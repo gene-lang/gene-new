@@ -345,27 +345,35 @@ From this package directory:
 
 ```sh
 ../../bin/gene test
-../../bin/gene test tests/response_spec.gene
+../../bin/gene test tests/unit
+../../bin/gene test tests/integration
+../../bin/gene test tests/unit/agents/response_spec.gene
 ../../bin/gene test --name "Harness trigger recovery"
 ../../bin/gene run ../../tools/generate_harness_event_catalog.gene --check
 ```
 
 The suite uses Gene's `$test` `describe`/`it` declarations, assertions and
 standard failure reports. `gene test` discovers `tests/**/*_spec.gene`;
-`--name` selects examples by their full description. Parsing, provider and
-calendar specs run directly. Runtime specs use `tests/support.gene` to run
-each example in an independent Application and fresh workspace under `tmp/`,
-with the same spec runner in the child. This preserves working-directory,
+`--name` selects examples by their full description. `tests/unit/` contains
+focused parsing, provider, calendar, composition and API tests.
+`tests/integration/` covers runtime composition, persistence, subprocesses,
+HTTP and service delivery. Both directories mirror `src/`, with one spec per
+targeted source file in each suite; keep related regression cases in that file.
+The captured-process lifecycle spec covers the Gene runtime dependency.
+Unit specs run directly. Integration specs use `tests/support.gene` for
+examples that need an independent Application and fresh workspace under
+`tmp/`, with the same spec runner in the child. This preserves working-directory,
 lock and scheduler isolation. Failure reports include child diagnostics and
 the workspace path for inspection. Crash and signal programs live under
 `tests/fixtures/` and are excluded from discovery.
 
 The specs cover patches, questions, history, plugins, sessions, commands,
 triggers, recovery, live delivery, concurrency and shutdown. Responsiveness
-specs measure HTTP and cancellation while CPU loops, native collection
-callbacks and synchronous process calls run. New tests should use the same
+tests in `tests/integration/runtime/call_supervision_spec.gene` measure HTTP
+and cancellation while CPU loops, native collection callbacks and synchronous
+process calls run. New tests should use the same
 `*_spec.gene` convention; see [Gene testing](../../docs/testing.md).
-Use a release binary for the responsiveness spec's 100 ms latency bounds;
+Use a release binary for the responsiveness tests' 100 ms latency bounds;
 build it with `nimble speedy` from the repository root. Debug builds can
 exceed those bounds during cleanup.
 

@@ -1,0 +1,29 @@
+# Tests src/web/component_spec.gene.
+(import $test [describe it run])
+(import [validate_web_component] ^from "../../../src/web/component_spec")
+
+(describe "Harness web components"
+  (it
+    "normalizes quoted views and rejects invalid elements, actions and replacement names"
+    []
+    (let component
+      (validate_web_component
+        {
+          ^name "counter"
+          ^slot "sidebar"
+          ^view (quote
+                  (section ^class_name "web_card" (h3 "Counter") (button ^command "/counter" "Add")))}))
+    ($assert (== component/view/tag "section") "quoted element was not normalized")
+    ($assert (== component/view/props/class "web_card") "class_name did not normalize")
+    (for invalid in [{^name "counter" ^slot "sidebar" ^view (quote (script "bad"))} {^name "counter" ^slot "sidebar" ^view (quote (button ^on_click "bad" "Bad"))} {^name "counter" ^slot "welcome" ^view (quote (p "Bad name"))} {^name "counter" ^slot "missing" ^view (quote (p "Bad slot"))}]
+      ($assert
+        (try
+          (validate_web_component invalid)
+          false
+        catch Any
+          true)
+        "invalid component was admitted"))))
+
+(fn main [args] : Int
+  (let result (run ^name (?? args/0 "")))
+  result/exit_code)

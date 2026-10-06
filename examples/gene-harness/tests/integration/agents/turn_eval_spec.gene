@@ -1,0 +1,109 @@
+# Tests src/agents/turn_eval.gene.
+(import $test [describe it])
+(import [isolated run_spec] ^from "../../support")
+(import [evaluate_turn] ^from "../../../src/agents/turn_eval")
+(import [gene_doc] ^from "../../../src/agents/instructions")
+
+(describe "Harness turn evaluation"
+  (it "reports actionable response diagnostics without host source line numbers" []
+    (isolated this_mod/.path "reports actionable response diagnostics without host source line numbers"
+      (fn [workspace]
+        ($fs/make_dir workspace)
+        (let root ($fs/real_path workspace))
+        (let unknown (evaluate_turn 1 root "\n(doc \"gene/control-flow\")" ^bindings {^doc gene_doc}))
+        ($assert ($str/contains? unknown/request "unknown documentation gene/control-flow") "doc error was masked")
+        ($assert ($str/contains? unknown/request "gene/control_flow") "doc error omitted valid chapter names")
+        ($assert (! ($str/contains? unknown/request "[1.error] line")) "host source line was presented as a response line")
+        (let label (evaluate_turn 2 root "# goal\n(let label \"value\")\n(append_prompt label 1)"))
+        ($assert ($str/contains? label/request "[2.error] line 3:") "dynamic label lacked its response line")
+        ($assert ($str/contains? label/request "literal label") "dynamic label lacked an explanation")
+        (let prose (evaluate_turn 3 root "I’ll inspect the files.\n# goal\n(Outcome ^done true ^reply \"done\")"))
+        ($assert ($str/contains? prose/request "[3.error] line 1:") "prose preamble lacked its response line")
+        ($assert ($str/contains? prose/request "# comments") "prose error lacked a format hint")
+        (let scalar (evaluate_turn 4 root "42"))
+        ($assert (== scalar/kind "continue") "format diagnostic rejected a valid scalar response"))))
+
+  (it "renders an applied patch alongside continuation and error items" []
+    (isolated this_mod/.path "renders an applied patch alongside continuation and error items"
+      (fn [workspace]
+        ($fs/make_dir workspace)
+        (let root ($fs/real_path workspace))
+        (let continued (evaluate_turn 20 root
+          "(Outcome ^prompt \"next\")\n*** Begin Patch\n*** Add File: continued.txt\n+written\n*** End Patch\n"))
+        ($assert (== continued/kind "continue") "patched continuation did not continue")
+        ($assert ($str/contains? continued/request "[20.patch] applied:") "patch result was lost")
+        ($assert ($str/contains? continued/request "[20.result]") "continuation result was lost")
+        (let errored (evaluate_turn 21 root
+          "(/ 1 0)\n*** Begin Patch\n*** Add File: errored.txt\n+written\n*** End Patch\n"))
+        ($assert (== errored/kind "error") "patched error did not return a diagnostic")
+        ($assert ($str/contains? errored/request "[21.patch] applied:") "error lost its patch result")
+        ($assert ($str/contains? errored/request "[21.error]") "code error diagnostic was lost"))))
+
+  (it "rejects copied history attachment placeholders before file writes" []
+    (isolated this_mod/.path "rejects copied history attachment placeholders before file writes"
+      (fn [workspace]
+        ($fs/make_dir workspace)
+        (let root ($fs/real_path workspace))
+        (let path $"${root}/asset.txt")
+        ($fs/write_text path "original")
+        (let code ($to_str "($fs/write_text " ($json/stringify path)
+          " (attachment \"asset\"))\n(Outcome ^done true ^reply \"written\")\n"
+          "<<<asset ELIDED\n[elided 2048 bytes; (recall \"14.attachment.asset\")]\nELIDED\n"))
+        (let result (evaluate_turn 15 root code))
+        ($assert (== result/kind "error") "copied history placeholder was executed")
+        ($assert ($str/contains? result/request "history placeholder") "recovery diagnostic was missing")
+        ($assert (== ($fs/read_text path) "original") "invalid attachment overwrote the file"))))
+
+  (it "captures outcomes, errors, console and patches within the child scope and budget" []
+    (isolated this_mod/.path "captures outcomes, errors, console and patches within the child scope and budget"
+      (fn [workspace]
+        ($fs/make_dir workspace)
+        (let root ($fs/real_path workspace))
+        ($os/set_cwd root)
+        (let done (evaluate_turn 1 root "($println \"console\")\n(Outcome ^^done ^reply \"hi\")"))
+        ($assert (== done/kind "done") "finish did not end the round")
+        ($assert (== done/request "") "console entered the next request")
+        ($assert (== done/console/0/text "console\n") "console was lost")
+        (let continued (evaluate_turn 2 root "(append_prompt \"result\" 3)\n(Outcome ^prompt \"again\")"))
+        ($assert ($str/contains? continued/request "[2.result] line 1:") "labeled result missing")
+        (let error (evaluate_turn 3 root "\n\n(/ 1 0)"))
+        ($assert (== error/kind "error") "runtime error did not continue")
+        ($assert ($str/contains? error/request "[3.error] line 3:") "runtime error location missing")
+        (let unreadable (evaluate_turn 4 root "(+ 1"))
+        ($assert (== unreadable/kind "error") "read error was accepted")
+        (let panic (evaluate_turn 9 root "($panic \"boom\")"))
+        ($assert (== panic/kind "error") "panic escaped the turn boundary")
+        ($assert ($str/contains? panic/request "boom") "panic message was lost")
+        (let patch (evaluate_turn 5 root "(Outcome ^^done ^reply ($fs/read_text \"result.txt\"))\n*** Begin Patch\n*** Add File: result.txt\n+patched\n*** End Patch\n"
+          ^bindings {}))
+        # Relative code paths use the workspace cwd, which the process owner sets.
+        (let tested (evaluate_turn 6 root "(Outcome ^^done ^reply ($fs/read_text \"result.txt\"))"))
+        ($assert (== tested/kind "done") "patched content was not available to code")
+        ($assert (== tested/validated/outcome/reply "patched\n") "code saw old file content")
+        (let conflict (evaluate_turn 10 root "($fs/write_text \"should-not-run\" \"bad\")\n*** Begin Patch\n*** Update File: result.txt\n@@\n-missing anchor\n+new\n*** End Patch\n"))
+        ($assert ($str/contains? conflict/request "[10.patch] failed:") "preflight failure was not a patch result")
+        ($assert (! ($fs/exists? "should-not-run")) "code ran after a failed patch")
+        (let children (evaluate_turn 7 root "(spawn ^lane root (do ($sleep 5) ($println \"child\")))\n(Outcome ^^done ^reply \"joined\")"))
+        ($assert (== children/kind "done") "turn scope did not join its child")
+        ($assert (== children/console/0/text "child\n") "child console did not inherit the turn sink")
+        (let timeout (evaluate_turn 8 root "(while true nil)" ^timeout_ms 10))
+        ($assert (== timeout/kind "error") "infinite loop did not time out")
+        (let before ($os/monotonic_ms))
+        (let slow_child (evaluate_turn 11 root "(spawn ^lane root ($sleep 1000))\n(Outcome ^^done ^reply \"done\")" ^timeout_ms 10))
+        ($assert (== slow_child/kind "error") "budget did not cancel a child at the turn boundary")
+        ($assert (< (- ($os/monotonic_ms) before) 100) "turn budget waited for a slow child")
+        (let pieces [])
+        (repeat i in 1024 (pieces .push "x"))
+        (let noisy (evaluate_turn 12 root "(repeat 300 ($print chunk)) (Outcome ^done true ^reply \"done\")"
+          ^bindings {^chunk ($str/join pieces "")}))
+        ($assert (== noisy/kind "done") $"noisy response failed: ${noisy/error}")
+        (var console_bytes 0)
+        (var markers 0)
+        (for item in noisy/console
+          (set console_bytes (+ console_bytes ($str/byte_size item/text)))
+          (if ($str/contains? item/text "[console truncated]") (set markers (+ markers 1))))
+        ($assert (<= console_bytes 262144) "console exceeded its per-turn cap")
+        ($assert (== markers 1) "console did not write exactly one truncation marker")
+        ($println "turn eval: outcomes, console, read/runtime errors, patches, child scope and budget passed")))))
+
+(fn main [args] : Int (run_spec args))

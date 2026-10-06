@@ -1,0 +1,16 @@
+# Tests src/plugin_api.gene.
+(import $test [describe it assert_equal run])
+(import [make_direct_plugin] ^from "../fixtures/activation")
+
+(describe "Harness activation"
+  (it "keeps direct closures alive across module and frame boundaries" []
+    (let callbacks {})
+    (repeat number in 200
+      (let plugin (make_direct_plugin number))
+      (plugin/activate (fn [name callback] (callbacks .put name callback)))
+      (let callback (callbacks .get "captured"))
+      (assert_equal (callback) number))))
+
+(fn main [args] : Int
+  (let result (run ^name (?? args/0 "")))
+  result/exit_code)

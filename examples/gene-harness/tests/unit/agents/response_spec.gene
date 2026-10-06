@@ -1,0 +1,58 @@
+# Tests src/agents/response.gene.
+(import $test [describe it assert_equal assert_raises run])
+(import [split_response ResponseReadError] ^from "../../../src/agents/response")
+(import [evaluate_response] ^from "../../../src/agents/eval_site")
+
+(describe "Harness responses"
+  (it "preserves the code prefix and exact attachment bytes" []
+    (let response (split_response "# finish\n(+ 1 2)\n<<<data END\n\\d+ \"quoted\"\nEND\n"))
+    (assert_equal response/code "# finish\n(+ 1 2)\n")
+    (assert_equal response/attachments/data "\\d+ \"quoted\"\n")
+    (let forms response/forms)
+    (assert_equal (evaluate_response `(do %forms...) (env)) 3))
+
+  (it "keeps block-like text inside multiline code strings" []
+    (let response (split_response "(let text \"hello\n<<<not a block\nbye\")\ntext\n"))
+    (assert_equal ($size response/attachments) 0)
+    (assert_equal response/forms/.size 2))
+
+  (it "rejects unreadable code" []
+    (assert_raises (fn [] (split_response "(+ 1")) ParseError))
+
+  (it "rejects unterminated attachments" []
+    (assert_raises (fn [] (split_response "<<<x STOP\nbody\n")) ResponseReadError))
+
+  (it "rejects duplicate attachment names" []
+    (assert_raises
+      (fn [] (split_response "<<<x STOP\na\nSTOP\n<<<x DONE\nb\nDONE\n"))
+      ResponseReadError))
+
+  (it "rejects multiple patches" []
+    (assert_raises
+      (fn [] (split_response "*** Begin Patch\n*** End Patch\n*** Begin Patch\n*** End Patch\n"))
+      ResponseReadError))
+
+  (it "rejects code after a raw block" []
+    (assert_raises
+      (fn [] (split_response "<<<x STOP\na\nSTOP\n(+ 1 2)\n")) ResponseReadError))
+
+  (it "accepts patch-only responses with either a newline or EOF terminator" []
+    (for suffix in ["\n" ""]
+      (let response (split_response ($to_str "*** Begin Patch\n*** Add File: a.txt\n+hello\n*** End Patch" suffix)))
+      (assert_equal response/forms/.size 0)
+      ($assert (! ($absent? response/patch)))))
+
+  (it "recognizes CRLF delimiters without changing attachment bytes" []
+    (let response (split_response "(+ 1 2)\r\n<<<raw END\r\nbody\r\nEND"))
+    (assert_equal response/attachments/raw "body\r\n")
+    (let patch (split_response "*** Begin Patch\r\n*** Add File: crlf.txt\r\n+ok\r\n*** End Patch"))
+    ($assert (! ($absent? patch/patch))))
+
+  (it "preserves authored source locations" []
+    (let response (split_response "\n\n(+ 1 2)"))
+    (let meta ($node/meta response/forms/0))
+    (assert_equal meta/line 3)))
+
+(fn main [args] : Int
+  (let result (run ^name (?? args/0 "")))
+  result/exit_code)

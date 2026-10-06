@@ -1,0 +1,138 @@
+# Tests src/profiles/baseline.gene.
+(import $test [describe it])
+(import [isolated run_spec] ^from "../../support")
+(import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
+(import [baseline_profile] ^from "../../../src/profiles/baseline")
+(import [row doc] ^from "../../../src/kernel")
+(import [set_plugin_enabled] ^from "../../../src/storage/workspace")
+(import [assemble_instructions] ^from "../../../src/agents/instructions")
+(import [open_session_service close_session_service] ^from "../../../src/web/session_service")
+
+(describe "Built-in contributions"
+  (it "unwinds command, plugin and reference rows while retaining loop controls" []
+    (isolated this_mod/.path "unwinds command, plugin and reference rows while retaining loop controls"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (try
+          ($assert (! ($absent? (row runtime/h "commands" "help")))
+            "core command plugin did not mount")
+          ($assert (! ($absent? (row runtime/h "functions" "register_plugin")))
+            "plugin administration did not mount")
+          ($assert ($str/contains? (doc runtime/h "gene/stdlib") "stdlib")
+            "language reference did not mount")
+          ($assert
+            (! ($str/contains? (assemble_instructions runtime {^kind "interactive"})
+                 "web_components registry"))
+            "CLI prompt describes the web-only contribution")
+          ($assert (== (row runtime/h "commands" "new") void)
+            "CLI command was mounted before the CLI entry point")
+          (set_plugin_enabled runtime/workspace runtime/h "core_commands" false)
+          ($assert (== (row runtime/h "commands" "help") void)
+            "disabled core command stayed visible")
+          ($assert (! ($absent? (row runtime/h "commands" "cancel")))
+            "loop control disappeared with core commands")
+          (set_plugin_enabled runtime/workspace runtime/h "core_commands" true)
+          ($assert (! ($absent? (row runtime/h "commands" "help")))
+            "enable did not restore shared commands")
+          (set_plugin_enabled runtime/workspace runtime/h "gene_reference" false)
+          ($assert
+            (try (doc runtime/h "gene/stdlib") false catch Any true)
+            "language chapter survived its plugin's disable")
+          (set_plugin_enabled runtime/workspace runtime/h "gene_reference" true)
+          (set_plugin_enabled runtime/workspace runtime/h "plugin_admin" false)
+          ($assert (== (row runtime/h "functions" "register_plugin") void)
+            "disabled plugin administration remained callable")
+          (set_plugin_enabled runtime/workspace runtime/h "plugin_admin" true)
+        ensure
+          (close_runtime runtime))
+        (let web_root ($path/join workspace "web"))
+        ($fs/make_dir web_root)
+        (let service (open_session_service ^workspace web_root ^^offline))
+        (try
+          ($assert ($str/contains? (doc service/runtime/h "harness/web_components") "web")
+            "web entry did not contribute its documentation")
+          ($assert ($str/contains?
+            (assemble_instructions service/runtime {^kind "interactive"})
+            "web_components registry")
+            "web entry did not contribute its prompt paragraph")
+          ($assert (== (row service/runtime/h "commands" "new") void)
+            "web host received a CLI-only command")
+        ensure
+          (close_session_service service)))))
+
+  (it "uses the response budget for host plugin callbacks" []
+    (isolated this_mod/.path "uses the response budget for host plugin callbacks"
+      (fn [workspace]
+        (let initial (open_runtime workspace "default" (baseline_profile)))
+        (let config_path $"${initial/state_root}/config.gene")
+        (close_runtime initial)
+        (let config ($serde/read_data ($fs/read_text config_path)))
+        (config .put "response_budget" {^timeout_ms 610000 ^max_memory_mb 768})
+        ($fs/write_text_atomic config_path ($serde/write_data config))
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (try
+          (let policy (runtime/h/plugin_policies/.get .get "core_commands"))
+          ($assert (== policy/limits/timeout_ms 610000)
+            "host plugin kept the old timeout ceiling")
+          ($assert (== policy/limits/max_memory_mb 768)
+            "host plugin kept the old memory ceiling")
+        ensure
+          (close_runtime runtime))))))
+
+(describe "First-party provider rows"
+  (it "prepares each provider's model-visible input without credentials" []
+    (isolated this_mod/.path "prepares each provider's model-visible input without credentials"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (try
+          (let messages
+            [{^role "system" ^content "rules"}
+             {^role "user" ^content "first"}
+             {^role "assistant" ^content "reply"}
+             {^role "user" ^content "next"}])
+          (let codex (row runtime/h "providers" "codex"))
+          (let codex_settings (codex/configure "model-a" "high" 1234))
+          (let codex_input (codex/prepare
+            {^purpose "turn" ^messages messages ^settings codex_settings}))
+          ($assert (== codex_input/body/instructions "rules")
+            "Codex lost its system instructions")
+          ($assert (== codex_input/body/input/.size 3)
+            "Codex did not keep conversation roles")
+          ($assert (== codex_input/timeout_ms 1234)
+            "Codex lost the selected timeout")
+          ($assert (! ($str/contains? ($to_str codex_input) "Bearer"))
+            "Codex prepared input contains authentication")
+          (let openrouter (row runtime/h "providers" "openrouter"))
+          (let openrouter_settings (openrouter/configure "model-b" "medium" 5678))
+          (let openrouter_input (openrouter/prepare
+            {^purpose "turn" ^messages messages ^settings openrouter_settings
+             ^max_tokens 77}))
+          ($assert (== openrouter_input/body/messages messages)
+            "OpenRouter rewrote the canonical messages")
+          ($assert (== openrouter_input/body/max_tokens 77)
+            "OpenRouter dropped the output budget")
+          (let anthropic (row runtime/h "providers" "anthropic"))
+          (let anthropic_settings (anthropic/configure "model-c" "minimal" 91011))
+          (let anthropic_input (anthropic/prepare
+            {^purpose "turn" ^messages messages ^settings anthropic_settings
+             ^max_tokens 88}))
+          ($assert (== anthropic_settings/effort "low")
+            "Anthropic did not map minimal effort to low")
+          ($assert (== anthropic_input/body/system "rules")
+            "Anthropic lost the separate system message")
+          ($assert (== anthropic_input/body/messages/.size 3)
+            "Anthropic dropped conversation history")
+          ($assert (== anthropic_input/body/max_tokens 88)
+            "Anthropic lost the output budget")
+          (let claude (row runtime/h "providers" "claude"))
+          (let claude_settings (claude/configure "sonnet" "medium" 12345))
+          (let claude_input (claude/prepare
+            {^purpose "turn" ^messages messages ^settings claude_settings}))
+          ($assert (== ($last claude_input/args) ($serde/write_data messages))
+            "Claude CLI did not flatten the complete history")
+          ($assert (== claude_input/timeout_ms 12345)
+            "Claude CLI lost the selected timeout")
+        ensure
+          (close_runtime runtime))))))
+
+(fn main [args] : Int (run_spec args))

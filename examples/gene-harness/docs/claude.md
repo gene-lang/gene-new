@@ -130,10 +130,11 @@ depend on token extraction, setup-token reuse, client impersonation, or a proxy.
 
 ## Verification
 
-The package specs run without a model. `tests/provider_prefix_spec.gene`
+The package specs run without a model.
+`tests/integration/builtin/provider_anthropic_spec.gene`
 serializes actual Anthropic requests across turns and checks that message
 content stays byte-stable while the two cache checkpoints move.
-`tests/provider_blocks_spec.gene` checks that the Anthropic, Claude CLI,
-OpenAI and OpenRouter transports preserve response bytes, so blocks that end
-at EOF still split correctly. A real subscription or API success requires the
-user's login or key.
+The provider specs under `tests/unit/builtin/` check that the Anthropic,
+Claude CLI, OpenAI and OpenRouter transports preserve response bytes, so
+blocks that end at EOF still split correctly. A real subscription or API
+success requires the user's login or key.

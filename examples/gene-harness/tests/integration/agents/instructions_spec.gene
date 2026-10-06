@@ -1,0 +1,67 @@
+# Tests src/agents/instructions.gene.
+(import $test [describe it])
+(import [isolated run_spec] ^from "../../support")
+(import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
+(import [baseline_profile] ^from "../../../src/profiles/baseline")
+(import [assemble_instructions reference_root response_format] ^from "../../../src/agents/instructions")
+(import [function_instructions workspace_bindings] ^from "../../../src/agents/harness_turn")
+(import [plugin_paragraph] ^from "../../../src/builtin/plugin_admin")
+(import [acquire_snapshot release_snapshot] ^from "../../../src/runtime/composition")
+(import [contribute doc] ^from "../../../src/kernel")
+
+(describe "Registry-backed instructions"
+  (it "preserves the baseline prompt and renders rows and docs" []
+    (isolated this_mod/.path "preserves the baseline prompt and renders rows and docs"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (try
+          (let root (reference_root))
+          (let reference ($fs/read_text ($path/join root "tools/gene-lang-skill/SKILL.md")))
+          (let session {^kind "interactive"})
+          (let context
+            ($to_str "Workspace: " runtime/root
+              "\nSession kind: interactive\nFunctions:\n"
+              (function_instructions runtime/h)))
+          (let chapter_line
+            "Documentation chapters: gene/pitfalls, gene/syntax, gene/declarations, gene/control_flow, gene/stdlib; for example (doc \"gene/stdlib\").")
+          (let expected
+            ($str/join [response_format reference chapter_line plugin_paragraph context]
+              "\n\n"))
+          ($assert (== (assemble_instructions runtime session) expected)
+            $"host reference rows changed the prompt: ${runtime/h/plugin_errors/.get}")
+          (contribute runtime/h "core" "prompt"
+            {^name "dynamic_probe" ^render (fn [current record]
+              $"probe:${record/kind}")})
+          (let rendered (assemble_instructions runtime session))
+          ($assert ($str/contains? rendered "probe:interactive")
+            "dynamic prompt row did not render")
+          ($assert ($str/ends_with? rendered context)
+            "dynamic context section did not stay last")
+          (contribute runtime/h "core" "docs" {^name "probe" ^text "hello"})
+          ($assert (== (doc runtime/h "probe") "hello")
+            "docs text row was not readable")
+          ($assert ($str/contains? (doc runtime/h "gene/stdlib") "stdlib")
+            "Gene reference chapter was not registered")
+          ($assert ($str/contains? (doc runtime/h "harness/plugins")
+                     "Register from a session")
+            "plugin administration chapter was not registered")
+          ($assert
+            (try
+              (doc runtime/h "missing")
+              false
+            catch Any
+              ($str/contains? $err/message "gene/stdlib"))
+            "unknown doc did not list registered chapters")
+          (let lease (acquire_snapshot runtime/h/snapshots))
+          (try
+            (let bindings (workspace_bindings runtime/h lease/snapshot "default" runtime/root))
+            (for name in ["doc" "register_plugin" "enable_plugin" "disable_plugin"
+                          "restore_plugin" "plugin_states" "inspect_plugin" "session_id"]
+              ($assert (! ($absent? (bindings .get name)))
+                $"shared workspace binding ${name} is absent"))
+          ensure
+            (release_snapshot runtime/h/snapshots lease))
+        ensure
+          (close_runtime runtime))))))
+
+(fn main [args] : Int (run_spec args))

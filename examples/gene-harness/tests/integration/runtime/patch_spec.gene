@@ -1,0 +1,200 @@
+# Tests src/runtime/patch.gene.
+(import $test [describe it assert_equal])
+(import [isolated run_spec fixture_path test_controller] ^from "../../support")
+(import [apply_patch prepare_patch recover_patch_temporaries] ^from "../../../src/runtime/patch")
+(import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
+(import [baseline_profile] ^from "../../../src/profiles/baseline")
+(import [save_round] ^from "../../../src/runtime/round_controller")
+(import [require_record create_session load_session] ^from "../../../src/runtime/sessions")
+(import [append_core_event record_core_state flush_event_store core_state events_for]
+  ^from "../../../src/storage/state")
+
+(fn expect_file [root : Str, path : Str, expected : Str]
+  ($assert (== ($fs/read_text ($path/join root path)) expected) $"file ${path} changed unexpectedly"))
+
+(fn applied [root, patch]
+  (let result (apply_patch root patch))
+  ($assert (== result/status "applied") $"patch failed: ${result/text}"))
+
+(describe "Harness patches"
+  (it "preflights add, update, delete and move operations and rolls back failed renames" []
+    (isolated this_mod/.path "preflights add, update, delete and move operations and rolls back failed renames"
+      (fn [workspace]
+        (let root workspace)
+        ($fs/make_dir root)
+        ($fs/write_text ($path/join root "a.txt") "one\ntwo\nthree\n")
+        ($fs/write_text ($path/join root "b.txt") "old\n")
+        (let updated (apply_patch root "*** Begin Patch\n*** Update File: a.txt\n@@\n one\n-two\n+changed\n three\n*** End Patch\n"))
+        ($assert (== updated/status "applied") updated/text)
+        (expect_file root "a.txt" "one\nchanged\nthree\n")
+        (let failed (apply_patch root "*** Begin Patch\n*** Update File: a.txt\n@@\n-missing\n+new\n*** Update File: b.txt\n@@\n-old\n+new\n*** End Patch\n"))
+        ($assert (== failed/status "failed") "bad anchor was accepted")
+        (expect_file root "a.txt" "one\nchanged\nthree\n")
+        (expect_file root "b.txt" "old\n")
+        ($fs/write_text ($path/join root "whitespace.txt") "  alpha  \n  beta  \n")
+        (let trimmed (apply_patch root "*** Begin Patch\n*** Update File: whitespace.txt\n@@\n-alpha\n+new\n beta\n*** End Patch\n"))
+        ($assert (== trimmed/status "applied") trimmed/text)
+        ($fs/write_text ($path/join root "ambiguous.txt") "same\nsame\n")
+        (let ambiguous (apply_patch root "*** Begin Patch\n*** Update File: ambiguous.txt\n@@\n-same\n+changed\n*** End Patch\n"))
+        ($assert (== ambiguous/status "failed")
+          "ambiguous context was accepted")
+        (let added (apply_patch root "*** Begin Patch\n*** Add File: nested/new.txt\n+hello\n+world\n*** End Patch\n"))
+        ($assert (== added/status "applied") added/text)
+        (expect_file root "nested/new.txt" "hello\nworld\n")
+        (let moved (apply_patch root "*** Begin Patch\n*** Update File: b.txt\n*** Move to: moved.txt\n@@\n-old\n+moved\n*** Delete File: nested/new.txt\n*** End Patch\n"))
+        ($assert (== moved/status "applied") moved/text)
+        ($assert (! ($fs/exists? ($path/join root "b.txt"))) "move left the old file")
+        ($assert (! ($fs/exists? ($path/join root "nested/new.txt"))) "delete left its file")
+        (expect_file root "moved.txt" "moved\n")
+        ($fs/write_text ($path/join root "b.txt") "old\n")
+        (let rollback (apply_patch root "*** Begin Patch\n*** Update File: a.txt\n@@\n-changed\n+new\n*** Update File: b.txt\n@@\n-old\n+new\n*** End Patch\n" ^fail_after_renames 1))
+        ($assert (== rollback/status "failed") "injected failure was accepted")
+        ($assert ($str/contains? rollback/text "restored a.txt") "rollback did not name the restored file")
+        (expect_file root "a.txt" "one\nchanged\nthree\n")
+        (expect_file root "b.txt" "old\n")
+        ($assert (! ($fs/exists? ($path/join root ".a.txt.gene-harness-tmp"))) "a temporary survived rollback")
+        ($assert (! ($fs/exists? ($path/join root ".b.txt.gene-harness-tmp"))) "b temporary survived rollback")
+        (let plan (prepare_patch root "*** Begin Patch\n*** Update File: b.txt\n@@\n-old\n+new\n*** End Patch\n"))
+        (expect_file root "b.txt" "old\n")
+        ($assert (== plan/files ["b.txt"]) "preflight lost the crash-recovery file list")
+        ($println "patch: add/update/delete/move, matching tiers, preflight and rename rollback passed"))))
+
+  (it "preserves modes, symlinks and CRLF and accepts implicit and anchored hunks" []
+    (isolated this_mod/.path "preserves modes, symlinks and CRLF and accepts implicit and anchored hunks"
+      (fn [workspace]
+        ($fs/make_dir workspace)
+        (let root ($fs/real_path workspace))
+        ($os/set_cwd root)
+        ($fs/write_text "script.sh" "#!/bin/sh\necho old\n")
+        ($fs/set_mode "script.sh" 493)
+        (applied root "*** Begin Patch\n*** Update File: script.sh\n-echo old\n+echo new\n*** End Patch")
+        ($assert (== (/mode ($fs/info "script.sh")) 493) "patch removed executable permissions")
+        ($fs/write_text "blank.txt" "before\n\nafter\n")
+        (applied root "*** Begin Patch\n*** Update File: blank.txt\n@@\n before\n\n-after\n+changed\n*** End Patch")
+        ($assert (== ($fs/read_text "blank.txt") "before\n\nchanged\n") "empty context line changed")
+        (applied root "*** Begin Patch\n*** Update File: blank.txt\n@@ before\n+inserted\n*** End Patch")
+        ($assert (== ($fs/read_text "blank.txt") "before\ninserted\n\nchanged\n") "anchor-only insertion missed its position")
+        ($fs/write_text "crlf.txt" "old\r\n")
+        (applied root "*** Begin Patch\r\n*** Update File: crlf.txt\r\n-old\r\n+new\r\n*** End Patch")
+        ($assert (== ($fs/read_text "crlf.txt") "new\r\n") "patch changed CRLF file endings")
+        ($fs/create_symlink "script.sh" "link.sh")
+        (applied root "*** Begin Patch\n*** Update File: link.sh\n-echo new\n+echo linked\n*** End Patch")
+        ($assert (/symlink ($fs/info "link.sh" ^follow false)) "patch replaced the symbolic link")
+        ($assert ($str/contains? ($fs/read_text "script.sh") "linked") "patch did not edit the link target")
+        ($fs/write_text "b.txt" "old\n")
+        (let failed (apply_patch root "*** Begin Patch\n*** Update File: link.sh\n-echo linked\n+echo wrong\n*** Update File: b.txt\n-old\n+new\n*** End Patch" ^fail_after_renames 1))
+        ($assert (== failed/status "failed") "injected write failure was accepted")
+        ($assert ($str/contains? ($fs/read_text "script.sh") "linked") "rollback did not restore link target content")
+        ($assert (== (/mode ($fs/info "script.sh")) 493) "rollback lost the original file mode")
+        (applied root "*** Begin Patch\n*** Update File: link.sh\n*** Move to: moved.sh\n-echo linked\n+echo moved\n*** End Patch")
+        ($assert (/symlink ($fs/info "moved.sh" ^follow false)) "move lost the symbolic link")
+        ($assert (! ($fs/exists? "link.sh")) "move retained the old link")
+        ($fs/create_symlink "missing" "dangling")
+        (applied root "*** Begin Patch\n*** Delete File: dangling\n*** End Patch")
+        ($assert (! ($fs/exists? "dangling")) "patch could not delete a dangling link")
+        ($println "patch edges: modes, rollback, symlink update/move/delete, blank context, implicit and anchored hunks, CRLF")))))
+
+(describe "Harness patch recovery"
+  (it "reports a partial rename and removes staged siblings after a process crash" []
+    (isolated this_mod/.path "reports a partial rename and removes staged siblings after a process crash"
+      (fn [workspace]
+        (let child ($os/exec_async ($os/executable_path)
+          "run" (fixture_path "patch_crash") workspace ^timeout_ms 15000))
+        (try
+          (let marker ($path/join workspace "owner-pid"))
+          (let deadline (+ ($os/monotonic_ms) 10000))
+          (while (&& (! ($fs/exists? marker)) (< ($os/monotonic_ms) deadline)) ($sleep 5))
+          ($assert ($fs/exists? marker) "patch did not reach the first rename")
+          (let killed (await ($os/exec_async "/bin/kill"
+            "-9" ($str/trim ($fs/read_text marker)))))
+          (assert_equal killed/status 0)
+          (let outcome (await child))
+          ($assert (!= outcome/status 0) "crash fixture exited normally")
+          (let saved ($serde/read_data ($fs/read_text ($path/join workspace "response.gene"))))
+          (let note (recover_patch_temporaries workspace saved/files))
+          ($assert ($str/contains? note "patch may be partially applied: a.txt, b.txt"))
+          (assert_equal ($fs/read_text ($path/join workspace "a.txt")) "a1\n")
+          (assert_equal ($fs/read_text ($path/join workspace "b.txt")) "b0\n")
+          ($assert (! ($fs/exists? ($path/join workspace ".b.txt.gene-harness-tmp"))))
+        ensure
+          (if_not child/.done? child/.cancel child/.join)))))
+
+  (it "reports partial commits and interruption after SIGKILL between real renames" []
+    (isolated this_mod/.path "reports partial commits and interruption after SIGKILL between real renames"
+      (fn [workspace]
+        ($fs/make_dir workspace)
+        (let root ($fs/real_path workspace))
+        (let child ($os/exec_async ($os/executable_path)
+          "run" (fixture_path "patch_crash_process") root ^timeout_ms 40000))
+        (try
+          (let marker ($path/join root "owner-pid"))
+          (let deadline (+ ($os/monotonic_ms) 30000))
+          (while (&& (! ($fs/exists? marker)) (< ($os/monotonic_ms) deadline)) ($sleep 5))
+          ($assert ($fs/exists? marker) "patch did not reach the first commit rename")
+          (let killed (await ($os/exec_async "/bin/kill" "-9" ($str/trim ($fs/read_text marker)))))
+          ($assert (== killed/status 0) "patch child could not be killed")
+          (await child)
+          (let reopened (open_runtime root "default" (baseline_profile)))
+          (try
+            (let recovery (core_state reopened/events "session" "default" "recovery"))
+            ($assert ($str/contains? recovery/warnings/0 "a.txt, b.txt") "interrupted turn omitted affected patch paths")
+            ($assert (== ($fs/read_text "a.txt") "a1\n") "first file did not commit before the crash")
+            ($assert (== ($fs/read_text "b.txt") "b0\n") "recovery silently committed the second file")
+            ($assert (! ($fs/exists? ".b.txt.gene-harness-tmp")) "recovery retained staging files")
+            (let session (require_record reopened/sessions "default"))
+            ($assert (== session/status "interrupted") "crashed round was replayed or lost")
+            ($assert session/attention "partial patch did not set attention")
+            (var noted false)
+            (for event in (events_for reopened/events "session" "default")
+              (if (&& (== event/type "trace") ($str/contains? event/payload/text "patch may be partially applied")) (set noted true)))
+            ($assert noted "partial patch warning was absent from the transcript")
+            ($println "patch crash: SIGKILL between real renames, interrupted transcript, attention and staging cleanup")
+          ensure (close_runtime reopened))
+        ensure (if_not child/.done? child/.cancel child/.join)))))
+
+  (it "records affected paths and partial warnings and removes staging files" []
+    (isolated this_mod/.path "records affected paths and partial warnings and removes staging files"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (let root runtime/root)
+        (create_session ^id "patch" runtime/sessions)
+        (let controller (test_controller runtime (fn [request] "")))
+        (save_round
+          controller
+          "patch"
+          {^id "p1" ^request_id "p1" ^submission_seq 1 ^state "running" ^last_turn 1})
+        (append_core_event runtime/events "session" "patch" {^type "turn/start" ^turn 1 ^round "p1"})
+        (record_core_state
+          runtime/events
+          "session"
+          "patch"
+          "session/state"
+          "patch/1"
+          {^files ["a.txt" "b.txt"] ^state "started" ^round "p1" ^turn 1})
+        ($fs/write_text "a.txt" "new")
+        ($fs/write_text "b.txt" "old")
+        ($fs/write_text ".b.txt.gene-harness-tmp" "new")
+        (flush_event_store runtime/events)
+        (let loaded (load_session runtime/sessions "patch"))
+        (loaded/round
+          .get
+          ; .put "state" "done")
+        (close_runtime runtime)
+        (let reopened (open_runtime root "default" (baseline_profile)))
+        (try
+          ($assert
+            (! ($fs/exists? ".b.txt.gene-harness-tmp"))
+            "boot did not remove patch staging siblings")
+          ($assert (== ($fs/read_text "a.txt") "new") "recovery overwrote the partially applied file")
+          ($assert (== ($fs/read_text "b.txt") "old") "recovery silently finished a partial patch")
+          (let recovery (core_state reopened/events "session" "patch" "recovery"))
+          ($assert
+            ($str/contains? recovery/warnings/0 "a.txt, b.txt")
+            "recovery did not name affected paths")
+          (let record (require_record reopened/sessions "patch"))
+          ($assert record/attention "partial patch did not mark attention")
+          ($println "patch recovery: durable affected paths, partial warning, attention and staged sibling removal")
+        ensure
+          (close_runtime reopened))))))
+
+(fn main [args] : Int (run_spec args))

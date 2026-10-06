@@ -1,0 +1,308 @@
+# Tests src/runtime/triggers.gene.
+(import $test [describe it])
+(import [isolated run_spec test_controller fixture_path package_path] ^from "../../support")
+(import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
+(import [baseline_profile] ^from "../../../src/profiles/baseline")
+(import [new_round_controller close_round_controller RoundError]
+  ^from "../../../src/runtime/round_controller")
+(import [open_trigger_manager close_trigger_manager create_trigger tick_triggers list_occurrences
+         apply_retention record_due save_occurrence prune_occurrences]
+  ^from "../../../src/runtime/triggers")
+(import [require_record view_session leave_session list_sessions update_session create_session
+         load_session]
+  ^from "../../../src/runtime/sessions")
+(import [contribute] ^from "../../../src/kernel")
+(import [append_message store_body recall_body history_state] ^from "../../../src/agents/history")
+(import [flush_event_store core_states] ^from "../../../src/storage/state")
+(import [scripted_profile] ^from "../../../src/profiles/scripted")
+(import [set_plugin_enabled] ^from "../../../src/storage/workspace")
+
+(describe "Harness triggers"
+  (it "creates deterministic occurrences and trigger sessions with default filters and cron" []
+    (isolated this_mod/.path "creates deterministic occurrences and trigger sessions with default filters and cron"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (let calls ($cell []))
+        (let controller (test_controller runtime (fn [request]
+          (calls/.get .push request/session)
+          "(Outcome ^done true ^reply \"checked\")")))
+        (let manager (open_trigger_manager runtime controller ^start false ^now 1000))
+        (try
+          (create_trigger manager {^id "beat" ^kind "heartbeat" ^every_ms 100 ^request "inspect"} ^now 1000)
+          (tick_triggers manager ^now 1100)
+          (for [id watcher] in controller/watchers/.get watcher/.join)
+          (tick_triggers manager ^now 1100)
+          (let occurrences (list_occurrences manager))
+          ($assert (== occurrences/.size 1) $"expected one occurrence: ${occurrences}")
+          ($assert (== occurrences/0/state "finished") $"occurrence did not finish: ${occurrences}")
+          ($assert (== (calls .get; .size) 1) "trigger ran more than once")
+          (let record (require_record runtime/sessions occurrences/0/session))
+          ($assert (== record/kind "heartbeat") "wrong trigger session kind")
+          ($assert (== record/trigger "beat") "trigger metadata missing")
+          ($assert (== (list_sessions runtime/sessions; .size) 1) "heartbeat appeared in default sidebar")
+          (tick_triggers manager ^now 1100)
+          ($assert (== (calls .get; .size) 1) "same scheduled time repeated")
+          (create_trigger manager {^id "nightly" ^kind "cron" ^cron "*/5 * * * *" ^timezone "UTC" ^request "audit"} ^now 1000)
+          (tick_triggers manager ^now 300000)
+          (for [id watcher] in controller/watchers/.get watcher/.join)
+          (tick_triggers manager ^now 300000)
+          (let cron_occurrences (list_occurrences manager ^trigger "nightly"))
+          ($assert (== cron_occurrences/0/state "finished") "cron did not run")
+          ($println "triggers: deterministic occurrences, trigger sessions, default filters and five-field cron")
+        ensure
+          (close_trigger_manager manager)
+          (close_round_controller controller)
+          (close_runtime runtime))))))
+
+(describe "Harness trigger policies"
+  (it "enforces caps, queueing, coalescing and retention protections" []
+    (isolated this_mod/.path "enforces caps, queueing, coalescing and retention protections"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (let config ($serde/read_data ($fs/read_text $"${runtime/state_root}/config.gene")))
+        (config .put "trigger_concurrency" 1)
+        (config .put "trigger_timeout_ms" 10000)
+        ($fs/write_text_atomic $"${runtime/state_root}/config.gene" ($serde/write_data config))
+        (let release ($cell false))
+        (let controller (test_controller runtime (fn [request]
+          (while (! release/.get) ($sleep 1))
+          "(Outcome ^done true ^reply \"nothing to do\")")))
+        (let manager (open_trigger_manager runtime controller ^start false ^now 1000))
+        (try
+          (create_trigger manager {^id "queue" ^kind "heartbeat" ^every_ms 100 ^request "check" ^overlap "queue_one" ^retention {^keep 1}} ^now 1000)
+          (tick_triggers manager ^now 1100)
+          (tick_triggers manager ^now 1200)
+          (tick_triggers manager ^now 1300)
+          (let pending (list_occurrences manager ^trigger "queue"))
+          ($assert (== pending/0/state "started") "first occurrence did not start")
+          ($assert (== pending/1/state "due") "cap dropped queued occurrence")
+          ($assert (== pending/2/state "skipped") "queue_one did not coalesce")
+          ($assert (== pending/2/reason "coalesced") "wrong skipped reason")
+          (release .set true)
+          (for [id watcher] in controller/watchers/.get watcher/.join)
+          (tick_triggers manager ^now 1300)
+          (for [id watcher] in controller/watchers/.get watcher/.join)
+          (tick_triggers manager ^now 1300)
+          (let finished (list_occurrences manager ^trigger "queue"))
+          ($assert (== finished/1/state "finished") "queued occurrence did not start when slot freed")
+          (update_session runtime/sessions finished/1/session {^^pinned})
+          (let kept (create_session runtime/sessions ^id "needs-attention" ^kind "heartbeat" ^trigger "queue"))
+          (update_session runtime/sessions kept/id {^^attention})
+          (let patched (create_session runtime/sessions ^id "patched" ^kind "heartbeat" ^trigger "queue"))
+          (update_session runtime/sessions patched/id {^^has_patch})
+          (let removed (apply_retention manager ^now 1300))
+          ($assert (== removed/0 finished/0/session) "retention did not collect empty heartbeats first")
+          ($assert (require_record runtime/sessions finished/1/session; .get "pinned") "retention collected pinned session")
+          ($assert (require_record runtime/sessions kept/id; .get "attention") "retention collected attention session")
+          (view_session runtime/sessions kept/id)
+          ($assert (! (require_record runtime/sessions kept/id; .get "attention")) "opening did not clear attention")
+          (leave_session runtime/sessions kept/id)
+          (create_trigger manager {^id "missed-once" ^kind "cron" ^cron "* * * * *" ^timezone "UTC" ^request "audit" ^missed "once"} ^now 1000)
+          (create_trigger manager {^id "missed-skip" ^kind "cron" ^cron "* * * * *" ^timezone "UTC" ^request "audit" ^missed "skip"} ^now 1000)
+          (tick_triggers manager ^now 180000 ^^boot)
+          ($assert (== (list_occurrences manager ^trigger "missed-once"; .size) 1) "downtime created three occurrences")
+          (let skipped (list_occurrences manager ^trigger "missed-skip"))
+          ($assert (== skipped/0/state "skipped") "missed skip started a round")
+          ($assert (== skipped/0/at_ms 180000) "missed cron was not coalesced to latest time")
+          (contribute runtime/h "core" "triggers" {^id "plugin-trigger" ^kind "scheduled" ^at 999999 ^request "plugin work"})
+          (tick_triggers manager ^now 180000)
+          ($assert (! ($absent? (manager/definitions/.get .get "plugin-trigger"))) "plugin trigger was not durable")
+          ($println "trigger policies: cap, queue_one, coalescing, slot release, retention protections, attention and missed cron")
+        ensure
+          (close_trigger_manager manager)
+          (close_round_controller controller)
+          (close_runtime runtime))))))
+
+(describe "Harness trigger administration"
+  (it "accepts plain maps and leaves due work untouched during list and create" []
+    (isolated this_mod/.path "accepts plain maps and leaves due work untouched during list and create"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (let root runtime/root)
+        (let controller (test_controller runtime (fn [request] "(Outcome ^done true ^reply \"unexpected\")")))
+        (let manager (open_trigger_manager runtime controller ^start false ^boot false ^now 0))
+        (let definition (create_trigger manager {^id "hb" ^kind "heartbeat" ^every_ms 1000 ^request "work" ^missed "once"} ^now 0))
+        (record_due manager definition 1000)
+        (close_trigger_manager manager)
+        (close_round_controller controller)
+        (close_runtime runtime)
+        (let entry (package_path "src/main.gene"))
+        (let script $"${root}/responses.gene")
+        ($fs/write_text script ($to_str ["(Outcome ^done true ^reply \"unexpected\")"]))
+        (let plain $"${root}/new-trigger.gene")
+        ($fs/write_text plain $"{^id \"new\" ^kind \"scheduled\" ^at ${(+ ($os/wall_ms) 60000)} ^request \"later\"}")
+        (for command in [["triggers" "list"] ["triggers" "occurrences"] ["triggers" "create" plain]]
+          (let options ["run" entry "--workspace" root "--script" script])
+          (for value in command (options .push value))
+          (let result (await ($os/exec_async ($os/executable_path) options... ^timeout_ms 30000)))
+          ($assert (== result/status 0) $"trigger administration failed: ${result/stderr}"))
+        (let reopened (open_runtime root "default" (baseline_profile)))
+        (let again (test_controller reopened (fn [request] "")))
+        (let read (open_trigger_manager reopened again ^start false ^boot false))
+        (try
+          (let occurrences (list_occurrences read ^trigger "hb"))
+          ($assert (== occurrences/.size 1) "read-only trigger commands scheduled new occurrences")
+          ($assert (== occurrences/0/state "due") "trigger administration consumed due work")
+          ($assert ($absent? (reopened/sessions/index/.get .get occurrences/0/session)) "administration created an execution session")
+          ($println "trigger administration: list/occurrences/create leave due work untouched; plain maps accepted")
+        ensure (close_trigger_manager read) (close_round_controller again) (close_runtime reopened))))))
+
+(describe "Harness trigger recovery"
+  (it "recovers due work without losing occurrences or replaying admitted rounds" []
+    (isolated ^timeout_ms 240000 this_mod/.path "recovers due work without losing occurrences or replaying admitted rounds"
+      (fn [home]
+        ($fs/make_dir home)
+        (let root ($fs/real_path home))
+        (let executable ($os/executable_path))
+        (let fixture (fixture_path "trigger_recovery"))
+        (for point in ["due" "session" "admitted" "started" "running"]
+          (let workspace $"${root}/${point}")
+          (let killed (await ($os/exec_async executable "run" fixture workspace point ^timeout_ms 30000)))
+          ($assert (!= killed/status 0) "crash child unexpectedly succeeded")
+          (let runtime (open_runtime workspace "default" (baseline_profile)))
+          (let calls ($cell 0))
+          (let controller (test_controller runtime (fn [request]
+            (calls .set (+ calls/.get 1))
+            "(Outcome ^done true ^reply \"recovered\")")))
+          (let manager (open_trigger_manager runtime controller ^start false ^now 2000))
+          (try
+            (for [id watcher] in controller/watchers/.get watcher/.join)
+            (tick_triggers manager ^now 2000)
+            (let records (list_occurrences manager))
+            ($assert (== records/.size 1) $"Duplicate occurrence after ${point}: ${records}")
+            (let record records/0)
+            ($assert (== record/state "finished") $"Occurrence lost after ${point}: ${record}")
+            (if (["due" "session"] .contains? point)
+              (then
+                ($assert (== calls/.get 1) $"Due occurrence not started after ${point}")
+                ($assert (== record/outcome "done") "recovered due occurrence did not finish"))
+              (else
+                ($assert (== calls/.get 0) $"Admitted round replayed after ${point}")
+                ($assert (== record/outcome "interrupted") $"Wrong crash outcome: ${record}")
+                (let metadata (require_record runtime/sessions record/session))
+                ($assert metadata/attention "interrupted trigger needs attention")))
+            (tick_triggers manager ^now 2000)
+            ($assert (== (list_occurrences manager; .size) 1) "repeated boot scheduled duplicate")
+          ensure
+            (close_trigger_manager manager)
+            (close_round_controller controller)
+            (close_runtime runtime)))
+        ($println "trigger crash recovery: due, existing session, admission, started and running; no lost occurrences or replay")))))
+
+(describe "Harness trigger queue recovery"
+  (it "retains waiting rounds and queued occurrences and starts them when a slot opens" []
+    (isolated this_mod/.path "retains waiting rounds and queued occurrences and starts them when a slot opens"
+      (fn [workspace]
+        ($fs/make_dir workspace)
+        (let root ($fs/real_path workspace))
+        (await ($os/exec_async ($os/executable_path) "run" (fixture_path "trigger_queue_restart") root ^timeout_ms 30000))
+        (let runtime (open_runtime root "default" (baseline_profile)))
+        (let calls ($cell 0))
+        (let controller (test_controller runtime (fn [request]
+          (calls .set (+ calls/.get 1))
+          "(Outcome ^done true ^reply \"resumed\")")))
+        (let manager (open_trigger_manager runtime controller ^start false ^now 1300))
+        (try
+          (let queued (list_occurrences manager))
+          ($assert (== queued/.size 3) "restart duplicated occurrences")
+          ($assert (== queued/0/state "started") "waiting trigger round was interrupted")
+          ($assert (== queued/1/state "due") "queued occurrence was lost during restart")
+          ($assert (== queued/2/state "skipped") "coalesced occurrence did not survive restart")
+          ($assert (== calls/.get 0) "queue started while cap was full")
+          (let waiting (load_session runtime/sessions queued/0/session))
+          (let receipt waiting/round/.get)
+          ($assert (! ($absent? receipt/questions/deadline)) "trigger questions have no deadline")
+          # The scheduler resumes an expired question batch without a user.
+          (tick_triggers manager ^now receipt/questions/deadline)
+          (for [id watcher] in controller/watchers/.get watcher/.join)
+          (tick_triggers manager ^now 1300)
+          (for [id watcher] in controller/watchers/.get watcher/.join)
+          (tick_triggers manager ^now 1300)
+          (let settled (list_occurrences manager))
+          ($assert (== settled/1/state "finished") "durable queued occurrence did not run when slot freed")
+          ($assert (== settled/1/outcome "done") "queued round did not finish")
+          ($assert (== calls/.get 2) "waiting round or queued occurrence executed more than once")
+          (let metadata (runtime/sessions/index/.get .get queued/0/session))
+          ($assert metadata/attention "expired unanswered questions lost attention")
+          ($println "trigger queue restart: waiting cap, durable due, coalescing, question deadline and eventual start")
+        ensure
+          (close_trigger_manager manager)
+          (close_round_controller controller)
+          (close_runtime runtime))))))
+
+(describe "Harness retention"
+  (it "bounds terminal occurrences, prevents replay and collects obsolete history blobs" []
+    (isolated this_mod/.path "bounds terminal occurrences, prevents replay and collects obsolete history blobs"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (let root runtime/root)
+        (let config ($serde/read_data ($fs/read_text $"${runtime/state_root}/config.gene")))
+        (config .put "trigger_occurrence_keep" 3)
+        (config .put "body_gc_interval_ms" 1)
+        ($fs/write_text $"${runtime/state_root}/config.gene" ($serde/write_data config))
+        (let controller (test_controller runtime (fn [request] "")))
+        (let manager (open_trigger_manager runtime controller ^start false ^boot false ^now 0))
+        (try
+          (let definition (create_trigger manager {^id "bounded" ^kind "heartbeat" ^every_ms 1000 ^request "work" ^enabled false} ^now 0))
+          (repeat index in 20
+            (let occurrence (record_due manager definition (* (+ index 1) 1000)))
+            (occurrence .put "state" "finished")
+            (occurrence .put "outcome" "done")
+            (save_occurrence manager occurrence))
+          ($assert (== (prune_occurrences manager) 17) "terminal occurrence window was not bounded")
+          ($assert (== ($size (list_occurrences manager)) 3) "old terminal occurrences stayed in memory")
+          ($assert ($absent? (record_due manager definition 1000)) "pruning allowed an old occurrence to replay")
+          (var projected 0)
+          (for [key value] in (core_states runtime/events "workspace" "workspace")
+            (if ($str/starts_with? ($to_str key) "occurrence/") (set projected (+ projected 1))))
+          ($assert (== projected 3) "pruned occurrence projections still accumulated")
+          (create_session runtime/sessions ^id "gc")
+          (load_session runtime/sessions "gc")
+          (store_body runtime "gc" "saved" "must survive collection")
+          (repeat turn in 40
+            (append_message runtime "gc" "user" $"full request ${turn}" ^settled "settled")
+            (flush_event_store runtime/events))
+          (let before ($size ($fs/list_dir $"${runtime/state_root}/blobs")))
+          (tick_triggers manager ^now 1)
+          (let after ($size ($fs/list_dir $"${runtime/state_root}/blobs")))
+          ($assert (< after (/ before 2)) "periodic collection retained superseded history blobs")
+          ($assert (== (recall_body runtime "gc" "saved") "must survive collection") "periodic GC removed a live recall body")
+          (let state (history_state runtime "gc"))
+          ($assert (== state/messages/0/content "settled") "old full request bodies were not settled in storage")
+        ensure (close_trigger_manager manager) (close_round_controller controller) (close_runtime runtime))
+        (let reopened (open_runtime root "default" (baseline_profile)))
+        (let again (test_controller reopened (fn [request] "")))
+        (let restored (open_trigger_manager reopened again ^start false ^boot false))
+        (try
+          ($assert (== ($size (list_occurrences restored)) 3) "pruned occurrences returned after restart")
+          (let restored_definition (restored/definitions/.get .get "bounded"))
+          ($assert ($absent? (record_due restored restored_definition 1000)) "restart lost the no-replay high-water mark")
+          ($println "growth: bounded terminal occurrences, durable no-replay marker, periodic blob GC and settled stored history")
+        ensure (close_trigger_manager restored) (close_round_controller again) (close_runtime reopened))))))
+
+(describe "Profile readiness"
+  (it "leaves a due trigger occurrence unadmitted while the profile is unready" []
+    (isolated this_mod/.path "leaves a due trigger occurrence unadmitted while the profile is unready"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default"
+          (scripted_profile ["(Outcome ^done true ^reply \"unused\")"])))
+        (let controller (new_round_controller runtime))
+        (let manager (open_trigger_manager runtime controller
+          ^start false ^boot false ^now 0))
+        (try
+          (create_trigger manager
+            {^id "beat" ^kind "heartbeat" ^every_ms 100 ^request "work"}
+            ^now 0)
+          (set_plugin_enabled runtime/workspace runtime/h "provider_scripted" false)
+          (try (tick_triggers manager ^now 100) catch RoundError nil)
+          (let occurrences (list_occurrences manager ^trigger "beat"))
+          ($assert (== occurrences/.size 1)
+            "due occurrence was lost on readiness refusal")
+          ($assert (== occurrences/0/state "due")
+            "readiness refusal consumed a due occurrence")
+        ensure
+          (close_trigger_manager manager)
+          (close_round_controller controller)
+          (close_runtime runtime))))))
+
+(fn main [args] : Int (run_spec args))

@@ -1,0 +1,83 @@
+# Tests src/builtin/provider_anthropic.gene.
+(import $test [describe it])
+(import [isolated run_spec test_service] ^from "../../support")
+(import [close_session_service create_session submit] ^from "../../../src/web/session_service")
+(import [prepare_anthropic] ^from "../../../src/builtin/provider_anthropic")
+
+(fn common_prefix [first : Str, second : Str] : Str
+  (let a ($binary/from_str first))
+  (let b ($binary/from_str second))
+  (var index 0)
+  (let limit ($math/min ($binary/size a) ($binary/size b)))
+  (while (&& (< index limit) (== ($binary/get a index) ($binary/get b index)))
+    (set index (+ index 1)))
+  ($str/slice_bytes first 0 index))
+
+(fn content_request [value]
+  (if (== ($head value) Map)
+    (then
+      (let copied {})
+      (for [key item] in value
+        (if (!= ($to_str key) "cache_control") (copied .put key (content_request item))))
+      (return copied)))
+  (if (== ($head value) List) (return ($map value content_request)))
+  value)
+
+(describe "Harness provider requests"
+  (it "keeps serialized Anthropic content stable with two moving cache checkpoints" []
+    (isolated this_mod/.path "keeps serialized Anthropic content stable with two moving cache checkpoints"
+      (fn [workspace]
+        (let wire ($cell []))
+        (let parts [])
+        (repeat index in 3000 (parts .push "x"))
+        (let payload ($str/join parts ""))
+        (let count ($cell 0))
+        (let settings {^model "test" ^effort "none" ^timeout_ms 600000})
+        (let service (test_service ^workspace workspace ^provider (fn [request]
+          (let messages request/messages)
+          (let last (- messages/.size 1))
+          (let spec (prepare_anthropic
+            {^purpose "turn" ^messages messages ^settings settings ^max_tokens 100}))
+          (wire/.get .push ($json/stringify spec/body))
+          (count .set (+ count/.get 1))
+          (let n count/.get)
+          (if (== n 10)
+            "(Outcome ^done true ^reply \"done\")"
+            $"# response-${n}\n(append_prompt \"large\" \"${payload}\") (Outcome ^prompt \"next\")"))))
+        (try
+          (let session (create_session service))
+          (submit service session/id "prefix" 1 "start")
+          (service/controller/watchers .get; .get session/id; .join)
+          (let bodies wire/.get)
+          ($assert (== bodies/.size 10) "provider did not record ten serialized requests")
+          (var k 2)
+          (while (< k 10)
+            (let before (- k 1))
+            (let old ($json/parse bodies/%before))
+            (let current ($json/parse bodies/%k))
+            (let prefix (common_prefix ($json/stringify (content_request old)) ($json/stringify (content_request current))))
+            (let marker $"response-${(- k 1)}")
+            ($assert ($str/contains? prefix marker) $"provider content prefix diverges before ${marker}")
+            (let old_content (content_request old))
+            (let new_content (content_request current))
+            (let last_assistant (- old_content/messages/.size 2))
+            ($assert ($str/contains? prefix ($json/stringify old_content/messages/%last_assistant))
+              "stable prefix stopped inside the previous assistant response")
+            (var stable 0)
+            (while (&& (< stable old_content/messages/.size)
+              (== ($json/stringify old_content/messages/%stable) ($json/stringify new_content/messages/%stable)))
+              (set stable (+ stable 1)))
+            ($assert (== stable (- old_content/messages/.size 1))
+              "first changed content message was not the previous full request")
+            (let previous_cache [])
+            (for message in old/messages
+              (if (! ($absent? message/content/0/cache_control))
+                (previous_cache .push message/content/0/text)))
+            ($assert (== previous_cache/.size ($math/min 2 before)) "provider did not retain the two latest cache checkpoints")
+            (let last_cache (- previous_cache/.size 1))
+            ($assert ($str/contains? previous_cache/%last_cache marker) "latest response lost its cache checkpoint")
+            (set k (+ k 1)))
+          ($println "provider prefix: actual serialized Anthropic requests, stable content and two moving checkpoints")
+        ensure (close_session_service service))))))
+
+(fn main [args] : Int (run_spec args))

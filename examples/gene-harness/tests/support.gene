@@ -53,8 +53,11 @@
   (callback_cells/.get .put service/runtime/root cell)
   service)
 
+(fn package_path [path : Str] : Str
+  ($path/join package_root path))
+
 (fn fixture_path [name : Str] : Str
-  ($path/join package_root $"tests/fixtures/${name}.gene"))
+  (package_path $"tests/fixtures/${name}.gene"))
 
 (fn isolated [spec_path : Str, name : Str, body, ^timeout_ms timeout_ms : Int = 120000]
   (let selected active_workspace/.get)

@@ -1,0 +1,17 @@
+# Tests src/runtime/triggers.gene.
+(import $test [describe it assert_raises run])
+(import [at_ms validate_definition TriggerError] ^from "../../../src/runtime/triggers")
+(import [ScheduleError] ^from "../../../src/runtime/schedule/errors")
+
+(describe "Harness trigger calendar"
+  (it "rejects invalid scheduled hours" []
+    (assert_raises (fn [] (at_ms "2026-01-01T24:00:00Z")) ScheduleError))
+
+  (it "rejects trigger IDs that escape the definition directory" []
+    (assert_raises
+      (fn [] (validate_definition {^id "../escape" ^kind "scheduled" ^at 0 ^request "x"} 0))
+      TriggerError)))
+
+(fn main [args] : Int
+  (let result (run ^name (?? args/0 "")))
+  result/exit_code)

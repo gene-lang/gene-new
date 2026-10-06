@@ -1,0 +1,48 @@
+# Tests src/builtin/provider_anthropic.gene.
+(import $test [describe it before_each assert_equal run])
+(import [prepare_anthropic anthropic_text] ^from "../../../src/builtin/provider_anthropic")
+(import [raw_blocks] ^from "./support")
+
+(describe "Harness provider requests"
+  (before_each [t]
+    (let messages [
+      {^role "system" ^content "instructions"}
+      {^role "user" ^content "prompt"}
+      {^role "assistant" ^content "response1"}
+      {^role "user" ^content "request1"}
+      {^role "assistant" ^content "response2"}
+      {^role "user" ^content "request2"}])
+    (set t/spec
+      (prepare_anthropic
+        {^purpose "turn" ^messages messages
+         ^settings {^model "test" ^effort "none" ^timeout_ms 600000}
+         ^max_tokens 100})))
+
+  (it "retains the conversation history" [t]
+    (assert_equal t/spec/body/messages/.size 5))
+
+  (it "marks the previous assistant cache checkpoint" [t]
+    (assert_equal t/spec/body/messages/1/content/0/cache_control/type "ephemeral"))
+
+  (it "marks the latest assistant cache checkpoint" [t]
+    (assert_equal t/spec/body/messages/3/content/0/cache_control/type "ephemeral")))
+
+(describe "Harness provider response bytes"
+  (it
+    "preserves Anthropic output text and EOF blocks"
+    []
+    (raw_blocks
+      (fn [text]
+        (anthropic_text
+          {
+            ^status 200
+            ^body ($json/stringify
+                    {
+                      ^type "message"
+                      ^role "assistant"
+                      ^stop_reason "end_turn"
+                      ^content [{^type "text" ^text text}]})})))))
+
+(fn main [args] : Int
+  (let result (run ^name (?? args/0 "")))
+  result/exit_code)

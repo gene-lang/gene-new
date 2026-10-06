@@ -1,0 +1,550 @@
+# Tests src/agents/model_call.gene.
+(import $test [describe it assert_equal])
+(import [isolated run_spec] ^from "../../support")
+(import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
+(import [Profile] ^from "../../../src/profiles/profile")
+(import [Plugin PluginHost] ^from "../../../src/plugin_api")
+(import [call_model store_part load_part] ^from "../../../src/agents/model_call")
+(import [append_message collect_unreferenced_bodies] ^from "../../../src/agents/history")
+(import [scripted_profile] ^from "../../../src/profiles/scripted")
+(import [history_basic] ^from "../../../src/builtin/history_basic")
+(import [new_round_controller submit_round round_receipt close_round_controller cancel_round]
+  ^from "../../../src/runtime/round_controller")
+(import [events_for append_core_event flush_event_store repair_interrupted_turns
+         append_turn_end_once]
+  ^from "../../../src/storage/state")
+(import [configure_model] ^from "../../../src/builtin/provider_common")
+(import [new_harness shutdown_harness contribute] ^from "../../../src/kernel")
+(import $net/http_client [request])
+
+(type ProviderError ^props {^message Str} ^impl [Error])
+(impl Error for ProviderError)
+
+(fn probe_profile [mode, attempts, entered]
+  (Profile ^name "test" ^provider "probe"
+    ^plugins [(Plugin ^id "provider_probe" ^provides [["providers" "probe"]]
+      ^activate (fn [host]
+        (host .PluginHost:contribute "providers"
+          {^name "probe" ^doc "Exercise model-call failures."
+           ^configure (fn [model, effort, timeout]
+             {^model "probe" ^effort "none" ^timeout_ms 30})
+           ^prepare (fn [call]
+             (if (== mode/.get "prepare")
+               (fail "prepare failed"))
+             {^messages call/messages})
+           ^send (fn [prepared]
+             (attempts .set (+ attempts/.get 1))
+             (if (== mode/.get "send_error")
+               (fail "provider failed"))
+             (if (== mode/.get "large_error")
+               (then
+                 (let pieces [])
+                 (repeat 400 (pieces .push "x"))
+                 (fail (ProviderError ^message ($str/join pieces "")))))
+             (if (== mode/.get "timeout")
+               (return {^timeout true}))
+             (if (== mode/.get "cancel")
+               (then
+                 (entered .set true)
+                 ($sleep 5000)))
+             {^text "(Outcome ^done true ^reply \"ok\")"})}
+        )
+      )
+    )]
+  ))
+
+(fn event_payloads [runtime, kind : Str]
+  (let found [])
+  (for event in (events_for runtime/events "session" "default")
+    (if (== event/type kind) (found .push event/payload)))
+  found)
+
+(describe "Durable model calls"
+  (it "records the frozen prepared value and reuses shared body blobs" []
+    (isolated this_mod/.path "records the frozen prepared value and reuses shared body blobs"
+      (fn [workspace]
+        (let seen ($cell []))
+        (let provider
+          (Plugin ^id "probe_providers"
+            ^provides [["providers" "forward"] ["providers" "flat"]]
+            ^activate (fn [host]
+              (host .PluginHost:contribute "providers"
+                {^name "forward" ^doc "Preserve messages."
+                 ^configure (fn [model, effort, timeout]
+                   {^model "test" ^effort "none" ^timeout_ms timeout})
+                 ^prepare (fn [call]
+                   {^messages call/messages ^timeout_ms call/settings/timeout_ms
+                    ^literal {^harness_blob "provider-literal"}})
+                 ^send (fn [prepared]
+                   (seen/.get .push prepared)
+                   {^text "forward response" ^usage {^input_tokens 5}})})
+              (host .PluginHost:contribute "providers"
+                {^name "flat" ^doc "Flatten messages."
+                 ^configure (fn [model, effort, timeout]
+                   {^model "test" ^effort "none" ^timeout_ms timeout})
+                 ^prepare (fn [call]
+                   (let bodies [])
+                   (for message in call/messages (bodies .push message/content))
+                   {^prompt ($str/join bodies "\n")
+                    ^timeout_ms call/settings/timeout_ms})
+                 ^send (fn [prepared]
+                   (seen/.get .push prepared)
+                   {^text "flat response"})}))))
+        (let runtime
+          (open_runtime workspace "default"
+            (Profile ^name "test" ^plugins [provider])))
+        (try
+          (let literal
+            {^harness_blob "literal-digest"
+             ^nested [{^harness_blob "literal-reference"}
+                      {^harness_literal {^harness_blob "another-literal"}}]})
+          ($assert (== (load_part runtime (store_part runtime literal)) literal)
+            "literal blob marker maps changed during storage")
+          (let shared_parts []) (let added_parts [])
+          (repeat 400
+            (shared_parts .push "x")
+            (added_parts .push "y"))
+          (let shared ($str/join shared_parts ""))
+          (let added ($str/join added_parts ""))
+          (let first_messages
+            [{^role "system" ^content shared}
+             {^role "user" ^content "first"}])
+          (let first (call_model runtime
+            {^session "default" ^round "r" ^turn 1 ^purpose "turn"
+             ^config {^provider "forward"} ^messages first_messages}))
+          ($assert (== first/text "forward response")
+            "forward provider did not return its text")
+          (let first_blob_count
+            ($size ($fs/list_dir $"${runtime/state_root}/blobs")))
+          (let second_messages
+            [{^role "system" ^content shared}
+             {^role "user" ^content "first"}
+             {^role "assistant" ^content added}])
+          (call_model runtime
+            {^session "default" ^round "r" ^turn 2 ^purpose "turn"
+             ^config {^provider "forward"} ^messages second_messages})
+          (let second_blob_count
+            ($size ($fs/list_dir $"${runtime/state_root}/blobs")))
+          ($assert (== second_blob_count (+ first_blob_count 1))
+            "shared history wrote duplicate blobs")
+          (call_model runtime
+            {^session "default" ^round "r" ^turn 2
+             ^purpose "history/summary"
+             ^config {^provider "flat"} ^messages second_messages})
+          (let requests []) (let results [])
+          (for event in (events_for runtime/events "session" "default")
+            (if (== event/type "model/request") (requests .push event/payload))
+            (if (== event/type "model/result") (results .push event/payload)))
+          ($assert (== requests/.size 3) "one model/request per call was not recorded")
+          ($assert (== results/.size 3) "one successful result per call was not recorded")
+          (let sent seen/.get)
+          (var index 0)
+          (for request in requests
+            (let restored (load_part runtime request/prepared))
+            ($assert (== restored sent/%index)
+              "recorded prepared input differs from send's input")
+            ($assert (== results/%index/call request/call)
+              "result was not linked to its request")
+            ($assert (== results/%index/outcome "ok")
+              "provider success was not recorded")
+            ($assert results/%index/final "successful result was not final")
+            ($assert (&& (> request/at_ms 0) (> results/%index/at_ms 0))
+              "model events omitted wall-clock timestamps")
+            (set index (+ index 1)))
+          ($assert (== requests/2/purpose "history/summary")
+            "summary call was not distinguished")
+          ($assert (== results/0/usage/input_tokens 5)
+            "provider usage was not recorded")
+          ($assert (>= results/0/timing_ms 0)
+            "provider timing was not recorded")
+          (let shared_ref requests/0/prepared/messages/0/content/harness_blob)
+          (collect_unreferenced_bodies runtime)
+          ($assert ($fs/exists? $"${runtime/state_root}/blobs/${shared_ref}")
+            "collection removed a body referenced by a model/request event")
+        ensure
+          (close_runtime runtime)))))
+
+  (it "records compaction and main calls from the same turn" []
+    (isolated this_mod/.path "records compaction and main calls from the same turn"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default"
+          (scripted_profile ["Earlier work summarized."
+            "(Outcome ^done true ^reply \"done\")"])))
+        (let controller (new_round_controller runtime))
+        (try
+          (let settings ($serde/read_data
+            ($fs/read_text $"${runtime/state_root}/config.gene")))
+          (settings .put "context_window" 10000)
+          ($fs/write_text_atomic $"${runtime/state_root}/config.gene"
+            ($serde/write_data settings))
+          (let pieces [])
+          (repeat 50000 (pieces .push "x"))
+          (append_message ^round "old" runtime "default" "user"
+            ($str/join pieces ""))
+          (append_message ^round "old" ^turn 1 runtime "default"
+            "assistant" "# prior work")
+          (let accepted (submit_round controller "default" "summary" 1 "go"))
+          (controller/watchers .get; .get "default"; .join)
+          (let receipt (round_receipt controller "default" accepted/id))
+          ($assert (== receipt/state "done")
+            $"scripted summary round failed: ${receipt/message}")
+          (let requests [])
+          (let main_response ($cell nil))
+          (for event in (events_for runtime/events "session" "default")
+            (if (== event/type "model/request")
+              (requests .push event/payload))
+            (if (== event/type "turn/response")
+              (main_response .set event/payload)))
+          ($assert (== requests/.size 2)
+            "summary and main invocation did not both record")
+          ($assert (== requests/0/purpose "history/summary")
+            "first invocation was not the summary")
+          ($assert (== requests/1/purpose "turn")
+            "second invocation was not the main turn")
+          ($assert (== main_response/.get/model_call requests/1/call)
+            "turn transcript did not link to its model call")
+        ensure
+          (close_round_controller controller)
+          (close_runtime runtime)))))
+
+  (it "uses one leased provider for summary and main calls" []
+    (isolated this_mod/.path "uses one leased provider for summary and main calls"
+      (fn [workspace]
+        (let unavailable ($cell false))
+        (let provider
+          (Plugin ^id "switching_providers"
+            ^provides [["providers" "first"] ["providers" "second"]]
+            ^activate (fn [host]
+              (host .PluginHost:contribute "providers"
+                {^name "first" ^doc "Initially selected provider." ^auto 0
+                 ^available (fn [] (if unavailable/.get "unavailable" nil))
+                 ^configure (fn [model, effort, timeout]
+                   {^model "first" ^effort "none" ^timeout_ms timeout})
+                 ^prepare (fn [call]
+                   {^purpose call/purpose ^messages call/messages})
+                 ^send (fn [prepared]
+                   (let summary (== prepared/purpose "history/summary"))
+                   (if summary (unavailable .set true))
+                   (if summary
+                     {^text "Earlier work summarized."}
+                     {^text "(Outcome ^done true ^reply \"done\")"}))})
+              (host .PluginHost:contribute "providers"
+                {^name "second" ^doc "Fallback provider." ^auto 1
+                 ^configure (fn [model, effort, timeout]
+                   {^model "second" ^effort "none" ^timeout_ms timeout})
+                 ^prepare (fn [call]
+                   {^purpose call/purpose ^messages call/messages})
+                 ^send (fn [prepared]
+                   {^text "(Outcome ^done true ^reply \"wrong provider\")"})}))))
+        (let runtime (open_runtime workspace "default"
+          (Profile ^name "test" ^plugins [provider (history_basic)])))
+        (let controller (new_round_controller runtime))
+        (try
+          (let settings ($serde/read_data
+            ($fs/read_text $"${runtime/state_root}/config.gene")))
+          (settings .put "context_window" 10000)
+          ($fs/write_text_atomic $"${runtime/state_root}/config.gene"
+            ($serde/write_data settings))
+          (let pieces [])
+          (repeat 50000 (pieces .push "x"))
+          (append_message ^round "old" runtime "default" "user"
+            ($str/join pieces ""))
+          (append_message ^round "old" ^turn 1 runtime "default"
+            "assistant" "# prior work")
+          (let accepted (submit_round controller "default" "same-provider" 1 "go"))
+          (controller/watchers .get; .get "default"; .join)
+          (let receipt (round_receipt controller "default" accepted/id))
+          ($assert (== receipt/state "done")
+            $"summary round failed: ${receipt/message}")
+          (let requests [])
+          (for event in (events_for runtime/events "session" "default")
+            (if (== event/type "model/request")
+              (requests .push event/payload)))
+          ($assert (&& (== requests/.size 2)
+                       (== requests/0/provider "first")
+                       (== requests/1/provider "first"))
+            "summary and main call chose different providers")
+        ensure
+          (close_round_controller controller)
+          (close_runtime runtime)))))
+
+  (it "repairs an in-flight retry with one unknown outcome and one turn end" []
+    (isolated this_mod/.path "repairs an in-flight retry with one unknown outcome and one turn end"
+      (fn [workspace]
+        (let profile (Profile ^name "test" ^plugins []))
+        (let runtime (open_runtime workspace "default" profile))
+        (let root runtime/root)
+        (try
+          (append_core_event runtime/events "session" "default"
+            {^type "turn/start" ^turn 1 ^round "r"})
+          (append_core_event runtime/events "session" "default"
+            {^type "model/request" ^call "call-1" ^turn 1 ^round "r"
+             ^purpose "turn" ^provider "test" ^prepared {^prompt "go"}})
+          (append_core_event runtime/events "session" "default"
+            {^type "model/result" ^call "call-1" ^attempt 1
+             ^outcome "timeout" ^final false ^timing_ms 30})
+          (append_core_event runtime/events "session" "default"
+            {^type "model/request" ^call "call-2" ^turn 1 ^round "r"
+             ^purpose "turn" ^provider "test" ^prepared {^prompt "again"}})
+          (flush_event_store runtime/events)
+        ensure
+          (close_runtime runtime))
+        (let reopened (open_runtime root "default" profile))
+        (try
+          (let results []) (let first_attempt []) (let endings [])
+          (for event in (events_for reopened/events "session" "default")
+            (if (&& (== event/type "model/result")
+                    (== event/payload/call "call-1"))
+              (results .push event/payload))
+            (if (&& (== event/type "model/result")
+                    (== event/payload/call "call-2"))
+              (first_attempt .push event/payload))
+            (if (&& (== event/type "turn/end")
+                    (== event/payload/turn 1))
+              (endings .push event/payload)))
+          ($assert (== results/.size 2)
+            "recovery did not close the in-flight call")
+          ($assert (== results/1/attempt 2)
+            "recovery used the wrong attempt number")
+          ($assert (== results/1/outcome "interrupted")
+            "recovery claimed an unknown provider outcome")
+          ($assert results/1/final "interrupted result was not final")
+          ($assert (> results/1/at_ms 0)
+            "recovery result omitted its wall-clock timestamp")
+          ($assert (&& (== first_attempt/.size 1)
+                       (== first_attempt/0/attempt 1)
+                       (== first_attempt/0/outcome "interrupted")
+                       first_attempt/0/final)
+            "recovery did not close an in-flight first attempt")
+          ($assert (== endings/.size 1)
+            "recovery did not write one turn ending")
+          ($assert endings/0/synthetic "cold recovery ending was not synthetic")
+          (repair_interrupted_turns ^session "default" reopened/events)
+          (let after (append_turn_end_once reopened/events "default"
+            {^type "turn/end" ^turn 1 ^round "r"
+             ^reason "error" ^synthetic false}))
+          ($assert (! after/created) "finalization wrote a duplicate turn end")
+        ensure
+          (close_runtime reopened))))))
+
+(describe "Model-call failure records"
+  (it "retains a large provider error referenced by a model result" []
+    (isolated this_mod/.path "retains a large provider error referenced by a model result"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default"
+          (probe_profile ($cell "large_error") ($cell 0) ($cell false))))
+        (try
+          (try
+            (call_model runtime
+              {^session "default" ^round "r" ^turn 1
+               ^config {} ^messages []})
+          catch Any nil)
+          (let results (event_payloads runtime "model/result"))
+          ($assert (== results/.size 1) "large error lacked a model result")
+          (let digest results/0/error/harness_blob)
+          ($assert (! ($absent? digest)) "large error was not stored by digest")
+          (collect_unreferenced_bodies runtime)
+          ($assert ($fs/exists? $"${runtime/state_root}/blobs/${digest}")
+            "collection removed a recorded provider error")
+        ensure
+          (close_runtime runtime)))))
+
+  (it "ends a pre-dispatch failure without inventing a model request" []
+    (isolated this_mod/.path "ends a pre-dispatch failure without inventing a model request"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default"
+          (probe_profile ($cell "prepare") ($cell 0) ($cell false))))
+        (let controller (new_round_controller runtime))
+        (try
+          (let accepted (submit_round controller "default" "first" 1 "go"))
+          (controller/watchers .get; .get "default"; .join)
+          (let receipt (round_receipt controller "default" accepted/id))
+          ($assert (== receipt/state "failed") "prepare error did not fail the round")
+          ($assert (== (event_payloads runtime "model/request") [])
+            "pre-dispatch error recorded a model call")
+          (let ends (event_payloads runtime "turn/end"))
+          ($assert (== ends/.size 1) "prepare error wrote multiple turn ends")
+          ($assert (== ends/0/stage "model/call")
+            "turn end omitted the failed stage")
+        ensure
+          (close_round_controller controller)
+          (close_runtime runtime)))))
+
+  (it "records provider errors and both timeout attempts" []
+    (isolated this_mod/.path "records provider errors and both timeout attempts"
+      (fn [workspace]
+        (let mode ($cell "send_error"))
+        (let attempts ($cell 0))
+        (let runtime (open_runtime workspace "default"
+          (probe_profile mode attempts ($cell false))))
+        (let controller (new_round_controller runtime))
+        (try
+          (let first (submit_round controller "default" "first" 1 "go"))
+          (controller/watchers .get; .get "default"; .join)
+          (let first_receipt (round_receipt controller "default" first/id))
+          ($assert (== first_receipt/state "failed")
+            "provider error did not fail the round")
+          (let error_results (event_payloads runtime "model/result"))
+          ($assert (== error_results/.size 1)
+            "provider error did not produce one result")
+          ($assert (&& (== error_results/0/outcome "error") error_results/0/final)
+            "provider failure result was not final")
+          (mode .set "timeout")
+          (let second (submit_round controller "default" "second" 2 "retry"))
+          (controller/watchers .get; .get "default"; .join)
+          (let second_receipt (round_receipt controller "default" second/id))
+          ($assert (== second_receipt/state "failed")
+            "two timeouts did not fail the round")
+          (let results (event_payloads runtime "model/result"))
+          ($assert (== results/.size 3) "retry did not record both attempts")
+          ($assert (&& (== results/1/outcome "timeout") (! results/1/final)
+                       (== results/2/outcome "timeout") results/2/final)
+            "timeout finality was wrong")
+          ($assert (== results/1/call results/2/call)
+            "retry did not retain one logical call id")
+          ($assert (== attempts/.get 3) "loop made the wrong number of attempts")
+          (let endings (event_payloads runtime "turn/end"))
+          ($assert (== endings/.size 2)
+            "failure finalization duplicated a turn end")
+        ensure
+          (close_round_controller controller)
+          (close_runtime runtime)))))
+
+  (it "records a cancelled in-flight provider attempt" []
+    (isolated this_mod/.path "records a cancelled in-flight provider attempt"
+      (fn [workspace]
+        (let entered ($cell false))
+        (let runtime (open_runtime workspace "default"
+          (probe_profile ($cell "cancel") ($cell 0) entered)))
+        (let controller (new_round_controller runtime))
+        (try
+          (let accepted (submit_round controller "default" "first" 1 "go"))
+          (let deadline (+ ($os/monotonic_ms) 5000))
+          (while (&& (! entered/.get) (< ($os/monotonic_ms) deadline))
+            ($sleep 1))
+          ($assert entered/.get "provider attempt never started")
+          (cancel_round controller "default" accepted/id)
+          (controller/watchers .get; .get "default"; .join)
+          (let results (event_payloads runtime "model/result"))
+          ($assert (== results/.size 1)
+            "cancelled provider attempt lacked a result")
+          ($assert (&& (== results/0/outcome "cancelled") results/0/final)
+            "cancelled attempt was recorded as a different outcome")
+          (let endings (event_payloads runtime "turn/end"))
+          ($assert (== endings/.size 1)
+            "cancellation wrote duplicate turn ends")
+        ensure
+          (close_round_controller controller)
+          (close_runtime runtime)))))
+
+  (it "ends a turn at the summary stage when its provider fails" []
+    (isolated this_mod/.path "ends a turn at the summary stage when its provider fails"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (scripted_profile [])))
+        (let controller (new_round_controller runtime))
+        (try
+          (let config ($serde/read_data
+            ($fs/read_text $"${runtime/state_root}/config.gene")))
+          (config .put "context_window" 10000)
+          ($fs/write_text_atomic $"${runtime/state_root}/config.gene"
+            ($serde/write_data config))
+          (let pieces [])
+          (repeat 50000 (pieces .push "x"))
+          (append_message ^round "old" runtime "default" "user"
+            ($str/join pieces ""))
+          (append_message ^round "old" ^turn 1 runtime "default"
+            "assistant" "# previous work")
+          (let accepted (submit_round controller "default" "first" 1 "go"))
+          (controller/watchers .get; .get "default"; .join)
+          (let receipt (round_receipt controller "default" accepted/id))
+          ($assert (== receipt/state "failed")
+            "summary provider failure did not fail the round")
+          (let requests (event_payloads runtime "model/request"))
+          (let results (event_payloads runtime "model/result"))
+          (let endings (event_payloads runtime "turn/end"))
+          ($assert (== requests/.size 1)
+            "main provider call ran after summary failure")
+          ($assert (== requests/0/purpose "history/summary")
+            "failed call was not identified as a summary")
+          ($assert (&& (== results/.size 1) (== results/0/outcome "error")
+                       results/0/final)
+            "summary error lacked a final model result")
+          ($assert (&& (== endings/.size 1)
+                       (== endings/0/stage "history/summary"))
+            "summary failure did not write one staged turn ending")
+        ensure
+          (close_round_controller controller)
+          (close_runtime runtime))))))
+
+(describe "Harness provider response bytes"
+  (it
+    "retries one provider timeout and preserves other failures"
+    []
+    (let h (new_harness))
+    (let calls ($cell 0))
+    (let mode ($cell "recover"))
+    (try
+      (contribute h "core" "providers"
+        {^name "retry" ^doc "Synthetic timeout provider."
+         ^configure (fn [model, effort, timeout]
+           (configure_model model effort timeout "retry"))
+         ^prepare (fn [call] call/messages)
+         ^send (fn [prepared]
+           (calls .set (+ calls/.get 1))
+           (if (== mode/.get "error")
+             (fail (HttpClientError ^message "certificate rejected")))
+           (if (|| (== mode/.get "timeout") (== calls/.get 1))
+             {^timeout true}
+             {^text "complete response"}))})
+      (let runtime {^h h ^profile (Profile ^name "test" ^plugins []
+        ^provider "retry")})
+      (let request {^config {^provider_timeout_ms 1500}
+        ^messages [{^role "system" ^content "rules"}
+                   {^role "user" ^content "go"}]})
+      (let recovered (call_model runtime request))
+      (assert_equal recovered/text "complete response")
+      (assert_equal calls/.get 2)
+      (calls .set 0)
+      (mode .set "timeout")
+      (let exhausted (try (call_model runtime request) "accepted"
+        catch Any $err/message))
+      (assert_equal calls/.get 2)
+      ($assert ($str/contains? exhausted
+        "retry model provider request exceeded 1.5 s (2 attempts)"))
+      (calls .set 0)
+      (mode .set "error")
+      (let other (try (call_model runtime request) "accepted"
+        catch HttpClientError $err/message))
+      (assert_equal calls/.get 1)
+      (assert_equal other "certificate rejected")
+      (let configured (configure_model nil nil 900000 "model"))
+      (assert_equal configured/timeout_ms 900000)
+    ensure
+      (shutdown_harness h))))
+
+(describe "Provider selection"
+  (it "retries one timeout in the loop" []
+    (isolated this_mod/.path "retries one timeout in the loop"
+      (fn [workspace]
+        (let h (new_harness))
+        (let attempts ($cell 0))
+        (try
+          (contribute h "core" "providers"
+            {^name "retry" ^doc "Synthetic retry provider."
+             ^configure (fn [model, effort, timeout]
+               {^model "retry" ^effort "none" ^timeout_ms timeout})
+             ^prepare (fn [call] call/messages)
+             ^send (fn [prepared]
+               (let number (attempts .swap (+ attempts/.get 1)))
+               (if (== number 0) {^timeout true} {^text "recovered"}))})
+          (let runtime {^h h ^profile (Profile ^name "test" ^plugins []
+            ^provider "retry")})
+          (let completion (call_model runtime
+            {^config {} ^messages [{^role "system" ^content "rules"}
+                                    {^role "user" ^content "go"}]}))
+          ($assert (== completion/text "recovered") "retry did not return the second result")
+          ($assert (== attempts/.get 2) "timeout used more than one retry")
+        ensure
+          (shutdown_harness h))))))
+
+(fn main [args] : Int (run_spec args))

@@ -1,0 +1,104 @@
+# Tests src/storage/state.gene.
+(import $test [describe it])
+(import [isolated run_spec] ^from "../../support")
+(import [open_event_store close_event_store append_core_event events_for record_core_state
+         core_state core_states flush_event_store unload_event_stream]
+  ^from "../../../src/storage/state")
+(import $store/fs [Store])
+
+(type ObservedStore ^props {^inner Any ^lookups Any}
+  (impl Store
+    (message put [key value] (self/inner .Store:put key value))
+    (message get [key] (self/inner .Store:get key))
+    (message has? [key]
+      (if ($str/starts_with? key "segment/") (self/lookups .set (+ self/lookups/.get 1)))
+      (self/inner .Store:has? key))
+    (message delete [key] (self/inner .Store:delete key))
+    (message keys [] self/inner/.Store:keys)
+    (message clear [] self/inner/.Store:clear)
+    (message checkpoint [generation records] (self/inner .Store:checkpoint generation records))
+    (message load_checkpoint [] self/inner/.Store:load_checkpoint)
+    (message close [] self/inner/.Store:close)))
+
+(describe "Harness event storage"
+  (it "loads streams lazily and preserves projections and retention across restart" []
+    (isolated this_mod/.path "loads streams lazily and preserves projections and retention across restart"
+      (fn [workspace]
+        (let root workspace)
+        ($fs/make_dir root)
+        (let first (open_event_store root ^segment_events 2 ^retained_segments 1))
+        (try
+          (for stream in ["a" "b"]
+            (record_core_state first "workspace" "workspace" "session/state"
+              $"session/${stream}" {^id stream ^title stream})
+            (record_core_state first "session" stream "round/state" "round" {^status "done"})
+            (for turn in [1 2 3 4 5]
+              (append_core_event first "session" stream {^type "trace" ^turn turn})))
+          (flush_event_store first)
+          ensure (close_event_store first))
+        (let events (open_event_store root))
+        (try
+          ($assert (== ($size events/streams/.get) 0) "opening read session streams")
+          ($assert (== ($size (core_states events "workspace" "workspace")) 2)
+            "session metadata was not restored")
+          ($assert (== ($size events/streams/.get) 0) "listing read event segments")
+          ($assert (== (core_state events "session" "a" "round") {^status "done"})
+            "stream projection did not load")
+          ($assert (== ($size events/streams/.get) 0) "projection lookup read event segments")
+          (let a (events_for events "session" "a"))
+          ($assert (== a/.size 6) "transcript was truncated by cache retention")
+          ($assert (== ($size events/streams/.get) 1) "loading a read b")
+          (unload_event_stream events "session" "a")
+          ($assert (== ($size events/streams/.get) 0) "unloading left the stream cached")
+          ($assert (== (events_for events "session" "a") a) "reload changed the transcript")
+          ($assert (== ($size (events_for events "session" "b")) 6) "second stream did not restore")
+          ($assert (! ($fs/exists? $"${root}/publish.lock")) "obsolete publication lock exists")
+          (scope
+            (let a_writer (spawn ^lane root
+              (for n in [1 2 3 4 5 6 7 8 9 10]
+                (append_core_event events "session" "parallel-a" {^type "trace" ^turn n})
+                (flush_event_store events))))
+            (let b_writer (spawn ^lane root
+              (for n in [1 2 3 4 5 6 7 8 9 10]
+                (append_core_event events "session" "parallel-b" {^type "trace" ^turn n})
+                (flush_event_store events))))
+            (await a_writer) (await b_writer))
+          ($assert (== ($size (events_for events "session" "parallel-a")) 10)
+            "parallel publication lost a events")
+          ($assert (== ($size (events_for events "session" "parallel-b")) 10)
+            "parallel publication lost b events")
+          ($println "event store: lazy streams, lazy projections, retention and reload passed")
+          ensure (close_event_store events)))))
+
+  (it "reuses sealed segment digests and safely changes segment sizes" []
+    (isolated this_mod/.path "reuses sealed segment digests and safely changes segment sizes"
+      (fn [workspace]
+        ($fs/make_dir workspace)
+        (let events (open_event_store workspace ^segment_events 16 ^gc_interval 1000))
+        (let lookups ($cell 0))
+        (try
+          (repeat n in 2048 (append_core_event events "session" "test" {^type "trace" ^text ($to_str n)}))
+          (flush_event_store events)
+          (let original_manifest events/last_manifest/.get)
+          (let original (original_manifest/streams .get "session:test"))
+          (set events/backend (ObservedStore ^inner events/backend ^lookups lookups))
+          (let before ($os/monotonic_ms))
+          (repeat turn in 200
+            (lookups .set 0)
+            (append_core_event events "session" "test" {^type "trace" ^text ($to_str turn)})
+            (flush_event_store events)
+            ($assert (== lookups/.get 1) "flush revisited sealed event segments"))
+          (let current_manifest events/last_manifest/.get)
+          (let current (current_manifest/streams .get "session:test"))
+          (repeat index in original/segments/.size
+            ($assert (== original/segments/%index current/segments/%index) "sealed segment digest changed"))
+          ($println $"segment reuse: 200 flushes after 2048 events, one tail write each (${(- ($os/monotonic_ms) before)} ms)")
+        ensure (close_event_store events))
+        (let reopened (open_event_store workspace ^segment_events 64))
+        (try
+          (append_core_event reopened "session" "test" {^type "trace" ^text "after reopen"})
+          (flush_event_store reopened)
+          ($assert (== ($size (events_for reopened "session" "test")) 2249) "changing segment size lost events")
+        ensure (close_event_store reopened))))))
+
+(fn main [args] : Int (run_spec args))

@@ -1,0 +1,179 @@
+# Tests src/kernel.gene.
+(import $test [describe it])
+(import [isolated run_spec] ^from "../support")
+(import [new_harness shutdown_harness install put_cordis_plugin rows row status_of uninstall]
+  ^from "../../src/kernel")
+(import [append_plugin_prompt] ^from "../../src/agents/outcome")
+(import [evaluate_harness_turn function_instructions] ^from "../../src/agents/harness_turn")
+(import [open_runtime close_runtime] ^from "../../src/runtime/bootstrap")
+(import [baseline_profile] ^from "../../src/profiles/baseline")
+(import [Plugin PluginHost DurableRecord] ^from "../../src/plugin_api")
+(import [append_core_event] ^from "../../src/storage/state")
+
+(describe "Harness kernel snapshots"
+  (it
+    "retains functions, named arguments and turn leases until retirement"
+    []
+    (isolated
+      this_mod/.path
+      "retains functions, named arguments and turn leases until retirement"
+      (fn [workspace]
+        (let root ($fs/real_path workspace))
+        (let h (new_harness))
+        (let closed ($cell []))
+        (fn plugin [version]
+          (let revisions [])
+          (Plugin ^id "count" ^provides [] ^requires [] ^activate (fn [host] (let revision ($cell false)) (revisions .push {^host host ^disposed revision}) (host .PluginHost:contribute "functions" {^name "count" ^doc "Return the leased version plus an increment." ^fn (fn [^increment increment : Int = 0] ($assert (! revision/.get) "leased resource was disposed") (+ version increment))}) (host .PluginHost:contribute "functions" {^name "report" ^doc "Append a function-correlated prompt." ^fn (fn [text] (append_plugin_prompt "details" text))})) ^deactivate (fn [host] (for revision in revisions (if (same? revision/host host) (revision/disposed .set true))) (closed .get; .push version))))
+        (try
+          (install h (plugin 1))
+          (let functions (rows h "functions"))
+          ($assert (== functions/.size 2) "functions were not published")
+          ($assert
+            ($str/contains? (function_instructions h) "increment")
+            "function signature was lost")
+          (let payload (row h "functions" "count"))
+          ($assert
+            (try
+              (payload .put "doc" "changed")
+              false
+            catch Any
+              true)
+            "published registry payload is mutable")
+          (let response ($cell nil))
+          (let entered ($channel ^capacity 1))
+          (let resume ($channel ^capacity 1))
+          (scope
+            (let turn
+              (spawn ^lane root (do (response .set (evaluate_harness_turn ^bindings {^entered entered ^resume resume} h 1 root "(var before (count ^increment 4)) (entered .send nil) resume/.recv (append_prompt \"version\" [before (count)]) (report \"from plugin\") (Outcome ^prompt \"continue\")")))))
+            entered/.recv
+            (put_cordis_plugin ^^replace h (plugin 2) {^host false})
+            ($assert (== closed/.get []) "replacement disposed a leased activation")
+            (resume .send nil)
+            (await turn))
+          (let result response/.get)
+          ($assert (== result/kind "continue") $"response evaluation failed: ${result/error}")
+          ($assert
+            ($str/contains? result/request "[5 1]")
+            "turn rebound across await or lost named args")
+          ($assert
+            ($str/contains? result/request "fn report")
+            "plugin prompt lost its function name")
+          ($assert (== closed/.get [1]) "lease release did not retire the old activation")
+          (let next
+            (evaluate_harness_turn h 2 root "(Outcome ^done true ^reply ($to_str (count)))"))
+          ($assert (== next/validated/outcome/reply "2") "new turn did not see the replacement")
+          (let sibling
+            (Plugin ^id "sibling" ^provides [] ^requires [] ^activate (fn [host] (host .PluginHost:create_registry {^name "custom" ^^unique}) (host .PluginHost:contribute "custom" {^name "entry" ^value 42}) (host .PluginHost:contribute "functions" {^name "sibling" ^doc "Independent function." ^fn (fn [] 42)}))))
+          (install h sibling)
+          ($assert
+            (== (status_of h "sibling") "ready")
+            "adding a sibling failed to rebuild the registry candidate")
+          (let sibling_result
+            (evaluate_harness_turn h 3 root "(Outcome ^done true ^reply ($to_str (sibling)))"))
+          ($assert
+            (== sibling_result/validated/outcome/reply "42")
+            "sibling function was not published")
+          (let duplicate
+            (Plugin ^id "duplicate" ^provides [] ^requires [] ^activate (fn [host] (host .PluginHost:contribute "functions" {^name "count" ^doc "Duplicate." ^fn (fn [] 99)}))))
+          (install h duplicate)
+          ($assert (== (status_of h "duplicate") "error") "duplicate function name was accepted")
+          (let unchanged
+            (evaluate_harness_turn h 3 root "(Outcome ^done true ^reply ($to_str (count)))"))
+          ($assert
+            (== unchanged/validated/outcome/reply "2")
+            "failed contribution changed the published functions")
+          (let broken
+            (Plugin ^id "count" ^provides [] ^requires [] ^activate (fn [host] ($assert false "activation failure"))))
+          (put_cordis_plugin ^^replace h broken {^host false})
+          (let retained
+            (evaluate_harness_turn h 4 root "(Outcome ^done true ^reply ($to_str (count)))"))
+          ($assert
+            (== retained/validated/outcome/reply "2")
+            $"failed replacement lost the old function: ${retained/error}")
+          (let timed_out
+            (evaluate_harness_turn ^timeout_ms 5
+              h
+              5
+              root
+              "(spawn ^lane root ($sleep 1000)) (Outcome ^done true ^reply \"done\")"))
+          ($assert
+            (== timed_out/error "response budget timed out")
+            "turn did not cancel and join its child")
+          (let invalid (evaluate_harness_turn h 6 root "("))
+          ($assert (== invalid/kind "error") "invalid response was not contained")
+          (for [id counter] in h/snapshots/counts/.get
+            ($assert (== counter/.load 0) "response exit leaked a snapshot lease"))
+          ($println "kernel snapshots: functions, named arguments, immutable views, turn leases and deferred retirement")
+        ensure
+          (shutdown_harness h))))))
+
+(describe "Harness composition"
+  (it "publishes contributions on the next turn through the origin-owned queue" []
+    (isolated this_mod/.path "publishes contributions on the next turn through the origin-owned queue"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (let entered ($cell false))
+        (let release ($cell false))
+        (try
+          (install runtime/h (Plugin ^id "dynamic" ^activate (fn [host]
+            (host .PluginHost:contribute "functions" {^name "add_later" ^doc "Contribute at the turn boundary."
+              ^fn (fn []
+                (host .PluginHost:contribute "functions" {^name "later" ^doc "Added function." ^fn (fn [] "later")})
+                ($assert ($absent? (row runtime/h "functions" "later")) "host lookup saw mid-turn mutation")
+                (entered .set true)
+                (while (! release/.get) ($sleep 1))
+                "queued")}))))
+          (let task (spawn ^lane root (evaluate_harness_turn runtime/h 1 runtime/root
+            "(add_later) (Outcome ^done true ^reply session_id)" ^session "a")))
+          (while (! entered/.get) ($sleep 1))
+          (let other (evaluate_harness_turn runtime/h 1 runtime/root "(Outcome ^done true ^reply \"other\")" ^session "b"))
+          ($assert ($absent? (row runtime/h "functions" "later")) "another turn published the still-open origin's queue")
+          (release .set true)
+          (let result (await task))
+          ($assert (== result/validated/outcome/reply "a") "session_id binding was absent")
+          ($assert (== result/kind "continue") "done completed before its plugin change was published")
+          ($assert ($str/contains? result/request "plugin_notice")
+            "rejected done did not explain the continuation")
+          ($assert (! ($absent? (row runtime/h "functions" "later")))
+            $"turn boundary did not publish contribution: ${result/composition_changes}; pending ${($size runtime/h/snapshots/pending/.get)}")
+          (let next (evaluate_harness_turn runtime/h 2 runtime/root "(Outcome ^done true ^reply (later))"))
+          ($assert (== next/validated/outcome/reply "later") "next turn could not call new function")
+          ($println "mid-turn contribution: immutable visibility, origin-owned queue and next-turn publication")
+        ensure
+          (release .set true)
+          (close_runtime runtime))))))
+
+(describe "Durable event bus"
+  (it "publishes every appended record and unwinds an observer with its plugin" []
+    (isolated this_mod/.path "publishes every appended record and unwinds an observer with its plugin"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (let turns ($cell 0))
+        (let records ($cell 0))
+        (let observer
+          (Plugin ^id "turn_counter" ^activate (fn [host]
+            (host .PluginHost:subscribe DurableRecord
+              (fn [event]
+                (records .set (+ records/.get 1))
+                (if (== event/name "turn/start")
+                  (turns .set (+ turns/.get 1))))))))
+        (try
+          (install runtime/h observer)
+          (append_core_event runtime/events "session" "default"
+            {^type "turn/start" ^turn 1 ^round "r"})
+          (append_core_event runtime/events "workspace" "workspace"
+            {^type "trace" ^text "workspace fact" ^^ignorable})
+          ($assert (== turns/.get 1)
+            "model-written observer did not receive the turn event")
+          ($assert (>= records/.get 2)
+            "workspace and session events did not share the bus")
+          (uninstall runtime/h "turn_counter")
+          (let before turns/.get)
+          (append_core_event runtime/events "session" "default"
+            {^type "turn/start" ^turn 2 ^round "r"})
+          ($assert (== turns/.get before)
+            "unloaded plugin still observed durable events")
+        ensure
+          (close_runtime runtime))))))
+
+(fn main [args] : Int (run_spec args))

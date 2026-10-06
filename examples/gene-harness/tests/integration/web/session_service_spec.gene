@@ -1,0 +1,530 @@
+# Tests src/web/session_service.gene.
+(import $test [describe it])
+(import [isolated run_spec test_service set_test_provider fixture_path] ^from "../../support")
+(import [open_session_service close_session_service create_session submit receipt answer snapshot
+         host_status edit_session acknowledge_attention list_sessions command]
+  ^from "../../../src/web/session_service")
+(import [update_session load_session unload_session list_sessions : runtime_list_sessions]
+  ^from "../../../src/runtime/sessions")
+(import [transcript] ^from "../../../src/agents/turn_loop")
+(import [events_for] ^from "../../../src/storage/state")
+(import [contribute] ^from "../../../src/kernel")
+(import [register_plugin set_plugin_enabled] ^from "../../../src/storage/workspace")
+
+(fn named_component [components, name : Str]
+  ($first ($filter components (fn [item] (== item/name name)))))
+
+(describe "Harness web turn loop"
+  (it
+    "publishes provider failures as timed turn records for live delivery and snapshots"
+    []
+    (isolated
+      this_mod/.path
+      "publishes provider failures as timed turn records for live delivery and snapshots"
+      (fn [workspace]
+        (let calls ($cell 0))
+        (let service
+          (test_service ^workspace workspace ^provider (fn [request] (calls .set (+ calls/.get 1)) (if (== calls/.get 1) (return "(Outcome ^prompt \"next\")")) (fail (HttpClientError ^message "provider timeout")))))
+        (let published ($cell []))
+        (service/publisher .set (fn [message] (published/.get .push message)))
+        (try
+          (let session (create_session ^title "Failure" service))
+          (let round (submit service session/id "failed" 1 "start"))
+          (service/controller/watchers
+            .get
+            ; .get session/id
+            ; .join)
+          (let failed (receipt service session/id round/id))
+          ($assert (== failed/state "failed") "provider failure did not fail the round")
+          (let view (snapshot service session/id))
+          (let failures (view/records .filter (fn [record] (== record/phase "turn/error"))))
+          ($assert (== failures/.size 1) "failed provider turn was absent from the snapshot")
+          ($assert (== failures/0/turn 2) "failure was attached to the wrong turn")
+          ($assert (> failures/0/order 1000000000000) "failure record had no timestamp")
+          ($assert ($str/contains? failures/0/text "provider timeout") "failure detail was lost")
+          (let live
+            (published/.get .filter
+              (fn [message]
+                (&& (== message/type "turn") (== message/data/phase "turn/error")))))
+          ($assert (== live/.size 1) "failed turn was not published live")
+        ensure
+          (close_session_service service)))))
+
+  (it
+    "serves code responses and questions with deduplicated replies"
+    []
+    (isolated
+      this_mod/.path
+      "serves code responses and questions with deduplicated replies"
+      (fn [workspace]
+        (let calls ($cell 0))
+        (let service
+          (test_service ^workspace workspace ^provider (fn [request] (let count (calls .swap (+ calls/.get 1))) (if (== count 0) "# Ask\n(Outcome ^questions [{^id \"ok\" ^prompt \"Continue?\" ^kind \"confirm\"}])" "# Finish\n(Outcome ^done true ^reply \"web done\")"))))
+        (try
+          (let session (create_session ^title "Web scripted" service))
+          (let round (submit service session/id "web-1" 1 "start"))
+          (service/controller/watchers
+            .get
+            ; .get session/id
+            ; .join)
+          (let waiting (receipt service session/id round/id))
+          ($assert (== waiting/state "waiting") $"web round failed: ${waiting}")
+          (let view (snapshot service session/id))
+          ($assert (== view/protocol 4) "snapshot retained protocol 3")
+          ($assert (== view/questions/questions/.size 1) "web snapshot lost the batch")
+          (answer service session/id waiting/questions/id {^^ok})
+          (service/controller/watchers
+            .get
+            ; .get session/id
+            ; .join)
+          (let done (receipt service session/id round/id))
+          ($assert (== done/reply "web done") "web answer did not execute a code response")
+          (let replay (answer service session/id waiting/questions/id {^^ok}))
+          ($assert (== replay/id round/id) "answer retry changed the round")
+          ($assert
+            (try
+              (answer service session/id waiting/questions/id {^ok false})
+              false
+            catch Any
+              true)
+            "conflicting answer retry was accepted")
+          ($println "web turn loop: protocol 4 service, code-only provider, questions and reply dedupe")
+        ensure
+          (close_session_service service))))))
+
+(describe "Harness web metadata"
+  (it "handles pinning, titles, revision conflicts and attention acknowledgement" []
+    (isolated this_mod/.path "handles pinning, titles, revision conflicts and attention acknowledgement"
+      (fn [workspace]
+        (let service (open_session_service ^workspace workspace ^^offline))
+        (try
+          (let record (create_session service ^title "Initial"))
+          (let pinned (edit_session service record/id {^pinned true ^title "Changed"} 0))
+          ($assert pinned/pinned "pinning did not persist")
+          ($assert (== pinned/title "Changed") "metadata edit lost title")
+          ($assert (try (edit_session service record/id {^title "stale"} 0) false catch Any true)
+            "stale metadata edit was accepted")
+          (update_session service/sessions record/id {^^attention})
+          (let before (list_sessions service))
+          ($assert (== before/needs_attention/.size 1) "attention list did not include the session")
+          (acknowledge_attention service record/id)
+          (let after (list_sessions service))
+          ($assert (== after/needs_attention/.size 0) "opening an existing tab did not clear attention")
+          ($assert (try (submit service record/id "cli-only" 1 "/new") false catch Any true)
+            "web host admitted a CLI-only command")
+          ($println "web metadata: pinning, titles, revision conflict, attention acknowledgement and CLI-only commands")
+        ensure (close_session_service service))))))
+
+(describe "Harness web paging"
+  (it "bounds the tail and retrieves earlier transcript pages without loss" []
+    (isolated this_mod/.path "bounds the tail and retrieves earlier transcript pages without loss"
+      (fn [workspace]
+        (let service (open_session_service ^workspace workspace ^^offline))
+        (try
+          (let session (create_session service))
+          (repeat number in 230
+            (transcript service/runtime session/id {^type "reply" ^round "history" ^turn number ^text ($to_str number) ^^final}))
+          (let latest (snapshot service session/id))
+          ($assert (== latest/records/.size 200) "latest page was not bounded")
+          ($assert latest/has_older "history did not advertise an earlier page")
+          ($assert (== latest/records/0/text "30") "latest page was not the transcript tail")
+          (let before ($parse/parse_int latest/records/0/seq))
+          (let earlier (snapshot service session/id ^before before))
+          ($assert (== earlier/records/.size 30) "earlier page overlapped or skipped records")
+          ($assert (! earlier/has_older) "earliest page still claimed older content")
+          ($assert (== earlier/records/0/text "0") "earliest record was lost")
+          ($println "web paging: bounded tail, earlier cursor and complete transcript")
+        ensure (close_session_service service))))))
+
+(describe "Harness shared runtime"
+  (it "runs concurrent isolated sessions and lists the index lazily" []
+    (isolated this_mod/.path "runs concurrent isolated sessions and lists the index lazily"
+      (fn [workspace]
+        (let service (test_service ^workspace workspace
+          ^provider (fn [request] $"(Outcome ^done true ^reply \"${request/session}\")")))
+        (try
+          (let runtime service/runtime)
+          (let before (events_for service/events "workspace" "workspace"))
+          (let a (create_session service ^title "Alpha"))
+          (let b (create_session service ^title "Beta"))
+          (let state_a (load_session service/sessions a/id))
+          (let state_b (load_session service/sessions b/id))
+          ($assert (same? state_a/runtime state_b/runtime) "sessions replaced the workspace runtime")
+          (let ra (submit service a/id "a" 1 "Alpha"))
+          (let rb (submit service b/id "b" 1 "Beta"))
+          (for [session watcher] in service/controller/watchers/.get watcher/.join)
+          (let done_a (receipt service a/id ra/id))
+          (let done_b (receipt service b/id rb/id))
+          ($assert (== done_a/reply a/id) "a used b's session context")
+          ($assert (== done_b/reply b/id) "b used a's session context")
+          ($assert (unload_session service/sessions a/id) "a could not unload")
+          ($assert (unload_session service/sessions b/id) "b could not unload")
+          (runtime_list_sessions service/sessions)
+          ($assert (== (service/events/streams/.get .get $"session:${a/id}") void) "listing loaded a's stream")
+          ($assert (== (service/events/streams/.get .get $"session:${b/id}") void) "listing loaded b's stream")
+          (let reloaded (load_session service/sessions a/id))
+          ($assert (same? reloaded/runtime runtime) "session reload reactivated the runtime")
+          ($println "shared runtime: concurrent sessions, isolated rounds and lazy index listing")
+          ensure (close_session_service service))))))
+
+(describe "Harness live delivery"
+  (it "publishes prompts, responses, console and progress before completion" []
+    (isolated this_mod/.path "publishes prompts, responses, console and progress before completion"
+      (fn [workspace]
+        (let entered ($cell false))
+        (let release ($cell false))
+        (let service (test_service ^workspace workspace ^provider (fn [request]
+          (if (== request/turn 1)
+            "(append_prompt \"first\" 1) ($println \"console now\") (Outcome ^prompt \"continue\" ^reply \"Progress now.\")"
+            (do (entered .set true) (while (! release/.get) ($sleep 1))
+              "(Outcome ^done true ^reply \"Finished.\")")))))
+        (let messages ($cell []))
+        (service/publisher .set (fn [message] (messages/.get .push message)))
+        (try
+          (let record (create_session service))
+          (let round (submit service record/id "live" 1 "original prompt"))
+          (while (! entered/.get) ($sleep 1))
+          ($assert (== (/state (receipt service record/id round/id)) "running") "stream check happened after completion")
+          (let kinds [])
+          (for message in messages/.get
+            (if (== message/session record/id)
+              (kinds .push message/type)))
+          ($assert (kinds .contains? "turn") "response code was not sent while running")
+          ($assert (kinds .contains? "console") "console waited for completion")
+          ($assert (kinds .contains? "reply") "progress reply waited for completion")
+          (let state (snapshot service record/id))
+          ($assert ($str/starts_with? state/records/0/text "original prompt")
+            "initial user request is missing")
+          ($assert (== state/records/0/role "user") "initial request has the wrong role")
+          (release .set true)
+          (service/controller/watchers .get; .get record/id; .join)
+          ($assert (== (/state (receipt service record/id round/id)) "done") "streamed round did not complete")
+          (let validations ($cell 0))
+          (let answers ($cell []))
+          (contribute service/runtime/h "core" "interactions" {^name "custom" ^validate_request (fn [question]
+            (validations .set (+ validations/.get 1)) question) ^validate_reply (fn [value]
+              (answers/.get .push value) value)})
+          (set_test_provider service/runtime (fn [request] "(append_prompt \"answers\" \"reserved label\") (Outcome ^questions [{^id \"choice\" ^kind \"custom\" ^prompt \"Choose a value.\"}])"))
+          (let custom (submit service record/id "custom" 2 "ask"))
+          (service/controller/watchers .get; .get record/id; .join)
+          ($assert (== (/state (receipt service record/id custom/id)) "waiting") "custom interaction did not wait")
+          ($assert (== validations/.get 1) "custom question was not validated under its turn lease")
+          (set_test_provider service/runtime (fn [request] "(Outcome ^done true ^reply \"answered\")"))
+          (let waiting (receipt service record/id custom/id))
+          (answer service record/id waiting/questions/id {^choice "ok"})
+          (service/controller/watchers .get; .get record/id; .join)
+          ($assert (== answers/.get ["ok"]) "custom answer bypassed its validator")
+          (let answered (snapshot service record/id))
+          (var recorded false)
+          (for block in answered/records
+            (if (&& (== block/kind "turn/request") ($str/contains? block/text ".answers#2]"))
+              (set recorded true)))
+          ($assert recorded "answer request was absent from the operator transcript")
+          (let huge ($cell "x"))
+          (repeat i in 18 (huge .set ($to_str huge/.get huge/.get)))
+          (contribute service/runtime/h "core" "functions"
+            {^name "noise" ^doc "Print bounded test output."
+             ^fn (fn [] ($print huge/.get))})
+          (set_test_provider service/runtime (fn [request] "(noise) (Outcome ^done true ^reply \"bounded console\")"))
+          (let noisy (submit service record/id "noisy" 3 "print"))
+          (service/controller/watchers .get; .get record/id; .join)
+          ($assert (== (/state (receipt service record/id noisy/id)) "done") "large console output exceeded an event envelope")
+          (var noisy_bytes 0)
+          (var truncated false)
+          (for event in (events_for service/events "session" record/id)
+            (if_yes (&& (== event/type "console") (== event/payload/round noisy/id))
+              (set noisy_bytes (+ noisy_bytes ($str/byte_size event/payload/text)))
+              (if ($str/contains? event/payload/text "[console truncated]") (set truncated true))))
+          ($assert (<= noisy_bytes 262144) "durable console exceeded its per-turn byte cap")
+          ($assert truncated "durable console omitted its truncation marker")
+          ($println "live transcript: initial prompt, response, console and progress before completion; custom question validator")
+        ensure
+          (release .set true)
+          (close_session_service service)))))
+
+  (it "routes detached console after turn closure and session unload" []
+    (isolated this_mod/.path "routes detached console after turn closure and session unload"
+      (fn [home]
+        (let service (test_service ^workspace home ^provider (fn [request]
+          """(let child (spawn ^lane root (do
+(wait_release)
+(stage "before console")
+($println "late output")
+(stage "after console")
+(try (append_prompt "late" "no") catch Any ($println $err/message)))))
+child/.detach
+(save_child child)
+(Outcome ^done true ^reply "done")""")))
+        (let child ($cell nil))
+        (let release ($cell false))
+        (let stages ($cell []))
+        (contribute service/runtime/h "core" "functions"
+          {^name "save_child" ^doc "Save a detached task."
+           ^fn (fn [task] (child .set task))})
+        (contribute service/runtime/h "core" "functions"
+          {^name "stage" ^doc "Record a stage."
+           ^fn (fn [text] (stages/.get .push text))})
+        (contribute service/runtime/h "core" "functions"
+          {^name "wait_release" ^doc "Wait for test release."
+           ^fn (fn [] (while (! release/.get) ($sleep 1)))})
+        (try
+          (let first (create_session service))
+          (submit service first/id "one" 1 "go")
+          (service/controller/watchers .get; .get first/id; .join)
+          (release .set true)
+          (let result (child .get; .join))
+          ($assert (== ($head result) TaskOutcome/ok) $"detached task failed: ${result}; ${stages/.get}")
+          (let late [])
+          (for event in (events_for service/events "session" first/id)
+            (if (== event/type "console") (late .push event/payload)))
+          ($assert (== late/.size 2) $"late console was lost: ${late}")
+          ($assert late/0/late "detached output was not marked late")
+          ($assert ($str/contains? late/1/text "closed") "late append_prompt did not raise TurnClosed")
+          (let second (create_session service))
+          (release .set false)
+          (submit service second/id "two" 1 "go")
+          (service/controller/watchers .get; .get second/id; .join)
+          ($assert (unload_session service/sessions second/id) "finished session could not unload")
+          (release .set true)
+          (child .get; .join)
+          (let workspace [])
+          (for event in (events_for service/events "workspace" "workspace")
+            (if (== event/type "console") (workspace .push event/payload)))
+          ($assert (== workspace/.size 2) "unloaded session did not route detached output to workspace log")
+          ($assert (== workspace/0/session second/id) "workspace console lost the source session")
+          ($assert workspace/0/late "workspace console lost late flag")
+          ($println "late console: detached output, TurnClosed and workspace routing after unload")
+        ensure (release .set true) (close_session_service service))))))
+
+(describe "Harness patch delivery"
+  (it "publishes applied patches with completed outcomes and reports preflight failures" []
+    (isolated this_mod/.path "publishes applied patches with completed outcomes and reports preflight failures"
+      (fn [workspace]
+        (let service (test_service ^workspace workspace ^provider (fn [request]
+          """# Apply and finish
+(Outcome ^done true ^reply "Patched.")
+*** Begin Patch
+*** Add File: added.txt
++content
+*** End Patch
+""")))
+        (try
+          (let session (create_session service))
+          (submit service session/id "patch" 1 "edit")
+          (service/controller/watchers .get; .get session/id; .join)
+          (let page (snapshot service session/id))
+          (let patches [])
+          (for record in page/records
+            (if (== record/kind "turn/patch") (patches .push record)))
+          ($assert (== patches/.size 1) "done Outcome hid its patch result")
+          ($assert ($str/contains? patches/0/text "applied") "patch result was not displayed")
+          (set_test_provider service/runtime (fn [request]
+            (if (== request/turn 2)
+              "(Outcome ^done true ^reply \"unreachable\")\n*** Begin Patch\n*** Update File: added.txt\n@@\n-missing\n+new\n*** End Patch\n"
+              "(Outcome ^done true ^reply \"Failure received.\")")))
+          (submit service session/id "bad" 2 "edit")
+          (service/controller/watchers .get; .get session/id; .join)
+          (let failed (snapshot service session/id))
+          (let failures [])
+          (for record in failed/records
+            (if (&& (== record/kind "turn/patch") ($str/contains? record/text "failed"))
+              (failures .push record)))
+          ($assert (! failures/.empty?) "preflight failure was absent from transcript")
+          ($assert (== ($fs/read_text "added.txt") "content\n") "failed preflight wrote a file")
+          ($println "patch transcript: applied patch on done Outcome and preflight failure")
+        ensure (close_session_service service))))))
+
+(describe "Harness web components"
+  (it
+    "publishes a named renderer immediately during fresh multi-plugin registration"
+    []
+    (isolated
+      this_mod/.path
+      "publishes a named renderer immediately during fresh multi-plugin registration"
+      (fn [workspace]
+        (let service (open_session_service ^workspace workspace ^^offline))
+        (try
+          (let deck
+            (quote
+              (mod plugin
+                (import ^from "src/plugin_api.gene" [Plugin PluginHost])
+                (fn init [descriptor]
+                  (Plugin ^id "deck" ^provides [["web_components" "welcome"] ["web_components" "help"]] ^activate (fn [host] (host .PluginHost:contribute "web_components" {^name "welcome" ^slot "welcome" ^view (quote (section (h2 "Welcome")))}) (host .PluginHost:contribute "web_components" {^name "help" ^slot "toolbar" ^view (quote (button ^command "/help" "Help"))})))))))
+          (register_plugin service/runtime/workspace service/runtime/h "deck" ($to_str deck))
+          (register_plugin
+            service/runtime/workspace
+            service/runtime/h
+            "workspace_pulse"
+            ($fs/read_text (fixture_path "web_pulse_plugin")))
+          (let status (host_status service))
+          ($assert (== status/web_components/.size 3) "ready renderer contribution was dropped")
+          (let pulse
+            ($first ($filter status/web_components (fn [item] (== item/name "workspace_pulse")))))
+          ($assert (! ($absent? pulse/view)) "named renderer did not render")
+          ($assert ($absent? pulse/error) "named renderer failed")
+          (set_plugin_enabled service/runtime/workspace service/runtime/h "workspace_pulse" false)
+          (let disabled (host_status service))
+          ($assert (== disabled/web_components/.size 2) "disable left named renderer rows")
+          (set_plugin_enabled service/runtime/workspace service/runtime/h "workspace_pulse" true)
+          (let enabled (host_status service))
+          ($assert (== enabled/web_components/.size 3) "re-enable dropped named renderer")
+        ensure
+          (close_session_service service)))))
+
+  (it
+    "isolates renderer failures and bounds a runaway render"
+    []
+    (isolated
+      this_mod/.path
+      "isolates renderer failures and bounds a runaway render"
+      (fn [workspace]
+        (let service (open_session_service ^workspace workspace ^^offline))
+        (try
+          (let source
+            (quote
+              (mod plugin
+                (import ^from "src/plugin_api.gene" [Plugin PluginHost])
+                (fn init [descriptor]
+                  (Plugin ^id "broken_view" ^provides [["web_components" "welcome"] ["web_components" "slow"]] ^activate (fn [host] (host .PluginHost:contribute "web_components" {^name "welcome" ^slot "welcome" ^render (fn [context] (/ 1 0))}) (host .PluginHost:contribute "web_components" {^name "slow" ^slot "sidebar" ^render (fn [context] (while true nil))})))))))
+          (register_plugin
+            service/runtime/workspace
+            service/runtime/h
+            "broken_view"
+            ($to_str source))
+          (let before ($os/monotonic_ms))
+          (let status (host_status service))
+          ($assert (< (- ($os/monotonic_ms) before) 1500) "runaway renderer was not bounded")
+          ($assert (== status/web_components/.size 2) "component failures aborted status")
+          (for item in status/web_components
+            ($assert ($absent? item/view) "failed renderer returned a view")
+            ($assert (! ($absent? item/error)) "failed renderer was not reported"))
+        ensure
+          (close_session_service service)))))
+
+  (it
+    "isolates render panics and cancels spawned children before continuing"
+    []
+    (isolated
+      this_mod/.path
+      "isolates render panics and cancels spawned children before continuing"
+      (fn [workspace]
+        (let service (open_session_service ^workspace workspace ^^offline))
+        (try
+          (let source
+            (quote
+              (mod plugin
+                (import ^from "src/plugin_api.gene" [Plugin PluginHost])
+                (fn init [descriptor]
+                  (Plugin ^id "render_tasks" ^provides [["web_components" "panicking"] ["web_components" "child"] ["web_components" "healthy"]] ^activate (fn [host] (host .PluginHost:contribute "web_components" {^name "panicking" ^slot "sidebar" ^render (fn [context] ($panic "render panic probe"))}) (host .PluginHost:contribute "web_components" {^name "child" ^slot "sidebar" ^render (fn [context] (scope (spawn ^lane root ($sleep 60000)) (quote (p "Must wait for child"))))}) (host .PluginHost:contribute "web_components" {^name "healthy" ^slot "sidebar" ^render (fn [context] (quote (p "Still rendering")))})))))))
+          (register_plugin
+            service/runtime/workspace
+            service/runtime/h
+            "render_tasks"
+            ($to_str source))
+          (let before ($os/monotonic_ms))
+          (let status (host_status service))
+          ($assert
+            (< (- ($os/monotonic_ms) before) 1500)
+            "spawned render child escaped its deadline")
+          ($assert (== status/web_components/.size 3) "render task failure aborted status")
+          (let panicking (named_component status/web_components "panicking"))
+          (let child (named_component status/web_components "child"))
+          (let healthy (named_component status/web_components "healthy"))
+          ($assert
+            ($str/contains? panicking/error "render panic probe")
+            $"render panic was lost: ${status/web_components}")
+          ($assert ($absent? child/view) "timed-out render child returned a view")
+          ($assert
+            (! ($absent? child/error))
+            "render child timeout was not reported")
+          ($assert
+            (== healthy/view/children/0 "Still rendering")
+            "later renderer did not run")
+          (let interrupted (spawn ^lane root (host_status service)))
+          ($sleep 20)
+          interrupted/.cancel
+          ($assert
+            (== ($head interrupted/.join) TaskOutcome/cancelled)
+            "status cancellation was swallowed")
+        ensure
+          (close_session_service service)))))
+
+  (it
+    "renders generated plugin state and restores slots after disable and restart"
+    []
+    (isolated
+      this_mod/.path
+      "renders generated plugin state and restores slots after disable and restart"
+      (fn [workspace]
+        (let service (open_session_service ^workspace workspace ^^offline))
+        (let pushed ($cell []))
+        (service/publisher .set (fn [message] (pushed/.get .push message)))
+        (let root service/runtime/root)
+        (let source
+          (quote
+            (mod plugin
+              (import ^from "src/plugin_api.gene" [Plugin PluginHost CommandResult])
+              (fn init [descriptor]
+                (Plugin ^id "counter" ^provides [["commands" "counter"] ["web_components" "counter"] ["web_components" "welcome"]] ^activate (fn [host] (host .PluginHost:contribute "commands" {^name "counter" ^usage "/counter" ^doc "Increment the persistent counter." ^run (fn [ctx] (let state (?? host/.PluginHost:state {^count 0})) (host .PluginHost:update_state {^count (+ state/count 1)}) (CommandResult ^display "Counted."))}) (host .PluginHost:contribute "web_components" {^name "counter" ^slot "sidebar" ^render (fn [context] (let state (?? host/.PluginHost:state {^count 0})) `(section ^class_name "web_card" (strong %state/count) (button ^command "/counter" "Add")))}) (host .PluginHost:contribute "web_components" {^name "welcome" ^slot "welcome" ^view (quote (section (h2 "Custom welcome") (button ^prompt "Build a feature" "Start")))})))))))
+        (try
+          (register_plugin service/runtime/workspace service/runtime/h "counter" ($to_str source))
+          (let session (create_session service))
+          (let initial (host_status ^session session/id service))
+          ($assert (== initial/web_components/.size 2) "generated components were not published")
+          (let initial_counter (named_component initial/web_components "counter"))
+          ($assert
+            (== initial_counter/view/children/0/children/0 "0")
+            $"initial counter was incorrect: ${initial/web_components}")
+          (let submitted (command service session/id "/counter"))
+          (service/runtime/commands/watchers
+            .get
+            ; .get $"${session/id}:${submitted/id}"
+            ; .join)
+          (let refreshed ($cell false))
+          (let refresh_deadline (+ ($os/monotonic_ms) 5000))
+          (while (&& (! refreshed/.get) (< ($os/monotonic_ms) refresh_deadline))
+            (for message in pushed/.get
+              (if (&& (== message/type "snapshot")
+                       (== message/session session/id))
+                (then
+                  (let component
+                    (named_component message/data/status/web_components "counter"))
+                  (if (&& (! ($absent? component))
+                           (== component/view/children/0/children/0 "1"))
+                    (refreshed .set true)))))
+            (if_not refreshed/.get ($sleep 1)))
+          ($assert refreshed/.get
+            "finished command did not push a refreshed plugin snapshot")
+          (let updated (snapshot service session/id))
+          (let updated_counter (named_component updated/status/web_components "counter"))
+          ($assert
+            (== updated_counter/view/children/0/children/0 "1")
+            "snapshot did not refresh plugin state")
+          (let disable (command service session/id "/run (disable_plugin \"counter\")"))
+          (service/runtime/commands/watchers
+            .get
+            ; .get $"${session/id}:${disable/id}"
+            ; .join)
+          (let disabled (host_status service))
+          ($assert (== disabled/web_components/.size 0) "disabled plugin left stale components")
+          (let enable (command service session/id "/run (enable_plugin \"counter\")"))
+          (service/runtime/commands/watchers
+            .get
+            ; .get $"${session/id}:${enable/id}"
+            ; .join)
+          (let enabled (host_status service))
+          ($assert (== enabled/web_components/.size 2) "re-enabled components were missing")
+        ensure
+          (close_session_service service))
+        (let reopened (open_session_service ^workspace root ^^offline))
+        (try
+          (let restored (host_status reopened))
+          ($assert (== restored/web_components/.size 2) "components did not survive restart")
+          (let restored_counter (named_component restored/web_components "counter"))
+          ($assert
+            (== restored_counter/view/children/0/children/0 "1")
+            "component state did not survive restart")
+        ensure
+          (close_session_service reopened))))))
+
+(fn main [args] : Int (run_spec args))

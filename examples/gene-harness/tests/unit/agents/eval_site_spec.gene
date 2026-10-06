@@ -1,0 +1,11 @@
+# Tests src/agents/eval_site.gene.
+(import $test [describe it assert_equal run])
+(import [evaluate_response] ^from "../../../src/agents/eval_site")
+
+(describe "Harness responses"
+  (it "evaluates without exposing a controller's lexical bindings" []
+    (assert_equal (evaluate_response (quote (do (let h 7) h)) (env)) 7)))
+
+(fn main [args] : Int
+  (let result (run ^name (?? args/0 "")))
+  result/exit_code)

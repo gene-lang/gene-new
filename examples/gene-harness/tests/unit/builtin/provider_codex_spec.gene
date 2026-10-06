@@ -1,0 +1,87 @@
+# Tests src/builtin/provider_codex.gene.
+(import $test [describe it assert_equal run])
+(import [response_text codex_stream_text] ^from "../../../src/builtin/provider_codex")
+(import [raw_blocks] ^from "./support")
+
+(describe "Harness provider response bytes"
+  (it
+    "selects final answers from phased Codex output without duplicating code"
+    []
+    (raw_blocks
+      (fn [text]
+        (response_text
+          {
+            ^status "completed"
+            ^output [
+                      {
+                        ^type "message"
+                        ^role "assistant"
+                        ^phase "commentary"
+                        ^content [{^type "output_text" ^text "I’ll inspect the files."}]}
+                      {
+                        ^type "message"
+                        ^role "assistant"
+                        ^phase "commentary"
+                        ^content [{^type "output_text" ^text text}]}
+                      {
+                        ^type "message"
+                        ^role "assistant"
+                        ^content [{^type "output_text" ^text "unphased commentary"}]}
+                      {
+                        ^type "message"
+                        ^role "assistant"
+                        ^phase "final_answer"
+                        ^content [{^type "output_text" ^text text}]}]}))))
+
+  (it
+    "selects phased final answers when completed SSE output arrives as separate items"
+    []
+    (let code """# goal
+(Outcome ^done true ^reply "done")""")
+    (let messages
+      [
+        {
+          ^type "message"
+          ^role "assistant"
+          ^phase "commentary"
+          ^content [{^type "output_text" ^text code}]}
+        {
+          ^type "message"
+          ^role "assistant"
+          ^phase "final_answer"
+          ^content [{^type "output_text" ^text code}]}])
+    (let lines [])
+    (for item in messages
+      (lines .push
+        ($to_str
+          "data: "
+          ($json/stringify {^type "response.output_item.done" ^item item})
+          """
+
+""")))
+    (lines .push
+      ($to_str
+        "data: "
+        ($json/stringify {^type "response.completed" ^response {^status "completed" ^output []}})
+        """
+
+"""))
+    (assert_equal (codex_stream_text ($str/join lines "")) code))
+
+  (it
+    "preserves OpenAI output text and EOF blocks"
+    []
+    (raw_blocks
+      (fn [text]
+        (response_text
+          {
+            ^status "completed"
+            ^output [
+                      {
+                        ^type "message"
+                        ^role "assistant"
+                        ^content [{^type "output_text" ^text text}]}]})))))
+
+(fn main [args] : Int
+  (let result (run ^name (?? args/0 "")))
+  result/exit_code)

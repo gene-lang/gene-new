@@ -1,0 +1,61 @@
+# Tests src/builtin/provider_common.gene.
+(import $test [describe it])
+(import [configure_model http_json_attempt] ^from "../../../src/builtin/provider_common")
+(import [call_model] ^from "../../../src/agents/model_call")
+(import [new_harness shutdown_harness contribute] ^from "../../../src/kernel")
+(import [Profile] ^from "../../../src/profiles/profile")
+(import [isolated run_spec] ^from "../../support")
+(import $net/http [listen serve stop json])
+(import $net/http_client [request])
+
+(describe "Harness provider response bytes"
+  (it
+    "wraps real HTTP timeout errors and retries the transfer once"
+    []
+    (isolated
+      this_mod/.path
+      "wraps real HTTP timeout errors and retries the transfer once"
+      (fn [workspace]
+        (let server (listen ^host "127.0.0.1" ^port 0))
+        (let h (new_harness))
+        (let calls ($cell 0))
+        (contribute h "core" "providers"
+          {^name "retry" ^doc "HTTP timeout provider."
+           ^configure (fn [model, effort, timeout]
+             (configure_model model effort timeout "retry"))
+           ^prepare (fn [call] call/messages)
+           ^send (fn [prepared]
+             (calls .set (+ calls/.get 1))
+             (http_json_attempt $"http://127.0.0.1:${server/port}/slow"
+               {^content-type "application/json"} {^prompt "go"} 30
+               (fn [response] {^text response/body})))})
+        (let runtime {^h h ^profile (Profile ^name "test" ^plugins []
+          ^provider "retry")})
+        (let tester
+          (spawn ^lane root (try
+            (let failure
+              (try
+                (call_model runtime
+                  {^config {^provider_timeout_ms 30}
+                   ^messages [{^role "system" ^content "rules"}
+                              {^role "user" ^content "go"}]})
+                "accepted"
+              catch Any $err/message))
+            ($assert (== calls/.get 2)
+              "real transfer timeout was not retried once")
+            ($assert ($str/contains? failure
+              "retry model provider request exceeded 0.03 s")
+              "real timeout was not identified as provider failure")
+          ensure
+            (stop server)
+            (shutdown_harness h))))
+        (serve ^handler (fn [req] ($sleep 200) (json "{}")) server)
+        (match tester/.join
+          (when (TaskOutcome/ok value)
+            value)
+          (when (TaskOutcome/error error)
+            (fail error))
+          (else
+            ($assert false "timeout test task did not finish")))))))
+
+(fn main [args] : Int (run_spec args))

@@ -133,10 +133,17 @@ data you want to keep. Then run the README's serve command and open
 5. Reload, then stop/relaunch the server and verify persistence.
 6. Check a narrow window, keyboard-only use, and browser console errors.
 
-For the original **31-test harness selection**, run from `examples/gene-harness`:
+For a focused harness regression selection, run from `examples/gene-harness`:
 
 ```sh
-../../bin/gene test tests/outcome_spec.gene tests/response_spec.gene tests/provider_blocks_spec.gene tests/turn_eval_spec.gene tests/turn_loop_spec.gene tests/patch_transcript_spec.gene
+../../bin/gene test \
+  tests/unit/agents/outcome_spec.gene \
+  tests/unit/agents/response_spec.gene \
+  tests/unit/builtin \
+  tests/integration/agents/model_call_spec.gene \
+  tests/integration/agents/turn_eval_spec.gene \
+  tests/integration/agents/turn_loop_spec.gene \
+  tests/integration/web/session_service_spec.gene
 ```
 
 The test count grows with newer checkouts. Run `../../bin/gene test` there for

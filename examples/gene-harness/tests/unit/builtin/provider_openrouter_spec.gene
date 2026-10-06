@@ -1,0 +1,17 @@
+# Tests src/builtin/provider_openrouter.gene.
+(import $test [describe it run])
+(import [openrouter_text] ^from "../../../src/builtin/provider_openrouter")
+(import [raw_blocks] ^from "./support")
+
+(describe "Harness provider response bytes"
+  (it
+    "preserves OpenRouter output text and EOF blocks"
+    []
+    (raw_blocks
+      (fn [text]
+        (openrouter_text
+          {^status 200 ^body ($json/stringify {^choices [{^message {^content text}}]})})))))
+
+(fn main [args] : Int
+  (let result (run ^name (?? args/0 "")))
+  result/exit_code)
