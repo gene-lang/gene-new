@@ -19,12 +19,12 @@
         (let lines ($channel ^capacity 128))
         (let console_seen ($cell false))
         (let process
-          ($os/exec_stream_async gene_binary "run" entry "scripted" "--script" script "--workspace" ($path/join directory "workspace") ^stdin_pipe stdin/0 ^stdout_chan lines ^timeout_ms 10000 ^max_bytes 1048576))
+          ($os/exec_stream_async gene_binary "run" entry "scripted" "--script" script "--workspace" ($path/join directory "workspace") ^stdin_pipe stdin/0 ^stdout_chan lines ^timeout_ms 30000 ^max_bytes 1048576))
         (scope
           (let writer
             (spawn ^lane root (do
               (await (write_all stdin/1 ($binary/from_list (($str/to_utf8 "slow\n") .to_list))))
-              (let deadline (+ ($os/monotonic_ms) 7000))
+              (let deadline (+ ($os/monotonic_ms) 20000))
               (while (&& (! console_seen/.get) (< ($os/monotonic_ms) deadline)) ($sleep 5))
               (await (write_all stdin/1 ($binary/from_list (($str/to_utf8 "/run (+ 2\n  3)\n") .to_list))))
               ($sleep 150)

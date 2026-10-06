@@ -16,6 +16,8 @@
     Plugin
     DescriptorContext
     PluginHost
+    HarnessEvent
+    DurableRecord
     ExecutionLimits
     default_execution_limits
     response_execution_limits])
@@ -58,7 +60,7 @@
 
 (type RegistryRow ^props {^row_id Str ^owner Str ^registry Str ^key Str ^payload Any ^priority Int ^config_order Int ^acquired Int ^effects Any? ^cleanup_state Any?})
 
-(type Harness ^props {^plugins Any ^plugin_errors Any ^log Any ^log_hydrated Any ^bus Any ^registries Any ^ledger Any ^row_index Any ^next_row_id Any ^event_store Any ^event_scope Str ^event_stream Str ^plugin_policies Any ^plugin_depth Any ^workspace Any ^registry_observer Any? ^composition Any? ^composition_entries Any? ^snapshots Any? ^publishing Any? ^published_plugins Any? ^registry_commit Any? ^registry_record Any?})
+(type Harness ^props {^plugins Any ^plugin_errors Any ^log Any ^log_hydrated Any ^bus Any ^registries Any ^ledger Any ^row_index Any ^next_row_id Any ^event_store Any ^event_scope Str ^event_stream Str ^plugin_policies Any ^plugin_depth Any ^workspace Any ^readiness Any? ^registry_observer Any? ^composition Any? ^composition_entries Any? ^snapshots Any? ^publishing Any? ^published_plugins Any? ^registry_commit Any? ^registry_record Any?})
 
 (type Host ^props {^h Harness ^owner Str ^effects Any})
 
@@ -396,9 +398,18 @@
       (return $"queued:${owner}:${registry_name}")))
   (if (serialize_registry_change? h)
     (return (registry_change h owner (fn [] (contribute h owner registry_name payload ^key key ^priority priority ^config_order config_order ^replace replace)))))
-  (if (&& (== registry_name "commands") (!= owner "core")
-          (["help" "cancel" "stop" "restart" "run" "sh" "view" "new" "sessions"] .contains? payload/name))
-    (fail (HarnessError ^message $"command ${payload/name} is reserved by the core")))
+  (if (== registry_name "commands")
+    (then
+      (let reserved_owner
+        (if (["help" "run" "sh" "view"] .contains? payload/name)
+          "core_commands"
+          (if (["cancel" "stop" "restart"] .contains? payload/name)
+            "core"
+            (if (["new" "sessions"] .contains? payload/name) "cli" nil))))
+      (if (&& (! ($absent? reserved_owner))
+              (!= owner reserved_owner))
+        (fail (HarnessError ^message
+          $"command ${payload/name} is reserved by ${reserved_owner}")))))
   (var r (registry_named h registry_name))
   (var checked
     (if ($absent? r/schema)
@@ -425,6 +436,21 @@
     (guarded .put "signature" ($runtime/signature checked/fn))
     (guarded .put "fn" (guard_callback h owner checked/fn false))
     (set checked guarded))
+  (if_yes (== registry_name "providers")
+    (let guarded ($thaw ($freeze_shallow checked)))
+    (for field in ["available" "configure" "prepare" "send"]
+      (let callback (checked .get field))
+      (if_not ($absent? callback)
+        (guarded .put field (guard_callback h owner callback false))))
+    (set checked guarded))
+  (if_yes (== registry_name "hooks")
+    (let guarded ($thaw ($freeze_shallow checked)))
+    (guarded .put "run" (guard_callback h owner checked/run false))
+    (set checked guarded))
+  (if_yes (&& (== registry_name "prompt") (! ($absent? checked/render)))
+    (let guarded ($thaw ($freeze_shallow checked)))
+    (guarded .put "render" (guard_callback h owner checked/render false))
+    (set checked guarded))
   (if_yes (&& (== registry_name "web_components") (! ($absent? checked/render)))
     (let guarded ($thaw ($freeze_shallow checked)))
     (guarded .put "render" (guard_callback h owner checked/render false))
@@ -445,8 +471,11 @@
     (set checked guarded_view_row))
   (var logical_key
     (if ($absent? key)
-      (if (== registry_name "triggers") ($to_str checked/id)
-        (if (!= checked/name void) ($to_str checked/name) ""))
+      (if (== registry_name "triggers")
+        ($to_str checked/id)
+        (if (== registry_name "hooks")
+          $"${checked/point}/${checked/name}"
+          (if (!= checked/name void) ($to_str checked/name) "")))
       ($to_str key)))
   (if (&& r/unique (== logical_key ""))
     (fail (HarnessError
@@ -677,6 +706,28 @@
     (fail (HarnessError ^message "a function row requires name, doc and a callable fn")))
   candidate)
 
+(fn validate_provider_row [candidate]
+  (if (|| ($absent? candidate/name) (== candidate/name "")
+          ($absent? candidate/doc)
+          (! ($runtime/callable? candidate/configure))
+          (! ($runtime/callable? candidate/prepare))
+          (! ($runtime/callable? candidate/send))
+          (&& (! ($absent? candidate/available))
+              (! ($runtime/callable? candidate/available)))
+          (&& (! ($absent? candidate/auto))
+              (!= ($head candidate/auto) Int)))
+    (fail (HarnessError ^message
+      "a provider row needs name, doc, configure, prepare and send")))
+  candidate)
+
+(fn validate_hook_row [candidate]
+  (if (|| ($absent? candidate/name) (== candidate/name "")
+          (! (["request/prepare" "history/compact"] .contains? candidate/point))
+          (! ($runtime/callable? candidate/run)))
+    (fail (HarnessError ^message
+      "a hook row needs point, name and a callable run")))
+  candidate)
+
 (fn validate_trigger_row [candidate]
   (if (|| (!= ($head candidate/id) Str) (!= ($head candidate/request) Str) (! (["heartbeat" "scheduled" "cron"] .contains? candidate/kind)))
     (fail (HarnessError ^message "a trigger row requires id, kind and request")))
@@ -694,9 +745,20 @@
   candidate)
 
 (fn validate_prompt_row [candidate]
-  (if (|| (== candidate/name void) (== candidate/text void))
-    (fail (HarnessError ^message "a prompt row requires name and text"))
-    candidate))
+  (if (|| (== candidate/name void)
+          (== ($absent? candidate/text) ($absent? candidate/render))
+          (&& (! ($absent? candidate/render))
+              (! ($runtime/callable? candidate/render))))
+    (fail (HarnessError ^message "a prompt row requires name and exactly one of text or callable render")))
+  candidate)
+
+(fn validate_docs_row [candidate]
+  (if (|| (== candidate/name void)
+          (== ($absent? candidate/text) ($absent? candidate/path))
+          (&& (! ($absent? candidate/text)) (!= ($head candidate/text) Str))
+          (&& (! ($absent? candidate/path)) (!= ($head candidate/path) Str)))
+    (fail (HarnessError ^message "a docs row requires name and exactly one of text or path")))
+  candidate)
 
 (fn validate_event_type_row [candidate]
   (if (|| (== candidate/name void) (== candidate/version void) (== candidate/ignorable void))
@@ -727,9 +789,11 @@
 # substitution is what the seams are for (design §2.2). The lifecycle is the
 # first thing worth observing: a plugin can watch its own dependencies come and
 # go without the kernel knowing anything about it.
-(type HarnessEvent : $event/Event)
 (type HarnessLog : HarnessEvent ^props {^kind Str ^text Str ^record Any?})
 (type HarnessFlushed : HarnessEvent ^props {^through Int})
+(type RoundChanged : HarnessEvent ^props {^session Str ^receipt Any})
+(type CommandChanged : HarnessEvent ^props {^session Str ^record Any})
+(type SessionChanged : HarnessEvent ^props {^record Any})
 
 (type PluginInstalled : HarnessEvent ^props {^plugin Str})
 (type PluginActivated : HarnessEvent ^props {^plugin Str})
@@ -757,9 +821,12 @@
   (registry h "seams" ^unique true ^schema validate_seam_row)
   (registry h "commands" ^unique true ^schema validate_command_row)
   (registry h "functions" ^unique true ^schema validate_function_row)
+  (registry h "providers" ^unique true ^schema validate_provider_row)
+  (registry h "hooks" ^unique true ^ordered true ^schema validate_hook_row)
   (registry h "triggers" ^unique true ^schema validate_trigger_row)
   (registry h "interactions" ^unique true ^schema validate_interaction_row)
   (registry h "prompt" ^unique false ^ordered true ^schema validate_prompt_row)
+  (registry h "docs" ^unique true ^schema validate_docs_row)
   (registry h "views" ^unique true ^schema validate_view_row)
   (registry h "web_components" ^unique true ^ordered true ^schema validate_web_component)
   (registry h "event_types" ^unique true ^schema validate_event_type_row)
@@ -791,6 +858,12 @@
         ^retirement (fn [ticket]
           (queue_retirement h/snapshots ticket ticket/.instances)))))
   (publish_registry_snapshot h)
+  (if_not ($absent? event_store)
+    (set event_store/observer
+      (fn [envelope]
+        (publish h
+          (DurableRecord ^scope envelope/scope ^stream envelope/stream
+            ^name envelope/type ^envelope envelope)))))
   h)
 
 (fn reconcile_cordis_harness [h : Harness]
@@ -1023,8 +1096,8 @@
         ^type "composition/changed"
         ^entry id
         ^operation operation
-        ^previous_digest previous_digest
-        ^new_digest new_digest
+        ^previous_digest (?? previous_digest "")
+        ^new_digest (?? new_digest "")
         ^revision revision
         ^session h/event_stream
         ^turn turn}))
@@ -1049,6 +1122,7 @@
   (if_yes (seam_bound h seam)
     (fail (HarnessError ^message $"seam ${seam} already bound; replace it explicitly")))
   (contribute h id "seams" {^name seam ^value value} ^key seam)
+  (if_not h/publishing/.get (reconcile_cordis_harness h))
   seam)
 
 (fn replace [h : Harness, id : Str, seam : Str, value] : Str
@@ -1067,12 +1141,22 @@
     (fail (HarnessError ^message $"seam ${seam} is not bound; provide it first")))
   (contribute h id "seams" {^name seam ^value value}
     ^key seam ^replace true)
+  (if_not h/publishing/.get (reconcile_cordis_harness h))
   seam)
 
 (fn resolve [h : Harness, seam : Str] : Any
   (var found (row h "seams" seam))
   (if_yes (== found void) (fail (HarnessError ^message $"no provider for seam ${seam}")))
   found/value)
+
+(fn withdraw_seam [h : Harness, owner : Str, seam : Str] : Bool
+  (let record (row_record h "seams" seam))
+  (if ($absent? record) (return false))
+  (if_not (== record/owner owner)
+    (fail (HarnessError ^message $"seam ${seam} belongs to ${record/owner}")))
+  (remove_registry_row h record/row_id)
+  (if_not h/publishing/.get (reconcile_cordis_harness h))
+  true)
 
 (fn seam_bound [h : Harness, seam : Str] : Bool
   # Asking without committing. `resolve` raises, which is right for a consumer
@@ -1087,13 +1171,15 @@
   out)
 
 (fn doc [h : Harness, name : Str] : Str
-  (for registry_name in ["prompt" "commands" "functions" "seams" "views"]
-    (var candidate (row h registry_name name))
-    (if_not (== candidate void)
-      (if_not (== candidate/text void) (return ($to_str candidate/text)))
-      (if_not (== candidate/doc void) (return ($to_str candidate/doc)))
-      (return ($to_str candidate))))
-  (fail (HarnessError ^message $"no registry documentation named ${name}")))
+  (let candidate (row h "docs" name))
+  (if_not ($absent? candidate)
+    (if_not ($absent? candidate/text) (return candidate/text))
+    (return ($fs/read_text candidate/path)))
+  (let names [])
+  (for chapter in (rows h "docs") (names .push chapter/name))
+  (let listed ($str/join names ", "))
+  (fail (HarnessError ^message
+    $"unknown documentation ${name}; valid chapters: ${listed}")))
 
 # --- observation (design §2.2: the bus is for observing, seams for swapping) -
 

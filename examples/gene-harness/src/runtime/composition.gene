@@ -89,20 +89,42 @@
   (require_open state)
   (let context ($runtime/context))
   (if (&& (! ($absent? context)) (! ($absent? context/turn)))
-    (change .put "origin_turn" context/turn))
+    (then
+      (change .put "origin_turn" context/turn)
+      (context/turn/composition_queued .set true)))
   (state/pending
     .get
     ; .push change)
   nil)
 
-(fn take_composition_changes [state : CompositionState]
+(fn take_composition_changes [state : CompositionState, ^origin origin = nil]
   (require_open state)
   (let ready []) (let waiting [])
   (for change in (state/pending .swap [])
-    (if (&& (! ($absent? change/origin_turn)) (== change/origin_turn/state/.get "open"))
-      (waiting .push change) (ready .push change)))
+    (let owner change/origin_turn)
+    (if ($absent? owner)
+      (ready .push change)
+      (if (&& (! ($absent? origin))
+              (== owner/queue_token origin/queue_token))
+        (if (== owner/state/.get "cancelled")
+          nil
+          (if (== owner/state/.get "open")
+            (waiting .push change)
+            (ready .push change)))
+        (waiting .push change))))
   (for change in waiting (state/pending/.get .push change))
   ready)
+
+(fn discard_composition_changes [state : CompositionState, origin]
+  (require_open state)
+  (let kept [])
+  (for change in (state/pending .swap [])
+    (let owner change/origin_turn)
+    (if (|| ($absent? owner)
+            (!= owner/queue_token origin/queue_token))
+      (kept .push change)))
+  (for change in kept (state/pending/.get .push change))
+  nil)
 
 (fn publish_snapshot [state : CompositionState, registries, instances, ^plugins plugins = []] : CompositionSnapshot
   (require_open state)
@@ -170,7 +192,8 @@
   (if state/closed/.get (return nil))
   (for [id counter] in state/counts/.get
     (if (> counter/.load 0)
-      (fail (CompositionClosed ^message "composition still has active turn leases"))))
+      (fail (CompositionClosed ^message
+        $"composition still has active turn leases at snapshot ${id}: ${counter/.load}"))))
   (drain_retirements state)
   (state/pending .set [])
   (state/snapshots .set {})

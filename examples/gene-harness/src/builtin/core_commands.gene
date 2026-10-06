@@ -1,0 +1,11 @@
+(mod core_commands)
+(import ^from "../plugin_api" [Plugin PluginHost])
+(import ^from "../runtime/commands" [shared_command_rows])
+
+(fn core_commands [] : Plugin
+  (Plugin ^id "core_commands"
+    ^provides [["commands" "help"] ["commands" "run"]
+               ["commands" "sh"] ["commands" "view"]]
+    ^activate (fn [host]
+      (for command in (shared_command_rows)
+        (host .PluginHost:contribute "commands" command)))))

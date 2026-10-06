@@ -1,0 +1,78 @@
+(mod hooks)
+(import ^from "../storage/state" [append_core_event])
+
+(fn hook_rows [snapshot, point : Str]
+  (let selected [])
+  (for record in (?? (snapshot/registries .get "hooks") [])
+    (if (== record/payload/point point)
+      (selected .push record/payload)))
+  selected)
+
+(fn hook_failure [runtime, session : Str, point : Str, name : Str, message : Str]
+  (append_core_event runtime/events "session" session
+    {^type "trace"
+     ^text $"hook ${point}/${name} skipped: ${message}"
+     ^^ignorable})
+  nil)
+
+(fn request_prepare [runtime, snapshot, context]
+  (let listeners (hook_rows snapshot "request/prepare"))
+  (let caller_context ($runtime/context))
+  (fn run_at [index : Int, value]
+    (if (>= index listeners/.size) (return value))
+    (let listener listeners/%index)
+    (let delegated ($cell nil))
+    (let called ($cell false))
+    (let next (fn [updated]
+      (called .set true)
+      (let result
+        ($runtime/with_context caller_context
+          (fn [] (run_at (+ index 1) updated))))
+      (delegated .set result)
+      result))
+    (try
+      (let result (listener/run value next))
+      (if (&& (== ($head result) Map)
+              (== ($head result/items) List))
+        (then result)
+        (else
+          ($runtime/with_context caller_context
+            (fn []
+              (hook_failure runtime context/session "request/prepare"
+                listener/name "listener returned no request context")))
+          (if (&& called/.get (! ($absent? delegated/.get)))
+            delegated/.get
+            ($runtime/with_context caller_context
+              (fn [] (run_at (+ index 1) value))))))
+    catch Any
+      ($runtime/with_context caller_context
+        (fn []
+          (hook_failure runtime context/session "request/prepare"
+            listener/name ($to_str $err/message))))
+      (if (&& called/.get (! ($absent? delegated/.get)))
+        delegated/.get
+        ($runtime/with_context caller_context
+          (fn [] (run_at (+ index 1) value))))))
+  (run_at 0 context))
+
+(fn history_policy [runtime, snapshot, context]
+  (let caller_context ($runtime/context))
+  (for listener in (hook_rows snapshot "history/compact")
+    (try
+      (let decision
+        ($runtime/with_context caller_context
+          (fn [] (listener/run context))))
+      (if_not ($absent? decision)
+        (if (&& (! ($absent? decision/trigger_bytes))
+                (! ($absent? decision/target_bytes))
+                (> decision/trigger_bytes decision/target_bytes)
+                (> decision/target_bytes 0))
+          (return decision)
+          (hook_failure runtime context/session "history/compact"
+            listener/name "listener returned invalid thresholds")))
+    catch Any
+      ($runtime/with_context caller_context
+        (fn []
+          (hook_failure runtime context/session "history/compact"
+            listener/name ($to_str $err/message))))))
+  nil)

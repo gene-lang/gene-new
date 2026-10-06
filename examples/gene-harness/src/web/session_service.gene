@@ -1,6 +1,7 @@
 (mod session_service)
 (import ^from "../runtime/bootstrap" [open_runtime close_runtime prepare_workspace_root])
 (import ^from "../profiles/baseline" [baseline_profile])
+(import ^from "../profiles/offline" [offline_profile])
 (import ^from "../runtime/round_controller" ^^export
   [
     new_round_controller
@@ -22,12 +23,15 @@
     require_record
     update_session
     load_session])
-(import ^from "../agents/model_client" [complete_messages public_model_config])
+(import ^from "../agents/provider_selection" [provider_choice select_provider])
 (import ^from "../storage/state" [events_for])
 (import ^from "./contract" [protocol_version history_page_limit])
 (import ^from "../runtime/commands"
   [parse_submission submit_command command_receipt command_state cancel_command])
-(import ^from "../kernel" [rows])
+(import ^from "../kernel"
+  [rows contribute provide withdraw_seam HarnessEvent
+   RoundChanged CommandChanged SessionChanged DurableRecord])
+(import ^from "../agents/instructions" [reference_root])
 (import ^from "../runtime/composition" [acquire_snapshot release_snapshot current_snapshot])
 (import ^from "../runtime/cordis_adapter" [spawn_composition_call])
 (import ^from "./component_spec" [bounded_component_view WebComponentError])
@@ -40,7 +44,7 @@
     delete_trigger
     list_occurrences])
 
-(type WorkspaceService ^props {^runtime Any ^events Any ^sessions Any ^controller Any ^epoch Str ^publisher Any ^revision Any ^closed Any ^model_info Any})
+(type WorkspaceService ^props {^runtime Any ^events Any ^sessions Any ^controller Any ^epoch Str ^publisher Any ^revision Any ^closed Any ^model_info Any ^offline Bool ^subscriptions Any ^snapshot_jobs Any ^snapshot_versions Any})
 
 (fn public_session [service, record]
   (let copy ($thaw ($freeze record)))
@@ -88,57 +92,97 @@
     (publish_message service kind session (event_record session event)))
   nil)
 
-(fn open_session_service [^workspace workspace : Str = "", ^offline offline : Bool = false, ^provider provider = nil]
+(fn queue_snapshot [service, session : Str]
+  (if service/closed/.get (return nil))
+  (let id ($crypto/random_hex 8))
+  (let versions service/snapshot_versions/.get)
+  (let version (+ (?? (versions .get session) 0) 1))
+  (versions .put session version)
+  (let slot ($cell nil))
+  (service/snapshot_jobs/.get .put id slot)
+  (let job
+    (spawn ^lane root
+      (try
+        (if_not service/closed/.get
+          ($runtime/with_context nil
+            (fn []
+              (let data (snapshot service session))
+              (if (&& (! service/closed/.get)
+                       (== (service/snapshot_versions/.get .get session) version))
+                (publish_message service "snapshot" session data)))))
+      catch Any
+        (if_not service/closed/.get
+          (publish_message service "error" session
+            {^message ($to_str $err/message)}))
+      ensure
+        (service/snapshot_jobs/.get .delete id))))
+  (slot .set job)
+  nil)
+
+(fn handle_harness_event [service, event]
+  (match event
+    (when (record : DurableRecord)
+      (if (== record/scope "session")
+        (publish_transcript service record/stream record/envelope)))
+    (when (changed : RoundChanged)
+      (publish_message service "round/state" changed/session changed/receipt)
+      (if (== changed/receipt/state "waiting")
+        (publish_message service "questions" changed/session
+          changed/receipt/questions))
+      (queue_snapshot service changed/session))
+    (when (changed : SessionChanged)
+      (publish_message service "session/list" "" (list_sessions service))
+      (publish_message service "attention" ""
+        {^sessions (session_records ^^attention service/sessions)}))
+    (when (changed : CommandChanged)
+      (let record changed/record)
+      (let session changed/session)
+      (if (&& (!= record/name "sh") (! ($absent? record/text)))
+        (publish_message service "console" session
+          {^id $"${session}/${record/id}/console" ^seq "0"
+           ^round_id "" ^turn 0 ^role "log" ^phase "console"
+           ^kind "console" ^text record/output ^late false
+           ^durable false})
+        (publish_message service "command" session record))
+      (if ($absent? record/text)
+        (queue_snapshot service session))))
+  nil)
+
+(fn open_session_service [^workspace workspace : Str = "", ^offline offline : Bool = false,
+                          ^profile supplied_profile = nil]
+  (let profile (?? supplied_profile (if offline (offline_profile) (baseline_profile))))
   (let runtime
     (open_runtime ^event_scope "workspace" ^entry ($path/join ($path/parent this_mod/.path) "server.gene")
       (prepare_workspace_root ^root workspace)
       "default"
-      (baseline_profile)))
-  (let chosen
-    (if ($absent? provider)
-      (if offline
-        (fn [request] """# Finish
-(Outcome ^done true ^reply "Scripted response.")""")
-        complete_messages)
-      provider))
+      profile))
+  (contribute runtime/h "web" "prompt"
+    {^name "web_components"
+     ^text "Plugins can enhance the existing web frontend through the web_components registry. Read (doc \"harness/web_components\") for its slots, quoted views, dynamic render callbacks, actions and examples before implementing a web component."})
+  (let reference (reference_root))
+  (if_not ($absent? reference)
+    (contribute runtime/h "web" "docs"
+      {^name "harness/web_components"
+       ^path ($path/join reference "examples/gene-harness/docs/web-components.md")}))
+  (let settings ($serde/read_data ($fs/read_text $"${runtime/state_root}/config.gene")))
+  (let model_info
+    (try
+      (let selected (select_provider runtime settings))
+      {^provider selected/name ^model selected/settings/model
+       ^effort selected/settings/effort}
+    catch Any
+      (let choice (provider_choice runtime settings))
+      {^provider choice/name ^model "Unavailable" ^effort ""}))
   (let service
-    (WorkspaceService ^runtime runtime ^events runtime/events ^sessions runtime/sessions ^controller nil ^epoch ($crypto/random_hex 16) ^publisher ($cell nil) ^revision ($cell 0) ^closed ($cell false) ^model_info (if offline {^provider "scripted" ^model "scripted"} (public_model_config ^settings ($serde/read_data ($fs/read_text $"${runtime/state_root}/config.gene"))))))
+    (WorkspaceService ^runtime runtime ^events runtime/events ^sessions runtime/sessions ^controller nil ^epoch ($crypto/random_hex 16) ^publisher ($cell nil) ^revision ($cell 0) ^closed ($cell false) ^model_info model_info ^offline offline ^subscriptions [] ^snapshot_jobs ($cell {}) ^snapshot_versions ($cell {})))
   (set service/controller
-    (new_round_controller ^on_change (fn [session receipt] (publish_message service "round/state" session receipt) (if (== receipt/state "waiting") (publish_message service "questions" session receipt/questions)) (publish_message service "snapshot" session (snapshot service session)))
-      runtime
-      chosen))
-  (set runtime/on_event (fn [session event] (publish_transcript service session event)))
+    (new_round_controller runtime))
+  (service/subscriptions .push
+    (runtime/h/bus .subscribe HarnessEvent
+      (fn [event] (handle_harness_event service event))))
   (set runtime/commands/interface "web")
-  (set service/sessions/on_change
-    (fn [record]
-      (publish_message service "session/list" "" (list_sessions service))
-      (publish_message
-        service
-        "attention"
-        ""
-        {^sessions (session_records ^^attention service/sessions)})))
-  (set runtime/commands/on_change
-    (fn [session record]
-      (if (&& (!= record/name "sh") (! ($absent? record/text)))
-        (publish_message
-          service
-          "console"
-          session
-          {
-            ^id $"${session}/${record/id}/console"
-            ^seq "0"
-            ^round_id ""
-            ^turn 0
-            ^role "log"
-            ^phase "console"
-            ^kind "console"
-            ^text record/output
-            ^late false
-            ^durable false})
-        (publish_message service "command" session record))
-      (if ($absent? record/text)
-        (publish_message service "snapshot" session (snapshot service session)))))
-  (open_trigger_manager runtime service/controller)
+  (provide runtime/h "core" "loop"
+    (fn [] {^runtime runtime ^controller service/controller ^start true ^boot true}))
   service)
 
 (fn list_sessions [service, ^after after : Str = "", ^limit limit : Int = 100, ^kind kind = nil, ^status status = nil, ^attention attention = nil, ^trigger trigger = nil, ^q q : Str = "", ^since since : Str = "", ^until until : Str = ""]
@@ -151,7 +195,6 @@
 
 (fn create_session [service, ^title title : Str = "New conversation"]
   (let record (create_record ^title title service/sessions))
-  (publish_message service "session/list" "" (list_sessions service))
   (public_session service record))
 
 (fn rename_session [service, id : Str, title : Str, revision : Int]
@@ -172,7 +215,6 @@
       (fail (RoundError ^code "invalid_request" ^message "Pinned must be boolean")))
     (update .put "pinned" changes/pinned))
   (let next (update_session service/sessions id update))
-  (publish_message service "session/list" "" (list_sessions service))
   (public_session service next))
 
 (fn acknowledge_attention [service, id : Str]
@@ -338,7 +380,6 @@
   (let active service/controller/active/.get)
   (let commands [])
   (for row in (rows service/runtime/h "commands")
-    (if (["new" "sessions"] .contains? row/name) (continue))
     (commands .push {^name row/name ^usage row/usage ^doc row/doc}))
   (let plugins [])
   (let composition (current_snapshot service/runtime/h/snapshots))
@@ -348,16 +389,29 @@
     ^protocol protocol_version
     ^epoch service/epoch
     ^model service/model_info
-    ^profile "chat"
+    ^profile service/runtime/profile/name
+    ^readiness (if ($absent? service/runtime/h/readiness)
+      nil (service/runtime/h/readiness))
     ^plugins plugins
     ^web_components (web_components service session)
     ^commands commands
-    ^offline (== service/model_info/provider "scripted")
+    ^offline service/offline
     ^workspace service/runtime/root
     ^running ($size active)})
 
 (fn close_session_service [service]
   (if (service/closed .swap true) (return nil))
-  (close_trigger_manager service/runtime/triggers)
+  (for subscription in service/subscriptions subscription/.cancel)
+  (let jobs (service/snapshot_jobs .swap {}))
+  (for [id slot] in jobs
+    (while ($absent? slot/.get) ($sleep 1))
+    (let job slot/.get)
+    job/.cancel)
+  (for [id slot] in jobs
+    (let job slot/.get)
+    job/.join)
+  (withdraw_seam service/runtime/h "core" "loop")
+  (if_not ($absent? service/runtime/triggers)
+    (close_trigger_manager service/runtime/triggers))
   (close_round_controller service/controller)
   (close_runtime service/runtime))

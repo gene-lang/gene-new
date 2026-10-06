@@ -5,6 +5,9 @@
   [open_session_service close_session_service host_status create_session command snapshot])
 (import ^from "../src/storage/workspace" [register_plugin set_plugin_enabled])
 
+(fn named_component [components, name : Str]
+  ($first ($filter components (fn [item] (== item/name name)))))
+
 (describe
   "Harness web components"
   (it
@@ -97,15 +100,18 @@
             (< (- ($os/monotonic_ms) before) 1500)
             "spawned render child escaped its deadline")
           ($assert (== status/web_components/.size 3) "render task failure aborted status")
+          (let panicking (named_component status/web_components "panicking"))
+          (let child (named_component status/web_components "child"))
+          (let healthy (named_component status/web_components "healthy"))
           ($assert
-            ($str/contains? status/web_components/0/error "render panic probe")
-            "render panic was lost")
-          ($assert ($absent? status/web_components/1/view) "timed-out render child returned a view")
+            ($str/contains? panicking/error "render panic probe")
+            $"render panic was lost: ${status/web_components}")
+          ($assert ($absent? child/view) "timed-out render child returned a view")
           ($assert
-            (! ($absent? status/web_components/1/error))
+            (! ($absent? child/error))
             "render child timeout was not reported")
           ($assert
-            (== status/web_components/2/view/children/0 "Still rendering")
+            (== healthy/view/children/0 "Still rendering")
             "later renderer did not run")
           (let interrupted (spawn ^lane root (host_status service)))
           ($sleep 20)
@@ -143,6 +149,8 @@
       "renders generated plugin state and restores slots after disable and restart"
       (fn [workspace]
         (let service (open_session_service ^workspace workspace ^^offline))
+        (let pushed ($cell []))
+        (service/publisher .set (fn [message] (pushed/.get .push message)))
         (let root service/runtime/root)
         (let source
           (quote
@@ -155,17 +163,34 @@
           (let session (create_session service))
           (let initial (host_status ^session session/id service))
           ($assert (== initial/web_components/.size 2) "generated components were not published")
+          (let initial_counter (named_component initial/web_components "counter"))
           ($assert
-            (== initial/web_components/0/view/children/0/children/0 "0")
-            "initial counter was incorrect")
+            (== initial_counter/view/children/0/children/0 "0")
+            $"initial counter was incorrect: ${initial/web_components}")
           (let submitted (command service session/id "/counter"))
           (service/runtime/commands/watchers
             .get
             ; .get $"${session/id}:${submitted/id}"
             ; .join)
+          (let refreshed ($cell false))
+          (let refresh_deadline (+ ($os/monotonic_ms) 5000))
+          (while (&& (! refreshed/.get) (< ($os/monotonic_ms) refresh_deadline))
+            (for message in pushed/.get
+              (if (&& (== message/type "snapshot")
+                       (== message/session session/id))
+                (then
+                  (let component
+                    (named_component message/data/status/web_components "counter"))
+                  (if (&& (! ($absent? component))
+                           (== component/view/children/0/children/0 "1"))
+                    (refreshed .set true)))))
+            (if_not refreshed/.get ($sleep 1)))
+          ($assert refreshed/.get
+            "finished command did not push a refreshed plugin snapshot")
           (let updated (snapshot service session/id))
+          (let updated_counter (named_component updated/status/web_components "counter"))
           ($assert
-            (== updated/status/web_components/0/view/children/0/children/0 "1")
+            (== updated_counter/view/children/0/children/0 "1")
             "snapshot did not refresh plugin state")
           (let disable (command service session/id "/run (disable_plugin \"counter\")"))
           (service/runtime/commands/watchers
@@ -187,8 +212,9 @@
         (try
           (let restored (host_status reopened))
           ($assert (== restored/web_components/.size 2) "components did not survive restart")
+          (let restored_counter (named_component restored/web_components "counter"))
           ($assert
-            (== restored/web_components/0/view/children/0/children/0 "1")
+            (== restored_counter/view/children/0/children/0 "1")
             "component state did not survive restart")
         ensure
           (close_session_service reopened))))))

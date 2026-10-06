@@ -16,6 +16,7 @@
           ^core_projections Any
           ^generation Any ^last_manifest Any ^dirty Any
           ^dirty_streams Any ^closed Any ^catalog Any ^quarantined Any ^writing Any
+          ^observer Any?
           ^formats_validated Any
           ^segment_events Int ^retained_segments Int
           ^max_event_bytes Int ^max_state_bytes Int
@@ -170,9 +171,15 @@
    origin : Str, owner : Str, projection : Str]
   (require_open events)
   (acquire_event_writer events)
-  (try
-    (append_stamped_event_unlocked events scope stream event origin owner projection)
-    ensure (events/writing .set false)))
+  (let envelope
+    (try
+      (append_stamped_event_unlocked events scope stream event origin owner projection)
+    ensure
+      (events/writing .set false)))
+  (if_not ($absent? events/observer)
+    (try (events/observer envelope)
+      catch Any nil))
+  envelope)
 
 (fn append_stamped_event_unlocked
   [events : EventStore, scope : Str, stream : Str, event,
@@ -550,27 +557,71 @@
 (fn restore_manifest [events : EventStore, manifest]
   (install_manifest_data events manifest (manifest_data events manifest)))
 
+(fn append_turn_end_once [events : EventStore, session : Str, payload]
+  (let records (events_for events "session" session))
+  (var index (- records/.size 1))
+  (while (>= index 0)
+    (let event records/%index)
+    (if (&& (== event/type "turn/end")
+            (== event/payload/turn payload/turn))
+      (return {^event event ^created false}))
+    (if (&& (== event/type "turn/start")
+            (== event/payload/turn payload/turn))
+      (break))
+    (set index (- index 1)))
+  {^event (append_core_event events "session" session payload)
+   ^created true})
+
 (fn repair_interrupted_turns [events : EventStore, ^session session = nil, ^reason reason : Str = "interrupted"] : Int
   (if_not ($absent? session)
     (current_events events (stream_key "session" session)))
   (var repairs (fresh_list))
+  (var interrupted_calls (fresh_list))
   (for [key values] in events/streams/.get
     (if_yes (&& (! ($absent? session)) (!= ($to_str key) (stream_key "session" session)))
       (continue))
     (var open_turns (fresh_map))
+    (var open_calls (fresh_map))
+    (var last_attempts (fresh_map))
     (for envelope in values
       (if (== envelope/type "turn/start")
         (then
           (open_turns .put ($to_str envelope/payload/turn) envelope))
         (elif (== envelope/type "turn/end")
-          (open_turns .delete ($to_str envelope/payload/turn)))))
+          (open_turns .delete ($to_str envelope/payload/turn))))
+      (if (== envelope/type "model/request")
+        (open_calls .put envelope/payload/call envelope))
+      (if (== envelope/type "model/result")
+        (then
+          (let id envelope/payload/call)
+          (last_attempts .put id
+            ($math/max (?? (last_attempts .get id) 0)
+              envelope/payload/attempt))
+          (if (== envelope/payload/final true)
+            (open_calls .delete id)))))
+    (for [id requested] in open_calls
+      (interrupted_calls .push
+        {^request requested
+         ^attempt (+ (?? (last_attempts .get id) 0) 1)}))
     (for [turn envelope] in open_turns
       (repairs .push envelope)))
+  (for pending in interrupted_calls
+    (let requested pending/request)
+    (append_core_event events ($to_str requested/scope)
+      ($to_str requested/stream)
+      {^type "model/result" ^call requested/payload/call
+       ^attempt pending/attempt
+       ^turn requested/payload/turn ^round requested/payload/round
+       ^purpose requested/payload/purpose
+       ^outcome "interrupted" ^final true ^timing_ms 0
+       ^error "process stopped before the provider outcome was recorded"}))
   (for started in repairs
-    (append_core_event events ($to_str started/scope) ($to_str started/stream)
+    (append_turn_end_once events ($to_str started/stream)
       {^type "turn/end" ^turn started/payload/turn
+       ^round (?? started/payload/round "")
        ^reason reason ^synthetic true}))
-  (if (> repairs/.size 0) (flush_event_store events))
+  (if (|| (> repairs/.size 0) (> interrupted_calls/.size 0))
+    (flush_event_store events))
   repairs/.size)
 
 (fn open_event_store
@@ -600,7 +651,8 @@
                 ^catalog ($cell nil) ^quarantined ($cell (fresh_list))
                 ^writing ($cell false)
                 ^formats_validated ($cell false)
-                ^closed ($cell false) ^segment_events segment_events
+                ^closed ($cell false) ^observer nil
+                ^segment_events segment_events
                 ^retained_segments retained_segments
                 ^max_event_bytes max_event_bytes
                 ^max_state_bytes max_state_bytes

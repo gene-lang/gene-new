@@ -1,5 +1,5 @@
 (mod history)
-(import ^from "../storage/state" [core_state core_states record_core_state append_core_event])
+(import ^from "../storage/state" [core_state core_states record_core_state append_core_event events_for])
 (import ^from "./response" [split_response])
 (import $store/fs [Store])
 
@@ -59,7 +59,12 @@
     (let live {})
     (mark_body_references runtime (core_states runtime/events "workspace" "workspace") live)
     (for [id record] in runtime/sessions/index/.get
-      (mark_body_references runtime (core_states runtime/events "session" ($to_str id)) live))
+      (mark_body_references runtime (core_states runtime/events "session" ($to_str id)) live)
+      (for event in (events_for runtime/events "session" ($to_str id))
+        (if (== event/type "model/request")
+          (mark_body_references runtime event/payload/prepared live)
+          (if (== event/type "model/result")
+            (mark_body_references runtime event/payload/output live)))))
     # Retained event generations can still be selected after a damaged newest
     # checkpoint. Their projection blobs must remain readable too.
     (let manifest runtime/events/last_manifest/.get)
@@ -224,9 +229,11 @@
     (if (> (+ bytes (+ separator ($str/byte_size rendered))) 65536)
       (fail (HistoryError ^message "output headers exceed the request byte limit")))
     (full .push rendered)
-    (settled .push (if (> entry/size 16384) entry/stub rendered))
+    (if_not (== item/settled false)
+      (settled .push (if (> entry/size 16384) entry/stub rendered)))
     (saved_items .push {^id item/id ^header item/header ^value body
-      ^original_bytes entry/size ^inline (== item/inline true) ^^saved})
+      ^original_bytes entry/size ^inline (== item/inline true)
+      ^settled (if (== item/settled false) false true) ^^saved})
     (set bytes (+ bytes (+ separator ($str/byte_size rendered)))))
   {^full ($str/join full "\n") ^settled ($str/join settled "\n") ^items saved_items})
 
@@ -326,10 +333,11 @@ ELIDED
     """
 """))
 
-(fn compact_history [runtime, session : Str, instructions : Str, window_tokens : Int, summarize]
+(fn compact_history [runtime, session : Str, instructions : Str, window_tokens : Int,
+                     summarize, ^policy policy]
   (let state (history_state runtime session))
-  (let trigger (* window_tokens 2.625))
-  (let target (* window_tokens 1.925))
+  (let trigger policy/trigger_bytes)
+  (let target policy/target_bytes)
   (if (<= (context_bytes state instructions) trigger) (return false))
   (let last (- state/messages/.size 2))
   (var index 0)

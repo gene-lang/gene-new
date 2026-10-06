@@ -201,6 +201,7 @@
         ^default_limits configured/default_limits ^reload_policy configured/reload_policy
         ^retirement configured/retirement
         ^allow_pending true
+        ^allow_failed true
         ^descriptor_factory (fn [module, row, graph] (describe_source record module row graph)))))
   (Composition ^token token))
 
@@ -303,11 +304,14 @@
   (let failures (failed_entries snapshot))
   (let rollback ($thaw #[]))
   (for id in failed_ids (rollback .push id))
+  (var restore_previous false)
   (for failure in failures
-    (if_not (rollback .contains? failure/id) (rollback .push failure/id)))
+    (if_not (rollback .contains? failure/id) (rollback .push failure/id))
+    (if_not ($absent? (record/current/.get .get failure/id))
+      (set restore_previous true)))
   # A newly failed plugin returns to its last active revision, or leaves the
   # composition when it has none. Its siblings activated regardless.
-  (if_yes (> rollback/.size failed_ids/.size)
+  (if_yes (&& restore_previous (> rollback/.size failed_ids/.size))
     (let second (select_revisions record plugins entries rollback))
     (set snapshot (reconcile_composition handle second/plugins second/options))
     (let reported (failure_ids failures))

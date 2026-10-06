@@ -1,4 +1,5 @@
 (import ^from "../../src/runtime/bootstrap" [open_runtime close_runtime])
+(import [test_controller] ^from "../support")
 (import ^from "../../src/profiles/baseline" [baseline_profile])
 (import ^from "../../src/runtime/round_controller" [new_round_controller close_round_controller answer_round])
 (import ^from "../../src/runtime/triggers"
@@ -9,7 +10,7 @@
   (let config ($serde/read_data ($fs/read_text $"${runtime/state_root}/config.gene")))
   (config .put "trigger_concurrency" 1)
   ($fs/write_text_atomic $"${runtime/state_root}/config.gene" ($serde/write_data config))
-  (let controller (new_round_controller runtime (fn [request]
+  (let controller (test_controller runtime (fn [request]
     "(Outcome ^questions [{^id \"ok\" ^prompt \"Continue?\"}])")))
   (let manager (open_trigger_manager runtime controller ^start false ^now 1000))
   (create_trigger manager {^id "queue" ^kind "heartbeat" ^every_ms 100 ^request "check" ^overlap "queue_one"} ^now 1000)

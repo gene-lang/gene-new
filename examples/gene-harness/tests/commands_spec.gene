@@ -1,11 +1,11 @@
 (import $test [describe it])
-(import ^from "./support" [isolated run_spec])
+(import ^from "./support" [isolated run_spec test_controller])
 (import ^from "../src/runtime/bootstrap" [open_runtime close_runtime])
 (import ^from "../src/profiles/baseline" [baseline_profile])
 (import ^from "../src/runtime/commands"
   [submit_command command_receipt parse_submission take_command_attachments])
 (import ^from "../src/runtime/round_controller"
-  [new_round_controller submit_round round_receipt close_round_controller])
+  [submit_round round_receipt close_round_controller])
 (import ^from "../src/kernel" [Plugin Host PluginHost install row])
 (describe
   "Harness commands"
@@ -20,7 +20,7 @@
         (let manager runtime/commands)
         (let seen ($cell nil))
         (let controller
-          (new_round_controller
+          (test_controller
             runtime
             (fn [request]
               (seen .set request/messages)
@@ -91,6 +91,9 @@ three""")
             ; .get "default"
             ; .join)
           (let messages seen/.get)
+          (let round_status (round_receipt controller "default" round/id))
+          ($assert (! ($absent? messages))
+            $"provider callback was not called: ${round_status}")
           (let last (- messages/.size 1))
           ($assert
             ($str/contains? messages/%last/content "[c1.run]")

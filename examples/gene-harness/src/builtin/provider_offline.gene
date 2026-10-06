@@ -1,0 +1,13 @@
+(mod provider_offline)
+(import ^from "../plugin_api" [Plugin PluginHost])
+
+(fn provider_offline [] : Plugin
+  (Plugin ^id "provider_offline" ^provides [["providers" "offline"]]
+    ^activate (fn [host]
+      (host .PluginHost:contribute "providers"
+        {^name "offline" ^doc "Complete a round without a model call."
+         ^configure (fn [model, effort, timeout]
+           {^model "offline" ^effort "none" ^timeout_ms timeout})
+         ^prepare (fn [call] {})
+         ^send (fn [prepared]
+           {^text "# Finish\n(Outcome ^done true ^reply \"Scripted response.\")"})}))))

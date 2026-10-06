@@ -1,0 +1,92 @@
+(import $test [describe it])
+(import [isolated run_spec] ^from "./support")
+(import ^from "../src/runtime/bootstrap" [open_runtime close_runtime])
+(import ^from "../src/profiles/profile" [Profile])
+(import ^from "../src/builtin/plugin_admin" [plugin_admin])
+(import ^from "../src/plugin_api" [Plugin PluginHost])
+(import ^from "../src/kernel" [row])
+(import ^from "../src/storage/workspace"
+  [set_plugin_enabled restore_plugin register_plugin doctor enable_entry composition_entries])
+(import ^from "../src/agents/harness_turn" [evaluate_harness_turn])
+
+(describe "Built-in plugin lifecycle"
+  (it "persists disable, enable and restore across restart"
+    []
+    (isolated this_mod/.path "persists disable, enable and restore across restart"
+      (fn [workspace]
+        (let root ($fs/real_path workspace))
+        (let profile
+          (Profile ^name "test"
+            ^plugins [(Plugin ^id "built" ^provides [["functions" "marker"]]
+              ^activate (fn [host]
+                (host .PluginHost:contribute "functions"
+                  {^name "marker" ^doc "Profile marker." ^fn (fn [] "built")})))
+              (plugin_admin)]))
+        (let replacement
+          ($to_str
+            (quote
+              (mod plugin
+                (import ^from "src/plugin_api.gene" [Plugin PluginHost])
+                (fn init [descriptor]
+                  (Plugin ^id "built" ^provides [["functions" "marker"]]
+                    ^activate (fn [host]
+                      (host .PluginHost:contribute "functions"
+                        {^name "marker" ^doc "Stored marker." ^fn (fn [] "stored")}))))))))
+        (let first (open_runtime root "default" profile))
+        (try
+          ($assert (!= (row first/h "functions" "marker") void) "profile function missing")
+          (let disabled (set_plugin_enabled first/workspace first/h "built" false))
+          ($assert (== disabled/status "disabled") "disable did not report its state")
+          ($assert (== (row first/h "functions" "marker") void)
+            "disabled built-in remained visible")
+          (let records (composition_entries first/workspace))
+          ($assert (== records/0/builtin true)
+            "disable did not write a built-in record")
+        ensure
+          (close_runtime first))
+        (let restarted (open_runtime root "default" profile))
+        (try
+          ($assert (== (row restarted/h "functions" "marker") void)
+            "disabled built-in reappeared after restart")
+          ($assert ($str/contains? ($to_str (doctor restarted/workspace)) "built-in disabled")
+            "doctor did not name the disabled default")
+        ensure
+          (close_runtime restarted))
+        (let recovery (open_runtime ^^activate root "default" profile))
+        (try
+          (enable_entry recovery/workspace "built")
+        ensure
+          (close_runtime recovery))
+        (let enabled (open_runtime root "default" profile))
+        (try
+          (let result (evaluate_harness_turn enabled/h 1 root
+            "(Outcome ^done true ^reply (marker))"))
+          ($assert (== result/validated/outcome/reply "built")
+            "recovery enable did not restore the default")
+          (let stored (register_plugin ^replace true enabled/workspace enabled/h "built" replacement))
+          ($assert (== stored/status "ready") "stored replacement did not activate")
+          (let restored_turn (evaluate_harness_turn enabled/h 2 root
+            "(append_prompt \"restore\" (restore_plugin \"built\")) (Outcome ^prompt \"continue\")"))
+          ($assert (== restored_turn/composition_changes/0/status "ready")
+            "turn restore did not activate the default")
+          ($assert (== (composition_entries enabled/workspace) [])
+            "restore left a stored override")
+          ($assert
+            (try
+              (restore_plugin enabled/workspace enabled/h "missing")
+              false
+            catch Any
+              ($str/contains? $err/message "no profile default"))
+            "restore silently removed an id without a profile default")
+        ensure
+          (close_runtime enabled))
+        (let final_runtime (open_runtime root "default" profile))
+        (try
+          (let final_result (evaluate_harness_turn final_runtime/h 2 root
+            "(Outcome ^done true ^reply (marker))"))
+          ($assert (== final_result/validated/outcome/reply "built")
+            "restored default did not survive restart")
+        ensure
+          (close_runtime final_runtime))))))
+
+(fn main [args] : Int (run_spec args))

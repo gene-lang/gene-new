@@ -1,0 +1,114 @@
+(mod model_call)
+(import ^from "./provider_selection" [select_provider])
+(import ^from "./history" [write_body read_body])
+(import ^from "../storage/state" [append_core_event flush_event_store])
+(import ^from "../kernel" [HarnessError])
+
+(fn store_part [runtime, value]
+  (if (== ($head value) Str)
+    (return
+      (if (> ($str/byte_size value) 256)
+        {^harness_blob (write_body runtime value)}
+        value)))
+  (if (== ($head value) List)
+    (then
+      (let parts [])
+      (for item in value (parts .push (store_part runtime item)))
+      (return parts)))
+  (if (== ($head value) Map)
+    (then
+      (let parts {})
+      (for [key item] in value
+        (parts .put key (store_part runtime item)))
+      (return parts)))
+  value)
+
+(fn load_part [runtime, value]
+  (if (== ($head value) Map)
+    (then
+      (if (&& (== ($size value) 1) (! ($absent? value/harness_blob)))
+        (return (read_body runtime value/harness_blob)))
+      (let restored {})
+      (for [key item] in value
+        (restored .put key (load_part runtime item)))
+      (return restored)))
+  (if (== ($head value) List)
+    (then
+      (let restored [])
+      (for item in value (restored .push (load_part runtime item)))
+      (return restored)))
+  value)
+
+(fn record_request [runtime, request, call_id : Str, selected, prepared]
+  (if ($absent? runtime/events) (return nil))
+  (append_core_event runtime/events "session" request/session
+    {^type "model/request" ^call call_id
+     ^turn (?? request/turn 0) ^round (?? request/round "")
+     ^purpose (?? request/purpose "turn")
+     ^provider selected/name ^settings selected/settings
+     ^prepared (store_part runtime prepared)})
+  (flush_event_store runtime/events)
+  nil)
+
+(fn record_result [runtime, request, call_id : Str, attempt : Int,
+                   outcome : Str, final : Bool, elapsed : Int,
+                   ^output output = nil, ^usage usage = nil, ^error error = nil]
+  (if ($absent? runtime/events) (return nil))
+  (append_core_event runtime/events "session" request/session
+    {^type "model/result" ^call call_id ^attempt attempt
+     ^turn (?? request/turn 0) ^round (?? request/round "")
+     ^purpose (?? request/purpose "turn")
+     ^outcome outcome ^final final ^timing_ms elapsed
+     ^output (if ($absent? output) nil (store_part runtime output))
+     ^usage usage
+     ^error (if ($absent? error) nil (store_part runtime error))})
+  (flush_event_store runtime/events)
+  nil)
+
+(fn call_model [runtime, request]
+  (let selected (select_provider runtime (?? request/config {})))
+  (let input (selected/row/prepare
+    {^purpose (?? request/purpose "turn")
+     ^session request/session ^round request/round ^turn request/turn
+     ^budget request/budget ^config request/config
+     ^messages request/messages ^settings selected/settings
+     ^max_tokens request/max_tokens}))
+  (let prepared ($freeze input))
+  (let call_id ($crypto/random_hex 16))
+  (record_request runtime request call_id selected prepared)
+  (repeat attempt in 2
+    (let started ($os/monotonic_ms))
+    (let number (+ attempt 1))
+    (var result nil)
+    (let returned ($cell false))
+    (try
+      (set result (selected/row/send prepared))
+      (returned .set true)
+    catch Any
+      (returned .set true)
+      (record_result runtime request call_id number "error" true
+        (- ($os/monotonic_ms) started) ^error ($to_str $err/message))
+      (fail $err)
+    ensure
+      (if_not returned/.get
+        (record_result runtime request call_id number "cancelled" true
+          (- ($os/monotonic_ms) started))))
+    (let elapsed (- ($os/monotonic_ms) started))
+    (if (== result/timeout true)
+      (then
+        (record_result runtime request call_id number "timeout" (== attempt 1)
+          elapsed ^usage result/usage)
+        (if (== attempt 1)
+          (fail (HarnessError ^message
+            $"${selected/name} model provider request exceeded ${(/ selected/settings/timeout_ms 1000.0)} s (2 attempts). Send a continuation message or increase provider_timeout_ms."))))
+      (else
+        (if_not (== ($head result/text) Str)
+          (record_result runtime request call_id number "error" true elapsed
+            ^error "provider returned invalid text content")
+          (fail (HarnessError ^message
+            $"${selected/name} provider returned invalid text content")))
+        (record_result runtime request call_id number "ok" true elapsed
+          ^output result/text ^usage result/usage)
+        (return {^text result/text ^usage result/usage
+          ^call_id call_id ^provider selected/name}))))
+  (fail (HarnessError ^message "provider returned no result")))

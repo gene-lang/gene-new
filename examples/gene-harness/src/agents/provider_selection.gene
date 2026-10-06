@@ -1,0 +1,98 @@
+(mod provider_selection)
+(import ^from "../kernel" [row rows HarnessError])
+
+(fn nonempty [value]
+  (if ($absent? value) (return nil))
+  (let text ($str/trim ($to_str value)))
+  (if (== text "") nil text))
+
+(fn provider_reason [candidate]
+  (if ($absent? candidate/available) (return nil))
+  (try
+    (candidate/available)
+  catch Any
+    ($to_str $err/message)))
+
+(fn choose_auto [h]
+  (var selected nil)
+  (for candidate in (rows h "providers")
+    (if ($absent? candidate/auto) (continue))
+    (if_not ($absent? (provider_reason candidate)) (continue))
+    (if (|| ($absent? selected)
+            (< candidate/auto selected/auto)
+            (&& (== candidate/auto selected/auto)
+                (< ($order/compare candidate/name selected/name) 0)))
+      (set selected candidate)))
+  selected)
+
+(fn provider_choice [runtime, settings, ^environment supplied = nil]
+  (let pinned (nonempty runtime/profile/provider))
+  (let environment
+    (nonempty (if ($absent? supplied)
+      ($os/env? "GENE_HARNESS_PROVIDER")
+      supplied/GENE_HARNESS_PROVIDER)))
+  (let configured (nonempty settings/provider))
+  (let name (?? pinned environment configured))
+  (let candidate
+    (if ($absent? name)
+      (choose_auto runtime/h)
+      (row runtime/h "providers" name)))
+  (if ($absent? candidate)
+    (return {^name (?? name "")
+      ^reason (if ($absent? name)
+        "no provider is available"
+        $"providers/${name} is missing")}))
+  (let reason (provider_reason candidate))
+  (if_not ($absent? reason)
+    (return {^name candidate/name ^reason reason ^row candidate}))
+  {^name candidate/name ^reason nil ^row candidate})
+
+(fn readiness_report [runtime, settings]
+  (for requirement in (?? runtime/profile/requires [])
+    (let registry ($to_str requirement/0))
+    (let key ($to_str requirement/1))
+    (if ($absent? (row runtime/h registry key))
+      (return $"${runtime/profile/name} cannot run: ${registry}/${key} is missing")))
+  (let choice (provider_choice runtime settings))
+  (if_not ($absent? choice/reason)
+    (return $"${runtime/profile/name} cannot run: ${choice/reason}"))
+  nil)
+
+(fn select_provider [runtime, settings, ^environment supplied = nil]
+  (let choice (provider_choice ^environment supplied runtime settings))
+  (if_not ($absent? choice/reason)
+    (fail (HarnessError ^message choice/reason)))
+  (let model (?? (nonempty (if ($absent? supplied)
+                            ($os/env? "GENE_HARNESS_MODEL")
+                            supplied/GENE_HARNESS_MODEL))
+                 (nonempty settings/model)))
+  (let effort (?? (nonempty (if ($absent? supplied)
+                             ($os/env? "GENE_HARNESS_THINKING_EFFORT")
+                             supplied/GENE_HARNESS_THINKING_EFFORT))
+                  (nonempty settings/effort)))
+  (let timeout (?? settings/provider_timeout_ms 600000))
+  (let effective (choice/row/configure model effort timeout))
+  {^name choice/name ^row choice/row ^settings effective})
+
+(fn complete_messages [runtime, request] : Str
+  (let selected (select_provider runtime (?? request/config {})))
+  (let prepared (selected/row/prepare
+    {^purpose (?? request/purpose "turn")
+     ^session request/session ^round request/round ^turn request/turn
+     ^budget request/budget ^config request/config
+     ^messages request/messages
+     ^settings selected/settings
+     ^max_tokens request/max_tokens}))
+  (repeat attempt in 2
+    (let result (selected/row/send prepared))
+    (if (== result/timeout true)
+      (then
+        (if (== attempt 1)
+          (fail (HarnessError ^message
+            $"${selected/name} model provider request exceeded ${(/ selected/settings/timeout_ms 1000.0)} s (2 attempts). Send a continuation message or increase provider_timeout_ms."))))
+      (else
+        (if_not (== ($head result/text) Str)
+          (fail (HarnessError ^message
+            $"${selected/name} provider returned invalid text content")))
+        (return result/text))))
+  "")

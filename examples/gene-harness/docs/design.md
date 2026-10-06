@@ -107,11 +107,40 @@ by stop from work interrupted by a crash.
 
 A turn builds instructions and history, invokes the provider, reads the raw
 response, applies its patch, evaluates code, and interprets the final value.
+The loop owns every protocol record. Its order is:
 
-Instructions contain response grammar and examples, Gene reference material,
-workspace/session information, leased function signatures and documentation,
-then plugin prompt sections. Pull-only reference material is available through
-doc. Credentials are private transport inputs.
+```text
+request/prepare hook -> turn/request (full and settled next item)
+turn/start -> prompt rows -> history/compact policy
+  summary call, if needed: prepare -> model/request -> send -> model/result
+prepare -> model/request -> send -> model/result
+turn/response -> split, patch, evaluate, Outcome -> turn/end
+```
+
+`model/request` records the exact immutable value returned by the selected
+provider row's `prepare`. The same value is passed to `send`; authentication
+and transport details may be added afterward, but model-visible content may
+not. Large strings in the prepared value are stored as content-addressed
+blobs, so unchanged history parts share blobs across calls. The request record
+is flushed before transport. Each logical call has one call id and one
+`model/result` per attempt. The loop retries one reported timeout; each result
+records outcome, finality, timing and any provider usage. The successful main
+result is linked from `turn/response`. Compaction summary calls use the same
+path and are marked `history/summary`.
+
+Provider errors, timeouts and cancellation produce results before the turn
+ends. If a process stops with no final model result, recovery adds an
+`interrupted` result with outcome unknown. Turn finalization is idempotent
+across the loop, round controller and cold recovery. An error before model
+dispatch writes a failed turn end with its stage and no invented model call.
+
+Instructions come entirely from ordered `prompt` rows: the loop's response
+grammar first, mounted plugin sections next, and dynamic workspace, session
+and function information last. `gene_reference` contributes the Gene skill;
+`plugin_admin` and `triggers` describe only functions they also contribute.
+The web entry contributes its own web-component paragraph, so a CLI prompt
+does not mention browser panels. Pull-only chapters come from `docs` rows and
+are read with `doc`. Credentials are private transport inputs.
 
 A response contains zero or more Gene forms followed by raw blocks:
 
@@ -166,9 +195,7 @@ are exactly:
 | --- | --- |
 | Loop | `Outcome`, `append_prompt` (rewritten to `append_prompt_at`), `attachment`, `recall` |
 | Context | `session_id`, `workspace_root`, `doc` |
-| Plugins | `register_plugin`, `plugin_states`, `inspect_plugin`, `enable_plugin`, `disable_plugin` |
-| Triggers | `create_trigger`, `list_triggers`, `delete_trigger` |
-| Functions | every row of the leased `functions` registry, by name |
+| Functions | every row of the leased `functions` registry, by name; the built-in plugin and trigger functions appear only while their plugins are active |
 
 The whole standard library is reachable through `$`. Relative paths resolve
 against the workspace root, which is the process's working directory.
@@ -273,6 +300,24 @@ queued during a turn are published at its boundary. Publication persists the
 new generation, reconciles Cordis into a candidate, publishes the snapshot,
 then records composition/changed.
 
+The profile is a set of built-in plugin defaults. The composition store has
+at most one record per id: no record uses the profile default; a disabled
+built-in record removes it; an enabled stored module replaces it; a disabled
+stored record leaves the id inactive. Replacing a taken id requires
+`^replace true`. `restore_plugin` drops a stored record only when the profile
+has a default for that id. `doctor`, `enable`, `disable` and `restore` work
+without activating plugins. A failed activation is quarantined and cannot
+block inspection or repair of the workspace.
+
+`register_plugin` validates and stores content-addressed source, then returns
+`queued` inside a turn. That return is not an installation receipt. At the
+boundary the loop sends `[N.plugins]` with the committed revision and active,
+pending or quarantined state. A turn that queued a change cannot end with
+`Outcome ^done`; its reply is shown as progress and the next turn receives the
+publication result. Cancellation discards that turn's queued changes. A
+committed plugin belongs to the workspace and loads again after restart, so
+another session can use its functions without registering it again.
+
 Replaced instances enter retirement. Cordis gives the host a retirement ticket;
 the host retires the old generation only after its last snapshot lease ends.
 Detached references can retain old callable code, but a disposed plugin
@@ -311,11 +356,14 @@ the host; a plugin keeps the host for later callbacks.
 | `subscribe`, `emit_event` | Observe the event bus; emit the plugin's own event types |
 | `state`, `update_state` | Workspace state, or per-session state with `^session` |
 
-The registries are `functions`, `commands`, `prompt`, `views`,
-`interactions`, `event_types`, `subscriptions`, `seams` and `triggers`. A
+The registries are `functions`, `commands`, `prompt`, `docs`, `providers`,
+`views`, `interactions`, `event_types`, `subscriptions`, `seams` and `triggers`. A
 `functions` row is `{^name ^fn ^doc}`. Names are unique across the workspace,
-and the instructions list each with its `$runtime/signature` and doc. The core
-reserves its built-in command names. `plugin_api` also exports
+and the instructions list each with its `$runtime/signature` and doc. A
+`prompt` row has `^name` and exactly one of `^text` or callable `^render`;
+`docs` rows have `^name` and `^text` or `^path`. The core reserves command
+names by owner: `core_commands` owns `/help`, `/run`, `/sh` and `/view`, while
+the loop owns `/cancel`, `/stop` and `/restart`. `plugin_api` also exports
 `append_prompt`, which forwards to the current turn and labels the item
 `fn <name>`. Outside an open turn it raises TurnClosed.
 
@@ -325,11 +373,43 @@ validates the source, preflights `init` under its bounded budget, stores
 content-addressed module blobs, and queues the composition change for the turn
 boundary. A failing `init` makes the call fail and stores nothing. An entry
 whose activation fails, or a stored entry that no longer loads at boot, is
-quarantined; `doctor`, `enable` and `disable` repair it.
+quarantined; `doctor`, `enable`, `disable` and `restore` repair it.
+
+Model adapters are `providers` rows. The profile may pin one; otherwise the
+environment, `config.gene`, then the lowest available `^auto` rank select it.
+Each row reports cheap availability, configures public model settings,
+prepares model-visible input as plain data, and sends one transport attempt.
+The loop retries one HTTP timeout. A missing or unavailable selected provider
+refuses round admission with `not_ready`; the same check runs before each
+turn. The `triggers` host plugin requires the loop's `loop` seam. It starts
+its scheduler only after the controller exists and stops when that seam goes.
 
 Long-lived background work belongs in a plugin's activation effect scope,
 not in a detached task from response code. Its console output goes to the
 workspace log, and it cannot append to a turn.
+
+## Hooks and observation
+
+The loop leases ordered `hooks` rows by `^point` and `^name`. A
+`request/prepare` listener receives the next request items and a `next`
+callable. Calling `next` delegates to the following listener; returning
+without it decides the value. The built-in `budget_advisory` contributes the
+small item shown in the full request and omitted from its settled form.
+`history/compact` takes the first valid policy; `history_basic` supplies the
+75% trigger and 55% target. A failed or timed-out listener is skipped with a
+durable `trace` diagnostic. Hooks shape values before the loop records them;
+they cannot alter or suppress `model/request`, `model/result` or `turn/end`.
+
+Every appended workspace or session event is also published on the bus as a
+`DurableRecord`, after the event writer releases its lock. A plugin imports
+`DurableRecord` from `src/plugin_api.gene`, subscribes to that type and
+selects exact records by its `name`, such as `turn/end` or `model/result`.
+Subscriptions unwind with their owner. The web host uses one `HarnessEvent`
+subscriber for durable transcript records and live round, command and
+session changes. The CLI subscribes for console, progress and operator
+notifications. Web snapshots that render plugin components run in tracked
+tasks outside the bus callback, and shutdown drains them. Event observers
+cannot rewrite the frozen persisted envelope.
 
 ## Transcript and history
 
@@ -340,10 +420,12 @@ History is the model-facing view, with console excluded.
 | Event | Kind | Records |
 | --- | --- | --- |
 | `round/state` | required | Receipt: id, initiator (`user` or `trigger:<id>`), state, turn range |
-| `turn/start`, `turn/end` | required | Session turn number and round; end reason (`done`, `continue`, `questions`, `error`, `interrupted`, `cancelled`) |
-| `turn/response` | required | Response text with large attachments and patch bodies stubbed; blob refs; patch file list |
+| `turn/start`, `turn/end` | required | Session turn number and round; one ending per started turn, including failure stage or synthetic interruption |
+| `model/request` | required | Call id, purpose, provider, effective public settings and the provider's prepared input, with shared blob refs |
+| `model/result` | required | One transport attempt: call id, attempt number, outcome, finality, raw output/error, timing and reported usage |
+| `turn/response` | required | Main response transcript view, with large blocks stubbed, patch file list and a link to the final model result |
 | `turn/patch` | required | Patch result |
-| `turn/request` | required | The next request in full and settled forms |
+| `turn/request` | required | The next user or continuation item in full and settled forms; it is not the complete provider input |
 | `question/asked`, `question/answered` | required | Batch and answers |
 | `reply` | required | Text and final flag |
 | `command` | required | Slash command record, output summary and attachment state |
@@ -368,9 +450,9 @@ by their settled form in storage. Periodic idle blob collection retains the
 latest references and the event store's fallback generations.
 
 Settlement can change the previous full request and the assistant body from
-the preceding turn; older message content remains stable. A wire-only budget
-advisory changes the newest user message without rewriting stored history or
-the system prefix. Anthropic transport currently places cache checkpoints
+the preceding turn; older message content remains stable. The
+`budget_advisory` hook adds `[harness_budget]` to the full request only; its
+settled form omits that item. Anthropic transport places cache checkpoints
 on the last two assistant messages. Compaction is the exceptional operation
 that rewrites old history.
 The stable-prefix invariant compares serialized message-content bytes from
@@ -379,11 +461,12 @@ checkpoints can change older wire JSON while preserving the content boundary:
 all messages through the previous assistant response remain byte-identical,
 and its following full request is the first content message that settles.
 
-Tokens are estimated from bytes when no provider count is available. Above
-75% of the configured window, compaction first keeps comments, append_prompt
-and Outcome lines with stubs. If more reduction is required, one provider call
+Tokens are estimated from bytes when no provider count is available. The
+`history_basic` hook decides at 75% of the configured window; compaction first
+keeps comments, append_prompt and Outcome lines with stubs. If more reduction
+is required, one provider call
 summarizes old whole rounds into a durable history/summary message. The newest
-request is preserved; the target is below 55%.
+request is preserved; the policy target is below 55%.
 
 Session collection removes its index entry and stream. Blob writers lease
 the store through admission and receipt publication. Collection closes new
@@ -433,8 +516,11 @@ without executing a scheduler boot tick.
 ## Operator commands and shutdown
 
 Slash commands are registered rows with name, usage, documentation, run and
-raw_input. The core reserves its built-in names. Unknown commands report a
-closest match; a doubled initial slash escapes a literal user prompt.
+raw_input. `core_commands` contributes the shared commands; the loop keeps
+cancel, stop and restart available even if that plugin is disabled. The CLI
+entry contributes `/new` and `/sessions`; the web entry does not. Unknown
+commands report a closest match; a doubled initial slash escapes a literal
+user prompt.
 
 CommandContext carries session, raw arguments, command id and output sink.
 CommandResult carries display value, status and attachment behavior. Command
@@ -480,11 +566,12 @@ The Harness relies on general runtime features, documented in
 | Round admission/receipts/cancellation | runtime/round_controller |
 | Response grammar and evaluation | agents/response, agents/turn_eval |
 | Outcomes and labeled items | agents/outcome |
-| Turn loop and instructions | agents/turn_loop, agents/instructions |
+| Turn loop, instructions and provider choice | agents/turn_loop, agents/instructions, agents/provider_selection |
 | Elision/recall/compaction | agents/history |
 | Composition snapshots and retirement | runtime/composition, runtime/cordis_adapter |
 | Plugin contract and activation | plugin_api, kernel, storage/workspace |
 | Patch preflight/commit/recovery | runtime/patch |
+| Built-in contributions | builtin/gene_reference, builtin/plugin_admin, builtin/core_commands, builtin/triggers, builtin/provider_* |
 | Commands, triggers and supervisor | runtime/commands, runtime/triggers, runtime/supervisor |
 | Durable streams and catalog | storage/state, events.catalog |
 | Browser service/transport/UI | web/session_service, web/push, web/server, client/ |

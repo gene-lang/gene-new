@@ -1,5 +1,5 @@
 (import $test [describe it])
-(import [isolated run_spec fixture_path] ^from "./support")
+(import [isolated run_spec fixture_path test_controller] ^from "./support")
 (import ^from "../src/runtime/bootstrap" [open_runtime close_runtime])
 (import ^from "../src/profiles/baseline" [baseline_profile])
 (import ^from "../src/runtime/round_controller" [new_round_controller close_round_controller answer_round])
@@ -15,7 +15,7 @@
         (await ($os/exec_async ($os/executable_path) "run" (fixture_path "trigger_queue_restart") root ^timeout_ms 30000))
         (let runtime (open_runtime root "default" (baseline_profile)))
         (let calls ($cell 0))
-        (let controller (new_round_controller runtime (fn [request]
+        (let controller (test_controller runtime (fn [request]
           (calls .set (+ calls/.get 1))
           "(Outcome ^done true ^reply \"resumed\")")))
         (let manager (open_trigger_manager runtime controller ^start false ^now 1300))

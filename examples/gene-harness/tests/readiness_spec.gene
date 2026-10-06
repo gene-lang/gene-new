@@ -1,0 +1,92 @@
+(import $test [describe it])
+(import [isolated run_spec] ^from "./support")
+(import ^from "../src/runtime/bootstrap" [open_runtime close_runtime])
+(import ^from "../src/profiles/scripted" [scripted_profile])
+(import ^from "../src/runtime/round_controller"
+  [RoundError new_round_controller submit_round round_receipt close_round_controller])
+(import ^from "../src/storage/workspace" [set_plugin_enabled])
+(import ^from "../src/runtime/triggers"
+  [open_trigger_manager close_trigger_manager create_trigger tick_triggers list_occurrences])
+
+(describe "Profile readiness"
+  (it "refuses a round missing instructions or its selected provider" []
+    (isolated this_mod/.path "refuses a round missing instructions or its selected provider"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default"
+          (scripted_profile ["(Outcome ^done true ^reply \"ready\")"])))
+        (let controller (new_round_controller runtime))
+        (try
+          (set_plugin_enabled runtime/workspace runtime/h "gene_reference" false)
+          ($assert
+            (try
+              (submit_round controller "default" "first" 1 "go")
+              false
+            catch RoundError
+              (&& (== $err/code "not_ready")
+                  ($str/contains? $err/message "prompt/gene_reference")))
+            "missing reference prompt did not refuse admission")
+          (set_plugin_enabled runtime/workspace runtime/h "gene_reference" true)
+          (set_plugin_enabled runtime/workspace runtime/h "provider_scripted" false)
+          ($assert
+            (try
+              (submit_round controller "default" "first" 1 "go")
+              false
+            catch RoundError
+              (&& (== $err/code "not_ready")
+                  ($str/contains? $err/message "providers/scripted")))
+            "missing selected provider did not refuse admission")
+          (set_plugin_enabled runtime/workspace runtime/h "provider_scripted" true)
+          (let accepted (submit_round controller "default" "first" 1 "go"))
+          (controller/watchers .get; .get "default"; .join)
+          (let receipt (round_receipt controller "default" accepted/id))
+          ($assert (== receipt/state "done")
+            "repaired profile could not run")
+        ensure
+          (close_round_controller controller)
+          (close_runtime runtime)))))
+
+  (it "fails a running round before a call after its provider disappears" []
+    (isolated this_mod/.path "fails a running round before a call after its provider disappears"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default"
+          (scripted_profile [
+            "(disable_plugin \"provider_scripted\") (Outcome ^prompt \"continue\")"
+            "(Outcome ^done true ^reply \"should not run\")"])))
+        (let controller (new_round_controller runtime))
+        (try
+          (let accepted (submit_round controller "default" "first" 1 "go"))
+          (controller/watchers .get; .get "default"; .join)
+          (let receipt (round_receipt controller "default" accepted/id))
+          ($assert (== receipt/state "failed")
+            "round continued after losing its provider")
+          ($assert ($str/contains? receipt/message "providers/scripted")
+            "failure omitted the readiness reason")
+        ensure
+          (close_round_controller controller)
+          (close_runtime runtime)))))
+
+  (it "leaves a due trigger occurrence unadmitted while the profile is unready" []
+    (isolated this_mod/.path "leaves a due trigger occurrence unadmitted while the profile is unready"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default"
+          (scripted_profile ["(Outcome ^done true ^reply \"unused\")"])))
+        (let controller (new_round_controller runtime))
+        (let manager (open_trigger_manager runtime controller
+          ^start false ^boot false ^now 0))
+        (try
+          (create_trigger manager
+            {^id "beat" ^kind "heartbeat" ^every_ms 100 ^request "work"}
+            ^now 0)
+          (set_plugin_enabled runtime/workspace runtime/h "provider_scripted" false)
+          (try (tick_triggers manager ^now 100) catch RoundError nil)
+          (let occurrences (list_occurrences manager ^trigger "beat"))
+          ($assert (== occurrences/.size 1)
+            "due occurrence was lost on readiness refusal")
+          ($assert (== occurrences/0/state "due")
+            "readiness refusal consumed a due occurrence")
+        ensure
+          (close_trigger_manager manager)
+          (close_round_controller controller)
+          (close_runtime runtime))))))
+
+(fn main [args] : Int (run_spec args))

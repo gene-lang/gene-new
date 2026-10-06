@@ -1,20 +1,18 @@
 (mod commands)
-(import ^from "../kernel" [rows row contribute])
+(import ^from "../kernel" [rows row contribute CommandChanged publish])
 (import ^from "../plugin_api" ^^export [CommandContext CommandResult])
 (import ^from "./composition" [acquire_snapshot release_snapshot])
-(import ^from "../agents/harness_turn" [function_bindings])
+(import ^from "../agents/harness_turn" [workspace_bindings])
 (import ^from "../agents/eval_site" [evaluate_response])
-(import ^from "../agents/instructions" [gene_doc])
 (import ^from "../agents/history"
   [write_body read_body byte_prefix bounded_request acquire_body_use release_body_use with_body_use])
 (import ^from "../storage/state"
   [core_state record_core_state flush_event_store next_sequence stream_key])
-(import ^from "../storage/workspace" [set_plugin_enabled])
 (import ^from "./sessions" [create_session list_sessions load_session])
 
 (type CommandError ^props {^code Str ^message Str} ^impl [Error])
 (impl Error for CommandError)
-(type CommandManager ^props {^runtime Any ^active Any ^watchers Any ^gate Any ^cancel Any ^stop Any ^on_change Any? ^accepting Any ^closed Any ^interface Str})
+(type CommandManager ^props {^runtime Any ^active Any ^watchers Any ^gate Any ^cancel Any ^stop Any ^accepting Any ^closed Any ^interface Str})
 
 (fn command_state [runtime, session : Str]
   (let ref (core_state runtime/events "session" session "commands"))
@@ -86,8 +84,6 @@
   (let name ($str/trim ctx/raw))
   (if (!= name "")
     (then
-      (if (&& (== ctx/manager/interface "web") (["new" "sessions"] .contains? name))
-        (fail (CommandError ^code "unknown_command" ^message "Use the session sidebar.")))
       (let command (row ctx/runtime/h "commands" name))
       (if ($absent? command)
         (fail (CommandError ^code "unknown_command" ^message $"unknown command /${name}")))
@@ -95,26 +91,13 @@
         (CommandResult ^display ($to_str command/usage "\n" command/doc)))))
   (let lines [])
   (for command in (rows ctx/runtime/h "commands")
-    (if (&& (== ctx/manager/interface "web") (["new" "sessions"] .contains? command/name))
-      (continue))
     (lines .push $"${command/usage} — ${command/doc}"))
   (CommandResult ^display ($str/join lines "\n")))
 
 (fn run_command [ctx]
   (let forms ($into ($parse/read_all ^source ctx/id ^^locs ctx/raw) []))
-  (let bindings (function_bindings ctx/snapshot))
-  (for [name function] in ctx/runtime/functions
-    (bindings .put name function))
-  (bindings .put "workspace_root" ctx/runtime/root)
-  (bindings .put "doc" gene_doc)
-  (bindings .put
-    "enable_plugin"
-    (fn [id : Str]
-      (set_plugin_enabled ctx/runtime/workspace ctx/runtime/h id true)))
-  (bindings .put
-    "disable_plugin"
-    (fn [id : Str]
-      (set_plugin_enabled ctx/runtime/workspace ctx/runtime/h id false)))
+  (let bindings
+    (workspace_bindings ctx/runtime/h ctx/snapshot ctx/session ctx/runtime/root))
   (let environment (env ^bindings bindings))
   (let value (evaluate_response `(scope %forms...) environment))
   (CommandResult ^display value ^^attached ^status "done"))
@@ -171,21 +154,23 @@
       page/text))
   (CommandResult ^display text ^^attached ^view {^path relative ^kind (if ($str/ends_with? relative ".gene") "gene" (if ($str/ends_with? relative ".md") "markdown" "text")) ^from first ^to page/to ^next page/next ^truncated page/truncated}))
 
-(fn install_core_commands [runtime]
+(fn shared_command_rows []
+  [
+    {^name "help" ^usage "/help [command]"
+     ^doc "List commands or show a command's usage." ^run help_command ^^raw_input}
+    {^name "run" ^usage "/run <Gene code>"
+     ^doc "Evaluate Gene with plugin functions and the standard library."
+     ^run run_command ^^raw_input}
+    {^name "sh" ^usage "/sh <shell command>"
+     ^doc "Run a non-interactive shell command with streamed output."
+     ^run shell_command ^^raw_input}
+    {^name "view" ^usage "/view <path>[:from-to]"
+     ^doc "View a file or directory, up to 400 lines."
+     ^run view_command ^^raw_input}])
+
+(fn install_control_commands [runtime]
   (let definitions
     [
-      ["help" "/help [command]" "List commands or show a command's usage." help_command]
-      [
-        "run"
-        "/run <Gene code>"
-        "Evaluate Gene with plugin functions and the standard library."
-        run_command]
-      [
-        "sh"
-        "/sh <shell command>"
-        "Run a non-interactive shell command with streamed output."
-        shell_command]
-      ["view" "/view <path>[:from-to]" "View a file or directory, up to 400 lines." view_command]
       [
         "cancel"
         "/cancel"
@@ -207,22 +192,7 @@
         (fn [ctx]
           (ctx/manager/stop ctx/session 75 (== ($str/trim ctx/raw) "--confirm"))
           (let supervised (== ($os/env? "GENE_HARNESS_SUPERVISED") "1"))
-          (CommandResult ^display (if supervised "Restarting." "Stopped. Direct gene run cannot restart this process; start it again from the terminal.") ^stop (if supervised 75 0)))]
-      [
-        "new"
-        "/new [title]"
-        "Create and select an interactive CLI session."
-        (fn [ctx]
-          (let record
-            (create_session ^title (if (== ctx/raw "") "New conversation" ctx/raw)
-              ctx/runtime/sessions))
-          (CommandResult ^display record/id ^selected record/id))]
-      [
-        "sessions"
-        "/sessions"
-        "List workspace sessions."
-        (fn [ctx]
-          (CommandResult ^display (list_sessions ctx/runtime/sessions)))]])
+          (CommandResult ^display (if supervised "Restarting." "Stopped. Direct gene run cannot restart this process; start it again from the terminal.") ^stop (if supervised 75 0)))]])
   (for entry in definitions
     (if ($absent? (row runtime/h "commands" entry/0))
       (contribute
@@ -231,16 +201,28 @@
         "commands"
         {^name entry/0 ^usage entry/1 ^doc entry/2 ^run entry/3 ^^raw_input}))))
 
-(fn new_command_manager [runtime, ^cancel cancel = nil, ^stop stop = nil, ^on_change on_change = nil]
-  (install_core_commands runtime)
-  (CommandManager ^runtime runtime ^active ($cell {}) ^watchers ($cell {}) ^gate ($cell false) ^cancel cancel ^stop stop ^on_change on_change ^accepting ($cell true) ^closed ($cell false) ^interface "cli"))
+(fn install_cli_commands [runtime]
+  (let definitions
+    [
+      ["new" "/new [title]" "Create and select an interactive CLI session."
+        (fn [ctx]
+          (let record
+            (create_session ^title (if (== ctx/raw "") "New conversation" ctx/raw)
+              ctx/runtime/sessions))
+          (CommandResult ^display record/id ^selected record/id))]
+      ["sessions" "/sessions" "List workspace sessions."
+        (fn [ctx]
+          (CommandResult ^display (list_sessions ctx/runtime/sessions)))]])
+  (for entry in definitions
+    (contribute runtime/h "cli" "commands"
+      {^name entry/0 ^usage entry/1 ^doc entry/2 ^run entry/3 ^^raw_input})))
+
+(fn new_command_manager [runtime, ^cancel cancel = nil, ^stop stop = nil]
+  (install_control_commands runtime)
+  (CommandManager ^runtime runtime ^active ($cell {}) ^watchers ($cell {}) ^gate ($cell false) ^cancel cancel ^stop stop ^accepting ($cell true) ^closed ($cell false) ^interface "cli"))
 
 (fn command_changed [manager, session : Str, record]
-  (if_not ($absent? manager/on_change)
-    (try
-      (manager/on_change session record)
-    catch Any
-      ($println "command notification failed: " $err/message)))
+  (publish manager/runtime/h (CommandChanged ^session session ^record record))
   nil)
 
 (fn update_command [manager, session : Str, record]
@@ -264,7 +246,6 @@
     (save_command_state manager/runtime session state)
   ensure
     (manager/gate .set false))
-  (command_changed manager session record)
   record)
 
 (fn append_command_output [manager, session : Str, record, text : Str]
@@ -347,6 +328,7 @@ Stopped."""))))
       .get
       ; .delete $"${session}:${record/id}")
     (release_snapshot manager/runtime/h/snapshots lease))
+  (command_changed manager session record)
   record)
 
 (fn submit_command [manager, session : Str, text : Str]
@@ -358,9 +340,6 @@ Stopped."""))))
   (let parsed (parse_submission manager/runtime/h text))
   (if_not (== parsed/kind "command")
     (fail (CommandError ^code "invalid_request" ^message "expected a command")))
-  (if (&& (== manager/interface "web") (["new" "sessions"] .contains? parsed/name))
-    (fail
-      (CommandError ^code "invalid_request" ^message "Use the session sidebar to create or list sessions.")))
   (load_session manager/runtime/sessions session)
   (while (manager/gate .swap true)
     ($sleep 1))

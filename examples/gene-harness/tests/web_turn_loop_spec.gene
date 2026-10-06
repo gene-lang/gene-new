@@ -1,5 +1,5 @@
 (import $test [describe it])
-(import ^from "./support" [isolated run_spec])
+(import ^from "./support" [isolated run_spec test_service])
 (import ^from "../src/web/session_service"
   [
     open_session_service
@@ -21,7 +21,7 @@
       (fn [workspace]
         (let calls ($cell 0))
         (let service
-          (open_session_service ^workspace workspace ^provider (fn [request] (calls .set (+ calls/.get 1)) (if (== calls/.get 1) (return "(Outcome ^prompt \"next\")")) (fail (HttpClientError ^message "provider timeout")))))
+          (test_service ^workspace workspace ^provider (fn [request] (calls .set (+ calls/.get 1)) (if (== calls/.get 1) (return "(Outcome ^prompt \"next\")")) (fail (HttpClientError ^message "provider timeout")))))
         (let published ($cell []))
         (service/publisher .set (fn [message] (published/.get .push message)))
         (try
@@ -55,7 +55,7 @@
       (fn [workspace]
         (let calls ($cell 0))
         (let service
-          (open_session_service ^workspace workspace ^provider (fn [request] (let count (calls .swap (+ calls/.get 1))) (if (== count 0) "# Ask\n(Outcome ^questions [{^id \"ok\" ^prompt \"Continue?\" ^kind \"confirm\"}])" "# Finish\n(Outcome ^done true ^reply \"web done\")"))))
+          (test_service ^workspace workspace ^provider (fn [request] (let count (calls .swap (+ calls/.get 1))) (if (== count 0) "# Ask\n(Outcome ^questions [{^id \"ok\" ^prompt \"Continue?\" ^kind \"confirm\"}])" "# Finish\n(Outcome ^done true ^reply \"web done\")"))))
         (try
           (let session (create_session ^title "Web scripted" service))
           (let round (submit service session/id "web-1" 1 "start"))

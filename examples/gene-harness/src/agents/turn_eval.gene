@@ -23,6 +23,7 @@
                    ^max_memory_mb max_memory_mb : Int = 1024,
                    ^console_sink console_sink = nil, ^recall recall_function = nil,
                    ^record record = nil, ^context inherited = nil,
+                   ^turn_sink turn_sink = nil,
                    ^validators validators = {},
                    ^fail_after_renames fail_after_renames : Int = -1,
                    ^after_patch_rename after_patch_rename = nil]
@@ -30,6 +31,7 @@
   (let bytes ($cell 0))
   (let truncated ($cell false))
   (let turn (new_turn_items number ^recall recall_function))
+  (if_not ($absent? turn_sink) (turn_sink .set turn))
   (let context (if ($absent? inherited) {} ($thaw ($freeze_shallow inherited))))
   (context .put "turn" turn)
   (context .put "output" (fn [text]
@@ -112,7 +114,7 @@
     catch Any
       (set error ($to_str $err/message))
       (set error_line (response_error_line $err))
-    ensure (turn/state .set "closed"))
+    ensure (turn/state .set (if cancelled "cancelled" "closed")))
   (if_yes (&& (! ($absent? response)) (> response/forms/.size 0)
            (== ($head response/forms/0) Sym)
            (== error $"undefined symbol: ${response/forms/0}"))

@@ -1,11 +1,11 @@
 (import $test [describe it])
-(import [isolated run_spec] ^from "./support")
+(import [isolated run_spec test_service set_test_provider] ^from "./support")
 (import ^from "../src/web/session_service" [open_session_service close_session_service create_session submit snapshot])
 (describe "Harness patch delivery"
   (it "publishes applied patches with completed outcomes and reports preflight failures" []
     (isolated this_mod/.path "publishes applied patches with completed outcomes and reports preflight failures"
       (fn [workspace]
-        (let service (open_session_service ^workspace workspace ^provider (fn [request]
+        (let service (test_service ^workspace workspace ^provider (fn [request]
           """# Apply and finish
 (Outcome ^done true ^reply "Patched.")
 *** Begin Patch
@@ -23,7 +23,7 @@
             (if (== record/kind "turn/patch") (patches .push record)))
           ($assert (== patches/.size 1) "done Outcome hid its patch result")
           ($assert ($str/contains? patches/0/text "applied") "patch result was not displayed")
-          (set service/controller/provider (fn [request]
+          (set_test_provider service/runtime (fn [request]
             (if (== request/turn 2)
               "(Outcome ^done true ^reply \"unreachable\")\n*** Begin Patch\n*** Update File: added.txt\n@@\n-missing\n+new\n*** End Patch\n"
               "(Outcome ^done true ^reply \"Failure received.\")")))

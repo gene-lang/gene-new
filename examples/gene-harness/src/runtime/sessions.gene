@@ -14,13 +14,14 @@
     copy_data])
 (import ^from "../agents/history" [history_state read_body write_body])
 (import ^from "./patch" [recover_patch_temporaries])
+(import ^from "../kernel" [SessionChanged publish])
 
 (type SessionError ^props {^code Str ^message Str} ^impl [Error])
 (impl Error for SessionError)
 
 (type SessionState ^props {^id Str ^runtime Any ^history Any ^round Any ^outputs Any ^console Any ^last_access Any ^viewers Any})
 
-(type SessionManager ^props {^runtime Any ^events Any ^state_root Str ^index Any ^loaded Any ^idle_timeout_ms Int ^closed Any ^mutating Any ^index_writing Any ^gates Any ^gate_mutex Any ^on_change Any?})
+(type SessionManager ^props {^runtime Any ^events Any ^state_root Str ^index Any ^loaded Any ^idle_timeout_ms Int ^closed Any ^mutating Any ^index_writing Any ^gates Any ^gate_mutex Any})
 
 (fn with_session_gate [manager, key : Str, thunk]
   (while (manager/gate_mutex .swap true) ($sleep 1))
@@ -37,9 +38,8 @@
   (try (thunk) ensure (gate .set false)))
 
 (fn notify_session [manager, record]
-  (if_not ($absent? manager/on_change)
-    (try (manager/on_change record)
-      catch Any ($println $"Session notification failed: ${$err/message}")))
+  (if_not ($absent? manager/runtime/h)
+    (publish manager/runtime/h (SessionChanged ^record record)))
   nil)
 
 (fn require_open [manager : SessionManager]

@@ -4,6 +4,7 @@
 (import ^from "../src/profiles/baseline" [baseline_profile])
 (import ^from "../src/agents/history"
   [append_message compact_history provider_context history_state context_bytes])
+(import ^from "../src/builtin/history_basic" [basic_history_policy])
 (import ^from "../src/storage/state" [events_for])
 (import ^from "../src/runtime/sessions" [create_session])
 (describe "Harness history"
@@ -29,9 +30,10 @@
 (append_prompt "report" 1)
 (Outcome ^prompt "next")"""))
           (append_message ^round "new" runtime "default" "user" "new prompt")
-          (let calls ($cell 0))
-          (let changed
-            (compact_history
+        (let calls ($cell 0))
+        (let policy (basic_history_policy {^window_tokens 1000}))
+        (let changed
+          (compact_history ^policy policy
               runtime
               "default"
               "instructions"
@@ -60,10 +62,10 @@
           (append_message ^round "old" runtime boundary "user" ($str/join bytes ""))
           (let boundary_calls ($cell 0))
           (let summary (fn [request] (boundary_calls .set (+ boundary_calls/.get 1)) large))
-          ($assert (! (compact_history runtime boundary "" 1000 summary)) "compaction triggered at or below 75%")
+          ($assert (! (compact_history ^policy policy runtime boundary "" 1000 summary)) "compaction triggered at or below 75%")
           ($assert (== boundary_calls/.get 0) "threshold check called the provider")
           (append_message ^round "new" runtime boundary "user" "y")
-          (compact_history runtime boundary "" 1000 summary)
+          (compact_history ^policy policy runtime boundary "" 1000 summary)
           ($assert (== boundary_calls/.get 1) "compaction did not use one summary call")
           ($assert (< (context_bytes (history_state runtime boundary) "") 1925)
             "oversized summary exceeded the target")
@@ -73,14 +75,14 @@
           (append_message ^round "active-round" ^turn 1 runtime "active" "user" large)
           (append_message ^round "active-round" ^turn 2 runtime "active" "assistant" "# finish")
           (append_message ^round "active-round" ^turn 2 runtime "active" "user" "continue")
-          (compact_history runtime "active" "" 1000 (fn [request] "Earlier inspection."))
+          (compact_history ^policy policy runtime "active" "" 1000 (fn [request] "Earlier inspection."))
           (let active (provider_context runtime "active" ""))
           ($assert (== active/2/content "Keep the initiating task intact.") "active-round compaction summarized away the task")
           (append_message ^round "active-round" ^turn 3 runtime "active" "assistant" "# inspect again")
           (append_message ^round "active-round" ^turn 3 runtime "active" "user" large)
           (append_message ^round "active-round" ^turn 4 runtime "active" "assistant" "# finish again")
           (append_message ^round "active-round" ^turn 4 runtime "active" "user" "continue")
-          (compact_history runtime "active" "" 1000 (fn [request] "More inspection."))
+          (compact_history ^policy policy runtime "active" "" 1000 (fn [request] "More inspection."))
           (let recompacted (provider_context runtime "active" ""))
           ($assert (== recompacted/2/content "Keep the initiating task intact.") "repeated compaction lost the active task")
           ($println "compaction: threshold, whole-round summary, newest request and durable summary event")

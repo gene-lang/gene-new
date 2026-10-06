@@ -1,0 +1,100 @@
+(mod provider_anthropic)
+(import ^from "../plugin_api" [Plugin PluginHost])
+(import ^from "../kernel" [HarnessError])
+(import ^from "./provider_common" [nonempty configure_model http_json_attempt])
+
+(fn api_key [] (nonempty ($os/env? "ANTHROPIC_API_KEY")))
+
+(fn anthropic_text [response] : Str
+  (if_not (== response/status 200)
+    (let help (if (== response/status 401) "check ANTHROPIC_API_KEY"
+      (if (== response/status 429) "rate or usage limit reached; try again later"
+        "check model access, thinking support, and request limits")))
+    (fail (HarnessError ^message $"anthropic ${response/status}: ${help}")))
+  (let parsed (try ($json/parse response/body)
+    catch Any (fail (HarnessError ^message "anthropic returned invalid JSON"))))
+  (if_not (== ($head parsed) Map)
+    (fail (HarnessError ^message "anthropic returned an invalid message")))
+  (if (|| (!= parsed/type "message") (!= parsed/role "assistant"))
+    (fail (HarnessError ^message "anthropic returned an invalid assistant message")))
+  (if (== parsed/stop_reason "max_tokens")
+    (fail (HarnessError ^message
+      "anthropic reached the output token limit; incomplete output was not executed")))
+  (if (|| (== parsed/stop_reason "refusal")
+          (== parsed/stop_details/type "refusal"))
+    (fail (HarnessError ^message "anthropic refused the request")))
+  (if_not (== parsed/stop_reason "end_turn")
+    (fail (HarnessError ^message
+      "anthropic response did not finish its turn; incomplete output was not executed")))
+  (if_not (== ($head parsed/content) List)
+    (fail (HarnessError ^message "anthropic returned invalid content")))
+  (let parts [])
+  (for block in parsed/content
+    (if_yes (== block/type "text")
+      (if_not (== ($head block/text) Str)
+        (fail (HarnessError ^message "anthropic returned invalid text content")))
+      (parts .push block/text)))
+  (let text ($str/join parts ""))
+  (if (== ($str/trim text) "")
+    (fail (HarnessError ^message "anthropic returned no output text")))
+  text)
+
+(fn prepare_anthropic [call]
+  (let settings call/settings)
+  (let messages call/messages)
+  (let conversation
+    (messages .filter (fn [message] (!= message/role "system"))))
+  (let assistant_indices [])
+  (var index 0)
+  (for message in conversation
+    (if (== message/role "assistant")
+      (assistant_indices .push index))
+    (set index (+ index 1)))
+  (let cached ($into ($take assistant_indices/.reverse 2) []))
+  (let wire [])
+  (set index 0)
+  (for message in conversation
+    (let block {^type "text" ^text message/content})
+    (if (cached .contains? index)
+      (block .put "cache_control" {^type "ephemeral"}))
+    (wire .push {^role message/role ^content [block]})
+    (set index (+ index 1)))
+  (let body
+    {^model settings/model ^system messages/0/content
+     ^max_tokens (?? call/max_tokens 8192) ^messages wire})
+  (if (== settings/effort "none")
+    (body .put "thinking" {^type "disabled"})
+    (do
+      (body .put "thinking" {^type "adaptive"})
+      (body .put "output_config" {^effort settings/effort})))
+  {^body body ^timeout_ms settings/timeout_ms})
+
+(fn provider_anthropic [] : Plugin
+  (Plugin ^id "provider_anthropic" ^provides [["providers" "anthropic"]]
+    ^activate (fn [host]
+      (host .PluginHost:contribute "providers"
+        {^name "anthropic" ^doc "Use the Anthropic Messages API." ^auto 1
+         ^available (fn []
+           (let key (api_key))
+           (if ($absent? key)
+             (return "ANTHROPIC_API_KEY is unavailable"))
+           (if ($str/starts_with? key "sk-ant-oat")
+             "ANTHROPIC_API_KEY must be an API key, not a Claude Code token"
+             nil))
+         ^configure (fn [model, effort, timeout]
+           (configure_model ^minimal_is_low true model effort timeout
+             "claude-sonnet-5"))
+         ^prepare prepare_anthropic
+         ^send (fn [prepared]
+           (let key (api_key))
+           (if ($absent? key)
+             (fail (HarnessError ^message
+               "no Anthropic API key; set ANTHROPIC_API_KEY")))
+           (http_json_attempt "https://api.anthropic.com/v1/messages"
+             {^content-type "application/json" ^x-api-key key
+              ^anthropic-version "2023-06-01"}
+             prepared/body prepared/timeout_ms
+             (fn [response]
+               (let text (anthropic_text response))
+               (let parsed ($json/parse response/body))
+               {^text text ^usage parsed/usage})))}))))

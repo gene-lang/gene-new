@@ -1,7 +1,9 @@
 (import $test [describe it])
-(import ^from "./support" [isolated run_spec])
+(import ^from "./support" [isolated run_spec test_controller])
 (import ^from "../src/runtime/bootstrap" [open_runtime close_runtime])
 (import ^from "../src/profiles/profile" [Profile])
+(import ^from "../src/builtin/gene_reference" [gene_reference])
+(import ^from "../src/builtin/budget_advisory" [budget_advisory])
 (import ^from "../src/runtime/sessions"
   [create_session load_session unload_session require_record update_session])
 (import ^from "../src/runtime/round_controller"
@@ -17,7 +19,9 @@
       this_mod/.path
       "retains task and recent failed patch context and exposes per-round budgets"
       (fn [workspace]
-        (let runtime (open_runtime workspace "default" (Profile ^name "scripted" ^plugins [])))
+        (let runtime (open_runtime workspace "default"
+          (Profile ^name "scripted"
+            ^plugins [(gene_reference) (budget_advisory)])))
         (let config_path $"${runtime/state_root}/config.gene")
         (let config ($serde/read_data ($fs/read_text config_path)))
         (config .put "turn_limit" 3)
@@ -80,7 +84,7 @@ END
               (! active_metadata/attention)
               "continuation did not acknowledge the prior failure")
             "(Outcome ^done true ^reply \"finished\" ^attention true)"))
-        (let controller (new_round_controller runtime provider))
+        (let controller (test_controller runtime provider))
         (try
           (let receipt (submit_round controller "default" "first" 1 prompt))
           (controller/watchers
@@ -153,7 +157,7 @@ END
               body
               """END
 """)))
-        (let controller (new_round_controller runtime provider))
+        (let controller (test_controller runtime provider))
         (try
           (let receipt (submit_round controller "default" "attachment" 1 "write attachment"))
           (controller/watchers
@@ -201,7 +205,7 @@ END
 (Outcome ^questions [{^id "name" ^prompt "Name?"}])"""
                 """# Finish
 (Outcome ^done true ^reply "b done")"""))))
-        (let controller (new_round_controller runtime provider))
+        (let controller (test_controller runtime provider))
         (try
           (create_session ^id "a" runtime/sessions)
           (create_session ^id "b" runtime/sessions)

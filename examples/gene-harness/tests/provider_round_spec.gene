@@ -1,0 +1,37 @@
+(import $test [describe it])
+(import [isolated run_spec] ^from "./support")
+(import ^from "../src/runtime/bootstrap" [open_runtime close_runtime])
+(import ^from "../src/profiles/scripted" [scripted_profile])
+(import ^from "../src/runtime/round_controller"
+  [new_round_controller submit_round round_receipt close_round_controller])
+(import ^from "../src/storage/state" [events_for])
+
+(describe "Provider rows in the turn loop"
+  (it "runs a scripted round through prepare and send" []
+    (isolated this_mod/.path "runs a scripted round through prepare and send"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default"
+          (scripted_profile ["(Outcome ^done true ^reply \"from row\")"])))
+        (let controller (new_round_controller runtime))
+        (try
+          (let accepted (submit_round controller "default" "scripted" 1 "go"))
+          (controller/watchers .get; .get "default"; .join)
+          (let receipt (round_receipt controller "default" accepted/id))
+          ($assert (== receipt/state "done")
+            $"provider row did not complete the round: ${receipt/message}")
+          ($assert (== receipt/reply "from row")
+            "scripted row's response was not evaluated")
+          (var initial nil)
+          (for event in (events_for runtime/events "session" "default")
+            (if (&& (== event/type "turn/request")
+                    (== event/payload/initial true))
+              (set initial event/payload)))
+          ($assert ($str/contains? initial/full "[harness_budget]")
+            "request/prepare did not add the budget item")
+          ($assert (! ($str/contains? initial/settled "[harness_budget]"))
+            "budget item contaminated settled history")
+        ensure
+          (close_round_controller controller)
+          (close_runtime runtime))))))
+
+(fn main [args] : Int (run_spec args))

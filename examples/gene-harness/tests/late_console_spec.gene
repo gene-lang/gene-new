@@ -1,14 +1,15 @@
 (import $test [describe it])
-(import [isolated run_spec] ^from "./support")
+(import [isolated run_spec test_service] ^from "./support")
 (import ^from "../src/web/session_service"
   [open_session_service close_session_service create_session submit])
 (import ^from "../src/runtime/sessions" [unload_session])
 (import ^from "../src/storage/state" [events_for])
+(import ^from "../src/kernel" [contribute])
 (describe "Harness live delivery"
   (it "routes detached console after turn closure and session unload" []
     (isolated this_mod/.path "routes detached console after turn closure and session unload"
       (fn [home]
-        (let service (open_session_service ^workspace home ^provider (fn [request]
+        (let service (test_service ^workspace home ^provider (fn [request]
           """(let child (spawn ^lane root (do
 (wait_release)
 (stage "before console")
@@ -21,9 +22,15 @@ child/.detach
         (let child ($cell nil))
         (let release ($cell false))
         (let stages ($cell []))
-        (service/runtime/functions .put "save_child" (fn [task] (child .set task)))
-        (service/runtime/functions .put "stage" (fn [text] (stages/.get .push text)))
-        (service/runtime/functions .put "wait_release" (fn [] (while (! release/.get) ($sleep 1))))
+        (contribute service/runtime/h "core" "functions"
+          {^name "save_child" ^doc "Save a detached task."
+           ^fn (fn [task] (child .set task))})
+        (contribute service/runtime/h "core" "functions"
+          {^name "stage" ^doc "Record a stage."
+           ^fn (fn [text] (stages/.get .push text))})
+        (contribute service/runtime/h "core" "functions"
+          {^name "wait_release" ^doc "Wait for test release."
+           ^fn (fn [] (while (! release/.get) ($sleep 1)))})
         (try
           (let first (create_session service))
           (submit service first/id "one" 1 "go")

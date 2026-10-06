@@ -17,6 +17,12 @@
 (fn validate_core_state_event [payload]
   (require_event_fields payload ["type" "key" "state"] "core_state"))
 
+(fn validate_model_request_event [payload]
+  (require_event_fields payload ["type" "call" "turn" "round" "purpose" "provider" "prepared"] "model_request"))
+
+(fn validate_model_result_event [payload]
+  (require_event_fields payload ["type" "call" "attempt" "outcome" "final" "timing_ms"] "model_result"))
+
 (fn validate_plugin_state_event [payload]
   (require_event_fields payload ["type" "plugin" "state_version" "state"] "plugin_state"))
 
@@ -52,6 +58,8 @@
     #{^name "round/state" ^version 1 ^ignorable false ^origin "core" ^owner "core" ^schema validate_core_state_event}
     #{^name "question/asked" ^version 1 ^ignorable false ^origin "core" ^owner "core" ^schema validate_core_state_event}
     #{^name "question/answered" ^version 1 ^ignorable false ^origin "core" ^owner "core" ^schema validate_core_state_event}
+    #{^name "model/request" ^version 1 ^ignorable false ^origin "core" ^owner "core" ^schema validate_model_request_event}
+    #{^name "model/result" ^version 1 ^ignorable false ^origin "core" ^owner "core" ^schema validate_model_result_event}
     #{^name "turn/response" ^version 1 ^ignorable false ^origin "core" ^owner "core" ^schema validate_turn_response_event}
     #{^name "turn/patch" ^version 1 ^ignorable false ^origin "core" ^owner "core" ^schema validate_turn_patch_event}
     #{^name "turn/request" ^version 1 ^ignorable false ^origin "core" ^owner "core" ^schema validate_turn_request_event}

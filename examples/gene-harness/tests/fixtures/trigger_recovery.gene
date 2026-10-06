@@ -1,4 +1,5 @@
 (import ^from "../../src/runtime/bootstrap" [open_runtime close_runtime])
+(import [test_controller] ^from "../support")
 (import ^from "../../src/profiles/baseline" [baseline_profile])
 (import ^from "../../src/runtime/round_controller" [new_round_controller close_round_controller])
 (import ^from "../../src/runtime/triggers"
@@ -9,7 +10,7 @@
   ($sleep 60000))
 (fn child [root point]
   (let runtime (open_runtime root "default" (baseline_profile)))
-  (let controller (new_round_controller runtime (fn [request]
+  (let controller (test_controller runtime (fn [request]
     ($fs/write_text "side-effect.txt" "ran")
     (if (== point "running") (crash))
     "(Outcome ^done true ^reply \"done\")")))

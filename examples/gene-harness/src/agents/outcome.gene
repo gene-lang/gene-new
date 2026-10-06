@@ -10,6 +10,8 @@
 (fn new_turn_items [turn : Int, ^attachments attachments = {}, ^recall recall = nil, ^console console = nil]
   {
     ^turn turn
+    ^queue_token ($crypto/random_hex 16)
+    ^composition_queued ($cell false)
     ^state ($cell "open")
     ^items ($cell [])
     ^labels ($cell {})
@@ -87,6 +89,9 @@
         (fail (OutcomeError ^message "done Outcome requires a non-empty reply")))
       (if (|| (!= outcome/prompt void) (!= outcome/questions void))
         (fail (OutcomeError ^message "done Outcome rejects prompt and questions")))
+      (if turn/composition_queued/.get
+        (return {^kind "continue" ^outcome (Outcome ^reply outcome/reply)
+          ^questions nil ^rejected_done true}))
       (if (> ($size turn/items/.get) 0)
         (then
           (if_not ($absent? turn/console)

@@ -2250,7 +2250,7 @@
     (cordis_failure CompositionError "descriptor_factory must be a host callable"))
   (if (&& (! (absent? options/retirement)) (! (callable? options/retirement)))
     (cordis_failure CompositionError "retirement must be a host callable"))
-  (LoaderOptions ^plugin_root options/plugin_root ^shared ($freeze (copy_list options/shared)) ^max_namespaces ($freeze (copy_list options/max_namespaces)) ^default_limits limits ^reload_policy options/reload_policy ^publication options/publication ^allow_pending options/allow_pending ^retirement options/retirement ^descriptor_factory options/descriptor_factory))
+  (LoaderOptions ^plugin_root options/plugin_root ^shared ($freeze (copy_list options/shared)) ^max_namespaces ($freeze (copy_list options/max_namespaces)) ^default_limits limits ^reload_policy options/reload_policy ^publication options/publication ^allow_pending options/allow_pending ^allow_failed options/allow_failed ^retirement options/retirement ^descriptor_factory options/descriptor_factory))
 
 (fn runtime_loader [handle : Runtime, options] ^^private
   (var runtime (require_runtime_open (runtime_record handle)))
@@ -2777,10 +2777,14 @@
     (order .push row/id))
   {^entries entries ^order order ^prepared_generations prepared_generations})
 
-(fn require_candidate_active [candidate, allow_pending = false] ^^private
+(fn require_candidate_active [candidate, allow_pending = false, allow_failed = false] ^^private
   (runtime_await_settled (Runtime ^token candidate/token))
   (for instance in candidate/instances/.get
-    (if_not (|| (== instance/state/.get InstanceState/active) (&& (== allow_pending true) (== instance/state/.get InstanceState/pending)) (&& (== instance/state/.get InstanceState/disposed) (! (absent? instance/parent_context/owner))))
+    (if_not (|| (== instance/state/.get InstanceState/active)
+                (&& (== allow_pending true) (== instance/state/.get InstanceState/pending))
+                (&& (== allow_failed true) (== instance/state/.get InstanceState/failed))
+                (&& (== instance/state/.get InstanceState/disposed)
+                    (! (absent? instance/parent_context/owner))))
       (var epoch (compute_instance_epoch instance))
       (plugin_error
         CompositionError
@@ -3178,7 +3182,8 @@
     (staged .put "direct_revisions"
       (build_direct_candidate_revisions candidate direct_roots))
     (staged .put "direct_replaced" replaced_direct)
-    (require_candidate_active candidate loader/options/allow_pending)
+    (require_candidate_active candidate loader/options/allow_pending
+      loader/options/allow_failed)
     transaction/.commit
   catch Any
     (var failure $err)

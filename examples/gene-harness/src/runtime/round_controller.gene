@@ -1,5 +1,6 @@
 (mod round_controller)
-(import ^from "../agents/turn_loop" [run_round transcript])
+(import ^from "../agents/turn_loop" [run_round transcript finish_turn])
+(import ^from "../agents/provider_selection" [readiness_report])
 (import ^from "../agents/harness_turn" [answer_validators])
 (import ^from "./composition" [acquire_snapshot release_snapshot])
 (import ^from "../agents/history"
@@ -12,20 +13,21 @@
     release_body_use
     with_body_use])
 (import ^from "../storage/state"
-  [core_state record_core_state flush_event_store copy_data events_for append_core_event])
+  [core_state record_core_state flush_event_store copy_data append_core_event])
 (import ^from "./sessions"
   [load_session require_record update_session session_busy? with_session_gate])
 (import ^from "./questions" [answer_questions])
 (import ^from "./commands" [take_command_attachments])
 (import ^from "./workspace_lock" [close_workspace_lock])
+(import ^from "../kernel" [RoundChanged publish])
 
 (type RoundError ^props {^code Str ^message Str} ^impl [Error])
 (impl Error for RoundError)
-(type RoundController ^props {^runtime Any ^provider Any ^active Any ^watchers Any ^completions Any ^on_change Any?})
+(type RoundController ^props {^runtime Any ^active Any ^watchers Any ^completions Any})
 
-(fn new_round_controller [runtime, provider, ^on_change on_change = nil]
+(fn new_round_controller [runtime]
   (let controller
-    (RoundController ^runtime runtime ^provider provider ^active ($cell {}) ^watchers ($cell {}) ^completions ($cell {}) ^on_change on_change))
+    (RoundController ^runtime runtime ^active ($cell {}) ^watchers ($cell {}) ^completions ($cell {})))
   (if_not ($absent? runtime/commands)
     (set runtime/commands/cancel
       (fn [session]
@@ -55,11 +57,7 @@
   nil)
 
 (fn changed [controller : RoundController, session : Str, receipt]
-  (if_not ($absent? controller/on_change)
-    (try
-      (controller/on_change session receipt)
-    catch Any
-      ($println "round notification failed: " $err/message)))
+  (publish controller/runtime/h (RoundChanged ^session session ^receipt receipt))
   nil)
 
 (fn save_round [controller : RoundController, session : Str, receipt]
@@ -133,22 +131,18 @@
     (saved .put "message" "Workspace stopped.")
     (saved .put "last_turn" ((Path "turns") (require_record controller/runtime/sessions session))))
   (if_yes (&& (["cancelled" "failed"] .contains? saved/state) (! ($absent? saved/last_turn)))
-    (var ended false)
-    (for event in (events_for controller/runtime/events "session" session)
-      (if (&& (== event/type "turn/end") (== event/payload/turn saved/last_turn)) (set ended true)))
-    (if_not ended
-      (transcript
-        controller/runtime
-        session
-        {
-          ^type "turn/end"
-          ^turn saved/last_turn
-          ^round saved/id
-          ^text (?? saved/message "Response cancelled.")
-          ^reason (if (== saved/state "cancelled")
-                    "cancelled"
-                    "error")
-          ^synthetic false})))
+    (finish_turn
+      controller/runtime
+      session
+      {
+        ^type "turn/end"
+        ^turn saved/last_turn
+        ^round saved/id
+        ^text (?? saved/message "Response cancelled.")
+        ^reason (if (== saved/state "cancelled")
+                  "cancelled"
+                  "error")
+        ^synthetic false}))
   (if_not (== saved/state "waiting") (saved .put "finished_at" ($to_str ($now))))
   (if (&& (== saved/state "waiting") (!= saved/initiator "user"))
     (saved .put "remaining_ms" ($math/max 0 (- saved/deadline_ms ($os/wall_ms)))))
@@ -170,7 +164,7 @@
   (let completion ($cell false))
   (controller/completions/.get .put session completion)
   (let task
-    (spawn ^lane root (run_round ^resume resume controller/runtime session receipt controller/provider)))
+    (spawn ^lane root (run_round ^resume resume controller/runtime session receipt)))
   (controller/active
     .get
     ; .put session task)
@@ -218,6 +212,20 @@
     (fail (RoundError ^code "busy" ^message "this session already has a round")))
   (if (!= sequence state/next_seq)
     (fail (RoundError ^code "submission_conflict" ^message "unexpected submission sequence")))
+  (let admission_lease (acquire_snapshot controller/runtime/h/snapshots))
+  (let ready_message
+    (try
+      ($runtime/with_context
+        {^composition controller/runtime/h/snapshots
+         ^snapshot admission_lease/snapshot}
+        (fn []
+          (let settings ($serde/read_data
+            ($fs/read_text $"${controller/runtime/state_root}/config.gene")))
+          (readiness_report controller/runtime settings)))
+    ensure
+      (release_snapshot controller/runtime/h/snapshots admission_lease)))
+  (if_not ($absent? ready_message)
+    (fail (RoundError ^code "not_ready" ^message ready_message)))
   (let metadata (require_record controller/runtime/sessions session))
   (let changes {})
   (if (== initiator "user") (changes .put "attention" false))

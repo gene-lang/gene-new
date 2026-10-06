@@ -1,5 +1,5 @@
 (import $test [describe it])
-(import [isolated run_spec] ^from "./support")
+(import [isolated run_spec test_controller] ^from "./support")
 (import ^from "../src/runtime/bootstrap" [open_runtime close_runtime])
 (import ^from "../src/profiles/baseline" [baseline_profile])
 (import ^from "../src/runtime/round_controller" [new_round_controller close_round_controller])
@@ -17,7 +17,7 @@
         (config .put "trigger_occurrence_keep" 3)
         (config .put "body_gc_interval_ms" 1)
         ($fs/write_text $"${runtime/state_root}/config.gene" ($serde/write_data config))
-        (let controller (new_round_controller runtime (fn [request] "")))
+        (let controller (test_controller runtime (fn [request] "")))
         (let manager (open_trigger_manager runtime controller ^start false ^boot false ^now 0))
         (try
           (let definition (create_trigger manager {^id "bounded" ^kind "heartbeat" ^every_ms 1000 ^request "work" ^enabled false} ^now 0))
@@ -48,7 +48,7 @@
           ($assert (== state/messages/0/content "settled") "old full request bodies were not settled in storage")
         ensure (close_trigger_manager manager) (close_round_controller controller) (close_runtime runtime))
         (let reopened (open_runtime root "default" (baseline_profile)))
-        (let again (new_round_controller reopened (fn [request] "")))
+        (let again (test_controller reopened (fn [request] "")))
         (let restored (open_trigger_manager reopened again ^start false ^boot false))
         (try
           ($assert (== ($size (list_occurrences restored)) 3) "pruned occurrences returned after restart")

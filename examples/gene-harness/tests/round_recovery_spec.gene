@@ -1,5 +1,5 @@
 (import $test [describe it])
-(import [isolated run_spec] ^from "./support")
+(import [isolated run_spec test_controller] ^from "./support")
 (import ^from "../src/runtime/bootstrap" [open_runtime close_runtime])
 (import ^from "../src/profiles/baseline" [baseline_profile])
 (import ^from "../src/runtime/sessions" [create_session load_session])
@@ -12,7 +12,7 @@
         (let runtime (open_runtime workspace "default" (baseline_profile)))
         (let root runtime/root)
         (create_session runtime/sessions ^id "recover")
-        (let controller (new_round_controller runtime (fn [request] "")))
+        (let controller (test_controller runtime (fn [request] "")))
         (save_round controller "recover" {^id "r1" ^request_id "u1" ^submission_seq 1 ^state "running"
           ^prompt "test" ^digest "test" ^last_turn 1})
         (append_core_event runtime/events "session" "recover" {^type "turn/start" ^turn 1 ^round "r1"})
@@ -23,7 +23,7 @@
         (close_runtime runtime)
         (let reopened (open_runtime root "default" (baseline_profile)))
         (try
-          (let fresh (new_round_controller reopened (fn [request] "")))
+          (let fresh (test_controller reopened (fn [request] "")))
           (let receipt (round_receipt fresh "recover" "r1"))
           ($assert (== receipt/state "interrupted") "historical receipt was not repaired")
           (let restored (load_session reopened/sessions "recover"))

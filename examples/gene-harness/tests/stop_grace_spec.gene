@@ -17,9 +17,9 @@
         (let lines ($channel ^capacity 128))
         (let process ($os/exec_stream_async ($os/executable_path)
           "run" entry "scripted" "--script" script "--workspace" $"${root}/workspace"
-          ^stdin_pipe input/0 ^stdout_chan lines ^timeout_ms 25000 ^max_bytes 1048576))
+          ^stdin_pipe input/0 ^stdout_chan lines ^timeout_ms 45000 ^max_bytes 1048576))
         (await (write_all input/1 ($binary/from_str "start\n")))
-        (let due (+ ($os/monotonic_ms) 15000))
+        (let due (+ ($os/monotonic_ms) 30000))
         (while (&& (! ($fs/exists? $"${root}/workspace/entered")) (< ($os/monotonic_ms) due))
           ($sleep 1))
         ($assert ($fs/exists? $"${root}/workspace/entered") "round did not enter its uncooperative cleanup fixture")

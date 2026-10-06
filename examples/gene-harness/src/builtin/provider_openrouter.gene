@@ -1,0 +1,50 @@
+(mod provider_openrouter)
+(import ^from "../plugin_api" [Plugin PluginHost])
+(import ^from "../kernel" [HarnessError])
+(import ^from "./provider_common" [nonempty configure_model http_json_attempt])
+
+(fn api_key []
+  (?? (nonempty ($os/env? "OPENROUTER_API_KEY"))
+      (nonempty ($os/env? "OPENROUTER_KEY"))))
+
+(fn openrouter_text [response] : Str
+  (if_not (== response/status 200)
+    (fail (HarnessError ^message
+      $"openrouter ${response/status}: provider request failed")))
+  (let parsed ($json/parse response/body))
+  (let content parsed/choices/0/message/content)
+  (if_not (== ($head content) Str)
+    (fail (HarnessError ^message
+      "provider returned invalid text content")))
+  content)
+
+(fn provider_openrouter [] : Plugin
+  (Plugin ^id "provider_openrouter" ^provides [["providers" "openrouter"]]
+    ^activate (fn [host]
+      (host .PluginHost:contribute "providers"
+        {^name "openrouter" ^doc "Use OpenRouter chat completions." ^auto 0
+         ^available (fn []
+           (if ($absent? (api_key))
+             "OPENROUTER_API_KEY is unavailable" nil))
+         ^configure (fn [model, effort, timeout]
+           (configure_model model effort timeout
+             (?? (nonempty ($os/env? "OPENROUTER_MODEL")) "openai/gpt-6-sol")))
+         ^prepare (fn [call]
+           (let settings call/settings)
+           {^body {^model settings/model ^messages call/messages
+                   ^max_tokens (?? call/max_tokens 3000)
+                   ^reasoning {^effort settings/effort}}
+            ^timeout_ms settings/timeout_ms})
+         ^send (fn [prepared]
+           (let key (api_key))
+           (if ($absent? key)
+             (fail (HarnessError ^message
+               "no OpenRouter API key; set OPENROUTER_API_KEY (or OPENROUTER_KEY)")))
+           (http_json_attempt "https://openrouter.ai/api/v1/chat/completions"
+             {^content-type "application/json"
+              ^authorization $"Bearer ${key}"}
+             prepared/body prepared/timeout_ms
+             (fn [response]
+               (let text (openrouter_text response))
+               (let parsed ($json/parse response/body))
+               {^text text ^usage parsed/usage})))}))))

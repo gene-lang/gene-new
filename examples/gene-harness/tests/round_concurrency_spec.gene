@@ -1,5 +1,5 @@
 (import $test [describe it])
-(import [isolated run_spec] ^from "./support")
+(import [isolated run_spec test_controller] ^from "./support")
 (import ^from "../src/runtime/bootstrap" [open_runtime close_runtime])
 (import ^from "../src/profiles/baseline" [baseline_profile])
 (import ^from "../src/runtime/sessions" [create_session])
@@ -13,7 +13,7 @@
         (let runtime (open_runtime workspace "default" (baseline_profile)))
         (let entered ($cell false))
         (let controller
-          (new_round_controller
+          (test_controller
             runtime
             (fn [request]
               (if_yes (== request/session "slow")

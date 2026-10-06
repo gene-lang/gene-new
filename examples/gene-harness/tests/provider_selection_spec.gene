@@ -1,0 +1,116 @@
+(import $test [describe it])
+(import [isolated run_spec] ^from "./support")
+(import ^from "../src/kernel" [new_harness shutdown_harness contribute])
+(import ^from "../src/profiles/profile" [Profile])
+(import ^from "../src/profiles/scripted" [scripted_profile])
+(import ^from "../src/profiles/offline" [offline_profile])
+(import ^from "../src/runtime/bootstrap" [open_runtime close_runtime])
+(import ^from "../src/agents/provider_selection" [provider_choice select_provider complete_messages])
+
+(fn provider_row [name : Str, rank : Int, reason]
+  {^name name ^doc "Synthetic provider." ^auto rank
+   ^available (fn [] reason)
+   ^configure (fn [model, effort, timeout]
+     {^model (?? model "default-model") ^effort (?? effort "medium")
+      ^timeout_ms timeout})
+   ^prepare (fn [call] call)
+   ^send (fn [prepared] {^text "done"})})
+
+(describe "Provider selection"
+  (it "uses profile, environment, configuration and ranked availability" []
+    (isolated this_mod/.path "uses profile, environment, configuration and ranked availability"
+      (fn [workspace]
+        (let h (new_harness))
+        (try
+          (contribute h "core" "providers" (provider_row "alpha" 0 "missing credential"))
+          (contribute h "core" "providers" (provider_row "beta" 1 nil))
+          (contribute h "core" "providers" (provider_row "gamma" 2 nil))
+          (let runtime {^h h ^profile (Profile ^name "test" ^plugins [])})
+          (let auto (provider_choice ^environment {} runtime {^provider ""}))
+          ($assert (== auto/name "beta")
+            "automatic selection ignored availability and rank")
+          (let unavailable
+            (provider_choice ^environment {} runtime {^provider "alpha"}))
+          ($assert (== unavailable/reason "missing credential")
+            "an explicit unavailable provider silently fell back")
+          (let from_env
+            (provider_choice ^environment {^GENE_HARNESS_PROVIDER "gamma"}
+              runtime {^provider "beta"}))
+          ($assert (== from_env/name "gamma")
+            "configuration overrode the provider environment")
+          (let pinned
+            {^h h ^profile (Profile ^name "scripted" ^plugins []
+              ^provider "beta")})
+          (let chosen
+            (select_provider ^environment
+              {^GENE_HARNESS_PROVIDER "gamma"
+               ^GENE_HARNESS_MODEL "env-model"
+               ^GENE_HARNESS_THINKING_EFFORT "high"}
+              pinned {^provider "alpha" ^model "config-model"}))
+          ($assert (== chosen/name "beta") "profile pin was ignored")
+          ($assert (== chosen/settings/model "env-model")
+            "effective model did not use the environment")
+          ($assert (== chosen/settings/effort "high")
+            "effective effort did not use the environment")
+        ensure
+          (shutdown_harness h)))))
+
+  (it "pins scripted and offline provider plugins in their profiles" []
+    (isolated this_mod/.path "pins scripted and offline provider plugins in their profiles"
+      (fn [workspace]
+        (let scripted (open_runtime workspace "default"
+          (scripted_profile ["first" "second"])))
+        (try
+          (let selected (select_provider ^environment
+            {^GENE_HARNESS_PROVIDER "other"}
+            scripted {^provider "other"}))
+          ($assert (== selected/name "scripted")
+            "scripted profile did not pin its provider")
+          (let prepared (selected/row/prepare {^purpose "turn" ^messages []
+            ^settings selected/settings}))
+          (let first (selected/row/send prepared))
+          ($assert (== first/text "first")
+            "scripted provider did not return its first response")
+          (let second (selected/row/send prepared))
+          ($assert (== second/text "second")
+            "scripted provider lost its response position")
+        ensure
+          (close_runtime scripted))
+        (let offline (open_runtime workspace "default" (offline_profile)))
+        (try
+          (let offline_selected (select_provider ^environment {} offline {}))
+          ($assert (== offline_selected/name "offline")
+            "offline profile did not pin its provider")
+          (let offline_prepared (offline_selected/row/prepare
+            {^purpose "turn" ^messages [] ^settings offline_selected/settings}))
+          (let offline_result (offline_selected/row/send offline_prepared))
+          ($assert ($str/contains? offline_result/text "Outcome")
+            "offline provider did not return Gene code")
+        ensure
+          (close_runtime offline)))))
+
+  (it "retries one timeout in the loop" []
+    (isolated this_mod/.path "retries one timeout in the loop"
+      (fn [workspace]
+        (let h (new_harness))
+        (let attempts ($cell 0))
+        (try
+          (contribute h "core" "providers"
+            {^name "retry" ^doc "Synthetic retry provider."
+             ^configure (fn [model, effort, timeout]
+               {^model "retry" ^effort "none" ^timeout_ms timeout})
+             ^prepare (fn [call] call/messages)
+             ^send (fn [prepared]
+               (let number (attempts .swap (+ attempts/.get 1)))
+               (if (== number 0) {^timeout true} {^text "recovered"}))})
+          (let runtime {^h h ^profile (Profile ^name "test" ^plugins []
+            ^provider "retry")})
+          (let text (complete_messages runtime
+            {^config {} ^messages [{^role "system" ^content "rules"}
+                                    {^role "user" ^content "go"}]}))
+          ($assert (== text "recovered") "retry did not return the second result")
+          ($assert (== attempts/.get 2) "timeout used more than one retry")
+        ensure
+          (shutdown_harness h))))))
+
+(fn main [args] : Int (run_spec args))

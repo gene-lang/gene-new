@@ -50,24 +50,37 @@ using Codex OAuth, including continuation, verification and recovery.
 | `triggers delete ID` | Disable and delete a trigger. |
 | `triggers occurrences [ID]` | List occurrence states. |
 | `doctor` | Report composition and plugin problems without activating plugins. |
-| `enable ID`, `disable ID` | Re-enable or disable a stored plugin entry. |
+| `enable ID`, `disable ID` | Enable or disable a stored or built-in plugin id. |
+| `restore ID` | Remove a stored override and restore the profile's built-in plugin. |
 
 `--workspace DIR` selects the workspace, `--session ID` selects the CLI session
-(default `default`), and `--script FILE` replaces the provider with canned
-responses. `doctor`, `enable` and `disable` are recovery commands: they open
-the workspace without activating plugins, so a broken plugin cannot block them.
+(default `default`), and `--script FILE` selects a scripted profile whose
+provider plugin owns the canned responses. `doctor`, `enable`, `disable` and
+`restore` are recovery commands: they open the workspace without activating
+plugins, so a broken plugin cannot block them.
 
 ## Providers and workspace settings
 
 Settings live in `.gene-harness/config.gene`, using Gene's inert serde data
-representation. Non-empty GENE_HARNESS_PROVIDER, GENE_HARNESS_MODEL and
-GENE_HARNESS_THINKING_EFFORT environment values override the workspace's
-provider, model and effort.
+representation. A profile may pin a provider. Otherwise a non-empty
+GENE_HARNESS_PROVIDER selects one, then `config.gene`'s `provider`, then the
+available provider row with the lowest automatic rank: OpenRouter,
+Anthropic, Codex. An explicit missing or unavailable provider makes the
+profile `not_ready`; it does not silently fall back. Model and effort use
+their environment values, then `config.gene`, then the selected row's default.
 
-Supported providers are codex, anthropic, claude and openrouter. When unset,
-the environment selects OpenRouter when its key is available, Anthropic when
-its key is available, or Codex otherwise. An unset model uses that provider's
-default.
+Each provider is a plugin row with `available`, `configure`, `prepare` and
+`send` callbacks. `prepare` returns the complete model-visible input without
+credentials. `send` adds authentication and makes one transport attempt; the
+loop retries one reported HTTP timeout. The scripted and offline profiles
+pin their own model-free provider plugins.
+
+Every provider invocation, including a compaction summary, writes a
+`model/request` with the exact prepared input before transport and a
+`model/result` for each attempt. Timeout, failure and unknown outcomes are
+recorded. Content-addressed blobs share unchanged history across requests;
+transport credentials are excluded. A successful main result is linked from
+the turn transcript.
 
 | Provider | Host credentials |
 | --- | --- |
@@ -84,9 +97,9 @@ CRLF delimiters are accepted while attachment bodies retain their line endings.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `provider`, `model` | `""` | Empty selects from the environment, as described above |
+| `provider`, `model` | `""` | Empty uses the profile/environment/configuration/automatic selection described above |
 | `effort` | `"medium"` | none, minimal, low, medium, high, xhigh or max |
-| `provider_timeout_ms` | `600000` | HTTP provider timeout per attempt; one retry on timeout |
+| `provider_timeout_ms` | `600000` | Timeout per provider attempt; one retry when `send` reports a timeout |
 | `response_budget` | `{^timeout_ms 600000 ^max_memory_mb 1024}` | Runaway limit for each response evaluation and command |
 | `turn_limit` | `24` | Turns per user round; reaching it fails the round |
 | `trigger_turn_limit` | `12` | Turns per trigger round |
@@ -264,22 +277,33 @@ one from an attachment:
 END
 ```
 
-The next turn can call `(count_lines "notes.txt")`. Registration and
-contributions queued during a turn become visible at its boundary, and the
-next turn binds the new functions. The instructions list every function with
-its signature and doc. `plugin_states`, `inspect_plugin`, `enable_plugin` and
-`disable_plugin` manage plugins from response code; the CLI's `doctor`,
-`enable` and `disable` handle recovery. Stored interface-v1 plugins are
-quarantined with a re-register message.
+The next turn can call `(count_lines "notes.txt")`. `register_plugin` returns
+`queued` during this turn. The boundary result reports the committed revision
+and whether activation was active, pending or quarantined; `queued` alone is
+not a success receipt. A turn that queues a plugin change continues to show
+that result before it can finish. The plugin belongs to the workspace and
+loads after restart, so other sessions can use it. `plugin_states`,
+`inspect_plugin`, `enable_plugin`, `disable_plugin` and `restore_plugin` are
+contributed by `plugin_admin`; the CLI's `doctor`, `enable`, `disable` and
+`restore` handle recovery. Stored interface-v1 plugins are quarantined with
+a re-register message.
 
 Plugins import the shared `src/plugin_api.gene` contract and activate through
 an ordinary function receiving PluginHost. They can contribute functions,
-commands, prompt sections, trigger definitions and web components. Web plugins
+commands, prompt sections, docs chapters, model providers, trigger definitions
+and web components. Web plugins
 add panels to named slots or replace the welcome/status summary through
 [the web component API](docs/web-components.md). Command handlers receive
 CommandContext and return CommandResult. Generations receive the full standard
 library namespace grants. A turn leases one immutable composition; replacing
 a plugin waits for old leases before disposal.
+
+Plugins can shape request items through the ordered `request/prepare` hook or
+choose compaction thresholds through `history/compact`. The loop records the
+resulting protocol facts itself. A plugin observes appended facts by
+subscribing to `DurableRecord` and checking its `name`; subscriptions unwind
+with the plugin. See [the plugin chapter](docs/plugins.md) for row shapes,
+hook behavior and restart recovery.
 
 ```gene
 (create_trigger

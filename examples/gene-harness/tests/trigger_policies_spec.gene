@@ -1,5 +1,5 @@
 (import $test [describe it])
-(import [isolated run_spec] ^from "./support")
+(import [isolated run_spec test_controller] ^from "./support")
 (import ^from "../src/runtime/bootstrap" [open_runtime close_runtime])
 (import ^from "../src/profiles/baseline" [baseline_profile])
 (import ^from "../src/runtime/round_controller" [new_round_controller close_round_controller])
@@ -17,7 +17,7 @@
         (config .put "trigger_timeout_ms" 10000)
         ($fs/write_text_atomic $"${runtime/state_root}/config.gene" ($serde/write_data config))
         (let release ($cell false))
-        (let controller (new_round_controller runtime (fn [request]
+        (let controller (test_controller runtime (fn [request]
           (while (! release/.get) ($sleep 1))
           "(Outcome ^done true ^reply \"nothing to do\")")))
         (let manager (open_trigger_manager runtime controller ^start false ^now 1000))

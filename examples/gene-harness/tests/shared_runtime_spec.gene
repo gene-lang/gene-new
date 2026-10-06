@@ -1,5 +1,5 @@
 (import $test [describe it])
-(import [isolated run_spec] ^from "./support")
+(import [isolated run_spec test_service] ^from "./support")
 (import [open_session_service close_session_service create_session submit receipt] ^from "../src/web/session_service")
 (import [load_session unload_session list_sessions] ^from "../src/runtime/sessions")
 (import [events_for] ^from "../src/storage/state")
@@ -7,7 +7,7 @@
   (it "runs concurrent isolated sessions and lists the index lazily" []
     (isolated this_mod/.path "runs concurrent isolated sessions and lists the index lazily"
       (fn [workspace]
-        (let service (open_session_service ^workspace workspace
+        (let service (test_service ^workspace workspace
           ^provider (fn [request] $"(Outcome ^done true ^reply \"${request/session}\")")))
         (try
           (let runtime service/runtime)

@@ -1,10 +1,10 @@
 (mod bootstrap)
 
 (import ^from "../kernel" [new_harness module_dir shutdown_harness])
-(import ^from "../profiles/profile" [boot])
+(import ^from "../profiles/profile" [profile_admissions])
 (import ^from "../storage/state" [open_event_store close_event_store flush_event_store])
 (import ^from "../storage/workspace"
-  [open_workspace close_workspace prepare_workspace activate_workspace_plan])
+  [open_workspace close_workspace prepare_workspace activate_workspace_plan set_profile_plugins])
 (import ^from "../storage/workspace" [persist_registry_generation record_registry_generation])
 (import ^from "./workspace_lock" ^^export
   [acquire_workspace_lock close_workspace_lock WorkspaceInUse])
@@ -12,8 +12,11 @@
 (import ^from "./commands" [new_command_manager close_command_manager])
 (import ^from "./triggers" [close_trigger_manager])
 (import ^from "../agents/history" [collect_unreferenced_bodies])
+(import ^from "../agents/instructions" [install_core_prompt_rows])
+(import ^from "../agents/provider_selection" [readiness_report])
+(import ^from "../plugin_api" [ExecutionLimits response_execution_limits])
 
-(type HarnessRuntime ^props {^root Str ^state_root Str ^h Any ^workspace Any ^events Any ^sessions Any ^commands Any ^triggers Any ^functions Any ^body_users Any ^body_collecting Any ^body_gc_pending Any ^stopping Any ^exit_code Any ^stdin_task Any ^ownership Any ^owns_ownership Bool ^owns_events Bool ^closed Any ^on_event Any? ^restarted Bool ^shutdown_watchdog Any})
+(type HarnessRuntime ^props {^root Str ^state_root Str ^h Any ^workspace Any ^profile Any ^events Any ^sessions Any ^commands Any ^triggers Any ^body_users Any ^body_collecting Any ^body_gc_pending Any ^stopping Any ^exit_code Any ^stdin_task Any ^ownership Any ^owns_ownership Bool ^owns_events Bool ^closed Any ^restarted Bool ^shutdown_watchdog Any})
 (type RuntimeCleanupError ^props {^message Str} ^impl [Error])
 (impl Error for RuntimeCleanupError)
 
@@ -69,7 +72,8 @@
         watchdog/.join)))
   (if_yes (&& (! ($absent? outcome)) (== outcome/status "recovery_required"))
     (fail
-      (RuntimeCleanupError ^message "Composition cleanup requires recovery. Inspect the Harness output.")))
+      (RuntimeCleanupError ^message
+        $"Composition cleanup requires recovery: ${outcome/errors}")))
   nil)
 
 (fn open_runtime [root : Str, session : Str, profile, ^events supplied_events = nil, ^ownership supplied_ownership = nil, ^entry entry : Str = "", ^event_scope event_scope : Str = "session", ^activate activate : Bool = true] : HarnessRuntime
@@ -87,6 +91,13 @@
   (let owned ($absent? supplied_events))
   (try
     (let state_root (prepare_layout canonical))
+    (let settings ($serde/read_data ($fs/read_text $"${state_root}/config.gene")))
+    (let response_budget (?? settings/response_budget {}))
+    (let base_limits (?? profile/limits (response_execution_limits)))
+    (let profile_limits
+      (ExecutionLimits ^max_steps base_limits/max_steps
+        ^max_memory_mb (?? response_budget/max_memory_mb base_limits/max_memory_mb)
+        ^timeout_ms (?? response_budget/timeout_ms base_limits/timeout_ms)))
     (let restarted ($fs/exists? $"${state_root}/restart_notice"))
     (if restarted ($fs/remove $"${state_root}/restart_notice"))
     ($os/set_cwd canonical)
@@ -94,18 +105,23 @@
     (set workspace
       (open_workspace ^blob_root $"${state_root}/modules" ^state_root state_root ^workspace_root canonical ^generated_dir $"${state_root}/modules/source"
         $"${state_root}/composition"))
+    (set_profile_plugins workspace (profile_admissions ^limits profile_limits profile))
     (set h
-      (new_harness ^event_store events ^event_scope event_scope ^event_stream session ^workspace workspace ^limits profile/limits))
+      (new_harness ^event_store events ^event_scope event_scope ^event_stream session ^workspace workspace ^limits profile_limits))
     (set h/registry_commit (fn [owner] (persist_registry_generation workspace h owner)))
     (set h/registry_record
       (fn [owner revision]
         (record_registry_generation workspace h owner revision)))
+    (install_core_prompt_rows h)
     (if_yes activate
       (let prepared (prepare_workspace ^session session workspace h))
-      (boot ^h h profile)
-      (activate_workspace_plan prepared h))
+      (activate_workspace_plan ^profile_admissions (profile_admissions ^limits profile_limits profile) prepared h))
     (set runtime
-      (HarnessRuntime ^root canonical ^state_root state_root ^sessions nil ^commands nil ^triggers nil ^functions {} ^body_users ($atomic_cell 0) ^body_collecting ($cell false) ^body_gc_pending ($cell false) ^stopping ($cell false) ^exit_code ($cell 0) ^stdin_task ($cell nil) ^restarted restarted ^shutdown_watchdog ($cell nil) ^h h ^workspace workspace ^events events ^ownership ownership ^owns_ownership owns_ownership ^owns_events owned ^closed ($cell false)))
+      (HarnessRuntime ^root canonical ^state_root state_root ^sessions nil ^commands nil ^triggers nil ^body_users ($atomic_cell 0) ^body_collecting ($cell false) ^body_gc_pending ($cell false) ^stopping ($cell false) ^exit_code ($cell 0) ^stdin_task ($cell nil) ^restarted restarted ^shutdown_watchdog ($cell nil) ^h h ^workspace workspace ^profile profile ^events events ^ownership ownership ^owns_ownership owns_ownership ^owns_events owned ^closed ($cell false)))
+    (set h/readiness
+      (fn []
+        (let current ($serde/read_data ($fs/read_text $"${state_root}/config.gene")))
+        (readiness_report runtime current)))
     (set runtime/sessions (open_session_manager runtime events state_root))
     (set runtime/commands (new_command_manager runtime))
     (if (&& activate (== event_scope "session"))

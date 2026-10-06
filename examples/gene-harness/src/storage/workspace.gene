@@ -39,7 +39,7 @@
 (type CompositionError ^props {^message Str} ^impl [Error])
 (impl Error for CompositionError)
 
-(type Workspace ^props {^root Str ^state_root Str ^workspace_root Str ^store Any ^blob_store Any ^revision Any ^entries Any ^busy Any ^closed Any ^generated_dir Str ^shared Any ^interfaces Any ^core_interface Str ^errors Any ^active_revision Any})
+(type Workspace ^props {^root Str ^state_root Str ^workspace_root Str ^store Any ^blob_store Any ^revision Any ^entries Any ^busy Any ^closed Any ^generated_dir Str ^shared Any ^interfaces Any ^core_interface Str ^errors Any ^active_revision Any ^profile_plugins Any})
 
 (type WorkspaceRestorePlan ^props {^workspace Workspace ^entries Any ^descriptors Any ^session Str})
 
@@ -57,16 +57,25 @@
   workspace)
 
 (fn validate_entry [entry, ids]
-  (if (|| (== entry/id void) (== entry/module_digest void) (== entry/closure void) (== entry/interfaces void))
-    (fail
-      (CompositionError ^message "composition entry requires id module_digest closure interfaces")))
+  (if (== entry/id void)
+    (fail (CompositionError ^message "composition entry requires id")))
   (var id ($to_str entry/id))
   (if (== id "") (fail (CompositionError ^message "composition entry id is empty")))
   (if_not (== (ids .get id) void)
     (fail (CompositionError ^message $"duplicate composition entry ${id}")))
   (ids .put id true)
-  (if_not (entry/closure .contains? entry/module_digest)
-    (fail (CompositionError ^message $"composition entry ${id} closure omits its root digest")))
+  (if (== entry/builtin true)
+    (then
+      (if_not (== entry/disabled true)
+        (fail (CompositionError ^message $"built-in record ${id} must be disabled")))
+      (if (|| (!= entry/module_digest void) (!= entry/closure void))
+        (fail (CompositionError ^message $"built-in record ${id} cannot name a stored module"))))
+    (else
+      (if (|| (== entry/module_digest void) (== entry/closure void) (== entry/interfaces void))
+        (fail
+          (CompositionError ^message "composition entry requires module_digest closure interfaces")))
+      (if_not (entry/closure .contains? entry/module_digest)
+        (fail (CompositionError ^message $"composition entry ${id} closure omits its root digest")))))
   entry)
 
 (fn validate_entries [entries]
@@ -122,8 +131,18 @@
         (real_path generated_dir))))
   (var interfaces (current_interfaces))
   (var workspace
-    (Workspace ^root canonical_root ^state_root canonical_state_root ^workspace_root canonical_workspace_root ^store (store_open ^root canonical_root) ^blob_store (store_open ^root canonical_blob_root) ^revision ($cell 0) ^entries ($cell (fresh_list)) ^busy ($cell false) ^closed ($cell false) ^generated_dir generated ^shared ["src/plugin_api.gene"] ^interfaces interfaces ^core_interface interfaces/core ^active_revision ($cell nil) ^errors ($cell (fresh_map))))
+    (Workspace ^root canonical_root ^state_root canonical_state_root ^workspace_root canonical_workspace_root ^store (store_open ^root canonical_root) ^blob_store (store_open ^root canonical_blob_root) ^revision ($cell 0) ^entries ($cell (fresh_list)) ^busy ($cell false) ^closed ($cell false) ^generated_dir generated ^shared ["src/plugin_api.gene"] ^interfaces interfaces ^core_interface interfaces/core ^active_revision ($cell nil) ^errors ($cell (fresh_map)) ^profile_plugins ($cell (fresh_map))))
   (load_composition workspace))
+
+(fn set_profile_plugins [workspace : Workspace, admissions]
+  (let defaults (fresh_map))
+  (for item in admissions
+    (let id item/plugin/id)
+    (if_not ($absent? (defaults .get id))
+      (fail (CompositionError ^message $"duplicate profile plugin ${id}")))
+    (defaults .put id item))
+  (workspace/profile_plugins .set defaults)
+  nil)
 
 (fn composition_revision [workspace : Workspace] : Int
   (require_open workspace)
@@ -395,6 +414,9 @@
   # That check stays where it is: it is the invariant on the entry list, and
   # this one is the early answer to a question already decided.
   (if_not replace
+    (if_not ($absent? (workspace/profile_plugins/.get .get id))
+      (fail (CompositionError
+        ^message $"profile plugin ${id} already exists; use ^replace true")))
     (var claimed (composition_entries workspace))
     (if_not (== (find_entry_index claimed id) -1)
       (fail (CompositionError
@@ -431,6 +453,8 @@
      ^limits bounded ^disabled false
      ^by by ^model model ^at at
      ^session h/event_stream ^turn authenticated_turn})
+  (if_not ($absent? (workspace/profile_plugins/.get .get id))
+    (entry .put "replaces_builtin" true))
 
   # Descriptor-only preflight: load and run `init`, but do not install or
   # activate anything until the generation is authoritative.
@@ -484,19 +508,23 @@
       "replaced"))
   (flush_harness h)
   (update_active_revision workspace h)
-  {^revision revision ^digest digest ^status status ^entry entry})
+  {^revision revision ^digest digest ^status status
+   ^state (if (== status "ready") "active"
+     (if (== status "error") "quarantined" status))
+   ^entry entry})
 
-(fn drain_workspace_changes [workspace : Workspace, h : Harness]
+(fn drain_workspace_changes [workspace : Workspace, h : Harness, ^origin origin = nil]
   (let results [])
   ($runtime/with_context
     nil
     (fn []
-      (for change in (take_composition_changes h/snapshots)
+      (for change in (take_composition_changes ^origin origin h/snapshots)
         (try
           (results .push (change/apply))
         catch Any
           (record_quarantine workspace change/id ($to_str $err/message))
-          (results .push {^status "error" ^id change/id ^message $err/message})))))
+          (results .push {^status "error" ^state "quarantined"
+            ^id change/id ^message $err/message})))))
   results)
 
 (fn run_workspace_turn [workspace : Workspace, h : Harness, id : Str, program, ^limits limits = nil]
@@ -552,14 +580,25 @@
   # Phase 1: bounded descriptor load only. This is what makes plugin event
   # schemas available before state reconstruction or activation.
   (for entry in entries
-    (if_yes (entry_enabled? entry)
-      (if_yes true
-        (try
-          (var descriptor (load_entry_descriptor workspace h entry))
-          (descriptors .put entry/id descriptor)
-          (register_descriptor_events h descriptor)
-        catch Any
-          (record_quarantine workspace ($to_str entry/id) ($to_str $err/message))))))
+    (if (== entry/builtin true)
+      (then
+        (if ($absent? (workspace/profile_plugins/.get .get entry/id))
+          (record_quarantine workspace ($to_str entry/id)
+            $"built-in default ${entry/id} is missing from this profile")))
+      (else
+        (if (&& (! ($absent? (workspace/profile_plugins/.get .get entry/id)))
+                (!= entry/replaces_builtin true))
+          (then
+            (record_quarantine workspace ($to_str entry/id)
+              $"stored plugin ${entry/id} collides with a profile plugin; replace it explicitly"))
+          (else
+            (if_yes (entry_enabled? entry)
+              (try
+                (var descriptor (load_entry_descriptor workspace h entry))
+                (descriptors .put entry/id descriptor)
+                (register_descriptor_events h descriptor)
+              catch Any
+                (record_quarantine workspace ($to_str entry/id) ($to_str $err/message)))))))))
 
   # Phase 2: validate the already-decoded generic envelopes against the core +
   # descriptor catalog. Missing plugin vocabulary quarantines that projection;
@@ -576,24 +615,46 @@
   (WorkspaceRestorePlan ^workspace workspace ^entries entries
     ^descriptors descriptors ^session session))
 
-(fn activate_workspace_plan [plan : WorkspaceRestorePlan, h : Harness]
+(fn activate_workspace_plan [plan : WorkspaceRestorePlan, h : Harness, ^profile_admissions profile_admissions = []]
   (var workspace plan/workspace)
   (var ready (fresh_list))
   (var pending (fresh_list))
-  # Phase 3: activate only descriptors whose load/state projection survived the
-  # earlier phases. They are staged together so the composition reconciles
-  # once; a failing descriptor is quarantined without holding back siblings.
-  (var admissions (fresh_list))
+  # A stored replacement takes the profile default's id before admission.
+  # A legacy stored entry with the same id but no replacement record is a
+  # clash: keep the default and quarantine that entry without blocking peers.
+  (var blocked_defaults (fresh_map))
   (for entry in plan/entries
-    (var descriptor (plan/descriptors .get entry/id))
-    (if_yes (&& (!= descriptor void) (== (workspace/errors/.get .get entry/id) void))
-      (try
-        (admissions .push
-          {^plugin descriptor ^options (descriptor_entry_options workspace entry)})
-      catch Any
-        (record_quarantine workspace ($to_str entry/id) ($to_str $err/message)))))
+    (if_yes (&& (! ($absent? (workspace/profile_plugins/.get .get entry/id)))
+                (|| (== entry/replaces_builtin true) (== entry/builtin true)))
+      (blocked_defaults .put entry/id true)))
+  (var admissions (fresh_list))
+  (for item in profile_admissions
+    (if ($absent? (blocked_defaults .get item/plugin/id))
+      (admissions .push item)))
+  (for entry in plan/entries
+    (if (== entry/builtin true)
+      (then nil)
+      (else
+        (if (&& (! ($absent? (workspace/profile_plugins/.get .get entry/id)))
+                (!= entry/replaces_builtin true))
+          (then
+            (record_quarantine workspace ($to_str entry/id)
+              $"stored plugin ${entry/id} collides with a profile plugin; replace it explicitly"))
+          (else
+            (var descriptor (plan/descriptors .get entry/id))
+            (if_yes (&& (!= descriptor void) (== (workspace/errors/.get .get entry/id) void))
+              (try
+                (admissions .push
+                  {^plugin descriptor ^options (descriptor_entry_options workspace entry)})
+              catch Any
+                (record_quarantine workspace ($to_str entry/id) ($to_str $err/message)))))))))
   (if (> admissions/.size 0)
-    (try (put_cordis_plugins h admissions) catch Any nil))
+    (try
+      (put_cordis_plugins h admissions)
+    catch Any
+      (for entry in plan/entries
+        (if (== (workspace/errors/.get .get entry/id) void)
+          (record_quarantine workspace ($to_str entry/id) ($to_str $err/message))))))
   (for item in admissions
     (var id ($to_str item/plugin/id))
     (var status (status_of h id))
@@ -610,12 +671,19 @@
   (var out (fresh_list))
   (var active workspace/active_revision/.get)
   (var desired (composition_revision workspace))
+  (for entry in (composition_entries workspace)
+    (if (== entry/builtin true)
+      (out .push $"${entry/id}: built-in disabled")
+      (out .push
+        ($to_str entry/id ": stored "
+          (if (entry_enabled? entry) "enabled" "disabled")
+          (if (== entry/replaces_builtin true) " (replaces built-in)" "")))))
   (for [id message] in workspace/errors/.get
     (out .push
       (if ($absent? active)
         $"${id}: ${message}"
         $"${id}: ${message} (desired ${desired}, active ${active})")))
-  (if (&& (== out/.size 0) (! ($absent? active)) (!= desired active))
+  (if (&& (== workspace/errors/.get #{}) (! ($absent? active)) (!= desired active))
     (out .push $"composition desired ${desired}, active ${active}: reconciliation pending"))
   out)
 
@@ -624,13 +692,23 @@
   (var found false)
   (var next_entries (fresh_list))
   (for entry in entries
-    (var next_entry entry)
-    (if_yes (== entry/id id)
-      (set found true)
-      (set next_entry (data_copy entry))
-      (next_entry .put "disabled" disabled))
-    (next_entries .push next_entry))
-  (if_not found (fail (CompositionError ^message $"composition entry ${id} does not exist")))
+    (if (== entry/id id)
+      (then
+        (set found true)
+        (if (== entry/builtin true)
+          (then
+            (if disabled (next_entries .push entry)))
+          (else
+            (let next_entry (data_copy entry))
+            (next_entry .put "disabled" disabled)
+            (next_entries .push next_entry))))
+      (else (next_entries .push entry))))
+  (if_not found
+    (if ($absent? (workspace/profile_plugins/.get .get id))
+      (fail (CompositionError ^message $"composition entry ${id} does not exist"))
+      (if disabled
+        (next_entries .push {^id id ^builtin true ^disabled true})
+        (return (composition_revision workspace)))))
   (var revision (commit_composition workspace next_entries))
   (if_not ($absent? h)
     (var digest (previous_module_digest next_entries id))
@@ -650,6 +728,24 @@
 (fn disable_entry [workspace : Workspace, id : Str, ^h h = nil]
   (set_entry_disabled ^h h workspace id true))
 
+(fn restore_entry [workspace : Workspace, id : Str, ^h h = nil]
+  (if ($absent? (workspace/profile_plugins/.get .get id))
+    (fail (CompositionError ^message $"plugin ${id} has no profile default to restore")))
+  (let entries (composition_entries workspace))
+  (let kept (fresh_list))
+  (var removed false)
+  (for entry in entries
+    (if (== entry/id id)
+      (set removed true)
+      (kept .push entry)))
+  (if_not removed (return (composition_revision workspace)))
+  (let revision (commit_composition workspace kept))
+  (if_not ($absent? h)
+    (record_composition_change h id (previous_module_digest entries id) nil
+      revision "recovery" "restored")
+    (flush_harness h))
+  revision)
+
 (fn persist_registry_generation [workspace, h, owner : Str]
   (commit_composition workspace (composition_entries workspace)))
 
@@ -661,16 +757,7 @@
   (let context ($runtime/context))
   (let apply (fn [] (run_composition_change h/snapshots (fn []
     (let revision (set_entry_disabled workspace id (! enabled)))
-    (if enabled
-      (then
-        (let entries (composition_entries workspace))
-        (let index (find_entry_index entries id))
-        (let entry entries/%index)
-        (let descriptor (load_entry_descriptor workspace h entry))
-        (register_descriptor_events h descriptor)
-        (activate_descriptor workspace h descriptor entry))
-      (else
-        (if_not ($absent? (h/plugins/.get .get id)) (uninstall h id))))
+    (activate_desired_plugin workspace h id)
     (let digest (previous_module_digest (composition_entries workspace) id))
     (record_composition_change h id digest digest revision "runtime" (if enabled "enabled" "disabled"))
     (flush_harness h)
@@ -678,6 +765,38 @@
     {^revision revision ^status (if enabled (status_of h id) "disabled")}))))
   (if (&& (! ($absent? context/turn)) (== context/turn/state/.get "open"))
     (then (queue_composition_change h/snapshots {^id id ^kind "enabled" ^apply apply}) "queued")
+    (else (apply))))
+
+(fn activate_desired_plugin [workspace : Workspace, h : Harness, id : Str]
+  (let entries (composition_entries workspace))
+  (let index (find_entry_index entries id))
+  (if (== index -1)
+    (then
+      (let default (workspace/profile_plugins/.get .get id))
+      (if ($absent? default)
+        (if_not ($absent? (h/plugins/.get .get id)) (uninstall h id))
+        (put_cordis_plugin ^^replace h default/plugin default/options)))
+    (else
+      (let entry entries/%index)
+      (if (entry_enabled? entry)
+        (then
+          (let descriptor (load_entry_descriptor workspace h entry))
+          (register_descriptor_events h descriptor)
+          (activate_descriptor workspace h descriptor entry))
+        (else
+          (if_not ($absent? (h/plugins/.get .get id)) (uninstall h id)))))))
+
+(fn restore_plugin [workspace : Workspace, h : Harness, id : Str]
+  (let context ($runtime/context))
+  (let apply (fn [] (run_composition_change h/snapshots (fn []
+    (let revision (restore_entry workspace id))
+    (activate_desired_plugin workspace h id)
+    (record_composition_change h id nil nil revision "runtime" "restored")
+    (flush_harness h)
+    (update_active_revision workspace h)
+    {^revision revision ^status (status_of h id)}))))
+  (if (&& (! ($absent? context/turn)) (== context/turn/state/.get "open"))
+    (then (queue_composition_change h/snapshots {^id id ^kind "restored" ^apply apply}) "queued")
     (else (apply))))
 
 (fn enable_entry [workspace : Workspace, id : Str, ^h h = nil]

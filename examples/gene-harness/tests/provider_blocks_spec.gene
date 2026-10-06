@@ -1,8 +1,13 @@
 (import $test [describe it assert_equal run])
 (import ^from "../src/agents/response" [split_response])
-(import ^from "../src/agents/model_client"
-  [completion_text response_text with_provider_timeout model_config])
-(import ^from "../src/agents/claude" [anthropic_text claude_text])
+(import ^from "../src/builtin/provider_codex" [response_text codex_stream_text])
+(import ^from "../src/builtin/provider_openrouter" [openrouter_text])
+(import ^from "../src/builtin/provider_anthropic" [anthropic_text])
+(import ^from "../src/builtin/provider_claude" [claude_text])
+(import ^from "../src/builtin/provider_common" [configure_model http_json_attempt])
+(import ^from "../src/agents/provider_selection" [complete_messages])
+(import ^from "../src/kernel" [new_harness shutdown_harness contribute])
+(import ^from "../src/profiles/profile" [Profile])
 (import ^from "./support" [isolated run_spec])
 (import $net/http [listen serve stop json])
 (import $net/http_client [request])
@@ -77,50 +82,50 @@
         """
 
 """))
-    (assert_equal (completion_text "codex" {^status 200 ^body ($str/join lines "")}) code))
+    (assert_equal (codex_stream_text ($str/join lines "")) code))
   (it
     "retries one provider timeout and preserves other failures"
     []
-    (let config {^provider "codex" ^provider_timeout_ms 1500})
+    (let h (new_harness))
     (let calls ($cell 0))
-    (let result
-      (with_provider_timeout
-        config
-        (fn []
-          (calls .set (+ calls/.get 1))
-          (if (== calls/.get 1)
-            (fail (HttpClientError ^message "net/http_client: Timeout was reached")))
-          "complete response")))
-    (assert_equal result "complete response")
-    (assert_equal calls/.get 2)
-    (calls .set 0)
-    (let exhausted
-      (try
-        (with_provider_timeout
-          config
-          (fn []
-            (calls .set (+ calls/.get 1))
-            (fail (HttpClientError ^message "net/http_client: Timeout was reached"))))
-        "accepted"
-      catch Any
-        $err/message))
-    (assert_equal calls/.get 2)
-    ($assert ($str/contains? exhausted "codex model provider request exceeded 1.5 s (2 attempts)"))
-    (calls .set 0)
-    (let other
-      (try
-        (with_provider_timeout
-          config
-          (fn []
-            (calls .set (+ calls/.get 1))
-            (fail (HttpClientError ^message "certificate rejected"))))
-        "accepted"
-      catch HttpClientError
-        $err/message))
-    (assert_equal calls/.get 1)
-    (assert_equal other "certificate rejected")
-    (let configured (model_config ^settings {^provider_timeout_ms 900000}))
-    (assert_equal configured/provider_timeout_ms 900000))
+    (let mode ($cell "recover"))
+    (try
+      (contribute h "core" "providers"
+        {^name "retry" ^doc "Synthetic timeout provider."
+         ^configure (fn [model, effort, timeout]
+           (configure_model model effort timeout "retry"))
+         ^prepare (fn [call] call/messages)
+         ^send (fn [prepared]
+           (calls .set (+ calls/.get 1))
+           (if (== mode/.get "error")
+             (fail (HttpClientError ^message "certificate rejected")))
+           (if (|| (== mode/.get "timeout") (== calls/.get 1))
+             {^timeout true}
+             {^text "complete response"}))})
+      (let runtime {^h h ^profile (Profile ^name "test" ^plugins []
+        ^provider "retry")})
+      (let request {^config {^provider_timeout_ms 1500}
+        ^messages [{^role "system" ^content "rules"}
+                   {^role "user" ^content "go"}]})
+      (assert_equal (complete_messages runtime request) "complete response")
+      (assert_equal calls/.get 2)
+      (calls .set 0)
+      (mode .set "timeout")
+      (let exhausted (try (complete_messages runtime request) "accepted"
+        catch Any $err/message))
+      (assert_equal calls/.get 2)
+      ($assert ($str/contains? exhausted
+        "retry model provider request exceeded 1.5 s (2 attempts)"))
+      (calls .set 0)
+      (mode .set "error")
+      (let other (try (complete_messages runtime request) "accepted"
+        catch HttpClientError $err/message))
+      (assert_equal calls/.get 1)
+      (assert_equal other "certificate rejected")
+      (let configured (configure_model nil nil 900000 "model"))
+      (assert_equal configured/timeout_ms 900000)
+    ensure
+      (shutdown_harness h)))
   (it
     "wraps real HTTP timeout errors and retries the transfer once"
     []
@@ -129,9 +134,38 @@
       "wraps real HTTP timeout errors and retries the transfer once"
       (fn [workspace]
         (let server (listen ^host "127.0.0.1" ^port 0))
+        (let h (new_harness))
         (let calls ($cell 0))
+        (contribute h "core" "providers"
+          {^name "retry" ^doc "HTTP timeout provider."
+           ^configure (fn [model, effort, timeout]
+             (configure_model model effort timeout "retry"))
+           ^prepare (fn [call] call/messages)
+           ^send (fn [prepared]
+             (calls .set (+ calls/.get 1))
+             (http_json_attempt $"http://127.0.0.1:${server/port}/slow"
+               {^content-type "application/json"} {^prompt "go"} 30
+               (fn [response] {^text response/body})))})
+        (let runtime {^h h ^profile (Profile ^name "test" ^plugins []
+          ^provider "retry")})
         (let tester
-          (spawn ^lane root (try (let failure (try (with_provider_timeout {^provider "codex" ^provider_timeout_ms 30} (fn [] (calls .set (+ calls/.get 1)) (let pending (request ^url $"http://127.0.0.1:${server/port}/slow" ^timeout_ms 30)) (let response (try (await pending) ensure pending/.cancel)) response/body)) "accepted" catch Any $err/message)) ($assert (== calls/.get 2) "real transfer timeout was not retried once") ($assert ($str/contains? failure "codex model provider request exceeded 0.03 s") "real timeout was not identified as provider failure") ensure (stop server))))
+          (spawn ^lane root (try
+            (let failure
+              (try
+                (complete_messages runtime
+                  {^config {^provider_timeout_ms 30}
+                   ^messages [{^role "system" ^content "rules"}
+                              {^role "user" ^content "go"}]})
+                "accepted"
+              catch Any $err/message))
+            ($assert (== calls/.get 2)
+              "real transfer timeout was not retried once")
+            ($assert ($str/contains? failure
+              "retry model provider request exceeded 0.03 s")
+              "real timeout was not identified as provider failure")
+          ensure
+            (stop server)
+            (shutdown_harness h))))
         (serve ^handler (fn [req] ($sleep 200) (json "{}")) server)
         (match tester/.join
           (when (TaskOutcome/ok value)
@@ -158,8 +192,7 @@
     []
     (raw_blocks
       (fn [text]
-        (completion_text
-          "openrouter"
+        (openrouter_text
           {^status 200 ^body ($json/stringify {^choices [{^message {^content text}}]})}))))
   (it
     "preserves Anthropic output text and EOF blocks"

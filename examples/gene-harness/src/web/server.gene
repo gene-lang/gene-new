@@ -29,7 +29,8 @@
 (import ^from "../runtime/questions" [QuestionError])
 (import ^from "../runtime/triggers"
   [list_triggers create_trigger delete_trigger list_occurrences TriggerError])
-(import ^from "../agents/scripted" [scripted_provider])
+(import ^from "../profiles/scripted" [scripted_profile])
+(import ^from "../profiles/offline" [offline_profile])
 (import $net/http [listen serve stop html json redirect ws_accept])
 (import ^from "./auth" [open_auth create_cookie authenticate])
 (import $html [render])
@@ -266,11 +267,15 @@
     (set i (+ i 1)))
   (if (|| (< port 1024) (> port 65535))
     (fail_request "invalid_request" "Choose a port between 1024 and 65535."))
-  (var provider nil)
+  (var selected_profile nil)
   (if_yes (!= script_file "")
-    (set provider (scripted_provider (($parse/read_all ($fs/read_text script_file)) .next)))
+    (set selected_profile
+      (scripted_profile (($parse/read_all ($fs/read_text script_file)) .next)))
     (set offline true))
-  (var host (open_session_service ^workspace workspace ^offline offline ^provider provider))
+  (if (&& offline ($absent? selected_profile))
+    (set selected_profile (offline_profile)))
+  (var host (open_session_service ^workspace workspace ^offline offline
+    ^profile selected_profile))
   (var origin $"http://127.0.0.1:${port}")
   (var authority $"127.0.0.1:${port}")
   # Distinct names prevent local servers from overwriting each other's cookies.

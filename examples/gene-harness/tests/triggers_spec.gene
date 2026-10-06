@@ -1,5 +1,5 @@
 (import $test [describe it])
-(import [isolated run_spec] ^from "./support")
+(import [isolated run_spec test_controller] ^from "./support")
 (import ^from "../src/runtime/bootstrap" [open_runtime close_runtime])
 (import ^from "../src/profiles/baseline" [baseline_profile])
 (import ^from "../src/runtime/round_controller" [new_round_controller close_round_controller])
@@ -11,7 +11,7 @@
       (fn [workspace]
         (let runtime (open_runtime workspace "default" (baseline_profile)))
         (let calls ($cell []))
-        (let controller (new_round_controller runtime (fn [request]
+        (let controller (test_controller runtime (fn [request]
           (calls/.get .push request/session)
           "(Outcome ^done true ^reply \"checked\")")))
         (let manager (open_trigger_manager runtime controller ^start false ^now 1000))

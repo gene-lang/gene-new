@@ -1,0 +1,25 @@
+(mod budget_advisory)
+(import ^from "../plugin_api" [Plugin PluginHost])
+
+(fn budget_advisory [] : Plugin
+  (Plugin ^id "budget_advisory"
+    ^provides [["hooks" "request/prepare/budget_advisory"]]
+    ^activate (fn [host]
+      (host .PluginHost:contribute "hooks"
+        {^point "request/prepare" ^name "budget_advisory"
+         ^run (fn [context, next]
+           (if (> context/round_turn context/limit)
+             (return (next context)))
+           (let items [])
+           (for item in context/items (items .push item))
+           (let remaining (- context/limit context/round_turn))
+           (items .push
+             {^id $"${context/turn}.budget" ^header "[harness_budget]"
+              ^value ($to_str "This is turn " context/round_turn " of "
+                context/limit " in this round; " remaining
+                " turns remain after this response. Prioritize implementation and verification; finish with Outcome when complete.")
+              ^settled false})
+           (next {^session context/session ^round context/round
+                  ^turn context/turn ^round_turn context/round_turn
+                  ^limit context/limit
+                  ^items items}))}))))

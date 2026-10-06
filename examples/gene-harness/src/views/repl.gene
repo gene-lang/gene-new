@@ -2,6 +2,7 @@
 (import ^from "../runtime/commands" [parse_submission submit_command])
 (import ^from "../runtime/round_controller" [submit_round round_state answer_round])
 (import ^from "../runtime/sessions" [load_session])
+(import ^from "../kernel" [HarnessEvent RoundChanged CommandChanged])
 
 (fn print_question [question]
   ($println question/prompt)
@@ -45,13 +46,11 @@
       (else (return nil))))
   $"/run ${code}")
 
-(fn chat [controller, selected : Str]
-  (let runtime controller/runtime)
-  (let session ($cell selected))
-  (let answers ($cell {}))
-  (let shown ($cell {}))
-  (set controller/on_change
-    (fn [id receipt]
+(fn handle_repl_event [selected, answers, shown, event]
+  (match event
+    (when (changed : RoundChanged)
+      (let id changed/session)
+      (let receipt changed/receipt)
       (let key $"${receipt/id}:${receipt/state}")
       (if (== (shown .get; .get key) true) (return nil))
       (shown
@@ -67,17 +66,28 @@
           ($println $"[${id}] Questions:")
           (print_question receipt/questions/questions/0)))
       ($io/flush_stdout)
-      nil))
-  (set runtime/commands/on_change
-    (fn [id record]
+      nil)
+    (when (changed : CommandChanged)
+      (let id changed/session)
+      (let record changed/record)
       (if_not ($absent? record/text) ($print $"[${id}] ${record/text}"))
       (if_not ($absent? record/display)
         ($println $"[${id}] ${record/display}")
         (if (== record/error_code "confirmation_required")
           ($println "Repeat /stop --confirm or /restart --confirm to stop those sessions.")))
-      (if_not ($absent? record/selected) (session .set record/selected))
+      (if_not ($absent? record/selected) (selected .set record/selected))
       ($io/flush_stdout)
       nil))
+  nil)
+
+(fn chat [controller, selected : Str]
+  (let runtime controller/runtime)
+  (let session ($cell selected))
+  (let answers ($cell {}))
+  (let shown ($cell {}))
+  (let subscription
+    (runtime/h/bus .subscribe HarnessEvent
+      (fn [event] (handle_repl_event session answers shown event))))
   (while (! runtime/stopping/.get)
     (let selected_id session/.get)
     ($print $"${selected_id}> ")
@@ -142,4 +152,5 @@
               parsed/text)))))
     catch Any
       ($println $err/message)))
+  subscription/.cancel
   runtime/exit_code/.get)

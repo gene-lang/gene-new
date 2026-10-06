@@ -2,21 +2,68 @@
 # opening a harness changes cwd, and crash fixtures deliberately kill processes.
 # Both the parent and child use the ordinary $test registry and reports.
 (import $test [assert_equal run])
+(import [Plugin PluginHost] ^from "../src/plugin_api")
+(import [put_cordis_plugin] ^from "../src/kernel")
+(import [Profile] ^from "../src/profiles/profile")
+(import [baseline_profile] ^from "../src/profiles/baseline")
+(import [new_round_controller : production_controller]
+  ^from "../src/runtime/round_controller")
+(import [open_session_service] ^from "../src/web/session_service")
 
 (let package_root ($path/parent ($path/parent this_mod/.path)))
 (let active_workspace ($cell nil))
+(let callback_cells ($cell {}))
+
+(fn callback_plugin [cell]
+  (Plugin ^id "provider_test" ^provides [["providers" "test"]]
+    ^activate (fn [host]
+      (host .PluginHost:contribute "providers"
+        {^name "test" ^doc "Model-free test callback."
+         ^configure (fn [model, effort, timeout]
+           {^model "test" ^effort "none" ^timeout_ms timeout})
+         ^prepare (fn [call] call)
+         ^send (fn [prepared]
+           (let callback cell/.get)
+           {^text (callback prepared)})}))))
+
+(fn set_test_provider [runtime, callback]
+  (let cell (callback_cells/.get .get runtime/root))
+  (if ($absent? cell) (fail "test provider was not installed"))
+  (cell .set callback)
+  nil)
+
+(fn test_controller [runtime, callback]
+  (if_not ($absent? callback)
+    (let cell ($cell callback))
+    (put_cordis_plugin ^^replace runtime/h (callback_plugin cell)
+      {^host true ^limits runtime/profile/limits})
+    (callback_cells/.get .put runtime/root cell)
+    (set runtime/profile/provider "test"))
+  (production_controller runtime))
+
+(fn test_service [^workspace workspace : Str = "", ^provider provider]
+  (let cell ($cell provider))
+  (let base (baseline_profile))
+  (let plugins [])
+  (for plugin in base/plugins (plugins .push plugin))
+  (plugins .push (callback_plugin cell))
+  (let profile (Profile ^name "test" ^plugins plugins ^limits base/limits
+    ^requires base/requires ^provider "test"))
+  (let service (open_session_service ^workspace workspace ^profile profile))
+  (callback_cells/.get .put service/runtime/root cell)
+  service)
 
 (fn fixture_path [name : Str] : Str
   ($path/join package_root $"tests/fixtures/${name}.gene"))
 
-(fn isolated [spec_path : Str, name : Str, body]
+(fn isolated [spec_path : Str, name : Str, body, ^timeout_ms timeout_ms : Int = 120000]
   (let selected active_workspace/.get)
   (if_not ($absent? selected) (return (body selected)))
   (let workspace ($path/join package_root $"tmp/spec-${($crypto/random_hex 12)}"))
   ($fs/make_dir workspace)
   (let result (await ($os/exec_async ($os/executable_path)
     "run" spec_path workspace name ^dir package_root
-    ^timeout_ms 120000 ^max_bytes 1048576)))
+    ^timeout_ms timeout_ms ^max_bytes 1048576)))
   (assert_equal result/status 0
     $"Isolated spec failed. Workspace: ${workspace}\n${result/stdout}${result/stderr}")
   ($assert (! result/truncated) "isolated spec output exceeded its capture bound"))

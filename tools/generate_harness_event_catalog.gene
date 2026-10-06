@@ -10,6 +10,8 @@
      ^turn_response ["type" "turn" "round" "text" "blobs"]
      ^turn_patch ["type" "turn" "round" "text" "result"]
      ^turn_request ["type" "turn" "round" "full" "settled"]
+     ^model_request ["type" "call" "turn" "round" "purpose" "provider" "prepared"]
+     ^model_result ["type" "call" "attempt" "outcome" "final" "timing_ms"]
      ^reply ["type" "text" "final" "round" "turn"]
      ^console ["type" "text" "late" "turn"]
      ^composition_changed ["type" "entry" "operation" "previous_digest" "new_digest" "revision" "session" "turn"]

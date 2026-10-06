@@ -1,4 +1,5 @@
 (import ^from "../../src/runtime/bootstrap" [open_runtime close_runtime])
+(import [test_controller] ^from "../support")
 (import ^from "../../src/profiles/baseline" [baseline_profile])
 (import ^from "../../src/runtime/round_controller" [new_round_controller save_round])
 (import ^from "../../src/runtime/sessions" [require_record])
@@ -7,7 +8,7 @@
 
 (fn hold_patch [root]
   (let runtime (open_runtime root "default" (baseline_profile)))
-  (let controller (new_round_controller runtime (fn [request] "")))
+  (let controller (test_controller runtime (fn [request] "")))
   (save_round controller "default" {^id "p1" ^request_id "p1" ^submission_seq 1 ^state "running" ^last_turn 1})
   (append_core_event runtime/events "session" "default" {^type "turn/start" ^turn 1 ^round "p1"})
   ($fs/write_text "a.txt" "a0\n")

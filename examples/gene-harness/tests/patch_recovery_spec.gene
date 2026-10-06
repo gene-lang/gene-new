@@ -1,5 +1,5 @@
 (import $test [describe it])
-(import [isolated run_spec] ^from "./support")
+(import [isolated run_spec test_controller] ^from "./support")
 (import ^from "../src/runtime/bootstrap" [open_runtime close_runtime])
 (import ^from "../src/profiles/baseline" [baseline_profile])
 (import ^from "../src/runtime/sessions" [create_session load_session require_record])
@@ -13,7 +13,7 @@
         (let runtime (open_runtime workspace "default" (baseline_profile)))
         (let root runtime/root)
         (create_session ^id "patch" runtime/sessions)
-        (let controller (new_round_controller runtime (fn [request] "")))
+        (let controller (test_controller runtime (fn [request] "")))
         (save_round
           controller
           "patch"

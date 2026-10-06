@@ -2,6 +2,7 @@
 (import [isolated run_spec] ^from "./support")
 (import ^from "../src/runtime/bootstrap" [open_runtime close_runtime])
 (import ^from "../src/profiles/profile" [Profile])
+(import ^from "../src/builtin/plugin_admin" [plugin_admin])
 (import ^from "../src/plugin_api" [PluginHost])
 (import ^from "../src/storage/workspace"
   [register_plugin composition_entries commit_composition prepare_workspace])
@@ -13,7 +14,8 @@
       (fn [workspace]
         ($fs/make_dir workspace)
         (let root ($fs/real_path workspace))
-        (let runtime (open_runtime ^^activate root "default" (Profile ^name "test" ^plugins [])))
+        (let runtime (open_runtime ^^activate root "default"
+          (Profile ^name "test" ^plugins [(plugin_admin)])))
         (try
           (let source
             (quote

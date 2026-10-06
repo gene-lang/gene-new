@@ -1,8 +1,8 @@
 (mod harness_turn)
-(import ^from "../kernel" [Harness rows])
-(import ^from "../runtime/composition" [acquire_snapshot release_snapshot take_composition_changes])
+(import ^from "../kernel" [Harness rows doc])
+(import ^from "../runtime/composition" [acquire_snapshot release_snapshot take_composition_changes discard_composition_changes])
 (import ^from "./turn_eval" [evaluate_turn])
-(import ^from "../storage/workspace" [register_plugin drain_workspace_changes set_plugin_enabled])
+(import ^from "../storage/workspace" [drain_workspace_changes])
 
 # Bind the callable from the leased revision and preserve its argument shape.
 # The function name in context correlates plugin append_prompt calls with the
@@ -21,6 +21,15 @@
   (for record in (?? (snapshot/registries .get "functions") [])
     (let function record/payload)
     (bindings .put function/name (TurnFunction ^name function/name ^callable function/fn)))
+  bindings)
+
+(fn workspace_bindings [h : Harness, snapshot, session : Str, workspace_root : Str,
+                        ^extra extra = {}]
+  (let bindings (function_bindings snapshot))
+  (bindings .put "session_id" session)
+  (bindings .put "workspace_root" workspace_root)
+  (bindings .put "doc" (fn [name : Str] (doc h name)))
+  (for [name value] in extra (bindings .put name value))
   bindings)
 
 (fn question_validators [snapshot]
@@ -56,33 +65,40 @@
 
 (fn evaluate_harness_turn [h : Harness, number : Int, workspace_root : Str, text : Str, ^session session : Str = "default", ^timeout_ms timeout_ms : Int = 600000, ^max_memory_mb max_memory_mb : Int = 1024, ^console_sink console_sink = nil, ^recall recall_function = nil, ^record record = nil, ^bindings extra_bindings = {}, ^lease supplied_lease = nil, ^after_patch_rename after_patch_rename = nil]
   (let lease (if ($absent? supplied_lease) (acquire_snapshot h/snapshots) supplied_lease))
+  (let turn_ref ($cell nil))
+  (let drained ($cell false))
   (try
-    (let bindings (function_bindings lease/snapshot))
-    (bindings .put "session_id" session)
-    (let plugins (?? lease/snapshot/plugins []))
-    (bindings .put "plugin_states" (fn [] plugins))
-    (bindings .put "inspect_plugin" (fn [id : Str]
-      (for plugin in plugins (if (== plugin/id id) (return plugin)))
-      nil))
-    (if_not ($absent? h/workspace)
-      (bindings .put
-        "register_plugin"
-        (fn [id : Str source, ^dependencies dependencies = [], ^replace replace : Bool = false]
-          (register_plugin ^dependencies dependencies ^replace replace h/workspace h id source))))
-    (if_not ($absent? h/workspace)
-      (bindings .put "enable_plugin" (fn [id : Str] (set_plugin_enabled h/workspace h id true)))
-      (bindings .put "disable_plugin" (fn [id : Str] (set_plugin_enabled h/workspace h id false))))
-    (for [name value] in extra_bindings
-      (bindings .put name value))
+    (let bindings
+      (workspace_bindings ^extra extra_bindings h lease/snapshot session workspace_root))
     (let result
-      (evaluate_turn ^validators (question_validators lease/snapshot) ^bindings bindings ^timeout_ms timeout_ms ^max_memory_mb max_memory_mb ^console_sink console_sink ^recall recall_function ^record record ^after_patch_rename after_patch_rename ^context {^composition h/snapshots ^snapshot lease/snapshot ^session session}
+      (evaluate_turn ^validators (question_validators lease/snapshot) ^bindings bindings ^timeout_ms timeout_ms ^max_memory_mb max_memory_mb ^console_sink console_sink ^recall recall_function ^record record ^after_patch_rename after_patch_rename ^turn_sink turn_ref ^context {^composition h/snapshots ^snapshot lease/snapshot ^session session}
         number
         workspace_root
         text))
     (if_not ($absent? h/workspace)
-      (result .put "composition_changes" (drain_workspace_changes h/workspace h)))
+      (result .put "composition_changes"
+        (drain_workspace_changes ^origin result/turn h/workspace h)))
     (if ($absent? h/workspace)
-      (for change in (take_composition_changes h/snapshots) (change/apply)))
+      (for change in (take_composition_changes ^origin result/turn h/snapshots) (change/apply)))
+    (drained .set true)
+    (let changes (?? result/composition_changes []))
+    (if_not changes/.empty?
+      (append_boundary_item result number "plugins" ($to_str changes)))
+    (if (== result/validated/rejected_done true)
+      (append_boundary_item result number "plugin_notice"
+        "Done was deferred because this turn changed plugins. Read the publication result before finishing."))
     result
   ensure
+    (if (&& (! drained/.get) (! ($absent? turn_ref/.get)))
+      (discard_composition_changes h/snapshots turn_ref/.get))
     (if ($absent? supplied_lease) (release_snapshot h/snapshots lease))))
+
+(fn append_boundary_item [result, number : Int, label : Str, value : Str]
+  (let id $"${number}.${label}")
+  (let header $"[${id}]")
+  (result/request_items .push {^id id ^header header ^value value})
+  (result .put "request"
+    (if (== result/request "")
+      $"${header}\n${value}"
+      $"${result/request}\n${header}\n${value}"))
+  nil)

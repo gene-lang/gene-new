@@ -25,9 +25,9 @@
 
 (import [Harness new_harness put_cordis_plugins] ^from "../kernel")
 
-(type Profile ^props {^name Str ^plugins Any ^limits Any?})
+(type Profile ^props {^name Str ^plugins Any ^limits Any? ^requires Any? ^provider Str?})
 
-(fn boot [p : Profile, ^h supplied = nil] : Harness
+(fn profile_admissions [p : Profile, ^limits supplied = nil]
   # The whole of it: stage every plugin, then reconcile once. There is no merge
   # step and no overlay resolution; the profile *is* the configuration.
   #
@@ -35,14 +35,19 @@
   # budget states what callbacks do in this deployment, and it is also the
   # ceiling every plugin's limits narrow from. Every plugin a profile lists is a
   # host plugin (`^host true`) and receives the Harness itself.
-  (var h (if (== supplied nil) (new_harness ^limits p/limits) supplied))
+  (let limits (?? supplied p/limits))
   (var admissions [])
   (for plugin in p/plugins
     (admissions .push
       {^plugin plugin
-       ^options (if ($absent? p/limits)
+       ^options (if ($absent? limits)
          {^host true}
-         {^host true ^limits p/limits})}))
+         {^host true ^limits limits})}))
+  admissions)
+
+(fn boot [p : Profile, ^h supplied = nil] : Harness
+  (var h (if (== supplied nil) (new_harness ^limits p/limits) supplied))
+  (let admissions (profile_admissions p))
   (put_cordis_plugins h admissions)
   h)
 
@@ -58,7 +63,8 @@
   # Exists to keep the claim in this file's header honest. Booting a profile
   # backwards must reach the same state as booting it forwards; if it ever does
   # not, "a profile is a set" was wrong and the layers were right.
-  (boot (Profile ^name p/name ^plugins (reversed p/plugins) ^limits p/limits)))
+  (boot (Profile ^name p/name ^plugins (reversed p/plugins) ^limits p/limits
+    ^requires p/requires ^provider p/provider)))
 
 (fn plugin_names [p : Profile] : Any
   (var out [])

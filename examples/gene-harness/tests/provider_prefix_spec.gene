@@ -1,7 +1,7 @@
 (import $test [describe it])
-(import [isolated run_spec] ^from "./support")
+(import [isolated run_spec test_service] ^from "./support")
 (import ^from "../src/web/session_service" [open_session_service close_session_service create_session submit])
-(import ^from "../src/agents/model_client" [completion_request])
+(import ^from "../src/builtin/provider_anthropic" [prepare_anthropic])
 (fn common_prefix [first : Str, second : Str] : Str
   (let a ($binary/from_str first))
   (let b ($binary/from_str second))
@@ -29,11 +29,12 @@
         (repeat index in 3000 (parts .push "x"))
         (let payload ($str/join parts ""))
         (let count ($cell 0))
-        (let config {^provider "anthropic" ^model "test" ^anthropic_key "test" ^effort "none"})
-        (let service (open_session_service ^workspace workspace ^provider (fn [request]
+        (let settings {^model "test" ^effort "none" ^timeout_ms 600000})
+        (let service (test_service ^workspace workspace ^provider (fn [request]
           (let messages request/messages)
           (let last (- messages/.size 1))
-          (let spec (completion_request config messages/0/content messages/%last/content 100 ^messages messages))
+          (let spec (prepare_anthropic
+            {^purpose "turn" ^messages messages ^settings settings ^max_tokens 100}))
           (wire/.get .push ($json/stringify spec/body))
           (count .set (+ count/.get 1))
           (let n count/.get)

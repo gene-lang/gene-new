@@ -1,0 +1,49 @@
+(mod plugin_admin)
+(import ^from "../plugin_api" [Plugin PluginHost])
+(import ^from "../runtime/composition" [current_snapshot])
+(import ^from "../storage/workspace"
+  [register_plugin set_plugin_enabled restore_plugin])
+(import ^from "../agents/instructions" [reference_root])
+
+(const plugin_paragraph "Use register_plugin with a quoted (mod plugin ...) or attachment text and optional dependencies. It queues publication; contributed functions appear next turn. Generated plugins import only src/plugin_api.gene plus supplied content-addressed dependencies. Activation is a direct (fn [host] ...); use PluginHost:contribute \"functions\" with name, fn and doc. Standard-library I/O is available directly.")
+
+(fn plugin_admin [] : Plugin
+  (Plugin ^id "plugin_admin"
+    ^provides [["functions" "register_plugin"] ["docs" "harness/plugins"]]
+    ^activate (fn [host]
+      (let h host/h)
+      (host .PluginHost:contribute "functions"
+        {^name "register_plugin" ^doc "Queue a workspace plugin for publication."
+         ^fn (fn [id : Str source, ^dependencies dependencies = [],
+                  ^replace replace : Bool = false]
+           (register_plugin ^dependencies dependencies ^replace replace
+             h/workspace h id source))})
+      (host .PluginHost:contribute "functions"
+        {^name "plugin_states" ^doc "List plugins from the leased composition."
+         ^fn (fn []
+           (let snapshot (current_snapshot h/snapshots))
+           {^plugins (?? snapshot/plugins [])
+            ^readiness (if ($absent? h/readiness) nil (h/readiness))})})
+      (host .PluginHost:contribute "functions"
+        {^name "inspect_plugin" ^doc "Inspect one plugin in the leased composition."
+         ^fn (fn [id : Str]
+           (let snapshot (current_snapshot h/snapshots))
+           (for plugin in (?? snapshot/plugins [])
+             (if (== plugin/id id) (return plugin)))
+           nil)})
+      (host .PluginHost:contribute "functions"
+        {^name "enable_plugin" ^doc "Enable a stored or built-in plugin."
+         ^fn (fn [id : Str] (set_plugin_enabled h/workspace h id true))})
+      (host .PluginHost:contribute "functions"
+        {^name "disable_plugin" ^doc "Disable a stored or built-in plugin."
+         ^fn (fn [id : Str] (set_plugin_enabled h/workspace h id false))})
+      (host .PluginHost:contribute "functions"
+        {^name "restore_plugin" ^doc "Restore a built-in plugin to its profile default."
+         ^fn (fn [id : Str] (restore_plugin h/workspace h id))})
+      (host .PluginHost:contribute "prompt"
+        {^name "plugin_admin" ^text plugin_paragraph})
+      (let root (reference_root))
+      (if ($absent? root) (fail "Harness documentation directory is unavailable"))
+      (host .PluginHost:contribute "docs"
+        {^name "harness/plugins"
+         ^path ($path/join root "examples/gene-harness/docs/plugins.md")}))))

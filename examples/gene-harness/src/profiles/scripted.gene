@@ -1,0 +1,12 @@
+(mod scripted_profile)
+(import [Profile] ^from "./profile")
+(import [baseline_profile] ^from "./baseline")
+(import [provider_scripted] ^from "../builtin/provider_scripted")
+
+(fn scripted_profile [responses] : Profile
+  (let base (baseline_profile))
+  (let plugins [])
+  (for plugin in base/plugins (plugins .push plugin))
+  (plugins .push (provider_scripted responses))
+  (Profile ^name "scripted" ^plugins plugins ^limits base/limits
+    ^requires base/requires ^provider "scripted"))

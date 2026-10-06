@@ -1,7 +1,7 @@
 (mod turn_loop)
 (import ^from "../runtime/composition" [acquire_snapshot release_snapshot])
 (import ^from "./harness_turn" [evaluate_harness_turn])
-(import ^from "./instructions" [assemble_instructions gene_doc])
+(import ^from "./instructions" [assemble_instructions])
 (import ^from "./history"
   [
     append_message
@@ -12,23 +12,24 @@
     compact_history
     write_body])
 (import ^from "./history" [byte_prefix])
+(import ^from "./provider_selection" [readiness_report])
+(import ^from "./model_call" [call_model])
+(import ^from "./hooks" [history_policy request_prepare])
 (import ^from "../storage/state"
-  [append_core_event core_state record_core_state flush_event_store copy_data])
+  [append_core_event append_turn_end_once core_state record_core_state flush_event_store copy_data])
 (import ^from "../runtime/questions" [ask_questions])
 (import ^from "../runtime/sessions" [require_record update_session])
 
 (fn transcript [runtime, session : Str, payload]
   (let timed (copy_data payload))
   (timed .put "at_ms" ($os/wall_ms))
-  (let event (append_core_event runtime/events "session" session timed))
-  (if_not ($absent? runtime/on_event)
-    (try
-      (runtime/on_event session event)
-    catch Any
-      ($println $"Transcript notification failed: ${$err/message}")))
-  (if (&& ($absent? runtime/on_event) (== payload/type "reply") (!= payload/final true))
-    ($runtime/with_context nil (fn [] ($println payload/text) ($io/flush_stdout))))
-  event)
+  (append_core_event runtime/events "session" session timed))
+
+(fn finish_turn [runtime, session : Str, payload]
+  (let timed (copy_data payload))
+  (timed .put "at_ms" ($os/wall_ms))
+  (let outcome (append_turn_end_once runtime/events session timed))
+  outcome/event)
 
 (fn console_output [runtime, session : Str, round : Str, turn : Int, item]
   (let loaded (runtime/sessions/loaded/.get .get session))
@@ -54,23 +55,9 @@
         (if_not ($absent? loaded) (loaded/console/.get .push payload))
         (transcript runtime session payload))))
   (if item/late (flush_event_store runtime/events))
-  (if ($absent? runtime/on_event)
-    ($runtime/with_context
-      nil
-      (fn []
-        (var running 0)
-        (for [id record] in runtime/sessions/index/.get
-          (if (== record/status "running") (set running (+ running 1))))
-        (let record (runtime/sessions/index/.get .get session))
-        (let title (?? record/title session))
-        (let prefix (if (> running 1) $"[${title}] " ""))
-        (if ($os/stdout_tty?)
-          ($print "[2m" prefix item/text "[0m")
-          ($print prefix item/text))
-        ($io/flush_stdout))))
   nil)
 
-(fn run_round [runtime, session : Str, round, provider, ^resume resume : Bool = false]
+(fn run_round [runtime, session : Str, round, ^resume resume : Bool = false]
   (let metadata (require_record runtime/sessions session))
   (let config ($serde/read_data ($fs/read_text $"${runtime/state_root}/config.gene")))
   (let limit
@@ -97,18 +84,6 @@
           last_request))
       (recovery .put "delivered" true)
       (record_core_state runtime/events "session" session "session/state" "recovery" recovery)))
-  (if_not resume
-    (append_message ^round round/id runtime session "user" last_request)
-    (transcript
-      runtime
-      session
-      {
-        ^type "turn/request"
-        ^round round/id
-        ^turn 0
-        ^full last_request
-        ^settled last_request
-        ^^initial}))
   (while (< count limit)
     (let current (require_record runtime/sessions session))
     (let number (+ current/turns 1))
@@ -117,53 +92,86 @@
     (round .put "last_turn" number)
     (if ($absent? round/first_turn) (round .put "first_turn" number))
     (update_session runtime/sessions session {^turns number})
-    (transcript runtime session {^type "turn/start" ^turn number ^round round/id})
-    (flush_event_store runtime/events)
     (let lease (acquire_snapshot runtime/h/snapshots))
     (var result nil)
+    (var stage "request/prepare")
+    (var started false)
     (try
+      (if (&& (! resume) (== count 1))
+        (then
+          (let source_request last_request)
+          (let prepared
+            ($runtime/with_context
+              {^composition runtime/h/snapshots ^snapshot lease/snapshot}
+              (fn []
+                (request_prepare runtime lease/snapshot
+                  {^session session ^round round/id ^turn number
+                   ^round_turn count ^limit limit ^items []}))))
+          (let rendered (bounded_request runtime session prepared/items))
+          (let settled
+            (if (== rendered/settled "") source_request
+              $"${source_request}\n${rendered/settled}"))
+          (if_not (== rendered/full "")
+            (set last_request $"${source_request}\n${rendered/full}"))
+          (round .put "request" last_request)
+          (round .put "request_settled" settled)
+          (append_message ^settled settled ^round round/id runtime session
+            "user" last_request)
+          (transcript runtime session
+            {^type "turn/request" ^round round/id ^turn 0
+             ^full last_request ^settled settled ^^initial})))
+      (transcript runtime session
+        {^type "turn/start" ^turn number ^round round/id})
+      (set started true)
+      (flush_event_store runtime/events)
+      (set stage "readiness")
+      (let ready_message
+        ($runtime/with_context
+          {^composition runtime/h/snapshots ^snapshot lease/snapshot}
+          (fn []
+            (readiness_report runtime config))))
+      (if_not ($absent? ready_message)
+        (finish_turn runtime session
+          {^type "turn/end" ^turn number ^round round/id
+           ^reason "not_ready" ^text ready_message ^synthetic false})
+        (flush_event_store runtime/events)
+        (return {^state "failed" ^message ready_message
+          ^turn_count count ^last_turn number}))
+      (set stage "instructions")
       (let instructions
         ($runtime/with_context
           {^composition runtime/h/snapshots ^snapshot lease/snapshot}
           (fn []
             (assemble_instructions runtime (require_record runtime/sessions session)))))
-      (compact_history
-        runtime
-        session
-        instructions
-        (?? config/context_window 128000)
-        (fn [request]
-          (request .put "config" config)
-          (provider request)))
+      (set stage "history/compact")
+      (let window_tokens (?? config/context_window 128000))
+      (let policy
+        ($runtime/with_context
+          {^composition runtime/h/snapshots ^snapshot lease/snapshot}
+          (fn []
+            (history_policy runtime lease/snapshot
+              {^session session ^round round/id ^turn number
+               ^window_tokens window_tokens}))))
+      (if_not ($absent? policy)
+        (compact_history ^policy policy
+          runtime
+          session
+          instructions
+          window_tokens
+          (fn [request]
+            (request .put "config" config)
+            (request .put "round" round/id)
+            (request .put "turn" number)
+            (set stage "history/summary")
+            (let summary_call (call_model runtime request))
+            (set stage "history/compact")
+            summary_call/text)))
+      (set stage "context")
       (let messages (provider_context runtime session instructions))
       (let budget {^limit limit ^used count ^remaining (- limit count)})
-      (let latest ($last messages))
-      (latest .put
-        "content"
-        ($to_str
-          latest/content
-          ($to_str
-            """
-[harness_budget] This is turn """
-            count
-            " of "
-            limit
-            " in this round; "
-            budget/remaining
-            " turns remain after this response. Prioritize implementation and verification; finish with Outcome when complete.")))
-      # Opt-in capture of exact model requests and raw replies. The event
-      # transcript records execution results, but assembled instructions
-      # change as plugins activate and would otherwise be lost.
-      (if (== ($os/env? "GENE_HARNESS_CAPTURE_REQUESTS") "1")
-        (then
-          (let directory $"${runtime/state_root}/model_requests")
-          ($fs/make_dir directory)
-          ($fs/write_text_atomic ^^owner_only
-            $"${directory}/${($crypto/sha256 session)}-${number}.json"
-            ($json/stringify {^session session ^round round/id ^turn number
-              ^messages messages}))))
-      (let text
-        (provider
+      (set stage "model/call")
+      (let completion
+        (call_model runtime
           {
             ^session session
             ^round round/id
@@ -171,10 +179,8 @@
             ^budget budget
             ^config config
             ^messages messages}))
-      (if (== ($os/env? "GENE_HARNESS_CAPTURE_REQUESTS") "1")
-        ($fs/write_text_atomic ^^owner_only
-          $"${runtime/state_root}/model_requests/${($crypto/sha256 session)}-${number}.response.txt"
-          text))
+      (let text completion/text)
+      (set stage "response/evaluate")
       (let elided
         (try
           (elide_response runtime session number text)
@@ -190,6 +196,7 @@
             ^type "turn/response"
             ^turn number
             ^round round/id
+            ^model_call completion/call_id
             ^text elided/text
             ^blobs elided/blobs
             ^patch_files files})
@@ -209,15 +216,32 @@
         (flush_event_store runtime/events)
         (response_recorded .set true)
         nil)
-      (let bindings ($thaw ($freeze_shallow runtime/functions)))
-      (bindings .put "doc" gene_doc)
       (set result
-        (evaluate_harness_turn ^session session ^lease lease ^timeout_ms (?? config/response_budget/timeout_ms 600000) ^max_memory_mb (?? config/response_budget/max_memory_mb 1024) ^bindings bindings ^recall (fn [id] (recall_body runtime session id)) ^console_sink (fn [item] (console_output runtime session round/id number item)) ^record (fn [kind data] (if (== kind "turn/response") (record_response data/patch_files) (do (record_core_state runtime/events "session" session "session/state" $"patch/${number}" {^state "completed" ^result data/result ^round round/id ^turn number}) (transcript runtime session {^type "turn/patch" ^round round/id ^turn number ^result data/result ^text data/result/text}))))
+        (evaluate_harness_turn ^session session ^lease lease ^timeout_ms (?? config/response_budget/timeout_ms 600000) ^max_memory_mb (?? config/response_budget/max_memory_mb 1024) ^recall (fn [id] (recall_body runtime session id)) ^console_sink (fn [item] (console_output runtime session round/id number item)) ^record (fn [kind data] (if (== kind "turn/response") (record_response data/patch_files) (do (record_core_state runtime/events "session" session "session/state" $"patch/${number}" {^state "completed" ^result data/result ^round round/id ^turn number}) (transcript runtime session {^type "turn/patch" ^round round/id ^turn number ^result data/result ^text data/result/text}))))
           runtime/h
           number
           runtime/root
           text))
       (record_response [])
+      (if_not (["done" "cancelled"] .contains? result/kind)
+        (let prepared
+          ($runtime/with_context
+            {^composition runtime/h/snapshots ^snapshot lease/snapshot}
+            (fn []
+              (request_prepare runtime lease/snapshot
+                {^session session ^round round/id ^turn (+ number 1)
+                 ^round_turn (+ count 1) ^limit limit
+                 ^items result/request_items}))))
+        (result .put "prepared_request_items" prepared/items))
+    catch Any
+      (let message ($to_str $err/message))
+      (if started
+        (finish_turn runtime session
+          {^type "turn/end" ^turn number ^round round/id
+           ^reason "error" ^stage stage ^text message ^synthetic false}))
+      (flush_event_store runtime/events)
+      (return {^state "failed" ^message message ^stage stage
+        ^turn_count count ^last_turn number})
     ensure
       (release_snapshot runtime/h/snapshots lease))
     (let outcome (if ($absent? result/validated) nil result/validated/outcome))
@@ -239,7 +263,7 @@
           ^round round/id
           ^text outcome/reply
           ^final (== result/kind "done")}))
-    (transcript
+    (finish_turn
       runtime
       session
       {^type "turn/end" ^turn number ^round round/id ^reason result/kind ^synthetic false})
@@ -251,7 +275,7 @@
       (then
         (flush_event_store runtime/events)
         (return {^state "cancelled" ^turn_count count ^last_turn number})))
-    (let requests (bounded_request runtime session result/request_items))
+    (let requests (bounded_request runtime session result/prepared_request_items))
     (set last_request requests/full)
     (round .put "request" last_request)
     (round .put "request_settled" requests/settled)

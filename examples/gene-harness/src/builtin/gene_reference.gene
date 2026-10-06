@@ -1,0 +1,23 @@
+(mod gene_reference)
+(import ^from "../plugin_api" [Plugin PluginHost])
+(import ^from "../agents/instructions" [reference_root])
+
+(fn gene_reference [] : Plugin
+  (Plugin ^id "gene_reference"
+    ^provides [["prompt" "gene_reference"] ["docs" "gene/stdlib"]]
+    ^activate (fn [host]
+      (let root (reference_root))
+      (if ($absent? root) (fail "Gene documentation directory is unavailable"))
+      (host .PluginHost:contribute "prompt"
+        {^name "gene_reference"
+         ^text ($fs/read_text ($path/join root "tools/gene-lang-skill/SKILL.md"))})
+      (host .PluginHost:contribute "prompt"
+        {^name "gene_chapters"
+         ^text "Documentation chapters: gene/pitfalls, gene/syntax, gene/declarations, gene/control_flow, gene/stdlib; for example (doc \"gene/stdlib\")."})
+      (for [name chapter] in
+          {^gene/pitfalls "pitfalls" ^gene/syntax "syntax"
+           ^gene/declarations "declarations" ^gene/control_flow "control-flow"
+           ^gene/stdlib "stdlib"}
+        (host .PluginHost:contribute "docs"
+          {^name ($to_str name)
+           ^path ($path/join root $"tools/gene-lang-skill/reference/${chapter}.md")})))))

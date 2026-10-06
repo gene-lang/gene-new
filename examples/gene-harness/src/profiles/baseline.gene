@@ -1,6 +1,20 @@
 (mod baseline)
 (import [Profile] ^from "./profile")
 (import [ExecutionLimits] ^from "../plugin_api")
+(import [gene_reference] ^from "../builtin/gene_reference")
+(import [plugin_admin] ^from "../builtin/plugin_admin")
+(import [core_commands] ^from "../builtin/core_commands")
+(import [triggers] ^from "../builtin/triggers")
+(import [provider_codex] ^from "../builtin/provider_codex")
+(import [provider_anthropic] ^from "../builtin/provider_anthropic")
+(import [provider_claude] ^from "../builtin/provider_claude")
+(import [provider_openrouter] ^from "../builtin/provider_openrouter")
+(import [budget_advisory] ^from "../builtin/budget_advisory")
+(import [history_basic] ^from "../builtin/history_basic")
 (fn baseline_profile []
-  (Profile ^name "chat" ^plugins []
+  (Profile ^name "chat"
+    ^plugins [(gene_reference) (plugin_admin) (core_commands) (triggers)
+              (provider_codex) (provider_anthropic) (provider_claude)
+              (provider_openrouter) (budget_advisory) (history_basic)]
+    ^requires [["prompt" "gene_reference"]]
     ^limits (ExecutionLimits ^max_steps 9223372036854775807 ^max_memory_mb 1024 ^timeout_ms 600000)))

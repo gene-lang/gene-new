@@ -1,0 +1,16 @@
+(mod provider_scripted)
+(import ^from "../plugin_api" [Plugin PluginHost])
+
+(fn provider_scripted [responses] : Plugin
+  (let index ($cell 0))
+  (Plugin ^id "provider_scripted" ^provides [["providers" "scripted"]]
+    ^activate (fn [host]
+      (host .PluginHost:contribute "providers"
+        {^name "scripted" ^doc "Replay supplied model responses."
+         ^configure (fn [model, effort, timeout]
+           {^model "scripted" ^effort "none" ^timeout_ms timeout})
+         ^prepare (fn [call] {})
+         ^send (fn [prepared]
+           (let next (index .swap (+ index/.get 1)))
+           (if (>= next responses/.size) (fail "scripted provider exhausted"))
+           {^text responses/%next})}))))

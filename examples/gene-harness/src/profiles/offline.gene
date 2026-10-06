@@ -1,0 +1,12 @@
+(mod offline_profile)
+(import [Profile] ^from "./profile")
+(import [baseline_profile] ^from "./baseline")
+(import [provider_offline] ^from "../builtin/provider_offline")
+
+(fn offline_profile [] : Profile
+  (let base (baseline_profile))
+  (let plugins [])
+  (for plugin in base/plugins (plugins .push plugin))
+  (plugins .push (provider_offline))
+  (Profile ^name "offline" ^plugins plugins ^limits base/limits
+    ^requires base/requires ^provider "offline"))

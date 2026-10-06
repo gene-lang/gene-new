@@ -410,9 +410,6 @@
     ^last_gc ($cell 0) ^gc_interval gc_interval
     ^mutating ($cell false) ^hook hook ^last_retention ($cell 0)))
   (set runtime/triggers manager)
-  (runtime/functions .put "create_trigger" (fn [definition] (create_trigger manager definition)))
-  (runtime/functions .put "list_triggers" (fn [] (list_triggers manager)))
-  (runtime/functions .put "delete_trigger" (fn [id : Str] (delete_trigger manager id)))
   (if boot (tick_triggers manager ^boot true ^now now))
   (if start
     (manager/task .set (spawn ^lane root

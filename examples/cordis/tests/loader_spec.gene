@@ -225,4 +225,37 @@
                  (== remaining/state "active")
                  (== activations/.get 2))
       "removing an entry must leave its sibling live")
+    loader/.dispose)
+
+  (it "keeps healthy staged entries when a host allows failed activations" [t]
+    (let runtime
+      (new_runtime
+        (RuntimeOptions ^logger nil ^invoker (default_plugin_invoker)
+          ^default_limits (invocation_limits))))
+    (set t/runtime runtime)
+    (let loader_cell ($cell nil))
+    (let loader
+      (runtime .loader
+        (LoaderOptions ^plugin_root "fixtures/plugins" ^shared []
+          ^max_namespaces [] ^default_limits nil ^reload_policy nil
+          ^allow_failed true
+          ^retirement (fn [ticket] (loader_cell/.get .retire ticket)))))
+    (loader_cell .set loader)
+    (let healthy
+      (PluginSpec ^id "host/healthy" ^config_schema nil ^requires []
+        ^provides [] ^reload nil ^activate (fn [ctx, config] nil)))
+    (let broken
+      (PluginSpec ^id "host/broken" ^config_schema nil ^requires []
+        ^provides [] ^reload nil
+        ^activate (fn [ctx, config]
+          (fail (LoaderBoom ^message "activation failed")))))
+    (let snapshot
+      (loader .reconcile_plugins
+        {^format 1 ^entries [{^id "healthy" ^module "host/healthy"}
+                              {^id "broken" ^module "host/broken"}]}
+        {^healthy healthy ^broken broken}))
+    (let states {})
+    (for entry in snapshot/entries (states .put entry/id entry/state))
+    (assert_equal (states .get "healthy") "active")
+    (assert_equal (states .get "broken") "failed")
     loader/.dispose))

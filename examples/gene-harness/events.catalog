@@ -9,6 +9,8 @@ session/state 1 required core_state
 round/state 1 required core_state
 question/asked 1 required core_state
 question/answered 1 required core_state
+model/request 1 required model_request
+model/result 1 required model_result
 turn/response 1 required turn_response
 turn/patch 1 required turn_patch
 turn/request 1 required turn_request

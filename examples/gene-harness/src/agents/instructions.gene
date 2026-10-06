@@ -1,6 +1,6 @@
 (mod instructions)
 (import ^from "./harness_turn" [function_instructions])
-(import ^from "../kernel" [rows HarnessError])
+(import ^from "../kernel" [rows contribute HarnessError])
 
 (const response_format """
 Return Gene code, optionally followed by raw attachment and patch blocks. Do not wrap code in Markdown or return a JSON envelope.
@@ -11,11 +11,8 @@ The last value is the outcome. (Outcome ^done true ^reply "...") finishes with a
 (Outcome ^questions [{^id "name" ^prompt "Project name?"}]) waits. Up to 8 unique ids; choices, recommended, multi and kind confirm are supported. Skipped answers are unanswered.
 Attachments start at column 1: <<<name END followed by newline, raw body lines, then END on its own line. Access with (attachment "name"). Preserve trailing newlines. One V4A *** Begin Patch / *** End Patch block is allowed; it applies before code. Patch paths must be relative to the workspace (for example server.gene), never absolute or containing .. segments. Patch failure skips code.
 ELIDED attachments and [elided ...] markers in history are summaries, not file contents. Never copy them into a new attachment; use recall to recover the original body or provide full new contents.
-Use register_plugin with a quoted (mod plugin ...) or attachment text and optional dependencies. It queues publication; contributed functions appear next turn. Generated plugins import only src/plugin_api.gene plus supplied content-addressed dependencies. Activation is a direct (fn [host] ...); use PluginHost:contribute "functions" with name, fn and doc. Standard-library I/O is available directly.
-Plugins can enhance the existing web frontend through the web_components registry. Read (doc "harness/web_components") for its slots, quoted views, dynamic render callbacks, actions and examples before implementing a web component.
-Use (recall "N.label") for elided bodies. Documentation chapters: gene/pitfalls, gene/syntax, gene/declarations, gene/control_flow, gene/stdlib; for example (doc "gene/stdlib").
+Use (recall "N.label") for elided bodies.
 Each round has a turn budget, shown in the latest request as [harness_budget]. Plan exploration, implementation and verification within it. A continuation message starts another round with the existing files and history.
-Use (create_trigger {^id "audit" ^kind "heartbeat" ^every_ms 60000 ^request "Audit."}) to schedule workspace work. Kinds: heartbeat (every_ms), scheduled (at, UTC timestamp), cron (cron, timezone). Policies: missed skip/once, overlap skip/queue_one, continue_session boolean, retention keep/days. (list_triggers) lists definitions; (delete_trigger "audit") disables future starts.
 
 # Finish
 (Outcome ^done true ^reply "Finished.")
@@ -63,28 +60,33 @@ Use (create_trigger {^id "audit" ^kind "heartbeat" ^every_ms 60000 ^request "Aud
         "examples/gene-harness/docs/web-components.md"
         $"tools/gene-lang-skill/reference/${chapter}.md"))))
 
-(fn assemble_instructions [runtime, session_record] : Str
-  (let root (reference_root))
-  (let reference
-    (if ($absent? root)
-      ""
-      ($fs/read_text ($path/join root "tools/gene-lang-skill/SKILL.md"))))
-  (let parts
-    [
-      response_format
-      reference
-      ($to_str
-        "Workspace: "
-        runtime/root
-        """
+(fn render_context [runtime, session_record]
+  ($to_str
+    "Workspace: "
+    runtime/root
+    """
 Session kind: """
-        session_record/kind
-        """
+    session_record/kind
+    """
 Functions:
 """
-        (function_instructions runtime/h))])
+    (function_instructions runtime/h)))
+
+(fn install_core_prompt_rows [h]
+  (contribute ^priority -100 h "core" "prompt"
+    {^name "core_response_format" ^text response_format})
+  (contribute ^priority 100 h "core" "prompt"
+    {^name "core_context" ^render render_context})
+  nil)
+
+(fn assemble_instructions [runtime, session_record] : Str
+  (let parts [])
   (for section in (rows runtime/h "prompt")
-    (if_not (== section/pull_only true) (parts .push section/text)))
+    (if_not (== section/pull_only true)
+      (parts .push
+        (if ($absent? section/render)
+          section/text
+          (section/render runtime session_record)))))
   ($str/join
     parts
     """

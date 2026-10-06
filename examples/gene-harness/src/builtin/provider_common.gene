@@ -1,0 +1,35 @@
+(mod provider_common)
+(import ^from "../kernel" [HarnessError])
+(import $net/http_client [request])
+
+(fn nonempty [value]
+  (if ($absent? value) (return nil))
+  (let text ($str/trim ($to_str value)))
+  (if (== text "") nil text))
+
+(fn configure_model [model, effort, timeout, default_model : Str,
+                     ^minimal_is_low minimal_is_low : Bool = false]
+  (if (|| (!= ($head timeout) Int) (<= timeout 0) (> timeout 86400000))
+    (fail (HarnessError ^message
+      "provider_timeout_ms must be an integer between 1 and 86400000")))
+  (let selected_effort (?? (nonempty effort) "medium"))
+  (if_not (["none" "minimal" "low" "medium" "high" "xhigh" "max"]
+           .contains? selected_effort)
+    (fail (HarnessError ^message
+      "GENE_HARNESS_THINKING_EFFORT must be none, minimal, low, medium, high, xhigh, or max")))
+  {^model (?? (nonempty model) default_model)
+   ^effort (if (&& minimal_is_low (== selected_effort "minimal"))
+             "low" selected_effort)
+   ^timeout_ms timeout})
+
+(fn http_json_attempt [url : Str, headers, body, timeout_ms : Int, parse_response]
+  (try
+    (let pending
+      (request ^method "POST" ^url url ^headers headers
+        ^body ($json/stringify body) ^timeout_ms timeout_ms ^max_bytes 2000000))
+    (let response (try (await pending) ensure pending/.cancel))
+    (parse_response response)
+  catch HttpClientError
+    (if ($str/contains? ($str/lower $err/message) "timeout")
+      {^timeout true}
+      (fail $err))))

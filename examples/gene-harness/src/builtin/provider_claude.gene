@@ -1,0 +1,89 @@
+(mod provider_claude)
+(import ^from "../plugin_api" [Plugin PluginHost])
+(import ^from "../kernel" [HarnessError])
+(import ^from "./provider_common" [nonempty configure_model])
+(import $os [exec_async])
+
+(fn claude_request [config, system : Str, user : Str]
+  (if (>= (+ ($str/byte_size system) ($str/byte_size user)) 131072)
+    (fail (HarnessError ^message
+      "Claude CLI prompt exceeds 128 KiB; use the anthropic provider for larger contexts")))
+  (let settings {^disableAllHooks true})
+  (if (== config/effort "none")
+    (settings .put "alwaysThinkingEnabled" false))
+  (let args ["--print" "--output-format" "json"
+    "--safe-mode" "--setting-sources" "" "--settings" ($json/stringify settings)
+    "--tools" "" "--strict-mcp-config" "--mcp-config" "{\"mcpServers\":{}}"
+    "--disallowedTools" "mcp__*" "--permission-mode" "dontAsk"
+    "--no-chrome" "--disable-slash-commands" "--no-session-persistence"
+    "--max-turns" "1" "--model" config/model "--system-prompt" system])
+  (if_not (== config/effort "none")
+    (args .push "--effort") (args .push config/effort))
+  (args .push "--") (args .push user)
+  {^cmd config/claude_command ^args args})
+
+(fn claude_text [response] : Str
+  (if response/timed_out
+    (fail (HarnessError ^message
+      "Claude CLI timed out; incomplete output was not executed")))
+  (if (|| response/stdout_truncated response/stderr_truncated)
+    (fail (HarnessError ^message
+      "Claude CLI output exceeded its byte limit; incomplete output was not executed")))
+  (let parsed (try ($json/parse response/stdout) catch Any nil))
+  (if_not (== ($head parsed) Map)
+    (fail (HarnessError ^message
+      "Claude CLI returned no valid JSON result; check claude auth status and update Claude Code if a flag is unsupported")))
+  (if (|| (!= response/status 0) (== parsed/is_error true))
+    (fail (HarnessError ^message
+      "Claude CLI request failed; check claude auth status, model access, and subscription/API usage limits")))
+  (if (|| (!= parsed/type "result") (!= parsed/subtype "success")
+          (!= parsed/is_error false))
+    (fail (HarnessError ^message
+      "Claude CLI did not complete successfully; incomplete output was not executed")))
+  (if_not ($absent? parsed/stop_reason)
+    (if_not (== parsed/stop_reason "end_turn")
+      (fail (HarnessError ^message
+        "Claude CLI response did not finish its turn; incomplete output was not executed"))))
+  (if_not (== ($head parsed/result) Str)
+    (fail (HarnessError ^message "Claude CLI returned no text result")))
+  (let text parsed/result)
+  (if (== ($str/trim text) "")
+    (fail (HarnessError ^message "Claude CLI returned empty output")))
+  text)
+
+(fn provider_claude [] : Plugin
+  (Plugin ^id "provider_claude" ^provides [["providers" "claude"]]
+    ^activate (fn [host]
+      (host .PluginHost:contribute "providers"
+        {^name "claude" ^doc "Use the local Claude Code CLI."
+         ^configure (fn [model, effort, timeout]
+           (let configured
+             (configure_model ^minimal_is_low true model effort timeout "sonnet"))
+           (configured .put "command"
+             (?? (nonempty ($os/env? "GENE_HARNESS_CLAUDE_COMMAND")) "claude"))
+           configured)
+         ^prepare (fn [call]
+           (let settings call/settings)
+           (let messages call/messages)
+           (let spec (claude_request
+             {^claude_command settings/command ^model settings/model
+              ^effort settings/effort}
+             messages/0/content ($serde/write_data messages)))
+           {^cmd spec/cmd ^args spec/args ^timeout_ms settings/timeout_ms})
+         ^send (fn [prepared]
+           (let task
+             (try
+               (exec_async prepared/cmd prepared/args...
+                 ^timeout_ms prepared/timeout_ms ^max_bytes 2000000)
+             catch Any
+               (fail (HarnessError ^message
+                 "Cannot start Claude Code; install or update claude"))))
+           (let response
+             (try (await task)
+               catch Any
+                 (fail (HarnessError ^message
+                   "Claude Code could not run; check GENE_HARNESS_CLAUDE_COMMAND"))
+               ensure task/.cancel))
+           (let text (claude_text response))
+           (let parsed (try ($json/parse response/stdout) catch Any nil))
+           {^text text ^usage parsed/usage})}))))

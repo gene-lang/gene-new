@@ -1,0 +1,174 @@
+(import $test [describe it])
+(import [isolated run_spec] ^from "./support")
+(import ^from "../src/runtime/bootstrap" [open_runtime close_runtime])
+(import ^from "../src/profiles/profile" [Profile])
+(import ^from "../src/plugin_api" [Plugin PluginHost])
+(import ^from "../src/runtime/round_controller"
+  [new_round_controller submit_round round_receipt cancel_round close_round_controller])
+(import ^from "../src/storage/state" [events_for])
+(import ^from "../src/profiles/scripted" [scripted_profile])
+(import ^from "../src/agents/history" [append_message])
+
+(fn probe_profile [mode, attempts, entered]
+  (Profile ^name "test" ^provider "probe"
+    ^plugins [(Plugin ^id "provider_probe" ^provides [["providers" "probe"]]
+      ^activate (fn [host]
+        (host .PluginHost:contribute "providers"
+          {^name "probe" ^doc "Exercise model-call failures."
+           ^configure (fn [model, effort, timeout]
+             {^model "probe" ^effort "none" ^timeout_ms 30})
+           ^prepare (fn [call]
+             (if (== mode/.get "prepare")
+               (fail "prepare failed"))
+             {^messages call/messages})
+           ^send (fn [prepared]
+             (attempts .set (+ attempts/.get 1))
+             (if (== mode/.get "send_error")
+               (fail "provider failed"))
+             (if (== mode/.get "timeout")
+               (return {^timeout true}))
+             (if (== mode/.get "cancel")
+               (then
+                 (entered .set true)
+                 ($sleep 5000)))
+             {^text "(Outcome ^done true ^reply \"ok\")"})}
+        )
+      )
+    )]
+  ))
+
+(fn event_payloads [runtime, kind : Str]
+  (let found [])
+  (for event in (events_for runtime/events "session" "default")
+    (if (== event/type kind) (found .push event/payload)))
+  found)
+
+(describe "Model-call failure records"
+  (it "ends a pre-dispatch failure without inventing a model request" []
+    (isolated this_mod/.path "ends a pre-dispatch failure without inventing a model request"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default"
+          (probe_profile ($cell "prepare") ($cell 0) ($cell false))))
+        (let controller (new_round_controller runtime))
+        (try
+          (let accepted (submit_round controller "default" "first" 1 "go"))
+          (controller/watchers .get; .get "default"; .join)
+          (let receipt (round_receipt controller "default" accepted/id))
+          ($assert (== receipt/state "failed") "prepare error did not fail the round")
+          ($assert (== (event_payloads runtime "model/request") [])
+            "pre-dispatch error recorded a model call")
+          (let ends (event_payloads runtime "turn/end"))
+          ($assert (== ends/.size 1) "prepare error wrote multiple turn ends")
+          ($assert (== ends/0/stage "model/call")
+            "turn end omitted the failed stage")
+        ensure
+          (close_round_controller controller)
+          (close_runtime runtime)))))
+
+  (it "records provider errors and both timeout attempts" []
+    (isolated this_mod/.path "records provider errors and both timeout attempts"
+      (fn [workspace]
+        (let mode ($cell "send_error"))
+        (let attempts ($cell 0))
+        (let runtime (open_runtime workspace "default"
+          (probe_profile mode attempts ($cell false))))
+        (let controller (new_round_controller runtime))
+        (try
+          (let first (submit_round controller "default" "first" 1 "go"))
+          (controller/watchers .get; .get "default"; .join)
+          (let first_receipt (round_receipt controller "default" first/id))
+          ($assert (== first_receipt/state "failed")
+            "provider error did not fail the round")
+          (let error_results (event_payloads runtime "model/result"))
+          ($assert (== error_results/.size 1)
+            "provider error did not produce one result")
+          ($assert (&& (== error_results/0/outcome "error") error_results/0/final)
+            "provider failure result was not final")
+          (mode .set "timeout")
+          (let second (submit_round controller "default" "second" 2 "retry"))
+          (controller/watchers .get; .get "default"; .join)
+          (let second_receipt (round_receipt controller "default" second/id))
+          ($assert (== second_receipt/state "failed")
+            "two timeouts did not fail the round")
+          (let results (event_payloads runtime "model/result"))
+          ($assert (== results/.size 3) "retry did not record both attempts")
+          ($assert (&& (== results/1/outcome "timeout") (! results/1/final)
+                       (== results/2/outcome "timeout") results/2/final)
+            "timeout finality was wrong")
+          ($assert (== results/1/call results/2/call)
+            "retry did not retain one logical call id")
+          ($assert (== attempts/.get 3) "loop made the wrong number of attempts")
+          (let endings (event_payloads runtime "turn/end"))
+          ($assert (== endings/.size 2)
+            "failure finalization duplicated a turn end")
+        ensure
+          (close_round_controller controller)
+          (close_runtime runtime)))))
+
+  (it "records a cancelled in-flight provider attempt" []
+    (isolated this_mod/.path "records a cancelled in-flight provider attempt"
+      (fn [workspace]
+        (let entered ($cell false))
+        (let runtime (open_runtime workspace "default"
+          (probe_profile ($cell "cancel") ($cell 0) entered)))
+        (let controller (new_round_controller runtime))
+        (try
+          (let accepted (submit_round controller "default" "first" 1 "go"))
+          (let deadline (+ ($os/monotonic_ms) 5000))
+          (while (&& (! entered/.get) (< ($os/monotonic_ms) deadline))
+            ($sleep 1))
+          ($assert entered/.get "provider attempt never started")
+          (cancel_round controller "default" accepted/id)
+          (controller/watchers .get; .get "default"; .join)
+          (let results (event_payloads runtime "model/result"))
+          ($assert (== results/.size 1)
+            "cancelled provider attempt lacked a result")
+          ($assert (&& (== results/0/outcome "cancelled") results/0/final)
+            "cancelled attempt was recorded as a different outcome")
+          (let endings (event_payloads runtime "turn/end"))
+          ($assert (== endings/.size 1)
+            "cancellation wrote duplicate turn ends")
+        ensure
+          (close_round_controller controller)
+          (close_runtime runtime)))))
+
+  (it "ends a turn at the summary stage when its provider fails" []
+    (isolated this_mod/.path "ends a turn at the summary stage when its provider fails"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (scripted_profile [])))
+        (let controller (new_round_controller runtime))
+        (try
+          (let config ($serde/read_data
+            ($fs/read_text $"${runtime/state_root}/config.gene")))
+          (config .put "context_window" 10000)
+          ($fs/write_text_atomic $"${runtime/state_root}/config.gene"
+            ($serde/write_data config))
+          (let pieces [])
+          (repeat 50000 (pieces .push "x"))
+          (append_message ^round "old" runtime "default" "user"
+            ($str/join pieces ""))
+          (append_message ^round "old" ^turn 1 runtime "default"
+            "assistant" "# previous work")
+          (let accepted (submit_round controller "default" "first" 1 "go"))
+          (controller/watchers .get; .get "default"; .join)
+          (let receipt (round_receipt controller "default" accepted/id))
+          ($assert (== receipt/state "failed")
+            "summary provider failure did not fail the round")
+          (let requests (event_payloads runtime "model/request"))
+          (let results (event_payloads runtime "model/result"))
+          (let endings (event_payloads runtime "turn/end"))
+          ($assert (== requests/.size 1)
+            "main provider call ran after summary failure")
+          ($assert (== requests/0/purpose "history/summary")
+            "failed call was not identified as a summary")
+          ($assert (&& (== results/.size 1) (== results/0/outcome "error")
+                       results/0/final)
+            "summary error lacked a final model result")
+          ($assert (&& (== endings/.size 1)
+                       (== endings/0/stage "history/summary"))
+            "summary failure did not write one staged turn ending")
+        ensure
+          (close_round_controller controller)
+          (close_runtime runtime))))))
+
+(fn main [args] : Int (run_spec args))
