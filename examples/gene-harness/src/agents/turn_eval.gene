@@ -13,7 +13,7 @@
     recall])
 (import ^from "./eval_site" [evaluate_response])
 (import ^from "../runtime/patch" [prepare_patch commit_patch])
-(import ^from "./history" [byte_prefix])
+(import ^from "../text" [byte_prefix])
 
 (fn response_error_line [failure]
   (?? failure/response_line (if (== failure/file "response") (?? failure/line nil) nil)))

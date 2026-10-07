@@ -1,0 +1,79 @@
+# Panel state, browser storage and control availability.
+(mod harness_ui_model ^profile web)
+
+(type UiNode ^props {^key Str ^tag Str ^element EventTarget ^props PropMap ^form Str ^seen Int})
+(type UiClient ^props {^root EventTarget ^target EventTarget ^safe Bool ^ready Bool
+  ^session Str ^workspace Str ^epoch Str ^metadata_revision Str ^rendered_revision Str ^descriptor Any ^settings Any ^instance Str ^version Str
+  ^state PropMap ^drafts PropMap ^forms PropMap ^nodes PropMap ^generation Int
+  ^sequence Int ^debounce Int ^last_data Str ^loading Bool ^render_error Bool ^pending Any ^resolving Bool
+  ^api (Fn [Str Str Any (Fn [Int Any] Void)] Void) ^select (Fn [Str] Void)
+  ^command (Fn [Str] Void) ^prompt (Fn [Str] Void)})
+
+(fn text [value : Any, fallback : Str = ""] : Str
+  (if_yes ($absent? value) (return fallback))
+  (var result : Str value) result)
+
+(fn flag [value : Any] : Bool
+  (if_yes ($absent? value) (return false))
+  (var result : Bool value) result)
+
+(fn copy_map [value : Any] : PropMap
+  (if_yes ($absent? value) (return {}))
+  (var result : PropMap ($json/parse ($json/stringify value))) result)
+
+(fn body_args [value : Any] : (List Any)
+  (var empty : (List Any) [])
+  (var raw : Any (?? value empty))
+  (var result : (List Any) raw) result)
+
+(fn notice [ui : UiClient, value : Str] : Void
+  ($dom/set_text ($dom/element "ui_action_status") value))
+
+(fn state_key [ui : UiClient] : Str
+  $"gene-harness/ui-state/${ui/workspace}/${(text ui/descriptor/name)}/${ui/version}")
+(fn pending_key [ui : UiClient] : Str $"gene-harness/ui-pending/${ui/workspace}")
+
+(fn persist_view [ui : UiClient] : Void
+  (if_yes (!= ui/workspace "")
+    (if_not ($session_storage/set (state_key ui)
+      ($json/stringify {^state ui/state ^drafts ui/drafts ^forms ui/forms}))
+      (notice ui "Panel drafts could not be saved in browser storage. Keep this page open."))))
+
+(fn persist_pending [ui : UiClient] : Bool
+  ($session_storage/set (pending_key ui) ($json/stringify ui/pending)))
+
+(fn field_value [node : UiNode] : Any
+  (if_yes (== (text node/props/type) "checkbox")
+    (var checked : Bool node/element/checked)
+    (return checked))
+  ($dom/input_value node/element))
+
+(fn sync_controls [ui : UiClient] : Void
+  (var current (!= (text ui/descriptor/revision) ""))
+  (var enabled (&& ui/ready current (! ui/loading) (! ui/render_error)
+    (== ui/rendered_revision (text ui/descriptor/revision)) ($absent? ui/pending)))
+  (for [key raw] in ui/nodes
+    (var node : UiNode raw)
+    (if_yes (== node/tag "button")
+      (set node/element/disabled (|| (! enabled) (! ($absent? node/props/disabled))))))
+  (var resolve_button ($dom/element "ui_resolve"))
+  (var cancel_button ($dom/element "ui_cancel"))
+  (var retry_button ($dom/element "ui_retry"))
+  (set retry_button/hidden (! ui/render_error))
+  (set retry_button/disabled (|| (! ui/ready) ui/loading))
+  (set resolve_button/hidden ($absent? ui/pending))
+  (set cancel_button/hidden
+    (|| ($absent? ui/pending) (== (text ui/pending/command_id) ""))))
+
+(fn clear_saved_drafts [ui : UiClient, pending : Any] : Void
+  (var form (text pending/form))
+  (var still_dirty false)
+  (for [key raw] in ui/drafts
+    (var item : Any raw)
+    (if_yes (== (text item/form) form)
+      (var name : Str item/name)
+      (if (== ($json/stringify item/value) ($json/stringify pending/request/named/%name))
+        (set ui/drafts/%key void)
+        (set still_dirty true))))
+  (if_not still_dirty (set ui/forms/%form void))
+  (persist_view ui))

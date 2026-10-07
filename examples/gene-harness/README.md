@@ -8,6 +8,19 @@ Code uses the standard library and workspace plugin functions directly. File
 edits use an apply-patch block. Run the process in an OS sandbox when you want
 isolation.
 
+## Documentation
+
+| Need | Guide |
+| --- | --- |
+| Architecture, lifetimes and module responsibilities | [Design](docs/design.md) |
+| Author a workspace plugin | [Plugins](docs/plugins.md) |
+| Run and verify a function plugin without a model | [Project audit example](website/examples/project_audit/README.md) |
+| Browser workflow, transport and recovery | [Web client](docs/web-client.md) |
+| Add UI components or forms | [Web components](docs/web-components.md) |
+| Try the editable project board | [Workspace UI experiment](experiments/ui/README.md) |
+| Follow an end-to-end application build | [Todo replay](docs/todo-replay.md) |
+| Configure Claude transports | [Claude providers](docs/claude.md) |
+
 ## Start
 
 From the Gene repository:
@@ -139,6 +152,32 @@ or dismiss the batch.
 The CLI reads input while a round runs. For questions, enter a numbered choice,
 press Enter for the recommendation, enter `-` to skip, or `/dismiss` to
 dismiss the batch. Comma-separated numbers answer multiple-choice items.
+
+## Workspace UI
+
+Plugins can contribute quoted Gene views to named slots in the browser.
+An opt-in [workspace UI experiment](experiments/ui/README.md) also adds a
+stateful panel with keyed forms, layout choices and theme tokens. Its project
+board fixture is installed separately; the interface remains experimental.
+
+The same registered functions serve the model, `/run`, the persistent REPL
+and panel actions. The browser keeps filters, selections and unsaved drafts
+while server data changes. Actions use command tasks, cancellation and durable
+receipts. Failed actions attach one diagnostic to the submitting session's
+next user request; successful actions stay out of model input and the chat
+transcript.
+
+The baseline profile exposes `ui_configure` and `ui_preview`, with rendering
+and actions disabled until explicitly enabled. Model turns receive compact
+previews of views owned by successfully published plugins, including in CLI
+sessions. Use `ui_preview` for the full validated tree or a different view
+state. Previewing checks the server representation; browser layout and
+interaction still need verification.
+
+`/ui/default` opens the host's recovery interface without plugin views or
+themes. It preserves the selected conversation and offers a link back to the
+workspace UI. See the [component contract](docs/web-components.md) for
+authoring, limits and recovery behavior.
 
 ## Slash commands
 
@@ -376,6 +415,7 @@ From this package directory:
 ../../bin/gene test tests/unit
 ../../bin/gene test tests/integration
 ../../bin/gene test tests/unit/agents/response_spec.gene
+../../bin/gene test tests/integration/ui
 ../../bin/gene test --name "Harness trigger recovery"
 ../../bin/gene run ../../tools/generate_harness_event_catalog.gene --check
 ```
@@ -408,9 +448,25 @@ exceed those bounds during cleanup.
 Both entry points accept `--script FILE` for canned responses. The browser
 also has `--offline` for a simple model-free reply.
 
-An opt-in [workspace UI experiment](experiments/ui/README.md) adds a
-plugin-owned project board beside the conversation. It exercises keyed forms,
-server render previews, structured function actions and safe UI recovery.
+## Code organization
 
-See [design](docs/design.md), [web client](docs/web-client.md) and
-[Claude providers](docs/claude.md).
+| Location | Responsibility |
+| --- | --- |
+| `src/plugin_api.gene`, `src/kernel.gene`, `src/seams.gene` | Plugin contract, registries, activation and host events |
+| `src/agents/` | Model requests, response evaluation, instructions and history |
+| `src/runtime/` | Workspace ownership, sessions, commands, REPL, rounds, scheduling and composition lifetimes |
+| `src/storage/` | Durable events and stored plugin generations |
+| `src/ui/` | Component validation, UI settings/descriptors, leased rendering, publication outlines and function actions; shared by CLI and web hosts |
+| `src/web/` | Browser service, HTTP/WebSocket transport, authentication, page shell and styles |
+| `src/builtin/`, `src/profiles/`, `src/views/` | Built-in plugins, entry-point composition and operator views |
+| `client/` | Gene web-profile conversation client and display helpers |
+| `client/ui/` | Panel model/storage, keyed DOM reconciliation and request/action controller |
+| `src/website/`, `client/website.gene`, `website/` | Informational site and its runnable examples |
+| `experiments/ui/` | Optional board plugin, installer and evaluation record |
+| `tests/unit/`, `tests/integration/` | Specs mirroring the native source modules |
+
+The plugin import contract stays `src/plugin_api.gene`; plugins do not import
+implementation modules from these directories. The browser controller consumes
+`src/web/contract.gene`, while `src/ui/` owns the component and action rules.
+See the [implementation map](docs/design.md#implementation-map) for individual
+modules and development constraints.

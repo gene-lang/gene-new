@@ -11,7 +11,7 @@
     bounded_request
     compact_history
     write_body])
-(import ^from "./history" [byte_prefix])
+(import ^from "../text" [byte_prefix])
 (import ^from "./provider_selection" [readiness_report select_provider])
 (import ^from "./model_call" [call_model])
 (import ^from "./hooks" [history_policy request_prepare])

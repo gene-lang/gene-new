@@ -3,8 +3,8 @@
 (import ^from "../runtime/composition" [acquire_snapshot release_snapshot take_composition_changes discard_composition_changes])
 (import ^from "./turn_eval" [evaluate_turn])
 (import ^from "../storage/workspace" [drain_workspace_changes])
-(import ^from "./history" [byte_prefix])
-(import [ui_publication_preview] ^from "../runtime/ui_views")
+(import ^from "../text" [byte_prefix])
+(import [ui_publication_preview] ^from "../ui/views")
 
 (fn plugin_change_summary [changes]
   (let lines [])

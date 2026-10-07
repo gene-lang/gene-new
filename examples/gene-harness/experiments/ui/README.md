@@ -104,5 +104,9 @@ operator to use it. A preview does not establish browser layout or usability.
 
 The authoring API, supported controls and preview rules are documented in
 [web-components.md](../../docs/web-components.md). The host implementation is
-in `src/runtime/ui_views.gene`, `src/runtime/ui_actions.gene` and `client/ui.gene`.
+in `src/ui/`: `components.gene` validates trees, `state.gene` owns settings and
+descriptors, `views.gene` renders them, `outline.gene` summarizes publication
+feedback, and `actions.gene` admits function calls. `client/ui/` separates the
+panel model/storage, keyed DOM patching and request/action controller. The
+HTTP host and page shell live in `src/web/`.
 The fixture and installation tooling are Gene source.

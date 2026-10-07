@@ -31,6 +31,11 @@ the plugin belongs to the workspace: another session can use it, and startup
 loads it from the stored source after restart. Plugin state written through
 `PluginHost:update_state` is durable; ordinary in-memory variables are not.
 
+When the UI experiment is enabled, successfully published plugins that own
+stateful views also receive `[N.ui]` outlines or render errors. These previews
+run without a browser. Read the publication feedback before finishing, then
+exercise the action functions and verify the browser interactions as needed.
+
 ## Contributions
 
 Activation receives a `PluginHost`. Each row it contributes is owned by that
@@ -38,7 +43,7 @@ plugin and is removed when the activation unloads. Common rows are:
 
 | Registry | Row |
 | --- | --- |
-| `functions` | `{^name ^doc ^fn}`; response code and `/run` bind it by name |
+| `functions` | `{^name ^doc ^fn}`; response code, `/run` and the REPL bind it by name |
 | `commands` | `{^name ^usage ^doc ^run}`; an operator slash command |
 | `input_modes` | `{^name ^label ^hint ^submit_label ^prompt ^classify ^run ^close}`; a transient operator input mode |
 | `prompt` | `{^name ^text}` or `{^name ^render}`; an instruction section |
@@ -46,6 +51,7 @@ plugin and is removed when the activation unloads. Common rows are:
 | `providers` | `{^name ^doc ^available ^configure ^prepare ^send}`; a model adapter selected by the profile or configuration |
 | `hooks` | `{^point ^name ^run}`; an ordered listener at a published shaping point |
 | `triggers` | A definition that starts workspace work without a user |
+| `web_components` | `{^name ^slot ^view}` or `{^name ^slot ^render}`; quoted UI, with `view_state` and `actions` for experimental panel forms |
 
 Prompt sections have deterministic order. A plugin should describe only the
 functions it also contributes, so disabling it removes both the binding and
@@ -53,6 +59,21 @@ the instruction. `prepare` on a provider row returns plain model-visible data
 without credentials; `send` adds transport authentication and makes one
 attempt. A provider row is inert until selected. Callback limits apply to
 generated provider and hook rows just as to other plugin callbacks.
+
+### Contribute UI
+
+Use [web components](web-components.md) for slot contributions, stateful views,
+forms and registered-function actions. The host validates quoted element data
+and renders it through the shared `ui/` layer. Plugins import only the shared
+`src/plugin_api.gene` contract and their declared dependencies; the `ui/`
+modules are host implementation details.
+
+The [project board](../experiments/ui/README.md) is a complete example. It stores
+task data through `PluginHost:update_state`; the browser owns filters,
+selection and drafts. It declares `ui/state_lock` as a required seam to make
+revision checks and updates atomic across direct calls and UI actions. The
+configuration plugin keeps `ui_configure` and `ui_preview` available while
+rendering and actions are disabled by default.
 
 ### Provide an operator input mode
 

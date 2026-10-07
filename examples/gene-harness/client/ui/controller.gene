@@ -1,82 +1,8 @@
-# The optional board panel owns its view state and drafts independently of chat.
-(mod harness_experimental_ui ^profile web)
-
-(type UiNode ^props {^key Str ^tag Str ^element EventTarget ^props PropMap ^form Str ^seen Int})
-(type UiClient ^props {^root EventTarget ^target EventTarget ^safe Bool ^ready Bool
-  ^session Str ^workspace Str ^epoch Str ^metadata_revision Str ^rendered_revision Str ^descriptor Any ^settings Any ^instance Str ^version Str
-  ^state PropMap ^drafts PropMap ^forms PropMap ^nodes PropMap ^generation Int
-  ^sequence Int ^debounce Int ^last_data Str ^loading Bool ^render_error Bool ^pending Any ^resolving Bool
-  ^api (Fn [Str Str Any (Fn [Int Any] Void)] Void) ^select (Fn [Str] Void)
-  ^command (Fn [Str] Void) ^prompt (Fn [Str] Void)})
-
-(fn text [value : Any, fallback : Str = ""] : Str
-  (if_yes ($absent? value) (return fallback))
-  (var result : Str value) result)
-
-(fn flag [value : Any] : Bool
-  (if_yes ($absent? value) (return false))
-  (var result : Bool value) result)
-
-(fn copy_map [value : Any] : PropMap
-  (if_yes ($absent? value) (return {}))
-  (var result : PropMap ($json/parse ($json/stringify value))) result)
-
-(fn body_args [value : Any] : (List Any)
-  (var empty : (List Any) [])
-  (var raw : Any (?? value empty))
-  (var result : (List Any) raw) result)
-
-(fn notice [ui : UiClient, value : Str] : Void
-  ($dom/set_text ($dom/element "ui_action_status") value))
-
-(fn state_key [ui : UiClient] : Str
-  $"gene-harness/ui-state/${ui/workspace}/${(text ui/descriptor/name)}/${ui/version}")
-(fn pending_key [ui : UiClient] : Str $"gene-harness/ui-pending/${ui/workspace}")
-
-(fn persist_view [ui : UiClient] : Void
-  (if_yes (!= ui/workspace "")
-    (if_not ($session_storage/set (state_key ui)
-      ($json/stringify {^state ui/state ^drafts ui/drafts ^forms ui/forms}))
-      (notice ui "Panel drafts could not be saved in browser storage. Keep this page open."))))
-
-(fn persist_pending [ui : UiClient] : Bool
-  ($session_storage/set (pending_key ui) ($json/stringify ui/pending)))
-
-(fn field_value [node : UiNode] : Any
-  (if_yes (== (text node/props/type) "checkbox")
-    (var checked : Bool node/element/checked)
-    (return checked))
-  ($dom/input_value node/element))
-
-(fn sync_controls [ui : UiClient] : Void
-  (var current (!= (text ui/descriptor/revision) ""))
-  (var enabled (&& ui/ready current (! ui/loading) (! ui/render_error)
-    (== ui/rendered_revision (text ui/descriptor/revision)) ($absent? ui/pending)))
-  (for [key raw] in ui/nodes
-    (var node : UiNode raw)
-    (if_yes (== node/tag "button")
-      (set node/element/disabled (|| (! enabled) (! ($absent? node/props/disabled))))))
-  (var resolve_button ($dom/element "ui_resolve"))
-  (var cancel_button ($dom/element "ui_cancel"))
-  (var retry_button ($dom/element "ui_retry"))
-  (set retry_button/hidden (! ui/render_error))
-  (set retry_button/disabled (|| (! ui/ready) ui/loading))
-  (set resolve_button/hidden ($absent? ui/pending))
-  (set cancel_button/hidden
-    (|| ($absent? ui/pending) (== (text ui/pending/command_id) ""))))
-
-(fn clear_saved_drafts [ui : UiClient, pending : Any] : Void
-  (var form (text pending/form))
-  (var still_dirty false)
-  (for [key raw] in ui/drafts
-    (var item : Any raw)
-    (if_yes (== (text item/form) form)
-      (var name : Str item/name)
-      (if (== ($json/stringify item/value) ($json/stringify pending/request/named/%name))
-        (set ui/drafts/%key void)
-        (set still_dirty true))))
-  (if_not still_dirty (set ui/forms/%form void))
-  (persist_view ui))
+# Workspace panel requests, actions and layout; independent of chat drafts.
+(mod harness_ui_controller ^profile web)
+(import [UiNode UiClient text flag copy_map body_args notice state_key pending_key
+  persist_view persist_pending field_value sync_controls clear_saved_drafts] ^from "./model.gene")
+(import [apply_tree] ^from "./tree.gene")
 
 (fn accept_receipt [ui : UiClient, session : Str, record : Any] : Void
   (if_yes ($absent? ui/pending) (return))
@@ -194,88 +120,6 @@
           (set ui/last_data "")
           (refresh ui))))))
 
-(fn metadata [name : Str] : Bool
-  (for key in ["key" "field" "state" "action" "args" "positional" "command" "prompt"]
-    (if_yes (== key name) (return true)))
-  false)
-
-(fn input_tag [tag : Str] : Bool
-  (|| (== tag "input") (== tag "textarea") (== tag "select")))
-
-(fn patch_node [ui : UiClient, tree : Any, parent : EventTarget, at : Int, path : Str, form : Str] : Void
-  (var tag (text tree/tag "#text"))
-  (var props (if (== tag "#text") {} (copy_map tree/props)))
-  (var key (text props/key path))
-  (var found : Any ui/nodes/%key)
-  (if_yes (! ($absent? found))
-    (var previous : UiNode found)
-    (if_yes (!= previous/tag tag)
-      ($dom/remove previous/element)
-      (set found nil)))
-  (var node : UiNode
-    (if ($absent? found)
-      (UiNode ^key key ^tag tag ^element (if (== tag "#text") ($dom/create_text "") ($dom/create_element tag))
-        ^props {} ^form form ^seen ui/generation)
-      found))
-  (var created ($absent? found))
-  (set ui/nodes/%key node)
-  (set node/seen ui/generation)
-  (set node/form form)
-  (if (== tag "#text")
-    ($dom/set_text node/element (text tree))
-    (do
-      (for [old_name value] in node/props
-        (var name ($to_str old_name))
-        (if_yes (&& (! (metadata name)) ($absent? props/%name))
-          ($dom/remove_attribute node/element name)))
-      (set node/props props)
-      ($dom/set_attribute node/element "data-ui-key" key)
-      (for [raw_name value] in props
-        (var name ($to_str raw_name))
-        (if_not (metadata name)
-          (var attribute : Str value)
-          ($dom/set_attribute node/element name attribute)))
-      (if_yes created
-        (if_yes (input_tag tag)
-          ($dom/add_event_listener node/element "input" (fn [event : Any] : Void (changed_control ui node))))
-        (if_yes (== tag "button")
-          ($dom/add_event_listener node/element "click" (fn [event : Any] : Void
-            (if_yes (|| (! ui/ready) ui/loading) (return))
-            (if_not ($absent? node/props/state)
-              ($dom/prevent_default event)
-              (changed_control ui node))
-            (if_not ($absent? node/props/action)
-              ($dom/prevent_default event)
-              (submit_action ui node))
-            (if_not ($absent? node/props/command) (ui/command (text node/props/command)))
-            (if_not ($absent? node/props/prompt) (ui/prompt (text node/props/prompt))))))
-        (if_yes (== tag "form")
-          ($dom/add_event_listener node/element "submit" (fn [event : Any] : Void
-            ($dom/prevent_default event) (submit_action ui node)))))
-      (var children : (List Any) tree/children)
-      (var index 0)
-      (for child in children
-        (patch_node ui child node/element index $"${path}/${index}" (if (== tag "form") key form))
-        (set index (+ index 1)))
-      (if_yes (input_tag tag)
-        (var draft : Any ui/drafts/%key)
-        (if (== (text props/type) "checkbox")
-          (set node/element/checked (if ($absent? draft) (! ($absent? props/checked)) (flag draft/value)))
-          (do
-            (var value (if ($absent? draft) (text props/value) (text draft/value)))
-            (if_yes (!= value ($dom/input_value node/element)) ($dom/set_input_value node/element value)))))))
-  ($dom/insert_at parent node/element at))
-
-(fn apply_tree [ui : UiClient, tree : Any] : Void
-  (set ui/generation (+ ui/generation 1))
-  (patch_node ui tree ui/target 0 "@root" "")
-  (for [key raw] in ui/nodes
-    (var node : UiNode raw)
-    (if_yes (!= node/seen ui/generation)
-      ($dom/remove node/element)
-      (set ui/nodes/%key void)))
-  (sync_controls ui))
-
 (fn refresh [ui : UiClient] : Void
   (if_yes (|| ui/safe (! ui/ready) ($absent? ui/descriptor)) (return))
   (var revision : Str ui/descriptor/revision)
@@ -297,7 +141,9 @@
       (set ui/loading false)
       (if (&& (== code 200) ($absent? data/error))
         (try
-          (apply_tree ui data/view)
+          (apply_tree ui data/view
+            (fn [node : UiNode] : Void (changed_control ui node))
+            (fn [node : UiNode] : Void (submit_action ui node)))
           (set ui/rendered_revision revision)
           (if_yes ui/render_error (notice ui ""))
           (set ui/render_error false)

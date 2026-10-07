@@ -1,72 +1,12 @@
-# Experimental quoted views. Rendering and previews share the same leased path.
+# Leased rendering and publication previews shared by CLI and browser hosts.
 (mod ui_views)
-(import [rows resolve] ^from "../kernel")
-(import [acquire_snapshot release_snapshot] ^from "./composition")
-(import [spawn_composition_call] ^from "./cordis_adapter")
-(import [load_session list_sessions require_record] ^from "./sessions")
-(import [plugin_state next_sequence stream_key] ^from "../storage/state")
-(import [bounded_component_view WebComponentError] ^from "../web/component_spec")
-(import [byte_prefix] ^from "../agents/history")
-
-(type UiError ^props {^code Str ^message Str} ^impl [Error])
-(impl Error for UiError)
-
-(fn ui_error [code : Str, message : Str] (fail (UiError ^code code ^message message)))
-
-(fn ui_settings [h]
-  (let saved (if ($absent? h/event_store) nil
-    (plugin_state h/event_store "workspace" "workspace" "ui_experiment")))
-  (?? saved {^enabled false ^layout "chat" ^panel "" ^side "left" ^width 50 ^theme {}}))
-
-(fn validate_ui_settings [value]
-  (if (!= ($head value) Map) (ui_error "invalid_request" "UI settings must be a map."))
-  (let result {^enabled (== value/enabled true) ^layout (?? value/layout "chat")
-    ^panel (?? value/panel "") ^side (?? value/side "left")
-    ^width (?? value/width 50) ^theme (?? value/theme {})})
-  (if_not (["chat" "panel"] .contains? result/layout) (ui_error "invalid_request" "Unknown UI layout."))
-  (if_not (["left" "right"] .contains? result/side) (ui_error "invalid_request" "Panel side must be left or right."))
-  (if (|| (!= ($head result/width) Int) (< result/width 25) (> result/width 70))
-    (ui_error "invalid_request" "Panel width must be 25–70 percent."))
-  (if (|| (!= ($head result/panel) Str) (!= ($head result/theme) Map))
-    (ui_error "invalid_request" "Invalid panel or theme."))
-  (for [key color] in result/theme
-    (if_not (["ink" "muted" "line" "surface" "sidebar" "soft" "accent"] .contains? ($to_str key))
-      (ui_error "invalid_request" $"Unknown theme token ${key}."))
-    (if (|| (!= ($head color) Str) ($absent? (#"^#[0-9a-fA-F]{6}$" .match color)))
-      (ui_error "invalid_request" "Theme colors must be six-digit hex colors.")))
-  result)
-
-(fn ui_record [snapshot, registry : Str, name : Str]
-  (for record in (?? (snapshot/registries .get registry) [])
-    (if (== record/key name) (return record)))
-  nil)
-
-(fn ui_revision [h, record] ($to_str h/ui_epoch ":" record/row_id))
-
-(fn ui_data_revision [h, snapshot]
-  ($to_str snapshot/id ":" (if ($absent? h/event_store) 0
-    (next_sequence h/event_store (stream_key "workspace" "workspace")))))
-
-(fn ui_descriptor [h, snapshot, record]
-  (let candidate record/payload)
-  (let functions {})
-  (for name in (?? candidate/actions [])
-    (let action (ui_record snapshot "functions" name))
-    (if_not ($absent? action) (functions .put name (ui_revision h action))))
-  {^name candidate/name ^slot candidate/slot ^revision (ui_revision h record)
-   ^data_revision (ui_data_revision h snapshot) ^view_state candidate/view_state
-   ^state_version ($to_str (?? candidate/state_version "1")) ^functions functions})
-
-(fn ui_status [h]
-  (let settings (ui_settings h))
-  (let components [])
-  (let snapshot h/snapshots/current/.get)
-  (if_yes settings/enabled
-    (for record in (?? (snapshot/registries .get "web_components") [])
-      (if_not ($absent? record/payload/view_state)
-        (components .push (ui_descriptor h snapshot record)))))
-  {^settings settings ^components components ^data_revision (ui_data_revision h snapshot) ^epoch h/ui_epoch
-   ^workspace (?? h/workspace/workspace_root "")})
+(import [resolve] ^from "../kernel")
+(import [acquire_snapshot release_snapshot] ^from "../runtime/composition")
+(import [spawn_composition_call] ^from "../runtime/cordis_adapter")
+(import [load_session list_sessions require_record] ^from "../runtime/sessions")
+(import [bounded_component_view WebComponentError] ^from "./components")
+(import [ui_settings ui_record ui_revision ui_data_revision ui_descriptor ui_error] ^from "./state")
+(import [view_outline outline_text] ^from "./outline")
 
 (fn render_component [h, callback, context, ^experimental experimental : Bool = false]
   (let outcome
@@ -151,54 +91,6 @@
   (let chosen (if (== session "") (?? (/session ($runtime/context)) "") session))
   (ui_render h chosen name "" state))
 
-(fn outline_text [value]
-  (let text ($to_str value))
-  (if (> ($str/byte_size text) 160) ($to_str (byte_prefix text 157) "…") text))
-
-# Fold simple labels and sample repeated list/table items before applying the
-# byte budget, so data rows do not crowd out the controls that follow them.
-(fn outline_node [tree, depth : Int, outline]
-  (if outline/full (return nil))
-  (let node {^depth depth})
-  (var folded false)
-  (var item_tag nil)
-  (if (== ($head tree) Str)
-    (node .put "text" (outline_text tree))
-    (do
-      (node .put "tag" tree/tag)
-      (for key in ["key" "field" "state" "action" "type" "value" "aria-label" "placeholder"]
-        (let value (tree/props .get key))
-        (if_not ($absent? value) (node .put key (outline_text value))))
-      (if (["button" "input" "textarea" "select" "form" "a"] .contains? tree/tag)
-        (node .put "enabled" ($absent? tree/props/disabled)))
-      (if_not ($absent? tree/props/checked) (node .put "checked" true))
-      (if (&& (== tree/children/.size 1) (== ($head tree/children/0) Str))
-        (do (node .put "text" (outline_text tree/children/0)) (set folded true)))
-      (set item_tag (if (== tree/tag "tbody") "tr"
-        (if (["ul" "ol"] .contains? tree/tag) "li" nil)))
-      (if_not ($absent? item_tag)
-        (let count ($size ($filter tree/children (fn [child] (== child/tag item_tag)))))
-        (if (> count 3)
-          (do
-            (node .put "omitted" (- count 3))
-            (node .put "item_tag" item_tag)
-            (outline .put "truncated" true))))))
-  (let size ($str/byte_size ($json/stringify node)))
-  (if (> (+ outline/bytes size 1) 3072)
-    (do (outline .put "truncated" true) (outline .put "full" true) (return nil)))
-  (outline/nodes .push node)
-  (outline .put "bytes" (+ outline/bytes size 1))
-  (if (&& (!= ($head tree) Str) (! folded))
-    (do
-      (var kept 0)
-      (for child in tree/children
-        (if (&& (! ($absent? item_tag)) (== child/tag item_tag))
-          (do
-            (if (>= kept 3) (continue))
-            (set kept (+ kept 1))))
-        (outline_node child (+ depth 1) outline))))
-  nil)
-
 (fn ui_publication_preview [h, session : Str, changes]
   (if_not (/enabled (ui_settings h)) (return nil))
   (let owners [])
@@ -215,8 +107,7 @@
     (let item {^name preview/name ^slot preview/slot ^revision preview/revision})
     (if ($absent? preview/error)
       (do
-        (let outline {^nodes [] ^bytes 2 ^truncated false ^full false})
-        (outline_node preview/view 0 outline)
+        (let outline (view_outline preview/view))
         (item .put "outline" outline/nodes)
         (item .put "truncated" outline/truncated))
       (item .put "error" (outline_text preview/error)))

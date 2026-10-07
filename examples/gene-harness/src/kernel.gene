@@ -33,7 +33,7 @@
     flush_event_store])
 (import ^from "./storage/generated_event_catalog" [core_event_types])
 (import ^from "./views/view_api" [HarnessView view_provider])
-(import ^from "./web/component_spec" [validate_web_component])
+(import ^from "./ui/components" [validate_web_component])
 (import ^from "./runtime/call_supervision" [supervised_call])
 (import ^from "./runtime/cordis_adapter"
   [RegistryHost retain_callback retained_callback? expire_scope_callbacks new_composition])

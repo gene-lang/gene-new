@@ -151,7 +151,7 @@
   `(section ^id "how" ^class "section" ^aria-labelledby "how_title"
      (div ^class "shell"
        %(section_head "How it works" "how_title"
-          "From a sentence to a tool you keep"
+          "From a request to a capability you keep"
           "The model writes Gene. The Harness decides what that Gene may touch, records what was installed, and restores it later.")
        (ol ^class "steps" %items...))))
 
@@ -176,7 +176,7 @@
   (var fixme ($to_str totals/fixme))
   `(div ^class "table_scroll" ^role "region" ^aria-label "Audit counts" ^tabindex "0"
      (table ^class "result_table"
-       (caption "Counts returned by project_audit.scan")
+       (caption "Counts returned by project_audit_scan")
        (thead
          (tr (th ^scope "col" "File")
              (th ^scope "col" ^class "num" "Non-empty lines")
@@ -213,26 +213,26 @@
   `(section ^id "example" ^class "section section_alt" ^aria-labelledby "example_title"
      (div ^class "shell"
        %(section_head "Worked example" "example_title"
-          "Project audit: a plugin built in conversation"
-          "This is a recording, not a live run. The request, the plugin the model wrote, and every result below come from checked-in fixtures that the repository re-verifies without a model.")
+          "Project audit: a reusable workspace function"
+          "Adapted from a plugin built in conversation. The source and commands below use the current Harness API; checked-in fixtures verify the counts, failure behavior and restart recovery without a model.")
        (div ^id "view_tabs" ^class "view_tabs" ^role "tablist" ^aria-label "Example views" ^^hidden
          %(view_tab "request" "Request" true)
          %(view_tab "plugin" "Plugin" false)
          %(view_tab "result" "Result" false))
        (section ^id "view_request" ^class "view" ^aria-labelledby "view_request_title"
          (h3 ^id "view_request_title" ^class "view_title" "1. Request")
-         (p ^class "view_text" "What the user asked for in a browser conversation, verbatim:")
+         (p ^class "view_text" "The original browser request, preserved for context. Its tool names and authoring commands belong to an earlier Harness API:")
          (blockquote ^class "request_quote" (p %request))
          (ul ^class "meta_list"
-           (li (strong "Model") " gpt-6-sol")
+           (li (strong "Original model") " gpt-6-sol")
            (li (strong "Scope") " workspace")
-           (li (strong "Composes") " fs.read, fs.write"))
+           (li (strong "Current I/O") " $fs/read_text, $fs/write_text"))
          (p ^class "view_text"
-           "It took more than one try: the first builds ran past the callback time limit, which led to the longer authoring budget the Harness uses now."))
+           "The current version registers ordinary functions and calls Gene libraries directly. The fixture checker exercises those functions through /run and verifies their persisted state after restart."))
        (section ^id "view_plugin" ^class "view" ^aria-labelledby "view_plugin_title"
          (h3 ^id "view_plugin_title" ^class "view_title" "2. Plugin")
          (p ^class "view_text"
-           "Revision 2 as the model wrote it, formatted for reading. It canonicalizes to the recorded module digest, so no code has changed. The excerpts show the contract it installs and the step that delegates the write and saves the summary.")
+           "This source has been migrated from the recorded plugin to the current function contract. The excerpts show its registered functions and the step that writes the report and saves the summary.")
          (div ^class "two_up"
            %(code_block "plugin_contract" "Excerpt · (fn init …)" contract ^lang "gene")
            %(code_block "plugin_report" "Excerpt · (fn write_report …)" report_step ^lang "gene"))
@@ -243,24 +243,24 @@
        (section ^id "view_result" ^class "view" ^aria-labelledby "view_result_title"
          (h3 ^id "view_result_title" ^class "view_title" "3. Result")
          (p ^class "view_text"
-           "The tool call, the counts it returned, and the report it wrote through fs.write.")
-         %(code_block "result_command" "Tool call" scan_command ^^wrap)
+           "The function call, the counts it returned, and the report written with $fs/write_text.")
+         %(code_block "result_command" "Operator command" scan_command ^^wrap)
          %(result_table)
          (div ^class "two_up"
-           %(code_block "result_value" "Tool result" summary ^lang "gene" ^^wrap)
+           %(code_block "result_value" "Function result" summary ^lang "gene" ^^wrap)
            %(code_block "result_report" "audit-report.md" report))
          (ul ^class "evidence"
-           (li "The report was read back through the browser client and checked against the source files.")
-           (li "A new conversation loaded the workspace plugin without rebuilding it, and "
+           (li "The fixture checker reads the report back and compares it with the expected counts and Markdown.")
+           (li "Reopening the workspace loads the plugin without rebuilding it, and "
                (code %last_command) " returned the same totals.")
            (li (code %check_command) " repeats these checks on the fixtures, without a model."))
          (details ^class "disclosure"
            (summary "When a file is missing")
            (div ^class "disclosure_body"
              (p ^class "view_text"
-               "A scan that names a missing file returns a structured error with the stage and path that failed. No report is written, and project_audit.last still returns the previous summary.")
-             %(code_block "failure_command" "Tool call" missing_command ^^wrap)
-             %(code_block "failure_result" "Tool result" missing ^lang "gene" ^^wrap))))
+               "A scan that names a missing file raises a typed error with the stage and path that failed. No report is written, and project_audit_last still returns the previous summary. The fields below are read from the caught error.")
+             %(code_block "failure_command" "Operator command" missing_command ^^wrap)
+             %(code_block "failure_result" "Error fields" missing ^lang "gene" ^^wrap))))
        (p ^class "view_text" (a ^href %fixtures "Browse the example fixtures")))))
 
 # --- Written in Gene ------------------------------------------------------------------
@@ -332,24 +332,24 @@
                  %(code_block "run_openrouter" "OpenRouter" openrouter)
                  %(code_block "run_anthropic" "Anthropic API" anthropic)
                  %(code_block "run_offline" "Command-only demo" offline)
-                 (p "The offline demo runs commands such as /help, /status, /code, /tool, and template-based /build, but cannot answer ordinary prompts."))))
+                 (p "Offline mode returns a canned reply. Use /help, /run, /repl, /sh and /view to exercise the workspace without a model."))))
            (li ^class "run_step"
              (h3 "Open the connection link")
              (p "The server prints a link like " (code "http://127.0.0.1:8095/#token=…")
                 ". It works once and expires after ten minutes; the browser then stays connected for eight hours."))
            (li ^class "run_step"
-             (h3 "Ask for a tool")
+             (h3 "Ask for a function")
              (p "Ordinary text goes to the model; " (code "/help")
                 " lists the commands that run without it. A first prompt to try:")
              %(code_block "run_prompt" "Prompt" prompt ^^wrap))
            (li ^class "run_step"
              (h3 "Point it at your project")
-             (p "Two directories matter. Choose each with a flag.")
+             (p "Choose the workspace; it becomes the process's working directory.")
              (dl ^class "dirs"
-               (div (dt "--project <dir>")
-                    (dd "What the built-in file tools read and write. Defaults to the Harness package."))
-               (div (dt "--home <dir>")
-                    (dd "Where conversations, plugins, module sources, and plugin state are kept. Defaults to examples/gene-harness/tmp/workspace.")))
+               (div (dt "--workspace <dir>")
+                    (dd "The project directory. Defaults to the current directory."))
+               (div (dt ".gene-harness/")
+                    (dd "Conversation, plugin and application state inside the workspace. One Harness process owns a workspace at a time.")))
              %(code_block "run_dirs" "Shell" dirs)))))))
 
 # --- FAQ and footer ----------------------------------------------------------------------
@@ -405,7 +405,7 @@
          (head
            (meta ^charset "utf-8")
            (meta ^name "viewport" ^content "width=device-width, initial-scale=1")
-           (title "Gene Harness · An agent that can build its own tools")
+           (title "Gene Harness · An agent that can extend itself")
            (meta ^name "description"
              ^content "Gene Harness turns new capabilities into durable Gene plugins you can inspect, use on real files, and keep across conversations.")
            %(stylesheet "gene-harness-website" website_css))

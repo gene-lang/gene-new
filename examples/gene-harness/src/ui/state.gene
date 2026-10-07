@@ -1,0 +1,63 @@
+# Workspace UI configuration and revision descriptors; no rendering or transport.
+(mod ui_state)
+(import [plugin_state next_sequence stream_key] ^from "../storage/state")
+
+(type UiError ^props {^code Str ^message Str} ^impl [Error])
+(impl Error for UiError)
+
+(fn ui_error [code : Str, message : Str] (fail (UiError ^code code ^message message)))
+
+(fn ui_settings [h]
+  (let saved (if ($absent? h/event_store) nil
+    (plugin_state h/event_store "workspace" "workspace" "ui_experiment")))
+  (?? saved {^enabled false ^layout "chat" ^panel "" ^side "left" ^width 50 ^theme {}}))
+
+(fn validate_ui_settings [value]
+  (if (!= ($head value) Map) (ui_error "invalid_request" "UI settings must be a map."))
+  (let result {^enabled (== value/enabled true) ^layout (?? value/layout "chat")
+    ^panel (?? value/panel "") ^side (?? value/side "left")
+    ^width (?? value/width 50) ^theme (?? value/theme {})})
+  (if_not (["chat" "panel"] .contains? result/layout) (ui_error "invalid_request" "Unknown UI layout."))
+  (if_not (["left" "right"] .contains? result/side) (ui_error "invalid_request" "Panel side must be left or right."))
+  (if (|| (!= ($head result/width) Int) (< result/width 25) (> result/width 70))
+    (ui_error "invalid_request" "Panel width must be 25–70 percent."))
+  (if (|| (!= ($head result/panel) Str) (!= ($head result/theme) Map))
+    (ui_error "invalid_request" "Invalid panel or theme."))
+  (for [key color] in result/theme
+    (if_not (["ink" "muted" "line" "surface" "sidebar" "soft" "accent"] .contains? ($to_str key))
+      (ui_error "invalid_request" $"Unknown theme token ${key}."))
+    (if (|| (!= ($head color) Str) ($absent? (#"^#[0-9a-fA-F]{6}$" .match color)))
+      (ui_error "invalid_request" "Theme colors must be six-digit hex colors.")))
+  result)
+
+(fn ui_record [snapshot, registry : Str, name : Str]
+  (for record in (?? (snapshot/registries .get registry) [])
+    (if (== record/key name) (return record)))
+  nil)
+
+(fn ui_revision [h, record] ($to_str h/ui_epoch ":" record/row_id))
+
+(fn ui_data_revision [h, snapshot]
+  ($to_str snapshot/id ":" (if ($absent? h/event_store) 0
+    (next_sequence h/event_store (stream_key "workspace" "workspace")))))
+
+(fn ui_descriptor [h, snapshot, record]
+  (let candidate record/payload)
+  (let functions {})
+  (for name in (?? candidate/actions [])
+    (let action (ui_record snapshot "functions" name))
+    (if_not ($absent? action) (functions .put name (ui_revision h action))))
+  {^name candidate/name ^slot candidate/slot ^revision (ui_revision h record)
+   ^data_revision (ui_data_revision h snapshot) ^view_state candidate/view_state
+   ^state_version ($to_str (?? candidate/state_version "1")) ^functions functions})
+
+(fn ui_status [h]
+  (let settings (ui_settings h))
+  (let components [])
+  (let snapshot h/snapshots/current/.get)
+  (if_yes settings/enabled
+    (for record in (?? (snapshot/registries .get "web_components") [])
+      (if_not ($absent? record/payload/view_state)
+        (components .push (ui_descriptor h snapshot record)))))
+  {^settings settings ^components components ^data_revision (ui_data_revision h snapshot) ^epoch h/ui_epoch
+   ^workspace (?? h/workspace/workspace_root "")})

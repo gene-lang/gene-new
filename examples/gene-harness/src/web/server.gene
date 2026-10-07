@@ -6,7 +6,6 @@
     close_session_service
     list_sessions
     create_session
-    rename_session
     snapshot
     submit
     receipt
@@ -18,15 +17,15 @@
     edit_session
     acknowledge_attention
     RoundError])
-(import ^from "./style" [styles])
-(import ^from "../kernel" [module_dir row])
-(import [ui_render ui_status UiError] ^from "../runtime/ui_views")
-(import [ui_action ui_action_receipt] ^from "../runtime/ui_actions")
+(import ^from "./page" [page])
+(import ^from "../kernel" [row])
+(import [ui_status UiError] ^from "../ui/state")
+(import [ui_render] ^from "../ui/views")
+(import [ui_action ui_action_receipt] ^from "../ui/actions")
 (import ^from "./contract" [error_status])
 (import ^from "./push" [new_push_hub add_peer remove_peer expire_peers broadcast])
 (import ^from "../website/page" [website_page])
-(import ^from "../runtime/sessions" [unload_idle_sessions])
-(import ^from "../runtime/sessions" [SessionError])
+(import ^from "../runtime/sessions" [unload_idle_sessions SessionError])
 (import ^from "../runtime/commands" [CommandError])
 (import [submit_mode_input close_mode expire_modes ModeError] ^from "../runtime/input_modes")
 (import ^from "../runtime/questions" [QuestionError])
@@ -36,174 +35,11 @@
 (import ^from "../profiles/offline" [offline_profile])
 (import $net/http [listen serve stop html json redirect ws_accept])
 (import ^from "./auth" [open_auth create_cookie authenticate])
-(import $html [render])
-(import $web [script stylesheet])
 (import $crypto [random_hex])
 (import $os [get_env monotonic_ms])
 
-(var harness_ui ($web/load $"${(module_dir this_mod/.path)}/../../client/main.gene"))
 # The informational page is static for the life of the server.
 (var about_page (website_page ^mode "embedded"))
-
-(fn page [] : Str
-  ($to_str
-    "<!doctype html>"
-    (render
-      `(html ^lang "en"
-         (head
-           (meta ^charset "utf-8")
-           (meta ^name "viewport" ^content "width=device-width, initial-scale=1")
-           (title "Gene Harness")
-           %(stylesheet "gene-harness" styles))
-         (body
-           (div ^id "harness_root" ^class "app"
-             (aside ^class "sidebar"
-               (div ^class "brand"
-                 (span ^class "brand_name" "Gene")
-                 (span ^class "brand_detail" "Harness")
-                 (span ^class "local" "Local"))
-               (button ^id "close_menu" ^class "mobile_only close_menu" ^type "button" "Close menu")
-               (button ^id "create_session" ^class "new_session" ^type "button"
-                 (span ^class "plus" ^aria-hidden "true" "+")
-                 "New conversation")
-               (input ^id "session_filter" ^class "filter" ^type "search" ^placeholder "Search conversations…" ^aria-label "Find a conversation")
-               (div ^class "session_filters"
-                 (select ^id "kind_filter" ^aria-label "Session kind"
-                   (option ^value "" "Interactive + pinned")
-                   (option ^value "interactive" "Interactive")
-                   (option ^value "heartbeat" "Heartbeat")
-                   (option ^value "scheduled" "Scheduled")
-                   (option ^value "cron" "Cron"))
-                 (select ^id "status_filter" ^aria-label "Round status"
-                   (option ^value "" "Any status")
-                   (option ^value "running" "Running")
-                   (option ^value "waiting" "Waiting")
-                   (option ^value "done" "Done")
-                   (option ^value "failed" "Failed")
-                   (option ^value "cancelled" "Cancelled")
-                   (option ^value "interrupted" "Interrupted"))
-                 (details
-                   (summary "More filters")
-                   (input ^id "trigger_filter" ^placeholder "Trigger id" ^aria-label "Trigger id")
-                   (label "Active since" (input ^id "since_filter" ^type "date"))
-                   (label "Active until" (input ^id "until_filter" ^type "date"))))
-               (div ^id "attention_section" ^^hidden
-                 (div ^class "section_label" "Needs attention")
-                 (nav ^id "attention_sessions" ^aria-label "Needs attention"))
-               (div ^class "section_label" "Conversations")
-               (div ^id "web_sidebar" ^class "web_components")
-               (nav ^id "sessions" ^class "session_list" ^aria-label "Conversations")
-               (div ^class "sidebar_footer"
-                 (button ^id "triggers_button" ^type "button" "Triggers")
-                 (button ^id "status_button" ^type "button" "Workspace status")
-                 (a ^href "/about/" "About Gene Harness")))
-             (main ^class "workspace"
-               (nav ^id "session_tabs" ^class "session_tabs" ^aria-label "Open sessions")
-               (header ^class "topbar"
-                 (button ^id "menu" ^class "mobile_only quiet" ^type "button" ^aria-label "Open conversations" "☰")
-               (div ^class "heading"
-                   (h1 ^id "conversation_title" "New conversation")
-                   (div ^id "mode" ^class "mode" "Local workspace")
-                   (span ^id "input_mode_label" ^class "mode"))
-               (button ^id "leave_mode" ^class "quiet" ^type "button" ^^hidden "Leave REPL")
-                 (button ^id "rename_session" ^class "quiet" ^type "button" "Rename")
-                 (button ^id "pin_session" ^class "quiet" ^type "button" "Pin"))
-               (div ^id "ui_layout_controls" ^class "ui_layout_controls" ^^hidden
-                 (button ^id "ui_toggle" ^type "button" "Show board")
-                 (a ^id "ui_default_link" ^href "/ui/default" "Restore default UI"))
-               (a ^id "ui_workspace_link" ^href "/" ^^hidden "Return to workspace UI")
-               (div ^id "web_toolbar" ^class "web_components web_toolbar")
-               (form ^id "rename_form" ^class "rename_form" ^^hidden
-                 (input ^id "rename_title" ^type "text" ^maxlength "256" ^aria-label "Conversation title")
-                 (button ^type "submit" "Save title"))
-               (section ^id "auth_notice" ^class "auth_notice" ^^hidden
-                 (strong "Connect to your local Harness")
-                 "Open the connection link printed by the server. It keeps access to this workspace private.")
-               (section ^id "offline_notice" ^class "auth_notice" ^^hidden
-                 (strong "Command demo mode — no model connected")
-                 "Restart without --offline or GENE_HARNESS_OFFLINE=1 to chat with the configured model. Use /help to explore commands.")
-               (section ^id "transcript" ^class "transcript" ^aria-label "Conversation")
-               (details ^id "console_pane" ^class "console_pane"
-                 (summary ^id "console_summary" "Console")
-                 (pre ^id "console_output" ^aria-label "Session console"))
-               (button ^id "new_output" ^class "new_output" ^type "button" ^^hidden "New output ↓")
-               (div ^class "composer_wrap"
-                 (div ^id "web_composer" ^class "web_components")
-                 (section ^id "input_panel" ^class "input_panel" ^^hidden
-                   (strong ^id "input_question")
-                   (form ^id "input_form"
-                     (div ^id "input_fields")
-                     (div ^class "input_actions"
-                       (button ^id "input_submit" ^type "submit" "Answer")
-                       (button ^id "input_yes" ^type "button" "Yes")
-                       (button ^id "input_no" ^type "button" "No")
-                       (button ^id "input_cancel" ^type "button" "Dismiss all"))))
-                 (div ^id "commands" ^class "commands" ^^hidden)
-                 (form ^id "composer" ^class "composer"
-                   (textarea ^id "prompt" ^rows "2" ^placeholder "Ask a question or describe a task…" ^aria-label "Message Gene")
-                   (div ^class "composer_actions"
-                     (span ^id "composer_hint" ^class "hint" "Shift+Enter for a new line · / for commands")
-                     (button ^id "send" ^class "send" ^type "submit" "Send")))
-                 (div ^id "notice" ^class "notice" ^role "status" ^aria-live "polite")
-                 (button ^id "resolve_submission" ^class "resolve" ^type "button" ^^hidden "Resolve submission")))
-             (aside ^id "ui_panel" ^class "ui_panel" ^^hidden ^aria-label "Workspace panel"
-               (button ^id "ui_discard" ^type "button" ^class "quiet" "Discard edits")
-               (div ^id "ui_view")
-               (div ^id "ui_action_status" ^role "status")
-               (button ^id "ui_retry" ^type "button" ^^hidden "Retry view")
-               (button ^id "ui_resolve" ^type "button" ^^hidden "Resolve action")
-               (button ^id "ui_cancel" ^type "button" ^^hidden "Cancel action"))
-             (aside ^id "status_drawer" ^class "drawer" ^^hidden
-               (div ^class "drawer_header"
-                 (h2 "Workspace status")
-                 (button ^id "close_status" ^class "drawer_close" ^type "button" ^aria-label "Close workspace status" "×"))
-               (div ^id "status_content")
-               (div ^id "web_status" ^class "web_components")))
-           (aside ^id "trigger_drawer" ^class "drawer" ^^hidden
-             (div ^class "drawer_header"
-               (h2 "Triggers")
-               (button ^id "close_triggers" ^type "button" "Close"))
-             (div ^id "trigger_list")
-             (section ^id "trigger_occurrences")
-             (details ^class "trigger_create"
-               (summary "Create trigger")
-               (form ^id "trigger_form"
-                 (label "Id" (input ^id "trigger_id" ^^required ^placeholder "nightly-audit"))
-                 (label
-                   "Kind"
-                   (select ^id "trigger_kind"
-                     (option ^value "heartbeat" "Heartbeat")
-                     (option ^value "scheduled" "One-shot schedule")
-                     (option ^value "cron" "Cron")))
-                 (label ^id "trigger_every_field"
-                   "Interval in milliseconds"
-                   (input ^id "trigger_every" ^type "number" ^min "1" ^value "60000"))
-                 (label ^id "trigger_at_field" ^^hidden
-                   "At (UTC)"
-                   (input ^id "trigger_at" ^placeholder "2026-10-01T12:00:00Z"))
-                 (label ^id "trigger_cron_field" ^^hidden
-                   "Cron (five fields)"
-                   (input ^id "trigger_cron" ^value "0 3 * * *"))
-                 (label ^id "trigger_timezone_field" ^^hidden
-                   "Timezone"
-                   (input ^id "trigger_timezone" ^value "UTC"))
-                 (label "Request" (textarea ^id "trigger_request" ^rows "3" ^^required))
-                 (label
-                   "After downtime"
-                   (select ^id "trigger_missed"
-                     (option ^value "skip" "Skip missed work")
-                     (option ^value "once" "Run once")))
-                 (label
-                   "Overlapping work"
-                   (select ^id "trigger_overlap"
-                     (option ^value "skip" "Skip")
-                     (option ^value "queue_one" "Queue one")))
-                 (label (input ^id "trigger_continue" ^type "checkbox") "Continue previous session")
-                 (label
-                   "Sessions to keep"
-                   (input ^id "trigger_keep" ^type "number" ^min "0" ^value "30"))
-                 (button ^type "submit" "Create"))))
-           %(script ^mount "harness_root" harness_ui))))))
 
 (fn response [status : Int, value]
   (json status ($json/stringify value)))

@@ -1,0 +1,87 @@
+# Keyed DOM reconciliation. The controller supplies edit and submission handlers.
+(mod harness_ui_tree ^profile web)
+(import [UiNode UiClient text flag copy_map sync_controls] ^from "./model.gene")
+
+(fn metadata [name : Str] : Bool
+  (for key in ["key" "field" "state" "action" "args" "positional" "command" "prompt"]
+    (if_yes (== key name) (return true)))
+  false)
+
+(fn input_tag [tag : Str] : Bool
+  (|| (== tag "input") (== tag "textarea") (== tag "select")))
+
+(fn patch_node [ui : UiClient, tree : Any, parent : EventTarget, at : Int, path : Str, form : Str,
+  changed : (Fn [UiNode] Void), submit : (Fn [UiNode] Void)] : Void
+  (var tag (text tree/tag "#text"))
+  (var props (if (== tag "#text") {} (copy_map tree/props)))
+  (var key (text props/key path))
+  (var found : Any ui/nodes/%key)
+  (if_yes (! ($absent? found))
+    (var previous : UiNode found)
+    (if_yes (!= previous/tag tag)
+      ($dom/remove previous/element)
+      (set found nil)))
+  (var node : UiNode
+    (if ($absent? found)
+      (UiNode ^key key ^tag tag ^element (if (== tag "#text") ($dom/create_text "") ($dom/create_element tag))
+        ^props {} ^form form ^seen ui/generation)
+      found))
+  (var created ($absent? found))
+  (set ui/nodes/%key node)
+  (set node/seen ui/generation)
+  (set node/form form)
+  (if (== tag "#text")
+    ($dom/set_text node/element (text tree))
+    (do
+      (for [old_name value] in node/props
+        (var name ($to_str old_name))
+        (if_yes (&& (! (metadata name)) ($absent? props/%name))
+          ($dom/remove_attribute node/element name)))
+      (set node/props props)
+      ($dom/set_attribute node/element "data-ui-key" key)
+      (for [raw_name value] in props
+        (var name ($to_str raw_name))
+        (if_not (metadata name)
+          (var attribute : Str value)
+          ($dom/set_attribute node/element name attribute)))
+      (if_yes created
+        (if_yes (input_tag tag)
+          ($dom/add_event_listener node/element "input" (fn [event : Any] : Void (changed node))))
+        (if_yes (== tag "button")
+          ($dom/add_event_listener node/element "click" (fn [event : Any] : Void
+            (if_yes (|| (! ui/ready) ui/loading) (return))
+            (if_not ($absent? node/props/state)
+              ($dom/prevent_default event)
+              (changed node))
+            (if_not ($absent? node/props/action)
+              ($dom/prevent_default event)
+              (submit node))
+            (if_not ($absent? node/props/command) (ui/command (text node/props/command)))
+            (if_not ($absent? node/props/prompt) (ui/prompt (text node/props/prompt))))))
+        (if_yes (== tag "form")
+          ($dom/add_event_listener node/element "submit" (fn [event : Any] : Void
+            ($dom/prevent_default event) (submit node)))))
+      (var children : (List Any) tree/children)
+      (var index 0)
+      (for child in children
+        (patch_node ui child node/element index $"${path}/${index}" (if (== tag "form") key form) changed submit)
+        (set index (+ index 1)))
+      (if_yes (input_tag tag)
+        (var draft : Any ui/drafts/%key)
+        (if (== (text props/type) "checkbox")
+          (set node/element/checked (if ($absent? draft) (! ($absent? props/checked)) (flag draft/value)))
+          (do
+            (var value (if ($absent? draft) (text props/value) (text draft/value)))
+            (if_yes (!= value ($dom/input_value node/element)) ($dom/set_input_value node/element value)))))))
+  ($dom/insert_at parent node/element at))
+
+(fn apply_tree [ui : UiClient, tree : Any,
+  changed : (Fn [UiNode] Void), submit : (Fn [UiNode] Void)] : Void
+  (set ui/generation (+ ui/generation 1))
+  (patch_node ui tree ui/target 0 "@root" "" changed submit)
+  (for [key raw] in ui/nodes
+    (var node : UiNode raw)
+    (if_yes (!= node/seen ui/generation)
+      ($dom/remove node/element)
+      (set ui/nodes/%key void)))
+  (sync_controls ui))

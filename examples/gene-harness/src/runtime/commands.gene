@@ -1,11 +1,12 @@
 (mod commands)
+(import [byte_prefix] ^from "../text")
 (import ^from "../kernel" [rows row contribute CommandChanged publish])
 (import ^from "../plugin_api" ^^export [CommandContext CommandResult])
 (import ^from "./composition" [acquire_snapshot release_snapshot])
 (import ^from "../agents/harness_turn" [workspace_bindings])
 (import ^from "../agents/eval_site" [evaluate_response])
 (import ^from "../agents/history"
-  [write_body read_body byte_prefix bounded_request acquire_body_use release_body_use with_body_use])
+  [write_body read_body bounded_request acquire_body_use release_body_use with_body_use])
 (import ^from "../storage/state"
   [core_state record_core_state flush_event_store next_sequence stream_key])
 (import ^from "./sessions" [create_session list_sessions load_session])

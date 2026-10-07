@@ -34,9 +34,10 @@
 (import ^from "../runtime/composition" [acquire_snapshot release_snapshot current_snapshot])
 (import [mode_state] ^from "../runtime/input_modes")
 (import [ModeChanged CompositionChanged] ^from "../kernel")
-(import [ui_status render_component] ^from "../runtime/ui_views")
+(import [ui_status] ^from "../ui/state")
+(import [render_component] ^from "../ui/views")
 (import ^from "../runtime/cordis_adapter" [spawn_composition_call])
-(import ^from "./component_spec" [bounded_component_view WebComponentError])
+(import ^from "../ui/components" [bounded_component_view WebComponentError])
 (import ^from "../runtime/triggers" ^^export
   [
     open_trigger_manager

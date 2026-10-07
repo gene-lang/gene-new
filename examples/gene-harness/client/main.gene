@@ -14,7 +14,8 @@
 (import ^from "../src/web/contract.gene" [protocol_version])
 (import ^from "./view.gene" [block_view step_view run_status_view not_durable])
 (import ^from "./components.gene" [render_slot])
-(import [UiClient create : create_ui update : update_ui controls : ui_controls event : ui_event] ^from "./ui.gene")
+(import [UiClient] ^from "./ui/model.gene")
+(import [create : create_ui update : update_ui controls : ui_controls event : ui_event] ^from "./ui/controller.gene")
 
 (type SessionTab ^props {^id Str ^title Str ^cache Any ^socket Any ^socket_epoch Int ^sequence Int ^connected Bool ^closed Bool ^expanded (List Str) ^server_epoch Str})
 

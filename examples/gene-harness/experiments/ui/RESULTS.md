@@ -49,7 +49,7 @@ sustained typing remain useful follow-up measurements.
   one HTTP listing took 104 ms against its 100 ms bound. Running that case
   alone passed all CPU, native-callback and process scenarios. The bound was
   not relaxed. A further overlapping-edit regression passed after adding the
-  shared state gate. All 145 current cases have passed across the full and
+  shared state gate. All 145 cases present at that point passed across the full and
   targeted runs; the final full run was not entirely green.
 - Web module compiler tests: 8 passed, including function-field callee
   evaluation before argument effects and rejection of a wrong argument type.
@@ -61,6 +61,20 @@ The new Gene web operations are `dom/insert_at`, `dom/remove`,
 `dom/remove_attribute` and `dom/set_style`. The web compiler also now accepts
 calls through statically typed function fields. These reuse existing Gene
 syntax and belong to the web runtime rather than the board implementation.
+
+### Follow-up reviews
+
+Subsequent review of the implementation and first fixes reported a complete
+146-case pass. Publication previews now contain bounded outlines for published
+plugins only. They fold simple text and summarize repeated rows, keeping all
+editing fields and Save in the default board and a 15-task regression case.
+The original browser timing above remains a two-task measurement.
+
+Partial task updates preserve omitted fields; UI errors omit invented source
+lines; missing render sessions return 404. Recovery has a return link, and
+failed renders have a retry control that preserves drafts. Scripted provider
+exhaustion now reports its intended error. The always-registered configuration
+and preview functions are documented as a deliberate small instruction cost.
 
 Detailed logs are in the repository-root `tmp/harness-ui-*.log` files. The
 browser screenshot is `tmp/harness-ui.png`.
@@ -76,8 +90,9 @@ did not require separate action retention, but frequent explicit Saves can
 eventually displace older command receipts. The browser does not automatically
 replay an uncertain action whose receipt is unavailable.
 
-The implementation stays in an optional panel controller and small view/action
-runtime modules, with integrations into existing publication, command and
-stream delivery. This is enough for the board; expanding the abstraction should
+The implementation lives in native `src/ui/` modules and browser `client/ui/`
+modules, with integrations into existing publication, command and stream
+delivery. The fixture remains under `experiments/ui/`. This is enough for the
+board; expanding the abstraction should
 depend on further plugin examples. The timing gate's sensitivity under full-suite
 load also deserves continued observation.

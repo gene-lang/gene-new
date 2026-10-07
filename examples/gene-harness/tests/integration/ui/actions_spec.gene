@@ -3,8 +3,8 @@
 (import [close_session_service create_session snapshot] ^from "../../../src/web/session_service")
 (import [register_plugin] ^from "../../../src/storage/workspace")
 (import [row] ^from "../../../src/kernel")
-(import [ui_status UiError] ^from "../../../src/runtime/ui_views")
-(import [ui_action ui_action_receipt] ^from "../../../src/runtime/ui_actions")
+(import [ui_status UiError] ^from "../../../src/ui/state")
+(import [ui_action ui_action_receipt] ^from "../../../src/ui/actions")
 (import [command_receipt take_command_attachments submit_command] ^from "../../../src/runtime/commands")
 
 (fn wait_action [service, session, record]

@@ -1,5 +1,10 @@
 # Gene Harness design
 
+This document describes the implemented runtime. The workspace UI panel is an
+opt-in experiment; its authoring API may change. The
+[README](../README.md) covers operation, [plugins](plugins.md) covers the
+extension contract, and [web components](web-components.md) covers UI authoring.
+
 ## Principles
 
 - The model acts only by writing Gene code. The only non-code action is a file
@@ -37,6 +42,9 @@
 | Console | `$print`/`$println` output; the operator sees it, the model never does |
 | Plugin, Function | A durable extension, and the callables it gives response code |
 | Command | An operator slash command that runs without the model |
+| Input mode | Transient interpretation of operator input, such as the persistent REPL |
+| UI view | A plugin's quoted component tree; a stateful view also declares browser-owned view state |
+| UI action | An explicit registered-function call executed as a command task with a durable receipt |
 
 ## Workspace ownership
 
@@ -141,9 +149,12 @@ Instructions come entirely from ordered `prompt` rows: the loop's response
 grammar first, mounted plugin sections next, and dynamic workspace, session
 and function information last. `gene_reference` contributes the Gene skill;
 `plugin_admin` and `triggers` describe only functions they also contribute.
-The web entry contributes its own web-component paragraph, so a CLI prompt
-does not mention browser panels. Pull-only chapters come from `docs` rows and
-are read with `doc`. Credentials are private transport inputs.
+The web entry contributes a paragraph about its browser workflow.
+`gene_reference` makes the `harness/web_components` chapter available in all
+profiles, and `ui_experiment` contributes the configuration and preview
+functions. CLI turns can author and preview UI plugins without a browser.
+Pull-only chapters come from `docs` rows and are read with `doc`. Credentials
+are private transport inputs.
 
 A response contains zero or more Gene forms followed by raw blocks:
 
@@ -537,8 +548,8 @@ user prompt.
 CommandContext carries session, raw arguments, command id and output sink.
 CommandResult carries display value, status and attachment behavior. Command
 tasks use the workspace directory, console routing and execution budgets.
-Their results attach only to the next user request, never to an intermediate
-turn or a trigger request. File views attach a pointer.
+Results marked for attachment wait for the next user request, never an
+intermediate turn or a trigger request. File views attach a pointer.
 
 The `repl` plugin contributes `/repl` and an `input_modes` row. A command
 returning `CommandResult ^mode` enters the named mode. The host owns transient
@@ -555,7 +566,8 @@ input's leased composition. No lease is held between inputs. Exit, EOF,
 session unload/deletion, plugin row withdrawal/replacement and shutdown close
 the environment. The last browser viewer leaving starts a 60-second grace
 period. Close stops admission, cancels and joins evaluation, releases plugin
-resources, clears host state and publishes ModeChanged. A short retirement
+resources, clears host state and publishes ModeChanged. Imports are allowed;
+relative paths resolve from the workspace working directory. A short retirement
 lease keeps the old close callback alive during publication-driven cleanup.
 
 The browser uses one Send/Eval/Stop action button. CLI Ctrl-C while the REPL
@@ -570,6 +582,99 @@ uncooperative cleanup. Normal completion flushes and releases ownership.
 The launcher restarts on exit 75; other exit statuses end supervision. Direct
 gene run maps restart to stop. Browser cookies and the secret persist for
 eight hours. Restart clients reconnect and receive a restarted notice.
+
+## Plugin-driven UI
+
+The native `ui/` modules define and render component data without depending on
+HTTP or a browser. Both model publication feedback and browser render requests
+use this layer. The web host owns the conversation, composer, questions,
+navigation, cancellation and recovery controls.
+
+```mermaid
+flowchart LR
+  Plugin[Workspace plugin] --> Registry[Kernel registries]
+  Registry --> UI[UI validation and leased rendering]
+  UI --> Preview[Model publication outline]
+  UI --> Web[Web service and transport]
+  Web --> Panel[Browser panel controller]
+  Panel --> Actions[UI action admission]
+  Actions --> Commands[Command tasks and receipts]
+  Commands --> Function[Registered plugin function]
+```
+
+### Components and browser state
+
+Ordinary `web_components` rows add views to named slots or replace the welcome
+and status summary. They return quoted Gene elements or equivalent inert
+trees. Validation limits element and attribute names, nesting and encoded
+size. The browser creates text and DOM nodes from this data.
+
+The experiment extends that contract with `slot "panel"`, scalar `view_state`
+defaults, a `state_version`, keyed forms and declared action functions. The
+baseline's `ui_experiment` plugin always contributes `ui_configure` and
+`ui_preview`; its persisted settings default to disabled. The board in
+`experiments/ui/` is a separately installed workspace plugin.
+
+Three kinds of state have separate owners:
+
+| State | Owner and lifetime |
+| --- | --- |
+| Layout/theme and application data | Durable workspace plugin state |
+| Filters, selection, drafts and original form arguments | Browser session storage, scoped by workspace, component and state version |
+| Action submission identity and receipt | Browser pending record plus durable command record in the submitting session |
+
+Snapshots and workspace invalidations carry stateful view descriptors without
+rendered trees. A targeted request supplies the current view state, instance,
+request sequence and view revision. The client rejects stale responses and
+patches controls by key, preserving dirty values, focus and selection. A state
+version change resets incompatible saved state. Workspace events currently
+invalidate views conservatively; there is no dependency graph.
+
+Rendering leases a composition snapshot, uses the existing one-second/32 MiB
+budget, and rejects durable Harness writes in its context. Context errors,
+including a missing session, are request errors; callback and tree-validation
+failures are reported on the view. The last usable DOM remains visible while
+actions are disabled. Retry view preserves drafts. Plugin code retains normal
+Gene host authority; this read-only context is not OS isolation.
+
+### Actions and publication feedback
+
+A form or action button names an existing registered function and supplies
+positional and named data. Admission checks the view/function revisions,
+declared action and submission identity, then runs through the ordinary command
+manager with its budget, output sink, cancellation and snapshot lease.
+Duplicate input ids return retained receipts; conflicting payloads are refused.
+The pending browser record retains its original session across tab changes and
+reloads. Unknown outcomes require receipt lookup or explicit retry with the
+same identity. They are never replayed automatically.
+
+UI action blocks are durable but hidden from chat transcripts. Successful
+actions add no model input; failures contribute one diagnostic to the original
+session's next user request. Functions remain callable directly from model
+turns, `/run` and the REPL. Application data revisions handle conflicting edits;
+the runtime-owned `ui/state_lock` seam serializes a plugin's check-and-write
+across sessions and plugin activations.
+
+After successful plugin publication, `[N.ui]` contains outlines or errors only
+for stateful views owned by the published plugins. Outlines fold simple text,
+sample repeated table/list items and retain complete nodes within a 3 KiB
+budget. Feedback has an eight-view/12 KiB total bound and explicit omission
+markers. An explicit `ui_preview` returns the full validated tree or error for
+the supplied state. Neither form of preview establishes browser usability.
+
+### Recovery and experimental scope
+
+`/ui/default` redirects to the host's standard interface for that page. The
+safe flag travels on HTTP and WebSocket requests; the host omits plugin trees,
+render callbacks, layout and themes. It preserves the selected session and
+offers Return to workspace UI. Shared workspace settings are unchanged.
+
+The current experiment supports one selected panel, a bounded theme, forms
+and function actions. It introduces no compiled browser plugins, general
+layout framework or API catalog. The [experiment guide](../experiments/ui/README.md)
+and [evaluation record](../experiments/ui/RESULTS.md) track installation and
+observed behavior. The [web client guide](web-client.md) defines protocol 6 and
+recovery delivery; the [component chapter](web-components.md) defines authoring.
 
 ## Gene runtime support
 
@@ -590,6 +695,8 @@ The Harness relies on general runtime features, documented in
 | Process groups for captured subprocesses | `/sh` cancellation stops the whole pipeline |
 | `$os/exit` | The shutdown watchdog and supervised restart status |
 | `$runtime/sandbox_namespaces` | The complete namespace grant for plugin generations |
+| `$repl/eval`, persistent task frames | Operator REPL declarations and imports across inputs |
+| Web-profile typed function fields and keyed DOM insertion | Panel controller callbacks and focus-preserving reconciliation |
 
 ## Implementation map
 
@@ -609,4 +716,31 @@ The Harness relies on general runtime features, documented in
 | Commands, triggers and supervisor | runtime/commands, runtime/triggers, runtime/supervisor |
 | Operator modes and persistent REPL | runtime/input_modes, runtime/repl_sessions, builtin/repl |
 | Durable streams and catalog | storage/state, events.catalog |
-| Browser service/transport/UI | web/session_service, web/push, web/server, client/ |
+| Bounded UTF-8 output shared by history, commands and UI | text |
+| UI component contract and validation | ui/components |
+| UI settings, descriptors and revision identity | ui/state |
+| Leased UI rendering and publication orchestration | ui/views |
+| Compact publication outlines | ui/outline |
+| UI function admission and receipt lookup | ui/actions |
+| Experimental UI configuration functions | builtin/ui_experiment |
+| Browser session service and ordered delivery | web/session_service, web/push |
+| HTTP lifecycle, authentication and wire contract | web/server, web/auth, web/contract |
+| Browser page shell and styles | web/page, web/style |
+| Conversation client and display | client/main, client/state, client/view, client/components |
+| Panel data/storage, keyed DOM and requests/actions | client/ui/model, client/ui/tree, client/ui/controller |
+| Informational site | website/page, website/content, website/style, client/website |
+
+Native UI modules stay independent of browser transport. Component validation
+and outline generation operate on data; runtime-dependent rendering and action
+admission are separate modules. Browser tree reconciliation receives handlers
+from its controller, so it does not depend on request or receipt handling.
+Specs follow the same paths under `tests/unit/` and `tests/integration/`.
+
+### Development constraints
+
+The current Gene web builder flattens output modules by source basename.
+Imported browser modules must therefore have distinct filenames even when
+they live in different directories (`client/state.gene` and
+`client/ui/model.gene`, for example). Preserving directory identity in web
+output is a tooling improvement to pursue in Gene; it requires no language
+syntax change. Compile `client/main.gene` after changing its import graph.

@@ -1,6 +1,6 @@
-# Tests src/web/component_spec.gene.
+# Tests src/ui/components.gene.
 (import $test [describe it run])
-(import [validate_web_component bounded_component_view] ^from "../../../src/web/component_spec")
+(import [validate_web_component bounded_component_view] ^from "../../../src/ui/components")
 
 (describe "Harness web components"
   (it "admits keyed forms and structured arguments only for the experiment" []

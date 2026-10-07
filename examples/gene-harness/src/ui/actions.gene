@@ -1,8 +1,8 @@
 (mod ui_actions)
-(import [ui_settings ui_record ui_revision ui_error] ^from "./ui_views")
-(import [acquire_snapshot release_snapshot] ^from "./composition")
-(import [with_session_gate] ^from "./sessions")
-(import [command_state submit_routed_command] ^from "./commands")
+(import [ui_settings ui_record ui_revision ui_error] ^from "./state")
+(import [acquire_snapshot release_snapshot] ^from "../runtime/composition")
+(import [with_session_gate] ^from "../runtime/sessions")
+(import [command_state submit_routed_command] ^from "../runtime/commands")
 (import [with_body_use] ^from "../agents/history")
 (import [CommandResult] ^from "../plugin_api")
 

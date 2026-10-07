@@ -66,6 +66,34 @@ Occurrence listings retain the configured recent terminal window; due/started
 and pinned/attention entries remain available. Historical occurrence events
 remain in the durable workspace transcript.
 
+## Workspace panels and recovery
+
+Ordinary plugin components occupy the named slots described in
+[web components](web-components.md). The opt-in
+[workspace UI experiment](../experiments/ui/README.md) adds one selected panel
+with keyed forms, configurable width/side and a small set of theme tokens.
+Layout settings are shared by the workspace. Each browser tab retains its own
+panel state and drafts in session storage, independently of its chat tabs.
+
+Stateful descriptors in status and snapshot messages contain no rendered tree.
+The panel requests its view with the current filter/selection and rejects
+responses from an older instance, request sequence, view revision or data
+revision. DOM reconciliation retains keyed inputs and dirty values. A new
+state version resets saved state; a compatible plugin replacement keeps it.
+
+Save calls a registered function through a command task. The panel tracks the
+receipt under the session selected at submission, even after switching to
+another conversation. Failures appear in the panel and attach once to that
+original session's next user request. Successful action blocks stay out of the
+chat transcript. Resolve action looks up the receipt before any explicit retry.
+
+Render failures retain the last tree with actions disabled. Retry view keeps
+drafts; Discard edits intentionally reloads current field values. The shared
+HTTP helper aborts requests after 30 seconds. `/ui/default` enters the host's
+recovery page, retaining the selected conversation and omitting plugin views,
+render callbacks and theme overrides. Its requests carry `ui=default`.
+Return to workspace UI leaves recovery without changing shared settings.
+
 ## Wire protocol 6
 
 The native host and Gene web-profile client share web/contract.gene.
@@ -186,11 +214,18 @@ cookie, changes the process epoch and delivers a restarted notice.
 
 ## Implementation and specs
 
-client/main.gene handles navigation, drafts, commands, answers, sockets and
-record caches. client/state.gene contains merge/grouping helpers.
-client/view.gene renders turns and values; highlight and markdown helpers
-provide safe display. The server assembles static HTML and the compiled
-web-profile assets.
+| Module | Responsibility |
+| --- | --- |
+| `client/main.gene` | Conversation navigation, commands, questions, streams and cached records |
+| `client/state.gene` | Transcript merge and grouping helpers |
+| `client/view.gene`, `client/markdown.gene`, `client/highlight.gene` | Turn and value display |
+| `client/components.gene` | Ordinary slot components |
+| `client/ui/model.gene` | Panel types, browser storage, draft bookkeeping and control availability |
+| `client/ui/tree.gene` | Keyed DOM patching with edit/submit handlers supplied by the controller |
+| `client/ui/controller.gene` | Panel render requests, actions, receipt recovery and layout |
+| `src/ui/` | Native component validation, descriptors, rendering, outlines and action admission |
+| `src/web/page.gene`, `src/web/style.gene` | Host page shell, compiled client entry and styling |
+| `src/web/server.gene` | HTTP routing, authentication checks and server lifecycle |
 
 web/session_service.gene connects the UI to the shared SessionManager and
 RoundController. web/push.gene routes ordered frames and viewer lifetimes.
@@ -203,3 +238,19 @@ metadata revisions/attention, command execution, restart authentication,
 concurrent sessions and shutdown. Responsiveness specs run CPU loops,
 native callback loops and synchronous processes while another session,
 a heartbeat and HTTP work continue.
+
+UI specs live in `tests/unit/ui/` and `tests/integration/ui/`; they cover
+component validation, render isolation, publication outlines, revision
+conflicts, cross-session actions and receipt recovery. The scripted model
+repair sequence lives in `tests/integration/agents/harness_turn_spec.gene`.
+The UI modules also run in CLI profiles; no browser is required for previews.
+
+To verify the browser import graph from the repository root:
+
+```text
+bin/gene build --target web --out-dir tmp/harness-web-client examples/gene-harness/client/main.gene
+```
+
+The server compiles and publishes these assets at startup; this command is a
+development check. The web builder currently requires unique source basenames
+across imported modules. See the [design notes](design.md#development-constraints).

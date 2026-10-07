@@ -2,11 +2,11 @@
 (import [isolated run_spec test_service package_path] ^from "../../support")
 (import [close_session_service create_session host_status snapshot] ^from "../../../src/web/session_service")
 (import [register_plugin] ^from "../../../src/storage/workspace")
-(import [row contribute] ^from "../../../src/kernel")
-(import [ui_status ui_render ui_preview ui_publication_preview UiError] ^from "../../../src/runtime/ui_views")
+(import [row contribute put_cordis_plugin] ^from "../../../src/kernel")
+(import [ui_status UiError] ^from "../../../src/ui/state")
+(import [ui_render ui_preview ui_publication_preview] ^from "../../../src/ui/views")
 (import [SessionError] ^from "../../../src/runtime/sessions")
 (import [Plugin PluginHost] ^from "../../../src/plugin_api")
-(import [put_cordis_plugin] ^from "../../../src/kernel")
 
 (fn assert_board_outline [h, omitted : Int]
   (let result ($json/parse (ui_publication_preview h "" [{^id "project_board" ^state "active"}])))
