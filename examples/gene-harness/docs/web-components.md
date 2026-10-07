@@ -99,7 +99,11 @@ lexical scope. Do not detach tasks from a renderer.
 `PluginHost:state` and `update_state` use workspace state by default. Pass
 `^session context/session_id` (or `ctx/session` in a command) for per-session
 state. Publication, round updates and finished commands send a new snapshot
-with freshly rendered components. Views are data, so rerendering discards the
+with freshly rendered components. Workspace state and composition changes also
+invalidate ordinary slots: the active browser fetches fresh status in its
+selected session's context. Revision and render-order checks prevent cached
+tabs or late responses from restoring older content. Views are data, so
+rerendering discards the
 old DOM and its handlers; plugins have no lingering browser timers or globals.
 
 Register the source with `register_plugin`. Generated sources import only the
@@ -158,6 +162,8 @@ Enable and configure it through `ui_configure`:
 percentage from 25 to 70. Theme keys are `ink`, `muted`, `line`, `surface`,
 `sidebar`, `soft` and `accent`, with six-digit hex colors. Passing
 `{^!enabled}` restores the ordinary interface. Configuration is workspace state.
+Host input, selected, code, notice and action surfaces derive from those same
+tokens, including in a dark palette; plugins do not need host-specific CSS.
 The `/ui/default` recovery URL omits plugin views and theme overrides for that
 page and preserves the workspace selection.
 

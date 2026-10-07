@@ -7892,7 +7892,8 @@ proc emitModule(module: WebModule, typescript: bool,
   needsMap = moduleUsesTypeKind(module, wtkMap) or
     moduleUsesExprKind(module, {wekMap})
   let needsPropMap = moduleUsesTypeKind(module, wtkPropMap) or
-    moduleExprUsesTypeKind(module, wtkPropMap) or needsPath
+    moduleExprUsesTypeKind(module, wtkPropMap) or needsPath or
+    moduleUsesBuiltin(module, ["json/parse"])
   needsStream = moduleUsesTypeKind(module, wtkStream)
   # Keyed on what the emitted code actually references, not on `fn.async`: a
   # function is async as soon as it calls one, and such a caller may never touch
@@ -8751,9 +8752,12 @@ proc emitModule(module: WebModule, typescript: bool,
     emitter.line("if (ch === \"[\") { i++; const out" &
       (if typescript: ": any[]" else: "") &
       " = []; ws(); if (text[i] === \"]\") { i++; return out; } while (true) { out.push(value()); ws(); if (text[i++] === \"]\") return out; } }")
-    emitter.line("if (ch === \"{\") { i++; const out" &
-      (if typescript: ": Record<string, any>" else: "") &
-      " = {}; ws(); if (text[i] === \"}\") { i++; return out; } while (true) { ws(); const key = value(); ws(); if (text[i++] !== \":\") throw new SyntaxError(\"expected JSON colon\"); out[key] = value(); ws(); if (text[i++] === \"}\") return out; } }")
+    # JSON objects are Gene data, including nested and initially empty maps.
+    # Retain the same property marker as a literal PropMap so dynamic writes
+    # preserve exact keys instead of taking the host snake_case bridge. Define
+    # own properties to preserve __proto__ as data; duplicate keys keep one slot.
+    emitter.line("if (ch === \"{\") { i++; const out" & dynamic &
+      " = $gene_prop_map([]); ws(); if (text[i] === \"}\") { i++; return out; } while (true) { ws(); const key = value(); ws(); if (text[i++] !== \":\") throw new SyntaxError(\"expected JSON colon\"); const item = value(); if (!Object.prototype.hasOwnProperty.call(out, key)) out[$gene_prop_order].push(key); Object.defineProperty(out, key, { value: item, enumerable: true, writable: true, configurable: true }); ws(); if (text[i++] === \"}\") return out; } }")
     emitter.line("if (text.startsWith(\"true\", i)) { i += 4; return true; } if (text.startsWith(\"false\", i)) { i += 5; return false; } if (text.startsWith(\"null\", i)) { i += 4; return null; }")
     emitter.line("const match = text.slice(i).match(/^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?/); if (!match) throw new SyntaxError(`invalid JSON at ${i}`); i += match[0].length; return /[.eE]/.test(match[0]) ? Number(match[0]) : BigInt(match[0]);")
     dec emitter.indent

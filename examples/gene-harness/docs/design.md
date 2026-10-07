@@ -630,6 +630,13 @@ patches controls by key, preserving dirty values, focus and selection. A state
 version change resets incompatible saved state. Workspace events currently
 invalidate views conservatively; there is no dependency graph.
 
+The same invalidation refreshes ordinary slots through session-scoped host
+status. Status carries the process epoch, selected session, workspace revision
+and a monotonic render-start sequence captured before callbacks can park.
+The browser rejects stale status and refreshes cached tabs, so ordinary slots
+cannot roll back workspace data or a plugin revision. This refresh is separate
+from the panel's keyed DOM and draft storage.
+
 Rendering leases a composition snapshot, uses the existing one-second/32 MiB
 budget, and rejects durable Harness writes in its context. Context errors,
 including a missing session, are request errors; callback and tree-validation

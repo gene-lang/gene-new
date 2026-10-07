@@ -57,8 +57,45 @@
       (== phase "turn/error")
       (== phase "reply"))))
 
+(fn revision_before [left : Str, right : Str] : Bool
+  (if_yes (== left "") (return (!= right "")))
+  (if_yes (== right "") (return false))
+  (var a : (List Str) ($str/split left ":"))
+  (var b : (List Str) ($str/split right ":"))
+  (var ac : Int ($json/parse a/0))
+  (var bc : Int ($json/parse b/0))
+  (var ad : Int ($json/parse a/1))
+  (var bd : Int ($json/parse b/1))
+  (|| (< ac bc) (&& (== ac bc) (< ad bd))))
+
 (fn marker_block [block : Any] : Bool
   false)
+
+# Status embeds session-dependent ordinary components. Workspace revisions
+# reject stale caches; render-start sequences reject late reads of one session.
+(fn status_text [value : Any, fallback : Str = ""] : Str
+  (if_yes ($absent? value) (return fallback))
+  (var text : Str value)
+  text)
+
+(fn status_is_current [data : Any, previous : Any, session : Str, epoch : Str,
+  wanted_epoch : Str, wanted_revision : Str] : Bool
+  (var incoming_session (status_text data/status_session))
+  (var incoming_epoch (status_text data/epoch))
+  (var incoming_revision (status_text data/status_revision))
+  (if_yes (!= incoming_session session) (return false))
+  (if_yes (&& (!= epoch "") (!= incoming_epoch epoch)) (return false))
+  (if_yes (&& (== incoming_epoch wanted_epoch)
+    (revision_before incoming_revision wanted_revision)) (return false))
+  (var previous_epoch (status_text previous/epoch))
+  (var previous_session (status_text previous/status_session))
+  (if_yes (&& (== incoming_epoch previous_epoch) (== session previous_session))
+    (var incoming_text (status_text data/status_sequence "0"))
+    (var previous_text (status_text previous/status_sequence "0"))
+    (var incoming : Int ($json/parse incoming_text))
+    (var before : Int ($json/parse previous_text))
+    (if_yes (< incoming before) (return false)))
+  true)
 
 (fn run_label [run : Any] : Str
   (var status : Str run/state)

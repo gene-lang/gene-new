@@ -34,7 +34,7 @@
 (import ^from "../runtime/composition" [acquire_snapshot release_snapshot current_snapshot])
 (import [mode_state] ^from "../runtime/input_modes")
 (import [ModeChanged CompositionChanged] ^from "../kernel")
-(import [ui_status] ^from "../ui/state")
+(import [ui_status ui_data_revision] ^from "../ui/state")
 (import [render_component] ^from "../ui/views")
 (import ^from "../runtime/cordis_adapter" [spawn_composition_call])
 (import ^from "../ui/components" [bounded_component_view WebComponentError])
@@ -185,7 +185,7 @@
       (let choice (provider_choice runtime settings))
       {^provider choice/name ^model "Unavailable" ^effort ""}))
   (let service
-    (WorkspaceService ^runtime runtime ^events runtime/events ^sessions runtime/sessions ^controller nil ^epoch ($crypto/random_hex 16) ^publisher ($cell nil) ^revision ($cell 0) ^closed ($cell false) ^model_info model_info ^offline offline ^subscriptions [] ^snapshot_jobs ($cell {}) ^snapshot_versions ($cell {})))
+    (WorkspaceService ^runtime runtime ^events runtime/events ^sessions runtime/sessions ^controller nil ^epoch ($crypto/random_hex 16) ^publisher ($cell nil) ^revision ($atomic_cell 0) ^closed ($cell false) ^model_info model_info ^offline offline ^subscriptions [] ^snapshot_jobs ($cell {}) ^snapshot_versions ($cell {})))
   (set service/controller
     (new_round_controller runtime))
   (service/subscriptions .push
@@ -362,18 +362,30 @@
   ensure
     (release_snapshot service/runtime/h/snapshots lease)))
 
+(fn next_status_sequence [service]
+  (loop
+    (let current service/revision/.load)
+    (if (service/revision .compare_exchange current (+ current 1)) (return current))))
+
 (fn host_status_in_snapshot [service, session : Str, ^safe safe : Bool = false]
+  # Capture freshness before callbacks can park. A render begun before a state
+  # change must not be stamped with the revision current at its completion.
+  (let composition (current_snapshot service/runtime/h/snapshots))
+  (let status_revision (ui_data_revision service/runtime/h composition))
+  (let status_sequence (next_status_sequence service))
   (let active service/controller/active/.get)
   (let commands [])
   (for row in (rows service/runtime/h "commands")
     (commands .push {^name row/name ^usage row/usage ^doc row/doc}))
   (let plugins [])
-  (let composition (current_snapshot service/runtime/h/snapshots))
   (for plugin in composition/plugins
     (plugins .push {^id plugin/id ^state plugin/status}))
   {
     ^protocol protocol_version
     ^epoch service/epoch
+    ^status_session session
+    ^status_revision status_revision
+    ^status_sequence ($to_str status_sequence)
     ^model service/model_info
     ^profile service/runtime/profile/name
     ^readiness (if ($absent? service/runtime/h/readiness)

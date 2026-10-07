@@ -3,6 +3,7 @@
 (import [UiNode UiClient text flag copy_map body_args notice state_key pending_key
   persist_view persist_pending field_value sync_controls clear_saved_drafts] ^from "./model.gene")
 (import [apply_tree] ^from "./tree.gene")
+(import [revision_before] ^from "../state.gene")
 
 (fn accept_receipt [ui : UiClient, session : Str, record : Any] : Void
   (if_yes ($absent? ui/pending) (return))
@@ -180,14 +181,7 @@
   (var epoch (text data/epoch))
   (var incoming (text data/data_revision))
   (if_yes (&& (== epoch ui/epoch) (!= ui/metadata_revision "") (!= incoming ""))
-    (var before : (List Str) ($str/split ui/metadata_revision ":"))
-    (var after : (List Str) ($str/split incoming ":"))
-    (var old_composition : Int ($json/parse before/0))
-    (var new_composition : Int ($json/parse after/0))
-    (var old_data : Int ($json/parse before/1))
-    (var new_data : Int ($json/parse after/1))
-    (if_yes (|| (< new_composition old_composition)
-                (&& (== new_composition old_composition) (< new_data old_data))) (return)))
+    (if_yes (revision_before incoming ui/metadata_revision) (return)))
   (if_yes (!= epoch ui/epoch) (set ui/last_data ""))
   (set ui/epoch epoch)
   (set ui/metadata_revision incoming)
@@ -233,14 +227,15 @@
 
 (fn controls [ui : UiClient, ready : Bool, session : Str] : Void
   (var reconnect (&& ready (! ui/ready)))
+  (var changed_session (!= ui/session session))
   (set ui/ready ready) (set ui/session session)
   ($dom/set_attribute ($dom/element "ui_default_link") "href"
     $"/ui/default?session=${($url/encode_component session)}")
   ($dom/set_attribute ($dom/element "ui_workspace_link") "href"
     $"/?session=${($url/encode_component session)}")
   (if_yes reconnect
-    (set ui/last_data "")
     (resolve_action ui false))
+  (if_yes (|| reconnect changed_session) (set ui/last_data ""))
   (refresh ui)
   (sync_controls ui))
 

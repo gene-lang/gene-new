@@ -1,0 +1,22 @@
+# Tests the pure state helpers shared by the compiled conversation/panel clients.
+(import $test [describe it run])
+(import [revision_before status_is_current] ^from "../../../client/state")
+
+(fn status [session, epoch, revision, sequence]
+  {^status_session session ^epoch epoch ^status_revision revision ^status_sequence sequence})
+
+(describe "Browser status freshness"
+  (it "rejects stale cached tabs, former processes and out-of-order renders" []
+    (let previous (status "a" "process" "10:5" "20"))
+    ($assert (revision_before "9:100" "10:1"))
+    ($assert (revision_before "10:5" "10:6"))
+    ($assert (! (revision_before "10:6" "10:6")))
+    ($assert (! (status_is_current (status "a" "process" "10:5" "22") previous "a" "process" "process" "10:6")))
+    ($assert (status_is_current (status "a" "process" "10:6" "22") previous "a" "process" "process" "10:6"))
+    ($assert (! (status_is_current (status "b" "process" "10:6" "22") previous "a" "process" "process" "10:6")))
+    ($assert (! (status_is_current (status "a" "old-process" "99:99" "999") previous "a" "process" "process" "10:6")))
+    ($assert (! (status_is_current (status "a" "process" "10:5" "19") previous "a" "process" "process" "10:5")))
+    ($assert (status_is_current (status "b" "process" "10:6" "18") previous "b" "process" "process" "10:6"))
+    ($assert (status_is_current (status "" "process" "0:0" "0") nil "" "" "" ""))))
+
+(fn main [args] : Int (/exit_code (run ^name (?? args/0 ""))))

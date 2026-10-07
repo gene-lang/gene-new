@@ -107,7 +107,7 @@ session.
 
 | Message | Data |
 | --- | --- |
-| status | Workspace, provider/model, command list and current activity |
+| status | Workspace, provider/model, commands, ordinary components, session context and render freshness |
 | session/list | Default session records and attention records |
 | attention | Sessions requiring attention |
 | snapshot | Session metadata, records, current/history receipts, questions and next submission sequence |
@@ -118,7 +118,7 @@ session.
 | console | Session console record, including its late flag |
 | command | Streaming chunk or final command record |
 | mode/state | Current input mode or nil; the frame also carries a change reason |
-| ui/state | Experimental layout, theme and stateful-view descriptors; workspace-wide invalidation |
+| ui/state | Layout, theme and stateful-view descriptors; also invalidates ordinary component status across the workspace |
 | ui/action | Workspace-delivered action receipt carrying its submitting session; displayed in the panel |
 | ready | Initial state delivery is complete |
 | stopped | Process stopped, or is restarting under supervision |
@@ -136,7 +136,7 @@ All API paths use /api/v6.
 | Method and path | Purpose |
 | --- | --- |
 | POST /auth/exchange | Exchange one-use bootstrap token |
-| GET /status | Authentication check, CSRF value and host status |
+| GET /status?session=ID | Authentication check, CSRF value and host status with ordinary components rendered for that session; omit ID for an unselected conversation |
 | GET /events?session=ID | Upgrade to the session's ordered stream |
 | GET /sessions | Query index filters |
 | POST /sessions | Create an interactive session |
@@ -163,6 +163,14 @@ Session query parameters are kind, status, attention, q, trigger, since and
 until, plus an after cursor for paging. Index queries do not load transcript
 streams. Decimal sequence and
 revision values are sent as text where the contract requires them.
+
+Status includes `status_session`, `status_revision` (composition/workspace data),
+and `status_sequence` (render-start order), scoped to its process `epoch`.
+These are captured before component callbacks run. The active conversation
+coalesces workspace invalidations into a status request and rejects responses
+from older revisions, prior processes, other sessions or earlier renders.
+Selecting a cached tab refreshes its status without reusing stale component
+content. Stateful panels keep their own keyed drafts and view state.
 
 Input errors preserve structured diagnostics: unknown command, busy session,
 submission/revision conflict, unknown session or invalid answer. They do not
@@ -203,8 +211,8 @@ by a late admission response. Drafts are stored per session.
 
 A sequence gap, dropped frame or disconnected socket invalidates that stream
 and requires a fresh snapshot. Each tab reconnects independently. There is no
-periodic HTTP polling while streams remain connected; status checks are used
-for disconnection and cookie-expiry recovery.
+periodic HTTP polling while streams remain connected. Connection recovery and
+event-driven component refreshes use status requests.
 
 Stop/restart may return confirmation_required when other sessions are running.
 The dialog names those sessions and offers confirmation or keeping them

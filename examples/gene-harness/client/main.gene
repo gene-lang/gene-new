@@ -10,7 +10,9 @@
     step_key
     step_block
     marker_block
-    run_label])
+    run_label
+    revision_before
+    status_is_current])
 (import ^from "../src/web/contract.gene" [protocol_version])
 (import ^from "./view.gene" [block_view step_view run_status_view not_durable])
 (import ^from "./components.gene" [render_slot])
@@ -19,7 +21,7 @@
 
 (type SessionTab ^props {^id Str ^title Str ^cache Any ^socket Any ^socket_epoch Int ^sequence Int ^connected Bool ^closed Bool ^expanded (List Str) ^server_epoch Str})
 
-(type Client ^props {^selected Str ^csrf Str ^cursor Str ^next_seq Str ^epoch Str ^ready Bool ^connected Bool ^server_busy Bool ^awaiting Str ^awaiting_session Str ^queued_prompt Str ^message_sequence Int ^sending Bool ^busy Bool ^autoscroll Bool ^has_older Bool ^loading_older Bool ^socket_epoch Int ^viewing_history Bool ^generation Int ^records (List Any) ^preview (List Any) ^sessions (List Any) ^needs_attention (List Any) ^filter_epoch Int ^trigger_selected Str ^tabs (List SessionTab) ^expanded (List Str) ^rounds (List Any) ^input_id Str ^answering Bool ^round Any ^mode Any ^mode_pending Any ^action_cooldown Bool ^was_executing Bool ^pending Any ^status Any ^components (List Any) ^component_buttons PropMap ^socket Any ^session_revision Str ^ui Any ^safe_ui Bool ^root EventTarget ^list EventTarget ^transcript EventTarget ^prompt EventTarget ^notice EventTarget ^title EventTarget})
+(type Client ^props {^selected Str ^csrf Str ^cursor Str ^next_seq Str ^epoch Str ^ready Bool ^connected Bool ^server_busy Bool ^awaiting Str ^awaiting_session Str ^queued_prompt Str ^message_sequence Int ^sending Bool ^busy Bool ^autoscroll Bool ^has_older Bool ^loading_older Bool ^socket_epoch Int ^viewing_history Bool ^generation Int ^records (List Any) ^preview (List Any) ^sessions (List Any) ^needs_attention (List Any) ^filter_epoch Int ^trigger_selected Str ^tabs (List SessionTab) ^expanded (List Str) ^rounds (List Any) ^input_id Str ^answering Bool ^round Any ^mode Any ^mode_pending Any ^action_cooldown Bool ^was_executing Bool ^pending Any ^status Any ^status_epoch Str ^status_revision Str ^status_generation Int ^components (List Any) ^component_buttons PropMap ^socket Any ^session_revision Str ^ui Any ^safe_ui Bool ^root EventTarget ^list EventTarget ^transcript EventTarget ^prompt EventTarget ^notice EventTarget ^title EventTarget})
 
 (fn render_plugin_slot [client : Client, target : EventTarget, slot : Str] : Bool
   (var components client/components)
@@ -133,6 +135,8 @@
   (set cache/cursor client/cursor)
   (set cache/next_submission_seq client/next_seq)
   (set cache/has_older client/has_older)
+  (if_yes (== (string_or client/status/status_session "") client/selected)
+    (set cache/status client/status))
   (set tab/expanded client/expanded))
 
 (fn render_tabs [client : Client] : Void
@@ -774,7 +778,34 @@
     (set client/awaiting "")
     (set client/awaiting_session "")))
 
+(fn refresh_status [client : Client] : Void
+  (if_not client/ready (return))
+  (set client/status_generation (+ client/status_generation 1))
+  (var generation client/status_generation)
+  (var session client/selected)
+  # Coalesce a publication's invalidations and drop late requests after a tab
+  # switch or another workspace update. This is event-driven, not polling.
+  ($time/after 25.0 (fn [] : Void
+    (if_yes (!= generation client/status_generation) (return))
+    (api client "GET" $"/api/v6/status?session=${($url/encode_component session)}" nil
+      (fn [code : Int, data : Any] : Void
+        (if_yes (|| (!= generation client/status_generation) (!= session client/selected)) (return))
+        (if (== code 200) (apply_status client data) (show_error client data)))))))
+
+(fn invalidate_status [client : Client, epoch : Str, revision : Str] : Void
+  (if_yes (&& (== epoch client/status_epoch)
+              (! (revision_before client/status_revision revision))) (return))
+  (set client/status_epoch epoch)
+  (set client/status_revision revision)
+  (refresh_status client))
+
 (fn apply_status [client : Client, data : Any] : Void
+  (if_not (status_is_current data client/status client/selected client/epoch
+    client/status_epoch client/status_revision) (return))
+  (var epoch (string_or data/epoch ""))
+  (var revision (string_or data/status_revision ""))
+  (set client/status_epoch epoch)
+  (set client/status_revision revision)
   (var unchanged (== ($json/stringify client/status) ($json/stringify data)))
   (set client/status data)
   (if_not ($absent? client/ui)
@@ -986,6 +1017,7 @@
   (set client/records [])
   (set client/preview [])
   (set client/expanded [])
+  (set client/components [])
   (set client/round nil)
   (set client/mode nil)
   (set client/mode_pending nil)
@@ -1007,6 +1039,7 @@
   (set client/socket_epoch tab/socket_epoch)
   (set client/message_sequence tab/sequence)
   (apply_snapshot client tab/cache)
+  (refresh_status client)
   (set client/expanded tab/expanded)
   (render_transcript client)
   (render_tabs client)
@@ -1472,8 +1505,8 @@
 (fn reconnect_socket [client : Client, epoch : Int] : Void
   ($time/after 2500.0 (fn [] : Void
     (if_yes (|| (! client/ready) (!= epoch client/socket_epoch)) (return))
-    # Only disconnection recovery uses an HTTP status check, including cookie
-    # expiry. There is no timer polling while the WebSocket is connected.
+    # Reconnection checks cookie expiry. Connected streams refresh status only
+    # on workspace invalidation or tab selection, without timer polling.
     (api client "GET" "/api/v6/status" nil
       (fn [code : Int, data : Any] : Void
         (if_yes (!= epoch client/socket_epoch) (return))
@@ -1571,6 +1604,8 @@
     (var data : Any message/data)
     (var ui : UiClient client/ui)
     (ui_event ui kind data)
+    (if_yes (&& (== tab/id client/selected) (== kind "ui/state"))
+      (invalidate_status client server_epoch (string_or data/data_revision "")))
     (if_yes (== kind "ready") (set tab/connected true))
     (if (== tab/id client/selected)
       (then
@@ -1665,7 +1700,7 @@
 
 (fn main [root : EventTarget] : Void
   (var client
-    (Client ^selected (query_value ($browser/search) "session") ^csrf "" ^cursor "" ^next_seq "1" ^epoch "" ^!ready ^!sending ^!connected ^!server_busy ^awaiting "" ^awaiting_session "" ^queued_prompt "" ^message_sequence 0 ^!busy ^^autoscroll ^generation 0 ^!has_older ^!loading_older ^socket_epoch 0 ^!viewing_history ^records [] ^preview [] ^sessions [] ^needs_attention [] ^filter_epoch 0 ^trigger_selected "" ^tabs [] ^expanded [] ^rounds [] ^input_id "" ^!answering ^round nil ^mode nil ^mode_pending nil ^!action_cooldown ^!was_executing ^pending nil ^status nil ^components [] ^component_buttons {} ^socket nil ^session_revision "1" ^ui nil ^safe_ui (== (query_value ($browser/search) "ui") "default") ^root root ^list ($dom/element "sessions") ^transcript ($dom/element "transcript") ^prompt ($dom/element "prompt") ^notice ($dom/element "notice") ^title ($dom/element "conversation_title")))
+    (Client ^selected (query_value ($browser/search) "session") ^csrf "" ^cursor "" ^next_seq "1" ^epoch "" ^!ready ^!sending ^!connected ^!server_busy ^awaiting "" ^awaiting_session "" ^queued_prompt "" ^message_sequence 0 ^!busy ^^autoscroll ^generation 0 ^!has_older ^!loading_older ^socket_epoch 0 ^!viewing_history ^records [] ^preview [] ^sessions [] ^needs_attention [] ^filter_epoch 0 ^trigger_selected "" ^tabs [] ^expanded [] ^rounds [] ^input_id "" ^!answering ^round nil ^mode nil ^mode_pending nil ^!action_cooldown ^!was_executing ^pending nil ^status nil ^status_epoch "" ^status_revision "" ^status_generation 0 ^components [] ^component_buttons {} ^socket nil ^session_revision "1" ^ui nil ^safe_ui (== (query_value ($browser/search) "ui") "default") ^root root ^list ($dom/element "sessions") ^transcript ($dom/element "transcript") ^prompt ($dom/element "prompt") ^notice ($dom/element "notice") ^title ($dom/element "conversation_title")))
   (set client/ui (create_ui root client/safe_ui
     (fn [method : Str, path : Str, payload : Any, done : (Fn [Int Any] Void)] : Void
       (api client method path payload done))

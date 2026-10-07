@@ -180,7 +180,7 @@
       (if (!= (?? request/headers/x-csrf-token "") browser/csrf)
         (fail_request "forbidden" "Refresh this page before making a change.")))
     (if_yes (&& (== request/method "GET") (== request/path "/api/v6/status"))
-      (var result (host_status ^safe safe host))
+      (var result (host_status ^safe safe ^session (field request/params "session" ^default "") host))
       (result .put "csrf" browser/csrf)
       (return (response 200 result)))
     (if_yes (&& (== request/method "GET") (== request/path "/api/v6/events"))

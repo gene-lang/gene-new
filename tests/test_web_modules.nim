@@ -17,6 +17,62 @@ proc checkWebExportRejection(facade, selection, expected: string) =
     diagnostic = error.msg
   check expected in diagnostic
 
+suite "web JSON data properties":
+  test "parsed maps retain exact dynamic keys across mutation and round trips":
+    let root = createTempDir("gene-web-json-properties-", "")
+    defer: removeDir(root)
+    writeFile(root / "properties.gene", """
+      (mod properties ^profile web)
+      (fn parse [source : Str] : Any ($json/parse source))
+      (fn put [data : Any, key : Str, value : Any] : Void (set data/%key value))
+      (fn get [data : Any, key : Str] : Any data/%key)
+      (fn remove [data : Any, key : Str] : Void (set data/%key void))
+      (fn names [data : PropMap] : (List Str)
+        (var keys : (List Str) [])
+        (for [key value] in data (keys .push ($to_str key)))
+        keys)
+      (fn encode [data : Any] : Str ($json/stringify data))
+    """)
+    # A parser-only module must also emit the PropMap runtime it now needs.
+    writeFile(root / "parser.gene", """
+      (mod parser ^profile web)
+      (fn parse [source : Str] : Any ($json/parse source))
+    """)
+    discard buildWebModule(root / "properties.gene", root / "out")
+    discard buildWebModule(root / "parser.gene", root / "out")
+    writeFile(root / "out" / "check.mjs", """
+      import assert from 'node:assert/strict';
+      import { parse, put, get, remove, names, encode } from './properties.mjs';
+      import { parse as parseOnly } from './parser.mjs';
+      const data = parse('{"nested":{},"labelReady":"separate","duplicate":1,"duplicate":2,"__proto__":{"safe":true}}');
+      put(data, 'label_ready', true);
+      put(data.nested, 'mount_checked', false);
+      assert.equal(get(data, 'label_ready'), true);
+      assert.equal(get(data, 'labelReady'), 'separate');
+      assert.equal(get(data, 'missing_key'), undefined);
+      assert.equal(get(data, '__proto__').safe, true);
+      assert.equal(Object.getPrototypeOf(data), Object.prototype);
+      assert.deepEqual(names(data), ['nested','labelReady','duplicate','__proto__','label_ready']);
+      assert.equal(data.duplicate, 2n);
+      remove(data, 'label_ready');
+      assert.equal(get(data, 'label_ready'), undefined);
+      assert.equal(get(data, 'labelReady'), 'separate');
+      put(data, 'label_ready', false);
+      assert.equal(parse(encode(data)).label_ready, false);
+      assert.equal(parse(encode(data)).nested.mount_checked, false);
+      const empty = parseOnly('{}');
+      put(empty, 'label_ready', true);
+      assert.equal(empty.label_ready, true);
+      // Host interop still uses camelCase for ordinary foreign objects.
+      const host = { textContent: 'before' };
+      put(host, 'text_content', 'after');
+      assert.equal(host.textContent, 'after');
+      assert.equal(get(host, 'text_content'), 'after');
+    """)
+    let ran = execCmdEx("node " & quoteShell(root / "out" / "check.mjs"))
+    checkpoint ran.output
+    check ran.exitCode == 0
+
 suite "web function fields":
   test "typed function paths capture the callee before argument effects":
     let root = createTempDir("gene-web-function-fields-", "")

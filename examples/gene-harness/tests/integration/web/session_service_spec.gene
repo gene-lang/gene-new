@@ -8,13 +8,65 @@
   ^from "../../../src/runtime/sessions")
 (import [transcript] ^from "../../../src/agents/turn_loop")
 (import [events_for] ^from "../../../src/storage/state")
-(import [contribute] ^from "../../../src/kernel")
+(import [contribute put_cordis_plugin] ^from "../../../src/kernel")
+(import [Plugin PluginHost] ^from "../../../src/plugin_api")
 (import [register_plugin set_plugin_enabled] ^from "../../../src/storage/workspace")
 
 (fn named_component [components, name : Str]
   ($first ($filter components (fn [item] (== item/name name)))))
 
 (describe "Harness web turn loop"
+  (it "versions ordinary component status before rendering and preserves session context" []
+    (isolated this_mod/.path "versions ordinary component status before rendering and preserves session context"
+      (fn [workspace]
+        (let service (test_service ^workspace workspace ^provider (fn [request] "(Outcome ^^done ^reply \"ok\")")))
+        (let entered ($cell false))
+        (let blocked ($cell true))
+        (let calls ($cell 0))
+        (let write ($cell nil))
+        (let messages [])
+        (try
+          (let a (create_session service))
+          (let b (create_session service))
+          (put_cordis_plugin service/runtime/h
+            (Plugin ^id "status_probe" ^activate (fn [host]
+              (write .set (fn [value] (host .PluginHost:update_state {^count value})))
+              (host .PluginHost:contribute "web_components"
+                {^name "status_counter" ^slot "sidebar" ^render (fn [context]
+                  (calls .set (+ calls/.get 1))
+                  (let value (?? (/count host/.PluginHost:state) 0))
+                  (entered .set true)
+                  (while blocked/.get ($sleep 1))
+                  `(p %$"${context/session_id}:${value}"))}))) {})
+          (service/publisher .set (fn [message] (messages .push message)))
+          (let before (host_status ^safe true ^session a/id service))
+          (scope
+            (let pending (spawn ^lane root (host_status ^session a/id service)))
+            (while (! entered/.get) ($sleep 1))
+            (let update write/.get)
+            (update 1)
+            (blocked .set false)
+            (let old (match pending/.join
+              (when (TaskOutcome/ok value) value)
+              (else (fail "status render did not complete"))))
+            (let fresh (host_status ^session a/id service))
+            ($assert (== old/status_revision before/status_revision))
+            ($assert (!= old/status_revision fresh/status_revision))
+            ($assert (< ($parse/parse_int old/status_sequence) ($parse/parse_int fresh/status_sequence)))
+            ($assert (== old/status_session a/id))
+            ($assert (== (/0 (/children (/view (named_component old/web_components "status_counter")))) $"${a/id}:0"))
+            ($assert (== (/0 (/children (/view (named_component fresh/web_components "status_counter")))) $"${a/id}:1")))
+          ($assert (> ($size ($filter messages (fn [m] (== m/type "ui/state")))) 0))
+          (let other (host_status ^session b/id service))
+          ($assert (== other/status_session b/id))
+          ($assert (== (/0 (/children (/view (named_component other/web_components "status_counter")))) $"${b/id}:1"))
+          (let rendered calls/.get)
+          (host_status ^safe true ^session b/id service)
+          ($assert (== rendered calls/.get) "safe status invoked plugin rendering")
+        ensure
+          (blocked .set false)
+          (close_session_service service)))))
+
   (it
     "publishes provider failures as timed turn records for live delivery and snapshots"
     []
