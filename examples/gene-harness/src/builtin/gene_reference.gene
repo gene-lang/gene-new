@@ -14,6 +14,9 @@
       (host .PluginHost:contribute "prompt"
         {^name "gene_chapters"
          ^text "Documentation chapters: gene/pitfalls, gene/syntax, gene/declarations, gene/control_flow, gene/stdlib; for example (doc \"gene/stdlib\")."})
+      (host .PluginHost:contribute "docs"
+        {^name "harness/web_components"
+         ^path ($path/join root "examples/gene-harness/docs/web-components.md")})
       (for [name chapter] in
           {^gene/pitfalls "pitfalls" ^gene/syntax "syntax"
            ^gene/declarations "declarations" ^gene/control_flow "control-flow"

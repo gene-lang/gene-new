@@ -249,6 +249,15 @@ tab-local drafts, and `$browser/origin|hash|search|replace_url|request_id|copy`
 provides location, submission identity, and clipboard operations. All application
 state and interaction logic can remain in Gene.
 
+For incremental DOM updates, `($dom/insert_at parent child index)` inserts or
+moves a node at a zero-based child position, preserving focus and text selection
+inside a retained node. `($dom/remove node)` detaches it if attached.
+`($dom/remove_attribute element name)` removes an attribute, and
+`($dom/set_style element name value)` sets one CSS property (including custom
+properties); an empty value removes it. Typed function fields can be called
+through paths, such as `(controller/send payload)`, with the callee evaluated
+before the argument expressions.
+
 The alternative is the wasm VM. `nimble wasm` requires Emscripten and builds
 the runtime for the browser. Choose it when you need the evaluator and broader
 VM semantics; host facilities still depend on what the embedding provides.

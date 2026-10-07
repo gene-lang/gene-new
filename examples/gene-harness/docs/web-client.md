@@ -66,10 +66,10 @@ Occurrence listings retain the configured recent terminal window; due/started
 and pinned/attention entries remain available. Historical occurrence events
 remain in the durable workspace transcript.
 
-## Wire protocol 5
+## Wire protocol 6
 
 The native host and Gene web-profile client share web/contract.gene.
-The current version is 5. A version mismatch stops interaction and asks for a
+The current version is 6. A version mismatch stops interaction and asks for a
 reload.
 
 Every WebSocket frame has protocol, epoch, decimal-text sequence, type,
@@ -90,6 +90,8 @@ session.
 | console | Session console record, including its late flag |
 | command | Streaming chunk or final command record |
 | mode/state | Current input mode or nil; the frame also carries a change reason |
+| ui/state | Experimental layout, theme and stateful-view descriptors; workspace-wide invalidation |
+| ui/action | Workspace-delivered action receipt carrying its submitting session; displayed in the panel |
 | ready | Initial state delivery is complete |
 | stopped | Process stopped, or is restarting under supervision |
 | restarted | Reconnected process completed a supervised restart |
@@ -101,7 +103,7 @@ provisional command output without dropping the command's console.
 
 ### HTTP endpoints
 
-All API paths use /api/v5.
+All API paths use /api/v6.
 
 | Method and path | Purpose |
 | --- | --- |
@@ -120,6 +122,10 @@ All API paths use /api/v5.
 | POST /sessions/ID/commands | Submit a slash command |
 | POST /sessions/ID/mode/input | Submit `{instance, input_id, text}` to the current input mode |
 | POST /sessions/ID/mode/leave | Close the named mode instance through the host |
+| POST /ui/render | Render one experimental component with its instance, revision, request sequence and view state |
+| POST /ui/settings | Explicitly enable or configure the experimental workspace layout |
+| POST /sessions/ID/ui/actions | Submit a registered function as a UI command with structured arguments and an input identity |
+| GET /sessions/ID/ui/actions/INPUT | Look up the original action receipt without executing it |
 | GET /triggers | List definitions |
 | POST /triggers | Create a definition |
 | DELETE /triggers/ID | Disable/delete a definition |
@@ -191,7 +197,7 @@ RoundController. web/push.gene routes ordered frames and viewer lifetimes.
 The same runtime runs CLI and browser rounds; there is no per-session plugin
 activation or browser-only model loop.
 
-The package's `gene test` specs cover protocol-5 service delivery, live
+The package's `gene test` specs cover protocol-6 service delivery, live
 records before completion, console routing, custom question validation,
 metadata revisions/attention, command execution, restart authentication,
 concurrent sessions and shutdown. Responsiveness specs run CPU loops,

@@ -20,6 +20,8 @@
             "plugin administration did not mount")
           ($assert ($str/contains? (doc runtime/h "gene/stdlib") "stdlib")
             "language reference did not mount")
+          ($assert ($str/contains? (doc runtime/h "harness/web_components") "web_components")
+            "UI authoring documentation must also be available to CLI and trigger sessions")
           ($assert
             (! ($str/contains? (assemble_instructions runtime {^kind "interactive"})
                  "web_components registry"))

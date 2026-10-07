@@ -1,0 +1,75 @@
+(import $test [describe it])
+(import [isolated run_spec test_service package_path] ^from "../../support")
+(import [close_session_service create_session host_status snapshot] ^from "../../../src/web/session_service")
+(import [register_plugin] ^from "../../../src/storage/workspace")
+(import [row contribute] ^from "../../../src/kernel")
+(import [ui_status ui_render ui_preview UiError] ^from "../../../src/runtime/ui_views")
+(import [Plugin PluginHost] ^from "../../../src/plugin_api")
+(import [put_cordis_plugin] ^from "../../../src/kernel")
+
+(describe "Experimental UI views"
+  (it "does not render stateful descriptors and refuses durable writes during rendering" []
+    (isolated this_mod/.path "does not render stateful descriptors and refuses durable writes during rendering"
+      (fn [workspace]
+        (let service (test_service ^workspace workspace ^provider (fn [request] "(Outcome ^done true ^reply \"ok\")")))
+        (let calls ($cell 0))
+        (try
+          (let h service/runtime/h)
+          (let configure (/fn (row h "functions" "ui_configure")))
+          (configure {^^enabled})
+          (put_cordis_plugin h (Plugin ^id "view_probe" ^activate (fn [host]
+            (host .PluginHost:contribute "web_components"
+              {^name "readonly" ^slot "panel" ^view_state {} ^render (fn [context]
+                (calls .set (+ calls/.get 1))
+                (host .PluginHost:update_state {^bad true})
+                (quote (p "should not render")))})
+            (host .PluginHost:contribute "web_components"
+              {^name "untouched" ^slot "panel" ^view_state {} ^render (fn [context]
+                (calls .set (+ calls/.get 100)) (quote (p "other")))}))) {})
+          (host_status service)
+          ($assert (== calls/.get 0))
+          (let preview (ui_preview h "readonly"))
+          ($assert ($str/contains? preview/error "cannot write durable") ($to_str preview))
+          ($assert (== calls/.get 1))
+        ensure (close_session_service service)))))
+
+  (it "renders the board on demand and invalidates it without resetting browser state" []
+    (isolated this_mod/.path "renders the board on demand and invalidates it without resetting browser state"
+      (fn [workspace]
+        (let service (test_service ^workspace workspace ^provider (fn [request] "(Outcome ^done true ^reply \"ok\")")))
+        (try
+          (let h service/runtime/h)
+          (let session (create_session service))
+          ($assert (== (/components (ui_status h)) []))
+          ($assert (! ($absent? (row h "seams" "ui/state_lock"))) "shared state lock was not provided")
+          (let installed (register_plugin service/runtime/workspace h "project_board" ($fs/read_text (package_path "experiments/ui/project_board.gene"))))
+          ($assert (== installed/state "active") ($to_str installed))
+          (let configure (/fn (row h "functions" "ui_configure")))
+          (configure {^^enabled ^layout "panel" ^panel "project_board" ^theme {^accent "#335577"}})
+          (let descriptors (/components (ui_status h)))
+          ($assert (== descriptors/.size 1))
+          (let descriptor descriptors/0)
+          ($assert ($absent? descriptor/view))
+          (let view (ui_render h session/id "project_board" descriptor/revision {^filter "feedback" ^selected "feedback"}))
+          ($assert ($absent? view/error) ($to_str view))
+          ($assert ($str/contains? ($json/stringify view/view) "Check the model feedback"))
+          ($assert (! ($str/contains? ($json/stringify view/view) "Try the project board")))
+          (let status (host_status service))
+          ($assert (== status/web_components []))
+          ($assert ($absent? status/ui/components/0/view))
+          (let events [])
+          (service/publisher .set (fn [message] (events .push message)))
+          (let save (/fn (row h "functions" "board_save")))
+          (save ^id "feedback" ^revision "1" ^title "Updated feedback" ^status "done")
+          ($assert (!= view/data_revision (/data_revision (ui_status h))))
+          (let invalidations ($filter events (fn [message] (== message/type "ui/state"))))
+          ($assert (> invalidations/.size 0))
+          (let refreshed (ui_render h session/id "project_board" descriptor/revision {^filter "feedback" ^selected "feedback"}))
+          ($assert ($str/contains? ($json/stringify refreshed/view) "Updated feedback"))
+          ($assert ($absent? (/ui (host_status ^safe true service))))
+          (contribute h "test" "web_components" {^name "broken" ^slot "sidebar" ^render (fn [ctx] (fail "should not run"))})
+          ($assert (== (/web_components (host_status ^safe true service)) []))
+          ($assert ($absent? (/ui (/status (snapshot ^safe true service session/id)))))
+        ensure (close_session_service service)))))
+)
+(fn main [args] : Int (run_spec args))

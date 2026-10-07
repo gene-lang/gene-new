@@ -1,0 +1,71 @@
+(mod plugin
+(import [Plugin PluginHost] ^from "src/plugin_api.gene")
+(type BoardError ^props {^message Str} ^impl [Error])
+(impl Error for BoardError)
+
+(fn initial_tasks []
+  [{^id "welcome" ^revision "1" ^title "Try the project board" ^status "todo" ^notes "Filter, select and edit this task."}
+   {^id "feedback" ^revision "1" ^title "Check the model feedback" ^status "doing" ^notes "Render previews run on the server."}])
+
+(fn init [descriptor]
+  (Plugin ^id "project_board" ^requires ["ui/state_lock"]
+    ^provides [["functions" "board_tasks"] ["functions" "board_save"] ["web_components" "project_board"]]
+    ^activate (fn [host]
+      (let with_state_lock (host .PluginHost:resolve "ui/state_lock"))
+      (fn tasks [] (?? (/tasks host/.PluginHost:state) (initial_tasks)))
+      (host .PluginHost:contribute "functions"
+        {^name "board_tasks" ^doc "List project-board tasks and their revisions." ^fn tasks})
+      (host .PluginHost:contribute "functions"
+        {^name "board_save" ^doc "Save a task with its expected revision; omit revision to create a new id."
+         ^fn (fn [^id id : Str, ^title title : Str, ^status status : Str = "todo", ^notes notes : Str = "", ^revision revision : Str = ""]
+           (with_state_lock "project_board" (fn []
+             (if (== ($str/trim title) "") (fail (BoardError ^message "A task needs a title.")))
+             (if_not (["todo" "doing" "done"] .contains? status) (fail (BoardError ^message "Unknown task status.")))
+             (let current (tasks))
+             (let updated [])
+             (var found false)
+             (var result nil)
+             (for task in current
+               (if (== task/id id)
+                 (then
+                   (if (!= revision task/revision) (fail (BoardError ^message "Task changed. Reload the task before saving.")))
+                   (set result {^id id ^title title ^status status ^notes notes
+                     ^revision ($to_str (+ ($parse/parse_int revision) 1))})
+                   (updated .push result)
+                   (set found true))
+                 (else (updated .push task))))
+             (if_not found
+               (if (!= revision "") (fail (BoardError ^message "Task no longer exists.")))
+               (set result {^id id ^title title ^status status ^notes notes ^revision "1"})
+               (updated .push result))
+             (host .PluginHost:update_state {^tasks updated})
+             result)))})
+      (host .PluginHost:contribute "web_components"
+        {^name "project_board" ^slot "panel" ^view_state {^filter "" ^selected "welcome"}
+         ^state_version "1" ^actions ["board_save"]
+         ^render (fn [context]
+           (let query ($str/lower context/view_state/filter))
+           (let rows [])
+           (var selected nil)
+           (for task in (tasks)
+             (if (== task/id context/view_state/selected) (set selected task))
+             (if (|| (== query "") ($str/contains? ($str/lower task/title) query))
+               (rows .push `(tr ^key %$"row-${task/id}"
+                 (td (button ^key %$"select-${task/id}" ^state "selected" ^value %task/id %task/title))
+                 (td %task/status)))))
+           (let inspector
+             (if ($absent? selected)
+               (quote (p "Select a task to edit it."))
+               `(form ^key %$"edit-${selected/id}" ^action "board_save"
+                  ^args %{^id selected/id ^revision selected/revision}
+                  (h3 "Task details")
+                  (label "Title" (input ^key %$"title-${selected/id}" ^field "title" ^value %selected/title ^^required))
+                  (label "Status" (select ^key %$"status-${selected/id}" ^field "status" ^value %selected/status
+                    (option ^value "todo" "To do") (option ^value "doing" "Doing") (option ^value "done" "Done")))
+                  (label "Notes" (textarea ^key %$"notes-${selected/id}" ^field "notes" ^rows "4" ^value %selected/notes))
+                  (button ^type "submit" "Save task"))))
+           `(section ^key "board" ^class_name "web_card"
+             (h2 "Project board")
+             (label "Filter tasks" (input ^key "filter" ^state "filter" ^value %context/view_state/filter ^placeholder "Find a task…"))
+             (table (thead (tr (th "Task") (th "Status"))) (tbody %rows...))
+             %inspector))})))))

@@ -31,10 +31,10 @@
 (import ^from "../kernel"
   [rows contribute provide withdraw_seam HarnessEvent
    RoundChanged CommandChanged SessionChanged DurableRecord])
-(import ^from "../agents/instructions" [reference_root])
 (import ^from "../runtime/composition" [acquire_snapshot release_snapshot current_snapshot])
 (import [mode_state] ^from "../runtime/input_modes")
-(import [ModeChanged] ^from "../kernel")
+(import [ModeChanged CompositionChanged] ^from "../kernel")
+(import [ui_status render_component] ^from "../runtime/ui_views")
 (import ^from "../runtime/cordis_adapter" [spawn_composition_call])
 (import ^from "./component_spec" [bounded_component_view WebComponentError])
 (import ^from "../runtime/triggers" ^^export
@@ -46,7 +46,7 @@
     delete_trigger
     list_occurrences])
 
-(type WorkspaceService ^props {^runtime Any ^events Any ^sessions Any ^controller Any ^epoch Str ^publisher Any ^revision Any ^closed Any ^model_info Any ^offline Bool ^subscriptions Any ^snapshot_jobs Any ^snapshot_versions Any})
+(type WorkspaceService ^props {^runtime Any ^events Any ^sessions Any ^controller Any ^epoch Str ^publisher Any ^revision Any ^closed Any ^model_info Any ^offline Bool ^subscriptions Any ^snapshot_jobs Any ^snapshot_versions Any ^ui_audience Any?})
 
 (fn public_session [service, record]
   (let copy ($thaw ($freeze record)))
@@ -111,7 +111,8 @@
         (if_not service/closed/.get
           ($runtime/with_context nil
             (fn []
-              (let data (snapshot service session))
+              (let safe (if ($absent? service/ui_audience) false (! (service/ui_audience))))
+              (let data (snapshot ^safe safe service session))
               (if (&& (! service/closed/.get)
                        (== (service/snapshot_versions/.get .get session) version))
                 (publish_message service "snapshot" session data)))))
@@ -128,7 +129,11 @@
   (match event ^!exhaustive
     (when (changed : ModeChanged)
       (publish_message ^reason changed/reason service "mode/state" changed/session changed/mode))
+    (when (changed : CompositionChanged)
+      (publish_message service "ui/state" "" (ui_status service/runtime/h)))
     (when (record : DurableRecord)
+      (if (&& (== record/scope "workspace") (== record/name "plugin/state"))
+        (publish_message service "ui/state" "" (ui_status service/runtime/h)))
       (if (== record/scope "session")
         (publish_transcript service record/stream record/envelope)))
     (when (changed : RoundChanged)
@@ -144,6 +149,9 @@
     (when (changed : CommandChanged)
       (let record changed/record)
       (let session changed/session)
+      (if_yes (== record/ui_action true)
+        (publish_message service "ui/action" "" {^session session ^record record})
+        (return nil))
       (if (&& (!= record/name "sh") (! ($absent? record/text)))
         (publish_message service "console" session
           {^id $"${session}/${record/id}/console" ^seq "0"
@@ -166,11 +174,6 @@
   (contribute runtime/h "web" "prompt"
     {^name "web_components"
      ^text "Plugins can enhance the existing web frontend through the web_components registry. Read (doc \"harness/web_components\") for its slots, quoted views, dynamic render callbacks, actions and examples before implementing a web component."})
-  (let reference (reference_root))
-  (if_not ($absent? reference)
-    (contribute runtime/h "web" "docs"
-      {^name "harness/web_components"
-       ^path ($path/join reference "examples/gene-harness/docs/web-components.md")}))
   (let settings ($serde/read_data ($fs/read_text $"${runtime/state_root}/config.gene")))
   (let model_info
     (try
@@ -245,7 +248,7 @@
 (fn cancel [service, session : Str, id : Str]
   (cancel_round service/controller session id))
 
-(fn snapshot [service, id : Str, ^after after : Int = -1, ^before before : Int = -1]
+(fn snapshot [service, id : Str, ^after after : Int = -1, ^before before : Int = -1, ^safe safe : Bool = false]
   (let metadata (require_record service/sessions id))
   (let loaded (load_session service/sessions id))
   (let records [])
@@ -258,6 +261,7 @@
       (records .push (event_record id event))))
   (let commands (command_state service/runtime id))
   (for record in commands/records
+    (if (== record/ui_action true) (continue))
     (let seq (?? record/start_seq 0))
     (if (&& (>= after 0) (<= seq after)) (continue))
     (if (&& (>= before 0) (>= seq before)) (continue))
@@ -313,43 +317,10 @@
     ^next_submission_seq ($to_str rounds/next_seq)
     ^round loaded/round/.get
     ^mode (mode_state service/runtime/modes id)
-    ^status (host_status ^session id service)
+    ^status (host_status ^session id ^safe safe service)
     ^questions (if (== metadata/status "waiting")
                  ((Path "questions") loaded/round/.get)
                  nil)})
-
-(fn render_component [service, callback, context]
-  (let started ($os/monotonic_ms))
-  (let outcome
-    (scope
-      (let task
-        (spawn_composition_call
-          service/runtime/h/composition
-          callback
-          [context]
-          {^timeout_ms 1000 ^max_memory_mb 32}
-          ($runtime/context)))
-      (let deadline (spawn ^lane root (do ($sleep 1000) task/.cancel)))
-      (var result nil)
-      (try
-        (set result task/.join)
-        result
-      ensure
-        (if_yes ($absent? result)
-          task/.cancel
-          task/.join)
-        deadline/.cancel
-        deadline/.join)))
-  (match outcome ^!exhaustive
-    (when (TaskOutcome/ok value)
-      (bounded_component_view value))
-    (when (TaskOutcome/error error)
-      (fail
-        (WebComponentError ^message $"${error/message} (render elapsed ${(- ($os/monotonic_ms) started)} ms)")))
-    (when (TaskOutcome/panic message)
-      (fail (WebComponentError ^message $"component render panicked: ${message}")))
-    (when TaskOutcome/cancelled
-      (fail (WebComponentError ^message "component render exceeded its budget or was cancelled")))))
 
 (fn web_components [service, session : Str]
   (let metadata (if (== session "") nil (require_record service/sessions session)))
@@ -367,29 +338,30 @@
         ^sessions (session_records service/sessions)}))
   (let components [])
   (for candidate in (rows service/runtime/h "web_components")
+    (if_not ($absent? candidate/view_state) (continue))
     (let item {^name candidate/name ^slot candidate/slot})
     (try
       (let view
         (if ($absent? candidate/render)
           candidate/view
-          (render_component service candidate/render context)))
+          (render_component service/runtime/h candidate/render context)))
       (item .put "view" view)
     catch Any
       (item .put "error" $err/message))
     (components .push item))
   components)
 
-(fn host_status [service, ^session session : Str = ""]
+(fn host_status [service, ^session session : Str = "", ^safe safe : Bool = false]
   (let lease (acquire_snapshot service/runtime/h/snapshots))
   (try
     ($runtime/with_context
       {^composition service/runtime/h/snapshots ^snapshot lease/snapshot ^session session}
       (fn []
-        (host_status_in_snapshot service session)))
+        (host_status_in_snapshot ^safe safe service session)))
   ensure
     (release_snapshot service/runtime/h/snapshots lease)))
 
-(fn host_status_in_snapshot [service, session : Str]
+(fn host_status_in_snapshot [service, session : Str, ^safe safe : Bool = false]
   (let active service/controller/active/.get)
   (let commands [])
   (for row in (rows service/runtime/h "commands")
@@ -406,7 +378,8 @@
     ^readiness (if ($absent? service/runtime/h/readiness)
       nil (service/runtime/h/readiness))
     ^plugins plugins
-    ^web_components (web_components service session)
+    ^web_components (if safe [] (web_components service session))
+    ^ui (if safe nil (ui_status service/runtime/h))
     ^commands commands
     ^offline service/offline
     ^workspace service/runtime/root

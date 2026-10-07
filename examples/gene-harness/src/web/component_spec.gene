@@ -3,7 +3,9 @@
 (type WebComponentError ^props {^message Str} ^impl [Error])
 (impl Error for WebComponentError)
 
-(const component_slots ["sidebar" "toolbar" "composer" "status" "welcome" "status_summary"])
+(const component_slots ["sidebar" "toolbar" "composer" "status" "welcome" "status_summary" "panel"])
+(const interactive_tags ["form" "label" "input" "textarea" "select" "option" "table" "thead" "tbody" "tr" "th" "td"])
+(const interactive_attributes ["key" "field" "state" "action" "args" "positional" "name" "placeholder" "checked" "selected" "for" "rows" "required"])
 (const component_tags
   [
     "div"
@@ -48,7 +50,7 @@
 (fn component_error [message : Str]
   (fail (WebComponentError ^message message)))
 
-(fn component_view [value, ^depth depth : Int = 0]
+(fn component_view [value, ^depth depth : Int = 0, ^experimental experimental : Bool = false, ^keys keys = nil, ^form form = nil]
   (if (> depth 24) (component_error "web component view exceeds 24 levels"))
   (if ([Str Int Float Bool Nil] .contains? ($head value))
     (return (if ($absent? value) "" ($to_str value))))
@@ -66,15 +68,25 @@
       (set children (?? data/children [])))
     (else
       (component_error "web component view must be a quoted element or data tree")))
-  (if_not (component_tags .contains? tag)
+  (if_not (|| (component_tags .contains? tag) (&& experimental (interactive_tags .contains? tag)))
     (component_error $"unsupported web component element ${tag}"))
   (if (|| (!= ($head props) Map) (!= ($head children) List))
     (component_error "web component props and children must be a map and list"))
   (let attributes {})
   (for [key item] in props
     (let name ($to_str key))
-    (if_not (component_attributes .contains? name)
+    (if_not (|| (component_attributes .contains? name) (&& experimental (interactive_attributes .contains? name)))
       (component_error $"unsupported web component attribute ${name}"))
+    (if_yes (== name "args")
+      (if (!= ($head item) Map) (component_error "action args must be a map"))
+      ($serde/write_data item)
+      (attributes .put name item)
+      (continue))
+    (if_yes (== name "positional")
+      (if (!= ($head item) List) (component_error "positional action arguments must be a list"))
+      ($serde/write_data item)
+      (attributes .put name item)
+      (continue))
     (if_not ([Str Int Float Bool Nil] .contains? ($head item))
       (component_error "web component attributes must be scalar data"))
     (if (|| ($absent? item) (== item false)) (continue))
@@ -92,11 +104,37 @@
     (attributes .delete "class-name"))
   (if (&& (! ($absent? attributes/command)) (! ($absent? attributes/prompt)))
     (component_error "a component button needs one action"))
-  (let body ($map children (fn [child] (component_view ^depth (+ depth 1) child))))
+  (if_yes experimental
+    (if (&& (== tag "form") (! ($absent? form))) (component_error "nested forms are unsupported"))
+    (if_not ($absent? attributes/field)
+      (if ($absent? form) (component_error "draft fields must belong to a form"))
+      (if_not ($absent? (form .get attributes/field)) (component_error "duplicate form field"))
+      (form .put attributes/field true))
+    (if (&& (|| (== tag "form") (! ($absent? attributes/field))
+                 (! ($absent? attributes/state)) (! ($absent? attributes/action)))
+            ($absent? attributes/key))
+      (component_error "interactive controls and forms require stable keys"))
+    (if (&& (== tag "input") (! ($absent? attributes/type))
+            (! (["text" "search" "checkbox" "number" "hidden"] .contains? attributes/type)))
+      (component_error "unsupported experimental input type"))
+    (if (&& (! ($absent? attributes/action)) (! (["button" "form"] .contains? tag)))
+      (component_error "function actions require a button or form"))
+    (if (&& (! ($absent? attributes/state)) (! (["button" "input" "textarea" "select"] .contains? tag)))
+      (component_error "view state requires a button or input"))
+    (if (&& (! ($absent? attributes/field)) (! (["input" "textarea" "select"] .contains? tag)))
+      (component_error "form fields require an input"))
+    (if (&& (! ($absent? attributes/field)) (! ($absent? attributes/state)))
+      (component_error "a control cannot be both a draft and view state"))
+    (if_not ($absent? attributes/key)
+      (if (|| (== attributes/key "") (! ($absent? (keys .get attributes/key))))
+        (component_error "view keys must be nonempty and unique"))
+      (keys .put attributes/key true)))
+  (let field_names (if (== tag "form") {} form))
+  (let body ($map children (fn [child] (component_view ^depth (+ depth 1) ^experimental experimental ^keys keys ^form field_names child))))
   {^tag tag ^props attributes ^children body})
 
-(fn bounded_component_view [value]
-  (let view (component_view value))
+(fn bounded_component_view [value, ^experimental experimental : Bool = false]
+  (let view (component_view ^experimental experimental ^keys {} value))
   (if (> ($str/byte_size ($json/stringify view)) 65536)
     (component_error "web component view exceeds 64 KiB"))
   view)
@@ -113,5 +151,18 @@
   (if (&& (! ($absent? candidate/render)) (! ($runtime/callable? candidate/render)))
     (component_error "web component render must be callable"))
   (let checked ($thaw ($freeze_shallow candidate)))
+  (let stateful (! ($absent? candidate/view_state)))
+  (if_yes stateful
+    (if (!= ($head candidate/view_state) Map) (component_error "view_state must declare a map of defaults"))
+    (if (|| ($absent? candidate/render) (!= candidate/slot "panel"))
+      (component_error "experimental stateful views need a panel render callback"))
+    (for [key value] in candidate/view_state
+      (if_not ([Str Bool Int Float Nil] .contains? ($head value))
+        (component_error "view state defaults must be scalar data")))
+    (if_not ($absent? candidate/actions)
+      (if (!= ($head candidate/actions) List) (component_error "actions must list function names"))
+      (for name in candidate/actions
+        (if (|| (!= ($head name) Str) (== name "")) (component_error "invalid action function name")))))
+  (if (&& (== candidate/slot "panel") (! stateful)) (component_error "panel views must declare view_state"))
   (if_not ($absent? candidate/view) (checked .put "view" (bounded_component_view candidate/view)))
   checked)

@@ -1,0 +1,19 @@
+(mod ui_experiment)
+(import [Plugin PluginHost] ^from "../plugin_api")
+(import [validate_ui_settings ui_preview] ^from "../runtime/ui_views")
+
+(fn ui_experiment [] : Plugin
+  (Plugin ^id "ui_experiment" ^requires ["loop"]
+    ^provides [["functions" "ui_configure"] ["functions" "ui_preview"]]
+    ^activate (fn [host]
+      (let loop_factory (host .PluginHost:resolve "loop"))
+      (let runtime (/runtime (loop_factory)))
+      (host .PluginHost:contribute "functions"
+        {^name "ui_configure" ^doc "Opt into the experimental UI or select its layout. Pass a map: enabled, layout chat/panel, panel name, side left/right, width 25–70, theme hex colors. Disabled by default."
+         ^fn (fn [settings]
+           (let checked (validate_ui_settings settings))
+           (host .PluginHost:update_state checked)
+           checked)})
+      (host .PluginHost:contribute "functions"
+        {^name "ui_preview" ^doc "Render an experimental view with supplied view-state data; returns its validated tree or error. Read (doc \"harness/web_components\") for the experimental contract."
+         ^fn (fn [name : Str, state = {}] (ui_preview runtime/h name state))}))))

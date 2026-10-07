@@ -1,0 +1,62 @@
+(import $test [describe it])
+(import [isolated run_spec test_service] ^from "../../support")
+(import [create_session close_session_service submit receipt] ^from "../../../src/web/session_service")
+(import [row] ^from "../../../src/kernel")
+
+(fn source [version]
+  ($to_str `(mod plugin
+    (import [Plugin PluginHost] ^from "src/plugin_api.gene")
+    (type ProbeError ^props {^message Str} ^impl [Error])
+    (impl Error for ProbeError)
+    (fn init [descriptor]
+      (Plugin ^id "preview_probe"
+        ^provides [["functions" "probe_save"] ["web_components" "probe_view"]]
+        ^activate (fn [host]
+          (host .PluginHost:contribute "functions"
+            {^name "probe_save" ^doc "Save a test value."
+             ^fn (fn [title : Str]
+               (if (< %version 3) (fail (ProbeError ^message "save-broken")))
+               ($to_str "saved " title))})
+          (host .PluginHost:contribute "web_components"
+            {^name "probe_view" ^slot "panel" ^view_state {} ^actions ["probe_save"]
+             ^render (fn [context]
+               (if (== %version 1) (fail (ProbeError ^message "render-broken")))
+               (quote (section (h3 "Preview ready"))))})))))))
+
+(fn publish_source [version]
+  ($to_str "(register_plugin " (if (> version 1) "^^replace " "")
+    "\"preview_probe\" " ($repl/format (source version)) ") (Outcome ^prompt \"inspect\")"))
+
+(describe "Harness UI publication feedback"
+  (it "repairs render and action failures across model turns without a browser" []
+    (isolated this_mod/.path "repairs render and action failures across model turns without a browser"
+      (fn [workspace]
+        (let calls ($cell 0))
+        (let service (test_service ^workspace workspace ^provider (fn [request]
+          (calls .set (+ calls/.get 1))
+          (let latest ($last request/messages))
+          (if (== calls/.get 1) (return (publish_source 1)))
+          (if_yes (== calls/.get 2)
+            ($assert ($str/contains? latest/content "render-broken") latest/content)
+            ($assert ($str/contains? latest/content ".ui]") latest/content)
+            (return (publish_source 2)))
+          (if_yes (== calls/.get 3)
+            ($assert ($str/contains? latest/content "Preview ready") latest/content)
+            (return "(probe_save \"test\") (Outcome ^done true)"))
+          (if_yes (== calls/.get 4)
+            ($assert ($str/contains? latest/content "save-broken") latest/content)
+            (return (publish_source 3)))
+          "(Outcome ^done true ^reply (probe_save \"test\"))")))
+        (try
+          (let configure (/fn (row service/runtime/h "functions" "ui_configure")))
+          (configure {^^enabled})
+          (let session (create_session service))
+          (let round (submit service session/id "test-ui" 1 "Build and check the view."))
+          (service/controller/watchers/.get .get session/id; .join)
+          (let result (receipt service session/id round/id))
+          ($assert (== result/state "done") ($to_str result))
+          ($assert (== result/reply "saved test") ($to_str result))
+          ($assert (== calls/.get 5))
+        ensure (close_session_service service)))))
+)
+(fn main [args] : Int (run_spec args))

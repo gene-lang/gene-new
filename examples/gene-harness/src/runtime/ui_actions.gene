@@ -1,0 +1,52 @@
+(mod ui_actions)
+(import [ui_settings ui_record ui_revision ui_error] ^from "./ui_views")
+(import [acquire_snapshot release_snapshot] ^from "./composition")
+(import [with_session_gate] ^from "./sessions")
+(import [command_state submit_routed_command] ^from "./commands")
+(import [with_body_use] ^from "../agents/history")
+(import [CommandResult] ^from "../plugin_api")
+
+(fn ui_action [manager, session : Str, request]
+  (if (!= ($head request) Map) (ui_error "invalid_request" "An action needs a data map."))
+  (if (> ($str/byte_size ($json/stringify request)) 65536) (ui_error "too_large" "Action arguments are too large."))
+  (for key in ["input_id" "component" "revision" "function" "function_revision" "instance"]
+    (let value (request .get key))
+    (if (|| (!= ($head value) Str) (== value "") (> ($str/byte_size value) 256))
+      (ui_error "invalid_request" $"Invalid action ${key}.")))
+  (let args (?? request/args []))
+  (let named (?? request/named {}))
+  (if (|| (!= ($head args) List) (!= ($head named) Map))
+    (ui_error "invalid_request" "Action arguments must be a list and a named map."))
+  (with_session_gate manager/runtime/sessions $"ui-actions/${session}" (fn []
+    # Resolve a retained identity before checking the current plugin revision.
+    (for record in (/records (command_state manager/runtime session))
+      (if_yes (== record/ui_action_id request/input_id)
+        (if (!= record/ui_request request) (ui_error "submission_conflict" "Action identity has different arguments."))
+        (return record)))
+    (let h manager/runtime/h)
+    (if_not (/enabled (ui_settings h)) (ui_error "unavailable" "The UI experiment is disabled."))
+    (let lease (acquire_snapshot h/snapshots))
+    (try
+      (let view (ui_record lease/snapshot "web_components" request/component))
+      (let action (ui_record lease/snapshot "functions" request/function))
+      (if (|| ($absent? view) ($absent? action) (!= (ui_revision h view) request/revision)
+              (!= (ui_revision h action) request/function_revision))
+        (ui_error "revision_conflict" "This action belongs to a replaced view or function."))
+      (if_not ((?? view/payload/actions []) .contains? request/function)
+        (ui_error "invalid_request" "This function is not an action of this view."))
+      (with_body_use manager/runtime (fn []
+        (submit_routed_command ^lease lease manager session
+          {^kind "command" ^name request/function ^raw "" ^^ui_action
+           ^ui_request request ^ui_action_id request/input_id
+           ^handler (fn [ctx]
+             (let invoke ($runtime/bind_call ^named named action/payload/fn args))
+             (let value (invoke))
+             (CommandResult ^display ($to_str value) ^!attached))})))
+    catch Any
+      (release_snapshot h/snapshots lease)
+      (fail $err)))))
+
+(fn ui_action_receipt [manager, session : Str, input_id : Str]
+  (for record in (/records (command_state manager/runtime session))
+    (if (== record/ui_action_id input_id) (return record)))
+  (ui_error "not_found" "No retained receipt exists for this action."))

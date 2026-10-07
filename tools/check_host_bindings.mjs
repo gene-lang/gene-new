@@ -140,9 +140,11 @@ const contract = [
   ["dom/create_element", "Document", "createElement", "call", 1],
   ["dom/create_text_node", "Document", "createTextNode", "call", 1],
   ["dom/append_child", "Node", "appendChild", "call", 1],
+  ["dom/insert_at", "Node", "insertBefore", "call", 2],
   ["dom/remove_child", "Node", "removeChild", "call", 1],
   ["dom/set_attribute", "Element", "setAttribute", "call", 2],
   ["dom/remove_attribute", "Element", "removeAttribute", "call", 1],
+  ["dom/set_style", "CSSStyleDeclaration", "setProperty", "call", 2],
 ];
 
 const program = ts.createProgram([domPath], {

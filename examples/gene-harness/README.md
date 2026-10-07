@@ -408,5 +408,9 @@ exceed those bounds during cleanup.
 Both entry points accept `--script FILE` for canned responses. The browser
 also has `--offline` for a simple model-free reply.
 
+An opt-in [workspace UI experiment](experiments/ui/README.md) adds a
+plugin-owned project board beside the conversation. It exercises keyed forms,
+server render previews, structured function actions and safe UI recovery.
+
 See [design](docs/design.md), [web client](docs/web-client.md) and
 [Claude providers](docs/claude.md).

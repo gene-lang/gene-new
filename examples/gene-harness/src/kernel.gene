@@ -60,7 +60,7 @@
 
 (type RegistryRow ^props {^row_id Str ^owner Str ^registry Str ^key Str ^payload Any ^priority Int ^config_order Int ^acquired Int ^effects Any? ^cleanup_state Any?})
 
-(type Harness ^props {^plugins Any ^plugin_errors Any ^log Any ^log_hydrated Any ^bus Any ^registries Any ^ledger Any ^row_index Any ^next_row_id Any ^event_store Any ^event_scope Str ^event_stream Str ^plugin_policies Any ^plugin_depth Any ^workspace Any ^readiness Any? ^registry_observer Any? ^composition Any? ^composition_entries Any? ^snapshots Any? ^publishing Any? ^published_plugins Any?})
+(type Harness ^props {^plugins Any ^plugin_errors Any ^log Any ^log_hydrated Any ^bus Any ^registries Any ^ledger Any ^row_index Any ^next_row_id Any ^event_store Any ^event_scope Str ^event_stream Str ^plugin_policies Any ^plugin_depth Any ^workspace Any ^ui_epoch Str? ^readiness Any? ^registry_observer Any? ^composition Any? ^composition_entries Any? ^snapshots Any? ^publishing Any? ^published_plugins Any?})
 
 (type Host ^props {^h Harness ^owner Str ^effects Any})
 
@@ -305,7 +305,8 @@
                         "error")
               ^module_digest entry/module_digest
               ^error (h/workspace/errors/.get .get entry/id)}))))
-    (publish_snapshot ^plugins plugins h/snapshots (snapshot_registries h) h/composition/.instances))
+    (let snapshot (publish_snapshot ^plugins plugins h/snapshots (snapshot_registries h) h/composition/.instances))
+    (notify h (CompositionChanged ^revision snapshot/id)))
   nil)
 
 (fn publish_direct_registry_change [h : Harness]
@@ -809,6 +810,7 @@
 (type CommandChanged : HarnessEvent ^props {^session Str ^record Any})
 (type ModeChanged : HarnessEvent ^props {^session Str ^mode Any ^instance Any ^running Any ^reason Str})
 (type SessionChanged : HarnessEvent ^props {^record Any})
+(type CompositionChanged : HarnessEvent ^props {^revision Int})
 
 (type PluginInstalled : HarnessEvent ^props {^plugin Str})
 (type PluginActivated : HarnessEvent ^props {^plugin Str})
@@ -832,7 +834,7 @@
              ^event_store event_store
              ^event_scope event_scope ^event_stream event_stream
              ^plugin_policies ($cell (fresh_map))
-             ^plugin_depth ($cell 0) ^workspace workspace))
+             ^plugin_depth ($cell 0) ^workspace workspace ^ui_epoch ($crypto/random_hex 12)))
   (registry h "seams" ^^unique ^schema validate_seam_row)
   (registry h "commands" ^^unique ^schema validate_command_row)
   (registry h "input_modes" ^^unique ^schema validate_input_mode_row)

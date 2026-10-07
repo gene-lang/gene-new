@@ -1,8 +1,27 @@
 # Tests src/web/component_spec.gene.
 (import $test [describe it run])
-(import [validate_web_component] ^from "../../../src/web/component_spec")
+(import [validate_web_component bounded_component_view] ^from "../../../src/web/component_spec")
 
 (describe "Harness web components"
+  (it "admits keyed forms and structured arguments only for the experiment" []
+    (let source (quote (form ^key "edit" ^action "save" ^args {^revision "1"} ^positional ["task"]
+      (label "Title" (input ^key "title" ^field "title" ^value "Draft"))
+      (button ^type "submit" "Save"))))
+    ($assert (try (bounded_component_view source) false catch Any true))
+    (let view (bounded_component_view ^^experimental source))
+    ($assert (== view/props/args/revision "1"))
+    ($assert (== view/props/positional ["task"])))
+
+  (it "rejects ambiguous keys, unowned fields and nested forms before display" []
+    (for source in [
+      (quote (input ^field "title"))
+      (quote (input ^key "title" ^field "title"))
+      (quote (section (p ^key "same") (p ^key "same")))
+      (quote (form ^key "outer" (form ^key "inner")))
+      (quote (form ^key "edit" (input ^key "a" ^field "title") (input ^key "b" ^field "title")))
+      (quote (input ^key "filter" ^state "filter" ^type "file"))]
+      ($assert (try (bounded_component_view ^^experimental source) false catch Any true))))
+
   (it
     "normalizes quoted views and rejects invalid elements, actions and replacement names"
     []

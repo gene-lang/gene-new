@@ -1,0 +1,18 @@
+# Install the board in a workspace whose Harness process is stopped.
+(mod install_ui_experiment)
+(import [open_session_service close_session_service] ^from "../../src/web/session_service")
+(import [register_plugin] ^from "../../src/storage/workspace")
+(import [row] ^from "../../src/kernel")
+
+(fn main [args] : Int
+  (let source ($fs/read_text ($path/join ($path/parent this_mod/.path) "project_board.gene")))
+  (let service (open_session_service ^workspace (?? args/0 "") ^^offline))
+  (try
+    (register_plugin ^^replace service/runtime/workspace service/runtime/h "project_board" source)
+    (let configure (/fn (row service/runtime/h "functions" "ui_configure")))
+    (configure {^^enabled ^layout "panel" ^panel "project_board" ^side "left" ^width 45
+      ^theme {^ink "#1e293b" ^muted "#526077" ^line "#d6e0ee" ^surface "#f6f9ff"
+              ^sidebar "#edf2fa" ^soft "#e6edf8" ^accent "#335577"}})
+    ($println $"Project board installed in ${service/runtime/root}")
+  ensure (close_session_service service))
+  0)

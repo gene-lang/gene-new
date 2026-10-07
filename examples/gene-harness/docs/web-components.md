@@ -140,3 +140,103 @@ using the same workspace helpers available to model turns:
 Disabling removes owned components after command publication; enabling restores
 them with their durable state. Removing a welcome replacement restores the
 built-in welcome immediately for an empty conversation.
+
+## Experimental stateful panel
+
+The optional workspace UI experiment adds a `panel` beside the conversation.
+It is disabled by default. See the [project board](../experiments/ui/README.md)
+for installation and a complete plugin. Its APIs are experimental.
+
+Enable and configure it through `ui_configure`:
+
+```gene
+(ui_configure {^^enabled ^layout "panel" ^panel "project_board"
+  ^side "left" ^width 45 ^theme {^accent "#335577"}})
+```
+
+`layout` is `chat` or `panel`; `side` is `left` or `right`; `width` is an integer
+percentage from 25 to 70. Theme keys are `ink`, `muted`, `line`, `surface`,
+`sidebar`, `soft` and `accent`, with six-digit hex colors. Passing
+`{^!enabled}` restores the ordinary interface. Configuration is workspace state.
+The `/ui/default` recovery URL omits plugin views and theme overrides for that
+page and preserves the workspace selection.
+
+A panel row declares `view_state` defaults, a `state_version`, an `actions`
+list naming registered functions, and a `render` callback:
+
+```gene
+(host .PluginHost:contribute "web_components"
+  {^name "project_board" ^slot "panel"
+   ^view_state {^filter "" ^selected "welcome"} ^state_version "1"
+   ^actions ["board_save"]
+   ^render (fn [context]
+     # Read durable task data; use context/view_state to filter and select.
+     `(section ^key "board"
+        (label "Filter" (input ^key "filter" ^state "filter"
+          ^value %context/view_state/filter))
+        (form ^key "edit-welcome" ^action "board_save"
+          ^args {^id "welcome" ^revision "1"}
+          (label "Title" (input ^key "title-welcome" ^field "title" ^value "Welcome"))
+          (button ^type "submit" "Save"))))})
+```
+
+Use the actual task revision in `args`; the literal above illustrates the
+wire data. Functions keep their usual signature, doc and callable. The action
+adapter runs them in a command task; no new command-row shape is required.
+
+For an optimistic read/check/write, declare `^requires ["ui/state_lock"]`,
+resolve it through `PluginHost:resolve`, and call the returned function with a
+workspace data key and a zero-argument body. The runtime owns this gate across
+plugin activations. The board uses the key `project_board`; its function keeps
+the expected-revision check and state write inside the same body.
+
+In addition to the ordinary elements, stateful panels support form, label,
+input, textarea, select, option, table, thead, tbody, tr, th and td.
+
+| Property | Meaning |
+| --- | --- |
+| `key` | Nonempty identity, unique within the view. Required on forms, draft fields and state/action controls. Include the entity id when changing an entity must create a different editor. |
+| `state` | Declared view-state field updated by this control. Inputs use their value; checkboxes use a Bool; buttons use `value`. |
+| `field` | Named function argument collected from a form on submission. Draft fields must belong to a form and be unique within it. |
+| `action` | Function from the row's `actions` list, invoked by a form submission or button. |
+| `args` | Static named arguments, combined with submitted form fields. |
+| `positional` | Optional static list of positional arguments. |
+| `value`, `checked`, `selected`, `required`, `placeholder`, `rows`, `for`, `name` | Ordinary control attributes. Values and checked state are updated without overwriting dirty fields. |
+
+Input types are text, search, checkbox, number and hidden. Field values are
+strings except checkboxes, which produce Bool; parse numbers in the function
+when needed. Nested forms, duplicate fields and duplicate keys are rejected.
+Use Str view-state defaults for value-based controls and Bool for checkboxes.
+
+View state is browser-owned scalar data. Filter typing is debounced, and only
+the target component renders. The renderer receives `context/view_state` and
+returns plain quoted data; it performs conditions and iteration in ordinary
+Gene. Forms keep unsaved values locally until Save. Compatible keys preserve
+focus, selection and drafts; increment `state_version` to reset incompatible
+browser state.
+
+Normal status snapshots carry a stateful view's descriptor and invalidation
+revision, not a default-state tree. Workspace plugin-state updates and plugin
+publication invalidate it. The browser requests a new tree with its current
+state and rejects superseded responses. This works for changes made by the
+model, CLI/REPL functions or another conversation.
+
+Render callbacks have the existing one-second/32 MiB bound and must be read-only.
+The Harness rejects durable state/event writes in the render context. Plugins
+retain ordinary Gene host authority; OS isolation remains a separate concern.
+Errors are reported per view and leave the rest of the interface usable.
+
+`(ui_preview "project_board" {^filter "ready"})` uses the same renderer and
+validator without a browser. Plugin publication includes bounded preview
+results beside `[N.plugins]` in the next model request. The model can exercise
+its registered action functions after publication as well. A successful preview
+checks the supplied context; browser layout and interaction still require
+browser verification.
+
+Actions retain durable command receipts and the session selected on submission.
+The panel resolves an uncertain outcome under that original session and input
+identity, even after switching conversations. Stale view/function revisions
+are refused. UI action blocks are omitted from conversation transcripts;
+progress, errors and cancellation stay in the panel. Failed actions contribute
+one diagnostic to the submitting conversation's next user request. Successes
+do not attach to model input. The normal 128-command retention window applies.

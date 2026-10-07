@@ -1,5 +1,5 @@
 import gene/web
-import std/[os, strutils, tempfiles, unittest]
+import std/[os, osproc, strutils, tempfiles, unittest]
 
 proc checkWebExportRejection(facade, selection, expected: string) =
   let root = createTempDir("gene-web-exports-", "")
@@ -16,6 +16,32 @@ proc checkWebExportRejection(facade, selection, expected: string) =
   except WebProfileError as error:
     diagnostic = error.msg
   check expected in diagnostic
+
+suite "web function fields":
+  test "typed function paths capture the callee before argument effects":
+    let root = createTempDir("gene-web-function-fields-", "")
+    defer: removeDir(root)
+    let source = """
+      (mod callbacks ^profile web)
+      (type Holder ^props {^call (Fn [Int] Int)})
+      (fn change [holder : Holder] : Int
+        (set holder/call (fn [value : Int] : Int (- value 100)))
+        1)
+      (fn run [] : Int
+        (let holder (Holder ^call (fn [value : Int] : Int (+ value 41))))
+        (holder/call (change holder)))
+    """
+    writeFile(root / "callbacks.gene", source)
+    discard buildWebModule(root / "callbacks.gene", root / "out")
+    writeFile(root / "out" / "check.mjs",
+      "import { run } from './callbacks.mjs'; " &
+      "if (run() !== 42n) throw new Error('function field was read after its arguments');")
+    let ran = execCmdEx("node " & quoteShell(root / "out" / "check.mjs"))
+    checkpoint ran.output
+    check ran.exitCode == 0
+    expect WebProfileError:
+      discard analyzeWebModule(source.replace("(holder/call (change holder))",
+        "(holder/call \"wrong type\")"), "callbacks.gene")
 
 suite "web module import syntax":
   test "source properties work in either position with aliases and re-exports":

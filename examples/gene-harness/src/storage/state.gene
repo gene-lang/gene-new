@@ -170,6 +170,9 @@
   [events : EventStore, scope : Str, stream : Str, event,
    origin : Str, owner : Str, projection : Str]
   (require_open events)
+  (let context ($runtime/context))
+  (if (== context/ui_render true)
+    (fail (HarnessStateError ^message "UI render callbacks cannot write durable Harness state.")))
   (acquire_event_writer events)
   (let envelope
     (try

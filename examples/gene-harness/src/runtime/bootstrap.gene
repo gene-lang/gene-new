@@ -1,13 +1,13 @@
 (mod bootstrap)
 
-(import ^from "../kernel" [new_harness module_dir shutdown_harness])
+(import ^from "../kernel" [new_harness module_dir shutdown_harness provide])
 (import ^from "../profiles/profile" [profile_admissions])
 (import ^from "../storage/state" [open_event_store close_event_store flush_event_store])
 (import ^from "../storage/workspace"
   [open_workspace close_workspace prepare_workspace activate_workspace_plan set_profile_plugins])
 (import ^from "./workspace_lock" ^^export
   [acquire_workspace_lock close_workspace_lock WorkspaceInUse])
-(import ^from "./sessions" [open_session_manager close_session_manager create_session load_session])
+(import ^from "./sessions" [open_session_manager close_session_manager create_session load_session with_session_gate])
 (import ^from "./commands" [new_command_manager close_command_manager])
 (import ^from "./triggers" [close_trigger_manager])
 (import ^from "../agents/history" [collect_unreferenced_bodies])
@@ -118,6 +118,10 @@
         (let current ($serde/read_data ($fs/read_text $"${state_root}/config.gene")))
         (readiness_report runtime current)))
     (set runtime/sessions (open_session_manager runtime events state_root))
+    # Runtime-owned gates survive plugin replacement and serialize data edits
+    # made by UI actions and direct model/REPL calls to the same function.
+    (provide h "core" "ui/state_lock"
+      (fn [key : Str, body] (with_session_gate runtime/sessions $"ui-state/${key}" body)))
     (set runtime/commands (new_command_manager runtime))
     (if (&& activate (== event_scope "session"))
       (then

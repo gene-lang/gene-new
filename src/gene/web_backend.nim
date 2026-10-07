@@ -2575,6 +2575,22 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
     let callee = analysis.analyzeExpr(value.head, bindings)
     if callee.typ.kind == wtkCallable:
       return analysis.analyzeCallableInvocation(value, callee, bindings, loc)
+    if callee.typ.kind == wtkCallback:
+      # A statically typed Fn field is an ordinary callee, not a stdlib path.
+      # Capture it before evaluating arguments, as the native VM does.
+      inc analysis.nextPipelineTemp
+      let captured = mangleWebName("$path_call_" & $analysis.nextPipelineTemp)
+      var signature = WebFunctionSig(params: callee.typ.params,
+        returnType: callee.typ.returnType, callName: captured, valueName: captured)
+      if callee.typ.optionalParams.anyIt(it):
+        for i, typ in callee.typ.params:
+          signature.namedParams.add WebParam(typ: typ,
+            optional: callee.typ.optionalParams[i])
+      let invocation = analysis.analyzeKnownCall(value, bindings, expected,
+        captured, signature, loc)
+      return WebExpr(kind: wekDo, typ: invocation.typ, loc: loc,
+        children: @[WebExpr(kind: wekBind, typ: callee.typ, loc: loc,
+          text: captured, children: @[callee]), invocation])
   if value.body.len >= 2 and (value.body[0].isSym("~") or
       value.body[0].isSym("?~")):
     if value.props.len > 0:
@@ -2960,6 +2976,18 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
         returnType = webType(wtkDomTarget)
       of "dom/append":
         paramTypes = @[webType(wtkDomTarget), webType(wtkDomTarget)]
+        returnType = webType(wtkVoid)
+      of "dom/insert_at":
+        paramTypes = @[webType(wtkDomTarget), webType(wtkDomTarget), webType(wtkInt)]
+        returnType = webType(wtkVoid)
+      of "dom/remove":
+        paramTypes = @[webType(wtkDomTarget)]
+        returnType = webType(wtkVoid)
+      of "dom/remove_attribute":
+        paramTypes = @[webType(wtkDomTarget), webType(wtkStr)]
+        returnType = webType(wtkVoid)
+      of "dom/set_style":
+        paramTypes = @[webType(wtkDomTarget), webType(wtkStr), webType(wtkStr)]
         returnType = webType(wtkVoid)
       of "dom/set_text":
         paramTypes = @[webType(wtkDomTarget), webType(wtkStr)]
@@ -5821,6 +5849,17 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
       let parent = if emitter.typescript: "(" & arguments[0] & " as Node)" else: arguments[0]
       let child = if emitter.typescript: "(" & arguments[1] & " as Node)" else: arguments[1]
       "(" & parent & ".appendChild(" & child & "), undefined)"
+    of "dom/insert_at":
+      "$gene_dom_insert_at(" & arguments.join(", ") & ")"
+    of "dom/remove":
+      let child = if emitter.typescript: "(" & arguments[0] & " as Node)" else: arguments[0]
+      "(" & child & ".parentNode?.removeChild(" & child & "), undefined)"
+    of "dom/remove_attribute":
+      let element = if emitter.typescript: "(" & arguments[0] & " as Element)" else: arguments[0]
+      "(" & element & ".removeAttribute(" & arguments[1] & "), undefined)"
+    of "dom/set_style":
+      let element = if emitter.typescript: "(" & arguments[0] & " as HTMLElement)" else: arguments[0]
+      "(" & element & ".style.setProperty(" & arguments[1] & ", " & arguments[2] & "), undefined)"
     of "dom/set_text":
       let node = if emitter.typescript: "(" & arguments[0] & " as Node)" else: arguments[0]
       "(" & node & ".textContent = " & arguments[1] & ", undefined)"
@@ -8293,6 +8332,21 @@ proc emitModule(module: WebModule, typescript: bool,
     dec emitter.indent
     emitter.line("}")
     emitter.line()
+  if moduleUsesBuiltin(module, ["dom/insert_at"]):
+    emitter.line("function $gene_dom_insert_at(parent" & (if typescript: ": EventTarget" else: "") &
+      ", child" & (if typescript: ": EventTarget" else: "") & ", index" & (if typescript: ": bigint" else: "") &
+      ")" & (if typescript: ": void" else: "") & " {")
+    inc emitter.indent
+    emitter.line("const p = " & (if typescript: "parent as Node" else: "parent") & ", c = " &
+      (if typescript: "child as Node" else: "child") & ";")
+    emitter.line("if (index < 0n || index > BigInt(p.childNodes.length)) throw new RangeError('dom/insert_at index out of range');")
+    emitter.line("const before = p.childNodes[Number(index)] ?? null; if (before === c) return;")
+    emitter.line("const active = p.ownerDocument?.activeElement" & (if typescript: " as HTMLInputElement | null" else: "") & ";")
+    emitter.line("const retained = active != null && c.contains(active), start = retained ? active.selectionStart : null, end = retained ? active.selectionEnd : null;")
+    emitter.line("p.insertBefore(c, before);")
+    emitter.line("if (retained && p.ownerDocument?.activeElement !== active) { active.focus({ preventScroll: true }); if (start != null && end != null) active.setSelectionRange(start, end); }")
+    dec emitter.indent
+    emitter.line("}")
   if needsDomEvents:
     # The listener is passed through unwrapped so `remove_event_listener` can
     # find it again by identity. There is nothing to adapt: the analyzer has

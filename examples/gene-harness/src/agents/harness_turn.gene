@@ -4,6 +4,7 @@
 (import ^from "./turn_eval" [evaluate_turn])
 (import ^from "../storage/workspace" [drain_workspace_changes])
 (import ^from "./history" [byte_prefix])
+(import [ui_publication_preview] ^from "../runtime/ui_views")
 
 (fn plugin_change_summary [changes]
   (let lines [])
@@ -102,7 +103,10 @@
     (drained .set true)
     (let changes (?? result/composition_changes []))
     (if_not changes/.empty?
-      (append_boundary_item result number "plugins" (plugin_change_summary changes)))
+      (append_boundary_item result number "plugins" (plugin_change_summary changes))
+      (let preview (try (ui_publication_preview h session) catch Any $err/message))
+      (if_not ($absent? preview)
+        (append_boundary_item result number "ui" (byte_prefix preview 16384))))
     (if (== result/validated/rejected_done true)
       (append_boundary_item result number "plugin_notice"
         "Done was deferred because this turn changed plugins. Read the publication result before finishing."))

@@ -5,6 +5,7 @@
 (import [plugin_admin] ^from "../builtin/plugin_admin")
 (import [core_commands] ^from "../builtin/core_commands")
 (import [repl] ^from "../builtin/repl")
+(import [ui_experiment] ^from "../builtin/ui_experiment")
 (import [triggers] ^from "../builtin/triggers")
 (import [provider_codex] ^from "../builtin/provider_codex")
 (import [provider_anthropic] ^from "../builtin/provider_anthropic")
@@ -14,7 +15,7 @@
 (import [history_basic] ^from "../builtin/history_basic")
 (fn baseline_profile []
   (Profile ^name "chat"
-    ^plugins [(gene_reference) (plugin_admin) (core_commands) (repl) (triggers)
+    ^plugins [(gene_reference) (plugin_admin) (core_commands) (repl) (triggers) (ui_experiment)
               (provider_codex) (provider_anthropic) (provider_claude)
               (provider_openrouter) (budget_advisory) (history_basic)]
     ^requires [["prompt" "gene_reference"]

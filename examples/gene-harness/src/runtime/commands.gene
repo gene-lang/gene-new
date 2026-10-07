@@ -266,7 +266,8 @@
   (command_changed
     manager
     session
-    {^id record/id ^name record/name ^status "running" ^text text ^output record/output})
+    {^id record/id ^name record/name ^status "running" ^text text ^output record/output
+     ^ui_action (== record/ui_action true)})
   nil)
 
 (fn finish_command [manager, session : Str, record, lease, outcome]
@@ -323,6 +324,12 @@
             record/raw
             """
 Stopped."""))))
+    (if_yes (&& (== record/ui_action true) (== record/status "failed"))
+      (let diagnostic $"UI action ${record/name} (${record/id}, view ${record/ui_request/component}, revision ${record/ui_request/revision}) failed: ${record/display}")
+      (let bounded (bounded_request manager/runtime session
+        [{^id record/id ^header $"[${record/id}.ui-error]" ^value diagnostic}]))
+      (record .put "attached" true)
+      (record .put "item" bounded/items/0))
     (let output (?? record/output ""))
     (if (!= output "")
       (then
@@ -354,7 +361,7 @@ Stopped."""))))
 (fn submit_command_impl [manager, session : Str, text : Str]
   (submit_routed_command manager session (parse_submission manager/runtime/h text)))
 
-(fn submit_routed_command [manager, session : Str, parsed]
+(fn submit_routed_command [manager, session : Str, parsed, ^lease supplied_lease = nil]
   (if (! manager/accepting/.get)
     (fail (CommandError ^code "stopped" ^message "workspace is stopping")))
   (if_not (== parsed/kind "command")
@@ -377,7 +384,7 @@ Stopped."""))))
           ^output ""
           ^started_ms ($os/wall_ms)
           ^start_seq (next_sequence manager/runtime/events (stream_key "session" session))})
-      (for key in ["mode_instance" "input_id"]
+      (for key in ["mode_instance" "input_id" "ui_action" "ui_request" "ui_action_id"]
         (let value (parsed .get key))
         (if_not ($absent? value) (allocated .put key value)))
       (state/records .push allocated)
@@ -386,7 +393,7 @@ Stopped."""))))
     ensure
       (manager/gate .set false)))
   (if_not ($absent? parsed/on_admit) (parsed/on_admit record))
-  (let lease (acquire_snapshot manager/runtime/h/snapshots))
+  (let lease (if ($absent? supplied_lease) (acquire_snapshot manager/runtime/h/snapshots) supplied_lease))
   (let sink (fn [output] (append_command_output manager session record output)))
   (let ctx
     (CommandContext ^manager manager ^runtime manager/runtime ^session session ^raw parsed/raw ^id record/id ^output sink ^snapshot lease/snapshot))

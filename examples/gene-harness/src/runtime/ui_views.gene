@@ -1,0 +1,155 @@
+# Experimental quoted views. Rendering and previews share the same leased path.
+(mod ui_views)
+(import [rows resolve] ^from "../kernel")
+(import [acquire_snapshot release_snapshot] ^from "./composition")
+(import [spawn_composition_call] ^from "./cordis_adapter")
+(import [load_session list_sessions require_record] ^from "./sessions")
+(import [plugin_state next_sequence stream_key] ^from "../storage/state")
+(import [bounded_component_view WebComponentError] ^from "../web/component_spec")
+
+(type UiError ^props {^code Str ^message Str} ^impl [Error])
+(impl Error for UiError)
+
+(fn ui_error [code : Str, message : Str] (fail (UiError ^code code ^message message)))
+
+(fn ui_settings [h]
+  (let saved (if ($absent? h/event_store) nil
+    (plugin_state h/event_store "workspace" "workspace" "ui_experiment")))
+  (?? saved {^enabled false ^layout "chat" ^panel "" ^side "left" ^width 50 ^theme {}}))
+
+(fn validate_ui_settings [value]
+  (if (!= ($head value) Map) (ui_error "invalid_request" "UI settings must be a map."))
+  (let result {^enabled (== value/enabled true) ^layout (?? value/layout "chat")
+    ^panel (?? value/panel "") ^side (?? value/side "left")
+    ^width (?? value/width 50) ^theme (?? value/theme {})})
+  (if_not (["chat" "panel"] .contains? result/layout) (ui_error "invalid_request" "Unknown UI layout."))
+  (if_not (["left" "right"] .contains? result/side) (ui_error "invalid_request" "Panel side must be left or right."))
+  (if (|| (!= ($head result/width) Int) (< result/width 25) (> result/width 70))
+    (ui_error "invalid_request" "Panel width must be 25–70 percent."))
+  (if (|| (!= ($head result/panel) Str) (!= ($head result/theme) Map))
+    (ui_error "invalid_request" "Invalid panel or theme."))
+  (for [key color] in result/theme
+    (if_not (["ink" "muted" "line" "surface" "sidebar" "soft" "accent"] .contains? ($to_str key))
+      (ui_error "invalid_request" $"Unknown theme token ${key}."))
+    (if (|| (!= ($head color) Str) ($absent? (#"^#[0-9a-fA-F]{6}$" .match color)))
+      (ui_error "invalid_request" "Theme colors must be six-digit hex colors.")))
+  result)
+
+(fn ui_record [snapshot, registry : Str, name : Str]
+  (for record in (?? (snapshot/registries .get registry) [])
+    (if (== record/key name) (return record)))
+  nil)
+
+(fn ui_revision [h, record] ($to_str h/ui_epoch ":" record/row_id))
+
+(fn ui_data_revision [h, snapshot]
+  ($to_str snapshot/id ":" (if ($absent? h/event_store) 0
+    (next_sequence h/event_store (stream_key "workspace" "workspace")))))
+
+(fn ui_descriptor [h, snapshot, record]
+  (let candidate record/payload)
+  (let functions {})
+  (for name in (?? candidate/actions [])
+    (let action (ui_record snapshot "functions" name))
+    (if_not ($absent? action) (functions .put name (ui_revision h action))))
+  {^name candidate/name ^slot candidate/slot ^revision (ui_revision h record)
+   ^data_revision (ui_data_revision h snapshot) ^view_state candidate/view_state
+   ^state_version ($to_str (?? candidate/state_version "1")) ^functions functions})
+
+(fn ui_status [h]
+  (let settings (ui_settings h))
+  (let components [])
+  (let snapshot h/snapshots/current/.get)
+  (if_yes settings/enabled
+    (for record in (?? (snapshot/registries .get "web_components") [])
+      (if_not ($absent? record/payload/view_state)
+        (components .push (ui_descriptor h snapshot record)))))
+  {^settings settings ^components components ^data_revision (ui_data_revision h snapshot) ^epoch h/ui_epoch
+   ^workspace (?? h/workspace/workspace_root "")})
+
+(fn render_component [h, callback, context, ^experimental experimental : Bool = false]
+  (let outcome
+    (scope
+      (let task (spawn_composition_call h/composition callback [context]
+        {^timeout_ms 1000 ^max_memory_mb 32} ($runtime/context)))
+      (let deadline (spawn ^lane root (do ($sleep 1000) task/.cancel)))
+      (try task/.join
+        ensure
+          (if_not task/.done? task/.cancel task/.join)
+          deadline/.cancel
+          deadline/.join)))
+  (match outcome
+    (when (TaskOutcome/ok value) (bounded_component_view ^experimental experimental value))
+    (when (TaskOutcome/error error) (fail (WebComponentError ^message error/message)))
+    (when (TaskOutcome/panic message) (fail (WebComponentError ^message $"component render panicked: ${message}")))
+    (else (fail (WebComponentError ^message "component render exceeded its budget or was cancelled")))))
+
+(fn ui_context [h, session : Str, state]
+  (let loop_factory (resolve h "loop"))
+  (let runtime (/runtime (loop_factory)))
+  (let loaded (if (== session "") nil (load_session runtime/sessions session)))
+  (let config ($serde/read_data ($fs/read_text $"${runtime/state_root}/config.gene")))
+  ($freeze {^session_id session ^session (if ($absent? loaded) nil (require_record runtime/sessions session))
+    ^round (if ($absent? loaded) nil loaded/round/.get) ^workspace runtime/root
+    ^model {^provider config/provider ^model config/model} ^sessions (list_sessions runtime/sessions)
+    ^view_state state}))
+
+(fn ui_view_state [candidate, supplied]
+  (if (!= ($head supplied) Map) (ui_error "invalid_request" "View state must be a map."))
+  (if (> ($str/byte_size ($json/stringify supplied)) 16384) (ui_error "too_large" "View state is too large."))
+  (let state ($thaw ($freeze candidate/view_state)))
+  (for [key value] in supplied
+    (if_not (candidate/view_state .has_key? key) (ui_error "invalid_request" $"Unknown view-state field ${key}."))
+    (if_not ([Str Bool Int Float Nil] .contains? ($head value)) (ui_error "invalid_request" "View state must contain scalar values."))
+    (let initial (candidate/view_state .get key))
+    (if (&& (! ($absent? initial)) (!= ($head initial) ($head value))
+            (! (&& ([Int Float] .contains? ($head initial)) ([Int Float] .contains? ($head value)))))
+      (ui_error "invalid_request" $"Wrong type for view-state field ${key}."))
+    (state .put key value))
+  state)
+
+(fn validate_view_actions [tree, candidate, snapshot]
+  (if ($absent? tree/tag) (return nil))
+  (if_not ($absent? tree/props/action)
+    (let name tree/props/action)
+    (if_not ((?? candidate/actions []) .contains? name)
+      (ui_error "invalid_request" $"Undeclared view action ${name}."))
+    (if ($absent? (ui_record snapshot "functions" name)) (ui_error "unavailable" $"Missing action function ${name}.")))
+  (if_not ($absent? tree/props/state)
+    (if_not (candidate/view_state .has_key? tree/props/state)
+      (ui_error "invalid_request" $"Undeclared view-state field ${tree/props/state}.")))
+  (for child in tree/children (validate_view_actions child candidate snapshot))
+  nil)
+
+(fn ui_render [h, session : Str, name : Str, revision : Str, state, ^instance instance : Str = "preview", ^sequence sequence : Str = "0"]
+  (if_not (/enabled (ui_settings h)) (ui_error "unavailable" "The UI experiment is disabled."))
+  (let lease (acquire_snapshot h/snapshots))
+  (try
+    (let record (ui_record lease/snapshot "web_components" name))
+    (if (|| ($absent? record) ($absent? record/payload/view_state)) (ui_error "not_found" "View not found."))
+    (if (&& (!= revision "") (!= revision (ui_revision h record))) (ui_error "revision_conflict" "This view was replaced. Refresh before trying again."))
+    (let data_revision (ui_data_revision h lease/snapshot))
+    (let result (ui_descriptor h lease/snapshot record))
+    (result .put "instance" instance)
+    (result .put "sequence" sequence)
+    (result .put "data_revision" data_revision)
+    (let view_state (ui_view_state record/payload state))
+    (try
+      (let view ($runtime/with_context {^composition h/snapshots ^snapshot lease/snapshot ^session session ^^ui_render}
+        (fn [] (render_component ^^experimental h record/payload/render (ui_context h session view_state)))))
+      (validate_view_actions view record/payload lease/snapshot)
+      (result .put "view" view)
+    catch Any (result .put "error" $err/message))
+    result
+  ensure (release_snapshot h/snapshots lease)))
+
+(fn ui_preview [h, name : Str, state = {}, ^session session : Str = ""]
+  (let chosen (if (== session "") (?? (/session ($runtime/context)) "") session))
+  (ui_render h chosen name "" state))
+
+(fn ui_publication_preview [h, session : Str]
+  (if_not (/enabled (ui_settings h)) (return nil))
+  (let results [])
+  (for component in (/components (ui_status h))
+    (results .push (ui_render h session component/name component/revision {})))
+  ($serde/write_data results))
