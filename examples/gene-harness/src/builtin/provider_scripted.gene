@@ -1,5 +1,6 @@
 (mod provider_scripted)
 (import ^from "../plugin_api" [Plugin PluginHost])
+(import ^from "./documentation" [contribute_text_doc])
 
 (type ScriptedProviderError ^props {^message Str} ^impl [Error])
 (impl Error for ScriptedProviderError)
@@ -9,7 +10,7 @@
   (Plugin ^id "provider_scripted" ^provides [["providers" "scripted"]]
     ^activate (fn [host]
       (host .PluginHost:contribute "providers"
-        {^name "scripted" ^doc "Replay supplied model responses."
+        {^name "scripted" ^tags ["provider" "model" "scripted"] ^docs ["harness/providers/scripted"] ^doc "Replay supplied model responses."
          ^configure (fn [model, effort, timeout]
            {^model "scripted" ^effort "none" ^timeout_ms timeout})
          ^prepare (fn [call] {})
@@ -17,4 +18,8 @@
            (let next (index .swap (+ index/.get 1)))
            (if (>= next responses/.size)
              (fail (ScriptedProviderError ^message "scripted provider exhausted")))
-           {^text responses/%next})}))))
+           {^text responses/%next})})
+      (contribute_text_doc host "harness/providers/scripted"
+        "Replay supplied responses for deterministic Harness tests."
+        "The scripted provider returns supplied response strings in sequence without a network call; exhausting them raises scripted provider exhausted. Its counter belongs to activation memory. Use it for deterministic runtime tests, not as evidence of live model authoring or discovery."
+        ^tags ["provider" "model" "scripted"]))))

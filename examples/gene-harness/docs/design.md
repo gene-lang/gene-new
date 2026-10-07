@@ -146,15 +146,23 @@ across the loop, round controller and cold recovery. An error before model
 dispatch writes a failed turn end with its stage and no invented model call.
 
 Instructions come entirely from ordered `prompt` rows: the loop's response
-grammar first, mounted plugin sections next, and dynamic workspace, session
-and function information last. `gene_reference` contributes the Gene skill;
-`plugin_admin` and `triggers` describe only functions they also contribute.
-The web entry contributes a paragraph about its browser workflow.
+grammar first, essential mounted plugin orientation next, and dynamic workspace,
+session and discovery instructions last. Full manuals and callable catalogs are
+loaded on demand. `gene_reference` contributes a short language orientation;
+the Gene skill is the `gene/overview` docs chapter. Plugin administration and
+triggers contribute searchable functions and owned docs rather than full prompt
+sections. The web entry contributes a short browser orientation.
 `gene_reference` makes the `harness/web_components` chapter available in all
 profiles, and `ui_experiment` contributes the configuration and preview
 functions. CLI turns can author and preview UI plugins without a browser.
-Pull-only chapters come from `docs` rows and are read with `doc`. Credentials
-are private transport inputs.
+Pull-only chapters come from `docs` rows and are read with `doc`. `discover`
+searches active contribution metadata with kind/owner filters and pagination,
+without reading chapter bodies or invoking callbacks. Its results include owners,
+short summaries, signatures/usage and chapter references. Optional summary, tags
+and docs fields support the same practice in generated plugins. Both helpers
+use the caller's leased composition; no separate catalog is stored. Focused UI
+recipes cover forms, drafts, revisions, configuration and verification. See
+[discovery](discovery.md). Credentials are private transport inputs.
 
 A response contains zero or more Gene forms followed by raw blocks:
 
@@ -208,7 +216,7 @@ are exactly:
 | Group | Names |
 | --- | --- |
 | Loop | `Outcome`, `append_prompt` (rewritten to `append_prompt_at`), `attachment`, `recall` |
-| Context | `session_id`, `workspace_root`, `doc` |
+| Context | `session_id`, `workspace_root`, `discover`, `doc` |
 | Functions | every row of the leased `functions` registry, by name; the built-in plugin and trigger functions appear only while their plugins are active |
 
 The whole standard library is reachable through `$`. Relative paths resolve
@@ -380,7 +388,8 @@ The registries are `functions`, `commands`, `input_modes`, `prompt`, `docs`,
 `providers`, `hooks`, `views`, `interactions`, `web_components`, `event_types`,
 `subscriptions`, `seams` and `triggers`. A
 `functions` row is `{^name ^fn ^doc}`. Names are unique across the workspace,
-and the instructions list each with its `$runtime/signature` and doc. A
+and discovery returns each with its captured `$runtime/signature` and short doc.
+Contributions may add a summary, topic tags and docs chapter references. A
 `prompt` row has `^name` and exactly one of `^text` or callable `^render`;
 `docs` rows have `^name` and `^text` or `^path`. The core reserves command
 names by owner: `core_commands` owns `/help`, `/run`, `/sh` and `/view`, while
@@ -677,8 +686,9 @@ render callbacks, layout and themes. It preserves the selected session and
 offers Return to workspace UI. Shared workspace settings are unchanged.
 
 The current experiment supports one selected panel, a bounded theme, forms
-and function actions. It introduces no compiled browser plugins, general
-layout framework or API catalog. The [experiment guide](../experiments/ui/README.md)
+and function actions. It introduces no compiled browser plugins or general
+layout framework. Shared registry discovery covers capabilities and docs.
+The [experiment guide](../experiments/ui/README.md)
 and [evaluation record](../experiments/ui/RESULTS.md) track installation and
 observed behavior. The [web client guide](web-client.md) defines protocol 6 and
 recovery delivery; the [component chapter](web-components.md) defines authoring.
@@ -730,6 +740,7 @@ The Harness relies on general runtime features, documented in
 | Compact publication outlines | ui/outline |
 | UI function admission and receipt lookup | ui/actions |
 | Experimental UI configuration functions | builtin/ui_experiment |
+| Progressive capability and docs discovery | agents/discovery; builtin/documentation shares owned chapter registration |
 | Browser session service and ordered delivery | web/session_service, web/push |
 | HTTP lifecycle, authentication and wire contract | web/server, web/auth, web/contract |
 | Browser page shell and styles | web/page, web/style |

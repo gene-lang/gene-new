@@ -241,6 +241,31 @@ re-evaluated. The `repl` built-in plugin can be disabled independently of
 
 ## Code responses
 
+### Discover as you work
+
+The initial model prompt contains execution rules and brief orientation. Gene
+and plugin manuals and callable signatures are loaded when needed:
+
+```gene
+(discover "ui forms" ^kind "docs")
+(doc "harness/ui/forms")
+(discover "register" ^kind "functions")
+```
+
+Discovery searches active contribution names, descriptions and tags. Results
+include owners, signatures/usage and chapter references; default pages contain
+12 matches, with next_offset for continuation. `doc` loads one chapter. Both
+helpers use the current composition lease and also work in `/run` and the REPL.
+
+Every plugin should follow this practice: concise descriptions, searchable tags
+and chapter references, with detailed instructions/examples in owned docs rows.
+Keep prompt contributions to essential orientation. New plugin contributions
+are discovered automatically, and disabling one withdraws its owned docs too.
+See [discovery](docs/discovery.md), [plugin authoring](docs/plugins.md), and the
+[focused UI recipes](docs/recipes/ui.md).
+
+### Return Gene code
+
 ```gene
 # Inspect the project
 # Keep a labeled result for the next turn.
@@ -345,7 +370,12 @@ one from an attachment:
     (Plugin ^id "line_counter" ^provides [["functions" "count_lines"]]
       ^activate (fn [host]
         (host .PluginHost:contribute "functions"
-          {^name "count_lines" ^doc "Count non-empty lines in a file." ^fn count_lines})))))
+          {^name "count_lines" ^doc "Count non-empty lines in a file."
+           ^tags ["files" "lines"] ^docs ["line_counter/usage"] ^fn count_lines})
+        (host .PluginHost:contribute "docs"
+          {^name "line_counter/usage" ^summary "Counting nonempty workspace file lines."
+           ^tags ["files" "lines"]
+           ^text "Call count_lines with a workspace-relative path; the file is read without modification."})))))
 END
 ```
 

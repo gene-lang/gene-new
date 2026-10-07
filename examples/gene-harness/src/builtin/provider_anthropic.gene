@@ -1,5 +1,6 @@
 (mod provider_anthropic)
 (import ^from "../plugin_api" [Plugin PluginHost])
+(import ^from "./documentation" [contribute_text_doc])
 (import ^from "../kernel" [HarnessError])
 (import ^from "./provider_common" [nonempty configure_model http_json_attempt])
 
@@ -73,7 +74,7 @@
   (Plugin ^id "provider_anthropic" ^provides [["providers" "anthropic"]]
     ^activate (fn [host]
       (host .PluginHost:contribute "providers"
-        {^name "anthropic" ^doc "Use the Anthropic Messages API." ^auto 1
+        {^name "anthropic" ^tags ["provider" "model" "anthropic"] ^docs ["harness/providers/anthropic"] ^doc "Use the Anthropic Messages API." ^auto 1
          ^available (fn []
            (let key (api_key))
            (if ($absent? key)
@@ -97,4 +98,8 @@
              (fn [response]
                (let text (anthropic_text response))
                (let parsed ($json/parse response/body))
-               {^text text ^usage parsed/usage})))}))))
+               {^text text ^usage parsed/usage})))})
+      (contribute_text_doc host "harness/providers/anthropic"
+        "Anthropic Messages preparation, effort and credential boundary."
+        "The anthropic provider separates system instructions from role-preserving conversation messages, prepares the output budget and adapts reasoning effort to the selected model. Minimal effort maps to low. Send reads ANTHROPIC_API_KEY; Claude Code OAuth tokens are not accepted as API keys. Preparation and discovery never expose credentials."
+        ^tags ["provider" "model" "anthropic"]))))

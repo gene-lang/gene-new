@@ -174,7 +174,7 @@
       profile))
   (contribute runtime/h "web" "prompt"
     {^name "web_components"
-     ^text "Plugins can enhance the existing web frontend through the web_components registry. Read (doc \"harness/web_components\") for its slots, quoted views, dynamic render callbacks, actions and examples before implementing a web component."})
+     ^text "This session has a browser frontend. Discover UI capabilities and start with (doc \"harness/ui\") to customize its workspace. Verify the browser as well as server previews."})
   (let settings ($serde/read_data ($fs/read_text $"${runtime/state_root}/config.gene")))
   (let model_info
     (try

@@ -14,9 +14,11 @@
       (let with_state_lock (host .PluginHost:resolve "ui/state_lock"))
       (fn tasks [] (?? (/tasks host/.PluginHost:state) (initial_tasks)))
       (host .PluginHost:contribute "functions"
-        {^name "board_tasks" ^doc "List project-board tasks and their revisions." ^fn tasks})
+        {^name "board_tasks" ^doc "List project-board tasks and their revisions."
+         ^tags ["board" "tasks" "project"] ^docs ["project_board/usage"] ^fn tasks})
       (host .PluginHost:contribute "functions"
         {^name "board_save" ^doc "Save a task with its expected revision. Omitted fields keep their current values; a new id requires title and no revision."
+         ^tags ["board" "tasks" "save"] ^docs ["project_board/usage"]
          ^fn (fn [^id id : Str, ^title title : Str? = nil, ^status status : Str? = nil, ^notes notes : Str? = nil, ^revision revision : Str = ""]
            (with_state_lock "project_board" (fn []
              (let current (tasks))
@@ -42,6 +44,8 @@
              result)))})
       (host .PluginHost:contribute "web_components"
         {^name "project_board" ^slot "panel" ^view_state {^filter "" ^selected "welcome"}
+         ^summary "Project tasks with search and a selected-task editor."
+         ^tags ["board" "tasks" "ui"] ^docs ["project_board/usage"]
          ^state_version "1" ^actions ["board_save"]
          ^render (fn [context]
            (let query ($str/lower context/view_state/filter))
@@ -68,4 +72,8 @@
              (h2 "Project board")
              (label "Filter tasks" (input ^key "filter" ^state "filter" ^value %context/view_state/filter ^placeholder "Find a task…"))
              (table (thead (tr (th "Task") (th "Status"))) (tbody %rows...))
-             %inspector))})))))
+             %inspector))})
+      (host .PluginHost:contribute "docs"
+        {^name "project_board/usage" ^summary "Project-board workflow, saves and draft recovery."
+         ^tags ["board" "tasks" "ui"] ^docs ["harness/ui/drafts"]
+         ^text "Search and select a task, edit its fields and Save task. board_tasks lists durable tasks/revisions. board_save takes an id and expected revision; omitted fields retain current values. New tasks need a title and an empty revision. Status is todo, doing or done. Browser navigation retains drafts; use host Discard edits to clear them and load current values after a conflict."})))))

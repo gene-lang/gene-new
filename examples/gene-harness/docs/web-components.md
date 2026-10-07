@@ -213,6 +213,9 @@ Input types are text, search, checkbox, number and hidden. Field values are
 strings except checkboxes, which produce Bool; parse numbers in the function
 when needed. Nested forms, duplicate fields and duplicate keys are rejected.
 Use Str view-state defaults for value-based controls and Bool for checkboxes.
+Textareas accept an explicit `value` or plain text children for their initial
+value. Text children are normalized into the value property for draft binding;
+an explicit value takes precedence. Markup children are not an initial text value.
 
 View state is browser-owned scalar data. Filter typing is debounced, and only
 the target component renders. The renderer receives `context/view_state` and

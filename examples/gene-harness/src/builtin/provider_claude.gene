@@ -1,5 +1,6 @@
 (mod provider_claude)
 (import ^from "../plugin_api" [Plugin PluginHost])
+(import ^from "./documentation" [contribute_text_doc contribute_doc])
 (import ^from "../kernel" [HarnessError])
 (import ^from "./provider_common" [nonempty configure_model])
 (import $os [exec_async])
@@ -55,7 +56,7 @@
   (Plugin ^id "provider_claude" ^provides [["providers" "claude"]]
     ^activate (fn [host]
       (host .PluginHost:contribute "providers"
-        {^name "claude" ^doc "Use the local Claude Code CLI."
+        {^name "claude" ^tags ["provider" "model" "claude"] ^docs ["harness/providers/claude"] ^doc "Use the local Claude Code CLI."
          ^configure (fn [model, effort, timeout]
            (let configured
              (configure_model ^^minimal_is_low model effort timeout "sonnet"))
@@ -86,4 +87,11 @@
                ensure task/.cancel))
            (let text (claude_text response))
            (let parsed (try ($json/parse response/stdout) catch Any nil))
-           {^text text ^usage parsed/usage})}))))
+           {^text text ^usage parsed/usage})})
+      (contribute_text_doc host "harness/providers/claude"
+        "Local Claude Code CLI transport and invocation contract."
+        "Use the claude provider for the local Claude Code CLI. Harness supplies instructions and serialized conversation history, disables CLI tools/hooks/MCP, and evaluates returned Gene itself. Configure the executable with GENE_HARNESS_CLAUDE_COMMAND. Model, effort and timeout use Harness settings. Read harness/claude for complete invocation details."
+        ^tags ["provider" "model" "claude"] ^docs ["harness/claude"])
+      (contribute_doc host "harness/claude"
+        "Complete local Claude Code invocation and transport behavior."
+        "examples/gene-harness/docs/claude.md" ^tags ["provider" "claude" "cli"]))))

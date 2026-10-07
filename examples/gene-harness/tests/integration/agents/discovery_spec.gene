@@ -1,0 +1,165 @@
+# Tests src/agents/discovery.gene, including plugin ownership and turn leases.
+(import $test [describe it])
+(import ^from "../../support" [isolated run_spec])
+(import ^from "../../../src/kernel"
+  [new_harness shutdown_harness put_cordis_plugin uninstall contribute doc])
+(import ^from "../../../src/plugin_api" [Plugin PluginHost])
+(import ^from "../../../src/agents/discovery" [discover])
+(import ^from "../../../src/agents/harness_turn" [evaluate_harness_turn])
+(import ^from "../../../src/runtime/bootstrap" [open_runtime close_runtime])
+(import ^from "../../../src/profiles/baseline" [baseline_profile])
+(import ^from "../../../src/storage/workspace" [set_plugin_enabled])
+(import ^from "../../../src/agents/instructions" [assemble_instructions])
+
+(fn widget [version : Str]
+  (Plugin ^id "widget" ^activate (fn [host] (host .PluginHost:contribute "docs" {^name "widget/guide" ^summary $"${version} widget editing guide" ^tags ["forms" "editing"] ^text $"${version} detailed help"}) (host .PluginHost:contribute "functions" {^name "widget_save" ^doc $"${version} save an edited widget" ^tags ["forms"] ^docs ["widget/guide"] ^fn (fn [^expected expected : Str] version)}))))
+
+(describe
+  "Progressive capability discovery"
+  (it
+    "searches metadata without loading bodies or executing callbacks, and pages results"
+    []
+    (isolated
+      this_mod/.path
+      "searches metadata without loading bodies or executing callbacks, and pages results"
+      (fn [workspace]
+        (let h (new_harness))
+        (try
+          (contribute
+            h
+            "probe"
+            "docs"
+            {
+              ^name "probe/guide"
+              ^summary "Repair job intake and forms"
+              ^tags ["bicycle"]
+              ^path "missing-documentation-file.md"})
+          (contribute
+            h
+            "probe"
+            "functions"
+            {
+              ^name "repair_save"
+              ^doc "Save a repair job."
+              ^tags ["bicycle" "intake"]
+              ^docs ["probe/guide"]
+              ^fn (fn [^title title : Str]
+                    (fail "discovery executed a function"))})
+          (contribute
+            h
+            "probe"
+            "web_components"
+            {
+              ^name "repair_panel"
+              ^summary "Bicycle repair overview"
+              ^tags ["bicycle"]
+              ^slot "sidebar"
+              ^render (fn [context]
+                        (fail "discovery executed a renderer"))})
+          (let first (discover ^limit 1 h "BICYCLE"))
+          ($assert (== first/total 3))
+          ($assert (== first/next_offset 1))
+          ($assert (== first/matches/0/name "probe/guide"))
+          ($assert ($absent? first/matches/0/path) "discovery exposed the body path")
+          (let second (discover ^offset first/next_offset ^limit 1 h "bicycle"))
+          ($assert (== second/matches/0/name "repair_save"))
+          ($assert (== second/matches/0/signature/named/0/name "title"))
+          ($assert (== second/matches/0/signature/named/0/required true))
+          ($assert (== second/matches/0/docs ["probe/guide"]))
+          ($assert ($absent? second/matches/0/fn) "discovery exposed a callable")
+          (let third (discover ^offset second/next_offset ^limit 1 h "bicycle"))
+          ($assert (== third/matches/0/slot "sidebar"))
+          ($assert (== third/next_offset nil))
+          ($assert (== ((Path "total") (discover ^owner "probe" h "repair intake")) 2))
+          ($assert (== ((Path "total") (discover ^kind "functions" h "bicycle")) 1))
+          ($assert (== ((Path "total") (discover ^owner "other" h "bicycle")) 0))
+          (for call in [(fn [] (discover ^kind "unknown" h)) (fn [] (discover ^limit 0 h)) (fn [] (discover ^offset -1 h))]
+            ($assert (try (call) false catch Any true)))
+          (for invalid in [{^tags "not-a-list"} {^docs [1]} {^summary 42}]
+            (let candidate {^name "bad" ^text "body"})
+            (for [key value] in invalid
+              (candidate .put key value))
+            ($assert (try (contribute h "probe" "docs" candidate) false catch Any true)))
+          (for name in ["discover" "doc"]
+            ($assert
+              (try
+                (contribute
+                  h
+                  "probe"
+                  "functions"
+                  {^name name ^doc "Shadow a helper." ^fn (fn [] nil)})
+                false
+              catch Any
+                ($str/contains? $err/message "reserved"))))
+        ensure
+          (shutdown_harness h)))))
+  (it
+    "keeps discovery and docs on the turn's lease through replacement, then retires them"
+    []
+    (isolated
+      this_mod/.path
+      "keeps discovery and docs on the turn's lease through replacement, then retires them"
+      (fn [workspace]
+        (let h (new_harness))
+        (try
+          (put_cordis_plugin h (widget "old") {^!host})
+          (let root ($fs/real_path workspace))
+          (let entered ($channel ^capacity 1))
+          (let resume ($channel ^capacity 1))
+          (let response ($cell nil))
+          (scope
+            (let task
+              (spawn ^lane root (response .set (evaluate_harness_turn ^bindings {^entered entered ^resume resume} h 1 workspace "(append_prompt \"before\" (discover \"widget\")) (entered .send nil) resume/.recv (append_prompt \"after\" (discover \"widget\")) (Outcome ^prompt \"continue\" ^reply (doc \"widget/guide\"))"))))
+            entered/.recv
+            (put_cordis_plugin ^^replace h (widget "new") {^!host})
+            (resume .send nil)
+            (await task))
+          (let result response/.get)
+          ($assert (== result/validated/outcome/reply "old detailed help") ($to_str result))
+          ($assert ($str/contains? result/request "old widget editing guide"))
+          ($assert (! ($str/contains? result/request "new widget editing guide")))
+          ($assert
+            (==
+              ((Path "matches" 0 "summary") (discover ^kind "docs" h "widget"))
+              "new widget editing guide"))
+          ($assert (== (doc h "widget/guide") "new detailed help"))
+          (uninstall h "widget")
+          ($assert (== ((Path "total") (discover h "widget")) 0))
+          ($assert
+            (try
+              (doc h "widget/guide")
+              false
+            catch Any
+              ($str/contains? $err/message "discover")))
+        ensure
+          (shutdown_harness h)))))
+  (it
+    "keeps manuals out of the prompt and withdraws each disabled plugin's references"
+    []
+    (isolated
+      this_mod/.path
+      "keeps manuals out of the prompt and withdraws each disabled plugin's references"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (try
+          (let prompt (assemble_instructions runtime {^kind "interactive"}))
+          ($assert ($str/contains? prompt "(discover \"topic\")"))
+          ($assert (! ($str/contains? prompt "The rules that catch most errors")))
+          ($assert (! ($str/contains? prompt "register_plugin: (")))
+          ($assert (! ($str/contains? prompt "Use (create_trigger")))
+          (let form_docs (discover ^kind "docs" runtime/h "ui forms"))
+          (let recipes (form_docs/matches .filter (fn [entry] (== entry/name "harness/ui/forms"))))
+          ($assert (! recipes/.empty?))
+          ($assert ($str/contains? (doc runtime/h "harness/ui/forms") "safety_checked"))
+          ($assert (> ((Path "total") (discover ^owner "provider_codex" runtime/h)) 0))
+          ($assert (> ((Path "total") (discover ^owner "repl" runtime/h)) 0))
+          (set_plugin_enabled runtime/workspace runtime/h "repl" false)
+          ($assert (== ((Path "total") (discover ^owner "repl" runtime/h)) 0))
+          ($assert (try (doc runtime/h "harness/repl") false catch Any true))
+          (set_plugin_enabled runtime/workspace runtime/h "repl" true)
+          ($assert (> ((Path "total") (discover ^owner "repl" runtime/h)) 0))
+        ensure
+          (close_runtime runtime))))))
+
+(fn main [args] : Int
+  (run_spec args))

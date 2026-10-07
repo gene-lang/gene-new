@@ -2,6 +2,7 @@
 (import [Plugin PluginHost] ^from "../plugin_api")
 (import [validate_ui_settings] ^from "../ui/state")
 (import [ui_preview] ^from "../ui/views")
+(import [contribute_doc] ^from "./documentation")
 
 (fn ui_experiment [] : Plugin
   (Plugin ^id "ui_experiment" ^requires ["loop"]
@@ -10,11 +11,17 @@
       (let loop_factory (host .PluginHost:resolve "loop"))
       (let runtime (/runtime (loop_factory)))
       (host .PluginHost:contribute "functions"
-        {^name "ui_configure" ^doc "Opt into the experimental UI or select its layout. Pass a map: enabled, layout chat/panel, panel name, side left/right, width 25–70, theme hex colors. Disabled by default."
+        {^name "ui_configure" ^doc "Enable, select or theme the experimental workspace panel."
+         ^tags ["ui" "layout" "theme" "panel"] ^docs ["harness/ui/configuration"]
          ^fn (fn [settings]
            (let checked (validate_ui_settings settings))
            (host .PluginHost:update_state checked)
            checked)})
       (host .PluginHost:contribute "functions"
-        {^name "ui_preview" ^doc "Render an experimental view with supplied view-state data; returns its validated tree or error. Read (doc \"harness/web_components\") for the experimental contract."
-         ^fn (fn [name : Str, state = {}] (ui_preview runtime/h name state))}))))
+        {^name "ui_preview" ^doc "Validate a panel tree using supplied browser view state."
+         ^tags ["ui" "preview" "verify"] ^docs ["harness/ui/publication"]
+         ^fn (fn [name : Str, state = {}] (ui_preview runtime/h name state))})
+      (contribute_doc host "harness/ui/configuration"
+        "Enable a panel; layout, width, theme tokens and default-UI recovery."
+        "examples/gene-harness/docs/recipes/ui-configuration.md"
+        ^tags ["ui" "layout" "theme" "panel" "recovery"] ^docs ["harness/ui"]))))

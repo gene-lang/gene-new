@@ -10,7 +10,10 @@ startup.
 
 Use `register_plugin` with one quoted `(mod plugin ...)` form or attachment
 text. The module must define `init` returning a `Plugin`. Its top level is
-inert; `init` is preflighted under a bounded budget. Generated imports are
+inert; `init` is preflighted under a bounded budget. Allowed top-level forms are
+import, import_impl, fn, type, impl, protocol, alias and enum. Top-level `const`
+is currently rejected, even for literal lists; use a zero-argument function.
+Generated imports are
 limited to `src/plugin_api.gene` and the supplied content-addressed
 dependency closure.
 
@@ -47,15 +50,44 @@ plugin and is removed when the activation unloads. Common rows are:
 | `commands` | `{^name ^usage ^doc ^run}`; an operator slash command |
 | `input_modes` | `{^name ^label ^hint ^submit_label ^prompt ^classify ^run ^close}`; a transient operator input mode |
 | `prompt` | `{^name ^text}` or `{^name ^render}`; an instruction section |
-| `docs` | `{^name ^text}` or `{^name ^path}`; read with `(doc name)` |
+| `docs` | `{^name ^summary ^tags ^text}` or `{^name ^summary ^tags ^path}`; body read with `(doc name)` |
 | `providers` | `{^name ^doc ^available ^configure ^prepare ^send}`; a model adapter selected by the profile or configuration |
 | `hooks` | `{^point ^name ^run}`; an ordered listener at a published shaping point |
 | `triggers` | A definition that starts workspace work without a user |
 | `web_components` | `{^name ^slot ^view}` or `{^name ^slot ^render}`; quoted UI, with `view_state` and `actions` for experimental panel forms |
 
-Prompt sections have deterministic order. A plugin should describe only the
-functions it also contributes, so disabling it removes both the binding and
-the instruction. `prepare` on a provider row returns plain model-visible data
+### Make every plugin discoverable
+
+Plugins use progressive discovery themselves. Their functions and other active
+contributions appear automatically in `(discover "topic")`; there is no separate
+catalog to synchronize. Keep doc descriptions concise. Add optional `summary`,
+`tags` (topic strings) and `docs` (chapter names) on contribution rows. A summary
+is a string; tags/docs are lists of nonempty strings. Legacy rows remain valid.
+
+Put detailed contracts, examples and workflow instructions in owned docs rows.
+Give those chapters a searchable summary/tags and a plugin-specific prefix.
+Functions refer to relevant chapters through `docs`. For example, inside
+activation:
+
+```gene
+(host .PluginHost:contribute "docs"
+  {^name "line_counter/usage" ^summary "Counting nonempty lines in workspace files."
+   ^tags ["files" "lines"]
+   ^text "Call count_lines with a workspace-relative path. It returns the number of nonempty lines and reads without modifying the file."})
+(host .PluginHost:contribute "functions"
+  {^name "count_lines" ^doc "Count nonempty lines in a file."
+   ^tags ["files" "lines"] ^docs ["line_counter/usage"] ^fn count_lines})
+```
+
+The starting prompt does not enumerate these signatures/manuals. The model can
+discover them and call the functions already bound in its environment. Keep
+prompt sections to essential behavioral rules or brief orientation; do not inject
+the plugin's full API manual. Prompt sections have deterministic order. Describe
+only contributed capabilities so retirement withdraws the guidance with them.
+Docs rows have the same ownership and lease semantics as function rows.
+See [discovery](discovery.md) for search, pagination and metadata behavior.
+
+`prepare` on a provider row returns plain model-visible data
 without credentials; `send` adds transport authentication and makes one
 attempt. A provider row is inert until selected. Callback limits apply to
 generated provider and hook rows just as to other plugin callbacks.

@@ -55,7 +55,7 @@
             "web entry did not contribute its documentation")
           ($assert ($str/contains?
             (assemble_instructions service/runtime {^kind "interactive"})
-            "web_components registry")
+            "This session has a browser frontend")
             "web entry did not contribute its prompt paragraph")
           ($assert (== (row service/runtime/h "commands" "new") void)
             "web host received a CLI-only command")

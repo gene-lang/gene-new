@@ -1,5 +1,6 @@
 (mod provider_openrouter)
 (import ^from "../plugin_api" [Plugin PluginHost])
+(import ^from "./documentation" [contribute_text_doc])
 (import ^from "../kernel" [HarnessError])
 (import ^from "./provider_common" [nonempty configure_model http_json_attempt])
 
@@ -22,7 +23,7 @@
   (Plugin ^id "provider_openrouter" ^provides [["providers" "openrouter"]]
     ^activate (fn [host]
       (host .PluginHost:contribute "providers"
-        {^name "openrouter" ^doc "Use OpenRouter chat completions." ^auto 0
+        {^name "openrouter" ^tags ["provider" "model" "openrouter"] ^docs ["harness/providers/openrouter"] ^doc "Use OpenRouter chat completions." ^auto 0
          ^available (fn []
            (if ($absent? (api_key))
              "OPENROUTER_API_KEY is unavailable" nil))
@@ -47,4 +48,8 @@
              (fn [response]
                (let text (openrouter_text response))
                (let parsed ($json/parse response/body))
-               {^text text ^usage parsed/usage})))}))))
+               {^text text ^usage parsed/usage})))})
+      (contribute_text_doc host "harness/providers/openrouter"
+        "OpenRouter transport and provider configuration."
+        "The openrouter provider preserves canonical messages and prepares model, reasoning effort and max_tokens (default 3000). Model defaults may use OPENROUTER_MODEL. Credentials are read only during send from OPENROUTER_API_KEY or OPENROUTER_KEY. Configuration selects the provider, model, effort and timeout; API keys must remain outside model-visible requests."
+        ^tags ["provider" "model" "openrouter"]))))

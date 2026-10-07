@@ -1,6 +1,7 @@
 (mod repl_sessions)
 (import [CommandResult] ^from "../plugin_api")
 (import [doc] ^from "../kernel")
+(import [discovery_bindings] ^from "../agents/discovery")
 
 (type LiveReplFunction ^^private ^props {^name Str}
   (impl Callable
@@ -22,11 +23,15 @@
   (var state (sessions/.get .get ctx/session))
   (if_yes ($absent? state)
     (let h ctx/runtime/h)
-    (let environment (env ^bindings
-      {^session_id ctx/session ^workspace_root ctx/runtime/root
-       ^doc (fn [name : Str] (doc h name))}))
-    (set state {^handle ($repl/open environment) ^names {}})
+    (let snapshot_ref ($cell ctx/snapshot))
+    (let bindings (discovery_bindings h snapshot_ref))
+    (bindings .put "session_id" ctx/session)
+    (bindings .put "workspace_root" ctx/runtime/root)
+    (bindings .put "doc" (fn [name : Str] (doc h name ^snapshot snapshot_ref/.get)))
+    (let environment (env ^bindings bindings))
+    (set state {^handle ($repl/open environment) ^names {} ^snapshot snapshot_ref})
     (sessions/.get .put ctx/session state))
+  (state/snapshot .set ctx/snapshot)
   (for record in (?? (ctx/snapshot/registries .get "functions") [])
     (let name record/payload/name)
     (if_yes ($absent? (state/names .get name))

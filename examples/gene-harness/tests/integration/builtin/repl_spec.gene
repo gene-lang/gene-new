@@ -37,6 +37,8 @@
           (service/runtime/commands/watchers/.get .get $"${session/id}:${opened/id}"; .join)
           (let saved (run_input service session/id "save" "(var saved calc) (saved ^increment 3)"))
           ($assert (&& (== saved/status "done") ($str/contains? saved/display "4")) saved/display)
+          (let discovery (run_input service session/id "discover" "(discover \"calc\" ^kind \"functions\")"))
+          ($assert (&& (== discovery/status "done") ($str/contains? discovery/display "increment")) discovery/display)
           (put_cordis_plugin ^^replace service/runtime/h (provider_functions 2)
             {^^host ^limits service/runtime/profile/limits})
           (let refreshed (run_input service session/id "refresh" "[(saved ^increment 3) (extra)]"))

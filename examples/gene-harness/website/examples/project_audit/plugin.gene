@@ -64,8 +64,14 @@
         (host .PluginHost:contribute "functions"
           {^name "project_audit_scan"
            ^doc "Audit 1–8 relative files, write a Markdown report and persist the successful summary."
+           ^tags ["audit" "files" "report"] ^docs ["project_audit/usage"]
            ^fn (fn [^paths paths : List, ^report_path report_path : Str]
              (scan host paths report_path))})
         (host .PluginHost:contribute "functions"
           {^name "project_audit_last" ^doc "Read the last successful audit without reading files."
-           ^fn (fn [] host/.PluginHost:state)})))))
+           ^tags ["audit" "report"] ^docs ["project_audit/usage"]
+           ^fn (fn [] host/.PluginHost:state)})
+        (host .PluginHost:contribute "docs"
+          {^name "project_audit/usage" ^summary "Audit workspace files and write a Markdown count report."
+           ^tags ["audit" "files" "report"]
+           ^text "Call project_audit_scan with paths (1–8 relative filenames) and report_path (a relative .md filename). Parent traversal, empty path parts and absolute paths are rejected. The function counts nonempty lines and lines containing TODO/FIXME, writes the report, then persists the successful summary. project_audit_last reads that summary without reading files. A failed scan/write leaves the prior successful summary intact."})))))

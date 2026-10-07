@@ -1,6 +1,7 @@
 (mod repl)
 (import [Plugin PluginHost CommandResult] ^from "../plugin_api")
 (import [classify_repl evaluate_repl close_repl close_repls] ^from "../runtime/repl_sessions")
+(import [contribute_doc] ^from "./documentation")
 
 (fn repl [] : Plugin
   (let activations [])
@@ -11,16 +12,21 @@
       (activations .push active)
       (host .PluginHost:contribute "commands"
         {^name "repl" ^usage "/repl" ^doc "Open a persistent Gene REPL for this session."
+         ^tags ["repl" "Gene" "evaluate"] ^docs ["harness/repl"]
          ^^raw_input ^run (fn [ctx]
            (if (!= ($str/trim ctx/raw) "") (fail "/repl takes no arguments."))
            (CommandResult ^display "REPL open. Enter exit or quit to leave."
              ^!attached ^mode "repl"))})
       (host .PluginHost:contribute "input_modes"
         {^name "repl" ^label "REPL" ^hint "REPL · exit or quit to leave"
+         ^tags ["repl" "Gene" "evaluate"] ^docs ["harness/repl"]
          ^submit_label "Eval" ^prompt "gene"
          ^classify classify_repl
          ^run (fn [ctx] (evaluate_repl sessions ctx))
          ^close (fn [session reason] (close_repl sessions session))})
+      (contribute_doc host "harness/repl"
+        "Persistent Gene evaluation, imports, cwd and live plugin functions."
+        "examples/gene-harness/docs/repl.md" ^tags ["repl" "Gene" "evaluate" "imports"])
       (active/active .set true))
     ^deactivate (fn [host]
       (for active in activations

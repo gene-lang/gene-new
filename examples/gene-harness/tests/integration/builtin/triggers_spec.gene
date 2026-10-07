@@ -6,7 +6,8 @@
 (import [new_round_controller close_round_controller] ^from "../../../src/runtime/round_controller")
 (import [evaluate_harness_turn] ^from "../../../src/agents/harness_turn")
 (import [assemble_instructions] ^from "../../../src/agents/instructions")
-(import [provide withdraw_seam status_of row] ^from "../../../src/kernel")
+(import [provide withdraw_seam status_of row doc] ^from "../../../src/kernel")
+(import [discover] ^from "../../../src/agents/discovery")
 
 (describe "Trigger host plugin"
   (it "waits for the loop seam and stops with it" []
@@ -27,10 +28,12 @@
           ($assert (! ($absent? runtime/triggers)) "trigger manager did not start")
           ($assert (! ($absent? (row runtime/h "functions" "list_triggers")))
             "trigger functions were not contributed")
-          ($assert ($str/contains?
+          ($assert (! ($str/contains?
             (assemble_instructions runtime {^kind "interactive"})
-            "Use (create_trigger")
-            "trigger prompt paragraph was missing")
+            "Use (create_trigger"))
+            "trigger manual was injected into the prompt")
+          ($assert (== (/total (discover runtime/h "schedule" ^kind "functions" ^owner "triggers")) 3))
+          ($assert ($str/contains? (doc runtime/h "harness/triggers") "every_ms"))
           (let result (evaluate_harness_turn runtime/h 1 runtime/root
             "(append_prompt \"triggers\" (list_triggers)) (Outcome ^prompt \"continue\")"))
           ($assert (== result/kind "continue")
@@ -41,6 +44,8 @@
           ($assert (== runtime/triggers nil) "closed manager stayed on runtime")
           ($assert (== (row runtime/h "functions" "list_triggers") void)
             "trigger callable survived seam loss")
+          ($assert (== (/total (discover runtime/h ^owner "triggers")) 0)
+            "trigger documentation survived seam loss")
         ensure
           (withdraw_seam runtime/h "core" "loop")
           (close_round_controller controller)

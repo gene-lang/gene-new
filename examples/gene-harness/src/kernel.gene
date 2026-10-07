@@ -415,6 +415,7 @@
     (if ($absent? r/schema)
       payload
       (invoke_owned_callable h r/owner r/schema [payload])))
+  (validate_discovery_metadata checked)
   (if_yes (== registry_name "event_types")
     (set checked (validate_event_type_owner owner checked)))
   # `Fn` is a type-level constructor for signatures, not a runtime value, and
@@ -709,6 +710,8 @@
 (fn validate_function_row [candidate]
   (if (|| ($absent? candidate/name) (== candidate/name "") ($absent? candidate/doc) (! ($runtime/callable? candidate/fn)))
     (fail (HarnessError ^message "a function row requires name, doc and a callable fn")))
+  (if (["discover" "doc"] .contains? candidate/name)
+    (fail (HarnessError ^message $"function ${candidate/name} is reserved by the shared discovery context")))
   candidate)
 
 (fn validate_input_mode_row [candidate]
@@ -765,6 +768,19 @@
           (&& (! ($absent? candidate/render))
               (! ($runtime/callable? candidate/render))))
     (fail (HarnessError ^message "a prompt row requires name and exactly one of text or callable render")))
+  candidate)
+
+(fn validate_discovery_metadata [candidate]
+  (if (&& (! ($absent? candidate/summary)) (!= ($head candidate/summary) Str))
+    (fail (HarnessError ^message "a discovery summary must be a string")))
+  (for field in ["tags" "docs"]
+    (let values (candidate .get field))
+    (if_not ($absent? values)
+      (if (!= ($head values) List)
+        (fail (HarnessError ^message $"discovery ${field} must be a list of strings")))
+      (for value in values
+        (if (|| (!= ($head value) Str) (== ($str/trim value) ""))
+          (fail (HarnessError ^message $"discovery ${field} must contain nonempty strings"))))))
   candidate)
 
 (fn validate_docs_row [candidate]
@@ -1187,16 +1203,18 @@
     (out .push ($to_str candidate/name)))
   out)
 
-(fn doc [h : Harness, name : Str] : Str
-  (let candidate (row h "docs" name))
-  (if_not ($absent? candidate)
-    (if_not ($absent? candidate/text) (return candidate/text))
-    (return ($fs/read_text candidate/path)))
+(fn doc [h : Harness, name : Str, ^snapshot snapshot = nil] : Str
+  (let chapters (if ($absent? snapshot) (rows h "docs")
+    ($map (?? (snapshot/registries .get "docs") []) (fn [record] record/payload))))
   (let names [])
-  (for chapter in (rows h "docs") (names .push chapter/name))
+  (for chapter in chapters
+    (if_yes (== chapter/name name)
+      (if_not ($absent? chapter/text) (return chapter/text))
+      (return ($fs/read_text chapter/path)))
+    (names .push chapter/name))
   (let listed ($str/join names ", "))
   (fail (HarnessError ^message
-    $"unknown documentation ${name}; valid chapters: ${listed}")))
+    $"unknown documentation ${name}; valid chapters: ${listed}. Use (discover \"topic\" ^kind \"docs\") to find the relevant chapter.")))
 
 # --- observation (design §2.2: the bus is for observing, seams for swapping) -
 

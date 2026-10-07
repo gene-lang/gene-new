@@ -225,7 +225,7 @@
     (var kind ($to_str ($head form)))
     (if_not (allowed .contains? kind)
       (fail (CompositionError
-        ^message $"generated module top level may not contain ${kind}")))
+        ^message $"generated module top level may not contain ${kind}; read (doc \"harness/plugins\") for inert declarations and imports")))
     (if_yes (&& (== kind "fn") (== ($to_str form/0) "init"))
       (set saw_init true))
     (set i (+ i 1)))

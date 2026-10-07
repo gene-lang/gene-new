@@ -1,5 +1,6 @@
 (mod provider_codex)
 (import ^from "../plugin_api" [Plugin PluginHost])
+(import ^from "./documentation" [contribute_text_doc])
 (import ^from "../kernel" [HarnessError])
 (import ^from "./provider_common" [nonempty configure_model http_json_attempt])
 
@@ -104,7 +105,7 @@
   (Plugin ^id "provider_codex" ^provides [["providers" "codex"]]
     ^activate (fn [host]
       (host .PluginHost:contribute "providers"
-        {^name "codex" ^doc "Use the Codex Responses endpoint." ^auto 2
+        {^name "codex" ^tags ["provider" "model" "codex"] ^docs ["harness/providers/codex"] ^doc "Use the Codex Responses endpoint." ^auto 2
          ^available (fn []
            (let path (auth_file))
            (if (&& (! ($absent? path)) ($fs/exists? path))
@@ -145,4 +146,8 @@
                      "codex 401: OAuth credentials expired or were rejected; run codex login to refresh auth.json"))
                    (fail (HarnessError ^message
                      $"codex ${response/status}: provider request failed"))))
-               (codex_stream_result response/body))))}))))
+               (codex_stream_result response/body))))})
+      (contribute_text_doc host "harness/providers/codex"
+        "Codex Responses transport, preparation and credential boundary."
+        "The codex provider prepares system instructions plus role-preserving conversation input, then sends one Responses streaming attempt. Provider preparation contains no authentication; send reads the existing Codex login file. Model, reasoning effort and timeout come from Harness settings. Refresh a rejected login through codex login as an operator; never copy credentials into prompts or documentation."
+        ^tags ["provider" "model" "codex"]))))

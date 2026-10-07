@@ -1,5 +1,6 @@
 (mod history_basic)
 (import ^from "../plugin_api" [Plugin PluginHost])
+(import ^from "./documentation" [contribute_text_doc])
 
 (fn basic_history_policy [context]
   {^trigger_bytes (* context/window_tokens 2.625)
@@ -11,4 +12,10 @@
     ^activate (fn [host]
       (host .PluginHost:contribute "hooks"
         {^point "history/compact" ^name "history_basic"
-         ^run basic_history_policy}))))
+         ^summary "Supply history compaction thresholds for the selected context window."
+         ^tags ["history" "compaction" "hooks"] ^docs ["harness/history"]
+         ^run basic_history_policy})
+      (contribute_text_doc host "harness/history"
+        "History compaction thresholds, elision and recovering exact bodies."
+        "The history/compact hook supplies trigger_bytes = window_tokens * 2.625 and target_bytes = window_tokens * 1.925 (75% and 55% of the estimated byte window). The baseline requires this policy. Large historical attachments/patches may become stubs; use recall with the original item id to recover exact bodies. ELIDED text is not source and must not be written into files."
+        ^tags ["history" "compaction" "recall" "hooks"]))))

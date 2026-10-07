@@ -1,13 +1,18 @@
 (mod provider_offline)
 (import ^from "../plugin_api" [Plugin PluginHost])
+(import ^from "./documentation" [contribute_text_doc])
 
 (fn provider_offline [] : Plugin
   (Plugin ^id "provider_offline" ^provides [["providers" "offline"]]
     ^activate (fn [host]
       (host .PluginHost:contribute "providers"
-        {^name "offline" ^doc "Complete a round without a model call."
+        {^name "offline" ^tags ["provider" "model" "offline"] ^docs ["harness/providers/offline"] ^doc "Complete a round without a model call."
          ^configure (fn [model, effort, timeout]
            {^model "offline" ^effort "none" ^timeout_ms timeout})
          ^prepare (fn [call] {})
          ^send (fn [prepared]
-           {^text "# Finish\n(Outcome ^^done ^reply \"Scripted response.\")"})}))))
+           {^text "# Finish\n(Outcome ^^done ^reply \"Scripted response.\")"})})
+      (contribute_text_doc host "harness/providers/offline"
+        "Offline completion for model-free exploration."
+        "The offline provider completes a round with a fixed Outcome without calling a model or network. It is useful for operator /run, REPL and UI checks, but it does not author application source. It prepares an empty request and uses model offline with effort none."
+        ^tags ["provider" "model" "offline"]))))

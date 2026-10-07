@@ -1,5 +1,6 @@
 (mod budget_advisory)
 (import ^from "../plugin_api" [Plugin PluginHost])
+(import ^from "./documentation" [contribute_text_doc])
 
 (fn budget_advisory [] : Plugin
   (Plugin ^id "budget_advisory"
@@ -7,6 +8,8 @@
     ^activate (fn [host]
       (host .PluginHost:contribute "hooks"
         {^point "request/prepare" ^name "budget_advisory"
+         ^summary "Append the remaining model-turn budget to each request."
+         ^tags ["budget" "round" "hooks"] ^docs ["harness/budget"]
          ^run (fn [context, next]
            (if (> context/round_turn context/limit)
              (return (next context)))
@@ -22,4 +25,8 @@
            (next {^session context/session ^round context/round
                   ^turn context/turn ^round_turn context/round_turn
                   ^limit context/limit
-                  ^items items}))}))))
+                  ^items items}))})
+      (contribute_text_doc host "harness/budget"
+        "Model round budget notices and incremental delivery."
+        "The request/prepare hook appends harness_budget with this round's turn number, limit and remaining turns. Finish with Outcome when complete; persist useful source and notes early. A user continuation starts another round with the same workspace and history. This hook does not increase the configured limit."
+        ^tags ["budget" "round" "hooks"]))))

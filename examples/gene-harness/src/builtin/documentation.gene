@@ -1,0 +1,16 @@
+# Shared registration helper; each calling plugin owns its documentation row.
+(mod documentation)
+(import ^from "../plugin_api" [PluginHost])
+(import ^from "../agents/instructions" [reference_root])
+
+(fn contribute_doc [host, name : Str, summary : Str, relative_path : Str, ^tags tags = [], ^docs references = []]
+  (let root (reference_root))
+  (if ($absent? root) (fail "Harness documentation directory is unavailable"))
+  (host .PluginHost:contribute
+    "docs"
+    {^name name ^summary summary ^tags tags ^docs references ^path ($path/join root relative_path)}))
+
+(fn contribute_text_doc [host, name : Str, summary : Str, text : Str, ^tags tags = [], ^docs references = []]
+  (host .PluginHost:contribute
+    "docs"
+    {^name name ^summary summary ^text text ^tags tags ^docs references}))

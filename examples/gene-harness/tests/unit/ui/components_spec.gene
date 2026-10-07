@@ -3,6 +3,19 @@
 (import [validate_web_component bounded_component_view] ^from "../../../src/ui/components")
 
 (describe "Harness web components"
+  (it "preserves textarea text defaults for keyed fields and honors explicit values" []
+    (let view (bounded_component_view ^^experimental
+      (quote (form ^key "job" ^action "save"
+        (textarea ^key "concern" ^field "concern" "Saved " "repair request")
+        (textarea ^key "notes" ^field "notes" ^value "Explicit notes" "Ignored fallback")))))
+    ($assert (== view/children/0/props/value "Saved repair request"))
+    ($assert (== view/children/1/props/value "Explicit notes"))
+    ($assert (try
+      (bounded_component_view ^^experimental
+        (quote (textarea ^key "bad" (strong "Not plain text"))))
+      false
+      catch Any ($str/contains? $err/message "must be text"))))
+
   (it "admits keyed forms and structured arguments only for the experiment" []
     (let source (quote (form ^key "edit" ^action "save" ^args {^revision "1"} ^positional ["task"]
       (label "Title" (input ^key "title" ^field "title" ^value "Draft"))

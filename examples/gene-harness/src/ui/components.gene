@@ -48,7 +48,8 @@
     "prompt"])
 
 (fn component_error [message : Str]
-  (fail (WebComponentError ^message message)))
+  (fail (WebComponentError ^message ($to_str message
+    "; read (doc \"harness/ui/forms\") for keyed controls or (doc \"harness/web_components\") for the full contract"))))
 
 (fn component_view [value, ^depth depth : Int = 0, ^experimental experimental : Bool = false, ^keys keys = nil, ^form form = nil]
   (if (> depth 24) (component_error "web component view exceeds 24 levels"))
@@ -131,6 +132,12 @@
       (keys .put attributes/key true)))
   (let field_names (if (== tag "form") {} form))
   (let body ($map children (fn [child] (component_view ^depth (+ depth 1) ^experimental experimental ^keys keys ^form field_names child))))
+  # A textarea's ordinary text content is its initial value. The keyed browser
+  # adapter needs that value in props; explicit value still takes precedence.
+  (if_yes (&& (== tag "textarea") ($absent? attributes/value) (! body/.empty?))
+    (for child in body
+      (if (!= ($head child) Str) (component_error "textarea initial content must be text")))
+    (attributes .put "value" ($str/join body "")))
   {^tag tag ^props attributes ^children body})
 
 (fn bounded_component_view [value, ^experimental experimental : Bool = false]

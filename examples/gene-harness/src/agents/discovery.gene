@@ -1,0 +1,101 @@
+# Model-visible discovery uses contribution metadata, never callback execution
+# or documentation bodies. Registry reads retain the caller's composition lease.
+(mod discovery)
+(import ^from "../kernel" [Harness HarnessError registry_row_records])
+(import ^from "../text" [byte_prefix])
+
+(fn parameter_shape [parameter]
+  {
+    ^name parameter/name
+    ^required parameter/required
+    ^has_default parameter/has_default
+    ^type (if parameter/type_known
+            ($to_str parameter/type)
+            nil)})
+
+(fn signature_shape [signature]
+  {
+    ^shape_known signature/shape_known
+    ^execution signature/execution
+    ^positional ($map (?? signature/positional []) parameter_shape)
+    ^named ($map (?? signature/named []) parameter_shape)
+    ^rest (if ($absent? signature/rest)
+            nil
+            (parameter_shape signature/rest))
+    ^result (if signature/result_known
+              ($to_str signature/result)
+              nil)})
+
+(fn searchable_registries []
+  ["docs" "functions" "commands" "input_modes" "providers" "hooks" "web_components" "seams"])
+
+(fn discovery_entry [kind : Str, record]
+  (let payload record/payload)
+  (let summary ($to_str (?? payload/summary payload/doc payload/hint payload/point "")))
+  (let entry
+    {
+      ^kind kind
+      ^name ($to_str (?? payload/name record/key))
+      ^owner record/owner
+      ^summary (byte_prefix summary 240)
+      ^docs (?? payload/docs [])
+      ^tags (?? payload/tags [])})
+  (if (== kind "functions") (entry .put "signature" (signature_shape payload/signature)))
+  (if (== kind "commands") (entry .put "usage" payload/usage))
+  (if (== kind "web_components") (entry .put "slot" payload/slot))
+  entry)
+
+(fn matches_query [query : Str, kind : Str, record]
+  (let payload record/payload)
+  (let haystack
+    ($str/lower
+      ($to_str
+        kind
+        " "
+        record/owner
+        " "
+        record/key
+        " "
+        (?? payload/summary "")
+        " "
+        (?? payload/doc "")
+        " "
+        (?? payload/hint "")
+        " "
+        (?? payload/point "")
+        " "
+        (?? payload/tags [])
+        " "
+        (?? payload/docs []))))
+  (for word in ($str/split ($str/lower ($str/trim query)) " ")
+    (if (&& (!= word "") (! ($str/contains? haystack word))) (return false)))
+  true)
+
+(fn discover [h : Harness, query : Str = "", ^kind kind : Str = "", ^owner owner : Str = "", ^limit limit : Int = 12, ^offset offset : Int = 0, ^snapshot snapshot = nil]
+  (let kinds (searchable_registries))
+  (if (&& (!= kind "") (! (kinds .contains? kind)))
+    (fail (HarnessError ^message $"unknown discovery kind ${kind}; use ${kinds}")))
+  (if (|| (< limit 1) (> limit 100) (< offset 0))
+    (fail (HarnessError ^message "discover requires limit 1–100 and offset >= 0")))
+  (let matches [])
+  (var total 0)
+  (for registry in kinds
+    (if_yes (|| (== kind "") (== kind registry))
+      (let records
+        (if ($absent? snapshot)
+          (registry_row_records h registry)
+          (?? (snapshot/registries .get registry) [])))
+      (for record in records
+        (if_yes (&& (|| (== owner "") (== owner record/owner)) (matches_query query registry record))
+          (if (&& (>= total offset) (< matches/.size limit))
+            (matches .push (discovery_entry registry record)))
+          (set total (+ total 1))))))
+  (let next (+ offset matches/.size))
+  {^matches matches ^total total ^next_offset (if (< next total) next nil)})
+
+(fn discovery_bindings [h : Harness, snapshot_ref]
+  {
+    ^discover (fn [query : Str = "", ^kind kind : Str = "", ^owner owner : Str = "", ^limit limit : Int = 12, ^offset offset : Int = 0]
+                (discover ^kind kind ^owner owner ^limit limit ^offset offset ^snapshot snapshot_ref/.get
+                  h
+                  query))})

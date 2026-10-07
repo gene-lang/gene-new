@@ -1,4 +1,7 @@
 # Stable, shared contract between the harness kernel and generated plugins.
+# Contributions may add summary (Str), tags ([Str]) and docs ([chapter name]).
+# discover indexes active metadata automatically; doc loads one owned chapter.
+# Keep prompt rows to essential orientation and place manuals/examples in docs.
 
 (mod plugin_api)
 

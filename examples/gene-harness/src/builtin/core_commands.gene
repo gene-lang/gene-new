@@ -1,6 +1,7 @@
 (mod core_commands)
 (import ^from "../plugin_api" [Plugin PluginHost])
 (import ^from "../runtime/commands" [shared_command_rows])
+(import ^from "./documentation" [contribute_doc])
 
 (fn core_commands [] : Plugin
   (Plugin ^id "core_commands"
@@ -8,4 +9,10 @@
                ["commands" "sh"] ["commands" "view"]]
     ^activate (fn [host]
       (for command in (shared_command_rows)
-        (host .PluginHost:contribute "commands" command)))))
+        (let row ($thaw ($freeze_shallow command)))
+        (row .put "docs" ["harness/commands"])
+        (row .put "tags" ["commands" "operator"])
+        (host .PluginHost:contribute "commands" row))
+      (contribute_doc host "harness/commands"
+        "Operator commands: help, Gene evaluation, shell processes and file inspection."
+        "examples/gene-harness/docs/commands.md" ^tags ["commands" "operator" "run" "files"]))))

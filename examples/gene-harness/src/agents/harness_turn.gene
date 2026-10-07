@@ -2,6 +2,7 @@
 (import ^from "../kernel" [Harness rows doc])
 (import ^from "../runtime/composition" [acquire_snapshot release_snapshot take_composition_changes discard_composition_changes])
 (import ^from "./turn_eval" [evaluate_turn])
+(import ^from "./discovery" [discovery_bindings])
 (import ^from "../storage/workspace" [drain_workspace_changes])
 (import ^from "../text" [byte_prefix])
 (import [ui_publication_preview] ^from "../ui/views")
@@ -48,7 +49,8 @@
   (let bindings (function_bindings snapshot))
   (bindings .put "session_id" session)
   (bindings .put "workspace_root" workspace_root)
-  (bindings .put "doc" (fn [name : Str] (doc h name)))
+  (bindings .put "doc" (fn [name : Str] (doc h name ^snapshot snapshot)))
+  (for [name value] in (discovery_bindings h ($cell snapshot)) (bindings .put name value))
   (for [name value] in extra (bindings .put name value))
   bindings)
 

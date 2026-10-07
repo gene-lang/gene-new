@@ -2,8 +2,7 @@
 (import ^from "../plugin_api" [Plugin PluginHost])
 (import ^from "../runtime/triggers"
   [open_trigger_manager close_trigger_manager create_trigger list_triggers delete_trigger])
-
-(const trigger_paragraph "Use (create_trigger {^id \"audit\" ^kind \"heartbeat\" ^every_ms 60000 ^request \"Audit.\"}) to schedule workspace work. Kinds: heartbeat (every_ms), scheduled (at, UTC timestamp), cron (cron, timezone). Policies: missed skip/once, overlap skip/queue_one, continue_session boolean, retention keep/days. (list_triggers) lists definitions; (delete_trigger \"audit\") disables future starts.")
+(import ^from "./documentation" [contribute_doc])
 
 (fn triggers [] : Plugin
   (let activations [])
@@ -19,15 +18,19 @@
       (activations .push {^host host ^manager manager ^runtime loop/runtime})
       (host .PluginHost:contribute "functions"
         {^name "create_trigger" ^doc "Schedule workspace work."
+         ^tags ["schedule" "heartbeat" "cron" "triggers"] ^docs ["harness/triggers"]
          ^fn (fn [definition] (create_trigger manager definition))})
       (host .PluginHost:contribute "functions"
         {^name "list_triggers" ^doc "List trigger definitions."
+         ^tags ["schedule" "triggers"] ^docs ["harness/triggers"]
          ^fn (fn [] (list_triggers manager))})
       (host .PluginHost:contribute "functions"
         {^name "delete_trigger" ^doc "Disable a trigger by id."
+         ^tags ["schedule" "triggers"] ^docs ["harness/triggers"]
          ^fn (fn [id : Str] (delete_trigger manager id))})
-      (host .PluginHost:contribute "prompt"
-        {^name "triggers" ^text trigger_paragraph}))
+      (contribute_doc host "harness/triggers"
+        "Schedule heartbeat, one-shot and cron work; policies and verification."
+        "examples/gene-harness/docs/triggers.md" ^tags ["schedule" "heartbeat" "cron" "triggers"]))
     ^deactivate (fn [host]
       (for active in activations
         (if (same? active/host host)

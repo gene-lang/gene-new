@@ -2,7 +2,7 @@
 (import $test [describe it])
 (import [isolated run_spec] ^from "../../support")
 (import [evaluate_turn] ^from "../../../src/agents/turn_eval")
-(import [gene_doc] ^from "../../../src/agents/instructions")
+(import [new_harness shutdown_harness contribute doc] ^from "../../../src/kernel")
 
 (describe "Harness turn evaluation"
   (it "reports actionable response diagnostics without host source line numbers" []
@@ -10,7 +10,12 @@
       (fn [workspace]
         ($fs/make_dir workspace)
         (let root ($fs/real_path workspace))
-        (let unknown (evaluate_turn 1 root "\n(doc \"gene/control-flow\")" ^bindings {^doc gene_doc}))
+        (let h (new_harness))
+        (let unknown (try
+          (contribute h "probe" "docs" {^name "gene/control_flow" ^text "Control flow"})
+          (evaluate_turn 1 root "\n(doc \"gene/control-flow\")"
+            ^bindings {^doc (fn [name : Str] (doc h name))})
+          ensure (shutdown_harness h)))
         ($assert ($str/contains? unknown/request "unknown documentation gene/control-flow") "doc error was masked")
         ($assert ($str/contains? unknown/request "gene/control_flow") "doc error omitted valid chapter names")
         ($assert (! ($str/contains? unknown/request "[1.error] line")) "host source line was presented as a response line")

@@ -1,6 +1,11 @@
 (mod instructions)
-(import ^from "./harness_turn" [function_instructions])
-(import ^from "../kernel" [rows contribute HarnessError])
+(import ^from "../kernel" [rows contribute])
+
+(const discovery_instructions """
+Discover before guessing an API. (discover "topic") searches active documentation and capabilities by names, summaries and tags; results include owners, callable signatures and chapter references. Narrow with ^kind "docs" or "functions", or ^owner "plugin_id". Results are paged: pass next_offset as ^offset to continue. (doc "chapter/name") loads one chapter. These helpers, session_id and workspace_root are always available; discovered functions are already callable in response code, /run and the REPL.
+Read (doc "gene/overview") before authoring Gene. Load focused chapters and recipes when needed; do not read every chapter in advance. For UI work, start with (discover "ui") and follow the relevant recipes. Persist incremental source early, check publication feedback, and distinguish server previews from actual browser verification.
+Plugins follow the same practice: concise capability descriptions, searchable tags and references, detailed instructions/examples in owned docs rows. Keep prompt contributions to essential orientation, not full manuals.
+""")
 
 (const response_format """
 Return Gene code, optionally followed by raw attachment and patch blocks. Do not wrap code in Markdown or return a JSON envelope.
@@ -38,28 +43,6 @@ Each round has a turn budget, shown in the latest request as [harness_budget]. P
     (set directory parent))
   nil)
 
-(fn gene_doc [name : Str] : Str
-  (let chapters
-    {
-      ^gene/pitfalls "pitfalls"
-      ^gene/syntax "syntax"
-      ^gene/declarations "declarations"
-      ^gene/control_flow "control-flow"
-      ^gene/stdlib "stdlib"
-      ^harness/web_components "harness-web-components"})
-  (let chapter (chapters .get name))
-  (let root (reference_root))
-  (if ($absent? chapter)
-    (fail
-      (HarnessError ^message $"unknown documentation ${name}; valid chapters: gene/pitfalls, gene/syntax, gene/declarations, gene/control_flow, gene/stdlib, harness/web_components")))
-  (if ($absent? root) (fail (HarnessError ^message "Gene documentation directory is unavailable")))
-  ($fs/read_text
-    ($path/join
-      root
-      (if (== chapter "harness-web-components")
-        "examples/gene-harness/docs/web-components.md"
-        $"tools/gene-lang-skill/reference/${chapter}.md"))))
-
 (fn render_context [runtime, session_record]
   ($to_str
     "Workspace: "
@@ -67,10 +50,8 @@ Each round has a turn budget, shown in the latest request as [harness_budget]. P
     """
 Session kind: """
     session_record/kind
-    """
-Functions:
-"""
-    (function_instructions runtime/h)))
+    "\n\n"
+    discovery_instructions))
 
 (fn install_core_prompt_rows [h]
   (contribute ^priority -100 h "core" "prompt"

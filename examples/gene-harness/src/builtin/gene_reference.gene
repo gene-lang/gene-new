@@ -1,26 +1,45 @@
 (mod gene_reference)
 (import ^from "../plugin_api" [Plugin PluginHost])
-(import ^from "../agents/instructions" [reference_root])
+(import ^from "./documentation" [contribute_doc])
 
 (fn gene_reference [] : Plugin
   (Plugin ^id "gene_reference"
     ^provides [["prompt" "gene_reference"] ["docs" "gene/stdlib"]]
     ^activate (fn [host]
-      (let root (reference_root))
-      (if ($absent? root) (fail "Gene documentation directory is unavailable"))
       (host .PluginHost:contribute "prompt"
         {^name "gene_reference"
-         ^text ($fs/read_text ($path/join root "tools/gene-lang-skill/SKILL.md"))})
-      (host .PluginHost:contribute "prompt"
-        {^name "gene_chapters"
-         ^text "Documentation chapters: gene/pitfalls, gene/syntax, gene/declarations, gene/control_flow, gene/stdlib; for example (doc \"gene/stdlib\")."})
-      (host .PluginHost:contribute "docs"
-        {^name "harness/web_components"
-         ^path ($path/join root "examples/gene-harness/docs/web-components.md")})
-      (for [name chapter] in
-          {^gene/pitfalls "pitfalls" ^gene/syntax "syntax"
-           ^gene/declarations "declarations" ^gene/control_flow "control-flow"
-           ^gene/stdlib "stdlib"}
-        (host .PluginHost:contribute "docs"
-          {^name ($to_str name)
-           ^path ($path/join root $"tools/gene-lang-skill/reference/${chapter}.md")})))))
+         ^text "Write Gene using its documented constructs; probe uncertain spellings. The language guide is available on demand as gene/overview, with focused chapters discoverable by topic."})
+      (contribute_doc host "gene/overview"
+        "Writing and probing Gene; essential conventions and reference branches."
+        "tools/gene-lang-skill/SKILL.md" ^tags ["language" "Gene" "syntax" "tooling"]
+        ^docs ["gene/syntax" "gene/declarations" "gene/control_flow" "gene/stdlib" "gene/pitfalls"])
+      (for entry in
+          [["pitfalls" "pitfalls" "Error messages, common authoring mistakes and fixes."
+             ["errors" "undefined" "diagnostics"]]
+           ["syntax" "syntax" "Literals, quoted nodes, paths, interpolation and spread."
+             ["quote" "splice" "spread" "interpolation" "paths"]]
+           ["declarations" "declarations" "Functions, types, protocols, modules and imports."
+             ["fn" "type" "protocol" "import" "module"]]
+           ["control_flow" "control-flow" "Conditionals, multi-step guards, loops, tasks and streams."
+             ["if" "if_yes" "if_not" "elif" "then" "else" "loops" "match" "tasks"]]
+           ["stdlib" "stdlib" "Standard-library namespaces, files, processes and built-in messages."
+             ["stdlib" "fs" "files" "os" "exec" "process" "http" "json" "serde" "collections"]]]
+        (contribute_doc host $"gene/${entry/0}" entry/2
+          $"tools/gene-lang-skill/reference/${entry/1}.md" ^tags entry/3))
+      (contribute_doc host "harness/web_components"
+        "Complete contract for UI slots, keyed forms, browser state and actions."
+        "examples/gene-harness/docs/web-components.md"
+        ^tags ["ui" "web" "components" "reference"]
+        ^docs ["harness/ui" "harness/ui/forms" "harness/ui/drafts" "harness/ui/revisions"])
+      (contribute_doc host "harness/ui"
+        "Start a customized workflow UI: layout, routes and relevant recipes."
+        "examples/gene-harness/docs/recipes/ui.md" ^tags ["ui" "web" "workflow" "layout"]
+        ^docs ["harness/ui/forms" "harness/ui/drafts" "harness/ui/revisions" "harness/ui/publication"])
+      (for entry in
+          [["forms" "Build keyed forms, named action arguments and friendly labels."]
+           ["drafts" "Retain browser drafts and selection; use true host discard."]
+           ["revisions" "Protect durable edits with expected revisions and a shared state lock."]
+           ["publication" "Publish and verify UI plugins; distinguish previews from browser acceptance."]]
+        (contribute_doc host $"harness/ui/${entry/0}" entry/1
+          $"examples/gene-harness/docs/recipes/ui-${entry/0}.md"
+          ^tags ["ui" "web" "recipe"] ^docs ["harness/web_components"])))))
