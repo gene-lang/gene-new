@@ -111,6 +111,7 @@
                (div ^id "ui_layout_controls" ^class "ui_layout_controls" ^^hidden
                  (button ^id "ui_toggle" ^type "button" "Show board")
                  (a ^id "ui_default_link" ^href "/ui/default" "Restore default UI"))
+               (a ^id "ui_workspace_link" ^href "/" ^^hidden "Return to workspace UI")
                (div ^id "web_toolbar" ^class "web_components web_toolbar")
                (form ^id "rename_form" ^class "rename_form" ^^hidden
                  (input ^id "rename_title" ^type "text" ^maxlength "256" ^aria-label "Conversation title")
@@ -149,6 +150,7 @@
                (button ^id "ui_discard" ^type "button" ^class "quiet" "Discard edits")
                (div ^id "ui_view")
                (div ^id "ui_action_status" ^role "status")
+               (button ^id "ui_retry" ^type "button" ^^hidden "Retry view")
                (button ^id "ui_resolve" ^type "button" ^^hidden "Resolve action")
                (button ^id "ui_cancel" ^type "button" ^^hidden "Cancel action"))
              (aside ^id "status_drawer" ^class "drawer" ^^hidden

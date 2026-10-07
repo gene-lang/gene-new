@@ -6,6 +6,7 @@
 (import [load_session list_sessions require_record] ^from "./sessions")
 (import [plugin_state next_sequence stream_key] ^from "../storage/state")
 (import [bounded_component_view WebComponentError] ^from "../web/component_spec")
+(import [byte_prefix] ^from "../agents/history")
 
 (type UiError ^props {^code Str ^message Str} ^impl [Error])
 (impl Error for UiError)
@@ -134,9 +135,12 @@
     (result .put "sequence" sequence)
     (result .put "data_revision" data_revision)
     (let view_state (ui_view_state record/payload state))
+    # Request failures (including a missing session) belong to the HTTP caller.
+    # Only callback/validation failures become a view's inline error.
+    (let context (ui_context h session view_state))
     (try
       (let view ($runtime/with_context {^composition h/snapshots ^snapshot lease/snapshot ^session session ^^ui_render}
-        (fn [] (render_component ^^experimental h record/payload/render (ui_context h session view_state)))))
+        (fn [] (render_component ^^experimental h record/payload/render context))))
       (validate_view_actions view record/payload lease/snapshot)
       (result .put "view" view)
     catch Any (result .put "error" $err/message))
@@ -147,9 +151,59 @@
   (let chosen (if (== session "") (?? (/session ($runtime/context)) "") session))
   (ui_render h chosen name "" state))
 
-(fn ui_publication_preview [h, session : Str]
+(fn outline_text [value]
+  (let text ($to_str value))
+  (if (> ($str/byte_size text) 160) ($to_str (byte_prefix text 157) "…") text))
+
+# Flatten the validated tree into bounded, complete nodes. Arguments, styling
+# and transport metadata are not useful publication feedback.
+(fn outline_node [tree, depth : Int, outline]
+  (if outline/truncated (return nil))
+  (let node {^depth depth})
+  (if (== ($head tree) Str)
+    (node .put "text" (outline_text tree))
+    (do
+      (node .put "tag" tree/tag)
+      (for key in ["key" "field" "state" "action" "type" "value" "aria-label" "placeholder"]
+        (let value (tree/props .get key))
+        (if_not ($absent? value) (node .put key (outline_text value))))
+      (if (["button" "input" "textarea" "select" "form" "a"] .contains? tree/tag)
+        (node .put "enabled" ($absent? tree/props/disabled)))
+      (if_not ($absent? tree/props/checked) (node .put "checked" true))))
+  (let size ($str/byte_size ($json/stringify node)))
+  (if (|| (>= outline/nodes/.size 40) (> (+ outline/bytes size 1) 3072))
+    (do (outline .put "truncated" true) (return nil)))
+  (outline/nodes .push node)
+  (outline .put "bytes" (+ outline/bytes size 1))
+  (if (!= ($head tree) Str)
+    (for child in tree/children
+      (outline_node child (+ depth 1) outline)))
+  nil)
+
+(fn ui_publication_preview [h, session : Str, changes]
   (if_not (/enabled (ui_settings h)) (return nil))
+  (let owners [])
+  (for change in changes
+    (if (== change/state "active") (owners .push change/id)))
   (let results [])
-  (for component in (/components (ui_status h))
-    (results .push (ui_render h session component/name component/revision {})))
-  ($serde/write_data results))
+  (let summary {^views results ^truncated false})
+  (var bytes 64)
+  (let snapshot h/snapshots/current/.get)
+  (for record in (?? (snapshot/registries .get "web_components") [])
+    (if (|| (! (owners .contains? record/owner)) ($absent? record/payload/view_state)) (continue))
+    (if (>= results/.size 8) (do (summary .put "truncated" true) (break)))
+    (let preview (ui_render h session record/key (ui_revision h record) {}))
+    (let item {^name preview/name ^slot preview/slot ^revision preview/revision})
+    (if ($absent? preview/error)
+      (do
+        (let outline {^nodes [] ^bytes 0 ^truncated false})
+        (outline_node preview/view 0 outline)
+        (item .put "outline" outline/nodes)
+        (item .put "truncated" outline/truncated))
+      (item .put "error" (outline_text preview/error)))
+    (let size (+ ($str/byte_size ($json/stringify item)) 1))
+    (if (> (+ bytes size) 12288)
+      (do (summary .put "truncated" true) (break)))
+    (set bytes (+ bytes size))
+    (results .push item))
+  (if results/.empty? nil ($json/stringify summary)))

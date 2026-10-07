@@ -58,6 +58,9 @@
       (set node/element/disabled (|| (! enabled) (! ($absent? node/props/disabled))))))
   (var resolve_button ($dom/element "ui_resolve"))
   (var cancel_button ($dom/element "ui_cancel"))
+  (var retry_button ($dom/element "ui_retry"))
+  (set retry_button/hidden (! ui/render_error))
+  (set retry_button/disabled (|| (! ui/ready) ui/loading))
   (set resolve_button/hidden ($absent? ui/pending))
   (set cancel_button/hidden
     (|| ($absent? ui/pending) (== (text ui/pending/command_id) ""))))
@@ -387,6 +390,8 @@
   (set ui/ready ready) (set ui/session session)
   ($dom/set_attribute ($dom/element "ui_default_link") "href"
     $"/ui/default?session=${($url/encode_component session)}")
+  ($dom/set_attribute ($dom/element "ui_workspace_link") "href"
+    $"/?session=${($url/encode_component session)}")
   (if_yes reconnect
     (set ui/last_data "")
     (resolve_action ui false))
@@ -405,6 +410,11 @@
     ^session "" ^workspace "" ^epoch "" ^metadata_revision "" ^rendered_revision "" ^descriptor nil ^settings nil ^instance "" ^version ""
     ^state {} ^drafts {} ^forms {} ^nodes {} ^generation 0 ^sequence 0 ^debounce 0
     ^last_data "" ^!loading ^!render_error ^pending nil ^!resolving ^api api ^select select ^command command ^prompt prompt))
+  (var workspace_link ($dom/element "ui_workspace_link"))
+  (set workspace_link/hidden (! safe))
+  ($dom/add_event_listener ($dom/element "ui_retry") "click" (fn [event : Any] : Void
+    (set ui/last_data "")
+    (refresh ui)))
   ($dom/add_event_listener ($dom/element "ui_toggle") "click" (fn [event : Any] : Void
     (if_yes (|| ui/safe ($absent? ui/descriptor)) (return))
     (var settings (copy_map ui/settings))

@@ -227,8 +227,14 @@ retain ordinary Gene host authority; OS isolation remains a separate concern.
 Errors are reported per view and leave the rest of the interface usable.
 
 `(ui_preview "project_board" {^filter "ready"})` uses the same renderer and
-validator without a browser. Plugin publication includes bounded preview
-results beside `[N.plugins]` in the next model request. The model can exercise
+validator without a browser. Plugin publication includes JSON outlines beside
+`[N.plugins]` in the next model request, only for views owned by successfully
+published plugins. Each outline includes tags, keys, visible text, control
+identities and enabled state, capped at 40 nodes and 3 KiB of encoded nodes.
+Text and control values are clipped to 160 bytes. Publication feedback is capped
+at eight views and 12 KiB overall, retaining whole nodes/views with explicit
+`truncated` markers. Explicit `ui_preview` calls still return the full validated
+tree or error. The model can exercise
 its registered action functions after publication as well. A successful preview
 checks the supplied context; browser layout and interaction still require
 browser verification.

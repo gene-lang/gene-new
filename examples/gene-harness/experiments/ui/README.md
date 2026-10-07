@@ -4,7 +4,11 @@ This opt-in experiment puts a plugin-owned project board beside the existing
 conversation. Views are quoted Gene data rendered on the server. The browser
 preserves keyed controls, drafts and view state while data changes.
 
-The experiment is disabled by default. Its API may change or be removed.
+Rendering and UI actions are disabled by default. The baseline profile always
+exposes `ui_configure` and `ui_preview` to the model; `ui_preview` reports that
+the experiment is disabled until it is enabled. This keeps discovery stable
+at the cost of two function entries in model instructions.
+Its API may change or be removed.
 See [RESULTS.md](RESULTS.md) for the observed behavior, measurements and
 keep/revise/remove recommendation.
 
@@ -37,7 +41,8 @@ In a running Harness, the following operator commands configure the experiment:
 Hide board / Show board changes the shared workspace layout. The direct
 `/ui/default` URL opens the standard interface for that page, omitting plugin
 views, their render callbacks and theme overrides. It preserves the workspace
-selection and uses the normal authentication checks.
+selection and uses the normal authentication checks. The recovery page offers
+a host-owned **Return to workspace UI** link for the selected conversation.
 
 ## Work through the same functions
 
@@ -52,7 +57,9 @@ The board registers two ordinary functions. They are available to model turns,
 
 Read the current revision from `board_tasks` before editing. A stale revision
 fails instead of overwriting another edit. Use a new id and omit revision to
-create a task.
+create a task. Omitted title, status and notes keep their current values on an
+update; pass `^notes ""` to clear notes explicitly. New tasks require a title
+and default to status `todo` and empty notes.
 The board uses the runtime's `ui/state_lock` service around its revision check
 and write, so concurrent function calls share the same gate across sessions
 and plugin activations.
@@ -77,6 +84,8 @@ automatically. Switching conversations does not change the receipt's owner.
 A failed action contributes one diagnostic to the submitting conversation's
 next user request. Successful actions do not attach themselves to model input.
 View-state requests are bounded reads and create no command record.
+The HTTP helper aborts requests after 30 seconds. **Retry view** retries a failed
+render while preserving the filter, selection and draft edits.
 
 ## Change the plugin
 
@@ -86,8 +95,10 @@ Edit a workspace copy of `project_board.gene` and register it normally:
 (register_plugin ^^replace "project_board" ($fs/read_text "project_board.gene"))
 ```
 
-The model receives a server-rendered preview or error beside the publication
-result, including in a CLI session without a browser. It can call `ui_preview`
+The model receives a bounded outline or render error for views owned by the
+plugins successfully published in that turn, including in a CLI session without
+a browser. Complete nodes are retained with an explicit truncation marker;
+unrelated views are not rendered for publication feedback. It can call `ui_preview`
 for other view states and exercise the action function before asking the
 operator to use it. A preview does not establish browser layout or usability.
 

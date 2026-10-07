@@ -3,11 +3,58 @@
 (import [close_session_service create_session host_status snapshot] ^from "../../../src/web/session_service")
 (import [register_plugin] ^from "../../../src/storage/workspace")
 (import [row contribute] ^from "../../../src/kernel")
-(import [ui_status ui_render ui_preview UiError] ^from "../../../src/runtime/ui_views")
+(import [ui_status ui_render ui_preview ui_publication_preview UiError] ^from "../../../src/runtime/ui_views")
+(import [SessionError] ^from "../../../src/runtime/sessions")
 (import [Plugin PluginHost] ^from "../../../src/plugin_api")
 (import [put_cordis_plugin] ^from "../../../src/kernel")
 
 (describe "Experimental UI views"
+  (it "bounds publication outlines and renders only successfully published owners" []
+    (isolated this_mod/.path "bounds publication outlines and renders only successfully published owners"
+      (fn [workspace]
+        (let service (test_service ^workspace workspace ^provider (fn [request] "(Outcome ^^done)")))
+        (let calls ($cell 0))
+        (try
+          (let h service/runtime/h)
+          ((/fn (row h "functions" "ui_configure")) {^^enabled})
+          (put_cordis_plugin h (Plugin ^id "unrelated" ^activate (fn [host]
+            (host .PluginHost:contribute "web_components"
+              {^name "unrelated" ^slot "panel" ^view_state {} ^render (fn [ctx]
+                (calls .set (+ calls/.get 100)) (quote (p "unrelated")))}))) {})
+          (let long_text ($str/join ($map [1 2 3 4 5 6 7 8 9 10] (fn [i] "A long visible title with Unicode 雪 and escaped text \"\\")) ""))
+          (put_cordis_plugin h (Plugin ^id "published" ^activate (fn [host]
+            (for n in [1 2 3 4 5 6 7 8 9 10]
+              (host .PluginHost:contribute "web_components"
+                {^name $"large_${n}" ^slot "panel" ^view_state {^filter ""} ^render (fn [ctx]
+                  (calls .set (+ calls/.get 1))
+                  (let children [])
+                  (var i 0)
+                  (while (< i 100)
+                    (children .push `(p %long_text))
+                    (set i (+ i 1)))
+                  `(section ^key "root"
+                    (input ^key "filter" ^state "filter" ^^disabled ^value "query")
+                    %children...))})))) {})
+          ($assert ($absent? (ui_publication_preview h "" [{^id "published" ^state "quarantined"}])))
+          ($assert (== calls/.get 0))
+          (let text (ui_publication_preview h "" [{^id "published" ^state "active"}]))
+          ($assert (<= ($str/byte_size text) 12288))
+          (let result ($json/parse text))
+          ($assert result/truncated)
+          ($assert (&& (> result/views/.size 0) (<= result/views/.size 8)))
+          ($assert (< calls/.get 10) "unrelated views were rendered")
+          (for view in result/views
+            ($assert view/truncated)
+            ($assert (<= view/outline/.size 40))
+            ($assert ($absent? view/view))
+            ($assert (== view/outline/0/tag "section"))
+            ($assert (== view/outline/1/key "filter"))
+            ($assert (== view/outline/1/state "filter"))
+            ($assert (== view/outline/1/enabled false))
+            ($assert (== view/outline/1/value "query"))
+            ($assert ($str/ends_with? view/outline/3/text "…")))
+        ensure (close_session_service service)))))
+
   (it "does not render stateful descriptors and refuses durable writes during rendering" []
     (isolated this_mod/.path "does not render stateful descriptors and refuses durable writes during rendering"
       (fn [workspace]
@@ -51,6 +98,9 @@
           (let descriptor descriptors/0)
           ($assert ($absent? descriptor/view))
           (let view (ui_render h session/id "project_board" descriptor/revision {^filter "feedback" ^selected "feedback"}))
+          ($assert (try
+            (ui_render h "s-doesnotexist" "project_board" descriptor/revision {}) false
+            catch SessionError (== $err/code "not_found")))
           ($assert ($absent? view/error) ($to_str view))
           ($assert ($str/contains? ($json/stringify view/view) "Check the model feedback"))
           ($assert (! ($str/contains? ($json/stringify view/view) "Try the project board")))
@@ -60,7 +110,16 @@
           (let events [])
           (service/publisher .set (fn [message] (events .push message)))
           (let save (/fn (row h "functions" "board_save")))
-          (save ^id "feedback" ^revision "1" ^title "Updated feedback" ^status "done")
+          (let saved (save ^id "feedback" ^revision "1" ^title "Updated feedback" ^status "done"))
+          ($assert (== saved/notes "Render previews run on the server."))
+          (let cleared (save ^id "feedback" ^revision "2" ^notes ""))
+          ($assert (== cleared/title "Updated feedback"))
+          ($assert (== cleared/status "done"))
+          ($assert (== cleared/notes ""))
+          (let created (save ^id "new" ^title "New task"))
+          ($assert (== created/status "todo"))
+          ($assert (== created/notes ""))
+          ($assert (try (save ^id "untitled") false catch Any true))
           ($assert (!= view/data_revision (/data_revision (ui_status h))))
           (let invalidations ($filter events (fn [message] (== message/type "ui/state"))))
           ($assert (> invalidations/.size 0))

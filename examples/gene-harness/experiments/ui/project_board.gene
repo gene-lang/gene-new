@@ -16,11 +16,9 @@
       (host .PluginHost:contribute "functions"
         {^name "board_tasks" ^doc "List project-board tasks and their revisions." ^fn tasks})
       (host .PluginHost:contribute "functions"
-        {^name "board_save" ^doc "Save a task with its expected revision; omit revision to create a new id."
-         ^fn (fn [^id id : Str, ^title title : Str, ^status status : Str = "todo", ^notes notes : Str = "", ^revision revision : Str = ""]
+        {^name "board_save" ^doc "Save a task with its expected revision. Omitted fields keep their current values; a new id requires title and no revision."
+         ^fn (fn [^id id : Str, ^title title : Str? = nil, ^status status : Str? = nil, ^notes notes : Str? = nil, ^revision revision : Str = ""]
            (with_state_lock "project_board" (fn []
-             (if (== ($str/trim title) "") (fail (BoardError ^message "A task needs a title.")))
-             (if_not (["todo" "doing" "done"] .contains? status) (fail (BoardError ^message "Unknown task status.")))
              (let current (tasks))
              (let updated [])
              (var found false)
@@ -29,15 +27,17 @@
                (if (== task/id id)
                  (then
                    (if (!= revision task/revision) (fail (BoardError ^message "Task changed. Reload the task before saving.")))
-                   (set result {^id id ^title title ^status status ^notes notes
+                   (set result {^id id ^title (?? title task/title) ^status (?? status task/status) ^notes (?? notes task/notes)
                      ^revision ($to_str (+ ($parse/parse_int revision) 1))})
                    (updated .push result)
                    (set found true))
                  (else (updated .push task))))
              (if_not found
                (if (!= revision "") (fail (BoardError ^message "Task no longer exists.")))
-               (set result {^id id ^title title ^status status ^notes notes ^revision "1"})
+               (set result {^id id ^title (?? title "") ^status (?? status "todo") ^notes (?? notes "") ^revision "1"})
                (updated .push result))
+             (if (== ($str/trim result/title) "") (fail (BoardError ^message "A task needs a title.")))
+             (if_not (["todo" "doing" "done"] .contains? result/status) (fail (BoardError ^message "Unknown task status.")))
              (host .PluginHost:update_state {^tasks updated})
              result)))})
       (host .PluginHost:contribute "web_components"

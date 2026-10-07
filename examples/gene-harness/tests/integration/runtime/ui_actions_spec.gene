@@ -5,7 +5,7 @@
 (import [row] ^from "../../../src/kernel")
 (import [ui_status UiError] ^from "../../../src/runtime/ui_views")
 (import [ui_action ui_action_receipt] ^from "../../../src/runtime/ui_actions")
-(import [command_receipt take_command_attachments] ^from "../../../src/runtime/commands")
+(import [command_receipt take_command_attachments submit_command] ^from "../../../src/runtime/commands")
 
 (fn wait_action [service, session, record]
   (service/runtime/commands/watchers/.get .get $"${session}:${record/id}"; .join)
@@ -72,11 +72,17 @@
           (stale .put "input_id" "stale-task")
           (let failed (wait_action service a/id (ui_action service/runtime/commands a/id stale)))
           ($assert (== failed/status "failed"))
+          ($assert (== failed/display "Task changed. Reload the task before saving."))
           (let errors (take_command_attachments service/runtime a/id))
           ($assert (== errors/.size 1))
           ($assert ($str/contains? ($to_str errors) "board_save"))
+          ($assert (! ($str/contains? ($to_str errors) "line 1:")))
           ($assert (== (take_command_attachments service/runtime a/id) []))
           ($assert (== (take_command_attachments service/runtime b/id) []))
+          (let run_failed (wait_action service b/id (submit_command service/runtime/commands b/id
+            "/run (board_save ^id \"welcome\" ^revision \"1\" ^title \"Stale\")")))
+          ($assert (== run_failed/status "failed"))
+          ($assert ($str/starts_with? run_failed/display "line 1:"))
           (let changed ($thaw ($freeze request)))
           (changed/named .put "title" "Different")
           ($assert (try (ui_action service/runtime/commands a/id changed) false catch UiError (== $err/code "submission_conflict")))
