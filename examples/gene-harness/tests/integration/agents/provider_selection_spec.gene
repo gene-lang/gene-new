@@ -75,6 +75,10 @@
           (let second (selected/row/send prepared))
           ($assert (== second/text "second")
             "scripted provider lost its response position")
+          (let exhausted (try (selected/row/send prepared) "accepted"
+            catch Any $err/message))
+          ($assert (== exhausted "scripted provider exhausted")
+            $"scripted exhaustion lost its diagnostic: ${exhausted}")
         ensure
           (close_runtime scripted))
         (let offline (open_runtime workspace "default" (offline_profile)))

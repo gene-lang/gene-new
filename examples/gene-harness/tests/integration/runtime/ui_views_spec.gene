@@ -8,6 +8,23 @@
 (import [Plugin PluginHost] ^from "../../../src/plugin_api")
 (import [put_cordis_plugin] ^from "../../../src/kernel")
 
+(fn assert_board_outline [h, omitted : Int]
+  (let result ($json/parse (ui_publication_preview h "" [{^id "project_board" ^state "active"}])))
+  (let view result/views/0)
+  ($assert ($absent? view/error) ($to_str view))
+  ($assert (== view/truncated (> omitted 0)))
+  (for field in ["title" "status" "notes"]
+    ($assert (== ($size ($filter view/outline (fn [node] (== node/field field)))) 1)
+      $"Publication outline lost field ${field}."))
+  ($assert (== ($size ($filter view/outline (fn [node] (== node/action "board_save")))) 1))
+  ($assert (== ($size ($filter view/outline (fn [node]
+    (&& (== node/tag "button") (== node/type "submit") (== node/text "Save task"))))) 1)
+    "Publication outline lost the Save button.")
+  (let body (/0 ($filter view/outline (fn [node] (== node/tag "tbody")))))
+  ($assert (== (?? body/omitted 0) omitted))
+  (if (> omitted 0) ($assert (== body/item_tag "tr")))
+  nil)
+
 (describe "Experimental UI views"
   (it "bounds publication outlines and renders only successfully published owners" []
     (isolated this_mod/.path "bounds publication outlines and renders only successfully published owners"
@@ -45,14 +62,15 @@
           ($assert (< calls/.get 10) "unrelated views were rendered")
           (for view in result/views
             ($assert view/truncated)
-            ($assert (<= view/outline/.size 40))
+            ($assert (<= ($str/byte_size ($json/stringify view/outline)) 3072))
             ($assert ($absent? view/view))
             ($assert (== view/outline/0/tag "section"))
             ($assert (== view/outline/1/key "filter"))
             ($assert (== view/outline/1/state "filter"))
             ($assert (== view/outline/1/enabled false))
             ($assert (== view/outline/1/value "query"))
-            ($assert ($str/ends_with? view/outline/3/text "…")))
+            ($assert (== view/outline/2/tag "p"))
+            ($assert ($str/ends_with? view/outline/2/text "…")))
         ensure (close_session_service service)))))
 
   (it "does not render stateful descriptors and refuses durable writes during rendering" []
@@ -93,6 +111,7 @@
           ($assert (== installed/state "active") ($to_str installed))
           (let configure (/fn (row h "functions" "ui_configure")))
           (configure {^^enabled ^layout "panel" ^panel "project_board" ^theme {^accent "#335577"}})
+          (assert_board_outline h 0)
           (let descriptors (/components (ui_status h)))
           ($assert (== descriptors/.size 1))
           (let descriptor descriptors/0)
@@ -125,6 +144,9 @@
           ($assert (> invalidations/.size 0))
           (let refreshed (ui_render h session/id "project_board" descriptor/revision {^filter "feedback" ^selected "feedback"}))
           ($assert ($str/contains? ($json/stringify refreshed/view) "Updated feedback"))
+          (for n in [1 2 3 4 5 6 7 8 9 10 11 12]
+            (save ^id $"extra-${n}" ^title $"Additional task ${n}"))
+          (assert_board_outline h 12)
           ($assert ($absent? (/ui (host_status ^safe true service))))
           (contribute h "test" "web_components" {^name "broken" ^slot "sidebar" ^render (fn [ctx] (fail "should not run"))})
           ($assert (== (/web_components (host_status ^safe true service)) []))

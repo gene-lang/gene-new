@@ -1,6 +1,9 @@
 (mod provider_scripted)
 (import ^from "../plugin_api" [Plugin PluginHost])
 
+(type ScriptedProviderError ^props {^message Str} ^impl [Error])
+(impl Error for ScriptedProviderError)
+
 (fn provider_scripted [responses] : Plugin
   (let index ($cell 0))
   (Plugin ^id "provider_scripted" ^provides [["providers" "scripted"]]
@@ -12,5 +15,6 @@
          ^prepare (fn [call] {})
          ^send (fn [prepared]
            (let next (index .swap (+ index/.get 1)))
-           (if (>= next responses/.size) (fail "scripted provider exhausted"))
+           (if (>= next responses/.size)
+             (fail (ScriptedProviderError ^message "scripted provider exhausted")))
            {^text responses/%next})}))))

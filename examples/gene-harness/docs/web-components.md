@@ -230,7 +230,10 @@ Errors are reported per view and leave the rest of the interface usable.
 validator without a browser. Plugin publication includes JSON outlines beside
 `[N.plugins]` in the next model request, only for views owned by successfully
 published plugins. Each outline includes tags, keys, visible text, control
-identities and enabled state, capped at 40 nodes and 3 KiB of encoded nodes.
+identities and enabled state, capped at 3 KiB of encoded nodes. A lone text child
+is folded into its parent. Table bodies and lists retain the first three items
+with an `omitted` count and `item_tag` on the parent, leaving room for forms and
+controls after the data. There is no separate node-count cap.
 Text and control values are clipped to 160 bytes. Publication feedback is capped
 at eight views and 12 KiB overall, retaining whole nodes/views with explicit
 `truncated` markers. Explicit `ui_preview` calls still return the full validated
