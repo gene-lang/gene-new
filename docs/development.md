@@ -163,6 +163,8 @@ version is a language compatibility promise.
 
 | Date | Change | Migration |
 | --- | --- | --- |
+| 2026-10-08 | HTTP listener failures expose `HttpError/code`: `address_in_use` for a bind collision, `listen_failed` for other setup errors. | Use the code to implement port fallback without parsing platform-specific messages. |
+| 2026-10-08 | The formatter preserves quoted expressions in conversions, CRLF, literal backslashes and trailing quotes in multiline strings. | Formatting preserves the existing source meaning and remains idempotent; no syntax changes. |
 | 2026-10-03 | Local macros expand when execution reaches their call, using their captured definition environment. Module macros retain compile-time expansion. | Each invocation observes its own enclosing values. Returned syntax still uses caller bindings and control-flow targets. Runtime local expansion has compilation cost; it leaves existing caller slots intact. |
 | 2026-10-03 | REPL macro definitions commit after successful compilation. | A runtime error retains those definitions and any runtime effects already performed. A compile error leaves the previous macro context intact. |
 | 2026-10-02 | Macro bodies execute ordinary Gene code during expansion; active unquotes use that body's environment. | Use quote/quasiquote to construct code. Quasiquote node splices now include properties; splice a list from `$body` for body-only insertion. Construct residual pins/paths with `%(quote (unquote name))`. See [macro execution](macro.md#d2b-definition-side-lexical-evaluation--decided). |

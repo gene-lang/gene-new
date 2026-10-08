@@ -16,6 +16,8 @@
 (import [flush_event_store core_states] ^from "../../../src/storage/state")
 (import [scripted_profile] ^from "../../../src/profiles/scripted")
 (import [set_plugin_enabled] ^from "../../../src/storage/workspace")
+(import [start_host stop_host cli] ^from "../../web_support")
+(import [discover] ^from "../../../src/cli/client")
 
 (describe "Harness triggers"
   (it "creates deterministic occurrences and trigger sessions with default filters and cron" []
@@ -114,8 +116,8 @@
           (close_runtime runtime))))))
 
 (describe "Harness trigger administration"
-  (it "accepts plain maps and leaves due work untouched during list and create" []
-    (isolated this_mod/.path "accepts plain maps and leaves due work untouched during list and create"
+  (it "requires a running host and accepts plain maps through its shared service" []
+    (isolated this_mod/.path "requires a running host and accepts plain maps through its shared service"
       (fn [workspace]
         (let runtime (open_runtime workspace "default" (baseline_profile)))
         (let root runtime/root)
@@ -126,16 +128,11 @@
         (close_trigger_manager manager)
         (close_round_controller controller)
         (close_runtime runtime)
-        (let entry (package_path "src/main.gene"))
-        (let script $"${root}/responses.gene")
-        ($fs/write_text script ($to_str ["(Outcome ^^done ^reply \"unexpected\")"]))
         (let plain $"${root}/new-trigger.gene")
-        ($fs/write_text plain $"{^id \"new\" ^kind \"scheduled\" ^at ${(+ ($os/wall_ms) 60000)} ^request \"later\"}")
+        ($fs/write_text plain $"{^id \"new\" ^kind \"scheduled\" ^at ${(+ ($os/wall_ms) 600000)} ^request \"later\"}")
         (for command in [["triggers" "list"] ["triggers" "occurrences"] ["triggers" "create" plain]]
-          (let options ["run" entry "--workspace" root "--script" script])
-          (for value in command (options .push value))
-          (let result (await ($os/exec_async ($os/executable_path) options... ^timeout_ms 30000)))
-          ($assert (== result/status 0) $"trigger administration failed: ${result/stderr}"))
+          (let result (cli root command ^expected 1))
+          ($assert (== result/code "unavailable") "CLI trigger operation opened a standalone runtime"))
         (let reopened (open_runtime root "default" (baseline_profile)))
         (let again (test_controller reopened (fn [request] "")))
         (let read (open_trigger_manager reopened again ^!start ^!boot))
@@ -144,8 +141,18 @@
           ($assert (== occurrences/.size 1) "read-only trigger commands scheduled new occurrences")
           ($assert (== occurrences/0/state "due") "trigger administration consumed due work")
           ($assert ($absent? (reopened/sessions/index/.get .get occurrences/0/session)) "administration created an execution session")
-          ($println "trigger administration: list/occurrences/create leave due work untouched; plain maps accepted")
-        ensure (close_trigger_manager read) (close_round_controller again) (close_runtime reopened))))))
+        ensure (close_trigger_manager read) (close_round_controller again) (close_runtime reopened))
+        (let host (start_host $"${root}/live"))
+        (try
+          (cli host/root ["triggers" "create" plain])
+          (let definitions (/triggers (cli host/root ["triggers" "list"])))
+          ($assert (== definitions/.size 1) "plain-map definition was not created")
+          ($assert (== definitions/0/id "new") "definition identity changed")
+          ($assert (== ((/occurrences (cli host/root ["triggers" "occurrences"])) .size) 0)
+            "future trigger ran during administration")
+          ($assert (== (/epoch (discover host/root)) host/connection/epoch) "CLI administration restarted the host")
+          ($println "trigger administration: live service, inert maps and no standalone CLI runtime")
+        ensure (stop_host host))))))
 
 (describe "Harness trigger recovery"
   (it "recovers due work without losing occurrences or replaying admitted rounds" []

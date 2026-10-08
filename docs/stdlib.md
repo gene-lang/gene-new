@@ -534,6 +534,11 @@ completion. It is a test surface, not a file or socket transport.
 
 ## HTTP server
 
+`listen` accepts port 0 and returns the actual reserved port in `server/port`.
+A bind collision raises `HttpError` with `code` equal to `address_in_use`;
+other listener setup failures use `listen_failed`. Applications can choose a
+new port for a collision without swallowing unrelated initialization failures.
+
 Save this as `server.gene` and run it with `gene run server.gene`:
 
 ```gene

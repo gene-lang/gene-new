@@ -335,8 +335,9 @@
                  (p "Offline mode returns a canned reply. Use /help, /run, /repl, /sh and /view to exercise the workspace without a model."))))
            (li ^class "run_step"
              (h3 "Open the connection link")
-             (p "The server prints a link like " (code "http://127.0.0.1:8095/#token=…")
-                ". It works once and expires after ten minutes; the browser then stays connected for eight hours."))
+             (p "In another terminal, run "
+                (code "bin/gene run examples/gene-harness/src/main.gene --workspace /path/to/project link")
+                " and open the returned URL. The owner link is reusable across browser and CLI clients until you explicitly reset it."))
            (li ^class "run_step"
              (h3 "Ask for a function")
              (p "Ordinary text goes to the model; " (code "/help")

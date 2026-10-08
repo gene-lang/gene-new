@@ -1,0 +1,85 @@
+# Workspace-local discovery and listener selection. Call mutations only while
+# holding the workspace lock; the live descriptor is not an ownership lock.
+(mod connection)
+(import ^from "./contract" [protocol_version])
+(import $net/http [listen])
+
+(type ConnectionError ^props {^code Str ^message Str} ^impl [Error])
+(impl Error for ConnectionError)
+
+(fn unavailable [root : Str]
+  (fail
+    (ConnectionError ^code "unavailable" ^message $"No running Harness host for ${root}. Start gene-harness web --workspace ${root}.")))
+
+(fn valid_port [port, ^zero zero : Bool = false]
+  (if (|| (!= ($head port) Int) (< port (if zero 0 1024)) (> port 65535))
+    (fail
+      (ConnectionError ^code "invalid_request" ^message "Port must be 1024–65535 (or 0 for automatic selection).")))
+  port)
+
+(fn read_connection [root : Str]
+  (let path $"${root}/.gene-harness/connection")
+  (if_not ($fs/exists? path) (unavailable root))
+  (let record (try ($serde/read_data ($fs/read_text path)) catch Any (unavailable root)))
+  (if (|| (!= ($head record) Map) (!= record/workspace root) (!= record/protocol protocol_version) (!= ($head record/epoch) Str) (== record/epoch ""))
+    (fail
+      (ConnectionError ^code "connection_mismatch" ^message "The Harness connection descriptor is stale or incompatible.")))
+  (valid_port record/port)
+  (if (!= record/origin $"http://127.0.0.1:${record/port}")
+    (fail
+      (ConnectionError ^code "connection_mismatch" ^message "The Harness endpoint must use its canonical loopback address.")))
+  record)
+
+(fn bind_workspace [state_root : Str, ^port explicit = nil, ^restart_port restart_port = nil]
+  (var selected 0)
+  (var strict false)
+  (if_not ($absent? restart_port)
+    (set selected (valid_port restart_port))
+    (set strict true))
+  (if_yes (&& (! strict) (! ($absent? explicit)))
+    (set selected (valid_port ^^zero explicit))
+    (set strict (!= selected 0)))
+  (if (&& ($absent? explicit) ($absent? restart_port) ($fs/exists? $"${state_root}/web_port"))
+    (set selected (valid_port ($serde/read_data ($fs/read_text $"${state_root}/web_port")))))
+  (try
+    (listen ^host "127.0.0.1" ^port selected)
+  catch HttpError
+    (if (|| strict (== selected 0) (!= $err/code "address_in_use")) (fail $err))
+    (let server (listen ^host "127.0.0.1" ^port 0))
+    ($println
+      ($to_str
+        "Remembered port "
+        selected
+        " is occupied; Harness address changed to http://127.0.0.1:"
+        server/port
+        "."))
+    server))
+
+(fn publish_link [state_root : Str, origin : Str, secret : Str]
+  ($fs/write_text_atomic ^^owner_only $"${state_root}/link" $"${origin}/#token=${secret}")
+  nil)
+
+(fn publish_connection [root : Str, epoch : Str, port : Int, secret : Str]
+  (let state_root $"${root}/.gene-harness")
+  (let origin $"http://127.0.0.1:${port}")
+  (let record
+    {
+      ^workspace root
+      ^epoch epoch
+      ^port port
+      ^origin origin
+      ^protocol protocol_version
+      ^pid ($os/process_id)})
+  (publish_link state_root origin secret)
+  ($fs/write_text_atomic $"${state_root}/connection" ($serde/write_data record))
+  ($fs/write_text_atomic $"${state_root}/web_port" ($serde/write_data port))
+  record)
+
+(fn clear_connection [root : Str, epoch : Str]
+  (let state_root $"${root}/.gene-harness")
+  (let record (try (read_connection root) catch Any nil))
+  (if (&& (!= epoch "") (! ($absent? record)) (!= record/epoch epoch)) (return nil))
+  (for name in ["connection" "link"]
+    (let path $"${state_root}/${name}")
+    (if ($fs/exists? path) ($fs/remove path)))
+  nil)

@@ -43,9 +43,11 @@ proc httpNamespaceBinding(scope: Scope, name: string): Value =
     return VOID
   httpNs.nsScope.vars.getOrDefault(name, VOID)
 
-proc raiseHttpError(message: string, scope: Scope) =
+proc raiseHttpError(message: string, scope: Scope, code = "") =
   var props = initPropTable()
   props["message"] = newStr(message)
+  if code.len > 0:
+    props["code"] = newStr(code)
   var e: ref GeneError
   new(e)
   e.msg = message
@@ -546,7 +548,8 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
     except OSError as e:
       result.close()
       raiseHttpError("failed to listen on " & host & ":" & $port & ": " &
-                     e.msg, scope)
+                     e.msg, scope,
+                     if e.errorCode == EADDRINUSE: "address_in_use" else: "listen_failed")
     # Non-blocking listener: the event loop must never park in the kernel
     # while handler fibers are runnable or timers are due.
     httpSetNonBlocking(result.getFd().cint)

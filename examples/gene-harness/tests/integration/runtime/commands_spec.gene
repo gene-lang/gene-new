@@ -6,12 +6,13 @@
 (import [submit_command command_receipt parse_submission take_command_attachments cancel_command]
   ^from "../../../src/runtime/commands")
 (import [submit_round round_receipt close_round_controller] ^from "../../../src/runtime/round_controller")
-(import [Plugin PluginHost] ^from "../../../src/kernel")
+(import [Plugin PluginHost contribute] ^from "../../../src/kernel")
 (import [recall_body] ^from "../../../src/agents/history")
 (import [register_plugin] ^from "../../../src/storage/workspace")
 
 (fn wait_command [manager, id]
-  (manager/watchers .get; .get $"default:${id}"; .join)
+  (let joined (manager/watchers .get; .get $"default:${id}"; .join))
+  ($assert (== ($head joined) TaskOutcome/ok) $"Command watcher failed: ${joined}")
   (command_receipt manager "default" id))
 
 (fn command [runtime, text]
@@ -219,6 +220,38 @@ three""")
           ($assert ($str/contains? result/display " a\nb") "raw arguments changed")
           ($assert ($str/contains? result/output "plugin console") "plugin command output sink was lost")
           ($println "plugin command: shared context/result identity, raw input, output sink and attachment")
+        ensure (close_runtime runtime))))))
+
+(describe "Harness command request identity"
+  (it "deduplicates concurrent admission and retains running work while refusing expired sequences" []
+    (isolated this_mod/.path "deduplicates concurrent admission and retains running work while refusing expired sequences"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (let count ($cell 0))
+        (try
+          (contribute runtime/h "core" "functions"
+            {^name "mark" ^doc "Count actual evaluations."
+             ^fn (fn [] (count .set (+ count/.get 1)) count/.get)})
+          (let one (spawn ^lane root (submit_command runtime/commands "default" "/run (mark)" ^request_id "same" ^sequence 1)))
+          (let two (spawn ^lane root (submit_command runtime/commands "default" "/run (mark)" ^request_id "same" ^sequence 1)))
+          (let first (await one))
+          (let second (await two))
+          ($assert (== first/id second/id) "concurrent retry allocated another command")
+          (wait_command runtime/commands first/id)
+          ($assert (== count/.get 1) "concurrent retry evaluated twice")
+          (let running (submit_command runtime/commands "default" "/run ($sleep 60000) 7"))
+          (repeat index in 130
+            (let receipt (submit_command runtime/commands "default" "/run 0"))
+            (wait_command runtime/commands receipt/id))
+          ($assert ($absent? (command_receipt runtime/commands "default" first/id)) "terminal receipt window did not prune")
+          ($assert (== (/status (command_receipt runtime/commands "default" running/id)) "running") "retention removed running work")
+          ($assert
+            (try (submit_command runtime/commands "default" "/run (mark)" ^request_id "same" ^sequence 1) false
+              catch Any (== $err/code "submission_conflict"))
+            "an expired request sequence was re-executed")
+          ($assert (== count/.get 1) "expired identity repeated its side effect")
+          (cancel_command runtime/commands "default" running/id)
+          (wait_command runtime/commands running/id)
         ensure (close_runtime runtime))))))
 
 (fn main [args] : Int (run_spec args))

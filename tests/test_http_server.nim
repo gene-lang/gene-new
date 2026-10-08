@@ -126,6 +126,17 @@ proc geneQuotedPath(path: string): string =
   "\"" & path.replace("\\", "\\\\").replace("\"", "\\\"") & "\""
 
 suite "net/http server e2e":
+  test "occupied listeners report a structured bind error":
+    let result = run(compileSource("""
+      (import $net/http [listen stop])
+      (let listener (listen ^host "127.0.0.1" ^port 0))
+      (try
+        (try (listen ^host "127.0.0.1" ^port listener/port) "unexpected"
+          catch HttpError $err/code)
+      ensure (stop listener))
+    """), newGlobalScope())
+    check result.strVal == "address_in_use"
+
   test "ephemeral listeners report their actual reserved ports":
     let ports = run(compileSource("""
       (import $net/http [listen status stop])

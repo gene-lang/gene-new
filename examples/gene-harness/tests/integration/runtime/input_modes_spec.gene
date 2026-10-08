@@ -231,4 +231,31 @@
         ensure (close_session_service service)))))
 )
 
+(describe "Harness disconnected work"
+  (it "lets admitted commands finish before viewer grace and idle collection close their session" []
+    (isolated this_mod/.path "lets admitted commands finish before viewer grace and idle collection close their session"
+      (fn [workspace]
+        (let service (test_service ^workspace workspace ^provider
+          (fn [request] "(Outcome ^^done ^reply \"unused\")")))
+        (try
+          (let session (create_session service))
+          (view_session service/sessions session/id)
+          (command service session/id "/repl")
+          (let mode (mode_state service/runtime/modes session/id))
+          (let record (submit_mode_input service/runtime/modes session/id mode/instance "pending" "($sleep 250) 42"))
+          (leave_session service/sessions session/id)
+          (expire_modes ^now 0 service/runtime/modes)
+          (expire_modes ^now 60000 service/runtime/modes)
+          ($assert (! ($absent? (mode_state service/runtime/modes session/id))) "viewer grace cancelled a running input")
+          ($assert (! (unload_session service/sessions session/id)) "idle unload cancelled a running input")
+          (service/runtime/commands/watchers/.get .get $"${session/id}:${record/id}"; .join)
+          ($assert (== (/status (command_receipt service/runtime/commands session/id record/id)) "done") "disconnected REPL work did not finish")
+          (expire_modes ^now 60001 service/runtime/modes)
+          ($assert ($absent? (mode_state service/runtime/modes session/id)) "idle REPL did not close after grace")
+          (let plain (submit_command service/runtime/commands session/id "/run ($sleep 250) 7"))
+          ($assert (! (unload_session service/sessions session/id)) "idle unload interrupted an ordinary command")
+          (service/runtime/commands/watchers/.get .get $"${session/id}:${plain/id}"; .join)
+          ($assert (unload_session service/sessions session/id) "finished session did not unload")
+        ensure (close_session_service service))))))
+
 (fn main [args] : Int (run_spec args))

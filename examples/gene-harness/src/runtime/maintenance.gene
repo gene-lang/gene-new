@@ -1,0 +1,48 @@
+# Offline repair keeps the previous activation-free bootstrap and its durable
+# crash recovery. Ordinary CLI operations never enter this module's runtime.
+(mod maintenance)
+(import ^from "./bootstrap" [open_runtime close_runtime prepare_workspace_root])
+(import ^from "../profiles/baseline" [baseline_profile])
+(import ^from "../storage/workspace"
+  [doctor prepare_workspace disable_entry enable_entry restore_entry composition_revision])
+(import ^from "./workspace_lock" [acquire_workspace_lock close_workspace_lock])
+(import ^from "../web/auth" [reset_auth_at])
+(import ^from "../web/connection" [clear_connection])
+
+(fn repair [root : Str, action : Str, id : Str = ""]
+  (let runtime
+    (open_runtime ^entry "offline maintenance" ^!activate
+      (prepare_workspace_root ^root root)
+      "default"
+      (baseline_profile)))
+  (try
+    (if_yes (== action "doctor")
+      (prepare_workspace runtime/workspace runtime/h)
+      (return {^findings (doctor runtime/workspace)}))
+    (if (== id "") (fail "A plugin id is required."))
+    (let before (composition_revision runtime/workspace))
+    (let revision
+      (match action
+        (when "disable"
+          (disable_entry ^h runtime/h runtime/workspace id))
+        (when "enable"
+          (enable_entry ^h runtime/h runtime/workspace id))
+        (when "restore"
+          (restore_entry ^h runtime/h runtime/workspace id))
+        (else
+          (fail "Unknown maintenance operation."))))
+    {^action action ^id id ^revision revision ^changed (!= before revision)}
+  ensure
+    (close_runtime runtime)))
+
+(fn reset_offline [root : Str]
+  (let canonical (prepare_workspace_root ^root root))
+  (let lock (acquire_workspace_lock canonical "offline credential reset"))
+  (try
+    (reset_auth_at $"${canonical}/.gene-harness")
+    (clear_connection canonical "")
+    {
+      ^^ok
+      ^message "Owner credential reset. Start the web host and use gene-harness link to connect."}
+  ensure
+    (close_workspace_lock lock)))

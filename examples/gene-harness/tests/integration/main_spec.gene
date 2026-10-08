@@ -1,300 +1,567 @@
-# Tests src/main.gene.
+# Real CLI processes talk to the same host and HTTP contract as the browser.
 (import $test [describe it])
-(import [isolated run_spec test_controller package_path] ^from "../support")
-(import $io [IoResource pipe write_all])
-(import [open_session_service close_session_service] ^from "../../src/web/session_service")
-(import [list_sessions create_session load_session] ^from "../../src/runtime/sessions")
-(import [open_runtime close_runtime] ^from "../../src/runtime/bootstrap")
-(import [baseline_profile] ^from "../../src/profiles/baseline")
-(import [submit_round close_round_controller] ^from "../../src/runtime/round_controller")
-(import [submit_command command_receipt] ^from "../../src/runtime/commands")
+(import ^from "../support" [isolated run_spec package_path])
+(import ^from "../web_support" [start_host launch_host ready_host stop_host cli])
+(import ^from "../../src/cli/client" [connect api wire checked session_path wait_for])
+(import ^from "../../src/runtime/workspace_lock" [acquire_workspace_lock close_workspace_lock])
+(import $net/http [listen stop])
+(import $io [tcp_connect AsyncReader IoResource write_all])
+(import $net/http_client [request])
 
-(describe "Harness CLI"
-  (it "closes an open REPL when stdin ends during a continuation" []
-    (isolated this_mod/.path "closes an open REPL when stdin ends during a continuation"
+(describe
+  "Harness owner clients"
+  (it
+    "shares sessions, literal prompts, commands and receipts across independent CLI clients"
+    []
+    (isolated
+      this_mod/.path
+      "shares sessions, literal prompts, commands and receipts across independent CLI clients"
       (fn [workspace]
-        (let root ($fs/real_path workspace))
-        (let script $"${root}/responses.gene")
-        ($fs/write_text script ($to_str ["(Outcome ^^done ^reply \"unused\")"]))
-        (let stdin (pipe))
-        (let process ($os/exec_stream_async ($os/executable_path)
-          "run" (package_path "src/main.gene") "chat" "--script" script
-          "--workspace" $"${root}/workspace" ^stdin_pipe stdin/0
-          ^timeout_ms 30000 ^max_bytes 1048576))
+        (let host (start_host $"${workspace}/host"))
         (try
-          (await (write_all stdin/1 ($binary/from_str "/repl\n(var retained 42)\n(do\n")))
-          stdin/1/.IoResource:close
-          (let result (await process))
-          ($assert (== result/status 0) result/stderr)
-          ($assert ($str/contains? result/stdout "default gene> ") result/stdout)
-          ($assert ($str/contains? result/stdout "... ") result/stdout)
-          ($assert (! ($str/contains? result/stdout "unused")) result/stdout)
-          (let reopened (open_session_service ^workspace $"${root}/workspace" ^^offline))
-          (close_session_service reopened)
-        ensure (if_not process/.done? process/.cancel process/.join)))))
+          (let listing (cli host/root ["sessions"]))
+          ($assert listing/sessions/.empty? "host created an implicit terminal conversation")
+          (let record (cli host/root ["sessions" "create" "--title" "Shared conversation"]))
+          (let session record/id)
+          (let left_job (spawn ^lane root (cli host/root ["sessions" "create" "--title" "Left"])))
+          (let right_job (spawn ^lane root (cli host/root ["sessions" "create" "--title" "Right"])))
+          (let left (await left_job))
+          (let right (await right_job))
+          ($assert (!= left/id right/id) "concurrent CLI clients collided on session creation")
+          (let command (cli host/root ["--session" session "run" "(+ 2 3)"]))
+          ($assert (== command/status "done") "operator command did not finish")
+          ($assert ($str/contains? command/display "5") "operator result missing")
+          (let text "($fs/write_text \"once\" ($to_str (+ 1 (if ($fs/exists? \"once\") ($parse/parse_int ($fs/read_text \"once\")) 0))))")
+          (let identity "once / owner")
+          (let first
+            (cli
+              host/root
+              ["--session" session "run" text "--request-id" identity "--sequence" "2"]))
+          (let repeated
+            (cli
+              host/root
+              ["--session" session "run" text "--request-id" identity "--sequence" "2"]))
+          ($assert (== first/id repeated/id) "retry allocated another command")
+          ($assert (== ($fs/read_text $"${host/root}/once") "1") "retry repeated the side effect")
+          (let found
+            (cli
+              host/root
+              ["--session" session "receipt" "--request-id" identity "--kind" "command"]))
+          ($assert (== found/id first/id) "request identity lookup lost command")
+          (let conflict
+            (cli ^expected 1
+              host/root
+              ["--session" session "run" "(+ 9 9)" "--request-id" identity "--sequence" "2"]))
+          ($assert
+            (== conflict/code "submission_conflict")
+            "identity reuse did not reject changed content")
+          ($assert (== conflict/request_id identity) "structured error lost request identity")
+          (let shell (cli host/root ["--session" session "sh" "printf shell-ok"]))
+          ($assert ($str/contains? shell/display "shell-ok") "CLI shell output was lost")
+          (let failed_shell (cli host/root ["--session" session "sh" "exit 7"] ^expected 1))
+          ($assert (== failed_shell/exit 7) "CLI hid shell exit status")
+          (let code_file $"${host/root}/operator.gene")
+          ($fs/write_text code_file "(+ 6 7)")
+          ($assert ($str/contains? (/display (cli host/root ["--session" session "run" "--file" code_file])) "13")
+            "CLI did not evaluate a local code file")
+          ($assert ($str/contains? (/display (cli host/root ["--session" session "view" "operator.gene"])) "(+ 6 7)")
+            "CLI file view did not use the host workspace")
+          ($assert ($str/contains? (/display (cli host/root ["--session" session "command" "/help"])) "/run")
+            "CLI did not invoke the registered command")
+          (let prompt (cli host/root ["--session" session "send" "--wait" "/this-is-literal"]))
+          ($assert (== prompt/state "done") "literal prompt was routed as a slash command")
+          (let transcript (cli host/root ["--session" session "transcript"]))
+          ($assert (> transcript/records/.size 0) "transcript is empty")
+          (let browser (connect host/root))
+          (let snapshot (api browser "GET" (session_path session "/snapshot?ui=default")))
+          ($assert (== snapshot/round/id prompt/id) "browser and CLI see different conversations")
+          (let prompt_file $"${host/root}/prompt.txt")
+          ($fs/write_text prompt_file "Prompt from a client file")
+          (let from_file (cli host/root ["--session" session "send" "--wait" "--file" prompt_file]))
+          ($assert (== from_file/prompt "Prompt from a client file") "CLI prompt file changed contents")
+          (let status (cli host/root ["status"]))
+          ($assert ($absent? status/csrf) "CLI diagnostics exposed a CSRF credential")
+          (let repair (cli ^expected 1 host/root ["doctor"]))
+          ($assert
+            ($str/contains? repair/message "in use")
+            "offline maintenance bypassed the host lock")
+        ensure
+          (let stopped (stop_host host))
+          ($assert (== stopped/status 0) stopped/stderr))))))
 
-  (it "keeps questions pending while REPL input owns the prompt and asks after exit" []
-    (isolated this_mod/.path "keeps questions pending while REPL input owns the prompt and asks after exit"
+(describe
+  "Harness owner credentials"
+  (it
+    "reuses owner links, preserves independent clients and resets access without cancelling work"
+    []
+    (isolated
+      this_mod/.path
+      "reuses owner links, preserves independent clients and resets access without cancelling work"
       (fn [workspace]
-        (let root ($fs/real_path workspace))
-        (let script $"${root}/responses.gene")
-        ($fs/write_text script ($to_str [
-          "($sleep 500) ($fs/write_text \"question-ready\" \"yes\") (Outcome ^questions [{^id \"name\" ^prompt \"What is your name?\"}])"
-          "(Outcome ^^done ^reply \"answer accepted\")"]))
-        (let stdin (pipe))
-        (let lines ($channel ^capacity 128))
-        (let process ($os/exec_stream_async ($os/executable_path)
-          "run" (package_path "src/main.gene") "chat" "--script" script
-          "--workspace" $"${root}/workspace" ^stdin_pipe stdin/0
-          ^stdout_chan lines ^timeout_ms 30000 ^max_bytes 1048576))
+        (let host
+          (start_host ^script ["($sleep 1500) (Outcome ^^done ^reply \"still finished\")"]
+            $"${workspace}/host"))
         (try
-          (scope
-            (let writer (spawn ^lane root
-              (do
-                (await (write_all stdin/1 ($binary/from_str "ask\n/repl\n")))
-                (let due (+ ($os/monotonic_ms) 20000))
-                (while (&& (! ($fs/exists? $"${root}/workspace/question-ready")) (< ($os/monotonic_ms) due))
-                  ($sleep 1))
-                ($assert ($fs/exists? $"${root}/workspace/question-ready") "question response did not start")
-                (await (write_all stdin/1 ($binary/from_str
-                  "(do ($sleep 500) ($println \"input still in REPL\") 42)\nexit\nGene\n")))
-                stdin/1/.IoResource:close)))
-            (let output [])
-            (try (loop (output .push lines/.recv)) catch ChannelClosed nil)
-            (let result (await process))
-            (await writer)
-            (let text ($str/join output "\n"))
-            ($assert (== result/status 0) $"${text}\n${result/stderr}")
-            ($assert (! ($str/contains? text "Questions:")) text)
-            (let parts ($str/split text "What is your name?"))
-            ($assert (== parts/.size 2) text)
-            ($assert ($str/contains? parts/0 "input still in REPL") text)
-            ($assert ($str/contains? text "answer accepted") text))
-        ensure (if_not process/.done? process/.cancel process/.join)))))
+          (let token ($fs/read_text $"${host/root}/.gene-harness/web_secret"))
+          (let first (wire host/connection "POST" "/auth/exchange" {^token token}))
+          (let second (wire host/connection "POST" "/auth/exchange" {^token token}))
+          ($assert (== first/status 200) "first browser exchange failed")
+          ($assert (== second/status 200) "owner token was consumed")
+          (let first_parts ($str/split (first/headers .get "set-cookie") ";"))
+          (let second_parts ($str/split (second/headers .get "set-cookie") ";"))
+          (let cookie1 {^cookie first_parts/0 ^csrf first/body/csrf})
+          (let cookie2 {^cookie second_parts/0 ^csrf second/body/csrf})
+          (let another_tab
+            (wire ^credentials cookie1 host/connection "POST" "/auth/exchange" {^token token}))
+          ($assert
+            (== another_tab/body/csrf first/body/csrf)
+            "another tab changed the browser's CSRF value")
+          ($assert
+            (== (another_tab/headers .get "set-cookie") (first/headers .get "set-cookie"))
+            "another tab replaced the shared cookie")
+          ($assert
+            (==
+              ((Path "status")
+                (wire ^credentials cookie1 host/connection "GET" "/status?ui=default"))
+              200)
+            "second browser invalidated first")
+          (let record (cli host/root ["sessions" "create"]))
+          (let round (cli host/root ["--session" record/id "send" "continue after reset"]))
+          (cli host/root ["auth" "reset"])
+          ($assert
+            (!= token ($fs/read_text $"${host/root}/.gene-harness/web_secret"))
+            "reset retained owner token")
+          ($assert
+            (== ((Path "status") (wire host/connection "POST" "/auth/exchange" {^token token})) 401)
+            "old owner token survived reset")
+          (for credentials in [cookie1 cookie2]
+            ($assert
+              (==
+                ((Path "status")
+                  (wire ^credentials credentials host/connection "GET" "/status?ui=default"))
+                401)
+              "old client survived reset"))
+          (let finished (cli host/root ["--session" record/id "wait" round/id]))
+          ($assert (== finished/reply "still finished") "reset cancelled admitted work")
+          (let link (cli host/root ["link"]))
+          ($assert ($str/starts_with? link host/connection/origin) "link points at the wrong host")
+          ($assert
+            ($str/contains? link ($fs/read_text $"${host/root}/.gene-harness/web_secret"))
+            "link retained old credential")
+        ensure
+          (stop_host host))))))
 
-  (it "cancels REPL evaluation on SIGINT and retains its bindings" []
-    (isolated this_mod/.path "cancels REPL evaluation on SIGINT and retains its bindings"
+(describe
+  "Harness CLI control"
+  (it
+    "answers and dismisses questions, rejects busy submissions and cancels host work explicitly"
+    []
+    (isolated
+      this_mod/.path
+      "answers and dismisses questions, rejects busy submissions and cancels host work explicitly"
       (fn [workspace]
-        (let root ($fs/real_path workspace))
-        (let script $"${root}/responses.gene")
-        ($fs/write_text script ($to_str ["(Outcome ^^done ^reply \"chat\")"]))
-        (let stdin (pipe))
-        (let lines ($channel ^capacity 128))
-        (let stopped ($cell false))
-        (let process ($os/exec_stream_async ($os/executable_path)
-          "run" (package_path "src/main.gene") "chat" "--script" script
-          "--workspace" $"${root}/workspace" ^stdin_pipe stdin/0
-          ^stdout_chan lines ^timeout_ms 45000 ^max_bytes 1048576))
+        (let host
+          (start_host ^script ["(Outcome ^questions [{^id \"name\" ^prompt \"Name?\"}])" "(Outcome ^^done ^reply \"answered\")" "(Outcome ^questions [{^id \"ok\" ^prompt \"Continue?\" ^kind \"confirm\"}])" "(Outcome ^^done ^reply \"dismissed\")" "($sleep 5000) (Outcome ^^done ^reply \"slow\")" "(Outcome ^^done ^reply \"other\")"]
+            $"${workspace}/host"))
         (try
-          (scope
-            (let writer (spawn ^lane root
-              (do
-                (await (write_all stdin/1 ($binary/from_str
-                  "/repl\n(var retained 42) ($fs/write_text \"pid\" ($to_str ($os/process_id)))\n(fn spin [] ($fs/write_text \"entered\" \"yes\") (while true nil))\n(spin)\n")))
-                (let ready (+ ($os/monotonic_ms) 30000))
-                (while (&& (! ($fs/exists? $"${root}/workspace/entered")) (< ($os/monotonic_ms) ready))
-                  ($sleep 1))
-                ($assert ($fs/exists? $"${root}/workspace/entered") "CLI REPL did not enter evaluation")
-                (let pid ($str/trim ($fs/read_text $"${root}/workspace/pid")))
-                (let signal (await ($os/exec_async "/bin/kill" "-INT" pid)))
-                ($assert (== signal/status 0))
-                (let due (+ ($os/monotonic_ms) 10000))
-                (while (&& (! stopped/.get) (< ($os/monotonic_ms) due)) ($sleep 1))
-                ($assert stopped/.get "SIGINT did not cancel the REPL input")
-                (await (write_all stdin/1 ($binary/from_str "retained\nexit\n")))
-                stdin/1/.IoResource:close)))
-            (let output [])
-            (try
-              (loop
-                (let line lines/.recv)
-                (output .push line)
-                (if ($str/contains? line "Stopped.") (stopped .set true)))
-              catch ChannelClosed nil)
-            (let result (await process))
-            (await writer)
-            (let text ($str/join output "\n"))
-            ($assert (== result/status 0) $"exit ${result/status}; timed out ${result/timed_out}\n${text}\n${result/stderr}")
-            ($assert ($str/contains? text "/repl retained\n42") text))
-        ensure (if_not process/.done? process/.cancel process/.join)))))
+          (let session ((Path "id") (cli host/root ["sessions" "create"])))
+          (let other ((Path "id") (cli host/root ["sessions" "create"])))
+          (let waiting (cli ^expected 2 host/root ["--session" session "send" "--wait" "ask"]))
+          (let resumed
+            (cli
+              host/root
+              [
+                "--session"
+                session
+                "answer"
+                "--batch"
+                waiting/questions/id
+                "--answers"
+                "{\"name\":\"Gene\"}"]))
+          ($assert
+            (== ((Path "reply") (cli host/root ["--session" session "wait" resumed/id])) "answered")
+            "answer did not resume")
+          (let question
+            (cli ^expected 2 host/root ["--session" session "send" "--wait" "ask again"]))
+          (let dismissed
+            (cli host/root ["--session" session "dismiss" "--batch" question/questions/id]))
+          ($assert
+            (==
+              ((Path "reply") (cli host/root ["--session" session "wait" dismissed/id]))
+              "dismissed")
+            "dismiss did not resume")
+          (let slow (cli host/root ["--session" session "send" "slow"]))
+          ($assert
+            (==
+              ((Path "code") (cli ^expected 1 host/root ["--session" session "send" "collision"]))
+              "busy")
+            "busy session accepted another round")
+          ($assert
+            (==
+              ((Path "reply") (cli host/root ["--session" other "send" "--wait" "parallel"]))
+              "other")
+            "other session was blocked")
+          ($assert
+            (== ((Path "code") (cli ^expected 1 host/root ["stop"])) "confirmation_required")
+            "stop skipped confirmation")
+          (cli host/root ["--session" session "cancel" "--round" slow/id])
+          ($assert
+            (==
+              ((Path "state") (cli ^expected 1 host/root ["--session" session "wait" slow/id]))
+              "cancelled")
+            "round did not cancel")
+          (let command (cli host/root ["--session" session "run" "($sleep 5000) 42" "--no-wait"]))
+          ($assert
+            (==
+              ((Path "code")
+                (cli ^expected 1
+                  host/root
+                  ["--session" session "wait" "--command" command/id "--timeout-ms" "10"]))
+              "wait_timeout")
+            "wait did not time out locally")
+          ($assert
+            (==
+              ((Path "status")
+                (cli host/root ["--session" session "receipt" "--command" command/id]))
+              "running")
+            "ending a wait cancelled command")
+          (cli host/root ["--session" session "cancel" "--command" command/id])
+          ($assert
+            (==
+              ((Path "status")
+                (cli ^expected 1 host/root ["--session" session "wait" "--command" command/id]))
+              "cancelled")
+            "command did not cancel")
+          (let definition $"${host/root}/trigger.gene")
+          ($fs/write_text
+            definition
+            ($serde/write_data {^id "check" ^kind "heartbeat" ^every_ms 60000 ^request "check"}))
+          (cli host/root ["triggers" "create" definition])
+          ($assert
+            (== (((Path "triggers") (cli host/root ["triggers" "list"])) .size) 1)
+            "trigger missing")
+          (cli host/root ["triggers" "occurrences" "check"])
+          (cli host/root ["triggers" "occurrences"])
+          (cli host/root ["triggers" "delete" "check"])
+        ensure
+          (stop_host host))))))
 
-  (it "routes persistent and multiline REPL inputs and returns to chat after exit" []
-    (isolated this_mod/.path "routes persistent and multiline REPL inputs and returns to chat after exit"
+(describe
+  "Harness host lifecycle"
+  (it
+    "remembers ports and credentials across fresh starts and announces only remembered-port fallback"
+    []
+    (isolated
+      this_mod/.path
+      "remembers ports and credentials across fresh starts and announces only remembered-port fallback"
       (fn [workspace]
-        (let root ($fs/real_path workspace))
-        (let script $"${root}/responses.gene")
-        ($fs/write_text script ($to_str ["(Outcome ^^done ^reply \"chat resumed\")"]))
-        (let input (pipe))
-        (let lines ($channel ^capacity 128))
-        (let process ($os/exec_stream_async ($os/executable_path) "run" (package_path "src/main.gene")
-          "chat" "--script" script "--workspace" $"${root}/workspace"
-          ^stdin_pipe input/0 ^stdout_chan lines ^timeout_ms 45000 ^max_bytes 1048576))
+        (let host (start_host ^!offline $"${workspace}/host"))
+        (let first host/connection)
+        (let token ($fs/read_text $"${host/root}/.gene-harness/web_secret"))
+        (let credentials ((Path "credentials") (connect host/root)))
+        ($assert
+          (== ((Path "profile") (cli host/root ["status"])) "web")
+          "production profile is not web")
+        ($assert (== ((Path "status") (stop_host host)) 0))
+        ($assert
+          (! ($fs/exists? $"${host/root}/.gene-harness/connection"))
+          "stop left a ready descriptor")
+        ($assert (! ($fs/exists? $"${host/root}/.gene-harness/link")) "stop left an active link")
+        (let restarted (start_host host/root))
         (try
-          (await (write_all input/1 ($binary/from_str
-            "/repl\n(var count 40)\n(do\n (+ count 2))\n/help\nexit\nhello\n")))
-          input/1/.IoResource:close
-          (let output [])
-          (try (loop (output .push lines/.recv)) catch ChannelClosed nil)
-          (let result (await process))
-          (let text ($str/join output "\n"))
-          ($assert (== result/status 0) result/stderr)
-          ($assert ($str/contains? text "default gene> ") text)
-          ($assert ($str/contains? text "42") text)
-          ($assert ($str/contains? text "Path") text)
-          ($assert ($str/contains? text "chat resumed") text)
-        ensure (if_not process/.done? process/.cancel process/.join)))))
-
-  (it "keeps stdin responsive and supports multiline run, cancel and stop commands" []
-    (isolated this_mod/.path "keeps stdin responsive and supports multiline run, cancel and stop commands"
-      (fn [workspace]
-        (let directory ($fs/real_path workspace))
-        (let gene_binary ($os/executable_path))
-        (let entry (package_path "src/main.gene"))
-        (let script ($path/join directory "responses.gene"))
-        ($fs/write_text
-          script
-          ($to_str
-            [
-              """# slow
-($println "response console visible") ($sleep 5000) (Outcome ^^done ^reply "should not finish")"""]))
-        (let stdin (pipe))
-        (let lines ($channel ^capacity 128))
-        (let console_seen ($cell false))
-        (let process
-          ($os/exec_stream_async gene_binary "run" entry "scripted" "--script" script "--workspace" ($path/join directory "workspace") ^stdin_pipe stdin/0 ^stdout_chan lines ^timeout_ms 30000 ^max_bytes 1048576))
-        (scope
-          (let writer
-            (spawn ^lane root (do
-              (await (write_all stdin/1 ($binary/from_list (($str/to_utf8 "slow\n") .to_list))))
-              (let deadline (+ ($os/monotonic_ms) 20000))
-              (while (&& (! console_seen/.get) (< ($os/monotonic_ms) deadline)) ($sleep 5))
-              (await (write_all stdin/1 ($binary/from_list (($str/to_utf8 "/run (+ 2\n  3)\n") .to_list))))
-              ($sleep 150)
-              (await (write_all stdin/1 ($binary/from_list (($str/to_utf8 "/cancel\n") .to_list))))
-              ($sleep 150)
-              (await (write_all stdin/1 ($binary/from_list (($str/to_utf8 "/stop\n") .to_list))))
-              stdin/1/.IoResource:close)))
-          (let output [])
+          ($assert (== restarted/connection/port first/port) "fresh start changed port")
+          ($assert (!= restarted/connection/epoch first/epoch) "restart reused instance")
+          ($assert
+            (==
+              ((Path "status")
+                (wire ^credentials credentials restarted/connection "GET" "/status?ui=default"))
+              200)
+            "restart expired client credentials")
+          (let other (start_host $"${workspace}/other"))
           (try
-            (loop
-              (let line lines/.recv)
-              (output .push line)
-              (if ($str/contains? line "response console visible") (console_seen .set true)))
-          catch ChannelClosed
-            nil)
-          (let result (await process))
-          (let text
+            ($assert (!= other/connection/port first/port) "workspaces shared a live port")
+          ensure
+            (stop_host other))
+          (let rejected (launch_host ^port first/port $"${workspace}/rejected"))
+          (let failure (await rejected/process))
+          ($assert (!= failure/status 0) "explicit port silently fell back")
+          ($assert
+            ($str/contains? failure/stdout "address_in_use")
+            "bind error lacks structured reason")
+          (let lock (acquire_workspace_lock rejected/root "verify cleanup"))
+          (close_workspace_lock lock)
+        ensure
+          (stop_host restarted))
+        (let blocker (listen ^host "127.0.0.1" ^port first/port))
+        (try
+          (let strict (launch_host ^restart_port first/port $"${workspace}/strict-restart"))
+          ($assert
+            (!= ((Path "status") (await strict/process)) 0)
+            "supervised port collision silently fell back")
+          (let moved (start_host host/root))
+          (try
+            ($assert
+              (!= moved/connection/port first/port)
+              "occupied remembered port did not fall back")
+            ($assert
+              (== token ($fs/read_text $"${host/root}/.gene-harness/web_secret"))
+              "fallback reset owner credential")
+          ensure
+            (let result (stop_host moved))
+            ($assert ($str/contains? result/stdout "address changed") "fallback was silent"))
+        ensure
+          (stop blocker)))))
+  (it
+    "restarts under supervision on the same port with the same credentials"
+    []
+    (isolated
+      this_mod/.path
+      "restarts under supervision on the same port with the same credentials"
+      (fn [workspace]
+        (let host (start_host ^^supervised $"${workspace}/host"))
+        (try
+          (let first host/connection)
+          (let credentials ((Path "credentials") (connect host/root)))
+          (let result (cli host/root ["restart"]))
+          ($assert result/restart "launcher did not supervise restart")
+          (let second (ready_host ^previous first/epoch host))
+          ($assert (== second/port first/port) "supervised restart changed port")
+          ($assert
+            (==
+              ((Path "status") (wire ^credentials credentials second "GET" "/status?ui=default"))
+              200)
+            "supervised restart revoked cookie")
+        ensure
+          (stop_host host))))))
+
+(describe
+  "Harness connection recovery"
+  (it
+    "revokes browser streams while retaining work and enforcing browser request checks"
+    []
+    (isolated
+      this_mod/.path
+      "revokes browser streams while retaining work and enforcing browser request checks"
+      (fn [workspace]
+        (let host (start_host $"${workspace}/host"))
+        (var socket nil)
+        (var reader nil)
+        (try
+          (let client (connect host/root))
+          (let session ((Path "id") (api client "POST" "/sessions" {})))
+          ($assert
+            (== ((Path "status") (wire host/connection "GET" "/sessions")) 401)
+            "unauthenticated workspace read succeeded")
+          (let wrong {^cookie client/credentials/cookie ^csrf "wrong"})
+          ($assert
+            (==
+              ((Path "status") (wire ^credentials wrong host/connection "POST" "/sessions" {}))
+              403)
+            "CSRF check was bypassed")
+          (for headers in [{^origin "http://other.invalid" ^cookie client/credentials/cookie ^x-csrf-token client/credentials/csrf} {^origin host/connection/origin ^host "other.invalid" ^cookie client/credentials/cookie ^x-csrf-token client/credentials/csrf}]
+            (let denied
+              (await
+                (request ^method "POST" ^url $"${host/connection/origin}/api/v6/sessions" ^headers headers ^body "{}" ^timeout_ms 5000)))
+            ($assert (== denied/status 403) "Host or Origin validation was bypassed"))
+          (let descriptor_path $"${host/root}/.gene-harness/connection")
+          (let saved ($fs/read_text descriptor_path))
+          (try
+            (for change in [{^protocol 999} {^epoch "stale-instance"}]
+              (let descriptor ($serde/read_data saved))
+              (for [key value] in change
+                (descriptor .put key value))
+              ($fs/write_text descriptor_path ($serde/write_data descriptor))
+              ($assert
+                (== ((Path "code") (cli ^expected 1 host/root ["status"])) "connection_mismatch")
+                "CLI accepted stale or incompatible metadata"))
+          ensure
+            ($fs/write_text descriptor_path saved))
+          (set socket (await (tcp_connect "127.0.0.1" host/connection/port)))
+          (let header
             ($str/join
-              output
-              """
-"""))
-          ($assert (== result/status 0) $"interactive CLI failed: ${result/stderr}")
-          ($assert ($str/contains? text "5") "CLI did not run a command while the round slept")
-          ($assert ($str/contains? text "response console visible") $"CLI did not print response console output: ${text}")
-          ($assert ($str/contains? text "Stopped.") "CLI did not cancel the running round")
+              [$"GET /api/v6/events?ui=default&session=${session} HTTP/1.1"
+               $"Host: 127.0.0.1:${host/connection/port}"
+               $"Origin: ${host/connection/origin}"
+               $"Cookie: ${client/credentials/cookie}"
+               "Upgrade: websocket" "Connection: Upgrade" "Sec-WebSocket-Version: 13"
+               "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" "" ""]
+              "\r\n"))
+          (await (write_all socket ($binary/from_str header)))
+          (var response "")
+          (while (! ($str/ends_with? response "\r\n\r\n"))
+            (let byte (await (socket .AsyncReader:read 1)))
+            ($assert (! ($absent? byte)) "socket closed before upgrade")
+            (set response ($to_str response ($binary/to_str byte))))
+          ($assert ($str/starts_with? response "HTTP/1.1 101") "browser socket did not upgrade")
+          (set reader
+            (spawn ^lane root (loop (let bytes (await (socket .AsyncReader:read 65536))) (if ($absent? bytes) (return true)))))
+          (cli host/root ["auth" "reset"])
+          (let due (+ ($os/monotonic_ms) 3000))
+          (while (&& (! reader/.done?) (< ($os/monotonic_ms) due))
+            ($sleep 10))
+          ($assert reader/.done? "credential reset left an authenticated stream open")
+          (for name in ["web_secret" "web_sessions" "link"]
+            ($assert
+              (== ((Path "mode") ($fs/info $"${host/root}/.gene-harness/${name}")) 384)
+              "credential file is not owner-only"))
+          (cli host/root ["status"])
           ($assert
-            (! ($str/contains? text "should not finish"))
-            "round finished before cancellation could be read")
-          (await writer)
-          ($println "async CLI: stdin remains responsive during evaluation, run/cancel/stop work"))))))
-
-(describe "Harness shutdown"
-  (it "stops within the grace period and restores the cancelled receipt" []
-    (isolated this_mod/.path "stops within the grace period and restores the cancelled receipt"
-      (fn [workspace]
-        ($fs/make_dir workspace)
-        (let root ($fs/real_path workspace))
-        (let entry (package_path "src/main.gene"))
-        (let script $"${root}/responses.gene")
-        ($fs/write_text script ($to_str [
-          "(try (do ($fs/write_text \"entered\" \"yes\") (while true ($sleep 10))) ensure (do (var i 0) (while true (set i (+ i 1)))))"]))
-        (let input (pipe))
-        (let lines ($channel ^capacity 128))
-        (let process ($os/exec_stream_async ($os/executable_path)
-          "run" entry "scripted" "--script" script "--workspace" $"${root}/workspace"
-          ^stdin_pipe input/0 ^stdout_chan lines ^timeout_ms 45000 ^max_bytes 1048576))
-        (await (write_all input/1 ($binary/from_str "start\n")))
-        (let due (+ ($os/monotonic_ms) 30000))
-        (while (&& (! ($fs/exists? $"${root}/workspace/entered")) (< ($os/monotonic_ms) due))
-          ($sleep 1))
-        ($assert ($fs/exists? $"${root}/workspace/entered") "round did not enter its uncooperative cleanup fixture")
-        (let before ($os/monotonic_ms))
-        (await (write_all input/1 ($binary/from_str "/stop\n")))
-        input/1/.IoResource:close
-        (let result (await process))
-        (let elapsed (- ($os/monotonic_ms) before))
-        ($assert (== result/status 0) $"stop did not exit zero: ${result}")
-        ($assert (< elapsed 6500) $"shutdown exceeded its five-second grace: ${elapsed} ms")
-        ($assert (>= elapsed 4500) "fixture did not exercise the shutdown grace deadline")
-        (let reopened (open_session_service ^workspace $"${root}/workspace" ^^offline))
-        (try
-          (let records (list_sessions reopened/sessions))
-          ($assert (== records/0/status "cancelled") "forced shutdown replayed or interrupted a cancelled round")
-          ($println $"shutdown grace: stopped after ${elapsed} ms, released lock, restored cancelled receipt")
-        ensure (close_session_service reopened)))))
-
-  (it "refuses new rounds, preserves questions and releases the lock before restart" []
-    (isolated this_mod/.path "refuses new rounds, preserves questions and releases the lock before restart"
-      (fn [workspace]
-        (let runtime (open_runtime workspace "default" (baseline_profile)))
-        (let controller
-          (test_controller
-            runtime
-            (fn [request]
-              (if (== request/session "other")
-                (do
-                  ($sleep 5000)
-                  "(Outcome ^^done ^reply \"later\")")
-                "(Outcome ^questions [{^id \"name\" ^prompt \"Name?\"}])"))))
-        (let root runtime/root)
-        (try
-          (create_session ^id "other" runtime/sessions)
-          (create_session ^id "waiting" runtime/sessions)
-          (submit_round controller "waiting" "q" 1 "ask")
-          (controller/watchers
-            .get
-            ; .get "waiting"
-            ; .join)
-          (submit_round controller "other" "slow" 1 "wait")
-          (let stop (submit_command runtime/commands "default" "/stop"))
-          (runtime/commands/watchers
-            .get
-            ; .get $"default:${stop/id}"
-            ; .join)
-          (let refused (command_receipt runtime/commands "default" stop/id))
-          ($assert
-            (== refused/error_code "confirmation_required")
-            "stop did not require other-session confirmation")
-          ($assert (! runtime/stopping/.get) "stop acted before confirmation")
-          (let confirmed (submit_command runtime/commands "default" "/stop --confirm"))
-          (runtime/commands/watchers
-            .get
-            ; .get $"default:${confirmed/id}"
-            ; .join)
-          ($assert runtime/stopping/.get "confirmed stop did not stop admissions")
-          ($assert
-            (try
-              (submit_round controller "default" "late" 1 "no")
-              false
-            catch Any
-              true)
-            "stopping runtime admitted another round")
-          ($println "stop: other-session confirmation, admission refusal and durable waiting questions")
+            (== ((Path "mode") ($fs/info $"${host/root}/.gene-harness/cli_cookie")) 384)
+            "CLI cookie is not owner-only")
         ensure
-          (close_round_controller controller)
-          (close_runtime runtime))
-        (let reopened (open_runtime root "default" (baseline_profile)))
+          (if_not ($absent? socket) socket/.IoResource:close)
+          (if_not ($absent? reader)
+            reader/.cancel
+            reader/.join)
+          (stop_host host)))))
+  (it
+    "cleans up failed startup and preserves offline repair and credential reset"
+    []
+    (isolated
+      this_mod/.path
+      "cleans up failed startup and preserves offline repair and credential reset"
+      (fn [workspace]
+        (let host (start_host $"${workspace}/host"))
+        (let port host/connection/port)
+        (let secret ($fs/read_text $"${host/root}/.gene-harness/web_secret"))
+        (stop_host host)
+        (let config_path $"${host/root}/.gene-harness/config.gene")
+        (let original ($fs/read_text config_path))
+        ($fs/write_text config_path "broken(")
+        (let broken (launch_host host/root))
+        ($assert (!= ((Path "status") (await broken/process)) 0) "invalid configuration started")
+        ($assert
+          (! ($fs/exists? $"${host/root}/.gene-harness/connection"))
+          "failed startup advertised ready")
+        (let listener (listen ^host "127.0.0.1" ^port port))
+        (stop listener)
+        (let lock (acquire_workspace_lock host/root "failed-start check"))
+        (close_workspace_lock lock)
+        ($fs/write_text config_path original)
+        (cli host/root ["doctor"])
+        (cli host/root ["disable" "gene_reference"])
+        (cli host/root ["enable" "gene_reference"])
+        (cli host/root ["disable" "gene_reference"])
+        (cli host/root ["restore" "gene_reference"])
+        ($fs/write_text $"${host/root}/.gene-harness/web_secret" "damaged")
+        ($fs/write_text $"${host/root}/.gene-harness/web_sessions" "damaged(")
+        (cli host/root ["auth" "reset"])
+        ($assert
+          (!= secret ($fs/read_text $"${host/root}/.gene-harness/web_secret"))
+          "offline reset retained token")
+        ($assert
+          (== ((Path "code") (cli ^expected 1 host/root ["link"])) "unavailable")
+          "link advertised a stopped host")
+        (let resumed (start_host host/root))
         (try
-          (let waiting (load_session reopened/sessions "waiting"))
-          (let round waiting/round/.get)
-          ($assert (== round/state "waiting") "stop discarded pending questions")
-          ($println "stop: workspace lock released and pending questions survive reopen")
+          (cli resumed/root ["sessions"])
         ensure
-          (close_runtime reopened))
-        (let entry (package_path "src/main.gene"))
-        (let direct (await ($os/exec_async ($os/executable_path)
-          "run" entry "chat" "/restart" "--workspace" $"${root}/direct" ^timeout_ms 30000)))
-        ($assert (== direct/status 0) $"direct restart did not exit normally: ${direct/stderr}")
-        ($assert ($str/contains? direct/stdout "Direct gene run cannot restart") "direct restart omitted its terminal instruction")
-        ($println "restart: direct invocation stops normally and explains terminal restart")))))
+          (stop_host resumed))))))
 
-(fn main [args] : Int (run_spec args))
+(describe
+  "Harness durable interruption"
+  (it
+    "recovers crashed rounds and commands without replaying uncertain submissions"
+    []
+    (isolated
+      this_mod/.path
+      "recovers crashed rounds and commands without replaying uncertain submissions"
+      (fn [workspace]
+        (let response "($fs/write_text \"round-entered\" \"yes\") ($sleep 60000) (Outcome ^^done ^reply \"never\")")
+        (var host (start_host ^script [response] $"${workspace}/host"))
+        (try
+          (let session ((Path "id") (cli host/root ["sessions" "create"])))
+          (let round (cli host/root ["--session" session "send" "long work"]))
+          (let code "($fs/write_text \"command-count\" ($to_str (+ 1 (if ($fs/exists? \"command-count\") ($parse/parse_int ($fs/read_text \"command-count\")) 0)))) ($sleep 60000) 42")
+          (let command
+            (cli
+              host/root
+              ["--session" session "run" code "--no-wait" "--request-id" "held" "--sequence" "1"]))
+          (let due (+ ($os/monotonic_ms) 5000))
+          (while (&& (|| (! ($fs/exists? $"${host/root}/round-entered")) (! ($fs/exists? $"${host/root}/command-count"))) (< ($os/monotonic_ms) due))
+            ($sleep 10))
+          ($assert ($fs/exists? $"${host/root}/command-count") "command did not start")
+          (let client (connect host/root))
+          (try
+            (api
+              client
+              "POST"
+              (session_path session "/commands")
+              {^text "/run ($os/exit 17)" ^request_id "crash" ^submission_seq "2"})
+          catch Any
+            nil)
+          ($assert (== ((Path "status") (await host/process)) 17) "fixture did not crash the host")
+          ($assert
+            (== ((Path "code") (cli ^expected 1 host/root ["link"])) "unavailable")
+            "stale descriptor was treated as live")
+          (set host (start_host ^script [response] host/root))
+          ($assert
+            (==
+              ((Path "state") (cli ^expected 1 host/root ["--session" session "receipt" round/id]))
+              "interrupted")
+            "round was not interrupted")
+          ($assert
+            (==
+              ((Path "status")
+                (cli ^expected 1 host/root ["--session" session "receipt" "--command" command/id]))
+              "interrupted")
+            "command was left running forever")
+          (let retry
+            (cli ^expected 1
+              host/root
+              ["--session" session "run" code "--request-id" "held" "--sequence" "1"]))
+          ($assert (== retry/id command/id) "uncertain command was re-admitted")
+          ($assert
+            (== ($fs/read_text $"${host/root}/command-count") "1")
+            "crash recovery repeated command side effect")
+        ensure
+          (stop_host host))))))
+
+(describe
+  "Harness shutdown grace"
+  (it
+    "bounds uncooperative cleanup and preserves cancelled receipts and waiting questions"
+    []
+    (isolated
+      this_mod/.path
+      "bounds uncooperative cleanup and preserves cancelled receipts and waiting questions"
+      (fn [workspace]
+        (var host
+          (start_host ^script ["(Outcome ^questions [{^id \"name\" ^prompt \"Name?\"}])" "(try (do ($fs/write_text \"entered\" \"yes\") (while true ($sleep 10))) ensure (do (var i 0) (while true (set i (+ i 1)))))"]
+            $"${workspace}/host"))
+        (try
+          (let waiting_session ((Path "id") (cli host/root ["sessions" "create"])))
+          (let busy_session ((Path "id") (cli host/root ["sessions" "create"])))
+          (let waiting
+            (cli ^expected 2 host/root ["--session" waiting_session "send" "--wait" "ask"]))
+          (let busy (cli host/root ["--session" busy_session "send" "spin"]))
+          (let due (+ ($os/monotonic_ms) 5000))
+          (while (&& (! ($fs/exists? $"${host/root}/entered")) (< ($os/monotonic_ms) due))
+            ($sleep 10))
+          ($assert ($fs/exists? $"${host/root}/entered") "cleanup fixture did not start")
+          (let before ($os/monotonic_ms))
+          (try
+            (api (connect host/root) "POST" "/control" {^action "stop" ^^confirm})
+          catch Any
+            nil)
+          ($assert
+            (== ((Path "status") (await host/process)) 0)
+            "shutdown watchdog returned failure")
+          (let elapsed (- ($os/monotonic_ms) before))
+          ($assert (&& (>= elapsed 4500) (< elapsed 7500)) $"shutdown grace took ${elapsed} ms")
+          (set host (start_host host/root))
+          ($assert
+            (==
+              ((Path "state")
+                (cli ^expected 1 host/root ["--session" busy_session "receipt" busy/id]))
+              "cancelled")
+            "shutdown lost cancelled receipt")
+          (let pending (cli ^expected 2 host/root ["--session" waiting_session "status"]))
+          ($assert
+            (== pending/questions/id waiting/questions/id)
+            "shutdown lost pending question batch")
+        ensure
+          (stop_host host))))))
+
+(fn main [args] : Int
+  (run_spec args))

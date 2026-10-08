@@ -233,7 +233,6 @@ line two"""
 # depend on external capabilities.
 
 (fn main []
-  (var users
-    [(make_user ^roles ["reader"] " Ada ") (make_user ^roles ["writer"] ^!active "Grace")])
+  (var users [(make_user ^roles ["reader"] " Ada ") (make_user ^roles ["writer"] ^!active "Grace")])
   ($println (join (active_names users) ", "))
   nil)

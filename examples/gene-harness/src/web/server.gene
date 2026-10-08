@@ -12,6 +12,8 @@
     cancel
     answer
     command
+    operator_receipt
+    request_receipt
     cancel_operator_command
     host_status
     edit_session
@@ -19,24 +21,27 @@
     RoundError])
 (import ^from "./page" [page])
 (import ^from "../kernel" [row])
-(import [ui_status UiError] ^from "../ui/state")
-(import [ui_render] ^from "../ui/views")
-(import [ui_action ui_action_receipt] ^from "../ui/actions")
+(import ^from "../ui/state" [ui_status UiError])
+(import ^from "../ui/views" [ui_render])
+(import ^from "../ui/actions" [ui_action ui_action_receipt])
 (import ^from "./contract" [error_status])
-(import ^from "./push" [new_push_hub add_peer remove_peer expire_peers broadcast])
+(import ^from "./push" [new_push_hub add_peer remove_peer expire_peers disconnect_peers broadcast])
 (import ^from "../website/page" [website_page])
 (import ^from "../runtime/sessions" [unload_idle_sessions SessionError])
 (import ^from "../runtime/commands" [CommandError])
-(import [submit_mode_input close_mode expire_modes ModeError] ^from "../runtime/input_modes")
+(import ^from "../runtime/round_controller" [request_stop submit_round])
+(import ^from "../runtime/bootstrap" [prepare_workspace_root])
+(import ^from "../runtime/workspace_lock" [acquire_workspace_lock close_workspace_lock])
+(import ^from "../runtime/input_modes" [submit_mode_input close_mode expire_modes ModeError])
 (import ^from "../runtime/questions" [QuestionError])
 (import ^from "../runtime/triggers"
   [list_triggers create_trigger delete_trigger list_occurrences TriggerError])
 (import ^from "../profiles/scripted" [scripted_profile])
 (import ^from "../profiles/offline" [offline_profile])
-(import $net/http [listen serve stop html json redirect ws_accept])
-(import ^from "./auth" [open_auth create_cookie authenticate])
-(import $crypto [random_hex])
-(import $os [get_env monotonic_ms])
+(import $net/http [serve stop html json redirect ws_accept ws_close])
+(import ^from "./auth" [open_auth exchange authenticate reset_auth AuthError])
+(import ^from "./connection" [bind_workspace publish_connection publish_link clear_connection])
+(import $os [get_env])
 
 # The informational page is static for the life of the server.
 (var about_page (website_page ^mode "embedded"))
@@ -97,7 +102,11 @@
   (var args [])
   (for arg in argv (args .push ($to_str arg)))
   (var offline (== (get_env "GENE_HARNESS_OFFLINE" "") "1"))
-  (var port ($parse/parse_int (get_env "GENE_HARNESS_PORT" "8095")))
+  (var port nil)
+  (let configured_port (get_env "GENE_HARNESS_PORT" ""))
+  (if (!= configured_port "") (set port ($parse/parse_int configured_port)))
+  (var restart_port nil)
+  (var supervised false)
   (var workspace "")
   (var script_file "")
   (var i 0)
@@ -105,19 +114,21 @@
     (var arg args/%i)
     (if (== arg "--offline")
       (then (set offline true))
+      (elif (== arg "--supervised") (set supervised true))
       (elif (&& (== arg "--port") (< (+ i 1) args/.size))
         (set i (+ i 1))
         (set port ($parse/parse_int args/%i)))
       (elif (&& (== arg "--workspace") (< (+ i 1) args/.size))
         (set i (+ i 1))
         (set workspace args/%i))
+      (elif (&& (== arg "--restart-port") (< (+ i 1) args/.size))
+        (set i (+ i 1))
+        (set restart_port ($parse/parse_int args/%i)))
       (elif (&& (== arg "--script") (< (+ i 1) args/.size))
         (set i (+ i 1))
         (set script_file args/%i))
       (else (fail_request "invalid_request" $"Unknown server option ${arg}.")))
     (set i (+ i 1)))
-  (if (|| (< port 1024) (> port 65535))
-    (fail_request "invalid_request" "Choose a port between 1024 and 65535."))
   (var selected_profile nil)
   (if_yes (!= script_file "")
     (set selected_profile
@@ -125,21 +136,30 @@
     (set offline true))
   (if (&& offline ($absent? selected_profile))
     (set selected_profile (offline_profile)))
-  (var host (open_session_service ^workspace workspace ^offline offline
-    ^profile selected_profile))
+  (let root (prepare_workspace_root ^root workspace))
+  (let ownership (acquire_workspace_lock root this_mod/.path))
+  (var server nil)
+  (var host nil)
+  (var connection nil)
+  (try
+  (clear_connection root "")
+  (set server (bind_workspace $"${root}/.gene-harness" ^port port ^restart_port restart_port))
+  (set port server/port)
+  (set host (open_session_service ^workspace root ^offline offline
+    ^profile selected_profile ^ownership ownership))
+  (set host/runtime/listen_port port)
+  (set host/runtime/supervised supervised)
   (var origin $"http://127.0.0.1:${port}")
   (var authority $"127.0.0.1:${port}")
   # Distinct names prevent local servers from overwriting each other's cookies.
   (var cookie_name $"gene_harness_session_${port}")
-  (var bootstrap ($cell (random_hex 32)))
-  (var bootstrap_until (+ (monotonic_ms) 600000))
   (let auth (open_auth host/runtime/state_root))
   (var push (new_push_hub host))
 
   (fn authorized [request]
     (var value (cookie_value (?? request/headers/cookie "") cookie_name))
     (try (authenticate auth value)
-      catch Any (fail_request "unauthorized" "Open the connection link printed by the local Harness server.")))
+      catch AuthError (fail_request "unauthorized" $err/message)))
 
   (fn handle [request]
     (if (!= (?? request/headers/host "") authority)
@@ -161,24 +181,39 @@
       (return (redirect "/about/")))
     (if_yes (&& (== request/method "GET") (== request/path "/about/"))
       (return (html about_page)))
+    (if_yes (&& (== request/method "GET") (== request/path "/api/v6/connection"))
+      (return (response 200 connection)))
     (if_yes (&& (== request/method "POST") (== request/path "/api/v6/auth/exchange"))
       (var data (request_data request))
       (var token (field data "token"))
-      (if (|| (== bootstrap/.get "") (!= token bootstrap/.get)
-              (> (monotonic_ms) bootstrap_until))
-        (fail_request "unauthorized" "This connection link has expired or was already used. Restart the server for a new link."))
-      (bootstrap .set "")
-      (let browser (create_cookie auth))
+      (let browser (exchange auth token
+        ^cookie (cookie_value (?? request/headers/cookie "") cookie_name)))
       (let cookie browser/cookie)
       (let csrf browser/csrf)
       (var result (response 200 {^csrf csrf}))
       (result/headers .put "set-cookie"
-        $"${cookie_name}=${cookie}; Path=/; HttpOnly; SameSite=Strict; Max-Age=28800")
+        $"${cookie_name}=${cookie}; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000")
       (return result))
     (var browser (authorized request))
     (if_yes (!= request/method "GET")
       (if (!= (?? request/headers/x-csrf-token "") browser/csrf)
         (fail_request "forbidden" "Refresh this page before making a change.")))
+    (if_yes (&& (!= request/method "GET") host/runtime/stopping/.get)
+      (fail_request "stopped" "The workspace is stopping."))
+    (if_yes (&& (== request/method "POST") (== request/path "/api/v6/auth/reset"))
+      (reset_auth auth)
+      (disconnect_peers push)
+      (publish_link host/runtime/state_root origin auth/secret)
+      (return (response 200 {^^ok ^message "Owner credential reset. Use gene-harness link to reconnect."})))
+    (if_yes (&& (== request/method "POST") (== request/path "/api/v6/control"))
+      (let data (request_data request))
+      (let action (field data "action"))
+      (if_not (["stop" "restart"] .contains? action)
+        (fail_request "invalid_request" "Expected stop or restart."))
+      (request_stop host/controller (field data "session" ^default "")
+        (if (== action "restart") 75 0) (== data/confirm true))
+      (return (response 200 {^^ok ^restart (== host/runtime/exit_code/.get 75)
+        ^message (if (== host/runtime/exit_code/.get 75) "Restarting." "Stopped.")})))
     (if_yes (&& (== request/method "GET") (== request/path "/api/v6/status"))
       (var result (host_status ^safe safe ^session (field request/params "session" ^default "") host))
       (result .put "csrf" browser/csrf)
@@ -188,7 +223,10 @@
       (var watched (field request/params "session" ^default ""))
       (if (> ($str/byte_size watched) 128) (fail_request "invalid_request" "Invalid session."))
       (return (ws_accept request
-        ^on_open (fn [connection] (add_peer ^safe safe push connection watched (+ (monotonic_ms) ($math/max 0 (- browser/expires ($os/wall_ms))))))
+        ^on_open (fn [connection]
+          (if (== browser/generation ($crypto/sha256 auth/secret))
+            (add_peer ^safe safe push connection watched 0)
+            (ws_close connection)))
         ^on_close (fn [connection] (remove_peer push connection)))))
     (if_yes (&& (== request/path "/api/v6/ui/render") (== request/method "POST"))
       (if safe (fail_request "unavailable" "The default UI has no experimental views."))
@@ -217,7 +255,12 @@
       (if (== request/method "POST")
         (return (response 201 (create_session host
           ^title (field (request_data request) "title" ^default "New conversation"))))))
-    (var parts ($str/split request/path "/"))
+    (let parts [])
+    (for part in ($str/split request/path "/")
+      (parts .push (try ($url/decode_component part)
+        catch Any (fail_request "invalid_request" "Invalid URL path component."))))
+    (if_yes (&& (== request/path "/api/v6/trigger-occurrences") (== request/method "GET"))
+      (return (response 200 {^occurrences (list_occurrences host/runtime/triggers)})))
     (if (== request/path "/api/v6/triggers")
       (then
         (if (== request/method "GET")
@@ -244,6 +287,9 @@
           ^before (number request/params "before" ^default "-1")))))
       (if_yes (&& (== parts/.size 6) (== parts/5 "rounds") (== request/method "POST"))
         (var data (request_data request))
+        (if (== data/literal true)
+          (return (response 202 (submit_round host/controller id (field data "request_id")
+            (number data "submission_seq") (field data "text")))))
         (return (response 202 (submit host id (field data "request_id")
           (number data "submission_seq") (field data "text")))))
       (if_yes (&& (== parts/.size 6) (["questions" "answers"] .contains? parts/5) (== request/method "POST"))
@@ -252,7 +298,14 @@
           data/answers ^dismiss (== data/dismiss true)))))
       (if_yes (&& (== parts/.size 6) (== parts/5 "commands") (== request/method "POST"))
         (var data (request_data request))
-        (return (response 202 (command host id (field data "text")))))
+        (let request_id (field data "request_id" ^default ""))
+        (return (response 202 (command host id (field data "text") ^request_id request_id
+          ^sequence (if (== request_id "") nil (number data "submission_seq"))))))
+      (if_yes (&& (== parts/.size 7) (== parts/5 "commands") (== request/method "GET"))
+        (return (response 200 (operator_receipt host id parts/6))))
+      (if_yes (&& (== parts/.size 7) (== parts/5 "requests") (== request/method "GET"))
+        (return (response 200 (request_receipt host id parts/6
+          (field request/params "kind" ^default "round")))))
       (if_yes (&& (== parts/.size 7) (== parts/5 "ui") (== parts/6 "actions") (== request/method "POST"))
         (return (response 202 (ui_action host/runtime/commands id (request_data request)))))
       (if_yes (&& (== parts/.size 8) (== parts/5 "ui") (== parts/6 "actions") (== request/method "GET"))
@@ -283,6 +336,7 @@
   (fn safe_handle [request]
     (secure_response
       (try (handle request)
+        catch AuthError (response 401 {^code $err/code ^message $err/message})
         catch UiError (response (error_status $err/code) {^code $err/code ^message $err/message})
         catch ModeError (response (error_status $err/code)
           {^code $err/code ^message $err/message ^mode $err/mode})
@@ -295,15 +349,14 @@
           ($println $"Harness ${request/method} ${request/path} failed: ${$err/message}")
           (response 500 {^code "internal_error" ^message "The Harness could not complete this request. See the server output."}))))
 
-  (var server (listen ^host "127.0.0.1" ^port port))
+  (set connection (publish_connection root host/epoch port auth/secret))
   ($println "Gene Harness is ready.")
-  ($println $"Open ${origin}/#token=${bootstrap/.get}")
+  ($println $"Host: ${origin}. Use gene-harness --workspace ${root} link to connect a browser.")
   ($io/flush_stdout)
   ($println (if offline
     "Command demo mode: no model connected. Restart without --offline or GENE_HARNESS_OFFLINE=1 to chat."
     "Ask anything. Use /help for commands. Model replies are available in the transcript."))
-  (try
-    (serve server ^handler safe_handle ^max_connections 64 ^max_in_flight 16
+  (serve server ^handler safe_handle ^max_connections 64 ^max_in_flight 16
       ^max_body_bytes 400000 ^request_timeout_ms 10000
       ^tick_ms 1000
       ^on_tick (fn []
@@ -314,5 +367,14 @@
             (broadcast push {^type "stopped" ^session "" ^data {^restart restarting
               ^message (if restarting "Harness restarting…" "Harness stopped. Restart it from a terminal.")}})
             (stop server)))))
-  ensure (close_session_service host))
-  host/runtime/exit_code/.get)
+  host/runtime/exit_code/.get
+  ensure
+    (try
+      (clear_connection root (if ($absent? host) "" host/epoch))
+    ensure
+      (try
+        (if_not ($absent? server) (try (stop server) catch Any nil))
+      ensure
+        (try
+          (if_not ($absent? host) (close_session_service host))
+        ensure (close_workspace_lock ownership))))))

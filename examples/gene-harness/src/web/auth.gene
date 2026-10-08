@@ -1,5 +1,5 @@
 (mod web_auth)
-(type BrowserAuth ^props {^root Str ^secret Str ^sessions Any})
+(type BrowserAuth ^props {^root Str ^secret Str ^sessions Any ^gate Any})
 (type AuthError ^props {^code Str ^message Str} ^impl [Error])
 (impl Error for AuthError)
 (fn open_auth [root : Str]
@@ -8,24 +8,83 @@
   (let secret ($fs/read_text path))
   (if (!= ($str/byte_size secret) 64)
     (fail (AuthError ^code "invalid_secret" ^message "invalid persisted browser secret")))
+  ($fs/write_text_atomic ^^owner_only path secret)
   (let sessions
     (if ($fs/exists? $"${root}/web_sessions")
       ($serde/read_data ($fs/read_text $"${root}/web_sessions"))
       {}))
-  (BrowserAuth ^root root ^secret secret ^sessions ($cell sessions)))
-(fn create_cookie [auth : BrowserAuth]
-  (let nonce ($crypto/random_hex 32))
-  (let cookie ($crypto/sha256 $"${auth/secret}:${nonce}"))
-  (let record {^csrf ($crypto/random_hex 32) ^expires (+ ($os/wall_ms) 28800000)})
-  (auth/sessions
-    .get
-    ; .put cookie record)
+  # Upgrade still-valid browser credentials. Generation tags reject stale
+  # cookie snapshots after an explicit owner reset.
+  (let generation ($crypto/sha256 secret))
+  (let retained {})
+  (for [cookie record] in sessions
+    (if ($absent? record/generation)
+      (if_yes (> (?? record/expires 0) ($os/wall_ms))
+        (record .put "generation" generation)
+        (record .delete "expires")))
+    (if (== record/generation generation) (retained .put cookie record)))
+  ($fs/write_text_atomic ^^owner_only $"${root}/web_sessions" ($serde/write_data retained))
+  (BrowserAuth ^root root ^secret secret ^sessions ($cell retained) ^gate ($cell false)))
+
+(fn accepts_token [auth : BrowserAuth, token : Str] : Bool
+  ($crypto/secure_equal? token auth/secret))
+
+(fn issue_cookie [auth : BrowserAuth]
+  (let cookie ($crypto/random_hex 32))
+  (let record {^csrf ($crypto/random_hex 32) ^generation ($crypto/sha256 auth/secret)})
+  (auth/sessions/.get .put cookie record)
   ($fs/write_text_atomic ^^owner_only
     $"${auth/root}/web_sessions"
     ($serde/write_data auth/sessions/.get))
-  {^cookie cookie ^csrf record/csrf ^expires record/expires})
+  {^cookie cookie ^csrf record/csrf})
+
+(fn create_cookie [auth : BrowserAuth]
+  (while (auth/gate .swap true)
+    ($sleep 1))
+  (try
+    (issue_cookie auth)
+  ensure
+    (auth/gate .set false)))
+
+(fn exchange [auth : BrowserAuth, token : Str, ^cookie cookie : Str = ""]
+  (if_not (accepts_token auth token)
+    (fail (AuthError ^code "unauthorized" ^message "Use gene-harness link to retrieve the current owner connection link.")))
+  # Admission may wait behind reset; recheck under the gate.
+  (while (auth/gate .swap true) ($sleep 1))
+  (try
+    (if_not (accepts_token auth token)
+      (fail (AuthError ^code "unauthorized" ^message "Owner credential was reset. Retrieve a new connection link.")))
+    # Tabs share a cookie jar but keep their own cached CSRF value.
+    # Reopening the owner link must preserve that pair for existing tabs.
+    (let existing (try (authenticate auth cookie) catch AuthError nil))
+    (if_not ($absent? existing)
+      (return {^cookie cookie ^csrf existing/csrf}))
+    (issue_cookie auth)
+  ensure (auth/gate .set false)))
+
+(fn reset_auth [auth : BrowserAuth]
+  (while (auth/gate .swap true)
+    ($sleep 1))
+  (try
+    (let secret ($crypto/random_hex 32))
+    # Clear first, including legacy records without generation tags. If reset
+    # is interrupted, publishing the new secret can never revive those cookies.
+    ($fs/write_text_atomic ^^owner_only $"${auth/root}/web_sessions" ($serde/write_data {}))
+    ($fs/write_text_atomic ^^owner_only $"${auth/root}/web_secret" secret)
+    (set auth/secret secret)
+    (auth/sessions .set {})
+    {^^ok}
+  ensure
+    (auth/gate .set false)))
+
+# Offline reset must also repair malformed credential files. The caller holds
+# the workspace lock, so it does not need to load any previous auth state.
+(fn reset_auth_at [root : Str]
+  (reset_auth (BrowserAuth ^root root ^secret "" ^sessions ($cell {}) ^gate ($cell false))))
+
 (fn authenticate [auth : BrowserAuth, cookie : Str]
   (let record (auth/sessions .get; .get cookie))
-  (if (|| ($absent? record) (> ($os/wall_ms) record/expires))
-    (fail (AuthError ^code "unauthorized" ^message "browser session expired or unknown")))
+  (if (|| ($absent? record) (!= record/generation ($crypto/sha256 auth/secret)))
+    (fail
+      (AuthError ^code "unauthorized" ^message "Client credential is unknown or was reset. Use gene-harness link to reconnect.")))
   record)

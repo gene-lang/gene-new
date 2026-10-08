@@ -26,28 +26,36 @@ isolation.
 From the Gene repository:
 
 ```text
-bin/gene run examples/gene-harness/src/main.gene --workspace /path/to/project chat
-bin/gene run examples/gene-harness/src/web/server.gene --workspace /path/to/project --port 8095
+bin/gene run examples/gene-harness/src/main.gene web --workspace /path/to/project
 ```
 
 The default workspace is the current directory. The process changes its working
 directory to the workspace and stores state in `.gene-harness/`. That
 directory has its own `.gitignore`.
 
-Both entry points own the workspace. One process holds a kernel lock for its
-lifetime; another fails with the owner's PID and entry point. The kernel
-releases the lock after a crash. Restart in the same workspace to recover
-sessions.
+Web is the only production profile. The host owns the workspace, holds its
+kernel lock, runs the scheduler and keeps sessions alive independently of
+connected clients. Multiple browsers and CLI processes can use that host.
+A second host fails with the owner's PID and entry point. The kernel releases
+the lock after a crash; start in the same workspace to recover durable state.
 
 For restart supervision, put Gene on PATH or set GENE_BINARY and use:
 
 ```text
-examples/gene-harness/bin/gene-harness --workspace /path/to/project chat
-examples/gene-harness/bin/gene-harness web --workspace /path/to/project --port 8095
+examples/gene-harness/bin/gene-harness web --workspace /path/to/project
+examples/gene-harness/bin/gene-harness --workspace /path/to/project link
 ```
 
-The supervisor is written in Gene and starts the same entry and arguments again
-after exit status 75.
+The foreground supervisor is written in Gene and restarts the host after exit
+status 75. With no command, the launcher starts `web`. Use an external process
+supervisor for unattended/background operation; host diagnostics go to stdout
+and stderr. The connection token is retrieved with `link`, not printed in
+startup diagnostics.
+
+The first start selects a free loopback port. Later starts reuse the remembered
+port; a fresh start announces a new address if that port is occupied. `--port
+PORT` selects a fixed port and fails if unavailable. A supervised restart also
+requires its original port. `link` retrieves the current browser URL.
 
 See [the todo-app replay guide](docs/todo-replay.md) for a complete web workflow
 using Codex OAuth, including continuation, verification and recovery.
@@ -56,8 +64,19 @@ using Codex OAuth, including continuation, verification and recovery.
 
 | Command | Effect |
 | --- | --- |
-| `chat` | Default. Read prompts and slash commands from the terminal. |
-| `chat words…` | Run one prompt or slash command, print the result, then exit. |
+| `web` | Start the foreground workspace host. This is the default. |
+| `status`, `link` | Inspect the running host or print its reusable owner connection URL. |
+| `sessions [create --title TITLE]` | List sessions or create one and return its id. |
+| `send [--wait] TEXT` | Submit a literal prompt to `--session ID`; optionally wait for its result. |
+| `run CODE`, `sh COMMAND`, `view PATH` | Run an operator command in `--session ID` and wait; `--no-wait` returns admission immediately. |
+| `command /NAME ARGS` | Invoke another registered operator command. |
+| `transcript [--before SEQ\|--after SEQ]` | Read a page of the selected session's transcript. |
+| `receipt ID`, `wait ID` | Inspect or wait for a round; use `--command ID` for a command. |
+| `receipt --request-id ID --kind round\|command` | Resolve a retained submission by its client request identity. |
+| `answer --batch ID --answers JSON`, `dismiss --batch ID` | Answer or dismiss a question batch in the selected session. |
+| `cancel --round ID`, `cancel --command ID` | Explicitly cancel work in the selected session. |
+| `stop [--confirm]`, `restart [--confirm]` | Control the host; other active sessions require confirmation. |
+| `auth reset` | Replace the owner token, revoke client cookies and close authenticated streams. |
 | `triggers [list]` | List trigger definitions. |
 | `triggers create FILE` | Create a trigger from an inert Gene map or serde file. |
 | `triggers delete ID` | Disable and delete a trigger. |
@@ -66,13 +85,29 @@ using Codex OAuth, including continuation, verification and recovery.
 | `enable ID`, `disable ID` | Enable or disable a stored or built-in plugin id. |
 | `restore ID` | Remove a stored override and restore the profile's built-in plugin. |
 
-`--workspace DIR` selects the workspace, `--session ID` selects the CLI session
-(default `default`), and `--script FILE` selects a scripted profile whose
-provider plugin owns the canned responses. `doctor`, `enable`, `disable` and
-`restore` are recovery commands: they open the workspace without activating
-plugins, so a broken plugin cannot block them. `doctor` leaves the composition
-generation unchanged; the other commands report the action or that no change
-was needed, along with the revision.
+`--workspace DIR` selects the workspace. Operations on an existing conversation
+require `--session ID`; create one explicitly with `sessions create`. Use
+`--json` for machine-readable results, `--file FILE` for prompt/code text, and
+`--timeout-ms N` to bound local waiting. Files supplied to the CLI are read from
+its launch directory; submitted code executes in the host workspace.
+
+Client exit or interruption stops observation and leaves admitted work running.
+`send --wait` returns when the round finishes or needs answers. Exit status is
+0 for success/admission, 2 for pending questions, and 1 for failure, cancelled
+work observed by `wait`, or a local wait timeout. A successful explicit cancel
+returns 0. Standalone terminal chat and the terminal REPL are retired.
+
+Mutation requests are not automatically retried. Retrying a retained prompt or
+operator command requires the original `--request-id ID --sequence N` and
+identical text; the host returns its receipt instead of executing again. Use
+request lookup after an uncertain response. Session creation and trigger
+mutations have no automatic retry.
+
+`doctor`, `enable`, `disable` and `restore` remain offline recovery commands.
+They acquire the workspace lock, refuse a running host, and skip plugin
+activation. Their bootstrap still repairs interrupted durable state. `doctor`
+leaves composition generations unchanged. `auth reset` uses the running host
+when present, or acquires the lock for an offline credential reset.
 
 ## Providers and workspace settings
 
@@ -89,8 +124,8 @@ that row for both a compaction summary and the main call.
 Each provider is a plugin row with `available`, `configure`, `prepare` and
 `send` callbacks. `prepare` returns the complete model-visible input without
 credentials. `send` adds authentication and makes one transport attempt; the
-loop retries one reported HTTP timeout. The scripted and offline profiles
-pin their own model-free provider plugins.
+loop retries one reported HTTP timeout. The web host's `--script FILE` and
+`--offline` test configurations pin model-free provider plugins.
 
 Every provider invocation, including a compaction summary, writes a
 `model/request` with the exact prepared input before transport and a
@@ -134,9 +169,16 @@ questions pauses a trigger round's running budget.
 
 ## Browser and CLI
 
-The browser host prints a one-use connection link. Opening it exchanges the
-token for an eight-hour cookie and CSRF value. Requests must come from the
-host's own origin. Cookies survive process restarts.
+The workspace owner retrieves a reusable connection URL with `gene-harness
+--workspace DIR link`. Its token survives restarts and remains valid until
+explicit reset. Every authenticated browser and CLI client has the same full
+workspace permissions; opening another client does not invalidate existing ones.
+
+Browsers and CLI clients use the same token exchange and cookie/CSRF checks.
+The host retains client credentials until reset; browser cookies have a
+one-year storage lifetime. If a browser discards its cookie, open the same link
+again. The token, link and CLI cookie files are owner-only. `auth reset` revokes
+old tokens/cookies and closes client streams while admitted work continues.
 
 The sidebar lists interactive and pinned sessions by default. Kind, status,
 trigger, text and time filters query the durable index. Needs attention lists
@@ -149,9 +191,10 @@ Console output has its own collapsible pane. Questions preselect recommended
 choices but submit only when the operator answers. Skip individual questions
 or dismiss the batch.
 
-The CLI reads input while a round runs. For questions, enter a numbered choice,
-press Enter for the recommendation, enter `-` to skip, or `/dismiss` to
-dismiss the batch. Comma-separated numbers answer multiple-choice items.
+The CLI prints a waiting round's question batch. Submit explicit answers with
+`answer --batch ID --answers '{"question_id":"answer"}'`, or use `dismiss
+--batch ID`. Both operations require `--session ID` and act on that same
+conversation in every connected browser.
 
 ## Workspace UI
 
@@ -169,8 +212,8 @@ transcript.
 
 The baseline profile exposes `ui_configure` and `ui_preview`, with rendering
 and actions disabled until explicitly enabled. Model turns receive compact
-previews of views owned by successfully published plugins, including in CLI
-sessions. Use `ui_preview` for the full validated tree or a different view
+previews of views owned by successfully published plugins, including for prompts
+submitted through the CLI. Use `ui_preview` for the full validated tree or a different view
 state. Previewing checks the server representation; browser layout and
 interaction still need verification.
 
@@ -193,16 +236,14 @@ Commands run without the model in their own tasks, with per-session ids.
 | /cancel | Cancel this session's current round or pending questions |
 | /stop | Stop admission, cancel running work, flush and exit |
 | /restart | Stop and restart under the launcher |
-| /new [title] | CLI: create and switch to an interactive session |
-| /sessions | CLI: list sessions |
 
 /run, /sh and /view can run during a round. Their results attach to the next
 user-initiated request after the current round; /view attaches a pointer.
 Other commands remain operator-only. Unknown commands report a closest match.
 `//text` sends the literal `/text` to the model.
 
-Multi-line /run input in the CLI continues until the reader has a complete
-form. Outcome and append_prompt are response-only bindings. Shell commands
+Pass complete code to CLI `run`, or use `run --file FILE` for multiline code.
+Outcome and append_prompt are response-only bindings. Shell commands
 have empty stdin and no terminal. Stored output is capped at 1 MiB and can be
 recalled. File views use 400-line pages.
 
@@ -217,9 +258,9 @@ tells the operator to start it again from a terminal.
 `/repl` opens a persistent Gene environment in the current session. Variables,
 functions, types, imports and macros remain available to subsequent inputs.
 While it is open, every submitted line is Gene code, including text beginning
-with `/`. Enter `exit`, `quit`, `:exit` or `:quit` to return to chat. The browser
-also provides a Leave control. Incomplete forms keep their draft; the CLI
-collects continuation lines with `... `.
+with `/`. Enter `exit`, `quit`, `:exit` or `:quit` to return to chat, or use the
+browser's Leave control. Incomplete forms keep their draft. Use the browser
+for the persistent REPL and CLI `run` for independent evaluations.
 
 REPL inputs use the command execution budget and appear in the transcript,
 with streamed console output and reader-syntax values. They do not attach to
@@ -227,14 +268,14 @@ the next model request. Plugin functions follow the composition leased by
 each input; saved function references see replacements on the next input.
 
 The browser action button reads Eval while idle and Stop while an input runs.
-Stop cancels that input and retains earlier bindings. In the CLI, Ctrl-C
-cancels an input or discards continuation lines; outside the REPL it ends the
-process. Only one input may run per session.
+Stop cancels that input and retains earlier bindings. Only one REPL input may
+run per session. Interrupting a CLI wait leaves its host command running.
 
 REPL state lives in memory. It closes on exit, session unload/deletion,
 plugin disable/replacement or process shutdown. The last browser viewer
 leaving starts a 60-second grace period, so ordinary reconnects preserve
-bindings. Restarting the process closes every REPL. Unknown browser input
+bindings. An admitted input finishes before viewer-grace cleanup closes an idle
+REPL. Restarting the process closes every REPL. Unknown browser input
 outcomes are resolved through recorded input ids and are never automatically
 re-evaluated. The `repl` built-in plugin can be disabled independently of
 `core_commands`.
@@ -475,8 +516,8 @@ Use a release binary for the responsiveness tests' 100 ms latency bounds;
 build it with `nimble speedy` from the repository root. Debug builds can
 exceed those bounds during cleanup.
 
-Both entry points accept `--script FILE` for canned responses. The browser
-also has `--offline` for a simple model-free reply.
+The web host accepts `--script FILE` for canned responses and `--offline` for
+a simple model-free reply. These are testing configurations of the same host.
 
 ## Code organization
 
@@ -486,8 +527,9 @@ also has `--offline` for a simple model-free reply.
 | `src/agents/` | Model requests, response evaluation, instructions and history |
 | `src/runtime/` | Workspace ownership, sessions, commands, REPL, rounds, scheduling and composition lifetimes |
 | `src/storage/` | Durable events and stored plugin generations |
-| `src/ui/` | Component validation, UI settings/descriptors, leased rendering, publication outlines and function actions; shared by CLI and web hosts |
-| `src/web/` | Browser service, HTTP/WebSocket transport, authentication, page shell and styles |
+| `src/cli/` | HTTP client, command-line operations, credentials and receipt polling |
+| `src/ui/` | Component validation, UI settings/descriptors, leased rendering, publication outlines and function actions |
+| `src/web/` | Shared session service, HTTP/WebSocket transport, owner authentication, connection discovery, page shell and styles |
 | `src/builtin/`, `src/profiles/`, `src/views/` | Built-in plugins, entry-point composition and operator views |
 | `client/` | Gene web-profile conversation client and display helpers |
 | `client/ui/` | Panel model/storage, keyed DOM reconciliation and request/action controller |

@@ -1,6 +1,6 @@
 (mod profiles)
 (import [baseline_profile] ^from "./baseline")
-(fn profile_names [] ["chat" "scripted"])
+(fn profile_names [] ["web"])
 (fn profile_named [name : Str]
   (if_not ((profile_names) .contains? name) (fail $"unknown profile ${name}"))
   (baseline_profile))

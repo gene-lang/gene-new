@@ -324,6 +324,13 @@
   (let state (manager/loaded .get; .get id))
   (if ($absent? state) (return false))
   (if (|| (session_running? state) (> state/viewers/.get 0)) (return false))
+  # Client departure and idle collection must not cancel admitted commands.
+  (if_not ($absent? manager/runtime/commands)
+    (for [key task] in manager/runtime/commands/active/.get
+      (if ($str/starts_with? ($to_str key) $"${id}:") (return false))))
+  (if_not ($absent? manager/runtime/modes)
+    (let mode (manager/runtime/modes/states/.get .get id))
+    (if_not ($absent? mode/running) (return false)))
   (if_not ($absent? manager/before_remove) (manager/before_remove id "unloaded"))
   (flush_event_store manager/events)
   (unload_event_stream manager/events "session" id)

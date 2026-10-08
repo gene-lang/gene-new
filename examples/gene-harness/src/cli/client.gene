@@ -1,0 +1,97 @@
+(mod cli_client)
+(import ^from "./options" [CliError problem])
+(import ^from "../web/connection" [read_connection unavailable])
+(import $net/http_client [request])
+
+(fn wire [connection, method : Str, path : Str, data = nil, ^credentials credentials = nil]
+  (let headers {^origin connection/origin ^content-type "application/json"})
+  (if_not ($absent? credentials)
+    (headers .put "cookie" credentials/cookie)
+    (headers .put "x-csrf-token" credentials/csrf))
+  (let pending
+    (request ^method method ^url $"${connection/origin}/api/v6${path}" ^headers headers ^body (if ($absent? data) "" ($json/stringify data)) ^timeout_ms 30000 ^max_bytes 16777216))
+  (let response (try (await pending) ensure pending/.cancel))
+  (let body
+    (try
+      ($json/parse response/body)
+    catch Any
+      (problem ^code "invalid_response" "The host returned an invalid response.")))
+  {^status response/status ^headers response/headers ^body body})
+
+(fn checked [response]
+  (if (|| (< response/status 200) (>= response/status 300))
+    (problem ^code (?? response/body/code "request_failed")
+      (?? response/body/message $"HTTP ${response/status}")))
+  response/body)
+
+(fn discover [root : Str]
+  (let connection (read_connection root))
+  (let response
+    (try
+      (wire connection "GET" "/connection")
+    catch HttpClientError
+      (unavailable root)))
+  (let live (checked response))
+  (for key in ["workspace" "epoch" "protocol" "origin" "port"]
+    (if (!= (live .get key) (connection .get key))
+      (problem ^code "connection_mismatch" "The host changed or its protocol is incompatible. Retry discovery.")))
+  connection)
+
+(fn connect [root : Str]
+  (let connection (discover root))
+  (let cache $"${root}/.gene-harness/cli_cookie")
+  (var credentials (try ($serde/read_data ($fs/read_text cache)) catch Any nil))
+  (if_yes (&& (== ($head credentials) Map) (== credentials/origin connection/origin) (== ($head credentials/cookie) Str) (== ($head credentials/csrf) Str))
+    (let cached_response (wire ^credentials credentials connection "GET" "/status?ui=default"))
+    (if_yes (== cached_response/status 200)
+      (if (!= cached_response/body/epoch connection/epoch)
+        (problem ^code "connection_mismatch" "The host restarted during connection. Retry discovery."))
+      (return {^connection connection ^credentials credentials})))
+  (let token ($fs/read_text $"${root}/.gene-harness/web_secret"))
+  (let response (wire connection "POST" "/auth/exchange" {^token token}))
+  (let body (checked response))
+  (let header (?? (response/headers .get "set-cookie") ""))
+  (let cookie ($str/split header ";"))
+  (if (|| (== cookie/0 "") (!= ($head body/csrf) Str))
+    (problem ^code "invalid_response" "The host did not issue client credentials."))
+  (set credentials {^origin connection/origin ^cookie cookie/0 ^csrf body/csrf})
+  ($fs/write_text_atomic ^^owner_only cache ($serde/write_data credentials))
+  {^connection connection ^credentials credentials})
+
+(fn api [client, method : Str, path : Str, data = nil]
+  # Mutations are never retried here. A lost response is resolved by its request
+  # identity/receipt; resetting a cookie must not replay an admitted operation.
+  (try
+    (let result (checked (wire client/connection method path data ^credentials client/credentials)))
+    (if (== ($head result) Map) (result .delete "csrf"))
+    result
+  catch HttpClientError
+    (problem ^code "connection_lost"
+      "Connection lost. Work already admitted remains on the host; look up its receipt before retrying.")))
+
+(fn connection_link [root : Str]
+  (let connection (discover root))
+  (let link ($str/trim ($fs/read_text $"${root}/.gene-harness/link")))
+  (let token ($fs/read_text $"${root}/.gene-harness/web_secret"))
+  (if (!= link $"${connection/origin}/#token=${token}")
+    (problem ^code "connection_mismatch" "The connection link changed. Retry discovery."))
+  link)
+
+(fn session_path [session : Str, suffix : Str = ""] : Str
+  (if (== session "") (problem "This operation requires --session ID."))
+  $"/sessions/${($url/encode_component session)}${suffix}")
+
+(fn execution_receipt [client, session : Str, id : Str, kind : Str]
+  (let section (if (== kind "command") "commands" "rounds"))
+  (api client "GET" (session_path session $"/${section}/${($url/encode_component id)}")))
+
+(fn wait_for [client, session : Str, id : Str, kind : Str, timeout : Int]
+  (let due (+ ($os/monotonic_ms) timeout))
+  (loop
+    (let result (execution_receipt client session id kind))
+    (let state (if (== kind "command") result/status result/state))
+    (if (!= state "running") (return result))
+    (if (>= ($os/monotonic_ms) due)
+      (fail
+        (CliError ^code "wait_timeout" ^execution_id id ^kind kind ^session session ^message $"Stopped waiting for ${id}. Work remains on the host; use receipt or wait to observe it.")))
+    ($sleep 100)))

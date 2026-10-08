@@ -57,7 +57,8 @@
     (let prefix (if (== index 0) "  #[" "    "))
     (let suffix (if (== index (- rows/.size 1)) "])" ""))
     (let name (quoted row/name))
-    (lines .push $"${prefix}#{^name ${name} ^version ${row/version} ^ignorable ${row/ignorable} ^origin \"core\" ^owner \"core\" ^schema validate_${row/schema}_event}${suffix}")
+    (let ignorable (if row/ignorable "^^ignorable" "^!ignorable"))
+    (lines .push $"${prefix}#{^name ${name} ^version ${row/version} ${ignorable} ^origin \"core\" ^owner \"core\" ^schema validate_${row/schema}_event}${suffix}")
     (set index (+ index 1)))
   ($to_str ($str/join lines "\n") "\n"))
 (fn main [argv]

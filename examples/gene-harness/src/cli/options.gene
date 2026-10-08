@@ -1,0 +1,78 @@
+(mod cli_options)
+(type CliError ^props {^code Str ^message Str ^request_id Str? ^submission_seq Str? ^execution_id Str? ^kind Str? ^session Str?} ^impl [Error])
+(impl Error for CliError)
+
+(fn problem [message : Str, ^code code : Str = "invalid_request"]
+  (fail (CliError ^code code ^message message)))
+
+(fn parse_options [args]
+  (let argv [])
+  (for arg in args
+    (argv .push ($to_str arg)))
+  (let options {})
+  (let words [])
+  (var i 0)
+  (var literal false)
+  (let valued
+    [
+      "workspace"
+      "session"
+      "port"
+      "restart-port"
+      "script"
+      "title"
+      "request-id"
+      "sequence"
+      "round"
+      "command"
+      "batch"
+      "answers"
+      "file"
+      "after"
+      "before"
+      "kind"
+      "status"
+      "trigger"
+      "q"
+      "since"
+      "until"
+      "timeout-ms"])
+  (let flags ["json" "wait" "no-wait" "confirm" "offline" "help" "attention" "supervised"])
+  (while (< i argv/.size)
+    (let arg ($to_str argv/%i))
+    (if (&& (! literal) (== arg "--"))
+      (then
+        (set literal true))
+      (elif (&& (! literal) ($str/starts_with? arg "--"))
+        (let key ($str/slice_bytes arg 2 (- ($str/byte_size arg) 2)))
+        (if (valued .contains? key)
+          (then
+            (set i (+ i 1))
+            (if (>= i argv/.size) (problem $"${arg} needs a value"))
+            (options .put key ($to_str argv/%i)))
+          (elif (flags .contains? key)
+            (options .put key true))
+          (else
+            (problem $"Unknown option ${arg}. Use --help for usage."))))
+      (else
+        (words .push arg)))
+    (set i (+ i 1)))
+  {^options options ^words words ^command (if words/.empty? "web" words/0)})
+
+(fn joined_words [words, start : Int] : Str
+  (let rest [])
+  (var i start)
+  (while (< i words/.size)
+    (rest .push words/%i)
+    (set i (+ i 1)))
+  ($str/join rest " "))
+
+(fn read_data_file [path : Str]
+  (let text ($fs/read_text path))
+  (try
+    ($serde/read_data text)
+  catch Any
+    (let forms ($into ($parse/read_all text) []))
+    (if (|| (!= forms/.size 1) (!= ($head forms/0) Map))
+      (problem "Definition must be an inert Gene map or serde data."))
+    forms/0))

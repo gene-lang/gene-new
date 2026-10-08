@@ -1,6 +1,6 @@
 # Persistent Gene REPL
 
-Enter with `/repl`. Input remains in a session-specific Gene environment until
+Enter in the browser with `/repl`. Input remains in a session-specific Gene environment until
 exit/quit (also :exit/:quit) or the host Leave control. Multiline incomplete
 syntax waits for more input. Empty input is ignored.
 
@@ -17,3 +17,7 @@ PluginHost state, not local REPL variables.
 The REPL does not send each input to the model; its results belong to the operator
 transcript. `/run` is useful for one-shot evaluation. Leave closes native resources;
 mode cleanup also runs when the session/plugin/viewer lifecycle ends.
+
+The CLI has no interactive REPL loop. Use `--session ID run CODE` or `run --file
+FILE` for independent evaluations against the running host. Its wait and cancel
+operations use the same durable command receipts as the browser.

@@ -8,6 +8,21 @@ template check_read(src: string, expected: string) =
   check read(src).print() == expected
 
 suite "reader — atoms and containers":
+  test "formatter preserves conversions containing quoted expressions":
+    for source in [
+      """($to_str "&" ($str/join parts "&"))""",
+      """($to_str id " " (?? state (?? status "")))""",
+      """($to_str "value " (f "a\\b"))""",
+      """($to_str "a\r" value)""",
+      """($to_str "a\0" value)"""
+    ]:
+      checkpoint source
+      let formatted = formatSource(source)
+      check '\r' notin formatted
+      check '\0' notin formatted
+      check read(formatted).print() == read(source).print()
+      check formatSource(formatted) == formatted
+
   test "printer and formatter preserve NUL strings without binary source bytes":
     for text in ["a\0b", "a\n\0b"]:
       let printed = newStr(text).print()
@@ -15,6 +30,12 @@ suite "reader — atoms and containers":
       check read(printed).strVal == text
       let formatted = formatSource(printed)
       check '\0' notin formatted
+      check read(formatted).strVal == text
+      check formatSource(formatted) == formatted
+  test "formatter preserves CRLF, backslashes and trailing quotes in multiline strings":
+    for text in ["a\r\nb\r\n", "a\\b\nc", "a\n\"", "a\n\"\"", "a\n\"\"\"", "a\n\\n"]:
+      let formatted = formatSource(newStr(text).print())
+      check '\r' notin formatted
       check read(formatted).strVal == text
       check formatSource(formatted) == formatted
   test "adjacent paths and messages after compound forms are rejected":
@@ -152,7 +173,7 @@ suite "reader — sugars":
   test "spread":             check_read("x...",         "(... x)")
   test "prop and meta flags consume no values":
     check_read("(x ^^!ready @@generated nil)",
-               "(x @@generated ^^!ready nil)")
+               "(x @@generated ^^\"!ready\" nil)")
     check_read("{^^ready ^!value}", "{^^ready ^!value}")
   test "bare at can be a node head":
     check_read("(@ {^line l} (x ^name n))", "(@ {^line l} (x ^name n))")

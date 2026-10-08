@@ -46,9 +46,10 @@ workspace and model context. Set `CODEX_AUTH_FILE` to a different path if your
 login is stored elsewhere. If credentials are missing or rejected, sign in
 through Codex with file credential storage and retry.
 
-Open the actual `http://127.0.0.1:8097/#token=...` link printed by this process.
-Its one-use token expires after ten minutes and establishes an eight-hour
-browser cookie that survives restarts. The header and Workspace status should
+In another terminal, run `bin/gene run examples/gene-harness/src/main.gene
+--workspace "$PWD/tmp/harness-todo-replay" link` and open the returned URL.
+The owner token is reusable until explicit reset, and client credentials survive
+host restarts. The header and Workspace status should
 show `gpt-6.1-sol · codex · high`.
 
 The Gene supervisor launcher supports automatic `/restart`. A server launched
@@ -113,8 +114,8 @@ and configuration guidance. Only a completed response reaches evaluation.
 | `/stop` | Stop the workspace process. |
 
 Do not launch a second harness in the same workspace. After restarting, use
-the recovered conversation. If the browser cookie expires, open a fresh
-connection link printed by the server.
+the recovered conversation. If the browser loses its cookie, retrieve the
+current reusable link with `gene-harness --workspace DIR link` and open it again.
 
 ## Verify the generated app
 

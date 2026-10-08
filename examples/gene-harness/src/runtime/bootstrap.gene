@@ -15,7 +15,7 @@
 (import ^from "../agents/provider_selection" [readiness_report])
 (import ^from "../plugin_api" [ExecutionLimits response_execution_limits])
 
-(type HarnessRuntime ^props {^root Str ^state_root Str ^h Any ^workspace Any ^profile Any ^events Any ^sessions Any ^commands Any ^triggers Any ^body_users Any ^body_collecting Any ^body_gc_pending Any ^stopping Any ^exit_code Any ^stdin_task Any ^ownership Any ^owns_ownership Bool ^owns_events Bool ^closed Any ^restarted Bool ^shutdown_watchdog Any ^modes Any?})
+(type HarnessRuntime ^props {^root Str ^state_root Str ^epoch Str ^h Any ^workspace Any ^profile Any ^events Any ^sessions Any ^commands Any ^triggers Any ^body_users Any ^body_collecting Any ^body_gc_pending Any ^stopping Any ^exit_code Any ^ownership Any ^owns_ownership Bool ^owns_events Bool ^closed Any ^restarted Bool ^shutdown_watchdog Any ^modes Any? ^listen_port Any? ^supervised Bool?})
 (type RuntimeCleanupError ^props {^message Str} ^impl [Error])
 (impl Error for RuntimeCleanupError)
 
@@ -112,7 +112,7 @@
       (let prepared (prepare_workspace ^session session workspace h))
       (activate_workspace_plan ^profile_admissions (profile_admissions ^limits profile_limits profile) prepared h))
     (set runtime
-      (HarnessRuntime ^root canonical ^state_root state_root ^sessions nil ^commands nil ^triggers nil ^body_users ($atomic_cell 0) ^body_collecting ($cell false) ^body_gc_pending ($cell false) ^stopping ($cell false) ^exit_code ($cell 0) ^stdin_task ($cell nil) ^restarted restarted ^shutdown_watchdog ($cell nil) ^h h ^workspace workspace ^profile profile ^events events ^ownership ownership ^owns_ownership owns_ownership ^owns_events owned ^closed ($cell false)))
+      (HarnessRuntime ^root canonical ^state_root state_root ^epoch ($crypto/random_hex 16) ^sessions nil ^commands nil ^triggers nil ^body_users ($atomic_cell 0) ^body_collecting ($cell false) ^body_gc_pending ($cell false) ^stopping ($cell false) ^exit_code ($cell 0) ^restarted restarted ^shutdown_watchdog ($cell nil) ^h h ^workspace workspace ^profile profile ^events events ^ownership ownership ^owns_ownership owns_ownership ^owns_events owned ^closed ($cell false)))
     (set h/readiness
       (fn []
         (let current ($serde/read_data ($fs/read_text $"${state_root}/config.gene")))

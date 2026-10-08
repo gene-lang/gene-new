@@ -80,7 +80,7 @@
                  (button ^type "submit" "Save title"))
                (section ^id "auth_notice" ^class "auth_notice" ^^hidden
                  (strong "Connect to your local Harness")
-                 "Open the connection link printed by the server. It keeps access to this workspace private.")
+                 "Run gene-harness --workspace DIR link, then open the returned owner connection URL.")
                (section ^id "offline_notice" ^class "auth_notice" ^^hidden
                  (strong "Command demo mode — no model connected")
                  "Restart without --offline or GENE_HARNESS_OFFLINE=1 to chat with the configured model. Use /help to explore commands.")

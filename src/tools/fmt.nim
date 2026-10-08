@@ -198,7 +198,8 @@ proc resugarInterp(v: Value): string =
   for item in v.body:
     if item.kind == vkString:
       sawStr = true
-      if '$' in item.strVal or '\n' in item.strVal: return ""
+      if '$' in item.strVal or '\n' in item.strVal or
+          '\r' in item.strVal or '\0' in item.strVal: return ""
   if not sawStr: return ""
   var sb = "$\""
   for item in v.body:
@@ -209,7 +210,12 @@ proc resugarInterp(v: Value): string =
         of '\\': sb.add "\\\\"
         else: sb.add ch
     else:
-      sb.add "${" & oneLine(item) & "}"
+      let expression = oneLine(item)
+      # The surrounding string reader would consume expression quotes/escapes.
+      # Keep the ordinary conversion form when interpolation is not lossless.
+      if '"' in expression or '\\' in expression or '\n' in expression:
+        return ""
+      sb.add "${" & expression & "}"
   sb.add '"'
   sb
 
@@ -520,8 +526,11 @@ proc fmtValue(v: Value, indent: int): string
 
 proc rawStr(s: string): string =
   ## Prefer the language's explicit triple-quoted spelling for multiline text.
-  if '\n' in s and '\0' notin s and "\"\"\"" notin s:
-    return "\"\"\"" & s & "\"\"\""
+  if '\n' in s and '\0' notin s and '\r' notin s and
+      "\"\"\"" notin s and not s.endsWith('"'):
+    # Triple strings still interpret escapes. Keep literal backslashes and
+    # avoid raw CR bytes or a trailing quote merging into the closing delimiter.
+    return "\"\"\"" & s.replace("\\", "\\\\") & "\"\"\""
   ## Fallback for one-line text or content containing a triple delimiter.
   var sb = "\""
   for ch in s:

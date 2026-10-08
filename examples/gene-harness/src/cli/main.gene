@@ -1,0 +1,269 @@
+(mod cli_main)
+(import ^from "./options" [CliError problem joined_words read_data_file])
+(import ^from "./client" [connect api connection_link session_path execution_receipt wait_for])
+(import ^from "../runtime/maintenance" [repair reset_offline])
+(import ^from "../runtime/workspace_lock" [WorkspaceInUse])
+
+(fn usage [] """Gene Harness: one web host per workspace.
+  gene-harness web [--workspace DIR] [--port PORT] [--offline | --script FILE]
+  gene-harness [--workspace DIR] [--json] COMMAND
+
+Workspace commands:
+  status | link | auth reset | stop [--confirm] | restart [--confirm]
+  sessions [create --title TITLE]
+  triggers [list | create FILE | delete ID | occurrences [ID]]
+  doctor | enable ID | disable ID | restore ID  (offline repair only)
+
+Session commands (require --session ID):
+  status | transcript [--before SEQ | --after SEQ]
+  send [--wait] TEXT                 submit a literal model prompt
+  run CODE | sh COMMAND | view PATH  execute an operator command and wait
+  command /NAME ARGS                 execute any registered operator command
+  receipt ID | wait ID               inspect/wait for a round
+  receipt --command ID | wait --command ID
+  receipt --request-id ID [--kind round|command]
+  answer --batch ID --answers JSON | dismiss --batch ID
+  cancel --round ID | cancel --command ID
+
+Use --file FILE for send/run text, --no-wait for operator commands,
+--request-id ID --sequence N to retry the same retained submission, and
+--timeout-ms N to bound local waiting. Disconnecting never cancels host work.
+""")
+
+(fn option_query [options, names]
+  (let parts [])
+  (for name in names
+    (let value (options .get name))
+    (if_not ($absent? value) (parts .push $"${name}=${($url/encode_component ($to_str value))}")))
+  (if parts/.empty?
+    ""
+    ($to_str "&" ($str/join parts "&"))))
+
+(fn receipt_kind [options] : Str
+  (let kind (if ($absent? options/command) (?? options/kind "round") "command"))
+  (if_not (["round" "command"] .contains? kind) (problem "Receipt kind must be round or command."))
+  kind)
+
+(fn print_result [result, json : Bool]
+  (if json (return ($println ($json/stringify result))))
+  (if (== ($head result) Str) (return ($println result)))
+  (if_not ($absent? result/sessions)
+    (for session in result/sessions
+      ($println $"${session/id}  ${session/status}  ${session/title}"))
+    (return nil))
+  (if_not ($absent? result/findings)
+    (if result/findings/.empty?
+      ($println "No composition problems found.")
+      (for finding in result/findings
+        ($println finding)))
+    (return nil))
+  (if_not ($absent? result/records)
+    (for record in result/records
+      ($println $"[${record/seq} ${record/kind}] ${record/text}"))
+    (if result/has_older ($println "Earlier records are available with transcript --before SEQ."))
+    (return nil))
+  (if_not ($absent? result/workspace)
+    ($println
+      ($to_str
+        result/workspace
+        """
+Profile: """
+        result/profile
+        "; running rounds: "
+        result/running))
+    (return nil))
+  (if_not ($absent? result/id)
+    ($println ($to_str result/id " " (?? result/state (?? result/status "")))))
+  (if_not ($absent? result/request_id)
+    ($println
+      $"Request: ${result/request_id}; sequence: ${(?? result/submission_seq result/request_seq)}"))
+  (var displayed false)
+  (for key in ["reply" "display" "message"]
+    (let value (result .get key))
+    (if_yes (&& (! ($absent? value)) (!= value ""))
+      ($println value)
+      (set displayed true)))
+  (if_not ($absent? result/questions)
+    ($println ($serde/write_data result/questions))
+    (set displayed true))
+  (if (&& (! displayed) ($absent? result/id)) ($println ($serde/write_data result)))
+  nil)
+
+(fn result_code [result] : Int
+  (if (!= ($head result) Map) (return 0))
+  (if (== result/ok true) (return 0))
+  (if (&& (== ($head result/exit) Int) (!= result/exit 0)) (return 1))
+  (let state (?? result/state result/status))
+  (if (== state "waiting")
+    2
+    (if (["failed" "cancelled" "interrupted" "recovery_required"] .contains? state)
+      1
+      0)))
+
+(fn execute [parsed]
+  (let options parsed/options)
+  (let words parsed/words)
+  (let action parsed/command)
+  (if (["chat" "scripted"] .contains? action)
+    (problem "Standalone terminal chat is retired. Start gene-harness web, then use sessions create and send --session ID."))
+  (if_not (["doctor" "enable" "disable" "restore" "status" "link" "auth" "stop" "restart" "sessions" "triggers" "transcript" "receipt" "wait" "answer" "dismiss" "cancel" "send" "run" "sh" "view" "command"] .contains? action)
+    (problem $"Unknown command ${action}. Use --help for usage."))
+  (for key in ["port" "restart-port" "script" "offline" "supervised"]
+    (if_not ($absent? (options .get key)) (problem $"--${key} is a web-host option.")))
+  (let selected (?? options/workspace ($os/launch_dir)))
+  (if_yes (["doctor" "enable" "disable" "restore"] .contains? action)
+    (if (&& (!= action "doctor") ($absent? words/1)) (problem $"${action} needs a plugin id."))
+    (return (repair selected action (?? words/1 ""))))
+  (if (&& (== action "auth") (== words/1 "reset"))
+    (try
+      (return (reset_offline selected))
+    catch WorkspaceInUse
+      nil))
+  (if_not ($fs/exists? selected)
+    (problem ^code "unavailable" "Workspace does not exist. Start gene-harness web --workspace DIR first."))
+  (let root ($fs/real_path selected))
+  (if (== action "link") (return (connection_link root)))
+  (let client (connect root))
+  (let session (?? options/session ""))
+  (let timeout ($parse/parse_int (?? (options .get "timeout-ms") "600000")))
+  (if (<= timeout 0) (problem "--timeout-ms must be positive."))
+  (if_yes (== action "status")
+    (if (== session "") (return (api client "GET" "/status?ui=default")))
+    (let state (api client "GET" (session_path session "/snapshot?ui=default")))
+    (return
+      {
+        ^id state/session/id
+        ^title state/session/title
+        ^status state/session/status
+        ^round state/round
+        ^questions state/questions
+        ^mode state/mode
+        ^next_submission_seq state/next_submission_seq
+        ^next_command_seq state/next_command_seq}))
+  (if_yes (== action "auth")
+    (if (!= words/1 "reset") (problem "Use auth reset."))
+    (return (api client "POST" "/auth/reset" {})))
+  (if (["stop" "restart"] .contains? action)
+    (return
+      (api
+        client
+        "POST"
+        "/control"
+        {^action action ^session session ^confirm (== options/confirm true)})))
+  (if_yes (== action "sessions")
+    (if (|| ($absent? words/1) (== words/1 "list"))
+      (return
+        (api
+          client
+          "GET"
+          ($to_str
+            "/sessions?ui=default"
+            (option_query
+              options
+              ["kind" "status" "attention" "trigger" "q" "since" "until" "after"])))))
+    (if (== words/1 "create")
+      (return (api client "POST" "/sessions" {^title (?? options/title "New conversation")})))
+    (problem "Use sessions [list|create --title TITLE]."))
+  (if_yes (== action "triggers")
+    (let sub (?? words/1 "list"))
+    (if (== sub "list") (return (api client "GET" "/triggers")))
+    (if_yes (== sub "create")
+      (if ($absent? words/2) (problem "triggers create needs a definition file."))
+      (return (api client "POST" "/triggers" (read_data_file words/2))))
+    (if_yes (== sub "delete")
+      (if ($absent? words/2) (problem "triggers delete needs an id."))
+      (return (api client "DELETE" $"/triggers/${($url/encode_component words/2)}")))
+    (if (== sub "occurrences")
+      (return
+        (api
+          client
+          "GET"
+          (if ($absent? words/2)
+            "/trigger-occurrences"
+            $"/triggers/${($url/encode_component words/2)}/occurrences"))))
+    (problem "Use triggers list|create|delete|occurrences."))
+  (if (== action "transcript")
+    (return
+      (api
+        client
+        "GET"
+        ($to_str
+          (session_path session "/snapshot?ui=default")
+          (option_query options ["before" "after"])))))
+  (if_yes (["receipt" "wait"] .contains? action)
+    (let kind (receipt_kind options))
+    (var id (?? options/command (?? words/1 options/round)))
+    (let request_id (options .get "request-id"))
+    (if_not ($absent? request_id)
+      (let result
+        (api
+          client
+          "GET"
+          (session_path session $"/requests/${($url/encode_component request_id)}?kind=${kind}")))
+      (if (== action "receipt") (return result))
+      (set id result/id))
+    (if ($absent? id) (problem "receipt/wait needs an execution id or --request-id."))
+    (return
+      (if (== action "wait")
+        (wait_for client session id kind timeout)
+        (execution_receipt client session id kind))))
+  (if_yes (["answer" "dismiss"] .contains? action)
+    (if ($absent? options/batch) (problem "Answering requires --batch ID."))
+    (let values
+      (if (== action "dismiss")
+        {}
+        (if (! ($absent? options/file))
+          (read_data_file options/file)
+          (if ($absent? options/answers)
+            (problem "Use --answers JSON or --file FILE.")
+            ($json/parse options/answers)))))
+    (return
+      (api
+        client
+        "POST"
+        (session_path session "/answers")
+        {^batch_id options/batch ^answers values ^dismiss (== action "dismiss")})))
+  (if_yes (== action "cancel")
+    (if_not ($absent? options/command)
+      (let result
+        (api
+          client
+          "POST"
+          (session_path session $"/commands/${($url/encode_component options/command)}/cancel")
+          {}))
+      (result .put "ok" true)
+      (return result))
+    (if ($absent? options/round) (problem "Use cancel --round ID or --command ID."))
+    (let result (api client "POST" (session_path session "/cancel") {^round_id options/round}))
+    (result .put "ok" true)
+    (return result))
+  (if_yes (["send" "run" "sh" "view" "command"] .contains? action)
+    (var text (if ($absent? options/file) (joined_words words 1) ($fs/read_text options/file)))
+    (if (== text "") (problem $"${action} needs text or --file FILE."))
+    (let kind (if (== action "send") "round" "command"))
+    (if (["run" "sh" "view"] .contains? action) (set text $"/${action} ${text}"))
+    (let state (api client "GET" (session_path session "/snapshot?ui=default")))
+    (let request_id (?? (options .get "request-id") $"cli-${($crypto/random_hex 16)}"))
+    (let sequence
+      (?? options/sequence (if (== kind "round") state/next_submission_seq state/next_command_seq)))
+    (if (&& (! ($absent? (options .get "request-id"))) ($absent? options/sequence))
+      (problem "An explicit --request-id requires its original --sequence. Use receipt --request-id to resolve an uncertain submission."))
+    (let result
+      (try
+        (api
+          client
+          "POST"
+          (session_path session (if (== kind "round") "/rounds" "/commands"))
+          {^text text ^request_id request_id ^submission_seq sequence ^^literal})
+      catch Any
+        (fail
+          (CliError ^code (?? $err/code "request_failed") ^message $"${$err/message} Request ${request_id}, sequence ${sequence}, kind ${kind}." ^request_id request_id ^submission_seq sequence ^kind kind ^session session))))
+    (if (|| (== options/wait true) (&& (== kind "command") (!= (options .get "no-wait") true)))
+      (return (wait_for client session result/id kind timeout)))
+    (return result))
+  (problem $"Unknown command ${action}. Use --help for usage."))
+
+(fn run_client [parsed] : Int
+  (let result (execute parsed))
+  (print_result result (== parsed/options/json true))
+  (result_code result))

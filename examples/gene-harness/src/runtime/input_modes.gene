@@ -151,11 +151,17 @@
     (if (|| ($absent? loaded) (== loaded/viewers/.get 0))
       (then
         (if ($absent? state/last_left) (state .put "last_left" instant))
-        (if (>= (- instant state/last_left) 60000) (due .push [($to_str session) state/instance])))
+        (if (&& ($absent? state/running) (>= (- instant state/last_left) 60000))
+          (due .push [($to_str session) state/instance])))
       (else (state .put "last_left" nil))))
   (for entry in due
-    (try (close_mode ^instance entry/1 manager entry/0 "viewers_left")
-      catch ModeError nil))
+    (with_session_gate manager/runtime/sessions $"round/${entry/0}" (fn []
+      (let state (manager/states/.get .get entry/0))
+      (let loaded (manager/runtime/sessions/loaded/.get .get entry/0))
+      (if (|| ($absent? state) (!= state/instance entry/1)
+              (! ($absent? state/running))
+              (&& (! ($absent? loaded)) (> loaded/viewers/.get 0))) (return nil))
+      (close_mode_locked manager entry/0 "viewers_left"))))
   nil)
 
 (fn publication_changed [manager, previous, snapshot]

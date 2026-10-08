@@ -395,7 +395,7 @@
   (runtime/stopping .set true)
   (runtime/commands/accepting .set false)
   (var exit_code code)
-  (if (&& (== code 75) (!= ($os/env? "GENE_HARNESS_SUPERVISED") "1"))
+  (if (&& (== code 75) (!= runtime/supervised true) (!= ($os/env? "GENE_HARNESS_SUPERVISED") "1"))
     (then
       ($println "Direct gene run: restart stops this process; start it again from the terminal.")
       (set exit_code 0)))
@@ -410,9 +410,8 @@
       watchdog/.detach
       (runtime/shutdown_watchdog .set watchdog)))
   (if (== exit_code 75)
-    ($fs/write_text_atomic $"${runtime/state_root}/restart_notice" ($to_str ($now))))
-  (let input runtime/stdin_task/.get)
-  (if_not ($absent? input) input/.cancel)
+    ($fs/write_text_atomic $"${runtime/state_root}/restart_notice"
+      ($serde/write_data {^at ($to_str ($now)) ^port runtime/listen_port})))
   (let running [])
   (for [id task] in controller/active/.get
     (running .push {^id ($to_str id) ^task task}))

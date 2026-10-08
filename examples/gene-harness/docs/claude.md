@@ -25,8 +25,9 @@ env GENE_HARNESS_PROVIDER=claude \
   src/web/server.gene --workspace /path/to/project
 ```
 
-Open the connection URL printed by the server. To use the terminal instead,
-run `src/main.gene --workspace /path/to/project chat`. Instead of the
+Retrieve the connection URL with `../../bin/gene run src/main.gene --workspace
+/path/to/project link`. CLI session commands connect to this same running host.
+Instead of the
 environment variable, you can set `^provider "claude"` in the workspace's
 `.gene-harness/config.gene`; a non-empty `GENE_HARNESS_PROVIDER` still wins.
 

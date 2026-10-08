@@ -21,13 +21,13 @@
           ($assert ($str/contains? (doc runtime/h "gene/stdlib") "stdlib")
             "language reference did not mount")
           ($assert ($str/contains? (doc runtime/h "harness/web_components") "web_components")
-            "UI authoring documentation must also be available to CLI and trigger sessions")
+            "UI authoring documentation must be available in runtime fixtures")
           ($assert
             (! ($str/contains? (assemble_instructions runtime {^kind "interactive"})
                  "web_components registry"))
-            "CLI prompt describes the web-only contribution")
+            "runtime fixture mounted the host-only prompt contribution")
           ($assert (== (row runtime/h "commands" "new") void)
-            "CLI command was mounted before the CLI entry point")
+            "retired terminal command was mounted")
           (set_plugin_enabled runtime/workspace runtime/h "core_commands" false)
           ($assert (== (row runtime/h "commands" "help") void)
             "disabled core command stayed visible")
@@ -58,7 +58,7 @@
             "This session has a browser frontend")
             "web entry did not contribute its prompt paragraph")
           ($assert (== (row service/runtime/h "commands" "new") void)
-            "web host received a CLI-only command")
+            "web host received a retired terminal command")
         ensure
           (close_session_service service)))))
 

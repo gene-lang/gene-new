@@ -1,0 +1,67 @@
+(mod web_test_support)
+(import ^from "./support" [package_path])
+(import ^from "../src/cli/client" [connect api discover])
+
+(fn launch_host [root : Str, ^script responses = nil, ^port port = nil, ^restart_port restart_port = nil, ^supervised supervised : Bool = false, ^offline offline : Bool = true]
+  ($fs/make_dir root)
+  (let canonical ($fs/real_path root))
+  (let entry (if supervised "src/runtime/supervisor.gene" "src/main.gene"))
+  (let arguments ["run" (package_path entry) "web" "--workspace" canonical])
+  (if_not ($absent? port)
+    (arguments .push "--port")
+    (arguments .push ($to_str port)))
+  (if_not ($absent? restart_port)
+    (arguments .push "--restart-port")
+    (arguments .push ($to_str restart_port)))
+  (if_not ($absent? responses)
+    ($fs/write_text $"${canonical}/responses.gene" ($to_str responses))
+    (arguments .push "--script")
+    (arguments .push $"${canonical}/responses.gene"))
+  (if (&& offline ($absent? responses)) (arguments .push "--offline"))
+  (let process
+    ($os/exec_async ^timeout_ms 120000 ^max_bytes 1048576 ($os/executable_path) arguments...))
+  {^root canonical ^process process})
+
+(fn ready_host [host, ^previous previous : Str = ""]
+  (let due (+ ($os/monotonic_ms) 20000))
+  (loop
+    (if_yes host/process/.done?
+      (let result (await host/process))
+      ($assert false $"Host exited before ready: ${result/stdout}${result/stderr}"))
+    (let connection (try (discover host/root) catch Any nil))
+    (if (&& (! ($absent? connection)) (!= connection/epoch previous)) (return connection))
+    ($assert (< ($os/monotonic_ms) due) "Host did not publish a ready connection")
+    ($sleep 20)))
+
+(fn start_host [root : Str, ^script responses = nil, ^port port = nil, ^supervised supervised : Bool = false, ^offline offline : Bool = true]
+  (let host (launch_host ^script responses ^port port ^supervised supervised ^offline offline root))
+  (try
+    (host .put "connection" (ready_host host))
+    host
+  catch Any
+    host/process/.cancel
+    host/process/.join
+    (fail $err)))
+
+(fn stop_host [host]
+  (if_not host/process/.done?
+    (try
+      (api (connect host/root) "POST" "/control" {^action "stop" ^^confirm})
+    catch Any
+      nil))
+  (let due (+ ($os/monotonic_ms) 10000))
+  (while (&& (! host/process/.done?) (< ($os/monotonic_ms) due))
+    ($sleep 20))
+  (if_not host/process/.done? host/process/.cancel)
+  (await host/process))
+
+(fn cli [root : Str, arguments, ^expected expected : Int = 0]
+  (let args ["run" (package_path "src/main.gene") "--workspace" root "--json"])
+  (for arg in arguments
+    (args .push arg))
+  (let result
+    (await ($os/exec_async ^timeout_ms 45000 ^max_bytes 16777216 ($os/executable_path) args...)))
+  ($assert
+    (== result/status expected)
+    $"CLI status ${result/status}, expected ${expected}: ${result/stdout}${result/stderr}")
+  ($json/parse ($str/trim result/stdout)))

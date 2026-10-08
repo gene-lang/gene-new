@@ -9,18 +9,37 @@
   [write_body read_body bounded_request acquire_body_use release_body_use with_body_use])
 (import ^from "../storage/state"
   [core_state record_core_state flush_event_store next_sequence stream_key])
-(import ^from "./sessions" [create_session list_sessions load_session])
+(import ^from "./sessions" [load_session])
 (import ^from "./input_modes"
   [new_input_modes enter_mode close_mode_locked close_input_modes mode_command_finished])
 
 (type CommandError ^props {^code Str ^message Str} ^impl [Error])
 (impl Error for CommandError)
-(type CommandManager ^props {^runtime Any ^active Any ^watchers Any ^gate Any ^cancel Any ^stop Any ^accepting Any ^closed Any ^interface Str ^modes Any?})
+(type CommandManager ^props {^runtime Any ^active Any ^watchers Any ^gate Any ^cancel Any ^stop Any ^accepting Any ^closed Any ^modes Any?})
 
 (fn command_state [runtime, session : Str]
+  (with_body_use runtime (fn [] (command_state_impl runtime session))))
+
+(fn command_state_impl [runtime, session : Str]
+  (let manager runtime/commands)
+  (if ($absent? manager) (return (read_command_state runtime session)))
+  (while (manager/gate .swap true) ($sleep 1))
+  (try (read_command_state runtime session) ensure (manager/gate .set false)))
+
+# Internal callers already holding the command gate use this helper.
+(fn read_command_state [runtime, session : Str]
   (let ref (core_state runtime/events "session" session "commands"))
   (if ($absent? ref) (return {^next_id 1 ^records [] ^attached []}))
-  ($serde/read_data (read_body runtime ref/digest)))
+  (let state ($serde/read_data (read_body runtime ref/digest)))
+  (var recovered false)
+  (for record in state/records
+    (if_yes (&& (== record/status "running") (!= record/runtime_epoch runtime/epoch))
+      (record .put "status" "interrupted")
+      (record .put "display" "Command interrupted by host restart; it was not replayed.")
+      (record .put "finished" ($to_str ($now)))
+      (set recovered true)))
+  (if recovered (save_command_state runtime session state))
+  state)
 
 (fn save_command_state [runtime, session : Str, state]
   (record_core_state
@@ -194,7 +213,7 @@
         "Stop and restart under the launcher."
         (fn [ctx]
           (ctx/manager/stop ctx/session 75 (== ($str/trim ctx/raw) "--confirm"))
-          (let supervised (== ($os/env? "GENE_HARNESS_SUPERVISED") "1"))
+          (let supervised (|| (== ctx/runtime/supervised true) (== ($os/env? "GENE_HARNESS_SUPERVISED") "1")))
           (CommandResult ^display (if supervised "Restarting." "Stopped. Direct gene run cannot restart this process; start it again from the terminal.") ^stop (if supervised 75 0)))]])
   (for entry in definitions
     (if ($absent? (row runtime/h "commands" entry/0))
@@ -204,25 +223,9 @@
         "commands"
         {^name entry/0 ^usage entry/1 ^doc entry/2 ^run entry/3 ^^raw_input}))))
 
-(fn install_cli_commands [runtime]
-  (let definitions
-    [
-      ["new" "/new [title]" "Create and select an interactive CLI session."
-        (fn [ctx]
-          (let record
-            (create_session ^title (if (== ctx/raw "") "New conversation" ctx/raw)
-              ctx/runtime/sessions))
-          (CommandResult ^display record/id ^selected record/id))]
-      ["sessions" "/sessions" "List workspace sessions."
-        (fn [ctx]
-          (CommandResult ^display (list_sessions ctx/runtime/sessions)))]])
-  (for entry in definitions
-    (contribute runtime/h "cli" "commands"
-      {^name entry/0 ^usage entry/1 ^doc entry/2 ^run entry/3 ^^raw_input})))
-
 (fn new_command_manager [runtime, ^cancel cancel = nil, ^stop stop = nil]
   (install_control_commands runtime)
-  (let manager (CommandManager ^runtime runtime ^active ($cell {}) ^watchers ($cell {}) ^gate ($cell false) ^cancel cancel ^stop stop ^accepting ($cell true) ^closed ($cell false) ^interface "cli"))
+  (let manager (CommandManager ^runtime runtime ^active ($cell {}) ^watchers ($cell {}) ^gate ($cell false) ^cancel cancel ^stop stop ^accepting ($cell true) ^closed ($cell false)))
   (set manager/modes (new_input_modes runtime
     (fn [session parsed]
       (with_body_use runtime (fn [] (submit_routed_command manager session parsed))))
@@ -241,7 +244,7 @@
   (while (manager/gate .swap true)
     ($sleep 1))
   (try
-    (let state (command_state manager/runtime session))
+    (let state (read_command_state manager/runtime session))
     (let records [])
     (var found false)
     (for previous in state/records
@@ -252,9 +255,13 @@
         (else
           (records .push previous))))
     (if_not found (records .push record))
-    (while (> records/.size 128)
-      (records .delete 0))
-    (state .put "records" records)
+    (let retained [])
+    (var excess ($math/max 0 (- records/.size 128)))
+    (for candidate in records
+      (if (&& (> excess 0) (!= candidate/status "running"))
+        (then (set excess (- excess 1)))
+        (else (retained .push candidate))))
+    (state .put "records" retained)
     (save_command_state manager/runtime session state)
   ensure
     (manager/gate .set false))
@@ -344,7 +351,7 @@ Stopped."""))))
         (while (manager/gate .swap true)
           ($sleep 1))
         (try
-          (let state (command_state manager/runtime session))
+          (let state (read_command_state manager/runtime session))
           (state/attached .push record/item)
           (save_command_state manager/runtime session state)
         ensure
@@ -357,11 +364,25 @@ Stopped."""))))
   (command_changed manager session record)
   record)
 
-(fn submit_command [manager, session : Str, text : Str]
-  (with_body_use manager/runtime (fn [] (submit_command_impl manager session text))))
+(fn submit_command [manager, session : Str, text : Str, ^request_id request_id : Str = "", ^sequence sequence = nil]
+  (with_body_use manager/runtime
+    (fn [] (submit_command_impl ^request_id request_id ^sequence sequence manager session text))))
 
-(fn submit_command_impl [manager, session : Str, text : Str]
-  (submit_routed_command manager session (parse_submission manager/runtime/h text)))
+(fn submit_command_impl [manager, session : Str, text : Str, ^request_id request_id : Str = "", ^sequence sequence = nil]
+  (let digest ($crypto/sha256 text))
+  (if_yes (!= request_id "")
+    (if (|| (> ($str/byte_size request_id) 256) (!= ($head sequence) Int) (< sequence 1))
+      (fail (CommandError ^code "invalid_request" ^message "A command request id requires a positive submission sequence.")))
+    (let old (command_request_receipt manager session request_id))
+    (if_not ($absent? old)
+      (if (&& (== old/request_digest digest) (== old/request_seq sequence)) (return old))
+      (fail (CommandError ^code "submission_conflict" ^message "Command request identity has different content."))))
+  (let parsed (parse_submission manager/runtime/h text))
+  (if_yes (!= request_id "")
+    (parsed .put "request_id" request_id)
+    (parsed .put "request_seq" sequence)
+    (parsed .put "request_digest" digest))
+  (submit_routed_command manager session parsed))
 
 (fn submit_routed_command [manager, session : Str, parsed, ^lease supplied_lease = nil]
   (if (! manager/accepting/.get)
@@ -373,12 +394,21 @@ Stopped."""))))
     ($sleep 1))
   (let record
     (try
-      (let state (command_state manager/runtime session))
+      (let state (read_command_state manager/runtime session))
+      (if_not ($absent? parsed/request_id)
+        (for previous in state/records
+          (if_yes (== previous/request_id parsed/request_id)
+            (if (&& (== previous/request_digest parsed/request_digest)
+                    (== previous/request_seq parsed/request_seq)) (return previous))
+            (fail (CommandError ^code "submission_conflict" ^message "Command request identity has different content."))))
+        (if (!= parsed/request_seq state/next_id)
+          (fail (CommandError ^code "submission_conflict" ^message "Unexpected command sequence; refresh or look up the previous receipt."))))
       (let id $"c${state/next_id}")
       (state .put "next_id" (+ state/next_id 1))
       (let allocated
         {
           ^id id
+          ^runtime_epoch manager/runtime/epoch
           ^name parsed/name
           ^raw parsed/raw
           ^status "running"
@@ -386,7 +416,7 @@ Stopped."""))))
           ^output ""
           ^started_ms ($os/wall_ms)
           ^start_seq (next_sequence manager/runtime/events (stream_key "session" session))})
-      (for key in ["mode_instance" "input_id" "ui_action" "ui_request" "ui_action_id"]
+      (for key in ["mode_instance" "input_id" "ui_action" "ui_request" "ui_action_id" "request_id" "request_seq" "request_digest"]
         (let value (parsed .get key))
         (if_not ($absent? value) (allocated .put key value)))
       (state/records .push allocated)
@@ -432,6 +462,12 @@ Stopped."""))))
     (if (== record/id id) (return record)))
   nil)
 
+(fn command_request_receipt [manager, session : Str, request_id : Str]
+  (let state (command_state manager/runtime session))
+  (for record in state/records
+    (if (== record/request_id request_id) (return record)))
+  nil)
+
 (fn cancel_command [manager, session : Str, id : Str]
   (let receipt (command_receipt manager session id))
   (if ($absent? receipt) (fail (CommandError ^code "not_found" ^message "command not found")))
@@ -444,7 +480,7 @@ Stopped."""))))
   (while (manager/gate .swap true)
     ($sleep 1))
   (try
-    (let state (command_state runtime session))
+    (let state (read_command_state runtime session))
     (let items state/attached)
     (state .put "attached" [])
     (save_command_state runtime session state)

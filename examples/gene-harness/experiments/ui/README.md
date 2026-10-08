@@ -21,7 +21,9 @@ bin/gene run examples/gene-harness/experiments/ui/install.gene /path/to/test-wor
 bin/gene run examples/gene-harness/src/web/server.gene --workspace /path/to/test-workspace --offline
 ```
 
-Open the bootstrap link printed by the server. Filter tasks, select one, edit
+In another terminal, retrieve the owner link with `bin/gene run
+examples/gene-harness/src/main.gene --workspace /path/to/test-workspace link`
+and open it. Filter tasks, select one, edit
 its fields and save. The first Save creates a normal session if necessary.
 The board's selection and drafts survive changing conversations and reloading.
 Discard edits reloads the task's current values after a conflict.

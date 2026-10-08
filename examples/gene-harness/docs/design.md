@@ -63,9 +63,13 @@ directory and stores all Harness state beneath `.gene-harness/`.
   events/                 workspace and session streams
   sessions/index          session metadata projection
   triggers/               durable trigger definitions
-  web_secret              persisted browser-session secret
-  web_sessions            cookie records and expiries
-  restart_notice          supervised restart handoff
+  web_secret              persistent reusable owner connection token (owner-only)
+  web_sessions            client cookies, CSRF values and reset generations (owner-only)
+  cli_cookie              CLI cookie and CSRF cache for the current origin (owner-only)
+  link                    reusable connection URL for the live host (owner-only)
+  connection              ready endpoint, workspace, protocol, instance and PID
+  web_port                last successfully selected port, retained across shutdown
+  restart_notice          supervised restart handoff, including the listening port
   shutdown.gene           active rounds cancelled by process shutdown
 ```
 
@@ -74,10 +78,56 @@ plugins. It writes owner atomically after acquiring the lock. A second process
 fails with the owner details; a crash releases the kernel lock. The target
 itself is not deleted. Shutdown flushes state and releases ownership last.
 
-The CLI and web entry points are owners. There is one event store, Harness
-runtime, composition and scheduler per workspace. Event publication is
-serialized within that process. CURRENT publication remains atomic for crash
-safety. There is no multi-writer merge, stream claim or publication lock.
+The web host is the only production runtime owner. It acquires the workspace
+lock before binding its listener or activating plugins. There is one event
+store, Harness runtime, composition and scheduler per workspace. Browser and
+CLI clients share its HTTP service; client disconnects leave admitted work
+running. Event publication is serialized within the host. CURRENT publication
+remains atomic for crash safety.
+
+The first host start binds an ephemeral loopback port. Fresh starts try the
+remembered port and announce a fallback if it is occupied. An explicit port or
+a supervised restart must bind its selected port. The actual listener port
+determines the Origin and cookie name. A ready descriptor and owner-only link
+are published after initialization, removed before shutdown releases ownership,
+and replaced after a crash. Startup failure closes the listener and runtime.
+Remembered ports and owner credentials survive shutdown independently of the
+live descriptor. Metadata checks detect stale or mismatched connections;
+cryptographic host verification is deferred.
+
+Offline `doctor`, `enable`, `disable` and `restore` retain the activation-free
+maintenance bootstrap and its durable crash recovery. They require exclusive
+workspace ownership and refuse a live host. Offline credential reset also takes
+the lock. Ordinary CLI operations never open the runtime or event store.
+
+## Owner authentication and clients
+
+`web` is the only production profile; the internal Profile type remains the
+unordered set of built-in defaults, limits and requirements. Scripted/offline
+provider configurations support model-free tests. Session state and plugin
+composition do not depend on the submitting client.
+
+One reusable owner token, persisted in `web_secret`, grants full workspace
+access to any number of browser and CLI clients. The existing auth exchange
+returns independent cookies and CSRF values. The token is never consumed or
+expired automatically. Client credentials remain valid at the host until
+explicit reset; the browser stores a persistent one-year cookie. The CLI caches
+its cookie in an owner-only file. Loopback, Host, Origin and CSRF checks remain.
+An exchange carrying a valid cookie reuses its cookie/CSRF pair, so reopening
+the link in another tab does not invalidate the CSRF value cached by older tabs.
+
+`link` reads the live connection metadata and owner-only URL. Startup diagnostics
+do not print the token. An owner reset replaces the token, clears client records,
+updates the link and closes authenticated streams without cancelling admitted
+work. Reset clears persisted cookies before publishing the new secret. Cookie
+records also carry a hash identifying the secret generation, so stale cookie
+snapshots cannot restore access after reset. Reset is handled by the running
+owner or under the offline lock.
+
+CLI operations create/list sessions, inspect state, submit literal prompts,
+run operator commands, answer questions, cancel work and administer triggers.
+Existing-session operations require an explicit id. HTTP reads and receipt
+polling support local waiting; there is no terminal chat or terminal REPL loop.
 
 ## Sessions, rounds and turns
 
@@ -152,9 +202,9 @@ loaded on demand. `gene_reference` contributes a short language orientation;
 the Gene skill is the `gene/overview` docs chapter. Plugin administration and
 triggers contribute searchable functions and owned docs rather than full prompt
 sections. The web entry contributes a short browser orientation.
-`gene_reference` makes the `harness/web_components` chapter available in all
-profiles, and `ui_experiment` contributes the configuration and preview
-functions. CLI turns can author and preview UI plugins without a browser.
+`gene_reference` makes the `harness/web_components` chapter available, and
+`ui_experiment` contributes configuration and preview functions. Prompts
+submitted through the CLI can author and preview UI plugins in the same host.
 Pull-only chapters come from `docs` rows and are read with `doc`. `discover`
 searches active contribution metadata with kind/owner filters and pagination,
 without reading chapter bodies or invoking callbacks. Its results include owners,
@@ -246,10 +296,9 @@ do not finish a round.
 
 Console printing is never a model request item. `$print` and `$println` in
 response code, in the plugin functions it calls, and in tasks they spawn write
-to the session's console sink through the task context. The CLI prints it
-dimmed, prefixed with the session title when several rounds run. The browser
-receives `console` messages, and the transcript records ignorable `console`
-events capped at 256 KiB per turn with a truncation marker.
+to the session's console sink through the task context. The browser receives
+`console` messages, and the CLI can read the same transcript records. Ignorable
+`console` events are capped at 256 KiB per turn with a truncation marker.
 
 ```gene
 (type Outcome ^props {^done Bool? ^prompt Any? ^reply Str? ^questions Any?
@@ -438,8 +487,8 @@ Every appended workspace or session event is also published on the bus as a
 selects exact records by its `name`, such as `turn/end` or `model/result`.
 Subscriptions unwind with their owner. The web host uses one `HarnessEvent`
 subscriber for durable transcript records and live round, command and
-session changes. The CLI subscribes for console, progress and operator
-notifications. Web snapshots that render plugin components run in tracked
+session changes. The CLI reads snapshots and polls receipts through HTTP.
+Web snapshots that render plugin components run in tracked
 tasks outside the bus callback, and shutdown drains them. Event observers
 cannot rewrite the frozen persisted envelope.
 
@@ -542,15 +591,16 @@ heartbeats are collected first. Pinned, attention, running, waiting and viewed
 sessions are preserved.
 The scheduler indexes pending occurrences separately from terminal history.
 It retains a configurable recent terminal window (default 256 per trigger)
-and durable no-replay watermarks. Administrative CLI commands open this state
-without executing a scheduler boot tick.
+and durable no-replay watermarks. CLI trigger administration uses the running
+host and does not open a second scheduler or runtime.
 
 ## Operator commands and shutdown
 
 Slash commands are registered rows with name, usage, documentation, run and
 raw_input. `core_commands` contributes the shared commands; the loop keeps
-cancel, stop and restart available even if that plugin is disabled. The CLI
-entry contributes `/new` and `/sessions`; the web entry does not. Unknown
+cancel, stop and restart available even if that plugin is disabled. Session
+creation/listing use service operations and CLI `sessions`; the retired
+`/new` and `/sessions` rows are absent. Unknown
 commands report a closest match; a doubled initial slash escapes a literal
 user prompt.
 
@@ -559,6 +609,15 @@ CommandResult carries display value, status and attachment behavior. Command
 tasks use the workspace directory, console routing and execution budgets.
 Results marked for attachment wait for the next user request, never an
 intermediate turn or a trigger request. File views attach a pointer.
+
+CLI operator submissions carry a request id, command sequence and text digest.
+Matching retained retries return the same receipt; changed content and stale
+sequences fail before execution. The sequence also prevents replay after a
+receipt leaves the retained window. Receipt lookup is available by execution
+or request id. Commands admitted by a previous runtime instance become
+`interrupted` on recovery and are never re-executed. Retention preserves running
+commands while pruning old terminal receipts. The client never blindly retries
+a mutation; session creation and trigger changes also have no automatic retry.
 
 The `repl` plugin contributes `/repl` and an `input_modes` row. A command
 returning `CommandResult ^mode` enters the named mode. The host owns transient
@@ -579,18 +638,25 @@ resources, clears host state and publishes ModeChanged. Imports are allowed;
 relative paths resolve from the workspace working directory. A short retirement
 lease keeps the old close callback alive during publication-driven cleanup.
 
-The browser uses one Send/Eval/Stop action button. CLI Ctrl-C while the REPL
-is open cancels its input or discards continuation lines. REPL state is never
-restored after process restart.
+Viewer-grace cleanup waits for an admitted input to finish and rechecks under
+the session admission gate. Idle session unloading likewise retains active
+operator commands and mode inputs. Explicit close, plugin withdrawal and host
+shutdown can still cancel work; ordinary client departure cannot.
+
+The browser uses one Send/Eval/Stop action button. CLI `run` performs independent
+evaluations; interrupting its local wait leaves the host task running. REPL
+state is never restored after process restart.
 
 Stop disables new rounds, commands and trigger starts, cancels running rounds,
 and preserves pending questions/due occurrences. Cancellation receipts and a
 shutdown marker become durable before cleanup. A five-second watchdog ends
 uncooperative cleanup. Normal completion flushes and releases ownership.
 
-The launcher restarts on exit 75; other exit statuses end supervision. Direct
-gene run maps restart to stop. Browser cookies and the secret persist for
-eight hours. Restart clients reconnect and receive a restarted notice.
+The launcher restarts the web host on exit 75 using its retained listening port;
+other exit statuses end supervision. Direct gene run maps restart to stop.
+Owner tokens and client credentials survive restart. Browser clients reconnect
+and receive a restarted notice. A fresh-start port fallback changes the Origin;
+the current link restores access but does not migrate browser-local drafts.
 
 ## Plugin-driven UI
 
@@ -708,7 +774,8 @@ The Harness relies on general runtime features, documented in
 | Fiber-aware `$os/exec`, `$fs/read_text`, `$fs/write_text` | Blocking calls park the fiber instead of the lane |
 | `$fs/try_lock` | Workspace ownership; the kernel releases it on exit |
 | `$fs/rename`, `$fs/info` | Patch commits and file views |
-| `$os/read_line_async`, `$io/flush_stdout` | A CLI that stays responsive while rounds run |
+| `$net/http_client/request` | CLI discovery, owner exchange, operations and receipt polling |
+| HTTP `listen` with port 0 and structured `address_in_use` errors | Remembered ports with precise fresh-start fallback |
 | Process groups for captured subprocesses | `/sh` cancellation stops the whole pipeline |
 | `$os/exit` | The shutdown watchdog and supervised restart status |
 | `$runtime/sandbox_namespaces` | The complete namespace grant for plugin generations |
@@ -720,6 +787,8 @@ The Harness relies on general runtime features, documented in
 | Responsibility | Module |
 | --- | --- |
 | Workspace boot and lock | runtime/bootstrap, runtime/workspace_lock |
+| CLI argument handling, operations and HTTP client | cli/options, cli/main, cli/client |
+| Offline composition repair and credential reset | runtime/maintenance |
 | Session index/load/unload/recovery | runtime/sessions |
 | Round admission/receipts/cancellation | runtime/round_controller |
 | Response grammar and evaluation | agents/response, agents/turn_eval |
@@ -742,7 +811,7 @@ The Harness relies on general runtime features, documented in
 | Experimental UI configuration functions | builtin/ui_experiment |
 | Progressive capability and docs discovery | agents/discovery; builtin/documentation shares owned chapter registration |
 | Browser session service and ordered delivery | web/session_service, web/push |
-| HTTP lifecycle, authentication and wire contract | web/server, web/auth, web/contract |
+| HTTP lifecycle, connection metadata, authentication and wire contract | web/server, web/connection, web/auth, web/contract |
 | Browser page shell and styles | web/page, web/style |
 | Conversation client and display | client/main, client/state, client/view, client/components |
 | Panel data/storage, keyed DOM and requests/actions | client/ui/model, client/ui/tree, client/ui/controller |

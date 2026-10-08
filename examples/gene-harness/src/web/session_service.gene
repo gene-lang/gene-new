@@ -27,7 +27,7 @@
 (import ^from "../storage/state" [events_for])
 (import ^from "./contract" [protocol_version history_page_limit])
 (import ^from "../runtime/commands"
-  [parse_submission submit_command command_receipt command_state cancel_command])
+  [parse_submission submit_command command_receipt command_request_receipt command_state cancel_command])
 (import ^from "../kernel"
   [rows contribute provide withdraw_seam HarnessEvent
    RoundChanged CommandChanged SessionChanged DurableRecord])
@@ -165,10 +165,10 @@
   nil)
 
 (fn open_session_service [^workspace workspace : Str = "", ^offline offline : Bool = false,
-                          ^profile supplied_profile = nil]
+                          ^profile supplied_profile = nil, ^ownership ownership = nil]
   (let profile (?? supplied_profile (if offline (offline_profile) (baseline_profile))))
   (let runtime
-    (open_runtime ^event_scope "workspace" ^entry ($path/join ($path/parent this_mod/.path) "server.gene")
+    (open_runtime ^ownership ownership ^event_scope "workspace" ^entry ($path/join ($path/parent this_mod/.path) "server.gene")
       (prepare_workspace_root ^root workspace)
       "default"
       profile))
@@ -191,7 +191,6 @@
   (service/subscriptions .push
     (runtime/h/bus .subscribe HarnessEvent
       (fn [event] (handle_harness_event service event))))
-  (set runtime/commands/interface "web")
   (provide runtime/h "core" "loop"
     (fn [] {^runtime runtime ^controller service/controller ^^start ^^boot}))
   service)
@@ -238,12 +237,31 @@
   (if (== parsed/kind "command")
     (submit_command service/runtime/commands session text)
     (submit_round service/controller session request_id sequence parsed/text)))
-(fn command [service, session : Str, text : Str]
-  (submit_command service/runtime/commands session text))
+(fn command [service, session : Str, text : Str, ^request_id request_id : Str = "", ^sequence sequence = nil]
+  (submit_command ^request_id request_id ^sequence sequence service/runtime/commands session text))
+
+(fn operator_receipt [service, session : Str, id : Str]
+  (require_record service/sessions session)
+  (let result (command_receipt service/runtime/commands session id))
+  (if ($absent? result) (fail (RoundError ^code "not_found" ^message "Command receipt is not retained.")))
+  result)
+
+(fn request_receipt [service, session : Str, request_id : Str, kind : Str]
+  (require_record service/sessions session)
+  (if_yes (== kind "command")
+    (let result (command_request_receipt service/runtime/commands session request_id))
+    (if_not ($absent? result) (return result)))
+  (if (== kind "round")
+    (for record in (/receipts (round_state service/controller session))
+      (if (== record/request_id request_id) (return record))))
+  (fail (RoundError ^code "not_found" ^message "Request receipt is not retained; do not replay an uncertain operation.")))
 (fn cancel_operator_command [service, session : Str, id : Str]
   (cancel_command service/runtime/commands session id))
 (fn receipt [service, session : Str, id : Str]
-  (round_receipt service/controller session id))
+  (require_record service/sessions session)
+  (let result (round_receipt service/controller session id))
+  (if ($absent? result) (fail (RoundError ^code "not_found" ^message "Round receipt is not retained.")))
+  result)
 (fn answer [service, session : Str, batch_id : Str, values, ^dismiss dismiss : Bool = false]
   (answer_round ^dismiss dismiss service/controller session batch_id values))
 (fn cancel [service, session : Str, id : Str]
@@ -315,6 +333,7 @@
     ^preview []
     ^has_older (> start 0)
     ^rounds rounds/receipts
+    ^next_command_seq ($to_str commands/next_id)
     ^next_submission_seq ($to_str rounds/next_seq)
     ^round loaded/round/.get
     ^mode (mode_state service/runtime/modes id)

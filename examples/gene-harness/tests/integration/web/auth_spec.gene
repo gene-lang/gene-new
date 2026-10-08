@@ -1,11 +1,16 @@
 # Tests src/web/auth.gene.
 (import $test [describe it])
-(import [isolated run_spec] ^from "../../support")
-(import [open_auth create_cookie authenticate] ^from "../../../src/web/auth")
+(import ^from "../../support" [isolated run_spec])
+(import ^from "../../../src/web/auth" [open_auth create_cookie authenticate exchange reset_auth])
 
-(describe "Harness browser authentication"
-  (it "preserves the secret, cookie and CSRF token across restart" []
-    (isolated this_mod/.path "preserves the secret, cookie and CSRF token across restart"
+(describe
+  "Harness browser authentication"
+  (it
+    "preserves the secret, cookie and CSRF token across restart"
+    []
+    (isolated
+      this_mod/.path
+      "preserves the secret, cookie and CSRF token across restart"
       (fn [workspace]
         ($fs/make_dir workspace)
         (let root ($fs/real_path workspace))
@@ -24,4 +29,43 @@
           "unknown cookie was accepted")
         ($println "browser auth: persisted secret, cookie and CSRF survive restart")))))
 
-(fn main [args] : Int (run_spec args))
+(describe "Harness owner authentication"
+  (it "keeps reusable credentials until reset and rejects an old cookie file after reset" []
+    (isolated this_mod/.path "keeps reusable credentials until reset and rejects an old cookie file after reset"
+      (fn [workspace]
+        (let root ($fs/real_path workspace))
+        (let auth (open_auth root))
+        (let token auth/secret)
+        (let first (exchange auth token))
+        (let second (exchange auth token))
+        (let another_tab (exchange auth token ^cookie first/cookie))
+        ($assert (&& (== another_tab/cookie first/cookie) (== another_tab/csrf first/csrf))
+          "opening another tab replaced the shared cookie/CSRF pair")
+        ($assert (!= first/cookie second/cookie) "clients did not get independent cookies")
+        ($assert (== (/csrf (authenticate auth first/cookie)) first/csrf) "another exchange revoked access")
+        (let old_records ($fs/read_text $"${root}/web_sessions"))
+        ($assert (== (/mode ($fs/info $"${root}/web_secret")) 384) "owner credential is not private")
+        ($assert (== (/mode ($fs/info $"${root}/web_sessions")) 384) "cookie records are not private")
+        (reset_auth auth)
+        ($assert (try (exchange auth token) false catch Any true) "reset accepted the previous owner token")
+        ($assert (try (authenticate auth second/cookie) false catch Any true) "reset accepted the previous cookie")
+        # A stale pre-reset cookie snapshot must not restore access.
+        ($fs/write_text_atomic ^^owner_only $"${root}/web_sessions" old_records)
+        (let reopened (open_auth root))
+        ($assert (try (authenticate reopened first/cookie) false catch Any true) "old cookies revived after crash")
+        (let fresh (exchange reopened auth/secret))
+        ($assert (== (/csrf (authenticate (open_auth root) fresh/cookie)) fresh/csrf) "new credentials did not survive restart"))))
+  (it "upgrades still-valid legacy cookies without reviving expired ones" []
+    (isolated this_mod/.path "upgrades still-valid legacy cookies without reviving expired ones"
+      (fn [workspace]
+        (let root ($fs/real_path workspace))
+        (open_auth root)
+        ($fs/write_text_atomic ^^owner_only $"${root}/web_sessions"
+          ($serde/write_data {^valid {^csrf "keep" ^expires (+ ($os/wall_ms) 60000)}
+                             ^expired {^csrf "drop" ^expires 1}}))
+        (let auth (open_auth root))
+        ($assert (== (/csrf (authenticate auth "valid")) "keep") "valid legacy cookie was lost")
+        ($assert (try (authenticate auth "expired") false catch Any true) "expired legacy cookie revived")))))
+
+(fn main [args] : Int
+  (run_spec args))

@@ -1,156 +1,37 @@
-(import ^from "./runtime/bootstrap" [open_runtime close_runtime prepare_workspace_root])
-(import ^from "./profiles/baseline" [baseline_profile])
-(import ^from "./profiles/scripted" [scripted_profile])
-(import ^from "./runtime/round_controller" [new_round_controller close_round_controller])
-(import ^from "./runtime/triggers" [close_trigger_manager list_triggers create_trigger delete_trigger list_occurrences])
-(import ^from "./runtime/cli_driver" [ask])
-(import ^from "./runtime/commands" [install_cli_commands])
-(import ^from "./storage/workspace" [doctor prepare_workspace disable_entry enable_entry restore_entry composition_revision])
-(import ^from "./views/repl" [chat])
-(import ^from "./kernel" [HarnessError DurableRecord provide withdraw_seam])
+(import ^from "./cli/options" [parse_options problem])
+(import ^from "./cli/main" [run_client usage])
+(import ^from "./web/server" [main : serve_web])
 
-(fn read_trigger_definition [path : Str]
-  (let text ($fs/read_text path))
-  (try ($serde/read_data text)
-    catch Any
-      (let forms ($into ($parse/read_all text) []))
-      (if (|| (!= forms/.size 1) (!= ($head forms/0) Map))
-        (fail (HarnessError ^message "trigger definition must be an inert Gene map or serde data")))
-      forms/0))
-
-(fn print_cli_record [runtime, event]
-  (if_not (== event/scope "session") (return nil))
-  # Event callbacks may run inside response code. Keep operator output outside
-  # the turn's console sink so printing does not append another console event.
-  ($runtime/with_context nil
-    (fn []
-      (let payload event/envelope/payload)
-      (if (&& (== event/name "reply") (!= payload/final true))
-        (then
-          ($println payload/text)
-          ($io/flush_stdout)))
-      (if (== event/name "console")
-        (then
-          (var running 0)
-          (for [id record] in runtime/sessions/index/.get
-            (if (== record/status "running")
-              (set running (+ running 1))))
-          (let record (runtime/sessions/index/.get .get event/stream))
-          (let title (?? record/title event/stream))
-          (let prefix (if (> running 1) $"[${title}] " ""))
-          (if ($os/stdout_tty?)
-            ($print "\u001b[2m" prefix payload/text "\u001b[0m")
-            ($print prefix payload/text))
-          ($io/flush_stdout)))))
-  nil)
-
-(fn main [args]
-  (let names [])
-  (for arg in args
-    (names .push ($to_str arg)))
-  (var root "")
-  (var session "default")
-  (var script nil)
-  (let positional [])
-  (var index 0)
-  (while (< index names/.size)
-    (let name names/%index)
-    (if (["--workspace" "--session" "--script"] .contains? name)
-      (then
-        (set index (+ index 1))
-        (if (>= index names/.size) (fail (HarnessError ^message $"${name} needs a value")))
-        (if (== name "--workspace")
-          (set root names/%index)
-          (if (== name "--session")
-            (set session names/%index)
-            (set script names/%index))))
-      (else
-        (positional .push name)))
-    (set index (+ index 1)))
-  (let command (if positional/.empty? "chat" positional/0))
-  (let recovery (["doctor" "disable" "enable" "restore"] .contains? command))
-  (let selected_profile
-    (if ($absent? script)
-      (baseline_profile)
-      (scripted_profile (($parse/read_all ($fs/read_text script)) .next))))
-  (let runtime
-    (open_runtime ^entry this_mod/.path ^activate (! recovery)
-      (prepare_workspace_root ^root root)
-      session
-      selected_profile))
-  (var controller nil)
-  (var cli_subscription nil)
+(fn main [args] : Int
+  (var parsed nil)
   (try
-    (if_not recovery
-      (set cli_subscription
-        (runtime/h/bus .subscribe DurableRecord
-          (fn [event] (print_cli_record runtime event)))))
-    (if_not recovery
-      (let report (runtime/h/readiness))
-      (if_not ($absent? report) ($println report)))
-    (if_not recovery (install_cli_commands runtime))
-    (if recovery
-      (then
-        (if (== command "doctor")
-          (then
-            (prepare_workspace runtime/workspace runtime/h)
-            (let findings (doctor runtime/workspace))
-            (if findings/.empty?
-              ($println "No composition problems found.")
-              (for finding in findings ($println finding))))
-          (else
-            (if (< positional/.size 2) (fail (HarnessError ^message $"${command} needs a plugin id")))
-            (let id positional/1)
-            (let before (composition_revision runtime/workspace))
-            (let revision
-              (match command ^!exhaustive
-                (when "disable" (disable_entry ^h runtime/h runtime/workspace id))
-                (when "enable" (enable_entry ^h runtime/h runtime/workspace id))
-                (when "restore" (restore_entry ^h runtime/h runtime/workspace id))))
-            (let changed (!= revision before))
-            (let status
-              (match command ^!exhaustive
-                (when "disable" (if changed "disabled" "already disabled"))
-                (when "enable" (if changed "enabled" "already enabled"))
-                (when "restore" (if changed "restored" "already at profile default"))))
-            ($println $"${id}: ${status} (revision ${revision})")))
-        (return 0)))
-    (if_not (["chat" "scripted" "triggers"] .contains? command) (fail (HarnessError ^message $"unknown command ${command}")))
-    (set controller (new_round_controller runtime))
-    (let serving (!= command "triggers"))
-    (provide runtime/h "core" "loop"
-      (fn [] {^runtime runtime ^controller controller ^start serving ^boot serving}))
-    (let triggers runtime/triggers)
-    (if (== command "triggers")
-      (then
-        (let action (if (> positional/.size 1) positional/1 "list"))
-        (match action
-          (when "list" (for definition in (list_triggers triggers) ($println definition)))
-          (when "create"
-            (if (< positional/.size 3) (fail (HarnessError ^message "triggers create needs a definition file")))
-            ($println (create_trigger triggers (read_trigger_definition positional/2))))
-          (when "delete"
-            (if (< positional/.size 3) (fail (HarnessError ^message "triggers delete needs an id")))
-            ($println (delete_trigger triggers positional/2)))
-          (when "occurrences"
-            (for occurrence in (list_occurrences triggers ^trigger (if (> positional/.size 2) positional/2 nil))
-              ($println occurrence)))
-          (else (fail (HarnessError ^message $"unknown triggers action ${action}"))))
-        (return 0)))
-    (if (> positional/.size 1)
-      (then
-        (let prompt [])
-        (var i 1)
-        (while (< i positional/.size)
-          (prompt .push positional/%i)
-          (set i (+ i 1)))
-        (ask controller session ($str/join prompt " ")))
-      (else
-        (chat controller session)))
-    runtime/exit_code/.get
-  ensure
-    (if_not ($absent? cli_subscription) cli_subscription/.cancel)
-    (withdraw_seam runtime/h "core" "loop")
-    (if_not ($absent? runtime/triggers) (close_trigger_manager runtime/triggers))
-    (if_not ($absent? controller) (close_round_controller controller))
-    (close_runtime runtime)))
+    (set parsed (parse_options args))
+    (if_yes (|| (== parsed/options/help true) (== parsed/command "help"))
+      ($println (usage))
+      (return 0))
+    (if_yes (== parsed/command "web")
+      (if (> parsed/words/.size 1) (problem "web accepts host options, not additional commands."))
+      (for [key value] in parsed/options
+        (if_not (["workspace" "port" "restart-port" "script" "offline" "supervised"] .contains? ($to_str key))
+          (problem $"--${key} requires a client command.")))
+      (let arguments [])
+      (for key in ["workspace" "port" "restart-port" "script"]
+        (let value (parsed/options .get key))
+        (if_not ($absent? value)
+          (arguments .push $"--${key}")
+          (arguments .push value)))
+      (if (== parsed/options/offline true) (arguments .push "--offline"))
+      (if (== parsed/options/supervised true) (arguments .push "--supervised"))
+      (return (serve_web arguments)))
+    (run_client parsed)
+  catch Any
+    (let error {^code (?? $err/code "error") ^message $err/message})
+    (let properties ($props $err))
+    (for key in ["request_id" "submission_seq" "execution_id" "kind" "session"]
+      (let value (properties .get key))
+      (if_not ($absent? value) (error .put key value)))
+    ($println
+      (if (== parsed/options/json true)
+        ($json/stringify error)
+        $"${error/code}: ${error/message}"))
+    1))

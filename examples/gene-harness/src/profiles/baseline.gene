@@ -14,7 +14,7 @@
 (import [budget_advisory] ^from "../builtin/budget_advisory")
 (import [history_basic] ^from "../builtin/history_basic")
 (fn baseline_profile []
-  (Profile ^name "chat"
+  (Profile ^name "web"
     ^plugins [(gene_reference) (plugin_admin) (core_commands) (repl) (triggers) (ui_experiment)
               (provider_codex) (provider_anthropic) (provider_claude)
               (provider_openrouter) (budget_advisory) (history_basic)]

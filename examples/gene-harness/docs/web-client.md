@@ -3,17 +3,35 @@
 ## Start and connect
 
 ```text
-bin/gene run examples/gene-harness/src/web/server.gene --workspace /path/to/project --port 8095
+bin/gene run examples/gene-harness/src/main.gene web --workspace /path/to/project
+# In another terminal:
+bin/gene run examples/gene-harness/src/main.gene --workspace /path/to/project link
 ```
 
-The host owns the workspace lock. It cannot run alongside a CLI owner of that
-workspace. It prints a one-use bootstrap link, valid for ten minutes.
+The web host owns the workspace lock and is the only production profile.
+Multiple browser and CLI clients share it. The host runs independently of its
+clients; closing a client leaves admitted rounds and operator commands running.
 
-The page exchanges the token for an eight-hour HttpOnly, SameSite cookie and
-CSRF value. The cookie name includes the port. The secret and browser-session
-records persist beneath .gene-harness, so a supervised restart does not require
-a new bootstrap link. Cookie expiry still requires reconnection through a new
-link.
+The owner retrieves a reusable connection link with `link`. Its token is stored
+in an owner-only file and stays valid across restart until explicit reset. The
+page exchanges it for an HttpOnly, SameSite cookie and CSRF value, then removes
+the token from the URL. Cookies have a one-year browser lifetime; the host keeps
+credentials valid until reset. Reopen the same link if the browser discards its
+cookie. Different browsers can use the same link at different times.
+Opening the link in an already authenticated browser reuses its cookie and
+CSRF value, keeping other tabs' pending requests valid.
+
+The first start chooses a free loopback port and remembers it. Later fresh
+starts reuse it or announce a fallback if occupied. Fixed-port starts and
+supervised restarts fail if their selected port is unavailable. Keeping the
+port preserves the Origin, cookie name and bookmarks. If the address changes,
+retrieve the current link; browser-local state from the old Origin is not
+automatically migrated.
+
+`auth reset` replaces the token, invalidates all client credentials and closes
+authenticated streams. Admitted work continues. The CLI uses the same exchange,
+cookie and CSRF checks, with an owner-only local cookie cache. Every authenticated
+client has full owner permissions. Startup diagnostics omit the connection token.
 
 The host binds to 127.0.0.1. It checks Host and Origin, and mutations require
 the current CSRF value. Responses have no-store and restrictive content
@@ -135,7 +153,10 @@ All API paths use /api/v6.
 
 | Method and path | Purpose |
 | --- | --- |
-| POST /auth/exchange | Exchange one-use bootstrap token |
+| GET /connection | Public endpoint/workspace/protocol/instance metadata for local discovery; no credentials or conversation records |
+| POST /auth/exchange | Exchange the reusable owner token for a cookie and CSRF value |
+| POST /auth/reset | Replace the owner token and revoke all client credentials and streams |
+| POST /control | Stop/restart with optional submitting session and confirmation |
 | GET /status?session=ID | Authentication check, CSRF value and host status with ordinary components rendered for that session; omit ID for an unselected conversation |
 | GET /events?session=ID | Upgrade to the session's ordered stream |
 | GET /sessions | Query index filters |
@@ -143,11 +164,14 @@ All API paths use /api/v6.
 | PATCH /sessions/ID | Rename/pin with metadata revision |
 | POST /sessions/ID/open | Acknowledge attention when activating an open tab |
 | GET /sessions/ID/snapshot | Fetch transcript state |
-| POST /sessions/ID/rounds | Admit a user prompt with request id and submission sequence |
+| POST /sessions/ID/rounds | Admit input with request id and submission sequence; `literal: true` submits prompt text without slash-command parsing |
 | GET /sessions/ID/rounds/ROUND | Retrieve an idempotent receipt |
 | POST /sessions/ID/answers | Answer/dismiss a question batch |
 | POST /sessions/ID/cancel | Cancel a round |
-| POST /sessions/ID/commands | Submit a slash command |
+| POST /sessions/ID/commands | Submit a slash command; optional request id plus submission sequence enables deduplication |
+| GET /sessions/ID/commands/COMMAND | Retrieve an operator-command receipt |
+| POST /sessions/ID/commands/COMMAND/cancel | Cancel an operator command |
+| GET /sessions/ID/requests/REQUEST?kind=round\|command | Look up a retained receipt by client request id |
 | POST /sessions/ID/mode/input | Submit `{instance, input_id, text}` to the current input mode |
 | POST /sessions/ID/mode/leave | Close the named mode instance through the host |
 | POST /ui/render | Render one experimental component with its instance, revision, request sequence and view state |
@@ -158,6 +182,13 @@ All API paths use /api/v6.
 | POST /triggers | Create a definition |
 | DELETE /triggers/ID | Disable/delete a definition |
 | GET /triggers/ID/occurrences | List occurrence state |
+| GET /trigger-occurrences | List retained occurrences across triggers |
+
+Snapshots include both `next_submission_seq` for rounds and `next_command_seq`
+for operator commands. CLI mutations are never automatically replayed after a
+lost response. Matching retained command identities return the existing receipt;
+conflicting content or stale sequences fail. Commands interrupted by a previous
+host become terminal `interrupted` receipts when recovered.
 
 Session query parameters are kind, status, attention, q, trigger, since and
 until, plus an after cursor for paging. Index queries do not load transcript
@@ -201,8 +232,8 @@ The web command picker uses server-provided usage/documentation.
 
 Run, shell and view commands remain available while a round runs. Their
 attachments wait for the next user prompt; they never appear in a running
-round's intermediate context. New/list-session commands are CLI-only because
-the browser has session navigation.
+round's intermediate context. Both clients create and list sessions through
+the session service; CLI uses `sessions`, and `/new` and `/sessions` are retired.
 
 A pending prompt retains its request id and submission sequence in browser
 storage until admission is known. Reconnection checks receipts and retries
@@ -233,12 +264,13 @@ cookie, changes the process epoch and delivers a restarted notice.
 | `client/ui/controller.gene` | Panel render requests, actions, receipt recovery and layout |
 | `src/ui/` | Native component validation, descriptors, rendering, outlines and action admission |
 | `src/web/page.gene`, `src/web/style.gene` | Host page shell, compiled client entry and styling |
-| `src/web/server.gene` | HTTP routing, authentication checks and server lifecycle |
+| `src/web/server.gene`, `src/web/connection.gene` | HTTP routing, remembered ports, ready descriptors and server lifecycle |
+| `src/web/auth.gene`, `src/cli/` | Shared owner exchange, credential reset, CLI operations and receipt polling |
 
 web/session_service.gene connects the UI to the shared SessionManager and
 RoundController. web/push.gene routes ordered frames and viewer lifetimes.
-The same runtime runs CLI and browser rounds; there is no per-session plugin
-activation or browser-only model loop.
+The web host runs all rounds, including prompts submitted by the CLI; there is
+no per-session plugin activation or second CLI runtime.
 
 The package's `gene test` specs cover protocol-6 service delivery, live
 records before completion, console routing, custom question validation,
@@ -251,7 +283,7 @@ UI specs live in `tests/unit/ui/` and `tests/integration/ui/`; they cover
 component validation, render isolation, publication outlines, revision
 conflicts, cross-session actions and receipt recovery. The scripted model
 repair sequence lives in `tests/integration/agents/harness_turn_spec.gene`.
-The UI modules also run in CLI profiles; no browser is required for previews.
+CLI-submitted prompts can use the same UI previews without a browser connected.
 
 To verify the browser import graph from the repository root:
 
