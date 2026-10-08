@@ -1,0 +1,212 @@
+# Source ownership and frozen declarative content. No UI, console or model history.
+(mod notification_publisher)
+(import ^from "./inbox"
+  [post_message publish_progress message_detail inbox_snapshot clear_messages notification_error])
+(import ^from "../ui/components" [bounded_component_view])
+(import ^from "../ui/state" [ui_record ui_revision])
+(import ^from "../runtime/composition" [current_snapshot])
+
+(fn bounded_text [value, label : Str, limit : Int, ^empty empty : Bool = false] : Str
+  (if (|| (!= ($head value) Str) (> ($str/byte_size value) limit) (&& (! empty) (== ($str/trim value) "")))
+    (notification_error "invalid_request" $"Invalid notification ${label}."))
+  value)
+
+(fn publisher_revision [h, source : Str] : Str
+  (if (== source "operator") (return h/ui_epoch))
+  (var active false)
+  (let snapshot h/snapshots/current/.get)
+  (for plugin in (?? snapshot/plugins [])
+    (if (&& (== plugin/id source) (== plugin/status "ready")) (set active true)))
+  (if (! active) (return ""))
+  (let policy (h/plugin_policies/.get .get source))
+  (?? policy/context/notification_revision ""))
+
+(fn validate_detail [value]
+  (if ($absent? value) (return nil))
+  (let tree
+    (try
+      (bounded_component_view ^^experimental value)
+    catch Any
+      (notification_error "invalid_request" $err/message)))
+  (fn check [node]
+    (if (!= ($head node) Map) (return nil))
+    (if (["form" "input" "textarea" "select" "option" "button"] .contains? node/tag)
+      (notification_error
+        "invalid_request"
+        "Notification details are read-only; declare actions separately."))
+    (for key in ["action" "command" "prompt" "state" "field"]
+      (if_not ($absent? (node/props .get key))
+        (notification_error
+          "invalid_request"
+          "Notification details cannot contain callbacks or hidden actions.")))
+    (for child in node/children
+      (check child)))
+  (check tree)
+  tree)
+
+(fn validate_actions [h, source : Str, revision : Str, input]
+  (if (|| (!= ($head input) List) (> input/.size 8))
+    (notification_error "invalid_request" "A notification supports at most eight actions."))
+  (let result [])
+  (let ids {})
+  (let snapshot (current_snapshot h/snapshots))
+  (for item in input
+    (if (!= ($head item) Map) (notification_error "invalid_request" "Action must be a data map."))
+    (let id (bounded_text item/id "action id" 80))
+    (if (ids .has_key? id) (notification_error "invalid_request" "Duplicate action id."))
+    (ids .put id true)
+    (let action
+      {^id id ^label (bounded_text item/label "action label" 120) ^publisher_revision revision})
+    (var count 0)
+    (for key in ["reference" "prompt" "function" "command"]
+      (if_not ($absent? (item .get key))
+        (set count (+ count 1))
+        (action .put key (item .get key))))
+    (if (!= count 1)
+      (notification_error "invalid_request" "An action requires exactly one behavior."))
+    (if_not ($absent? item/reference)
+      (let ref item/reference)
+      (if (|| (!= ($head ref) Map) (!= ($head ref/session) Str) (== ref/session ""))
+        (notification_error "invalid_request" "A reference requires an originating session."))
+      (for [key value] in ref
+        (if_not (["session" "round" "command" "artifact" "entity" "component" "view_state"] .contains? ($to_str key))
+          (notification_error "invalid_request" "Unknown notification reference field.")))
+      (for key in ["session" "round" "command" "artifact" "entity" "component"]
+        (if_not ($absent? (ref .get key)) (bounded_text (ref .get key) "reference" 1024)))
+      (let patch (?? ref/view_state {}))
+      (if (!= ($head patch) Map)
+        (notification_error "invalid_request" "View-state patch must be a map."))
+      (for [key value] in patch
+        (if_not ([Str Bool Int Float Nil] .contains? ($head value))
+          (notification_error "invalid_request" "View-state patch values must be scalar.")))
+      (if_not ($absent? ref/component)
+        (let component (ui_record snapshot "web_components" ref/component))
+        (if ($absent? component)
+          (notification_error "not_found" "Reference component is unavailable."))
+        (action .put "component_revision" (ui_revision h component)))
+      (action .put "reference" ($thaw ($freeze ref))))
+    (if_not ($absent? item/prompt) (bounded_text item/prompt "prompt" 16384))
+    (if_not ($absent? item/command)
+      (bounded_text item/command "command" 16384)
+      (if_not ($str/starts_with? item/command "/")
+        (notification_error "invalid_request" "Operator commands start with /."))
+      (let words ($str/split ($str/trim item/command) " "))
+      (let name ($str/slice_bytes words/0 1 (- ($str/byte_size words/0) 1)))
+      (let command (ui_record snapshot "commands" name))
+      (if ($absent? command)
+        (notification_error "not_found" "Notification command is unavailable."))
+      (action .put "command_name" name)
+      (action .put "command_revision" (ui_revision h command)))
+    (if_not ($absent? item/function)
+      (bounded_text item/function "function" 128)
+      (let function (ui_record snapshot "functions" item/function))
+      (if ($absent? function)
+        (notification_error "not_found" "Notification function is unavailable."))
+      (action .put "function_revision" (ui_revision h function))
+      (action .put "args" (?? item/args []))
+      (action .put "named" (?? item/named {}))
+      (if (|| (!= ($head action/args) List) (!= ($head action/named) Map))
+        (notification_error "invalid_request" "Function arguments require a list and named map.")))
+    (if (> ($str/byte_size ($json/stringify action)) 32768)
+      (notification_error "too_large" "Notification action is too large."))
+    (result .push action))
+  result)
+
+(fn publish_notification [h, source : Str, input, ^revision revision = nil, ^frozen_actions frozen_actions = nil, ^preserve_origin preserve_origin : Bool = false]
+  (if ($absent? h/notifications)
+    (notification_error "unavailable" "The notification inbox is unavailable."))
+  (if (!= ($head input) Map)
+    (notification_error "invalid_request" "Notification needs a data map."))
+  (for key in ["id" "source" "sequence" "revision" "state" "kind" "dismissible" "response" "cleared_revision"]
+    (if_not ($absent? (input .get key))
+      (notification_error "invalid_request" $"Notification ${key} is host-owned or unsupported.")))
+  (let context ($runtime/context))
+  (let origin ($thaw ($freeze (?? input/origin {}))))
+  (if (!= ($head origin) Map) (notification_error "invalid_request" "Origin must be a data map."))
+  (if (> ($str/byte_size ($json/stringify origin)) 4096)
+    (notification_error "too_large" "Notification origin is too large."))
+  (if (&& (! preserve_origin) (! ($absent? context/session)))
+    (origin .put "session" context/session))
+  (for key in ["session" "round" "command" "component" "entity" "revision"]
+    (if_not ($absent? (origin .get key)) (bounded_text ($to_str (origin .get key)) "origin" 1024)))
+  (let key (bounded_text ^^empty (?? input/key "") "key" 128))
+  (if_yes (== input/progress true)
+    (if (== key "") (notification_error "invalid_request" "Progress requires a stable source key."))
+    (let data {^origin origin ^summary (bounded_text input/summary "progress" 2048)})
+    (return (publish_progress h/notifications source key data)))
+  (let scope (?? input/scope (if ($absent? origin/session) "workspace" "session")))
+  (if_not (["workspace" "session"] .contains? scope)
+    (notification_error "invalid_request" "Scope must be workspace or session."))
+  (if (&& (== scope "session") ($absent? origin/session))
+    (notification_error "invalid_request" "Session messages need an originating session."))
+  (let severity (?? input/severity "info"))
+  (if_not (["info" "success" "warning" "error"] .contains? severity)
+    (notification_error "invalid_request" "Unknown notification severity."))
+  (if_not ($absent? input/expires_at)
+    (if (|| (!= ($head input/expires_at) Int) (<= input/expires_at ($os/wall_ms)))
+      (notification_error "invalid_request" "expires_at must be a future epoch millisecond value.")))
+  (let definition
+    {
+      ^key key
+      ^scope scope
+      ^origin origin
+      ^severity severity
+      ^title (bounded_text input/title "title" 256)
+      ^summary (bounded_text ^^empty (?? input/summary "") "summary" 4096)
+      ^detail (validate_detail input/detail)
+      ^actions (if ($absent? frozen_actions)
+                 (validate_actions
+                   h
+                   source
+                   (?? revision (publisher_revision h source))
+                   (?? input/actions []))
+                 frozen_actions)
+      ^expires_at (?? input/expires_at nil)
+      ^renew (== input/renew true)})
+  (if (> ($str/byte_size ($json/stringify definition)) 32768)
+    (notification_error "too_large" "A notification publication must fit in 32 KiB."))
+  (post_message h/notifications source definition))
+
+(fn safe_publish [h, source : Str, input, ^revision revision = nil, ^frozen_actions frozen_actions = nil, ^preserve_origin preserve_origin : Bool = false]
+  (try
+    (publish_notification ^revision revision ^frozen_actions frozen_actions ^preserve_origin preserve_origin
+      h
+      source
+      input)
+  catch Any
+    {^!ok ^code (?? $err/code "notification_failed") ^message $err/message}))
+
+(fn source_message [h, source : Str, id : Str]
+  (let message (message_detail h/notifications id))
+  (if (!= source message/source)
+    (notification_error "forbidden" "Publisher does not own this notification."))
+  message)
+
+(fn update_notification [h, source : Str, id : Str, changes, ^revision revision = nil]
+  (try
+    (let message (source_message h source id))
+    (if (&& (! ($absent? changes/key)) (!= changes/key message/key))
+      (notification_error "invalid_request" "An existing notification key cannot be changed."))
+    (if (== message/key "")
+      (notification_error "invalid_request" "Updates require a keyed publication."))
+    (let input {})
+    (for key in ["key" "scope" "origin" "severity" "title" "summary" "detail" "actions"]
+      (input .put key (message .get key)))
+    (for [key value] in changes
+      (input .put key value))
+    (safe_publish ^revision revision ^frozen_actions (if ($absent? changes/actions) message/actions nil) ^preserve_origin ($absent? changes/origin)
+      h
+      source
+      input)
+  catch Any
+    {^!ok ^code (?? $err/code "notification_failed") ^message $err/message}))
+
+(fn list_source_messages [h, source : Str]
+  (let messages [])
+  (for item in ((Path "messages") (inbox_snapshot h/notifications))
+    (if (== item/source source) (messages .push item)))
+  messages)
+
+(fn clear_source_message [h, source : Str, id : Str, revision : Int]
+  (source_message h source id)
+  (clear_messages h/notifications [{^id id ^revision revision}]))

@@ -112,10 +112,10 @@ recovery page, retaining the selected conversation and omitting plugin views,
 render callbacks and theme overrides. Its requests carry `ui=default`.
 Return to workspace UI leaves recovery without changing shared settings.
 
-## Wire protocol 6
+## Wire protocol 7
 
 The native host and Gene web-profile client share web/contract.gene.
-The current version is 6. A version mismatch stops interaction and asks for a
+The current version is 7. A version mismatch stops interaction and asks for a
 reload.
 
 Every WebSocket frame has protocol, epoch, decimal-text sequence, type,
@@ -138,6 +138,8 @@ session.
 | mode/state | Current input mode or nil; the frame also carries a change reason |
 | ui/state | Layout, theme and stateful-view descriptors; also invalidates ordinary component status across the workspace |
 | ui/action | Workspace-delivered action receipt carrying its submitting session; displayed in the panel |
+| notifications/state | Isolated inbox revision, publication watermark, opened watermark and visible producer messages |
+| notifications/progress | Transient source/key progress with original work context; never replayed on reconnect |
 | ready | Initial state delivery is complete |
 | stopped | Process stopped, or is restarting under supervision |
 | restarted | Reconnected process completed a supervised restart |
@@ -149,7 +151,7 @@ provisional command output without dropping the command's console.
 
 ### HTTP endpoints
 
-All API paths use /api/v6.
+All API paths use /api/v7.
 
 | Method and path | Purpose |
 | --- | --- |
@@ -159,6 +161,12 @@ All API paths use /api/v6.
 | POST /control | Stop/restart with optional submitting session and confirmation |
 | GET /status?session=ID | Authentication check, CSRF value and host status with ordinary components rendered for that session; omit ID for an unselected conversation |
 | GET /events?session=ID | Upgrade to the session's ordered stream |
+| GET /notifications | Producer snapshot; independent of workflow question/attention state |
+| GET /notifications/ID | Retained message detail, including cleared revisions |
+| POST /notifications | Publish an operator-owned message |
+| POST /notifications/ack | Advance opened-through watermark using `through` |
+| POST /notifications/clear | Clear observed `{id, revision}` entries in `messages` |
+| POST /notifications/action | Resolve a declared action; mutations carry original session/request id/command sequence |
 | GET /sessions | Query index filters |
 | POST /sessions | Create an interactive session |
 | PATCH /sessions/ID | Rename/pin with metadata revision |
@@ -272,7 +280,7 @@ RoundController. web/push.gene routes ordered frames and viewer lifetimes.
 The web host runs all rounds, including prompts submitted by the CLI; there is
 no per-session plugin activation or second CLI runtime.
 
-The package's `gene test` specs cover protocol-6 service delivery, live
+The package's `gene test` specs cover protocol-7 service delivery, live
 records before completion, console routing, custom question validation,
 metadata revisions/attention, command execution, restart authentication,
 concurrent sessions and shutdown. Responsiveness specs run CPU loops,

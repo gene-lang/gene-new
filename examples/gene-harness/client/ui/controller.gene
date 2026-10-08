@@ -1,9 +1,29 @@
 # Workspace panel requests, actions and layout; independent of chat drafts.
 (mod harness_ui_controller ^profile web)
-(import [UiNode UiClient text flag copy_map body_args notice state_key pending_key
-  persist_view persist_pending field_value sync_controls clear_saved_drafts] ^from "./model.gene")
-(import [apply_tree] ^from "./tree.gene")
-(import [revision_before] ^from "../state.gene")
+(import ^from "../notices.gene" [Notices])
+(import ^from "./model.gene"
+  [
+    UiNode
+    UiClient
+    text
+    flag
+    copy_map
+    body_args
+    notice
+    state_key
+    pending_key
+    persist_view
+    persist_pending
+    field_value
+    sync_controls
+    clear_saved_drafts])
+(import ^from "./tree.gene" [apply_tree])
+(import ^from "../state.gene" [revision_before])
+
+(fn action_notice [ui : UiClient, pending : Any, message : Str, severity : Str = "info", sticky : Bool = true] : Void
+  (notice ^key (text pending/request/input_id) ^severity severity ^sticky sticky ^action (if (&& sticky (! ($absent? ui/pending))) (fn [] : Void (if_yes (== (text ui/pending/request/input_id) (text pending/request/input_id)) (resolve_action ui true))) nil) ^origin {^session pending/session ^component pending/request/component ^instance pending/request/instance ^arguments pending/request/named ^view_state pending/view_state ^command pending/command_id}
+    ui
+    message))
 
 (fn accept_receipt [ui : UiClient, session : Str, record : Any] : Void
   (if_yes ($absent? ui/pending) (return))
@@ -14,11 +34,14 @@
   (persist_pending ui)
   (var status (text record/status))
   (if (== status "running")
-    (notice ui "Saving…")
+    (action_notice ui pending "Saving…")
     (do
       (if (== status "done")
-        (do (clear_saved_drafts ui pending) (notice ui "Saved."))
-        (notice ui (text record/display status)))
+        (do
+          (if_yes (&& (== (text pending/request/component) (text ui/descriptor/name)) (== (text pending/request/instance) ui/instance) (== ($json/stringify (copy_map pending/view_state)) ($json/stringify ui/state)))
+            (clear_saved_drafts ui pending))
+          (action_notice ui pending "Saved." "info" false))
+        (action_notice ui pending (text record/display status) "error"))
       ($session_storage/remove (pending_key ui))
       (set ui/pending nil)
       (set ui/last_data "")
@@ -30,24 +53,35 @@
   (var pending : Any ui/pending)
   (var session : Str pending/session)
   (if_not (persist_pending ui)
-    (notice ui "Browser storage is required before saving an action.")
+    (action_notice ui pending "Browser storage is required before saving an action." "error")
     (return))
-  (notice ui "Saving…")
+  (action_notice ui pending "Saving…")
   (sync_controls ui)
-  (ui/api "POST" $"/api/v6/sessions/${session}/ui/actions" pending/request
+  (ui/api
+    "POST"
+    $"/api/v7/sessions/${session}/ui/actions"
+    pending/request
     (fn [code : Int, data : Any] : Void
-      (if_yes (|| ($absent? ui/pending)
-        (!= (text ui/pending/request/input_id) (text pending/request/input_id))) (return))
+      (if_yes (|| ($absent? ui/pending) (!= (text ui/pending/request/input_id) (text pending/request/input_id)))
+        (return))
       (if (== code 202)
         (accept_receipt ui session data)
         (if (&& (>= code 400) (< code 500))
           (do
             ($session_storage/remove (pending_key ui))
             (set ui/pending nil)
-            (notice ui (text data/message "Action refused. Refresh the view."))
+            (action_notice
+              ui
+              pending
+              (text data/message "Action refused. Refresh the view.")
+              "error")
             (set ui/last_data "")
             (refresh ui))
-          (notice ui "Save outcome is unknown. Resolve the action before trying again.")))
+          (action_notice
+            ui
+            pending
+            "Save outcome is unknown. Resolve the action before trying again."
+            "error")))
       (sync_controls ui))))
 
 (fn resolve_action [ui : UiClient, retry : Bool] : Void
@@ -56,7 +90,10 @@
   (var session : Str pending/session)
   (var id : Str pending/request/input_id)
   (set ui/resolving true)
-  (ui/api "GET" $"/api/v6/sessions/${session}/ui/actions/${id}" nil
+  (ui/api
+    "GET"
+    $"/api/v7/sessions/${session}/ui/actions/${id}"
+    nil
     (fn [code : Int, data : Any] : Void
       (set ui/resolving false)
       (if_yes (|| ($absent? ui/pending) (!= id (text ui/pending/request/input_id))) (return))
@@ -64,11 +101,15 @@
         (accept_receipt ui session data)
         (if (&& (== code 404) retry)
           (post_action ui)
-          (notice ui "No receipt was recovered. Resolve action retries the original identity."))))))
+          (action_notice
+            ui
+            pending
+            "No receipt was recovered. Resolve action retries the original identity."
+            "error"))))))
 
 (fn submit_action [ui : UiClient, node : UiNode] : Void
-  (if_yes (|| (! ui/ready) ui/loading ui/render_error
-    (!= ui/rendered_revision (text ui/descriptor/revision)) (! ($absent? ui/pending))) (return))
+  (if_yes (|| (! ui/ready) ui/loading ui/render_error (!= ui/rendered_revision (text ui/descriptor/revision)) (! ($absent? ui/pending)))
+    (return))
   (var name (text node/props/action))
   (var form (if (== node/tag "form") node/key node/form))
   (var named (copy_map node/props/args))
@@ -77,18 +118,31 @@
     (var saved : Any ui/forms/%form)
     (if ($absent? saved/named)
       (set named (copy_map saved))
-      (do (set named (copy_map saved/named)) (set args (body_args saved/positional)))))
+      (do
+        (set named (copy_map saved/named))
+        (set args (body_args saved/positional)))))
   (for [key raw] in ui/nodes
     (var input : UiNode raw)
     (if_yes (&& (== input/form form) (! ($absent? input/props/field)))
       (var field : Str input/props/field)
       (set named/%field (field_value input))))
-  (var request {^component ui/descriptor/name ^revision ui/descriptor/revision
-    ^function name ^function_revision ui/descriptor/functions/%name ^instance ui/instance
-    ^input_id ($browser/request_id) ^args args ^named named})
-  (set ui/pending {^session ui/session ^request request ^form form ^command_id ""})
+  (var request
+    {
+      ^component ui/descriptor/name
+      ^revision ui/descriptor/revision
+      ^function name
+      ^function_revision ui/descriptor/functions/%name
+      ^instance ui/instance
+      ^input_id ($browser/request_id)
+      ^args args
+      ^named named})
+  (set ui/pending
+    {^session ui/session ^request request ^form form ^command_id "" ^view_state (copy_map ui/state)})
   (if (== ui/session "")
-    (ui/api "POST" "/api/v6/sessions" {^title "Project board"}
+    (ui/api
+      "POST"
+      "/api/v7/sessions"
+      {^title "Project board"}
       (fn [code : Int, data : Any] : Void
         (if (== code 201)
           (do
@@ -96,7 +150,9 @@
             (set ui/pending/session id)
             (if_yes (== ui/session "") (ui/select id))
             (post_action ui))
-          (do (set ui/pending nil) (notice ui (text data/message "Could not create a session."))))))
+          (do
+            (set ui/pending nil)
+            (notice ui (text data/message "Could not create a session."))))))
     (post_action ui)))
 
 (fn changed_control [ui : UiClient, node : UiNode] : Void
@@ -104,7 +160,8 @@
     (var form node/form)
     (if_yes ($absent? ui/forms/%form)
       (var owner : UiNode ui/nodes/%form)
-      (set ui/forms/%form {^named (copy_map owner/props/args) ^positional (body_args owner/props/positional)}))
+      (set ui/forms/%form
+        {^named (copy_map owner/props/args) ^positional (body_args owner/props/positional)}))
     (var key node/key)
     (set ui/drafts/%key {^name node/props/field ^form form ^value (field_value node)})
     (persist_view ui))
@@ -115,7 +172,10 @@
     (persist_view ui)
     (set ui/debounce (+ ui/debounce 1))
     (var wanted ui/debounce)
-    ($time/after (if (== node/tag "button") 0.0 150.0)
+    ($time/after
+      (if (== node/tag "button")
+        0.0
+        150.0)
       (fn [] : Void
         (if_yes (== wanted ui/debounce)
           (set ui/last_data "")
@@ -132,27 +192,42 @@
   (set ui/loading true)
   (set ui/last_data data_revision)
   (sync_controls ui)
-  (ui/api "POST" "/api/v6/ui/render"
-    {^session ui/session ^component ui/descriptor/name ^revision revision ^instance instance
-     ^sequence sequence ^state ui/state}
+  (ui/api
+    "POST"
+    "/api/v7/ui/render"
+    {
+      ^session ui/session
+      ^component ui/descriptor/name
+      ^revision revision
+      ^instance instance
+      ^sequence sequence
+      ^state ui/state}
     (fn [code : Int, data : Any] : Void
-      (if_yes (|| (!= instance ui/instance) (!= sequence ($to_str ui/sequence))
-        (!= revision (text ui/descriptor/revision))
-        (!= data_revision (text ui/descriptor/data_revision))) (return))
+      (if_yes (|| (!= instance ui/instance) (!= sequence ($to_str ui/sequence)) (!= revision (text ui/descriptor/revision)) (!= data_revision (text ui/descriptor/data_revision)))
+        (return))
       (set ui/loading false)
       (if (&& (== code 200) ($absent? data/error))
         (try
-          (apply_tree ui data/view
-            (fn [node : UiNode] : Void (changed_control ui node))
-            (fn [node : UiNode] : Void (submit_action ui node)))
+          (apply_tree
+            ui
+            data/view
+            (fn [node : UiNode] : Void
+              (changed_control ui node))
+            (fn [node : UiNode] : Void
+              (submit_action ui node)))
           (set ui/rendered_revision revision)
-          (if_yes ui/render_error (notice ui ""))
+          (if_yes ui/render_error (notice ^key "render" ui ""))
           (set ui/render_error false)
-          catch Any
-            (set ui/render_error true)
-            (notice ui "The view could not be displayed. Restore the default UI to recover."))
-        (do (set ui/render_error true)
-          (notice ui (text data/error (text data/message "View rendering failed.")))))
+        catch Any
+          (set ui/render_error true)
+          (notice ^key "render" ^^sticky ^severity "error"
+            ui
+            "The view could not be displayed. Restore the default UI to recover."))
+        (do
+          (set ui/render_error true)
+          (notice ^key "render" ^^sticky ^severity "error"
+            ui
+            (text data/error (text data/message "View rendering failed.")))))
       (sync_controls ui))))
 
 (fn restore_view [ui : UiClient, descriptor : Any] : Void
@@ -163,7 +238,9 @@
   (set ui/instance ($browser/request_id))
   (set ui/version (text descriptor/state_version "1"))
   (set ui/state (copy_map descriptor/view_state))
-  (set ui/nodes {}) (set ui/drafts {}) (set ui/forms {})
+  (set ui/nodes {})
+  (set ui/drafts {})
+  (set ui/forms {})
   (set ui/last_data "")
   ($dom/clear ui/target)
   (var saved (?? ($session_storage/get (state_key ui)) ""))
@@ -173,7 +250,17 @@
       (set ui/state (copy_map value/state))
       (set ui/drafts (copy_map value/drafts))
       (set ui/forms (copy_map value/forms))
-    catch Any (notice ui "The saved panel state could not be restored."))))
+    catch Any
+      (notice ui "The saved panel state could not be restored."))))
+
+(fn restore_pending [ui : UiClient, workspace : Str] : Void
+  (if_yes (|| (== workspace "") (== workspace ui/workspace)) (return))
+  (set ui/workspace workspace)
+  (var saved (?? ($session_storage/get (pending_key ui)) ""))
+  (if_yes (!= saved "")
+    (set ui/pending (try ($json/parse saved) catch Any nil))
+    (if_not ($absent? ui/pending)
+      (action_notice ui ui/pending "A saved action needs receipt recovery." "error"))))
 
 (fn update [ui : UiClient, data : Any] : Void
   (if_yes ui/safe (return))
@@ -186,18 +273,14 @@
   (set ui/epoch epoch)
   (set ui/metadata_revision incoming)
   (var workspace (text data/workspace ui/workspace))
-  (if_yes (!= workspace ui/workspace)
-    (set ui/workspace workspace)
-    (var saved (?? ($session_storage/get (pending_key ui)) ""))
-    (if_yes (!= saved "") (set ui/pending (try ($json/parse saved) catch Any nil))))
+  (restore_pending ui workspace)
   (set ui/settings data/settings)
   (var selected : Any nil)
   (var empty : (List Any) [])
   (var raw_components : Any (?? data/components empty))
   (var components : (List Any) raw_components)
   (for component in components
-    (if_yes (|| (== (text component/name) (text data/settings/panel))
-                (&& ($absent? selected) (== (text data/settings/panel) "")))
+    (if_yes (|| (== (text component/name) (text data/settings/panel)) (&& ($absent? selected) (== (text data/settings/panel) "")))
       (set selected component)))
   (var active (&& (flag data/settings/enabled) (! ($absent? selected))))
   (var layout_controls ($dom/element "ui_layout_controls"))
@@ -216,10 +299,13 @@
   ($dom/set_style ui/root "--ui-first" $"${first}fr")
   ($dom/set_style ui/root "--ui-second" $"${(- 100 first)}fr")
   (if ($absent? selected)
-    (do (set ui/descriptor nil) (set ui/loading false) (set ui/nodes {}) ($dom/clear ui/target))
     (do
-      (if (|| (!= (text ui/descriptor/name) (text selected/name))
-              (!= ui/version (text selected/state_version "1")))
+      (set ui/descriptor nil)
+      (set ui/loading false)
+      (set ui/nodes {})
+      ($dom/clear ui/target))
+    (do
+      (if (|| (!= (text ui/descriptor/name) (text selected/name)) (!= ui/version (text selected/state_version "1")))
         (restore_view ui selected)
         (set ui/descriptor selected))
       (refresh ui)))
@@ -228,54 +314,111 @@
 (fn controls [ui : UiClient, ready : Bool, session : Str] : Void
   (var reconnect (&& ready (! ui/ready)))
   (var changed_session (!= ui/session session))
-  (set ui/ready ready) (set ui/session session)
-  ($dom/set_attribute ($dom/element "ui_default_link") "href"
+  (set ui/ready ready)
+  (set ui/session session)
+  ($dom/set_attribute
+    ($dom/element "ui_default_link")
+    "href"
     $"/ui/default?session=${($url/encode_component session)}")
-  ($dom/set_attribute ($dom/element "ui_workspace_link") "href"
+  ($dom/set_attribute
+    ($dom/element "ui_workspace_link")
+    "href"
     $"/?session=${($url/encode_component session)}")
-  (if_yes reconnect
-    (resolve_action ui false))
+  (if_yes reconnect (resolve_action ui false))
   (if_yes (|| reconnect changed_session) (set ui/last_data ""))
   (refresh ui)
   (sync_controls ui))
 
 (fn event [ui : UiClient, kind : Str, data : Any] : Void
-  (if_yes ui/safe (return))
+  (if_yes (== kind "status") (restore_pending ui (text data/workspace)))
+  (if_yes (&& ui/safe (!= kind "ui/action")) (return))
   (if_yes (== kind "ui/state") (update ui data))
   (if_yes (== kind "ui/action") (accept_receipt ui (text data/session) data/record)))
 
-(fn create [root : EventTarget, safe : Bool,
-  api : (Fn [Str Str Any (Fn [Int Any] Void)] Void), select : (Fn [Str] Void),
-  command : (Fn [Str] Void), prompt : (Fn [Str] Void)] : UiClient
-  (var ui (UiClient ^root root ^target ($dom/element "ui_view") ^safe safe ^!ready
-    ^session "" ^workspace "" ^epoch "" ^metadata_revision "" ^rendered_revision "" ^descriptor nil ^settings nil ^instance "" ^version ""
-    ^state {} ^drafts {} ^forms {} ^nodes {} ^generation 0 ^sequence 0 ^debounce 0
-    ^last_data "" ^!loading ^!render_error ^pending nil ^!resolving ^api api ^select select ^command command ^prompt prompt))
+(fn open_reference [ui : UiClient, reference : Any] : Void
+  (if_yes (|| ui/safe ($absent? reference/component)) (return))
+  (var apply_reference
+    (fn [] : Void
+      (if_yes (!= (text ui/descriptor/name) (text reference/component)) (return))
+      (for [key value] in (copy_map reference/view_state)
+        (set ui/state/%key value))
+      (persist_view ui)
+      (set ui/last_data "")
+      (refresh ui)))
+  (if (== (text ui/descriptor/name) (text reference/component))
+    (apply_reference)
+    (do
+      (var settings (copy_map ui/settings))
+      (set settings/panel reference/component)
+      (set settings/enabled true)
+      (set settings/layout "panel")
+      (ui/api
+        "POST"
+        "/api/v7/ui/settings"
+        settings
+        (fn [code : Int, data : Any] : Void
+          (if (== code 200)
+            (do
+              (update ui data)
+              (apply_reference))
+            (notice ^^sticky ^severity "error"
+              ui
+              (text data/message "Could not open the referenced panel."))))))))
+
+(fn create [root : EventTarget, safe : Bool, notices : Notices, api : (Fn [Str Str Any (Fn [Int Any] Void)] Void), select : (Fn [Str] Void), command : (Fn [Str] Void), prompt : (Fn [Str] Void)] : UiClient
+  (var ui
+    (UiClient ^root root ^target ($dom/element "ui_view") ^safe safe ^!ready ^session "" ^workspace "" ^epoch "" ^metadata_revision "" ^rendered_revision "" ^descriptor nil ^settings nil ^instance "" ^version "" ^notices notices ^state {} ^drafts {} ^forms {} ^nodes {} ^generation 0 ^sequence 0 ^debounce 0 ^last_data "" ^!loading ^!render_error ^pending nil ^!resolving ^api api ^select select ^command command ^prompt prompt))
   (var workspace_link ($dom/element "ui_workspace_link"))
   (set workspace_link/hidden (! safe))
-  ($dom/add_event_listener ($dom/element "ui_retry") "click" (fn [event : Any] : Void
-    (set ui/last_data "")
-    (refresh ui)))
-  ($dom/add_event_listener ($dom/element "ui_toggle") "click" (fn [event : Any] : Void
-    (if_yes (|| ui/safe ($absent? ui/descriptor)) (return))
-    (var settings (copy_map ui/settings))
-    (set settings/layout (if (== (text settings/layout) "panel") "chat" "panel"))
-    (set settings/panel ui/descriptor/name)
-    (ui/api "POST" "/api/v6/ui/settings" settings
-      (fn [code : Int, data : Any] : Void
-        (if (== code 200) (update ui data) (notice ui (text data/message "Layout change failed.")))))))
-  ($dom/add_event_listener ($dom/element "ui_resolve") "click" (fn [event : Any] : Void (resolve_action ui true)))
-  ($dom/add_event_listener ($dom/element "ui_discard") "click" (fn [event : Any] : Void
-    (set ui/drafts {}) (set ui/forms {})
-    (persist_view ui)
-    (set ui/last_data "")
-    (refresh ui)
-    (notice ui "Draft edits discarded.")))
-  ($dom/add_event_listener ($dom/element "ui_cancel") "click" (fn [event : Any] : Void
-    (if_yes ($absent? ui/pending) (return))
-    (var session : Str ui/pending/session)
-    (var id (text ui/pending/command_id))
-    (if_yes (!= id "")
-      (ui/api "POST" $"/api/v6/sessions/${session}/commands/${id}/cancel" {}
-        (fn [code : Int, data : Any] : Void (notice ui "Cancellation requested."))))))
+  ($dom/add_event_listener
+    ($dom/element "ui_retry")
+    "click"
+    (fn [event : Any] : Void
+      (set ui/last_data "")
+      (refresh ui)))
+  ($dom/add_event_listener
+    ($dom/element "ui_toggle")
+    "click"
+    (fn [event : Any] : Void
+      (if_yes (|| ui/safe ($absent? ui/descriptor)) (return))
+      (var settings (copy_map ui/settings))
+      (set settings/layout (if (== (text settings/layout) "panel") "chat" "panel"))
+      (set settings/panel ui/descriptor/name)
+      (ui/api
+        "POST"
+        "/api/v7/ui/settings"
+        settings
+        (fn [code : Int, data : Any] : Void
+          (if (== code 200)
+            (update ui data)
+            (notice ui (text data/message "Layout change failed.")))))))
+  ($dom/add_event_listener
+    ($dom/element "ui_resolve")
+    "click"
+    (fn [event : Any] : Void
+      (resolve_action ui true)))
+  ($dom/add_event_listener
+    ($dom/element "ui_discard")
+    "click"
+    (fn [event : Any] : Void
+      (set ui/drafts {})
+      (set ui/forms {})
+      (persist_view ui)
+      (set ui/last_data "")
+      (refresh ui)
+      (notice ui "Draft edits discarded.")))
+  ($dom/add_event_listener
+    ($dom/element "ui_cancel")
+    "click"
+    (fn [event : Any] : Void
+      (if_yes ($absent? ui/pending) (return))
+      (var session : Str ui/pending/session)
+      (var id (text ui/pending/command_id))
+      (if_yes (!= id "")
+        (ui/api
+          "POST"
+          $"/api/v7/sessions/${session}/commands/${id}/cancel"
+          {}
+          (fn [code : Int, data : Any] : Void
+            (notice ui "Cancellation requested."))))))
   ui)

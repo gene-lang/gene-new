@@ -168,6 +168,21 @@ input::placeholder, textarea::placeholder { color: var(--muted); opacity: 1; }
 .stop { color: var(--accent); border-color: var(--line); font-size: .8rem; }
 .notice { color: var(--accent); padding: .5rem .1rem 0; font-size: .78rem; }
 .notice:empty { padding: 0; }
+.notice { max-height: 8rem; overflow: auto; }
+.notice_item { padding: .3rem 0; overflow-wrap: anywhere; color: var(--ink); }
+.notice_item[data-severity="error"] { border-left: 3px solid var(--accent); padding-left: .6rem; }
+.confirmation { border: 1px solid var(--accent); padding: .75rem; margin-top: .5rem; border-radius: 8px; }
+.confirmation button { margin: .4rem; }
+.drawer.notification_center { width: 440px; }
+.notification_card { padding: .75rem 0; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
+.notification_card h3 { margin: .3rem 0; font-size: 1rem; }
+.notification_card button, .question_editor button { margin: .4rem .4rem .4rem 0; }
+.notification_questions { border: 0; padding: 0; min-width: 0; }
+.question_editor fieldset { min-width: 0; margin: .5rem 0; border: 1px solid var(--line); border-radius: 6px; }
+.question_editor textarea, .question_editor select { width: 100%; max-width: 100%; padding: .5rem; border: 1px solid var(--line); border-radius: 5px; background: var(--input-surface); }
+.question_editor label { display: block; }
+.notification_local { display: block; width: 100%; text-align: left; padding: .6rem; overflow-wrap: anywhere; }
+#notification_reference_text { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 20rem; overflow: auto; }
 .commands { max-height: min(15rem, 35dvh); overflow: auto; border: 1px solid var(--line); border-radius: 9px; padding: .35rem; margin-bottom: .55rem; background: var(--input-surface); }
 .command { display: flex; align-items: baseline; gap: 1rem; width: 100%; padding: .5rem .6rem; text-align: left; border: 0; font-size: .8rem; }
 .command strong { min-width: 6.5rem; font: 500 .8rem ui-monospace, SFMono-Regular, Menlo, monospace; }

@@ -65,6 +65,7 @@ an unset or empty environment variable preserves the launch-directory default.
   modules/                content-addressed plugin modules
   blobs/                  content-addressed recall, history and receipt bodies
   events/                 workspace and session streams
+  notifications/          separate checkpointed producer inbox and opened watermark
   sessions/index          session metadata projection
   triggers/               durable trigger definitions
   web_secret              persistent reusable owner connection token (owner-only)
@@ -760,8 +761,44 @@ and function actions. It introduces no compiled browser plugins or general
 layout framework. Shared registry discovery covers capabilities and docs.
 The [experiment guide](../experiments/ui/README.md)
 and [evaluation record](../experiments/ui/RESULTS.md) track installation and
-observed behavior. The [web client guide](web-client.md) defines protocol 6 and
+observed behavior. The [web client guide](web-client.md) defines protocol 7 and
 recovery delivery; the [component chapter](web-components.md) defines authoring.
+
+## Notifications and workflow projections
+
+The host-owned center combines three authorities: keyed browser feedback,
+existing workflow projections, and a producer inbox. Client notices are keyed
+by source, scope and logical condition. Routine feedback expires with interaction
+pausing; unresolved errors and command decisions remain independent. Panel save
+feedback captures its admission session, component, view state and arguments.
+
+Question editors are keyed by session and batch, shared between the active form
+and the center, with separate drafts and pending payloads. Reconnect recovers all
+saved replies through the existing answers endpoint. Background snapshots load
+on demand; workspace session/list events invalidate caches even when metadata
+revisions do not change. Fetch generations and process epochs reject late data.
+Question lifetime remains owned by the batch, including explicit workflow
+dismissal. Clearing messages never handles questions or acknowledges attention.
+
+`src/notifications/inbox.gene` owns an independent Store checkpoint and revision,
+with source-local deduplication, meaningful-publication sequence, one operator
+opened watermark and revision-specific clears. Storage failure leaves the prior
+in-memory state intact. Cosmetic updates do not resurface cleared messages;
+progress uses live delivery without checkpoints. The workspace event stream,
+board data revision and automatic model history are unaffected.
+
+The shared PluginHost publisher stamps source and origin. Publishing returns an
+explicit success/failure result so notification failure need not falsify an
+already committed business save. Read-only render contexts cannot publish.
+Actions freeze publisher/function/command/component identities and run only on
+click; command actions use ordinary budgets, cancellation, sequences and
+receipts. Receipt lookup precedes retirement checks for admitted work.
+
+Protocol 7 adds workspace notification snapshots/progress and authenticated HTTP
+operations. Browser merges use epoch and inbox revision; clearing and opening
+propagate across tabs. The CLI presenter polls the same inbox, printing each
+meaningful publication once while attached. See [notification design and
+acceptance](notification.md) and [publishing](recipes/notification-publishing.md).
 
 ## Gene runtime support
 

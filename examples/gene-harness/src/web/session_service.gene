@@ -27,15 +27,29 @@
 (import ^from "../storage/state" [events_for])
 (import ^from "./contract" [protocol_version history_page_limit])
 (import ^from "../runtime/commands"
-  [parse_submission submit_command command_receipt command_request_receipt command_state cancel_command])
+  [
+    parse_submission
+    submit_command
+    command_receipt
+    command_request_receipt
+    command_state
+    cancel_command])
 (import ^from "../kernel"
-  [rows contribute provide withdraw_seam HarnessEvent
-   RoundChanged CommandChanged SessionChanged DurableRecord])
+  [
+    rows
+    contribute
+    provide
+    withdraw_seam
+    HarnessEvent
+    RoundChanged
+    CommandChanged
+    SessionChanged
+    DurableRecord])
 (import ^from "../runtime/composition" [acquire_snapshot release_snapshot current_snapshot])
-(import [mode_state] ^from "../runtime/input_modes")
-(import [ModeChanged CompositionChanged] ^from "../kernel")
-(import [ui_status ui_data_revision] ^from "../ui/state")
-(import [render_component] ^from "../ui/views")
+(import ^from "../runtime/input_modes" [mode_state])
+(import ^from "../kernel" [ModeChanged CompositionChanged])
+(import ^from "../ui/state" [ui_status ui_data_revision])
+(import ^from "../ui/views" [render_component])
 (import ^from "../runtime/cordis_adapter" [spawn_composition_call])
 (import ^from "../ui/components" [bounded_component_view WebComponentError])
 (import ^from "../runtime/triggers" ^^export
@@ -47,7 +61,7 @@
     delete_trigger
     list_occurrences])
 
-(type WorkspaceService ^props {^runtime Any ^events Any ^sessions Any ^controller Any ^epoch Str ^publisher Any ^revision Any ^closed Any ^model_info Any ^offline Bool ^subscriptions Any ^snapshot_jobs Any ^snapshot_versions Any ^ui_audience Any?})
+(type WorkspaceService ^props {^runtime Any ^events Any ^sessions Any ^controller Any ^epoch Str ^publisher Any ^revision Any ^closed Any ^model_info Any ^offline Bool ^subscriptions Any ^snapshot_jobs Any ^snapshot_versions Any ^ui_audience Any? ^snapshot_audience Any?})
 
 (fn public_session [service, record]
   (let copy ($thaw ($freeze record)))
@@ -100,6 +114,9 @@
 
 (fn queue_snapshot [service, session : Str]
   (if service/closed/.get (return nil))
+  (if ($absent? service/publisher/.get) (return nil))
+  (if (&& (! ($absent? service/snapshot_audience)) (! (service/snapshot_audience session)))
+    (return nil))
   (let id ($crypto/random_hex 8))
   (let versions service/snapshot_versions/.get)
   (let version (+ (?? (versions .get session) 0) 1))
@@ -107,27 +124,12 @@
   (let slot ($cell nil))
   (service/snapshot_jobs/.get .put id slot)
   (let job
-    (spawn ^lane root
-      (try
-        (if_not service/closed/.get
-          ($runtime/with_context nil
-            (fn []
-              (let safe (if ($absent? service/ui_audience) false (! (service/ui_audience))))
-              (let data (snapshot ^safe safe service session))
-              (if (&& (! service/closed/.get)
-                       (== (service/snapshot_versions/.get .get session) version))
-                (publish_message service "snapshot" session data)))))
-      catch Any
-        (if_not service/closed/.get
-          (publish_message service "error" session
-            {^message ($to_str $err/message)}))
-      ensure
-        (service/snapshot_jobs/.get .delete id))))
+    (spawn ^lane root (try (if_not service/closed/.get ($runtime/with_context nil (fn [] (let safe (if ($absent? service/ui_audience) false (! (service/ui_audience)))) (let data (snapshot ^safe safe service session)) (if (&& (! service/closed/.get) (== (service/snapshot_versions/.get .get session) version)) (publish_message service "snapshot" session data))))) catch Any (if_not service/closed/.get (publish_message service "error" session {^message ($to_str $err/message)})) ensure (service/snapshot_jobs/.get .delete id))))
   (slot .set job)
   nil)
 
 (fn handle_harness_event [service, event]
-  (match event ^!exhaustive
+  (match ^!exhaustive event
     (when (changed : ModeChanged)
       (publish_message ^reason changed/reason service "mode/state" changed/session changed/mode))
     (when (changed : CompositionChanged)
@@ -135,17 +137,18 @@
     (when (record : DurableRecord)
       (if (&& (== record/scope "workspace") (== record/name "plugin/state"))
         (publish_message service "ui/state" "" (ui_status service/runtime/h)))
-      (if (== record/scope "session")
-        (publish_transcript service record/stream record/envelope)))
+      (if (== record/scope "session") (publish_transcript service record/stream record/envelope)))
     (when (changed : RoundChanged)
       (publish_message service "round/state" changed/session changed/receipt)
       (if (== changed/receipt/state "waiting")
-        (publish_message service "questions" changed/session
-          changed/receipt/questions))
+        (publish_message service "questions" changed/session changed/receipt/questions))
       (queue_snapshot service changed/session))
     (when (changed : SessionChanged)
       (publish_message service "session/list" "" (list_sessions service))
-      (publish_message service "attention" ""
+      (publish_message
+        service
+        "attention"
+        ""
         {^sessions (session_records ^^attention service/sessions)}))
     (when (changed : CommandChanged)
       (let record changed/record)
@@ -154,45 +157,63 @@
         (publish_message service "ui/action" "" {^session session ^record record})
         (return nil))
       (if (&& (!= record/name "sh") (! ($absent? record/text)))
-        (publish_message service "console" session
-          {^id $"${session}/${record/id}/console" ^seq "0"
-           ^round_id "" ^turn 0 ^role "log" ^phase "console"
-           ^kind "console" ^text record/output ^!late
-           ^!durable})
+        (publish_message
+          service
+          "console"
+          session
+          {
+            ^id $"${session}/${record/id}/console"
+            ^seq "0"
+            ^round_id ""
+            ^turn 0
+            ^role "log"
+            ^phase "console"
+            ^kind "console"
+            ^text record/output
+            ^!late
+            ^!durable})
         (publish_message service "command" session record))
-      (if ($absent? record/text)
-        (queue_snapshot service session))))
+      (if ($absent? record/text) (queue_snapshot service session))))
   nil)
 
-(fn open_session_service [^workspace workspace : Str = "", ^offline offline : Bool = false,
-                          ^profile supplied_profile = nil, ^ownership ownership = nil]
+(fn open_session_service [^workspace workspace : Str = "", ^offline offline : Bool = false, ^profile supplied_profile = nil, ^ownership ownership = nil]
   (let profile (?? supplied_profile (if offline (offline_profile) (baseline_profile))))
   (let runtime
     (open_runtime ^ownership ownership ^event_scope "workspace" ^entry ($path/join ($path/parent this_mod/.path) "server.gene")
       (prepare_workspace_root ^root workspace)
       "default"
       profile))
-  (contribute runtime/h "web" "prompt"
-    {^name "web_components"
-     ^text "This session has a browser frontend. Discover UI capabilities and start with (doc \"harness/ui\") to customize its workspace. Verify the browser as well as server previews."})
+  (contribute
+    runtime/h
+    "web"
+    "prompt"
+    {
+      ^name "web_components"
+      ^text "This session has a browser frontend. Discover UI capabilities and start with (doc \"harness/ui\") to customize its workspace. Verify the browser as well as server previews."})
   (let settings ($serde/read_data ($fs/read_text $"${runtime/state_root}/config.gene")))
   (let model_info
     (try
       (let selected (select_provider runtime settings))
-      {^provider selected/name ^model selected/settings/model
-       ^effort selected/settings/effort}
+      {^provider selected/name ^model selected/settings/model ^effort selected/settings/effort}
     catch Any
       (let choice (provider_choice runtime settings))
       {^provider choice/name ^model "Unavailable" ^effort ""}))
   (let service
     (WorkspaceService ^runtime runtime ^events runtime/events ^sessions runtime/sessions ^controller nil ^epoch ($crypto/random_hex 16) ^publisher ($cell nil) ^revision ($atomic_cell 0) ^closed ($cell false) ^model_info model_info ^offline offline ^subscriptions [] ^snapshot_jobs ($cell {}) ^snapshot_versions ($cell {})))
-  (set service/controller
-    (new_round_controller runtime))
+  (runtime/h/notifications/observer .set
+    (fn [kind, data]
+      (let copy ($thaw ($freeze data)))
+      (copy .put "epoch" service/epoch)
+      (publish_message service kind "" copy)))
+  (set service/controller (new_round_controller runtime))
   (service/subscriptions .push
-    (runtime/h/bus .subscribe HarnessEvent
-      (fn [event] (handle_harness_event service event))))
-  (provide runtime/h "core" "loop"
-    (fn [] {^runtime runtime ^controller service/controller ^^start ^^boot}))
+    (runtime/h/bus .subscribe HarnessEvent (fn [event] (handle_harness_event service event))))
+  (provide
+    runtime/h
+    "core"
+    "loop"
+    (fn []
+      {^runtime runtime ^controller service/controller ^^start ^^boot}))
   service)
 
 (fn list_sessions [service, ^after after : Str = "", ^limit limit : Int = 100, ^kind kind = nil, ^status status = nil, ^attention attention = nil, ^trigger trigger = nil, ^q q : Str = "", ^since since : Str = "", ^until until : Str = ""]
@@ -243,7 +264,8 @@
 (fn operator_receipt [service, session : Str, id : Str]
   (require_record service/sessions session)
   (let result (command_receipt service/runtime/commands session id))
-  (if ($absent? result) (fail (RoundError ^code "not_found" ^message "Command receipt is not retained.")))
+  (if ($absent? result)
+    (fail (RoundError ^code "not_found" ^message "Command receipt is not retained.")))
   result)
 
 (fn request_receipt [service, session : Str, request_id : Str, kind : Str]
@@ -252,15 +274,17 @@
     (let result (command_request_receipt service/runtime/commands session request_id))
     (if_not ($absent? result) (return result)))
   (if (== kind "round")
-    (for record in (/receipts (round_state service/controller session))
+    (for record in ((Path "receipts") (round_state service/controller session))
       (if (== record/request_id request_id) (return record))))
-  (fail (RoundError ^code "not_found" ^message "Request receipt is not retained; do not replay an uncertain operation.")))
+  (fail
+    (RoundError ^code "not_found" ^message "Request receipt is not retained; do not replay an uncertain operation.")))
 (fn cancel_operator_command [service, session : Str, id : Str]
   (cancel_command service/runtime/commands session id))
 (fn receipt [service, session : Str, id : Str]
   (require_record service/sessions session)
   (let result (round_receipt service/controller session id))
-  (if ($absent? result) (fail (RoundError ^code "not_found" ^message "Round receipt is not retained.")))
+  (if ($absent? result)
+    (fail (RoundError ^code "not_found" ^message "Round receipt is not retained.")))
   result)
 (fn answer [service, session : Str, batch_id : Str, values, ^dismiss dismiss : Bool = false]
   (answer_round ^dismiss dismiss service/controller session batch_id values))
@@ -419,17 +443,19 @@
 
 (fn close_session_service [service]
   (if (service/closed .swap true) (return nil))
-  (for subscription in service/subscriptions subscription/.cancel)
+  (service/runtime/h/notifications/observer .set nil)
+  (for subscription in service/subscriptions
+    subscription/.cancel)
   (let jobs (service/snapshot_jobs .swap {}))
   (for [id slot] in jobs
-    (while ($absent? slot/.get) ($sleep 1))
+    (while ($absent? slot/.get)
+      ($sleep 1))
     (let job slot/.get)
     job/.cancel)
   (for [id slot] in jobs
     (let job slot/.get)
     job/.join)
   (withdraw_seam service/runtime/h "core" "loop")
-  (if_not ($absent? service/runtime/triggers)
-    (close_trigger_manager service/runtime/triggers))
+  (if_not ($absent? service/runtime/triggers) (close_trigger_manager service/runtime/triggers))
   (close_round_controller service/controller)
   (close_runtime service/runtime))

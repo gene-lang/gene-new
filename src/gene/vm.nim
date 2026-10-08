@@ -16307,7 +16307,9 @@ proc appendNativeTrace(e: ref GeneError, calleeName: string,
 # fibers parked on a channel, actor mailbox, task await, or timer.
 # `currentFiberActive` gates suspension: only a scheduled fiber parks —
 # root-level channel use keeps its original synchronous behavior.
-const schedulerInstructionBudget = 2048
+# Short instruction slices keep root-lane HTTP and cancellation responsive as
+# application scopes grow, while always making forward progress before yielding.
+const schedulerInstructionBudget = 512
 const schedulerWorkerTimerPollMs = 1
 
 when compileOption("threads") and defined(gcAtomicArc):

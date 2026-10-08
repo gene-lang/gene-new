@@ -4984,16 +4984,23 @@ when not defined(geneWasm):
   type ReplFrameCall = ref object of RootObj
     session: IncrementalReplSession
     chunk: Chunk
+    budget: EvalBudget
     requiredTypesLen: int
+    started: bool
     successful: bool
 
   proc finishReplFrame(context: RootRef, args: openArray[Value],
                        call: ptr NativeCall): Value {.nimcall.} =
     let state = ReplFrameCall(context)
-    if not state.successful:
-      abandonReplInput(state.session.scope, state.chunk, state.requiredTypesLen)
-    state.session.scope.evalBudget = nil
-    state.session.busy = false
+    if not state.started:
+      return NIL
+    try:
+      if not state.successful:
+        abandonReplInput(state.session.scope, state.chunk, state.requiredTypesLen)
+    finally:
+      state.session.scope.evalBudget = nil
+      state.session.busy = false
+      state.started = false
     NIL
 
   proc succeedReplFrame(context: RootRef, args: openArray[Value],
@@ -5004,6 +5011,16 @@ when not defined(geneWasm):
   proc executeReplFrame(context: RootRef, args: openArray[Value],
                         call: ptr NativeCall): Value {.nimcall.} =
     let state = ReplFrameCall(context)
+    if state.session.closed:
+      raise newException(GeneError, "repl/eval: Session is closed")
+    if state.session.busy:
+      raise newException(GeneError, "repl/eval: Session is busy")
+    # Claim execution only after the wrapper's ensure handler is installed.
+    # Cancellation before its first instruction must not strand a busy session.
+    state.session.busy = true
+    state.started = true
+    state.requiredTypesLen = state.session.scope.requiredImplTypes.len
+    state.session.scope.evalBudget = state.budget
     state.session.scope.prepareChunkScope(state.chunk)
     var request: ref NativeFrameRequest
     new(request)
@@ -5024,6 +5041,9 @@ when not defined(geneWasm):
     if session.busy:
       raise newException(GeneError, "repl/eval: Session is busy")
     let wrapper = newScope(caller)
+    # Only trusted bookkeeping runs in this wrapper. User code receives the
+    # caller budget below; an exhausted input budget must not skip repl_finish.
+    wrapper.evalBudget = EvalBudget(remaining: high(int64))
     let wrapperChunk = compileEvalSource(
       "(try (let value (repl_execute)) (repl_success) value ensure (repl_finish))",
       useLocalSlots = false)
@@ -5053,7 +5073,10 @@ when not defined(geneWasm):
       session.busy = false
       raise
     let state = ReplFrameCall(session: session, chunk: compiled,
+      budget: session.scope.evalBudget,
       requiredTypesLen: session.scope.requiredImplTypes.len)
+    session.scope.evalBudget = nil
+    session.busy = false
     wrapper.define("repl_execute", newNativeContextFn("repl/execute", state,
       executeReplFrame, acceptsNamed = false))
     wrapper.define("repl_finish", newNativeContextFn("repl/finish", state,

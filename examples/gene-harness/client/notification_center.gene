@@ -1,0 +1,328 @@
+# Workflow projections. Session metadata is a hint; only snapshots own questions.
+(mod harness_notification_center ^profile web)
+(import ^from "./notices.gene" [Notices Notice])
+(import ^from "./question_editors.gene" [QuestionEditors QuestionEditor mount_question qtext qjson])
+(import ^from "./question_state.gene" [current_fetch waiting_batch])
+
+(type NotificationCenter ^props {^cards PropMap ^locals PropMap ^epoch Str ^open Bool ^new_messages Int ^on_open (Fn [] Void) ^ready Bool ^selected Str ^notices Notices ^questions QuestionEditors ^generation Int ^api (Fn [Str Str Any (Fn [Int Any] Void)] Void) ^select (Fn [Str] Void)})
+(type QuestionCard ^props {^session Str ^title Str ^attention Bool ^waiting Bool ^snapshot Any ^stale Bool ^generation Int ^loading Bool ^expanded Bool ^error Str ^element EventTarget ^heading EventTarget ^status EventTarget ^details EventTarget ^fields EventTarget ^toggle EventTarget})
+
+(fn update_center_count [center : NotificationCenter] : Void
+  (var count 0)
+  (for [key raw] in center/cards
+    (var card : QuestionCard raw)
+    (if_yes (! card/element/hidden) (set count (+ count 1))))
+  (var origins : PropMap {})
+  (for [key raw] in center/notices/items
+    (var item : Notice raw)
+    (if_yes item/sticky
+      (var session (qtext item/origin/session))
+      (var card : Any center/cards/%session)
+      (if_yes (|| (== session "") ($absent? card) card/element/hidden)
+        (var scope (if (== session "") item/identity session))
+        (if_yes ($absent? origins/%scope)
+          (set origins/%scope true)
+          (set count (+ count 1))))))
+  (var message_label (if (== center/new_messages 1) "new message" "new messages"))
+  (var messages (if (== center/new_messages 0) "" $" · ${center/new_messages} ${message_label}"))
+  ($dom/set_text ($dom/element "notifications_button") $"Notifications · ${count}${messages}")
+  ($dom/set_text ($dom/element "notifications_count") $"${count} need attention${messages}")
+  (var section ($dom/element "attention_section"))
+  (set section/hidden (== count 0)))
+
+(fn pending_for [center : NotificationCenter, session : Str] : Bool
+  (for [key payload] in center/questions/pending
+    (if_yes (&& (! ($absent? payload)) (== (qtext payload/session) session)) (return true)))
+  false)
+
+(fn paint_card [center : NotificationCenter, card : QuestionCard] : Void
+  (var pending (pending_for center card/session))
+  (set card/element/hidden (! (|| card/attention card/waiting pending)))
+  ($dom/set_text card/heading card/title)
+  ($dom/set_text
+    card/status
+    (if card/loading
+      "Checking current questions…"
+      (if (!= card/error "")
+        card/error
+        (if card/stale
+          "Details need checking."
+          (if pending
+            "Reply needs confirmation."
+            (if card/waiting
+              "Needs response"
+              "Needs attention"))))))
+  (set card/details/hidden (! card/expanded))
+  (set card/fields/disabled (|| card/stale card/loading (! center/ready)))
+  ($dom/set_text card/toggle (if card/expanded "Collapse details" "Details"))
+  ($dom/set_attribute card/toggle "aria-expanded" (if card/expanded "true" "false"))
+  (if_yes (&& card/expanded (! card/stale))
+    (mount_question
+      center/questions
+      card/session
+      (waiting_batch card/snapshot)
+      card/fields
+      $"center/${card/session}"))
+  (var completed : (List Any) [])
+  (for [key view] in center/questions/mounts
+    (var slot ($to_str key))
+    (var identity (qtext view/key))
+    (if_yes (&& (str/starts_with? slot "pending/") ($absent? center/questions/pending/%identity))
+      (var editor : QuestionEditor center/questions/editors/%identity)
+      (if_yes (== editor/session card/session) (completed .push view))))
+  (for view in completed
+    (var target : EventTarget view/target)
+    (mount_question center/questions card/session nil target (qtext view/slot))
+    ($dom/remove target))
+  (if_yes card/expanded
+    (var current_batch (waiting_batch card/snapshot))
+    (for [key payload] in center/questions/pending
+      (if_yes (&& (! ($absent? payload)) (== (qtext payload/session) card/session) (!= (qtext payload/batch_id) (qtext current_batch/id)))
+        (var identity ($to_str key))
+        (var editor : QuestionEditor center/questions/editors/%identity)
+        (if_not ($absent? editor)
+          (var slot $"pending/${identity}")
+          (if_yes ($absent? center/questions/mounts/%slot)
+            (var recovery ($dom/render `(div ^class_name "reply_recovery")))
+            ($dom/append card/details recovery)
+            (mount_question center/questions card/session editor/batch recovery slot))))))
+  (update_center_count center))
+
+(fn fetch_card [center : NotificationCenter, card : QuestionCard] : Void
+  (if_yes (|| (! center/ready) card/loading (! card/stale) (! card/expanded) (! center/open))
+    (return))
+  (var generation card/generation)
+  (var epoch center/epoch)
+  (var session card/session)
+  (set card/loading true)
+  (paint_card center card)
+  (center/api
+    "GET"
+    $"/api/v7/sessions/${session}/snapshot"
+    nil
+    (fn [code : Int, data : Any] : Void
+      (set card/loading false)
+      (if_not (current_fetch generation card/generation epoch center/epoch)
+        (fetch_card center card)
+        (return))
+      (if (== code 200)
+        (do
+          (set card/snapshot data)
+          (set card/title (qtext data/session/title card/title))
+          (set card/attention (== (qjson data/session/attention) "true"))
+          (set card/waiting (! ($absent? (waiting_batch data))))
+          (set card/stale false)
+          (set card/error ""))
+        (set card/error "Details unavailable. Retry details or open the conversation."))
+      (paint_card center card))))
+
+(fn card_for [center : NotificationCenter, session : Str] : QuestionCard
+  (var found : Any center/cards/%session)
+  (if_not ($absent? found)
+    (var existing : QuestionCard found)
+    (return existing))
+  (var element ($dom/render `(section ^class_name "notification_card")))
+  (var heading ($dom/render `(h3)))
+  (var status ($dom/render `(p ^role "status")))
+  (var details ($dom/render `(div ^^hidden)))
+  (var fields ($dom/render `(fieldset ^class_name "notification_questions")))
+  (var toggle ($dom/render `(button ^type "button" "Details")))
+  (var open ($dom/render `(button ^type "button" "Open conversation")))
+  (var card
+    (QuestionCard ^session session ^title session ^!attention ^!waiting ^snapshot nil ^^stale ^generation 0 ^!loading ^!expanded ^error "" ^element element ^heading heading ^status status ^details details ^fields fields ^toggle toggle))
+  (set center/cards/%session card)
+  ($dom/append element heading)
+  ($dom/append element status)
+  ($dom/append element toggle)
+  ($dom/append element open)
+  ($dom/append details fields)
+  ($dom/append element details)
+  ($dom/append ($dom/element "notification_workflows") element)
+  ($dom/add_event_listener
+    toggle
+    "click"
+    (fn [event : Any] : Void
+      (set card/expanded (! card/expanded))
+      (paint_card center card)
+      (fetch_card center card)))
+  ($dom/add_event_listener open "click" (fn [event : Any] : Void (center/select session)))
+  card)
+
+(fn invalidate_questions [center : NotificationCenter, session : Str = ""] : Void
+  (set center/generation (+ center/generation 1))
+  (var generation center/generation)
+  (for [key raw] in center/cards
+    (var card : QuestionCard raw)
+    (if_yes (|| (== session "") (== session card/session))
+      (set card/generation (+ card/generation 1))
+      (set card/stale true)
+      (paint_card center card)))
+  ($time/after
+    100.0
+    (fn [] : Void
+      (if_yes (!= generation center/generation) (return))
+      (for [key raw] in center/cards
+        (var card : QuestionCard raw)
+        (fetch_card center card)))))
+
+(fn center_sessions [center : NotificationCenter, sessions : (List Any), attention : (List Any)] : Void
+  (for [key raw] in center/cards
+    (var card : QuestionCard raw)
+    (set card/attention false))
+  (for session in sessions
+    (var id (qtext session/id))
+    (var waiting (== (qtext session/status) "waiting"))
+    (if_yes (|| waiting (! ($absent? center/cards/%id)))
+      (var card (card_for center id))
+      (set card/title (qtext session/title))
+      (if_yes (|| card/stale ($absent? card/snapshot)) (set card/waiting waiting))))
+  (for session in attention
+    (var card (card_for center (qtext session/id)))
+    (set card/title (qtext session/title))
+    (set card/attention true)
+    (if_yes (|| card/stale ($absent? card/snapshot))
+      (set card/waiting (== (qtext session/status) "waiting"))))
+  (for [key payload] in center/questions/pending
+    (if_not ($absent? payload) (card_for center (qtext payload/session))))
+  (for [key raw] in center/cards
+    (var card : QuestionCard raw)
+    (paint_card center card)))
+
+(fn center_snapshot [center : NotificationCenter, session : Str, snapshot : Any] : Void
+  (if_yes (== session "") (return))
+  (var card (card_for center session))
+  (set card/generation (+ card/generation 1))
+  (set card/snapshot snapshot)
+  (set card/title (qtext snapshot/session/title card/title))
+  (set card/attention (== (qjson snapshot/session/attention) "true"))
+  (set card/waiting (! ($absent? (waiting_batch snapshot))))
+  (set card/stale false)
+  (set card/error "")
+  (paint_card center card))
+
+(fn center_locals [center : NotificationCenter] : Void
+  (for [key raw] in center/locals
+    (if_yes ($absent? center/notices/items/%key)
+      (var element : EventTarget raw)
+      ($dom/remove element)
+      (set center/locals/%key void)))
+  (for [key raw] in center/notices/items
+    (var item : Notice raw)
+    (var saved : Any center/locals/%key)
+    (var element
+      :
+      EventTarget
+      (if ($absent? saved)
+        ($dom/render `(button ^type "button" ^class_name "notification_local"))
+        saved))
+    (if_yes ($absent? saved)
+      (set center/locals/%key element)
+      ($dom/append ($dom/element "notification_local") element)
+      ($dom/add_event_listener
+        element
+        "click"
+        (fn [event : Any] : Void
+          (if ($absent? item/action)
+            ($dom/focus item/element)
+            (do
+              (var action : (Fn [] Void) item/action)
+              (action)))))
+      ($dom/add_event_listener
+        element
+        "focusin"
+        (fn [event : Any] : Void
+          (set item/center_focused true)))
+      ($dom/add_event_listener
+        element
+        "focusout"
+        (fn [event : Any] : Void
+          (set item/center_focused false)))
+      ($dom/add_event_listener
+        element
+        "mouseenter"
+        (fn [event : Any] : Void
+          (set item/center_hovered true)))
+      ($dom/add_event_listener
+        element
+        "mouseleave"
+        (fn [event : Any] : Void
+          (set item/center_hovered false))))
+    (var action_label (if ($absent? item/action) "" "Resolve original operation"))
+    (var entity
+      (qtext
+        item/origin/entity
+        (qtext item/origin/arguments/id (qtext item/origin/arguments/entity))))
+    ($dom/set_text
+      element
+      ($to_str
+        item/text
+        " "
+        (qtext item/origin/component)
+        " "
+        entity
+        " "
+        (qtext item/origin/session)
+        " "
+        action_label)))
+  (update_center_count center))
+
+(fn toggle_center [center : NotificationCenter, open : Bool] : Void
+  (set center/open open)
+  (if_not open
+    (for [key raw] in center/notices/items
+      (var item : Notice raw)
+      (set item/center_hovered false)
+      (set item/center_focused false)))
+  (var drawer ($dom/element "notification_center"))
+  (set drawer/hidden (! open))
+  ($dom/set_attribute
+    ($dom/element "notifications_button")
+    "aria-expanded"
+    (if open
+      "true"
+      "false"))
+  (if open
+    (do
+      (center/on_open)
+      (center_locals center)
+      (for [key raw] in center/cards
+        (var card : QuestionCard raw)
+        (fetch_card center card))
+      ($dom/focus ($dom/element "close_notifications")))
+    ($dom/focus ($dom/element "notifications_button"))))
+
+(fn center_ready [center : NotificationCenter, ready : Bool] : Void
+  (if_yes (== ready center/ready) (return))
+  (set center/ready ready)
+  (for [key raw] in center/cards
+    (var card : QuestionCard raw)
+    (paint_card center card)
+    (fetch_card center card)))
+
+(fn create_center [notices : Notices, questions : QuestionEditors, api : (Fn [Str Str Any (Fn [Int Any] Void)] Void), select : (Fn [Str] Void)] : NotificationCenter
+  (var center
+    (NotificationCenter ^cards {} ^locals {} ^epoch "" ^!open ^!ready ^new_messages 0 ^on_open (fn [] : Void nil) ^selected "" ^notices notices ^questions questions ^generation 0 ^api api ^select select))
+  (set notices/changed (fn [] : Void (center_locals center)))
+  ($dom/add_event_listener
+    ($dom/element "notifications_button")
+    "click"
+    (fn [event : Any] : Void
+      (toggle_center center (! center/open))))
+  ($dom/add_event_listener
+    ($dom/element "close_notifications")
+    "click"
+    (fn [event : Any] : Void
+      (toggle_center center false)))
+  ($dom/add_event_listener
+    ($dom/element "attention_shortcut")
+    "click"
+    (fn [event : Any] : Void
+      (toggle_center center true)))
+  ($dom/add_event_listener
+    ($dom/element "notification_center")
+    "keydown"
+    (fn [event : Any] : Void
+      (if_yes (== ($event/key event) "Escape")
+        ($dom/prevent_default event)
+        (toggle_center center false))))
+  center)

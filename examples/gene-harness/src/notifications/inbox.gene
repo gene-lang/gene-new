@@ -1,0 +1,188 @@
+# Independent checkpointed producer inbox. Never writes the workspace data stream.
+(mod notification_inbox)
+(import $store/fs [open : store_open Store])
+
+(type NotificationError ^props {^code Str ^message Str} ^impl [Error])
+(impl Error for NotificationError)
+(type Inbox ^props {^backend Any ^state Any ^gate Any ^observer Any ^progress Any})
+
+(fn notification_error [code : Str, message : Str]
+  (fail (NotificationError ^code code ^message message)))
+(fn copy [value]
+  ($serde/read_data ($serde/write_data value)))
+(fn now_ms []
+  ($os/wall_ms))
+
+(fn open_inbox [root : Str] : Inbox
+  ($fs/make_dir root)
+  (let backend (store_open ^root root))
+  (try
+    (let loaded backend/.Store:load_checkpoint)
+    (let state
+      (if ($absent? loaded)
+        {^format 1 ^revision 0 ^sequence 0 ^opened 0 ^messages []}
+        loaded/records/inbox))
+    (if (!= state/format 1)
+      (notification_error "unavailable" "Unsupported notification inbox format."))
+    (Inbox ^backend backend ^state ($cell state) ^gate ($cell false) ^observer ($cell nil) ^progress ($cell {}))
+  catch Any
+    backend/.Store:close
+    (fail $err)))
+
+(fn close_inbox [inbox : Inbox]
+  inbox/backend/.Store:close)
+
+(fn writable []
+  (let context ($runtime/context))
+  (if (== context/ui_render true)
+    (notification_error "forbidden" "Render callbacks cannot publish or change notifications.")))
+
+(fn mutate [inbox : Inbox, body]
+  (writable)
+  (while (inbox/gate .swap true) ($sleep 1))
+  (try
+    (let next (copy inbox/state/.get))
+    (let result (body next))
+    (if_yes (!= next inbox/state/.get)
+      (next .put "revision" (+ inbox/state/.get/revision 1))
+      (inbox/backend .Store:checkpoint next/revision {^inbox next})
+      (inbox/state .set next)
+      # Delivery failure cannot change the outcome of a committed publication.
+      (let observer inbox/observer/.get)
+      (if_not ($absent? observer) (try (observer "notifications/state" (inbox_snapshot inbox)) catch Any nil)))
+    result
+  ensure (inbox/gate .set false)))
+
+(fn visible [message, now : Int] : Bool
+  (&& (< message/cleared_revision message/revision) (> message/expires_at now)))
+
+(fn inbox_snapshot [inbox : Inbox, ^all all : Bool = false]
+  (let state inbox/state/.get)
+  (let records [])
+  (var unread 0)
+  (let now (now_ms))
+  (for message in state/messages
+    (if_yes (visible message now) (if (> message/sequence state/opened) (set unread (+ unread 1))))
+    (if (|| all (visible message now)) (records .push (copy message))))
+  {
+    ^revision ($to_str state/revision)
+    ^watermark ($to_str state/sequence)
+    ^opened ($to_str state/opened)
+    ^new_messages unread
+    ^messages records})
+
+(fn find_message [state, id : Str]
+  (for message in state/messages
+    (if (== message/id id) (return message)))
+  (notification_error "not_found" "Notification is no longer retained."))
+
+(fn message_detail [inbox : Inbox, id : Str]
+  (copy (find_message inbox/state/.get id)))
+
+(fn post_message [inbox : Inbox, source : Str, definition]
+  (mutate
+    inbox
+    (fn [state]
+      (let now (now_ms))
+      (let local_key (?? definition/key ""))
+      (var previous nil)
+      (if (!= local_key "")
+        (for message in state/messages
+          (if (&& (== message/source source) (== message/key local_key)) (set previous message))))
+      (let meaningful
+        (||
+          ($absent? previous)
+          (== definition/renew true)
+          (!= previous/title definition/title)
+          (!= previous/summary definition/summary)
+          (!= previous/severity definition/severity)
+          (!= previous/actions definition/actions)
+          (!= previous/origin definition/origin)
+          (!= previous/scope definition/scope)))
+      (let revision (if ($absent? previous) 1 (+ previous/revision 1)))
+      (let sequence (if meaningful (+ state/sequence 1) previous/sequence))
+      (let record
+        {
+          ^id (if ($absent? previous)
+                $"n-${($crypto/random_hex 16)}"
+                previous/id)
+          ^revision revision
+          ^sequence sequence
+          ^source source
+          ^key local_key
+          ^scope definition/scope
+          ^origin definition/origin
+          ^severity definition/severity
+          ^title definition/title
+          ^summary definition/summary
+          ^detail definition/detail
+          ^actions definition/actions
+          ^created_at (if ($absent? previous)
+                        now
+                        previous/created_at)
+          ^updated_at now
+          ^expires_at (??
+                        definition/expires_at
+                        (if (|| ($absent? previous) meaningful)
+                          (+ now 2592000000)
+                          previous/expires_at))
+          ^cleared_revision (if ($absent? previous)
+                              0
+                              (if (&& (! meaningful) (>= previous/cleared_revision previous/revision))
+                                revision
+                                previous/cleared_revision))})
+      (if (&& (! meaningful) (== previous/detail record/detail) (== previous/expires_at record/expires_at))
+        (return
+          {^^ok ^id previous/id ^revision previous/revision ^sequence previous/sequence ^^unchanged}))
+      (let kept [])
+      (for message in state/messages
+        (if (&& (!= message/id record/id) (> message/expires_at now)) (kept .push message)))
+      (kept .push record)
+      (let retained [])
+      (var index 0)
+      (for message in kept
+        (if (>= index (- kept/.size 256)) (retained .push message))
+        (set index (+ index 1)))
+      (state .put "messages" retained)
+      (if meaningful (state .put "sequence" sequence))
+      {^^ok ^id record/id ^revision revision ^sequence sequence})))
+
+(fn acknowledge_messages [inbox : Inbox, through : Int]
+  (mutate
+    inbox
+    (fn [state]
+      (if (|| (< through 0) (> through state/sequence))
+        (notification_error "invalid_request" "Acknowledgment is beyond the published watermark."))
+      (if (> through state/opened) (state .put "opened" through))
+      {^^ok ^opened ($to_str state/opened)})))
+
+(fn clear_messages [inbox : Inbox, selected]
+  (if (!= ($head selected) List)
+    (notification_error "invalid_request" "Clear needs observed message ids and revisions."))
+  (mutate
+    inbox
+    (fn [state]
+      (for item in selected
+        (let message (find_message state item/id))
+        (if (|| (!= ($head item/revision) Int) (< item/revision 1) (> item/revision message/revision))
+          (notification_error "invalid_request" "Invalid observed message revision."))
+        (if (> item/revision message/cleared_revision)
+          (message .put
+            "cleared_revision"
+            item/revision)))
+      {^^ok})))
+
+(fn publish_progress [inbox : Inbox, source : Str, key : Str, data]
+  (writable)
+  (let identity ($json/stringify [source key]))
+  (let previous (inbox/progress/.get .get identity))
+  (if (&& (! ($absent? previous)) (< (- ($os/monotonic_ms) previous) 100))
+    (return {^^ok ^^coalesced}))
+  (inbox/progress/.get .put identity ($os/monotonic_ms))
+  (let observer inbox/observer/.get)
+  (if_not ($absent? observer)
+    (try
+      (observer "notifications/progress" {^source source ^key key ^data data})
+    catch Any
+      nil))
+  {^^ok ^^transient})

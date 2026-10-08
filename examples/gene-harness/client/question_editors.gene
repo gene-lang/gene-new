@@ -1,0 +1,380 @@
+# One reply controller per original session/batch, shared by every visible form.
+(mod harness_question_editors ^profile web)
+(import ^from "./question_state.gene" [question_key definitive_reply])
+(import ^from "./notices.gene" [Notices put_notice remove_notice])
+
+(type QuestionEditors ^props {^editors PropMap ^mounts PropMap ^pending PropMap ^drafts PropMap ^ready Bool ^notices Notices ^api (Fn [Str Str Any (Fn [Int Any] Void)] Void) ^changed (Fn [Str] Void)})
+(type QuestionEditor ^props {^key Str ^session Str ^batch Any ^answers PropMap ^skips PropMap ^sending Bool ^error Str ^views (List Any)})
+
+(fn qtext [value : Any, fallback : Str = ""] : Str
+  (if_yes ($absent? value) (return fallback))
+  (var result : Str value)
+  result)
+
+(fn qjson [value : Any] : Str
+  ($json/stringify (if ($absent? value) nil value)))
+
+(fn choice_label [value : Any] : Str
+  (var encoded (qjson value))
+  (if_yes (str/starts_with? encoded "\"") (return (qtext value)))
+  (if_yes (== encoded "true") (return "Yes"))
+  (if_yes (== encoded "false") (return "No"))
+  encoded)
+
+(fn restored_map [key : Str] : PropMap
+  (var saved (?? ($session_storage/get key) ""))
+  (if_yes (== saved "") (return {}))
+  (try
+    (var value : PropMap ($json/parse saved))
+    value
+  catch Any
+    {}))
+
+(fn create_question_editors [notices : Notices,
+  api : (Fn [Str Str Any (Fn [Int Any] Void)] Void), changed : (Fn [Str] Void)] : QuestionEditors
+  (var controller (QuestionEditors ^editors {} ^mounts {}
+    ^pending (restored_map "gene-harness/question-replies")
+    ^drafts (restored_map "gene-harness/question-drafts") ^!ready
+    ^notices notices ^api api ^changed changed))
+  # Upgrade the earlier selected-session slot without dropping an uncertain reply.
+  (var old (?? ($session_storage/get "gene-harness/input-reply") ""))
+  (if_yes (!= old "")
+    (try
+      (var payload : Any ($json/parse old))
+      (var key (question_key (qtext payload/session) (qtext payload/batch_id)))
+      (if_yes ($absent? controller/pending/%key)
+        (set controller/pending/%key payload))
+      (if_yes ($session_storage/set "gene-harness/question-replies" (qjson controller/pending))
+        ($session_storage/remove "gene-harness/input-reply"))
+    catch Any nil))
+  controller)
+
+(fn editor_for [controller : QuestionEditors, session : Str, batch : Any] : QuestionEditor
+  (var key (question_key session (qtext batch/id)))
+  (var raw : Any controller/editors/%key)
+  (if_not ($absent? raw)
+    (var found : QuestionEditor raw)
+    (return found))
+  (var answers : PropMap {})
+  (var skips : PropMap {})
+  (var questions : (List Any) batch/questions)
+  (for question in questions
+    (var id (qtext question/id))
+    (if_not ($absent? question/recommended)
+      (if (== (qjson question/multi) "true")
+        (set answers/%id [question/recommended])
+        (set answers/%id question/recommended))))
+  (var draft : Any controller/drafts/%key)
+  (var pending : Any controller/pending/%key)
+  (if_not ($absent? pending) (set answers pending/answers))
+  (if_not ($absent? draft)
+    (set answers draft/answers)
+    (set skips draft/skips))
+  (var editor
+    (QuestionEditor ^key key ^session session ^batch batch ^answers answers ^skips skips ^!sending ^error "" ^views []))
+  (set controller/editors/%key editor)
+  editor)
+
+(fn sync_question [controller : QuestionEditors, editor : QuestionEditor] : Void
+  (var key editor/key)
+  (var pending (! ($absent? controller/pending/%key)))
+  (for view in editor/views
+    (var status : EventTarget view/status)
+    ($dom/set_text
+      status
+      (if editor/sending
+        "Sending answer…"
+        (if (!= editor/error "")
+          editor/error
+          (if pending
+            "Answer outcome unknown. Resolve reuses the original reply."
+            ""))))
+    (var submit : EventTarget view/submit)
+    (var dismiss : EventTarget view/dismiss)
+    (var cancel : EventTarget view/cancel)
+    (set submit/disabled (|| (! controller/ready) editor/sending))
+    ($dom/set_text submit (if pending "Resolve answer" "Answer"))
+    (set dismiss/disabled (|| (! controller/ready) editor/sending pending))
+    (set cancel/disabled (|| (! controller/ready) editor/sending))
+    (set cancel/hidden (== (qtext editor/batch/round_id) ""))
+    (var fields : (List Any) view/fields)
+    (for field in fields
+      (var element : EventTarget field/element)
+      (var id (qtext field/id))
+      (var kind (qtext field/kind))
+      (set element/disabled (|| editor/sending pending))
+      (if (== kind "skip")
+        (set element/checked (== (qjson editor/skips/%id) "true"))
+        (if (== kind "multi")
+          (do
+            (var checked false)
+            (if_not ($absent? editor/answers/%id)
+              (var picked : (List Any) editor/answers/%id)
+              (for value in picked
+                (if_yes (== (qjson value) (qjson field/choice)) (set checked true))))
+            (set element/checked checked))
+          (do
+            (var value (if (== kind "text") (qtext editor/answers/%id) "-1"))
+            (if_yes (== kind "select")
+              (var choices : (List Any) field/choices)
+              (var index 0)
+              (for choice in choices
+                (if_yes (== (qjson choice) (qjson editor/answers/%id)) (set value ($to_str index)))
+                (set index (+ index 1))))
+            (if_yes (!= ($dom/input_value element) value) ($dom/set_input_value element value))))))))
+
+(fn store_draft [controller : QuestionEditors, editor : QuestionEditor] : Void
+  (var key editor/key)
+  (set controller/drafts/%key {^answers editor/answers ^skips editor/skips})
+  (if_not ($session_storage/set "gene-harness/question-drafts" (qjson controller/drafts))
+    (set editor/error "Draft could not be saved in browser storage. Keep this tab open."))
+  (sync_question controller editor))
+
+(fn send_reply [controller : QuestionEditors, editor : QuestionEditor, dismiss : Bool] : Void
+  (if_yes (|| (! controller/ready) editor/sending) (return))
+  (var key editor/key)
+  (var payload : Any controller/pending/%key)
+  (if_yes ($absent? payload)
+    (var answers : PropMap {})
+    (if_not dismiss
+      (for [raw_id value] in editor/answers
+        (var id ($to_str raw_id))
+        (if_yes (&& (! ($absent? value)) (!= (qjson editor/skips/%id) "true") (!= (qjson value) "\"\""))
+          (set answers/%id value))))
+    (set payload
+      ($json/parse
+        (qjson
+          {
+            ^session editor/session
+            ^batch_id editor/batch/id
+            ^round_id editor/batch/round_id
+            ^answers answers
+            ^dismiss dismiss})))
+    (set controller/pending/%key payload))
+  (if_not ($session_storage/set "gene-harness/question-replies" (qjson controller/pending))
+    (set editor/error "Browser storage is required before answering. Resolve will retry this exact reply.")
+    (sync_question controller editor)
+    (return))
+  (set editor/sending true)
+  (set editor/error "")
+  (sync_question controller editor)
+  (var session editor/session)
+  (controller/api
+    "POST"
+    $"/api/v7/sessions/${session}/answers"
+    payload
+    (fn [code : Int, data : Any] : Void
+      (set editor/sending false)
+      (if (definitive_reply code)
+        (do
+          (set controller/pending/%key void)
+          ($session_storage/set "gene-harness/question-replies" (qjson controller/pending))
+          (if (< code 300)
+            (do
+              (set editor/error "Answer accepted.")
+              (set controller/drafts/%key void)
+              ($session_storage/set "gene-harness/question-drafts" (qjson controller/drafts)))
+            (set editor/error (qtext data/message "This batch cannot accept the reply.")))
+          (remove_notice controller/notices "questions" session key))
+        (put_notice
+          controller/notices
+          ($dom/element "notice")
+          "questions"
+          session
+          key
+          "An answer is unconfirmed. Resolve its original reply in Notifications."
+          "error"
+          true
+          {^session session ^batch editor/batch/id}))
+      (sync_question controller editor)
+      (controller/changed session))))
+
+(fn resume_replies [controller : QuestionEditors] : Void
+  (if_not controller/ready (return))
+  (for [key payload] in controller/pending
+    (if_not ($absent? payload)
+      (var empty : (List Any) [])
+      (var editor
+        (editor_for
+          controller
+          (qtext payload/session)
+          {^id payload/batch_id ^round_id (qtext payload/round_id) ^questions empty}))
+      (if_yes editor/sending (continue))
+      (set editor/sending true)
+      (var session (qtext payload/session))
+      (controller/api
+        "GET"
+        $"/api/v7/sessions/${session}/snapshot?ui=default"
+        nil
+        (fn [code : Int, data : Any] : Void
+          (set editor/sending false)
+          (if (== code 200)
+            (send_reply controller editor false)
+            (do
+              (set editor/error "The original conversation could not be checked. The reply is still pending.")
+              (sync_question controller editor)
+              (controller/changed session))))))))
+
+(fn question_ready [controller : QuestionEditors, ready : Bool] : Void
+  (set controller/ready ready)
+  (for [key raw] in controller/editors
+    (var editor : QuestionEditor raw)
+    (sync_question controller editor)))
+
+(fn cancel_question_round [controller : QuestionEditors, editor : QuestionEditor] : Void
+  (var round (qtext editor/batch/round_id))
+  (if_yes (|| (! controller/ready) editor/sending (== round "")) (return))
+  (var session editor/session)
+  (set editor/sending true)
+  (sync_question controller editor)
+  (controller/api
+    "POST"
+    $"/api/v7/sessions/${session}/cancel"
+    {^round_id round}
+    (fn [code : Int, data : Any] : Void
+      (set editor/sending false)
+      (if (&& (>= code 200) (< code 300))
+        (do
+          (var key editor/key)
+          (set controller/pending/%key void)
+          ($session_storage/set "gene-harness/question-replies" (qjson controller/pending))
+          (remove_notice controller/notices "questions" session key)
+          (set editor/error "Cancellation requested."))
+        (set editor/error "Cancellation was not confirmed. The original question remains available."))
+      (sync_question controller editor)
+      (controller/changed session))))
+
+(fn mount_question [controller : QuestionEditors, session : Str, batch : Any, target : EventTarget, slot : Str] : Void
+  (var identity (if ($absent? batch) "" (question_key session (qtext batch/id))))
+  (var previous : Any controller/mounts/%slot)
+  (if_yes (== (qtext previous/key) identity) (return))
+  (if_not ($absent? previous)
+    (var previous_key (qtext previous/key))
+    (var old : QuestionEditor controller/editors/%previous_key)
+    (var kept : (List Any) [])
+    (for view in old/views
+      (if_yes (!= (qtext view/slot) slot) (kept .push view)))
+    (set old/views kept))
+  ($dom/clear target)
+  (set controller/mounts/%slot void)
+  (if_yes (== identity "") (return))
+  (var editor (editor_for controller session batch))
+  (set editor/batch batch)
+  (var form ($dom/render `(form ^class_name "question_editor")))
+  (var fields : (List Any) [])
+  (var questions : (List Any) batch/questions)
+  (for question in questions
+    (var id (qtext question/id))
+    (var group ($dom/render `(fieldset (legend %(qtext question/prompt)))))
+    (var choices : Any question/choices)
+    (if ($absent? choices)
+      (do
+        (var input ($dom/render `(textarea ^rows "2" ^aria-label %(qtext question/prompt))))
+        (fields .push {^element input ^kind "text" ^id id})
+        ($dom/add_event_listener
+          input
+          "input"
+          (fn [event : Any] : Void
+            (set editor/answers/%id ($dom/input_value input))
+            (store_draft controller editor)))
+        ($dom/append group input))
+      (if (== (qjson question/multi) "true")
+        (do
+          (var values : (List Any) choices)
+          (for choice in values
+            (var input ($dom/render `(input ^type "checkbox")))
+            (var label ($dom/render `(label)))
+            ($dom/append label input)
+            ($dom/append label ($dom/create_text (choice_label choice)))
+            (fields .push {^element input ^kind "multi" ^id id ^choice choice})
+            ($dom/add_event_listener
+              input
+              "change"
+              (fn [event : Any] : Void
+                (var picked : (List Any) [])
+                (if_not ($absent? editor/answers/%id)
+                  (var saved : (List Any) editor/answers/%id)
+                  (for value in saved
+                    (if_yes (!= (qjson value) (qjson choice)) (picked .push value))))
+                (if_yes input/checked (picked .push choice))
+                (set editor/answers/%id picked)
+                (store_draft controller editor)))
+            ($dom/append group label)))
+        (do
+          (var select
+            ($dom/render `(select ^aria-label %(qtext question/prompt) (option ^value "-1" "Skip"))))
+          (var values : (List Any) choices)
+          (var index 0)
+          (for choice in values
+            ($dom/append
+              select
+              ($dom/render `(option ^value %($to_str index) %(choice_label choice))))
+            (set index (+ index 1)))
+          (fields .push {^element select ^kind "select" ^id id ^choices choices})
+          ($dom/add_event_listener
+            select
+            "change"
+            (fn [event : Any] : Void
+              (var selected : Int ($json/parse ($dom/input_value select)))
+              (set editor/answers/%id (if (< selected 0) void values/%selected))
+              (store_draft controller editor)))
+          ($dom/append group select))))
+    (var skip ($dom/render `(input ^type "checkbox")))
+    (var label ($dom/render `(label ^class_name "question_skip")))
+    ($dom/append label skip)
+    ($dom/append label ($dom/create_text "Skip this question"))
+    (fields .push {^element skip ^kind "skip" ^id id})
+    ($dom/add_event_listener
+      skip
+      "change"
+      (fn [event : Any] : Void
+        (set editor/skips/%id skip/checked)
+        (store_draft controller editor)))
+    ($dom/append group label)
+    ($dom/append form group))
+  (var submit ($dom/render `(button ^type "submit" "Answer")))
+  (var dismiss ($dom/render `(button ^type "button" "Dismiss all")))
+  (var cancel ($dom/render `(button ^type "button" "Cancel round")))
+  (var status ($dom/render `(p ^role "status" ^aria-live "polite")))
+  ($dom/append form submit)
+  ($dom/append form dismiss)
+  ($dom/append form cancel)
+  ($dom/append form status)
+  ($dom/add_event_listener
+    form
+    "submit"
+    (fn [event : Any] : Void
+      ($dom/prevent_default event)
+      (send_reply controller editor false)))
+  ($dom/add_event_listener
+    dismiss
+    "click"
+    (fn [event : Any] : Void
+      (send_reply controller editor true)))
+  ($dom/add_event_listener
+    cancel
+    "click"
+    (fn [event : Any] : Void
+      (cancel_question_round controller editor)))
+  (var view
+    {
+      ^slot slot
+      ^key identity
+      ^target target
+      ^fields fields
+      ^submit submit
+      ^dismiss dismiss
+      ^cancel cancel
+      ^status status})
+  (var field_index 0)
+  (for field in fields
+    (var element : EventTarget field/element)
+    ($dom/set_attribute
+      element
+      "id"
+      $"question-${($url/encode_component slot)}-${($url/encode_component identity)}-${field_index}")
+    (set field_index (+ field_index 1)))
+  (editor/views .push view)
+  (set controller/mounts/%slot view)
+  ($dom/append target form)
+  (sync_question controller editor))

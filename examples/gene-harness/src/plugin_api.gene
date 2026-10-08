@@ -10,8 +10,7 @@
 # The bus publishes this after a workspace or session event is appended.
 # Subscribe to DurableRecord, then select an event by `name`.
 (type HarnessEvent : $event/Event)
-(type DurableRecord : HarnessEvent
-  ^props {^scope Str ^stream Str ^name Str ^envelope Any})
+(type DurableRecord : HarnessEvent ^props {^scope Str ^stream Str ^name Str ^envelope Any})
 
 (type CommandContext ^props {^manager Any ^runtime Any ^session Str ^raw Str ^id Str ^output Any ^snapshot Any})
 (type CommandResult ^props {^display Any? ^status Str? ^attached Bool? ^exit Int? ^view Any? ^selected Str? ^stop Int? ^mode Str?})
@@ -20,14 +19,6 @@
 # protocol: preflight and boot see only immutable identity, never live registry
 # state or a contribution surface.
 (type DescriptorContext ^props {^module_id Str ^core_interface Str})
-
-
-
-
-
-
-
-
 
 (type ExecutionLimits ^props {^max_steps Int ^max_memory_mb Int ^timeout_ms Int})
 
@@ -40,9 +31,6 @@
 (protocol PluginHost
   (message registry_names [] : Any)
   (message row_keys [registry : Str] : Any)
-
-
-
   (message create_registry [spec] : Any)
   (message resolve [seam : Str] : Any)
   (message provide [seam : Str, value] : Str)
@@ -52,7 +40,11 @@
   (message subscribe [selector, handler] : Any)
   (message emit_event [name : Str, payload] : Any)
   (message state [^session session = nil] : Any)
-  (message update_state [value, ^session session = nil] : Any))
+  (message update_state [value, ^session session = nil] : Any)
+  (message notify [message] : Any)
+  (message notifications [] : Any)
+  (message notification_update [id : Str, changes] : Any)
+  (message notification_clear [id : Str, revision : Int] : Any))
 
 (import ^from "./agents/outcome" [append_plugin_prompt])
 (fn append_prompt [label : Str, value]

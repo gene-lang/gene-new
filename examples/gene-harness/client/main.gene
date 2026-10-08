@@ -16,12 +16,29 @@
 (import ^from "../src/web/contract.gene" [protocol_version])
 (import ^from "./view.gene" [block_view step_view run_status_view not_durable])
 (import ^from "./components.gene" [render_slot])
-(import [UiClient] ^from "./ui/model.gene")
-(import [create : create_ui update : update_ui controls : ui_controls event : ui_event] ^from "./ui/controller.gene")
+(import ^from "./ui/model.gene" [UiClient])
+(import ^from "./notices.gene" [Notices create_notices put_notice remove_notice])
+(import ^from "./confirmations.gene" [Confirmations create_confirmations command_confirmation])
+(import ^from "./question_state.gene" [waiting_batch])
+(import ^from "./question_editors.gene"
+  [QuestionEditors create_question_editors mount_question question_ready resume_replies])
+(import ^from "./notification_center.gene"
+  [
+    NotificationCenter
+    create_center
+    center_ready
+    center_sessions
+    center_snapshot
+    invalidate_questions
+    update_center_count])
+(import ^from "./producer_inbox.gene"
+  [ProducerInbox create_producer_inbox producer_ready producer_event opened_inbox])
+(import ^from "./ui/controller.gene"
+  [create : create_ui update : update_ui controls : ui_controls event : ui_event open_reference])
 
 (type SessionTab ^props {^id Str ^title Str ^cache Any ^socket Any ^socket_epoch Int ^sequence Int ^connected Bool ^closed Bool ^expanded (List Str) ^server_epoch Str})
 
-(type Client ^props {^selected Str ^csrf Str ^cursor Str ^next_seq Str ^epoch Str ^ready Bool ^connected Bool ^server_busy Bool ^awaiting Str ^awaiting_session Str ^queued_prompt Str ^message_sequence Int ^sending Bool ^busy Bool ^autoscroll Bool ^has_older Bool ^loading_older Bool ^socket_epoch Int ^viewing_history Bool ^generation Int ^records (List Any) ^preview (List Any) ^sessions (List Any) ^needs_attention (List Any) ^filter_epoch Int ^trigger_selected Str ^tabs (List SessionTab) ^expanded (List Str) ^rounds (List Any) ^input_id Str ^answering Bool ^round Any ^mode Any ^mode_pending Any ^action_cooldown Bool ^was_executing Bool ^pending Any ^status Any ^status_epoch Str ^status_revision Str ^status_generation Int ^components (List Any) ^component_buttons PropMap ^socket Any ^session_revision Str ^ui Any ^safe_ui Bool ^root EventTarget ^list EventTarget ^transcript EventTarget ^prompt EventTarget ^notice EventTarget ^title EventTarget})
+(type Client ^props {^selected Str ^csrf Str ^cursor Str ^next_seq Str ^epoch Str ^ready Bool ^connected Bool ^server_busy Bool ^awaiting Str ^awaiting_session Str ^queued_prompt Str ^message_sequence Int ^sending Bool ^busy Bool ^autoscroll Bool ^has_older Bool ^loading_older Bool ^socket_epoch Int ^viewing_history Bool ^generation Int ^records (List Any) ^preview (List Any) ^sessions (List Any) ^needs_attention (List Any) ^filter_epoch Int ^trigger_selected Str ^tabs (List SessionTab) ^expanded (List Str) ^rounds (List Any) ^input_id Str ^answering Bool ^round Any ^mode Any ^mode_pending Any ^action_cooldown Bool ^was_executing Bool ^pending Any ^status Any ^status_epoch Str ^status_revision Str ^status_generation Int ^components (List Any) ^component_buttons PropMap ^socket Any ^session_revision Str ^ui Any ^notices Notices ^confirmations Any ^questions Any ^center Any ^inbox Any ^safe_ui Bool ^root EventTarget ^list EventTarget ^transcript EventTarget ^prompt EventTarget ^notice EventTarget ^title EventTarget})
 
 (fn render_plugin_slot [client : Client, target : EventTarget, slot : Str] : Bool
   (var components client/components)
@@ -64,7 +81,7 @@
   (api
     client
     "POST"
-    "/api/v6/sessions"
+    "/api/v7/sessions"
     {^title "Plugin tools"}
     (fn [code : Int, data : Any] : Void
       (set client/sending false)
@@ -79,8 +96,8 @@
           (show_error client data)))
       (update_controls client))))
 
-(fn notice [client : Client, text : Str] : Void
-  ($dom/set_text client/notice text))
+(fn notice [client : Client, text : Str, ^key key : Str = "feedback", ^scope scope : Str = "", ^sticky sticky : Bool = false, ^severity severity : Str = "info"] : Void
+  (put_notice client/notices client/notice "host" scope key text severity sticky {^session scope}))
 
 (fn set_hidden [id : Str, hidden : Bool] : Void
   (var element ($dom/element id))
@@ -92,8 +109,10 @@
   text)
 
 (fn api [client : Client, method : Str, path : Str, payload : Any, done : (Fn [Int Any] Void)] : Void
-  (var address (if client/safe_ui
-    ($to_str path (if (str/contains? path "?") "&ui=default" "?ui=default")) path))
+  (var address
+    (if client/safe_ui
+      ($to_str path (if (str/contains? path "?") "&ui=default" "?ui=default"))
+      path))
   ($http/request
     method
     address
@@ -111,9 +130,9 @@
             {^code "invalid_response" ^message "The Harness returned an unreadable response."})))
       (done status result))))
 
-(fn show_error [client : Client, result : Any] : Void
+(fn show_error [client : Client, result : Any, ^session session : Str = ""] : Void
   (var message (string_or result/message "The request could not be completed."))
-  (notice client message))
+  (notice ^key "request-error" ^scope session ^^sticky ^severity "error" client message))
 
 (fn session_tab [client : Client, id : Str] : SessionTab
   (for tab in client/tabs
@@ -179,18 +198,28 @@
   (if_yes (! client/ready) (return))
   (if_yes (&& (!= client/selected "") (== client/generation 0)) (return))
   (var key (draft_key (if (== client/selected "") "new" client/selected)))
-  (if_not ($session_storage/set key ($dom/input_value client/prompt))
-    (notice client "Browser storage is unavailable. Keep this tab open to preserve your draft.")))
+  (if ($session_storage/set key ($dom/input_value client/prompt))
+    (notice ^key "draft-storage" ^scope client/selected client "")
+    (notice ^key "draft-storage" ^scope client/selected ^^sticky ^severity "error"
+      client
+      "Browser storage is unavailable. Keep this tab open to preserve your draft.")))
 
 (fn controls [client : Client] : Void
+  (if_not ($absent? client/inbox)
+    (var inbox : ProducerInbox client/inbox)
+    (producer_ready inbox (&& client/ready client/connected) client/selected))
+  (if_not ($absent? client/questions)
+    (var questions : QuestionEditors client/questions)
+    (question_ready questions (&& client/ready client/connected)))
+  (if_not ($absent? client/center)
+    (var center : NotificationCenter client/center)
+    (center_ready center (&& client/ready client/connected)))
   (var send ($dom/element "send"))
   (var in_mode (! ($absent? client/mode)))
   (var executing (if in_mode (! ($absent? client/mode/running)) client/server_busy))
   (if_yes (&& client/was_executing (! executing))
     (set client/action_cooldown true)
-    ($time/after 250.0 (fn [] : Void
-      (set client/action_cooldown false)
-      (update_controls client))))
+    ($time/after 250.0 (fn [] : Void (set client/action_cooldown false) (update_controls client))))
   (set client/was_executing executing)
   ($dom/set_class client/root "working" client/busy)
   ($dom/set_class client/root "sending" client/sending)
@@ -205,8 +234,7 @@
       (! client/connected)
       client/sending
       client/action_cooldown
-      (&& (! executing) (! in_mode) (! command)
-        (|| client/busy (!= client/input_id "")))))
+      (&& (! executing) (! in_mode) (! command) (|| client/busy (!= client/input_id "")))))
   (var rename ($dom/element "rename_session"))
   (set rename/disabled
     (|| (! client/ready) (! client/connected) (== client/selected "") client/busy))
@@ -216,20 +244,22 @@
   (set create_button/disabled (|| (! client/ready) (! client/connected) client/sending))
   (set client/prompt/disabled (! client/ready))
   (set_hidden "leave_mode" (! in_mode))
-  ($dom/set_text ($dom/element "input_mode_label")
-    (if in_mode client/mode/label ""))
-  ($dom/set_text ($dom/element "composer_hint")
-    (if in_mode client/mode/hint "Shift+Enter for a new line · / for commands"))
-  (for id in ["input_submit" "input_yes" "input_no" "input_cancel"]
-    (var button ($dom/element id))
-    (set button/disabled
-      (|| client/answering (! client/ready) (! client/connected) client/server_busy)))
+  ($dom/set_text ($dom/element "input_mode_label") (if in_mode client/mode/label ""))
+  ($dom/set_text
+    ($dom/element "composer_hint")
+    (if in_mode
+      client/mode/hint
+      "Shift+Enter for a new line · / for commands"))
   (set send/text_content
     (if client/sending
       "Sending…"
-      (if executing "Stop"
-        (if in_mode client/mode/submit_label
-          (if ($absent? client/pending) "Send" "Resolve")))))
+      (if executing
+        "Stop"
+        (if in_mode
+          client/mode/submit_label
+          (if ($absent? client/pending)
+            "Send"
+            "Resolve")))))
   ($dom/set_class send "stop" executing)
   (var mode "Local workspace")
   (if_not ($absent? client/status)
@@ -246,159 +276,21 @@
     (var ui : UiClient client/ui)
     (ui_controls ui (&& client/ready client/connected) client/selected)))
 
-(fn choice_label [choice : Any] : Str
-  (var encoded ($json/stringify choice))
-  (if (str/starts_with? encoded "\"")
-    (then
-      (var text : Str ($json/parse encoded))
-      text)
-    (else
-      encoded)))
-
 (fn render_input [client : Client] : Void
-  (var batch : Any nil)
-  (if_not ($absent? client/round)
-    (var state : Str client/round/state)
-    (if_yes (== state "waiting") (set batch client/round/questions)))
-  (var id : Str (if ($absent? batch) "" (string_or batch/id "")))
-  (set_hidden "input_panel" (== id ""))
-  (if_yes (== id client/input_id) (return))
-  (set client/input_id id)
-  (if_yes (== id "") (return))
-  ($dom/set_text
-    ($dom/element "input_question")
-    "Answer any questions; skipped answers are unanswered.")
-  (var fields ($dom/element "input_fields"))
-  ($dom/clear fields)
-  (set_hidden "input_submit" false)
-  (set_hidden "input_yes" true)
-  (set_hidden "input_no" true)
-  (var questions : (List Any) batch/questions)
-  (var index 0)
-  (for question in questions
-    (var prompt : Str question/prompt)
-    (var group ($dom/render `(fieldset (legend %prompt))))
-    (var choices : Any question/choices)
-    (var multi : Bool false)
-    (if_not ($absent? question/multi) (set multi question/multi))
-    (if ($absent? choices)
-      (then
-        ($dom/append group ($dom/render `(textarea ^id %$"question_${index}" ^rows "2"))))
-      (elif multi
-        (var values : (List Any) choices)
-        (var j 0)
-        (for choice in values
-          (var label (choice_label choice))
-          (var checked (== question/recommended choice))
-          ($dom/append
-            group
-            ($dom/render
-              `(label
-                 (input ^id %$"question_${index}_${j}" ^type "checkbox" ^checked %checked)
-                 %label)))
-          (set j (+ j 1))))
-      (else
-        (var select ($dom/render `(select ^id %$"question_${index}")))
-        ($dom/append select ($dom/render `(option ^value "-1" "Skip")))
-        (var values : (List Any) choices)
-        (var j 0)
-        (for choice in values
-          (var label (choice_label choice))
-          (var option ($dom/render `(option ^value %($to_str j) %label)))
-          (if_yes (== question/recommended choice) (set option/selected true))
-          ($dom/append select option)
-          (set j (+ j 1)))
-        ($dom/append group select)))
-    ($dom/append
-      group
-      ($dom/render
-        `(label ^class_name "question_skip"
-           (input ^id %$"question_skip_${index}" ^type "checkbox")
-           "Skip this question")))
-    ($dom/append fields group)
-    (set index (+ index 1)))
-  (controls client))
-
-(fn send_input_reply [client : Client, payload : Any] : Void
-  (if_yes (|| client/answering (! client/connected)) (return))
-  (set client/answering true)
-  (for id in ["input_submit" "input_yes" "input_no" "input_cancel"]
-    (var button ($dom/element id))
-    (set button/disabled true))
-  ($session_storage/set "gene-harness/input-reply" ($json/stringify payload))
-  (var session : Str payload/session)
-  (api
-    client
-    "POST"
-    $"/api/v6/sessions/${session}/answers"
-    payload
-    (fn [code : Int, data : Any] : Void
-      (set client/answering false)
-      (for id in ["input_submit" "input_yes" "input_no" "input_cancel"]
-        (var button ($dom/element id))
-        (set button/disabled false))
-      (controls client)
-      (if (&& (>= code 200) (< code 300))
-        (then
-          ($session_storage/remove "gene-harness/input-reply")
-          (notice client ""))
-        (elif (&& (>= code 400) (< code 500))
-          ($session_storage/remove "gene-harness/input-reply")
-          (show_error client data))
-        (else
-          (notice client "Your answer is saved. Reconnecting to confirm it…")
-          (connect_socket client))))))
-
-(fn answer_question [client : Client, value : Any, cancelled : Bool] : Void
-  (if_yes (== client/input_id "") (return))
-  (send_input_reply
-    client
-    {^session client/selected ^batch_id client/input_id ^answers {} ^dismiss cancelled}))
-
-(fn read_answer [client : Client] : Void
-  (if_yes (== client/input_id "") (return))
-  (var answers : Any {})
-  (var questions : (List Any) client/round/questions/questions)
-  (var index 0)
-  (for question in questions
-    (var skip ($dom/element $"question_skip_${index}"))
-    (if_yes skip/checked
-      (set index (+ index 1))
-      (continue))
-    (var id : Str question/id)
-    (var choices : Any question/choices)
-    (var multi : Bool false)
-    (if_not ($absent? question/multi) (set multi question/multi))
-    (if ($absent? choices)
-      (then
-        (var text ($dom/input_value ($dom/element $"question_${index}")))
-        (if_yes (!= text "") (set answers/%id text)))
-      (elif multi
-        (var values : (List Any) choices)
-        (var picked : (List Any) [])
-        (var j 0)
-        (for choice in values
-          (var box ($dom/element $"question_${index}_${j}"))
-          (if_yes box/checked (picked .push choice))
-          (set j (+ j 1)))
-        (set answers/%id picked))
-      (else
-        (var text ($dom/input_value ($dom/element $"question_${index}")))
-        (var j : Int ($json/parse text))
-        (var values : (List Any) choices)
-        (if_yes (>= j 0) (set answers/%id values/%j))))
-    (set index (+ index 1)))
-  (send_input_reply
-    client
-    {^session client/selected ^batch_id client/input_id ^answers answers ^!dismiss}))
+  (var batch (waiting_batch {^round client/round}))
+  (set client/input_id (if ($absent? batch) "" (string_or batch/id "")))
+  (set_hidden "input_panel" (== client/input_id ""))
+  (if_not ($absent? client/questions)
+    (var questions : QuestionEditors client/questions)
+    (mount_question questions client/selected batch ($dom/element "input_fields") "conversation")))
 
 (fn render_sessions [client : Client] : Void
   ($dom/clear client/list)
   (var attention ($dom/element "attention_sessions"))
   ($dom/clear attention)
-  (set_hidden "attention_section" (== ($size client/needs_attention) 0))
-  (for session in client/needs_attention
-    (render_session_button client attention session))
+  (if_not ($absent? client/center)
+    (var center : NotificationCenter client/center)
+    (center_sessions center client/sessions client/needs_attention))
   (for session in client/sessions
     (render_session_button client client/list session))
   (if_yes (== ($size client/sessions) 0)
@@ -432,7 +324,7 @@
   (api
     client
     "GET"
-    $"/api/v6/sessions${query}"
+    $"/api/v7/sessions${query}"
     nil
     (fn [code : Int, data : Any] : Void
       (if_yes (!= epoch client/filter_epoch) (return))
@@ -461,7 +353,7 @@
   (api
     client
     "GET"
-    $"/api/v6/triggers/${($url/encode_component id)}/occurrences"
+    $"/api/v7/triggers/${($url/encode_component id)}/occurrences"
     nil
     (fn [code : Int, data : Any] : Void
       (if_yes (!= client/trigger_selected id) (return))
@@ -486,7 +378,7 @@
   (api
     client
     "GET"
-    "/api/v6/triggers"
+    "/api/v7/triggers"
     nil
     (fn [code : Int, data : Any] : Void
       (if (!= code 200)
@@ -508,7 +400,7 @@
                    (button ^type "button" ^on_click %(fn [event : Any] : Void (trigger_occurrences client id))
                      %id
                      (small %kind))
-                   (button ^type "button" ^on_click %(fn [event : Any] : Void (api client "DELETE" $"/api/v6/triggers/${($url/encode_component id)}" nil (fn [status : Int, result : Any] : Void (if (== status 200) (load_triggers client) (show_error client result))))) "Delete"))))))))))
+                   (button ^type "button" ^on_click %(fn [event : Any] : Void (api client "DELETE" $"/api/v7/triggers/${($url/encode_component id)}" nil (fn [status : Int, result : Any] : Void (if (== status 200) (load_triggers client) (show_error client result))))) "Delete"))))))))))
 
 (fn create_trigger [client : Client] : Void
   (try
@@ -538,7 +430,7 @@
     (api
       client
       "POST"
-      "/api/v6/triggers"
+      "/api/v7/triggers"
       data
       (fn [code : Int, result : Any] : Void
         (if (== code 201)
@@ -598,7 +490,7 @@
     ($dom/append
       target
       ($dom/render
-        `(button ^type "button" ^on_click %(fn [event : Any] : Void (api client "POST" $"/api/v6/sessions/${client/selected}/commands/${command_id}/cancel" {} (fn [code : Int, data : Any] : Void (if_yes (!= code 200) (show_error client data))))) "Cancel command"))))
+        `(button ^type "button" ^on_click %(fn [event : Any] : Void (api client "POST" $"/api/v7/sessions/${client/selected}/commands/${command_id}/cancel" {} (fn [code : Int, data : Any] : Void (if_yes (!= code 200) (show_error client data))))) "Cancel command"))))
   (var view : Any block/view)
   (if_yes (! ($absent? view))
     (var next : Any view/next)
@@ -787,21 +679,21 @@
   # switch or another workspace update. This is event-driven, not polling.
   ($time/after 25.0 (fn [] : Void
     (if_yes (!= generation client/status_generation) (return))
-    (api client "GET" $"/api/v6/status?session=${($url/encode_component session)}" nil
+    (api client "GET" $"/api/v7/status?session=${($url/encode_component session)}" nil
       (fn [code : Int, data : Any] : Void
         (if_yes (|| (!= generation client/status_generation) (!= session client/selected)) (return))
         (if (== code 200) (apply_status client data) (show_error client data)))))))
 
 (fn invalidate_status [client : Client, epoch : Str, revision : Str] : Void
-  (if_yes (&& (== epoch client/status_epoch)
-              (! (revision_before client/status_revision revision))) (return))
+  (if_yes (&& (== epoch client/status_epoch) (! (revision_before client/status_revision revision)))
+    (return))
   (set client/status_epoch epoch)
   (set client/status_revision revision)
   (refresh_status client))
 
 (fn apply_status [client : Client, data : Any] : Void
-  (if_not (status_is_current data client/status client/selected client/epoch
-    client/status_epoch client/status_revision) (return))
+  (if_not (status_is_current data client/status client/selected client/epoch client/status_epoch client/status_revision)
+    (return))
   (var epoch (string_or data/epoch ""))
   (var revision (string_or data/status_revision ""))
   (set client/status_epoch epoch)
@@ -893,7 +785,7 @@
 
 (fn sessions_page [client : Client, after : Str] : Void
   (var epoch client/socket_epoch)
-  (api client "GET" $"/api/v6/sessions?after=${after}" nil
+  (api client "GET" $"/api/v7/sessions?after=${after}" nil
     (fn [code : Int, data : Any] : Void
       (if_yes (!= epoch client/socket_epoch) (return))
       (if (== code 200)
@@ -921,7 +813,7 @@
   (api
     client
     "GET"
-    $"/api/v6/sessions/${client/selected}/snapshot?before=${before}"
+    $"/api/v7/sessions/${client/selected}/snapshot?before=${before}"
     nil
     (fn [code : Int, data : Any] : Void
       (if_yes (!= generation client/generation) (return))
@@ -1028,7 +920,8 @@
   (set client/autoscroll true)
   (set client/generation (+ client/generation 1))
   ($dom/set_input_value client/prompt (?? ($session_storage/get (draft_key id)) ""))
-  ($browser/replace_url ($to_str $"/?session=${($url/encode_component id)}" (if client/safe_ui "&ui=default" "")))
+  ($browser/replace_url
+    ($to_str $"/?session=${($url/encode_component id)}" (if client/safe_ui "&ui=default" "")))
   ($dom/set_class client/root "menu_open" false)
   (notice client "")
   (render_sessions client)
@@ -1048,7 +941,7 @@
     (api
       client
       "GET"
-      $"/api/v6/sessions/${id}/snapshot"
+      $"/api/v7/sessions/${id}/snapshot"
       nil
       (fn [code : Int, data : Any] : Void
         (if_yes (== id client/selected)
@@ -1059,7 +952,7 @@
     (api
       client
       "POST"
-      $"/api/v6/sessions/${id}/open"
+      $"/api/v7/sessions/${id}/open"
       {}
       (fn [code : Int, data : Any] : Void
         (if_yes (!= code 200) (show_error client data))))))
@@ -1074,7 +967,7 @@
   (api
     client
     "PATCH"
-    $"/api/v6/sessions/${id}"
+    $"/api/v7/sessions/${id}"
     {^pinned (! pinned) ^revision client/session_revision}
     (fn [code : Int, data : Any] : Void
       (if (== code 200)
@@ -1094,7 +987,7 @@
   (api
     client
     "POST"
-    "/api/v6/sessions"
+    "/api/v7/sessions"
     {^title "New conversation"}
     (fn [code : Int, data : Any] : Void
       (if (== code 201)
@@ -1121,7 +1014,7 @@
     (set client/awaiting request_id) (set client/awaiting_session session))
   (set client/sending true)
   (update_controls client)
-  (api client "POST" $"/api/v6/sessions/${session}/rounds" pending
+  (api client "POST" $"/api/v7/sessions/${session}/rounds" pending
     (fn [code : Int, data : Any] : Void
       (set client/sending false)
       (if (== code 202)
@@ -1191,7 +1084,7 @@
   (api
     client
     "POST"
-    $"/api/v6/sessions/${client/selected}/commands"
+    $"/api/v7/sessions/${client/selected}/commands"
     {^text text}
     (fn [code : Int, data : Any] : Void
       (set client/sending false)
@@ -1236,17 +1129,6 @@
       ^view data/view
       ^!durable})
   (if_yes (!= status "running") (resolve_mode_receipt client [data]))
-  (var error_code : Str (string_or data/error_code ""))
-  (if_yes (== error_code "confirmation_required")
-    (var name : Str data/name)
-    ($dom/clear client/notice)
-    ($dom/append
-      client/notice
-      ($dom/render
-        `(div ^role "dialog" ^aria-label "Confirm stopping sessions"
-           (p %text)
-           (button ^type "button" ^on_click %(fn [event : Any] : Void (send_command client $"/${name} --confirm")) "Confirm")
-           (button ^type "button" ^on_click %(fn [event : Any] : Void (notice client "")) "Keep running")))))
   (render_transcript client))
 
 (fn mode_pending_key [session : Str] : Str
@@ -1256,32 +1138,37 @@
   (if_yes (== client/selected "") (return))
   (if_yes ($absent? client/mode_pending)
     (var saved : Str (?? ($session_storage/get (mode_pending_key client/selected)) ""))
-    (if_yes (!= saved "")
-      (set client/mode_pending (try ($json/parse saved) catch Any nil))))
+    (if_yes (!= saved "") (set client/mode_pending (try ($json/parse saved) catch Any nil))))
   (if_yes ($absent? client/mode_pending) (return))
   (var pending : Any client/mode_pending)
   (for record in records
-    (if_yes (&& (== record/input_id pending/input_id)
-                 (== record/mode_instance pending/instance))
+    (if_yes (&& (== record/input_id pending/input_id) (== record/mode_instance pending/instance))
       ($session_storage/remove (mode_pending_key client/selected))
       (if_yes (== ($dom/input_value client/prompt) (string_or pending/text ""))
         ($dom/set_input_value client/prompt "")
         (remember_draft client))
       (set client/mode_pending nil)
+      (notice ^key "mode-input" ^scope client/selected client "")
       (notice client "Input receipt recovered.")
       (return)))
-  (notice client "Input outcome is unknown. Check the transcript; Eval resolves the same input id."))
+  (notice ^key "mode-input" ^scope client/selected ^^sticky
+    client
+    "Input outcome is unknown. Check the transcript; Eval resolves the same input id."))
 
 (fn send_mode_input [client : Client] : Void
-  (if_yes (|| (! client/ready) (! client/connected) client/sending
-               (! ($absent? client/mode/running))) (return))
+  (if_yes (|| (! client/ready) (! client/connected) client/sending (! ($absent? client/mode/running)))
+    (return))
   (var text ($dom/input_value client/prompt))
   (if_yes (== (str/trim text) "") (return))
   (var pending : Any client/mode_pending)
   (if ($absent? pending)
     (then
-      (set pending {^session client/selected ^instance client/mode/instance
-        ^input_id ($browser/request_id) ^text text}))
+      (set pending
+        {
+          ^session client/selected
+          ^instance client/mode/instance
+          ^input_id ($browser/request_id)
+          ^text text}))
     (else
       (var previous_text : Str pending/text)
       (if_yes (!= previous_text text)
@@ -1295,7 +1182,11 @@
   (remember_draft client)
   (update_controls client)
   (var session : Str pending/session)
-  (api client "POST" $"/api/v6/sessions/${session}/mode/input" pending
+  (api
+    client
+    "POST"
+    $"/api/v7/sessions/${session}/mode/input"
+    pending
     (fn [code : Int, data : Any] : Void
       (set client/sending false)
       (var incomplete : Bool false)
@@ -1329,20 +1220,26 @@
   (var instance : Str client/mode/instance)
   (set client/sending true)
   (update_controls client)
-  (api client "POST" $"/api/v6/sessions/${session}/mode/leave" {^instance instance}
+  (api
+    client
+    "POST"
+    $"/api/v7/sessions/${session}/mode/leave"
+    {^instance instance}
     (fn [code : Int, data : Any] : Void
       (set client/sending false)
       (if (== code 200)
-        (do (set client/mode nil) (notice client ""))
+        (do
+          (set client/mode nil)
+          (notice client ""))
         (show_error client data))
       (update_controls client))))
 
 (fn action [client : Client] : Void
   (if_yes (|| client/sending client/action_cooldown) (return))
-  (var executing
-    (if ($absent? client/mode) client/server_busy
-      (! ($absent? client/mode/running))))
-  (if executing (stop client) (send client)))
+  (var executing (if ($absent? client/mode) client/server_busy (! ($absent? client/mode/running))))
+  (if executing
+    (stop client)
+    (send client)))
 
 (fn send [client : Client] : Void
   (if_yes (|| (! client/ready) (! client/connected) client/sending) (return))
@@ -1369,7 +1266,7 @@
     (api
       client
       "POST"
-      "/api/v6/sessions"
+      "/api/v7/sessions"
       {^title "New conversation"}
       (fn [code : Int, data : Any] : Void
         (set client/sending false)
@@ -1391,17 +1288,22 @@
   (if_yes (! ($absent? client/mode))
     (if_yes ($absent? client/mode/running) (return))
     (var command_id : Str client/mode/running)
-    (api client "POST"
-      $"/api/v6/sessions/${client/selected}/commands/${command_id}/cancel" {}
+    (api
+      client
+      "POST"
+      $"/api/v7/sessions/${client/selected}/commands/${command_id}/cancel"
+      {}
       (fn [code : Int, data : Any] : Void
-        (if (== code 200) (notice client "Stop requested.") (show_error client data))))
+        (if (== code 200)
+          (notice client "Stop requested.")
+          (show_error client data))))
     (return))
   (if_yes ($absent? client/round) (return))
   (var id : Str client/round/id)
   (api
     client
     "POST"
-    $"/api/v6/sessions/${client/selected}/rounds/${id}/cancel"
+    $"/api/v7/sessions/${client/selected}/rounds/${id}/cancel"
     {}
     (fn [code : Int, data : Any] : Void
       (if (== code 200)
@@ -1418,7 +1320,9 @@
       (set client/ready false)
       (set client/connected false)
       (update_controls client)
-      (notice client "Reload the page to use the current server version.")
+      (notice ^key "connection" ^^sticky
+        client
+        "Reload the page to use the current server version.")
       (return))
     (var sequence_text : Str message/sequence)
     (var sequence : Int ($json/parse sequence_text))
@@ -1434,6 +1338,8 @@
       (then
         (apply_status client data))
       (elif (== kind "session/list")
+        (var center : NotificationCenter client/center)
+        (invalidate_questions center)
         (refresh_sessions client))
       (elif (== kind "attention")
         (set client/needs_attention data/sessions)
@@ -1467,7 +1373,7 @@
         (set client/ready restarting)
         (set client/connected false)
         (var stopped_message : Str data/message)
-        (notice client stopped_message)
+        (notice ^key "connection" ^^sticky client stopped_message)
         (controls client))
       (elif (== kind "restarted")
         (notice client "Harness restarted."))
@@ -1478,19 +1384,10 @@
         ($ws/close socket))
       (elif (== kind "ready")
         (set client/connected true)
-        (var current_notice ($dom/text client/notice))
-        (if_yes (|| (== current_notice "Reconnecting… Your draft is saved.") (== current_notice "Refreshing the live connection…"))
-          (notice client ""))
+        (notice ^key "connection" client "")
         (update_controls client)
-        (var saved (?? ($session_storage/get "gene-harness/input-reply") ""))
-        (if_yes (!= saved "")
-          (var payload : Any ($json/parse saved))
-          (var reply_session : Str payload/session)
-          (var input_id : Str payload/batch_id)
-          (if_yes (== reply_session client/selected)
-            (if (== input_id client/input_id)
-              (send_input_reply client payload)
-              ($session_storage/remove "gene-harness/input-reply"))))
+        (var questions : QuestionEditors client/questions)
+        (resume_replies questions)
         (if_not ($absent? client/pending) (send_pending client))
         (if_yes (!= client/queued_prompt "")
           (var queued client/queued_prompt)
@@ -1499,7 +1396,7 @@
             (send_command client queued)
             (stage_submission client queued)))))
   catch Any
-    (notice client "Refreshing the live connection…")
+    (notice ^key "connection" ^^sticky client "Refreshing the live connection…")
     (connect_socket client)))
 
 (fn reconnect_socket [client : Client, epoch : Int] : Void
@@ -1507,7 +1404,7 @@
     (if_yes (|| (! client/ready) (!= epoch client/socket_epoch)) (return))
     # Reconnection checks cookie expiry. Connected streams refresh status only
     # on workspace invalidation or tab selection, without timer polling.
-    (api client "GET" "/api/v6/status" nil
+    (api client "GET" "/api/v7/status" nil
       (fn [code : Int, data : Any] : Void
         (if_yes (!= epoch client/socket_epoch) (return))
         (if (== code 200)
@@ -1538,7 +1435,12 @@
   (var parts : (List Str) (str/split origin "://"))
   (var scheme (if (== parts/0 "https") "wss" "ws"))
   (var socket
-    ($ws/connect ($to_str $"${scheme}://${parts/1}/api/v6/events?session=${($url/encode_component tab/id)}" (if client/safe_ui "&ui=default" ""))))
+    ($ws/connect
+      ($to_str
+        $"${scheme}://${parts/1}/api/v7/events?session=${($url/encode_component tab/id)}"
+        (if client/safe_ui
+          "&ui=default"
+          ""))))
   (set tab/socket socket)
   (if_yes (== tab/id client/selected)
     (set client/socket socket)
@@ -1559,7 +1461,8 @@
       (if_yes (== tab/id client/selected)
         (set client/connected false)
         (update_controls client)
-        (if_yes client/ready (notice client "Reconnecting… Your draft is saved.")))
+        (if_yes client/ready
+          (notice ^key "connection" ^^sticky client "Reconnecting… Your draft is saved.")))
       (if_yes client/ready (reconnect_stream client tab epoch)))))
 
 (fn reconnect_stream [client : Client, tab : SessionTab, epoch : Int] : Void
@@ -1570,7 +1473,7 @@
       (api
         client
         "GET"
-        "/api/v6/status"
+        "/api/v7/status"
         nil
         (fn [code : Int, data : Any] : Void
           (if_yes (|| tab/closed (!= epoch tab/socket_epoch)) (return))
@@ -1603,6 +1506,17 @@
     (var session : Str message/session)
     (var data : Any message/data)
     (var ui : UiClient client/ui)
+    (var center : NotificationCenter client/center)
+    (if_yes (!= center/epoch server_epoch)
+      (set center/epoch server_epoch)
+      (invalidate_questions center))
+    (var inbox : ProducerInbox client/inbox)
+    (producer_event inbox kind server_epoch data)
+    (if_yes (== kind "snapshot") (center_snapshot center session data))
+    (if_yes (== kind "round/state") (invalidate_questions center session))
+    (if_yes (== kind "command")
+      (var confirmations : Confirmations client/confirmations)
+      (command_confirmation confirmations session data))
     (ui_event ui kind data)
     (if_yes (&& (== tab/id client/selected) (== kind "ui/state"))
       (invalidate_status client server_epoch (string_or data/data_revision "")))
@@ -1626,8 +1540,7 @@
           (var rounds : (List Any) cache/rounds)
           (set cache/rounds (merge_blocks rounds [data]))
           (acknowledge_run client data session))
-        (if_yes (&& (== session tab/id) (== kind "mode/state"))
-          (set cache/mode data))
+        (if_yes (&& (== session tab/id) (== kind "mode/state")) (set cache/mode data))
         (if_yes (&& (== session tab/id) (== kind "command"))
           (var id : Str data/id)
           (var output (string_or data/display (string_or data/text "")))
@@ -1671,12 +1584,17 @@
 
 (fn authenticate [client : Client] : Void
   (var token (query_value ($browser/hash) "token"))
-  ($browser/replace_url (if client/safe_ui $"/?ui=default&session=${client/selected}" (if (== client/selected "") "/" $"/?session=${client/selected}")))
+  ($browser/replace_url
+    (if client/safe_ui
+      $"/?ui=default&session=${client/selected}"
+      (if (== client/selected "")
+        "/"
+        $"/?session=${client/selected}")))
   (if (!= token "")
     (api
       client
       "POST"
-      "/api/v6/auth/exchange"
+      "/api/v7/auth/exchange"
       {^token token}
       (fn [code : Int, data : Any] : Void
         (if (== code 200)
@@ -1688,7 +1606,7 @@
     (api
       client
       "GET"
-      "/api/v6/status"
+      "/api/v7/status"
       nil
       (fn [code : Int, data : Any] : Void
         (if (== code 200)
@@ -1700,40 +1618,74 @@
 
 (fn main [root : EventTarget] : Void
   (var client
-    (Client ^selected (query_value ($browser/search) "session") ^csrf "" ^cursor "" ^next_seq "1" ^epoch "" ^!ready ^!sending ^!connected ^!server_busy ^awaiting "" ^awaiting_session "" ^queued_prompt "" ^message_sequence 0 ^!busy ^^autoscroll ^generation 0 ^!has_older ^!loading_older ^socket_epoch 0 ^!viewing_history ^records [] ^preview [] ^sessions [] ^needs_attention [] ^filter_epoch 0 ^trigger_selected "" ^tabs [] ^expanded [] ^rounds [] ^input_id "" ^!answering ^round nil ^mode nil ^mode_pending nil ^!action_cooldown ^!was_executing ^pending nil ^status nil ^status_epoch "" ^status_revision "" ^status_generation 0 ^components [] ^component_buttons {} ^socket nil ^session_revision "1" ^ui nil ^safe_ui (== (query_value ($browser/search) "ui") "default") ^root root ^list ($dom/element "sessions") ^transcript ($dom/element "transcript") ^prompt ($dom/element "prompt") ^notice ($dom/element "notice") ^title ($dom/element "conversation_title")))
-  (set client/ui (create_ui root client/safe_ui
-    (fn [method : Str, path : Str, payload : Any, done : (Fn [Int Any] Void)] : Void
-      (api client method path payload done))
-    (fn [id : Str] : Void (select_session client id))
-    (fn [command : Str] : Void (component_command client command))
-    (fn [text : Str] : Void (edit_prompt client text))))
+    (Client ^selected (query_value ($browser/search) "session") ^csrf "" ^cursor "" ^next_seq "1" ^epoch "" ^!ready ^!sending ^!connected ^!server_busy ^awaiting "" ^awaiting_session "" ^queued_prompt "" ^message_sequence 0 ^!busy ^^autoscroll ^generation 0 ^!has_older ^!loading_older ^socket_epoch 0 ^!viewing_history ^records [] ^preview [] ^sessions [] ^needs_attention [] ^filter_epoch 0 ^trigger_selected "" ^tabs [] ^expanded [] ^rounds [] ^input_id "" ^!answering ^round nil ^mode nil ^mode_pending nil ^!action_cooldown ^!was_executing ^pending nil ^status nil ^status_epoch "" ^status_revision "" ^status_generation 0 ^components [] ^component_buttons {} ^socket nil ^session_revision "1" ^ui nil ^notices (create_notices) ^confirmations nil ^questions nil ^center nil ^inbox nil ^safe_ui (== (query_value ($browser/search) "ui") "default") ^root root ^list ($dom/element "sessions") ^transcript ($dom/element "transcript") ^prompt ($dom/element "prompt") ^notice ($dom/element "notice") ^title ($dom/element "conversation_title")))
+  (set client/questions
+    (create_question_editors
+      client/notices
+      (fn [method : Str, path : Str, payload : Any, done : (Fn [Int Any] Void)] : Void
+        (api client method path payload done))
+      (fn [session : Str] : Void
+        (var center : NotificationCenter client/center)
+        (invalidate_questions center session))))
+  (var questions : QuestionEditors client/questions)
+  (set client/center
+    (create_center
+      client/notices
+      questions
+      (fn [method : Str, path : Str, payload : Any, done : (Fn [Int Any] Void)] : Void
+        (api client method path payload done))
+      (fn [session : Str] : Void
+        (select_session client session))))
+  (var center : NotificationCenter client/center)
+  (set client/inbox
+    (create_producer_inbox
+      client/notices
+      client/safe_ui
+      (fn [method : Str, path : Str, payload : Any, done : (Fn [Int Any] Void)] : Void
+        (api client method path payload done))
+      (fn [count : Int] : Void
+        (set center/new_messages count)
+        (update_center_count center))
+      (fn [reference : Any] : Void
+        (var session (string_or reference/session ""))
+        (if_yes (!= session "") (select_session client session))
+        (var ui : UiClient client/ui)
+        (open_reference ui reference)
+        (if_not ($absent? reference/round)
+          (var round : Str reference/round)
+          (client/expanded .push round)
+          (render_transcript client))
+        nil)
+      (fn [session : Str, text : Str] : Void
+        (if_yes (&& (!= session "") (!= session client/selected)) (select_session client session))
+        (edit_prompt client text))))
+  (var inbox : ProducerInbox client/inbox)
+  (set center/on_open (fn [] : Void (opened_inbox inbox)))
+  (set client/confirmations
+    (create_confirmations
+      ($dom/element "confirmations")
+      client/notices
+      (fn [method : Str, path : Str, payload : Any, done : (Fn [Int Any] Void)] : Void
+        (api client method path payload done))))
+  (set client/ui
+    (create_ui
+      root
+      client/safe_ui
+      client/notices
+      (fn [method : Str, path : Str, payload : Any, done : (Fn [Int Any] Void)] : Void
+        (api client method path payload done))
+      (fn [id : Str] : Void
+        (select_session client id))
+      (fn [command : Str] : Void
+        (component_command client command))
+      (fn [text : Str] : Void
+        (edit_prompt client text))))
   ($dom/add_event_listener
     ($dom/element "composer")
     "submit"
     (fn [event : Any] : Void
       ($dom/prevent_default event)
       (action client)))
-  ($dom/add_event_listener
-    ($dom/element "input_form")
-    "submit"
-    (fn [event : Any] : Void
-      ($dom/prevent_default event)
-      (read_answer client)))
-  ($dom/add_event_listener
-    ($dom/element "input_yes")
-    "click"
-    (fn [event : Any] : Void
-      (answer_question client true false)))
-  ($dom/add_event_listener
-    ($dom/element "input_no")
-    "click"
-    (fn [event : Any] : Void
-      (answer_question client false false)))
-  ($dom/add_event_listener
-    ($dom/element "input_cancel")
-    "click"
-    (fn [event : Any] : Void
-      (answer_question client nil true)))
   ($dom/add_event_listener
     client/prompt
     "keydown"
@@ -1786,8 +1738,11 @@
     (fn [event : Any] : Void
       ($dom/prevent_default event)
       (create_trigger client)))
-  ($dom/add_event_listener ($dom/element "leave_mode") "click"
-    (fn [event : Any] : Void (leave_mode client)))
+  ($dom/add_event_listener
+    ($dom/element "leave_mode")
+    "click"
+    (fn [event : Any] : Void
+      (leave_mode client)))
   ($dom/add_event_listener
     ($dom/element "resolve_submission")
     "click"
@@ -1850,7 +1805,7 @@
       (api
         client
         "PATCH"
-        $"/api/v6/sessions/${client/selected}"
+        $"/api/v7/sessions/${client/selected}"
         {^title ($dom/input_value ($dom/element "rename_title")) ^revision client/session_revision}
         (fn [code : Int, data : Any] : Void
           (if (== code 200)

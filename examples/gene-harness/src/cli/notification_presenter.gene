@@ -1,0 +1,59 @@
+# Attached CLI presenter. Publications never print from producer callbacks.
+(mod notification_presenter)
+(import ^from "./client" [api])
+(import ^from "./options" [problem])
+
+(fn one_line [value] : Str
+  ($regex/replace_all #"[\r\n\t]+" ($to_str value) " "))
+
+(fn present_message [message, json : Bool]
+  (if json
+    ($println ($json/stringify message))
+    ($println
+      ($to_str
+        message/id
+        " ["
+        message/source
+        "] "
+        message/severity
+        ": "
+        (one_line message/title)
+        " — "
+        (one_line message/summary)))))
+
+(fn watch_messages [client, timeout : Int, json : Bool]
+  (let seen {})
+  (let deadline (+ ($os/monotonic_ms) timeout))
+  (loop
+    (let snapshot (api client "GET" "/notifications"))
+    (for message in snapshot/messages
+      (if_yes (!= (seen .get message/id) message/sequence)
+        (present_message message json)
+        (seen .put message/id message/sequence)))
+    (if (>= ($os/monotonic_ms) deadline) (return nil))
+    ($sleep 500)))
+
+(fn notification_command [client, words, options, timeout : Int]
+  (let sub (?? words/1 "list"))
+  (if (== sub "list") (return (api client "GET" "/notifications")))
+  (if_yes (== sub "watch")
+    (watch_messages client timeout (== options/json true))
+    (return nil))
+  (if_yes (== sub "show")
+    (if ($absent? words/2) (problem "Use notifications show ID."))
+    (return (api client "GET" $"/notifications/${($url/encode_component words/2)}")))
+  (if_yes (== sub "ack")
+    (let snapshot (api client "GET" "/notifications"))
+    (return
+      (api client "POST" "/notifications/ack" {^through ($parse/parse_int snapshot/watermark)})))
+  (if_yes (== sub "clear")
+    (let selected [])
+    (if (== options/all true)
+      (for message in ((Path "messages") (api client "GET" "/notifications"))
+        (selected .push {^id message/id ^revision message/revision}))
+      (do
+        (if (|| ($absent? words/2) ($absent? options/revision))
+          (problem "Use notifications clear ID --revision N, or notifications clear --all."))
+        (selected .push {^id words/2 ^revision ($parse/parse_int options/revision)})))
+    (return (api client "POST" "/notifications/clear" {^messages selected})))
+  (problem "Use notifications list|show ID|clear ID --revision N|clear --all|ack|watch."))

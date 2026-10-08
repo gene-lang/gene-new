@@ -25,6 +25,7 @@
       "title"
       "request-id"
       "sequence"
+      "revision"
       "round"
       "command"
       "batch"
@@ -39,7 +40,7 @@
       "since"
       "until"
       "timeout-ms"])
-  (let flags ["json" "wait" "no-wait" "confirm" "offline" "help" "attention" "supervised"])
+  (let flags ["json" "wait" "no-wait" "confirm" "offline" "help" "attention" "supervised" "all"])
   (while (< i argv/.size)
     (let arg ($to_str argv/%i))
     (if (&& (! literal) (== arg "--"))

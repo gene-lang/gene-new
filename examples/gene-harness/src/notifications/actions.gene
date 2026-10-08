@@ -1,0 +1,129 @@
+(mod notification_actions)
+(import ^from "./inbox" [message_detail notification_error])
+(import ^from "./publisher" [publisher_revision])
+(import ^from "../ui/state" [ui_record ui_revision])
+(import ^from "../ui/views" [ui_view_state])
+(import ^from "../runtime/composition" [acquire_snapshot release_snapshot])
+(import ^from "../runtime/sessions" [with_session_gate require_record])
+(import ^from "../runtime/commands"
+  [command_request_receipt parse_submission submit_routed_command view_command])
+(import ^from "../agents/history" [with_body_use])
+(import ^from "../plugin_api" [CommandResult])
+
+(fn invoke_notification_action [runtime, request]
+  (if (!= ($head request) Map)
+    (notification_error "invalid_request" "Action request must be a map."))
+  (for key in ["notification" "action"]
+    (if (!= ($head (request .get key)) Str)
+      (notification_error "invalid_request" "Missing action identity.")))
+  (let h runtime/h)
+  (let session (?? request/session ""))
+  (let request_id (?? request/request_id ""))
+  (let digest ($crypto/sha256 ($serde/write_data request)))
+  (with_session_gate
+    runtime/sessions
+    $"notification-action/${session}"
+    (fn []
+      (if_yes (&& (!= session "") (!= request_id ""))
+        (let previous (command_request_receipt runtime/commands session request_id))
+        (if_not ($absent? previous)
+          (if (!= previous/request_digest digest)
+            (notification_error "submission_conflict" "Action retry changed its original payload."))
+          (return {^kind "command" ^session session ^receipt previous})))
+      (let message (message_detail h/notifications request/notification))
+      (if (!= message/revision request/revision)
+        (notification_error
+          "revision_conflict"
+          "This message changed. Review the current publication."))
+      (var action nil)
+      (for item in message/actions
+        (if (== item/id request/action) (set action item)))
+      (if ($absent? action) (notification_error "not_found" "Notification action is unavailable."))
+      (if (!= action/publisher_revision (publisher_revision h message/source))
+        (notification_error
+          "revision_conflict"
+          "The publisher was replaced or retired. Open the original reference to recover."))
+      (let lease (acquire_snapshot h/snapshots))
+      (var transferred false)
+      (try
+        (if_not ($absent? action/reference)
+          (let reference ($thaw ($freeze action/reference)))
+          (require_record runtime/sessions reference/session)
+          (if_not ($absent? reference/artifact)
+            (let view (view_command {^runtime runtime ^raw reference/artifact}))
+            (reference .put
+              "evidence"
+              {^title reference/artifact ^text ($to_str view/display) ^view view/view}))
+          (if_not ($absent? reference/component)
+            (let component (ui_record lease/snapshot "web_components" reference/component))
+            (if (|| ($absent? component) (!= action/component_revision (ui_revision h component)))
+              (notification_error "revision_conflict" "The referenced panel was replaced."))
+            (reference .put
+              "view_state"
+              (ui_view_state component/payload (?? reference/view_state {}))))
+          (return {^kind "reference" ^reference reference}))
+        (if_not ($absent? action/prompt)
+          (return
+            {
+              ^kind "prompt"
+              ^session (?? message/origin/session session)
+              ^text ($to_str
+                      "[notification "
+                      message/id
+                      " revision "
+                      message/revision
+                      ", source "
+                      message/source
+                      ", origin "
+                      ($json/stringify message/origin)
+                      """]
+"""
+                      action/prompt)}))
+        (if (|| (== session "") (!= ($head request_id) Str) (== request_id "") (> ($str/byte_size request_id) 256) (!= ($head request/sequence) Int) (< request/sequence 1))
+          (notification_error
+            "invalid_request"
+            "Choose a conversation and provide the original request id and command sequence."))
+        (if (&& (! ($absent? message/origin/session)) (!= session message/origin/session))
+          (notification_error "invalid_request" "This action belongs to its original conversation."))
+        (var parsed nil)
+        (if ($absent? action/function)
+          (do
+            (let command (ui_record lease/snapshot "commands" action/command_name))
+            (if (|| ($absent? command) (!= action/command_revision (ui_revision h command)))
+              (notification_error
+                "revision_conflict"
+                "The notification command was replaced or disabled."))
+            (set parsed
+              ($runtime/with_context
+                {^composition h/snapshots ^snapshot lease/snapshot}
+                (fn []
+                  (parse_submission h action/command)))))
+          (do
+            (let function (ui_record lease/snapshot "functions" action/function))
+            (if (|| ($absent? function) (!= action/function_revision (ui_revision h function)))
+              (notification_error
+                "revision_conflict"
+                "The notification function was replaced or disabled."))
+            (set parsed
+              {
+                ^kind "command"
+                ^name action/function
+                ^raw ""
+                ^handler (fn [ctx]
+                           (let call
+                             ($runtime/bind_call ^named action/named
+                               function/payload/fn
+                               action/args))
+                           (CommandResult ^display ($to_str (call)) ^!attached))})))
+        (parsed .put "request_id" request_id)
+        (parsed .put "request_seq" request/sequence)
+        (parsed .put "request_digest" digest)
+        (let receipt
+          (with_body_use
+            runtime
+            (fn []
+              (submit_routed_command ^lease lease runtime/commands session parsed))))
+        (set transferred true)
+        {^kind "command" ^session session ^receipt receipt}
+      ensure
+        (if_not transferred (release_snapshot h/snapshots lease))))))

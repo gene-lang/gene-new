@@ -1,0 +1,92 @@
+(import $test [describe it])
+(import ^from "../../support" [isolated run_spec package_path])
+(import ^from "../../web_support" [start_host stop_host cli])
+(import ^from "../../../src/cli/client" [connect api])
+
+(describe
+  "Notification owner transport"
+  (it
+    "stores messages without viewers and shares CLI clear and acknowledgment with browser snapshots"
+    []
+    (isolated
+      this_mod/.path
+      "stores messages without viewers and shares CLI clear and acknowledgment with browser snapshots"
+      (fn [workspace]
+        (let host (start_host $"${workspace}/host"))
+        (try
+          (let client (connect host/root))
+          (let posted
+            (api
+              client
+              "POST"
+              "/notifications"
+              {
+                ^key "headless"
+                ^severity "warning"
+                ^title "Saved review"
+                ^summary "Two blockers remain."
+                ^detail {^tag "section" ^props {} ^children ["Review evidence"]}}))
+          (let listed (cli host/root ["notifications"]))
+          ($assert (== listed/messages/0/id posted/id))
+          ($assert (== listed/new_messages 1))
+          (let detail (cli host/root ["notifications" "show" posted/id]))
+          ($assert (== detail/source "operator"))
+          ($assert (! ($absent? detail/detail)))
+          ($assert
+            ($absent?
+              ((Path "detail") (api client "GET" $"/notifications/${posted/id}?ui=default"))))
+          (cli host/root ["notifications" "ack"])
+          ($assert (== ((Path "new_messages") (api client "GET" "/notifications")) 0))
+          (cli host/root ["notifications" "clear" posted/id "--revision" ($to_str posted/revision)])
+          ($assert (== ($size ((Path "messages") (api client "GET" "/notifications"))) 0))
+          (api
+            client
+            "POST"
+            "/notifications"
+            {
+              ^key "headless"
+              ^severity "warning"
+              ^title "Review changed"
+              ^summary "One blocker remains."})
+          ($assert (== ((Path "new_messages") (cli host/root ["notifications"])) 1))
+          (cli host/root ["notifications" "clear" "--all"])
+          ($assert (== ($size ((Path "messages") (api client "GET" "/notifications"))) 0))
+          (let watcher
+            ($os/exec_async ^timeout_ms 10000
+              ($os/executable_path)
+              "run"
+              (package_path "src/main.gene")
+              "--workspace"
+              host/root
+              "notifications"
+              "watch"
+              "--timeout-ms"
+              "1800"))
+          ($sleep 250)
+          (let announcement
+            {
+              ^key "watch"
+              ^title "Attached CLI"
+              ^summary """A live milestone.
+Second line."""})
+          (let watched (api client "POST" "/notifications" announcement))
+          (api client "POST" "/notifications" announcement)
+          (let output (await watcher))
+          ($assert (== output/status 0) output/stderr)
+          ($assert ($str/contains? output/stdout watched/id))
+          ($assert ($str/contains? output/stdout "[operator] info: Attached CLI"))
+          ($assert
+            (==
+              ($size
+                ($str/split
+                  ($str/trim output/stdout)
+                  """
+"""))
+              1)
+            "presenter repeated an unchanged publication")
+        ensure
+          (let stopped (stop_host host))
+          ($assert (== stopped/status 0) stopped/stderr))))))
+
+(fn main [args] : Int
+  (run_spec args))

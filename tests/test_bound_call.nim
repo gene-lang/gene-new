@@ -5,6 +5,17 @@ proc evalBoundCall(source: string): Value =
   run(compileSource(source), newGlobalScope())
 
 suite "runtime bound calls":
+  test "persistent REPL releases its busy guard after an inherited budget expires":
+    let scope = newGlobalScope()
+    discard run(compileSource("(let session ($repl/open (env))) " &
+      "($repl/eval session \"(var retained 42)\")"), scope)
+    scope.evalBudget = EvalBudget(remaining: 500)
+    expect GeneError:
+      discard run(compileSource("($repl/eval session \"(while true nil)\")"), scope)
+    scope.evalBudget = nil
+    check run(compileSource("($repl/eval session \"retained\")"), scope).print() == "42"
+    discard run(compileSource("($repl/close session)"), scope)
+
   test "binds positional and named arguments without invoking the target":
     check evalBoundCall("(var hits ($cell 0)) " &
       "(fn add [x : Int ^y : Int] : Int " &

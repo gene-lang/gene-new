@@ -1,0 +1,23 @@
+# Identities and freshness rules shared by browser controllers and native specs.
+(mod harness_question_state ^profile web)
+
+(fn question_key [session : Str, batch : Str] : Str
+  ($json/stringify [session batch]))
+
+(fn current_fetch [started : Int, generation : Int, epoch : Str, current_epoch : Str] : Bool
+  (&& (== started generation) (== epoch current_epoch)))
+
+(fn definitive_reply [code : Int] : Bool
+  # Authentication/transport failures do not say whether an admitted reply ran.
+  (|| (&& (>= code 200) (< code 300)) (== code 400) (== code 404) (== code 409) (== code 410)))
+
+(fn waiting_batch [snapshot : Any] : Any
+  (var state "")
+  (if_not ($absent? snapshot/round/state) (set state snapshot/round/state))
+  (if_yes (&& (== state "waiting") (! ($absent? snapshot/round/questions)))
+    (var batch : Any ($json/parse ($json/stringify snapshot/round/questions)))
+    (var round "")
+    (if_not ($absent? snapshot/round/id) (set round snapshot/round/id))
+    (set batch/round_id round)
+    (return batch))
+  nil)

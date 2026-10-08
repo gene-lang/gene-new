@@ -226,7 +226,9 @@ Evaluation runs on the calling task's VM frames: CPU work yields, asynchronous
 operations can park, and cancellation stops the input. Each input uses the
 caller's current execution budget and task context, including its output sink.
 The session releases that budget after the input, including failure and
-cancellation. An application supplying per-input budgets should open an Env
+cancellation. Trusted cleanup releases the busy guard even when an inherited
+budget is exhausted, so a later input can use earlier declarations. An
+application supplying per-input budgets should open an Env
 without a policy and invoke each input through `$runtime/bind_call ^policy`.
 The application owns any task scope used to join work spawned by an input.
 

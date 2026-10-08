@@ -34,6 +34,15 @@ the plugin belongs to the workspace: another session can use it, and startup
 loads it from the stored source after restart. Plugin state written through
 `PluginHost:update_state` is durable; ordinary in-memory variables are not.
 
+Use `PluginHost:notify` for operator-facing milestones. The host stamps the
+publisher, scopes keys by source, and stores messages outside ordinary plugin
+state so notifications do not invalidate unrelated panels. The protocol also
+provides `notifications`, `notification_update` and `notification_clear` for
+source-owned records. Publishing returns an explicit `ok` result; report a
+notification failure separately from a successful business save. Keep policy
+in the plugin's owned usage chapter and use a real decision workflow for
+questions. See [publishing notifications](recipes/notification-publishing.md).
+
 When the UI experiment is enabled, successfully published plugins that own
 stateful views also receive `[N.ui]` outlines or render errors. These previews
 run without a browser. Read the publication feedback before finishing, then

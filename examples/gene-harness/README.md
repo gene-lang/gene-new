@@ -16,6 +16,7 @@ isolation.
 | Author a workspace plugin | [Plugins](docs/plugins.md) |
 | Run and verify a function plugin without a model | [Project audit example](website/examples/project_audit/README.md) |
 | Browser workflow, transport and recovery | [Web client](docs/web-client.md) |
+| Notifications, background answers and producer messages | [Notifications](docs/notification.md) |
 | Add UI components or forms | [Web components](docs/web-components.md) |
 | Try the editable project board | [Workspace UI experiment](experiments/ui/README.md) |
 | Follow an end-to-end application build | [Todo replay](docs/todo-replay.md) |
@@ -93,6 +94,9 @@ using Codex OAuth, including continuation, verification and recovery.
 | `triggers create FILE` | Create a trigger from an inert Gene map or serde file. |
 | `triggers delete ID` | Disable and delete a trigger. |
 | `triggers occurrences [ID]` | List occurrence states. |
+| `notifications [list]`, `notifications show ID` | List recent producer messages or inspect one. |
+| `notifications clear ID --revision N`, `notifications clear --all` | Clear observed message revisions; pending questions are unaffected. |
+| `notifications ack`, `notifications watch` | Acknowledge the current snapshot or attach a one-line presenter; `--timeout-ms` bounds watching. |
 | `doctor` | Report composition and plugin problems without activating plugins. |
 | `enable ID`, `disable ID` | Enable or disable a stored or built-in plugin id. |
 | `restore ID` | Remove a stored override and restore the profile's built-in plugin. |
@@ -120,6 +124,28 @@ They acquire the workspace lock, refuse a running host, and skip plugin
 activation. Their bootstrap still repairs interrupted durable state. `doctor`
 leaves composition generations unchanged. `auth reset` uses the running host
 when present, or acquires the lock for an offline credential reset.
+
+## Notifications
+
+The host-owned Notifications center keeps background questions separate from
+ordinary feedback and stored messages. Expand a question to answer it without
+switching conversations. Each session/batch retains its draft and original
+pending reply across reconnects; Clear messages never dismisses a question.
+Answer, Dismiss all and Cancel round act on the original workflow.
+Command confirmations have their own controls and survive unrelated feedback.
+
+Plugins publish meaningful milestones with `PluginHost:notify`; model/operator
+code discovers `notification_post`, listing and revision-specific clearing.
+Messages have source-scoped keys, original work references and explicit actions.
+Opening the center acknowledges messages through its observed watermark. A new
+meaningful occurrence can resurface after an earlier revision was cleared.
+The inbox uses separate storage and delivery, so publishing does not rerender
+unrelated boards. Progress is transient. `/ui/default` keeps host summaries and
+recovery controls while suppressing rich plugin detail.
+
+See the [publishing recipe](docs/recipes/notification-publishing.md) and the
+[review notifier example](examples/notifications/README.md). Restart older hosts
+and reload browser tabs to use web protocol 7.
 
 ## Providers and workspace settings
 
@@ -540,6 +566,7 @@ a simple model-free reply. These are testing configurations of the same host.
 | `src/runtime/` | Workspace ownership, sessions, commands, REPL, rounds, scheduling and composition lifetimes |
 | `src/storage/` | Durable events and stored plugin generations |
 | `src/cli/` | HTTP client, command-line operations, credentials and receipt polling |
+| `src/notifications/` | Isolated producer inbox, source validation and frozen action admission |
 | `src/ui/` | Component validation, UI settings/descriptors, leased rendering, publication outlines and function actions |
 | `src/web/` | Shared session service, HTTP/WebSocket transport, owner authentication, connection discovery, page shell and styles |
 | `src/builtin/`, `src/profiles/`, `src/views/` | Built-in plugins, entry-point composition and operator views |

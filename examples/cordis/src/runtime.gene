@@ -574,14 +574,18 @@
       (if (== ($head runtime/invoker) DefaultPluginInvoker)
         (default_invoke_for call instance registration_scope)
         (runtime/invoker .PluginInvoker:invoke call))))
-  (instance/invocations .set (+ instance/invocations/.get 1))
+  (let invocation ($crypto/random_hex 16))
   (try
+    # Install cleanup before admission. A cancelled caller can otherwise leave
+    # the old increment-before-try counter permanently nonzero. Keyed admission
+    # also avoids a yielding read/modify/write race between concurrent calls.
+    (instance/invocations/.get .put invocation true)
     (if (== ($head runtime/invoker) DefaultPluginInvoker)
       (default_invoke_for call instance registration_scope)
       (runtime/invoker .PluginInvoker:invoke call))
   ensure
-    (instance/invocations .set (- instance/invocations/.get 1))
-    (if (&& (== instance/invocations/.get 0) instance/dispose_requested/.get)
+    (instance/invocations/.get .delete invocation)
+    (if (&& (== ($size instance/invocations/.get) 0) instance/dispose_requested/.get)
       (request_transition instance false))))
 
 # --- runtime and contexts --------------------------------------------------
@@ -955,7 +959,7 @@
   (var uid runtime/next_uid/.get)
   (runtime/next_uid .set (+ uid 1))
   (var record
-    (InstanceRecord ^token ($cell nil) ^runtime runtime ^uid uid ^plugin plugin ^entry_id entry_id ^parent_context parent ^context ($cell nil) ^config ($cell nil) ^state ($cell InstanceState/pending) ^error ($cell nil) ^desired_epoch ($cell "inactive") ^active_epoch ($cell "") ^transition ($cell nil) ^dirty ($cell true) ^retry ($cell false) ^dispose_requested ($cell false) ^root_effect ($cell nil) ^providers ($cell (fresh_list)) ^provided ($cell (fresh_map)) ^children ($cell (fresh_list)) ^invocations ($cell 0) ^gate_open ($cell true) ^teardown ($cell false)))
+    (InstanceRecord ^token ($cell nil) ^runtime runtime ^uid uid ^plugin plugin ^entry_id entry_id ^parent_context parent ^context ($cell nil) ^config ($cell nil) ^state ($cell InstanceState/pending) ^error ($cell nil) ^desired_epoch ($cell "inactive") ^active_epoch ($cell "") ^transition ($cell nil) ^dirty ($cell true) ^retry ($cell false) ^dispose_requested ($cell false) ^root_effect ($cell nil) ^providers ($cell (fresh_list)) ^provided ($cell (fresh_map)) ^children ($cell (fresh_list)) ^invocations ($cell (fresh_map)) ^gate_open ($cell true) ^teardown ($cell false)))
   (record/config .set (validate_instance_config record config))
   (var context
     (new_context_record
@@ -1127,7 +1131,7 @@
   (var root instance/root_effect/.get)
   (var cleanup_failure nil)
   (if_not (absent? root) (root/accepting .set false))
-  (while (> instance/invocations/.get 0)
+  (while (> ($size instance/invocations/.get) 0)
     ($sleep 0))
   # Withdraw first, then wait for the exact consumer closure to quiesce before
   # provider cleanup. No new binding can enter after this point.
@@ -1261,7 +1265,7 @@
   (instance/dispose_requested .set true)
   (request_transition instance false)
   # Self-disposal is queued until the current invocation releases its lease.
-  (if (== instance/invocations/.get 0)
+  (if (== ($size instance/invocations/.get) 0)
     (while (! (absent? instance/transition/.get))
       instance/transition/.get/.join))
   nil)

@@ -1,0 +1,30 @@
+# Publish an edition-demo review milestone without injecting a manual into the initial prompt.
+(mod plugin
+  (import [Plugin PluginHost] ^from "src/plugin_api.gene")
+
+  # Publish a source-owned, keyed milestone with an edition entity and a draft-only action.
+  (fn publish_review_notice [host, revision : Str, summary : Str]
+    (host .PluginHost:notify
+      {^key "edition-demo-review" ^scope "workspace" ^severity "success"
+       ^title "Edition demo ready for review" ^summary summary
+       ^origin {^entity "edition-demo" ^revision revision}
+       ^actions [{^id "draft_review" ^label "Draft a review"
+                  ^prompt $"Review the saved edition-demo entity at revision ${revision}. Summarize the edition-review milestone, check the saved evidence and identify remaining blockers before recommending publication."}]}))
+
+  # Register only short discovery metadata and keep workflow policy in the owned chapter.
+  (fn init [descriptor]
+    (Plugin ^id "review_notifier"
+      ^provides [["functions" "review_notice"] ["docs" "review_notifier/usage"]]
+      ^activate (fn [host]
+        (host .PluginHost:contribute "docs"
+          {^name "review_notifier/usage"
+           ^summary "When to publish an edition-demo review milestone."
+           ^tags ["edition" "review" "notifications"]
+           ^text "Call review_notice with a saved edition-demo revision and a concise, factual summary after a meaningful review milestone has been saved (for example, review completion or a new blocker decision). Do not notify for a percentage, a transient step, an unsaved draft or a duplicated question. The keyed workspace notice links the edition-demo entity and revision. Its Draft a review action only fills the operator's composer; it does not send. Inspect the returned ok receipt before reporting publication success. A repeat with unchanged meaningful fields will not renew attention; change the summary for a genuinely new milestone."})
+        (host .PluginHost:contribute "functions"
+          {^name "review_notice"
+           ^doc "Publish a saved edition-demo review milestone; returns the notification receipt."
+           ^tags ["edition" "review" "notifications"]
+           ^docs ["review_notifier/usage"]
+           ^fn (fn [^revision revision : Str, ^summary summary : Str]
+             (publish_review_notice host revision summary))})))))

@@ -7,7 +7,8 @@
 (import [new_round_controller submit_round round_receipt cancel_round close_round_controller
          save_round RoundError answer_round request_stop]
   ^from "../../../src/runtime/round_controller")
-(import [events_for append_core_event flush_event_store] ^from "../../../src/storage/state")
+(import [events_for append_core_event flush_event_store core_state] ^from "../../../src/storage/state")
+(import [QuestionError] ^from "../../../src/runtime/questions")
 (import [append_message] ^from "../../../src/agents/history")
 (import [RoundChanged] ^from "../../../src/kernel")
 (import [scripted_profile] ^from "../../../src/profiles/scripted")
@@ -18,6 +19,31 @@
     catch RoundError {^!accepted ^code $err/code}))
 
 (describe "Harness rounds"
+  (it "rejects an uncertain answer after the owning round was cancelled" []
+    (isolated this_mod/.path "rejects an uncertain answer after the owning round was cancelled"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (let controller (test_controller runtime (fn [request]
+          "(Outcome ^questions [{^id \"q\" ^prompt \"Continue?\"}])")))
+        (try
+          (let admitted (submit_round controller "default" "cancelled-question" 1 "ask"))
+          (controller/watchers/.get .get "default"; .join)
+          (let receipt (round_receipt controller "default" admitted/id))
+          (let batch receipt/questions/id)
+          (cancel_round controller "default" admitted/id)
+          (let cancelled (core_state runtime/events "session" "default" $"questions/${batch}"))
+          ($assert (== cancelled/status "answered"))
+          ($assert (try (answer_round controller "default" batch {^q "yes"}) false
+            catch QuestionError true))
+          ($assert (== cancelled (core_state runtime/events "session" "default" $"questions/${batch}")))
+          (var answers 0)
+          (for event in (events_for runtime/events "session" "default")
+            (if (== event/type "question/answered") (set answers (+ answers 1))))
+          ($assert (== answers 1) "late answer mutated a cancelled workflow")
+        ensure
+          (close_round_controller controller)
+          (close_runtime runtime)))))
+
   (it "refuses busy sessions while allowing independent rounds and cancellation" []
     (isolated this_mod/.path "refuses busy sessions while allowing independent rounds and cancellation"
       (fn [workspace]

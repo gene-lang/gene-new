@@ -2,13 +2,38 @@
 
 (import $test [describe it after_each assert_equal])
 
-(import [HookMode RuntimeOptions PluginSpec invocation_limits hook_key
-         default_plugin_invoker new_runtime]
+(import [HookMode RuntimeOptions PluginSpec PluginCallKind invocation_limits hook_key
+         default_plugin_invoker new_runtime invoke_effect_owner]
   ^from "../src/cordis")
 
 (describe "Cordis quiescence"
   (after_each [t]
     (if_not ($absent? t/runtime) t/runtime/.close))
+
+  (it "releases concurrent and cancelled admissions before disposal" [t]
+    (let owner ($cell nil))
+    (let cleaned ($cell false))
+    (let runtime (new_runtime (RuntimeOptions ^logger nil ^invoker (default_plugin_invoker)
+      ^default_limits (invocation_limits))))
+    (set t/runtime runtime)
+    (let plugin (PluginSpec ^id "cancelled-admissions" ^config_schema nil ^requires []
+      ^provides [] ^reload nil ^activate (fn [ctx config]
+        (ctx .defer (fn [] (cleaned .set true)))
+        (ctx .effect "calls" (fn [scope] (owner .set scope))))))
+    (let instance (runtime .install runtime/.root plugin nil))
+    instance/.await_ready
+    (scope
+      (let calls [])
+      (repeat 24
+        (calls .push (spawn ^lane root
+          (invoke_effect_owner owner/.get PluginCallKind/operation
+            (fn [] ($sleep 20)) []))))
+      ($sleep 1)
+      (for call in calls call/.cancel)
+      (for call in calls call/.join))
+    instance/.dispose
+    runtime/.await_settled
+    ($assert cleaned/.get "cancelled admission kept its owner alive"))
 
   (it "waits for entered hook calls before running owner cleanup" [t]
     (var hook (hook_key "slow" HookMode/emit))

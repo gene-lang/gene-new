@@ -3,6 +3,7 @@
 (import ^from "./client" [connect api connection_link session_path execution_receipt wait_for])
 (import ^from "../runtime/maintenance" [repair reset_offline])
 (import ^from "../runtime/workspace_lock" [WorkspaceInUse])
+(import ^from "./notification_presenter" [notification_command present_message])
 
 (fn usage [] """Gene Harness: one web host per workspace.
   gene-harness web [--workspace DIR] [--port PORT] [--offline | --script FILE]
@@ -15,6 +16,7 @@ Workspace commands:
   status | link | auth reset | stop [--confirm] | restart [--confirm]
   sessions [create --title TITLE]
   triggers [list | create FILE | delete ID | occurrences [ID]]
+  notifications [list | show ID | clear ID --revision N | clear --all | ack | watch]
   doctor | enable ID | disable ID | restore ID  (offline repair only)
 
 Session commands (require --session ID):
@@ -48,7 +50,12 @@ Use --file FILE for send/run text, --no-wait for operator commands,
   kind)
 
 (fn print_result [result, json : Bool]
+  (if ($absent? result) (return nil))
   (if json (return ($println ($json/stringify result))))
+  (if_not ($absent? result/messages)
+    (for message in result/messages
+      (present_message message false))
+    (return nil))
   (if (== ($head result) Str) (return ($println result)))
   (if_not ($absent? result/sessions)
     (for session in result/sessions
@@ -109,7 +116,7 @@ Profile: """
   (let action parsed/command)
   (if (["chat" "scripted"] .contains? action)
     (problem "Standalone terminal chat is retired. Start gene-harness web, then use sessions create and send --session ID."))
-  (if_not (["doctor" "enable" "disable" "restore" "status" "link" "auth" "stop" "restart" "sessions" "triggers" "transcript" "receipt" "wait" "answer" "dismiss" "cancel" "send" "run" "sh" "view" "command"] .contains? action)
+  (if_not (["doctor" "enable" "disable" "restore" "status" "link" "auth" "stop" "restart" "sessions" "triggers" "notifications" "transcript" "receipt" "wait" "answer" "dismiss" "cancel" "send" "run" "sh" "view" "command"] .contains? action)
     (problem $"Unknown command ${action}. Use --help for usage."))
   (for key in ["port" "restart-port" "script" "offline" "supervised"]
     (if_not ($absent? (options .get key)) (problem $"--${key} is a web-host option.")))
@@ -130,6 +137,7 @@ Profile: """
   (let session (?? options/session ""))
   (let timeout ($parse/parse_int (?? (options .get "timeout-ms") "600000")))
   (if (<= timeout 0) (problem "--timeout-ms must be positive."))
+  (if (== action "notifications") (return (notification_command client words options timeout)))
   (if_yes (== action "status")
     (if (== session "") (return (api client "GET" "/status?ui=default")))
     (let state (api client "GET" (session_path session "/snapshot?ui=default")))

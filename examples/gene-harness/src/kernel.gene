@@ -34,6 +34,8 @@
 (import ^from "./storage/generated_event_catalog" [core_event_types])
 (import ^from "./views/view_api" [HarnessView view_provider])
 (import ^from "./ui/components" [validate_web_component])
+(import ^from "./notifications/publisher"
+  [safe_publish update_notification list_source_messages clear_source_message])
 (import ^from "./runtime/call_supervision" [supervised_call])
 (import ^from "./runtime/cordis_adapter"
   [RegistryHost retain_callback retained_callback? expire_scope_callbacks new_composition])
@@ -60,9 +62,9 @@
 
 (type RegistryRow ^props {^row_id Str ^owner Str ^registry Str ^key Str ^payload Any ^priority Int ^config_order Int ^acquired Int ^effects Any? ^cleanup_state Any?})
 
-(type Harness ^props {^plugins Any ^plugin_errors Any ^log Any ^log_hydrated Any ^bus Any ^registries Any ^ledger Any ^row_index Any ^next_row_id Any ^event_store Any ^event_scope Str ^event_stream Str ^plugin_policies Any ^plugin_depth Any ^workspace Any ^ui_epoch Str? ^readiness Any? ^registry_observer Any? ^composition Any? ^composition_entries Any? ^snapshots Any? ^publishing Any? ^published_plugins Any?})
+(type Harness ^props {^plugins Any ^plugin_errors Any ^log Any ^log_hydrated Any ^bus Any ^registries Any ^ledger Any ^row_index Any ^next_row_id Any ^event_store Any ^event_scope Str ^event_stream Str ^plugin_policies Any ^plugin_depth Any ^workspace Any ^ui_epoch Str? ^readiness Any? ^registry_observer Any? ^composition Any? ^composition_entries Any? ^snapshots Any? ^publishing Any? ^published_plugins Any? ^notifications Any?})
 
-(type Host ^props {^h Harness ^owner Str ^effects Any})
+(type Host ^props {^h Harness ^owner Str ^effects Any ^notification_revision Str})
 
 (type GuardedHandler ^^private ^props {^h Harness ^owner Str ^handler Any})
 
@@ -183,9 +185,7 @@
       (let publication ($cell true))
       (scoped .put "publication" publication)
       (try
-        ($runtime/with_context
-          scoped
-          thunk)
+        ($runtime/with_context scoped thunk)
       ensure
         (publication .set false)))))
 
@@ -305,7 +305,11 @@
                         "error")
               ^module_digest entry/module_digest
               ^error (h/workspace/errors/.get .get entry/id)}))))
-    (let snapshot (publish_snapshot ^plugins plugins h/snapshots (snapshot_registries h) h/composition/.instances))
+    (let snapshot
+      (publish_snapshot ^plugins plugins
+        h/snapshots
+        (snapshot_registries h)
+        h/composition/.instances))
     (notify h (CompositionChanged ^revision snapshot/id)))
   nil)
 
@@ -366,8 +370,7 @@
                    (remove_registry_row ^cleanup cleanup h row_id))})
       (return true)))
   (if (serialize_registry_change? h)
-    (return
-      (registry_change h (fn [] (remove_registry_row ^cleanup cleanup h row_id)))))
+    (return (registry_change h (fn [] (remove_registry_row ^cleanup cleanup h row_id)))))
   (var r (registry_named h record/registry))
   (var kept (fresh_list))
   (for candidate in r/rows/.get
@@ -569,8 +572,7 @@
         h/snapshots
         {^id owner ^kind "removal" ^apply (fn [] (remove_owner h owner))})
       (return [])))
-  (if (serialize_registry_change? h)
-    (return (registry_change h (fn [] (remove_owner h owner)))))
+  (if (serialize_registry_change? h) (return (registry_change h (fn [] (remove_owner h owner)))))
   (var ledger h/ledger/.get)
   (var owned (?? (ledger .get owner) (fresh_list)))
   (var errors (fresh_list))
@@ -600,8 +602,7 @@
         h/snapshots
         {^id r/owner ^kind "removal" ^apply (fn [] (remove_registry h name))})
       (return [])))
-  (if (serialize_registry_change? h)
-    (return (registry_change h (fn [] (remove_registry h name)))))
+  (if (serialize_registry_change? h) (return (registry_change h (fn [] (remove_registry h name)))))
   (var errors (fresh_list))
   (var records (copy_list r/rows/.get))
   (var i (- records/.size 1))
@@ -668,7 +669,7 @@
     (message context [plugin, effects, observer, policy] : PluginHost
       (var h self/h)
       (set h/registry_observer observer)
-      (var context (Host ^h h ^owner plugin/id ^effects effects))
+      (var context (Host ^h h ^owner plugin/id ^effects effects ^notification_revision ($crypto/random_hex 16)))
       (var owned_rows ($cell (fresh_list)))
       (h/plugin_policies/.get .put plugin/id
         {^limits (ExecutionLimits ^max_steps policy/limits/max_steps
@@ -711,7 +712,8 @@
   (if (|| ($absent? candidate/name) (== candidate/name "") ($absent? candidate/doc) (! ($runtime/callable? candidate/fn)))
     (fail (HarnessError ^message "a function row requires name, doc and a callable fn")))
   (if (["discover" "doc"] .contains? candidate/name)
-    (fail (HarnessError ^message $"function ${candidate/name} is reserved by the shared discovery context")))
+    (fail
+      (HarnessError ^message $"function ${candidate/name} is reserved by the shared discovery context")))
   candidate)
 
 (fn validate_input_mode_row [candidate]
@@ -725,25 +727,13 @@
   candidate)
 
 (fn validate_provider_row [candidate]
-  (if (|| ($absent? candidate/name) (== candidate/name "")
-          ($absent? candidate/doc)
-          (! ($runtime/callable? candidate/configure))
-          (! ($runtime/callable? candidate/prepare))
-          (! ($runtime/callable? candidate/send))
-          (&& (! ($absent? candidate/available))
-              (! ($runtime/callable? candidate/available)))
-          (&& (! ($absent? candidate/auto))
-              (!= ($head candidate/auto) Int)))
-    (fail (HarnessError ^message
-      "a provider row needs name, doc, configure, prepare and send")))
+  (if (|| ($absent? candidate/name) (== candidate/name "") ($absent? candidate/doc) (! ($runtime/callable? candidate/configure)) (! ($runtime/callable? candidate/prepare)) (! ($runtime/callable? candidate/send)) (&& (! ($absent? candidate/available)) (! ($runtime/callable? candidate/available))) (&& (! ($absent? candidate/auto)) (!= ($head candidate/auto) Int)))
+    (fail (HarnessError ^message "a provider row needs name, doc, configure, prepare and send")))
   candidate)
 
 (fn validate_hook_row [candidate]
-  (if (|| ($absent? candidate/name) (== candidate/name "")
-          (! (["request/prepare" "history/compact"] .contains? candidate/point))
-          (! ($runtime/callable? candidate/run)))
-    (fail (HarnessError ^message
-      "a hook row needs point, name and a callable run")))
+  (if (|| ($absent? candidate/name) (== candidate/name "") (! (["request/prepare" "history/compact"] .contains? candidate/point)) (! ($runtime/callable? candidate/run)))
+    (fail (HarnessError ^message "a hook row needs point, name and a callable run")))
   candidate)
 
 (fn validate_trigger_row [candidate]
@@ -763,11 +753,9 @@
   candidate)
 
 (fn validate_prompt_row [candidate]
-  (if (|| (== candidate/name void)
-          (== ($absent? candidate/text) ($absent? candidate/render))
-          (&& (! ($absent? candidate/render))
-              (! ($runtime/callable? candidate/render))))
-    (fail (HarnessError ^message "a prompt row requires name and exactly one of text or callable render")))
+  (if (|| (== candidate/name void) (== ($absent? candidate/text) ($absent? candidate/render)) (&& (! ($absent? candidate/render)) (! ($runtime/callable? candidate/render))))
+    (fail
+      (HarnessError ^message "a prompt row requires name and exactly one of text or callable render")))
   candidate)
 
 (fn validate_discovery_metadata [candidate]
@@ -784,10 +772,7 @@
   candidate)
 
 (fn validate_docs_row [candidate]
-  (if (|| (== candidate/name void)
-          (== ($absent? candidate/text) ($absent? candidate/path))
-          (&& (! ($absent? candidate/text)) (!= ($head candidate/text) Str))
-          (&& (! ($absent? candidate/path)) (!= ($head candidate/path) Str)))
+  (if (|| (== candidate/name void) (== ($absent? candidate/text) ($absent? candidate/path)) (&& (! ($absent? candidate/text)) (!= ($head candidate/text) Str)) (&& (! ($absent? candidate/path)) (!= ($head candidate/path) Str)))
     (fail (HarnessError ^message "a docs row requires name and exactly one of text or path")))
   candidate)
 
@@ -1204,8 +1189,10 @@
   out)
 
 (fn doc [h : Harness, name : Str, ^snapshot snapshot = nil] : Str
-  (let chapters (if ($absent? snapshot) (rows h "docs")
-    ($map (?? (snapshot/registries .get "docs") []) (fn [record] record/payload))))
+  (let chapters
+    (if ($absent? snapshot)
+      (rows h "docs")
+      ($map (?? (snapshot/registries .get "docs") []) (fn [record] record/payload))))
   (let names [])
   (for chapter in chapters
     (if_yes (== chapter/name name)
@@ -1213,8 +1200,8 @@
       (return ($fs/read_text chapter/path)))
     (names .push chapter/name))
   (let listed ($str/join names ", "))
-  (fail (HarnessError ^message
-    $"unknown documentation ${name}; valid chapters: ${listed}. Use (discover \"topic\" ^kind \"docs\") to find the relevant chapter.")))
+  (fail
+    (HarnessError ^message $"unknown documentation ${name}; valid chapters: ${listed}. Use (discover \"topic\" ^kind \"docs\") to find the relevant chapter.")))
 
 # --- observation (design §2.2: the bus is for observing, seams for swapping) -
 
@@ -1262,7 +1249,7 @@
 
 (fn invoke_supervised [callable, args, limits : ExecutionLimits]
   (let outcome (supervised_call callable args limits))
-  (match outcome ^!exhaustive
+  (match ^!exhaustive outcome
     (when (TaskOutcome/ok value)
       value)
     (when (TaskOutcome/error error)
@@ -1329,6 +1316,14 @@
   out)
 
 (impl PluginHost for Host
+  (message notify [message] : Any
+    (safe_publish ^revision self/notification_revision self/h self/owner message))
+  (message notifications [] : Any
+    (list_source_messages self/h self/owner))
+  (message notification_update [id : Str, changes] : Any
+    (update_notification ^revision self/notification_revision self/h self/owner id changes))
+  (message notification_clear [id : Str, revision : Int] : Any
+    (clear_source_message self/h self/owner id revision))
   (message registry_names [] : Any
     (var record self)
     (registry_names record/h))

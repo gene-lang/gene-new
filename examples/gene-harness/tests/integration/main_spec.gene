@@ -409,7 +409,7 @@
           (for headers in [{^origin "http://other.invalid" ^cookie client/credentials/cookie ^x-csrf-token client/credentials/csrf} {^origin host/connection/origin ^host "other.invalid" ^cookie client/credentials/cookie ^x-csrf-token client/credentials/csrf}]
             (let denied
               (await
-                (request ^method "POST" ^url $"${host/connection/origin}/api/v6/sessions" ^headers headers ^body "{}" ^timeout_ms 5000)))
+                (request ^method "POST" ^url $"${host/connection/origin}/api/v7/sessions" ^headers headers ^body "{}" ^timeout_ms 5000)))
             ($assert (== denied/status 403) "Host or Origin validation was bypassed"))
           (let descriptor_path $"${host/root}/.gene-harness/connection")
           (let saved ($fs/read_text descriptor_path))
@@ -427,7 +427,7 @@
           (set socket (await (tcp_connect "127.0.0.1" host/connection/port)))
           (let header
             ($str/join
-              [$"GET /api/v6/events?ui=default&session=${session} HTTP/1.1"
+              [$"GET /api/v7/events?ui=default&session=${session} HTTP/1.1"
                $"Host: 127.0.0.1:${host/connection/port}"
                $"Origin: ${host/connection/origin}"
                $"Cookie: ${client/credentials/cookie}"

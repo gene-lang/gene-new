@@ -163,6 +163,8 @@ version is a language compatibility promise.
 
 | Date | Change | Migration |
 | --- | --- | --- |
+| 2026-10-08 | Root-lane fibers use shorter instruction slices to keep HTTP and cancellation responsive in larger application scopes. | Scheduling remains cooperative; user execution budgets are unchanged. |
+| 2026-10-08 | Persistent REPL bookkeeping releases its busy guard after an inherited budget failure or cancellation before execution starts. User code retains the original execution budget. | No syntax change; later inputs can use earlier declarations after a failed evaluation. |
 | 2026-10-08 | HTTP listener failures expose `HttpError/code`: `address_in_use` for a bind collision, `listen_failed` for other setup errors. | Use the code to implement port fallback without parsing platform-specific messages. |
 | 2026-10-08 | The formatter preserves quoted expressions in conversions, CRLF, literal backslashes and trailing quotes in multiline strings. | Formatting preserves the existing source meaning and remains idempotent; no syntax changes. |
 | 2026-10-03 | Local macros expand when execution reaches their call, using their captured definition environment. Module macros retain compile-time expansion. | Each invocation observes its own enclosing values. Returned syntax still uses caller bindings and control-flow targets. Runtime local expansion has compilation cost; it leaves existing caller slots intact. |

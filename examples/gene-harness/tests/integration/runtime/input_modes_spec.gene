@@ -25,6 +25,12 @@
     (return (command_receipt service/runtime/commands session record/id)))
   record)
 
+(fn wait_entered [entered, service, session, record]
+  (let deadline (+ ($os/monotonic_ms) 5000))
+  (while (&& (! entered/.get) (< ($os/monotonic_ms) deadline)) ($sleep 1))
+  ($assert entered/.get ($to_str "REPL evaluation did not enter: "
+    (command_receipt service/runtime/commands session record/id))))
+
 (describe "Harness input modes"
   (it "cancels busy inputs while other sessions and heartbeats progress and closes on replacement" []
     (isolated this_mod/.path "cancels busy inputs while other sessions and heartbeats progress and closes on replacement"
@@ -63,8 +69,8 @@
           ($assert (== (/status (command_receipt service/runtime/commands session/id busy/id)) "cancelled"))
           ($assert ($str/contains? (/display (input service session/id "read" "x")) "42"))
           (entered .set false)
-          (submit_mode_input service/runtime/modes session/id mode/instance "again" "(spin)")
-          (while (! entered/.get) ($sleep 1))
+          (let again (submit_mode_input service/runtime/modes session/id mode/instance "again" "(spin)"))
+          (wait_entered entered service session/id again)
           (put_cordis_plugin ^^replace service/runtime/h (repl_plugin)
             {^^host ^limits service/runtime/profile/limits})
           (for job in service/runtime/modes/jobs/.get job/.join)
@@ -74,8 +80,8 @@
           (input service session/id "declare_again" "(fn spin [] (mark_entered) (while true nil))")
           (entered .set false)
           (let reopened (mode_state service/runtime/modes session/id))
-          (submit_mode_input service/runtime/modes session/id reopened/instance "withdraw" "(spin)")
-          (while (! entered/.get) ($sleep 1))
+          (let withdrawing (submit_mode_input service/runtime/modes session/id reopened/instance "withdraw" "(spin)"))
+          (wait_entered entered service session/id withdrawing)
           (set_plugin_enabled service/runtime/workspace service/runtime/h "repl" false)
           (for job in service/runtime/modes/jobs/.get job/.join)
           ($assert ($absent? (mode_state service/runtime/modes session/id)))
@@ -107,7 +113,8 @@
           ($assert (|| (== expired/status "cancelled")
             (&& (== expired/status "failed") ($str/contains? expired/display "eval timeout exceeded"))) expired/display)
           ($assert (< (- ($os/monotonic_ms) started) 2000) "REPL input exceeded its response deadline")
-          ($assert ($str/contains? (/display (input service session/id "read" "retained")) "42"))
+          (let recovered (input service session/id "read" "retained"))
+          ($assert ($str/contains? recovered/display "42") recovered/display)
           (config .put "response_budget" {^timeout_ms 600000 ^max_memory_mb 1024})
           ($fs/write_text config_path ($serde/write_data config))
           (let mode (mode_state service/runtime/modes session/id))

@@ -1,7 +1,7 @@
 # Host-owned page shell and compiled browser entry point.
 (mod harness_web_page)
-(import [styles] ^from "./style")
-(import [module_dir] ^from "../kernel")
+(import ^from "./style" [styles])
+(import ^from "../kernel" [module_dir])
 (import $html [render])
 (import $web [script stylesheet])
 
@@ -50,7 +50,7 @@
                    (label "Active since" (input ^id "since_filter" ^type "date"))
                    (label "Active until" (input ^id "until_filter" ^type "date"))))
                (div ^id "attention_section" ^^hidden
-                 (div ^class "section_label" "Needs attention")
+                 (button ^id "attention_shortcut" ^type "button" "Needs attention")
                  (nav ^id "attention_sessions" ^aria-label "Needs attention"))
                (div ^class "section_label" "Conversations")
                (div ^id "web_sidebar" ^class "web_components")
@@ -63,11 +63,12 @@
                (nav ^id "session_tabs" ^class "session_tabs" ^aria-label "Open sessions")
                (header ^class "topbar"
                  (button ^id "menu" ^class "mobile_only quiet" ^type "button" ^aria-label "Open conversations" "☰")
-               (div ^class "heading"
+                 (div ^class "heading"
                    (h1 ^id "conversation_title" "New conversation")
                    (div ^id "mode" ^class "mode" "Local workspace")
                    (span ^id "input_mode_label" ^class "mode"))
-               (button ^id "leave_mode" ^class "quiet" ^type "button" ^^hidden "Leave REPL")
+                 (button ^id "leave_mode" ^class "quiet" ^type "button" ^^hidden "Leave REPL")
+                 (button ^id "notifications_button" ^type "button" ^aria-expanded "false" ^aria-controls "notification_center" "Notifications")
                  (button ^id "rename_session" ^class "quiet" ^type "button" "Rename")
                  (button ^id "pin_session" ^class "quiet" ^type "button" "Pin"))
                (div ^id "ui_layout_controls" ^class "ui_layout_controls" ^^hidden
@@ -92,14 +93,8 @@
                (div ^class "composer_wrap"
                  (div ^id "web_composer" ^class "web_components")
                  (section ^id "input_panel" ^class "input_panel" ^^hidden
-                   (strong ^id "input_question")
-                   (form ^id "input_form"
-                     (div ^id "input_fields")
-                     (div ^class "input_actions"
-                       (button ^id "input_submit" ^type "submit" "Answer")
-                       (button ^id "input_yes" ^type "button" "Yes")
-                       (button ^id "input_no" ^type "button" "No")
-                       (button ^id "input_cancel" ^type "button" "Dismiss all"))))
+                   (strong "Answer any questions; skipped answers are unanswered.")
+                   (div ^id "input_fields"))
                  (div ^id "commands" ^class "commands" ^^hidden)
                  (form ^id "composer" ^class "composer"
                    (textarea ^id "prompt" ^rows "2" ^placeholder "Ask a question or describe a task…" ^aria-label "Message Gene")
@@ -107,6 +102,7 @@
                      (span ^id "composer_hint" ^class "hint" "Shift+Enter for a new line · / for commands")
                      (button ^id "send" ^class "send" ^type "submit" "Send")))
                  (div ^id "notice" ^class "notice" ^role "status" ^aria-live "polite")
+                 (div ^id "confirmations" ^aria-label "Pending confirmations")
                  (button ^id "resolve_submission" ^class "resolve" ^type "button" ^^hidden "Resolve submission")))
              (aside ^id "ui_panel" ^class "ui_panel" ^^hidden ^aria-label "Workspace panel"
                (button ^id "ui_discard" ^type "button" ^class "quiet" "Discard edits")
@@ -115,6 +111,20 @@
                (button ^id "ui_retry" ^type "button" ^^hidden "Retry view")
                (button ^id "ui_resolve" ^type "button" ^^hidden "Resolve action")
                (button ^id "ui_cancel" ^type "button" ^^hidden "Cancel action"))
+             (aside ^id "notification_center" ^class "drawer notification_center" ^^hidden ^aria-label "Notifications"
+               (div ^class "drawer_header"
+                 (h2 "Notifications")
+                 (button ^id "close_notifications" ^type "button" "Close"))
+               (p ^id "notifications_count" ^role "status" ^aria-live "polite")
+               (section ^id "notification_reference" ^^hidden
+                 (h3 "Original evidence")
+                 (pre ^id "notification_reference_text"))
+               (div ^id "notification_local")
+               (div ^id "notification_workflows")
+               (h3 "Messages")
+               (button ^id "ack_messages" ^type "button" "Mark messages opened")
+               (button ^id "clear_messages" ^type "button" "Clear messages")
+               (div ^id "notification_messages"))
              (aside ^id "status_drawer" ^class "drawer" ^^hidden
                (div ^class "drawer_header"
                  (h2 "Workspace status")

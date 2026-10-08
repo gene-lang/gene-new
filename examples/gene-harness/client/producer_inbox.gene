@@ -1,0 +1,394 @@
+# Producer inbox presentation and receipt recovery, independent of panel renders.
+(mod harness_producer_inbox ^profile web)
+(import ^from "./question_editors.gene" [qtext qjson restored_map])
+(import ^from "./components.gene" [render_element])
+(import ^from "./notices.gene" [Notices put_notice remove_notice])
+
+(type ProducerInbox ^props {^cards PropMap ^epoch Str ^revision Int ^watermark Str ^opened Str ^ready Bool ^safe Bool ^selected Str ^pending PropMap ^sending PropMap ^notices Notices ^reference_generation Int ^api (Fn [Str Str Any (Fn [Int Any] Void)] Void) ^changed (Fn [Int] Void) ^navigate (Fn [Any] Void) ^draft (Fn [Str Str] Void)})
+(type ProducerCard ^props {^message Any ^element EventTarget ^heading EventTarget ^summary EventTarget ^source EventTarget ^details EventTarget ^content EventTarget ^actions EventTarget ^status EventTarget ^revision Int ^buttons PropMap ^reference EventTarget})
+
+(fn producer_problem [inbox : ProducerInbox, message : Str] : Void
+  (put_notice inbox/notices ($dom/element "notice") "inbox" "" "transport" message "error" true {}))
+
+(fn refresh_inbox [inbox : ProducerInbox] : Void
+  (if_not inbox/ready (return))
+  (var epoch inbox/epoch)
+  (inbox/api
+    "GET"
+    "/api/v7/notifications"
+    nil
+    (fn [code : Int, data : Any] : Void
+      (if_yes (!= epoch inbox/epoch) (return))
+      (if (== code 200)
+        (apply_inbox inbox data)
+        (producer_problem inbox (qtext data/message "Messages could not be loaded."))))))
+
+(fn clear_producers [inbox : ProducerInbox, selected : (List Any)] : Void
+  (if_not inbox/ready (return))
+  (inbox/api
+    "POST"
+    "/api/v7/notifications/clear"
+    {^messages selected}
+    (fn [code : Int, data : Any] : Void
+      (if (== code 200)
+        (refresh_inbox inbox)
+        (producer_problem inbox "Clearing was not confirmed. Refresh messages before trying again.")))))
+
+(fn opened_inbox [inbox : ProducerInbox] : Void
+  (if_not inbox/ready (return))
+  # The snapshot observed at open is the boundary; later arrivals remain new.
+  (var through : Int ($json/parse inbox/watermark))
+  (inbox/api "POST" "/api/v7/notifications/ack" {^through through}
+    (fn [code : Int, data : Any] : Void
+      (if (== code 200) (refresh_inbox inbox)
+        (producer_problem inbox "Opening acknowledgment was not confirmed.")))))
+
+(fn action_key [request : Any] : Str
+  (qtext request/request_id))
+
+(fn open_evidence [inbox : ProducerInbox, reference : Any] : Void
+  (set inbox/reference_generation (+ inbox/reference_generation 1))
+  (var generation inbox/reference_generation)
+  (var epoch inbox/epoch)
+  (var region ($dom/element "notification_reference"))
+  (var target ($dom/element "notification_reference_text"))
+  (set region/hidden false)
+  (if_not ($absent? reference/evidence)
+    ($dom/set_text
+      target
+      ($to_str
+        (qtext reference/evidence/title)
+        """
+"""
+        (qtext reference/evidence/text)))
+    (return))
+  (var session (qtext reference/session))
+  (var path "")
+  (if_not ($absent? reference/round)
+    (set path $"/api/v7/sessions/${session}/rounds/${(qtext reference/round)}"))
+  (if_not ($absent? reference/command)
+    (set path $"/api/v7/sessions/${session}/commands/${(qtext reference/command)}"))
+  (if_yes (== path "")
+    ($dom/set_text
+      target
+      ($to_str
+        "Conversation "
+        session
+        """
+"""
+        (qtext reference/component)
+        " "
+        (qtext reference/entity)))
+    (return))
+  ($dom/set_text target "Loading original receipt…")
+  (inbox/api
+    "GET"
+    path
+    nil
+    (fn [code : Int, data : Any] : Void
+      (if_yes (|| (!= generation inbox/reference_generation) (!= epoch inbox/epoch)) (return))
+      ($dom/set_text
+        target
+        (if (== code 200)
+          ($to_str
+            (qtext data/id)
+            " · "
+            (qtext data/status (qtext data/state))
+            """
+"""
+            (qtext data/display (qtext data/reply (qtext data/prompt))))
+          (qtext data/message "Original receipt is unavailable."))))))
+
+(fn finish_action [inbox : ProducerInbox, key : Str, record : Any] : Void
+  (var pending : Any inbox/pending/%key)
+  (if_yes ($absent? pending) (return))
+  (set pending/command (qtext record/id))
+  ($session_storage/set "gene-harness/notification-actions" (qjson inbox/pending))
+  (var status (qtext record/status))
+  (if_yes (== status "running")
+    ($time/after 500.0 (fn [] : Void (recover_action inbox key false)))
+    (return))
+  (set inbox/pending/%key void)
+  ($session_storage/set "gene-harness/notification-actions" (qjson inbox/pending))
+  (remove_notice inbox/notices "notification-action" (qtext pending/request/session) key)
+  (put_notice
+    inbox/notices
+    ($dom/element "notice")
+    "notification-action"
+    (qtext pending/request/session)
+    key
+    (qtext record/display status)
+    (if (== status "done")
+      "success"
+      "error")
+    (!= status "done")
+    {^session pending/request/session ^command record/id ^notification pending/request/notification}))
+
+(fn post_action [inbox : ProducerInbox, request : Any] : Void
+  (var key (action_key request))
+  (if_yes (|| (! inbox/ready) (! ($absent? inbox/sending/%key))) (return))
+  (set inbox/sending/%key true)
+  (inbox/api
+    "POST"
+    "/api/v7/notifications/action"
+    request
+    (fn [code : Int, data : Any] : Void
+      (set inbox/sending/%key void)
+      (if (== code 202)
+        (finish_action inbox key data/receipt)
+        (if (== code 200)
+          (do
+            (remove_notice inbox/notices "notification-action" (qtext request/session) key)
+            (if_yes (== (qtext data/kind) "reference")
+              (open_evidence inbox data/reference)
+              (inbox/navigate data/reference))
+            (if_yes (== (qtext data/kind) "prompt")
+              (inbox/draft (qtext data/session) (qtext data/text))))
+          (do
+            (if_yes (|| (== code 400) (== code 404) (== code 409) (== code 410))
+              (set inbox/pending/%key void)
+              ($session_storage/set "gene-harness/notification-actions" (qjson inbox/pending)))
+            (put_notice ^action (if ($absent? inbox/pending/%key) nil (fn [] : Void (recover_action inbox key true)))
+              inbox/notices
+              ($dom/element "notice")
+              "notification-action"
+              (qtext request/session)
+              key
+              (qtext data/message "Action outcome unknown. Resolve the original operation.")
+              "error"
+              true
+              {^session request/session ^notification request/notification})))))))
+
+(fn recover_action [inbox : ProducerInbox, key : Str, retry : Bool] : Void
+  (var pending : Any inbox/pending/%key)
+  (if_yes (|| (! inbox/ready) ($absent? pending) (! ($absent? inbox/sending/%key))) (return))
+  (var session (qtext pending/request/session))
+  (var id (qtext pending/request/request_id))
+  (set inbox/sending/%key true)
+  (inbox/api
+    "GET"
+    $"/api/v7/sessions/${session}/requests/${($url/encode_component id)}?kind=command"
+    nil
+    (fn [code : Int, data : Any] : Void
+      (set inbox/sending/%key void)
+      (if_yes ($absent? inbox/pending/%key) (return))
+      (if (== code 200)
+        (finish_action inbox key data)
+        (if (&& (== code 404) retry)
+          (post_action inbox pending/request)
+          (put_notice ^action (fn [] : Void (recover_action inbox key true))
+            inbox/notices
+            ($dom/element "notice")
+            "notification-action"
+            session
+            key
+            "An action needs receipt recovery. Resolve reuses its original identity."
+            "error"
+            true
+            {^session session ^notification pending/request/notification}))))))
+
+(fn activate_action [inbox : ProducerInbox, message : Any, action : Any] : Void
+  (if_not inbox/ready (return))
+  (var session (qtext message/origin/session inbox/selected))
+  (var request
+    {^notification message/id ^revision message/revision ^action action/id ^session session})
+  (if_yes (&& ($absent? action/function) ($absent? action/command))
+    (post_action inbox request)
+    (return))
+  (for [key pending] in inbox/pending
+    (if_yes (&& (== (qtext pending/request/notification) (qtext message/id)) (== (qtext pending/request/action) (qtext action/id)))
+      (recover_action inbox ($to_str key) true)
+      (return)))
+  (var admission ($json/stringify [message/id action/id]))
+  (if_not ($absent? inbox/sending/%admission) (return))
+  (if_yes (== session "")
+    (producer_problem inbox "Open or create a conversation before running this action.")
+    (return))
+  (set inbox/sending/%admission true)
+  (inbox/api
+    "GET"
+    $"/api/v7/sessions/${session}/snapshot"
+    nil
+    (fn [code : Int, data : Any] : Void
+      (set inbox/sending/%admission void)
+      (if_yes (!= code 200)
+        (producer_problem inbox (qtext data/message))
+        (return))
+      (var key ($browser/request_id))
+      (set request/request_id key)
+      (var sequence : Int ($json/parse (qtext data/next_command_seq)))
+      (set request/sequence sequence)
+      (set inbox/pending/%key {^request request ^command ""})
+      (if_not ($session_storage/set "gene-harness/notification-actions" (qjson inbox/pending))
+        (producer_problem inbox "Browser storage is required to recover this action.")
+        (return))
+      (put_notice ^action (fn [] : Void (recover_action inbox key true))
+        inbox/notices
+        ($dom/element "notice")
+        "notification-action"
+        session
+        key
+        "Action submitted. Receipt recovery remains available."
+        "info"
+        true
+        {^session session ^notification message/id})
+      (post_action inbox request))))
+
+(fn render_producer [inbox : ProducerInbox, message : Any] : Void
+  (var id (qtext message/id))
+  (var found : Any inbox/cards/%id)
+  (var card
+    :
+    ProducerCard
+    (if ($absent? found)
+      (ProducerCard ^message message ^element ($dom/render `(section ^class_name "notification_card producer_message")) ^heading ($dom/render `(h3)) ^summary ($dom/render `(p)) ^source ($dom/render `(small)) ^details ($dom/render `(details (summary "Details"))) ^content ($dom/render `(div)) ^actions ($dom/render `(div)) ^status ($dom/render `(p ^role "status")) ^revision 0 ^buttons {} ^reference ($dom/render `(button ^type "button" "Open conversation")))
+      found))
+  (set card/element/hidden false)
+  (if_yes ($absent? found)
+    (set inbox/cards/%id card)
+    ($dom/append card/element card/heading)
+    ($dom/append card/element card/source)
+    ($dom/append card/element card/summary)
+    ($dom/append card/details card/content)
+    ($dom/append card/element card/details)
+    ($dom/append card/element card/actions)
+    ($dom/append card/element card/reference)
+    ($dom/add_event_listener
+      card/reference
+      "click"
+      (fn [event : Any] : Void
+        (inbox/navigate card/message/origin)))
+    ($dom/append card/element card/status)
+    (var clear ($dom/render `(button ^type "button" "Clear")))
+    ($dom/append card/element clear)
+    ($dom/add_event_listener
+      clear
+      "click"
+      (fn [event : Any] : Void
+        (clear_producers inbox [{^id card/message/id ^revision card/message/revision}])))
+    ($dom/append ($dom/element "notification_messages") card/element))
+  (var revision : Int message/revision)
+  (if_yes (== revision card/revision) (return))
+  (set card/revision revision)
+  (set card/message message)
+  ($dom/set_text card/heading (qtext message/title))
+  ($dom/set_text card/summary (qtext message/summary))
+  ($dom/set_text card/source $"${(qtext message/severity)} · ${(qtext message/source)}")
+  ($dom/clear card/content)
+  (set card/details/hidden (|| inbox/safe ($absent? message/detail)))
+  (if_yes (&& (! inbox/safe) (! ($absent? message/detail)))
+    (try
+      (var buttons : (List Any) [])
+      ($dom/append
+        card/content
+        (render_element
+          message/detail
+          (fn [text : Str] : Void
+            nil)
+          (fn [text : Str] : Void
+            nil)
+          false
+          buttons))
+    catch Any
+      ($dom/set_text
+        card/content
+        "Details could not be displayed. Original references remain available.")))
+  (var actions : (List Any) message/actions)
+  (var action_ids : PropMap {})
+  (for action in actions
+    (var key (qtext action/id))
+    (set action_ids/%key true)
+    (var saved : Any card/buttons/%key)
+    (if_yes (&& (! ($absent? saved)) (!= (qjson saved/action) (qjson action)))
+      (var old : EventTarget saved/element)
+      ($dom/remove old)
+      (set saved nil))
+    (var button
+      :
+      EventTarget
+      (if ($absent? saved)
+        ($dom/render `(button ^type "button" %(qtext action/label)))
+        saved/element))
+    (if_yes ($absent? saved)
+      (set card/buttons/%key {^element button ^action action})
+      ($dom/add_event_listener
+        button
+        "click"
+        (fn [event : Any] : Void
+          (activate_action inbox card/message action)))
+      ($dom/append card/actions button))
+    (set button/hidden false))
+  (for [key saved] in card/buttons
+    (if_yes ($absent? action_ids/%key)
+      (var button : EventTarget saved/element)
+      (set button/hidden true)))
+  (set card/reference/hidden ($absent? message/origin/session)))
+
+(fn apply_inbox [inbox : ProducerInbox, data : Any] : Void
+  (if_yes (!= (qtext data/epoch) inbox/epoch) (return))
+  (var revision : Int ($json/parse (qtext data/revision "0")))
+  (if_yes (< revision inbox/revision) (return))
+  (set inbox/revision revision)
+  (set inbox/watermark (qtext data/watermark "0"))
+  (set inbox/opened (qtext data/opened "0"))
+  (var messages : (List Any) data/messages)
+  (var seen : PropMap {})
+  (for message in messages
+    (var id (qtext message/id))
+    (set seen/%id true)
+    (render_producer inbox message))
+  (for [key raw] in inbox/cards
+    (var card : ProducerCard raw)
+    (if_yes ($absent? seen/%key) (set card/element/hidden true)))
+  (var count : Int data/new_messages)
+  (inbox/changed count)
+  (remove_notice inbox/notices "inbox" "" "transport"))
+
+(fn producer_event [inbox : ProducerInbox, kind : Str, epoch : Str, data : Any] : Void
+  (if_yes (!= epoch inbox/epoch)
+    (set inbox/epoch epoch)
+    (set inbox/revision -1)
+    (for [key raw] in inbox/cards
+      (var card : ProducerCard raw)
+      (set card/revision 0)))
+  (if_yes (== kind "notifications/state") (apply_inbox inbox data))
+  (if_yes (== kind "notifications/progress")
+    (put_notice
+      inbox/notices
+      ($dom/element "notice")
+      (qtext data/source)
+      (qtext data/data/origin/session)
+      (qtext data/key)
+      (qtext data/data/summary)
+      "info"
+      false
+      data/data/origin)))
+
+(fn producer_ready [inbox : ProducerInbox, ready : Bool, selected : Str] : Void
+  (var reconnect (&& ready (! inbox/ready)))
+  (set inbox/ready ready)
+  (set inbox/selected selected)
+  (if_yes reconnect
+    (refresh_inbox inbox)
+    (for [key pending] in inbox/pending
+      (recover_action inbox ($to_str key) false))))
+
+(fn create_producer_inbox [notices : Notices, safe : Bool, api : (Fn [Str Str Any (Fn [Int Any] Void)] Void), changed : (Fn [Int] Void), navigate : (Fn [Any] Void), draft : (Fn [Str Str] Void)] : ProducerInbox
+  (var inbox
+    (ProducerInbox ^cards {} ^epoch "" ^revision -1 ^watermark "0" ^opened "0" ^!ready ^safe safe ^selected "" ^pending (restored_map "gene-harness/notification-actions") ^sending {} ^notices notices ^reference_generation 0 ^api api ^changed changed ^navigate navigate ^draft draft))
+  ($dom/add_event_listener
+    ($dom/element "clear_messages")
+    "click"
+    (fn [event : Any] : Void
+      (var selected : (List Any) [])
+      (for [key raw] in inbox/cards
+        (var card : ProducerCard raw)
+        (if_not card/element/hidden
+          (selected .push {^id card/message/id ^revision card/message/revision})))
+      (clear_producers inbox selected)))
+  ($dom/add_event_listener
+    ($dom/element "ack_messages")
+    "click"
+    (fn [event : Any] : Void
+      (opened_inbox inbox)))
+  inbox)

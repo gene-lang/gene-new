@@ -1,6 +1,19 @@
 # Gene Harness notifications
 
-Status: design proposal, before implementation. Updated 2026-10-08.
+Status: implemented and verified. Updated 2026-10-08.
+
+## Implementation map
+
+The implementation follows the phases below. `client/notices.gene` and
+`client/confirmations.gene` own local presentation and decisions;
+`question_editors.gene` and `notification_center.gene` project existing workflows.
+`src/notifications/` provides the isolated producer store, source-scoped publisher
+and frozen action admission. `client/producer_inbox.gene` and the CLI presenter
+consume protocol 7 notification delivery. The public usage guides are
+[overview](recipes/notifications.md), [publishing](recipes/notification-publishing.md)
+and the [review notifier example](../examples/notifications/README.md).
+The [verification record](notification-verification.md) maps the acceptance
+criteria to automated tests and observed browser behavior.
 
 ## Purpose and scope
 
@@ -30,13 +43,13 @@ notification database or plugin publisher. Phase 2 adds producer messages after
 phase 1 is usable. Implementation and tooling should be Gene; no new Gene syntax
 is proposed.
 
-## What exists today
+## Pre-implementation behavior
 
-- [client/main.gene](../examples/gene-harness/client/main.gene) writes feedback
+- [client/main.gene](../client/main.gene) writes feedback
   into one notice element. Copy, reconnect, errors and other messages replace it.
   Some command confirmations render their buttons into that same element.
-- [client/ui/model.gene](../examples/gene-harness/client/ui/model.gene) and
-  [controller.gene](../examples/gene-harness/client/ui/controller.gene) use a
+- [client/ui/model.gene](../client/ui/model.gene) and
+  [controller.gene](../client/ui/controller.gene) use a
   separate panel status element for saving, validation, rendering and recovery.
 - Question batches, session attention and command/action receipts have existing
   owners. Browser pending submissions also retain their original identity in
@@ -306,9 +319,9 @@ the watermark. Per-user acknowledgment belongs to a later account model.
 
 ## Storage, progress and delivery isolation
 
-The current [ui_data_revision](../examples/gene-harness/src/ui/state.gene) includes
+The current [ui_data_revision](../src/ui/state.gene) includes
 the workspace/workspace stream's next sequence.
-[session_service.gene](../examples/gene-harness/src/web/session_service.gene)
+[session_service.gene](../src/web/session_service.gene)
 broadcasts ui/state for workspace plugin/state records. These facts make using
 ordinary plugin state for notifications expensive.
 

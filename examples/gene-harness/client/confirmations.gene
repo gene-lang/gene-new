@@ -1,0 +1,84 @@
+# Decisions are independent of feedback, captured under their original command.
+(mod harness_confirmations ^profile web)
+(import ^from "./notices.gene" [Notices put_notice remove_notice])
+(type Confirmations ^props {^target EventTarget ^items PropMap ^saved PropMap ^notices Notices ^api (Fn [Str Str Any (Fn [Int Any] Void)] Void)})
+
+(fn create_confirmations [target : EventTarget, notices : Notices, api : (Fn [Str Str Any (Fn [Int Any] Void)] Void)] : Confirmations
+  (var controller (Confirmations ^target target ^items {} ^saved {} ^notices notices ^api api))
+  (var saved (?? ($session_storage/get "gene-harness/confirmations") ""))
+  (if_yes (!= saved "")
+    (try
+      (set controller/saved ($json/parse saved))
+      (for [key record] in controller/saved
+        (var session : Str record/session)
+        (if (== ($json/stringify record/handled) "true")
+          (set controller/items/%key true)
+          (command_confirmation controller session record/command)))
+    catch Any
+      nil))
+  controller)
+
+(fn finish_confirmation [controller : Confirmations, key : Str, target : EventTarget] : Void
+  (var record : Any controller/saved/%key)
+  (set record/handled true)
+  (var session : Str record/session)
+  (remove_notice controller/notices "confirmation" session key)
+  ($session_storage/set "gene-harness/confirmations" ($json/stringify controller/saved))
+  ($dom/remove target))
+
+(fn command_confirmation [controller : Confirmations, session : Str, command : Any] : Void
+  (var code "")
+  (if_not ($absent? command/error_code) (set code command/error_code))
+  (if_yes (!= code "confirmation_required") (return))
+  (var id : Str command/id)
+  (var key ($json/stringify [session id]))
+  (if_not ($absent? controller/items/%key) (return))
+  (var text : Str command/display)
+  (var name : Str command/name)
+  (var target
+    ($dom/render `(section ^class_name "confirmation" ^aria-label "Confirm stopping sessions")))
+  (var status ($dom/render `(p ^role "status")))
+  (var confirm ($dom/render `(button ^type "button" "Confirm")))
+  (var keep ($dom/render `(button ^type "button" "Keep running")))
+  (set controller/items/%key target)
+  (set controller/saved/%key {^session session ^command command ^!handled})
+  ($session_storage/set "gene-harness/confirmations" ($json/stringify controller/saved))
+  ($dom/append target ($dom/render `(p %text)))
+  ($dom/append target ($dom/render `(small %$"Conversation ${session}")))
+  ($dom/append target confirm)
+  ($dom/append target keep)
+  ($dom/append target status)
+  ($dom/append controller/target target)
+  (put_notice ^action (fn [] : Void ($dom/focus confirm))
+    controller/notices
+    ($dom/element "notice")
+    "confirmation"
+    session
+    key
+    "A command needs your confirmation."
+    "warning"
+    true
+    {^session session ^command id})
+  ($dom/add_event_listener
+    keep
+    "click"
+    (fn [event : Any] : Void
+      (finish_confirmation controller key target)))
+  ($dom/add_event_listener
+    confirm
+    "click"
+    (fn [event : Any] : Void
+      (set confirm/disabled true)
+      (set keep/disabled true)
+      (controller/api
+        "POST"
+        $"/api/v7/sessions/${session}/commands"
+        {^text $"/${name} --confirm"}
+        (fn [code : Int, data : Any] : Void
+          (if (== code 202)
+            (finish_confirmation controller key target)
+            (do
+              ($dom/set_text
+                status
+                "Confirmation could not be verified. Check the host before trying again.")
+              (set keep/disabled false))))))))

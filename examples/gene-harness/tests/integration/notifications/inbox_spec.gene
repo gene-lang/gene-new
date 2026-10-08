@@ -1,0 +1,86 @@
+(import $test [describe it])
+(import ^from "../../support" [isolated run_spec])
+(import ^from "../../../src/notifications/inbox"
+  [
+    open_inbox
+    close_inbox
+    post_message
+    inbox_snapshot
+    message_detail
+    clear_messages
+    acknowledge_messages
+    publish_progress])
+
+(fn definition [title, ^detail detail = nil]
+  {
+    ^key "review"
+    ^scope "workspace"
+    ^origin {}
+    ^severity "info"
+    ^title title
+    ^summary "Review milestone"
+    ^detail detail
+    ^actions []})
+
+(describe
+  "Producer notification inbox"
+  (it
+    "isolates publishers, acknowledgment, cosmetic changes and revision clears across restart"
+    []
+    (isolated
+      this_mod/.path
+      "isolates publishers, acknowledgment, cosmetic changes and revision clears across restart"
+      (fn [workspace]
+        (var inbox (open_inbox $"${workspace}/notifications"))
+        (try
+          (let one (post_message inbox "first" (definition "First")))
+          (let two (post_message inbox "second" (definition "Second")))
+          ($assert (!= one/id two/id) "publisher-local keys collided")
+          ($assert (== ((Path "new_messages") (inbox_snapshot inbox)) 2))
+          (acknowledge_messages inbox 2)
+          (clear_messages inbox [{^id one/id ^revision one/revision}])
+          (let cosmetic (post_message inbox "first" (definition ^detail "More detail" "First")))
+          ($assert (== cosmetic/id one/id))
+          ($assert (== cosmetic/sequence one/sequence))
+          ($assert
+            (== ((Path "watermark") (inbox_snapshot inbox)) "2")
+            "cosmetic update rolled back publication watermark")
+          ($assert
+            (== ($size ((Path "messages") (inbox_snapshot inbox))) 1)
+            "cosmetic change resurfaced a clear")
+          (let occurrence (post_message inbox "first" (definition "First again")))
+          ($assert (== occurrence/id one/id))
+          ($assert (== occurrence/sequence 3))
+          (clear_messages inbox [{^id one/id ^revision one/revision}])
+          ($assert
+            (== ($size ((Path "messages") (inbox_snapshot inbox))) 2)
+            "stale clear hid newer occurrence")
+          ($assert (== ((Path "new_messages") (inbox_snapshot inbox)) 1))
+          (let revision ((Path "revision") (inbox_snapshot inbox)))
+          (for n in [1 2 3 4 5]
+            (publish_progress inbox "first" "review" {^percent n}))
+          ($assert
+            (== revision ((Path "revision") (inbox_snapshot inbox)))
+            "progress persisted notification churn")
+          (close_inbox inbox)
+          (set inbox (open_inbox $"${workspace}/notifications"))
+          ($assert (== ((Path "new_messages") (inbox_snapshot inbox)) 1))
+          ($assert (== ((Path "title") (message_detail inbox one/id)) "First again"))
+          (acknowledge_messages inbox 3)
+          (acknowledge_messages inbox 1)
+          ($assert
+            (== ((Path "opened") (inbox_snapshot inbox)) "3")
+            "stale acknowledgment regressed watermark")
+          (let expired_definition (definition "Expired"))
+          (expired_definition .put "expires_at" 1)
+          (let expired (post_message inbox "expiry" expired_definition))
+          (let renewed (post_message inbox "expiry" (definition "New occurrence")))
+          ($assert (== renewed/id expired/id))
+          ($assert
+            (> ((Path "expires_at") (message_detail inbox renewed/id)) ($os/wall_ms))
+            "new occurrence inherited the previous expired deadline")
+        ensure
+          (close_inbox inbox))))))
+
+(fn main [args] : Int
+  (run_spec args))

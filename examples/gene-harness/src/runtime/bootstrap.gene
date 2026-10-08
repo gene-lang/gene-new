@@ -3,11 +3,13 @@
 (import ^from "../kernel" [new_harness module_dir shutdown_harness provide])
 (import ^from "../profiles/profile" [profile_admissions])
 (import ^from "../storage/state" [open_event_store close_event_store flush_event_store])
+(import ^from "../notifications/inbox" [open_inbox close_inbox])
 (import ^from "../storage/workspace"
   [open_workspace close_workspace prepare_workspace activate_workspace_plan set_profile_plugins])
 (import ^from "./workspace_lock" ^^export
   [acquire_workspace_lock close_workspace_lock WorkspaceInUse])
-(import ^from "./sessions" [open_session_manager close_session_manager create_session load_session with_session_gate])
+(import ^from "./sessions"
+  [open_session_manager close_session_manager create_session load_session with_session_gate])
 (import ^from "./commands" [new_command_manager close_command_manager])
 (import ^from "./triggers" [close_trigger_manager])
 (import ^from "../agents/history" [collect_unreferenced_bodies])
@@ -56,7 +58,10 @@
       (set outcome (shutdown_harness runtime/h))
       (if runtime/body_gc_pending/.get (collect_unreferenced_bodies runtime))
     ensure
-      (close_workspace runtime/workspace))
+      (try
+        (close_workspace runtime/workspace)
+      ensure
+        (if_not ($absent? runtime/h/notifications) (close_inbox runtime/h/notifications))))
   ensure
     (try
       (if runtime/owns_events
@@ -71,8 +76,7 @@
         watchdog/.join)))
   (if_yes (&& (! ($absent? outcome)) (== outcome/status "recovery_required"))
     (fail
-      (RuntimeCleanupError ^message
-        $"Composition cleanup requires recovery: ${outcome/errors}")))
+      (RuntimeCleanupError ^message $"Composition cleanup requires recovery: ${outcome/errors}")))
   nil)
 
 (fn open_runtime [root : Str, session : Str, profile, ^events supplied_events = nil, ^ownership supplied_ownership = nil, ^entry entry : Str = "", ^event_scope event_scope : Str = "session", ^activate activate : Bool = true] : HarnessRuntime
@@ -107,6 +111,7 @@
     (set_profile_plugins workspace (profile_admissions ^limits profile_limits profile))
     (set h
       (new_harness ^event_store events ^event_scope event_scope ^event_stream session ^workspace workspace ^limits profile_limits))
+    (set h/notifications (open_inbox $"${state_root}/notifications"))
     (install_core_prompt_rows h)
     (if_yes activate
       (let prepared (prepare_workspace ^session session workspace h))
@@ -134,7 +139,9 @@
       (try
         (if (&& (! ($absent? runtime)) (! ($absent? runtime/sessions)))
           (close_session_manager runtime/sessions))
-        (if_not ($absent? h) (shutdown_harness h))
+        (if_not ($absent? h)
+          (try (shutdown_harness h)
+            ensure (if_not ($absent? h/notifications) (close_inbox h/notifications))))
       ensure
         (try
           (if_not ($absent? workspace) (close_workspace workspace))

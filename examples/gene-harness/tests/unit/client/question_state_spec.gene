@@ -1,0 +1,37 @@
+(import $test [describe it run])
+(import ^from "../../../client/question_state"
+  [question_key current_fetch definitive_reply waiting_batch])
+
+(describe
+  "Notification workflow identities"
+  (it
+    "keeps sessions and batches independent even with separators in ids"
+    []
+    ($assert (!= (question_key "a/b" "c") (question_key "a" "b/c")))
+    ($assert (!= (question_key "a" "first") (question_key "a" "second")))
+    ($assert (!= (question_key "a" "batch") (question_key "b" "batch"))))
+  (it
+    "rejects background fetches superseded by invalidation or process restart"
+    []
+    ($assert (current_fetch 4 4 "host-a" "host-a"))
+    ($assert (! (current_fetch 4 5 "host-a" "host-a")))
+    ($assert (! (current_fetch 4 4 "host-a" "host-b"))))
+  (it
+    "retains uncertain replies through transport, authentication and server failures"
+    []
+    (for code in [0 401 403 408 429 500 503]
+      ($assert (! (definitive_reply code))))
+    (for code in [200 202 400 404 409 410]
+      ($assert (definitive_reply code))))
+  (it
+    "projects only an owning waiting round, never question-shaped text"
+    []
+    ($assert ($absent? (waiting_batch {^summary "Approve?"})))
+    ($assert ($absent? (waiting_batch {^round {^state "done" ^questions {^id "old"}}})))
+    ($assert
+      (==
+        ((Path "id") (waiting_batch {^round {^state "waiting" ^questions {^id "current"}}}))
+        "current"))))
+
+(fn main [args] : Int
+  ((Path "exit_code") (run ^name (?? args/0 ""))))

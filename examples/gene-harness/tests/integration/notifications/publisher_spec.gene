@@ -1,0 +1,222 @@
+(import $test [describe it])
+(import ^from "../../support" [isolated run_spec])
+(import ^from "../../../src/web/session_service"
+  [open_session_service close_session_service create_session])
+(import ^from "../../../src/notifications/publisher"
+  [safe_publish update_notification])
+(import ^from "../../../src/notifications/inbox" [inbox_snapshot message_detail])
+(import ^from "../../../src/notifications/actions" [invoke_notification_action])
+(import ^from "../../../src/kernel" [Plugin PluginHost put_cordis_plugin uninstall])
+(import ^from "../../../src/ui/state" [ui_data_revision])
+(import ^from "../../../src/runtime/commands" [command_receipt cancel_command])
+(import $store/fs [Store open : store_open])
+
+(fn finished [runtime, session, id]
+  (let deadline (+ ($os/monotonic_ms) 5000))
+  (loop
+    (let receipt (command_receipt runtime/commands session id))
+    (if (!= receipt/status "running") (return receipt))
+    ($assert (< ($os/monotonic_ms) deadline))
+    ($sleep 10)))
+
+(describe
+  "Notification publishers and actions"
+  (it
+    "keeps writes isolated, owns source keys, freezes actions and reports publication failures separately"
+    []
+    (isolated
+      this_mod/.path
+      "keeps writes isolated, owns source keys, freezes actions and reports publication failures separately"
+      (fn [workspace]
+        (let service (open_session_service ^workspace workspace ^^offline))
+        (try
+          (let h service/runtime/h)
+          (let owner ($cell nil))
+          (let calls ($cell 0))
+          (fn plugin []
+            (Plugin ^id "edition_notices" ^provides [["functions" "finish_edition"] ["web_components" "edition_panel"]] ^activate (fn [host] (owner .set host) (host .PluginHost:contribute "functions" {^name "finish_edition" ^doc "Complete test edition." ^fn (fn [] (calls .set (+ calls/.get 1)) "finished")}) (host .PluginHost:contribute "web_components" {^name "edition_panel" ^slot "panel" ^view_state {^selected ""} ^render (fn [ctx] `(section (p "Edition evidence")))}))))
+          (put_cordis_plugin h (plugin) {^^host ^limits service/runtime/profile/limits})
+          (let session ((Path "id") (create_session ^title "Origin" service)))
+          ($fs/write_text $"${workspace}/edition-evidence.txt" "Saved edition evidence")
+          (let before (ui_data_revision h h/snapshots/current/.get))
+          (let frames [])
+          (service/publisher .set (fn [frame] (frames .push frame)))
+          (let posted
+            (owner/.get .PluginHost:notify
+              {
+                ^key "edition"
+                ^title "Ready"
+                ^origin {^session session ^entity "edition-42"}
+                ^actions [
+                           {^id "finish" ^label "Finish edition" ^function "finish_edition"}
+                           {^id "draft" ^label "Draft review" ^prompt "Review the saved edition."}
+                           {
+                             ^id "open"
+                             ^label "Open evidence"
+                             ^reference {
+                                          ^session session
+                                          ^entity "edition-42"
+                                          ^component "edition_panel"
+                                          ^view_state {^selected "edition-42"}}}
+                           {
+                             ^id "artifact"
+                             ^label "Read artifact"
+                             ^reference {^session session ^artifact "edition-evidence.txt"}}
+                           {^id "run" ^label "Run calculation" ^command "/run (+ 40 2)"}
+                           {^id "pause" ^label "Long calculation" ^command "/run ($sleep 30000)"}]}))
+          ($assert posted/ok (?? posted/message ""))
+          ($assert
+            (== before (ui_data_revision h h/snapshots/current/.get))
+            "notification invalidated board revision")
+          ($assert
+            (== ((Path "source") (message_detail h/notifications posted/id)) "edition_notices"))
+          ($assert (== frames/0/type "notifications/state"))
+          (for frame in frames
+            ($assert (!= frame/type "ui/state") "notification rerendered unrelated UI"))
+          (let other (safe_publish h "operator" {^key "edition" ^title "Other"}))
+          ($assert other/ok (?? other/message ""))
+          ($assert (!= posted/id other/id))
+          ($assert
+            (! ((Path "ok") (update_notification h "operator" posted/id {^title "Hijacked"}))))
+          (let draft
+            (invoke_notification_action
+              service/runtime
+              {^notification posted/id ^revision posted/revision ^action "draft"}))
+          ($assert (== draft/kind "prompt"))
+          ($assert (== draft/session session))
+          ($assert ($str/contains? draft/text posted/id))
+          ($assert ($str/contains? draft/text "edition-42"))
+          (let reference
+            (invoke_notification_action
+              service/runtime
+              {^notification posted/id ^revision posted/revision ^action "open"}))
+          ($assert (== reference/reference/session session))
+          ($assert (== reference/reference/view_state/selected "edition-42"))
+          (let artifact
+            (invoke_notification_action
+              service/runtime
+              {^notification posted/id ^revision posted/revision ^action "artifact"}))
+          ($assert ($str/contains? artifact/reference/evidence/text "Saved edition evidence"))
+          (let request
+            {
+              ^notification posted/id
+              ^revision posted/revision
+              ^action "finish"
+              ^session session
+              ^request_id "notification-once"
+              ^sequence 1})
+          (let admitted (invoke_notification_action service/runtime request))
+          (let deadline (+ ($os/monotonic_ms) 5000))
+          (while (== ((Path "status") (command_receipt service/runtime/commands session admitted/receipt/id)) "running")
+            ($assert (< ($os/monotonic_ms) deadline))
+            ($sleep 10))
+          ($assert (== calls/.get 1))
+          (let repeated (invoke_notification_action service/runtime request))
+          ($assert (== repeated/receipt/id admitted/receipt/id))
+          ($assert (== calls/.get 1) "action retry duplicated a mutation")
+          (let calculation
+            (invoke_notification_action
+              service/runtime
+              {
+                ^notification posted/id
+                ^revision posted/revision
+                ^action "run"
+                ^session session
+                ^request_id "calculation"
+                ^sequence 2}))
+          ($assert
+            ($str/contains?
+              ((Path "display") (finished service/runtime session calculation/receipt/id))
+              "42"))
+          (let running
+            (invoke_notification_action
+              service/runtime
+              {
+                ^notification posted/id
+                ^revision posted/revision
+                ^action "pause"
+                ^session session
+                ^request_id "long-calculation"
+                ^sequence 3}))
+          (cancel_command service/runtime/commands session running/receipt/id)
+          ($assert
+            (== ((Path "status") (finished service/runtime session running/receipt/id)) "cancelled"))
+          (put_cordis_plugin ^^replace h (plugin) {^^host ^limits service/runtime/profile/limits})
+          (let previous_message (message_detail h/notifications posted/id))
+          (let cosmetic
+            ($runtime/with_context
+              {^session "another-session"}
+              (fn []
+                (owner/.get .PluginHost:notification_update posted/id {^detail "More evidence"}))))
+          ($assert cosmetic/ok (?? cosmetic/message ""))
+          (let updated_message (message_detail h/notifications posted/id))
+          ($assert
+            (== updated_message/actions previous_message/actions)
+            "cosmetic update rebound old actions")
+          ($assert
+            (== updated_message/origin previous_message/origin)
+            "cosmetic update changed original work context")
+          ($assert (== cosmetic/sequence posted/sequence) "cosmetic update renewed unread state")
+          ($assert
+            (==
+              ((Path "receipt" "id") (invoke_notification_action service/runtime request))
+              admitted/receipt/id)
+            "retirement prevented receipt recovery")
+          ($assert
+            (try
+              (invoke_notification_action
+                service/runtime
+                {
+                  ^notification posted/id
+                  ^revision cosmetic/revision
+                  ^action "finish"
+                  ^session session
+                  ^request_id "stale-action"
+                  ^sequence 2})
+              false
+            catch Any
+              (== $err/code "revision_conflict"))
+            "old action rebound to replacement code")
+          (let before_disable
+            (owner/.get .PluginHost:notify
+              {
+                ^key "retirement"
+                ^title "Before disable"
+                ^actions [{^id "draft" ^label "Draft" ^prompt "Review original evidence."}]}))
+          ($assert before_disable/ok (?? before_disable/message ""))
+          (uninstall h "edition_notices")
+          ($assert
+            (try
+              (invoke_notification_action
+                service/runtime
+                {^notification before_disable/id ^revision before_disable/revision ^action "draft"})
+              false
+            catch Any
+              (== $err/code "revision_conflict"))
+            "disabled publisher retained live action handles")
+          (let read_only
+            ($runtime/with_context
+              {^^ui_render}
+              (fn []
+                (safe_publish h "operator" {^title "Forbidden"}))))
+          ($assert (! read_only/ok))
+          (let count ($size ((Path "messages") (inbox_snapshot h/notifications))))
+          (let invalid (safe_publish h "operator" {^title "Invalid" ^detail `(script "alert(1)")}))
+          ($assert (! invalid/ok))
+          ($assert (== count ($size ((Path "messages") (inbox_snapshot h/notifications)))))
+          h/notifications/backend/.Store:close
+          ($fs/write_text $"${workspace}/business-save" "committed")
+          (let failure (safe_publish h "operator" {^title "Storage unavailable"}))
+          (set h/notifications/backend
+            (store_open ^root $"${workspace}/.gene-harness/notifications"))
+          ($assert (! failure/ok) "publisher reported success after storage failure")
+          ($assert (== ($fs/read_text $"${workspace}/business-save") "committed"))
+          ($assert (== count ($size ((Path "messages") (inbox_snapshot h/notifications)))))
+        catch Any
+          ($println $"Notification test failed before cleanup: ${$err/message}")
+          (fail $err)
+        ensure
+          (close_session_service service))))))
+
+(fn main [args] : Int
+  (run_spec args))
