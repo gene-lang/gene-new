@@ -50,6 +50,10 @@ extension contract, and [web components](web-components.md) covers UI authoring.
 
 A workspace is the project directory. The process makes it its working
 directory and stores all Harness state beneath `.gene-harness/`.
+Host startup, CLI clients, offline maintenance and restart supervision select
+it using `--workspace DIR`, then non-empty `GENE_HARNESS_WORKSPACE`, then the
+launch directory. Relative workspace paths resolve from the launch directory;
+an unset or empty environment variable preserves the launch-directory default.
 
 ```text
 .gene-harness/

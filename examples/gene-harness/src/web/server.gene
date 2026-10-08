@@ -107,7 +107,7 @@
   (if (!= configured_port "") (set port ($parse/parse_int configured_port)))
   (var restart_port nil)
   (var supervised false)
-  (var workspace "")
+  (var workspace (get_env "GENE_HARNESS_WORKSPACE" ""))
   (var script_file "")
   (var i 0)
   (while (< i args/.size)

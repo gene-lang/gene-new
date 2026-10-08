@@ -10,6 +10,8 @@
   (for arg in args
     (argv .push ($to_str arg)))
   (let options {})
+  (let workspace ($os/get_env "GENE_HARNESS_WORKSPACE" ""))
+  (if (!= workspace "") (options .put "workspace" workspace))
   (let words [])
   (var i 0)
   (var literal false)

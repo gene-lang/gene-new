@@ -9,6 +9,54 @@
 (import $net/http_client [request])
 
 (describe
+  "Harness workspace selection"
+  (it
+    "uses the environment across hosts, clients, maintenance and supervised restarts"
+    []
+    (isolated
+      this_mod/.path
+      "uses the environment across hosts, clients, maintenance and supervised restarts"
+      (fn [workspace]
+        (let root $"${workspace}/env host")
+        (let process
+          ($os/exec_async ^dir workspace ^timeout_ms 60000 ^max_bytes 1048576
+            "env" "GENE_HARNESS_WORKSPACE=env host" ($os/executable_path)
+            "run" (package_path "src/runtime/supervisor.gene") "web" "--offline"))
+        (let host {^root root ^process process})
+        (fn client [environment, arguments]
+          (let args [environment ($os/executable_path) "run" (package_path "src/main.gene") "--json"])
+          (for arg in arguments (args .push arg))
+          (let result
+            (await ($os/exec_async ^dir root ^timeout_ms 15000 "env" args...)))
+          ($assert (== result/status 0) $"${result/stdout}${result/stderr}")
+          ($json/parse ($str/trim result/stdout)))
+        (try
+          (let first (ready_host host))
+          ($assert (== (/workspace (client $"GENE_HARNESS_WORKSPACE=${root}" ["status"])) root)
+            "CLI ignored the workspace environment")
+          ($assert (== (/workspace (client "GENE_HARNESS_WORKSPACE=missing" ["--workspace" root "status"])) root)
+            "explicit workspace did not override the environment")
+          ($assert (== (/workspace (client "GENE_HARNESS_WORKSPACE=" ["status"])) root)
+            "empty environment did not fall back to the launch directory")
+          (let unset_result
+            (await ($os/exec_async ^dir root ^timeout_ms 15000
+              "env" "-u" "GENE_HARNESS_WORKSPACE" ($os/executable_path)
+              "run" (package_path "src/main.gene") "--json" "status")))
+          ($assert (== unset_result/status 0) unset_result/stderr)
+          ($assert (== (/workspace ($json/parse ($str/trim unset_result/stdout))) root)
+            "unset environment did not fall back to the launch directory")
+          (client $"GENE_HARNESS_WORKSPACE=${root}" ["restart"])
+          (let restarted (ready_host ^previous first/epoch host))
+          ($assert (== restarted/port first/port) "environment workspace lost its restart port")
+          (let repair_root $"${workspace}/repair")
+          (client $"GENE_HARNESS_WORKSPACE=${repair_root}" ["doctor"])
+          ($assert ($fs/exists? $"${repair_root}/.gene-harness/config.gene")
+            "offline maintenance ignored the workspace environment")
+        ensure
+          (let stopped (stop_host host))
+          ($assert (== stopped/status 0) stopped/stderr))))))
+
+(describe
   "Harness owner clients"
   (it
     "shares sessions, literal prompts, commands and receipts across independent CLI clients"

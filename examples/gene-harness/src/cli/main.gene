@@ -8,6 +8,9 @@
   gene-harness web [--workspace DIR] [--port PORT] [--offline | --script FILE]
   gene-harness [--workspace DIR] [--json] COMMAND
 
+Workspace: --workspace DIR, then non-empty GENE_HARNESS_WORKSPACE,
+then the launch directory. Relative paths use the launch directory.
+
 Workspace commands:
   status | link | auth reset | stop [--confirm] | restart [--confirm]
   sessions [create --title TITLE]

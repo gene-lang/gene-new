@@ -29,8 +29,20 @@ From the Gene repository:
 bin/gene run examples/gene-harness/src/main.gene web --workspace /path/to/project
 ```
 
-The default workspace is the current directory. The process changes its working
-directory to the workspace and stores state in `.gene-harness/`. That
+Workspace selection uses `--workspace DIR`, then a non-empty
+`GENE_HARNESS_WORKSPACE`, then the launch directory. Relative paths resolve
+from the launch directory. This applies to the web host, CLI clients and offline
+maintenance commands. Set the variable once to omit `--workspace`:
+
+```sh
+export GENE_HARNESS_WORKSPACE=/path/to/project
+examples/gene-harness/bin/gene-harness web
+# In another terminal with the same variable exported:
+examples/gene-harness/bin/gene-harness status
+examples/gene-harness/bin/gene-harness link
+```
+
+The host changes its working directory to the workspace and stores state in `.gene-harness/`. That
 directory has its own `.gitignore`.
 
 Web is the only production profile. The host owns the workspace, holds its
@@ -85,7 +97,7 @@ using Codex OAuth, including continuation, verification and recovery.
 | `enable ID`, `disable ID` | Enable or disable a stored or built-in plugin id. |
 | `restore ID` | Remove a stored override and restore the profile's built-in plugin. |
 
-`--workspace DIR` selects the workspace. Operations on an existing conversation
+`--workspace DIR` overrides `GENE_HARNESS_WORKSPACE`. Operations on an existing conversation
 require `--session ID`; create one explicitly with `sessions create`. Use
 `--json` for machine-readable results, `--file FILE` for prompt/code text, and
 `--timeout-ms N` to bound local waiting. Files supplied to the CLI are read from
