@@ -3,7 +3,7 @@
 (type WebComponentError ^props {^message Str} ^impl [Error])
 (impl Error for WebComponentError)
 
-(const component_slots ["sidebar" "toolbar" "composer" "status" "welcome" "status_summary" "panel"])
+(const component_slots ["sidebar" "toolbar" "composer" "status" "welcome" "status_summary" "panel" "view"])
 (const interactive_tags ["form" "label" "input" "textarea" "select" "option" "table" "thead" "tbody" "tr" "th" "td"])
 (const interactive_attributes ["key" "field" "state" "action" "args" "positional" "name" "placeholder" "checked" "selected" "for" "rows" "required"])
 (const component_tags
@@ -45,7 +45,9 @@
     "open"
     "disabled"
     "command"
-    "prompt"])
+    "prompt"
+    "switch_view"
+    "presentation"])
 
 (fn component_error [message : Str]
   (fail (WebComponentError ^message ($to_str message
@@ -91,11 +93,13 @@
     (if_not ([Str Int Float Bool Nil] .contains? ($head item))
       (component_error "web component attributes must be scalar data"))
     (if (|| ($absent? item) (== item false)) (continue))
-    (if_yes (["command" "prompt"] .contains? name)
+    (if_yes (["command" "prompt" "switch_view"] .contains? name)
       (if (|| (!= tag "button") (!= ($head item) Str))
         (component_error "component actions require a button and text"))
       (if (&& (== name "command") (! ($str/starts_with? item "/")))
-        (component_error "component command actions must start with /")))
+        (component_error "component command actions must start with /"))
+      (if (&& (== name "switch_view") (== ($str/trim item) ""))
+        (component_error "view navigation needs a nonempty target")))
     (if_yes (== name "href")
       (if (|| (!= ($head item) Str) (! (|| ($str/starts_with? item "#") (&& ($str/starts_with? item "/") (! ($str/starts_with? item "//"))) ($str/starts_with? item "https://"))))
         (component_error "component links require a local path, fragment or HTTPS URL")))
@@ -105,6 +109,14 @@
     (attributes .delete "class-name"))
   (if (&& (! ($absent? attributes/command)) (! ($absent? attributes/prompt)))
     (component_error "a component button needs one action"))
+  (if_not ($absent? attributes/switch-view)
+    (for name in ["command" "prompt" "action" "state"]
+      (if_not ($absent? (attributes .get name))
+        (component_error "view navigation cannot be combined with another button action"))))
+  (if_not ($absent? attributes/presentation)
+    (if (|| ($absent? attributes/switch-view) (== attributes/switch-view "harness")
+            (! (["docked" "full"] .contains? attributes/presentation)))
+      (component_error "presentation requires a plugin view target and must be docked or full")))
   (if_yes experimental
     (if (&& (== tag "form") (! ($absent? form))) (component_error "nested forms are unsupported"))
     (if_not ($absent? attributes/field)
@@ -149,6 +161,7 @@
 (fn validate_web_component [candidate]
   (if (|| (!= ($head candidate/name) Str) ($absent? (#"^[a-z][a-z0-9_]{0,79}$" .match candidate/name)))
     (component_error "web component requires a stable name"))
+  (if (== candidate/name "harness") (component_error "harness is reserved for Classic Harness"))
   (if_not (component_slots .contains? candidate/slot)
     (component_error "unknown web component slot"))
   (if (&& (["welcome" "status_summary"] .contains? candidate/slot) (!= candidate/name candidate/slot))
@@ -161,8 +174,8 @@
   (let stateful (! ($absent? candidate/view_state)))
   (if_yes stateful
     (if (!= ($head candidate/view_state) Map) (component_error "view_state must declare a map of defaults"))
-    (if (|| ($absent? candidate/render) (!= candidate/slot "panel"))
-      (component_error "experimental stateful views need a panel render callback"))
+    (if (|| ($absent? candidate/render) (! (["panel" "view"] .contains? candidate/slot)))
+      (component_error "stateful views need a panel or view render callback"))
     (for [key value] in candidate/view_state
       (if_not ([Str Bool Int Float Nil] .contains? ($head value))
         (component_error "view state defaults must be scalar data")))
@@ -170,6 +183,14 @@
       (if (!= ($head candidate/actions) List) (component_error "actions must list function names"))
       (for name in candidate/actions
         (if (|| (!= ($head name) Str) (== name "")) (component_error "invalid action function name")))))
-  (if (&& (== candidate/slot "panel") (! stateful)) (component_error "panel views must declare view_state"))
+  (if (&& (["panel" "view"] .contains? candidate/slot) (! stateful))
+    (component_error "views must declare view_state"))
+  (if_yes stateful
+    (let title (if (== candidate/slot "panel") (?? candidate/title candidate/name) candidate/title))
+    (if (|| (!= ($head title) Str) (== ($str/trim title) "") (> ($str/byte_size title) 160))
+      (component_error "view title must have 1–160 bytes"))
+    (checked .put "title" title)
+    (checked .put "default_presentation" (if (== candidate/slot "panel") "docked" "full"))
+    (checked .put "slot" "view"))
   (if_not ($absent? candidate/view) (checked .put "view" (bounded_component_view candidate/view)))
   checked)

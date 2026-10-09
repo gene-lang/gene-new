@@ -1,0 +1,68 @@
+(import $test [describe it])
+(import [isolated run_spec package_path] ^from "../../support")
+(import [start_host stop_host] ^from "../../web_support")
+(import [connect api wire] ^from "../../../src/cli/client")
+(import [open_session_service close_session_service] ^from "../../../src/web/session_service")
+(import [register_plugin] ^from "../../../src/storage/workspace")
+(import [row] ^from "../../../src/kernel")
+
+(fn wait_receipt [client, id]
+  (let until (+ ($os/monotonic_ms) 5000))
+  (loop
+    (let record (api client "GET" $"/ui/actions/${id}"))
+    (if_not (["accepted" "running"] .contains? record/status) (return record))
+    ($assert (< ($os/monotonic_ms) until) "action did not settle")
+    ($sleep 10)))
+
+(describe "Workspace action transport"
+  (it "uses owner-authenticated workspace routes and restores receipts without sessions" []
+    (isolated this_mod/.path "uses owner-authenticated workspace routes and restores receipts without sessions"
+      (fn [workspace]
+        (let root $"${workspace}/host")
+        (let setup (open_session_service ^workspace root ^^offline))
+        (try
+          (register_plugin setup/runtime/workspace setup/runtime/h "project_board"
+            ($fs/read_text (package_path "experiments/ui/project_board.gene")))
+          ((/fn (row setup/runtime/h "functions" "ui_configure")) {^^enabled ^default_view "project_board"})
+          ensure (close_session_service setup))
+        (var host (start_host root))
+        (try
+          (var client (connect root))
+          (let status (api client "GET" "/status"))
+          ($assert (== status/protocol 8))
+          (let view status/ui/components/0)
+          (let request {^input_id "1:wire" ^generation status/ui/actions/generation
+            ^component view/name ^revision view/revision ^function "board_save"
+            ^function_revision view/functions/board_save ^instance "wire-instance"
+            ^args [] ^named {^id "welcome" ^revision "1" ^title "Through workspace route"}})
+          (let anonymous (wire client/connection "POST" "/ui/actions" request))
+          ($assert (== anonymous/status 401))
+          (let forbidden (wire ^credentials {^cookie client/credentials/cookie ^csrf "incorrect"}
+            client/connection "POST" "/ui/actions" request))
+          ($assert (== forbidden/status 403))
+          (let admitted (api client "POST" "/ui/actions" request))
+          ($assert (== admitted/input_id request/input_id))
+          ($assert (== (/status (wait_receipt client request/input_id)) "done"))
+          ($assert (== (/status (api client "POST" "/ui/actions" request)) "done"))
+          ($assert (== (/sessions (api client "GET" "/sessions")) []))
+          (let changed ($thaw ($freeze request)))
+          (changed/named .put "title" "Different request")
+          (let conflict (wire ^credentials client/credentials client/connection "POST" "/ui/actions" changed))
+          ($assert (== conflict/status 409))
+          ($assert (== conflict/body/code "submission_conflict"))
+          (let legacy (wire ^credentials client/credentials client/connection "POST" "/sessions/old/ui/actions" request))
+          ($assert (== legacy/status 404) "legacy action submission remained enabled")
+          ($assert (== (/status (api client "GET" $"/ui/actions/${request/input_id}?ui=default")) "done"))
+          (let safe (wire ^credentials client/credentials client/connection "POST" "/ui/actions?ui=default" request))
+          ($assert (== safe/status 503))
+          (stop_host host)
+          (set host (start_host root))
+          (set client (connect root))
+          ($assert (== (/status (api client "GET" $"/ui/actions/${request/input_id}")) "done"))
+          # A retained identity survives a new host/publication epoch without
+          # revalidating the function or repeating its effect.
+          ($assert (== (/status (api client "POST" "/ui/actions" request)) "done"))
+          ($assert (== (/sessions (api client "GET" "/sessions")) []))
+          ensure (stop_host host))))))
+
+(fn main [args] : Int (run_spec args))

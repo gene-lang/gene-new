@@ -113,7 +113,7 @@
           (configure {^^enabled ^layout "panel" ^panel "project_board" ^theme {^accent "#335577"}})
           (assert_board_outline h 0)
           (let descriptors (/components (ui_status h)))
-          ($assert (== descriptors/.size 1))
+          ($assert (== descriptors/.size 2))
           (let descriptor descriptors/0)
           ($assert ($absent? descriptor/view))
           (let view (ui_render h session/id "project_board" descriptor/revision {^filter "feedback" ^selected "feedback"}))

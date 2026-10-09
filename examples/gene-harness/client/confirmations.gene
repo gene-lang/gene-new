@@ -72,7 +72,7 @@
       (set keep/disabled true)
       (controller/api
         "POST"
-        $"/api/v7/sessions/${session}/commands"
+        $"/api/v8/sessions/${session}/commands"
         {^text $"/${name} --confirm"}
         (fn [code : Int, data : Any] : Void
           (if (== code 202)

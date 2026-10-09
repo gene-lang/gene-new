@@ -11,7 +11,8 @@ records must use entity-specific editor/field keys; switching back can restore
 that record's unsaved draft. Navigation is not discard.
 
 **Use the host Discard edits control to clear retained drafts and reload saved
-values.** Its scope is the host's drafts, not one individual form. The current
+values.** Its scope is the current view's drafts, not one individual form. Other
+views' drafts remain. The current
 plugin contract has no per-editor draft-store reset. Alternating keys between
 `0` and `1` does not delete drafts: returning to an old key can resurrect one.
 

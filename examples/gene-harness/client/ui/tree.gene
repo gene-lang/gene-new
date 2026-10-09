@@ -3,7 +3,7 @@
 (import [UiNode UiClient text flag copy_map sync_controls] ^from "./model.gene")
 
 (fn metadata [name : Str] : Bool
-  (for key in ["key" "field" "state" "action" "args" "positional" "command" "prompt"]
+  (for key in ["key" "field" "state" "action" "args" "positional" "command" "prompt" "switch-view" "presentation"]
     (if_yes (== key name) (return true)))
   false)
 
@@ -49,6 +49,10 @@
           ($dom/add_event_listener node/element "input" (fn [event : Any] : Void (changed node))))
         (if_yes (== tag "button")
           ($dom/add_event_listener node/element "click" (fn [event : Any] : Void
+            (if_not ($absent? node/props/switch-view)
+              ($dom/prevent_default event)
+              (ui/navigate (text node/props/switch-view) (text node/props/presentation))
+              (return))
             (if_yes (|| (! ui/ready) ui/loading) (return))
             (if_not ($absent? node/props/state)
               ($dom/prevent_default event)
@@ -57,7 +61,9 @@
               ($dom/prevent_default event)
               (submit node))
             (if_not ($absent? node/props/command) (ui/command (text node/props/command)))
-            (if_not ($absent? node/props/prompt) (ui/prompt (text node/props/prompt))))))
+            (if_not ($absent? node/props/prompt)
+              (ui/navigate "harness" "")
+              (ui/prompt (text node/props/prompt))))))
         (if_yes (== tag "form")
           ($dom/add_event_listener node/element "submit" (fn [event : Any] : Void
             ($dom/prevent_default event) (submit node)))))

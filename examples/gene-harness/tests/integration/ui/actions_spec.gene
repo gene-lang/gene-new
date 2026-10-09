@@ -2,16 +2,94 @@
 (import [isolated run_spec test_service package_path] ^from "../../support")
 (import [close_session_service create_session snapshot] ^from "../../../src/web/session_service")
 (import [register_plugin] ^from "../../../src/storage/workspace")
-(import [row] ^from "../../../src/kernel")
+(import [row put_cordis_plugin] ^from "../../../src/kernel")
+(import [Plugin PluginHost] ^from "../../../src/plugin_api")
+(import [events_for] ^from "../../../src/storage/state")
 (import [ui_status UiError] ^from "../../../src/ui/state")
-(import [ui_action ui_action_receipt] ^from "../../../src/ui/actions")
+(import [ui_action ui_action_receipt cancel_ui_action] ^from "../../../src/ui/actions")
 (import [command_receipt take_command_attachments submit_command] ^from "../../../src/runtime/commands")
+(import [list_sessions delete_session] ^from "../../../src/runtime/sessions")
 
-(fn wait_action [service, session, record]
+(fn wait_command [service, session, record]
   (service/runtime/commands/watchers/.get .get $"${session}:${record/id}"; .join)
   (command_receipt service/runtime/commands session record/id))
 
+(fn wait_action [service, record]
+  (let result (service/runtime/actions/watchers/.get .get record/input_id; .join))
+  ($assert (== ($head result) TaskOutcome/ok) ($to_str result))
+  (ui_action_receipt service/runtime/actions record/input_id))
+
 (describe "Experimental UI actions"
+  (it "isolates runtime context and receipt invalidation while preserving cancellation" []
+    (isolated this_mod/.path "isolates runtime context and receipt invalidation while preserving cancellation"
+      (fn [workspace]
+        (let service (test_service ^workspace workspace ^provider (fn [request] "")))
+        (let entered ($cell false))
+        (try
+          (let h service/runtime/h)
+          (put_cordis_plugin h
+            (Plugin ^id "action_probe"
+              ^activate (fn [host]
+                (host .PluginHost:contribute "event_types"
+                  {^name "action_probe/event" ^version 1 ^^ignorable ^origin "plugin" ^owner "action_probe"})
+                (host .PluginHost:contribute "functions"
+                  {^name "probe_action" ^doc "Probe workspace action context." ^fn (fn [^emit emit : Bool = false, ^spin spin : Bool = false, ^payload payload = nil]
+                    ($assert ($absent? (/session ($runtime/context))) "action inherited a conversation")
+                    (entered .set true)
+                    (if emit (host .PluginHost:emit_event "action_probe/event" {^value "workspace"}))
+                    (if spin (while true ($sleep 1)))
+                    (if_not ($absent? payload) ($sleep 30))
+                    (if ($absent? payload) "complete" payload/value))})
+                (host .PluginHost:contribute "web_components"
+                  {^name "probe" ^slot "view" ^title "Probe" ^view_state {}
+                   ^actions ["probe_action"] ^render (fn [ctx] (quote (p "Probe")))}))) {})
+          ((/fn (row h "functions" "ui_configure")) {^^enabled})
+          (let session (create_session service))
+          (let notifications [])
+          (service/publisher .set (fn [message] (notifications .push message/type)))
+          (let before (ui_status h))
+          ($assert (== before/components/.size 1) ($to_str h/plugin_errors/.get))
+          (let view before/components/0)
+          (let request {^input_id "1:context" ^generation 1 ^instance "probe" ^component "probe"
+            ^revision view/revision ^function "probe_action" ^function_revision view/functions/probe_action
+            ^args [] ^named {}})
+          (let one ($runtime/with_context {^session session/id}
+            (fn [] (ui_action service/runtime/actions request))))
+          ($assert (== (/status (wait_action service one)) "done"))
+          ($assert (== before/data_revision (/data_revision (ui_status h)))
+            "receipt-only writes invalidated views")
+          ($assert (! (notifications .contains? "ui/state")))
+          (let snapshot_request ($thaw ($freeze request)))
+          (snapshot_request .put "input_id" "1:immutable")
+          (snapshot_request .put "named" {^payload {^value "admitted"}})
+          (let admitted (ui_action service/runtime/actions snapshot_request))
+          (snapshot_request/named/payload .put "value" "caller changed")
+          (admitted/request/named/payload .put "value" "receipt changed")
+          ($assert (== (/display (wait_action service admitted)) "admitted")
+            "execution arguments changed after durable admission")
+          (request .put "input_id" "1:emit")
+          (request .put "named" {^^emit})
+          (let emitted (wait_action service (ui_action service/runtime/actions request)))
+          ($assert (== emitted/status "done") emitted/display)
+          ($assert (notifications .contains? "ui/state") "domain events did not invalidate workspace views")
+          ($assert (== ($size ($filter (events_for service/events "workspace" "workspace")
+            (fn [event] (== event/type "action_probe/event")))) 1))
+          ($assert (== ($size ($filter (events_for service/events "session" session/id)
+            (fn [event] (== event/type "action_probe/event")))) 0))
+          (request .put "input_id" "1:cancel")
+          (request .put "named" {^^spin})
+          (entered .set false)
+          (let running (ui_action service/runtime/actions request))
+          (while (! entered/.get) ($sleep 1))
+          (cancel_ui_action service/runtime/actions running/input_id)
+          ($assert (== (/status (wait_action service running)) "cancelled"))
+          ($assert (== (take_command_attachments service/runtime session/id) []))
+          ($assert (delete_session service/runtime/sessions session/id))
+          ($assert (== (/status (ui_action_receipt service/runtime/actions one/input_id)) "done")
+            "conversation deletion lost a workspace receipt")
+          ensure (close_session_service service))))))
+
+(describe "Workspace action integration"
   (it "serializes the revision check and write across conversations" []
     (isolated this_mod/.path "serializes the revision check and write across conversations"
       (fn [workspace]
@@ -27,16 +105,16 @@
           (let a (create_session service))
           (let b (create_session service))
           (let view (/0 (/components (ui_status h))))
-          (let request {^input_id "first" ^instance "board" ^component "project_board"
+          (let request {^input_id "1:first" ^generation 1 ^instance "board" ^component "project_board"
             ^revision view/revision ^function "board_save" ^function_revision view/functions/board_save
             ^args [] ^named {^id "welcome" ^revision "1" ^title "First"}})
           (let other ($thaw ($freeze request)))
-          (other .put "input_id" "second")
+          (other .put "input_id" "1:second")
           (other/named .put "title" "Second")
-          (let first (ui_action service/runtime/commands a/id request))
-          (let second (ui_action service/runtime/commands b/id other))
-          (let left (wait_action service a/id first))
-          (let right (wait_action service b/id second))
+          (let first (ui_action service/runtime/actions request))
+          (let second (ui_action service/runtime/actions other))
+          (let left (wait_action service first))
+          (let right (wait_action service second))
           ($assert (|| (&& (== left/status "done") (== right/status "failed"))
                        (&& (== right/status "done") (== left/status "failed")))
             $"${left/status}, ${right/status}")
@@ -44,8 +122,8 @@
           ($assert (== (/revision (/0 (tasks))) "2"))
         ensure (close_session_service service)))))
 
-  (it "retains session-bound receipts, hides transcript blocks and attaches only failures" []
-    (isolated this_mod/.path "retains session-bound receipts, hides transcript blocks and attaches only failures"
+  (it "runs workspace actions without conversations and never attaches domain failures" []
+    (isolated this_mod/.path "runs workspace actions without conversations and never attaches domain failures"
       (fn [workspace]
         (let service (test_service ^workspace workspace ^provider (fn [request] "(Outcome ^done true ^reply \"ok\")")))
         (try
@@ -53,43 +131,44 @@
           (register_plugin service/runtime/workspace h "project_board" ($fs/read_text (package_path "experiments/ui/project_board.gene")))
           (let configure (/fn (row h "functions" "ui_configure")))
           (configure {^^enabled ^layout "panel" ^panel "project_board"})
-          (let a (create_session service))
-          (let b (create_session service))
           (let view (/0 (/components (ui_status h))))
-          (let request {^input_id "save-once" ^instance "board-instance" ^component "project_board"
+          (let request {^input_id "1:save-once" ^generation 1 ^instance "board-instance" ^component "project_board"
             ^revision view/revision ^function "board_save" ^function_revision view/functions/board_save
             ^args [] ^named {^id "welcome" ^revision "1" ^title "Saved once"}})
-          (let record (wait_action service a/id (ui_action service/runtime/commands a/id request)))
+          (let record (wait_action service (ui_action service/runtime/actions request)))
           ($assert (== record/status "done") record/display)
-          ($assert (== (/id (ui_action service/runtime/commands a/id request)) record/id))
-          ($assert (== (/id (ui_action_receipt service/runtime/commands a/id "save-once")) record/id))
-          ($assert (try (ui_action_receipt service/runtime/commands b/id "save-once") false catch UiError true))
+          ($assert (== (list_sessions service/runtime/sessions) []) "action created a conversation")
+          ($assert (== (/id (ui_action service/runtime/actions request)) record/id))
+          ($assert (== (/id (ui_action_receipt service/runtime/actions "1:save-once")) record/id))
+          (let a (create_session service))
+          (let b (create_session service))
           ($assert (== (/records (snapshot service a/id)) []))
           ($assert (== (take_command_attachments service/runtime a/id) []))
           (let tasks (/fn (row h "functions" "board_tasks")))
           ($assert (== (/revision (/0 (tasks))) "2"))
           (let stale ($thaw ($freeze request)))
-          (stale .put "input_id" "stale-task")
-          (let failed (wait_action service a/id (ui_action service/runtime/commands a/id stale)))
+          (stale .put "input_id" "1:stale-task")
+          (let failed (wait_action service ($runtime/with_context {^session a/id}
+            (fn [] (ui_action service/runtime/actions stale)))))
           ($assert (== failed/status "failed"))
           ($assert (== failed/display "Task changed. Reload the task before saving."))
           (let errors (take_command_attachments service/runtime a/id))
-          ($assert (== errors/.size 1))
-          ($assert ($str/contains? ($to_str errors) "board_save"))
-          ($assert (! ($str/contains? ($to_str errors) "line 1:")))
+          ($assert (== errors/.size 0) "domain failure leaked into model input")
           ($assert (== (take_command_attachments service/runtime a/id) []))
           ($assert (== (take_command_attachments service/runtime b/id) []))
-          (let run_failed (wait_action service b/id (submit_command service/runtime/commands b/id
+          (let run_failed (wait_command service b/id (submit_command service/runtime/commands b/id
             "/run (board_save ^id \"welcome\" ^revision \"1\" ^title \"Stale\")")))
           ($assert (== run_failed/status "failed"))
           ($assert ($str/starts_with? run_failed/display "line 1:"))
           (let changed ($thaw ($freeze request)))
           (changed/named .put "title" "Different")
-          ($assert (try (ui_action service/runtime/commands a/id changed) false catch UiError (== $err/code "submission_conflict")))
+          ($assert (try (ui_action service/runtime/actions changed) false catch UiError (== $err/code "submission_conflict")))
           (register_plugin ^^replace service/runtime/workspace h "project_board" ($fs/read_text (package_path "experiments/ui/project_board.gene")))
-          ($assert (== (/id (ui_action service/runtime/commands a/id request)) record/id))
-          (stale .put "input_id" "old-view")
-          ($assert (try (ui_action service/runtime/commands a/id stale) false catch UiError (== $err/code "revision_conflict")))
+          ($assert (== (/id (ui_action service/runtime/actions request)) record/id))
+          (stale .put "input_id" "1:old-view")
+          ($assert (try (ui_action service/runtime/actions stale) false catch UiError (== $err/code "revision_conflict")))
+          (let inspect (/fn (row h "functions" "ui_action_receipts")))
+          ($assert (== (/status (/0 (/records (inspect ^input_id failed/input_id)))) "failed"))
         ensure (close_session_service service)))))
 )
 (fn main [args] : Int (run_spec args))

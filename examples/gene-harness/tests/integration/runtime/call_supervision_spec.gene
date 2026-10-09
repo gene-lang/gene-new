@@ -30,7 +30,7 @@
         # scenarios from a sibling task so the host can dispatch their requests.
         (let tester (spawn ^lane root (try
           (let port server/port)
-          (let url $"http://127.0.0.1:${port}/api/v7/sessions")
+          (let url $"http://127.0.0.1:${port}/api/v8/sessions")
           # Initialize the native client before timing the server's response path.
           (await (request ^url url ^timeout_ms 1000))
           (var sequence 0)

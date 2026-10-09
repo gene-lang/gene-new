@@ -48,7 +48,8 @@
       (try
         (if_not ($absent? action/reference)
           (let reference ($thaw ($freeze action/reference)))
-          (require_record runtime/sessions reference/session)
+          (if (&& (! ($absent? reference/session)) (!= reference/session ""))
+            (require_record runtime/sessions reference/session))
           (if_not ($absent? reference/artifact)
             (let view (view_command {^runtime runtime ^raw reference/artifact}))
             (reference .put

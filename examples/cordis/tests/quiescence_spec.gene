@@ -68,3 +68,36 @@
     dispatch/.join
     (assert_equal events/.get ["handler-start" "handler-end" "cleanup"]
       "unload must wait for entered calls before running cleanup")))
+
+(describe "Cordis inherited deadlines"
+  (it "retires a supervised evaluator before an expired caller returns" []
+    (let owner ($cell nil))
+    (let runtime (new_runtime (RuntimeOptions ^logger nil ^invoker (default_plugin_invoker)
+      ^default_limits (invocation_limits))))
+    (let repl ($repl/open (env)))
+    (let entered ($cell false))
+    (try
+      ($repl/eval repl "(var retained 42) (fn wait [] ($sleep 10000))")
+      (let plugin (PluginSpec ^id "deadline-owner" ^config_schema nil ^requires []
+        ^provides [] ^reload nil ^activate (fn [ctx config]
+          (ctx .effect "calls" (fn [scope] (owner .set scope))))))
+      (let instance (runtime .install runtime/.root plugin nil))
+      instance/.await_ready
+      (let invoke ($runtime/bind_call ^policy {^timeout_ms 100}
+        (fn [] (invoke_effect_owner owner/.get PluginCallKind/operation
+          (fn [] (entered .set true) ($repl/eval repl "(wait)")) [])) []))
+      (scope
+        (let caller (spawn ^lane root (invoke)))
+        (let timeout (spawn ^lane root (do ($sleep 110) caller/.cancel)))
+        (try
+          (let outcome caller/.join)
+          ($assert (!= ($head outcome) TaskOutcome/ok))
+          ensure timeout/.cancel timeout/.join))
+      # This is refused as busy if invocation cleanup orphaned the evaluator.
+      ($assert entered/.get "fixture expired before entering its supervised evaluator")
+      (assert_equal ($repl/eval repl "retained") 42)
+      instance/.dispose
+      runtime/.await_settled
+      ensure
+        ($repl/close repl)
+        runtime/.close)))

@@ -2,11 +2,12 @@
 (import [Plugin PluginHost] ^from "../plugin_api")
 (import [validate_ui_settings] ^from "../ui/state")
 (import [ui_preview] ^from "../ui/views")
+(import [list_action_receipts] ^from "../ui/action_log")
 (import [contribute_doc] ^from "./documentation")
 
 (fn ui_experiment [] : Plugin
   (Plugin ^id "ui_experiment" ^requires ["loop"]
-    ^provides [["functions" "ui_configure"] ["functions" "ui_preview"]]
+    ^provides [["functions" "ui_configure"] ["functions" "ui_preview"] ["functions" "ui_action_receipts"]]
     ^activate (fn [host]
       (let loop_factory (host .PluginHost:resolve "loop"))
       (let runtime (/runtime (loop_factory)))
@@ -21,6 +22,11 @@
         {^name "ui_preview" ^doc "Validate a panel tree using supplied browser view state."
          ^tags ["ui" "preview" "verify"] ^docs ["harness/ui/publication"]
          ^fn (fn [name : Str, state = {}] (ui_preview runtime/h name state))})
+      (host .PluginHost:contribute "functions"
+        {^name "ui_action_receipts" ^doc "Read recent workspace UI action outcomes without creating a conversation. Filter by view, status or input_id; before is the returned pagination cursor."
+         ^tags ["ui" "actions" "receipts" "diagnostics"] ^docs ["harness/ui/publication"]
+         ^fn (fn [^view view : Str = "", ^status status : Str = "", ^input_id input_id : Str = "", ^before before : Int = 0, ^limit limit : Int = 25]
+           (list_action_receipts runtime/actions/log ^view view ^status status ^input_id input_id ^before before ^limit limit))})
       (contribute_doc host "harness/ui/configuration"
         "Enable a panel; layout, width, theme tokens and default-UI recovery."
         "examples/gene-harness/docs/recipes/ui-configuration.md"

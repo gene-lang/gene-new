@@ -1,0 +1,53 @@
+# Pure tab-local navigation rules shared by the router and native tests.
+(mod harness_ui_navigation ^profile web)
+
+(fn nav_text [value : Any, fallback : Str = ""] : Str
+  (if_yes ($absent? value) (return fallback))
+  (var text : Str value)
+  text)
+
+(fn find_view [views : (List Any), id : Str] : Any
+  (for view in views
+    (if_yes (== (nav_text view/name) id) (return view)))
+  nil)
+
+(fn default_view [views : (List Any), settings : Any] : Str
+  (var raw : Any (?? settings/enabled false))
+  (var enabled : Bool raw)
+  (if_not enabled (return "harness"))
+  (var explicit (nav_text settings/default_view))
+  (if_yes (!= explicit "") (return explicit))
+  (if_yes (== (nav_text settings/layout) "panel")
+    (var panel (nav_text settings/panel))
+    (if_yes (!= panel "") (return panel))
+    (if_yes (> views/.size 0) (return (nav_text views/0/name))))
+  "harness")
+
+(fn initial_view [views : (List Any), settings : Any, saved : Any, url_view : Str] : Str
+  (var chosen url_view)
+  (if_yes (== chosen "") (set chosen (nav_text saved/active)))
+  (if_yes (== chosen "") (set chosen (default_view views settings)))
+  chosen)
+
+(fn presentation_for [view : Any, settings : Any, remembered : Any, explicit : Str = ""] : Str
+  (if_yes (|| (== explicit "full") (== explicit "docked")) (return explicit))
+  (var name (nav_text view/name))
+  (var saved (nav_text remembered/%name))
+  (if_yes (|| (== saved "full") (== saved "docked")) (return saved))
+  (if_yes (&& (== (nav_text settings/layout) "panel")
+             (== (nav_text settings/panel) name)) (return "docked"))
+  (nav_text view/default_presentation "full"))
+
+(fn return_view [views : (List Any), settings : Any, last : Str] : Str
+  (if_not ($absent? (find_view views last)) (return last))
+  (var default (default_view views settings))
+  (if_not ($absent? (find_view views default)) (return default))
+  (if_yes (> views/.size 0) (return (nav_text views/0/name)))
+  "harness")
+
+(fn view_url [session : Str, view : Str, presentation : Str, safe : Bool] : Str
+  (var url $"/?session=${($url/encode_component session)}")
+  (if_yes safe (return $"${url}&ui=default"))
+  (set url $"${url}&view=${($url/encode_component view)}")
+  (if_yes (!= view "harness") (set url $"${url}&presentation=${presentation}"))
+  url)

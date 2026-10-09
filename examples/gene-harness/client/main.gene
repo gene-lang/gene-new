@@ -16,7 +16,9 @@
 (import ^from "../src/web/contract.gene" [protocol_version])
 (import ^from "./view.gene" [block_view step_view run_status_view not_durable])
 (import ^from "./components.gene" [render_slot])
-(import ^from "./ui/model.gene" [UiClient])
+(import ^from "./ui/model.gene" [UiClient UiNavigation])
+(import ^from "./ui/router.gene" [navigate update_url])
+(import ^from "./ui/navigation.gene" [view_url])
 (import ^from "./notices.gene" [Notices create_notices put_notice remove_notice])
 (import ^from "./confirmations.gene" [Confirmations create_confirmations command_confirmation])
 (import ^from "./question_state.gene" [waiting_batch])
@@ -52,7 +54,10 @@
     (fn [text : Str] : Void
       (component_command client text))
     (fn [text : Str] : Void
-      (if_yes (&& client/ready client/connected (! client/sending)) (edit_prompt client text)))
+      (if_yes (&& client/ready client/connected (! client/sending)) (stage_prompt client text)))
+    (fn [target : Str, presentation : Str] : Void
+      (var ui : UiClient client/ui)
+      (navigate ui target presentation))
     (&& client/ready client/connected (! client/sending))
     buttons))
 
@@ -81,7 +86,7 @@
   (api
     client
     "POST"
-    "/api/v7/sessions"
+    "/api/v8/sessions"
     {^title "Plugin tools"}
     (fn [code : Int, data : Any] : Void
       (set client/sending false)
@@ -324,7 +329,7 @@
   (api
     client
     "GET"
-    $"/api/v7/sessions${query}"
+    $"/api/v8/sessions${query}"
     nil
     (fn [code : Int, data : Any] : Void
       (if_yes (!= epoch client/filter_epoch) (return))
@@ -353,7 +358,7 @@
   (api
     client
     "GET"
-    $"/api/v7/triggers/${($url/encode_component id)}/occurrences"
+    $"/api/v8/triggers/${($url/encode_component id)}/occurrences"
     nil
     (fn [code : Int, data : Any] : Void
       (if_yes (!= client/trigger_selected id) (return))
@@ -378,7 +383,7 @@
   (api
     client
     "GET"
-    "/api/v7/triggers"
+    "/api/v8/triggers"
     nil
     (fn [code : Int, data : Any] : Void
       (if (!= code 200)
@@ -400,7 +405,7 @@
                    (button ^type "button" ^on_click %(fn [event : Any] : Void (trigger_occurrences client id))
                      %id
                      (small %kind))
-                   (button ^type "button" ^on_click %(fn [event : Any] : Void (api client "DELETE" $"/api/v7/triggers/${($url/encode_component id)}" nil (fn [status : Int, result : Any] : Void (if (== status 200) (load_triggers client) (show_error client result))))) "Delete"))))))))))
+                   (button ^type "button" ^on_click %(fn [event : Any] : Void (api client "DELETE" $"/api/v8/triggers/${($url/encode_component id)}" nil (fn [status : Int, result : Any] : Void (if (== status 200) (load_triggers client) (show_error client result))))) "Delete"))))))))))
 
 (fn create_trigger [client : Client] : Void
   (try
@@ -430,7 +435,7 @@
     (api
       client
       "POST"
-      "/api/v7/triggers"
+      "/api/v8/triggers"
       data
       (fn [code : Int, result : Any] : Void
         (if (== code 201)
@@ -469,6 +474,26 @@
   (render_commands client)
   ($dom/focus client/prompt))
 
+(fn stage_prompt [client : Client, text : Str] : Void
+  (var ui : UiClient client/ui)
+  (navigate ui "harness")
+  (var draft ($dom/input_value client/prompt))
+  (if_yes (|| (== draft "") (== draft text)) (edit_prompt client text) (return))
+  (var offer ($dom/element "prompt_offer"))
+  ($dom/clear offer)
+  (set offer/hidden false)
+  ($dom/append offer ($dom/render
+    `(div
+      (p "A view offered a prompt. Keep your current draft, replace it, or append the offered text.")
+      (pre %text)
+      (button ^type "button" ^on_click %(fn [event : Any] : Void
+        (edit_prompt client text) (set offer/hidden true)) "Replace draft")
+      (button ^type "button" ^on_click %(fn [event : Any] : Void
+        (edit_prompt client ($to_str ($dom/input_value client/prompt) "\n\n" text))
+        (set offer/hidden true)) "Append to draft")
+      (button ^type "button" ^on_click %(fn [event : Any] : Void
+        (set offer/hidden true) ($dom/focus client/prompt)) "Keep draft")))))
+
 (fn render_block [client : Client, target : EventTarget, block : Any] : Void
   (var id : Str block/id)
   (var generation client/generation)
@@ -490,7 +515,7 @@
     ($dom/append
       target
       ($dom/render
-        `(button ^type "button" ^on_click %(fn [event : Any] : Void (api client "POST" $"/api/v7/sessions/${client/selected}/commands/${command_id}/cancel" {} (fn [code : Int, data : Any] : Void (if_yes (!= code 200) (show_error client data))))) "Cancel command"))))
+        `(button ^type "button" ^on_click %(fn [event : Any] : Void (api client "POST" $"/api/v8/sessions/${client/selected}/commands/${command_id}/cancel" {} (fn [code : Int, data : Any] : Void (if_yes (!= code 200) (show_error client data))))) "Cancel command"))))
   (var view : Any block/view)
   (if_yes (! ($absent? view))
     (var next : Any view/next)
@@ -679,7 +704,7 @@
   # switch or another workspace update. This is event-driven, not polling.
   ($time/after 25.0 (fn [] : Void
     (if_yes (!= generation client/status_generation) (return))
-    (api client "GET" $"/api/v7/status?session=${($url/encode_component session)}" nil
+    (api client "GET" $"/api/v8/status?session=${($url/encode_component session)}" nil
       (fn [code : Int, data : Any] : Void
         (if_yes (|| (!= generation client/status_generation) (!= session client/selected)) (return))
         (if (== code 200) (apply_status client data) (show_error client data)))))))
@@ -785,7 +810,7 @@
 
 (fn sessions_page [client : Client, after : Str] : Void
   (var epoch client/socket_epoch)
-  (api client "GET" $"/api/v7/sessions?after=${after}" nil
+  (api client "GET" $"/api/v8/sessions?after=${after}" nil
     (fn [code : Int, data : Any] : Void
       (if_yes (!= epoch client/socket_epoch) (return))
       (if (== code 200)
@@ -813,7 +838,7 @@
   (api
     client
     "GET"
-    $"/api/v7/sessions/${client/selected}/snapshot?before=${before}"
+    $"/api/v8/sessions/${client/selected}/snapshot?before=${before}"
     nil
     (fn [code : Int, data : Any] : Void
       (if_yes (!= generation client/generation) (return))
@@ -921,7 +946,8 @@
   (set client/generation (+ client/generation 1))
   ($dom/set_input_value client/prompt (?? ($session_storage/get (draft_key id)) ""))
   ($browser/replace_url
-    ($to_str $"/?session=${($url/encode_component id)}" (if client/safe_ui "&ui=default" "")))
+    (view_url id ((Path "navigation" "active") client/ui)
+      ((Path "navigation" "presentation") client/ui) client/safe_ui))
   ($dom/set_class client/root "menu_open" false)
   (notice client "")
   (render_sessions client)
@@ -941,7 +967,7 @@
     (api
       client
       "GET"
-      $"/api/v7/sessions/${id}/snapshot"
+      $"/api/v8/sessions/${id}/snapshot"
       nil
       (fn [code : Int, data : Any] : Void
         (if_yes (== id client/selected)
@@ -952,7 +978,7 @@
     (api
       client
       "POST"
-      $"/api/v7/sessions/${id}/open"
+      $"/api/v8/sessions/${id}/open"
       {}
       (fn [code : Int, data : Any] : Void
         (if_yes (!= code 200) (show_error client data))))))
@@ -967,7 +993,7 @@
   (api
     client
     "PATCH"
-    $"/api/v7/sessions/${id}"
+    $"/api/v8/sessions/${id}"
     {^pinned (! pinned) ^revision client/session_revision}
     (fn [code : Int, data : Any] : Void
       (if (== code 200)
@@ -987,7 +1013,7 @@
   (api
     client
     "POST"
-    "/api/v7/sessions"
+    "/api/v8/sessions"
     {^title "New conversation"}
     (fn [code : Int, data : Any] : Void
       (if (== code 201)
@@ -1014,7 +1040,7 @@
     (set client/awaiting request_id) (set client/awaiting_session session))
   (set client/sending true)
   (update_controls client)
-  (api client "POST" $"/api/v7/sessions/${session}/rounds" pending
+  (api client "POST" $"/api/v8/sessions/${session}/rounds" pending
     (fn [code : Int, data : Any] : Void
       (set client/sending false)
       (if (== code 202)
@@ -1084,7 +1110,7 @@
   (api
     client
     "POST"
-    $"/api/v7/sessions/${client/selected}/commands"
+    $"/api/v8/sessions/${client/selected}/commands"
     {^text text}
     (fn [code : Int, data : Any] : Void
       (set client/sending false)
@@ -1185,7 +1211,7 @@
   (api
     client
     "POST"
-    $"/api/v7/sessions/${session}/mode/input"
+    $"/api/v8/sessions/${session}/mode/input"
     pending
     (fn [code : Int, data : Any] : Void
       (set client/sending false)
@@ -1223,7 +1249,7 @@
   (api
     client
     "POST"
-    $"/api/v7/sessions/${session}/mode/leave"
+    $"/api/v8/sessions/${session}/mode/leave"
     {^instance instance}
     (fn [code : Int, data : Any] : Void
       (set client/sending false)
@@ -1266,7 +1292,7 @@
     (api
       client
       "POST"
-      "/api/v7/sessions"
+      "/api/v8/sessions"
       {^title "New conversation"}
       (fn [code : Int, data : Any] : Void
         (set client/sending false)
@@ -1291,7 +1317,7 @@
     (api
       client
       "POST"
-      $"/api/v7/sessions/${client/selected}/commands/${command_id}/cancel"
+      $"/api/v8/sessions/${client/selected}/commands/${command_id}/cancel"
       {}
       (fn [code : Int, data : Any] : Void
         (if (== code 200)
@@ -1303,7 +1329,7 @@
   (api
     client
     "POST"
-    $"/api/v7/sessions/${client/selected}/rounds/${id}/cancel"
+    $"/api/v8/sessions/${client/selected}/rounds/${id}/cancel"
     {}
     (fn [code : Int, data : Any] : Void
       (if (== code 200)
@@ -1404,7 +1430,7 @@
     (if_yes (|| (! client/ready) (!= epoch client/socket_epoch)) (return))
     # Reconnection checks cookie expiry. Connected streams refresh status only
     # on workspace invalidation or tab selection, without timer polling.
-    (api client "GET" "/api/v7/status" nil
+    (api client "GET" "/api/v8/status" nil
       (fn [code : Int, data : Any] : Void
         (if_yes (!= epoch client/socket_epoch) (return))
         (if (== code 200)
@@ -1437,7 +1463,7 @@
   (var socket
     ($ws/connect
       ($to_str
-        $"${scheme}://${parts/1}/api/v7/events?session=${($url/encode_component tab/id)}"
+        $"${scheme}://${parts/1}/api/v8/events?session=${($url/encode_component tab/id)}"
         (if client/safe_ui
           "&ui=default"
           ""))))
@@ -1473,7 +1499,7 @@
       (api
         client
         "GET"
-        "/api/v7/status"
+        "/api/v8/status"
         nil
         (fn [code : Int, data : Any] : Void
           (if_yes (|| tab/closed (!= epoch tab/socket_epoch)) (return))
@@ -1584,17 +1610,13 @@
 
 (fn authenticate [client : Client] : Void
   (var token (query_value ($browser/hash) "token"))
-  ($browser/replace_url
-    (if client/safe_ui
-      $"/?ui=default&session=${client/selected}"
-      (if (== client/selected "")
-        "/"
-        $"/?session=${client/selected}")))
+  # Remove the owner token fragment without losing a view/presentation deep link.
+  ($browser/replace_url ($to_str "/" ($browser/search)))
   (if (!= token "")
     (api
       client
       "POST"
-      "/api/v7/auth/exchange"
+      "/api/v8/auth/exchange"
       {^token token}
       (fn [code : Int, data : Any] : Void
         (if (== code 200)
@@ -1606,7 +1628,7 @@
     (api
       client
       "GET"
-      "/api/v7/status"
+      "/api/v8/status"
       nil
       (fn [code : Int, data : Any] : Void
         (if (== code 200)
@@ -1635,7 +1657,9 @@
       (fn [method : Str, path : Str, payload : Any, done : (Fn [Int Any] Void)] : Void
         (api client method path payload done))
       (fn [session : Str] : Void
-        (select_session client session))))
+        (select_session client session)
+        (var ui : UiClient client/ui)
+        (navigate ui "harness"))))
   (var center : NotificationCenter client/center)
   (set client/inbox
     (create_producer_inbox
@@ -1650,7 +1674,9 @@
         (var session (string_or reference/session ""))
         (if_yes (!= session "") (select_session client session))
         (var ui : UiClient client/ui)
-        (open_reference ui reference)
+        (if ($absent? reference/component)
+          (navigate ui "harness")
+          (open_reference ui reference))
         (if_not ($absent? reference/round)
           (var round : Str reference/round)
           (client/expanded .push round)
@@ -1658,7 +1684,7 @@
         nil)
       (fn [session : Str, text : Str] : Void
         (if_yes (&& (!= session "") (!= session client/selected)) (select_session client session))
-        (edit_prompt client text))))
+        (stage_prompt client text))))
   (var inbox : ProducerInbox client/inbox)
   (set center/on_open (fn [] : Void (opened_inbox inbox)))
   (set client/confirmations
@@ -1679,7 +1705,18 @@
       (fn [command : Str] : Void
         (component_command client command))
       (fn [text : Str] : Void
-        (edit_prompt client text))))
+        (stage_prompt client text))))
+  ($dom/add_event_listener ($dom/window) "popstate"
+    (fn [event : Any] : Void
+      (var search ($browser/search))
+      (var session (query_value search "session"))
+      (var view (query_value search "view"))
+      (var presentation (query_value search "presentation"))
+      (if_yes (== view "") (set view "harness"))
+      (if_yes (!= session client/selected) (select_session client session))
+      (var ui : UiClient client/ui)
+      (if_not (navigate ui view presentation false)
+        (navigate ui "harness" "" false))))
   ($dom/add_event_listener
     ($dom/element "composer")
     "submit"
@@ -1805,7 +1842,7 @@
       (api
         client
         "PATCH"
-        $"/api/v7/sessions/${client/selected}"
+        $"/api/v8/sessions/${client/selected}"
         {^title ($dom/input_value ($dom/element "rename_title")) ^revision client/session_revision}
         (fn [code : Int, data : Any] : Void
           (if (== code 200)

@@ -3,7 +3,8 @@
 (import ^from "../notices.gene" [Notices put_notice])
 
 (type UiNode ^props {^key Str ^tag Str ^element EventTarget ^props PropMap ^form Str ^seen Int})
-(type UiClient ^props {^root EventTarget ^target EventTarget ^safe Bool ^ready Bool ^session Str ^workspace Str ^epoch Str ^metadata_revision Str ^rendered_revision Str ^descriptor Any ^settings Any ^instance Str ^version Str ^notices Notices ^state PropMap ^drafts PropMap ^forms PropMap ^nodes PropMap ^generation Int ^sequence Int ^debounce Int ^last_data Str ^loading Bool ^render_error Bool ^pending Any ^resolving Bool ^api (Fn [Str Str Any (Fn [Int Any] Void)] Void) ^select (Fn [Str] Void) ^command (Fn [Str] Void) ^prompt (Fn [Str] Void)})
+(type UiNavigation ^props {^workspace Str ^active Str ^last_view Str ^presentation Str ^remembered PropMap ^versions PropMap ^snapshots PropMap ^views (List Any) ^side Str ^width Int ^focus Str ^scroll F64 ^focus_pending Bool ^action_generation Int ^action_revision Str ^restore (Fn [Any] Void) ^refresh (Fn [] Void)})
+(type UiClient ^props {^root EventTarget ^target EventTarget ^safe Bool ^ready Bool ^session Str ^workspace Str ^epoch Str ^metadata_revision Str ^rendered_revision Str ^descriptor Any ^settings Any ^instance Str ^version Str ^notices Notices ^state PropMap ^drafts PropMap ^forms PropMap ^nodes PropMap ^generation Int ^sequence Int ^debounce Int ^last_data Str ^loading Bool ^render_error Bool ^pending Any ^resolving Bool ^navigation UiNavigation ^navigate (Fn [Str Str] Void) ^api (Fn [Str Str Any (Fn [Int Any] Void)] Void) ^select (Fn [Str] Void) ^command (Fn [Str] Void) ^prompt (Fn [Str] Void)})
 
 (fn text [value : Any, fallback : Str = ""] : Str
   (if_yes ($absent? value) (return fallback))
@@ -47,17 +48,30 @@
 
 (fn state_key [ui : UiClient] : Str
   $"gene-harness/ui-state/${ui/workspace}/${(text ui/descriptor/name)}/${ui/version}")
+(fn stored_view_key [ui : UiClient, component : Str, version : Str] : Str
+  $"gene-harness/ui-state/${ui/workspace}/${component}/${version}")
 (fn pending_key [ui : UiClient] : Str
   $"gene-harness/ui-pending/${ui/workspace}")
 
 (fn persist_view [ui : UiClient] : Void
-  (if_yes (!= ui/workspace "")
+  (if_yes (&& (!= ui/workspace "") (! ($absent? ui/descriptor)))
     (var origin {^session "" ^component ui/descriptor/name ^workspace ui/workspace})
-    (if ($session_storage/set (state_key ui) ($json/stringify {^state ui/state ^drafts ui/drafts ^forms ui/forms}))
+    (var key (state_key ui))
+    (var saved {^state ui/state ^drafts ui/drafts ^forms ui/forms
+      ^focus ui/navigation/focus ^scroll ($to_int ui/navigation/scroll)})
+    (set ui/navigation/snapshots/%key (copy_map saved))
+    (if ($session_storage/set key ($json/stringify saved))
       (notice ^key "storage" ^origin origin ui "")
       (notice ^key "storage" ^origin origin ^^sticky ^severity "error"
         ui
         "Panel drafts could not be saved in browser storage. Keep this page open."))))
+
+(fn saved_view [ui : UiClient, key : Str] : PropMap
+  (var memory : Any ui/navigation/snapshots/%key)
+  (if_not ($absent? memory) (return (copy_map memory)))
+  (var raw (?? ($session_storage/get key) ""))
+  (if_yes (== raw "") (return {}))
+  (try (copy_map ($json/parse raw)) catch Any {}))
 
 (fn persist_pending [ui : UiClient] : Bool
   ($session_storage/set (pending_key ui) ($json/stringify ui/pending)))
@@ -82,26 +96,54 @@
     (if_yes (== node/tag "button")
       (set node/element/disabled
         (||
-          (! enabled)
+          (&& (! enabled) ($absent? node/props/switch-view))
           (! ($absent? node/props/disabled))
-          (&& (! ($absent? ui/pending)) ($absent? node/props/state))))))
+          (&& (! ($absent? ui/pending)) ($absent? node/props/state) ($absent? node/props/switch-view) ($absent? node/props/prompt))))))
   (var resolve_button ($dom/element "ui_resolve"))
   (var cancel_button ($dom/element "ui_cancel"))
   (var retry_button ($dom/element "ui_retry"))
   (set retry_button/hidden (! ui/render_error))
   (set retry_button/disabled (|| (! ui/ready) ui/loading))
-  (set resolve_button/hidden ($absent? ui/pending))
-  (set cancel_button/hidden (|| ($absent? ui/pending) (== (text ui/pending/command_id) ""))))
+  (var legacy (&& (! ($absent? ui/pending)) (!= (text ui/pending/format) "2")))
+  (set resolve_button/hidden (|| ($absent? ui/pending) legacy))
+  (set resolve_button/disabled (|| (! ui/ready) ui/resolving))
+  (set cancel_button/hidden (|| ($absent? ui/pending) legacy (== (text ui/pending/command_id) "")))
+  (set cancel_button/disabled (! ui/ready))
+  (var dismiss ($dom/element "ui_dismiss_pending"))
+  (set dismiss/hidden (|| ($absent? ui/pending) (! (|| legacy (flag ui/pending/unknown)))))
+  (var owner (text ui/pending/request/component "previous view"))
+  ($dom/set_text ($dom/element "ui_pending_owner")
+    (if ($absent? ui/pending) "" $"Pending action · ${owner}")))
 
 (fn clear_saved_drafts [ui : UiClient, pending : Any] : Void
   (var form (text pending/form))
-  (var still_dirty false)
-  (for [key raw] in ui/drafts
+  (var component (text pending/request/component))
+  (var version (text pending/version))
+  (var active (&& (== component (text ui/descriptor/name)) (== version ui/version)))
+  (if_yes active (persist_view ui))
+  (var key (stored_view_key ui component version))
+  (var saved (saved_view ui key))
+  (var drafts (copy_map saved/drafts))
+  (var forms (copy_map saved/forms))
+  # Form args capture the original record revision. A newly edited form with
+  # another revision must not be cleared by an earlier receipt.
+  (if_yes (!= ($json/stringify forms/%form) ($json/stringify pending/form_context)) (return))
+  (for [field_key raw] in drafts
     (var item : Any raw)
     (if_yes (== (text item/form) form)
       (var name : Str item/name)
-      (if (== ($json/stringify item/value) ($json/stringify pending/request/named/%name))
-        (set ui/drafts/%key void)
-        (set still_dirty true))))
-  (if_not still_dirty (set ui/forms/%form void))
-  (persist_view ui))
+      (if_yes (== ($json/stringify item/value) ($json/stringify pending/request/named/%name))
+        (set drafts/%field_key void))))
+  (var still_dirty false)
+  (for [field_key raw] in drafts
+    (var item : Any raw)
+    (if_yes (== (text item/form) form) (set still_dirty true)))
+  (if_not still_dirty (set forms/%form void))
+  (set saved/drafts drafts)
+  (set saved/forms forms)
+  (set ui/navigation/snapshots/%key saved)
+  (if_not ($session_storage/set key ($json/stringify saved))
+    (notice ^key "storage" ^^sticky ^severity "error" ui "Saved, but draft recovery storage could not be updated. Keep this page open."))
+  (if_yes active
+    (set ui/drafts drafts)
+    (set ui/forms forms)))

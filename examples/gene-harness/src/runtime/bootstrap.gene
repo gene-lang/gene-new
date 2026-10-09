@@ -4,6 +4,7 @@
 (import ^from "../profiles/profile" [profile_admissions])
 (import ^from "../storage/state" [open_event_store close_event_store flush_event_store])
 (import ^from "../notifications/inbox" [open_inbox close_inbox])
+(import ^from "../ui/actions" [open_ui_actions close_ui_actions])
 (import ^from "../storage/workspace"
   [open_workspace close_workspace prepare_workspace activate_workspace_plan set_profile_plugins])
 (import ^from "./workspace_lock" ^^export
@@ -17,7 +18,7 @@
 (import ^from "../agents/provider_selection" [readiness_report])
 (import ^from "../plugin_api" [ExecutionLimits response_execution_limits])
 
-(type HarnessRuntime ^props {^root Str ^state_root Str ^epoch Str ^h Any ^workspace Any ^profile Any ^events Any ^sessions Any ^commands Any ^triggers Any ^body_users Any ^body_collecting Any ^body_gc_pending Any ^stopping Any ^exit_code Any ^ownership Any ^owns_ownership Bool ^owns_events Bool ^closed Any ^restarted Bool ^shutdown_watchdog Any ^modes Any? ^listen_port Any? ^supervised Bool?})
+(type HarnessRuntime ^props {^root Str ^state_root Str ^epoch Str ^h Any ^workspace Any ^profile Any ^events Any ^sessions Any ^commands Any ^triggers Any ^body_users Any ^body_collecting Any ^body_gc_pending Any ^stopping Any ^exit_code Any ^ownership Any ^owns_ownership Bool ^owns_events Bool ^closed Any ^restarted Bool ^shutdown_watchdog Any ^modes Any? ^listen_port Any? ^supervised Bool? ^actions Any?})
 (type RuntimeCleanupError ^props {^message Str} ^impl [Error])
 (impl Error for RuntimeCleanupError)
 
@@ -53,6 +54,7 @@
   (try
     (try
       (if_not ($absent? runtime/triggers) (close_trigger_manager runtime/triggers))
+      (if_not ($absent? runtime/actions) (close_ui_actions runtime/actions))
       (if_not ($absent? runtime/commands) (close_command_manager runtime/commands))
       (close_session_manager runtime/sessions)
       (set outcome (shutdown_harness runtime/h))
@@ -128,6 +130,8 @@
     (provide h "core" "ui/state_lock"
       (fn [key : Str, body] (with_session_gate runtime/sessions $"ui-state/${key}" body)))
     (set runtime/commands (new_command_manager runtime))
+    (set runtime/actions (open_ui_actions runtime))
+    (set h/ui_action_log runtime/actions/log)
     (if (&& activate (== event_scope "session"))
       (then
         (create_session ^id session runtime/sessions)
@@ -137,6 +141,8 @@
   ensure
     (if_not ready
       (try
+        (if (&& (! ($absent? runtime)) (! ($absent? runtime/actions)))
+          (close_ui_actions runtime/actions))
         (if (&& (! ($absent? runtime)) (! ($absent? runtime/sessions)))
           (close_session_manager runtime/sessions))
         (if_not ($absent? h)

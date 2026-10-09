@@ -496,30 +496,29 @@
   (var wrapper ($runtime/bind_call call/callable call/args ^policy policy))
   (var task nil)
   (var outcome nil)
-  (try
-    (set task (spawn ^lane root (wrapper)))
-    (if (&& (! (absent? instance))
-            (!= call/kind PluginCallKind/cleanup)
-            (! (absent? registration_scope)))
-      (then
-        (var owner_scope registration_scope)
-        (if owner_scope/accepting/.get
-          (owner_scope/entries/.get .push
-            {^kind "task" ^label "plugin-invocation" ^task task}))))
-    (set outcome task/.join)
-  ensure
-    # Cancellation of the invoker must not orphan its supervised wrapper.
-    # Task/join intentionally leaves an independent task running, so this
-    # ownership edge is explicit.
+  (scope
+    # Native scope retirement owns the wrapper even when an inherited budget
+    # expires during the Gene cleanup below. Joining alone does not own a task.
     (try
-      (if (&& (absent? outcome) (! (absent? task)))
+      (set task (spawn ^lane root (wrapper)))
+      (if (&& (! (absent? instance))
+              (!= call/kind PluginCallKind/cleanup)
+              (! (absent? registration_scope)))
         (then
-          task/.cancel
-          task/.join))
+          (var owner_scope registration_scope)
+          (if owner_scope/accepting/.get
+            (owner_scope/entries/.get .push
+              {^kind "task" ^label "plugin-invocation" ^task task}))))
+      (set outcome task/.join)
     ensure
-      # A binding captures this invocation scope. Release the local edge after
-      # joining, including failed calls, instead of leaving a closure cycle.
-      (set wrapper nil)))
+      (try
+        (if (&& (absent? outcome) (! (absent? task)))
+          (then
+            task/.cancel
+            task/.join))
+      ensure
+        # Release the binding's local edge after joining, including failures.
+        (set wrapper nil))))
   (match outcome ^!exhaustive
     (when (TaskOutcome/ok value) value)
     (when (TaskOutcome/error error) (fail error))

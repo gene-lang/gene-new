@@ -98,7 +98,7 @@
   (paint_card center card)
   (center/api
     "GET"
-    $"/api/v7/sessions/${session}/snapshot"
+    $"/api/v8/sessions/${session}/snapshot"
     nil
     (fn [code : Int, data : Any] : Void
       (set card/loading false)

@@ -30,10 +30,15 @@ replace the roster when a record is selected; do not stack every workflow screen
 above the common action. Readiness text should identify whether it describes
 saved state or unsaved input.
 
-The panel is one selected component beside the Harness conversation. Surrounding
+One selected view is mounted, full screen or docked beside Classic Harness. Use
+`^slot "view"` with a title; legacy `panel` is accepted. Add `switch_view` buttons
+for local navigation and `presentation "docked"` to develop beside the chat.
+Surrounding
 slots are sidebar, toolbar, composer, status, welcome and status_summary; the last
 two replace their built-in views. Ordinary slots support command/prompt buttons;
-stateful panel forms invoke declared functions. Themes and layout are bounded.
+stateful forms invoke declared functions with workspace receipts and no implicit
+conversation. Themes and layout are bounded. `ui_action_receipts` provides
+bounded diagnostics when asked; domain failures are not automatically model input.
 
 Browser selection is not automatically in the model's conversation context.
 Include an explicit saved record ID/headline in a contextual prompt button.

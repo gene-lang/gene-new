@@ -1,52 +1,137 @@
+# Session-independent function execution with durable workspace receipts.
 (mod ui_actions)
 (import [ui_settings ui_record ui_revision ui_error] ^from "./state")
+(import [copy_data open_action_log close_action_log admit_action action_receipt update_action
+         action_output notify_action] ^from "./action_log")
 (import [acquire_snapshot release_snapshot] ^from "../runtime/composition")
-(import [with_session_gate] ^from "../runtime/sessions")
-(import [command_state submit_routed_command] ^from "../runtime/commands")
-(import [with_body_use] ^from "../agents/history")
-(import [CommandResult] ^from "../plugin_api")
+(import [acquire_body_use release_body_use] ^from "../agents/history")
+(import [byte_prefix] ^from "../text")
+(import [flush_event_store] ^from "../storage/state")
 
-(fn ui_action [manager, session : Str, request]
+(type UiActionManager ^props {^runtime Any ^log Any ^active Any ^watchers Any ^accepting Any ^closed Any})
+
+(fn open_ui_actions [runtime]
+  (UiActionManager ^runtime runtime ^log (open_action_log $"${runtime/state_root}/ui-actions")
+    ^active ($cell {}) ^watchers ($cell {}) ^accepting ($cell true) ^closed ($cell false)))
+
+(fn finish_ui_action [manager, id : Str, outcome]
+  (let changes
+    (match outcome
+      (when (TaskOutcome/ok value)
+        {^status "done" ^display (byte_prefix (if (== ($head value) Str) value ($to_str value)) 16384)})
+      (when (TaskOutcome/error error)
+        {^status "failed" ^display (byte_prefix ($to_str error/message) 16384)
+         ^error_code (?? error/code "action_failed")})
+      (when (TaskOutcome/panic message)
+        {^status "failed" ^display (byte_prefix message 16384) ^error_code "panic"})
+      (else {^status "cancelled" ^display "Action stopped. Effects may have occurred."})))
+  # Domain events are buffered independently of the receipt log. A durable
+  # "done" receipt must never get ahead of the writes it acknowledges.
+  (try (flush_event_store manager/runtime/events)
+    catch Any
+      (changes .put "status" "interrupted")
+      (changes .put "error_code" "persistence_unknown")
+      (changes .put "display" (byte_prefix
+        ($to_str "Action effects could not be confirmed durable: " $err/message) 16384)))
+  (update_action manager/log id changes))
+
+(fn ui_action [manager : UiActionManager, request]
+  (if (== (/ui_render ($runtime/context)) true)
+    (ui_error "forbidden" "Render callbacks cannot submit actions."))
+  (if_not manager/accepting/.get (ui_error "unavailable" "Workspace is stopping."))
   (if (!= ($head request) Map) (ui_error "invalid_request" "An action needs a data map."))
   (if (> ($str/byte_size ($json/stringify request)) 65536) (ui_error "too_large" "Action arguments are too large."))
   (for key in ["input_id" "component" "revision" "function" "function_revision" "instance"]
     (let value (request .get key))
     (if (|| (!= ($head value) Str) (== value "") (> ($str/byte_size value) 256))
       (ui_error "invalid_request" $"Invalid action ${key}.")))
+  (if_not ($absent? request/session)
+    (ui_error "invalid_request" "Workspace actions have no implicit session. Pass conversation data explicitly in named arguments if needed."))
   (let args (?? request/args []))
   (let named (?? request/named {}))
   (if (|| (!= ($head args) List) (!= ($head named) Map))
     (ui_error "invalid_request" "Action arguments must be a list and a named map."))
-  (with_session_gate manager/runtime/sessions $"ui-actions/${session}" (fn []
-    # Resolve a retained identity before checking the current plugin revision.
-    (for record in (/records (command_state manager/runtime session))
-      (if_yes (== record/ui_action_id request/input_id)
-        (if (!= record/ui_request request) (ui_error "submission_conflict" "Action identity has different arguments."))
-        (return record)))
-    (let h manager/runtime/h)
-    (if_not (/enabled (ui_settings h)) (ui_error "unavailable" "The UI experiment is disabled."))
-    (let lease (acquire_snapshot h/snapshots))
-    (try
+  (let h manager/runtime/h)
+  (let lease (acquire_snapshot h/snapshots))
+  (var transferred false)
+  (var held false)
+  (var admitted_id "")
+  (try
+    (var action nil)
+    (let admitted (admit_action manager/log request (fn []
+      (if_not (/enabled (ui_settings h)) (ui_error "unavailable" "Workspace views are disabled."))
       (let view (ui_record lease/snapshot "web_components" request/component))
-      (let action (ui_record lease/snapshot "functions" request/function))
-      (if (|| ($absent? view) ($absent? action) (!= (ui_revision h view) request/revision)
+      (set action (ui_record lease/snapshot "functions" request/function))
+      (if (|| ($absent? view) ($absent? view/payload/view_state) ($absent? action)
+              (!= (ui_revision h view) request/revision)
               (!= (ui_revision h action) request/function_revision))
         (ui_error "revision_conflict" "This action belongs to a replaced view or function."))
       (if_not ((?? view/payload/actions []) .contains? request/function)
         (ui_error "invalid_request" "This function is not an action of this view."))
-      (with_body_use manager/runtime (fn []
-        (submit_routed_command ^lease lease manager session
-          {^kind "command" ^name request/function ^raw "" ^^ui_action
-           ^ui_request request ^ui_action_id request/input_id
-           ^handler (fn [ctx]
-             (let invoke ($runtime/bind_call ^named named action/payload/fn args))
-             (let value (invoke))
-             (CommandResult ^display ($to_str value) ^!attached))})))
-    catch Any
+      {^owner view/owner})))
+    (if_not admitted/admitted (return admitted/record))
+    (let id request/input_id)
+    (set admitted_id id)
+    # Execution owns a separate data snapshot from both the caller's request
+    # and the admission DTO returned to it.
+    (let execution_request (copy_data admitted/record/request))
+    (let settings ($serde/read_data ($fs/read_text $"${manager/runtime/state_root}/config.gene")))
+    (let budget (?? settings/response_budget {^timeout_ms 600000 ^max_memory_mb 1024}))
+    (let invoke ($runtime/bind_call ^named (?? execution_request/named {})
+      ^policy {^timeout_ms (?? budget/timeout_ms 600000) ^max_memory_mb (?? budget/max_memory_mb 1024)}
+      action/payload/fn (?? execution_request/args [])))
+    (acquire_body_use manager/runtime)
+    (set held true)
+    # Explicit fresh context: never inherit the browser/model's conversation.
+    (let context {^composition h/snapshots ^snapshot lease/snapshot ^ui_action id
+      ^output (fn [text] (action_output manager/log id ($to_str text)))})
+    (notify_action manager/log admitted/record)
+    (let completed [])
+    (for [old_id old] in manager/watchers/.get
+      (if old/.done? (completed .push old_id)))
+    (for old_id in completed (manager/watchers/.get .delete old_id))
+    (let task (spawn ^lane root
+      ($runtime/with_context context (fn []
+        (update_action manager/log id {^status "running"})
+        (scope (invoke))))))
+    (manager/active/.get .put id task)
+    (let deadline (spawn ^lane root (do ($sleep (?? budget/timeout_ms 600000)) task/.cancel)))
+    (let watcher
+      (spawn ^lane root
+        (try
+          (let outcome (try task/.join ensure deadline/.cancel deadline/.join))
+          (finish_ui_action manager id outcome)
+        ensure
+          (manager/active/.get .delete id)
+          (release_snapshot h/snapshots lease)
+          (release_body_use manager/runtime))))
+    (manager/watchers/.get .put id watcher)
+    (set transferred true)
+    admitted/record
+  catch Any
+    (if (&& (!= admitted_id "") (! transferred) ($absent? (manager/active/.get .get admitted_id)))
+      (return (update_action manager/log admitted_id
+        {^status "failed" ^display (byte_prefix ($to_str $err/message) 16384) ^error_code "admission_setup"})))
+    (fail $err)
+  ensure
+    (if_not transferred
       (release_snapshot h/snapshots lease)
-      (fail $err)))))
+      (if held (release_body_use manager/runtime)))))
 
-(fn ui_action_receipt [manager, session : Str, input_id : Str]
-  (for record in (/records (command_state manager/runtime session))
-    (if (== record/ui_action_id input_id) (return record)))
-  (ui_error "not_found" "No retained receipt exists for this action."))
+(fn ui_action_receipt [manager : UiActionManager, input_id : Str]
+  (action_receipt manager/log input_id))
+
+(fn cancel_ui_action [manager : UiActionManager, input_id : Str]
+  (let receipt (ui_action_receipt manager input_id))
+  (let task (manager/active/.get .get input_id))
+  (if_not ($absent? task) task/.cancel)
+  receipt)
+
+(fn close_ui_actions [manager : UiActionManager]
+  (if (manager/closed .swap true) (return nil))
+  (manager/accepting .set false)
+  (try
+    (for [id task] in manager/active/.get task/.cancel)
+    (for [id watcher] in manager/watchers/.get watcher/.join)
+    ensure (close_action_log manager/log))
+  nil)

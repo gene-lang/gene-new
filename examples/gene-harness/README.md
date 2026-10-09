@@ -145,7 +145,7 @@ recovery controls while suppressing rich plugin detail.
 
 See the [publishing recipe](docs/recipes/notification-publishing.md) and the
 [review notifier example](examples/notifications/README.md). Restart older hosts
-and reload browser tabs to use web protocol 7.
+and reload browser tabs to use web protocol 8.
 
 ## Providers and workspace settings
 
@@ -237,18 +237,19 @@ conversation in every connected browser.
 ## Workspace UI
 
 Plugins can contribute quoted Gene views to named slots in the browser.
-An opt-in [workspace UI experiment](experiments/ui/README.md) also adds a
-stateful panel with keyed forms, layout choices and theme tokens. Its project
+The opt-in [workspace UI experiment](experiments/ui/README.md) adds plugin views
+that fill the application area or dock beside Classic Harness. The host picker,
+shortcuts, and view buttons switch locally in each tab. Its two-view project
 board fixture is installed separately; the interface remains experimental.
 
 The same registered functions serve the model, `/run`, the persistent REPL
-and panel actions. The browser keeps filters, selections and unsaved drafts
-while server data changes. Actions use command tasks, cancellation and durable
-receipts. Failed actions attach one diagnostic to the submitting session's
-next user request; successful actions stay out of model input and the chat
-transcript.
+and view actions. The browser keeps filters, selections and unsaved drafts
+while server data changes. UI actions have workspace receipts, cancellation,
+and bounded execution without creating a conversation. Failures stay in the UI;
+the model can inspect `ui_action_receipts` when asked. See
+[workspace views](docs/workspace-views.md) for storage, concurrency and recovery.
 
-The baseline profile exposes `ui_configure` and `ui_preview`, with rendering
+The baseline profile exposes `ui_configure`, `ui_preview`, and `ui_action_receipts`, with rendering
 and actions disabled until explicitly enabled. Model turns receive compact
 previews of views owned by successfully published plugins, including for prompts
 submitted through the CLI. Use `ui_preview` for the full validated tree or a different view

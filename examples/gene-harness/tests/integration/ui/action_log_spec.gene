@@ -1,0 +1,92 @@
+(import $test [describe it])
+(import [isolated run_spec] ^from "../../support")
+(import [UiError] ^from "../../../src/ui/state")
+(import [open_action_log close_action_log admit_action update_action action_receipt
+         action_metadata list_action_receipts action_output]
+  ^from "../../../src/ui/action_log")
+
+(fn request [id : Str, generation : Int = 1]
+  {^input_id $"${generation}:${id}" ^generation generation ^component "board"
+   ^function "save" ^revision "view-1" ^function_revision "save-1"
+   ^instance "editor" ^args [] ^named {^title "Original"}})
+
+(describe "Workspace action log"
+  (it "persists admission before execution and recovers without replay" []
+    (isolated this_mod/.path "persists admission before execution and recovers without replay"
+      (fn [workspace]
+        (var log (open_action_log $"${workspace}/actions"))
+        (let checks ($cell 0))
+        (let validate (fn [] (checks .set (+ checks/.get 1)) {^owner "board_plugin"}))
+        (try
+          (let original (request "once"))
+          (let first (admit_action log original validate))
+          ($assert first/admitted)
+          ($assert (== first/record/status "accepted"))
+          (action_output log original/input_id "hello")
+          (action_output log original/input_id " world")
+          ($assert (== (/output (action_receipt log original/input_id)) "hello world"))
+          (let again (admit_action log original validate))
+          ($assert (! again/admitted))
+          ($assert (== checks/.get 1) "duplicate revalidated or re-executed")
+          (let changed (request "once"))
+          (changed .put "function_revision" "save-2")
+          ($assert (try (admit_action log changed validate) false
+            catch UiError (== $err/code "submission_conflict")))
+          (close_action_log log)
+          (set log (open_action_log $"${workspace}/actions"))
+          ($assert (== (/status (action_receipt log original/input_id)) "interrupted"))
+          ($assert (! (/admitted (admit_action log original validate))))
+          ($assert (== checks/.get 1))
+          (let page (list_action_receipts log ^view "board" ^status "interrupted"))
+          ($assert (== page/records/.size 1))
+          ($assert (== page/records/0/function_revision "save-1"))
+          ($assert (== (/records (list_action_receipts log ^view "other")) []))
+          ensure (close_action_log log))))))
+
+(describe "Workspace action retention"
+  (it "rotates admission generations and preserves old running identities" []
+    (isolated this_mod/.path "rotates admission generations and preserves old running identities"
+      (fn [workspace]
+        (var log (open_action_log $"${workspace}/actions"))
+        (let validate (fn [] {^owner "board_plugin"}))
+        (try
+          (let running (request "slow"))
+          (admit_action log running validate)
+          (let old (request "finished"))
+          (admit_action log old validate)
+          (update_action log old/input_id {^status "done" ^display "Saved"})
+          ($assert (try (admit_action log (request "future" 99) validate) false
+            catch UiError (== $err/code "invalid_request")))
+          (repeat n in 510
+            (let metadata (action_metadata log))
+            (let input (request ($to_str n) metadata/generation))
+            (admit_action log input validate)
+            (update_action log input/input_id {^status "done" ^display "Saved"}))
+          ($assert (== (/generation (action_metadata log)) 5))
+          ($assert (== (/floor (action_metadata log)) 2))
+          (let admission_count log/state/.get/admissions)
+          ($assert (! (/admitted (admit_action log running validate))))
+          ($assert (== log/state/.get/admissions admission_count) "duplicate advanced admission rotation")
+          ($assert (try (admit_action log old validate) false
+            catch UiError (== $err/code "receipt_expired")))
+          (let retagged (request "finished"))
+          (retagged .put "generation" 5)
+          ($assert (try (admit_action log retagged validate) false
+            catch UiError (== $err/code "invalid_request")))
+          (update_action log running/input_id {^status "done" ^display "Late finish"})
+          ($assert (try (action_receipt log running/input_id) false
+            catch UiError (== $err/code "receipt_expired")))
+          (let page (list_action_receipts log ^limit 3))
+          ($assert (== page/records/.size 3))
+          ($assert (> page/before 0))
+          (let next (list_action_receipts log ^limit 3 ^before page/before))
+          ($assert (< next/records/0/sequence page/records/2/sequence))
+          (close_action_log log)
+          (set log (open_action_log $"${workspace}/actions"))
+          ($assert (== (/generation (action_metadata log)) 5))
+          ($assert (== (/floor (action_metadata log)) 2))
+          ($assert (try (admit_action log (request "late-first") validate) false
+            catch UiError (== $err/code "receipt_expired")))
+          ensure (close_action_log log))))))
+
+(fn main [args] : Int (run_spec args))

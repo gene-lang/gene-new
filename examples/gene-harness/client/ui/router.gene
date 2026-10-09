@@ -1,0 +1,210 @@
+# Local navigation never writes shared workspace settings or admits work.
+(mod harness_ui_router ^profile web)
+(import [UiClient UiNode UiNavigation text flag copy_map notice persist_view sync_controls] ^from "./model.gene")
+(import [find_view initial_view presentation_for return_view view_url] ^from "./navigation.gene")
+(import [query_value] ^from "../state.gene")
+
+(fn navigation_key [ui : UiClient] : Str
+  $"gene-harness/ui-navigation/${ui/workspace}")
+
+(fn navigation_notice [ui : UiClient, message : Str] : Void
+  (notice ^key "navigation" ^origin {^workspace ui/workspace}
+    ^^sticky ^severity "error" ui message))
+
+(fn persist_navigation [ui : UiClient] : Void
+  (if_yes (|| ui/safe (== ui/workspace "")) (return))
+  (var nav ui/navigation)
+  (if ($session_storage/set (navigation_key ui)
+    ($json/stringify {^active nav/active ^last_view nav/last_view ^presentations nav/remembered ^versions nav/versions
+      ^side nav/side ^width nav/width}))
+    (notice ^key "navigation-storage" ^origin {^workspace ui/workspace} ui "")
+    (notice ^key "navigation-storage" ^origin {^workspace ui/workspace} ^^sticky ^severity "error" ui
+      "View selection could not be saved in this tab. Keep the page open.")))
+
+(fn update_url [ui : UiClient, push : Bool = false] : Void
+  (var url (view_url ui/session ui/navigation/active ui/navigation/presentation ui/safe))
+  (if push ($browser/push_url url) ($browser/replace_url url)))
+
+(fn capture_view [ui : UiClient] : Void
+  (if_yes ($absent? ui/descriptor) (return))
+  (set ui/navigation/scroll ($dom/scroll_top ($dom/element "ui_panel")))
+  (for [key raw] in ui/nodes
+    (var node : UiNode raw)
+    (if_yes ($dom/focused? node/element) (set ui/navigation/focus node/key)))
+  (persist_view ui))
+
+(fn restore_focus [ui : UiClient] : Void
+  (if_not ui/navigation/focus_pending (return))
+  (set ui/navigation/focus_pending false)
+  (var key ui/navigation/focus)
+  (var raw : Any ui/nodes/%key)
+  (if ($absent? raw)
+    ($dom/focus ($dom/element "ui_view_title"))
+    (do
+      (var node : UiNode raw)
+      ($dom/focus node/element)))
+  ($dom/set_scroll_top ($dom/element "ui_panel") ui/navigation/scroll))
+
+(fn layout [ui : UiClient] : Void
+  (var nav ui/navigation)
+  (var active (&& (! ui/safe) (!= nav/active "harness") (! ($absent? ui/descriptor))))
+  (var full (&& active (== nav/presentation "full")))
+  (var docked (&& active (! full)))
+  (var panel ($dom/element "ui_panel"))
+  (set panel/hidden (! active))
+  (var classic ($dom/element "classic_workspace"))
+  (var sidebar ($dom/element "classic_sidebar"))
+  (set classic/hidden full)
+  (set sidebar/hidden full)
+  ($dom/set_class ui/root "has_ui_panel" docked)
+  ($dom/set_class ui/root "ui_full" full)
+  ($dom/set_class ui/root "ui_right" (== nav/side "right"))
+  (if_yes full ($dom/set_class ui/root "menu_open" false))
+  (var toggle ($dom/element "ui_toggle"))
+  (set toggle/hidden (! active))
+  ($dom/set_text toggle (if full "Show chat" "Hide chat"))
+  (var sizing ($dom/element "ui_sizing"))
+  (set sizing/hidden (! docked))
+  ($dom/set_input_value ($dom/element "ui_side") nav/side)
+  ($dom/set_input_value ($dom/element "ui_width") ($to_str nav/width))
+  ($dom/set_text ($dom/element "ui_view_title") (text ui/descriptor/title nav/active))
+  (for key in ["ink" "muted" "line" "surface" "sidebar" "soft" "accent"]
+    ($dom/set_style ui/root $"--${key}" "")
+    ($dom/set_style panel $"--${key}" (if active (text ui/settings/theme/%key) "")))
+  (var first (if (== nav/side "right") (- 100 nav/width) nav/width))
+  ($dom/set_style ui/root "--ui-first" $"${first}fr")
+  ($dom/set_style ui/root "--ui-second" $"${(- 100 first)}fr")
+  (var picker ($dom/element "ui_view_picker"))
+  ($dom/clear picker)
+  ($dom/append picker ($dom/render `(option ^value "harness" "Classic Harness · Ctrl+Shift+1")))
+  (var index 2)
+  (for view in nav/views
+    (var name (text view/name))
+    (var title (text view/title name))
+    (var duplicate false)
+    (for other in nav/views
+      (if_yes (&& (!= name (text other/name)) (== title (text other/title))) (set duplicate true)))
+    (if_yes duplicate (set title $"${title} (${name})"))
+    (if_yes (<= index 9) (set title $"${title} · Ctrl+Shift+${index}"))
+    ($dom/append picker ($dom/render `(option ^value %name %title)))
+    (set index (+ index 1)))
+  ($dom/set_input_value picker nav/active)
+  (set picker/disabled ui/safe)
+  (sync_controls ui))
+
+(fn navigate [ui : UiClient, target : Str, presentation : Str = "", push : Bool = true] : Bool
+  (if_yes (&& ui/safe (!= target "harness")) (return false))
+  (var nav ui/navigation)
+  (var view (find_view nav/views target))
+  (if_yes (&& (!= target "harness") ($absent? view))
+    (navigation_notice ui $"View ${target} is unavailable.")
+    (return false))
+  (if_yes push (navigation_notice ui ""))
+  (var chosen (if (== target "harness") "classic"
+    (presentation_for view ui/settings nav/remembered presentation)))
+  (var changed (|| (!= target nav/active) (!= chosen nav/presentation)))
+  (if_yes (&& (! changed) (! ($absent? ui/descriptor))) (return true))
+  (capture_view ui)
+  (set nav/active target)
+  (set nav/presentation chosen)
+  (if (== target "harness")
+    (do
+      (set ui/sequence (+ ui/sequence 1))
+      (set ui/debounce (+ ui/debounce 1))
+      (set ui/instance ($browser/request_id))
+      (set ui/descriptor nil)
+      (set ui/nodes {})
+      (set ui/loading false)
+      (set ui/render_error false)
+      ($dom/clear ui/target))
+    (do
+      (set nav/last_view target)
+      (set nav/remembered/%target chosen)
+      (if (|| (!= (text ui/descriptor/name) target) (!= ui/version (text view/state_version "1")))
+        (nav/restore view)
+        (set ui/descriptor view))
+      (set nav/focus_pending true)))
+  (layout ui)
+  (persist_navigation ui)
+  (update_url ui (&& push changed))
+  (if (== target "harness")
+    ($dom/focus ($dom/element "prompt"))
+    (do
+      (set ui/last_data "")
+      (nav/refresh)))
+  true)
+
+(fn toggle [ui : UiClient] : Bool
+  (var nav ui/navigation)
+  (if_yes ui/safe (return false))
+  (if (== nav/active "harness")
+    (navigate ui (return_view nav/views ui/settings nav/last_view))
+    (navigate ui nav/active (if (== nav/presentation "full") "docked" "full"))))
+
+(fn update_views [ui : UiClient, components : (List Any)] : Void
+  (var nav ui/navigation)
+  (set nav/views components)
+  (var fresh (!= nav/workspace ui/workspace))
+  (if_yes fresh
+    (set nav/workspace ui/workspace)
+    (var saved : Any (try ($json/parse (?? ($session_storage/get (navigation_key ui)) "{}")) catch Any nil))
+    (set nav/remembered (copy_map saved/presentations))
+    (set nav/versions (copy_map saved/versions))
+    (set nav/last_view (text saved/last_view))
+    (set nav/side (text saved/side (text ui/settings/side "left")))
+    (if_yes (!= nav/side "right") (set nav/side "left"))
+    (var raw_width : Any (?? saved/width (?? ui/settings/width 50)))
+    (var width : Int raw_width)
+    (set nav/width (if (|| (< width 25) (> width 70)) 50 width))
+    (var target (if ui/safe "harness"
+      (initial_view components ui/settings saved (query_value ($browser/search) "view"))))
+    (if_yes (&& (!= target "harness") ($absent? (find_view components target)))
+      (navigation_notice ui $"View ${target} is unavailable. Opened Classic Harness.")
+      (set target "harness"))
+    (navigate ui target (query_value ($browser/search) "presentation") false)
+    (return))
+  (if (== nav/active "harness")
+    (layout ui)
+    (do
+      (var current (find_view components nav/active))
+      (if ($absent? current)
+        (do
+          (navigation_notice ui "The selected view is unavailable. Opened Classic Harness.")
+          (navigate ui "harness" "" false))
+        (do
+          (if (!= ui/version (text current/state_version "1"))
+            (do (capture_view ui) (nav/restore current))
+            (set ui/descriptor current))
+          (layout ui)
+          (persist_navigation ui)
+          (nav/refresh))))))
+
+(fn install_router [ui : UiClient] : Void
+  ($dom/add_event_listener ($dom/element "ui_view_picker") "change"
+    (fn [event : Any] : Void (navigate ui ($dom/input_value ($dom/element "ui_view_picker")))))
+  ($dom/add_event_listener ($dom/element "ui_toggle") "click"
+    (fn [event : Any] : Void (toggle ui)))
+  ($dom/add_event_listener ($dom/element "ui_side") "change"
+    (fn [event : Any] : Void
+      (set ui/navigation/side ($dom/input_value ($dom/element "ui_side")))
+      (persist_navigation ui) (layout ui)))
+  ($dom/add_event_listener ($dom/element "ui_width") "change"
+    (fn [event : Any] : Void
+      (var width : Int ($json/parse ($dom/input_value ($dom/element "ui_width"))))
+      (if_yes (&& (>= width 25) (<= width 70)) (set ui/navigation/width width))
+      (persist_navigation ui) (layout ui)))
+  ($dom/add_event_listener ^^capture ($dom/window) "keydown"
+    (fn [event : Any] : Void
+      (if_yes (|| ui/safe ($event/is_composing event) ($event/repeat event)
+                  (! ($event/ctrl_key event)) (! ($event/shift_key event))
+                  ($event/alt_key event) ($event/meta_key event)) (return))
+      (var code ($event/code event))
+      (var handled false)
+      (if_yes (== code "Space") (set handled (toggle ui)))
+      (if_yes (== code "Digit1") (set handled (navigate ui "harness")))
+      (var index 2)
+      (for view in ui/navigation/views
+        (if_yes (&& (<= index 9) (== code $"Digit${index}"))
+          (set handled (navigate ui (text view/name))))
+        (set index (+ index 1)))
+      (if_yes handled ($dom/prevent_default event)))))

@@ -9,7 +9,7 @@
 
 (fn init [descriptor]
   (Plugin ^id "project_board" ^requires ["ui/state_lock"]
-    ^provides [["functions" "board_tasks"] ["functions" "board_save"] ["web_components" "project_board"]]
+    ^provides [["functions" "board_tasks"] ["functions" "board_save"] ["web_components" "project_board"] ["web_components" "project_overview"]]
     ^activate (fn [host]
       (let with_state_lock (host .PluginHost:resolve "ui/state_lock"))
       (fn tasks [] (?? (/tasks host/.PluginHost:state) (initial_tasks)))
@@ -43,7 +43,7 @@
              (host .PluginHost:update_state {^tasks updated})
              result)))})
       (host .PluginHost:contribute "web_components"
-        {^name "project_board" ^slot "panel" ^view_state {^filter "" ^selected "welcome"}
+        {^name "project_board" ^slot "view" ^title "Project board" ^view_state {^filter "" ^selected "welcome"}
          ^summary "Project tasks with search and a selected-task editor."
          ^tags ["board" "tasks" "ui"] ^docs ["project_board/usage"]
          ^state_version "1" ^actions ["board_save"]
@@ -70,9 +70,23 @@
                   (button ^type "submit" "Save task"))))
            `(section ^key "board" ^class_name "web_card"
              (h2 "Project board")
+             (button ^key "overview" ^switch_view "project_overview" "Overview")
+             (button ^key "develop" ^switch_view "project_board" ^presentation "docked" "Develop in Harness")
              (label "Filter tasks" (input ^key "filter" ^state "filter" ^value %context/view_state/filter ^placeholder "Find a task…"))
              (table (thead (tr (th "Task") (th "Status"))) (tbody %rows...))
              %inspector))})
+      (host .PluginHost:contribute "web_components"
+        {^name "project_overview" ^slot "view" ^title "Project overview" ^view_state {}
+         ^state_version "1" ^actions []
+         ^render (fn [context]
+           (let current (tasks))
+           (let done ($size ($filter current (fn [task] (== task/status "done")))))
+           (let summary $"${done} of ${current/.size} tasks completed.")
+           `(section ^key "overview"
+              (h2 "Project overview") (p %summary)
+              (button ^key "edit" ^switch_view "project_board" "Edit tasks")
+              (button ^key "develop" ^switch_view "project_overview" ^presentation "docked" "Develop in Harness")
+              (button ^key "improve" ^prompt "Inspect the project_board plugin and suggest a useful improvement. Read its current source and board_tasks first." "Ask Gene to improve this view")))})
       (host .PluginHost:contribute "docs"
         {^name "project_board/usage" ^summary "Project-board workflow, saves and draft recovery."
          ^tags ["board" "tasks" "ui"] ^docs ["harness/ui/drafts"]

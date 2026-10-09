@@ -19,7 +19,32 @@
            %(stylesheet "gene-harness" styles))
          (body
            (div ^id "harness_root" ^class "app"
-             (aside ^class "sidebar"
+             (header ^class "ui_host" ^aria-label "Harness controls"
+               (div ^class "ui_host_navigation"
+                 (label "View "
+                   (select ^id "ui_view_picker" ^aria-label "Workspace view"
+                     (option ^value "harness" "Classic Harness")))
+                 (button ^id "ui_toggle" ^type "button" ^^hidden
+                   ^title "Ctrl+Shift+Space" "Show chat")
+                 (span ^id "ui_sizing" ^^hidden
+                   (select ^id "ui_side" ^aria-label "Dock side"
+                     (option ^value "left" "Dock left") (option ^value "right" "Dock right"))
+                   (label "Width " (input ^id "ui_width" ^type "range" ^min "25" ^max "70" ^value "50" ^aria-label "Dock width")))
+                 (span ^id "ui_connection" ^role "status" "Connecting…")
+                 (button ^id "notifications_button" ^type "button" ^aria-expanded "false" ^aria-controls "notification_center" "Notifications")
+                 (a ^id "ui_default_link" ^href "/ui/default" "Recovery UI")
+                 (a ^id "ui_workspace_link" ^href "/" ^^hidden "Return to workspace UI"))
+               (div ^class "ui_host_actions"
+                 (span ^id "ui_pending_owner")
+                 (button ^id "ui_resolve" ^type "button" ^^hidden "Resolve action")
+                 (button ^id "ui_cancel" ^type "button" ^^hidden "Cancel action")
+                 (button ^id "ui_dismiss_pending" ^type "button" ^^hidden "Dismiss"))
+               (div ^id "ui_action_status" ^role "status")
+               (div ^id "confirmations" ^aria-label "Pending confirmations")
+               (section ^id "auth_notice" ^class "auth_notice" ^^hidden
+                 (strong "Connect to your local Harness")
+                 "Run gene-harness --workspace DIR link, then open the returned owner connection URL."))
+             (aside ^id "classic_sidebar" ^class "sidebar"
                (div ^class "brand"
                  (span ^class "brand_name" "Gene")
                  (span ^class "brand_detail" "Harness")
@@ -59,7 +84,7 @@
                  (button ^id "triggers_button" ^type "button" "Triggers")
                  (button ^id "status_button" ^type "button" "Workspace status")
                  (a ^href "/about/" "About Gene Harness")))
-             (main ^class "workspace"
+             (main ^id "classic_workspace" ^class "workspace"
                (nav ^id "session_tabs" ^class "session_tabs" ^aria-label "Open sessions")
                (header ^class "topbar"
                  (button ^id "menu" ^class "mobile_only quiet" ^type "button" ^aria-label "Open conversations" "☰")
@@ -68,20 +93,12 @@
                    (div ^id "mode" ^class "mode" "Local workspace")
                    (span ^id "input_mode_label" ^class "mode"))
                  (button ^id "leave_mode" ^class "quiet" ^type "button" ^^hidden "Leave REPL")
-                 (button ^id "notifications_button" ^type "button" ^aria-expanded "false" ^aria-controls "notification_center" "Notifications")
                  (button ^id "rename_session" ^class "quiet" ^type "button" "Rename")
                  (button ^id "pin_session" ^class "quiet" ^type "button" "Pin"))
-               (div ^id "ui_layout_controls" ^class "ui_layout_controls" ^^hidden
-                 (button ^id "ui_toggle" ^type "button" "Show board")
-                 (a ^id "ui_default_link" ^href "/ui/default" "Restore default UI"))
-               (a ^id "ui_workspace_link" ^href "/" ^^hidden "Return to workspace UI")
                (div ^id "web_toolbar" ^class "web_components web_toolbar")
                (form ^id "rename_form" ^class "rename_form" ^^hidden
                  (input ^id "rename_title" ^type "text" ^maxlength "256" ^aria-label "Conversation title")
                  (button ^type "submit" "Save title"))
-               (section ^id "auth_notice" ^class "auth_notice" ^^hidden
-                 (strong "Connect to your local Harness")
-                 "Run gene-harness --workspace DIR link, then open the returned owner connection URL.")
                (section ^id "offline_notice" ^class "auth_notice" ^^hidden
                  (strong "Command demo mode — no model connected")
                  "Restart without --offline or GENE_HARNESS_OFFLINE=1 to chat with the configured model. Use /help to explore commands.")
@@ -96,21 +113,19 @@
                    (strong "Answer any questions; skipped answers are unanswered.")
                    (div ^id "input_fields"))
                  (div ^id "commands" ^class "commands" ^^hidden)
+                 (section ^id "prompt_offer" ^class "prompt_offer" ^^hidden ^aria-label "Offered prompt")
                  (form ^id "composer" ^class "composer"
                    (textarea ^id "prompt" ^rows "2" ^placeholder "Ask a question or describe a task…" ^aria-label "Message Gene")
                    (div ^class "composer_actions"
                      (span ^id "composer_hint" ^class "hint" "Shift+Enter for a new line · / for commands")
                      (button ^id "send" ^class "send" ^type "submit" "Send")))
                  (div ^id "notice" ^class "notice" ^role "status" ^aria-live "polite")
-                 (div ^id "confirmations" ^aria-label "Pending confirmations")
                  (button ^id "resolve_submission" ^class "resolve" ^type "button" ^^hidden "Resolve submission")))
              (aside ^id "ui_panel" ^class "ui_panel" ^^hidden ^aria-label "Workspace panel"
+               (h2 ^id "ui_view_title" ^tabindex "-1" "Workspace view")
                (button ^id "ui_discard" ^type "button" ^class "quiet" "Discard edits")
-               (div ^id "ui_view")
-               (div ^id "ui_action_status" ^role "status")
                (button ^id "ui_retry" ^type "button" ^^hidden "Retry view")
-               (button ^id "ui_resolve" ^type "button" ^^hidden "Resolve action")
-               (button ^id "ui_cancel" ^type "button" ^^hidden "Cancel action"))
+               (div ^id "ui_view"))
              (aside ^id "notification_center" ^class "drawer notification_center" ^^hidden ^aria-label "Notifications"
                (div ^class "drawer_header"
                  (h2 "Notifications")

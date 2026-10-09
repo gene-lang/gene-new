@@ -9,7 +9,7 @@ The implementation follows the phases below. `client/notices.gene` and
 `question_editors.gene` and `notification_center.gene` project existing workflows.
 `src/notifications/` provides the isolated producer store, source-scoped publisher
 and frozen action admission. `client/producer_inbox.gene` and the CLI presenter
-consume protocol 7 notification delivery. The public usage guides are
+consume protocol 8 notification delivery. The public usage guides are
 [overview](recipes/notifications.md), [publishing](recipes/notification-publishing.md)
 and the [review notifier example](../examples/notifications/README.md).
 The [verification record](notification-verification.md) maps the acceptance

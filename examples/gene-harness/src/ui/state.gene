@@ -15,6 +15,7 @@
 (fn validate_ui_settings [value]
   (if (!= ($head value) Map) (ui_error "invalid_request" "UI settings must be a map."))
   (let result {^enabled (== value/enabled true) ^layout (?? value/layout "chat")
+    ^default_view (?? value/default_view "")
     ^panel (?? value/panel "") ^side (?? value/side "left")
     ^width (?? value/width 50) ^theme (?? value/theme {})})
   (if_not (["chat" "panel"] .contains? result/layout) (ui_error "invalid_request" "Unknown UI layout."))
@@ -23,6 +24,9 @@
     (ui_error "invalid_request" "Panel width must be 25–70 percent."))
   (if (|| (!= ($head result/panel) Str) (!= ($head result/theme) Map))
     (ui_error "invalid_request" "Invalid panel or theme."))
+  (if (|| (!= ($head result/default_view) Str)
+          (&& (!= result/default_view "") ($absent? (#"^[a-z][a-z0-9_]{0,79}$" .match result/default_view))))
+    (ui_error "invalid_request" "Default view must be a registered view name or harness."))
   (for [key color] in result/theme
     (if_not (["ink" "muted" "line" "surface" "sidebar" "soft" "accent"] .contains? ($to_str key))
       (ui_error "invalid_request" $"Unknown theme token ${key}."))
@@ -47,7 +51,9 @@
   (for name in (?? candidate/actions [])
     (let action (ui_record snapshot "functions" name))
     (if_not ($absent? action) (functions .put name (ui_revision h action))))
-  {^name candidate/name ^slot candidate/slot ^revision (ui_revision h record)
+  {^name candidate/name ^title (?? candidate/title candidate/name) ^owner record/owner
+   ^default_presentation (?? candidate/default_presentation "docked")
+   ^slot candidate/slot ^revision (ui_revision h record)
    ^data_revision (ui_data_revision h snapshot) ^view_state candidate/view_state
    ^state_version ($to_str (?? candidate/state_version "1")) ^functions functions})
 
@@ -59,5 +65,9 @@
     (for record in (?? (snapshot/registries .get "web_components") [])
       (if_not ($absent? record/payload/view_state)
         (components .push (ui_descriptor h snapshot record)))))
-  {^settings settings ^components components ^data_revision (ui_data_revision h snapshot) ^epoch h/ui_epoch
+  (let actions (if ($absent? h/ui_action_log) nil h/ui_action_log/state/.get))
+  {^settings settings ^components ($order/sort_by components (fn [item] item/name))
+   ^data_revision (ui_data_revision h snapshot) ^epoch h/ui_epoch
+   ^actions (if ($absent? actions) nil
+     {^generation actions/generation ^floor actions/floor ^revision ($to_str actions/revision)})
    ^workspace (?? h/workspace/workspace_root "")})

@@ -1,0 +1,32 @@
+(import $test [describe it])
+(import [isolated run_spec fixture_path] ^from "../../support")
+(import [open_session_service close_session_service] ^from "../../../src/web/session_service")
+(import [row] ^from "../../../src/kernel")
+(import [list_sessions] ^from "../../../src/runtime/sessions")
+(import [ui_action ui_action_receipt] ^from "../../../src/ui/actions")
+
+(describe "Workspace action crash recovery"
+  (it "persists saved domain data before done and never replays an interrupted effect" []
+    (isolated this_mod/.path "persists saved domain data before done and never replays an interrupted effect"
+      (fn [workspace]
+        (for phase in ["saved" "interrupted"]
+          (let root $"${workspace}/${phase}")
+          (let child (await ($os/exec_async ($os/executable_path) "run" (fixture_path "ui_action_crash")
+            root phase ^timeout_ms 30000)))
+          ($assert (== child/status (if (== phase "saved") 73 74)) ($to_str child/stdout child/stderr))
+          (let service (open_session_service ^workspace root ^^offline))
+          (try
+            (let request ($serde/read_data ($fs/read_text $"${root}/original-request.gene")))
+            (let record (ui_action_receipt service/runtime/actions request/input_id))
+            ($assert (== record/status (if (== phase "saved") "done" "interrupted")))
+            ($assert (== (/status (ui_action service/runtime/actions request)) record/status))
+            ($assert (== (list_sessions service/runtime/sessions) []))
+            (if (== phase "saved")
+              (do
+                (let tasks ((/fn (row service/runtime/h "functions" "board_tasks"))))
+                ($assert (== tasks/0/title "Durable action") "receipt survived but its domain write was lost")
+                ($assert (== tasks/0/revision "2") "saved action was replayed"))
+              ($assert (== ($fs/read_text $"${root}/effect.txt") "once")))
+            ensure (close_session_service service)))))))
+
+(fn main [args] : Int (run_spec args))

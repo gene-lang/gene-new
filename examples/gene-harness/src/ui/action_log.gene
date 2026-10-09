@@ -1,0 +1,164 @@
+# Durable workspace action identities, independent of conversation/data streams.
+(mod ui_action_log)
+(import $store/fs [open : store_open Store])
+(import [ui_error] ^from "./state")
+(import [byte_prefix] ^from "../text")
+
+(type ActionLog ^props {^backend Any ^state Any ^gate Any ^observer Any})
+
+(fn copy_data [value] ($serde/read_data ($serde/write_data value)))
+(fn action_terminal? [status : Str]
+  (["done" "failed" "cancelled" "interrupted"] .contains? status))
+
+(fn checkpoint [log : ActionLog, state]
+  (state .put "revision" (+ log/state/.get/revision 1))
+  (log/backend .Store:checkpoint state/revision {^actions state})
+  (log/state .set state))
+
+(fn open_action_log [root : Str] : ActionLog
+  ($fs/make_dir root)
+  (let backend (store_open ^root root))
+  (try
+    (let loaded backend/.Store:load_checkpoint)
+    (let state (if ($absent? loaded)
+      {^format 1 ^revision 0 ^generation 1 ^floor 1 ^admissions 0 ^sequence 0 ^records []}
+      loaded/records/actions))
+    (if (!= state/format 1) (ui_error "unavailable" "Unsupported workspace action log format."))
+    (let log (ActionLog ^backend backend ^state ($cell state) ^gate ($cell false) ^observer ($cell nil)))
+    (let recovered (copy_data state))
+    (var changed false)
+    (for record in recovered/records
+      (if_not (action_terminal? record/status)
+        (record .put "status" "interrupted")
+        (record .put "display" "Action interrupted by host restart. Effects may have occurred; it was not replayed.")
+        (record .put "finished_ms" ($os/wall_ms))
+        (set changed true)))
+    (if changed (checkpoint log recovered))
+    log
+  catch Any
+    backend/.Store:close
+    (fail $err)))
+
+(fn close_action_log [log : ActionLog] log/backend/.Store:close)
+
+(fn action_metadata [log : ActionLog]
+  (let state log/state/.get)
+  {^generation state/generation ^floor state/floor ^revision ($to_str state/revision)})
+
+(fn notify_action [log : ActionLog, record]
+  (let observer log/observer/.get)
+  (if_not ($absent? observer)
+    # A transport failure cannot turn a committed operation into a refusal.
+    (try (observer (copy_data record) (action_metadata log)) catch Any nil)))
+
+(fn find_action [state, id : Str]
+  (for record in state/records
+    (if (== record/input_id id) (return record)))
+  nil)
+
+(fn action_receipt [log : ActionLog, id : Str]
+  (let record (find_action log/state/.get id))
+  (if ($absent? record)
+    (ui_error "receipt_expired" "No retained receipt exists. The action's outcome may be unknown."))
+  (copy_data record))
+
+(fn prune_actions [state]
+  (let kept [])
+  (for record in state/records
+    (if (|| (>= record/generation state/floor) (! (action_terminal? record/status)))
+      (kept .push record)))
+  (state .put "records" kept))
+
+(fn admit_action [log : ActionLog, request, validate]
+  (while (log/gate .swap true) ($sleep 1))
+  (try
+    (let state (copy_data log/state/.get))
+    (let previous (find_action state request/input_id))
+    (if_not ($absent? previous)
+      (if (!= previous/request request)
+        (ui_error "submission_conflict" "Action identity has different content."))
+      (return {^record (copy_data previous) ^!admitted}))
+    (let generation request/generation)
+    (if (|| (!= ($head generation) Int) (< generation 1) (> generation state/generation))
+      (ui_error "invalid_request" "Invalid action generation."))
+    (let prefix $"${generation}:")
+    (if (|| (!= ($head request/input_id) Str)
+            (! ($str/starts_with? request/input_id prefix))
+            (<= ($str/byte_size request/input_id) ($str/byte_size prefix)))
+      (ui_error "invalid_request" "Action identity must include its original generation."))
+    (if (< generation state/floor)
+      (ui_error "receipt_expired" "Action generation expired. This attempt was not admitted; earlier effects may be unknown."))
+    (let metadata (validate))
+    (let record
+      {^id request/input_id ^input_id request/input_id ^generation generation
+       ^sequence (+ state/sequence 1) ^request (copy_data request)
+       ^component request/component ^function request/function
+       ^revision request/revision ^function_revision request/function_revision
+       ^owner metadata/owner ^status "accepted" ^output "" ^display ""
+       ^started_ms ($os/wall_ms)})
+    (state/records .push record)
+    (state .put "sequence" record/sequence)
+    (state .put "admissions" (+ state/admissions 1))
+    (if_yes (>= state/admissions 128)
+      (state .put "admissions" 0)
+      (state .put "generation" (+ state/generation 1))
+      (state .put "floor" ($math/max 1 (- state/generation 3))))
+    # Floor and deletions are committed in one atomic checkpoint. No identity
+    # can disappear while the durable state still permits its admission.
+    (prune_actions state)
+    (checkpoint log state)
+    {^record (copy_data record) ^^admitted}
+  ensure (log/gate .set false)))
+
+(fn update_action [log : ActionLog, id : Str, changes]
+  (while (log/gate .swap true) ($sleep 1))
+  (let result
+    (try
+      (let state (copy_data log/state/.get))
+      (let record (find_action state id))
+      (if ($absent? record) (ui_error "receipt_expired" "Action receipt is no longer retained."))
+      (if (action_terminal? record/status) (return (copy_data record)))
+      (for [key value] in changes
+        (if (== ($to_str key) "append_output")
+          (record .put "output" (byte_prefix ($to_str record/output value) 16384))
+          (record .put key value)))
+      (if (action_terminal? record/status) (record .put "finished_ms" ($os/wall_ms)))
+      (let saved (copy_data record))
+      (prune_actions state)
+      (checkpoint log state)
+      saved
+    ensure (log/gate .set false)))
+  (notify_action log result)
+  result)
+
+(fn action_output [log : ActionLog, id : Str, value : Str]
+  (update_action log id {^append_output value}))
+
+(fn list_action_receipts [log : ActionLog, ^view view : Str = "", ^status status : Str = "", ^input_id input_id : Str = "", ^before before : Int = 0, ^limit limit : Int = 25]
+  (if (|| (< limit 1) (> limit 100) (< before 0))
+    (ui_error "invalid_request" "Receipt limit must be 1–100 and cursor nonnegative."))
+  (let records log/state/.get/records)
+  (let out [])
+  (var bytes 0)
+  (var index (- records/.size 1))
+  (var next 0)
+  (while (>= index 0)
+    (let record records/%index)
+    (set index (- index 1))
+    (if (|| (&& (!= view "") (!= view record/component))
+            (&& (!= status "") (!= status record/status))
+            (&& (!= input_id "") (!= input_id record/input_id))
+            (&& (> before 0) (>= record/sequence before))) (continue))
+    (let item {^input_id record/input_id ^sequence record/sequence
+      ^component record/component ^function record/function ^owner record/owner
+      ^revision record/revision ^function_revision record/function_revision
+      ^status record/status ^started_ms record/started_ms
+      ^finished_ms (?? record/finished_ms nil)
+      ^display (byte_prefix record/display 4096) ^output (byte_prefix record/output 4096)})
+    (let size ($str/byte_size ($json/stringify item)))
+    (if_yes (|| (>= out/.size limit) (> (+ bytes size) 60000))
+      (set next (+ record/sequence 1))
+      (break))
+    (out .push item)
+    (set bytes (+ bytes size)))
+  {^records out ^before next ^metadata (action_metadata log)})

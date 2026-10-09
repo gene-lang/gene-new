@@ -161,7 +161,7 @@
   (var session editor/session)
   (controller/api
     "POST"
-    $"/api/v7/sessions/${session}/answers"
+    $"/api/v8/sessions/${session}/answers"
     payload
     (fn [code : Int, data : Any] : Void
       (set editor/sending false)
@@ -204,7 +204,7 @@
       (var session (qtext payload/session))
       (controller/api
         "GET"
-        $"/api/v7/sessions/${session}/snapshot?ui=default"
+        $"/api/v8/sessions/${session}/snapshot?ui=default"
         nil
         (fn [code : Int, data : Any] : Void
           (set editor/sending false)
@@ -229,7 +229,7 @@
   (sync_question controller editor)
   (controller/api
     "POST"
-    $"/api/v7/sessions/${session}/cancel"
+    $"/api/v8/sessions/${session}/cancel"
     {^round_id round}
     (fn [code : Int, data : Any] : Void
       (set editor/sending false)

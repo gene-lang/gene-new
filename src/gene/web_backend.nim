@@ -2828,6 +2828,9 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       if value.body.len != 3:
         raise webError(loc, "dom/" & listenerOp &
           " expects a target, an event type, and a handler")
+      for key, _ in value.props:
+        if key != "capture":
+          raise webError(loc, "dom/" & listenerOp & " accepts only ^capture")
       let handlerType = webType(wtkCallback)
       handlerType.params = @[webType(wtkAny)]
       handlerType.returnType = webType(wtkVoid)
@@ -2836,7 +2839,9 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
         children: @[
           analysis.analyzeExpr(value.body[0], bindings, webType(wtkDomTarget)),
           analysis.analyzeExpr(value.body[1], bindings, webType(wtkStr)),
-          analysis.analyzeExpr(value.body[2], bindings, handlerType)])
+          analysis.analyzeExpr(value.body[2], bindings, handlerType),
+          analysis.analyzeExpr(value.props.getOrDefault("capture", FALSE),
+                               bindings, webType(wtkBool))])
     if value.head.kind == vkNode and value.head.head.isSym("path") and not
         (value.head.body.len == 2 and value.head.body[0].kind == vkSymbol and
          analysis.enumDecls.hasKey(value.head.body[0].symVal)):
@@ -2998,6 +3003,9 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       of "dom/clear", "dom/focus", "dom/scroll_end":
         paramTypes = @[webType(wtkDomTarget)]
         returnType = webType(wtkVoid)
+      of "dom/focused?":
+        paramTypes = @[webType(wtkDomTarget)]
+        returnType = webType(wtkBool)
       of "dom/input_value":
         paramTypes = @[webType(wtkDomTarget)]
         returnType = webType(wtkStr)
@@ -3034,7 +3042,8 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       of "event/code", "event/key":
         paramTypes = @[webType(wtkAny)]
         returnType = webType(wtkStr)
-      of "event/shift_key", "event/is_composing":
+      of "event/shift_key", "event/ctrl_key", "event/alt_key", "event/meta_key",
+         "event/repeat", "event/is_composing":
         paramTypes = @[webType(wtkAny)]
         returnType = webType(wtkBool)
       of "event/button", "event/client_x", "event/client_y", "event/delta_y",
@@ -3083,7 +3092,7 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       of "browser/origin", "browser/hash", "browser/search", "browser/request_id":
         paramTypes = @[]
         returnType = webType(wtkStr)
-      of "browser/replace_url":
+      of "browser/replace_url", "browser/push_url":
         paramTypes = @[webType(wtkStr)]
         returnType = webType(wtkVoid)
       of "browser/copy":
@@ -5902,15 +5911,28 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
     of "browser/request_id": "crypto.randomUUID()"
     of "browser/replace_url":
       "(history.replaceState(null, \"\", " & arguments[0] & "), undefined)"
+    of "browser/push_url":
+      "(history.pushState(null, \"\", " & arguments[0] & "), undefined)"
     of "browser/copy": "$gene_clipboard_copy(" & arguments.join(", ") & ")"
     of "session_storage/get": "$gene_session_storage_get(" & arguments[0] & ")"
     of "session_storage/set": "$gene_session_storage_set(" & arguments.join(", ") & ")"
     of "session_storage/remove": "$gene_session_storage_remove(" & arguments[0] & ")"
-    of "event/shift_key", "event/is_composing":
+    of "dom/focused?":
+      let element = if emitter.typescript:
+        "(" & arguments[0] & " as Element)" else: arguments[0]
+      "(" & element & ".ownerDocument?.activeElement === " & arguments[0] & ")"
+    of "event/shift_key", "event/ctrl_key", "event/alt_key", "event/meta_key",
+       "event/repeat", "event/is_composing":
       let event = if emitter.typescript:
         "(" & arguments[0] & " as KeyboardEvent)" else: arguments[0]
-      "Boolean(" & event & "." &
-        (if expr.text == "event/shift_key": "shiftKey" else: "isComposing") & ")"
+      let property = case expr.text
+        of "event/shift_key": "shiftKey"
+        of "event/ctrl_key": "ctrlKey"
+        of "event/alt_key": "altKey"
+        of "event/meta_key": "metaKey"
+        of "event/repeat": "repeat"
+        else: "isComposing"
+      "Boolean(" & event & "." & property & ")"
     of "dom/inner_width": "window.innerWidth"
     of "dom/inner_height": "window.innerHeight"
     of "dom/rect_left": "$gene_dom_rect(" & arguments[0] & ", \"left\")"
@@ -6613,8 +6635,9 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
     let target = emitter.emitExpr(expr.children[0])
     let eventType = emitter.emitExpr(expr.children[1])
     let handler = emitter.emitExpr(expr.children[2])
+    let capture = emitter.emitExpr(expr.children[3])
     "$gene_dom_" & expr.text & "(" & target & ", " & eventType & ", " &
-      handler & ")"
+      handler & ", " & capture & ")"
   of wekTry:
     let target = emitter.temp()
     let hasEnsure = expr.keys.len > 0 and expr.keys[^1] == "ensure"
@@ -8359,15 +8382,16 @@ proc emitModule(module: WebModule, typescript: bool,
     let typeParam = if typescript: "type: string" else: "type"
     let handlerParam =
       if typescript: "handler: (event: unknown) => void" else: "handler"
+    let captureParam = if typescript: "capture: boolean" else: "capture"
     let voidReturn = if typescript: ": void" else: ""
     emitter.line("function $gene_dom_add_event_listener(" & targetParam &
-      ", " & typeParam & ", " & handlerParam & ")" & voidReturn &
+      ", " & typeParam & ", " & handlerParam & ", " & captureParam & ")" & voidReturn &
       " { target.addEventListener(type, handler" &
-      (if typescript: " as EventListener" else: "") & "); }")
+      (if typescript: " as EventListener" else: "") & ", capture); }")
     emitter.line("function $gene_dom_remove_event_listener(" & targetParam &
-      ", " & typeParam & ", " & handlerParam & ")" & voidReturn &
+      ", " & typeParam & ", " & handlerParam & ", " & captureParam & ")" & voidReturn &
       " { target.removeEventListener(type, handler" &
-      (if typescript: " as EventListener" else: "") & "); }")
+      (if typescript: " as EventListener" else: "") & ", capture); }")
     emitter.line()
   if moduleUsesBuiltin(module, ["to_str"]):
     # Gene display, not JS `String()`: `null` is "nil", `undefined` is "void",

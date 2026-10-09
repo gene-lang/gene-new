@@ -9,7 +9,7 @@
     (headers .put "cookie" credentials/cookie)
     (headers .put "x-csrf-token" credentials/csrf))
   (let pending
-    (request ^method method ^url $"${connection/origin}/api/v7${path}" ^headers headers ^body (if ($absent? data) "" ($json/stringify data)) ^timeout_ms 30000 ^max_bytes 16777216))
+    (request ^method method ^url $"${connection/origin}/api/v8${path}" ^headers headers ^body (if ($absent? data) "" ($json/stringify data)) ^timeout_ms 30000 ^max_bytes 16777216))
   (let response (try (await pending) ensure pending/.cancel))
   (let body
     (try

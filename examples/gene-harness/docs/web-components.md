@@ -145,11 +145,12 @@ Disabling removes owned components after command publication; enabling restores
 them with their durable state. Removing a welcome replacement restores the
 built-in welcome immediately for an empty conversation.
 
-## Experimental stateful panel
+## Stateful workspace views
 
-The optional workspace UI experiment adds a `panel` beside the conversation.
-It is disabled by default. See the [project board](../experiments/ui/README.md)
-for installation and a complete plugin. Its APIs are experimental.
+The optional workspace UI supports `view` components, full screen or docked
+beside Classic Harness. Legacy `panel` registrations are aliases with a docked
+default. It is disabled by default. See the [project board](../experiments/ui/README.md)
+for a two-view plugin and [workspace views](workspace-views.md) for navigation.
 
 Enable and configure it through `ui_configure`:
 
@@ -161,18 +162,20 @@ Enable and configure it through `ui_configure`:
 `layout` is `chat` or `panel`; `side` is `left` or `right`; `width` is an integer
 percentage from 25 to 70. Theme keys are `ink`, `muted`, `line`, `surface`,
 `sidebar`, `soft` and `accent`, with six-digit hex colors. Passing
-`{^!enabled}` restores the ordinary interface. Configuration is workspace state.
-Host input, selected, code, notice and action surfaces derive from those same
-tokens, including in a dark palette; plugins do not need host-specific CSS.
+`{^!enabled}` restores the ordinary interface. Configuration is workspace state
+and supplies fresh-tab defaults; navigation and presentation choices are local
+to a tab. `default_view` selects a canonical initial view or `harness` and takes
+precedence over the legacy layout/panel fields. Theme tokens style plugin
+content, while Classic Harness and host controls retain their own palette.
 The `/ui/default` recovery URL omits plugin views and theme overrides for that
 page and preserves the workspace selection.
 
-A panel row declares `view_state` defaults, a `state_version`, an `actions`
+A view row declares a nonempty `title`, `view_state` defaults, a `state_version`, an `actions`
 list naming registered functions, and a `render` callback:
 
 ```gene
 (host .PluginHost:contribute "web_components"
-  {^name "project_board" ^slot "panel"
+  {^name "project_board" ^slot "view" ^title "Project board"
    ^view_state {^filter "" ^selected "welcome"} ^state_version "1"
    ^actions ["board_save"]
    ^render (fn [context]
@@ -251,10 +254,20 @@ its registered action functions after publication as well. A successful preview
 checks the supplied context; browser layout and interaction still require
 browser verification.
 
-Actions retain durable command receipts and the session selected on submission.
-The panel resolves an uncertain outcome under that original session and input
-identity, even after switching conversations. Stale view/function revisions
-are refused. UI action blocks are omitted from conversation transcripts;
-progress, errors and cancellation stay in the panel. Failed actions contribute
-one diagnostic to the submitting conversation's next user request. Successes
-do not attach to model input. The normal 128-command retention window applies.
+Actions use a dedicated workspace log and no implicit session. They never create
+a conversation or automatically attach failures to model input. Stale
+view/function revisions are refused; record-revision checks remain the save
+function's responsibility. Receipts survive view switching and host restart;
+unfinished work is interrupted without replay. Inspect them when requested with
+`(ui_action_receipts ^view "project_board" ^status "failed")`.
+
+An original generation-bound input identity is required for explicit retry.
+Generations rotate every 128 admissions; four generations and nonterminal
+records are protected. Receipt absence after expiry means the outcome can be
+unknown. Do not create a replacement identity to replay an uncertain operation.
+
+Navigation buttons may use `^switch_view "name"` and optionally
+`^presentation "docked"` or `"full"`. `harness` selects Classic alone and cannot
+have a presentation override. Navigation cannot share a button with a function,
+command, prompt, or view-state action. A `prompt` button stages in Classic
+Harness and offers Replace/Append/Keep when an unsent draft already exists.

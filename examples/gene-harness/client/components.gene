@@ -1,6 +1,6 @@
 (mod harness_web_components ^profile web)
 
-(fn render_element [tree : Any, on_command : (Fn [Str] Void), on_prompt : (Fn [Str] Void), enabled : Bool, buttons : (List Any)] : EventTarget
+(fn render_element [tree : Any, on_command : (Fn [Str] Void), on_prompt : (Fn [Str] Void), on_navigate : (Fn [Str Str] Void), enabled : Bool, buttons : (List Any)] : EventTarget
   (if_yes ($absent? tree) (return ($dom/create_text "")))
   (if_yes ($absent? tree/tag)
     (var text : Str tree)
@@ -10,12 +10,21 @@
   (var props : PropMap tree/props)
   (for [key value] in props
     (var name : Str ($to_str key))
-    (if_yes (|| (== name "command") (== name "prompt") ($absent? value)) (continue))
+    (if_yes (|| (== name "command") (== name "prompt") (== name "switch-view") (== name "presentation") ($absent? value)) (continue))
     (var text : Str value)
     ($dom/set_attribute element name text))
   (var children : (List Any) tree/children)
   (for child in children
-    ($dom/append element (render_element child on_command on_prompt enabled buttons)))
+    ($dom/append element (render_element child on_command on_prompt on_navigate enabled buttons)))
+  (if_not ($absent? props/switch-view)
+    (var destination : Str props/switch-view)
+    (var presentation : Str "")
+    (if_not ($absent? props/presentation) (set presentation props/presentation))
+    ($dom/set_attribute element "type" "button")
+    ($dom/add_event_listener element "click"
+      (fn [event : Any] : Void
+        ($dom/prevent_default event)
+        (if_yes ($absent? props/disabled) (on_navigate destination presentation)))))
   (if_not ($absent? props/command)
     (buttons .push {^element element ^disabled (! ($absent? props/disabled))})
     (var command : Str props/command)
@@ -38,7 +47,7 @@
         (if_yes ($absent? props/disabled) (on_prompt prompt)))))
   element)
 
-(fn render_slot [target : EventTarget, components : (List Any), slot : Str, on_command : (Fn [Str] Void), on_prompt : (Fn [Str] Void), enabled : Bool, buttons : (List Any)] : Bool
+(fn render_slot [target : EventTarget, components : (List Any), slot : Str, on_command : (Fn [Str] Void), on_prompt : (Fn [Str] Void), on_navigate : (Fn [Str Str] Void), enabled : Bool, buttons : (List Any)] : Bool
   (var rendered false)
   (for component in components
     (var selected : Str component/slot)
@@ -47,7 +56,7 @@
     ($dom/set_attribute wrapper "class" "plugin_component")
     (var name : Str component/name)
     ($dom/set_attribute wrapper "data-component" name)
-    ($dom/append wrapper (render_element component/view on_command on_prompt enabled buttons))
+    ($dom/append wrapper (render_element component/view on_command on_prompt on_navigate enabled buttons))
     ($dom/append target wrapper)
     (set rendered true))
   rendered)

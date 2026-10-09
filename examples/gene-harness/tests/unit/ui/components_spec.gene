@@ -3,6 +3,30 @@
 (import [validate_web_component bounded_component_view] ^from "../../../src/ui/components")
 
 (describe "Harness web components"
+  (it "unifies full and docked views and validates explicit navigation" []
+    (let render (fn [ctx] (quote (p "content"))))
+    (let legacy (validate_web_component {^name "board" ^slot "panel" ^view_state {} ^render render}))
+    ($assert (== legacy/slot "view"))
+    ($assert (== legacy/title "board"))
+    ($assert (== legacy/default_presentation "docked"))
+    (let full (validate_web_component {^name "desk" ^slot "view" ^title "Desk" ^view_state {} ^render render}))
+    ($assert (== full/default_presentation "full"))
+    ($assert (try (validate_web_component {^name "desk" ^slot "view" ^view_state {} ^render render}) false catch Any true))
+    ($assert (try (validate_web_component {^name "harness" ^slot "view" ^title "Imposter" ^view_state {} ^render render}) false catch Any true))
+    (let navigation (bounded_component_view
+      (quote (button ^switch_view "desk" ^presentation "docked" "Develop"))))
+    ($assert (== navigation/props/switch-view "desk"))
+    ($assert (== navigation/props/presentation "docked"))
+    (for source in [
+      (quote (button ^switch_view "" "Missing"))
+      (quote (button ^switch_view "harness" ^presentation "full" "Wrong"))
+      (quote (button ^switch_view "desk" ^presentation "overlay" "Wrong"))
+      (quote (button ^presentation "docked" "Missing view"))
+      (quote (a ^switch_view "desk" "Wrong element"))
+      (quote (button ^switch_view "desk" ^prompt "hello" "Ambiguous"))
+      (quote (button ^key "bad" ^switch_view "desk" ^action "save" "Ambiguous"))]
+      ($assert (try (bounded_component_view ^^experimental source) false catch Any true))))
+
   (it "preserves textarea text defaults for keyed fields and honors explicit values" []
     (let view (bounded_component_view ^^experimental
       (quote (form ^key "job" ^action "save"

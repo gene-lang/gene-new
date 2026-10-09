@@ -15,7 +15,7 @@
   (var epoch inbox/epoch)
   (inbox/api
     "GET"
-    "/api/v7/notifications"
+    "/api/v8/notifications"
     nil
     (fn [code : Int, data : Any] : Void
       (if_yes (!= epoch inbox/epoch) (return))
@@ -27,7 +27,7 @@
   (if_not inbox/ready (return))
   (inbox/api
     "POST"
-    "/api/v7/notifications/clear"
+    "/api/v8/notifications/clear"
     {^messages selected}
     (fn [code : Int, data : Any] : Void
       (if (== code 200)
@@ -38,7 +38,7 @@
   (if_not inbox/ready (return))
   # The snapshot observed at open is the boundary; later arrivals remain new.
   (var through : Int ($json/parse inbox/watermark))
-  (inbox/api "POST" "/api/v7/notifications/ack" {^through through}
+  (inbox/api "POST" "/api/v8/notifications/ack" {^through through}
     (fn [code : Int, data : Any] : Void
       (if (== code 200) (refresh_inbox inbox)
         (producer_problem inbox "Opening acknowledgment was not confirmed.")))))
@@ -65,15 +65,14 @@
   (var session (qtext reference/session))
   (var path "")
   (if_not ($absent? reference/round)
-    (set path $"/api/v7/sessions/${session}/rounds/${(qtext reference/round)}"))
+    (set path $"/api/v8/sessions/${session}/rounds/${(qtext reference/round)}"))
   (if_not ($absent? reference/command)
-    (set path $"/api/v7/sessions/${session}/commands/${(qtext reference/command)}"))
+    (set path $"/api/v8/sessions/${session}/commands/${(qtext reference/command)}"))
   (if_yes (== path "")
     ($dom/set_text
       target
       ($to_str
-        "Conversation "
-        session
+        (if (== session "") "Workspace view" ($to_str "Conversation " session))
         """
 """
         (qtext reference/component)
@@ -130,7 +129,7 @@
   (set inbox/sending/%key true)
   (inbox/api
     "POST"
-    "/api/v7/notifications/action"
+    "/api/v8/notifications/action"
     request
     (fn [code : Int, data : Any] : Void
       (set inbox/sending/%key void)
@@ -167,7 +166,7 @@
   (set inbox/sending/%key true)
   (inbox/api
     "GET"
-    $"/api/v7/sessions/${session}/requests/${($url/encode_component id)}?kind=command"
+    $"/api/v8/sessions/${session}/requests/${($url/encode_component id)}?kind=command"
     nil
     (fn [code : Int, data : Any] : Void
       (set inbox/sending/%key void)
@@ -207,7 +206,7 @@
   (set inbox/sending/%admission true)
   (inbox/api
     "GET"
-    $"/api/v7/sessions/${session}/snapshot"
+    $"/api/v8/sessions/${session}/snapshot"
     nil
     (fn [code : Int, data : Any] : Void
       (set inbox/sending/%admission void)
@@ -287,6 +286,8 @@
             nil)
           (fn [text : Str] : Void
             nil)
+          (fn [target : Str, presentation : Str] : Void
+            (inbox/navigate {^component target ^presentation presentation}))
           false
           buttons))
     catch Any

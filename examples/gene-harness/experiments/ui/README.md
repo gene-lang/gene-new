@@ -1,7 +1,7 @@
 # Experimental workspace UI
 
-This opt-in experiment puts a plugin-owned project board beside the existing
-conversation. Views are quoted Gene data rendered on the server. The browser
+This opt-in experiment offers a project board and project overview, full screen
+or docked beside Classic Harness. Views are quoted Gene data rendered on the server. The browser
 preserves keyed controls, drafts and view state while data changes.
 
 Rendering and UI actions are disabled by default. The baseline profile always
@@ -24,8 +24,9 @@ bin/gene run examples/gene-harness/src/web/server.gene --workspace /path/to/test
 In another terminal, retrieve the owner link with `bin/gene run
 examples/gene-harness/src/main.gene --workspace /path/to/test-workspace link`
 and open it. Filter tasks, select one, edit
-its fields and save. The first Save creates a normal session if necessary.
-The board's selection and drafts survive changing conversations and reloading.
+its fields and save. Saves have workspace receipts and create no conversation.
+Use Overview, Edit tasks, and Develop in Harness to navigate between views and
+dock the current view. The board's selection and drafts survive switching and reloading.
 Discard edits reloads the task's current values after a conflict.
 
 The installer registers `project_board.gene` through the normal workspace
@@ -40,7 +41,9 @@ In a running Harness, the following operator commands configure the experiment:
 /run (ui_configure {^!enabled})
 ```
 
-Hide board / Show board changes the shared workspace layout. The direct
+The host View picker, Show chat / Hide chat, dock side/width, and shortcuts
+change only the current browser tab. `ui_configure` sets fresh-tab defaults.
+The direct
 `/ui/default` URL opens the standard interface for that page, omitting plugin
 views, their render callbacks and theme overrides. It preserves the workspace
 selection and uses the normal authentication checks. The recovery page offers
@@ -73,19 +76,17 @@ original edit revision.
 
 ## Action behavior
 
-Save calls the registered function inside a normal command task. It receives
-the existing budget, cancellation, output sink and durable receipt. UI action
-blocks are hidden from conversation transcripts; their progress, errors and
-Cancel action control stay in the panel.
+Save calls the registered function with the usual budget, cancellation and
+output sink, but with no implicit conversation. Its durable workspace receipt
+is independent of conversation history. Progress, errors and recovery controls
+remain in the host strip while another view is open.
 
-The pending action records its original session and input identity in browser
-storage. Resolve action first looks up that receipt. If none is retained, an
-explicit retry uses the same identity. An uncertain mutation is never replayed
-automatically. Switching conversations does not change the receipt's owner.
-
-A failed action contributes one diagnostic to the submitting conversation's
-next user request. Successful actions do not attach themselves to model input.
-View-state requests are bounded reads and create no command record.
+The pending action records its original generation-bound input identity in
+session storage. Resolve checks that receipt before an explicit retry. An
+uncertain mutation is never automatically replayed; an expired receipt remains
+an unknown outcome. Inspect `(ui_action_receipts ^view "project_board")` when
+asked to diagnose a problem. No automatic diagnostic is attached to model input.
+View-state requests are bounded reads and create no action record.
 The HTTP helper aborts requests after 30 seconds. **Retry view** retries a failed
 render while preserving the filter, selection and draft edits.
 

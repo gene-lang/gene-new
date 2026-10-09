@@ -144,7 +144,8 @@
     (when (changed : CompositionChanged)
       (publish_message service "ui/state" "" (ui_status service/runtime/h)))
     (when (record : DurableRecord)
-      (if (&& (== record/scope "workspace") (== record/name "plugin/state"))
+      (if (&& (== record/scope "workspace")
+              (|| (== record/name "plugin/state") (== record/envelope/origin "plugin")))
         (publish_message service "ui/state" "" (ui_status service/runtime/h)))
       (if (== record/scope "session") (publish_transcript service record/stream record/envelope)))
     (when (changed : RoundChanged)
@@ -216,6 +217,9 @@
       (let copy ($thaw ($freeze data)))
       (copy .put "epoch" service/epoch)
       (publish_message service kind "" copy)))
+  (runtime/actions/log/observer .set
+    (fn [record, metadata]
+      (publish_message service "ui/action" "" {^record record ^actions metadata})))
   (set service/controller (new_round_controller runtime))
   (service/subscriptions .push
     (runtime/h/bus .subscribe HarnessEvent (fn [event] (handle_harness_event service event))))
@@ -463,6 +467,7 @@
 (fn close_session_service [service]
   (if (service/closed .swap true) (return nil))
   (service/runtime/h/notifications/observer .set nil)
+  (service/runtime/actions/log/observer .set nil)
   (for subscription in service/subscriptions
     subscription/.cancel)
   (let jobs (service/snapshot_jobs .swap {}))

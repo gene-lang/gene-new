@@ -245,9 +245,18 @@ is a complete example.
 Browser bindings include `$http/request method url body headers callback`,
 whose callback receives `(Int status, Str body)` including non-2xx responses;
 status `0` means a transport failure. `$session_storage/get|set|remove` handles
-tab-local drafts, and `$browser/origin|hash|search|replace_url|request_id|copy`
+tab-local drafts, and `$browser/origin|hash|search|replace_url|push_url|request_id|copy`
 provides location, submission identity, and clipboard operations. All application
 state and interaction logic can remain in Gene.
+
+Use `$event/code` with `$event/ctrl_key|shift_key|alt_key|meta_key` for physical
+keyboard shortcuts; `$event/repeat` and `$event/is_composing` allow handlers to
+ignore repeated/composing input. `$dom/focused? element` checks focus before
+replacing a view. `$browser/push_url` adds a history entry; register a `popstate`
+listener on `$dom/window` to restore local navigation without reloading.
+`$dom/add_event_listener` and `$dom/remove_event_listener` accept `^capture true`
+for host-level controls that must run before a focused widget handles an event;
+use the same capture flag and callback identity when removing a listener.
 
 For incremental DOM updates, `($dom/insert_at parent child index)` inserts or
 moves a node at a zero-based child position, preserving focus and text selection

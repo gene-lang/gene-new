@@ -1,6 +1,55 @@
 import gene/web
 import std/[os, osproc, strutils, tempfiles, unittest]
 
+suite "web navigation host bindings":
+  test "capture listeners preserve removal identity and shortcut fields use native events":
+    let root = createTempDir("gene-web-navigation-", "")
+    defer: removeDir(root)
+    writeFile(root / "navigation.gene", """
+      (mod navigation ^profile web)
+      (fn install [target : EventTarget, handler : (Fn [Any] Void)] : Void
+        ($dom/add_event_listener ^^capture target "keydown" handler)
+        ($dom/remove_event_listener ^^capture target "keydown" handler))
+      (fn shortcut [event : Any] : Bool
+        (&& ($event/ctrl_key event) ($event/shift_key event)
+          (! ($event/alt_key event)) (! ($event/meta_key event))
+          (! ($event/repeat event)) (! ($event/is_composing event))
+          (== ($event/code event) "Digit2")))
+      (fn focused [target : EventTarget] : Bool ($dom/focused? target))
+      (fn visit [url : Str] : Void ($browser/push_url url))
+    """)
+    discard buildWebModule(root / "navigation.gene", root / "out")
+    writeFile(root / "out" / "check.mjs", """
+      import assert from 'node:assert/strict';
+      import { install, shortcut, focused, visit } from './navigation.mjs';
+      class Target extends EventTarget {
+        addEventListener(type, handler, capture) { this.added = {type, handler, capture}; }
+        removeEventListener(type, handler, capture) { this.removed = {type, handler, capture}; }
+      }
+      const target = new Target();
+      install(target, () => {});
+      assert.equal(target.added.type, 'keydown');
+      assert.equal(target.added.capture, true);
+      assert.equal(target.removed.handler, target.added.handler);
+      assert.equal(target.removed.capture, true);
+      const event = { code:'Digit2', key:'@', ctrlKey:true, shiftKey:true,
+        altKey:false, metaKey:false, repeat:false, isComposing:false };
+      assert.equal(shortcut(event), true);
+      assert.equal(shortcut({...event, repeat:true}), false);
+      assert.equal(shortcut({...event, isComposing:true}), false);
+      assert.equal(shortcut({...event, ctrlKey:false}), false);
+      target.ownerDocument = { activeElement: target };
+      assert.equal(focused(target), true);
+      target.ownerDocument.activeElement = null;
+      assert.equal(focused(target), false);
+      globalThis.history = { pushState(...args) { this.last = args; } };
+      visit('/?view=desk');
+      assert.deepEqual(history.last, [null, '', '/?view=desk']);
+    """)
+    let ran = execCmdEx("node " & quoteShell(root / "out" / "check.mjs"))
+    checkpoint ran.output
+    check ran.exitCode == 0
+
 proc checkWebExportRejection(facade, selection, expected: string) =
   let root = createTempDir("gene-web-exports-", "")
   defer: removeDir(root)

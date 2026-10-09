@@ -689,19 +689,21 @@ and status summary. They return quoted Gene elements or equivalent inert
 trees. Validation limits element and attribute names, nesting and encoded
 size. The browser creates text and DOM nodes from this data.
 
-The experiment extends that contract with `slot "panel"`, scalar `view_state`
+The experiment extends that contract with `slot "view"` (legacy `panel` is an
+alias), a title, scalar `view_state`
 defaults, a `state_version`, keyed forms and declared action functions. The
 baseline's `ui_experiment` plugin always contributes `ui_configure` and
-`ui_preview`; its persisted settings default to disabled. The board in
+`ui_preview` plus the read-only `ui_action_receipts`; its persisted settings default to disabled. The board in
 `experiments/ui/` is a separately installed workspace plugin.
 
-Three kinds of state have separate owners:
+State has separate owners:
 
 | State | Owner and lifetime |
 | --- | --- |
-| Layout/theme and application data | Durable workspace plugin state |
+| Fresh-tab defaults, plugin themes and application data | Durable workspace plugin state |
+| Active view and full/docked/classic presentation | Browser tab; switching never writes shared settings |
 | Filters, selection, drafts and original form arguments | Browser session storage, scoped by workspace, component and state version |
-| Action submission identity and receipt | Browser pending record plus durable command record in the submitting session |
+| Action submission identity and receipt | Browser pending record plus independent workspace action log, with no implicit conversation |
 
 Snapshots and workspace invalidations carry stateful view descriptors without
 rendered trees. A targeted request supplies the current view state, instance,
@@ -728,19 +730,29 @@ Gene host authority; this read-only context is not OS isolation.
 
 A form or action button names an existing registered function and supplies
 positional and named data. Admission checks the view/function revisions,
-declared action and submission identity, then runs through the ordinary command
-manager with its budget, output sink, cancellation and snapshot lease.
+declared action and generation-bound submission identity, then runs through a
+workspace action manager with budget, output sink, cancellation and snapshot lease.
 Duplicate input ids return retained receipts; conflicting payloads are refused.
-The pending browser record retains its original session across tab changes and
-reloads. Unknown outcomes require receipt lookup or explicit retry with the
-same identity. They are never replayed automatically.
+The pending browser record retains its original workspace identity, request and
+generation across view changes and reloads. Unknown outcomes require receipt
+lookup or explicit retry with the same identity. They are never replayed
+automatically. Generations advance every 128 admissions; four generations and
+nonterminal records remain protected. The durable floor advances before terminal
+identity pruning; an expired missing identity cannot be admitted again.
 
-UI action blocks are durable but hidden from chat transcripts. Successful
-actions add no model input; failures contribute one diagnostic to the original
-session's next user request. Functions remain callable directly from model
+UI actions create no conversation or automatic model input. Domain failures
+remain in the view and host controls, and can be inspected through bounded
+`ui_action_receipts` when requested. Functions remain callable directly from model
 turns, `/run` and the REPL. Application data revisions handle conflicting edits;
 the runtime-owned `ui/state_lock` seam serializes a plugin's check-and-write
 across sessions and plugin activations.
+
+One plugin renderer is mounted per tab. Its memory/session-storage snapshots
+retain drafts across navigation; late replies must match the instance, request
+sequence and revisions before patching. Workspace action receipts are managed
+outside that renderer and reconcile only the originating form's submitted values.
+Host navigation, notifications, confirmations and recovery remain available in
+full-screen views. See [workspace views](workspace-views.md) for the UI contract.
 
 After successful plugin publication, `[N.ui]` contains outlines or errors only
 for stateful views owned by the published plugins. Outlines fold simple text,
@@ -761,7 +773,7 @@ and function actions. It introduces no compiled browser plugins or general
 layout framework. Shared registry discovery covers capabilities and docs.
 The [experiment guide](../experiments/ui/README.md)
 and [evaluation record](../experiments/ui/RESULTS.md) track installation and
-observed behavior. The [web client guide](web-client.md) defines protocol 7 and
+observed behavior. The [web client guide](web-client.md) defines protocol 8 and
 recovery delivery; the [component chapter](web-components.md) defines authoring.
 
 ## Notifications and workflow projections

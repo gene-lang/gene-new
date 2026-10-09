@@ -1,0 +1,40 @@
+(import [open_session_service] ^from "../../src/web/session_service")
+(import [register_plugin] ^from "../../src/storage/workspace")
+(import [row Plugin PluginHost put_cordis_plugin] ^from "../../src/kernel")
+(import [ui_status] ^from "../../src/ui/state")
+(import [ui_action ui_action_receipt] ^from "../../src/ui/actions")
+
+(fn main [args]
+  (let board_path ($path/join ($path/parent ($path/parent ($path/parent this_mod/.path))) "experiments/ui/project_board.gene"))
+  (let service (open_session_service ^workspace args/0 ^^offline))
+  (let h service/runtime/h)
+  ((/fn (row h "functions" "ui_configure")) {^^enabled})
+  (var request nil)
+  (if (== args/1 "saved")
+    (do
+      (register_plugin service/runtime/workspace h "project_board" ($fs/read_text board_path))
+      (let view (/0 (/components (ui_status h))))
+      (set request {^input_id "1:crash-saved" ^generation 1 ^instance "crash"
+        ^component "project_board" ^revision view/revision ^function "board_save"
+        ^function_revision view/functions/board_save ^args []
+        ^named {^id "welcome" ^revision "1" ^title "Durable action"}}))
+    (do
+      (put_cordis_plugin h
+        (Plugin ^id "crash_probe" ^activate (fn [host]
+          (host .PluginHost:contribute "functions"
+            {^name "crash_effect" ^doc "Write an external effect then terminate the test process."
+             ^fn (fn [] ($fs/write_text "effect.txt" "once") ($os/exit 74))})
+          (host .PluginHost:contribute "web_components"
+            {^name "crash_view" ^slot "view" ^title "Crash probe" ^view_state {}
+             ^actions ["crash_effect"] ^render (fn [ctx] (quote (p "Crash probe")))}))) {})
+      (let view (/0 (/components (ui_status h))))
+      (set request {^input_id "1:crash-effect" ^generation 1 ^instance "crash"
+        ^component "crash_view" ^revision view/revision ^function "crash_effect"
+        ^function_revision view/functions/crash_effect ^args [] ^named {}})))
+  ($fs/write_text "original-request.gene" ($serde/write_data request))
+  (let receipt (ui_action service/runtime/actions request))
+  (service/runtime/actions/watchers/.get .get receipt/input_id; .join)
+  ($assert (== (/status (ui_action_receipt service/runtime/actions receipt/input_id)) "done"))
+  # Intentionally bypass normal host shutdown and its event-store flush.
+  ($os/exit 73)
+  0)

@@ -8,6 +8,9 @@
 (import ^from "../../../src/notifications/actions" [invoke_notification_action])
 (import ^from "../../../src/kernel" [Plugin PluginHost put_cordis_plugin uninstall])
 (import ^from "../../../src/ui/state" [ui_data_revision])
+(import [ui_settings] ^from "../../../src/ui/state")
+(import [row] ^from "../../../src/kernel")
+(import [list_sessions] ^from "../../../src/runtime/sessions")
 (import ^from "../../../src/runtime/commands" [command_receipt cancel_command])
 (import $store/fs [Store open : store_open])
 
@@ -21,6 +24,33 @@
 
 (describe
   "Notification publishers and actions"
+  (it "opens a workspace view reference without a conversation or shared layout change" []
+    (isolated this_mod/.path "opens a workspace view reference without a conversation or shared layout change"
+      (fn [workspace]
+        (let service (open_session_service ^workspace workspace ^^offline))
+        (try
+          (let h service/runtime/h)
+          (put_cordis_plugin h
+            (Plugin ^id "workspace_reference" ^activate (fn [host]
+              (host .PluginHost:contribute "web_components"
+                {^name "workspace_view" ^slot "view" ^title "Workspace view"
+                 ^view_state {^selected ""} ^render (fn [ctx] (quote (p "View")))}))) {})
+          ((/fn (row h "functions" "ui_configure")) {^^enabled})
+          (let before (ui_settings h))
+          (let posted (safe_publish h "operator"
+            {^title "Open workspace record" ^actions [
+              {^id "open" ^label "Open record"
+               ^reference {^component "workspace_view" ^view_state {^selected "record-1"}}}]}))
+          ($assert posted/ok ($to_str posted))
+          (let result (invoke_notification_action service/runtime
+            {^notification posted/id ^revision posted/revision ^action "open"}))
+          ($assert (== result/kind "reference"))
+          ($assert ($absent? result/reference/session))
+          ($assert (== result/reference/view_state/selected "record-1"))
+          ($assert (== before (ui_settings h)))
+          ($assert (== (list_sessions service/runtime/sessions) []))
+          ensure (close_session_service service)))))
+
   (it
     "keeps writes isolated, owns source keys, freezes actions and reports publication failures separately"
     []

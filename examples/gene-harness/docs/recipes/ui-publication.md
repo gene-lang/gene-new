@@ -1,5 +1,10 @@
 # Publish and verify a UI plugin
 
+For action failures, inspect `(ui_action_receipts ^view "your_view" ^status "failed")`
+when asked. UI Saves have workspace receipts and do not automatically contribute
+diagnostics to a conversation. Check the recorded function/view revision before
+repairing a plugin that may already have changed.
+
 1. Discover registration functions and read `harness/plugins` before packaging.
    Persist source early. Generated modules have an inert top level: imports,
    functions, types, impls, protocols, aliases and enums. Top-level `const` is

@@ -1,0 +1,30 @@
+(import $test [describe it run])
+(import [default_view initial_view find_view presentation_for return_view]
+  ^from "../../../client/ui/navigation")
+
+(describe "Workspace view navigation"
+  (it "keeps tab choices above workspace defaults and preserves missing destinations" []
+    (let views [{^name "board" ^default_presentation "docked"}
+                {^name "desk" ^default_presentation "full"}])
+    (let settings {^^enabled ^layout "panel" ^panel "board" ^default_view "desk"})
+    ($assert (== (default_view views settings) "desk"))
+    ($assert (== (initial_view views settings nil "") "desk"))
+    ($assert (== (initial_view views settings {^active "harness"} "") "harness"))
+    ($assert (== (initial_view views settings {^active "harness"} "missing") "missing"))
+    ($assert ($absent? (find_view views "missing")))
+    ($assert (== (return_view views settings "board") "board"))
+    ($assert (== (return_view views settings "retired") "desk"))
+    ($assert (== (return_view [] settings "retired") "harness")))
+
+  (it "resolves explicit and remembered presentation before legacy defaults" []
+    (let board {^name "board" ^default_presentation "docked"})
+    (let desk {^name "desk" ^default_presentation "full"})
+    (let settings {^^enabled ^layout "panel" ^panel "board"})
+    ($assert (== (presentation_for board settings {} "") "docked"))
+    ($assert (== (presentation_for desk settings {} "") "full"))
+    ($assert (== (presentation_for board settings {^board "full"} "") "full"))
+    ($assert (== (presentation_for board settings {^board "full"} "docked") "docked"))
+    ($assert (== (default_view [board desk] settings) "board"))
+    ($assert (== (default_view [board desk] {^!enabled ^layout "panel" ^panel "board"}) "harness"))))
+
+(fn main [args] : Int (/exit_code (run ^name (?? args/0 ""))))

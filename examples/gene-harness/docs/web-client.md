@@ -87,14 +87,15 @@ Occurrence listings retain the configured recent terminal window; due/started
 and pinned/attention entries remain available. Historical occurrence events
 remain in the durable workspace transcript.
 
-## Workspace panels and recovery
+## Workspace views and recovery
 
 Ordinary plugin components occupy the named slots described in
 [web components](web-components.md). The opt-in
-[workspace UI experiment](../experiments/ui/README.md) adds one selected panel
-with keyed forms, configurable width/side and a small set of theme tokens.
-Layout settings are shared by the workspace. Each browser tab retains its own
-panel state and drafts in session storage, independently of its chat tabs.
+[workspace UI experiment](../experiments/ui/README.md) supports one selected
+plugin view, either full screen or docked beside Classic Harness. View choice,
+presentation, dock side/width, and drafts belong to each browser tab. Shared
+workspace settings supply defaults only. See [workspace views](workspace-views.md)
+for shortcuts, navigation buttons, storage, and simultaneous-tab behavior.
 
 Stateful descriptors in status and snapshot messages contain no rendered tree.
 The panel requests its view with the current filter/selection and rejects
@@ -102,11 +103,11 @@ responses from an older instance, request sequence, view revision or data
 revision. DOM reconciliation retains keyed inputs and dirty values. A new
 state version resets saved state; a compatible plugin replacement keeps it.
 
-Save calls a registered function through a command task. The panel tracks the
-receipt under the session selected at submission, even after switching to
-another conversation. Failures appear in the panel and attach once to that
-original session's next user request. Successful action blocks stay out of the
-chat transcript. Resolve action looks up the receipt before any explicit retry.
+Save calls a declared function through a workspace action task. No conversation
+is created or implicitly supplied. The independent action log owns its receipt;
+failures stay in the UI and are available through `ui_action_receipts` when
+requested. Resolve action checks the original identity and generation before
+an explicit retry. It never invents a replacement identity for an unknown result.
 
 Render failures retain the last tree with actions disabled. Retry view keeps
 drafts; Discard edits intentionally reloads current field values. The shared
@@ -115,7 +116,7 @@ recovery page, retaining the selected conversation and omitting plugin views,
 render callbacks and theme overrides. Its requests carry `ui=default`.
 Return to workspace UI leaves recovery without changing shared settings.
 
-## Wire protocol 7
+## Wire protocol 8
 
 The native host and Gene web-profile client share web/contract.gene.
 The current version is 7. A version mismatch stops interaction and asks for a
@@ -140,7 +141,7 @@ session.
 | command | Streaming chunk or final command record |
 | mode/state | Current input mode or nil; the frame also carries a change reason |
 | ui/state | Layout, theme and stateful-view descriptors; also invalidates ordinary component status across the workspace |
-| ui/action | Workspace-delivered action receipt carrying its submitting session; displayed in the panel |
+| ui/action | Workspace action receipt and current admission-generation metadata; no submitting conversation |
 | notifications/state | Isolated inbox revision, publication watermark, opened watermark and visible producer messages |
 | notifications/progress | Transient source/key progress with original work context; never replayed on reconnect |
 | ready | Initial state delivery is complete |
@@ -154,7 +155,7 @@ provisional command output without dropping the command's console.
 
 ### HTTP endpoints
 
-All API paths use /api/v7.
+All API paths use /api/v8.
 
 | Method and path | Purpose |
 | --- | --- |
@@ -187,8 +188,9 @@ All API paths use /api/v7.
 | POST /sessions/ID/mode/leave | Close the named mode instance through the host |
 | POST /ui/render | Render one experimental component with its instance, revision, request sequence and view state |
 | POST /ui/settings | Explicitly enable or configure the experimental workspace layout |
-| POST /sessions/ID/ui/actions | Submit a registered function as a UI command with structured arguments and an input identity |
-| GET /sessions/ID/ui/actions/INPUT | Look up the original action receipt without executing it |
+| POST /ui/actions | Submit a workspace function action with generation-bound input identity, publication revisions, and structured arguments |
+| GET /ui/actions/INPUT | Look up its workspace receipt without executing it |
+| POST /ui/actions/INPUT/cancel | Request cancellation by the original workspace action identity |
 | GET /triggers | List definitions |
 | POST /triggers | Create a definition |
 | DELETE /triggers/ID | Disable/delete a definition |
@@ -283,7 +285,7 @@ RoundController. web/push.gene routes ordered frames and viewer lifetimes.
 The web host runs all rounds, including prompts submitted by the CLI; there is
 no per-session plugin activation or second CLI runtime.
 
-The package's `gene test` specs cover protocol-7 service delivery, live
+The package's `gene test` specs cover protocol-8 service delivery, live
 records before completion, console routing, custom question validation,
 metadata revisions/attention, command execution, restart authentication,
 concurrent sessions and shutdown. Responsiveness specs run CPU loops,
