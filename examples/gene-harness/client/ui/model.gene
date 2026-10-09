@@ -3,7 +3,7 @@
 (import ^from "../notices.gene" [Notices put_notice])
 
 (type UiNode ^props {^key Str ^tag Str ^element EventTarget ^props PropMap ^form Str ^seen Int})
-(type UiNavigation ^props {^workspace Str ^active Str ^last_view Str ^presentation Str ^remembered PropMap ^versions PropMap ^snapshots PropMap ^views (List Any) ^side Str ^width Int ^focus Str ^scroll F64 ^focus_pending Bool ^action_generation Int ^action_revision Str ^restore (Fn [Any] Void) ^refresh (Fn [] Void)})
+(type UiNavigation ^props {^workspace Str ^active Str ^last_view Str ^presentation Str ^remembered PropMap ^versions PropMap ^snapshots PropMap ^views (List Any) ^side Str ^width Int ^bar_hidden Bool ^focus Str ^scroll F64 ^focus_pending Bool ^action_generation Int ^action_revision Str ^restore (Fn [Any] Void) ^refresh (Fn [] Void)})
 (type UiClient ^props {^root EventTarget ^target EventTarget ^safe Bool ^ready Bool ^session Str ^workspace Str ^epoch Str ^metadata_revision Str ^rendered_revision Str ^descriptor Any ^settings Any ^instance Str ^version Str ^notices Notices ^state PropMap ^drafts PropMap ^forms PropMap ^nodes PropMap ^generation Int ^sequence Int ^debounce Int ^last_data Str ^loading Bool ^render_error Bool ^pending Any ^resolving Bool ^navigation UiNavigation ^navigate (Fn [Str Str] Void) ^api (Fn [Str Str Any (Fn [Int Any] Void)] Void) ^select (Fn [Str] Void) ^command (Fn [Str] Void) ^prompt (Fn [Str] Void)})
 
 (fn text [value : Any, fallback : Str = ""] : Str
@@ -117,6 +117,8 @@
 
 (fn clear_saved_drafts [ui : UiClient, pending : Any] : Void
   (var form (text pending/form))
+  # Standalone action buttons have no form or submitted drafts to clear.
+  (if_yes (== form "") (return))
   (var component (text pending/request/component))
   (var version (text pending/version))
   (var active (&& (== component (text ui/descriptor/name)) (== version ui/version)))
@@ -125,6 +127,8 @@
   (var saved (saved_view ui key))
   (var drafts (copy_map saved/drafts))
   (var forms (copy_map saved/forms))
+  # Untouched or already discarded forms have no retained edit context.
+  (if_yes ($absent? forms/%form) (return))
   # Form args capture the original record revision. A newly edited form with
   # another revision must not be cleared by an earlier receipt.
   (if_yes (!= ($json/stringify forms/%form) ($json/stringify pending/form_context)) (return))

@@ -347,7 +347,7 @@
 (fn create [root : EventTarget, safe : Bool, notices : Notices, api : (Fn [Str Str Any (Fn [Int Any] Void)] Void), select : (Fn [Str] Void), command : (Fn [Str] Void), prompt : (Fn [Str] Void)] : UiClient
   (var navigation (UiNavigation ^workspace "" ^active "harness" ^last_view "" ^presentation "classic"
     ^remembered {} ^versions {} ^snapshots {} ^views [] ^side "left" ^width 50 ^focus "" ^scroll 0.0
-    ^!focus_pending ^action_generation 0 ^action_revision ""
+    ^!bar_hidden ^!focus_pending ^action_generation 0 ^action_revision ""
     ^restore (fn [view : Any] : Void (return)) ^refresh (fn [] : Void (return))))
   (var ui
     (UiClient ^root root ^target ($dom/element "ui_view") ^safe safe ^!ready ^session "" ^workspace "" ^epoch "" ^metadata_revision "" ^rendered_revision "" ^descriptor nil ^settings nil ^instance "" ^version "" ^notices notices ^state {} ^drafts {} ^forms {} ^nodes {} ^generation 0 ^sequence 0 ^debounce 0 ^last_data "" ^!loading ^!render_error ^pending nil ^!resolving ^navigation navigation ^navigate (fn [target : Str, presentation : Str] : Void (return)) ^api api ^select select ^command command ^prompt prompt))

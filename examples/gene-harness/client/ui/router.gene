@@ -16,7 +16,7 @@
   (var nav ui/navigation)
   (if ($session_storage/set (navigation_key ui)
     ($json/stringify {^active nav/active ^last_view nav/last_view ^presentations nav/remembered ^versions nav/versions
-      ^side nav/side ^width nav/width}))
+      ^side nav/side ^width nav/width ^bar_hidden nav/bar_hidden}))
     (notice ^key "navigation-storage" ^origin {^workspace ui/workspace} ui "")
     (notice ^key "navigation-storage" ^origin {^workspace ui/workspace} ^^sticky ^severity "error" ui
       "View selection could not be saved in this tab. Keep the page open.")))
@@ -47,6 +47,8 @@
 
 (fn layout [ui : UiClient] : Void
   (var nav ui/navigation)
+  (var bar ($dom/element "ui_host"))
+  (set bar/hidden (&& (! ui/safe) nav/bar_hidden))
   (var active (&& (! ui/safe) (!= nav/active "harness") (! ($absent? ui/descriptor))))
   (var full (&& active (== nav/presentation "full")))
   (var docked (&& active (! full)))
@@ -141,6 +143,14 @@
     (navigate ui (return_view nav/views ui/settings nav/last_view))
     (navigate ui nav/active (if (== nav/presentation "full") "docked" "full"))))
 
+(fn toggle_bar [ui : UiClient] : Bool
+  (if_yes ui/safe (return false))
+  (set ui/navigation/bar_hidden (! ui/navigation/bar_hidden))
+  (var bar ($dom/element "ui_host"))
+  (set bar/hidden ui/navigation/bar_hidden)
+  (persist_navigation ui)
+  true)
+
 (fn update_views [ui : UiClient, components : (List Any)] : Void
   (var nav ui/navigation)
   (set nav/views components)
@@ -151,6 +161,7 @@
     (set nav/remembered (copy_map saved/presentations))
     (set nav/versions (copy_map saved/versions))
     (set nav/last_view (text saved/last_view))
+    (set nav/bar_hidden (flag saved/bar_hidden))
     (set nav/side (text saved/side (text ui/settings/side "left")))
     (if_yes (!= nav/side "right") (set nav/side "left"))
     (var raw_width : Any (?? saved/width (?? ui/settings/width 50)))
@@ -200,6 +211,7 @@
                   ($event/alt_key event) ($event/meta_key event)) (return))
       (var code ($event/code event))
       (var handled false)
+      (if_yes (== code "Digit0") (set handled (toggle_bar ui)))
       (if_yes (== code "Space") (set handled (toggle ui)))
       (if_yes (== code "Digit1") (set handled (navigate ui "harness")))
       (var index 2)

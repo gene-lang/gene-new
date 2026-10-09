@@ -19,7 +19,8 @@
            %(stylesheet "gene-harness" styles))
          (body
            (div ^id "harness_root" ^class "app"
-             (header ^class "ui_host" ^aria-label "Harness controls"
+             (header ^id "ui_host" ^class "ui_host" ^aria-label "Harness controls"
+               ^title "Ctrl+Shift+0 to hide or show this bar"
                (div ^class "ui_host_navigation"
                  (label "View "
                    (select ^id "ui_view_picker" ^aria-label "Workspace view"

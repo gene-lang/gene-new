@@ -13,12 +13,18 @@ its state. Dock side and width belong to the current browser tab.
 
 | Shortcut | Result |
 | --- | --- |
+| Ctrl+Shift+0 | Hide or show the top view switch bar. |
 | Ctrl+Shift+Space | Toggle full-screen/docked, or return from Classic alone to the previous plugin view. |
 | Ctrl+Shift+1 | Classic Harness alone. |
 | Ctrl+Shift+2–9 | The corresponding view in the picker. |
 
 Bindings use physical digit keys and ignore repeated/composing input. Host
 buttons remain available when an OS or browser reserves a shortcut.
+
+The bar's visibility is remembered per workspace in this tab's session storage.
+View shortcuts continue working while it is hidden; Ctrl+Shift+0 restores the
+bar, including notifications and pending-action controls. Recovery UI always
+shows the bar.
 
 The URL can name `view=project_board&presentation=full` or `presentation=docked`.
 An explicit destination wins over the tab's remembered choice. Browser
