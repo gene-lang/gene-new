@@ -53,7 +53,10 @@ default name. Custom titles are preserved. The workspace header and status
 drawer show the provider, model and configured reasoning effort.
 Provider failures appear in their turn disclosure with a timestamp and error
 detail, including when generation never produced response code. Accepted
-slash commands clear both the composer and its hint row.
+slash commands clear both the composer and its hint row. Their input appears
+as a “You” message in the same right-aligned blue box as a prompt, with
+left-aligned text. Execution results appear separately under Gene. Both
+entries survive reload and remain together when paging through history.
 
 Each open session tab retains its own socket, frame sequence, snapshot,
 records, round state and reconnect state. Switching tabs preserves the draft

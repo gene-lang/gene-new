@@ -112,6 +112,15 @@
     (publish_message service kind session (event_record session event)))
   nil)
 
+(fn command_input_record [session : Str, record]
+  # Older receipts retain the parsed command, but not its original spelling.
+  (let text (?? record/input_text
+    ($to_str "/" record/name (if (== record/raw "") "" ($to_str " " record/raw)))))
+  {^id $"${session}/${record/id}/input"
+   ^seq ($to_str (?? record/start_seq 0)) ^round_id "" ^turn 0
+   ^role "user" ^phase "prompt" ^kind "command/input"
+   ^text text ^order (?? record/started_ms 0) ^^durable})
+
 (fn queue_snapshot [service, session : Str]
   (if service/closed/.get (return nil))
   (if ($absent? service/publisher/.get) (return nil))
@@ -156,6 +165,8 @@
       (if_yes (== record/ui_action true)
         (publish_message service "ui/action" "" {^session session ^record record})
         (return nil))
+      (if (&& (! ($absent? record/raw)) ($absent? record/mode_instance))
+        (publish_message service "turn" session (command_input_record session record)))
       (if (&& (!= record/name "sh") (! ($absent? record/text)))
         (publish_message
           service
@@ -308,6 +319,8 @@
     (let seq (?? record/start_seq 0))
     (if (&& (>= after 0) (<= seq after)) (continue))
     (if (&& (>= before 0) (>= seq before)) (continue))
+    (if ($absent? record/mode_instance)
+      (records .push (command_input_record id record)))
     (if_yes (&& (!= record/name "sh") (!= (?? record/output "") ""))
       (records .push
         {
@@ -344,7 +357,13 @@
   (let rounds (round_state service/controller id))
   (let ordered ($order/sort_by records (fn [record] (?? record/order 0))))
   (let page [])
-  (let start ($math/max 0 (- ordered/.size history_page_limit)))
+  (var start ($math/max 0 (- ordered/.size history_page_limit)))
+  # A command's input and output share one cursor. Keep them on the same
+  # page so the exclusive "before" cursor cannot skip its input.
+  (while (> start 0)
+    (let previous (- start 1))
+    (if (!= ordered/%previous/seq ordered/%start/seq) (break))
+    (set start previous))
   (var i 0)
   (for record in ordered
     (if (>= i start) (page .push record))

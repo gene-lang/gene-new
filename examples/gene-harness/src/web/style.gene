@@ -123,8 +123,8 @@ input::placeholder, textarea::placeholder { color: var(--muted); opacity: 1; }
 .run + .run { padding-top: 1.25rem; }
 .message { max-width: var(--content-width); margin: 0 auto 1.75rem; }
 .speaker { margin: 0 0 .55rem; color: var(--muted); font-size: .72rem; font-weight: 550; }
-.user { margin-left: clamp(0rem, 8%, 3rem); padding: .85rem 1.1rem; border-radius: 10px; background: var(--soft); }
-.user .speaker { color: var(--muted); }
+.user { width: fit-content; max-width: 90%; margin-left: auto; margin-right: 0; padding: .85rem 1.1rem; border-radius: 18px; text-align: left; color: #163a63; background: #e6f1ff; }
+.user .speaker, .user.provisional .speaker, .user .muted { color: inherit; }
 .agent { padding: .2rem 0; }
 .message_text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: .94rem; }
 .provisional .speaker { color: var(--accent); }
@@ -264,7 +264,7 @@ input::placeholder, textarea::placeholder { color: var(--muted); opacity: 1; }
   .command strong { min-width: 5.5rem; }
   .rename_form, .auth_notice { padding: .6rem 1.25rem; }
   .drawer { right: 1rem; top: 4.5rem; max-width: calc(100vw - 2rem); }
-  .user { margin-left: 1rem; }
+  .user { max-width: calc(100% - 1rem); }
   .run { margin-bottom: 2rem; }
 }
 @media (max-height: 600px) {

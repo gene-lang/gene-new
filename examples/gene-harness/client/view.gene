@@ -38,7 +38,9 @@
   (var view_kind : Str "")
   (if_not ($absent? block/view) (set view_kind block/view/kind))
   (var content : EventTarget
-    (if (== view_kind "gene")
+    (if (== role "user")
+      ($dom/render `(div ^class_name "message_text" %text))
+      (if (== view_kind "gene")
       (execution_view text "Gene file" true true on_copy on_toggle)
       (if (== view_kind "markdown")
         (markdown_view text)
@@ -50,12 +52,12 @@
               (execution_view text "Next request" false true on_copy on_toggle)
               (if (== phase "reply")
               (markdown_view text)
-              ($dom/render `(div ^class_name "message_text" %text)))))))))
+              ($dom/render `(div ^class_name "message_text" %text))))))))))
   (var article : EventTarget
     ($dom/render
       `(article ^class_name %cls
          (div ^class_name "speaker" %label
-           %(if provisional " · in progress" "")))))
+           %(if (&& provisional (!= role "user")) " · in progress" "")))))
   ($dom/append article content)
   (if_yes block/truncated
     ($dom/append article ($dom/render `(p ^class_name "muted" "Output shortened for display."))))

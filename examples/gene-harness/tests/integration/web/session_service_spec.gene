@@ -220,6 +220,52 @@
           ensure (close_session_service service))))))
 
 (describe "Harness live delivery"
+  (it "separates command inputs from execution output in live and restored history" []
+    (isolated this_mod/.path "separates command inputs from execution output in live and restored history"
+      (fn [workspace]
+        (let service (test_service ^workspace workspace ^provider (fn [request] "")))
+        (let messages [])
+        (let session (create_session service))
+        (let inputs ["/help" "/run  ($println \"live output\") (+ 2 3)\n"
+                     "/sh printf 'shell output'" "/run missing_command_value"])
+        (service/publisher .set (fn [message] (messages .push message)))
+        (try
+          (for text in inputs
+            (let submitted (command service session/id text))
+            (let joined (service/runtime/commands/watchers/.get .get $"${session/id}:${submitted/id}"; .join))
+            ($assert (== ($head joined) TaskOutcome/ok))
+            (let state (snapshot service session/id))
+            (let input_id $"${session/id}/${submitted/id}/input")
+            (let user ($filter state/records (fn [record] (== record/id input_id))))
+            ($assert (== user/.size 1) "command input was missing or duplicated")
+            ($assert (== user/0/role "user"))
+            ($assert (== user/0/text text) "command spelling was not preserved")
+            (let result ($first ($filter state/records (fn [record] (== record/id $"${session/id}/${submitted/id}")))))
+            ($assert (== result/role "assistant"))
+            ($assert (== result/phase "command"))
+            ($assert (!= result/text "") "execution output was lost")
+            ($assert (> ($size ($filter messages (fn [message]
+              (&& (== message/type "turn") (== message/data/id input_id)
+                  (== message/data/role "user") (== message/data/text text))))) 0)
+              "command input was not published live"))
+          ensure (close_session_service service))
+        (let restored (test_service ^workspace workspace ^provider (fn [request] "")))
+        (try
+          (let state (snapshot restored session/id))
+          (let users ($filter state/records (fn [record] (== record/role "user"))))
+          ($assert (== users/.size inputs/.size))
+          ($assert (== ($map users (fn [record] record/text)) inputs)
+            "restored commands changed order or input text")
+          (repeat number in 199
+            (transcript restored/runtime session/id {^type "reply" ^text ($to_str number) ^^final}))
+          (let latest (snapshot restored session/id))
+          ($assert (== latest/records/0/role "user") "page boundary split command input from output")
+          ($assert (== latest/records/0/text inputs/3))
+          ($assert (== latest/records/.size 201))
+          (let earlier (snapshot restored session/id ^before ($parse/parse_int latest/records/0/seq)))
+          ($assert (== ($size ($filter earlier/records (fn [record] (== record/role "user")))) 3))
+          ensure (close_session_service restored)))))
+
   (it "publishes prompts, responses, console and progress before completion" []
     (isolated this_mod/.path "publishes prompts, responses, console and progress before completion"
       (fn [workspace]

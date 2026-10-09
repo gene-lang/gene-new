@@ -100,7 +100,7 @@
     (if (>= offset ($str/byte_size text))
       ""
       ($str/slice_bytes text offset (- ($str/byte_size text) offset))))
-  {^kind "command" ^name name ^raw raw ^handler selected/run})
+  {^kind "command" ^name name ^raw raw ^input_text text ^handler selected/run})
 
 (fn help_command [ctx]
   (let name ($str/trim ctx/raw))
@@ -416,7 +416,7 @@ Stopped."""))))
           ^output ""
           ^started_ms ($os/wall_ms)
           ^start_seq (next_sequence manager/runtime/events (stream_key "session" session))})
-      (for key in ["mode_instance" "input_id" "ui_action" "ui_request" "ui_action_id" "request_id" "request_seq" "request_digest"]
+      (for key in ["input_text" "mode_instance" "input_id" "ui_action" "ui_request" "ui_action_id" "request_id" "request_seq" "request_digest"]
         (let value (parsed .get key))
         (if_not ($absent? value) (allocated .put key value)))
       (state/records .push allocated)
