@@ -3,6 +3,20 @@
 Build the host in portable release mode with `nimble build`. Check
 `bin/gene --version`; `nimble debug` is for debugging, not performance baselines.
 
+## General-purpose Gene / Python comparison
+
+```sh
+bin/gene run benchmarks/run_general.gene tmp/general-comparison bin/gene "$(command -v python3)"
+bin/gene test benchmarks/general_spec.gene
+```
+
+The Gene runner compares six matching standard-library workloads: integer
+computation, closure dispatch, record processing, text indexing, JSON round
+trips, and event replay. It verifies results across languages, alternates fresh
+processes, excludes warmup and calibration, and writes raw results, provenance,
+`summary.json`, and `report.md`. See [the workload contract](general/README.md)
+for timing boundaries, parameters, and interpretation.
+
 ## Repeatable core measurements
 
 ```sh

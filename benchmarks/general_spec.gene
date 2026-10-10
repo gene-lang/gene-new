@@ -1,0 +1,109 @@
+(import $test [describe it assert_equal assert_raises])
+(import [cases make_input integer_loop closure_dispatch records text_index json_roundtrip event_replay measure]
+  ^from "./general/workloads")
+(import [new_variant validate_results record_sample checked_output] ^from "./run_general")
+
+(fn payload []
+  (let rows [])
+  (for entry in (cases)
+    (rows .push {^name entry/0 ^repetitions 4 ^elapsed_ms 120 ^result [17 42]}))
+  {^format 1 ^language "gene" ^size 17 ^target_ms 100 ^rows rows})
+
+(describe "General benchmark correctness"
+  (it "checks a hand-computed single-item fixture" []
+    (let input (make_input 1))
+    (assert_equal (integer_loop input) [242 242])
+    (assert_equal (closure_dispatch input) 11)
+    (let grouped (records input))
+    (assert_equal grouped/0 0)
+    (assert_equal grouped/1 0)
+    (for total in grouped/2 (assert_equal total 0))
+    (assert_equal (text_index input) [4 [["action" 1] ["info" 1] ["read" 1] ["user-0" 1]]])
+    (assert_equal (json_roundtrip input) [1 11 55])
+    (assert_equal (event_replay input) [["user-0" 11 1]]))
+  (it "preserves stable sorting and ordered account updates" []
+    (let input {^records [
+      {^id 4 ^group "group-0" ^amount 5 ^active true}
+      {^id 2 ^group "group-0" ^amount 5 ^active true}
+      {^id 9 ^group "group-1" ^amount 100 ^active false}]
+      ^events [
+        {^key "a" ^kind 0 ^amount 10}
+        {^key "a" ^kind 1 ^amount 3}
+        {^key "a" ^kind 2 ^amount 20}
+        {^key "a" ^kind 0 ^amount 2}]})
+    (let grouped (records input))
+    (assert_equal grouped/0 2)
+    (assert_equal grouped/1 126)
+    (assert_equal grouped/2/0 10)
+    (assert_equal grouped/2/1 0)
+    (assert_equal (event_replay input) [["a" 22 4]]))
+  (it "matches Python across small, wrapping and duplicate-key inputs" []
+    (let directory ($path/parent this_mod/.path))
+    (let python (?? ($os/env? "GENE_BENCH_PYTHON") "python3"))
+    (for size in [1 17 257 2048]
+      (let process (await ($os/exec_async python
+        ($path/join directory "general/workloads.py") ($to_str size) "0"
+        ^timeout_ms 30000 ^max_bytes 1048576)))
+      (let actual (validate_results (checked_output process) "python" size 0))
+      (let input (make_input size))
+      (for entry in (cases)
+        (let callable entry/1)
+        (assert_equal (actual .get entry/0) (callable input) $"${entry/0}, size ${size}")))))
+
+(describe "General benchmark runner"
+  (it "calibrates and measures real work without changing its result" []
+    (let input (make_input 257))
+    (let result (measure "integer_loop" integer_loop input 10))
+    (assert_equal result/name "integer_loop")
+    (assert_equal result/result (integer_loop input))
+    ($assert (> result/repetitions 0) "calibration did not select repetitions")
+    ($assert (> result/elapsed_ms 0) "measured batch fell below clock resolution"))
+  (it "excludes warmup and normalizes batches with different repetition counts" []
+    (let variant (new_variant "gene"))
+    (record_sample variant (payload) 17 100 500 0)
+    (assert_equal variant/wall_ms [])
+    (let group (variant/rows .get "integer_loop"))
+    (assert_equal group/batch_ms [])
+    (record_sample variant (payload) 17 100 600 1)
+    (assert_equal group/batch_ms [30.0])
+    (let second (payload))
+    (for row in second/rows (row .put "repetitions" 8))
+    (record_sample variant second 17 100 700 2)
+    (assert_equal group/batch_ms [30.0 15.0])
+    (assert_equal variant/wall_ms [600 700]))
+  (it "rejects result drift before keeping any samples" []
+    (let variant (new_variant "gene"))
+    (record_sample variant (payload) 17 100 500 0)
+    (let changed (payload))
+    (changed/rows/5 .put "result" [99])
+    (assert_raises (fn [] (record_sample variant changed 17 100 600 1)) AssertionError)
+    (assert_equal variant/wall_ms [])
+    (for [name group] in variant/rows (assert_equal group/batch_ms [])))
+  (it "rejects missing, duplicate and unknown workloads" []
+    (let missing (payload))
+    (missing .put "rows" [])
+    (assert_raises (fn [] (validate_results missing "gene" 17 100)) AssertionError)
+    (let duplicate (payload))
+    (duplicate/rows/5 .put "name" "integer_loop")
+    (assert_raises (fn [] (validate_results duplicate "gene" 17 100)) AssertionError)
+    (let unknown (payload))
+    (unknown/rows/5 .put "name" "unknown")
+    (assert_raises (fn [] (validate_results unknown "gene" 17 100)) AssertionError))
+  (it "rejects invalid metadata and timing" []
+    (assert_raises (fn [] (validate_results (payload) "python" 17 100)) AssertionError)
+    (assert_raises (fn [] (validate_results (payload) "gene" 18 100)) AssertionError)
+    (let zero (payload))
+    (zero/rows/0 .put "elapsed_ms" 0)
+    (assert_raises (fn [] (validate_results zero "gene" 17 100)) AssertionError)
+    (let negative (payload))
+    (negative/rows/0 .put "repetitions" -1)
+    (assert_raises (fn [] (validate_results negative "gene" 17 100)) AssertionError)
+    (let fractional (payload))
+    (fractional/rows/0 .put "repetitions" 1.5)
+    (assert_raises (fn [] (validate_results fractional "gene" 17 100)) AssertionError))
+  (it "rejects process failure, timeout and truncated output before parsing" []
+    (for process in [
+      {^status 1 ^timed_out false ^truncated false ^stderr "failed"}
+      {^status 0 ^timed_out true ^truncated false ^stderr "timeout"}
+      {^status 0 ^timed_out false ^truncated true ^stderr "truncated"}]
+      (assert_raises (fn [] (checked_output process)) AssertionError))))
