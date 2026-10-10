@@ -58,6 +58,10 @@ Miclone meshing pass are the initial application targets.
 For the native service path, `bin/gene run examples/gene-harness/probes/performance.gene
 tmp/harness-profile 100` runs real service/turn/patch work against a deterministic
 provider and asserts that every patch was applied. Use a new workspace each run.
+Workload version 2 uses the supported scripted profile and checks completed
+round receipts and exact file contents. It is not directly comparable with the
+October 4 callback-based capture; compare runtime binaries on the same current
+probe. Scripted response preparation and service startup are outside its timer.
 The existing native numeric workload is
 `bin/gene run examples/miclone/probes/run_worldgen.gene --repeat-seconds 10`.
 It executes the server's real generation code. Miclone's client mesher runs in
