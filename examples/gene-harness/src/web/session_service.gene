@@ -80,6 +80,9 @@
 
 (fn event_record [session : Str, event]
   (let payload event/payload)
+  # Initial user bubbles exclude temporary request/prepare guidance. Keep the
+  # full request for model input and subsequent diagnostic request records.
+  (let text (?? payload/text (?? payload/full "")))
   {
     ^seq ($to_str event/seq)
     ^id $"${session}/${event/seq}"
@@ -97,7 +100,7 @@
                "turn/error"
                event/type))
     ^order (?? payload/at_ms event/seq)
-    ^text (?? payload/text (?? payload/full ""))
+    ^text (if (== payload/initial true) (?? payload/settled text) text)
     ^late (== payload/late true)
     ^final (== payload/final true)
     ^patch_files (?? payload/patch_files [])

@@ -1,6 +1,12 @@
 # Tests src/builtin/triggers.gene.
 (import $test [describe it])
-(import [isolated run_spec] ^from "../../support")
+(import [isolated run_spec test_service] ^from "../../support")
+(import [close_session_service] ^from "../../../src/web/session_service")
+(import [create_trigger delete_trigger list_occurrences] ^from "../../../src/runtime/triggers")
+(import [triggers : trigger_plugin] ^from "../../../src/builtin/triggers")
+(import [put_cordis_plugin] ^from "../../../src/kernel")
+(import [ExecutionLimits] ^from "../../../src/plugin_api")
+(import [start_host stop_host cli] ^from "../../web_support")
 (import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
 (import [baseline_profile] ^from "../../../src/profiles/baseline")
 (import [new_round_controller close_round_controller] ^from "../../../src/runtime/round_controller")
@@ -10,6 +16,82 @@
 (import [discover] ^from "../../../src/agents/discovery")
 
 (describe "Trigger host plugin"
+  (it "fires a one-shot through the web host after its activation budget expires" []
+    (isolated this_mod/.path "fires a one-shot through the web host after its activation budget expires"
+      (fn [workspace]
+        ($fs/make_dir $"${workspace}/.gene-harness")
+        ($fs/write_text $"${workspace}/.gene-harness/config.gene"
+          ($serde/write_data {^response_budget {^timeout_ms 1000}}))
+        (let host (start_host workspace
+          ^script ["($fs/write_text \"trigger-result.txt\" \"TRIGGER_OK\") (Outcome ^^done ^reply \"fired\")"]))
+        (try
+          ($sleep 2500)
+          (let definition $"${workspace}/one-shot.gene")
+          ($fs/write_text definition ($serde/write_data
+            {^id "one-shot" ^kind "scheduled" ^at (+ ($os/wall_ms) 1000)
+             ^request "Write the smoke test marker."}))
+          (cli workspace ["triggers" "create" definition])
+          (let due (+ ($os/monotonic_ms) 20000))
+          (var finished false)
+          (while (! finished)
+            (let result (cli workspace ["triggers" "occurrences" "one-shot"]))
+            (if_yes (> result/occurrences/.size 0)
+              (let occurrence result/occurrences/0)
+              (if_yes (== occurrence/state "finished")
+                ($assert (== occurrence/outcome "done") "one-shot round failed")
+                (set finished true)))
+            ($assert (< ($os/monotonic_ms) due) "web host did not automatically fire the one-shot")
+            ($sleep 100))
+          ($assert (== ($fs/read_text $"${workspace}/trigger-result.txt") "TRIGGER_OK")
+            "scheduled model execution did not write the marker")
+          (let definitions (/triggers (cli workspace ["triggers" "list"])))
+          ($assert ($absent? definitions/0/next_ms) "one-shot next_ms did not advance")
+          (cli workspace ["triggers" "delete" "one-shot"])
+        ensure (stop_host host)))))
+
+  (it "automatically fires all trigger kinds after activation returns" []
+    (isolated this_mod/.path "automatically fires all trigger kinds after activation returns"
+      (fn [workspace]
+        (let calls ($cell []))
+        (let service (test_service ^workspace workspace ^provider (fn [request]
+          (calls/.get .push request/session)
+          "(Outcome ^^done ^reply \"trigger fired\")")))
+        # A host may stay open far longer than any one plugin invocation.
+        (let activated (put_cordis_plugin ^^replace service/runtime/h (trigger_plugin)
+          {^^host ^limits (ExecutionLimits ^max_steps 9223372036854775807
+            ^max_memory_mb 1024 ^timeout_ms 5000)}))
+        (let manager service/runtime/triggers)
+        (try
+          ($assert (== activated "ready")
+            $"trigger replacement failed: ${service/runtime/h/plugin_errors/.get}")
+          ($sleep 6500)
+          (let polling manager/task/.get)
+          (let plugin_status (status_of service/runtime/h "triggers"))
+          ($assert (! polling/.done?)
+            $"trigger polling task stopped after plugin activation: ${(if polling/.done? polling/.join nil)}; status=${plugin_status}; closed=${manager/closed/.get}")
+          (let now ($os/wall_ms))
+          (create_trigger manager {^id "scheduled" ^kind "scheduled" ^at (+ now 150) ^request "scheduled"})
+          (create_trigger manager {^id "heartbeat" ^kind "heartbeat" ^every_ms 150 ^request "heartbeat"})
+          (create_trigger manager {^id "cron" ^kind "cron" ^cron "* * * * *" ^timezone "UTC" ^request "cron"}
+            ^now (- now 60000))
+          (let due (+ ($os/monotonic_ms) 10000))
+          (let finished {})
+          (while (< ($size finished) 3)
+            (for occurrence in (list_occurrences manager)
+              (if_yes (&& (== occurrence/state "finished") ($absent? (finished .get occurrence/trigger)))
+                ($assert (== occurrence/outcome "done") "automatic trigger round failed")
+                (finished .put occurrence/trigger true)
+                (delete_trigger manager occurrence/trigger)))
+            ($assert (< ($os/monotonic_ms) due) $"automatic trigger firing timed out: ${finished}")
+            ($sleep 25))
+          ($assert (>= (calls .get; .size) 3)
+            $"automatic triggers did not invoke the provider: calls=${calls/.get}; occurrences=${(list_occurrences manager)}")
+          (let scheduler manager/task/.get)
+          (withdraw_seam service/runtime/h "core" "loop")
+          ($assert manager/closed/.get "seam loss did not close the scheduler")
+          ($assert scheduler/.done? "scheduler task survived plugin deactivation")
+        ensure (close_session_service service)))))
+
   (it "waits for the loop seam and stops with it" []
     (isolated this_mod/.path "waits for the loop seam and stops with it"
       (fn [workspace]

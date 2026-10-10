@@ -54,6 +54,7 @@
     hook_key
     default_plugin_invoker
     invoke_effect_owner
+    spawn_effect_call
     spawn_host_call
     config_update
     hmr_reloaded

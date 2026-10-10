@@ -5,6 +5,7 @@
 (import ^from "./sessions" [create_session require_record list_sessions unload_idle_sessions update_session delete_session load_session session_busy?])
 (import ^from "../kernel" [rows])
 (import ^from "../agents/history" [collect_unreferenced_bodies])
+(import [spawn_effect_call] ^from "." ^pkg "cordis")
 (import ^from "./round_controller" [submit_round round_state round_receipt answer_round])
 (import * : cron ^from "./schedule/cron")
 (import * : timezone ^from "./schedule/timezone")
@@ -380,8 +381,15 @@
         (set excess (- excess 1)))))
   removed)
 
+(fn poll_triggers [manager, poll_ms : Int]
+  (while (! manager/closed/.get)
+    ($sleep poll_ms)
+    (try (tick_triggers manager)
+      catch Any ($println $"Trigger scheduler: ${$err/message}"))))
+
 (fn open_trigger_manager [runtime, controller, ^poll_ms poll_ms : Int = 100,
-                          ^start start : Bool = true, ^boot boot : Bool = true, ^now now = nil, ^hook hook = nil]
+                          ^start start : Bool = true, ^boot boot : Bool = true, ^now now = nil, ^hook hook = nil,
+                          ^owner owner = nil]
   (let definitions {})
   (let occurrences {})
   (let pending {}) (let watermarks {}) (let finished {})
@@ -412,11 +420,13 @@
   (set runtime/triggers manager)
   (if boot (tick_triggers manager ^^boot ^now now))
   (if start
-    (manager/task .set (spawn ^lane root
-      (while (! manager/closed/.get)
-        ($sleep poll_ms)
-        (try (tick_triggers manager)
-          catch Any ($println $"Trigger scheduler: ${$err/message}"))))))
+    # Plugin-owned background work must outlive its activation call's budget.
+    # The executor starts this module-defined loop in its host context, while
+    # the activation effect still owns cancellation and retirement.
+    (manager/task .set
+      (if ($absent? owner)
+        (spawn ^lane root (poll_triggers manager poll_ms))
+        (spawn_effect_call owner "trigger scheduler" poll_triggers [manager poll_ms]))))
   manager)
 
 (fn close_trigger_manager [manager]

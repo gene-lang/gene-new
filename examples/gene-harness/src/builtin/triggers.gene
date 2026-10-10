@@ -13,7 +13,8 @@
       (let loop_factory (host .PluginHost:resolve "loop"))
       (let loop (loop_factory))
       (let manager
-        (open_trigger_manager ^start (?? loop/start true) ^boot (?? loop/boot true)
+        (open_trigger_manager ^owner host/effects
+          ^start (?? loop/start true) ^boot (?? loop/boot true)
           loop/runtime loop/controller))
       (activations .push {^host host ^manager manager ^runtime loop/runtime})
       (host .PluginHost:contribute "functions"

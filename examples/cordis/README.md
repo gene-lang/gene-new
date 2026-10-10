@@ -60,6 +60,12 @@ exact `EffectScope` for callbacks belonging to an activation revision. The
 lease covers that invocation; a returned stream or task still needs an owned
 consumer/effect until its deferred work finishes.
 
+`spawn_effect_call(owner, label, callable, args)` starts trusted host work on
+the runtime executor without inheriting the registering call's deadline. The
+supplied activation effect owns cancellation, so long-lived host adapters such
+as schedulers stop when their plugin retires. Use module-defined callables;
+plugin callbacks still require normal supervised invocation.
+
 `spawn_host_call(runtime, label, callable, args)` starts trusted host work on
 the runtime executor, outside the submitting invocation's execution budget.
 This is useful for request-driven rendering and other host adapters. The

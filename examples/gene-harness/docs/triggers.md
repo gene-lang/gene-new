@@ -25,3 +25,8 @@ replayed after a crash. Missed/overlapping work follows the selected policy.
 Verify the returned definition/list, timezone and occurrence behavior before
 claiming a schedule is installed. The scheduler and its functions disappear
 when the plugin or its loop dependency is withdrawn.
+
+The polling loop runs as host background work owned by the plugin's activation
+effect. It must outlive the activation callback's execution budget; starting it
+with a plain spawn inside activation can leave a ready plugin whose scheduler
+has stopped. Individual triggered rounds retain their own execution limits.

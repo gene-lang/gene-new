@@ -272,6 +272,9 @@
         (let entered ($cell false))
         (let release ($cell false))
         (let service (test_service ^workspace workspace ^provider (fn [request]
+          (let latest ($last request/messages))
+          ($assert ($str/contains? latest/content "[harness_budget]")
+            "display filtering removed the model's budget guidance")
           (if (== request/turn 1)
             "(append_prompt \"first\" 1) ($println \"console now\") (Outcome ^prompt \"continue\" ^reply \"Progress now.\")"
             (do (entered .set true) (while (! release/.get) ($sleep 1))
@@ -291,9 +294,14 @@
           ($assert (kinds .contains? "console") "console waited for completion")
           ($assert (kinds .contains? "reply") "progress reply waited for completion")
           (let state (snapshot service record/id))
-          ($assert ($str/starts_with? state/records/0/text "original prompt")
-            "initial user request is missing")
+          ($assert (== state/records/0/text "original prompt")
+            "initial user bubble includes model-only guidance")
           ($assert (== state/records/0/role "user") "initial request has the wrong role")
+          (let user_messages ($filter messages/.get (fn [message]
+            (&& (== message/type "turn") (== message/data/role "user")))))
+          ($assert (== user_messages/.size 1) "initial prompt was not published live")
+          ($assert (== user_messages/0/data/text "original prompt")
+            "live user bubble includes model-only guidance")
           (release .set true)
           (service/controller/watchers .get; .get record/id; .join)
           ($assert (== (/state (receipt service record/id round/id)) "done") "streamed round did not complete")
