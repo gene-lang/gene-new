@@ -23,6 +23,14 @@ above only supplies the installed Python path. To use explicit paths:
 bin/gene run benchmarks/run_general.gene tmp/general-large /path/to/gene /path/to/python3 20000
 ```
 
+To compare a runtime change, append the preserved baseline Gene executable
+after `SIZE`. All three executables run in rotating order, with identical
+per-batch work and matching results. The report adds before/after speedups:
+
+```sh
+bin/gene run benchmarks/run_general.gene tmp/general-before-after /path/to/after-gene /path/to/python3 5000 /path/to/before-gene
+```
+
 | Parameter | Default | Range / meaning |
 | --- | --- | --- |
 | Final positional `SIZE` | 5000 | 1–1,000,000 input items per workload batch |
@@ -82,8 +90,8 @@ the run; no summary is published for an incomplete comparison.
 
 ## Timing method
 
-1. Alternate which language runs first in each round. Run one excluded warmup
-   process per language, followed by the requested measured processes.
+1. Rotate which executable runs first in each round. Run one excluded warmup
+   process per executable, followed by the requested measured processes.
 2. In every process, construct inputs outside kernel timing. For each workload,
    double repetitions until a calibration batch reaches the target duration.
 3. Exclude calibration and time a new batch with that repetition count. Retain
