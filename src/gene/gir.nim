@@ -699,6 +699,7 @@ type
   ForProto* = ref object
     pattern*: Value              # loop-variable pattern
     body*: Chunk                 # loop body
+    reuseScope*: bool            # body cannot retain its iteration scope
 
   MatchClause* = object
     pattern*: Value

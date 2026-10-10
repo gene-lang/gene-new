@@ -186,6 +186,17 @@ when defined(geneRcStats):
       check run(compileSource("(retained_helper 2)", useLocalSlots = false), scope).print() == "42"
 
   suite "rc — closures and scopes (geneRcStats)":
+    test "reused for activations release their values on normal and abrupt exits":
+      for ending in ["nil", "(continue)", "(break)", "(return nil)", "(fail \"stop\")"]:
+        let source = "(fn work [] (for item in [1 2 3 4] " &
+          "(var local {^value [item ($to_str item)]}) " &
+          "(var typed : Str ($to_str item)) " &
+          "(set typed \"next\") " & ending & ")) " &
+          "(repeat i in 100 (try (work) catch Any nil))"
+        discard leakedManaged(source)
+        checkpoint ending
+        check leakedManaged(source) == 0
+
     test "a directly stored Path releases its held-message scope":
       for slots in [true, false]:
         check leakedManaged("(Path \".Self:head\")",

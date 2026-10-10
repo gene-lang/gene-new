@@ -60,6 +60,17 @@ proc nativeEnvelopeEcho(args: openArray[Value], call: ptr NativeCall): Value {.n
     items.add args[0]
   newList(items)
 
+var retainedIterationScopes: seq[Scope]
+
+proc retainIterationScope(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  retainedIterationScopes.add call[].dispatchScope
+  NIL
+
+proc temporaryNamespace(): Value =
+  let scope = newScope()
+  scope.define("answer", newInt(42))
+  newNamespace("temporary", scope)
+
 suite "VM — proper tail calls":
   test "mutual and higher-order tail chains keep physical frames flat":
     beginTailCallStats()
@@ -233,6 +244,47 @@ suite "VM — proper tail calls":
     check armStats.fallbackByReason[tfrStructuredFrame] >= 1
     check armStats.collapsedExpressionFrames == 0
 
+  test "tail capture checks reach closures beyond cyclic containers and node heads":
+    beginTailCallStats()
+    let cyclic = runStr("""
+      (var saved nil)
+      (fn retain [value] (set saved value) 0)
+      (let nodes [])
+      (repeat i in 40 (nodes .push [i]))
+      (repeat j in 39
+        (let next (+ j 1))
+        (nodes/%j .push nodes/%next))
+      (nodes/39 .push nodes/0)
+      (fn outer [x root last]
+        (last .push (fn [] x))
+        (set x (+ x 1))
+        (retain root))
+      (outer 7 nodes/0 nodes/39)
+      (var last saved)
+      (repeat step in 39 (set last last/1))
+      (let answer (last/2))
+      (last .set 1 nil)
+      (last .set 2 nil)
+      answer
+    """)
+    let cyclicStats = finishTailCallStats()
+    check cyclic == newInt(8)
+    check cyclicStats.fallbackByReason[tfrCapturedScope] >= 1
+
+    beginTailCallStats()
+    let headed = runStr("""
+      (var saved nil)
+      (fn retain [value] (set saved value) 0)
+      (fn outer [x]
+        (retain ($node/rebuild (quote (held))
+          ^head (fn [] (set x (+ x 1)) x))))
+      (outer 11)
+      [(($head saved)) (($head saved))]
+    """)
+    let headStats = finishTailCallStats()
+    check headed.print() == "[12 13]"
+    check headStats.fallbackByReason[tfrCapturedScope] >= 1
+
   test "defensive eligibility guards preserve malformed internal GIR":
     let operandChunk = compileSource(
       "(fn target [] 1) (fn caller [] [0 (target)]) (caller)")
@@ -378,6 +430,19 @@ suite "VM — proper tail calls":
     check stats.maxPhysicalFrames <= 4
 
 suite "compiler — GIR emission":
+  test "for scope reuse is conservative and survives GIR cloning":
+    let simple = compileSource("(for x in [1 2] (+ x 1))")
+    check simple.forLoops[0].reuseScope
+    check cloneCompiledChunk(simple).forLoops[0].reuseScope
+    for source in [
+        "(for x in [1 2] (fn [] x))",
+        "(for x in [1 2] (env))",
+        "(for x in [1 2] (for y in [3] (+ x y)))",
+        "(for x in [1 2] (try x ensure nil))",
+        "(for x in [1 2] (spawn x))"]:
+      let chunk = compileSource(source)
+      check not chunk.forLoops[0].reuseScope
+
   test "tail-position proof reaches calls, match arms, and callable bodies":
     let chunk = compileSource(
       "(fn g [x] x) (fn h [x] x) (fn k [x] x) " &
@@ -1589,6 +1654,69 @@ suite "vm — macros":
         discard run(compileSource("($cell metadata_env)"), scope)
     finally:
       environment.setEnvCompilerMacros(nil)
+
+  test "borrowed authority scan reaches cyclic graphs beyond inline visitation":
+    let scope = newGlobalScope()
+    let borrowed = newCallerEnv(scope)
+    var nodes: seq[Value]
+    for i in 0 ..< 40:
+      nodes.add newList(@[newStr("ordinary leaf"), newInt(i)])
+    for i in 0 ..< nodes.high:
+      nodes[i].pushListItem(nodes[i + 1])
+    nodes[^1].pushListItem(nodes[0])
+    try:
+      # A legal cycle terminates; revisiting it must not hide a later sibling.
+      requireNativeRootable(nodes[0])
+      let hidden = newMap()
+      hidden.putMapEntry("hidden", borrowed)
+      nodes[^1].pushListItem(hidden)
+      expect GeneError:
+        requireNativeRootable(nodes[0])
+    finally:
+      nodes[^1].setListItem(2, NIL)
+
+  test "for activations preserve bindings snapshots and exits":
+    ck "(fn run [] (var total 0) (for x in [1 2 3] " &
+       "(var local x) (set local (+ local 10)) (set total (+ total local))) total) (run)", "36"
+    ck "(fn capture! [] (caller_env .snapshot [\"x\"])) " &
+       "(var snapshots []) (for x in [1 2 3] (snapshots .push (capture!))) " &
+       "[(eval (quote x) ^in snapshots/0) (eval (quote x) ^in snapshots/1) " &
+       " (eval (quote x) ^in snapshots/2)]", "[1 2 3]"
+    ck "(var total 0) (for _ in [1 2 3] (set total (+ total 1))) total", "3"
+    ck "(var total 0) (for [a b] in [[1 2] [3 4]] " &
+       "(set total (+ total a b))) total", "10"
+    ck "(fn run [] (var total 0) (for x in [1 2 3 4] " &
+       "(if (== x 2) (continue)) (if (== x 4) (break)) " &
+       "(set total (+ total x))) total) (run)", "4"
+    ck "(fn run [] (for x in [1 2 3] (if (== x 2) (return x))) 9) (run)", "2"
+    ck "(var hs []) (for x in [1 2 3] " &
+       "(var y x) (hs .push (fn [] (set y (+ y 1)) y))) " &
+       "[(hs/0) (hs/1) (hs/2) (hs/0)]", "[2 3 4 3]"
+
+  test "native retention overrides the compiler's iteration reuse proof":
+    let scope = newGlobalScope()
+    scope.define("retain_iteration", newNativeCallFn("retain_iteration", retainIterationScope))
+    let chunk = compileSource("(for item in [1 2 3] (retain_iteration))")
+    check chunk.forLoops[0].reuseScope
+    retainedIterationScopes.setLen(0)
+    try:
+      discard run(chunk, scope)
+      check retainedIterationScopes.len == 3
+      for i, retained in retainedIterationScopes:
+        check retained.lookup("item") == newInt(i + 1)
+    finally:
+      retainedIterationScopes.setLen(0)
+
+  test "namespace scope borrowing preserves owned reads and aliased output":
+    let retained = temporaryNamespace().nsScope
+    GC_fullCollect()
+    check retained.lookup("answer") == newInt(42)
+    var container = temporaryNamespace()
+    check container.nsScope.lookupOptional("answer", container)
+    check container == newInt(42)
+    var missing = newInt(9)
+    check not retained.lookupOptional("absent", missing)
+    check missing == newInt(9)
 
   test "escaping closed snapshots retain helpers and their selected macros":
     ck "(fn capture! [] (caller_env .snapshot [\"helper\" \"twice\"])) " &

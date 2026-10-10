@@ -8385,7 +8385,8 @@ proc compileFor(c: var Compiler, node: Value) =
   compileBodyFrom(bodyCompiler, body, 3)
   discard bodyCompiler.emit(opReturn)
   bodyCompiler.chunk.localNames = bodyCompiler.localNames
-  let fp = ForProto(pattern: body[0], body: bodyCompiler.chunk)
+  let fp = ForProto(pattern: body[0], body: bodyCompiler.chunk,
+    reuseScope: chunkCanPoolCallScope(bodyCompiler.chunk))
   discard c.emit(opForEach, c.chunk.addForLoop(fp))
 
 proc compileYield(c: var Compiler, node: Value) =

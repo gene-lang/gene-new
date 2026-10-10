@@ -1823,7 +1823,7 @@ proc raiseUndefinedSymbol(name: string) {.noReturn.} =
   raise error
 
 proc clearManagedBindingPins(scope: Scope, name: string) =
-  if scope.managedBindingPins.hasKey(name):
+  if scope.managedBindingPins.len > 0 and scope.managedBindingPins.hasKey(name):
     var retired = scope.managedBindingPins[name]
     scope.managedBindingPins.del(name)
     reset(retired) # after the former Value slot has been replaced
@@ -1943,7 +1943,9 @@ proc assignSlotAt(scope: Scope, depth, index: int, name: string, v: Value) =
   scope.scopeAtDepth(depth, name).assignSlot(index, name, v)
 
 proc lookup*(scope: Scope, name: string): Value =
-  var s = scope
+  # The starting scope owns its parent chain throughout this read-only walk.
+  # Owning each cursor hop needlessly makes ORC revisit the same scope graph.
+  var s {.cursor.} = scope
   while s != nil:
     let slot = s.slotIndex(name)
     if slot >= 0:
@@ -1966,7 +1968,7 @@ proc lookup*(scope: Scope, name: string): Value =
   raiseUndefinedSymbol(name)
 
 proc lookupOptional*(scope: Scope, name: string, value: var Value): bool =
-  var s = scope
+  var s {.cursor.} = scope
   while s != nil:
     let slot = s.slotIndex(name)
     if slot >= 0:
@@ -1997,7 +1999,7 @@ proc nameResolvable(scope: Scope, name: string): bool =
   ## ambiguous still *has* the name, so it must read as a collision here
   ## rather than raise (which would turn lazy import ambiguity into an eager
   ## import-time error in the nested case).
-  var s = scope
+  var s {.cursor.} = scope
   while s != nil:
     let slot = s.slotIndex(name)
     if slot >= 0:
@@ -4348,49 +4350,71 @@ proc requireEnv(name: string, value: Value) =
   if value.kind != vkEnv:
     raise newException(GeneError, name & " expects an Env")
 
-proc carriesCallerEnv(value: Value, seen: var HashSet[uint64]): bool =
-  ## Detect direct or captured borrowed authority at publication boundaries.
-  ## Containers are walked defensively; ordinary construction rejects them, so
-  ## this remains a cold error-path check rather than a hot lookup tax.
-  if value.kind == vkCallerEnv:
+type ValueGraphVisited = object
+  ## Most stored graphs contain only a handful of containers. Do not allocate
+  ## a hash table (or insert scalar/string leaves) for every ordinary store.
+  inline: array[16, uint64]
+  count: int
+  overflow: HashSet[uint64]
+
+proc firstGraphVisit(seen: var ValueGraphVisited, bits: uint64): bool =
+  for i in 0 ..< seen.count:
+    if seen.inline[i] == bits: return false
+  if seen.count < seen.inline.len:
+    seen.inline[seen.count] = bits
+    inc seen.count
     return true
-  if value.isHeapBacked:
-    if seen.contains(value.bits):
-      return false
-    seen.incl value.bits
+  not seen.overflow.containsOrIncl(bits)
+
+proc carriesCallerEnv(value: Value, seen: var ValueGraphVisited): bool =
+  ## Detect direct or captured borrowed authority at publication boundaries.
+  ## Walk containers without copying their backing storage or property names.
+  ## The walk invokes no user code and does not mutate the graph.
   case value.kind
-  of vkFunction:
-    value.fnCapturesCallerEnv
+  of vkCallerEnv: return true
+  of vkFunction: return value.fnCapturesCallerEnv
+  of vkNamespace:
+    return value.nsScope != nil and value.nsScope.borrowedCallerEnv
+  of vkCallableView, vkList, vkMap, vkSet, vkHashMap, vkNode, vkModule,
+     vkEnv, vkCell, vkAtomicCell, vkStream:
+    if not seen.firstGraphVisit(value.bits): return false
+  else: return false
+  case value.kind
   of vkCallableView:
     carriesCallerEnv(value.callableViewTarget, seen)
   of vkList:
-    for item in value.listItems:
-      if carriesCallerEnv(item, seen): return true
+    let items {.cursor.} = value.listItems
+    for i in 0 ..< items.len:
+      if carriesCallerEnv(items[i], seen): return true
     false
   of vkMap:
-    for _, item in value.mapEntries:
+    let entries {.cursor.} = value.mapEntries
+    for item in entries.borrowedValues:
       if carriesCallerEnv(item, seen): return true
     false
   of vkSet:
-    for item in value.setItems:
-      if carriesCallerEnv(item, seen): return true
+    let items {.cursor.} = value.setItems
+    for i in 0 ..< items.len:
+      if carriesCallerEnv(items[i], seen): return true
     false
   of vkHashMap:
-    for entry in value.hashMapEntries:
-      if carriesCallerEnv(entry.key, seen) or
-          carriesCallerEnv(entry.val, seen): return true
+    let entries {.cursor.} = value.hashMapEntries
+    for i in 0 ..< entries.len:
+      if carriesCallerEnv(entries[i].key, seen) or
+          carriesCallerEnv(entries[i].val, seen): return true
     false
   of vkNode:
-    if carriesCallerEnv(value.head, seen): return true
-    for _, item in value.props:
+    if carriesCallerEnv(value.borrowedNodeHead, seen): return true
+    let props {.cursor.} = value.props
+    for item in props.borrowedValues:
       if carriesCallerEnv(item, seen): return true
-    for item in value.body:
-      if carriesCallerEnv(item, seen): return true
-    for _, item in value.meta:
+    let body {.cursor.} = value.body
+    for i in 0 ..< body.len:
+      if carriesCallerEnv(body[i], seen): return true
+    let meta {.cursor.} = value.meta
+    for item in meta.borrowedValues:
       if carriesCallerEnv(item, seen): return true
     false
-  of vkNamespace:
-    value.nsScope != nil and value.nsScope.borrowedCallerEnv
   of vkModule:
     carriesCallerEnv(value.moduleRootNamespace, seen)
   of vkEnv:
@@ -4418,7 +4442,7 @@ proc carriesCallerEnv(value: Value, seen: var HashSet[uint64]): bool =
     false
 
 proc carriesCallerEnv(value: Value): bool =
-  var seen = initHashSet[uint64]()
+  var seen: ValueGraphVisited
   carriesCallerEnv(value, seen)
 
 proc carriesConstruction*(value: Value): bool {.noinline.}
@@ -5571,10 +5595,11 @@ proc exportedBinding(ns: Value, name: string): Value =
     return VOID
   if ns.nsIsModuleRoot and name in ["this_mod", "this_pkg"]:
     return VOID
-  if name in ns.nsScope.exportExcludedNames:
+  let namespaceScope {.cursor.} = ns.nsScope
+  if name in namespaceScope.exportExcludedNames:
     return VOID
-  ns.nsScope.materializeMirroredVars()
-  ns.nsScope.vars.getOrDefault(name, VOID)
+  namespaceScope.materializeMirroredVars()
+  namespaceScope.vars.getOrDefault(name, VOID)
 
 proc namespaceDeclarationNodes(ns: Value): seq[Value] =
   for name in sortedBindingNames(ns.nsScope):
@@ -11398,6 +11423,19 @@ proc bindMatchedValues(scope: Scope, binds: Table[string, Value],
         continue
     scope.define(k, v)
 
+proc bindForItem(scope: Scope, pattern, item: Value): bool =
+  ## A single binding needs neither a match scratch table nor a second walk
+  ## over that table. Destructuring keeps the complete matcher unchanged.
+  if pattern.kind == vkSymbol:
+    let name = pattern.symVal
+    if name != "_":
+      scope.define(name, item)
+    return true
+  var binds = initTable[string, Value]()
+  if not tryMatch(pattern, item, scope, binds): return false
+  scope.bindMatchedValues(binds, replaceExisting = false)
+  true
+
 # ---------------------------------------------------------------------------
 # Execution
 # ---------------------------------------------------------------------------
@@ -11986,6 +12024,21 @@ proc releaseCallScope(pools: var VmPools, scope: Scope) =
 
 proc releaseCallScope(scope: Scope) =
   releaseCallScope(gVmPools, scope)
+
+proc nextForScope(previous, parent: Scope, body: Chunk, reusable: bool): Scope =
+  ## Reuse storage only after both compiler and ownership proofs. The old
+  ## bindings are released before the next item is installed; captured scopes,
+  ## dynamic declarations, suspension and nested scopes use fresh activations.
+  if reusable and not previous.closureHeld and previous.scopeIsUniquelyOwned:
+    previous.clearDefinedCallSlots()
+    previous.resetCallScope(parent, body.localNames)
+    previous.slotMirror = body.mirrorSlots
+    previous.moduleRefs = parent.moduleRefs
+    previous.sandboxGenerationId = parent.sandboxGenerationId
+    result = previous
+  else:
+    result = newScope(parent)
+  result.prepareChunkScope(body)
 
 proc typeBoundaryScope(scope: Scope): Scope =
   ## Conformance depends on the nearest impl-bearing scope. A module/eval root
@@ -15615,7 +15668,7 @@ proc cloneSuperChunk(chunk: Chunk, owner: FunctionProto,
   for i, body in chunk.subchunks:
     result.subchunks[i] = cloneSuperChunk(body, childOwner(body), cloned)
   for i, loop in chunk.forLoops:
-    result.forLoops[i] = ForProto(pattern: loop.pattern,
+    result.forLoops[i] = ForProto(pattern: loop.pattern, reuseScope: loop.reuseScope,
       body: cloneSuperChunk(loop.body, childOwner(loop.body), cloned))
   for i, match in chunk.matches:
     var clauses: seq[MatchClause]
@@ -15913,7 +15966,7 @@ when dispatchCacheEnabled:
     ## once.
     if scope.application().activeImplAssemblies.len > 0:
       return true
-    var s = scope
+    var s {.cursor.} = scope
     while s != nil:
       if s.implAssembly != nil:
         return true
@@ -17043,7 +17096,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       retireReturnedCallScope(scope)
 
   proc scopeChainContains(start, target: Scope): bool {.inline.} =
-    var current = start
+    var current {.cursor.} = start
     while current != nil:
       if current == target:
         return true
@@ -17051,41 +17104,50 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     false
 
   proc valueCapturesScope(value: Value, target: Scope,
-                          seen: var HashSet[uint64]): bool =
+                          seen: var ValueGraphVisited): bool =
+    # This is a read-only reachability proof, not a value snapshot. The caller
+    # owns the roots and no user code runs while the graph is inspected.
     if value.kind in {vkList, vkMap, vkSet, vkHashMap, vkNode, vkModule,
                       vkEnv, vkCell, vkAtomicCell, vkStream, vkCallableView}:
-      if seen.containsOrIncl(value.bits):
+      if not seen.firstGraphVisit(value.bits):
         return false
     case value.kind
     of vkFunction:
-      scopeChainContains(value.fnScope, target)
+      scopeChainContains(cast[Scope](value.fnScopeAddr), target)
     of vkCallableView:
       scopeChainContains(value.callableViewScope, target) or
         valueCapturesScope(value.callableViewTarget, target, seen)
     of vkList:
-      for item in value.listItems:
-        if valueCapturesScope(item, target, seen): return true
+      let items {.cursor.} = value.listItems
+      for i in 0 ..< items.len:
+        if valueCapturesScope(items[i], target, seen): return true
       false
     of vkMap:
-      for _, item in value.mapEntries:
+      let entries {.cursor.} = value.mapEntries
+      for item in entries.borrowedValues:
         if valueCapturesScope(item, target, seen): return true
       false
     of vkSet:
-      for item in value.setItems:
-        if valueCapturesScope(item, target, seen): return true
+      let items {.cursor.} = value.setItems
+      for i in 0 ..< items.len:
+        if valueCapturesScope(items[i], target, seen): return true
       false
     of vkHashMap:
-      for entry in value.hashMapEntries:
-        if valueCapturesScope(entry.key, target, seen) or
-            valueCapturesScope(entry.val, target, seen): return true
+      let entries {.cursor.} = value.hashMapEntries
+      for i in 0 ..< entries.len:
+        if valueCapturesScope(entries[i].key, target, seen) or
+            valueCapturesScope(entries[i].val, target, seen): return true
       false
     of vkNode:
-      if valueCapturesScope(value.head, target, seen): return true
-      for _, item in value.props:
+      if valueCapturesScope(value.borrowedNodeHead, target, seen): return true
+      let props {.cursor.} = value.props
+      for item in props.borrowedValues:
         if valueCapturesScope(item, target, seen): return true
-      for item in value.body:
-        if valueCapturesScope(item, target, seen): return true
-      for _, item in value.meta:
+      let body {.cursor.} = value.body
+      for i in 0 ..< body.len:
+        if valueCapturesScope(body[i], target, seen): return true
+      let meta {.cursor.} = value.meta
+      for item in meta.borrowedValues:
         if valueCapturesScope(item, target, seen): return true
       false
     of vkNamespace:
@@ -17094,10 +17156,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       valueCapturesScope(value.moduleRootNamespace, target, seen)
     of vkEnv:
       if valueCapturesScope(value.envParent, target, seen): return true
-      for _, item in value.envBindings:
+      let bindings {.cursor.} = value.envBindings
+      for item in bindings.values:
         if valueCapturesScope(item, target, seen): return true
-      for item in value.envImports:
-        if valueCapturesScope(item, target, seen): return true
+      let imports {.cursor.} = value.envImports
+      for i in 0 ..< imports.len:
+        if valueCapturesScope(imports[i], target, seen): return true
       valueCapturesScope(value.envModule, target, seen) or
         valueCapturesScope(value.envPolicy, target, seen)
     of vkCell:
@@ -17114,11 +17178,11 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
   proc scopeValuesCaptureScope(candidate, target: Scope): bool =
     if candidate == nil or target == nil:
       return false
-    var seen = initHashSet[uint64]()
-    for i, item in candidate.slots:
-      if candidate.slotDefined(i) and valueCapturesScope(item, target, seen):
+    var seen: ValueGraphVisited
+    for i in 0 ..< candidate.slots.len:
+      if candidate.slotDefined(i) and valueCapturesScope(candidate.slots[i], target, seen):
         return true
-    for _, item in candidate.vars:
+    for item in candidate.vars.values:
       if valueCapturesScope(item, target, seen):
         return true
     false
@@ -17183,14 +17247,14 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       if curForStream.streamHasNext:
         let item = checkedStreamNext(curForStream, "for item")
         let ownerScope = frames[^1].scope
-        let loopScope = newScope(ownerScope)
-        loopScope.prepareChunkScope(curForBody)
-        var binds = initTable[string, Value]()
-        if not tryMatch(curForPattern, item, loopScope, binds):
+        let ownerChunk = frames[^1].chunk
+        let loopIndex = ownerChunk.instructions[frames[^1].ip - 1].intArg
+        let loopScope = nextForScope(scope, ownerScope, curForBody,
+                                     ownerChunk.forLoops[loopIndex].reuseScope)
+        if not bindForItem(loopScope, curForPattern, item):
           curForStream.closeStream()
           curForStream = NIL
           raiseMatchError(loopScope, "for pattern did not match an item")
-        loopScope.bindMatchedValues(binds, replaceExisting = false)
         chunk = curForBody
         scope = loopScope
         curStackBase = sp
@@ -17214,12 +17278,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       let item = curForItems[curForIndex]
       inc curForIndex
       let ownerScope = frames[^1].scope
-      let loopScope = newScope(ownerScope)
-      loopScope.prepareChunkScope(curForBody)
-      var binds = initTable[string, Value]()
-      if not tryMatch(curForPattern, item, loopScope, binds):
+      let ownerChunk = frames[^1].chunk
+      let loopIndex = ownerChunk.instructions[frames[^1].ip - 1].intArg
+      let loopScope = nextForScope(scope, ownerScope, curForBody,
+                                   ownerChunk.forLoops[loopIndex].reuseScope)
+      if not bindForItem(loopScope, curForPattern, item):
         raiseMatchError(loopScope, "for pattern did not match an item")
-      loopScope.bindMatchedValues(binds, replaceExisting = false)
       chunk = curForBody
       scope = loopScope
       curStackBase = sp
@@ -17971,7 +18035,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           spush stack[curStackBase + inst[].intArg]
         of opLoadOuterLocal:
           let slot = inst[].intArg
-          let outer =
+          let outer {.cursor.} =
             if inst[].depth == 1:
               scope.parent
             else:
@@ -18001,8 +18065,11 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         of opSetName:
           if sp == 0:
             raise newException(GeneError, "VM stack underflow in set")
-          rejectCallerEnvEscape("set outer binding '" & inst[].name & "'",
-                                stack[sp - 1])
+          # Immediate scalars cannot contain borrowed authority or an
+          # in-progress instance. Keep diagnostic formatting on the heap path.
+          if stack[sp - 1].isHeapBacked:
+            rejectCallerEnvEscape("set outer binding '" & inst[].name & "'",
+                                  stack[sp - 1])
           scope.assign(inst[].name, stack[sp - 1])
         of opSetLocal:
           if sp == 0:
@@ -18011,8 +18078,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         of opSetOuterLocal:
           if sp == 0:
             raise newException(GeneError, "VM stack underflow in set")
-          rejectCallerEnvEscape("set outer binding '" & inst[].name & "'",
-                                stack[sp - 1])
+          if stack[sp - 1].isHeapBacked:
+            rejectCallerEnvEscape("set outer binding '" & inst[].name & "'",
+                                  stack[sp - 1])
           scope.assignSlotAt(inst[].depth, inst[].intArg, inst[].name, stack[sp - 1])
         of opRefBegin:
           scope.beginModuleRef(inst[].name)
@@ -20270,11 +20338,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               raise
             let loopScope = newScope(scope)
             loopScope.prepareChunkScope(fp.body)
-            var binds = initTable[string, Value]()
-            if not tryMatch(fp.pattern, item, loopScope, binds):
+            if not bindForItem(loopScope, fp.pattern, item):
               coll.closeStream()
               raiseMatchError(loopScope, "for pattern did not match an item")
-            loopScope.bindMatchedValues(binds, replaceExisting = false)
             pushFrame()
             enterFrame(fp.body, loopScope, true, fkForBody)
             curForStream = coll
@@ -20289,10 +20355,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             let item = items[0]
             let loopScope = newScope(scope)
             loopScope.prepareChunkScope(fp.body)
-            var binds = initTable[string, Value]()
-            if not tryMatch(fp.pattern, item, loopScope, binds):
+            if not bindForItem(loopScope, fp.pattern, item):
               raiseMatchError(loopScope, "for pattern did not match an item")
-            loopScope.bindMatchedValues(binds, replaceExisting = false)
             pushFrame()
             enterFrame(fp.body, loopScope, true, fkForBody)
             curForItems = items

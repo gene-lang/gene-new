@@ -1554,7 +1554,7 @@ iterator values*(t: PropTable): Value =
   for i in 0 ..< t.data.len:
     yield t.data[i].val
 
-iterator borrowedValues(t: PropTable): lent Value =
+iterator borrowedValues*(t: PropTable): lent Value =
   ## `values` without the per-item copy, for walks that must not run release
   ## hooks. The table must not change during the loop.
   for i in 0 ..< t.data.len:
@@ -3794,6 +3794,14 @@ proc scopeHasOtherOwners*(scope: Scope): bool {.inline.} =
   else:
     false
 
+proc scopeIsUniquelyOwned*(scope: Scope): bool {.inline.} =
+  ## Positive proof for reusing an ended activation. Unlike the retirement
+  ## shortcut above, unavailable refcounts must never count as uniqueness.
+  when nimRefCountReadable and not defined(gcAtomicArc):
+    scope != nil and nimStrongRefs(cast[pointer](scope)) == 1
+  else:
+    false
+
 proc capturesScopeChain(v: Value, owner: Scope, budget: var int,
                         seen: var HashSet[uint64], nested: bool): bool =
   ## Whether `v` reaches, directly or through lists, maps, nodes, and Cells, a
@@ -4749,6 +4757,13 @@ proc head*(v: Value): Value =
     raise newException(FieldDefect, "value is not a Node")
   cast[ptr GeneNode](v.bits and PAYLOAD_MASK).head
 
+proc borrowedNodeHead*(v: Value): lent Value =
+  ## Read-only graph walkers keep the node alive and must not create temporary
+  ## owners (or run release hooks) merely to inspect its head.
+  if v.tagOf != NODE_TAG:
+    raise newException(FieldDefect, "value is not a Node")
+  cast[ptr GeneNode](v.bits and PAYLOAD_MASK).head
+
 proc props*(v: Value): lent PropTable =
   if v.tagOf != NODE_TAG:
     raise newException(FieldDefect, "value is not a Node")
@@ -5127,7 +5142,7 @@ proc setNsName*(v: Value, name: sink string) =
     raise newException(FieldDefect, "value is not a Namespace")
   NamespaceData(objData(v)).name = name
 
-proc nsScope*(v: Value): Scope =
+proc nsScope*(v: Value): lent Scope =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okNamespace:
     raise newException(FieldDefect, "value is not a Namespace")
   NamespaceData(objData(v)).scope
