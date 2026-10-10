@@ -351,7 +351,7 @@ suite "spec — reader surface from design":
 
   test "ordinary props require values and flags are explicit":
     check_read("(x ^^ready @@generated false)",
-               "(x @@generated ^^!ready)")
+               "(x @@generated ^^ready false)")
     check_read("{^^ready ^value nil}", "{^^ready ^value nil}")
     for source in ["(x ^name)", "(x @doc)", "{^name}", "#{^name}"]:
       expect ReadError:
@@ -11617,13 +11617,13 @@ suite "spec — qualified message spelling":
     check_eval("(type Dog ^props {} (message bark [] : Str \"woof\")) " &
                "(try ((Dog) .Dog:bark) " &
                "catch CallKindError [$err/where $err/expected])",
-               "[\"message send\" \"Protocol\"]")
+               "[\"message qualifier\" \"Protocol\"]")
 
   test "a type cannot qualify a message value":
     check_eval("(type Dog ^props {} (message bark [] : Str \"woof\")) " &
                "(try Dog:bark " &
                "catch CallKindError [$err/where $err/expected])",
-               "[\"message value\" \"Protocol\"]")
+               "[\"message qualifier\" \"Protocol\"]")
 
   test "Self:msg is the value spelling for a type-direct message":
     # `Self:msg` names no type and dispatches on the runtime receiver, so an

@@ -104,11 +104,11 @@ suite "Self — declaration contracts":
     selfTypeError(parent & "(type Pup : Dog ^props {} " &
       "(message accepts [x : Dog] : Bool true))", "override")
     selfTypeError(parent & "(type Pup : Dog ^props {} " &
-      "(message accepts [x : Self] : Bool ^^^override))", "Self")
+      "(message accepts [x : Self] : Bool ^^override true))", "Self")
     selfTypeError(parent & "(type Pup : Dog ^props {} " &
-      "(message accepts [x : Pup] : Bool ^^^override))", "incompatible")
+      "(message accepts [x : Pup] : Bool ^^override true))", "incompatible")
     check selfTypeEval(parent & "(type Pup : Dog ^props {} " &
-      "(message accepts [x : Dog] : Bool ^^!override)) " &
+      "(message accepts [x : Dog] : Bool ^^override false)) " &
       "((Pup) .accepts (Dog))") == "false"
 
   test "new direct messages cannot assert replacement":
@@ -145,13 +145,13 @@ suite "Self — declaration contracts":
       (alias Hidden Self)
       (type Dog ^props {} (message accepts [x : Self] : Bool true))
       (type Pup : Dog ^props {}
-        (message accepts [x : Hidden] : Bool ^^^override))
+        (message accepts [x : Hidden] : Bool ^^override true))
     """, "Self")
     check selfTypeEval("""
       (type Dog ^props {} (message accepts [x : Self] : Bool true))
       (alias Parent Dog)
       (type Pup : Dog ^props {}
-        (message accepts [x : Parent] : Bool ^^!override))
+        (message accepts [x : Parent] : Bool ^^override false))
       ((Pup) .accepts (Dog))
     """) == "false"
 
@@ -332,7 +332,7 @@ suite "Self — forward annotation dependencies":
   test "a forward alias cannot hide contextual Self in a direct replacement":
     selfTypeError("""
       (type Dog ^props {} (message accepts [x : Later] : Bool true))
-      (type Pup : Dog ^props {} (message accepts [x : Later] : Bool ^^^override))
+      (type Pup : Dog ^props {} (message accepts [x : Later] : Bool ^^override true))
       (alias Later Self)
     """, "Self")
 
@@ -359,7 +359,7 @@ suite "Self — shared nested signature comparison":
       (type Base ^props {}
         (message accepts [f : (Callable [(| Int Str)] Bool ^named {^x (| Nil Str)})] : Bool true))
       (type Child : Base ^props {}
-        (message accepts [f : (Callable [(| Str Int)] Bool ^named {^x (| Str Nil)})] : Bool ^^!override))
+        (message accepts [f : (Callable [(| Str Int)] Bool ^named {^x (| Str Nil)})] : Bool ^^override false))
       true
     """) == "true"
 
@@ -454,7 +454,7 @@ suite "Self — proposal integration cases":
         (message accepts [x : (Cell Self)] : Bool true))
       (type Mid : Dog ^props {})
       (type Pup : Mid ^props {}
-        (message accepts [x : (Cell Dog)] : Bool ^^!override))
+        (message accepts [x : (Cell Dog)] : Bool ^^override false))
       (var cell : (Cell Dog) ($cell (Dog)))
       ((Pup) .accepts cell)
     """) == "false"
@@ -541,6 +541,6 @@ suite "Self — native annotation compatibility":
     selfTypeError("""
       (type Base ^props {} (message accepts [x : (C/Ptr Later)] : Bool true))
       (type Child : Base ^props {}
-        (message accepts [x : (C/Ptr Later)] : Bool ^^^override))
+        (message accepts [x : (C/Ptr Later)] : Bool ^^override true))
       (alias Later Self)
     """, "Self")

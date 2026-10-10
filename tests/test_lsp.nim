@@ -68,7 +68,7 @@ suite "lsp — analysis":
     check "(Stream Int Never)" in definitions[0].signature
     check "yield" notin definitions[0].signature
     let literal = analyze("(fn ^^generator values [] (yield 1))")
-    check findSym(literal.symbols, "values").selectionRange.start.character == 20
+    check findSym(literal.symbols, "values").selectionRange.start.character == 16
     for source in ["(fn values [] ^^generator (yield 1))",
                    "(fn values [] : (Stream Int Never) ^^generator (yield 1))",
                    "(fn values [] (yield 1) ^^generator)"]:
