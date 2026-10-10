@@ -19,13 +19,24 @@
   (it "fires a one-shot through the web host after its activation budget expires" []
     (isolated this_mod/.path "fires a one-shot through the web host after its activation budget expires"
       (fn [workspace]
+        # This checks scheduler lifetime after activation expiry, not startup
+        # throughput. A one-second limit can time out the documentation plugins
+        # before the required instruction seam is available on a busy host.
+        (let activation_budget 5000)
         ($fs/make_dir $"${workspace}/.gene-harness")
         ($fs/write_text $"${workspace}/.gene-harness/config.gene"
-          ($serde/write_data {^response_budget {^timeout_ms 1000}}))
+          ($serde/write_data {^response_budget {^timeout_ms activation_budget}}))
         (let host (start_host workspace
           ^script ["($fs/write_text \"trigger-result.txt\" \"TRIGGER_OK\") (Outcome ^^done ^reply \"fired\")"]))
         (try
-          ($sleep 2500)
+          (let startup (cli workspace ["status"]))
+          (let ready {})
+          (for plugin in startup/plugins
+            (ready .put plugin/id plugin/state))
+          (for id in ["gene_reference" "core_commands" "triggers" "provider_scripted"]
+            ($assert (== (ready .get id) "ready")
+              $"required plugin did not activate: ${id}; ${startup/readiness}"))
+          ($sleep (+ activation_budget 1500))
           (let definition $"${workspace}/one-shot.gene")
           ($fs/write_text definition ($serde/write_data
             {^id "one-shot" ^kind "scheduled" ^at (+ ($os/wall_ms) 1000)
