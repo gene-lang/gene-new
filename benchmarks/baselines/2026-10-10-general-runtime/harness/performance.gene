@@ -1,0 +1,42 @@
+# Exercise the actual service, turn controller, transcript and patch path.
+# No external model or network service is used. Each run needs a new workspace.
+# Usage: gene run examples/gene-harness/probes/performance.gene WORKSPACE [TURNS]
+(import [open_session_service close_session_service create_session submit snapshot receipt]
+  ^from "../src/web/session_service")
+(import [scripted_profile] ^from "../src/profiles/scripted")
+
+(fn main [args] : Int
+  ($assert (>= ($size args/body) 1) "expected a new workspace path")
+  (let workspace args/body/0)
+  ($assert (! ($fs/exists? workspace)) "profile workspace must be new")
+  ($fs/make_dir workspace)
+  (let absolute ($fs/real_path workspace))
+  (let turns (if (> ($size args/body) 1) ($parse/parse_int args/body/1) 100))
+  ($assert (&& (> turns 0) (<= turns 10000)) "turn count must be in 1..10000")
+  # Prepare deterministic provider output outside the timed region. The
+  # supported service API accepts a profile, not the retired callback argument.
+  (let responses [])
+  (repeat response_index in turns
+    (responses .push
+      ($to_str "(Outcome ^^done ^reply \"Patched.\")\n"
+        "*** Begin Patch\n*** Add File: result-" (+ response_index 1) ".txt\n"
+        "+profile result\n*** End Patch\n")))
+  (let service (open_session_service ^workspace absolute ^profile (scripted_profile responses)))
+  (try
+    (let session (create_session service))
+    (let started ($os/monotonic_ms))
+    (var checksum 0)
+    (repeat i in turns
+      (let admitted (submit service session/id $"profile-${i}" (+ i 1) "write the next result"))
+      (let watcher ((service/controller/watchers .get) .get session/id))
+      watcher/.join
+      (let completed (receipt service session/id admitted/id))
+      ($assert (== completed/state "done") "profile round did not complete successfully")
+      (let state (snapshot service session/id))
+      (set checksum (+ checksum ($size state/records)))
+      ($assert (== ($fs/read_text $"${absolute}/result-${(+ i 1)}.txt") "profile result\n")
+        "profile turn did not apply its patch"))
+    ($println ($json/stringify {^workload_version 2 ^turns turns ^elapsed_ms (- ($os/monotonic_ms) started)
+      ^record_checksum checksum ^workspace absolute}))
+    0
+    ensure (close_session_service service)))

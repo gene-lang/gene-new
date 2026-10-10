@@ -1,0 +1,20 @@
+# The system allocator makes Nim's occupied-memory counter unavailable. Select
+# all VM suites except the env/eval suite containing the unbounded memory-limit
+# fixture. The normal allocator runs the complete suite, including that fixture.
+(fn main [args] : Int
+  (let filters [])
+  (for line in ($str/split ($fs/read_text "tests/test_vm.nim") "\n")
+    (if ($str/starts_with? line "suite \"")
+      (then
+        (let parts ($str/split line "\""))
+        (let name parts/1)
+        (if (!= name "vm — env and eval")
+          (filters .push $"${name}::*")))))
+  ($assert (> ($size filters) 20) "VM suite selection unexpectedly empty")
+  (let process (await ($os/exec_async args/body/0 filters...
+    ^timeout_ms 600000 ^max_bytes 4194304)))
+  ($println process/stdout)
+  ($println process/stderr)
+  ($assert (! process/timed_out) "ASan VM selection timed out")
+  ($assert (! process/truncated) "ASan VM output truncated")
+  process/status)
