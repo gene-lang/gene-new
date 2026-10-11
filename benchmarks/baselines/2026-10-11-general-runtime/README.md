@@ -125,9 +125,18 @@ programs and the complete Harness suite (179 passed) pass with it.
 A third change skips the tail-call capture walk for frames whose scope the
 VM already recycles. Service median 15.27 s with it against 17.37 s without
 (three samples each, one capture). Nim suites, differential programs and
-the complete Harness suite (179 passed) pass with it. Taken together the
-three service changes bring the 100-turn workload from about 29.7 s to
-about 15.3 s; those two figures come from different captures.
+the complete Harness suite (179 passed) pass with it.
+
+A final capture measures the starting tree against the final build directly
+(three samples each, rotating order, quiet machine;
+[service/summary.json](service/summary.json) is this capture):
+
+| Build | Service samples (ms) | Service median (ms) | Whole-process median (ms) |
+| --- | --- | ---: | ---: |
+| Baseline `1e3f539` | 26091, 25205, 25244 | 25244 | 34509 |
+| Final build | 14936, 14698, 15493 | 14936 | 18193 |
+
+That is 1.69x on service time and 1.90x on whole-process time.
 
 ## Build provenance
 

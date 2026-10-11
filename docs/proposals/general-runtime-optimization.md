@@ -250,6 +250,10 @@ and no closure was found holding it (`closureHeld`), nothing can hold it —
 pooling already depends on that — so the walk is skipped. Other frames walk
 as before. Service median in one capture: 17.37 s without, 15.27 s with.
 
+Measured directly against the starting tree in one quiet capture, the three
+service changes together take the 100-turn workload from a median 25.24 s
+to 14.94 s (1.69x), and whole-process time from 34.5 s to 18.2 s.
+
 What remains at the top of the service profile is the per-spawn scope walk
 (20% before this change) and weak-function escape (12%), both whole-graph
 walks with a visited set over the same large values.
