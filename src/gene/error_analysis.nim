@@ -1564,6 +1564,24 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
         if body.value != nil and body.value.kind == avTask and body.value.taskFresh:
           state.allocateTask(body.value)
       if body.exceptionState != nil: observeException(body.exceptionState[])
+    # `/`, `//`, `==` and `!=` compile to the fast-operator opcodes, but unlike
+    # `+ - * <` they are not "numeric operands or an open error": equality
+    # takes any operands and answers Bool, and division can fail on numbers.
+    # Their effects are whatever the named native's are, so they are modeled
+    # as the load-by-name and two-argument call those opcodes stand in for.
+    template isCallModeledFastKind(kind: int): bool =
+      NativeFastKind(kind) in {nfkDiv, nfkRem, nfkEq, nfkNe}
+    template modelFastOperatorCall(args: seq[AbstractValue]) =
+      if state.at(environment, inst.name).value == nil:
+        errors.mergeErrors(oneError("RuntimeError"))
+      let callee = load(inst.name)
+      let call = analysis.callValue(callee, args, environment, function, loc,
+                                     constructorCall = false, namedCount = 0)
+      absorb(call)
+      result.taskCode = true
+      observeException(state) # invocation can also produce a generated failure
+      if call.neverReturns: next = false
+      else: push call.value
     case inst.op
     of opNoop, opSetModuleName, opDeclareType, opLoopEnter, opLoopLeave:
       if inst.op == opSetModuleName: push scalarValue("Nil")
@@ -2152,19 +2170,31 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
       push scalarValue("Nil")
     of opIntAdd2, opIntSub2, opIntMul2, opIntLt2, opIntGt2, opIntLe2, opIntGe2,
        opIntFast2, opNativeFast2, opReturnIntAdd2:
-      let b = state.pop()
-      let a = state.pop()
-      if not a.numeric or not b.numeric: errors.open = true
-      let value = if inst.op in {opIntLt2, opIntGt2, opIntLe2, opIntGe2}: scalarValue("Bool")
-                  else: scalarValue("Int")
-      if inst.op == opReturnIntAdd2: finish(value, state); next = false
-      else: push value
+      if inst.op == opNativeFast2 and isCallModeledFastKind(inst.intArg):
+        var args = newSeq[AbstractValue](2)
+        args[1] = state.pop()
+        args[0] = state.pop()
+        modelFastOperatorCall(args)
+      else:
+        let b = state.pop()
+        let a = state.pop()
+        if not a.numeric or not b.numeric: errors.open = true
+        let value = if inst.op in {opIntLt2, opIntGt2, opIntLe2, opIntGe2}: scalarValue("Bool")
+                    else: scalarValue("Int")
+        if inst.op == opReturnIntAdd2: finish(value, state); next = false
+        else: push value
     of opIntAddConst, opIntSubConst, opIntMulConst, opIntLtConst, opIntGtConst,
        opIntLeConst, opIntGeConst, opIntFastConst, opNativeFastConst:
-      let value = state.pop()
-      if not value.numeric: errors.open = true
-      push (if inst.op in {opIntLtConst, opIntGtConst, opIntLeConst, opIntGeConst}:
-              scalarValue("Bool") else: scalarValue("Int"))
+      if inst.op == opNativeFastConst and isCallModeledFastKind(inst.intArg):
+        var args = newSeq[AbstractValue](2)
+        args[0] = state.pop()
+        args[1] = literalValue(chunk.constants[inst.depth])
+        modelFastOperatorCall(args)
+      else:
+        let value = state.pop()
+        if not value.numeric: errors.open = true
+        push (if inst.op in {opIntLtConst, opIntGtConst, opIntLeConst, opIntGeConst}:
+                scalarValue("Bool") else: scalarValue("Int"))
     of opNot:
       discard state.pop()
       push scalarValue("Bool")

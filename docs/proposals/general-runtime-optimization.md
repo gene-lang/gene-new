@@ -121,11 +121,19 @@ without changing what a program can observe.
 - **Empty tables are not probed.** `Table.withValue` and `HashSet.contains`
   hash the key before noticing the table is empty; name lookup and namespace
   export checks now test the length first.
-- **`/`, `//`, `==` and `!=` join the compiler-known operators**, under the
-  same rule as `+ - * < > <= >=`: only where the name is not lexically bound,
-  imported, or compiled for dynamic lookup. Their fast path covers two small
-  Ints (and declines a zero divisor); every other operand pair calls the same
-  native function as before. GIR format advances to 29.
+- **`/` and `//` join the compiler-known operators**, under the same rule
+  as `+ - * < > <= >=`: only where the name is not lexically bound, imported,
+  or compiled for dynamic lookup. Their fast path covers two small Ints (and
+  declines a zero divisor); every other operand pair calls the same native
+  function as before. The static error analysis models them as that call,
+  not as error-free arithmetic. GIR format advances to 29.
+- **`==` and `!=` were lowered the same way and then withdrawn.** With them
+  lowered, one Harness spec hung at service startup while every direct
+  comparison of equality results still matched the old runtime; bisection
+  isolated the lowering but not the mechanism. They remain ordinary calls
+  (the native keeps its own small-Int shortcut). Anyone retrying this should
+  start from the fact that lowering makes small `==` predicates eligible for
+  scopeless calls, and must run the Harness suite, not only the specs.
 - **By-name load cache.** A name the compiler cannot bind lexically (an
   imported function, a type, the root `gene` before every `$ns/fn`) is found
   by walking the scope chain. The activation scopes are still inspected on
@@ -180,25 +188,22 @@ calibration:
 
 | Workload | Before ms/batch | After ms/batch | Speedup | After / Python |
 | --- | ---: | ---: | ---: | ---: |
-| Integer loop | 2.887 | 0.939 | 3.07x | 5.05 |
-| Closure dispatch | 7.469 | 2.965 | 2.52x | 7.35 |
-| Filter/group/sort records | 10.641 | 4.465 | 2.38x | 4.88 |
-| Text indexing | 28.625 | 15.984 | 1.79x | 9.35 |
-| JSON round trip | 6.227 | 2.754 | 2.26x | 0.97 |
-| Event replay | 12.047 | 4.828 | 2.50x | 7.44 |
+| Integer loop | 2.883 | 0.905 | 3.18x | 4.86 |
+| Closure dispatch | 7.422 | 2.906 | 2.55x | 7.23 |
+| Filter/group/sort records | 10.609 | 4.461 | 2.38x | 4.97 |
+| Text indexing | 28.344 | 15.766 | 1.80x | 9.27 |
+| JSON round trip | 6.234 | 2.691 | 2.32x | 0.95 |
+| Event replay | 11.953 | 5.211 | 2.29x | 8.12 |
 
-An independent fresh-cache rebuild gives 2.99x, 2.44x, 2.32x, 1.84x, 2.28x
-and 2.53x. All outputs match the baseline runtime and Python.
-
-Verification for this pass: 1,687 broad-suite cases, 874 language specs (28
-new, pinning what a shortcut could change), 402 VM cases under both ORC and
-AtomicArc, 87 lifetime cases, the lifetime suite and 390 VM cases under
-AddressSanitizer with no reports, 21 Cordis cases, 15 benchmark-tooling cases
-and 46 wasm ABI cases. **The Harness suite and the Harness service benchmark
-are not established for this pass**: the one Harness run overlapped another
-session's edits to the Harness sources and its nine failures were not
-separated from them. The evidence README records the details and the
-commands to rerun.
+Verification for this pass, on the corrected runtime: 1,685 broad-suite
+cases, 874 language specs (28 new, pinning what a shortcut could change), 402
+VM cases under both ORC and AtomicArc, 87 lifetime cases, and the complete
+Harness suite (179 cases) run from a clean export of the committed tree.
+AddressSanitizer (lifetime suite and 390 VM cases, no reports), Cordis,
+benchmark tooling and wasm ABI cases passed on the build before `==`/`!=`
+were withdrawn and were not repeated. The Harness service benchmark was not
+rerun. The evidence README records the regression, how it was bisected, and
+what remains unexplained.
 
 ### What is still slow
 

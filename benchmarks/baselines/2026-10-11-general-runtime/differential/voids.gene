@@ -1,0 +1,12 @@
+(mod voids)
+(fn probe [m]
+  [(== m/zz nil) (!= m/zz nil) (== nil m/zz) (!= nil m/zz) (== m/zz m/yy) (== m/zz "x") (!= m/zz "x") (== m/zz 1) (!= m/zz 1) (== m/zz false) (== m/zz true)])
+(fn probe2 [m k]
+  (let v (m .get k))
+  [(== v nil) (!= v nil) (== v 0) (!= v 0) (== ($absent? v) true)])
+(fn main [args] : Int
+  ($println (probe {}))
+  ($println (probe {^zz nil}))
+  ($println (probe2 {} "k"))
+  ($println (probe2 {^k nil} "k"))
+  0)

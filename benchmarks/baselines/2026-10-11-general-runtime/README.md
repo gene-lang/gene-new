@@ -14,12 +14,12 @@ order, 5,000 input items per batch, 300 ms calibration per workload
 
 | Workload | Baseline ms/batch | Optimized ms/batch | Baseline / optimized | Optimized / Python |
 | --- | ---: | ---: | ---: | ---: |
-| Integer loop | 2.887 | 0.939 | 3.07x | 5.05 |
-| Closure dispatch | 7.469 | 2.965 | 2.52x | 7.35 |
-| Filter/group/sort records | 10.641 | 4.465 | 2.38x | 4.88 |
-| Text indexing | 28.625 | 15.984 | 1.79x | 9.35 |
-| JSON round trip | 6.227 | 2.754 | 2.26x | 0.97 |
-| Event replay | 12.047 | 4.828 | 2.50x | 7.44 |
+| Integer loop | 2.883 | 0.905 | 3.18x | 4.86 |
+| Closure dispatch | 7.422 | 2.906 | 2.55x | 7.23 |
+| Filter/group/sort records | 10.609 | 4.461 | 2.38x | 4.97 |
+| Text indexing | 28.344 | 15.766 | 1.80x | 9.27 |
+| JSON round trip | 6.234 | 2.691 | 2.32x | 0.95 |
+| Event replay | 11.953 | 5.211 | 2.29x | 8.12 |
 
 Every result matches the baseline runtime and Python at sizes 1, 17, 257 and
 2048 and in every timed process. These are separate workloads, not a weighted
@@ -47,54 +47,74 @@ These were single runs taken before the last small batch and are here to show
 that paths the suite does not cover moved in the same direction, not as
 precise figures. Direct recursive calls were already fast and did not change.
 
-## Independent rebuild
+## A regression found after the first capture
 
-A second optimized binary built from a fresh cache repeats the result. Three
-measured processes per executable, same size and calibration: 2.99x
-(integer), 2.44x (closures), 2.32x (records), 1.84x (text), 2.28x (JSON) and
-2.53x (events), all outputs matching. Its medians are within about 3% of the
-first build's. See [confirmation/report.md](confirmation/report.md).
+The first optimized build also lowered `==` and `!=` to the fast-operator
+opcodes. Its numbers were captured, confirmed by an independent rebuild
+(within about 3%), and committed — and then the Harness suite, run from a
+clean export of the committed tree, showed one spec hanging with that build
+and passing with the baseline: *Harness UI publication feedback repairs
+render and action failures across model turns*. The run stalls at service
+startup, before any `composition/changed` event.
 
-No compiler, test suite or profiler from this work overlapped either timing
-capture. The workstation is shared, and another session was editing files in
-the same worktree during the day.
+Bisecting over the intermediate binaries and then over scratch builds of the
+committed tree narrowed it to the `==`/`!=` lowering alone: with only that
+withdrawn, the spec passes in its usual 16 seconds. Every direct comparison
+of equality results — small Ints, wide Ints, Floats, strings, containers,
+typed instances, nil and void operands, typed and untyped functions — still
+matched the baseline, so the mechanism was **not isolated**. One known side
+effect of the lowering is that small predicates built from `==` begin to
+satisfy the scopeless-call opcode whitelist.
+
+The corrected runtime therefore keeps `==` and `!=` as ordinary calls and
+lowers only `/` and `//`. The same investigation found that the static error
+analysis modelled every fast-operator opcode as "numeric operands or an open
+error, result Int"; `/` and `//` are now modelled as the native calls they
+replace, so division's own error effects are back.
+
+All numbers and logs in this directory are from the corrected runtime. The
+only workload that moved is event replay (2.50x before the correction, 2.29x
+after), which is where `==` appears in the timed loop. The independent
+rebuild was not repeated after the correction.
 
 ## Build provenance
 
 ```sh
 nim c --nimcache:tmp/perf2/cache-baseline --hints:off -o:tmp/perf2/gene-baseline src/gene.nim   # at 1e3f539, before any edit
-nim c --nimcache:tmp/perf2/cache-work --hints:off --warnings:off -o:tmp/perf2/gene-b7 src/gene.nim
-nim c --nimcache:tmp/perf2/cache-confirm --hints:off --warnings:off -o:tmp/perf2/gene-confirm src/gene.nim
+nim c --nimcache:<scratch>/cache-var --hints:off --warnings:off -o:tmp/perf2/gene-var-final2 src/gene.nim   # clean export of the corrected tree
 ```
 
-All three report `release; macosx/arm64; Nim 2.2.4; mm=orc; nim-opt=speed;
+Both report `release; macosx/arm64; Nim 2.2.4; mm=orc; nim-opt=speed;
 bounds=true; overflow=true`. `general/metadata.json` records executable
 hashes, the Git revision, worktree status and diff, and parameters;
-`runtime-source-hashes.json` lists the three executables and the changed
-source files. The
-worktree at capture time also held another session's unrelated, uncommitted
-standard-library addition (`$binary/decode_utf8`) and Harness edits; they are
-in the recorded diff and in the optimized binary, and touch none of the
-measured paths.
+`runtime-source-hashes.json` lists the two executables and the changed
+source files. The optimized binary was built from a clean export of the
+corrected tree, so it contains none of the unrelated, uncommitted work another
+session had in the worktree that day; the diff recorded in
+`general/metadata.json` is the worktree's and does include that work.
 
-The GIR format advances from 28 to 29 (four operators joined the
+The GIR format advances from 28 to 29 (two operators joined the
 compiler-known set). Rebuild older GIR artifacts.
 
 ## Qualification
 
 | Check | Result |
 | --- | ---: |
-| Broad compiler/runtime/integration suite | 1687 passed |
+| Broad compiler/runtime/integration suite | 1685 passed |
 | Executable language specs (28 new) | 874 passed |
 | VM, ORC | 402 passed |
 | VM, AtomicArc | 402 passed |
 | Reference-count/lifetime suite | 87 passed |
-| AddressSanitizer: lifetime suite | 87 passed, 0 reports |
-| AddressSanitizer: VM suites except env/eval | 390 passed, 0 reports |
-| Cordis | 21 passed |
-| Benchmark tooling | 15 passed |
-| wasm ABI cases, scratch build | 46 passed |
-| Harness | **not established** — see below |
+| Harness, complete suite from a clean export | 179 passed |
+| AddressSanitizer: lifetime suite (before the correction) | 87 passed, 0 reports |
+| AddressSanitizer: VM suites except env/eval (before the correction) | 390 passed, 0 reports |
+| Cordis (before the correction) | 21 passed |
+| Benchmark tooling (before the correction) | 15 passed |
+| wasm ABI cases, scratch build (before the correction) | 46 passed |
+
+Rows marked "before the correction" were run on the first optimized build
+and not repeated; the correction only removes two operators from the
+compiler's lowering and changes the error analysis of two others.
 
 The 28 new specs (`spec — runtime fast paths keep ordinary semantics`) pin
 the behaviours a shortcut could change: operator results and errors, operator
@@ -114,25 +134,14 @@ and `web/gene.wasm` were not regenerated.
 
 ### Harness
 
-The Harness suite was run once with the optimized binary and reported **180
-passed, 9 failed** (`verification/harness-final.log.gz`). That run does not
-qualify or disqualify this change: another session was editing the Harness
-sources in the same worktree while it ran. One failure quotes a read error in
-`client/media.gene`, an untracked file from that work, on a line the file no
-longer contained by the end of the run; the others are web-host specs that
-exited without output. The failures were not reproduced against the committed
-Harness tree, and the 100-turn Harness service benchmark was not rerun for
-this pass. Both should be run once the Harness tree is settled:
-
-```sh
-cd examples/gene-harness && GENE_BINARY=/path/to/gene /path/to/gene test
-GENE_BENCH_SAMPLES=3 bin/gene run benchmarks/run_harness.gene tmp/new-service /path/to/before-gene /path/to/after-gene
-```
-
-One language spec, `recursive watch discovers files in newly created
-directories`, failed once while five suites compiled in parallel and passed
-in the final run; it depends on filesystem-event timing and exercises nothing
-changed here.
+The complete Harness suite passes with the corrected runtime: 179 passed,
+0 failed (`verification/harness-final.log.gz`), run from a clean export of
+the committed tree so that edits another session was making to the Harness
+sources could not affect it. Earlier runs are not counted: one overlapped
+those edits, one used an export that lacked the repository docs the Harness
+reads, and one overlapped heavy machine load that timed out web-host startup
+specs which pass when rerun alone. The 100-turn Harness service benchmark
+was not rerun for this pass.
 
 The sanitizer builds use `-d:useMalloc -fsanitize=address` in recover mode
 with leak detection off. The VM selection omits the env/eval suite, whose
