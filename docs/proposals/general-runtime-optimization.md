@@ -240,10 +240,19 @@ service benchmark on a busy machine gave a median 22.8 s with the shortcut
 against 25.3 s without (samples 22.1/22.8/25.8 against 24.1/25.3/26.2), so
 treat the size as roughly 10%, not as measured precisely.
 
-After these two changes the service profile is led by the tail-call capture
-check (`scopeValuesCaptureScope`, 25%), the per-spawn scope walk (20%) and
-weak-function escape (12%). All three are whole-graph walks with a visited
-set over the same large values.
+### Tail-call capture check
+
+After those two changes the service profile was led by the tail-call capture
+check (`scopeValuesCaptureScope`, 25%): each tail call walked every argument's
+value graph for anything holding the scope being replaced. When the frame's
+scope is one the VM will recycle into the call-scope pool (`recycleScope`)
+and no closure was found holding it (`closureHeld`), nothing can hold it —
+pooling already depends on that — so the walk is skipped. Other frames walk
+as before. Service median in one capture: 17.37 s without, 15.27 s with.
+
+What remains at the top of the service profile is the per-spawn scope walk
+(20% before this change) and weak-function escape (12%), both whole-graph
+walks with a visited set over the same large values.
 
 ### What is still slow
 

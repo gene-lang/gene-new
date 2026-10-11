@@ -17670,6 +17670,17 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         return true
     false
 
+  template currentScopeCapturedBy(calleeScope: Scope): bool =
+    ## Whether a value bound in `calleeScope` captures the current scope.
+    ## `recycleScope` means this frame's scope goes back to the call-scope
+    ## pool when the frame ends unless a closure was found holding it
+    ## (`closureHeld`) — which is only correct if nothing else holds it. Under
+    ## that same condition no bound value can capture it, so the walk over
+    ## every argument's value graph is skipped; it is the largest cost of a
+    ## tail call that passes large data.
+    (not (recycleScope and not scope.closureHeld)) and
+      scopeValuesCaptureScope(calleeScope, scope)
+
   proc valueMayRetainScope(value: Value): bool {.inline.} =
     value.kind in {vkFunction, vkCallableView, vkList, vkMap, vkSet, vkHashMap, vkNode,
                    vkNamespace, vkModule, vkEnv, vkCell, vkAtomicCell,
@@ -18129,7 +18140,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       curPendingError == nil and curPendingPanic == nil and
       curPendingCancel == nil and curPendingReturn == nil and
       (not boundValuesMayCapture or
-       not scopeValuesCaptureScope(calleeScope, scope)) and
+       not currentScopeCapturedBy(calleeScope)) and
       (if recycleScope: not scopeChainContains(calleeScope, scope)
        else: frames.len == 0 or not scope.scopeHasOtherOwners or
          not tailTransferStrandsCycle(scope, calleeScope))
@@ -18141,7 +18152,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       var safe = curFrameKind == fkTailMatchBody and
         curStackBase == operandBase and frames.len > 0 and
         (not boundValuesMayCapture or
-         not scopeValuesCaptureScope(calleeScope, scope)) and
+         not currentScopeCapturedBy(calleeScope)) and
         (not recycleScope or not scopeChainContains(calleeScope, scope))
       let inheritedReturnDepth = returnDepth
       var scan = frames.len - 1
@@ -18175,7 +18186,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     while curFrameKind == fkTailMatchBody:
       discardFrameLoops()
       doAssert not boundValuesMayCapture or
-        not scopeValuesCaptureScope(calleeScope, scope)
+        not currentScopeCapturedBy(calleeScope)
       doAssert not recycleScope or not scopeChainContains(calleeScope, scope)
       releaseCurrentCallScope()
       if not keepOperands:

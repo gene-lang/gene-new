@@ -122,6 +122,13 @@ against 25.3 s without (three samples each, overlapping); the size is
 roughly 10% and is not a clean measurement. The Nim suites, the differential
 programs and the complete Harness suite (179 passed) pass with it.
 
+A third change skips the tail-call capture walk for frames whose scope the
+VM already recycles. Service median 15.27 s with it against 17.37 s without
+(three samples each, one capture). Nim suites, differential programs and
+the complete Harness suite (179 passed) pass with it. Taken together the
+three service changes bring the 100-turn workload from about 29.7 s to
+about 15.3 s; those two figures come from different captures.
+
 ## Build provenance
 
 ```sh
