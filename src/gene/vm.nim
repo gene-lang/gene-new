@@ -520,6 +520,10 @@ type
     nativeGt: Value
     nativeLe: Value
     nativeGe: Value
+    nativeDiv: Value
+    nativeRem: Value
+    nativeEq: Value
+    nativeNe: Value
     moduleCache: Table[string, Value]
     moduleEpoch: uint64
     moduleLoading: HashSet[string]
@@ -1453,18 +1457,33 @@ proc inheritScopeContext(scope, parent: Scope,
                          application: RuntimeContext = nil) {.inline.} =
   ## Parent-derived fields have one initialization rule for fresh, pooled,
   ## and reused scopes. A nil parent clears inherited context on release.
-  scope.application =
-    if application != nil: application
-    elif parent != nil: parent.application
-    else: nil
-  scope.parent = parent
-  scope.evalBudget =
-    if parent != nil: parent.evalBudget
-    else: nil
-  scope.moduleBase = if parent != nil: parent.moduleBase else: nil
-  scope.moduleRefs = if parent != nil: parent.moduleRefs else: nil
-  scope.sandboxGenerationId = if parent != nil: parent.sandboxGenerationId else: 0
-  scope.borrowedCallerEnv = parent != nil and parent.borrowedCallerEnv
+  ##
+  ## Each managed field is stored only when it changes. These are references
+  ## to cyclic types, so even re-storing the same one is a count round trip
+  ## plus an ORC cycle-candidate registration, and a loop iteration reusing
+  ## its scope re-inherits from the very parent it already has.
+  template storeChanged(field, value: untyped) =
+    if cast[pointer](field) != cast[pointer](value):
+      field = value
+  if application != nil:
+    storeChanged(scope.application, application)
+  elif parent != nil:
+    storeChanged(scope.application, parent.application)
+  elif scope.application != nil:
+    scope.application = nil
+  storeChanged(scope.parent, parent)
+  if parent != nil:
+    storeChanged(scope.evalBudget, parent.evalBudget)
+    storeChanged(scope.moduleBase, parent.moduleBase)
+    storeChanged(scope.moduleRefs, parent.moduleRefs)
+    scope.sandboxGenerationId = parent.sandboxGenerationId
+    scope.borrowedCallerEnv = parent.borrowedCallerEnv
+  else:
+    if scope.evalBudget != nil: scope.evalBudget = nil
+    if scope.moduleBase != nil: scope.moduleBase = nil
+    if scope.moduleRefs != nil: scope.moduleRefs = nil
+    scope.sandboxGenerationId = 0
+    scope.borrowedCallerEnv = false
 
 proc newScope*(parent: Scope = nil,
                application: RuntimeContext = nil): Scope =
@@ -1679,6 +1698,10 @@ proc prepareSlots(scope: Scope, names: seq[string], mirror = false) =
   scope.slotNames = names
   scope.privateSlots.setLen(0)
   scope.slotMirror = mirror
+  if scope.namesGen != 0:
+    # New slot names change what a by-name read finds here. A scope never
+    # stamped has nothing remembered about it, so it stays unstamped.
+    scope.touchNames()
 
 proc moduleRefRootScope(scope: Scope): Scope =
   var current = scope
@@ -1704,13 +1727,16 @@ proc ensureModuleRefEntry(scope: Scope, name: string): ModuleRefEntry =
 proc prepareImplAssembly(scope: Scope, chunk: Chunk)
 proc finishImplAssembly(scope: Scope, chunk: Chunk)
 
-proc prepareChunkScope(scope: Scope, chunk: Chunk) =
+proc prepareChunkScope(scope: Scope, chunk: Chunk, layoutInstalled = false) =
+  ## `layoutInstalled`: the caller has just reset `scope` to this chunk's own
+  ## slot layout, so comparing the two name lists again proves nothing.
   if chunk.finalMacroContext != nil:
     scope.compilerMacros = chunk.finalMacroContext
   if chunk.localNames.len > 0:
     if scope.slots.len == 0:
       scope.prepareSlots(chunk.localNames, mirror = chunk.mirrorSlots)
-    elif scope.slotNames.len > 0 and scope.slotNames != chunk.localNames:
+    elif not layoutInstalled and scope.slotNames.len > 0 and
+        scope.slotNames != chunk.localNames:
       ## Two independently compiled slot layouts cannot share one scope: each
       ## numbers its locals from zero, so the incoming chunk's slot 0 would
       ## read whatever the resident layout put there. That used to happen
@@ -1725,9 +1751,14 @@ proc prepareChunkScope(scope: Scope, chunk: Chunk) =
         $chunk.localNames.len & " local(s) but the scope already holds a " &
         "different layout of " & $scope.slotNames.len & ". Compile the " &
         "chunks with useLocalSlots = false to share one scope.")
-    scope.privateSlots = chunk.privateLocalSlots
-  for name in chunk.exportExcludedNames:
-    scope.exportExcludedNames.incl name
+    if chunk.privateLocalSlots.len != 0 or scope.privateSlots.len != 0:
+      scope.privateSlots = chunk.privateLocalSlots
+      if scope.namesGen != 0:
+        scope.touchNames()     # private slots are hidden from by-name reads
+  if chunk.exportExcludedNames.len > 0:
+    for name in chunk.exportExcludedNames:
+      scope.exportExcludedNames.incl name
+    scope.touchNames()
   for name in chunk.moduleRefNames:
     discard scope.ensureModuleRefEntry(name)
   scope.prepareImplAssembly(chunk)
@@ -1776,6 +1807,8 @@ proc materializeMirroredVars*(scope: Scope) =
   for i, name in scope.slotNames:
     if name.len > 0 and name[0] != '\0' and i notin scope.privateSlots and scope.slotDefined(i):
       scope.vars[name] = scope.slots[i]
+  # No stamp: this only settles `vars` to the view the slot writes, each
+  # stamped when it happened, had already established.
 
 proc hasTypeBinding(binding: TypeBinding): bool {.inline.} =
   binding.expr.kind != vkNil
@@ -1797,7 +1830,30 @@ proc assignmentValue(scope: Scope, name: string, v: Value,
   else:
     v
 
-proc checkStrictBindingUpdate(scope: Scope, name: string, value: Value)
+proc checkStrictBindingUpdateFull(scope: Scope, name: string, value: Value)
+
+template hasOwnApplication(scope: Scope): bool =
+  scope != nil and scope.application != nil and
+    scope.application of Application
+
+template ownApplicationView(scope: Scope): Application =
+  ## The scope's Application as a view, valid only after `hasOwnApplication`
+  ## and while the scope lives. `application()` returns an owned reference; on
+  ## a path taken per binding store or per send, that temporary is a count
+  ## round trip and a cycle-candidate registration just to read one field.
+  cast[Application](cast[pointer](scope.application))
+
+proc checkStrictBindingUpdate(scope: Scope, name: string,
+                              value: Value) {.inline.} =
+  ## Runs before every binding store. Almost no program holds a strict error
+  ## registration, so that test stays at the call site.
+  if scope == nil or scope.application == nil:
+    return
+  if scope.hasOwnApplication and
+      scope.ownApplicationView.strictErrorRegistrations.len == 0:
+    return
+  checkStrictBindingUpdateFull(scope, name, value)
+
 proc installStrictErrorLease(value: Value, scope: Scope) {.nimcall.}
 proc activateStrictErrorLease(value: Value, scope: Scope): RootRef
 proc checkStrictScopeRemoval(app: Application, scope: Scope)
@@ -1828,11 +1884,16 @@ proc raiseUndefinedSymbol(name: string) {.noReturn.} =
   error.errorDetail = name
   raise error
 
-proc clearManagedBindingPins(scope: Scope, name: string) =
-  if scope.managedBindingPins.len > 0 and scope.managedBindingPins.hasKey(name):
+proc retireManagedBindingPins(scope: Scope, name: string) {.noinline.} =
+  if scope.managedBindingPins.hasKey(name):
     var retired = scope.managedBindingPins[name]
     scope.managedBindingPins.del(name)
     reset(retired) # after the former Value slot has been replaced
+
+proc clearManagedBindingPins(scope: Scope, name: string) {.inline.} =
+  # Follows every binding store; a scope almost never holds a pin.
+  if scope.managedBindingPins.len > 0:
+    retireManagedBindingPins(scope, name)
 
 proc storeSlot(scope: Scope, index: int, name: string, v: Value,
                requireExisting: bool, permitRedefine = false) =
@@ -1859,6 +1920,8 @@ proc storeSlot(scope: Scope, index: int, name: string, v: Value,
     # Deferred mirror: top-level loops set slots far more often than anything
     # reads .vars; materializeMirroredVars settles the hash on demand.
     scope.varsDirty = true
+    # The exported view changed now, whenever the hash catches up.
+    scope.touchSlots()
   scope.markSlotDefined(index)
   scope.clearManagedBindingPins(name)
 
@@ -1905,8 +1968,23 @@ proc loadSlot(scope: Scope, index: int, name: string): Value =
     raiseUndefinedSymbol(name)
   scope.slots[index]
 
+template withScopeAtDepth(scope: Scope, depth: int, name: string,
+                          target, body: untyped) =
+  ## `scopeAtDepth` as a borrow. The proc returns an owned reference, and
+  ## walking with one counts every hop — each a cycle-candidate registration
+  ## for a scope that the starting scope's parent chain already keeps alive.
+  var target {.cursor.} = scope
+  for _ in 0 ..< depth:
+    if target == nil:
+      raiseUndefinedSymbol(name)
+    target = target.parent
+  if target == nil:
+    raiseUndefinedSymbol(name)
+  body
+
 proc loadSlotAt(scope: Scope, depth, index: int, name: string): Value =
-  scope.scopeAtDepth(depth, name).loadSlot(index, name)
+  withScopeAtDepth(scope, depth, name, target):
+    result = target.loadSlot(index, name)
 
 proc redefineSlot(scope: Scope, index: int, name: string, v: Value) =
   ## A loop body's `var`, on any iteration after the first. The slot is already
@@ -1941,12 +2019,14 @@ proc assignSlot(scope: Scope, index: int, name: string, v: Value) =
       if scope.managedBindingPins.hasKey(name) and scope.vars.hasKey(name):
         scope.vars[name] = v
       scope.varsDirty = true
+      scope.touchSlots()
     scope.clearManagedBindingPins(name)
     return
   scope.storeSlot(index, name, v, requireExisting = true)
 
 proc assignSlotAt(scope: Scope, depth, index: int, name: string, v: Value) =
-  scope.scopeAtDepth(depth, name).assignSlot(index, name, v)
+  withScopeAtDepth(scope, depth, name, target):
+    target.assignSlot(index, name, v)
 
 proc lookup*(scope: Scope, name: string): Value =
   # The starting scope owns its parent chain throughout this read-only walk.
@@ -1958,6 +2038,11 @@ proc lookup*(scope: Scope, name: string): Value =
       if s.slotDefined(slot):
         return s.slots[slot]
       raiseUndefinedSymbol(name)
+    # A table probe hashes the name before it can notice the table is empty,
+    # and an activation scope between the use and its module holds neither.
+    if s.vars.len == 0 and s.wildcardFallbacks.len == 0:
+      s = s.parent
+      continue
     s.vars.withValue(name, value):
       return value[]
     s.wildcardFallbacks.withValue(name, fallback):
@@ -1982,6 +2067,9 @@ proc lookupOptional*(scope: Scope, name: string, value: var Value): bool =
         value = s.slots[slot]
         return true
       return false
+    if s.vars.len == 0 and s.wildcardFallbacks.len == 0:
+      s = s.parent
+      continue
     s.vars.withValue(name, found):
       value = found[]
       return true
@@ -2028,6 +2116,7 @@ proc addWildcardFallback(scope: Scope, name: string, value: Value,
       scope.parent.nameResolvable(name)
     scope.wildcardFallbacks[name] = WildcardFallback(
       value: value, source: source, parentCollision: parentCollision)
+    scope.touchNames()
 
 proc define*(scope: Scope, name: string, v: Value) =
   if scope.storeNamedSlot(name, v, requireExisting = false):
@@ -2036,6 +2125,7 @@ proc define*(scope: Scope, name: string, v: Value) =
     raise newException(GeneError, "duplicate binding: " & name)
   checkStrictBindingUpdate(scope, name, v)
   scope.vars[name] = functionForScopeStorage(v, scope, binding = true)
+  scope.touchNames()
   scope.clearManagedBindingPins(name)
 
 proc redefine*(scope: Scope, name: string, v: Value) =
@@ -2050,6 +2140,7 @@ proc redefine*(scope: Scope, name: string, v: Value) =
     return
   checkStrictBindingUpdate(scope, name, v)
   scope.vars[name] = functionForScopeStorage(v, scope, binding = true)
+  scope.touchNames()
   scope.clearManagedBindingPins(name)
 
 proc defineOverlay(scope: Scope, name: string, v: Value) =
@@ -2057,6 +2148,7 @@ proc defineOverlay(scope: Scope, name: string, v: Value) =
   ## shadow copied parent bindings without acting like source declarations.
   checkStrictBindingUpdate(scope, name, v)
   scope.vars[name] = v
+  scope.touchNames()
   scope.clearManagedBindingPins(name)
 
 proc assign*(scope: Scope, name: string, v: Value) =
@@ -2071,6 +2163,8 @@ proc assign*(scope: Scope, name: string, v: Value) =
       let stored = functionForScopeStorage(value, s, binding = true)
       checkStrictBindingUpdate(s, name, stored)
       s.vars[name] = stored
+      s.touchNames()
+      s.touchSlots()
       s.syncSlot(name, stored)
       s.clearManagedBindingPins(name)
       return
@@ -2698,6 +2792,11 @@ proc invokeValueOrder(witness, left, right: Value): int =
                                         "ValueOrder:compare"))
 
 proc orderCompare(left, right: Value, strictNumeric: bool): int =
+  if left.isSmallInt and right.isSmallInt:
+    # Sorting by an Int key spends its time here.
+    let a = left.smallIntVal
+    let b = right.smallIntVal
+    return (if a < b: -1 elif a > b: 1 else: 0)
   if left.kind == vkInt and right.kind == vkInt:
     return intCompare(left, right)
   if left.isNumber and right.isNumber:
@@ -2835,6 +2934,30 @@ proc tryFastNativeKind2(kind: NativeFastKind, a, b: Value): tuple[handled: bool,
       (true, newBool(a.toFloat >= b.toFloat))
     else:
       (false, NIL)
+  # Two small Ints only. A zero divisor, a wider Int, a Float, or any other
+  # value is declined so the native function decides, errors included.
+  of nfkDiv:
+    if a.isSmallInt and b.isSmallInt and b.smallIntVal != 0:
+      (true, newInt(a.smallIntVal div b.smallIntVal))
+    else:
+      (false, NIL)
+  of nfkRem:
+    if a.isSmallInt and b.isSmallInt and b.smallIntVal != 0:
+      (true, newInt(a.smallIntVal mod b.smallIntVal))
+    else:
+      (false, NIL)
+  of nfkEq:
+    # An Int in small range is always stored small, so equal small Ints are
+    # exactly equal bits.
+    if a.isSmallInt and b.isSmallInt:
+      (true, newBool(a.bits == b.bits))
+    else:
+      (false, NIL)
+  of nfkNe:
+    if a.isSmallInt and b.isSmallInt:
+      (true, newBool(a.bits != b.bits))
+    else:
+      (false, NIL)
   else:
     (false, NIL)
 
@@ -2969,17 +3092,21 @@ proc stableSortEntries(entries: var seq[SortEntry], comparator: Value,
     sortRange(middle, last)
     var left = first
     var right = middle
+    # Entries are moved between the two buffers, never copied: a copy retains
+    # and later releases both the value and its key, twice per element per
+    # merge level. `work` is a private copy, so a comparator that raises
+    # midway leaves the caller's `entries` exactly as they were.
     for pos in first ..< last:
       if right >= last or
           (left < middle and compareKeys(work[left].key,
                                          work[right].key) <= 0):
-        scratch[pos] = work[left]
+        scratch[pos] = move work[left]
         inc left
       else:
-        scratch[pos] = work[right]
+        scratch[pos] = move work[right]
         inc right
     for pos in first ..< last:
-      work[pos] = scratch[pos]
+      work[pos] = move scratch[pos]
   sortRange(0, work.len)
   entries = move work
 
@@ -2999,8 +3126,8 @@ proc orderSortedList(source, keyFn, comparator: Value,
       else: invokeOrderCallback(keyFn, [value], "order key function", scope)
   stableSortEntries(entries, comparator, scope)
   var values = newSeq[Value](entries.len)
-  for i, entry in entries:
-    values[i] = entry.value
+  for i in 0 ..< entries.len:
+    values[i] = move entries[i].value
   newList(values, source.listImmutable)
 
 proc biOrderCompare(args: openArray[Value]): Value {.nimcall.} =
@@ -4615,6 +4742,8 @@ proc patchModuleRefScope(scope: Scope, name: string, target: Value,
   for key in varNames:
     scope.vars[key] = patchModuleRefValue(scope.vars[key], name, target,
                                           seenScopes, seenValues)
+  scope.touchNames()
+  scope.touchSlots()
 
 proc patchResolvedModuleRef(root: Scope, name: string, target: Value) =
   var seenScopes = initHashSet[pointer]()
@@ -5532,6 +5661,30 @@ proc keySegment(name: string, segment: Value): string =
     raise newException(GeneError,
       name & " expects a symbol/string path segment, got " & $segment.kind)
 
+proc keySegmentId(name: string, segment: Value): int32 =
+  ## `keySegment` as a PropTable key id, interning the text. No string is
+  ## copied, and a Str remembers its id.
+  case segment.kind
+  of vkSymbol:
+    segment.symbolId
+  of vkString:
+    segment.strKeyId
+  else:
+    raise newException(GeneError,
+      name & " expects a symbol/string path segment, got " & $segment.kind)
+
+proc keySegmentLookupId(name: string, segment: Value): int32 =
+  ## `keySegmentId` for a read: -1 when the text was never interned, which is
+  ## a miss for every PropTable and must not grow the intern table.
+  case segment.kind
+  of vkSymbol:
+    segment.symbolId
+  of vkString:
+    segment.strLookupKeyId
+  else:
+    raise newException(GeneError,
+      name & " expects a symbol/string path segment, got " & $segment.kind)
+
 proc sortedBindingNames(scope: Scope): seq[string] =
   scope.materializeMirroredVars()
   for key in scope.vars.keys:
@@ -5603,7 +5756,10 @@ proc exportedBinding(ns: Value, name: string): Value =
   if ns.nsIsModuleRoot and name in ["this_mod", "this_pkg"]:
     return VOID
   let namespaceScope {.cursor.} = ns.borrowedNsScope
-  if name in namespaceScope.exportExcludedNames:
+  # A set probe hashes the name before it can see the set is empty, and the
+  # standard-library namespaces every `$ns/fn` goes through exclude nothing.
+  if namespaceScope.exportExcludedNames.len > 0 and
+      name in namespaceScope.exportExcludedNames:
     return VOID
   namespaceScope.materializeMirroredVars()
   namespaceScope.vars.getOrDefault(name, VOID)
@@ -6369,6 +6525,16 @@ proc normalizeNumericIndex(segment, size: Value, writing: bool): Value =
   normalized
 
 proc readIndexedValue(target, segment: Value): Value =
+  if target.kind == vkList and segment.isSmallInt:
+    # A List and an ordinary Int index: the same from-the-end and bounds rules
+    # as normalizeNumericIndex, without building Int values to compare.
+    let count = target.listItems.len
+    var index = segment.smallIntVal
+    if index < 0:
+      index = index +% int64(count)
+    if index < 0 or index >= int64(count):
+      return VOID
+    return target.listItems[int(index)]
   if target.kind notin {vkList, vkNode}:
     return VOID
   if target.kind == vkNode and target.head.kind == vkType:
@@ -6380,9 +6546,15 @@ proc readIndexedValue(target, segment: Value): Value =
       if index.kind == vkVoid:
         return VOID
       return invokeIndexedWitness(atFn, [target, index], "IndexRead:at")
-  let items = if target.kind == vkList: target.listItems else: target.body
-  let index = normalizeNumericIndex(segment, newInt(items.len), false)
-  if index.kind == vkVoid: VOID else: items[int(index.intVal)]
+  # The items are read in place. Binding them to a local through an `if`
+  # expression copied the whole list — a retain per element — for every
+  # single index read, which made `xs/%i` in a loop quadratic.
+  template readItem(items: untyped): Value =
+    block:
+      let index = normalizeNumericIndex(segment, newInt(items.len), false)
+      if index.kind == vkVoid: VOID else: items[int(index.intVal)]
+  if target.kind == vkList: readItem(target.listItems)
+  else: readItem(target.body)
 
 proc updateIndex(name: string, itemsLen: int, rawIndex: int64): int =
   var idx = rawIndex
@@ -6870,7 +7042,11 @@ proc biMapPutBang(args: openArray[Value]): Value {.nimcall.} =
   requirePropMap("Map/put", args[0])
   rejectCallerEnvEscape("Map/put", args[2])
   let stored = strengthenStoredValue(args[2])
-  args[0].putMapEntry(keySegment("Map/put", args[1]), stored)
+  if stored.kind == vkVoid:
+    # Removal probes by text so an absent key is not interned.
+    args[0].putMapEntry(keySegment("Map/put", args[1]), stored)
+  else:
+    args[0].putMapEntryById(keySegmentId("Map/put", args[1]), stored)
   noteFunctionStore(args[0], stored)
   stored
 
@@ -6940,7 +7116,9 @@ proc biMapGet(args: openArray[Value]): Value {.nimcall.} =
   requireMap("Map/get", args[0])
   case args[0].kind
   of vkMap:
-    args[0].mapEntries.getOrDefault(keySegment("Map/get", args[1]), VOID)
+    let keyId = keySegmentLookupId("Map/get", args[1])
+    if keyId < 0: VOID
+    else: args[0].mapEntries.getOrDefaultById(keyId, VOID)
   of vkHashMap:
     beginKeyOperation(args[0])
     defer: endKeyOperation()
@@ -6956,7 +7134,8 @@ proc biHasKey(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
       "has_key? expects 2 arguments, got " & $args.len)
   case args[0].kind
   of vkMap:
-    newBool(args[0].mapEntries.hasKey(keySegment("has_key?", args[1])))
+    let keyId = keySegmentLookupId("has_key?", args[1])
+    newBool(keyId >= 0 and args[0].mapEntries.hasId(keyId))
   of vkHashMap:
     beginKeyOperation(args[0])
     defer: endKeyOperation()
@@ -9252,17 +9431,21 @@ proc buildBuiltins(app: Application): Scope =
   app.nativeGt = builtinNativeFn(">", comparison(">", `>`))
   app.nativeLe = builtinNativeFn("<=", comparison("<=", `<=`))
   app.nativeGe = builtinNativeFn(">=", comparison(">=", `>=`))
+  app.nativeDiv = builtinNativeFn("/", biDiv)
+  app.nativeRem = builtinNativeFn("//", biRem)
+  app.nativeEq = builtinNativeFn("==", biEq)
+  app.nativeNe = builtinNativeFn("!=", biNe)
   result.define("+", app.nativeAdd)
   result.define("-", app.nativeSub)
   result.define("*", app.nativeMul)
-  result.define("/", builtinNativeFn("/", biDiv))
-  result.define("//", builtinNativeFn("//", biRem))
+  result.define("/", app.nativeDiv)
+  result.define("//", app.nativeRem)
   result.define("<", app.nativeLt)
   result.define(">", app.nativeGt)
   result.define("<=", app.nativeLe)
   result.define(">=", app.nativeGe)
-  result.define("==", builtinNativeFn("==", biEq))
-  result.define("!=", builtinNativeFn("!=", biNe))
+  result.define("==", app.nativeEq)
+  result.define("!=", app.nativeNe)
   result.define("contains?",
                 sharedBuiltinNative("contains?", builtinNativeFn("contains?", biContains)))
   result.define("same?", builtinNativeFn("same?", biSame))
@@ -9860,6 +10043,7 @@ proc buildBuiltins(app: Application): Scope =
       if staysBare(name):
         bare.add (name, value)
     result.vars.clear()
+    result.touchNames()
     for entry in bare:
       result.define(entry[0], entry[1])
   result.define("gene", newNamespace("gene", geneScope))
@@ -10490,6 +10674,10 @@ proc fastNativeForKind(app: Application, kind: NativeFastKind): Value {.inline.}
   of nfkGt: app.nativeGt
   of nfkLe: app.nativeLe
   of nfkGe: app.nativeGe
+  of nfkDiv: app.nativeDiv
+  of nfkRem: app.nativeRem
+  of nfkEq: app.nativeEq
+  of nfkNe: app.nativeNe
   else: NIL
 
 proc loadNativeFast(scope: Scope, kind: NativeFastKind, name: string): Value =
@@ -11359,11 +11547,15 @@ proc tryMatch(pat, target: Value, scope: Scope,
 proc forItems(coll: Value): seq[Value] =
   case coll.kind
   of vkList:
-    for it in coll.listItems: result.add it
+    result = coll.listItems
   of vkNode:
-    for it in coll.body: result.add it
+    result = coll.body
   of vkMap:
-    for k, v in coll.mapEntries: result.add newList(@[newSym(k), v])
+    # A map key is already a symbol id; going through its text would copy the
+    # string and intern it again for every entry.
+    result = newSeqOfCap[Value](coll.mapEntries.len)
+    for id, v in coll.mapEntries.idPairs:
+      result.add newList(@[newSymFromKeyId(id), v])
   of vkSet:
     for it in coll.setItems: result.add it
   of vkHashMap:
@@ -11391,9 +11583,9 @@ proc iteratorStream(coll: Value): Value =
   of vkNode:
     newStream(copyItems(coll.body))
   of vkMap:
-    var pairs: seq[Value]
-    for k, v in coll.mapEntries:
-      pairs.add newList(@[newSym(k), v])
+    var pairs = newSeqOfCap[Value](coll.mapEntries.len)
+    for id, v in coll.mapEntries.idPairs:
+      pairs.add newList(@[newSymFromKeyId(id), v])
     newStream(pairs)
   of vkSet:
     newStream(copyItems(coll.setItems))
@@ -11419,6 +11611,11 @@ proc iteratorStream(coll: Value): Value =
 
 proc bindMatchedValues(scope: Scope, binds: Table[string, Value],
                        replaceExisting: bool) =
+  # Callers declare `binds` without initTable: a Table allocates its slots on
+  # the first insert, and a pattern that binds nothing — a literal `when`
+  # clause, a failed clause — then costs no allocation and no walk here.
+  if binds.len == 0:
+    return
   for k, v in binds:
     if replaceExisting:
       if scope.storeNamedSlot(k, v, requireExisting = true):
@@ -11426,6 +11623,8 @@ proc bindMatchedValues(scope: Scope, binds: Table[string, Value],
       if scope.vars.hasKey(k):
         let stored = functionForScopeStorage(v, scope, binding = true)
         scope.vars[k] = stored
+        scope.touchNames()
+        scope.touchSlots()
         scope.syncSlot(k, stored)
         continue
     scope.define(k, v)
@@ -11434,11 +11633,17 @@ proc bindForItem(scope: Scope, pattern, item: Value): bool =
   ## A single binding needs neither a match scratch table nor a second walk
   ## over that table. Destructuring keeps the complete matcher unchanged.
   if pattern.kind == vkSymbol:
-    let name = pattern.symVal
-    if name != "_":
-      scope.define(name, item)
+    # Read the interned name in place; binding it to a local copies the text.
+    if pattern.symVal != "_":
+      if scope.slotNames.len > 0 and scope.privateSlots.len == 0 and
+          scope.slots.len > 0 and scope.slotNames[0] == pattern.symVal:
+        # The loop variable is the body's first local, so `define` would
+        # search the slot names only to arrive at slot 0 and make this call.
+        scope.storeSlot(0, pattern.symVal, item, requireExisting = false)
+      else:
+        scope.define(pattern.symVal, item)
     return true
-  var binds = initTable[string, Value]()
+  var binds: Table[string, Value]
   if not tryMatch(pattern, item, scope, binds): return false
   scope.bindMatchedValues(binds, replaceExisting = false)
   true
@@ -11571,7 +11776,8 @@ proc resetCallScopeSlots(scope: Scope, names: seq[string],
   if scope.slots.len != names.len:
     scope.slots.setLen(names.len)
   scope.slotDefinedBits = 0
-  scope.privateSlots.setLen(0)
+  if scope.privateSlots.len != 0:
+    scope.privateSlots.setLen(0)
   if names.len > 64:
     scope.slotDefinedOverflow.setLen(names.len - 64)
   elif scope.slotDefinedOverflow.len != 0:
@@ -11579,7 +11785,11 @@ proc resetCallScopeSlots(scope: Scope, names: seq[string],
   if scope.slotTypes.len != 0:
     scope.slotTypes.setLen(0)
   if keepSlotNames:
-    scope.slotNames = names
+    # Assigning copies every name. A loop iteration reusing its scope, and a
+    # pooled scope handed back to the function that just released it, already
+    # hold this exact list; comparing is far cheaper than recopying it.
+    if scope.slotNames != names:
+      scope.slotNames = names
   elif scope.slotNames.len != 0:
     scope.slotNames.setLen(0)
     scope.slotMirror = false
@@ -11602,25 +11812,34 @@ proc seedFunctionProtocolEntry(scope: Scope, callee: Value) {.inline.} =
       scope.annotationSelfType = ownedValueFromBits(selfBits)
 
 proc resetCallScope(scope, parent: Scope, names: seq[string], mirror = false) =
+  ## Every field is returned to its fresh-scope state. The containers are
+  ## nearly always empty already, and clearing an empty table or shrinking an
+  ## empty seq is still a call, so each one is tested first.
   scope.strictErrorLease = nil
   scope.compilerMacros = nil
   scope.runtimeMacroSlots = nil
-  scope.privateSlots.setLen(0)
   scope.inheritScopeContext(parent)
   scope.slotMirror = mirror
   scope.simpleCallScope = false
   scope.typeBoundaryToken = nil
   scope.typeBoundarySnapshot = false
   scope.annotationSelfType = NIL
-  scope.vars.clear()
+  if scope.vars.len > 0:
+    scope.vars.clear()
+    scope.touchNames()
   if scope.wildcardFallbacks.len > 0:
     scope.wildcardFallbacks.clear()
+    scope.touchNames()
   if scope.exportExcludedNames.len > 0:
     scope.exportExcludedNames.clear()
+    scope.touchNames()
   scope.varsDirty = false
-  scope.varTypes.clear()
-  scope.impls.setLen(0)
-  scope.corePendingTypes.setLen(0)
+  if scope.varTypes.len > 0:
+    scope.varTypes.clear()
+  if scope.impls.len != 0:
+    scope.impls.setLen(0)
+  if scope.corePendingTypes.len != 0:
+    scope.corePendingTypes.setLen(0)
   scope.implAssembly = nil
   scope.implValidationEpoch = 0
   scope.implOverlayRoot = false
@@ -11629,15 +11848,19 @@ proc resetCallScope(scope, parent: Scope, names: seq[string], mirror = false) =
   scope.forceOverlayImpls = false
   scope.moduleRoot = false
   scope.moduleStatic = false
-  scope.requiredImplTypes.setLen(0)
+  if scope.requiredImplTypes.len != 0:
+    scope.requiredImplTypes.setLen(0)
   scope.ownsTasks = false
-  scope.ownedTasks.setLen(0)
-  scope.ownedCleanupTasks.setLen(0)
+  if scope.ownedTasks.len != 0:
+    scope.ownedTasks.setLen(0)
+  if scope.ownedCleanupTasks.len != 0:
+    scope.ownedCleanupTasks.setLen(0)
   scope.ownsActors = false
   scope.actorFailureStrategy = afsStop
   scope.supervisorEvents = NIL
   scope.supervisorDeadLetters = NIL
-  scope.ownedActors.setLen(0)
+  if scope.ownedActors.len != 0:
+    scope.ownedActors.setLen(0)
   scope.resetCallScopeSlots(names)
 
 proc acquireCallScope(pools: var VmPools, parent: Scope,
@@ -11683,7 +11906,8 @@ proc acquireSimpleCallScope(pools: var VmPools, parent: Scope,
     if result.slotTypes.len != 0:
       result.slotTypes.setLen(0)
     if keepSlotNames:
-      result.slotNames = names
+      if result.slotNames != names:
+        result.slotNames = names
     elif result.slotNames.len != 0:
       result.slotNames.setLen(0)
     result.slotMirror = false
@@ -11950,8 +12174,10 @@ proc releaseCallScope(pools: var VmPools, scope: Scope) =
     scope.moduleStatic = false
     if scope.wildcardFallbacks.len != 0:
       scope.wildcardFallbacks.clear()
+      scope.touchNames()
     if scope.exportExcludedNames.len != 0:
       scope.exportExcludedNames.clear()
+      scope.touchNames()
     if pools.callScopesLen < MaxCallScopePool:
       pools.callScopes[pools.callScopesLen] = scope
       inc pools.callScopesLen
@@ -11970,10 +12196,13 @@ proc releaseCallScope(pools: var VmPools, scope: Scope) =
       scope.slotDefinedOverflow[i] = false
   if scope.vars.len != 0:
     scope.vars.clear()
+    scope.touchNames()
   if scope.wildcardFallbacks.len != 0:
     scope.wildcardFallbacks.clear()
+    scope.touchNames()
   if scope.exportExcludedNames.len != 0:
     scope.exportExcludedNames.clear()
+    scope.touchNames()
   scope.varsDirty = false
   if scope.varTypes.len != 0:
     scope.varTypes.clear()
@@ -12010,16 +12239,23 @@ proc releaseCallScope(pools: var VmPools, scope: Scope) =
 proc releaseCallScope(scope: Scope) =
   releaseCallScope(gVmPools, scope)
 
-proc nextForScope(previous, parent: Scope, body: Chunk, reusable: bool): Scope =
+proc reuseForScope(previous, parent: Scope, body: Chunk, reusable: bool): bool =
   ## Reuse storage only after both compiler and ownership proofs. The old
   ## bindings are released before the next item is installed; captured scopes,
   ## dynamic declarations, suspension and nested scopes use fresh activations.
+  ##
+  ## Answers whether `previous` is now the next iteration's scope. It is not
+  ## returned: handing the same reference back through a result would count it
+  ## twice more per iteration, each time registering an ORC cycle candidate.
   if reusable and not previous.closureHeld and previous.scopeIsUniquelyOwned:
     previous.clearDefinedCallSlots()
     previous.resetCallScope(parent, body.localNames, mirror = body.mirrorSlots)
-    result = previous
-  else:
-    result = newScope(parent)
+    previous.prepareChunkScope(body, layoutInstalled = true)
+    return true
+  false
+
+proc freshForScope(parent: Scope, body: Chunk): Scope =
+  result = newScope(parent)
   result.prepareChunkScope(body)
 
 proc typeBoundaryScope(scope: Scope): Scope =
@@ -12550,6 +12786,7 @@ proc resolveTypeContract(scope: Scope, pending: PendingTypeContract) =
   let parent = typ.typeParent
   let annotationScope = newScope(scope)
   annotationScope.vars[proto.name] = typ
+  annotationScope.touchNames()
   for message in proto.messages:
     let inherited = if parent.kind == vkType:
       parent.typeDirectMessage(message.name) else: NIL
@@ -13115,6 +13352,11 @@ proc staticOperandShape(expr: Value): bool =
   true
 
 proc prepareImplAssembly(scope: Scope, chunk: Chunk) =
+  if chunk.implProtos.len == 0 and chunk.typeProtos.len == 0 and
+      chunk.enumProtos.len == 0:
+    # Nothing to declare: every path below returns without touching the scope.
+    # Most chunks are loop and function bodies, entered once per iteration.
+    return
   if scope.implAssembly != nil:
     let existing = ImplAssembly(scope.implAssembly)
     if existing.chunk == chunk and not existing.finished:
@@ -14390,6 +14632,7 @@ proc copyChunkCapturesToSnapshots(source: Scope, chunk: Chunk,
         raiseUndefinedSymbol(name)
       rootSnapshot.vars[name] = value
       rootSnapshot.vars[name] = cloneForCapturedSnapshot(value, scopeMap)
+      rootSnapshot.touchNames()
 
 proc snapshotTypeBinding(binding: TypeBinding,
                          scopeMap: var Table[pointer, Scope]): TypeBinding =
@@ -15936,6 +16179,15 @@ when dispatchCacheEnabled:
     ## Cache guard epoch: any impl change or generation retirement moves it.
     (app.retireEpoch shl 32) xor app.implEpoch
 
+  proc scopeDispatchEpoch(scope: Scope): uint64 {.inline.} =
+    ## `scope.application().dispatchEpoch()` without owning the Application
+    ## for the length of two field reads; every cached send computes this.
+    if scope.hasOwnApplication:
+      let app {.cursor.} = scope.ownApplicationView
+      (app.retireEpoch shl 32) xor app.implEpoch
+    else:
+      scope.application().dispatchEpoch()
+
   proc chainHasTransientImpls(scope: Scope): bool {.inline.} =
     ## True when a scope strictly below the first stable base (module root or
     ## eval overlay root) carries impls. Those activation-local overlay impls
@@ -15946,7 +16198,10 @@ when dispatchCacheEnabled:
     ## walk stops at the base without inspecting them. Cost is O(transient
     ## depth) of `.impls.len` reads; a module/eval root send scope returns at
     ## once.
-    if scope.application().activeImplAssemblies.len > 0:
+    if scope.hasOwnApplication:
+      if scope.ownApplicationView.activeImplAssemblies.len > 0:
+        return true
+    elif scope.application().activeImplAssemblies.len > 0:
       return true
     var s {.cursor.} = scope
     while s != nil:
@@ -15985,6 +16240,183 @@ when dispatchCacheEnabled:
     chunk.dispatchCache[site] = DispatchCacheEntry(
       recvTypeBits: recvType.bits, msgBits: msgBits, epoch: epoch,
       calleeBits: callee.bits)
+
+when dispatchCacheEnabled:
+  # Namespace member cache (`$str/split`, `some_mod/helper`).
+  #
+  # Resolving a constant path through namespaces hashes one name per segment
+  # and takes and drops a reference to every namespace it passes. The path is
+  # a constant of the chunk and the target is nearly always the same
+  # namespace, so the selector-apply site remembers the answer.
+  #
+  # What is remembered is only "this namespace object, this path -> this
+  # value". Which namespace the name `gene` denotes is still looked up through
+  # the scope chain on every execution, so a module under a restricted root
+  # keeps reaching its own standard library: a different namespace object is a
+  # different key.
+  #
+  # An entry is trusted while each namespace scope on the path carries the
+  # two stamps it had when the entry was written: `namesGen` and `slotsGen`
+  # (types.nim explains them and the duty they put on writers). The site's
+  # own slot holds the target, the first scope's name stamp, the selector and
+  # the value; the slot of the instruction before it — the `opPushConst` that
+  # supplied the selector, which never uses its own — holds the second scope,
+  # its name stamp, and both slot stamps. The second scope is read only after
+  # the first scope's stamps matched, which proves that scope still binds the
+  # namespace that owns the second.
+  # By-name load cache (`opLoadName`, `opCallName*`).
+  #
+  # A name the compiler could not bind lexically is found by walking the scope
+  # chain: an imported function, a type name, an operator taken as a value,
+  # and — before every `$ns/fn` — the root `gene`. Inside a function the walk
+  # passes a few activation scopes that bind nothing by name, then reaches the
+  # module root and its parent, where it compares the name against every
+  # top-level slot name and hashes it once or twice.
+  #
+  # The activation scopes are still inspected on every load. Only the last
+  # part is remembered, per site: "from this module root, in this state, the
+  # name is bound here to this value". State is the `namesGen` stamp, so the
+  # module root must not have changed by name, and — when the binding lives
+  # in its parent — neither must the parent. Which scope is the parent is read
+  # from the root each time: a module moved under a different root has a
+  # parent with a different stamp, and resolves again.
+  proc lookupAtModuleRoot(root: Scope, name: string, chunk: Chunk,
+                          site: int): Value =
+    if site >= 0 and site < chunk.dispatchCache.len:
+      let entry = addr chunk.dispatchCache[site]
+      if entry.recvTypeBits == cast[uint64](cast[pointer](root)) and
+          entry.msgBits == root.namesGen and entry.msgBits != 0:
+        if entry.epoch == 0:
+          return ownedValueFromBits(entry.calleeBits)
+        let outer {.cursor.} = root.parent
+        if outer != nil and outer.namesGen == entry.epoch:
+          return ownedValueFromBits(entry.calleeBits)
+    block resolve:
+      # The same order as `lookup`: slots, vars, wildcard fallbacks, parent.
+      # A slot or a fallback at either level is left to `lookup` itself, with
+      # its undefined-slot and ambiguity errors, and is not remembered.
+      if site < 0 or root.namesGen == 0 or root.slotIndex(name) >= 0:
+        break resolve
+      var value: Value
+      var found = false
+      var outerStamp = 0'u64
+      if root.vars.len > 0:
+        root.vars.withValue(name, bound):
+          value = bound[]
+          found = true
+      if not found:
+        if root.wildcardFallbacks.len > 0 and
+            root.wildcardFallbacks.hasKey(name):
+          break resolve
+        let outer {.cursor.} = root.parent
+        if outer == nil or outer.namesGen == 0 or outer.vars.len == 0 or
+            outer.slotIndex(name) >= 0:
+          break resolve
+        outer.vars.withValue(name, bound):
+          value = bound[]
+          found = true
+          outerStamp = outer.namesGen
+        if not found:
+          break resolve
+      if chunk.dispatchCache.len != chunk.instructions.len:
+        chunk.dispatchCache.setLen(chunk.instructions.len)
+      chunk.dispatchCache[site] = DispatchCacheEntry(
+        recvTypeBits: cast[uint64](cast[pointer](root)),
+        msgBits: root.namesGen, epoch: outerStamp, calleeBits: value.bits)
+      return value
+    root.lookup(name)
+
+  proc lookupThroughModuleRoot(scope: Scope, name: string, chunk: Chunk,
+                               site: int): Value =
+    ## `scope.lookup(name)`, remembering the part of the answer that lies at
+    ## or above the module root.
+    var s {.cursor.} = scope
+    while s != nil and not s.moduleRoot:
+      if s.vars.len != 0 or s.wildcardFallbacks.len != 0 or
+          s.slotIndex(name) >= 0:
+        # This activation may bind the name: the ordinary walk from here.
+        return s.lookup(name)
+      s = s.parent
+    if s == nil:
+      raiseUndefinedSymbol(name)
+    lookupAtModuleRoot(s, name, chunk, site)
+
+  proc namespaceMemberHit(chunk: Chunk, site: int, target, selector: Value,
+                          value: var Value): bool {.inline.} =
+    ## `target` must be a Namespace.
+    if site < 1 or site >= chunk.dispatchCache.len:
+      return false
+    let entry = addr chunk.dispatchCache[site]
+    if entry.recvTypeBits != target.bits or entry.epoch != selector.bits:
+      return false
+    let inner = addr chunk.dispatchCache[site - 1]
+    let first {.cursor.} = target.borrowedNsScope
+    if first.namesGen != entry.msgBits or first.slotsGen != inner.epoch:
+      return false
+    if inner.recvTypeBits != 0:
+      let second {.cursor.} = cast[Scope](cast[pointer](inner.recvTypeBits))
+      if second.namesGen != inner.msgBits or
+          second.slotsGen != inner.calleeBits:
+        return false
+    value = ownedValueFromBits(entry.calleeBits)
+    true
+
+  proc resolveNamespaceMember(chunk: Chunk, site: int, target, selector: Value,
+                              value: var Value): bool {.noinline.} =
+    ## Resolve a one- or two-key constant path whose every container is a
+    ## Namespace, exactly as applySelector would, and remember it. False means
+    ## the shape is anything else — a missing member, a `.msg` segment, a
+    ## Module or Map on the way, a selector that is not this site's constant —
+    ## and the caller applies the selector the general way.
+    if site < 1 or chunk.instructions[site - 1].op != opPushConst:
+      return false
+    # Only the chunk's own constant is remembered: it lives as long as the
+    # chunk and is never handed to a program, so its bits identify it for
+    # good. A selector built at run time is freed after use and its address
+    # reused.
+    let constIndex = chunk.instructions[site - 1].intArg
+    if constIndex < 0 or constIndex >= chunk.constants.len or
+        chunk.constants[constIndex].bits != selector.bits:
+      return false
+    if selector.kind != vkNode or selector.props.len != 0:
+      return false
+    let depth = selector.body.len
+    if depth < 1 or depth > 2:
+      return false
+    var scopes: array[2, pointer]
+    var nameStamps: array[2, uint64]
+    var slotStamps: array[2, uint64]
+    var current = target
+    for i in 0 ..< depth:
+      if current.kind != vkNamespace or selector.body[i].kind != vkString:
+        return false
+      # A module root hides these two names by a flag on the namespace value
+      # rather than by its scope, so the scope's stamp cannot vouch for them.
+      if selector.body[i].strVal.startsWith(".") or
+          selector.body[i].strVal.startsWith("?.") or
+          selector.body[i].strVal in ["this_mod", "this_pkg"]:
+        return false
+      let member = current.exportedBinding(selector.body[i].strVal)
+      if member.kind == vkVoid:
+        return false
+      let namespaceScope {.cursor.} = current.borrowedNsScope
+      if namespaceScope.namesGen == 0:
+        return false
+      scopes[i] = cast[pointer](namespaceScope)
+      nameStamps[i] = namespaceScope.namesGen
+      slotStamps[i] = namespaceScope.slotsGen
+      current = member
+    if chunk.dispatchCache.len != chunk.instructions.len:
+      chunk.dispatchCache.setLen(chunk.instructions.len)
+    chunk.dispatchCache[site - 1] = DispatchCacheEntry(
+      recvTypeBits: (if depth == 2: cast[uint64](scopes[1]) else: 0'u64),
+      msgBits: nameStamps[1], epoch: slotStamps[0],
+      calleeBits: slotStamps[1])
+    chunk.dispatchCache[site] = DispatchCacheEntry(
+      recvTypeBits: target.bits, msgBits: nameStamps[0], epoch: selector.bits,
+      calleeBits: current.bits)
+    value = current
+    true
 
 
 proc appendSplicedBody(target: var seq[Value], value: Value) =
@@ -16130,12 +16562,17 @@ proc runReplSession*(scope: Scope,
                      writeErr: ReplWrite,
                      options = defaultReplOptions()): int
 
-proc instructionLocAt(chunk: Chunk, index: int): SourceLoc =
+let unknownSourceLoc = SourceLoc()
+
+proc instructionLocAt(chunk: Chunk, index: int): lent SourceLoc =
+  ## Borrowed, not copied: a SourceLoc carries its source name, and the call
+  ## opcodes pass one to every native call for an error that rarely happens.
+  ## A caller that keeps the location past the chunk copies it by assignment.
   if chunk != nil and index >= 0 and index < chunk.instructionLocs.len:
     return chunk.instructionLocs[index]
-  SourceLoc()
+  unknownSourceLoc
 
-proc instructionLocBefore(chunk: Chunk, ip: int): SourceLoc =
+proc instructionLocBefore(chunk: Chunk, ip: int): lent SourceLoc =
   instructionLocAt(chunk, ip - 1)
 
 proc annotateTopLevelUndefined(e: ref GeneError, chunk: Chunk,
@@ -16717,6 +17154,15 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     else: nil
   template executionBudget(s: Scope): EvalBudget =
     (if s.evalBudget != nil: s.evalBudget else: inheritedBudget)
+  template refreshEvalBudget(s: Scope) =
+    ## `evalBudget = executionBudget(s)`, storing only on a change. Every
+    ## call and return runs this, the budget is almost always the same one
+    ## (usually none), and assigning a reference is an out-of-line call.
+    if s.evalBudget != nil:
+      if cast[pointer](evalBudget) != cast[pointer](s.evalBudget):
+        evalBudget = s.evalBudget
+    elif cast[pointer](evalBudget) != cast[pointer](inheritedBudget):
+      evalBudget = inheritedBudget
   # Stage 1 of structured concurrency: the "current frame" lives in registers
   # below, and simple Gene function calls push the caller onto `frames` and
   # switch registers to the callee instead of recursing through Nim. A call chain
@@ -16855,7 +17301,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     curOwnedScope = fiber.ownedScope
     curNamespaceName = fiber.namespaceName
     curInitializationLease = fiber.initializationLease
-    evalBudget = executionBudget(scope)
+    refreshEvalBudget(scope)
   elif fiber != nil:
     frames = acquireFrameStack(gVmPools)
     recycleScope = fiber.recycleScope
@@ -16914,7 +17360,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       curForBody = f.extra.forBody
       curOwnedScope = f.extra.ownedScope
       curNamespaceName = f.extra.namespaceName
-    evalBudget = executionBudget(scope)
+    refreshEvalBudget(scope)
 
   template pushFrame() =
     let frameExtra =
@@ -17015,7 +17461,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     curForBody = nil
     curOwnedScope = nil
     curNamespaceName = ""
-    evalBudget = executionBudget(scope)
+    refreshEvalBudget(scope)
 
   template captureContinuation(resumeIp: int) =
     ## Save the whole running continuation into `fiber` so the scheduler can resume
@@ -17223,32 +17669,48 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     if curFrameKind == fkForBody and scope.scopeHasOtherOwners:
       retireReturnedCallScope(scope)
 
+  template enterNextForIteration(item: Value, onMismatch: untyped) =
+    ## Install `item` as the next iteration. The owner's scope and chunk are
+    ## read in place (the frame keeps them alive), and a reused iteration scope
+    ## stays in the `scope` register untouched: copying any of these counts a
+    ## reference to a cyclic type, once per iteration, for nothing.
+    let ownerScope {.cursor.} = frames[^1].scope
+    let ownerChunk {.cursor.} = frames[^1].chunk
+    let loopIndex = ownerChunk.instructions[frames[^1].ip - 1].intArg
+    if reuseForScope(scope, ownerScope, curForBody,
+                     ownerChunk.forLoops[loopIndex].reuseScope):
+      if not bindForItem(scope, curForPattern, item):
+        onMismatch
+        raiseMatchError(scope, "for pattern did not match an item")
+    else:
+      var loopScope = freshForScope(ownerScope, curForBody)
+      if not bindForItem(loopScope, curForPattern, item):
+        onMismatch
+        raiseMatchError(loopScope, "for pattern did not match an item")
+      scope = move loopScope
+    if chunk != curForBody:
+      chunk = curForBody
+    curStackBase = sp
+    ip = 0
+    validateImplRequirements = true
+    returnType = NIL
+    if returnLabel.len != 0:
+      returnLabel = ""
+    curChecksErrors = false
+    if curErrorTypes.len != 0:
+      curErrorTypes = @[]
+    curFnName = ""
+    curFrameKind = fkForBody
+    refreshEvalBudget(scope)
+
   template advanceForLoop() =
     retireEndingLoopScope()
     if curForStream.kind == vkStream:
       if curForStream.streamHasNext:
         let item = checkedStreamNext(curForStream, "for item")
-        let ownerScope = frames[^1].scope
-        let ownerChunk = frames[^1].chunk
-        let loopIndex = ownerChunk.instructions[frames[^1].ip - 1].intArg
-        let loopScope = nextForScope(scope, ownerScope, curForBody,
-                                     ownerChunk.forLoops[loopIndex].reuseScope)
-        if not bindForItem(loopScope, curForPattern, item):
+        enterNextForIteration(item):
           curForStream.closeStream()
           curForStream = NIL
-          raiseMatchError(loopScope, "for pattern did not match an item")
-        chunk = curForBody
-        scope = loopScope
-        curStackBase = sp
-        ip = 0
-        validateImplRequirements = true
-        returnType = NIL
-        returnLabel = ""
-        curChecksErrors = false
-        curErrorTypes = @[]
-        curFnName = ""
-        curFrameKind = fkForBody
-        evalBudget = executionBudget(scope)
       else:
         curForStream.closeStream()
         curForStream = NIL
@@ -17257,27 +17719,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         loadFrameRegs(owner)
         spush NIL
     elif curForIndex < curForItems.len:
-      let item = curForItems[curForIndex]
       inc curForIndex
-      let ownerScope = frames[^1].scope
-      let ownerChunk = frames[^1].chunk
-      let loopIndex = ownerChunk.instructions[frames[^1].ip - 1].intArg
-      let loopScope = nextForScope(scope, ownerScope, curForBody,
-                                   ownerChunk.forLoops[loopIndex].reuseScope)
-      if not bindForItem(loopScope, curForPattern, item):
-        raiseMatchError(loopScope, "for pattern did not match an item")
-      chunk = curForBody
-      scope = loopScope
-      curStackBase = sp
-      ip = 0
-      validateImplRequirements = true
-      returnType = NIL
-      returnLabel = ""
-      curChecksErrors = false
-      curErrorTypes = @[]
-      curFnName = ""
-      curFrameKind = fkForBody
-      evalBudget = executionBudget(scope)
+      enterNextForIteration(curForItems[curForIndex - 1]):
+        discard
     else:
       var owner = frames.pop()
       strunc(curStackBase)
@@ -17563,7 +18007,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     curErrorTypes = @[]
     curFnName = proto.name
     curFrameKind = fkNormal
-    evalBudget = executionBudget(callScope)
+    refreshEvalBudget(callScope)
     continue
 
   template enterRecur1SameScopeFrame(arg: Value, argKnownBareInt: bool) =
@@ -17602,7 +18046,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     curFnName = proto.name
     curFrameKind = fkNormal
     recycleScope = false
-    evalBudget = executionBudget(scope)
+    refreshEvalBudget(scope)
     continue
 
   template restartRecur1SameScopeFrame(arg: Value, argKnownBareInt: bool) =
@@ -17614,7 +18058,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     scope.slots[proto.positionalSlots[0]] = arg
     strunc(curStackBase)
     ip = 0
-    evalBudget = executionBudget(scope)
+    refreshEvalBudget(scope)
     continue
 
   template canReplaceCurrentTailCall(calleeScope: Scope, tailMarked: bool,
@@ -17751,7 +18195,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     else:
       curFnName = nextFnName
     curFrameKind = fkNormal
-    evalBudget = executionBudget(nextScope)
+    refreshEvalBudget(nextScope)
     continue
 
   proc tailFallbackReasonCode(reason: TailFallbackReason): string =
@@ -17866,7 +18310,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       curFnName = nextFnName
     curFrameKind = fkNormal
     curInitializationLease = nil
-    evalBudget = executionBudget(nextScope)
+    refreshEvalBudget(nextScope)
     continue
 
   template maybeEnterUserCallableBytecode(calleeValue: Value,
@@ -17997,7 +18441,11 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         of opPushConst:
           spush chunk.constants[inst[].intArg]
         of opLoadName:
-          spush materializedModuleRefValue(scope, scope.lookup(inst[].name))
+          when dispatchCacheEnabled:
+            spush materializedModuleRefValue(scope,
+              scope.lookupThroughModuleRoot(inst[].name, chunk, ip - 1))
+          else:
+            spush materializedModuleRefValue(scope, scope.lookup(inst[].name))
         of opLoadNativeFast:
           spush scope.loadNativeFast(NativeFastKind(inst[].intArg), inst[].name)
         of opLoadLocal:
@@ -18017,11 +18465,17 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           spush stack[curStackBase + inst[].intArg]
         of opLoadOuterLocal:
           let slot = inst[].intArg
-          let outer {.cursor.} =
-            if inst[].depth == 1:
-              scope.parent
-            else:
-              scope.scopeAtDepth(inst[].depth, inst[].name)
+          # Walked as a borrow at every depth; scopeAtDepth returns an owned
+          # reference, which counts each hop of a chain `scope` keeps alive.
+          var outer {.cursor.} = scope.parent
+          if inst[].depth != 1:
+            outer = scope
+            for _ in 0 ..< inst[].depth:
+              if outer == nil:
+                raiseUndefinedSymbol(inst[].name)
+              outer = outer.parent
+            if outer == nil:
+              raiseUndefinedSymbol(inst[].name)
           if outer != nil and slot >= 0 and slot < outer.slots.len and
               outer.slotDefined(slot):
             spush materializedModuleRefValue(scope, outer.slots[slot])
@@ -18203,6 +18657,36 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 sourceLoc: stageProto.sourceLoc, slot: detected.slot)
           spush newPipeline(spop(), stages, proto.immutable)
         of opMakeSelector:
+          if inst[].intArg == 1 and sp >= 2 and
+              ip < chunk.instructions.len and
+              chunk.instructions[ip].op == opApplySelectorTop and
+              (instructionBudget <= 0 or remainingBudget > 0):
+            # `xs/%i`: a one-segment selector built only for the next
+            # instruction to apply. For a List or Map target and a plain key
+            # that application is exactly staticLookup, so the Path node need
+            # never exist. The skipped instruction is still charged, and ip
+            # moves past it before anything can raise, so budgets and error
+            # positions match the two-instruction form. Other targets (a
+            # stream can suspend and retry the apply) take that form.
+            let segment = stack[sp - 1]
+            let targetKind = stack[sp - 2].kind
+            if (targetKind == vkList or targetKind == vkMap) and
+                (segment.kind == vkInt or segment.kind == vkSymbol or
+                 (segment.kind == vkString and
+                  not segment.strVal.startsWith(".") and
+                  not segment.strVal.startsWith("?."))):
+              rejectCallerEnvEscape("selector construction", segment)
+              if instructionBudget > 0:
+                dec remainingBudget
+              if evalBudget != nil:
+                consumeEvalStep(evalBudget)
+              inc ip
+              let argsStart = sp - 2
+              let value = materializedModuleRefValue(
+                scope, staticLookup(stack[argsStart], segment))
+              strunc(argsStart)
+              spush value
+              continue
           var body = newSeq[Value](inst[].intArg)
           if inst[].intArg > 0:
             for i in countdown(inst[].intArg - 1, 0):
@@ -18226,10 +18710,33 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           if sp < 2:
             raise newException(GeneError, "VM stack underflow in selector apply")
           let argsStart = sp - 2
-          let target = stack[argsStart]
-          let selector = stack[argsStart + 1]
+          if stack[argsStart].isPropMap:
+            # `row/amount` on a Map: what applySelector does for a plain
+            # one-key selector is this one table read. An absent key is void
+            # either way, and any other selector shape falls through.
+            let keyId = plainPathKeyId(stack[argsStart + 1])
+            if keyId != -2:
+              let value = materializedModuleRefValue(scope,
+                if keyId < 0: VOID
+                else: stack[argsStart].mapEntries.getOrDefaultById(keyId, VOID))
+              strunc(argsStart)
+              spush value
+              continue
+          when dispatchCacheEnabled:
+            if stack[argsStart].kind == vkNamespace:
+              var member: Value
+              if namespaceMemberHit(chunk, ip - 1, stack[argsStart],
+                                    stack[argsStart + 1], member) or
+                  resolveNamespaceMember(chunk, ip - 1, stack[argsStart],
+                                         stack[argsStart + 1], member):
+                let value = materializedModuleRefValue(scope, member)
+                strunc(argsStart)
+                spush value
+                continue
+          # The operands stay on the stack for the call, which owns them; a
+          # local copy of each would only add a retain and a release.
           let value = materializedModuleRefValue(
-            scope, applySelector(selector, target, scope))
+            scope, applySelector(stack[argsStart + 1], stack[argsStart], scope))
           strunc(argsStart)
           spush value
         of opMakeFn:
@@ -18557,6 +19064,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                                  proto.backingType, scope, messages)
           let annotationScope = newScope(scope)
           annotationScope.vars[proto.name] = enumType
+          annotationScope.touchNames()
           for message in proto.messages:
             if message.declaresOverride:
               raise newException(GeneError,
@@ -18914,7 +19422,10 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               break
           var callee =
             if inst[].op in {opCallName0, opCallName1, opCallNameN}:
-              scope.lookup(inst[].name)
+              when dispatchCacheEnabled:
+                scope.lookupThroughModuleRoot(inst[].name, chunk, ip - 1)
+              else:
+                scope.lookup(inst[].name)
             elif inst[].op == opCallLocal1 or inst[].op == opCallLocalN:
               let slot = inst[].intArg
               if slot >= 0 and slot < scope.slots.len and scope.slotDefined(slot):
@@ -18924,7 +19435,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             elif inst[].op == opCallParentLocal0 or
                 inst[].op == opCallParentLocal1:
               let slot = inst[].intArg
-              let parent = scope.parent
+              # Borrowed: `scope` holds its parent for this whole statement.
+              let parent {.cursor.} = scope.parent
               if parent != nil and slot >= 0 and slot < parent.slots.len and
                   parent.slotDefined(slot):
                 parent.slots[slot]
@@ -18932,11 +19444,15 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 scope.loadSlotAt(1, slot, inst[].name)
             else:
               let slot = inst[].intArg
-              let outer =
-                if inst[].depth == 1:
-                  scope.parent
-                else:
-                  scope.scopeAtDepth(inst[].depth, inst[].name)
+              var outer {.cursor.} = scope.parent
+              if inst[].depth != 1:
+                outer = scope
+                for _ in 0 ..< inst[].depth:
+                  if outer == nil:
+                    raiseUndefinedSymbol(inst[].name)
+                  outer = outer.parent
+                if outer == nil:
+                  raiseUndefinedSymbol(inst[].name)
               if outer != nil and slot >= 0 and slot < outer.slots.len and
                   outer.slotDefined(slot):
                 outer.slots[slot]
@@ -19215,39 +19731,73 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               "cannot dispatch '" & inst[].name &
               "' on an in-progress constructed instance")
           var callee = NIL
-          let recvType = receiver.receiverType
-          ensureTypeContractReady(scope, recvType)
-          # An unqualified send reaches only type-direct messages, walking the
-          # parent chain (design §3/§9). Protocol messages are always qualified —
-          # `(x .P:m)` — so a protocol impl is never reached by a bare name.
-          if recvType.kind == vkType:
-            when dispatchCacheEnabled:
-              # site = this instruction's index (ip was advanced at loop top).
+          when dispatchCacheEnabled:
+            block cachedBuiltinSend:
+              # `(xs .push x)`, `(m .get k)`, `(point .norm)`: a site that
+              # keeps seeing one receiver type is answered from its cache
+              # entry without taking a reference to that type at all — an
+              # owned Type costs a GC_ref/GC_unref pair each time it is
+              # produced or passed. Every condition the general path below
+              # would test is tested here: same type, same epoch, no pending
+              # contract, no transient impls.
+              let receiverKind = receiver.kind
+              var typeBits = 0'u64
+              var contractPending = false
+              if receiverKind == vkNode:
+                # An instance of a declared type carries that type in its
+                # head, which is what receiverType answers for it. A data
+                # node, a Path, or an enum variant's node takes the general
+                # path.
+                if receiver.borrowedNodeHead.kind == vkType:
+                  typeBits = receiver.borrowedNodeHead.bits
+                  contractPending =
+                    receiver.borrowedNodeHead.typeContractPending
+              elif receiverKind != vkEnumVariant:
+                typeBits = gScalarTypes[receiverKind].bits
+                contractPending = gScalarTypes[receiverKind].typeContractPending
               let site = ip - 1
-              let epoch = scope.application().dispatchEpoch()
-              let cacheable = not scope.chainHasTransientImpls()
-              if cacheable:
-                callee = chunk.dispatchCacheLookup(site, recvType, 0'u64, epoch)
-            if callee.kind == vkNil:
-              callee = readyTypeDirectMessage(recvType, inst[].name)
+              if typeBits == 0 or site >= chunk.dispatchCache.len:
+                break cachedBuiltinSend
+              let entry = addr chunk.dispatchCache[site]
+              if entry.recvTypeBits != typeBits or entry.msgBits != 0'u64 or
+                  entry.epoch != scope.scopeDispatchEpoch() or
+                  contractPending or scope.chainHasTransientImpls():
+                break cachedBuiltinSend
+              callee = ownedValueFromBits(entry.calleeBits)
+          if callee.kind == vkNil:
+            let recvType = receiver.receiverType
+            ensureTypeContractReady(scope, recvType)
+            # An unqualified send reaches only type-direct messages, walking the
+            # parent chain (design §3/§9). Protocol messages are always qualified —
+            # `(x .P:m)` — so a protocol impl is never reached by a bare name.
+            if recvType.kind == vkType:
               when dispatchCacheEnabled:
-                if cacheable and callee.kind != vkNil:
-                  chunk.dispatchCacheFill(site, recvType, 0'u64, epoch, callee)
-          if callee.kind == vkNil:
-            callee = builtinReceiverMessage(scope, receiver, inst[].name)
-          if callee.kind == vkNil:
-            # `~` dispatches only (design §3). There is no lexical fallback — a
-            # name that resolves to no type-direct message is a MessageError,
-            # with a hint when it names a lexical callable (likely a call, not a
-            # send) or a same-named protocol message (needs qualification).
-            var lexical: Value
-            let lexicalHint = scope.lookupOptional(inst[].name, lexical) and
-              lexical.kind in {vkFunction, vkNativeFn}
-            let recvTypeName =
-              if recvType.kind == vkType: recvType.typeName
-              else: declarationKind(receiver)
-            raiseMessageError(inst[].name, recvTypeName, scope, lexicalHint,
-                              receiverValue = recvType)
+                # site = this instruction's index (ip was advanced at loop top).
+                let site = ip - 1
+                let epoch = scope.scopeDispatchEpoch()
+                let cacheable = not scope.chainHasTransientImpls()
+                if cacheable:
+                  callee = chunk.dispatchCacheLookup(site, recvType, 0'u64, epoch)
+              if callee.kind == vkNil:
+                callee = readyTypeDirectMessage(recvType, inst[].name)
+                when dispatchCacheEnabled:
+                  if cacheable and callee.kind != vkNil:
+                    chunk.dispatchCacheFill(site, recvType, 0'u64, epoch, callee)
+            if callee.kind == vkNil:
+              callee = builtinReceiverMessage(scope, receiver, inst[].name)
+            if callee.kind == vkNil:
+              # `~` dispatches only (design §3). There is no lexical fallback — a
+              # name that resolves to no type-direct message is a MessageError,
+              # with a hint when it names a lexical callable (likely a call, not a
+              # send) or a same-named protocol message (needs qualification).
+              var lexical: Value
+              let lexicalHint = scope.lookupOptional(inst[].name, lexical) and
+                lexical.kind in {vkFunction, vkNativeFn}
+              let recvTypeName =
+                if recvType.kind == vkType: recvType.typeName
+                else: declarationKind(receiver)
+              raiseMessageError(inst[].name, recvTypeName, scope, lexicalHint,
+                                receiverValue = recvType)
           if callee.isSyntaxFn:
             rejectSyntaxSend(callee, scope)
           if inst[].intArg > 0:
@@ -19283,7 +19833,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             # per-site cache only has to guard the impl epoch (reload/overlay).
             when dispatchCacheEnabled:
               let site = ip - 1
-              let epoch = scope.application().dispatchEpoch()
+              let epoch = scope.scopeDispatchEpoch()
               callee = chunk.dispatchCacheLookup(site, superType, 0'u64, epoch)
               if callee.kind == vkNil:
                 callee = readyTypeDirectMessage(superType, inst[].name)
@@ -20175,6 +20725,30 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               stack[top - 2] = newBool(a.smallIntVal >= b.smallIntVal)
               sp = (top - 1)
               continue
+            of nfkMul:
+              stack[top - 2] = intMul(a, b)
+              sp = (top - 1)
+              continue
+            of nfkDiv:
+              let divisor = b.smallIntVal
+              if divisor != 0:
+                stack[top - 2] = newInt(a.smallIntVal div divisor)
+                sp = (top - 1)
+                continue
+            of nfkRem:
+              let divisor = b.smallIntVal
+              if divisor != 0:
+                stack[top - 2] = newInt(a.smallIntVal mod divisor)
+                sp = (top - 1)
+                continue
+            of nfkEq:
+              stack[top - 2] = newBool(a.bits == b.bits)
+              sp = (top - 1)
+              continue
+            of nfkNe:
+              stack[top - 2] = newBool(a.bits != b.bits)
+              sp = (top - 1)
+              continue
             else:
               discard
           strunc(top - 2)
@@ -20215,6 +20789,25 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               continue
             of nfkGe:
               stack[top - 1] = newBool(a.smallIntVal >= b.smallIntVal)
+              continue
+            of nfkMul:
+              stack[top - 1] = intMul(a, b)
+              continue
+            of nfkDiv:
+              let divisor = b.smallIntVal
+              if divisor != 0:
+                stack[top - 1] = newInt(a.smallIntVal div divisor)
+                continue
+            of nfkRem:
+              let divisor = b.smallIntVal
+              if divisor != 0:
+                stack[top - 1] = newInt(a.smallIntVal mod divisor)
+                continue
+            of nfkEq:
+              stack[top - 1] = newBool(a.bits == b.bits)
+              continue
+            of nfkNe:
+              stack[top - 1] = newBool(a.bits != b.bits)
               continue
             else:
               discard
@@ -20267,7 +20860,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             if mp.tailResult: fkTailMatchBody else: fkNormal
           var handled = false
           for cl in mp.clauses:
-            var binds = initTable[string, Value]()
+            var binds: Table[string, Value]
             if tryMatch(cl.pattern, target, scope, binds):
               let branchScope = newScope(scope)
               branchScope.prepareChunkScope(cl.body)
@@ -20290,14 +20883,14 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             continue
         of opMatchBind:
           let target = spop()
-          var binds = initTable[string, Value]()
+          var binds: Table[string, Value]
           if not tryMatch(chunk.constants[inst[].intArg], target, scope, binds):
             raiseMatchError(scope, "destructuring pattern did not match")
           scope.bindMatchedValues(binds, replaceExisting = false)
           spush target
         of opMatchBindReplace:
           let target = spop()
-          var binds = initTable[string, Value]()
+          var binds: Table[string, Value]
           if not tryMatch(chunk.constants[inst[].intArg], target, scope, binds):
             raiseMatchError(scope, "destructuring pattern did not match")
           scope.bindMatchedValues(binds, replaceExisting = true)
@@ -20425,7 +21018,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           curErrorTypes = @[]
           curFnName = ""
           curFrameKind = fkTryBody
-          evalBudget = executionBudget(scope)
+          refreshEvalBudget(scope)
           continue
         of opTaskScope:
           let taskScope = newScope(scope)
@@ -20767,7 +21360,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 not isIoReadMessage(scope, message.protocolMessageProtocol,
                                     message.protocolMessageName):
               let site = ip - 1
-              let epoch = scope.application().dispatchEpoch()
+              let epoch = scope.scopeDispatchEpoch()
               let msgBits = message.bits
               callee = chunk.dispatchCacheLookup(site, recvType, msgBits, epoch)
               if callee.kind == vkNil:
@@ -20800,14 +21393,14 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             if cacheable:
               callee = chunk.dispatchCacheLookup(ip - 1, recvType,
                                                  qualifier.bits,
-                                                 scope.application().dispatchEpoch())
+                                                 scope.scopeDispatchEpoch())
           if callee.kind == vkNil:
             callee = resolveQualifiedSend(scope, qualifier, inst[].name,
                                           receiver)
             when dispatchCacheEnabled:
               if cacheable and callee.kind != vkNil:
                 chunk.dispatchCacheFill(ip - 1, recvType, qualifier.bits,
-                                        scope.application().dispatchEpoch(), callee)
+                                        scope.scopeDispatchEpoch(), callee)
           if callee.isSyntaxFn:
             rejectSyntaxSend(callee, scope)
           spush callee
@@ -20920,7 +21513,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               newNode(builtInTypeHead(h.scope, "RuntimeError"), props = props)
           var caught = false
           for cl in h.tp.catches:
-            var binds = initTable[string, Value]()
+            var binds: Table[string, Value]
             if tryMatch(cl.pattern, errVal, h.scope, binds):
               let catchScope = newScope(h.scope)
               catchScope.prepareChunkScope(cl.body)
@@ -25000,7 +25593,7 @@ proc staticLookup(target, segment: Value): Value =
     # no intern-table probe. A string segment probes lookup-only: an
     # un-interned key text cannot be present in any PropTable.
     let keyId = if segment.kind == vkSymbol: segment.symbolId
-                else: lookupPropKeyId(segment.strVal)
+                else: segment.strLookupKeyId
     template key: string =
       (if segment.kind == vkSymbol: segment.symVal else: segment.strVal)
     case target.kind

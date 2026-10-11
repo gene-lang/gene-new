@@ -12528,3 +12528,120 @@ suite "spec — naming convention":
               offenders.add qual & "/" & msgName
     sort(offenders)
     check offenders == newSeq[string]()
+
+suite "spec — runtime fast paths keep ordinary semantics":
+  # Each expectation was produced by the runtime before the fast paths existed
+  # (benchmarks/baselines/2026-10-11-general-runtime). A case fails when a
+  # shortcut — an operator opcode, a lookup cache, the JSON codec — stops
+  # agreeing with the general path it stands in for.
+  test "remainder and division of small Ints truncate toward zero":
+    check_eval("""[(// 17 5) (// -17 5) (// 17 -5) (// -17 -5) (// 0 3) (// 5 -1) (/ 17 5) (/ -17 5) (/ 17 -5) (/ 7 -1)]""",
+               """[2 -2 2 -2 0 0 3 -3 -3 -7]""")
+
+  test "remainder and division widen past the small Int range":
+    check_eval("""[(// 9223372036854775807 10) (// 140737488355328 7) (/ (* 140737488355328 2) -1) (/ (- 0 140737488355328) -1)]""",
+               """[7 4 -281474976710656 140737488355328]""")
+
+  test "remainder and division keep their Float and n-ary rules":
+    check_eval("""[(/ 7.0 2) (// 7.5 2) (/ 100 5 2)]""",
+               """[3.5 1.5 10]""")
+
+  test "equality operators compare small Ints and fall back for everything else":
+    check_eval("""[(== 1 1) (== 1 2) (!= 1 1) (!= 1 2) (== 1 1.0) (== "a" "a") (!= "a" "b") (== [1 2] [1 2]) (== 1 1 2) (== nil nil)]""",
+               """[true false false true false true true true false true]""")
+
+  test "a zero divisor is still an error on the fast path":
+    check_eval("""[(try (/ 1 0) catch Any $err_msg) (try (// 1 0) catch Any $err_msg) (try (do (var z 0) (// 9 z)) catch Any $err_msg) (try (// "a" 2) catch Any $err_msg)]""",
+               """["division by zero" "division by zero" "division by zero" "// expects numbers, got vkString"]""")
+
+  test "a module-level operator definition wins over the built-in":
+    check_eval("""(fn // [a b] "mine") (fn == [a b] "same") [(// 9 2) (== 1 2)]""",
+               """["mine" "same"]""")
+
+  test "a local operator binding wins over the built-in":
+    check_eval("""(fn f [] (let == (fn [a b] "local eq")) (let / (fn [a b] "local div")) [(== 1 1) (/ 9 2)]) (f)""",
+               """["local eq" "local div"]""")
+
+  test "operators remain first-class values":
+    check_eval("""(var ops [== != // /]) (fn apply2 [f a b] (f a b)) [(ops/0 3 3) (ops/1 3 3) (ops/2 9 4) (ops/3 9 4) (apply2 // 9 4)]""",
+               """[true false 1 2 1]""")
+
+  test "operators inside a loop match the unlooped results":
+    check_eval("""(var total 0) (repeat i in 50 (set total (+ total (// (* i 37) 11) (/ i 3))) (if (== (// i 7) 0) (then (set total (+ total 1000)))) (if (!= (// i 2) 0) (then (set total (- total 1))))) total""",
+               """8614""")
+
+  test "a dynamic one-segment path indexes Lists from either end":
+    check_eval("""(var xs [10 20 30]) (var i 1) (var n -1) (var far 9) (var low -4) [xs/%i xs/%n xs/%far xs/%low]""",
+               """[20 30 void void]""")
+
+  test "a dynamic one-segment path reads Map keys and message segments":
+    check_eval("""(var m {^a 1 ^c nil}) (var k "a") (var z "zz") (var s (quote a)) (var xs [1 2 3]) (var msg ".size") [m/%k m/%z m/%s m/c xs/%msg]""",
+               """[1 void 1 nil 3]""")
+
+  test "a namespace member read sees every rebinding":
+    check_eval("""(ns counter (var n 0) (fn bump [] (set n (+ n 1)))) (fn read [] counter/n) (var out []) (repeat i in 3 (out .push (read)) (counter/bump)) out""",
+               """[0 1 2]""")
+
+  test "a nested namespace member read sees every rebinding":
+    check_eval("""(ns outer (ns inner (var depth 2) (fn deepen [] (set depth (+ depth 1))))) (fn read [] outer/inner/depth) (var out []) (repeat i in 3 (out .push (read)) (outer/inner/deepen)) out""",
+               """[2 3 4]""")
+
+  test "one path site serves two namespaces":
+    check_eval("""(ns left (var value "left")) (ns right (var value "right")) (fn pick [space] space/value) (var out []) (repeat i in 4 (out .push (pick (if (== (// i 2) 0) (then left) (else right))))) out""",
+               """["left" "right" "left" "right"]""")
+
+  test "a by-name load sees every rebinding of a module-level name":
+    check_eval("""(var x 1) (fn get [] x) (var out []) (repeat i in 3 (out .push (get)) (set x (+ x 1))) out""",
+               """[1 2 3]""")
+
+  test "a by-name call sees a rebound function":
+    check_eval("""(var f (fn [] "first")) (fn call_it [] (f)) (var out []) (out .push (call_it)) (set f (fn [] "second")) (out .push (call_it)) out""",
+               """["first" "second"]""")
+
+  test "a name defined after its user is found once it exists":
+    check_eval("""(fn late [] later_name) (var later_name 5) (var a (late)) (set later_name 6) [a (late)]""",
+               """[5 6]""")
+
+  test "a repeated standard-library call resolves the same function":
+    check_eval("""(fn probe [text] ($str/upper text)) (var out []) (repeat i in 3 (out .push (probe $"v${i}"))) out""",
+               """["V0" "V1" "V2"]""")
+
+  test "Map get and put accept Str and Sym keys without interning a missed key":
+    check_eval("""(var m {}) (m .put "alpha" 1) (m .put (quote beta) 2) (m .put "gamma" nil) (var before [(m .get "alpha") (m .get (quote alpha)) (m .get "beta") (m .get "gamma") (m .get "spec_key_never_interned")]) (m .put "alpha" void) [before (m .get "alpha") ($size m)]""",
+               """[[1 1 2 nil void] void 2]""")
+
+  test "Map iteration yields Sym keys in insertion order":
+    check_eval("""(var out []) (for [k v] in {^b 2 ^a 1} (out .push [k v ($to_str k)])) out""",
+               """[[b 2 "b"] [a 1 "a"]]""")
+
+  test "a Map literal drops void entries":
+    check_eval("""{^a 1 ^b void ^c 3}""",
+               """{^a 1 ^c 3}""")
+
+  test "json/parse reads plain, signed, long and fractional numbers":
+    check_eval("""($json/parse "[0, -0, 007, 12, -34, 1.5, -2.5e3, 123456789012345678, 1234567890123456789, 12345678901234567890]")""",
+               """[0 0 7 12 -34 1.5 -2500.0 123456789012345678 1234567890123456789 1.2345678901234567e+19]""")
+
+  test "json/parse keeps key order across repeated and escaped keys":
+    check_eval("""($json/parse "[{\"id\":1,\"name\":\"x\"},{\"name\":\"z\",\"id\":3,\"extra\":true,\"\":0}]")""",
+               """[{^id 1 ^name "x"} {^name "z" ^id 3 ^^extra ^"" 0}]""")
+
+  test "json/stringify escapes quotes and backslashes and passes text through":
+    check_eval("""($json/stringify ["a\"b" "c\\d" "plain é ✓" {^k [1 -2 nil true]}])""",
+               """"[\"a\\\"b\",\"c\\\\d\",\"plain é ✓\",{\"k\":[1,-2,null,true]}]"""")
+
+  test "json/parse reports malformed keys, strings and numbers":
+    check_eval("""[(try ($json/parse "{\"abc") catch Any $err_msg) (try ($json/parse "[\"a\\qb\"]") catch Any $err_msg) (try ($json/parse "[-]") catch Any $err_msg) (try ($json/parse "{\"a\":1,\"a\":2}" ^^strict) catch Any $err_msg)]""",
+               """["json/parse: unterminated string at offset 5" "json/parse: invalid escape \\q at offset 4" "json/parse: invalid number at offset 2" "json/parse: duplicate object key a at offset 11"]""")
+
+  test "sort_by is stable and a failing comparator leaves its input alone":
+    check_eval("""(var rows [{^id 1 ^k 3} {^id 2 ^k 1} {^id 3 ^k 3} {^id 4 ^k 1} {^id 5 ^k 2}]) (var ids []) (for row in ($order/sort_by rows /k) (ids .push row/id)) (var pending [4 2 9 1]) (var failed (try ($order/sort pending ^compare (fn [a b] (fail (Error ^message "no order")))) catch Any "failed")) [ids rows/0/id failed pending ($order/sort [5 3 9 1 3])]""",
+               """[[2 4 5 1 3] 1 "failed" [4 2 9 1] [1 3 3 5 9]]""")
+
+  test "a literal match clause binds nothing and still selects":
+    check_eval("""(fn m [x] (match x (when 0 "zero") (when 1 "one") (else "many"))) [(m 0) (m 1) (m 5)]""",
+               """["zero" "one" "many"]""")
+
+  test "loop iterations keep distinct captured variables":
+    check_eval("""(var fns []) (for item in [1 2 3] (fns .push (fn [] (* item 10)))) (var called []) (for f in fns (called .push (f))) called""",
+               """[10 20 30]""")

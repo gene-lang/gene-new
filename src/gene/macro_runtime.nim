@@ -124,6 +124,7 @@ proc macroRuntimeState(session: MacroExecutionSession): MacroRuntimeState =
   let hostBuiltins = host.builtinsScope()
   let phaseBuiltins = newScope(application = phaseApp)
   phaseBuiltins.vars = hostBuiltins.vars
+  phaseBuiltins.touchNames()
   phaseBuiltins.impls = host.intrinsicImpls
   phaseApp.intrinsicImpls = host.intrinsicImpls
   phaseApp.builtins = phaseBuiltins
@@ -142,6 +143,10 @@ proc macroRuntimeState(session: MacroExecutionSession): MacroRuntimeState =
   phaseApp.nativeGt = host.nativeGt
   phaseApp.nativeLe = host.nativeLe
   phaseApp.nativeGe = host.nativeGe
+  phaseApp.nativeDiv = host.nativeDiv
+  phaseApp.nativeRem = host.nativeRem
+  phaseApp.nativeEq = host.nativeEq
+  phaseApp.nativeNe = host.nativeNe
   if host.sandboxRoot != nil:
     # Rebuild the same grant surface in the phase Application. Reusing the
     # host's Scope mixes Error/impl ownership between Applications and can

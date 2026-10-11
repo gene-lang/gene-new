@@ -5886,14 +5886,26 @@ proc biFsRealPath(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
 
 const jsonMaxDepth = 200
 
-type JsonParser = object
-  input: string
-  pos: int
-  scope: Scope
-  # `^^strict` rejects a repeated object key instead of keeping the last
-  # one: a peer's message then means exactly one thing to every parser.
-  strict: bool
-  maxDepth: int
+const jsonKeyCacheSize = 32
+
+type
+  JsonKeyCacheEntry = object
+    text: string
+    id: int32       # key id plus one; 0 marks an empty entry
+
+  JsonParser = object
+    input: string
+    pos: int
+    scope: Scope
+    # `^^strict` rejects a repeated object key instead of keeping the last
+    # one: a peer's message then means exactly one thing to every parser.
+    strict: bool
+    maxDepth: int
+    # Object keys repeat: an array of records spells the same few names once
+    # per element. Remembering each spelling's key id saves a string
+    # allocation, a hash, and the intern lock on every later occurrence.
+    keyCache: array[jsonKeyCacheSize, JsonKeyCacheEntry]
+    lastObjectSize: int
 
 proc raiseJsonError(p: var JsonParser, message: string) =
   var props = initPropTable()
@@ -5923,7 +5935,20 @@ proc parseJsonValue(p: var JsonParser, depth: int): Value
 
 proc parseJsonString(p: var JsonParser): string =
   inc p.pos                             # opening quote
-  var s = ""
+  # Most strings contain no escape. Find the end of the plain run first and
+  # take it in one copy; only an escape, a control character, or the end of
+  # input hands the rest to the character loop, which reports those as before.
+  let runStart = p.pos
+  while p.pos < p.input.len:
+    let c = p.input[p.pos]
+    if c == '"' or c == '\\' or c < ' ':
+      break
+    inc p.pos
+  if p.pos < p.input.len and p.input[p.pos] == '"':
+    result = p.input[runStart ..< p.pos]
+    inc p.pos
+    return
+  var s = p.input[runStart ..< p.pos]
   while true:
     if p.pos >= p.input.len:
       raiseJsonError(p, "unterminated string")
@@ -5965,8 +5990,56 @@ proc parseJsonString(p: var JsonParser): string =
       s.add c
       inc p.pos
 
+proc parseJsonKeyId(p: var JsonParser): int32 =
+  ## The key id of the object key at `p.pos` (an opening quote), leaving
+  ## `p.pos` after its closing quote.
+  let keyStart = p.pos + 1
+  var keyEnd = keyStart
+  while keyEnd < p.input.len:
+    let c = p.input[keyEnd]
+    if c == '"' or c == '\\' or c < ' ':
+      break
+    inc keyEnd
+  if keyEnd >= p.input.len or p.input[keyEnd] != '"':
+    # Escaped, malformed, or unterminated: the general string path.
+    return propKeyId(parseJsonString(p))
+  let n = keyEnd - keyStart
+  var slot = n
+  if n > 0:
+    slot = n * 31 + ord(p.input[keyStart]) * 7 + ord(p.input[keyEnd - 1])
+  slot = slot and (jsonKeyCacheSize - 1)
+  p.pos = keyEnd + 1
+  if p.keyCache[slot].id != 0 and p.keyCache[slot].text.len == n and
+      (n == 0 or equalMem(unsafeAddr p.keyCache[slot].text[0],
+                          unsafeAddr p.input[keyStart], n)):
+    return p.keyCache[slot].id - 1
+  let key = p.input[keyStart ..< keyEnd]
+  result = propKeyId(key)
+  p.keyCache[slot] = JsonKeyCacheEntry(text: key, id: result + 1)
+
 proc parseJsonNumber(p: var JsonParser): Value =
   let start = p.pos
+  block plainInt:
+    # An optional sign and at most 18 digits cannot overflow, and such a
+    # number is by far the usual one. Anything else — longer, fractional,
+    # exponent, or malformed — is parsed from `start` by the general path.
+    var i = start
+    let negative = i < p.input.len and p.input[i] == '-'
+    if negative:
+      inc i
+    let digitsStart = i
+    var magnitude = 0'i64
+    while i < p.input.len and p.input[i] in {'0'..'9'} and
+        i - digitsStart < 18:
+      magnitude = magnitude * 10 + int64(ord(p.input[i]) - ord('0'))
+      inc i
+    if i == digitsStart:
+      break plainInt
+    if i < p.input.len and
+        p.input[i] in {'0'..'9', '.', 'e', 'E', '+', '-'}:
+      break plainInt
+    p.pos = i
+    return newInt(if negative: -magnitude else: magnitude)
   var isFloat = false
   if p.pos < p.input.len and p.input[p.pos] == '-':
     inc p.pos
@@ -6013,18 +6086,20 @@ proc parseJsonValue(p: var JsonParser, depth: int): Value =
     if p.pos < p.input.len and p.input[p.pos] == '}':
       inc p.pos
       return newMap(entries)
+    # Sibling objects are usually the same shape.
+    entries.reserve(p.lastObjectSize)
     while true:
       jsonSkipWs(p)
       if p.pos >= p.input.len or p.input[p.pos] != '"':
         raiseJsonError(p, "expected object key string")
-      let key = parseJsonString(p)
+      let keyId = parseJsonKeyId(p)
       jsonSkipWs(p)
       if p.pos >= p.input.len or p.input[p.pos] != ':':
         raiseJsonError(p, "expected ':' after object key")
       inc p.pos
-      if p.strict and entries.hasKey(key):
-        raiseJsonError(p, "duplicate object key " & key)
-      entries[key] = parseJsonValue(p, depth + 1)
+      if p.strict and entries.hasId(keyId):
+        raiseJsonError(p, "duplicate object key " & propKeyText(keyId))
+      entries.putById(keyId, parseJsonValue(p, depth + 1))
       jsonSkipWs(p)
       if p.pos >= p.input.len:
         raiseJsonError(p, "unterminated object")
@@ -6035,6 +6110,7 @@ proc parseJsonValue(p: var JsonParser, depth: int): Value =
         break
       else:
         raiseJsonError(p, "expected ',' or '}' in object")
+    p.lastObjectSize = entries.len
     newMap(entries)
   of '[':
     inc p.pos
@@ -6161,7 +6237,21 @@ proc biJsonParse(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
 
 proc jsonEscapeInto(s: string, into: var string) =
   into.add '"'
-  for c in s:
+  # Text that needs no escaping is appended a run at a time rather than a
+  # character at a time; each escape flushes the run before it.
+  var runStart = 0
+  template flushRun(upTo: int) =
+    if upTo > runStart:
+      let count = upTo - runStart
+      let base = into.len
+      into.setLen(base + count)
+      copyMem(addr into[base], unsafeAddr s[runStart], count)
+  for i in 0 ..< s.len:
+    let c = s[i]
+    if c != '"' and c != '\\' and c >= ' ':
+      continue
+    flushRun(i)
+    runStart = i + 1
     case c
     of '"': into.add "\\\""
     of '\\': into.add "\\\\"
@@ -6171,11 +6261,9 @@ proc jsonEscapeInto(s: string, into: var string) =
     of '\r': into.add "\\r"
     of '\t': into.add "\\t"
     else:
-      if c < ' ':
-        into.add "\\u"
-        into.add toHex(ord(c), 4).toLowerAscii()
-      else:
-        into.add c
+      into.add "\\u"
+      into.add toHex(ord(c), 4).toLowerAscii()
+  flushRun(s.len)
   into.add '"'
 
 proc jsonStringifyInto(value: Value, into: var string, scope: Scope,
@@ -6185,7 +6273,7 @@ proc jsonStringifyInto(value: Value, into: var string, scope: Scope,
   case value.kind
   of vkNil, vkVoid: into.add "null"
   of vkBool: into.add (if value.boolVal: "true" else: "false")
-  of vkInt: into.add $value.intVal
+  of vkInt: into.addInt value.intVal
   of vkFloat: into.add $value.floatVal
   of vkString: jsonEscapeInto(value.strVal, into)
   of vkSymbol: jsonEscapeInto(value.symVal, into)
@@ -6200,10 +6288,11 @@ proc jsonStringifyInto(value: Value, into: var string, scope: Scope,
   of vkMap:
     into.add '{'
     var first = true
-    for key, item in value.mapEntries:
+    # By key id: the text is read in place instead of copied out per entry.
+    for keyId, item in value.mapEntries.idPairs:
       if not first: into.add ','
       first = false
-      jsonEscapeInto(key, into)
+      jsonEscapeInto(propKeyText(keyId), into)
       into.add ':'
       jsonStringifyInto(item, into, scope, depth + 1)
     into.add '}'

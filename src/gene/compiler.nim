@@ -568,13 +568,18 @@ proc nativeFastLoadKind(name: string): NativeFastKind =
   of "+": nfkAdd
   of "-": nfkSub
   of "*": nfkMul
-  # Division keeps the regular native-call path for now. Its zero checks and
-  # integer/float result rules need a separate measured fast path, not just
-  # inclusion in the generic binary opNativeFast2 lowering.
   of "<": nfkLt
   of ">": nfkGt
   of "<=": nfkLe
   of ">=": nfkGe
+  # Division, remainder and equality have their fast path for two small Ints
+  # only (a zero divisor included in what it declines); every other operand
+  # pair reaches the same native function an ordinary call would, so zero
+  # checks, Int/Float result rules and structural equality stay in one place.
+  of "/": nfkDiv
+  of "//": nfkRem
+  of "==": nfkEq
+  of "!=": nfkNe
   else: nfkNone
 
 proc isSelfEvaluatingFastConst(v: Value): bool =
@@ -631,7 +636,8 @@ proc exprKnownBareInt(c: Compiler, v: Value): bool =
   of vkNode:
     if v.props.len == 0 and v.head.kind == vkSymbol:
       case v.head.symVal
-      of "+", "-", "*":
+      of "+", "-", "*", "/", "//":
+        # Int division and remainder of two Ints are Ints, or they raise.
         not c.dynamicNameLookup and v.body.len == 2 and c.localSlot(v.head.symVal) < 0 and
           c.parentSlot(v.head.symVal).slot < 0 and
           not (c.macroPhaseCompilation and c.unitDeclares(v.head.symVal)) and
@@ -898,6 +904,8 @@ proc intFast2Op(kind: NativeFastKind): OpCode =
   of nfkGt: opIntGt2
   of nfkLe: opIntLe2
   of nfkGe: opIntGe2
+  # No Int-specialized opcode: the generic one still takes its small-Int path.
+  of nfkDiv, nfkRem, nfkEq, nfkNe: opNativeFast2
   else: opIntFast2
 
 proc intFastConstOp(kind: NativeFastKind): OpCode =
@@ -909,6 +917,7 @@ proc intFastConstOp(kind: NativeFastKind): OpCode =
   of nfkGt: opIntGtConst
   of nfkLe: opIntLeConst
   of nfkGe: opIntGeConst
+  of nfkDiv, nfkRem, nfkEq, nfkNe: opNativeFastConst
   else: opIntFastConst
 
 proc emitDefineBinding(c: var Compiler, name: string, immutable = false,

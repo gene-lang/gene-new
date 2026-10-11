@@ -80,6 +80,143 @@ cases. See [the reset investigation](scope-pool-reset-investigation.md).
 The archived benchmark timings below precede these follow-ups; performance
 has not been remeasured for these changes.
 
+## Second pass (2026-10-11)
+
+Baseline for this pass: `1e3f539`, the tree after the review follow-ups above.
+Evidence: [2026-10-11 results](../../benchmarks/baselines/2026-10-11-general-runtime/README.md).
+
+The first pass removed allocation from scope setup. Profiles of that runtime
+showed the remaining time was not in any one operation but in costs repeated
+on every instruction: thread-local loads, reference counts on cyclic types,
+string hashing for names the compiler already knows, and generic paths taken
+for the most common operand shapes. Each item below removes one of those
+without changing what a program can observe.
+
+### Reference counting
+
+- **Retain and release settle the common case without a thread-local load.**
+  Nim loads the thread's error flag on entry to any proc with a checked
+  operation or a call it must assume can raise, and on macOS that load is a
+  function call. `rcRetain`/`rcRelease` are now short procs with unchecked
+  count arithmetic that handle an unshared object staying alive, and reach the
+  full bodies through an `importc` alias (which Nim treats as non-raising).
+  The full bodies are unchanged and repeat every test.
+- **Hot paths borrow `Scope` and `Application` instead of owning them.**
+  Each owned copy of a reference to a cyclic type is a count round trip plus
+  an ORC cycle-candidate registration. Outer-slot loads and stores, the
+  per-iteration loop entry, the strict-binding check before every store, and
+  the dispatch-epoch read now use cursors or a cast view of a reference the
+  current scope already holds. `inheritScopeContext` stores a field only when
+  it changes.
+- A sort moves its entries between buffers instead of copying them, and
+  `withoutVoidEntries`, map iteration and JSON encoding no longer copy each
+  key's text.
+
+### Names and keys
+
+- **A `Str` remembers its interned key id.** Using a string as a map or
+  property key took a global lock and hashed the text every time. A `Str` is
+  immutable, so the id is cached on the object after the first use. `Map/get`,
+  `Map/put`, `has_key?` and path lookup use ids and no longer copy the key.
+- **Empty tables are not probed.** `Table.withValue` and `HashSet.contains`
+  hash the key before noticing the table is empty; name lookup and namespace
+  export checks now test the length first.
+- **`/`, `//`, `==` and `!=` join the compiler-known operators**, under the
+  same rule as `+ - * < > <= >=`: only where the name is not lexically bound,
+  imported, or compiled for dynamic lookup. Their fast path covers two small
+  Ints (and declines a zero divisor); every other operand pair calls the same
+  native function as before. GIR format advances to 29.
+- **By-name load cache.** A name the compiler cannot bind lexically (an
+  imported function, a type, the root `gene` before every `$ns/fn`) is found
+  by walking the scope chain. The activation scopes are still inspected on
+  every load; what the walk finds at the module root or its parent is
+  remembered per site.
+- **Namespace member cache.** `$str/split` and `some_ns/member` resolve a
+  constant path through namespaces; the selector-apply site remembers the
+  result for that namespace object. Which namespace `gene` denotes is still
+  resolved through the scope chain every time, so a module under a restricted
+  root keeps reaching its own standard library.
+
+Both caches are validated by two stamps on `Scope`, `namesGen` and `slotsGen`
+(see `types.nim`). **Every change to a scope's `vars`, `wildcardFallbacks`,
+`exportExcludedNames`, slot names or private slots must call `touchNames`,
+and every slot write in a mirrored scope must call `touchSlots`.** A missed
+call is a stale read of a rebound name. Stamps come from one process-wide
+counter, so a scope allocated at a recycled address cannot match a remembered
+stamp. The two are separate so that a top-level loop writing module variables
+does not invalidate what is remembered about names the module does not bind.
+The caches share the dispatch cache's side storage and its gate: they are off
+in the AtomicArc worker build.
+
+### Opcodes
+
+- A one-key path read on a Map (`row/amount`) and a one-segment dynamic path
+  on a List or Map (`xs/%i`) are a direct table or index read; the selector
+  node for the dynamic form is never built. The skipped instruction is still
+  charged to instruction and evaluation budgets.
+- An unqualified send whose site keeps seeing one receiver type — built-in or
+  declared — is answered from the dispatch cache without taking a reference
+  to the type.
+- Loop iteration reuse keeps the complete scope reset the review asked for,
+  but tests each container before clearing it, keeps the slot-name list when
+  it is already the body's, and leaves the reused scope in its register.
+- A `match` clause's binding table is allocated on first insert, so a literal
+  clause or a failed clause allocates nothing.
+- Int multiplication uses the C compiler's overflow-checked multiply instead
+  of a division; small-Int add, subtract and compare avoid checked arithmetic
+  that cannot overflow.
+
+### JSON
+
+`json/parse` takes an unescaped string in one copy, resolves repeated object
+keys through a small per-parse cache, and parses plain integers of up to 18
+digits without a temporary string. `json/stringify` appends unescaped runs
+rather than single characters. Error messages and offsets are unchanged.
+
+### Results
+
+Six measured processes per executable, rotating order, 5,000 items, 300 ms
+calibration:
+
+| Workload | Before ms/batch | After ms/batch | Speedup | After / Python |
+| --- | ---: | ---: | ---: | ---: |
+| Integer loop | 2.887 | 0.939 | 3.07x | 5.05 |
+| Closure dispatch | 7.469 | 2.965 | 2.52x | 7.35 |
+| Filter/group/sort records | 10.641 | 4.465 | 2.38x | 4.88 |
+| Text indexing | 28.625 | 15.984 | 1.79x | 9.35 |
+| JSON round trip | 6.227 | 2.754 | 2.26x | 0.97 |
+| Event replay | 12.047 | 4.828 | 2.50x | 7.44 |
+
+An independent fresh-cache rebuild gives 2.99x, 2.44x, 2.32x, 1.84x, 2.28x
+and 2.53x. All outputs match the baseline runtime and Python.
+
+Verification for this pass: 1,687 broad-suite cases, 874 language specs (28
+new, pinning what a shortcut could change), 402 VM cases under both ORC and
+AtomicArc, 87 lifetime cases, the lifetime suite and 390 VM cases under
+AddressSanitizer with no reports, 21 Cordis cases, 15 benchmark-tooling cases
+and 46 wasm ABI cases. **The Harness suite and the Harness service benchmark
+are not established for this pass**: the one Harness run overlapped another
+session's edits to the Harness sources and its nine failures were not
+separated from them. The evidence README records the details and the
+commands to rerun.
+
+### What is still slow
+
+- Each `for` iteration is a frame with its own scope. The reset is now cheap
+  but not free; a compile-time "simple body" class, like `simpleCall` for
+  functions, would allow a slots-only reset.
+- A match branch and the first iteration of every loop allocate a fresh
+  `Scope` (about sixty fields). Pooling them needs the same ownership proof
+  loop reuse uses.
+- Passing a scope-bound closure as an argument clones it (weak-capture
+  promotion); a call through a local closure costs about five times a direct
+  recursive call.
+- Constructing a typed instance and sending to it remain several times
+  slower than the equivalent built-in operations.
+- Nim's goto-exceptions put an error-flag test after most calls. Helpers the
+  C compiler does not inline pay a thread-local load each; the dispatch loop
+  still calls several of them out of line.
+
 ## Measurement and qualification
 
 Portable release builds retain bounds and overflow checks. Measurements must

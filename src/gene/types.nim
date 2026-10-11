@@ -223,6 +223,23 @@ proc installContinuationEdgesHook*(hook: ContinuationEdgesHook) =
 proc rcRetain(bits: uint64) {.raises: [].}
 proc rcRelease(bits: uint64) {.raises: [].}
 
+# rcRetain and rcRelease run for every copy and drop of a heap Value. Each is
+# a short proc that settles the common case itself and hands everything else
+# to its `Full` body, which repeats the tests and so stays correct alone.
+#
+# The split exists for one reason. Nim loads the thread's error flag on entry
+# to any proc that contains a checked operation or a call it must assume can
+# raise a Defect, and on macOS a thread-local load is itself a function call —
+# so the old bodies paid a second call per retain and per release before doing
+# any work. The short procs therefore use unchecked count arithmetic, and
+# reach the full bodies through an `importc` alias, which Nim treats as unable
+# to raise. That is accurate: both bodies are `raises: []`, and callers check
+# the flag after these hooks exactly as they did before.
+proc rcRetainFull(bits: uint64) {.raises: [], exportc: "geneRcRetainFull".}
+proc rcRetainOther(bits: uint64) {.importc: "geneRcRetainFull", raises: [].}
+proc rcReleaseFull(bits: uint64) {.raises: [], exportc: "geneRcReleaseFull".}
+proc rcReleaseOther(bits: uint64) {.importc: "geneRcReleaseFull", raises: [].}
+
 proc `=destroy`(v: var Value) {.inline.} =
   let old = v.bits
   v.bits = 0
@@ -317,6 +334,7 @@ type
     shared: int
     when defined(geneAtomicGenerationRetirementProbe): rawPublished: int
     s: string
+    keyId: int32  # interned key id of `s` plus one, once known; 0 = not probed
 
   GeneInt64 = object
     refCount: int
@@ -563,6 +581,24 @@ type
     actorMaxRestarts*: int      # supervisor ^max_restarts; <= 0 unlimited
     actorRestartWindowMs*: int  # supervisor ^within_ms; <= 0 lifetime
     ownedActors*: seq[Value]
+    ## Stamps of this scope's by-name view, which the VM's lookup caches
+    ## compare instead of repeating a lookup (see "By-name load cache" and
+    ## "Namespace member cache" in vm.nim).
+    ##
+    ## `namesGen` covers which names the scope binds and what its non-slot
+    ## bindings hold: `vars`, `wildcardFallbacks`, `exportExcludedNames`, the
+    ## slot names and which of them are private. `slotsGen` covers the slot
+    ## *values* of a mirrored scope — a module or namespace body, whose slots
+    ## are its exported members and reach `vars` lazily. They are separate
+    ## because a top-level loop writes module slots constantly, and that must
+    ## not disturb what is remembered about names the module does not bind.
+    ##
+    ## **Every** change to one of these must be followed by `touchNames` or
+    ## `touchSlots` on the scope. A missed call is a stale read of a rebound
+    ## name, not a crash. Both are zero until first touched, and no two
+    ## (scope, state) pairs ever share a nonzero stamp.
+    namesGen*: uint64
+    slotsGen*: uint64
 
   ## Runtime call metadata for envelope-aware native functions. Positional
   ## arguments stay as an openArray parameter on NativeProc to keep the hot
@@ -715,6 +751,10 @@ type
     nfkGt
     nfkLe
     nfkGe
+    nfkDiv
+    nfkRem
+    nfkEq
+    nfkNe
 
   NativeErrorMetadata* = object
     ## Host-authored identity of a compiler-known native effect model. Metadata
@@ -1476,6 +1516,12 @@ proc putById*(t: var PropTable, id: int32, v: sink Value) =
       t.index[id] = t.data.high
     elif t.data.len > propSpillThreshold:
       t.rebuildPropIndex()
+
+proc reserve*(t: var PropTable, capacity: int) =
+  ## Room for `capacity` entries in a still-empty table, so a builder that
+  ## knows the likely size does not regrow the entry list as it fills.
+  if t.data.len == 0 and capacity > 0:
+    t.data = newSeqOfCap[PropEntry](capacity)
 
 proc delById*(t: var PropTable, id: int32) =
   let i = t.findId(id)
@@ -2498,6 +2544,25 @@ template releaseManual(p: untyped, body: untyped) =
 
 template markManualShared(p: untyped) =
   markSharedFlag(p.shared)
+
+var scopeStampCounter: uint64
+
+proc nextScopeStamp(): uint64 {.inline.} =
+  ## A stamp no scope has carried before (see `Scope.namesGen`). Drawing from
+  ## one process-wide counter, rather than counting per scope, is what keeps a
+  ## new scope at a recycled address from matching a stamp remembered for the
+  ## scope that used to live there.
+  when threadedRc:
+    atomicAddFetch(addr scopeStampCounter, 1'u64, ATOMIC_RELAXED)
+  else:
+    scopeStampCounter = scopeStampCounter + 1
+    scopeStampCounter
+
+proc touchNames*(scope: Scope) {.inline.} =
+  scope.namesGen = nextScopeStamp()
+
+proc touchSlots*(scope: Scope) {.inline.} =
+  scope.slotsGen = nextScopeStamp()
   when defined(geneAtomicGenerationRetirementProbe):
     if managedPublicationDepth == 0: markSharedFlag(p.rawPublished)
 
@@ -2775,6 +2840,51 @@ proc publicationValueChildren*(value: Value): seq[Value] =
         result.add Value(bits: weakBits)
 
 proc rcRetain(bits: uint64) =
+  ## An unshared manual object's count is bumped in place. A shared one needs
+  ## the atomic path, and a Node carrying error evidence may have to restore
+  ## its environment; both, and every object kind, go to the full body.
+  let payload = bits and PAYLOAD_MASK
+  case bits shr TAG_SHIFT
+  of STRING_TAG:
+    let p = cast[ptr GeneString](payload)
+    if not isSharedFlag(p.shared):
+      p.refCount = p.refCount +% 1
+      return
+  of INT64_TAG:
+    let p = cast[ptr GeneInt64](payload)
+    if not isSharedFlag(p.shared):
+      p.refCount = p.refCount +% 1
+      return
+  of LIST_TAG:
+    let p = cast[ptr GeneList](payload)
+    if not isSharedFlag(p.shared):
+      p.refCount = p.refCount +% 1
+      return
+  of MAP_TAG:
+    let p = cast[ptr GeneMap](payload)
+    if not isSharedFlag(p.shared):
+      p.refCount = p.refCount +% 1
+      return
+  of NODE_TAG:
+    let p = cast[ptr GeneNode](payload)
+    if not isSharedFlag(p.shared) and p.errorEvidence == nil:
+      p.refCount = p.refCount +% 1
+      return
+  of FUNCTION_TAG:
+    let p = cast[ptr GeneFunction](payload)
+    if not isSharedFlag(p.shared):
+      p.refCount = p.refCount +% 1
+      return
+  of NATIVE_FN_TAG:
+    let p = cast[ptr GeneNativeFn](payload)
+    if not isSharedFlag(p.shared):
+      p.refCount = p.refCount +% 1
+      return
+  else:
+    discard
+  rcRetainOther(bits)
+
+proc rcRetainFull(bits: uint64) =
   case bits shr TAG_SHIFT
   of STRING_TAG: retainManual(cast[ptr GeneString](bits and PAYLOAD_MASK))
   of INT64_TAG:  retainManual(cast[ptr GeneInt64](bits and PAYLOAD_MASK))
@@ -3518,6 +3628,7 @@ type RetiredScopeBindings = object
   ownedActors: seq[Value]
 
 proc takeRetiredBindings(s: Scope): RetiredScopeBindings =
+  s.touchNames()
   result.vars = move s.vars
   result.managedBindingPins = move s.managedBindingPins
   result.wildcardFallbacks = move s.wildcardFallbacks
@@ -4239,6 +4350,58 @@ proc weakenEscapedMapItems(p: ptr GeneMap) =
     weakenOwnedFunctions(candidates)
 
 proc rcRelease(bits: uint64) =
+  ## Most releases leave the object alive. For an unshared manual object with
+  ## no release-time bookkeeping that is a single decrement: no call is made,
+  ## so no pending-exception check can cut it short. The count is known to
+  ## exceed one, so the unchecked decrement cannot wrap.
+  let payload = bits and PAYLOAD_MASK
+  if payload != 0:
+    case bits shr TAG_SHIFT
+    of STRING_TAG:
+      let p = cast[ptr GeneString](payload)
+      if not isSharedFlag(p.shared) and p.refCount > 1:
+        p.refCount = p.refCount -% 1
+        return
+    of INT64_TAG:
+      let p = cast[ptr GeneInt64](payload)
+      if not isSharedFlag(p.shared) and p.refCount > 1:
+        p.refCount = p.refCount -% 1
+        return
+    of LIST_TAG:
+      let p = cast[ptr GeneList](payload)
+      if not isSharedFlag(p.shared) and p.refCount > 1 and
+          not p.cycleWatched and not p.holdsEscapedFn:
+        p.refCount = p.refCount -% 1
+        return
+    of MAP_TAG:
+      let p = cast[ptr GeneMap](payload)
+      if not isSharedFlag(p.shared) and p.refCount > 1 and
+          not p.cycleWatched and not p.holdsEscapedFn:
+        p.refCount = p.refCount -% 1
+        return
+    of NODE_TAG:
+      let p = cast[ptr GeneNode](payload)
+      if not isSharedFlag(p.shared) and p.refCount > 1 and
+          not p.cycleWatched and not p.holdsEscapedFn and
+          p.errorEvidence == nil:
+        p.refCount = p.refCount -% 1
+        return
+    of FUNCTION_TAG:
+      let p = cast[ptr GeneFunction](payload)
+      if not isSharedFlag(p.shared) and p.refCount > 1 and
+          not p.cycleWatched and not (p.weakable and p.scope != nil):
+        p.refCount = p.refCount -% 1
+        return
+    of NATIVE_FN_TAG:
+      let p = cast[ptr GeneNativeFn](payload)
+      if not isSharedFlag(p.shared) and p.refCount > 1:
+        p.refCount = p.refCount -% 1
+        return
+    else:
+      discard
+  rcReleaseOther(bits)
+
+proc rcReleaseFull(bits: uint64) =
   when compileOption("exceptions", "goto"):
     # Nim can destroy a Value before clearing the pending-exception flag (see
     # pending_exception.nim). The error checks after this body's own calls
@@ -4249,7 +4412,7 @@ proc rcRelease(bits: uint64) =
     let pending = pendingExceptionFlag()
     if unlikely(pending[]):
       pending[] = false
-      rcRelease(bits)
+      rcReleaseFull(bits)
       pending[] = true
       return
   let payload = bits and PAYLOAD_MASK
@@ -4557,6 +4720,44 @@ proc strVal*(v: Value): lent string =
   if v.tagOf != STRING_TAG:
     raise newException(FieldDefect, "value is not a String")
   cast[ptr GeneString](v.bits and PAYLOAD_MASK).s
+
+# A Str used as a map or property key is resolved to its interned key id, which
+# costs a lock and a hash of the text. A Str's text never changes, so the id is
+# remembered on the object: the same key object — a constant in code, or a
+# value reused across calls — resolves once. Only a positive answer is stored;
+# "never interned" can stop being true. Racing writers store the same id.
+
+template loadCachedKeyId(p: ptr GeneString): int32 =
+  when threadedRc: atomicLoadN(addr p.keyId, ATOMIC_RELAXED)
+  else: p.keyId
+
+template storeCachedKeyId(p: ptr GeneString, id: int32) =
+  when threadedRc: atomicStoreN(addr p.keyId, id, ATOMIC_RELAXED)
+  else: p.keyId = id
+
+proc strKeyId*(v: Value): int32 =
+  ## Key id of a Str's text, interning it.
+  if v.tagOf != STRING_TAG:
+    raise newException(FieldDefect, "value is not a String")
+  let p = cast[ptr GeneString](v.bits and PAYLOAD_MASK)
+  let cached = loadCachedKeyId(p)
+  if cached != 0:
+    return cached - 1
+  result = internSymbolId(p.s)
+  storeCachedKeyId(p, result + 1)
+
+proc strLookupKeyId*(v: Value): int32 =
+  ## Key id of a Str's text, or -1 when that text was never interned (so it is
+  ## a miss for every PropTable). Never grows the intern table.
+  if v.tagOf != STRING_TAG:
+    raise newException(FieldDefect, "value is not a String")
+  let p = cast[ptr GeneString](v.bits and PAYLOAD_MASK)
+  let cached = loadCachedKeyId(p)
+  if cached != 0:
+    return cached - 1
+  result = lookupSymbolId(p.s)
+  if result >= 0:
+    storeCachedKeyId(p, result + 1)
 
 proc bytesVal*(v: Value): lent string =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okBytes:
@@ -4920,6 +5121,49 @@ proc putMapEntry*(v: Value, key: string, value: Value) =
     p.entries.del(key)
   else:
     p.entries[key] = value
+
+proc isPropMap*(v: Value): bool {.inline.} =
+  ## A `{...}` PropMap (not a general HashMap), by tag alone.
+  v.tagOf == MAP_TAG
+
+proc plainPathKeyId*(selector: Value): int32 {.inline.} =
+  ## For the selector of a plain one-key read (`row/amount`) — a Node with no
+  ## props whose single segment is a Sym, or a Str other than a `.msg` /
+  ## `?.msg` send — that key's PropTable id, or -1 when its text was never
+  ## interned and so is absent from every table. -2 for any other value.
+  if selector.tagOf != NODE_TAG:
+    return -2
+  let node = cast[ptr GeneNode](selector.bits and PAYLOAD_MASK)
+  if node.body.len != 1 or node.props.data.len != 0:
+    return -2
+  let segment = node.body[0].bits
+  case segment shr TAG_SHIFT
+  of SYMBOL_TAG:
+    result = int32(segment and PAYLOAD_MASK)
+  of STRING_TAG:
+    let str = cast[ptr GeneString](segment and PAYLOAD_MASK)
+    if str.s.len > 0 and (str.s[0] == '.' or
+        (str.s.len > 1 and str.s[0] == '?' and str.s[1] == '.')):
+      return -2
+    let cached = loadCachedKeyId(str)
+    if cached != 0:
+      return cached - 1
+    result = lookupSymbolId(str.s)
+    if result >= 0:
+      storeCachedKeyId(str, result + 1)
+  else:
+    result = -2
+
+proc putMapEntryById*(v: Value, keyId: int32, value: Value) =
+  ## `putMapEntry` for a caller that already holds the key id. `value` must not
+  ## be void: removal goes through `putMapEntry`, which probes without
+  ## interning.
+  if v.tagOf != MAP_TAG:
+    raise newException(FieldDefect, "value is not a Map")
+  let p = cast[ptr GeneMap](v.bits and PAYLOAD_MASK)
+  if p.immutable:
+    raise newException(GeneError, "cannot mutate immutable Map")
+  p.entries.putById(keyId, value)
 
 proc setNodeProp*(v: Value, key: string, value: Value) =
   if v.tagOf != NODE_TAG:
@@ -7085,15 +7329,19 @@ proc isSmallInt*(v: Value): bool {.inline.} =
 proc smallIntVal*(v: Value): int64 {.inline.} =
   decodeSmallInt(v.bits)
 
+# Two small Ints are 48-bit values, so their sum and difference always fit an
+# int64. The unchecked operators say so: a checked `+` would give these
+# two-instruction helpers a raise path, and with it an error-flag test in
+# every arithmetic opcode that calls them.
 proc smallIntAddKnown*(a, b: Value, outValue: var Value): bool {.inline.} =
-  let s = a.smallIntVal + b.smallIntVal
+  let s = a.smallIntVal +% b.smallIntVal
   if s < SMALL_INT_MIN or s > SMALL_INT_MAX:
     return false
   outValue = mkImm(INT_TAG, encodeSmallInt(s))
   true
 
 proc smallIntSubKnown*(a, b: Value, outValue: var Value): bool {.inline.} =
-  let s = a.smallIntVal - b.smallIntVal
+  let s = a.smallIntVal -% b.smallIntVal
   if s < SMALL_INT_MIN or s > SMALL_INT_MAX:
     return false
   outValue = mkImm(INT_TAG, encodeSmallInt(s))
@@ -7110,6 +7358,11 @@ proc smallIntSub*(a, b: Value, outValue: var Value): bool {.inline.} =
   smallIntSubKnown(a, b, outValue)
 
 proc intCompare*(a, b: Value): int {.inline.} =
+  if a.isSmallInt and b.isSmallInt:
+    # The usual case, answered before the general kind and width tests.
+    let av = a.smallIntVal
+    let bv = b.smallIntVal
+    return (if av < bv: -1 elif av > bv: 1 else: 0)
   if a.kind != vkInt or b.kind != vkInt:
     raise newException(FieldDefect, "value is not an Int")
   if a.isInt64Backed and b.isInt64Backed:
@@ -7136,27 +7389,15 @@ proc checkedSub64(a, b: int64, outValue: var int64): bool {.inline.} =
   outValue = a - b
   true
 
-proc absMagnitude(v: int64): uint64 {.inline.} =
-  if v < 0: uint64(-(v + 1)) + 1'u64 else: uint64(v)
+proc mulOverflows64(a, b: int64, product: var int64): bool {.
+  importc: "__builtin_smulll_overflow", nodecl.}
+  ## The C compiler's checked multiply: true when the exact product does not
+  ## fit an int64.
 
 proc checkedMul64(a, b: int64, outValue: var int64): bool {.inline.} =
-  if a == 0 or b == 0:
-    outValue = 0
-    return true
-  if a == low(int64) and b == -1: return false
-  if b == low(int64) and a == -1: return false
-  let aa = absMagnitude(a)
-  let bb = absMagnitude(b)
-  let negative = (a < 0) xor (b < 0)
-  let limit = if negative: 1'u64 shl 63 else: uint64(high(int64))
-  if aa > limit div bb:
-    return false
-  let mag = aa * bb
-  if negative:
-    outValue = if mag == (1'u64 shl 63): low(int64) else: -int64(mag)
-  else:
-    outValue = int64(mag)
-  true
+  # One multiply and a flag test. Deciding the same thing from magnitudes
+  # costs an integer division on every Int multiplication.
+  not mulOverflows64(a, b, outValue)
 
 proc intAdd*(a, b: Value): Value {.inline.} =
   if a.isInt64Backed and b.isInt64Backed:
@@ -7180,7 +7421,11 @@ proc intSub*(a, b: Value): Value {.inline.} =
   bigToValue(subBig(a.intBigValue, b.intBigValue))
 
 proc intMul*(a, b: Value): Value {.inline.} =
-  if a.isInt64Backed and b.isInt64Backed:
+  if a.isSmallInt and b.isSmallInt:
+    var p: int64
+    if checkedMul64(a.smallIntVal, b.smallIntVal, p):
+      return newInt(p)
+  elif a.isInt64Backed and b.isInt64Backed:
     var p: int64
     if checkedMul64(a.intVal, b.intVal, p):
       return newInt(p)
@@ -7329,6 +7574,11 @@ proc newChar*(r: Rune): Value {.inline.} =
 proc newSym*(v: string): Value =
   mkImm(SYMBOL_TAG, uint64(internSymbolId(v)))
 
+proc newSymFromKeyId*(id: int32): Value {.inline.} =
+  ## The symbol for an existing PropTable key id (see `symbolId`): the same
+  ## value `newSym(propKeyText(id))` returns, without re-interning the text.
+  mkImm(SYMBOL_TAG, uint64(id))
+
 proc newBool*(v: bool): Value {.inline.} =
   if v: TRUE else: FALSE
 
@@ -7342,17 +7592,20 @@ proc newList*(items: sink seq[Value] = @[], immutable = false,
   boxPtr(LIST_TAG, p)
 
 proc withoutVoidEntries(entries: sink PropTable): PropTable =
+  # Every Map is built through here. Walk the stored entries directly: the
+  # `pairs` iterator hands out each key as a copied string, which the common
+  # no-void answer never looks at.
   var hasVoid = false
-  for _, val in entries:
-    if val.kind == vkVoid:
+  for i in 0 ..< entries.data.len:
+    if entries.data[i].val.kind == vkVoid:
       hasVoid = true
       break
   if not hasVoid:
     return entries
   result = initPropTable()
-  for key, val in entries:
-    if val.kind != vkVoid:
-      result[key] = val
+  for i in 0 ..< entries.data.len:
+    if entries.data[i].val.kind != vkVoid:
+      result.putById(entries.data[i].keyId, entries.data[i].val)
 
 proc newMap*(entries: sink PropTable = initPropTable(),
              immutable = false, deepFrozen = false): Value =
@@ -7691,6 +7944,13 @@ proc functionForScopeStorage*(v: Value, owner: Scope, binding = false): Value =
   ## Store scope-owned functions with a weak back-edge so the owner can be
   ## reclaimed after its ordinary references are dropped. A `binding` stored in
   ## a scope's slots or vars escapes in place and re-weakens on release.
+  case v.bits shr TAG_SHIFT
+  of FUNCTION_TAG, NODE_TAG, OBJECT_TAG, CYCLE_OBJECT_TAG:
+    discard
+  else:
+    # Every binding store passes through here; only the kinds tested below
+    # can carry a scope edge, and each of them has one of these four tags.
+    return v
   if v.kind == vkFunction:
     let capture = v.fnScope
     if not v.fnHasWeakScope and capture == owner:
@@ -9173,6 +9433,10 @@ proc classifyNativeFastKind*(name: string): NativeFastKind =
   of ">": nfkGt
   of "<=": nfkLe
   of ">=": nfkGe
+  of "/": nfkDiv
+  of "//": nfkRem
+  of "==": nfkEq
+  of "!=": nfkNe
   else: nfkNone
 
 proc newNativeFn*(name: string, impl: NativeProc,

@@ -127,9 +127,11 @@ proc strictPrefixContext(registration: StrictErrorRegistration,
     proxy.exportExcludedNames = original.exportExcludedNames
     for name, member in original.vars: proxy.vars[name] = member
     proxy.vars[path[i + 1]] = replacement
+    proxy.touchNames()
     replacement = newNamespace(path[i], proxy)
   result = newScope(declaration)
   result.vars[path[0]] = replacement
+  result.touchNames()
 
 proc resolveStrictRegistration(registration: StrictErrorRegistration): Value =
   let declaration = cast[Scope](registration.declarationScope)
@@ -410,7 +412,7 @@ proc activateStrictErrorLease(value: Value, scope: Scope): RootRef =
   addStrictDependencies(activation, original.deferred, scope, value.fnName, seen)
   activation
 
-proc checkStrictBindingUpdate(scope: Scope, name: string, value: Value) =
+proc checkStrictBindingUpdateFull(scope: Scope, name: string, value: Value) =
   if scope == nil or scope.application == nil: return
   let app = scope.application()
   if app.strictErrorRegistrations.len == 0: return
