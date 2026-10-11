@@ -204,10 +204,29 @@ benchmark tooling and wasm ABI cases also pass on it, and an independent
 fresh-cache rebuild repeats the speedups within about 3%. The evidence README
 records the regression, how it was bisected, and what remains unexplained.
 
-**The Harness service benchmark does not improve**: 100 turns take a median
-26.39 s on the baseline and 26.41 s on the corrected runtime. This pass makes
-compute kernels faster; a Harness turn spends its time elsewhere (the
-2026-10-10 profile pointed at scope retention and publication).
+### Spawn publication
+
+The kernel work did not move the 100-turn Harness service workload (26.39 s
+against 26.41 s). Its profile put 46% of main-thread samples in
+`publishSpawnCapture`: every `spawn` re-walked the scope chain and all the
+code reachable from it, with fresh visited sets. Code does not change between
+spawns and marking a value shared is permanent, so `publishSpawnChunk` now
+remembers a chunk once its walk has covered it and found nothing below it
+that can change. Chunks that declare types, enums, protocols, impls, macros,
+FFI, web modules or imports are never remembered — their walk reaches scopes
+or runtime state — and neither is a chunk with an unremembered chunk beneath
+it. Scopes are still walked on every spawn. A managed-value publication
+(`completePublication`) neither uses nor sets the mark.
+
+One consequence to know: a value pushed at run time into a *quoted literal*
+container is no longer re-marked through the constant pool on later spawns;
+it is still marked when any scope reaches it.
+
+Service time in one rotating capture: 29.73 s baseline, 27.89 s with the
+kernel work only, 18.71 s with remembered publication (1.59x). The Nim
+suites including AtomicArc and atomic generation retirement, the
+differential programs and the full Harness suite pass with it. GIR format
+advances to 30.
 
 ### What is still slow
 

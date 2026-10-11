@@ -10,7 +10,7 @@ import ./[gir, printer, reader, types]
 # The number changes when the chunk layout or opcode/value meaning changes, so
 # a stale artifact fails closed. Path values replaced Selector values while
 # reusing the same bytecode slots, so that migration also advances the format.
-const GirArtifactFormat* = 29
+const GirArtifactFormat* = 30
 
 proc validateModuleSourcePath(path: string) =
   # Empty remains available to host-created, explicitly path-bound chunks.
@@ -505,6 +505,8 @@ proc toJsonHook(chunk: Chunk,
   var portable = chunk[]
   portable.owner = nil
   portable.dispatchCache = @[]
+  portable.spawnPublished = false
+  portable.spawnPublishedSuperBits = 0
   portable.macroRuntimeLease = nil
   toJson(portable, options)
 
@@ -582,6 +584,8 @@ proc restoreChunkOwners(root: Chunk, allowRuntimeState = false) =
       else: discard
     chunk.owner = owner
     chunk.dispatchCache = @[]
+    chunk.spawnPublished = false
+    chunk.spawnPublishedSuperBits = 0
     for dependency in chunk.errorProofDependencies: validateDependency(dependency)
     for fn in chunk.functions:
       restoreFunction(fn)
@@ -653,7 +657,8 @@ proc copyExecutionTemplate[T](source: T, copies: var Table[pointer, pointer]): T
       result.add copyExecutionTemplate(value, copies)
   elif T is object or T is tuple:
     for name, original, copied in fieldPairs(source, result):
-      when T is typeof(default(Chunk)[]) and name in ["owner", "dispatchCache"]:
+      when T is typeof(default(Chunk)[]) and name in ["owner", "dispatchCache", "spawnPublished",
+                                                  "spawnPublishedSuperBits"]:
         discard
       else:
         copied = copyExecutionTemplate(original, copies)

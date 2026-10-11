@@ -12555,11 +12555,13 @@ proc normalizeOptionalParameters(original: FunctionProto, scope: Scope): Functio
     result.chunk[] = original.chunk[]
     result.chunk.owner = result
     result.chunk.dispatchCache = @[]
+    result.chunk.spawnPublished = false
   if original.scopelessChunk != nil:
     result.scopelessChunk = Chunk()
     result.scopelessChunk[] = original.scopelessChunk[]
     result.scopelessChunk.owner = result
     result.scopelessChunk.dispatchCache = @[]
+    result.scopelessChunk.spawnPublished = false
 
 proc resolveMessageContract(fn: Value, selfType: Value, rejectSelf = false,
                             declarationScope: Scope = nil): Value =
@@ -12586,11 +12588,13 @@ proc resolveMessageContract(fn: Value, selfType: Value, rejectSelf = false,
     proto.chunk[] = original.chunk[]
     proto.chunk.owner = proto
     proto.chunk.dispatchCache = @[]
+    proto.chunk.spawnPublished = false
   if original.scopelessChunk != nil:
     proto.scopelessChunk = Chunk()
     proto.scopelessChunk[] = original.scopelessChunk[]
     proto.scopelessChunk.owner = proto
     proto.scopelessChunk.dispatchCache = @[]
+    proto.scopelessChunk.spawnPublished = false
   proc resolve(expr: Value): Value =
     try:
       discard resolveDeclarationAnnotation(expr, scope, NIL, rejectSelf = true)
@@ -14755,11 +14759,58 @@ proc publishNativeRepr(repr: AotRepr, seenScopes: var HashSet[pointer],
     for field in repr.nativeType.abi.fields:
       publishSpawnValue(field.typeExpr, seenScopes, seenValues, seenChunks)
 
+var spawnWalkUnsettled {.threadvar.}: int
+
+proc chunkPublicationIsStable(chunk: Chunk): bool =
+  ## Whether the walk below this chunk touches only compile-time data: its
+  ## constants, call sites, patterns, and nested function and control-flow
+  ## bodies. Macro contexts, declarations (types, enums, protocols, impls,
+  ## FFI) and web modules reach scopes or runtime state and are walked on
+  ## every spawn.
+  chunk.macroContexts.len == 0 and chunk.finalMacroContext == nil and
+    chunk.runtimeMacroDefinitions.len == 0 and
+    chunk.runtimeMacroCalls.len == 0 and chunk.typeProtos.len == 0 and
+    chunk.enumProtos.len == 0 and chunk.protocolProtos.len == 0 and
+    chunk.implProtos.len == 0 and chunk.webModules.len == 0 and
+    chunk.ffiLibraries.len == 0 and chunk.ffiFns.len == 0 and
+    chunk.ffiStructs.len == 0 and chunk.ffiUnions.len == 0 and
+    chunk.ffiSignatures.len == 0 and chunk.monomorphizations.len == 0 and
+    chunk.imports.len == 0 and chunk.importImpls.len == 0
+
+proc publishSpawnChunkWalk(chunk: Chunk, seenScopes: var HashSet[pointer],
+                           seenValues: var SpawnPublicationValues,
+                           seenChunks: var HashSet[pointer])
+
 proc publishSpawnChunk(chunk: Chunk, seenScopes: var HashSet[pointer],
                        seenValues: var SpawnPublicationValues,
                        seenChunks: var HashSet[pointer]) =
+  ## Every spawn publishes the code its scope can reach. A program's code does
+  ## not change between spawns, and marking a value shared is permanent, so a
+  ## chunk whose whole subtree is compile-time data is walked once and then
+  ## skipped. Without this the walk is the largest single cost of a Harness
+  ## turn. A chunk is remembered only when nothing below it was left
+  ## unremembered during its own walk: `spawnWalkUnsettled` counts every
+  ## chunk met that is not, or not yet, remembered.
   if chunk == nil:
     return
+  if not completePublication and chunk.spawnPublished and
+      chunk.spawnPublishedSuperBits == chunk.superType.bits:
+    return
+  if seenChunks.contains(cast[pointer](chunk)):
+    inc spawnWalkUnsettled
+    return
+  let unsettledBefore = spawnWalkUnsettled
+  publishSpawnChunkWalk(chunk, seenScopes, seenValues, seenChunks)
+  if not completePublication and chunkPublicationIsStable(chunk) and
+      spawnWalkUnsettled == unsettledBefore:
+    chunk.spawnPublished = true
+    chunk.spawnPublishedSuperBits = chunk.superType.bits
+  else:
+    inc spawnWalkUnsettled
+
+proc publishSpawnChunkWalk(chunk: Chunk, seenScopes: var HashSet[pointer],
+                           seenValues: var SpawnPublicationValues,
+                           seenChunks: var HashSet[pointer]) =
   let key = cast[pointer](chunk)
   if seenChunks.contains(key):
     return
@@ -15884,6 +15935,7 @@ proc cloneSuperChunk(chunk: Chunk, owner: FunctionProto,
   result.owner = owner
   result.superType = NIL
   result.dispatchCache = @[]     # sites are per-chunk; the copy starts cold
+  result.spawnPublished = false
   template childOwner(body: Chunk): FunctionProto =
     (if body == nil or body.owner == nil: nil
      elif body.owner == chunk.owner: owner
@@ -18814,6 +18866,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           proto.chunk[] = chunk.functions[plan.functionIndex].chunk[]
           proto.chunk.owner = proto
           proto.chunk.dispatchCache = @[]
+          proto.chunk.spawnPublished = false
           let callback = newFunction(proto.name, proto.params, proto, bound)
           rejectCallerEnvEscape("pipeline callback capture", callback)
           strunc(captureStart)

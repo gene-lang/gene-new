@@ -872,6 +872,12 @@ type
     imports*: seq[ImportSpec]
     importImpls*: seq[ImportImplSpec]
     dispatchCache*: seq[DispatchCacheEntry] # inline send cache; lazily sized to instructions.len
+    ## Runtime state, like dispatchCache: set once a spawn's publication walk
+    ## has covered this chunk and found nothing below it that can change, so
+    ## later spawns skip it. `spawnPublishedSuperBits` is the superType the
+    ## walk saw; a chunk restamped with another type is walked again.
+    spawnPublished*: bool
+    spawnPublishedSuperBits*: uint64
     diagnostics*: seq[CompileDiagnostic]
     forLoops*: seq[ForProto]
     matches*: seq[MatchProto]

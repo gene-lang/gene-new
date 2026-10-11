@@ -87,18 +87,32 @@ and calibration: 3.08x (integer), 2.51x (closures), 2.42x (records), 1.79x
 
 ## Harness service benchmark
 
-The 100-turn Harness service workload does **not** get faster. Three measured
-processes per executable after an excluded warmup, rotating order, each with
-a fresh workspace ([service/summary.json](service/summary.json)):
+The compute-kernel work above did not move the 100-turn Harness service
+workload: 26.39 s on the baseline against 26.41 s. A profile of that workload
+showed why. 46% of main-thread samples were in `publishSpawnCapture`, which
+on every `spawn` re-walked the whole code graph reachable from the spawning
+scope.
 
-| Build | Service samples (ms) | Service median (ms) | Whole-process median (ms) |
-| --- | --- | ---: | ---: |
-| Baseline `1e3f539` | 26387, 26819, 25823 | 26387 | 36002 |
-| Corrected runtime | 26282, 26407, 26646 | 26407 | 36128 |
+A chunk whose publication subtree is pure compile-time data is now walked
+once and skipped afterwards. Three measured processes per executable after
+an excluded warmup, rotating order, each with a fresh workspace
+([service/summary.json](service/summary.json)):
 
-The compute kernels this pass targets are not what a Harness turn spends its
-time on. The 2026-10-10 profile put that in scope retention and publication,
-which this pass did not change.
+| Build | Service median (ms) | Whole-process median (ms) |
+| --- | ---: | ---: |
+| Baseline `1e3f539` | 29731 | 39332 |
+| Kernel work only | 27885 | 37908 |
+| With remembered publication | 18709 | 23537 |
+
+That is 1.59x on service time against the baseline in the same capture. The
+general workloads do not spawn and are unaffected. Chunks that declare
+types, enums, protocols, impls, macros, FFI, web modules or imports are still
+walked on every spawn, because their walk reaches scopes or runtime state;
+so is every scope. The Nim suites (including the AtomicArc VM suite and the
+atomic generation-retirement test), the differential programs and the
+complete Harness suite (179 passed) were rerun with this change; the
+sanitizer, Cordis, benchmark-tooling and wasm rows below predate it. GIR
+format advances to 30 for the two runtime-state fields on a chunk.
 
 ## Build provenance
 
