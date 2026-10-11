@@ -1,0 +1,9 @@
+(mod shadow)
+(fn / [a b] "module div")
+(fn // [a b] "module rem")
+(fn == [a b] "module eq")
+(fn != [a b] "module ne")
+(fn main [args] : Int
+  ($println [(/ 8 2) (// 8 3) (== 1 1) (!= 1 2)])
+  (repeat i in 2 ($println (// i 2) (== i 0)))
+  0)

@@ -1,0 +1,74 @@
+# Extra kernels outside the general suite: calls, recursion, user types, strings.
+(mod micro)
+
+(fn fib [n] (if (< n 2) (then n) (else (+ (fib (- n 1)) (fib (- n 2))))))
+
+(fn typed_fib [n : Int] : Int
+  (if (< n 2) (then n) (else (+ (typed_fib (- n 1)) (typed_fib (- n 2))))))
+
+(type Point ^props {^x Int ^y Int}
+  (message norm1 [self] (+ self/x self/y))
+  (message shifted [self dx] (Point ^x (+ self/x dx) ^y self/y)))
+
+(fn user_types [count]
+  (var p (Point ^x 1 ^y 2))
+  (var total 0)
+  (repeat i in count
+    (set total (+ total (p .norm1)))
+    (set p (p .shifted 1)))
+  total)
+
+(fn string_build [count]
+  (var parts [])
+  (repeat i in count (parts .push $"item-${i}"))
+  (var joined ($str/join parts ","))
+  ($str/byte_size joined))
+
+(fn list_ops [count]
+  (var xs [])
+  (repeat i in count (xs .push (* i 3)))
+  (var total 0)
+  (repeat j in count (set total (+ total xs/%j)))
+  (var evens 0)
+  (for x in xs (if (== (// x 2) 0) (then (set evens (+ evens 1)))))
+  [total evens ($size xs)])
+
+(fn while_loop [count]
+  (var i 0)
+  (var acc 0)
+  (while (< i count)
+    (set acc (+ acc (* i 2)))
+    (set i (+ i 1)))
+  acc)
+
+(fn higher_order [count]
+  (let add (fn [a b] (+ a b)))
+  (let apply3 (fn [f a b c] (f (f a b) c)))
+  (var total 0)
+  (repeat i in count (set total (apply3 add total i 1)))
+  total)
+
+(fn match_kernel [count]
+  (var total 0)
+  (repeat i in count
+    (set total (+ total (match (// i 3)
+      (when 0 1)
+      (when 1 10)
+      (else 100)))))
+  total)
+
+(fn timed [name thunk]
+  (let started ($os/monotonic_ms))
+  (let result (thunk))
+  ($println name " ms=" (- ($os/monotonic_ms) started) " result=" result))
+
+(fn main [args] : Int
+  (timed "fib27" (fn [] (fib 27)))
+  (timed "typed_fib27" (fn [] (typed_fib 27)))
+  (timed "user_types" (fn [] (user_types 200000)))
+  (timed "string_build" (fn [] (string_build 200000)))
+  (timed "list_ops" (fn [] (list_ops 300000)))
+  (timed "while_loop" (fn [] (while_loop 2000000)))
+  (timed "higher_order" (fn [] (higher_order 500000)))
+  (timed "match_kernel" (fn [] (match_kernel 300000)))
+  0)

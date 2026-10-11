@@ -1,0 +1,18 @@
+{
+ "executables_sha256": {
+  "baseline": "7b0ccfa29b7df4ff276ad05debc3e17d526069ea6f6c006c35378ba0b53b41f1",
+  "optimized": "bbc08dd529c4e1b40f5b764e7c0489bd4683e7982e340b80114d36f3aa5e2e30",
+  "confirmation": "2befc3d39ae1cf4168fb3f7664bfe9e12563a8e13ab6649f30a488f2bb414b0b"
+ },
+ "source_sha256_at_capture": {
+  "src/gene/vm.nim": "eb4dec2d5e264cd94beba8ca145dc2d0a06f3688799c924fc4ed19510e0a929f",
+  "src/gene/types.nim": "1ce3eccff71f7576830d46427e8d353c6e1eda8a6c438ab8cc601462422129a5",
+  "src/gene/stdlib.nim": "09e78f48e1934a07c5be5701db933cf7ff5e3b1f59105947ee0a89ba286c0c7a",
+  "src/gene/compiler.nim": "9a2191a1953548cb5bf77061665dc3d37f682a1b0eb45e4b1b9abf57d45cc281",
+  "src/gene/error_runtime.nim": "c0d0fa7c7b365c8de092779fc068d10bf6b2d3fa54f5bb20385508279b74b94f",
+  "src/gene/macro_runtime.nim": "fd9f6421149e1f04afce1b4a3ed359b0bbdb13e16a00e4205e4a2b5dea8dda49",
+  "src/gene/gir_codec.nim": "76ebeae554b66200db1b345345d9875131d06711ca8ac7e80effbfc8e28648c2",
+  "tests/spec_runner.nim": "4ad81f53f07e68865fb0c5a27e65f66c662c9f0d5347c4511daeb8c045c5c652"
+ },
+ "base_revision": "1e3f539"
+}

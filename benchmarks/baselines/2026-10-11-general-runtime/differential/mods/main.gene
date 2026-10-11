@@ -1,0 +1,34 @@
+(mod main)
+(import [twice call_count relabel tools] ^from "./helper.gene")
+
+(fn show [label value] ($println label " => " value))
+
+(fn use_imports []
+  (var out [])
+  (repeat i in 4 (out .push (twice i)))
+  (show "imported fn" out)
+  (show "imported counter" (call_count)))
+
+(fn through_module []
+  (var labels [])
+  (repeat j in 3
+    (labels .push (relabel $"helper v${(+ j 2)}")))
+  (show "module fn" labels)
+  (var scales [])
+  (repeat k in 3
+    (scales .push [tools/scale (tools/scaled 10)])
+    (tools/rescale (+ k 5)))
+  (scales .push [tools/scale (tools/scaled 10)])
+  (show "nested member" scales))
+
+(var top_total 0)
+(repeat n in 5
+  (set top_total (+ top_total (twice n) ($str/byte_size $"${n}")))
+  (if (== (// n 2) 0) (then (set top_total (+ top_total 100)))))
+
+(fn main [args] : Int
+  (show "top level loop" top_total)
+  (use_imports)
+  (through_module)
+  (show "types by name" [(Int .name) ($to_str Str)])
+  0)

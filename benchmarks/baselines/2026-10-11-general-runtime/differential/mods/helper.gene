@@ -1,0 +1,10 @@
+(mod helper)
+(var calls 0)
+(fn twice [x] (set calls (+ calls 1)) (* x 2))
+(fn call_count [] calls)
+(var label "helper v1")
+(fn relabel [text] (set label text) label)
+(ns tools
+  (var scale 3)
+  (fn scaled [x] (* x scale))
+  (fn rescale [n] (set scale n) scale))

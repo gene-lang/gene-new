@@ -1,0 +1,13 @@
+(var x 1) (fn get [] x) (var out []) (repeat i in 3 (out .push (get)) (set x (+ x 1))) out
+(ns counter (var n 0) (fn bump [] (set n (+ n 1)))) (fn read [] counter/n) (var out []) (repeat i in 3 (out .push (read)) (counter/bump)) out
+(var f (fn [] "first")) (fn call_it [] (f)) (var out []) (out .push (call_it)) (set f (fn [] "second")) (out .push (call_it)) out
+(fn probe [] ($str/upper "abc")) (var out []) (repeat i in 3 (out .push (probe))) out
+(var total 0) (repeat i in 6 (set total (+ total (// (* i 7) 4) (/ i 2)))) [total (== total 21) (!= total 21)]
+(fn late [] helper_later) (var helper_later 5) (var a (late)) (set helper_later 6) [a (late)]
+(var m {^a 1}) (fn rd [k] m/%k) (var out []) (out .push (rd "a")) (m .put "a" 2) (out .push (rd "a")) (m .put "b" 3) (out .push (rd "b")) out
+(var xs [1 2 3]) (fn at [i] xs/%i) [(at 0) (at 2) (at -1) (at 3) (at -4)]
+(fn undefined_use [] not_defined_anywhere) (try (undefined_use) catch Any $err_msg)
+(var words []) (for [k v] in {^b 2 ^a 1} (words .push [k v])) words
+($json/parse ($json/stringify {^k [1 2 {^z "q"}] ^s "a\"b"}))
+(var acc 0) (for n in [3 1 2] (set acc (+ (* acc 10) n))) acc
+(ns shapes (var kind "circle") (fn set_kind [k] (set kind k))) (fn describe [] shapes/kind) (var out []) (out .push (describe)) (shapes/set_kind "square") (out .push (describe)) (out .push shapes/kind) out

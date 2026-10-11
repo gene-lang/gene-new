@@ -1,0 +1,61 @@
+# Differential checks: every line printed must match the baseline runtime.
+(mod ops)
+
+(fn show [label value] ($println label " => " value))
+
+(fn try_show [label thunk]
+  (show label (try (thunk) catch Any $"!! ${$err_msg}")))
+
+(fn arithmetic []
+  (show "rem small" [(// 17 5) (// -17 5) (// 17 -5) (// -17 -5) (// 0 3) (// 5 1) (// 5 -1)])
+  (show "div small" [(/ 17 5) (/ -17 5) (/ 17 -5) (/ -17 -5) (/ 0 3) (/ 7 1) (/ 7 -1)])
+  (show "div float" [(/ 7.0 2) (/ 7 2.0) (/ 1.5 0.5)])
+  (show "rem float" [(// 7.5 2) (// 7 2.5) (// -7.5 2)])
+  (let big 9223372036854775807)
+  (let wide 140737488355328)
+  (show "rem big" [(// big 10) (// wide 7) (// (- 0 wide) 7) (// 7 wide)])
+  (show "div big" [(/ big 10) (/ wide 7) (/ (- 0 wide) -1) (/ (* wide 2) -1)])
+  (show "huge" [(/ (* big big) big) (// (* big big) 1000) (== (* big big) (* big big))])
+  (show "eq ints" [(== 1 1) (== 1 2) (!= 1 1) (!= 1 2) (== 0 -0) (== wide wide) (!= wide (+ wide 1))])
+  (show "eq mixed" [(== 1 1.0) (!= 1 1.0) (== "a" "a") (!= "a" "b") (== nil nil) (== nil false) (== true true)])
+  (show "eq data" [(== [1 2] [1 2]) (!= [1 2] [1 3]) (== {^a 1} {^a 1}) (== {^a 1} {^a 2})])
+  (show "eq nary" [(== 1 1 1) (== 1 1 2) (!= 1 2 3) (== "x")])
+  (try_show "div zero" (fn [] (/ 1 0)))
+  (try_show "rem zero" (fn [] (// 1 0)))
+  (try_show "div zero float" (fn [] (/ 1.0 0)))
+  (try_show "rem zero var" (fn [] (let z 0) (// 9 z)))
+  (try_show "div zero var" (fn [] (let z 0) (/ 9 z)))
+  (try_show "div non number" (fn [] (/ "a" 2)))
+  (try_show "rem non number" (fn [] (// "a" 2)))
+  (try_show "div one arg" (fn [] (/ 4)))
+  (try_show "rem three args" (fn [] (// 9 4 2)))
+  (show "div nary" (/ 100 5 2))
+  (var total 0)
+  (repeat i in 50
+    (set total (+ total (// (* i 37) 11) (/ i 3)))
+    (if (== (// i 7) 0) (then (set total (+ total 1000))))
+    (if (!= (// i 2) 0) (then (set total (- total 1)))))
+  (show "loop mix" total))
+
+(fn typed [a : Int b : Int] : Int
+  (+ (// a b) (/ a b)))
+
+(fn shadowing []
+  (let == (fn [a b] "local eq"))
+  (let // (fn [a b] "local rem"))
+  (let / (fn [a b] "local div"))
+  (show "shadow local" [(== 1 1) (// 9 2) (/ 9 2)]))
+
+(fn first_class []
+  (let ops [== != // /])
+  (show "first class" [(ops/0 3 3) (ops/1 3 3) (ops/2 9 4) (ops/3 9 4)])
+  (let apply2 (fn [f a b] (f a b)))
+  (show "passed" [(apply2 == 2 2) (apply2 // 9 4) (apply2 != 2 2) (apply2 / 9 2)]))
+
+(fn main [args] : Int
+  (arithmetic)
+  (show "typed" [(typed 17 5) (typed -17 5)])
+  (try_show "typed zero" (fn [] (typed 1 0)))
+  (shadowing)
+  (first_class)
+  0)
