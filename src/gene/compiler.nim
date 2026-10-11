@@ -579,10 +579,10 @@ proc nativeFastLoadKind(name: string): NativeFastKind =
   #
   # `==` and `!=` are deliberately absent. Lowering them here made one Harness
   # spec hang (the UI publication feedback turn test) while every direct
-  # comparison of results still matched; the cause was not isolated. One
-  # effect of lowering is that small predicates built from them start to
-  # satisfy `scopelessOps`. They stay ordinary calls, where the native's own
-  # small-Int shortcut still applies.
+  # comparison of results still matched; the cause was not isolated. (Small
+  # predicates built from them start to satisfy `scopelessOps`, but barring
+  # those from scopeless calls did not cure the hang.) They stay ordinary
+  # calls, where the native's own small-Int shortcut still applies.
   of "/": nfkDiv
   of "//": nfkRem
   else: nfkNone

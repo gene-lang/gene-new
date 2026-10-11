@@ -131,9 +131,9 @@ without changing what a program can observe.
   lowered, one Harness spec hung at service startup while every direct
   comparison of equality results still matched the old runtime; bisection
   isolated the lowering but not the mechanism. They remain ordinary calls
-  (the native keeps its own small-Int shortcut). Anyone retrying this should
-  start from the fact that lowering makes small `==` predicates eligible for
-  scopeless calls, and must run the Harness suite, not only the specs.
+  (the native keeps its own small-Int shortcut). Scopeless-call eligibility
+  of small `==` predicates was tested and ruled out as the cause. Anyone
+  retrying this must run the Harness suite, not only the specs.
 - **By-name load cache.** A name the compiler cannot bind lexically (an
   imported function, a type, the root `gene` before every `$ns/fn`) is found
   by walking the scope chain. The activation scopes are still inspected on
@@ -200,10 +200,14 @@ cases, 874 language specs (28 new, pinning what a shortcut could change), 402
 VM cases under both ORC and AtomicArc, 87 lifetime cases, and the complete
 Harness suite (179 cases) run from a clean export of the committed tree.
 AddressSanitizer (lifetime suite and 390 VM cases, no reports), Cordis,
-benchmark tooling and wasm ABI cases passed on the build before `==`/`!=`
-were withdrawn and were not repeated. The Harness service benchmark was not
-rerun. The evidence README records the regression, how it was bisected, and
-what remains unexplained.
+benchmark tooling and wasm ABI cases also pass on it, and an independent
+fresh-cache rebuild repeats the speedups within about 3%. The evidence README
+records the regression, how it was bisected, and what remains unexplained.
+
+**The Harness service benchmark does not improve**: 100 turns take a median
+26.39 s on the baseline and 26.41 s on the corrected runtime. This pass makes
+compute kernels faster; a Harness turn spends its time elsewhere (the
+2026-10-10 profile pointed at scope retention and publication).
 
 ### What is still slow
 

@@ -62,9 +62,10 @@ committed tree narrowed it to the `==`/`!=` lowering alone: with only that
 withdrawn, the spec passes in its usual 16 seconds. Every direct comparison
 of equality results — small Ints, wide Ints, Floats, strings, containers,
 typed instances, nil and void operands, typed and untyped functions — still
-matched the baseline, so the mechanism was **not isolated**. One known side
-effect of the lowering is that small predicates built from `==` begin to
-satisfy the scopeless-call opcode whitelist.
+matched the baseline, so the mechanism was **not isolated**. One side effect
+of the lowering is that small predicates built from `==` begin to satisfy the
+scopeless-call opcode whitelist; a build with the lowering restored but such
+functions barred from scopeless calls still hung, so that is not the cause.
 
 The corrected runtime therefore keeps `==` and `!=` as ordinary calls and
 lowers only `/` and `//`. The same investigation found that the static error
@@ -74,8 +75,30 @@ replace, so division's own error effects are back.
 
 All numbers and logs in this directory are from the corrected runtime. The
 only workload that moved is event replay (2.50x before the correction, 2.29x
-after), which is where `==` appears in the timed loop. The independent
-rebuild was not repeated after the correction.
+after), which is where `==` appears in the timed loop.
+
+## Independent rebuild
+
+A second binary built from a fresh cache and a clean export of the corrected
+tree repeats the result. Three measured processes per executable, same size
+and calibration: 3.08x (integer), 2.51x (closures), 2.42x (records), 1.79x
+(text), 2.22x (JSON) and 2.34x (events), all outputs matching. See
+[confirmation/report.md](confirmation/report.md).
+
+## Harness service benchmark
+
+The 100-turn Harness service workload does **not** get faster. Three measured
+processes per executable after an excluded warmup, rotating order, each with
+a fresh workspace ([service/summary.json](service/summary.json)):
+
+| Build | Service samples (ms) | Service median (ms) | Whole-process median (ms) |
+| --- | --- | ---: | ---: |
+| Baseline `1e3f539` | 26387, 26819, 25823 | 26387 | 36002 |
+| Corrected runtime | 26282, 26407, 26646 | 26407 | 36128 |
+
+The compute kernels this pass targets are not what a Harness turn spends its
+time on. The 2026-10-10 profile put that in scope retention and publication,
+which this pass did not change.
 
 ## Build provenance
 
@@ -106,15 +129,14 @@ compiler-known set). Rebuild older GIR artifacts.
 | VM, AtomicArc | 402 passed |
 | Reference-count/lifetime suite | 87 passed |
 | Harness, complete suite from a clean export | 179 passed |
-| AddressSanitizer: lifetime suite (before the correction) | 87 passed, 0 reports |
-| AddressSanitizer: VM suites except env/eval (before the correction) | 390 passed, 0 reports |
-| Cordis (before the correction) | 21 passed |
-| Benchmark tooling (before the correction) | 15 passed |
-| wasm ABI cases, scratch build (before the correction) | 46 passed |
+| AddressSanitizer: lifetime suite | 87 passed, 0 reports |
+| AddressSanitizer: VM suites except env/eval | 390 passed, 0 reports |
+| Cordis | 21 passed |
+| Benchmark tooling | 15 passed |
+| wasm ABI cases, scratch build | 46 passed |
 
-Rows marked "before the correction" were run on the first optimized build
-and not repeated; the correction only removes two operators from the
-compiler's lowering and changes the error analysis of two others.
+Every row is from the corrected runtime, built and run from a clean export
+of the committed tree.
 
 The 28 new specs (`spec — runtime fast paths keep ordinary semantics`) pin
 the behaviours a shortcut could change: operator results and errors, operator
@@ -140,8 +162,7 @@ the committed tree so that edits another session was making to the Harness
 sources could not affect it. Earlier runs are not counted: one overlapped
 those edits, one used an export that lacked the repository docs the Harness
 reads, and one overlapped heavy machine load that timed out web-host startup
-specs which pass when rerun alone. The 100-turn Harness service benchmark
-was not rerun for this pass.
+specs which pass when rerun alone.
 
 The sanitizer builds use `-d:useMalloc -fsanitize=address` in recover mode
 with leak detection off. The VM selection omits the env/eval suite, whose
