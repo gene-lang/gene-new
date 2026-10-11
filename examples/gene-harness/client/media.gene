@@ -1,0 +1,216 @@
+(mod harness_media_composer ^profile web)
+
+(type MediaComposer ^props {^selected Str ^drafts PropMap ^enabled Bool ^working Bool
+  ^list EventTarget ^input EventTarget ^status EventTarget
+  ^post (Fn [Str Str (Fn [Int Any] Void)] Void) ^changed (Fn [] Void)})
+
+(fn media_key [session : Str] : Str
+  (var key (if (== session "") "new" session))
+  $"gene-harness/media-draft/${key}")
+
+(fn items_for [media : MediaComposer, session : Str] : (List Any)
+  (var existing : Any media/drafts/%session)
+  (var saved : (List Any) [])
+  (if (! ($absent? existing))
+    (then (set saved existing))
+    (else
+    (var source (?? ($session_storage/get (media_key session)) ""))
+    (if_yes (!= source "")
+      (try
+        (var parsed : (List Any) ($json/parse source))
+        (for record in parsed
+          (if_yes (< ($size saved) 16)
+            (var state : Str record/state)
+            (saved .push {^key record/key ^name record/name ^session session
+              ^state (if (== state "ready") "ready" "error") ^asset record/asset
+              ^error (if (== state "ready") "" "Upload interrupted. Remove it and choose the file again.")
+              ^removed false ^reader nil ^file nil})))
+      catch Any (set saved [])))
+    (set media/drafts/%session saved)))
+  saved)
+
+(fn persist_media [media : MediaComposer, session : Str] : Void
+  (var saved : (List Any) [])
+  (for item in (items_for media session)
+    (var state : Str item/state)
+    (saved .push {^key item/key ^name item/name ^state state ^asset item/asset}))
+  (if_not ($session_storage/set (media_key session) ($json/stringify saved))
+    ($dom/set_text media/status "Browser storage is unavailable; keep this tab open to retain attachments.")))
+
+(fn attachment_view [asset : Any] : EventTarget
+  (var name : Str asset/name)
+  (var id : Str asset/id)
+  (var url $"/api/v8/media/${($url/encode_component id)}")
+  (var kind : Str asset/kind)
+  (var view ($dom/render `(div ^class_name "attachment")))
+  (if_yes (== kind "image")
+    ($dom/append view ($dom/render `(a ^href %url ^target "_blank" ^rel "noopener"
+      (img ^src %url ^alt %name ^loading "lazy")))))
+  ($dom/append view ($dom/render `(a ^href %$"${url}?download=1" %name)))
+  view)
+
+(fn render_media [media : MediaComposer] : Void
+  ($dom/clear media/list)
+  (for item in (items_for media media/selected)
+    (var name : Str item/name)
+    (var key : Str item/key)
+    (var state : Str item/state)
+    (var card ($dom/render `(div ^class_name "attachment_draft")))
+    (if (== state "ready")
+      ($dom/append card (attachment_view item/asset))
+      ($dom/append card ($dom/render `(span %name))))
+    (var status (if (== state "ready") "Ready"
+      (if (== state "queued") "Queued…" (if (== state "error") item/error "Uploading…"))))
+    ($dom/append card ($dom/render `(small ^role "status" %status)))
+    ($dom/append card ($dom/render `(button ^type "button" ^disabled %(! media/enabled)
+      ^aria_label %$"Remove ${name}" ^on_click %(fn [event : Any] : Void (remove_media media key)) "Remove")))
+    ($dom/append media/list card)))
+
+(fn media_changed [media : MediaComposer, session : Str] : Void
+  (persist_media media session)
+  (if_yes (== session media/selected) (render_media media))
+  (media/changed))
+
+(fn remove_media [media : MediaComposer, key : Str] : Void
+  (if_not media/enabled (return))
+  (var kept : (List Any) [])
+  (var reader : Any nil)
+  (var session media/selected)
+  (for item in (items_for media media/selected)
+    (var item_key : Str item/key)
+    (var state : Str item/state)
+    (if (== item_key key)
+      (do
+        (set item/removed true)
+        (if_yes (== state "reading") (set reader item/reader)))
+      (kept .push item)))
+  (set media/drafts/%session kept)
+  (if_not ($absent? reader)
+    (var active : EventTarget reader)
+    ($files/cancel active))
+  (media_changed media media/selected))
+
+(fn media_ids [media : MediaComposer] : (List Str)
+  (var result : (List Str) [])
+  (for item in (items_for media media/selected)
+    (var state : Str item/state)
+    (if_yes (== state "ready")
+      (var id : Str item/asset/id)
+      (result .push id)))
+  result)
+
+(fn media_has [media : MediaComposer] : Bool
+  (var items (items_for media media/selected))
+  (> items/.size 0))
+
+(fn media_blocked [media : MediaComposer] : Bool
+  (for item in (items_for media media/selected)
+    (var state : Str item/state)
+    (if_yes (!= state "ready") (return true)))
+  false)
+
+(fn media_select [media : MediaComposer, session : Str] : Void
+  (persist_media media media/selected)
+  (set media/selected session)
+  (render_media media))
+
+(fn media_move [media : MediaComposer, source : Str, destination : Str] : Void
+  (var items (items_for media source))
+  (if_yes (== items/.size 0) (return))
+  (for item in items (set item/session destination))
+  (set media/drafts/%destination items)
+  (var empty : (List Any) [])
+  (set media/drafts/%source empty)
+  (persist_media media source)
+  (persist_media media destination))
+
+(fn media_admitted [media : MediaComposer, session : Str, ids : (List Any)] : Void
+  (var kept : (List Any) [])
+  (for item in (items_for media session)
+    (var submitted false)
+    (for id in ids
+      (if_yes (== id item/asset/id) (set submitted true)))
+    (if_not submitted (kept .push item)))
+  (set media/drafts/%session kept)
+  (media_changed media session))
+
+(fn media_controls [media : MediaComposer, enabled : Bool] : Void
+  (set media/input/disabled (! enabled))
+  (if_yes (!= media/enabled enabled)
+    (set media/enabled enabled)
+    (render_media media)))
+
+(fn finish_upload [media : MediaComposer, item : Any, code : Int, result : Any] : Void
+  (if (&& (>= code 200) (< code 300))
+    (then (set item/state "ready") (set item/asset result))
+    (else
+      (set item/state "error")
+      (set item/error (?? result/message "Upload failed. Remove it and choose the file again."))))
+  (set media/working false)
+  (var session : Str item/session)
+  (media_changed media session)
+  (start_upload media))
+
+(fn start_upload [media : MediaComposer] : Void
+  (if_yes media/working (return))
+  (var next : Any nil)
+  (for [session items] in media/drafts
+    (var entries : (List Any) items)
+    (for item in entries
+      (var state : Str item/state)
+      (if_yes (&& ($absent? next) (== state "queued")) (set next item))))
+  (if_yes ($absent? next) (return))
+  (var item : Any next)
+  (set item/state "reading")
+  (set media/working true)
+  (var session : Str item/session)
+  (media_changed media session)
+  (try
+    (set item/reader ($files/read_base64 item/file 10485760
+      (fn [data : Str] : Void
+        (var removed : Bool item/removed)
+        (if removed
+          (finish_upload media item 499 {^message "Removed from draft."})
+          (do
+            (set item/state "uploading")
+            (var name : Str item/name)
+            (media/post name data (fn [code : Int, result : Any] : Void
+              (finish_upload media item code result))))))
+      (fn [message : Str] : Void
+        (finish_upload media item 400 {^message message}))))
+  catch Any (finish_upload media item 400 {^message "The selected file could not be read."})))
+
+(fn add_files [media : MediaComposer, files : (List Any)] : Void
+  (if_not media/enabled (return))
+  (var entries (items_for media media/selected))
+  (for file in files
+    (if_yes (>= entries/.size 16)
+      ($dom/set_text media/status "A message can contain at most 16 attachments.")
+      (break))
+    (var name ($files/name file))
+    (var large (> ($files/size file) 10485760))
+    (entries .push {^key ($browser/request_id) ^name name ^session media/selected
+      ^state (if large "error" "queued") ^error (if large "File exceeds the 10 MiB limit." "")
+      ^file file ^reader nil ^asset nil ^removed false}))
+  (media_changed media media/selected)
+  (start_upload media))
+
+(fn create_media [session : Str, post : (Fn [Str Str (Fn [Int Any] Void)] Void), changed : (Fn [] Void)] : MediaComposer
+  (var media (MediaComposer ^selected session ^drafts {} ^!enabled ^!working
+    ^list ($dom/element "media_drafts") ^input ($dom/element "media_files")
+    ^status ($dom/element "media_status") ^post post ^changed changed))
+  ($dom/add_event_listener media/input "change" (fn [event : Any] : Void
+    (add_files media ($files/from_input media/input))
+    ($dom/set_input_value media/input "")))
+  (var composer ($dom/element "composer"))
+  ($dom/add_event_listener composer "dragover" (fn [event : Any] : Void ($dom/prevent_default event)))
+  ($dom/add_event_listener composer "drop" (fn [event : Any] : Void
+    ($dom/prevent_default event)
+    (add_files media ($files/from_event event))))
+  ($dom/add_event_listener ($dom/element "prompt") "paste" (fn [event : Any] : Void
+    (var files ($files/from_event event))
+    (if_yes (> files/.size 0)
+      ($dom/prevent_default event)
+      (add_files media files))))
+  (render_media media)
+  media)

@@ -1,0 +1,54 @@
+(mod media)
+(import [Plugin PluginHost append_prompt] ^from "../plugin_api")
+(import [contribute_doc] ^from "./documentation")
+(import [open_media_store media_record media_descriptor put_media MediaError] ^from "../storage/media")
+(import [media_pdf_page] ^from "../storage/documents")
+(import [history_state history_media_refs] ^from "../agents/history")
+(import [require_turn] ^from "../agents/outcome")
+
+(fn attach_media [runtime, id : Str]
+  (let context ($runtime/context))
+  (let turn (require_turn context/turn))
+  (let descriptor (media_descriptor (open_media_store runtime/state_root) id))
+  (if (>= turn/media/.get/.size 16)
+    (fail (MediaError ^code "too_large" ^message "At most 16 media items can be shown per turn.")))
+  (for previous in turn/media/.get
+    (if (== previous/id id) (return descriptor)))
+  (turn/media/.get .push descriptor)
+  (append_prompt "media" descriptor)
+  descriptor)
+
+(fn media [] : Plugin
+  (Plugin ^id "media" ^requires ["loop"]
+    ^provides [["functions" "media_list"] ["functions" "media_show"]
+      ["functions" "media_import"] ["functions" "media_page"]]
+    ^activate (fn [host]
+      (let factory (host .PluginHost:resolve "loop"))
+      (let runtime ((Path "runtime") (factory)))
+      (for definition in [
+        {^name "media_list" ^doc "List this conversation's attachment descriptors, including compacted history."
+         ^fn (fn []
+           (let context ($runtime/context))
+           (let state (history_state runtime context/session))
+           (history_media_refs state/messages))}
+        {^name "media_show" ^doc "Show an attachment by ID to the model on the next turn and in the transcript."
+         ^fn (fn [id : Str] (attach_media runtime id))}
+        {^name "media_import" ^doc "Import a workspace image/document by relative path, then show it on the next turn."
+         ^fn (fn [path : Str]
+           (let resolved ($fs/real_path ($path/join runtime/root path)))
+           (if_not ($str/starts_with? resolved $"${runtime/root}/")
+             (fail (MediaError ^code "invalid_request" ^message "Media imports must be inside this workspace.")))
+           (let info ($fs/info resolved))
+           (if (> info/size 10485760)
+             (fail (MediaError ^code "too_large" ^message "Media import exceeds 10 MiB.")))
+           (let item (put_media (open_media_store runtime/state_root) path ($fs/read_bytes resolved)))
+           (attach_media runtime item/id))}
+        {^name "media_page" ^doc "Render a one-based PDF page by attachment ID and show its image on the next turn."
+         ^fn (fn [id : Str, page : Int]
+           (let result (media_pdf_page (open_media_store runtime/state_root) id page))
+           (attach_media runtime result/media/id))}]
+        (definition .put "tags" ["media" "image" "document" "screenshot"])
+        (definition .put "docs" ["harness/media"])
+        (host .PluginHost:contribute "functions" definition))
+      (contribute_doc host "harness/media" "Read attachments, inspect images and render PDF pages."
+        "examples/gene-harness/docs/media.md" ^tags ["media" "image" "document" "screenshot"])) ))

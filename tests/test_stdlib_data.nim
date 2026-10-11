@@ -14,6 +14,19 @@ proc dataError(source: string): string =
   except CatchableError as error:
     error.msg
 
+suite "UTF-8 byte decoding":
+  test "decodes valid documents including empty text and non-ASCII characters":
+    check evalData("($binary/decode_utf8 ($binary/from_str \"héllo 世界\"))").print() ==
+      "\"héllo 世界\""
+    check evalData("($binary/decode_utf8 ($binary/from_list []))").print() == "\"\""
+
+  test "rejects invalid sequences without changing raw byte-string conversion":
+    for encoded in ["[255]", "[192 128]", "[224 128 128]", "[237 160 128]",
+                    "[240 128 128 128]", "[244 144 128 128]", "[240 159 146]"]:
+      check "invalid UTF-8" in dataError("($binary/decode_utf8 ($binary/from_list " & encoded & "))")
+    check evalData("($str/byte_size ($binary/decode_utf8 ($binary/from_list [244 143 191 191])))").print() == "4"
+    check evalData("($str/byte_size ($binary/to_str ($binary/from_list [255])))").print() == "1"
+
 suite "base64":
   test "encodes Str and Bytes with padding and no line breaks":
     check evalData("($base64/encode \"hello\")").print() == "\"aGVsbG8=\""
@@ -70,6 +83,20 @@ suite "strict reading":
       dataError("($parse/read_all \"(a)\" ^^locs ^max_depth 2)")
 
 suite "atomic byte files":
+  test "remove_dir removes only empty directories and tolerates absence":
+    let path = getTempDir() / "gene_remove_empty_dir"
+    createDir(path)
+    defer:
+      if dirExists(path): removeDir(path)
+    let quoted = "\"" & path & "\""
+    writeFile(path / "keep.txt", "keep")
+    check dataError("($fs/remove_dir " & quoted & ")").len > 0
+    check readFile(path / "keep.txt") == "keep"
+    removeFile(path / "keep.txt")
+    check evalData("($fs/remove_dir " & quoted & ")").print() == "nil"
+    check not dirExists(path)
+    check evalData("($fs/remove_dir " & quoted & ")").print() == "nil"
+
   test "write_bytes_atomic replaces a file with exactly the given bytes":
     let path = getTempDir() / "gene_write_bytes_atomic.bin"
     defer:

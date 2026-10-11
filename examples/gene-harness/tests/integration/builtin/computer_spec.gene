@@ -1,0 +1,127 @@
+(import $test [describe it])
+(import [isolated run_spec] ^from "../../support")
+(import [open_driver grant_window grant_browser observe action action_receipt targets close_session normalize_result ComputerError] ^from "." ^pkg "computer")
+
+(describe "Scoped computer actions"
+  (it "binds exact browser tabs and converts screenshot pixels without accepting stale refs" []
+    (isolated this_mod/.path "binds exact browser tabs and converts screenshot pixels without accepting stale refs"
+      (fn [workspace]
+        (let sent ($cell nil))
+        (let driver (open_driver ($path/join workspace "driver") ^transport (fn [name args]
+          (if (== name "get_browser_state")
+            (then
+              (if_not ($absent? args/pid)
+                (return (normalize_result {^binding_quality "exact" ^target_id "browser-1"
+                  ^tabs [{^tab_id "tab-1" ^^active}]})))
+              (return (normalize_result {^snapshot {^id "p5"} ^refs [{^ref "p5:0" ^name "Input"}]
+                ^screenshot {^width 200 ^height 100 ^pixel_to_css_scale_x 0.5 ^pixel_to_css_scale_y 0.5}}))))
+          (sent .set args)
+          (normalize_result {^status "ok"}))))
+        (let target (grant_browser driver "owner" 123 456))
+        (let state (observe driver "owner" target/id))
+        ($assert (== (try (action driver "owner" target/id state/observation "type"
+          {^ref "p4:0" ^text "bad"} "stale") "accepted" catch ComputerError "rejected") "rejected"))
+        (action driver "owner" target/id state/observation "click" {^x 100 ^y 50} "pixel")
+        ($assert (== sent/.get/x 50.0))
+        ($assert (== sent/.get/y 25.0))
+        ($assert (== sent/.get/target_id "browser-1"))
+        ($assert (== sent/.get/tab_id "tab-1")))))
+  (it "normalizes actual CLI JSON and separate screenshot bytes into model content" []
+    (let pixels ($binary/from_list [137 80 78 71]))
+    (let result (normalize_result ^image pixels {^snapshot_id "s00000001" ^capture_id "capture-1"}))
+    ($assert (== result/structuredContent/snapshot_id "s00000001"))
+    ($assert (== result/content/0/data ($base64/encode pixels)))
+    ($assert (== result/content/0/mimeType "image/png"))
+    ($assert (! result/isError))
+    ($assert (/isError (normalize_result {^status "refused" ^error "No target."}))))
+  (it "cleans unused grants locally and releases a contacted session only once" []
+    (isolated this_mod/.path "cleans unused grants locally and releases a contacted session only once"
+      (fn [workspace]
+        (let calls ($cell []))
+        (let driver (open_driver ($path/join workspace "driver")
+          ^transport (fn [name args]
+            (calls/.get .push name)
+            {^structuredContent {^snapshot_id "s00000001"} ^content []})))
+        (grant_window driver "unused" 123 456)
+        (close_session driver "unused")
+        ($assert (== calls/.get []))
+        ($assert (== (targets driver "unused") []))
+        (let target (grant_window driver "used" 123 456))
+        (observe driver "used" target/id)
+        (close_session driver "used")
+        (close_session driver "used")
+        ($assert (== calls/.get ["get_window_state" "end_session"])))))
+  (it "isolates owners, rejects stale observations and persists completed or uncertain actions without replay" []
+    (isolated this_mod/.path
+      "isolates owners, rejects stale observations and persists completed or uncertain actions without replay"
+      (fn [workspace]
+        (let calls ($cell []))
+        (let fail_next ($cell false))
+        (let transport (fn [name args]
+          (calls/.get .push {^name name ^args args})
+          (if (== name "get_window_state")
+            (return {^structuredContent {^snapshot_id "s00000001" ^capture_id "capture-1"} ^content []}))
+          (if fail_next/.get (fail "connection lost after dispatch"))
+          {^content [{^type "text" ^text "dispatched"}]}))
+        (let driver (open_driver ($path/join workspace "driver") ^transport transport))
+        (let target (grant_window driver "alice" 123 456))
+        ($assert (== (targets driver "bob") []))
+        ($assert (== (try (observe driver "bob" target/id) "accepted" catch ComputerError "rejected") "rejected"))
+        (let observed (observe driver "alice" target/id))
+        ($assert (== (try (action driver "alice" target/id observed/observation "click" {^pid 9} "bad") "accepted" catch ComputerError "rejected") "rejected"))
+        ($assert (== (try (action driver "alice" target/id observed/observation "click" {^element_token "s00000002:1"} "wrong-token") "accepted" catch ComputerError "rejected") "rejected"))
+        (let params {^element_token "s00000001:1"})
+        (let completed (action driver "alice" target/id observed/observation "click" params "click-1"))
+        ($assert (== completed/state "completed"))
+        ($assert (== calls/.get/.size 2))
+        ($assert (== calls/.get/1/args/pid 123))
+        ($assert (== calls/.get/1/args/window_id 456))
+        ($assert (== (action driver "alice" target/id observed/observation "click" params "click-1") completed))
+        ($assert (== calls/.get/.size 2) "receipt replay dispatched again")
+        ($assert (== (try (action driver "alice" target/id observed/observation "click" params "click-2") "accepted" catch ComputerError "rejected") "rejected"))
+        (let refreshed (observe driver "alice" target/id))
+        (fail_next .set true)
+        (let unknown (action driver "alice" target/id refreshed/observation "click" {^x 10 ^y 20} "uncertain"))
+        ($assert (== unknown/state "unknown"))
+        ($assert (== calls/.get/3/args/capture_id "capture-1"))
+        (let count calls/.get/.size)
+        (let reopened (open_driver ($path/join workspace "driver") ^transport transport))
+        ($assert (== (action_receipt reopened "alice" "uncertain") unknown))
+        ($assert (== (try (action_receipt reopened "bob" "uncertain") "accepted" catch ComputerError "rejected") "rejected"))
+        ($assert (== (action reopened "alice" target/id refreshed/observation "click" {^x 10 ^y 20} "uncertain") unknown))
+        ($assert (== calls/.get/.size count))
+        ($assert (== (try (action reopened "alice" target/id refreshed/observation "click" {^x 11 ^y 20} "uncertain") "accepted" catch ComputerError "rejected") "rejected"))
+        (fail_next .set false)
+        (close_session driver "alice")
+        ($assert (== (targets driver "alice") []))))))
+
+(describe "Computer cancellation"
+  (it "leaves a durable unknown outcome and releases its gate when dispatch is cancelled" []
+    (isolated this_mod/.path
+      "leaves a durable unknown outcome and releases its gate when dispatch is cancelled"
+      (fn [workspace]
+        (let started ($cell false))
+        (let calls ($cell 0))
+        (let transport (fn [name args]
+          (if (== name "get_window_state")
+            (return {^structuredContent {^snapshot_id "s00000001" ^capture_id "capture-1"} ^content []}))
+          (calls .set (+ calls/.get 1))
+          (started .set true)
+          ($sleep 60000)
+          {^content []}))
+        (let driver (open_driver ($path/join workspace "driver") ^transport transport))
+        (let target (grant_window driver "alice" 123 456))
+        (let observed (observe driver "alice" target/id))
+        (let params {^element_token "s00000001:1"})
+        (scope
+          (let task (spawn (action driver "alice" target/id observed/observation "click" params "cancelled")))
+          (while (! started/.get) ($sleep 1))
+          task/.cancel
+          task/.join)
+        (let receipt (action driver "alice" target/id observed/observation "click" params "cancelled"))
+        ($assert (== receipt/state "unknown"))
+        ($assert (== calls/.get 1))
+        (let refreshed (observe driver "alice" target/id))
+        ($assert (!= refreshed/observation observed/observation))))))
+
+(fn main [args] (run_spec args))

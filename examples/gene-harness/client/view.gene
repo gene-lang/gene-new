@@ -3,6 +3,7 @@
 (import [markdown_view] ^from "./markdown.gene")
 (import [code_view] ^from "./highlight.gene")
 (import [run_label terminal] ^from "./state.gene")
+(import [attachment_view] ^from "./media.gene")
 
 (fn execution_view [text : Str, summary : Str, is_gene : Bool,
                     expanded : Bool, on_copy : (Fn [Str] Void),
@@ -59,6 +60,11 @@
          (div ^class_name "speaker" %label
            %(if (&& provisional (!= role "user")) " · in progress" "")))))
   ($dom/append article content)
+  (if_not ($absent? block/media)
+    (var attachments : (List Any) block/media)
+    (var gallery ($dom/render `(div ^class_name "message_attachments")))
+    (for asset in attachments ($dom/append gallery (attachment_view asset)))
+    ($dom/append article gallery))
   (if_yes block/truncated
     ($dom/append article ($dom/render `(p ^class_name "muted" "Output shortened for display."))))
   article)

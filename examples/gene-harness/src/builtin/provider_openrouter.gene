@@ -1,4 +1,5 @@
 (mod provider_openrouter)
+(import [chat_messages] ^from "../agents/content")
 (import ^from "../plugin_api" [Plugin PluginHost])
 (import ^from "./documentation" [contribute_text_doc])
 (import ^from "../kernel" [HarnessError])
@@ -32,7 +33,7 @@
              (?? (nonempty ($os/env? "OPENROUTER_MODEL")) "openai/gpt-6-sol")))
          ^prepare (fn [call]
            (let settings call/settings)
-           {^body {^model settings/model ^messages call/messages
+           {^body {^model settings/model ^messages (chat_messages call/messages)
                    ^max_tokens (?? call/max_tokens 3000)
                    ^reasoning {^effort settings/effort}}
             ^timeout_ms settings/timeout_ms})

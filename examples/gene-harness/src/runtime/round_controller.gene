@@ -1,4 +1,6 @@
 (mod round_controller)
+(import [open_media_store validate_media_refs] ^from "../storage/media")
+(import [prompt_limit] ^from "../web/contract")
 (import ^from "../agents/turn_loop" [run_round transcript finish_turn])
 (import ^from "../agents/provider_selection" [readiness_report])
 (import ^from "../agents/harness_turn" [answer_validators])
@@ -181,7 +183,7 @@
     ; .put session watcher)
   receipt)
 
-(fn submit_round [controller : RoundController, session : Str, request_id : Str, sequence : Int, text : Str, ^initiator initiator : Str = "user", ^on_admit on_admit = nil]
+(fn submit_round [controller : RoundController, session : Str, request_id : Str, sequence : Int, text : Str, ^initiator initiator : Str = "user", ^on_admit on_admit = nil, ^media media = []]
   (with_body_use
     controller/runtime
     (fn []
@@ -189,19 +191,24 @@
         controller/runtime/sessions
         $"round/${session}"
         (fn []
-          (submit_round_impl ^initiator initiator ^on_admit on_admit
+          (submit_round_impl ^initiator initiator ^on_admit on_admit ^media media
             controller
             session
             request_id
             sequence
             text))))))
 
-(fn submit_round_impl [controller : RoundController, session : Str, request_id : Str, sequence : Int, text : Str, ^initiator initiator : Str = "user", ^on_admit on_admit = nil]
+(fn submit_round_impl [controller : RoundController, session : Str, request_id : Str, sequence : Int, text : Str, ^initiator initiator : Str = "user", ^on_admit on_admit = nil, ^media media = []]
   (require_chat controller/runtime/modes session)
+  (if (> ($str/byte_size text) prompt_limit)
+    (fail (RoundError ^code "too_large" ^message "Message text exceeds 64 KiB; attach the document instead.")))
   (if controller/runtime/stopping/.get
     (fail (RoundError ^code "stopped" ^message "workspace is stopping")))
   (let state (round_state controller session))
-  (let digest ($crypto/sha256 text))
+  (if_not (== ($head media) List)
+    (fail (RoundError ^code "invalid_request" ^message "Attachments must be a list of media IDs.")))
+  (let digest ($crypto/sha256 (if media/.empty? text
+    ($serde/write_data {^text text ^media media}))))
   (for old in state/receipts
     (if (|| (== old/request_id request_id) (== old/submission_seq sequence))
       (then
@@ -210,6 +217,8 @@
         (fail
           (RoundError ^code "submission_conflict" ^message "submission identity has different content")))))
   (let loaded (load_session controller/runtime/sessions session))
+  (let attachments (if media/.empty? []
+    (validate_media_refs (open_media_store controller/runtime/state_root) media)))
   (if (|| (session_busy? loaded) (! ($absent? (controller/active/.get .get session))))
     (fail (RoundError ^code "busy" ^message "this session already has a round")))
   (if (!= sequence state/next_seq)
@@ -230,11 +239,13 @@
     (fail (RoundError ^code "not_ready" ^message ready_message)))
   (let metadata (require_record controller/runtime/sessions session))
   (let changes {})
+  (let display_request (if (&& (== ($str/trim text) "") (! attachments/.empty?))
+    $"Attachment: ${attachments/0/name}" text))
   (if (== initiator "user") (changes .put "attention" false))
   (if_yes (== metadata/first_request "")
-    (changes .put "first_request" text)
+    (changes .put "first_request" display_request)
     (if_yes (&& (== initiator "user") (== metadata/title "New conversation"))
-      (let normalized ($str/trim ($regex/replace_all #"\s+" text " ")))
+      (let normalized ($str/trim ($regex/replace_all #"\s+" display_request " ")))
       (let title ($first ($regex/split #"[.!?](?:\s|$)" normalized)))
       (if_yes (!= title "")
         (var prefix "")
@@ -257,6 +268,7 @@
       ^request text
       ^turn_count 0
       ^accepted_at ($to_str ($now))})
+  (if_not attachments/.empty? (receipt .put "media" attachments))
   (if (!= initiator "user")
     (then
       (let config
@@ -343,7 +355,7 @@
   (receipt .put "state" "running")
   (if (!= receipt/initiator "user")
     (receipt .put "deadline_ms" (+ ($os/wall_ms) (?? receipt/remaining_ms 300000))))
-  (append_message ^settled requests/settled ^round receipt/id ^turn receipt/last_turn
+  (append_message ^media (?? receipt/request_media []) ^settled requests/settled ^round receipt/id ^turn receipt/last_turn
     controller/runtime
     session
     "user"

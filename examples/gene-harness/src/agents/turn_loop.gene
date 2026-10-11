@@ -115,11 +115,11 @@
             (set last_request $"${source_request}\n${rendered/full}"))
           (round .put "request" last_request)
           (round .put "request_settled" settled)
-          (append_message ^settled settled ^round round/id runtime session
+          (append_message ^settled settled ^round round/id ^media (?? round/media []) runtime session
             "user" last_request)
           (transcript runtime session
             {^type "turn/request" ^round round/id ^turn 0
-             ^full last_request ^settled settled ^^initial})))
+             ^full last_request ^settled settled ^media (?? round/media []) ^^initial})))
       (transcript runtime session
         {^type "turn/start" ^turn number ^round round/id})
       (set started true)
@@ -228,6 +228,10 @@
           runtime/root
           text))
       (record_response [])
+      (let produced_media (?? result/media []))
+      (if_not produced_media/.empty?
+        (transcript runtime session {^type "reply" ^round round/id ^turn number
+          ^text "" ^media result/media ^!final}))
       (if_not (["done" "cancelled"] .contains? result/kind)
         (let prepared
           ($runtime/with_context
@@ -284,6 +288,7 @@
     (set last_request requests/full)
     (round .put "request" last_request)
     (round .put "request_settled" requests/settled)
+    (round .put "request_media" (?? result/media []))
     (round .put "request_items_ref" (write_body runtime ($serde/write_data requests/items)))
     (transcript
       runtime
@@ -315,7 +320,7 @@
             ^request last_request
             ^turn_count count
             ^last_turn number})))
-    (append_message ^settled requests/settled ^round round/id ^turn number
+    (append_message ^media (?? result/media []) ^settled requests/settled ^round round/id ^turn number
       runtime
       session
       "user"

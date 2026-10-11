@@ -1,0 +1,103 @@
+(mod computer)
+(import [Plugin PluginHost CommandResult append_prompt] ^from "../plugin_api")
+(import [contribute_doc] ^from "./documentation")
+(import [open_driver driver_call grant_window grant_browser targets observe action action_receipt close_session session_label]
+  ^from "." ^pkg "computer")
+(import [open_media_store put_media] ^from "../storage/media")
+(import [attach_media] ^from "./media")
+
+(fn computer [] : Plugin
+  (let client ($cell nil))
+  (let owners ($cell {}))
+  (let activations [])
+  (fn driver [runtime]
+    (if ($absent? client/.get)
+      (then
+        (let config ($serde/read_data ($fs/read_text $"${runtime/state_root}/config.gene")))
+        (let options (?? config/computer {}))
+        (client .set (open_driver $"${runtime/state_root}/computer"
+          ^command (?? options/command "cua-driver") ^socket (?? options/socket "")))))
+    client/.get)
+  (Plugin ^id "computer" ^requires ["loop"]
+    ^provides [["commands" "computer"] ["functions" "computer_targets"]
+      ["functions" "computer_observe"] ["functions" "computer_act"] ["functions" "computer_receipt"]]
+    ^activate (fn [host]
+      (let active {^host host ^active ($cell true)})
+      (activations .push active)
+      (let factory (host .PluginHost:resolve "loop"))
+      (let runtime ((Path "runtime") (factory)))
+      (host .PluginHost:contribute "commands"
+        {^name "computer" ^usage "/computer windows | allow PID WINDOW | browser PID WINDOW | close"
+         ^doc "Select computer-use targets for this conversation or release them."
+         ^tags ["computer" "browser" "screenshot"] ^docs ["harness/computer"]
+         ^run (fn [ctx]
+           (let parts ($filter ($str/split ($str/trim ctx/raw) " ") (fn [part] (!= part ""))))
+           (let operation (?? parts/0 "help"))
+           (if_not (["windows" "allow" "browser" "close"] .contains? operation)
+             (return (CommandResult ^display "Use /computer windows, /computer allow PID WINDOW, /computer browser PID WINDOW, or /computer close. See (doc \"harness/computer\") for driver setup." ^!attached)))
+           (let connection (driver runtime))
+           (owners/.get .put ctx/session true)
+           (if (&& (== operation "windows") (== parts/.size 1))
+             (return (CommandResult ^display ($serde/write_data
+               (driver_call connection "list_windows" {^session (session_label connection ctx/session)})) ^!attached)))
+           (if (&& (== operation "allow") (== parts/.size 3))
+             (return (CommandResult ^display ($serde/write_data
+               (grant_window connection ctx/session ($parse/parse_int parts/1) ($parse/parse_int parts/2))) ^!attached)))
+           (if (&& (== operation "browser") (== parts/.size 3))
+             (return (CommandResult ^display ($serde/write_data
+               (grant_browser connection ctx/session ($parse/parse_int parts/1) ($parse/parse_int parts/2))) ^!attached)))
+           (if (&& (== operation "close") (== parts/.size 1))
+             (return (CommandResult ^display ($serde/write_data (close_session connection ctx/session)) ^!attached)))
+           (CommandResult ^display "Use /computer windows, /computer allow PID WINDOW, /computer browser PID WINDOW, or /computer close. See (doc \"harness/computer\") for driver setup." ^!attached))})
+      (for definition in [
+        {^name "computer_targets" ^doc "List computer windows granted by the operator to this conversation."
+         ^fn (fn [] (let context ($runtime/context)) (targets (driver runtime) context/session))}
+        {^name "computer_observe" ^doc "Observe one granted target; append its UI state and screenshot for the next model turn."
+         ^fn (fn [target : Str, ^query query : Str = ""]
+           (let context ($runtime/context))
+           (let result (observe ^query query (driver runtime) context/session target))
+           (let raw (?? result/result result))
+           (let content [])
+           (for block in (?? raw/content [])
+             (if (== block/type "image")
+               (then
+                 (let extension (if (== block/mimeType "image/jpeg") "jpg" "png"))
+                 (let item (put_media ^source "screenshot" (open_media_store runtime/state_root)
+                   $"screenshot.${extension}" ($base64/decode block/data)))
+                 (attach_media runtime item/id)
+                 (content .push {^type "image" ^media item}))
+               (else (content .push block))))
+           (let output {^target target ^observation result/observation
+             ^state raw/structuredContent ^content content ^isError (== raw/isError true)})
+           (append_prompt "computer" output)
+           output)}
+        {^name "computer_receipt" ^doc "Read a durable action outcome by request ID without dispatch, including after restart."
+         ^fn (fn [request : Str]
+           (let context ($runtime/context))
+           (let receipt (action_receipt (driver runtime) context/session request))
+           (append_prompt "computer" receipt)
+           receipt)}
+        {^name "computer_act" ^doc "Dispatch a scoped action once, using a fresh observation and stable request ID. Observe again to verify."
+         ^fn (fn [target : Str, observation : Str, name : Str, params, request : Str]
+           (let context ($runtime/context))
+           (let receipt (action (driver runtime) context/session target observation name params request))
+           (append_prompt "computer" receipt)
+           receipt)}]
+        (definition .put "tags" ["computer" "browser" "screenshot"])
+        (definition .put "docs" ["harness/computer"])
+        (host .PluginHost:contribute "functions" definition))
+      (contribute_doc host "harness/computer" "Computer-use workflow, target grants, screenshots and action recovery."
+        "examples/gene-harness/docs/computer.md" ^tags ["computer" "browser" "screenshot" "skill"]))
+    ^deactivate (fn [host]
+      (for active in activations
+        (if (same? active/host host) (active/active .set false)))
+      (var remains false)
+      (for active in activations (if active/active/.get (set remains true)))
+      (if (&& (! remains) (! ($absent? client/.get)))
+        (then
+          (let errors [])
+          (for [owner present] in owners/.get
+            (try (close_session client/.get ($to_str owner))
+              catch Any (errors .push $err/message)))
+          (if_not errors/.empty?
+            (fail $"Computer session cleanup needs attention: ${errors}")))))))

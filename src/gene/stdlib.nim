@@ -358,6 +358,42 @@ proc biBytesToStr(args: openArray[Value]): Value {.nimcall.} =
   requireBytes("binary/to_str", args[0])
   newStr(args[0].bytesVal)
 
+proc biBytesDecodeUtf8(args: openArray[Value]): Value {.nimcall.} =
+  ## Unlike the raw byte/string view, decoding at an input boundary must not
+  ## admit malformed UTF-8 into a JSON request or user-visible document.
+  requireOne("binary/decode_utf8", args)
+  requireBytes("binary/decode_utf8", args[0])
+  let raw = args[0].bytesVal
+  var invalid = unicode.validateUtf8(raw)
+  # Nim's validator checks byte structure but accepts some overlong encodings
+  # and surrogate/out-of-range scalar values. A strict decoder rejects those.
+  if invalid < 0:
+    var i = 0
+    while i < raw.len:
+      let first = uint8(raw[i])
+      if first >= 0xE0 and first <= 0xEF:
+        let second = uint8(raw[i + 1])
+        if (first == 0xE0 and second < 0xA0) or
+            (first == 0xED and second >= 0xA0):
+          invalid = i
+          break
+        i += 3
+      elif first >= 0xF0:
+        let second = uint8(raw[i + 1])
+        if first > 0xF4 or (first == 0xF0 and second < 0x90) or
+            (first == 0xF4 and second >= 0x90):
+          invalid = i
+          break
+        i += 4
+      elif first >= 0xC2:
+        i += 2
+      else:
+        inc i
+  if invalid >= 0:
+    raise newException(GeneError,
+      "binary/decode_utf8: invalid UTF-8 at byte " & $invalid)
+  newStr(raw)
+
 # --- base64 ------------------------------------------------------------------
 #
 # The text encoding a JSON or HTTP payload needs for binary data, such as an
@@ -5882,6 +5918,23 @@ proc biFsRealPath(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
   except CatchableError as e:
     raiseFilesystemOperationError("fs/real_path", e, scope)
 
+proc biFsRemoveDir(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 1:
+    raise newException(GeneError, "fs/remove_dir expects (path)")
+  requireStr("fs/remove_dir path", args[0])
+  let scope = if call == nil: nil else: call[].dispatchScope
+  try:
+    if symlinkExists(args[0].strVal):
+      raise newException(IOError, "refusing to remove a directory symlink")
+    when not defined(posix):
+      if dirExists(args[0].strVal):
+        for entry in walkDir(args[0].strVal):
+          raise newException(IOError, "directory is not empty")
+    fsRemoveDir(args[0].strVal)
+  except CatchableError as e:
+    raiseFilesystemOperationError("fs/remove_dir", e, scope)
+  NIL
+
 # --- json: parse and stringify over Gene value kinds (docs/stdlib.md "Module Layout") ---
 
 const jsonMaxDepth = 200
@@ -10264,6 +10317,7 @@ proc registerStdlibNamespaces(root: Scope) =
   bytesScope.define("slice", builtinNativeFn("binary/slice", biBytesSlice))
   bytesScope.define("from_str", builtinNativeFn("binary/from_str", biBytesFromStr))
   bytesScope.define("to_str", builtinNativeFn("binary/to_str", biBytesToStr))
+  bytesScope.define("decode_utf8", builtinNativeFn("binary/decode_utf8", biBytesDecodeUtf8))
   # Number codecs, all little-endian at a byte offset (design.md §D7.3).
   bytesScope.define("get_u16", builtinNativeFn("binary/get_u16", biBytesGetU16))
   bytesScope.define("get_u32", builtinNativeFn("binary/get_u32", biBytesGetU32))
@@ -11408,6 +11462,8 @@ proc registerStdlibNamespaces(root: Scope) =
       builtinNativeCallFn("fs/make_dir", biFsMakeDir, acceptsNamed = false))
     fsNs.nsScope.define("remove",
       builtinNativeCallFn("fs/remove", biFsRemove, acceptsNamed = false))
+    fsNs.nsScope.define("remove_dir",
+      builtinNativeCallFn("fs/remove_dir", biFsRemoveDir, acceptsNamed = false))
     fsNs.nsScope.define("rename",
       builtinNativeCallFn("fs/rename", biFsRename, acceptsNamed = false))
     fsNs.nsScope.define("real_path",

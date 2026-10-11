@@ -132,6 +132,7 @@
   (let kind (if cancelled "cancelled" (if ($absent? error)
     (if ($absent? validated) "error" validated/kind) "error")))
   {^kind kind ^validated validated ^request request ^patch patch_result ^error error
+   ^media turn/media/.get
    ^console console/.get ^turn turn
    ^request_items (if (== request "") [] (request_items turn validated ^patch patch_text
      ^error error ^error_line error_line ^result_line last_line))})

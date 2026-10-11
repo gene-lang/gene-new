@@ -111,7 +111,7 @@
         (append_boundary_item result number "ui" preview)))
     (if (== result/validated/rejected_done true)
       (append_boundary_item result number "plugin_notice"
-        "Done was deferred because this turn changed plugins. Read the publication result before finishing."))
+        "Done was deferred because this turn produced new context. Read the attached media or publication result before finishing."))
     result
   ensure
     (if (&& (! drained/.get) (! ($absent? turn_ref/.get)))

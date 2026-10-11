@@ -16,6 +16,8 @@ isolation.
 | Author a workspace plugin | [Plugins](docs/plugins.md) |
 | Run and verify a function plugin without a model | [Project audit example](website/examples/project_audit/README.md) |
 | Browser workflow, transport and recovery | [Web client](docs/web-client.md) |
+| Upload documents, inspect images and render PDF pages | [Media](docs/media.md) |
+| Select windows, take screenshots and use computer actions | [Computer use](docs/computer.md) |
 | Notifications, background answers and producer messages | [Notifications](docs/notification.md) |
 | Add UI components or forms | [Web components](docs/web-components.md) |
 | Try the editable project board | [Workspace UI experiment](experiments/ui/README.md) |

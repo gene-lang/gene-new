@@ -1,0 +1,119 @@
+(import $test [describe it])
+(import ^from "../../support" [isolated run_spec])
+(import ^from "../../../src/storage/media"
+  [
+    open_media_store
+    put_media
+    put_media_base64
+    media_record
+    media_descriptor
+    media_bytes
+    media_text
+    media_data_url
+    validate_media_refs
+    MediaError])
+
+(fn rejected [code : Str, action]
+  (let result (try (action) "accepted" catch MediaError $err/code))
+  ($assert (== result code) $"Expected ${code}, received ${result}"))
+
+(describe
+  "Harness media storage"
+  (it
+    "stores immutable bytes and descriptors across reopen without exposing paths"
+    []
+    (isolated
+      this_mod/.path
+      "stores immutable bytes and descriptors across reopen without exposing paths"
+      (fn [workspace]
+        (let root ($path/join workspace ".gene-harness"))
+        (let store (open_media_store root))
+        (let data ($binary/from_str "A document: héllo 世界"))
+        (let item (put_media store "C:\\Users\\demo\\report.txt" data))
+        ($assert (== item/name "report.txt"))
+        ($assert (== item/kind "text"))
+        ($assert (== item/mime "text/plain"))
+        ($assert ($absent? item/path))
+        ($assert ($absent? item/digest))
+        ($assert (== item/url $"/api/v8/media/${item/id}"))
+        (let reopened (open_media_store root))
+        ($assert (== (media_bytes reopened item/id) data))
+        ($assert (== (media_text reopened item/id) "A document: héllo 世界"))
+        ($assert (== (media_descriptor reopened item/id) item))
+        ($assert (== (validate_media_refs reopened [item/id]) [item])))))
+  (it
+    "retains binary images and canonical base64 without text conversion"
+    []
+    (isolated
+      this_mod/.path
+      "retains binary images and canonical base64 without text conversion"
+      (fn [workspace]
+        (let store (open_media_store ($path/join workspace ".gene-harness")))
+        (let encoded "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aU1sAAAAASUVORK5CYII=")
+        (let image (put_media_base64 store "pixel.PNG" encoded))
+        ($assert (== image/mime "image/png"))
+        ($assert (== image/kind "image"))
+        ($assert (== (media_data_url store image/id) $"data:image/png;base64,${encoded}"))
+        (rejected "invalid_request" (fn [] (media_text store image/id)))
+        (rejected "invalid_request" (fn [] (put_media_base64 store "x.png" "!!!"))))))
+  (it
+    "bounds file count and distinct binary storage while deduplicating content"
+    []
+    (isolated
+      this_mod/.path
+      "bounds file count and distinct binary storage while deduplicating content"
+      (fn [workspace]
+        (let store
+          (open_media_store ^max_file_bytes 12 ^max_total_bytes 16 ^max_records 3
+            ($path/join workspace ".gene-harness")))
+        (let first (put_media store "first.txt" ($binary/from_str "123456789")))
+        (let second (put_media store "second.txt" ($binary/from_str "123456789")))
+        ($assert (!= first/id second/id))
+        ($assert (== ($size ($fs/list_dir ($path/join store/root "objects"))) 1))
+        (rejected
+          "too_large"
+          (fn []
+            (put_media store "large.txt" ($binary/from_str "1234567890123"))))
+        (rejected "too_large" (fn [] (put_media store "quota.txt" ($binary/from_str "abcdefgh"))))
+        (put_media store "empty.txt" ($binary/from_str ""))
+        (rejected "too_large" (fn [] (put_media store "fourth.txt" ($binary/from_str "")))))))
+  (it
+    "rejects traversal invalid text duplicate references and corrupt objects"
+    []
+    (isolated
+      this_mod/.path
+      "rejects traversal invalid text duplicate references and corrupt objects"
+      (fn [workspace]
+        (let store (open_media_store ($path/join workspace ".gene-harness")))
+        (rejected "not_found" (fn [] (media_bytes store "../../config.gene")))
+        (rejected
+          "invalid_request"
+          (fn []
+            (put_media
+              store
+              """bad
+name.txt"""
+              ($binary/from_str "ok"))))
+        (rejected
+          "invalid_request"
+          (fn []
+            (put_media store "fake.png" ($binary/from_str "not an image"))))
+        (rejected
+          "invalid_request"
+          (fn []
+            (put_media store "invalid.txt" ($binary/from_list [255]))))
+        (rejected
+          "invalid_request"
+          (fn []
+            (put_media store "nul.txt" ($binary/from_list [65 0 66]))))
+        (let item (put_media store "ok.txt" ($binary/from_str "original")))
+        (rejected "invalid_request" (fn [] (validate_media_refs store [item/id item/id])))
+        (rejected "invalid_request" (fn [] (validate_media_refs store [1])))
+        (let record (media_record store item/id))
+        ($fs/write_bytes_atomic
+          ($path/join store/root "objects" record/digest)
+          ($binary/from_str "corrupt"))
+        (rejected "unavailable" (fn [] (media_bytes store item/id)))))))
+
+(fn main [args]
+  (run_spec args))

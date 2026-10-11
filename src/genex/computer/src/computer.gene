@@ -1,0 +1,229 @@
+(mod computer)
+(type ComputerError ^props {^code Str ^message Str} ^impl [Error])
+(impl Error for ComputerError)
+(type Driver ^props {^command Str ^socket Str ^root Str ^targets Any ^observations Any ^leases Any ^gate Any ^transport Any ^epoch Str})
+
+(fn refuse [message : Str]
+  (fail (ComputerError ^code "invalid_request" ^message message)))
+
+(fn normalize_result [value, ^image image = nil]
+  (if_not (== ($head value) Map) (refuse "Cua Driver returned an invalid result."))
+  (let result (if (== ($head value/content) List) value
+    {^structuredContent value ^content []
+     ^isError (|| (== value/isError true) (! ($absent? value/error))
+       (["error" "refused" "denied" "failed"] .contains? value/status))}))
+  (if_not ($absent? image)
+    (result/content .push {^type "image" ^mimeType "image/png" ^data ($base64/encode image)}))
+  result)
+
+(fn open_driver [root : Str, ^command command : Str = "cua-driver", ^socket socket : Str = "", ^transport transport = nil]
+  ($fs/make_dir root)
+  ($fs/set_mode root 448)
+  (Driver ^root ($fs/real_path root) ^command command ^socket socket
+    ^targets ($cell {}) ^observations ($cell {}) ^leases ($cell {}) ^gate ($cell false)
+    ^transport transport ^epoch ($crypto/random_hex 8)))
+
+(fn driver_call [driver : Driver, tool : Str, args]
+  (if_not ($absent? args/session) (driver/leases/.get .put args/session true))
+  (if_not ($absent? driver/transport) (return (driver/transport tool args)))
+  (let encoded ($json/stringify args))
+  (if (> ($str/byte_size encoded) 131072) (refuse "Computer request exceeds 128 KiB."))
+  (let argv ["call" tool encoded])
+  (if (!= driver/socket "") (then (argv .push "--socket") (argv .push driver/socket)))
+  (let capture (&& (["get_window_state" "get_browser_state"] .contains? tool)
+    (== args/include_screenshot true)))
+  (let image_path ($path/join driver/root $"capture-${($crypto/random_hex 16)}.png"))
+  (if capture (then (argv .push "--screenshot-out-file") (argv .push image_path)))
+  (try
+  (let result (await ($os/exec_async driver/command argv... ^timeout_ms 30000 ^max_bytes 16777216)))
+  (if (|| result/timed_out result/truncated (!= result/status 0))
+    (fail (ComputerError ^code "transport" ^message $"Cua Driver did not return a complete result (status ${result/status}). ${result/stderr}")))
+  (let parsed (try ($json/parse result/stdout) catch Any
+    (fail (ComputerError ^code "transport" ^message "Cua Driver returned invalid JSON."))))
+  (var image nil)
+  (if capture
+    (then
+      (if_not ($fs/exists? image_path)
+        (fail (ComputerError ^code "capture" ^message "Cua Driver did not produce the requested screenshot.")))
+      (let info ($fs/info image_path))
+      (if (> info/size 10485760) (refuse "Driver screenshot exceeds 10 MiB."))
+      (set image ($fs/read_bytes image_path))))
+  (normalize_result ^image image parsed)
+  ensure ($fs/remove image_path)))
+
+(fn session_label [driver : Driver, owner : Str] : Str
+  $"gene-${driver/epoch}-${($crypto/sha256 owner)}")
+
+# This is a host operation. Expose it through operator controls, never as an
+# agent tool: a model cannot manufacture a target grant from arbitrary PIDs.
+(fn grant_window [driver : Driver, owner : Str, pid : Int, window : Int]
+  (if (|| (< pid 1) (< window 1)) (refuse "Window grants require positive PID and window ID."))
+  (let id ($crypto/random_hex 16))
+  (let target {^id id ^owner owner ^kind "window" ^pid pid ^window_id window})
+  (driver/targets/.get .put id target)
+  target)
+
+(fn grant_browser [driver : Driver, owner : Str, pid : Int, window : Int]
+  (let bound (driver_call driver "get_browser_state"
+    {^session (session_label driver owner) ^pid pid ^window_id window}))
+  (let state bound/structuredContent)
+  (if (|| bound/isError (!= state/binding_quality "exact") ($absent? state/target_id))
+    (fail (ComputerError ^code "binding" ^message $"Browser requires an exact authorized endpoint: ${state}")))
+  (let active ($filter state/tabs (fn [tab] (== tab/active true))))
+  (if (!= active/.size 1) (refuse "Browser binding did not identify exactly one active tab."))
+  (let id ($crypto/random_hex 16))
+  (let target {^id id ^owner owner ^kind "browser" ^pid pid ^window_id window
+    ^target_id state/target_id ^tab_id active/0/tab_id})
+  (driver/targets/.get .put id target)
+  target)
+
+(fn require_target [driver : Driver, owner : Str, id : Str]
+  (let target (driver/targets/.get .get id))
+  (if (|| ($absent? target) (!= target/owner owner)) (refuse "Unknown or ungranted computer target."))
+  target)
+
+(fn targets [driver : Driver, owner : Str]
+  (let result [])
+  (for [id target] in driver/targets/.get
+    (if (&& (! ($absent? target)) (== target/owner owner)) (result .push target)))
+  result)
+
+(fn target_args [driver : Driver, owner : Str, target]
+  (if (== target/kind "browser")
+    {^session (session_label driver owner) ^target_id target/target_id ^tab_id target/tab_id}
+    {^session (session_label driver owner) ^pid target/pid ^window_id target/window_id}))
+
+(fn observe [driver : Driver, owner : Str, id : Str, ^query query : Str = ""]
+  (while (driver/gate .swap true) ($sleep 1))
+  (try
+  (let target (require_target driver owner id))
+  (driver/observations/.get .put id nil)
+  (let args (target_args driver owner target))
+  (args .put "include_screenshot" true)
+  (if (!= query "") (args .put "query" query))
+  (let browser (== target/kind "browser"))
+  (if browser
+    (args .put "snapshot_format" "semantic_v2")
+    (do (args .put "max_dimension" 1600) (args .put "max_elements" 500)))
+  (let result (driver_call driver (if browser "get_browser_state" "get_window_state") args))
+  (if (== result/isError true) (return result))
+  (let observation ($crypto/random_hex 16))
+  (driver/observations/.get .put id {^id observation ^result result})
+  {^observation observation ^target id ^result result}
+  ensure (driver/gate .set false)))
+
+(fn receipt_path [driver : Driver, owner : Str, request : Str] : Str
+  ($path/join driver/root $"${($crypto/sha256 ($serde/write_data [owner request]))}.gene"))
+
+(fn action_receipt [driver : Driver, owner : Str, request : Str]
+  (let path (receipt_path driver owner request))
+  (if_not ($fs/exists? path)
+    (fail (ComputerError ^code "not_found" ^message "Computer action receipt not found.")))
+  ($serde/read_data ($fs/read_text path)))
+
+(fn action [driver : Driver, owner : Str, id : Str, observation : Str,
+            name : Str, params, request : Str]
+  (if (|| (== request "") (> ($str/byte_size request) 128)) (refuse "An action needs a stable request ID of 1–128 bytes."))
+  (if_not (== ($head params) Map) (refuse "Action parameters must be a map."))
+  (let digest ($crypto/sha256 ($serde/write_data [id observation name params])))
+  (let path (receipt_path driver owner request))
+  (while (driver/gate .swap true) ($sleep 1))
+  (try
+    # Check replay before target liveness so a receipt is usable after restart.
+    (if ($fs/exists? path)
+      (then
+        (let previous ($serde/read_data ($fs/read_text path)))
+        (if (!= previous/digest digest) (refuse "Action request ID was reused for different input."))
+        (return previous)))
+    (let target (require_target driver owner id))
+    (let observed (driver/observations/.get .get id))
+    (if (|| ($absent? observed) (!= observed/id observation))
+      (refuse "Observe this target again before acting."))
+    (let browser (== target/kind "browser"))
+    (let mappings (if browser
+      {^click "browser_click" ^type "browser_type" ^navigate "browser_navigate" ^scroll "browser_pointer"}
+      {^click "click" ^type "type_text" ^key "press_key" ^scroll "scroll"}))
+    (let tool (mappings .get name))
+    (if ($absent? tool) (refuse "Unsupported action for this target."))
+    (let allowed (if browser
+      {^click ["ref" "x" "y" "delivery_mode"] ^type ["ref" "text" "replace"] ^navigate ["url"]
+       ^scroll ["ref" "delta_x" "delta_y" "delivery_mode"]}
+      {^click ["element_token" "x" "y" "button" "delivery_mode"] ^type ["element_token" "text" "delivery_mode"]
+       ^key ["element_token" "key" "modifiers" "delivery_mode"] ^scroll ["element_token" "direction" "amount" "delivery_mode"]}))
+    (let args (target_args driver owner target))
+    (for [key value] in params
+      (if_not ((allowed .get name) .contains? ($to_str key)) (refuse $"Unsupported action parameter: ${key}"))
+      (args .put key value))
+    (if_not ($absent? params/delivery_mode)
+      (if_not (["background" "foreground"] .contains? params/delivery_mode)
+        (refuse "delivery_mode must be background or foreground.")))
+    (if (&& (! browser) (["type" "scroll"] .contains? name) ($absent? params/element_token))
+      (refuse "Typing and scrolling require an observed element token."))
+    (if (&& (== name "click") ($absent? params/element_token) ($absent? params/ref) ($absent? params/x))
+      (refuse "Click requires an observed element token or screenshot coordinates."))
+    (if browser
+      (then
+        (let state observed/result/structuredContent)
+        (if_not ($absent? params/ref)
+          (let found ($filter (?? state/refs []) (fn [item] (== item/ref params/ref))))
+          (if found/.empty? (refuse "Browser ref does not belong to this observation.")))
+        (if (&& (["type" "scroll"] .contains? name) ($absent? params/ref))
+          (refuse "Browser typing and scrolling require an observed ref."))
+        (if (== name "scroll") (args .put "action" "scroll"))
+        (if (|| (! ($absent? params/x)) (! ($absent? params/y)))
+          (then
+            (let shot state/screenshot)
+            (if (|| ($absent? params/x) ($absent? params/y)
+                    ($absent? shot/pixel_to_css_scale_x) ($absent? shot/pixel_to_css_scale_y))
+              (refuse "Browser coordinates require the observed screenshot transform."))
+            (if (|| (< params/x 0) (< params/y 0) (>= params/x shot/width) (>= params/y shot/height))
+              (refuse "Browser coordinates are outside the observed screenshot."))
+            (args .put "x" (* params/x shot/pixel_to_css_scale_x))
+            (args .put "y" (* params/y shot/pixel_to_css_scale_y)))))
+      (else
+        (let snapshot observed/result/structuredContent)
+        (if_not ($absent? params/element_token)
+          (if (|| ($absent? snapshot/snapshot_id)
+                  (! ($str/starts_with? params/element_token $"${snapshot/snapshot_id}:")))
+            (refuse "Element token does not belong to this observation.")))
+        (if (|| (! ($absent? params/x)) (! ($absent? params/y)))
+          (then
+            (if (|| ($absent? snapshot/capture_id) ($absent? params/x) ($absent? params/y))
+              (refuse "Coordinates require both x/y and a captured screenshot."))
+            # Cua click atomically consumes this exact capture; scroll's schema
+            # lacks capture_id, so allow only an AX token for native scrolling.
+            (if (!= name "click") (refuse "Native scrolling requires an element token."))
+            (args .put "capture_id" snapshot/capture_id)))))
+    (let receipt {^request request ^digest digest ^state "unknown" ^target id ^action name
+      ^message "Dispatch may have occurred. Observe the target; do not replay this action."})
+    ($fs/write_text_atomic ^^owner_only path ($serde/write_data receipt))
+    # One observation authorizes one dispatch. Both successful and uncertain
+    # effects require another observation before any follow-up action.
+    (driver/observations/.get .put id nil)
+    (try
+      (let result (driver_call driver tool args))
+      (receipt .put "state" (if (== result/isError true) "failed" "completed"))
+      (receipt .put "result" result)
+      (receipt .put "message" "Inspect fresh state to verify the effect.")
+      ($fs/write_text_atomic ^^owner_only path ($serde/write_data receipt))
+    catch Any
+      (receipt .put "state" "unknown")
+      (receipt .put "message" $"Action outcome is unknown. ${$err/message}")
+      ($fs/write_text_atomic ^^owner_only path ($serde/write_data receipt)))
+    receipt
+  ensure (driver/gate .set false)))
+
+(fn close_session [driver : Driver, owner : Str]
+  (while (driver/gate .swap true) ($sleep 1))
+  (try
+  (for target in (targets driver owner)
+    (driver/targets/.get .put target/id nil)
+    (driver/observations/.get .put target/id nil))
+  (let label (session_label driver owner))
+  (if ($absent? (driver/leases/.get .get label)) (return {^content []}))
+  (let result (driver_call driver "end_session" {^session label}))
+  (if (== result/isError true)
+    (fail (ComputerError ^code "cleanup" ^message "Cua Driver could not release the session.")))
+  (driver/leases/.get .delete label)
+  result
+  ensure (driver/gate .set false)))

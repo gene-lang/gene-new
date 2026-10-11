@@ -1,0 +1,62 @@
+(import $test [describe it])
+(import [isolated run_spec test_service] ^from "../../support")
+(import [close_session_service] ^from "../../../src/web/session_service")
+(import [row HarnessError] ^from "../../../src/kernel")
+(import [responses_content anthropic_content chat_messages require_text_messages]
+  ^from "../../../src/agents/content")
+
+(describe "Harness provider image content"
+  (it "uses native image blocks in actual provider preparation" []
+    (isolated this_mod/.path "uses native image blocks in actual provider preparation"
+      (fn [workspace]
+        (let service (test_service ^workspace workspace
+          ^provider (fn [request] "(Outcome ^^done ^reply \"ok\")")))
+        (try
+          (let request
+            {^settings {^model "test" ^effort "none" ^timeout_ms 30000 ^command "claude"}
+             ^messages [{^role "system" ^content "instructions"}
+                        {^role "user" ^content "Describe the screenshot."
+                         ^images [{^mime "image/png" ^data "AQID" ^detail "high"}]}
+                        {^role "assistant" ^content "(Outcome ^^done ^reply \"done\")"}]})
+          (let codex (row service/runtime/h "providers" "codex"))
+          (let responses (codex/prepare request))
+          ($assert (== responses/body/input/0/content/1/type "input_image"))
+          ($assert (== responses/body/input/0/content/1/image_url "data:image/png;base64,AQID"))
+          ($assert (== responses/body/input/0/content/1/detail "high"))
+          ($assert (== responses/body/input/1/content/0/type "output_text"))
+          (let anthropic (row service/runtime/h "providers" "anthropic"))
+          (let messages (anthropic/prepare request))
+          ($assert (== messages/body/messages/0/content/1
+            {^type "image" ^source {^type "base64" ^media_type "image/png" ^data "AQID"}}))
+          ($assert (== messages/body/messages/1/content/0/cache_control/type "ephemeral"))
+          (let openrouter (row service/runtime/h "providers" "openrouter"))
+          (let chat (openrouter/prepare request))
+          ($assert (== chat/body/messages/1/content/1/type "image_url"))
+          ($assert (== chat/body/messages/1/content/1/image_url/url "data:image/png;base64,AQID"))
+          ($assert (== chat/body/messages/2/content request/messages/2/content))
+          (let claude (row service/runtime/h "providers" "claude"))
+          (let failure (try (claude/prepare request) "accepted" catch HarnessError $err/message))
+          ($assert ($str/contains? failure "does not support image observations"))
+        ensure (close_session_service service)))))
+
+  (it "supports image-only messages and rejects unsupported image roles or formats" []
+    (let image {^role "user" ^content "" ^images [{^mime "image/jpeg" ^data "AQID"}]})
+    ($assert (== (responses_content image) [{^type "input_image" ^image_url "data:image/jpeg;base64,AQID" ^detail "auto"}]))
+    ($assert (== ($size (anthropic_content image)) 1))
+    (let invalid_role (try
+      (responses_content {^role "assistant" ^content "" ^images image/images})
+      "accepted" catch HarnessError $err/message))
+    ($assert ($str/contains? invalid_role "user messages"))
+    (let invalid_format (try
+      (anthropic_content {^role "user" ^content "" ^images [{^mime "image/svg+xml" ^data "AQID"}]})
+      "accepted" catch HarnessError $err/message))
+    ($assert ($str/contains? invalid_format "Invalid model image")))
+
+  (it "keeps ordinary text-only message shapes unchanged" []
+    (let messages [{^role "system" ^content "instructions"} {^role "user" ^content "hello"}])
+    ($assert (== (chat_messages messages) messages))
+    ($assert (== (responses_content messages/1) [{^type "input_text" ^text "hello"}]))
+    ($assert (== (anthropic_content messages/1) [{^type "text" ^text "hello"}]))
+    ($assert ($absent? (require_text_messages messages "Claude CLI")))))
+
+(fn main [args] (run_spec args))

@@ -123,6 +123,15 @@ const contract = [
   ["storage/set", "Storage", "setItem", "call", 2],
   ["image/load (src)", "HTMLImageElement", "src", "assign"],
   ["image/load (onload)", "HTMLImageElement", "onload", "assign"],
+  ["files/from_input", "HTMLInputElement", "files", "read"],
+  ["files/from_event (drop)", "DataTransfer", "files", "read"],
+  ["files/from_event (paste)", "ClipboardEvent", "clipboardData", "read"],
+  ["files/name", "File", "name", "read"],
+  ["files/mime", "Blob", "type", "read"],
+  ["files/size", "Blob", "size", "read"],
+  ["files/read_base64", "FileReader", "readAsDataURL", "call", 1],
+  ["files/read_base64 (result)", "FileReader", "result", "read"],
+  ["files/cancel", "FileReader", "abort", "call", 0],
   // portable UTF-8 — the same two names exist in the VM's `str` namespace, so
   // a module compiled for both backends encodes a string without knowing which
   // side it is on.

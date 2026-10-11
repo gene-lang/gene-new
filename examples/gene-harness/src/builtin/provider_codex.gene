@@ -3,6 +3,7 @@
 (import ^from "./documentation" [contribute_text_doc])
 (import ^from "../kernel" [HarnessError])
 (import ^from "./provider_common" [nonempty configure_model http_json_attempt])
+(import [responses_content] ^from "../agents/content")
 
 (fn auth_file []
   (let explicit (nonempty ($os/env? "CODEX_AUTH_FILE")))
@@ -122,9 +123,7 @@
              {^model settings/model ^instructions messages/0/content
               ^input (conversation .map (fn [message]
                 {^role message/role
-                 ^content [{^type (if (== message/role "assistant")
-                                     "output_text" "input_text")
-                            ^text message/content}]}))
+                 ^content (responses_content message)}))
               ^reasoning {^effort settings/effort}
               ^!store ^^stream}
             ^timeout_ms settings/timeout_ms})

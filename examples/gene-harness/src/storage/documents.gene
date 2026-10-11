@@ -1,0 +1,37 @@
+(mod documents)
+(import [extract_document extract_pdf_page] ^from "./extract" ^pkg "documents")
+(import [media_record media_bytes put_media MediaError] ^from "./media")
+(var ^^private extraction_gate ($cell false))
+
+(fn cached_extraction [store, key : Str, extract]
+  (while (extraction_gate .swap true) ($sleep 1))
+  (try
+    (let root ($path/join store/root "extracted"))
+    ($fs/make_dir root)
+    (let path ($path/join root $"${key}.gene"))
+    (if ($fs/exists? path) (return ($serde/read_data ($fs/read_text path))))
+    (let result (extract ($path/join store/root "converting")))
+    ($fs/write_text_atomic ^^owner_only path ($serde/write_data result))
+    result
+  ensure (extraction_gate .set false)))
+
+(fn media_document [store, id : Str]
+  (let record (media_record store id))
+  (cached_extraction store $"v1-${id}" (fn [root]
+    (let result (extract_document root record/name (media_bytes store id)))
+    (let pages [])
+    (for page in result/pages
+      (let descriptor (put_media ^source "document_page" store
+        $"${id}-page-${page/page}.png" page/data))
+      (pages .push {^page page/page ^media descriptor}))
+    (result .put "pages" pages)
+    result)))
+
+(fn media_pdf_page [store, id : Str, page : Int]
+  (let record (media_record store id))
+  (if (|| (< page 1) (> page 10000))
+    (fail (MediaError ^code "invalid_request" ^message "PDF page must be in 1..10000.")))
+  (cached_extraction store $"v1-${id}-page-${page}" (fn [root]
+    (let result (extract_pdf_page root record/name (media_bytes store id) page))
+    (let descriptor (put_media ^source "document_page" store $"${id}-page-${page}.png" result/data))
+    {^page page ^page_count result/page_count ^media descriptor})))

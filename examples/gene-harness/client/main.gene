@@ -15,6 +15,9 @@
     status_is_current])
 (import ^from "../src/web/contract.gene" [protocol_version])
 (import ^from "./view.gene" [block_view step_view run_status_view not_durable])
+(import ^from "./media.gene"
+  [MediaComposer create_media media_select media_move media_ids media_has
+   media_blocked media_admitted media_controls])
 (import ^from "./components.gene" [render_slot])
 (import ^from "./ui/model.gene" [UiClient UiNavigation])
 (import ^from "./ui/router.gene" [navigate update_url])
@@ -40,7 +43,7 @@
 
 (type SessionTab ^props {^id Str ^title Str ^cache Any ^socket Any ^socket_epoch Int ^sequence Int ^connected Bool ^closed Bool ^expanded (List Str) ^server_epoch Str})
 
-(type Client ^props {^selected Str ^csrf Str ^cursor Str ^next_seq Str ^epoch Str ^ready Bool ^connected Bool ^server_busy Bool ^awaiting Str ^awaiting_session Str ^queued_prompt Str ^message_sequence Int ^sending Bool ^busy Bool ^autoscroll Bool ^has_older Bool ^loading_older Bool ^socket_epoch Int ^viewing_history Bool ^generation Int ^records (List Any) ^preview (List Any) ^sessions (List Any) ^needs_attention (List Any) ^filter_epoch Int ^trigger_selected Str ^tabs (List SessionTab) ^expanded (List Str) ^rounds (List Any) ^input_id Str ^answering Bool ^round Any ^mode Any ^mode_pending Any ^action_cooldown Bool ^was_executing Bool ^pending Any ^status Any ^status_epoch Str ^status_revision Str ^status_generation Int ^components (List Any) ^component_buttons PropMap ^socket Any ^session_revision Str ^ui Any ^notices Notices ^confirmations Any ^questions Any ^center Any ^inbox Any ^safe_ui Bool ^root EventTarget ^list EventTarget ^transcript EventTarget ^prompt EventTarget ^notice EventTarget ^title EventTarget})
+(type Client ^props {^selected Str ^csrf Str ^cursor Str ^next_seq Str ^epoch Str ^ready Bool ^connected Bool ^server_busy Bool ^awaiting Str ^awaiting_session Str ^queued_prompt Str ^queued_submit Bool ^message_sequence Int ^sending Bool ^busy Bool ^autoscroll Bool ^has_older Bool ^loading_older Bool ^socket_epoch Int ^viewing_history Bool ^generation Int ^records (List Any) ^preview (List Any) ^sessions (List Any) ^needs_attention (List Any) ^filter_epoch Int ^trigger_selected Str ^tabs (List SessionTab) ^expanded (List Str) ^rounds (List Any) ^input_id Str ^answering Bool ^round Any ^mode Any ^mode_pending Any ^action_cooldown Bool ^was_executing Bool ^pending Any ^status Any ^status_epoch Str ^status_revision Str ^status_generation Int ^components (List Any) ^component_buttons PropMap ^socket Any ^session_revision Str ^ui Any ^media Any ^notices Notices ^confirmations Any ^questions Any ^center Any ^inbox Any ^safe_ui Bool ^root EventTarget ^list EventTarget ^transcript EventTarget ^prompt EventTarget ^notice EventTarget ^title EventTarget})
 
 (fn render_plugin_slot [client : Client, target : EventTarget, slot : Str] : Bool
   (var components client/components)
@@ -222,6 +225,9 @@
   (var send ($dom/element "send"))
   (var in_mode (! ($absent? client/mode)))
   (var executing (if in_mode (! ($absent? client/mode/running)) client/server_busy))
+  (var attachments : MediaComposer client/media)
+  (media_controls attachments (&& client/ready client/connected (! client/sending)
+    ($absent? client/pending) (! in_mode)))
   (if_yes (&& client/was_executing (! executing))
     (set client/action_cooldown true)
     ($time/after 250.0 (fn [] : Void (set client/action_cooldown false) (update_controls client))))
@@ -239,6 +245,7 @@
       (! client/connected)
       client/sending
       client/action_cooldown
+      (&& (! executing) (media_blocked attachments))
       (&& (! executing) (! in_mode) (! command) (|| client/busy (!= client/input_id "")))))
   (var rename ($dom/element "rename_session"))
   (set rename/disabled
@@ -928,7 +935,10 @@
   (var refresh (&& (== id client/selected) client/viewing_history))
   (save_tab client)
   (set client/selected id)
+  (var attachments : MediaComposer client/media)
+  (media_select attachments id)
   (set client/queued_prompt "")
+  (set client/queued_submit false)
   (set client/cursor "")
   (set client/next_seq "1")
   (set client/records [])
@@ -1019,6 +1029,8 @@
       (if (== code 201)
         (then
           (var id : Str data/id)
+          (var attachments : MediaComposer client/media)
+          (media_move attachments "" id)
           (select_session client id)
           (if_yes (!= draft "")
             ($dom/set_input_value client/prompt draft)
@@ -1051,6 +1063,10 @@
           (if_yes (terminal status) (acknowledge_run client data session))
           ($session_storage/remove "gene-harness/pending")
           (var submitted : Str pending/text)
+          (var attachments : MediaComposer client/media)
+          (var submitted_media : (List Any) [])
+          (if_not ($absent? pending/media) (set submitted_media pending/media))
+          (media_admitted attachments session submitted_media)
           (if (== session client/selected)
             (then
               (if (== ($dom/input_value client/prompt) submitted)
@@ -1090,12 +1106,13 @@
       (update_controls client))))
 
 (fn stage_submission [client : Client, text : Str] : Void
+  (var attachments : MediaComposer client/media)
   (set client/pending
     {
       ^session client/selected
       ^request_id ($browser/request_id)
       ^submission_seq client/next_seq
-      ^text text})
+      ^text text ^media (media_ids attachments)})
   (if_not ($session_storage/set "gene-harness/pending" ($json/stringify client/pending))
     (set client/pending nil)
     (notice
@@ -1273,7 +1290,11 @@
     (send_mode_input client)
     (return))
   (var raw ($dom/input_value client/prompt))
+  (var attachments : MediaComposer client/media)
   (if_yes (&& (!= client/selected "") (str/starts_with? raw "/") (! (str/starts_with? raw "//")))
+    (if_yes (media_has attachments)
+      (notice client "Remove attachments before running a slash command.")
+      (return))
     (send_command client raw)
     (return))
   (if_yes (!= client/input_id "")
@@ -1284,7 +1305,10 @@
     (send_pending client)
     (return))
   (var text ($dom/input_value client/prompt))
-  (if_yes (== (str/trim text) "") (return))
+  (if_yes (media_blocked attachments)
+    (notice client "Wait for uploads to finish, or remove any failed attachment.")
+    (return))
+  (if_yes (&& (== (str/trim text) "") (! (media_has attachments))) (return))
   (remember_draft client)
   (if_yes (== client/selected "")
     (set client/sending true)
@@ -1299,8 +1323,10 @@
         (if (== code 201)
           (then
             (var id : Str data/id)
+            (media_move attachments "" id)
             (select_session client id)
             (set client/queued_prompt text)
+            (set client/queued_submit true)
             ($dom/set_input_value client/prompt text)
             (remember_draft client)
             ($session_storage/remove (draft_key "new")))
@@ -1415,9 +1441,10 @@
         (var questions : QuestionEditors client/questions)
         (resume_replies questions)
         (if_not ($absent? client/pending) (send_pending client))
-        (if_yes (!= client/queued_prompt "")
+        (if_yes (|| client/queued_submit (!= client/queued_prompt ""))
           (var queued client/queued_prompt)
           (set client/queued_prompt "")
+          (set client/queued_submit false)
           (if (&& (str/starts_with? queued "/") (! (str/starts_with? queued "//")))
             (send_command client queued)
             (stage_submission client queued)))))
@@ -1601,6 +1628,8 @@
   (if_not ($absent? client/pending)
     (var id : Str client/pending/session)
     (set client/selected id))
+  (var attachments : MediaComposer client/media)
+  (media_select attachments client/selected)
   # A direct conversation URL needs the same draft initialization as navigation.
   (if_yes (== client/generation 0)
     (set client/generation 1)
@@ -1640,7 +1669,12 @@
 
 (fn main [root : EventTarget] : Void
   (var client
-    (Client ^selected (query_value ($browser/search) "session") ^csrf "" ^cursor "" ^next_seq "1" ^epoch "" ^!ready ^!sending ^!connected ^!server_busy ^awaiting "" ^awaiting_session "" ^queued_prompt "" ^message_sequence 0 ^!busy ^^autoscroll ^generation 0 ^!has_older ^!loading_older ^socket_epoch 0 ^!viewing_history ^records [] ^preview [] ^sessions [] ^needs_attention [] ^filter_epoch 0 ^trigger_selected "" ^tabs [] ^expanded [] ^rounds [] ^input_id "" ^!answering ^round nil ^mode nil ^mode_pending nil ^!action_cooldown ^!was_executing ^pending nil ^status nil ^status_epoch "" ^status_revision "" ^status_generation 0 ^components [] ^component_buttons {} ^socket nil ^session_revision "1" ^ui nil ^notices (create_notices) ^confirmations nil ^questions nil ^center nil ^inbox nil ^safe_ui (== (query_value ($browser/search) "ui") "default") ^root root ^list ($dom/element "sessions") ^transcript ($dom/element "transcript") ^prompt ($dom/element "prompt") ^notice ($dom/element "notice") ^title ($dom/element "conversation_title")))
+    (Client ^selected (query_value ($browser/search) "session") ^csrf "" ^cursor "" ^next_seq "1" ^epoch "" ^!ready ^!sending ^!connected ^!server_busy ^awaiting "" ^awaiting_session "" ^queued_prompt "" ^!queued_submit ^message_sequence 0 ^!busy ^^autoscroll ^generation 0 ^!has_older ^!loading_older ^socket_epoch 0 ^!viewing_history ^records [] ^preview [] ^sessions [] ^needs_attention [] ^filter_epoch 0 ^trigger_selected "" ^tabs [] ^expanded [] ^rounds [] ^input_id "" ^!answering ^round nil ^mode nil ^mode_pending nil ^!action_cooldown ^!was_executing ^pending nil ^status nil ^status_epoch "" ^status_revision "" ^status_generation 0 ^components [] ^component_buttons {} ^socket nil ^session_revision "1" ^ui nil ^media nil ^notices (create_notices) ^confirmations nil ^questions nil ^center nil ^inbox nil ^safe_ui (== (query_value ($browser/search) "ui") "default") ^root root ^list ($dom/element "sessions") ^transcript ($dom/element "transcript") ^prompt ($dom/element "prompt") ^notice ($dom/element "notice") ^title ($dom/element "conversation_title")))
+  (set client/media
+    (create_media client/selected
+      (fn [name : Str, data : Str, done : (Fn [Int Any] Void)] : Void
+        (api client "POST" "/api/v8/media" {^name name ^data data} done))
+      (fn [] : Void (update_controls client))))
   (set client/questions
     (create_question_editors
       client/notices

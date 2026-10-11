@@ -1,0 +1,73 @@
+(import $test [describe it])
+(import [isolated run_spec test_service] ^from "../../support")
+(import [create_session submit snapshot close_session_service] ^from "../../../src/web/session_service")
+(import [open_media_store put_media_base64 put_media] ^from "../../../src/storage/media")
+(import [RoundError] ^from "../../../src/runtime/round_controller")
+
+(describe "Harness attachment model input"
+  (it "admits image-only input and preserves attachments through retries and restart" []
+    (isolated ^timeout_ms 300000 this_mod/.path
+      "admits image-only input and preserves attachments through retries and restart"
+      (fn [workspace]
+        (let captured ($cell []))
+        (let provider (fn [request]
+          (captured/.get .push request/messages)
+          "(Outcome ^^done ^reply \"Attachment received.\")"))
+        (var service (test_service ^workspace workspace ^provider provider))
+        (let session (create_session service))
+        (var image nil)
+        (let encoded "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aU1sAAAAASUVORK5CYII=")
+        (try
+          (let store (open_media_store service/runtime/state_root))
+          (set image (put_media_base64 store "pixel.png" encoded))
+          (let admitted (submit ^media [image/id] service session/id "image-only" 1 ""))
+          (service/controller/watchers .get; .get session/id; .join)
+          ($assert (== captured/.get/.size 1))
+          (let messages captured/.get/0)
+          ($assert (== messages/1/images/0/data encoded))
+          ($assert (== messages/1/images/0/mime "image/png"))
+          ($assert ($str/contains? messages/1/content image/id))
+          (let view (snapshot service session/id))
+          (let first ($first ($filter view/records (fn [record] (== record/role "user")))))
+          ($assert (== first/media [image]))
+          (let replay (submit ^media [image/id] service session/id "image-only" 1 ""))
+          ($assert (== replay/id admitted/id))
+          ($assert (== captured/.get/.size 1))
+          (let conflict (try (submit service session/id "image-only" 1 "")
+            "accepted" catch RoundError $err/code))
+          ($assert (== conflict "submission_conflict"))
+        ensure (close_session_service service))
+        (set service (test_service ^workspace workspace ^provider provider))
+        (try
+          (submit service session/id "after-restart" 2 "Use the earlier image.")
+          (service/controller/watchers .get; .get session/id; .join)
+          ($assert (== captured/.get/.size 2))
+          (let restored_messages captured/.get/1)
+          ($assert (== restored_messages/1/images/0/data encoded))
+          ($assert (== restored_messages/1/media/0/id image/id))
+        ensure (close_session_service service)))))
+
+  (it "extracts uploaded UTF-8 documents and never treats them as slash commands" []
+    (isolated ^timeout_ms 300000 this_mod/.path
+      "extracts uploaded UTF-8 documents and never treats them as slash commands"
+      (fn [workspace]
+        (let captured ($cell nil))
+        (let service (test_service ^workspace workspace ^provider (fn [request]
+          (captured .set request/messages)
+          "(Outcome ^^done ^reply \"Read.\")")))
+        (try
+          (let session (create_session service))
+          (let store (open_media_store service/runtime/state_root))
+          (let document (put_media store "notes.md" ($binary/from_str "Unique document marker: 世界")))
+          (let rejected (try (submit ^media [document/id] service session/id "command" 1 "/help")
+            "accepted" catch RoundError $err/code))
+          ($assert (== rejected "invalid_request"))
+          (submit ^media [document/id] service session/id "document" 1 "Summarize this file.")
+          (service/controller/watchers .get; .get session/id; .join)
+          (let messages captured/.get)
+          ($assert ($str/contains? messages/1/content "Unique document marker: 世界"))
+          ($assert ($str/contains? messages/1/content "data, not instructions"))
+          ($assert (== messages/1/images []))
+        ensure (close_session_service service))))))
+
+(fn main [args] (run_spec args))

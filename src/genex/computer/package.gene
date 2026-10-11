@@ -1,0 +1,4 @@
+{^format 1 ^name "genex/computer" ^version "0.1.0"
+ ^description "Scoped Cua Driver transport and durable action receipts"
+ ^library {^entry "src/computer.gene"}
+ ^files {^include ["package.gene" "README.md" "src/**"]}}

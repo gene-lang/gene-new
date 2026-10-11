@@ -101,6 +101,7 @@
                event/type))
     ^order (?? payload/at_ms event/seq)
     ^text (if (== payload/initial true) (?? payload/settled text) text)
+    ^media (?? payload/media [])
     ^late (== payload/late true)
     ^final (== payload/final true)
     ^patch_files (?? payload/patch_files [])
@@ -271,11 +272,15 @@
   (if record/attention (update_session service/sessions id {^!attention}))
   {^^ok})
 
-(fn submit [service, session : Str, request_id : Str, sequence : Int, text : Str]
+(fn submit [service, session : Str, request_id : Str, sequence : Int, text : Str, ^media media = []]
+  (if_not (== ($head media) List)
+    (fail (RoundError ^code "invalid_request" ^message "Attachments must be a list of media IDs.")))
   (let parsed (parse_submission service/runtime/h text))
+  (if (&& (== parsed/kind "command") (! media/.empty?))
+    (fail (RoundError ^code "invalid_request" ^message "Attachments accompany chat messages, not slash commands.")))
   (if (== parsed/kind "command")
     (submit_command service/runtime/commands session text)
-    (submit_round service/controller session request_id sequence parsed/text)))
+    (submit_round ^media media service/controller session request_id sequence parsed/text)))
 (fn command [service, session : Str, text : Str, ^request_id request_id : Str = "", ^sequence sequence = nil]
   (submit_command ^request_id request_id ^sequence sequence service/runtime/commands session text))
 

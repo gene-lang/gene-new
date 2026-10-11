@@ -3,6 +3,7 @@
 (import ^from "./history" [write_body read_body])
 (import ^from "../storage/state" [append_core_event flush_event_store])
 (import ^from "../kernel" [HarnessError])
+(import [expand_media_messages] ^from "./media_input")
 
 (fn store_part [runtime, value]
   (if (== ($head value) Str)
@@ -86,7 +87,7 @@
     {^purpose (?? request/purpose "turn")
      ^session request/session ^round request/round ^turn request/turn
      ^budget request/budget ^config request/config
-     ^messages request/messages ^settings selected/settings
+     ^messages (expand_media_messages runtime request/messages) ^settings selected/settings
      ^max_tokens request/max_tokens}))
   (let prepared ($freeze input))
   (let call_id ($crypto/random_hex 16))

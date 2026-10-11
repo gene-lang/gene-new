@@ -274,13 +274,14 @@ ELIDED
 """)
     ^blobs refs})
 
-(fn append_message [runtime, session : Str, role : Str, text : Str, ^settled settled = nil, ^round round : Str = "", ^turn turn : Int = 0]
+(fn append_message [runtime, session : Str, role : Str, text : Str, ^settled settled = nil, ^round round : Str = "", ^turn turn : Int = 0, ^media media = []]
   (while (history_gate .swap true)
     ($sleep 1))
   (try
     (let state (history_state runtime session))
-    (state/messages .push
-      {^role role ^content text ^settled (?? settled text) ^round round ^turn turn})
+    (let message {^role role ^content text ^settled (?? settled text) ^round round ^turn turn})
+    (if_not media/.empty? (message .put "media" media))
+    (state/messages .push message)
     (save_history runtime session state)
   ensure
     (history_gate .set false)))
@@ -289,24 +290,50 @@ ELIDED
   (let messages [{^role "system" ^content instructions}])
   (var index 0)
   (for message in state/messages
-    (messages .push
+    (let prepared
       {
         ^role message/role
         ^content (if (keep_full_message? state/messages index)
                    message/content
                    message/settled)})
+    (if_not ($absent? message/media) (prepared .put "media" message/media))
+    (messages .push prepared)
     (set index (+ index 1)))
   messages)
 
 (fn provider_context [runtime, session : Str, instructions : Str]
   (context_from_state (history_state runtime session) instructions))
 
+(fn media_context_bytes [media]
+  (var bytes 0)
+  (for item in media
+    (set bytes (+ bytes 512
+      (if (== item/kind "text") ($math/min 131072 item/size)
+        (if (== item/kind "document") 196608 32768)))))
+  bytes)
+
 (fn context_bytes [state, instructions : Str]
   (let messages (context_from_state state instructions))
   (var bytes 0)
   (for message in messages
-    (set bytes (+ bytes ($str/byte_size message/content))))
+    (set bytes (+ bytes ($str/byte_size message/content)
+      (media_context_bytes (?? message/media [])))))
   bytes)
+
+# Summary prose is lossy. Keep a deterministic catalog beside it so repeated
+# compaction cannot discard attachment identities, even if the model omits them.
+(fn history_media_refs [messages]
+  (let refs [])
+  (let seen {})
+  (for message in messages
+    (for field in ["media" "media_refs"]
+      (for reference in (?? (message .get field) [])
+        (let id (if (== ($head reference) Str) reference reference/id))
+        (if ($absent? (seen .get id))
+          (then
+            (seen .put id true)
+            (refs .push reference))))))
+  refs)
 
 (fn compact_assistant [text : Str] : Str
   (let kept [])
@@ -349,7 +376,8 @@ ELIDED
           (then
             (selected .push message)
             (if_not (rounds .contains? message/round) (rounds .push message/round))
-            (set removed (+ removed ($str/byte_size message/settled))))
+            (set removed (+ removed ($str/byte_size message/settled)
+              (media_context_bytes (?? message/media [])))))
           (else (retained .push message))))
       # Summarize whole rounds: extend selection to all messages belonging to
       # a chosen round, even when the byte threshold landed in its middle.
@@ -372,7 +400,14 @@ ELIDED
         (if_not selected/.empty? (rounds .push latest)))
       (if_not selected/.empty?
         (let tail_state {^messages tail})
-        (let prefix "Earlier rounds summary:\n")
+        (let media_refs (history_media_refs selected))
+        (var media_note "")
+        (if_not media_refs/.empty?
+          (let catalog ($serde/write_data media_refs))
+          (let catalog_id $"media.${($crypto/sha256 catalog)}")
+          (store_body runtime session catalog_id catalog)
+          (set media_note $"\n[Earlier attachment catalog: (recall \"${catalog_id}\"); ${media_refs/.size} attachments. Use their IDs to inspect them again.]\n"))
+        (let prefix $"Earlier rounds summary:\n${media_note}")
         (let available (- (- (- target (context_bytes tail_state instructions)) ($str/byte_size prefix)) 1))
         (if (< available 160)
           (fail (HistoryError ^message "newest context cannot fit below the compaction target; increase context_window or shorten the request")))
@@ -388,9 +423,9 @@ ELIDED
             (let stub $"\n… (recall \"${id}\")")
             (set bounded ($to_str (byte_prefix summary ($to_int (- (- available ($str/byte_size stub)) 1))) stub))))
         (record_core_state runtime/events "session" session "history/summary" $"summary/${($crypto/sha256 summary)}"
-          {^text bounded ^digest (write_body runtime summary) ^rounds rounds})
-        (state .put "messages" [{^role "user" ^content $"Earlier rounds summary:\n${bounded}"
-          ^settled $"Earlier rounds summary:\n${bounded}" ^round "summary" ^turn 0}])
+          {^text bounded ^digest (write_body runtime summary) ^rounds rounds ^media_refs media_refs})
+        (state .put "messages" [{^role "user" ^content $"${prefix}${bounded}"
+          ^settled $"${prefix}${bounded}" ^round "summary" ^turn 0 ^media_refs media_refs}])
         (for message in tail (state/messages .push message)))))
   (if (>= (context_bytes state instructions) target)
     (fail (HistoryError ^message "compaction could not fit the current context below its target")))

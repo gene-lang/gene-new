@@ -116,7 +116,15 @@
                  (div ^id "commands" ^class "commands" ^^hidden)
                  (section ^id "prompt_offer" ^class "prompt_offer" ^^hidden ^aria-label "Offered prompt")
                  (form ^id "composer" ^class "composer"
+                   (div ^id "media_drafts" ^class "media_drafts" ^aria-label "Pending attachments")
                    (textarea ^id "prompt" ^rows "2" ^placeholder "Ask a question or describe a task…" ^aria-label "Message Gene")
+                   (div ^class "media_picker"
+                     (label "Attach documents or images"
+                       (input ^id "media_files" ^type "file" ^^multiple
+                         ^accept ".png,.jpg,.jpeg,.webp,.pdf,.docx,.txt,.md,.csv,.tsv,.json,.yaml,.yml,.xml,.html,.log,.gene,.js,.ts,.py,.go,.c,.h,.rs,.toml,.css,.sql"
+                         ^aria-label "Attach documents or images"))
+                     (small "Up to 10 MiB each · drop files or paste an image")
+                     (span ^id "media_status" ^role "status"))
                    (div ^class "composer_actions"
                      (span ^id "composer_hint" ^class "hint" "Shift+Enter for a new line · / for commands")
                      (button ^id "send" ^class "send" ^type "submit" "Send")))

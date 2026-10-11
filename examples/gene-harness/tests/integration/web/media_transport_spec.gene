@@ -1,0 +1,52 @@
+(import $test [describe it])
+(import [isolated run_spec] ^from "../../support")
+(import [start_host stop_host] ^from "../../web_support")
+(import [connect api wire] ^from "../../../src/cli/client")
+(import $net/http_client [request])
+
+(fn download [client, path : Str]
+  (let task (request ^url $"${client/connection/origin}/api/v8${path}"
+    ^headers {^cookie client/credentials/cookie}
+    ^timeout_ms 15000 ^max_bytes 20000000))
+  (try (await task) ensure task/.cancel))
+
+(describe "Harness media HTTP transport"
+  (it "requires owner authentication and CSRF and serves exact safe attachment bytes" []
+    (isolated ^timeout_ms 300000 this_mod/.path
+      "requires owner authentication and CSRF and serves exact safe attachment bytes"
+      (fn [workspace]
+        (let host (start_host workspace))
+        (try
+          (let client (connect workspace))
+          (let encoded "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aU1sAAAAASUVORK5CYII=")
+          (let upload {^name "pixel.png" ^data encoded})
+          ($assert (== (/status (wire client/connection "POST" "/media" upload)) 401))
+          ($assert (== (/status (wire ^credentials {^cookie client/credentials/cookie ^csrf "wrong"}
+            client/connection "POST" "/media" upload)) 403))
+          (let image (api client "POST" "/media" upload))
+          ($assert (== image/mime "image/png"))
+          ($assert ($absent? image/path))
+          ($assert ($absent? image/data))
+          ($assert (== (/status (wire client/connection "GET" $"/media/${image/id}")) 401))
+          (let shown (download client $"/media/${image/id}"))
+          ($assert (== shown/status 200))
+          ($assert (== ($base64/encode shown/body) encoded))
+          ($assert (== shown/headers/content-type "image/png"))
+          ($assert ($str/starts_with? shown/headers/content-disposition "inline;"))
+          ($assert (== shown/headers/x-content-type-options "nosniff"))
+          (let saved (download client $"/media/${image/id}?download=1"))
+          ($assert ($str/starts_with? saved/headers/content-disposition "attachment;"))
+          (let document (api client "POST" "/media"
+            {^name "example.html" ^data ($base64/encode "<script>not executed</script>")}))
+          (let text (download client $"/media/${document/id}"))
+          ($assert (== text/headers/content-type "text/plain"))
+          ($assert ($str/starts_with? text/headers/content-disposition "attachment;"))
+          ($assert (== (/status (wire ^credentials client/credentials client/connection
+            "POST" "/media" {^name "broken.png" ^data "!"})) 400))
+          (let session (api client "POST" "/sessions" {^title "Image-only upload"}))
+          (let admitted (api client "POST" $"/sessions/${session/id}/rounds"
+            {^request_id "image-only-http" ^submission_seq "1" ^text "" ^media [image/id]}))
+          ($assert (== admitted/media/0/id image/id))
+        ensure (stop_host host))))))
+
+(fn main [args] (run_spec args))

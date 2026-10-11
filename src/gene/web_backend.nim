@@ -3121,6 +3121,27 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
         onLoad.returnType = webType(wtkVoid)
         paramTypes = @[webType(wtkStr), onLoad]
         returnType = webType(wtkVoid)
+      of "files/from_input":
+        paramTypes = @[webType(wtkDomTarget)]
+        returnType = webType(wtkList, webType(wtkAny))
+      of "files/from_event":
+        paramTypes = @[webType(wtkAny)]
+        returnType = webType(wtkList, webType(wtkAny))
+      of "files/name", "files/mime":
+        paramTypes = @[webType(wtkAny)]
+        returnType = webType(wtkStr)
+      of "files/size":
+        paramTypes = @[webType(wtkAny)]
+        returnType = webType(wtkInt)
+      of "files/read_base64":
+        let callback = webType(wtkCallback)
+        callback.params = @[webType(wtkStr)]
+        callback.returnType = webType(wtkVoid)
+        paramTypes = @[webType(wtkAny), webType(wtkInt), callback, callback]
+        returnType = webType(wtkDomTarget)
+      of "files/cancel":
+        paramTypes = @[webType(wtkDomTarget)]
+        returnType = webType(wtkVoid)
       # --- WebSocket --------------------------------------------------------
       #
       # The client half of the only persistent bidirectional transport a
@@ -5964,6 +5985,13 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
       "(localStorage.setItem(" & arguments[0] & ", " & arguments[1] & "), undefined)"
     of "image/load":
       "$gene_image_load(" & arguments[0] & ", " & arguments[1] & ")"
+    of "files/from_input": "$gene_files_input(" & arguments[0] & ")"
+    of "files/from_event": "$gene_files_event(" & arguments[0] & ")"
+    of "files/name": "$gene_file(" & arguments[0] & ").name"
+    of "files/mime": "$gene_file(" & arguments[0] & ").type"
+    of "files/size": "BigInt($gene_file(" & arguments[0] & ").size)"
+    of "files/read_base64": "$gene_file_read(" & arguments.join(", ") & ")"
+    of "files/cancel": "$gene_file_cancel(" & arguments[0] & ")"
     # --- WebSocket ---
     of "ws/connect": "$gene_ws_connect(" & arguments[0] & ")"
     of "ws/connect_protocol":
@@ -6613,9 +6641,10 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
     emitter.lines = savedLines
     emitter.lineLocs = savedLocs
     if bodyLines.len == 0:
-      # A pure expression body needs no block, and no statement slot.
+      # Discarded literal bodies use a block: TypeScript rejects a pure literal
+      # on the left of a comma expression. Evaluation and result stay the same.
       signature & " => " & (if expr.typ.returnType.isStatementType:
-        "(" & bodyValue & ", " & statementUnit(expr.typ.returnType) & ")" else: bodyValue)
+        "{ void (" & bodyValue & "); return " & statementUnit(expr.typ.returnType) & "; }" else: bodyValue)
     else:
       # The body needed statements, so the arrow is bound to a temp and the
       # call site names it. Always a `const`, never a patched-up line: the
@@ -8504,6 +8533,37 @@ proc emitModule(module: WebModule, typescript: bool,
       " { const image = new Image(); image.onload = () => onLoad(image); " &
       "image.onerror = () => { throw new Error(`image/load failed: ${src}`); }; " &
       "image.src = src; }")
+  if moduleUsesBuiltin(module, ["files/from_input", "files/from_event",
+      "files/name", "files/mime", "files/size", "files/read_base64", "files/cancel"]):
+    let anyParam = if typescript: ": any" else: ""
+    let targetParam = if typescript: ": EventTarget" else: ""
+    let fileReturn = if typescript: ": File" else: ""
+    let filesReturn = if typescript: ": File[]" else: ""
+    let voidReturn = if typescript: ": void" else: ""
+    emitter.line("function $gene_file(value" & anyParam & ")" & fileReturn &
+      " { if (!(value instanceof File)) throw new TypeError('files operation expects a File'); return value; }")
+    emitter.line("function $gene_files_input(input" & targetParam & ")" & filesReturn &
+      " { if (!(input instanceof HTMLInputElement) || input.type !== 'file') " &
+      "throw new TypeError('files/from_input expects a file input'); return Array.from(input.files || []); }")
+    emitter.line("function $gene_files_event(event" & anyParam & ")" & filesReturn &
+      " { return Array.from(event?.dataTransfer?.files || event?.clipboardData?.files || []).map($gene_file); }")
+    let readParams = if typescript:
+        "value: any, maxBytes: bigint, onRead: (data: string) => void, onError: (message: string) => void"
+      else: "value, maxBytes, onRead, onError"
+    emitter.line("function $gene_file_read(" & readParams & ")" &
+      (if typescript: ": EventTarget" else: "") & " {")
+    inc emitter.indent
+    emitter.line("const file = $gene_file(value); const reader = new FileReader();")
+    emitter.line("if (maxBytes < 0n || maxBytes > 67108864n) throw new RangeError('files/read_base64 limit must be 0..64 MiB');")
+    emitter.line("if (BigInt(file.size) > maxBytes) { queueMicrotask(() => onError('File exceeds the configured size limit.')); return reader; }")
+    emitter.line("reader.onload = () => { const data = reader.result; if (typeof data !== 'string' || !data.includes(';base64,')) { onError('File did not produce base64 data.'); return; } onRead(data.slice(data.indexOf(',') + 1)); };")
+    emitter.line("reader.onerror = () => onError('The selected file could not be read.');")
+    emitter.line("reader.onabort = () => onError('File reading was cancelled.');")
+    emitter.line("reader.readAsDataURL(file); return reader;")
+    dec emitter.indent
+    emitter.line("}")
+    emitter.line("function $gene_file_cancel(reader" & targetParam & ")" & voidReturn &
+      " { if (!(reader instanceof FileReader)) throw new TypeError('files/cancel expects a FileReader'); reader.abort(); }")
   for op in ["lower", "upper"]:
     if moduleUsesBuiltin(module, ["str/" & op]):
       let params = if typescript: "s: string" else: "s"

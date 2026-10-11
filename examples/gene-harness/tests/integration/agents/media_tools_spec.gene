@@ -1,0 +1,75 @@
+(import $test [describe it])
+(import [isolated run_spec test_service] ^from "../../support")
+(import [create_session submit snapshot receipt answer close_session_service] ^from "../../../src/web/session_service")
+(import [open_media_store put_media_base64] ^from "../../../src/storage/media")
+
+(describe "Model media functions"
+  (it "publishes image content and a transcript preview before allowing a done reply" []
+    (isolated ^timeout_ms 300000 this_mod/.path
+      "publishes image content and a transcript preview before allowing a done reply"
+      (fn [workspace]
+        (let calls ($cell []))
+        (let image ($cell nil))
+        (let provider (fn [request]
+          (calls/.get .push request/messages)
+          (if (== calls/.get/.size 1)
+            $"(media_show \"${image/.get/id}\") (Outcome ^^done ^reply \"Premature.\")"
+            "(Outcome ^^done ^reply \"Image inspected.\")")))
+        (let service (test_service ^workspace workspace ^provider provider))
+        (try
+          (let encoded "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aU1sAAAAASUVORK5CYII=")
+          (image .set (put_media_base64 (open_media_store service/runtime/state_root) "pixel.png" encoded))
+          (let session (create_session service))
+          (submit service session/id "media-tools" 1 "Inspect the stored image.")
+          (service/controller/watchers .get; .get session/id; .join)
+          ($assert (== calls/.get/.size 2) "done reply skipped image understanding")
+          (let final_messages calls/.get/1)
+          (let last ($last final_messages))
+          ($assert (== last/images/0/data encoded))
+          ($assert (== last/media/0/id image/.get/id))
+          (let view (snapshot service session/id))
+          (let previews ($filter view/records (fn [record] (!= (?? record/media []) []))))
+          ($assert (== previews/.size 1))
+          ($assert (== previews/0/media/0/id image/.get/id))
+        ensure (close_session_service service))))))
+
+(describe "Media across questions"
+  (it "retains queued image context through a question pause and host restart" []
+    (isolated ^timeout_ms 300000 this_mod/.path
+      "retains queued image context through a question pause and host restart"
+      (fn [workspace]
+        (let calls ($cell []))
+        (let image ($cell nil))
+        (let provider (fn [request]
+          (calls/.get .push request/messages)
+          (if (== calls/.get/.size 1)
+            $"(media_show \"${image/.get/id}\") (Outcome ^questions [{^id \"ok\" ^kind \"confirm\" ^prompt \"Inspect this image?\"}])"
+            "(Outcome ^^done ^reply \"Image inspected after your answer.\")")))
+        (var service (test_service ^workspace workspace ^provider provider))
+        (let session (create_session service))
+        (var round nil)
+        (var batch nil)
+        (let encoded "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aU1sAAAAASUVORK5CYII=")
+        (try
+          (image .set (put_media_base64 (open_media_store service/runtime/state_root) "pixel.png" encoded))
+          (set round (submit service session/id "media-question" 1 "Show the image and ask before inspecting it."))
+          (service/controller/watchers .get; .get session/id; .join)
+          (let waiting (receipt service session/id round/id))
+          ($assert (== waiting/state "waiting"))
+          ($assert (== waiting/request_media/0/id image/.get/id))
+          (set batch waiting/questions/id)
+        ensure (close_session_service service))
+        (set service (test_service ^workspace workspace ^provider provider))
+        (try
+          (answer service session/id batch {^^ok})
+          (service/controller/watchers .get; .get session/id; .join)
+          ($assert (== calls/.get/.size 2))
+          (let messages calls/.get/1)
+          (let last ($last messages))
+          ($assert (== last/images/0/data encoded))
+          ($assert (== last/media/0/id image/.get/id))
+          (let completed (receipt service session/id round/id))
+          ($assert (== completed/state "done"))
+        ensure (close_session_service service))))))
+
+(fn main [args] (run_spec args))

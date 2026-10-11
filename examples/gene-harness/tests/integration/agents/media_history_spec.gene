@@ -1,0 +1,47 @@
+(import $test [describe it])
+(import [isolated run_spec] ^from "../../support")
+(import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
+(import [baseline_profile] ^from "../../../src/profiles/baseline")
+(import [append_message history_state compact_history history_media_refs provider_context recall_body context_bytes]
+  ^from "../../../src/agents/history")
+(import [open_media_store put_media_base64 media_bytes] ^from "../../../src/storage/media")
+
+(describe "Attachment retention during compaction"
+  (it "preserves a deduplicated catalog through summaries and restart without resending pixels" []
+    (isolated ^timeout_ms 300000 this_mod/.path
+      "preserves a deduplicated catalog through summaries and restart without resending pixels"
+      (fn [workspace]
+        (var runtime (open_runtime workspace "default" (baseline_profile)))
+        (let root runtime/root)
+        (let encoded "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aU1sAAAAASUVORK5CYII=")
+        (let image (put_media_base64 (open_media_store runtime/state_root) "image.png" encoded))
+        (let policy {^trigger_bytes 3000 ^target_bytes 2000})
+        (try
+          (append_message ^media [image] ^round "old" runtime "default" "user" "Inspect this.")
+          (append_message ^round "new" runtime "default" "user" "Continue.")
+          (compact_history ^policy policy runtime "default" "" 1000 (fn [request] "Some work happened."))
+          (let first (history_state runtime "default"))
+          ($assert (== first/messages/0/media_refs [image]))
+          ($assert ($str/contains? first/messages/0/content "Earlier attachment catalog"))
+          ($assert ($absent? first/messages/0/media))
+          ($assert (< (context_bytes first "") 2000))
+          (let catalog ($serde/write_data [image]))
+          ($assert (== (recall_body runtime "default" $"media.${($crypto/sha256 catalog)}") catalog))
+          # The next summary consumes both the previous catalog and the same
+          # attachment again. The summarizer intentionally omits every ID.
+          (append_message ^media [image] ^round "again" runtime "default" "user" "Inspect again.")
+          (append_message ^round "last" runtime "default" "user" "Finish.")
+          (compact_history ^policy policy runtime "default" "" 1000 (fn [request] "Finished earlier work."))
+          (let second (history_state runtime "default"))
+          ($assert (== (history_media_refs second/messages) [image]))
+        ensure (close_runtime runtime))
+        (set runtime (open_runtime root "default" (baseline_profile)))
+        (try
+          (let restored (history_state runtime "default"))
+          ($assert (== (history_media_refs restored/messages) [image]))
+          ($assert (== ($base64/encode (media_bytes (open_media_store runtime/state_root) image/id)) encoded))
+          (let context (provider_context runtime "default" ""))
+          ($assert ($str/contains? context/1/content "recall"))
+        ensure (close_runtime runtime))))))
+
+(fn main [args] (run_spec args))

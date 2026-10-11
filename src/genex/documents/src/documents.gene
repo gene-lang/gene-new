@@ -1,0 +1,63 @@
+(mod documents)
+
+(type DocumentError ^props {^message Str} ^impl [Error])
+(impl Error for DocumentError)
+
+(fn invalid [message : Str]
+  (fail (DocumentError ^message message)))
+
+(fn display_name [name : Str] : Str
+  # Names are display metadata only, never paths supplied to a converter.
+  (let normalized ($str/join ($str/split name "\\") "/"))
+  (let leaf ($last ($str/split normalized "/")))
+  (if (|| (== leaf "") (== leaf ".") (== leaf "..")
+          (> ($str/byte_size leaf) 240))
+    (invalid "Choose a filename of 1–240 UTF-8 bytes without control characters."))
+  (for byte in ($binary/to_list ($binary/from_str leaf))
+    (if (|| (< byte 32) (== byte 127))
+      (invalid "Filenames cannot contain control characters.")))
+  leaf)
+
+(fn prefix? [data : Bytes, expected : Bytes, ^offset offset : Int = 0] : Bool
+  (&&
+    (>= ($binary/size data) (+ offset ($binary/size expected)))
+    (== ($binary/slice data offset ($binary/size expected)) expected)))
+
+(fn inspect_bytes [name : Str, data : Bytes]
+  (let leaf (display_name name))
+  (let size ($binary/size data))
+  (let lower ($str/lower leaf))
+  (var mime "")
+  (var kind "")
+  (if (prefix? data ($binary/from_list [137 80 78 71 13 10 26 10]))
+    (then
+      (set mime "image/png")
+      (set kind "image"))
+    (elif (prefix? data ($binary/from_list [255 216 255]))
+      (set mime "image/jpeg")
+      (set kind "image"))
+    (elif (&& (prefix? data ($binary/from_str "RIFF")) (prefix? ^offset 8 data ($binary/from_str "WEBP")))
+      (set mime "image/webp")
+      (set kind "image"))
+    (elif (prefix? data ($binary/from_str "%PDF-"))
+      (set mime "application/pdf")
+      (set kind "document"))
+    (elif (&& ($str/ends_with? lower ".docx") (prefix? data ($binary/from_list [80 75 3 4])))
+      (set mime "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+      (set kind "document"))
+    (else
+      (var allowed false)
+      (for extension in [".txt" ".md" ".markdown" ".csv" ".tsv" ".json" ".yaml" ".yml" ".xml" ".html" ".htm" ".log" ".gene" ".js" ".ts" ".py" ".go" ".c" ".h" ".rs" ".toml" ".css" ".sql"]
+        (if ($str/ends_with? lower extension) (set allowed true)))
+      (if_not allowed
+        (invalid "Supported uploads: PNG, JPEG, WebP, PDF, DOCX and UTF-8 text/code files."))
+      (let text
+        (try
+          ($binary/decode_utf8 data)
+        catch Any
+          (invalid "Text documents must contain valid UTF-8.")))
+      (if ($str/contains? text ($binary/to_str ($binary/from_list [0])))
+        (invalid "Text documents cannot contain NUL bytes."))
+      (set mime "text/plain")
+      (set kind "text")))
+  {^name leaf ^mime mime ^kind kind ^size size})

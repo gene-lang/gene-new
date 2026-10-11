@@ -1,4 +1,5 @@
 (mod provider_anthropic)
+(import [anthropic_content] ^from "../agents/content")
 (import ^from "../plugin_api" [Plugin PluginHost])
 (import ^from "./documentation" [contribute_text_doc])
 (import ^from "../kernel" [HarnessError])
@@ -55,10 +56,11 @@
   (let wire [])
   (set index 0)
   (for message in conversation
-    (let block {^type "text" ^text message/content})
+    (let blocks (anthropic_content message))
+    (let block blocks/0)
     (if (cached .contains? index)
       (block .put "cache_control" {^type "ephemeral"}))
-    (wire .push {^role message/role ^content [block]})
+    (wire .push {^role message/role ^content blocks})
     (set index (+ index 1)))
   (let body
     {^model settings/model ^system messages/0/content

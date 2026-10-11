@@ -1,0 +1,98 @@
+(mod extract)
+(import [DocumentError inspect_bytes] ^from "./documents")
+
+# Each conversion owns a private directory. No caller filename is used as a
+# converter argument or output path. Cancellation retires the subprocess before
+# ensure removes that directory.
+(fn conversion [root : Str, name : Str, data : Bytes, operation]
+  (if (> ($binary/size data) 10485760)
+    (fail (DocumentError ^message "Document exceeds the 10 MiB conversion limit.")))
+  (let metadata (inspect_bytes name data))
+  ($fs/make_dir root)
+  (let directory ($path/join root ($crypto/random_hex 16)))
+  ($fs/make_dir directory)
+  ($fs/set_mode directory 448)
+  (try
+    (let source ($path/join directory (if (== metadata/mime "application/pdf") "input.pdf" "input.docx")))
+    ($fs/write_bytes_atomic source data)
+    (operation metadata source directory)
+  ensure
+    (for file in ($fs/list_dir directory)
+      ($fs/remove ($path/join directory file)))
+    ($fs/remove_dir directory)))
+
+(fn converter [command : Str, args, ^max_bytes max_bytes : Int = 262144]
+  (let result
+    (try
+      (await ($os/exec_async command args... ^timeout_ms 20000 ^max_bytes max_bytes))
+    catch Any
+      (fail (DocumentError ^message $"Cannot run ${command}. Install the documented converter dependency. ${$err/message}"))))
+  (if result/timed_out
+    (fail (DocumentError ^message $"${command} exceeded the 20 second conversion limit.")))
+  (if (!= result/status 0)
+    (fail (DocumentError ^message $"${command} could not read this document (corrupt, encrypted or unsupported input).")))
+  result)
+
+(fn pdf_pages [source : Str] : Int
+  (let info (converter "pdfinfo" [source] ^max_bytes 32768))
+  (for line in ($str/split info/stdout "\n")
+    (if ($str/starts_with? line "Pages:")
+      (then
+        (let count ($parse/parse_int ($str/trim ($str/slice_bytes line 6 ($str/byte_size line)))))
+        (if (&& (>= count 1) (<= count 10000)) (return count)))))
+  (fail (DocumentError ^message "PDF page count is unavailable or exceeds 10000 pages.")))
+
+(fn render_page [source : Str, directory : Str, page : Int]
+  (let output ($path/join directory "page"))
+  (converter "pdftoppm" ["-f" ($to_str page) "-l" ($to_str page) "-singlefile" "-scale-to" "1600" "-png" source output] ^max_bytes 32768)
+  (let bytes ($fs/read_bytes $"${output}.png"))
+  (if (> ($binary/size bytes) 10485760)
+    (fail (DocumentError ^message "Rendered PDF page exceeds the image limit.")))
+  {^page page ^mime "image/png" ^data bytes})
+
+(fn extracted_text [result] : Str
+  (let bytes ($binary/from_str result/stdout))
+  (var size ($binary/size bytes))
+  (repeat trimmed in 4
+    (try
+      (return ($binary/decode_utf8 ($binary/slice bytes 0 size)))
+    catch Any
+      (if (|| (! result/stdout_truncated) (== size 0))
+        (fail (DocumentError ^message "The converter returned invalid UTF-8 text.")))
+      (set size (- size 1))))
+  (fail (DocumentError ^message "The converter returned invalid UTF-8 text.")))
+
+# Extract a bounded initial context. PDF page images are always included: a
+# nonempty text layer does not imply charts or scanned regions were captured.
+(fn extract_document [root : Str, name : Str, data : Bytes, ^preview_pages preview_pages : Int = 2]
+  (if (|| (< preview_pages 0) (> preview_pages 4))
+    (fail (DocumentError ^message "PDF preview page count must be in 0..4.")))
+  (conversion root name data (fn [metadata source directory]
+    (if (== metadata/mime "application/pdf")
+      (then
+        (let count (pdf_pages source))
+        (let selected ($math/min count ($math/max 1 preview_pages)))
+        (let text (converter "pdftotext" ["-f" "1" "-l" ($to_str selected) "-layout" "-enc" "UTF-8" source "-"] ^max_bytes 131072))
+        (let pages [])
+        (repeat index in ($math/min count preview_pages)
+          (pages .push (render_page source directory (+ index 1))))
+        {^text (extracted_text text) ^pages pages ^page_count count ^text_pages selected
+         ^truncated (|| text/stdout_truncated (> count selected))})
+      (elif (== metadata/mime "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        # Test every compressed entry and CRC without extracting filesystem
+        # paths. Both checks and conversion have process/output deadlines.
+        (converter "unzip" ["-t" source] ^max_bytes 32768)
+        (let text (converter "textutil" ["-convert" "txt" "-stdout" "-encoding" "UTF-8" source] ^max_bytes 131072))
+        {^text (extracted_text text) ^pages [] ^truncated text/stdout_truncated})
+      (else (fail (DocumentError ^message "Extraction expects PDF or DOCX input.")))))))
+
+(fn extract_pdf_page [root : Str, name : Str, data : Bytes, page : Int]
+  (conversion root name data (fn [metadata source directory]
+    (if (!= metadata/mime "application/pdf")
+      (fail (DocumentError ^message "Page rendering expects a PDF attachment.")))
+    (let count (pdf_pages source))
+    (if (|| (< page 1) (> page count))
+      (fail (DocumentError ^message $"PDF page must be in 1..${count}.")))
+    (let rendered (render_page source directory page))
+    (rendered .put "page_count" count)
+    rendered)))

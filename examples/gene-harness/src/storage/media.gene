@@ -1,0 +1,146 @@
+# Immutable binary media is separate from the text-history blob collector.
+(mod media)
+(import ^from "." ^pkg "documents" [inspect_bytes DocumentError])
+
+(type MediaError ^props {^code Str ^message Str} ^impl [Error])
+(impl Error for MediaError)
+(type MediaStore ^props {^root Str ^max_file_bytes Int ^max_total_bytes Int ^max_records Int})
+(var ^^private media_gate ($cell false))
+
+(fn media_error [code : Str, message : Str]
+  (fail (MediaError ^code code ^message message)))
+
+(fn open_media_store [state_root : Str, ^max_file_bytes max_file_bytes : Int = 10485760, ^max_total_bytes max_total_bytes : Int = 268435456, ^max_records max_records : Int = 2048] : MediaStore
+  (if (|| (< max_file_bytes 1) (< max_total_bytes max_file_bytes) (< max_records 1))
+    (media_error "invalid_request" "Invalid media storage limits."))
+  (let root ($path/join state_root "media"))
+  ($fs/make_dir root)
+  ($fs/set_mode root 448)
+  ($fs/make_dir ($path/join root "objects"))
+  (MediaStore ^root ($fs/real_path root) ^max_file_bytes max_file_bytes ^max_total_bytes max_total_bytes ^max_records max_records))
+
+(fn index_path [store : MediaStore] : Str
+  ($path/join store/root "index.gene"))
+
+(fn read_index [store : MediaStore]
+  (let path (index_path store))
+  (if_not ($fs/exists? path) (return {^format 1 ^assets {}}))
+  (let value
+    (try
+      ($serde/read_data ($fs/read_text path))
+    catch Any
+      (media_error "unavailable" "The media index could not be read.")))
+  (if_not (&& (== value/format 1) (== ($head value/assets) Map))
+    (media_error "unavailable" "Unsupported or damaged media index."))
+  value)
+
+(fn validate_id [id : Str]
+  (if ($absent? (#"^[0-9a-f]{32}$" .match id)) (media_error "not_found" "Attachment not found.")))
+
+(fn object_path [store : MediaStore, digest : Str] : Str
+  (if ($absent? (#"^[0-9a-f]{64}$" .match digest))
+    (media_error "unavailable" "Invalid media object digest."))
+  ($path/join store/root "objects" digest))
+
+(fn media_record [store : MediaStore, id : Str]
+  (validate_id id)
+  (let index (read_index store))
+  (let record (index/assets .get id))
+  (if ($absent? record) (media_error "not_found" "Attachment not found."))
+  record)
+
+(fn media_descriptor [store : MediaStore, id : Str]
+  (let record (media_record store id))
+  {
+    ^id record/id
+    ^name record/name
+    ^mime record/mime
+    ^kind record/kind
+    ^size record/size
+    ^source record/source
+    ^url $"/api/v8/media/${record/id}"})
+
+(fn media_bytes [store : MediaStore, id : Str] : Bytes
+  (let record (media_record store id))
+  (let path (object_path store record/digest))
+  (let data
+    (try
+      ($fs/read_bytes path)
+    catch Any
+      (media_error "unavailable" "Attachment bytes are unavailable.")))
+  (if_not (&& (== ($binary/size data) record/size) (== ($crypto/sha256 data) record/digest))
+    (media_error "unavailable" "Attachment integrity check failed."))
+  data)
+
+(fn media_text [store : MediaStore, id : Str] : Str
+  (let record (media_record store id))
+  (if (!= record/kind "text")
+    (media_error "invalid_request" "This attachment needs document extraction or image input."))
+  ($binary/decode_utf8 (media_bytes store id)))
+
+(fn media_data_url [store : MediaStore, id : Str] : Str
+  (let record (media_record store id))
+  $"data:${record/mime};base64,${($base64/encode (media_bytes store id))}")
+
+(fn put_media [store : MediaStore, name : Str, data : Bytes,
+               ^source source : Str = "upload"]
+  (if (> ($binary/size data) store/max_file_bytes)
+    (media_error "too_large" $"Each attachment must be at most ${store/max_file_bytes} bytes."))
+  (if_not (["upload" "screenshot" "document_page"] .contains? source)
+    (media_error "invalid_request" "Unknown media source."))
+  (let metadata (try (inspect_bytes name data)
+    catch DocumentError (media_error "invalid_request" $err/message)))
+  (let digest ($crypto/sha256 data))
+  (while (media_gate .swap true) ($sleep 1))
+  (try
+    (let index (read_index store))
+    (if (>= ($size index/assets) store/max_records)
+      (media_error "too_large" "The workspace attachment count limit has been reached."))
+    (let seen {})
+    (var used 0)
+    (for [id asset] in index/assets
+      (if ($absent? (seen .get asset/digest))
+        (then
+          (set used (+ used asset/size))
+          (seen .put asset/digest true))))
+    (let extra (if ($absent? (seen .get digest)) metadata/size 0))
+    (if (> (+ used extra) store/max_total_bytes)
+      (media_error "too_large" "The workspace attachment storage limit has been reached."))
+    (let id ($crypto/random_hex 16))
+    (metadata .put "id" id)
+    (metadata .put "digest" digest)
+    (metadata .put "source" source)
+    (metadata .put "created_at_ms" ($os/wall_ms))
+    (let path (object_path store digest))
+    # Rewriting the immutable object also repairs an interrupted/corrupt write.
+    ($fs/write_bytes_atomic path data)
+    (index/assets .put id metadata)
+    ($fs/write_text_atomic ^^owner_only (index_path store) ($serde/write_data index))
+    (media_descriptor store id)
+  ensure (media_gate .set false)))
+
+(fn put_media_base64 [store : MediaStore, name : Str, encoded : Str]
+  # Enforce the encoded bound before allocating decoded bytes.
+  (if (> ($str/byte_size encoded) (* 4 (/ (+ store/max_file_bytes 2) 3)))
+    (media_error "too_large" "The encoded attachment exceeds the upload limit."))
+  (let data (try ($base64/decode encoded)
+    catch Any (media_error "invalid_request" "Attachment data must be canonical base64.")))
+  (put_media store name data))
+
+(fn validate_media_refs [store : MediaStore, ids]
+  (if_not (== ($head ids) List)
+    (media_error "invalid_request" "Attachments must be a list of media IDs."))
+  (if (> ids/.size 16) (media_error "too_large" "A message can contain at most 16 attachments."))
+  (let descriptors [])
+  (let seen {})
+  (var total 0)
+  (for id in ids
+    (if_not (== ($head id) Str) (media_error "invalid_request" "Attachment IDs must be text."))
+    (if_not ($absent? (seen .get id))
+      (media_error "invalid_request" "The same attachment was supplied twice."))
+    (seen .put id true)
+    (let descriptor (media_descriptor store id))
+    (set total (+ total descriptor/size))
+    (if (> total 41943040) (media_error "too_large" "Message attachments exceed 40 MiB."))
+    (descriptors .push descriptor))
+  descriptors)

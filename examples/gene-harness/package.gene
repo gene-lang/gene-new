@@ -6,4 +6,6 @@
    (application "harness" ^entry "src/main.gene")
  ]
  ^dependencies {
-   ^cordis (dep "genex/cordis" "0.1.0" ^path "../cordis")}}
+   ^cordis (dep "genex/cordis" "0.1.0" ^path "../cordis")
+   ^computer (dep "genex/computer" "0.1.0" ^path "../../src/genex/computer")
+   ^documents (dep "genex/documents" "0.1.0" ^path "../../src/genex/documents")}}

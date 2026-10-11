@@ -48,6 +48,11 @@ backends; every other character is unchanged. For example,
 `($str/lower "ÉA")` is `"Éa"` and `($str/upper "éa")` is `"éA"`.
 Unicode case mapping is deliberately absent from these operations.
 
+`($binary/decode_utf8 bytes)` decodes a `Bytes` value strictly, rejecting invalid
+UTF-8, overlong encodings, surrogate code points and values above U+10FFFF. Use
+it when accepting uploaded text or other encoded input. The existing
+`$binary/to_str` remains a raw conversion and does not validate its bytes.
+
 ```gene runnable
 (import $str [split trim join])
 (let names ($map (split " Ada, Grace " ",") trim))
@@ -140,6 +145,11 @@ Captured execution supplies EOF when `stdin_pipe` is omitted. Use
 channel. Live captured groups are cleaned up on process signals and exit;
 existing signal handlers are called after cleanup. `($os/stdout_tty?)` tests
 the output terminal independently of `stdin_tty?`.
+
+`($fs/remove_dir path)` removes an empty directory (a missing directory is a
+no-op). It refuses nonempty directories and does not follow directory symlinks.
+Use `$fs/remove` for files or symlinks. This supports explicit cleanup of private
+temporary directories without recursively deleting unrelated files.
 
 ## Task context and source locations
 

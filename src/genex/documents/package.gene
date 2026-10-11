@@ -1,0 +1,6 @@
+{^format 1
+ ^name "genex/documents"
+ ^version "0.1.0"
+ ^description "Bounded document and image inspection for model input"
+ ^library {^entry "src/documents.gene"}
+ ^files {^include ["package.gene" "README.md" "src/**"]}}

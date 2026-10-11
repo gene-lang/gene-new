@@ -43,6 +43,9 @@
   $"${run}/turn-${round}")
 
 (fn step_block [block : Any] : Bool
+  (var media : (List Any) [])
+  (if_not ($absent? block/media) (set media block/media))
+  (if_yes (> ($size media) 0) (return false))
   (var round : Int block/turn)
   (var phase : Str block/phase)
   (var final : Bool false)

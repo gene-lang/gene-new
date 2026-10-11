@@ -42,8 +42,10 @@
   [list_triggers create_trigger delete_trigger list_occurrences TriggerError])
 (import ^from "../profiles/scripted" [scripted_profile])
 (import ^from "../profiles/offline" [offline_profile])
-(import $net/http [serve stop html json redirect ws_accept ws_close])
+(import $net/http [serve stop html json redirect bytes : http_bytes ws_accept ws_close])
 (import ^from "./auth" [open_auth exchange authenticate reset_auth AuthError])
+(import [open_media_store put_media_base64 media_descriptor media_bytes MediaError]
+  ^from "../storage/media")
 (import ^from "./connection" [bind_workspace publish_connection publish_link clear_connection])
 (import $os [get_env])
 
@@ -151,6 +153,7 @@
   (set port server/port)
   (set host (open_session_service ^workspace root ^offline offline
     ^profile selected_profile ^ownership ownership))
+  (let media_store (open_media_store host/runtime/state_root))
   (set host/runtime/listen_port port)
   (set host/runtime/supervised supervised)
   (var origin $"http://127.0.0.1:${port}")
@@ -222,6 +225,15 @@
       (var result (host_status ^safe safe ^session (field request/params "session" ^default "") host))
       (result .put "csrf" browser/csrf)
       (return (response 200 result)))
+    (if_yes (== request/path "/api/v8/media")
+      (if (== request/method "GET")
+        (return (response 200 {^max_file_bytes media_store/max_file_bytes
+          ^max_files 16 ^max_message_bytes 41943040})))
+      (if_yes (== request/method "POST")
+        (let data (try ($json/parse request/body ^^strict ^max_depth 8)
+          catch Any (fail_request "invalid_request" "The upload must contain a JSON object.")))
+        (return (response 201 (put_media_base64 media_store
+          (field data "name") (field data "data"))))))
     (if_yes (&& (== request/method "GET") (== request/path "/api/v8/events"))
       (if (!= request_origin origin) (fail_request "forbidden" "A same-origin socket is required."))
       (var watched (field request/params "session" ^default ""))
@@ -283,6 +295,16 @@
     (for part in ($str/split request/path "/")
       (parts .push (try ($url/decode_component part)
         catch Any (fail_request "invalid_request" "Invalid URL path component."))))
+    (if_yes (&& (== parts/.size 5) (== parts/1 "api") (== parts/2 "v8")
+                (== parts/3 "media") (== request/method "GET"))
+      (let descriptor (media_descriptor media_store parts/4))
+      (let result (http_bytes 200 (media_bytes media_store parts/4)))
+      (result/headers .put "content-type" descriptor/mime)
+      (let disposition (if (&& (== descriptor/kind "image")
+        (!= (?? request/params/download "") "1")) "inline" "attachment"))
+      (result/headers .put "content-disposition"
+        $"${disposition}; filename*=UTF-8''${($url/encode_component descriptor/name)}")
+      (return result))
     (if_yes (&& (>= parts/.size 6) (== parts/1 "api") (== parts/2 "v8")
                 (== parts/3 "ui") (== parts/4 "actions"))
       (if (&& (== parts/.size 6) (== request/method "GET"))
@@ -323,9 +345,9 @@
       (if_yes (&& (== parts/.size 6) (== parts/5 "rounds") (== request/method "POST"))
         (var data (request_data request))
         (if (== data/literal true)
-          (return (response 202 (submit_round host/controller id (field data "request_id")
+          (return (response 202 (submit_round ^media (?? data/media []) host/controller id (field data "request_id")
             (number data "submission_seq") (field data "text")))))
-        (return (response 202 (submit host id (field data "request_id")
+        (return (response 202 (submit ^media (?? data/media []) host id (field data "request_id")
           (number data "submission_seq") (field data "text")))))
       (if_yes (&& (== parts/.size 6) (["questions" "answers"] .contains? parts/5) (== request/method "POST"))
         (var data (request_data request))
@@ -368,6 +390,7 @@
     (secure_response
       (try (handle request)
         catch AuthError (response 401 {^code $err/code ^message $err/message})
+        catch MediaError (response (error_status $err/code) {^code $err/code ^message $err/message})
         catch UiError (response (error_status $err/code) {^code $err/code ^message $err/message})
         catch NotificationError (response (error_status $err/code) {^code $err/code ^message $err/message})
         catch ModeError (response (error_status $err/code)
@@ -389,7 +412,7 @@
     "Command demo mode: no model connected. Restart without --offline or GENE_HARNESS_OFFLINE=1 to chat."
     "Ask anything. Use /help for commands. Model replies are available in the transcript."))
   (serve server ^handler safe_handle ^max_connections 64 ^max_in_flight 16
-      ^max_body_bytes 400000 ^request_timeout_ms 10000
+      ^max_body_bytes 16777216 ^request_timeout_ms 10000
       ^tick_ms 1000
       ^on_tick (fn []
         (expire_peers push) (expire_modes host/runtime/modes) (unload_idle_sessions host/sessions)
