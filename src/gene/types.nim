@@ -9509,9 +9509,20 @@ proc newEnv*(bindings: sink Table[string, Value],
   boxObject(EnvData(objKind: okEnv, parent: parent, bindings: storedBindings,
                     imports: imports, module: module, policy: policy))
 
+var callerEnvsCreated: int
+
+proc anyCallerEnvCreated*(): bool {.inline.} =
+  ## Whether this process has ever made a borrowed CallerEnv. `newCallerEnv`
+  ## is the only place one comes from, so until it has run no value anywhere
+  ## can carry one. Never reset: an expired CallerEnv is still a CallerEnv.
+  when threadedRc: atomicLoadN(addr callerEnvsCreated, ATOMIC_RELAXED) != 0
+  else: callerEnvsCreated != 0
+
 proc newCallerEnv*(scope: Scope): Value =
   if scope == nil:
     raise newException(FieldDefect, "CallerEnv requires a caller scope")
+  when threadedRc: discard atomicFetchAdd(addr callerEnvsCreated, 1, ATOMIC_RELAXED)
+  else: inc callerEnvsCreated
   boxObject(EnvData(objKind: okEnv, borrowed: true, borrowedActive: true,
                     borrowedScope: scope))
 

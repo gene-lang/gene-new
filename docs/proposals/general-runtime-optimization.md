@@ -228,6 +228,23 @@ suites including AtomicArc and atomic generation retirement, the
 differential programs and the full Harness suite pass with it. GIR format
 advances to 30.
 
+### Caller-env escape check
+
+Every map put, list push and cell set of a heap value calls
+`rejectCallerEnvEscape`, which walks the whole value graph looking for a
+borrowed CallerEnv; storing a large transcript walks all of it. `newCallerEnv`
+is the only place such a value is made, so until it has run in the process
+the walk is skipped. A program that calls any `fn!` gets no benefit. The
+service profile had 10% of main-thread samples in this walk; a rerun of the
+service benchmark on a busy machine gave a median 22.8 s with the shortcut
+against 25.3 s without (samples 22.1/22.8/25.8 against 24.1/25.3/26.2), so
+treat the size as roughly 10%, not as measured precisely.
+
+After these two changes the service profile is led by the tail-call capture
+check (`scopeValuesCaptureScope`, 25%), the per-spawn scope walk (20%) and
+weak-function escape (12%). All three are whole-graph walks with a visited
+set over the same large values.
+
 ### What is still slow
 
 - Each `for` iteration is a frame with its own scope. The reset is now cheap

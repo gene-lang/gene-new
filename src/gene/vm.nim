@@ -4582,7 +4582,10 @@ proc carriesCallerEnv(value: Value): bool =
 proc carriesConstruction*(value: Value): bool {.noinline.}
 
 proc rejectCallerEnvEscape(where: string, value: Value) =
-  if value.carriesCallerEnv:
+  # Every map put, list push and cell set of a heap value comes through here,
+  # and the test is a walk of the whole value graph. A program that has made
+  # no CallerEnv — one that calls no `fn!` — has nothing to find.
+  if anyCallerEnvCreated() and value.carriesCallerEnv:
     raise newException(GeneError,
       where & " cannot retain borrowed CallerEnv authority; use " &
       "Env/snapshot with explicit binding names")

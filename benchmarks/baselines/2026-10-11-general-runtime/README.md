@@ -114,6 +114,12 @@ complete Harness suite (179 passed) were rerun with this change; the
 sanitizer, Cordis, benchmark-tooling and wasm rows below predate it. GIR
 format advances to 30 for the two runtime-state fields on a chunk.
 
+A later change skips the caller-env escape walk in a process that has never
+created a CallerEnv. On a busy machine the service median was 22.8 s with it
+against 25.3 s without (three samples each, overlapping); the size is
+roughly 10% and is not a clean measurement. The Nim suites, the differential
+programs and the complete Harness suite (179 passed) pass with it.
+
 ## Build provenance
 
 ```sh
