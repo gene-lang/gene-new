@@ -199,6 +199,15 @@ documented in `docs/stdlib.md`):
 
 ## Open items
 
+The 2026-10-11 reliability fixes and their regression evidence are recorded in
+[review.md](review.md#resolution). Requests now use durable admission receipts;
+unfinished attempts return an explicit uncertain outcome rather than being
+replayed. Old idempotency records without fingerprints require inspection before
+using a new key. Runs retain their original wall deadline and call usage across
+resume, including planning/review calls; a new run provides a new allowance.
+Profile compatibility checks now include recorded configuration and tool/font
+identity rather than just the readable renderer name.
+
 - §10.2's set of non-dominated candidates is not kept; the loop keeps one
   working candidate.
 - History pagination is served but the client loads the first page only; very

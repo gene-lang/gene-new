@@ -89,7 +89,24 @@
 
 # The profile as a manifest node, without machine-local working paths.
 (fn tool_node [name : Str, path : Str, version : Str] : Any
-  `(tool ^name %name ^path %path ^version %version))
+  (let digest (digest_of ($fs/read_bytes path)))
+  `(tool ^name %name ^path %path ^version %version ^digest %digest))
+
+# Paths and scratch directories are locations, not rendering inputs. Legacy
+# profiles can still be checked against every stable field they recorded.
+(fn profile_fingerprint [manifest, ^legacy legacy : Bool = false] : Str
+  (let props {})
+  (for [name value] in ($props manifest)
+    (if (!= ($to_str name) "fingerprint") (props .put ($to_str name) value)))
+  (let children [])
+  (for child in ($body manifest)
+    (let fields {})
+    (for [name value] in ($props child)
+      (if (&& (!= ($to_str name) "path")
+              (! (&& legacy (== (kind_of child) "tool") (== ($to_str name) "digest"))))
+        (fields .put ($to_str name) value)))
+    (children .push ($node/rebuild `(record) ^head ($head child) ^props fields ^body ($body child))))
+  (digest_of (canonical ($node/rebuild `(record) ^head ($head manifest) ^props props ^body children))))
 
 (fn font_node [font] : Any
   (let id font/id)
@@ -107,10 +124,13 @@
   (for font in profile/fonts (children .push (font_node font)))
   (let id profile/id)
   (let edge profile/edge)
-  `(render_profile ^schema 1 ^id %id ^edge %edge ^antialias %antialias
+  (let manifest `(render_profile ^schema 1 ^id %id ^edge %edge ^antialias %antialias
      ^svg_serializer %svg_serializer_version
      ^flags ["-f pdf" "-png -singlefile -f 1 -l 1 -scale-to-x W -scale-to-y H"]
      %children...))
+  (let props ($thaw ($freeze ($props manifest))))
+  (props .put "fingerprint" (profile_fingerprint manifest))
+  ($node/rebuild manifest ^props props))
 
 # ── geometry of the output ─────────────────────────────────────────────────
 
@@ -286,9 +306,10 @@
   (let mapping (view_box_to_png scene size))
   (let rsvg profile/rsvg_version)
   (let poppler profile/poppler_version)
+  (let fingerprint (profile_fingerprint (profile_manifest profile)))
   (let manifest
     ($freeze
-      `(render_manifest ^schema 1 ^profile %profile_name ^scene %digest
+      `(render_manifest ^schema 1 ^profile %profile_name ^profile_fingerprint %fingerprint ^scene %digest
          ^canvas %canvas ^view_box %box
          ^output %size ^rounding "longest edge to the profile edge; other edge rounded half up"
          ^view_box_to_png %mapping

@@ -12,11 +12,11 @@
 (import [StoreError DomainError reject kind_of node? children_named child_named text_of
          str?] ^from "./types")
 (import [valid_id?] ^from "./scene_schema")
-(import [canonical digest_of scene_digest blank_scene normalize_scene] ^from "./scene")
+(import [canonical digest_of scene_digest blank_scene normalize_scene read_canonical] ^from "./scene")
 (import [scene_svg] ^from "./svg")
 (import [apply_patch replay_normalized] ^from "./patch")
 (import [diff_scenes describe_diff] ^from "./diff")
-(import [render_scene render_crop profile_manifest] ^from "./render")
+(import [render_scene render_crop profile_manifest profile_fingerprint] ^from "./render")
 (import [validate_goal validate_policy build_evaluation] ^from "./evaluation")
 (import [Project create_project open_project close_project in_transaction put_node
          put_object get_node get_object publish_bundle verify_bundle new_staging remove_tree
@@ -279,12 +279,20 @@
 
 (fn open_evolution [root : Str, profile] : Any
   (let project (open_project root))
-  (if (!= project/record/render_profile profile/id)
+  (try
+  (let saved (read_canonical ($fs/read_text ($path/join root "render-profile.gene"))))
+  (let current (profile_manifest profile))
+  (let legacy ($absent? saved/fingerprint))
+  (if (|| (!= project/record/render_profile profile/id)
+          (!= (profile_fingerprint ^legacy legacy saved) (profile_fingerprint ^legacy legacy current)))
     # Switching profiles is explicit: old evidence is never reinterpreted.
     (store_failure "profile_mismatch"
-      $"the project was rendered with ${project/record/render_profile}, not ${profile/id}"
+      "The renderer configuration differs from the saved project profile; use the original profile or explicitly migrate the project."
       ^detail profile/id))
-  (Evolution ^project project ^profile profile))
+  (Evolution ^project project ^profile profile)
+  catch Any
+    (close_project project)
+    (fail $err)))
 
 (fn close_evolution [evolution] : Nil
   (close_project evolution/project)
@@ -369,22 +377,33 @@
 
 # A new goal id for a goal that succeeds `predecessor`.
 (fn next_goal_id [evolution] : Str
-  (let count (/n ((db_of evolution) .Db:query_one "SELECT COUNT(*) AS n FROM goals")))
-  (if (< count 9) $"goal-0${(+ count 1)}" $"goal-${(+ count 1)}"))
+  (in_transaction evolution/project (fn []
+    (let count (/n ((db_of evolution) .Db:query_one "SELECT COUNT(*) AS n FROM goals")))
+    (var number ($math/max (+ count 1) (+ (next_number evolution/project "next_goal") 1)))
+    (var id "")
+    (loop
+      (set id (if (< number 10) $"goal-0${number}" $"goal-${number}"))
+      (if ($absent? ((db_of evolution) .Db:query_one "SELECT id FROM goals WHERE id = ?" id)) (break))
+      (set number (+ number 1)))
+    (meta_put evolution/project "next_goal" ($to_str number))
+    id)))
 
 # Replace a line's active goal with a new immutable goal record. The old goal
 # is kept; reviews made for it do not complete the new one.
-(fn change_goal [evolution, line_id : Str, goal] : Any
+(fn change_goal [evolution, line_id : Str, goal, ^expected_goal expected_goal = nil, ^after after = nil] : Any
   (let project evolution/project)
   (let checked (validate_goal goal))
   (line_row evolution line_id)
   (in_transaction project
     (fn []
+      (if (&& (! ($absent? expected_goal)) (!= (/goal (line_row evolution line_id)) expected_goal))
+        (store_failure "stale_goal" "The line's goal changed while planning."))
       (store_goal evolution checked)
       (project/db .Db:execute "UPDATE lines SET goal = ?, version = version + 1 WHERE id = ?"
         checked/id line_id)
       (let goal_id checked/id)
-      (append_event project "goal_changed" nil nil `(event ^line %line_id ^goal %goal_id))))
+      (append_event project "goal_changed" nil nil `(event ^line %line_id ^goal %goal_id))
+      (if_not ($absent? after) (after))))
   checked)
 
 # Choose a saved result. Separate from viewing: it changes project metadata,
@@ -450,13 +469,17 @@
   (let diff
     (diff_scenes (get_node evolution/project left_row/scene)
       (get_node evolution/project right_row/scene) ^left_name left ^right_name right))
-  (let left_profile (/profile (verify_bundle evolution/project left_row/render)))
-  (let right_profile (/profile (verify_bundle evolution/project right_row/render)))
+  (let left_manifest (verify_bundle evolution/project left_row/render))
+  (let right_manifest (verify_bundle evolution/project right_row/render))
+  (let left_profile left_manifest/profile)
+  (let right_profile right_manifest/profile)
   {^diff diff
    ^lines (describe_diff diff)
    ^left {^revision left ^image left_row/image ^render left_row/render ^profile left_profile}
    ^right {^revision right ^image right_row/image ^render right_row/render ^profile right_profile}
-   ^same_profile (== left_profile right_profile)})
+   ^same_profile (|| (== left_row/render right_row/render)
+     (&& (! ($absent? left_manifest/profile_fingerprint))
+         (== left_manifest/profile_fingerprint right_manifest/profile_fingerprint)))})
 
 # Exact replay (section 11.3): reapply the stored normalized operations along
 # a path to their recorded bases and verify the scene and SVG digests at every

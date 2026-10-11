@@ -1,0 +1,262 @@
+(import $test [describe it assert_equal run])
+(import [scratch test_profile error_code] ^from "./support")
+(import [canonical digest_of read_domain read_canonical] ^from "../src/scene")
+(import [profile_manifest profile_fingerprint] ^from "../src/render")
+(import [create_evolution open_evolution close_evolution goal_of next_goal_id view stage]
+  ^from "../src/evolution")
+(import [remove_tree publish_bundle render_dir verify_bundle] ^from "../src/store")
+(import [new_workbench idempotent request_identity route] ^from "../src/server")
+(import [start_run execute_run steer_run run_row resume_run] ^from "../src/jobs")
+(import [fixture_agent] ^from "../src/adapters/model")
+(import $db/sqlite [Db])
+
+(fn new_history [^policy policy = nil]
+  (let goal (read_domain "(goal ^id \"goal-01\" ^request \"A subject.\" (requirement ^id \"subject\" ^strength \"hard\" ^check \"visual\" \"Visible subject.\"))" ^head "goal"))
+  (create_evolution ($path/join (scratch "reliability") "project") "review" goal (test_profile) ^width 64 ^height 64 ^policy policy))
+
+(fn done [input]
+  $"(agent_response ^schema 1 ^observed_revision \"${input/context/newest}\" ^observed_image \"${input/context/image}\" ^action \"done\" (review (check ^requirement \"subject\" ^result \"pass\" ^evidence \"fixture\")) (summary \"Complete.\"))")
+
+(fn blocked [input]
+  $"(agent_response ^schema 1 ^observed_revision \"${input/context/newest}\" ^observed_image \"${input/context/image}\" ^action \"blocked\" (review (check ^requirement \"subject\" ^result \"fail\" ^evidence \"fixture\")) (blocked (issue \"Need another step.\") (remaining \"subject\")))")
+
+(fn result_of [task]
+  (match task/.join
+    (when (TaskOutcome/ok value) value)
+    (else (fail "concurrent test task failed"))))
+
+(describe "request receipts"
+  (it "deduplicates the steering HTTP route rather than appending an instruction twice" []
+    (let history (new_history))
+    (try
+      (let bench (new_workbench ($path/parent history/project/root) (test_profile) nil 8080))
+      (bench/projects .put "review" history)
+      (let started (start_run history "main"))
+      (let request {^method "POST" ^path $"/api/v1/jobs/review.${started/id}/steer"
+        ^body ($json/stringify {^idempotency_key "one-instruction" ^instruction "Add a border."})})
+      (route bench request)
+      (route bench request)
+      (assert_equal (/steering (run_row history started/id)) "Add a border.")
+    ensure (close_evolution history)))
+  (it "fingerprints arbitrary JSON property names without ambiguous serialization" []
+    (let first ($json/parse "{\"a 1 ^b\":2}"))
+    (let second {^a 1 ^b 2})
+    ($assert (!= (canonical (request_identity first)) (canonical (request_identity second)))))
+  (it "joins concurrent identical requests, checks input identity and survives a new workbench" []
+    (let home (scratch "receipts"))
+    (let bench (new_workbench home nil nil 8080))
+    (let calls ($cell 0))
+    (let entered ($cell false))
+    (scope
+      (let first (spawn ^lane root
+        (idempotent ^input {^a 1 ^b 2} bench nil "request" "create" (fn []
+          (calls .set (+ calls/.get 1)) (entered .set true)
+          ($sleep 30) {^id "created"}))))
+      (while (! entered/.get)
+        (if first/.done? (fail "first request failed before entry"))
+        ($sleep 1))
+      (let second (spawn ^lane root
+        (idempotent ^input {^b 2 ^a 1} bench nil "request" "create" (fn []
+          (calls .set (+ calls/.get 1)) {^id "duplicate"}))))
+      (assert_equal (result_of first) (result_of second)))
+    (assert_equal calls/.get 1)
+    (let reopened (new_workbench home nil nil 8081))
+    (assert_equal (idempotent ^input {^a 1 ^b 2} reopened nil "request" "create" (fn [] (fail "replayed"))) {^id "created"})
+    (assert_equal (error_code (fn [] (idempotent ^input {^a 9} reopened nil "request" "create" (fn [] nil)))) "idempotency_conflict")
+    (assert_equal (error_code (fn [] (idempotent ^input {^a 1 ^b 2} reopened nil "request" "delete" (fn [] nil)))) "idempotency_conflict"))
+
+  (it "does not repeat an uncertain effect after cancellation" []
+    (let bench (new_workbench (scratch "cancel-receipt") nil nil 8080))
+    (let entered ($cell false))
+    (scope
+      (let task (spawn ^lane root (idempotent bench nil "request" "create" (fn []
+        (entered .set true) ($sleep 60000) {^id "late"}))))
+      (while (! entered/.get)
+        (if task/.done? (fail "request failed before entry"))
+        ($sleep 1))
+      task/.cancel task/.join)
+    (assert_equal (error_code (fn [] (idempotent bench nil "request" "create" (fn [] (fail "replayed"))))) "idempotency_incomplete"))
+
+  (it "keeps project receipts through close and reopen" []
+    (let history (new_history))
+    (let root history/project/root)
+    (let bench (new_workbench ($path/parent root) nil nil 8080))
+    (idempotent ^input {^revision "r000"} bench history "select" "selection" (fn [] {^selected "r000"}))
+    (close_evolution history)
+    (let reopened (open_evolution root (test_profile)))
+    (try
+      (assert_equal (idempotent ^input {^revision "r000"} bench reopened "select" "selection" (fn [] (fail "replayed"))) {^selected "r000"})
+    ensure (close_evolution reopened))))
+
+(describe "bundle publication and cleanup"
+  (it "recovers an unreferenced partial directory but preserves referenced corrupt evidence" []
+    (let history (new_history))
+    (try
+      (let source (scratch "bundle"))
+      ($fs/write_text ($path/join source "scene.svg") "<svg/>")
+      (let content (digest_of "<svg/>"))
+      (let manifest `(render_manifest (artifact ^kind "scene.svg" ^digest %content)))
+      (let digest (digest_of (canonical manifest)))
+      (let bundle {^dir source ^digest digest ^manifest manifest})
+      ($fs/make_dir (render_dir history/project digest))
+      (publish_bundle history/project bundle)
+      (assert_equal (verify_bundle history/project digest) manifest)
+      (let existing (view history "r000"))
+      (let file ($path/join (render_dir history/project existing/bundle) "manifest.gene"))
+      ($fs/remove file)
+      (assert_equal (error_code (fn [] (publish_bundle history/project
+        {^digest existing/bundle ^manifest manifest ^dir source}))) "missing_artifact")
+      ($assert (! ($fs/exists? file)) "referenced evidence was replaced")
+    ensure (close_evolution history)))
+
+  (it "leaves no published directory after a pre-rename failure and can retry" []
+    (let history (new_history))
+    (try
+      (let source (scratch "atomic-bundle"))
+      ($fs/write_text ($path/join source "scene.svg") "atomic")
+      (let content (digest_of "atomic"))
+      (let manifest `(render_manifest (artifact ^kind "scene.svg" ^digest %content)))
+      (let digest (digest_of (canonical manifest)))
+      (let bundle {^dir source ^digest digest ^manifest manifest})
+      (history/project/hooks .put "before_bundle_rename" (fn [path] (fail "injected interruption")))
+      (try (publish_bundle history/project bundle) catch Any nil)
+      ($assert (! ($fs/exists? (render_dir history/project digest))))
+      (assert_equal ($fs/list_dir ($path/join history/project/root "staging")) [])
+      (history/project/hooks .delete "before_bundle_rename")
+      (publish_bundle history/project bundle)
+      (verify_bundle history/project digest)
+    ensure (close_evolution history)))
+
+  (it "removes directory trees without following links outside them" []
+    (let root (scratch "cleanup"))
+    (let outside (scratch "outside"))
+    ($fs/write_text ($path/join outside "keep") "keep")
+    ($fs/make_dir ($path/join root "nested"))
+    ($fs/write_text ($path/join root "nested" "remove") "remove")
+    ($fs/create_symlink outside ($path/join root "link"))
+    (remove_tree root)
+    ($assert (! ($fs/exists? root)))
+    (assert_equal ($fs/read_text ($path/join outside "keep")) "keep")))
+
+(describe "renderer identity"
+  (it "rejects edge, tool-version and font changes and releases the lock on refusal" []
+    (let history (new_history))
+    (let root history/project/root)
+    (close_evolution history)
+    (for field in ["edge" "rsvg_version" "fonts"]
+      (let profile ($thaw ($freeze (test_profile))))
+      (profile .put field (if (== field "edge") 512 (if (== field "fonts") [] "different")))
+      (assert_equal (error_code (fn [] (open_evolution root profile))) "profile_mismatch"))
+    (let reopened (open_evolution root (test_profile)))
+    (close_evolution reopened))
+
+  (it "accepts relocated legacy profiles only when every recorded setting matches" []
+    (let history (new_history))
+    (let root history/project/root)
+    (close_evolution history)
+    (let original (profile_manifest (test_profile)))
+    (let props ($thaw ($freeze ($props original))))
+    (props .delete "fingerprint")
+    (let children [])
+    (for child in ($body original)
+      (let fields ($thaw ($freeze ($props child))))
+      (if (== ($head child) `tool)
+        (then (fields .delete "digest") (fields .put "path" "/previous/install/location")))
+      (children .push ($node/rebuild child ^props fields)))
+    ($fs/write_text ($path/join root "render-profile.gene")
+      (canonical ($node/rebuild original ^props props ^body children)))
+    (let reopened (open_evolution root (test_profile)))
+    (close_evolution reopened)
+    (let different ($thaw ($freeze (test_profile))))
+    (different .put "edge" 512)
+    (assert_equal (error_code (fn [] (open_evolution root different))) "profile_mismatch")))
+
+(describe "steering and cumulative budgets"
+  (it "applies line policy budgets when no run override was supplied" []
+    (let history (new_history ^policy `(policy (limit ^name "max_model_calls" ^value 1))))
+    (try
+      (let started (start_run history "main"))
+      (assert_equal (/max_model_calls (read_canonical started/budgets)) 1)
+    ensure (close_evolution history)))
+
+  (it "counts no-op edit attempts across resume" []
+    (let history (new_history))
+    (try
+      (let started (start_run history "main" ^budgets {^max_iterations 1}))
+      (let noop (fn [input]
+        $"(agent_response ^schema 1 ^observed_revision \"${input/context/newest}\" ^observed_image \"${input/context/image}\" ^action \"edit\" (review (check ^requirement \"subject\" ^result \"fail\" ^evidence \"fixture\")) (plan \"Keep background.\") (patch ^schema 1 ^id \"${input/context/patch_id}\" ^base \"${input/context/head}\" ^goal \"${input/context/goal}\" (intent \"Keep background.\") (set_canvas ^field [\"background\"] ^value \"#ffffff\")))"))
+      (execute_run history (fixture_agent [noop blocked]) started/id)
+      (assert_equal (/iteration (run_row history started/id)) 1)
+      (resume_run history started/id)
+      (let retry (fixture_agent [done]))
+      (execute_run history retry started/id)
+      (assert_equal retry/received/.size 0)
+    ensure (close_evolution history)))
+
+  (it "plans an instruction arriving during planning before allowing completion" []
+    (let history (new_history))
+    (try
+      (let started (start_run history "main"))
+      (steer_run history started/id "Make it blue.")
+      (let agent (fixture_agent [
+        (fn [input]
+          (steer_run history started/id "Add a border.")
+          "(goal ^id \"goal-02\" ^request \"blue\" (requirement ^id \"subject\" ^strength \"hard\" ^check \"visual\" \"Blue subject.\"))")
+        done
+        "(goal ^id \"goal-03\" ^request \"border\" (requirement ^id \"subject\" ^strength \"hard\" ^check \"visual\" \"Bordered subject.\"))"
+        done]))
+      (let outcome (execute_run history agent started/id))
+      (assert_equal outcome/status "complete")
+      (let row (run_row history started/id))
+      (assert_equal row/steering nil)
+      (let goal (goal_of history row/goal))
+      ($assert ($str/contains? goal/request "Add a border."))
+      (assert_equal (/calls (read_canonical row/usage)) 4)
+      ($assert (!= (next_goal_id history) (next_goal_id history)))
+    ensure (close_evolution history)))
+
+  (it "does not reset the call allowance after resume" []
+    (let history (new_history))
+    (try
+      (let started (start_run history "main" ^budgets {^max_model_calls 1}))
+      (let first (execute_run history (fixture_agent [blocked]) started/id))
+      (assert_equal first/status "partial")
+      (resume_run history started/id)
+      (let agent (fixture_agent [done]))
+      (let outcome (execute_run history agent started/id))
+      (assert_equal outcome/status "partial")
+      (assert_equal agent/received/.size 0)
+      (assert_equal outcome/calls 1)
+    ensure (close_evolution history)))
+
+  (it "counts failed and planner calls before dispatch" []
+    (let history (new_history))
+    (try
+      (let started (start_run history "main" ^budgets {^max_model_calls 1}))
+      (steer_run history started/id "New direction.")
+      (let agent (fixture_agent ["!transport"]))
+      (execute_run history agent started/id)
+      (assert_equal (/calls (read_canonical (/usage (run_row history started/id)))) 1)
+      (resume_run history started/id)
+      (let retry (fixture_agent [done]))
+      (execute_run history retry started/id)
+      (assert_equal retry/received/.size 0)
+    ensure (close_evolution history)))
+
+  (it "retains the wall deadline across resume and cancels an overlong call" []
+    (let history (new_history))
+    (try
+      (let started (start_run history "main" ^budgets {^max_wall_ms 1000}))
+      (let before ($os/monotonic_ms))
+      (let slow (fixture_agent [(fn [input] ($sleep 60000) (done input))]))
+      (let outcome (execute_run history slow started/id))
+      (assert_equal outcome/status "partial")
+      (assert_equal slow/received/.size 1)
+      ($assert (< (- ($os/monotonic_ms) before) 5000))
+      (resume_run history started/id)
+      (let retry (fixture_agent [done]))
+      (assert_equal (/status (execute_run history retry started/id)) "partial")
+      (assert_equal retry/received/.size 0)
+    ensure (close_evolution history))))
+
+(fn main [args] : Int (/exit_code (run)))

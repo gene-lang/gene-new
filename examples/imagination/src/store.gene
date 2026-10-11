@@ -14,6 +14,7 @@
 (import [media_id] ^from "./scene_schema")
 
 (const store_format 1)
+(var ^^private publication_gate ($cell false))
 (const artifact_kinds
   ["scene.svg" "scene.pdf" "observation.png" "thumbnail.png" "transparent.png" "manifest.gene"])
 
@@ -152,7 +153,9 @@
   (if_not ($fs/exists? path) (return nil))
   (let info ($fs/info path ^!follow))
   (if_yes (== info/kind "directory")
-    (for name in ($fs/list_dir path) (remove_tree ($path/join path name))))
+    (for name in ($fs/list_dir path) (remove_tree ($path/join path name)))
+    ($fs/remove_dir path)
+    (return nil))
   ($fs/remove path)
   nil)
 
@@ -189,18 +192,46 @@
 # is written with a temporary name, flushed, and renamed; then every artifact
 # the manifest names is read back and checked against its digest.
 (fn publish_bundle [project, bundle] : Nil
+  (while (publication_gate .swap true) ($sleep 1))
+  (var staging nil)
+  (try
   (let target (render_dir project bundle/digest))
-  (if_not ($fs/exists? target)
-    ($fs/make_dir target)
-    (for artifact in (children_named bundle/manifest "artifact")
-      ($fs/write_bytes_atomic ($path/join target artifact/kind)
-        ($fs/read_bytes ($path/join bundle/dir artifact/kind))))
-    ($fs/write_text_atomic ($path/join target "manifest.gene") (canonical bundle/manifest)))
+  (if ($fs/exists? target)
+    (then
+      (try
+        (verify_bundle project bundle/digest)
+        (return nil)
+      catch StoreError
+        # Never replace evidence already referenced by a committed revision.
+        (if (|| ($absent? project/db)
+                (! ($absent? (project/db .Db:query_one
+                  "SELECT id FROM revisions WHERE render = ? LIMIT 1" bundle/digest)))
+                (! ($absent? (project/db .Db:query_one
+                  "SELECT seq FROM events WHERE body LIKE ? LIMIT 1" $"%${bundle/digest}%"))))
+          (fail $err))
+        (remove_tree target))))
+  (set staging (new_staging project))
+  (for artifact in (children_named bundle/manifest "artifact")
+    (if_not (artifact_kinds .contains? artifact/kind)
+      (store_failure "invalid_artifact" "Unknown render artifact kind."))
+    ($fs/write_bytes_atomic ($path/join staging artifact/kind)
+      ($fs/read_bytes ($path/join bundle/dir artifact/kind))))
+  ($fs/write_text_atomic ($path/join staging "manifest.gene") (canonical bundle/manifest))
+  (verify_bundle_at staging bundle/digest)
+  (let hook (project/hooks .get "before_bundle_rename"))
+  (if_not ($absent? hook) (hook staging))
+  ($fs/rename staging target)
   (verify_bundle project bundle/digest)
-  nil)
+  nil
+  ensure
+    (try
+      (if_not ($absent? staging) (remove_tree staging))
+    ensure (publication_gate .set false))))
 
 (fn verify_bundle [project, digest : Str] : Any
-  (let directory (render_dir project digest))
+  (verify_bundle_at (render_dir project digest) digest))
+
+(fn verify_bundle_at [directory : Str, digest : Str] : Any
   (let manifest_path ($path/join directory "manifest.gene"))
   (if_not ($fs/exists? manifest_path)
     (store_failure "missing_artifact" $"render ${digest} has no manifest" ^detail digest))
@@ -210,6 +241,8 @@
       ^detail digest))
   (let manifest (read_canonical text))
   (for artifact in (children_named manifest "artifact")
+    (if_not (artifact_kinds .contains? artifact/kind)
+      (store_failure "invalid_artifact" "Unknown render artifact kind."))
     (let path ($path/join directory artifact/kind))
     (if_not ($fs/exists? path)
       (store_failure "missing_artifact" $"render ${digest} is missing ${artifact/kind}"

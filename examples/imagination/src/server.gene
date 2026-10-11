@@ -11,7 +11,7 @@
 (import $html [render])
 (import $web [script stylesheet])
 (import [StoreError DomainError RenderError ModelError kind_of node? children_named
-         child_named text_of field_label] ^from "./types")
+         child_named text_of field_label sorted_keys] ^from "./types")
 (import [valid_id?] ^from "./scene_schema")
 (import [canonical read_canonical read_domain digest_of index_scene world_bounds] ^from "./scene")
 (import [validate_goal requirements_of] ^from "./evaluation")
@@ -375,23 +375,54 @@
 
 # A repeated mutation with the same key returns the first result instead of
 # acting again.
-(fn idempotent [bench, evolution, key : Str, kind : Str, body]
+(fn request_identity [value]
+  (if (== ($head value) Map)
+    (then
+      (let pairs [])
+      (for key in (sorted_keys value)
+        (pairs .push [key (request_identity (value .get key))]))
+      (return ["object" pairs])))
+  (if (== ($head value) List)
+    (return ["array" ($map value request_identity)]))
+  ["scalar" value])
+
+(fn idempotent [bench, evolution, key : Str, kind : Str, body, ^input input = nil]
   (if (|| (== key "") (> ($str/byte_size key) 128))
     (api_failure 400 "invalid_request" "Every change needs an idempotency_key of at most 128 characters."))
-  (if ($absent? evolution)
+  (let root ($path/join (if ($absent? evolution) bench/home evolution/project/root) ".requests"))
+  ($fs/make_dir root)
+  ($fs/set_mode root 448)
+  (let identity ($crypto/sha256 key))
+  (let path ($path/join root $"${identity}.gene"))
+  (let fingerprint (digest_of (canonical [kind (request_identity input)])))
+  (var lock nil)
+  (while ($absent? lock)
+    (set lock ($fs/try_lock ($path/join root $"${identity}.lock")))
+    (if ($absent? lock) ($sleep 1)))
+  (try
+  (if ($fs/exists? path)
     (then
-      (let seen (bench/idempotency .get key))
-      (if_not ($absent? seen) (return seen))
-      (let result (body))
-      (bench/idempotency .put key result)
-      (return result)))
-  (let db evolution/project/db)
-  (let stored (db .Db:query_one "SELECT result FROM idempotency WHERE key = ?" key))
-  (if_not ($absent? stored) (return ($json/parse stored/result)))
+      (let saved ($serde/read_data ($fs/read_text path)))
+      (if (!= saved/fingerprint fingerprint)
+        (api_failure 409 "idempotency_conflict" "This idempotency key belongs to a different request."))
+      (if (== saved/state "completed") (return saved/result))
+      (api_failure 409 "idempotency_incomplete"
+        "The earlier attempt may have acted before stopping. Inspect its project/job before submitting a new request; this key will not replay the operation.")))
+  (if_not ($absent? evolution)
+    (let old (evolution/project/db .Db:query_one "SELECT key FROM idempotency WHERE key = ?" key))
+    (if_not ($absent? old)
+      (api_failure 409 "legacy_idempotency"
+        "This key has an older receipt without a request fingerprint. Inspect the existing result before using a new key.")))
+  # Claim before any potentially yielding work. A crash/cancellation leaves an
+  # explicit uncertain outcome, never permission to blindly repeat an effect.
+  (let claim {^fingerprint fingerprint ^kind kind ^state "started"})
+  ($fs/write_text_atomic ^^owner_only path ($serde/write_data claim))
   (let result (body))
-  (db .Db:execute "INSERT OR IGNORE INTO idempotency(key, kind, result, created_ms) VALUES (?, ?, ?, ?)"
-    key kind ($json/stringify result) ($os/wall_ms))
-  result)
+  (claim .put "state" "completed")
+  (claim .put "result" result)
+  ($fs/write_text_atomic ^^owner_only path ($serde/write_data claim))
+  result
+  ensure lock/.close))
 
 # ── operations ─────────────────────────────────────────────────────────────
 
@@ -708,7 +739,7 @@
         (then
           (let data (request_data request))
           (return (respond 201
-            (idempotent bench nil (text_field data "idempotency_key" ^limit 128) "project"
+            (idempotent ^input data bench nil (text_field data "idempotency_key" ^limit 128) "project"
               (fn [] (create_project_from bench data)))))))))
   (if_yes (&& (>= count 2) (== rest/0 "jobs"))
     (let job rest/1)
@@ -728,18 +759,28 @@
     (if (&& (== count 3) (== method "GET") (== rest/2 "activity"))
       (return (respond 200 (activity_json evolution run_id))))
     (if (&& (== count 3) (== method "POST") (== rest/2 "cancel"))
-      (return (respond 200 (run_json name (cancel_run evolution run_id)))))
+      (then
+        (let data (request_data request))
+        (return (respond 200
+          (idempotent ^input data bench evolution (text_field data "idempotency_key" ^limit 128) $"cancel/${run_id}"
+            (fn [] (run_json name (cancel_run evolution run_id))))))))
     (if (&& (== count 3) (== method "POST") (== rest/2 "steer"))
       (then
         (let data (request_data request))
-        (return (respond 202 (run_json name
-          (steer_run evolution run_id (text_field data "instruction" ^limit 2000)))))))
+        (return (respond 202
+          (idempotent ^input data bench evolution (text_field data "idempotency_key" ^limit 128) $"steer/${run_id}"
+            (fn [] (run_json name
+              (steer_run evolution run_id (text_field data "instruction" ^limit 2000)))))))))
     (if (&& (== count 3) (== method "POST") (== rest/2 "resume"))
       (then
-        (require_agent bench)
-        (let resumed (resume_run evolution run_id))
-        (launch bench name run_id)
-        (return (respond 202 (run_json name resumed))))))
+        (let data (request_data request))
+        (return (respond 202
+          (idempotent ^input data bench evolution (text_field data "idempotency_key" ^limit 128) $"resume/${run_id}"
+            (fn []
+              (require_agent bench)
+              (let resumed (resume_run evolution run_id))
+              (launch bench name run_id)
+              (run_json name resumed))))))))
   (if (|| (< count 2) (!= rest/0 "projects"))
     (api_failure 404 "not_found" "This route is not available."))
   (let name rest/1)
@@ -778,19 +819,19 @@
     (then
       (let data (request_data request))
       (return (respond 201
-        (idempotent bench evolution (text_field data "idempotency_key" ^limit 128) "line"
+        (idempotent ^input data bench evolution (text_field data "idempotency_key" ^limit 128) "line"
           (fn [] (fork_line bench name data)))))))
   (if (&& (== section "runs") (== method "POST"))
     (then
       (let data (request_data request))
       (return (respond 202
-        (idempotent bench evolution (text_field data "idempotency_key" ^limit 128) "run"
+        (idempotent ^input data bench evolution (text_field data "idempotency_key" ^limit 128) "run"
           (fn [] (start_job bench name data)))))))
   (if (&& (== section "selection") (== method "POST"))
     (then
       (let data (request_data request))
       (return (respond 200
-        (idempotent bench evolution (text_field data "idempotency_key" ^limit 128) "selection"
+        (idempotent ^input data bench evolution (text_field data "idempotency_key" ^limit 128) "selection"
           (fn []
             (let version
               (select evolution (text_field data "revision" ^limit 32)

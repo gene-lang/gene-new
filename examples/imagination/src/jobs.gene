@@ -7,20 +7,77 @@
 (mod imagination_jobs)
 
 (import $db/sqlite [Db])
-(import [StoreError ModelError DomainError RenderError kind_of text_of children_named
-         default_budgets] ^from "./types")
+(import [StoreError ModelError DomainError RenderError kind_of text_of children_named] ^from "./types")
 (import [canonical read_canonical] ^from "./scene")
 (import [validate_goal build_evaluation] ^from "./evaluation")
 (import [in_transaction append_event next_number store_failure put_node get_node]
   ^from "./store")
 (import [Evolution view line_row policy_of goal_of stage publish record_review
          allocate_prefix id_taken? crop_of change_goal next_goal_id] ^from "./evolution")
-(import [DrawingSession run_drawing plan_goal] ^from "./agent")
+(import [DrawingSession run_drawing plan_goal budgets_from] ^from "./agent")
+(import [VisionAgent] ^from "./adapters/model")
 (import [note event_line first_line] ^from "./log")
 
 # One run's session on one working line of an Evolution.
 (type EvolutionSession
   ^props {^evolution Any ^agent Any ^run Str ^line Str ^state Any})
+
+(type BudgetAgent ^props {^evolution Any ^run Str ^agent Any ^config Any?})
+
+(fn budget_failure [message : Str]
+  (fail (ModelError ^code "budget_exhausted" ^message message ^detail nil)))
+
+(fn deadline_of [row, budgets]
+  (?? budgets/deadline_ms (+ row/created_ms budgets/max_wall_ms)))
+
+(fn budget_call [wrapper, purpose : Str, request]
+  (let project wrapper/evolution/project)
+  (let deadline (in_transaction project (fn []
+    (let row (run_row wrapper/evolution wrapper/run))
+    (let budgets (read_canonical row/budgets))
+    (let total (read_canonical row/usage))
+    (let end (deadline_of row budgets))
+    (if (>= ($os/wall_ms) end) (budget_failure "The run's time budget is used up."))
+    (if (>= total/calls budgets/max_model_calls) (budget_failure "The run's model-call budget is used up."))
+    (let calls (+ total/calls 1))
+    (let input total/input) (let output total/output)
+    (project/db .Db:execute "UPDATE runs SET usage = ?, updated_ms = ? WHERE id = ?"
+      (canonical `(usage ^input %input ^output %output ^calls %calls)) ($os/wall_ms) wrapper/run)
+    (project/db .Db:execute "INSERT INTO run_events(run, kind, body, created_ms) VALUES (?, 'model_admitted', ?, ?)"
+      wrapper/run (canonical `(call ^purpose %purpose ^number %calls)) ($os/wall_ms))
+    end)))
+  (let expired ($cell false))
+  (let result (scope
+    (let call (spawn ^lane root
+      (match purpose
+        (when "plan" (wrapper/agent .VisionAgent:plan request))
+        (when "evaluate" (wrapper/agent .VisionAgent:evaluate request))
+        (else (wrapper/agent .VisionAgent:decide request)))))
+    (let timer (spawn ^lane root
+      (do ($sleep ($math/max 0 (- deadline ($os/wall_ms)))) (expired .set true) call/.cancel)))
+    (try call/.join ensure timer/.cancel timer/.join)))
+  (var reply nil)
+  (match result ^!exhaustive
+    (when (TaskOutcome/ok value) (set reply value))
+    (when (TaskOutcome/error error) (fail error))
+    (when (TaskOutcome/panic message) (panic message))
+    (when TaskOutcome/cancelled
+      (if expired/.get (budget_failure "The run's time budget expired during a model call."))
+      (fail (ModelError ^code "cancelled" ^message "The model call was cancelled." ^detail nil))))
+  (in_transaction project (fn []
+    (let total (read_canonical (/usage (run_row wrapper/evolution wrapper/run))))
+    (let input (+ total/input (?? reply/usage/input 0)))
+    (let output (+ total/output (?? reply/usage/output 0)))
+    (let calls total/calls)
+    (project/db .Db:execute "UPDATE runs SET usage = ?, updated_ms = ? WHERE id = ?"
+      (canonical `(usage ^input %input ^output %output ^calls %calls)) ($os/wall_ms) wrapper/run)))
+  (if (>= ($os/wall_ms) deadline) (budget_failure "The run's time budget is used up."))
+  reply)
+
+(impl VisionAgent for BudgetAgent
+  (message plan [request] : Any (budget_call self "plan" request))
+  (message decide [request] : Any (budget_call self "decide" request))
+  (message evaluate [request] : Any (budget_call self "evaluate" request)))
 
 # Maps become (record ...) nodes so a run event has a canonical form.
 (fn as_data [value] : Any
@@ -119,6 +176,11 @@
   (message event [kind : Str, data] : Nil
     (let project self/evolution/project)
     (let run self/run)
+    (if (== kind "run_finished")
+      (then
+        (let total (read_canonical (/usage (run_row self/evolution run))))
+        (data .put "calls" total/calls)
+        (data .put "usage" {^input total/input ^output total/output})))
     (let body (as_data data))
     (let line (event_line kind data))
     (if_not ($absent? line) (note $"${project/record/name} ${run}" line))
@@ -127,16 +189,14 @@
         (project/db .Db:execute
           "INSERT INTO run_events(run, kind, body, created_ms) VALUES (?, ?, ?, ?)"
           run kind (canonical body) ($os/wall_ms))
+        (if (["no_op" "render_failed"] .contains? kind)
+          (project/db .Db:execute
+            "UPDATE runs SET iteration = iteration + 1, updated_ms = ? WHERE id = ?"
+            ($os/wall_ms) run))
         (if_yes (== kind "phase_changed")
           (project/db .Db:execute "UPDATE runs SET phase = ?, updated_ms = ? WHERE id = ?"
             data/phase ($os/wall_ms) run)
           (append_event project "phase_changed" run nil body))
-        (if_yes (== kind "model_call")
-          (let usage data/usage)
-          (project/db .Db:execute
-            "UPDATE runs SET usage = ?, updated_ms = ? WHERE id = ?"
-            (canonical (add_usage (read_canonical (/usage (run_row self/evolution run))) usage))
-            ($os/wall_ms) run))
         # What the run is doing right now, for the browser's status line.
         (let activity
           (if (== kind "model_request") $"asking the model (call ${data/call})"
@@ -164,6 +224,9 @@
   (message cancelled [] : Bool
     (== (/cancel_requested (run_row self/evolution self/run)) 1))
 
+  (message steering_pending [] : Bool
+    (! ($absent? (/steering (run_row self/evolution self/run)))))
+
   # A steering instruction becomes a new goal record here, at a safe boundary.
   (message steer [] : Any
     (let row (run_row self/evolution self/run))
@@ -179,10 +242,20 @@
       (validate_goal
         ($node/rebuild planned
           ^props {^id goal_id ^request request ^predecessor predecessor ^instruction instruction})))
-    (change_goal self/evolution self/line goal)
-    ((db_of self/evolution) .Db:execute
-      "UPDATE runs SET steering = NULL, goal = ?, updated_ms = ? WHERE id = ?"
-      goal_id ($os/wall_ms) self/run)
+    (change_goal self/evolution self/line goal ^expected_goal current/id
+      ^after (fn []
+        (let latest (run_row self/evolution self/run))
+        (var remaining nil)
+        (if (!= latest/steering instruction)
+          (then
+            (let prefix $"${instruction}\n")
+            (if_not (&& (== ($head latest/steering) Str) ($str/starts_with? latest/steering prefix))
+              (store_failure "steering_conflict" "The queued instruction changed while planning."))
+            (let offset ($str/byte_size prefix))
+            (set remaining ($str/slice_bytes latest/steering offset (- ($str/byte_size latest/steering) offset)))))
+        ((db_of self/evolution) .Db:execute
+          "UPDATE runs SET steering = ?, goal = ?, updated_ms = ? WHERE id = ?"
+          remaining goal_id ($os/wall_ms) self/run)))
     (self/state .put "goal" goal_id)
     {^goal goal ^policy (policy_of self/evolution (line_row self/evolution self/line))
      ^instruction instruction})
@@ -193,12 +266,6 @@
 (fn build_unreviewed [session, candidate] : Any
   (build_evaluation (goal_of session/evolution candidate/goal) candidate/id candidate/image
     session/evolution/profile/id candidate/scene nil))
-
-(fn add_usage [total, usage] : Any
-  (let input (+ total/input usage/input))
-  (let output (+ total/output usage/output))
-  (let calls (+ total/calls 1))
-  `(usage ^input %input ^output %output ^calls %calls))
 
 (fn budgets_node [budgets] : Any
   (var props {})
@@ -217,10 +284,7 @@
   (if (&& (! ($absent? expected_head)) (!= expected_head line/head))
     (store_failure "stale_head"
       $"line ${line_id} is at ${line/head}, not ${expected_head}" ^detail line/head))
-  (var limits {})
-  (for [name value] in default_budgets (limits .put ($to_str name) value))
-  (if_not ($absent? budgets)
-    (for [name value] in budgets (limits .put ($to_str name) value)))
+  (let limits (budgets_from (policy_of evolution line) budgets))
   (in_transaction project
     (fn []
       (if_not ($absent? (active_run evolution line_id))
@@ -228,6 +292,7 @@
       (let number (+ (next_number project "next_run") 1))
       (let id (if (< number 10) $"run-0${number}" $"run-${number}"))
       (let now ($os/wall_ms))
+      (limits .put "deadline_ms" (+ now limits/max_wall_ms))
       (project/db .Db:execute
         "INSERT INTO runs(id, line, goal, source, status, phase, accepted, pending, iteration, budgets, usage, reason, last_error, steering, cancel_requested, created_ms, updated_ms) VALUES (?, ?, ?, ?, 'running', 'starting', ?, NULL, 0, ?, ?, '', '', NULL, 0, ?, ?)"
         id line_id line/goal line/head line/head (canonical (budgets_node limits))
@@ -243,31 +308,44 @@
 (fn execute_run [evolution, agent, run_id : Str] : Any
   (let project evolution/project)
   (let row (run_row evolution run_id))
+  (let guarded (BudgetAgent ^evolution evolution ^run run_id ^agent agent
+    ^config (try agent/config catch Any nil)))
   (let session
-    (EvolutionSession ^evolution evolution ^agent agent ^run run_id ^line row/line
+    (EvolutionSession ^evolution evolution ^agent guarded ^run run_id ^line row/line
       ^state {^goal row/goal}))
   (let limits (read_canonical row/budgets))
   (var budgets {})
   (for [name value] in ($props limits) (budgets .put ($to_str name) value))
   # A resumed run keeps the edits it already spent.
   (budgets .put "max_iterations" ($math/max 0 (- budgets/max_iterations row/iteration)))
+  (let used (read_canonical row/usage))
+  (budgets .put "max_model_calls" ($math/max 0 (- budgets/max_model_calls used/calls)))
+  (budgets .put "max_wall_ms" ($math/max 0 (- (deadline_of row limits) ($os/wall_ms))))
   (var outcome nil)
   (try
     (let line (line_row evolution row/line))
     (set outcome
-      (run_drawing session agent (goal_of evolution row/goal)
+      (run_drawing session guarded (goal_of evolution row/goal)
         ^policy (policy_of evolution line) ^budgets budgets))
   catch Any
     (set outcome
       {^status "failed" ^revision (/head (line_row evolution row/line))
        ^reason $"The run stopped on an unexpected error: ${$err/message}"
        ^remaining [] ^iterations 0 ^calls 0 ^usage {^input 0 ^output 0}}))
-  (let status outcome/status)
-  (let reason outcome/reason)
   (let revision outcome/revision)
   (let remaining outcome/remaining)
   (in_transaction project
     (fn []
+      (let latest (run_row evolution run_id))
+      (if (&& (== outcome/status "complete") (! ($absent? latest/steering)))
+        (then
+          (outcome .put "status" "partial")
+          (outcome .put "reason" "New instructions arrived while finishing; they remain queued for resume.")))
+      (let status outcome/status)
+      (let reason outcome/reason)
+      (let usage (read_canonical latest/usage))
+      (outcome .put "calls" usage/calls)
+      (outcome .put "usage" {^input usage/input ^output usage/output})
       (project/db .Db:execute
         "UPDATE runs SET status = ?, phase = 'finished', reason = ?, pending = NULL, updated_ms = ? WHERE id = ?"
         status reason ($os/wall_ms) run_id)
@@ -289,6 +367,7 @@
 # instruction that arrives while another is still waiting is added to it, not
 # put in its place.
 (fn steer_run [evolution, run_id : Str, instruction : Str] : Any
+  (in_transaction evolution/project (fn []
   (let row (run_row evolution run_id))
   (if (!= row/status "running")
     (store_failure "run_finished" $"run ${run_id} is ${row/status}" ^detail row/status))
@@ -298,7 +377,7 @@
     (store_failure "invalid_instruction" "the waiting instructions are 1 to 2000 bytes of text"))
   ((db_of evolution) .Db:execute "UPDATE runs SET steering = ?, updated_ms = ? WHERE id = ?"
     queued ($os/wall_ms) run_id)
-  (run_row evolution run_id))
+  (run_row evolution run_id))))
 
 # Make a stopped run runnable again from the line's current head. Completed
 # model calls are not repeated: the published revisions are the saved state,

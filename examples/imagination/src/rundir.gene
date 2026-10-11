@@ -174,5 +174,6 @@
     ($fs/exists? ($path/join self/root "cancel")))
 
   (message steer [] : Any nil)
+  (message steering_pending [] : Bool false)
 
   (message profile [] : Str self/profile/id))

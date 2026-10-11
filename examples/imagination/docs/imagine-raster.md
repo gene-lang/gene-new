@@ -1,7 +1,7 @@
 # Imagine Raster: deterministic painting in the Gene Imagination framework
 
 **Status:** implementation design, version 0.1  
-**Framework:** the `Evolution`/`Media` architecture in `imagination.md`  
+**Framework:** [Evolution design](design.md) and the [proposed Media boundary](follow-on.md#4-a-generic-media-protocol)<br>
 **Authoritative medium:** an editable Gene painting program  
 **Visual output:** PNG rendered directly from raster surfaces  
 **Required behavior:** after every completed edit, repaint the entire program from a fresh canvas
@@ -22,7 +22,7 @@ Render(canonical_program, immutable_assets, renderer_profile) -> pixels, PNG, ma
 
 Identical complete inputs must produce identical pixel bytes within a certified renderer profile. The pinned PNG encoder must also produce identical PNG bytes. Model decisions and evaluation are outside this pure rendering function and can be nondeterministic; saved decisions are never regenerated during rendering.
 
-This document specializes the existing framework. It replaces the optional integer/pixel-art raster adapter in `imagination.md` for this application. It does not change the SVG adapter or require a rewrite of the generic history engine. The raster application can be implemented directly without completing the SVG backend first.
+This document specializes the existing SVG application and the proposed Media boundary. It replaces the optional integer/pixel-art raster adapter in `follow-on.md` for this application. Extract the shared history/artifact boundary while retaining the SVG implementation and its tests; a generic Media interface is not yet implemented. Restoration and merging remain follow-on capabilities, not prerequisites already supplied by the application.
 
 ## 2. What is reused and what changes
 
@@ -31,12 +31,12 @@ This document specializes the existing framework. It replaces the optional integ
 | `Evolution[T]`, immutable revisions, named lines, provenance | Instantiate conceptually as `Evolution[RasterPainting]` |
 | Drafts and atomic validated patches | Apply edits to the painting program |
 | Goals, locks, budgets, acceptance and completion | Reuse; add raster selection/dependency rules |
-| `Media` adapter boundary | Implement `raster-painting/v1` |
+| Proposed `Media` adapter boundary | Extract the minimum interface for SVG and `raster-painting/v1` |
 | SQLite index and immutable object store | Store complete programs, assets, patches, evaluations, and renders |
 | Multimodal model adapter | Submit actual PNG bytes plus bounded program summaries |
-| Jobs, cancellation, idempotency, SSE | Reuse the same lifecycle and publication rules |
-| React/TypeScript workbench and revision DAG | Show raster PNGs and program-aware inspectors |
-| Structural/semantic merge, restore, replay | Specialize for layers, operations, resources, order, and pixel-reading dependencies |
+| Jobs, cancellation, idempotency, WebSockets | Reuse the same lifecycle and publication rules |
+| Gene web-profile workbench and revision DAG | Show raster PNGs and program-aware inspectors |
+| Exact replay; proposed merge and restoration | Specialize replay; implement the deferred capabilities separately |
 | SVG → PDF → PNG renderer | Use direct raster → PNG for this medium |
 
 Use the pinned Gene checkout's implemented syntax and host bridge. All Gene examples below are serialized domain data, not executable functions. `Evolution[RasterPainting]` is conceptual type notation, not a claim about available Gene generic syntax. Keep creative orchestration, validation, and history logic in Gene; native code performs bulk pixel work.
@@ -65,7 +65,7 @@ No generative image service is called inside the renderer. Initial texture asset
 | Skia CPU build | Geometry rasterization, gradient evaluation, surface operations, PNG encoding | Required, pin build |
 | Small project-owned C++ renderer bridge | Versioned ABI, program execution, deterministic brush stamper | Required |
 | SQLite adapter | Transactional history/index operations | Reuse existing framework |
-| React, TypeScript, Vite, `@xyflow/react` | Workbench and history visualization | Reuse existing frontend |
+| Gene web profile | Workbench and history visualization | Reuse existing frontend |
 | Image-capable model transport | Actual image submission and validated responses | Reuse existing model adapter |
 | libmypaint | Richer brush behavior through a separate profile | Optional after basic renderer |
 | CanvasKit | Browser-side interactive rendering if later needed | Optional |
@@ -394,7 +394,7 @@ Do not merge these meanings under a single UI promise of deterministic replay. R
 
 ## 15. Web frontend and API specialization
 
-Reuse the existing local-first workbench, API/job contracts, idempotency keys, expected heads, SSE reconnect, and distinction between viewing a revision and continuing from it.
+Reuse the existing local-first Gene workbench, API/job contracts, idempotency keys, expected heads, WebSocket reconnect, and distinction between viewing a revision and continuing from it.
 
 Add:
 
@@ -425,7 +425,7 @@ Publication order remains: validate/apply, full repaint, evaluate, write and flu
 | `raster/schema.gene` | Registered fields, limits, normalization, model documentation |
 | `raster/program.gene` | Immutable program traversal, identity, resource closure |
 | `raster/patch.gene` | Atomic editing, preconditions, locks, order anchors |
-| `raster/media.gene` | Implementation of the existing `Media` descriptor/interface |
+| `raster/media.gene` | Implementation of the Media descriptor/interface extracted for the second medium |
 | `raster/dependencies.gene` | Conservative regions, consumers, reads and order interactions |
 | `raster/render.gene` | Worker orchestration, full repaint, profiles, manifests and PNG handoff |
 | `native/raster/` | Skia wrapper, custom dab engine, asset decode and fixed encoder settings |
@@ -506,7 +506,7 @@ Test the contracts, especially where mistakes are easy:
 - Invalid batches, indirect lock violations through resources, stale order anchors, and publication races.
 - Merge insert-order ambiguity, delete/modify conflict, shared-resource interaction, and read-footprint interaction.
 - Crash between immutable artifact write and index commit; no partial revision becomes visible.
-- Canvas/model image identity, crop coordinates, cancellation, idempotent jobs, and SSE recovery.
+- Canvas/model image identity, crop coordinates, cancellation, idempotent jobs, and WebSocket recovery.
 
 Expected primitive pixels must come from independently specified small fixtures, not merely snapshots generated by the same implementation. Record and review golden images for complete painting examples. Passing deterministic tests establishes reproducibility; it does not establish artistic quality.
 
@@ -528,7 +528,7 @@ Before coding, confirm the target Gene checkout's parser, numeric representation
 
 The rendering rules, schemas, limits, and milestone choices here are proposed application contracts. They must be implemented and verified; existing dependencies do not automatically guarantee them.
 
-- `imagination.md`: existing Gene `Evolution`/`Media` design, publication, model loop, web frontend, merge, storage and job contracts. This companion defines the deterministic raster specialization; its full-program repaint rule overrides that document's optional materialized-tile raster proposal for this application.
+- [design.md](design.md) and [follow-on.md](follow-on.md): implemented SVG/Evolution contracts and proposed Media, merge and restoration boundaries. This companion defines the deterministic raster specialization; its full-program repaint rule overrides the optional materialized-tile raster proposal for this application.
 - [Skia SkPaint overview](https://skia.org/docs/user/api/skpaint_overview/): primary documentation for gradient/shader and blending capabilities.
 - [Skia color management](https://skia.org/docs/user/color/): primary documentation for color-space conversion and alpha handling. The project's linear working/compositing policy still needs explicit configuration.
 - [Skia PNG encoder interface](https://skia.googlesource.com/skia/+/refs/heads/main/include/encode/SkPngEncoder.h): direct pixel/image encoding and encoder options.
