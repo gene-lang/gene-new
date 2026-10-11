@@ -19,10 +19,11 @@ snapshots, patch application, and durable completion.
   refcount layouts and AtomicArc use fresh scopes. Bindings and annotations
   are cleared before reuse; stream, error, cancellation, and loop-exit handling
   keep their existing paths.
-- Name lookup and namespace access borrow scope references during read-only
-  walks. An owning caller still obtains an owning reference when it retains a
-  namespace's scope. Regression coverage includes temporary namespaces and
-  aliased lookup output.
+- Name lookup and selected namespace accesses borrow scope references during
+  read-only walks. `nsScope` returns an owning reference; the explicitly named
+  `borrowedNsScope` accessor requires its namespace owner to remain alive.
+  Regression coverage includes proc-local retention after namespace release
+  and heap-valued aliased lookup output.
 - Immediate scalar assignments avoid constructing an error label for an
   authority/construction check that cannot reject an immediate value. Heap
   values retain the complete checks. Binding contracts remain enforced.
@@ -36,6 +37,43 @@ snapshots, patch application, and durable completion.
 The internal executable-GIR format advances from 27 to 28 to carry the loop
 reuse hint. This invalidates old compiled artifacts; it does not change source
 syntax or language behavior. Super-specialized chunk copies preserve the hint.
+
+## Review follow-up (2026-10-11)
+
+Findings 1, 2, and 4 are addressed:
+
+- Restored the owning `nsScope` API and limited `borrowedNsScope` to explicit
+  read-only accesses whose namespace remains rooted. The previous claim that
+  a proc-local binding automatically retained a `lent Scope` was incorrect.
+- Scope uniqueness now requires the successful runtime refcount-layout probe,
+  as well as a supported memory manager. An unrecognized layout disables reuse.
+- New proc-local regressions release the namespace before reading a heap value
+  through its retained scope, and exercise heap-valued aliased lookup output.
+  A non-retaining native observer proves actual iteration reuse; a test-only
+  failed layout probe proves the fresh-scope fallback. The existing native
+  retention regression verifies that retained iteration bindings stay distinct.
+
+`nimble test` and `nimble verify` enable `geneScopeReuseTests` for the broad
+suite, so the failed-probe regression is part of normal verification. The hook
+is absent from production builds. Direct VM testing can use:
+
+```sh
+GENE_USER_PACKAGES="$PWD/tmp/review-packages" nim c -r \
+  -d:geneScopeReuseTests --path:src --nimcache:tmp/review-vm-cache \
+  -o:tmp/review-vm tests/test_vm.nim
+```
+
+Final-source verification: 398 VM tests pass under ORC debug and AtomicArc;
+87 RC/lifetime tests pass. AddressSanitizer passes the four new ownership/reuse
+tests plus the existing native-retention and loop-binding/exit tests (six
+selected cases, with leak detection disabled). Nim `--expandArc` confirms
+that the retained proc-local scope now has an owning reference and destructor.
+Local build and test logs are in `tmp/bench-review-fixes/`.
+
+Finding 3 is a confirmed pre-existing pooled-call metadata defect, documented
+with a diagnostic in [the reset investigation](scope-pool-reset-investigation.md).
+It remains separate from these fixes. The archived benchmark timings below
+precede this follow-up; performance has not been remeasured for these changes.
 
 ## Measurement and qualification
 

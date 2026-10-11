@@ -4374,7 +4374,8 @@ proc carriesCallerEnv(value: Value, seen: var ValueGraphVisited): bool =
   of vkCallerEnv: return true
   of vkFunction: return value.fnCapturesCallerEnv
   of vkNamespace:
-    return value.nsScope != nil and value.nsScope.borrowedCallerEnv
+    let namespaceScope {.cursor.} = value.borrowedNsScope
+    return namespaceScope != nil and namespaceScope.borrowedCallerEnv
   of vkCallableView, vkList, vkMap, vkSet, vkHashMap, vkNode, vkModule,
      vkEnv, vkCell, vkAtomicCell, vkStream:
     if not seen.firstGraphVisit(value.bits): return false
@@ -5595,7 +5596,7 @@ proc exportedBinding(ns: Value, name: string): Value =
     return VOID
   if ns.nsIsModuleRoot and name in ["this_mod", "this_pkg"]:
     return VOID
-  let namespaceScope {.cursor.} = ns.nsScope
+  let namespaceScope {.cursor.} = ns.borrowedNsScope
   if name in namespaceScope.exportExcludedNames:
     return VOID
   namespaceScope.materializeMirroredVars()
@@ -17151,7 +17152,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         if valueCapturesScope(item, target, seen): return true
       false
     of vkNamespace:
-      scopeChainContains(value.nsScope, target)
+      scopeChainContains(value.borrowedNsScope, target)
     of vkModule:
       valueCapturesScope(value.moduleRootNamespace, target, seen)
     of vkEnv:

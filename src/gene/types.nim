@@ -3099,6 +3099,16 @@ proc retirementSupported(): bool =
           retirementLayout = 1
   retirementLayout == 1
 
+when defined(geneScopeReuseTests):
+  template withUnsupportedScopeRefcounts*(body: untyped) =
+    ## Exercise a failed runtime layout probe without changing the toolchain.
+    let savedLayout = retirementLayout
+    retirementLayout = -1
+    try:
+      body
+    finally:
+      retirementLayout = savedLayout
+
 proc generationRetirementAvailable*(): bool =
   ## Whether this build has its count adapter. AtomicArc remains unavailable
   ## without the qualification flag; a true probe result is not production support.
@@ -3798,7 +3808,8 @@ proc scopeIsUniquelyOwned*(scope: Scope): bool {.inline.} =
   ## Positive proof for reusing an ended activation. Unlike the retirement
   ## shortcut above, unavailable refcounts must never count as uniqueness.
   when nimRefCountReadable and not defined(gcAtomicArc):
-    scope != nil and nimStrongRefs(cast[pointer](scope)) == 1
+    scope != nil and retirementSupported() and
+      nimStrongRefs(cast[pointer](scope)) == 1
   else:
     false
 
@@ -5142,10 +5153,15 @@ proc setNsName*(v: Value, name: sink string) =
     raise newException(FieldDefect, "value is not a Namespace")
   NamespaceData(objData(v)).name = name
 
-proc nsScope*(v: Value): lent Scope =
+proc borrowedNsScope*(v: Value): lent Scope =
+  ## The namespace must remain alive and unchanged for the borrow's lifetime.
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okNamespace:
     raise newException(FieldDefect, "value is not a Namespace")
   NamespaceData(objData(v)).scope
+
+proc nsScope*(v: Value): Scope =
+  ## Retain the scope independently of the namespace that owns it.
+  v.borrowedNsScope
 
 proc nsModulePath*(v: Value): lent string =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okNamespace:

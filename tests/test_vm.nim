@@ -61,15 +61,85 @@ proc nativeEnvelopeEcho(args: openArray[Value], call: ptr NativeCall): Value {.n
   newList(items)
 
 var retainedIterationScopes: seq[Scope]
+var observedIterationScopes: seq[pointer]
 
 proc retainIterationScope(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   retainedIterationScopes.add call[].dispatchScope
   NIL
 
+proc observeIterationScope(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  # Never retain the Scope: that would disable the optimization being tested.
+  observedIterationScopes.add cast[pointer](call[].dispatchScope)
+  NIL
+
 proc temporaryNamespace(): Value =
   let scope = newScope()
-  scope.define("answer", newInt(42))
+  scope.define("answer", newStr("a heap-owned answer"))
   newNamespace("temporary", scope)
+
+proc namespaceScopeAfterOwnerRelease(): Value =
+  var namespace = temporaryNamespace()
+  let retained = namespace.nsScope
+  when defined(gcOrc):
+    # Fail before releasing the owner if this proc-local became a cursor.
+    doAssert not retained.scopeIsUniquelyOwned
+  namespace = NIL
+  GC_fullCollect()
+  retained.lookup("answer")
+
+proc namespaceScopeFromTemporary(): Value =
+  let retained = temporaryNamespace().nsScope
+  GC_fullCollect()
+  retained.lookup("answer")
+
+proc aliasedNamespaceLookup(): Value =
+  var container = temporaryNamespace()
+  doAssert container.nsScope.lookupOptional("answer", container)
+  GC_fullCollect()
+  # Reading heap data here detects a prematurely released lookup result.
+  doAssert container.strVal == "a heap-owned answer"
+  container
+
+proc observeLoopScopeReuse() =
+  let scope = newGlobalScope()
+  scope.define("observe_iteration", newNativeCallFn("observe_iteration", observeIterationScope))
+  let chunk = compileSource("(for item in [1 2 3 4] (observe_iteration))")
+  doAssert chunk.forLoops[0].reuseScope
+  observedIterationScopes.setLen(0)
+  discard run(chunk, scope)
+  doAssert observedIterationScopes.len == 4
+
+suite "VM — scope ownership and reuse":
+  test "eligible iterations reuse storage only with supported refcounts":
+    observeLoopScopeReuse()
+    for i in 1 ..< observedIterationScopes.len:
+      # The fresh path allocates the next scope while the previous one is
+      # still live, so adjacent equal addresses prove actual scope reuse.
+      when defined(gcOrc) and not (defined(nimArcDebug) or defined(nimArcIds) or
+                                  defined(nimOrcLeakDetector)):
+        check observedIterationScopes[i] == observedIterationScopes[i - 1]
+      else:
+        check observedIterationScopes[i] != observedIterationScopes[i - 1]
+
+  when defined(geneScopeReuseTests):
+    test "a failed runtime refcount layout probe disables iteration reuse":
+      withUnsupportedScopeRefcounts:
+        let soleOwner = newScope()
+        check not soleOwner.scopeIsUniquelyOwned
+        observeLoopScopeReuse()
+        for i in 1 ..< observedIterationScopes.len:
+          check observedIterationScopes[i] != observedIterationScopes[i - 1]
+
+  test "proc locals retain namespace scopes after their owners are released":
+    check namespaceScopeAfterOwnerRelease().strVal == "a heap-owned answer"
+    check namespaceScopeFromTemporary().strVal == "a heap-owned answer"
+
+  test "namespace lookup preserves an aliased heap-valued output":
+    check aliasedNamespaceLookup().strVal == "a heap-owned answer"
+    let retained = temporaryNamespace().nsScope
+    var missing = newStr("unchanged")
+    check not retained.lookupOptional("absent", missing)
+    check missing.strVal == "unchanged"
 
 suite "VM — proper tail calls":
   test "mutual and higher-order tail chains keep physical frames flat":
@@ -1706,17 +1776,6 @@ suite "vm — macros":
         check retained.lookup("item") == newInt(i + 1)
     finally:
       retainedIterationScopes.setLen(0)
-
-  test "namespace scope borrowing preserves owned reads and aliased output":
-    let retained = temporaryNamespace().nsScope
-    GC_fullCollect()
-    check retained.lookup("answer") == newInt(42)
-    var container = temporaryNamespace()
-    check container.nsScope.lookupOptional("answer", container)
-    check container == newInt(42)
-    var missing = newInt(9)
-    check not retained.lookupOptional("absent", missing)
-    check missing == newInt(9)
 
   test "escaping closed snapshots retain helpers and their selected macros":
     ck "(fn capture! [] (caller_env .snapshot [\"helper\" \"twice\"])) " &
