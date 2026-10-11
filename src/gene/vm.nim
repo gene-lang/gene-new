@@ -1449,23 +1449,29 @@ proc cancelOwnedActor(actor: Value)
 # Scope
 # ---------------------------------------------------------------------------
 
+proc inheritScopeContext(scope, parent: Scope,
+                         application: RuntimeContext = nil) {.inline.} =
+  ## Parent-derived fields have one initialization rule for fresh, pooled,
+  ## and reused scopes. A nil parent clears inherited context on release.
+  scope.application =
+    if application != nil: application
+    elif parent != nil: parent.application
+    else: nil
+  scope.parent = parent
+  scope.evalBudget =
+    if parent != nil: parent.evalBudget
+    else: nil
+  scope.moduleBase = if parent != nil: parent.moduleBase else: nil
+  scope.moduleRefs = if parent != nil: parent.moduleRefs else: nil
+  scope.sandboxGenerationId = if parent != nil: parent.sandboxGenerationId else: 0
+  scope.borrowedCallerEnv = parent != nil and parent.borrowedCallerEnv
+
 proc newScope*(parent: Scope = nil,
                application: RuntimeContext = nil): Scope =
   # Tables and seqs stay at Nim's zero-value empty state until a scope actually
   # needs named declarations, impls, or required protocol checks.
-  let owner =
-    if application != nil: application
-    elif parent != nil: parent.application
-    else: nil
-  let budget =
-    if parent != nil: parent.evalBudget
-    else: nil
-  Scope(application: owner, parent: parent, evalBudget: budget,
-        moduleRefs: (if parent != nil: parent.moduleRefs else: nil),
-        moduleBase: (if parent != nil: parent.moduleBase else: nil),
-        sandboxGenerationId:
-          (if parent != nil: parent.sandboxGenerationId else: 0),
-        borrowedCallerEnv: parent != nil and parent.borrowedCallerEnv)
+  result = Scope()
+  result.inheritScopeContext(parent, application)
 
 proc registerOwnedActor(scope: Scope, actor: Value) =
   var s = scope
@@ -11595,23 +11601,22 @@ proc seedFunctionProtocolEntry(scope: Scope, callee: Value) {.inline.} =
     if selfBits != 0:
       scope.annotationSelfType = ownedValueFromBits(selfBits)
 
-proc resetCallScope(scope, parent: Scope, names: seq[string]) =
+proc resetCallScope(scope, parent: Scope, names: seq[string], mirror = false) =
   scope.strictErrorLease = nil
   scope.compilerMacros = nil
   scope.runtimeMacroSlots = nil
   scope.privateSlots.setLen(0)
-  scope.application =
-    if parent != nil: parent.application
-    else: nil
-  scope.parent = parent
-  scope.moduleBase =
-    if parent != nil: parent.moduleBase
-    else: nil
+  scope.inheritScopeContext(parent)
+  scope.slotMirror = mirror
   scope.simpleCallScope = false
   scope.typeBoundaryToken = nil
   scope.typeBoundarySnapshot = false
   scope.annotationSelfType = NIL
   scope.vars.clear()
+  if scope.wildcardFallbacks.len > 0:
+    scope.wildcardFallbacks.clear()
+  if scope.exportExcludedNames.len > 0:
+    scope.exportExcludedNames.clear()
   scope.varsDirty = false
   scope.varTypes.clear()
   scope.impls.setLen(0)
@@ -11624,11 +11629,7 @@ proc resetCallScope(scope, parent: Scope, names: seq[string]) =
   scope.forceOverlayImpls = false
   scope.moduleRoot = false
   scope.moduleStatic = false
-  scope.borrowedCallerEnv = parent != nil and parent.borrowedCallerEnv
   scope.requiredImplTypes.setLen(0)
-  scope.evalBudget =
-    if parent != nil: parent.evalBudget
-    else: nil
   scope.ownsTasks = false
   scope.ownedTasks.setLen(0)
   scope.ownedCleanupTasks.setLen(0)
@@ -11665,20 +11666,11 @@ proc acquireSimpleCallScope(pools: var VmPools, parent: Scope,
   else:
     dec pools.callScopesLen
     result = move pools.callScopes[pools.callScopesLen]
-  result.application =
-    if parent != nil: parent.application
-    else: nil
-  result.parent = parent
-  result.moduleBase =
-    if parent != nil: parent.moduleBase
-    else: nil
+  result.inheritScopeContext(parent)
+  result.slotMirror = false
   result.simpleCallScope = true
   result.runtimeMacroSlots = nil
   result.privateSlots.setLen(0)
-  result.borrowedCallerEnv = parent != nil and parent.borrowedCallerEnv
-  result.evalBudget =
-    if parent != nil: parent.evalBudget
-    else: nil
   result.moduleExecutionPolicy = nil
   if resetSlots:
     result.resetCallScopeSlots(names, keepSlotNames)
@@ -11952,12 +11944,8 @@ proc releaseCallScope(pools: var VmPools, scope: Scope) =
     scope.clearDefinedCallSlots()
     if scope.slotTypes.len != 0:
       scope.slotTypes.setLen(0)
-    scope.parent = nil
-    scope.moduleBase = nil
-    scope.application = nil
-    scope.evalBudget = nil
+    scope.inheritScopeContext(nil)
     scope.moduleExecutionPolicy = nil
-    scope.borrowedCallerEnv = false
     scope.moduleRoot = false
     scope.moduleStatic = false
     if scope.wildcardFallbacks.len != 0:
@@ -12014,11 +12002,7 @@ proc releaseCallScope(pools: var VmPools, scope: Scope) =
   scope.supervisorDeadLetters = NIL
   if scope.ownedActors.len != 0:
     scope.ownedActors.setLen(0)
-  scope.parent = nil
-  scope.moduleBase = nil
-  scope.application = nil
-  scope.evalBudget = nil
-  scope.borrowedCallerEnv = false
+  scope.inheritScopeContext(nil)
   if pools.callScopesLen < MaxCallScopePool:
     pools.callScopes[pools.callScopesLen] = scope
     inc pools.callScopesLen
@@ -12032,10 +12016,7 @@ proc nextForScope(previous, parent: Scope, body: Chunk, reusable: bool): Scope =
   ## dynamic declarations, suspension and nested scopes use fresh activations.
   if reusable and not previous.closureHeld and previous.scopeIsUniquelyOwned:
     previous.clearDefinedCallSlots()
-    previous.resetCallScope(parent, body.localNames)
-    previous.slotMirror = body.mirrorSlots
-    previous.moduleRefs = parent.moduleRefs
-    previous.sandboxGenerationId = parent.sandboxGenerationId
+    previous.resetCallScope(parent, body.localNames, mirror = body.mirrorSlots)
     result = previous
   else:
     result = newScope(parent)

@@ -1,40 +1,47 @@
 # Pooled call-scope metadata investigation
 
 2026-10-11, follow-up to finding 3 in the general-runtime benchmark review.
-Status: stale metadata reproduced; runtime correction remains separate from
-the namespace-ownership and loop-uniqueness fixes.
+Status: fixed after the namespace-ownership and loop-uniqueness changes in
+`c43b40e`.
 
 ## Confirmed behavior
 
 The diagnostic [probe](../../tests/fixtures/scope_pool_metadata_probe.nim)
-compiles a pooled function and runs it under two distinct roots. Each root has
-its own `ModuleRefTable`; their sandbox generation IDs are 101 and 202. A native
+compiles a pooled function and runs it under distinct roots. The first two have
+their own `ModuleRefTable` and sandbox generation IDs 101 and 202; the third
+has no table and generation zero. A native
 callback records the current scope address, generation, and whether its ref
 table matches its parent's. It never retains the scope.
 
-On Nim 2.2.4 ORC in both debug and release builds, the first function produced:
+Before the fix, on Nim 2.2.4 ORC in both debug and release builds, the first
+function produced:
 
 | Invocation | Scope address | Scope generation | Parent generation | Ref table matches parent |
 | --- | --- | ---: | ---: | --- |
 | First root | A | 101 | 101 | true |
 | Second root | A | 101 | 202 | false |
 
-The second function mutates its parameter and exercises the general acquisition
-path instead of the simple one. It reuses A and also retains stale metadata.
-The exact heap address is incidental; reuse and mismatched metadata are not.
+The original probe's second function mutated its parameter but still used the
+simple acquisition path. The corrected probe uses a typed parameter to select
+the general path and asserts the actual `simpleCallScope` flag. Regression tests
+reproduce stale metadata on both paths. The exact heap address is incidental;
+reuse and mismatched metadata are not.
 
 `newScope` inherits `moduleRefs` and `sandboxGenerationId` from its parent.
-Neither `resetCallScope` nor `acquireSimpleCallScope` refreshes these fields,
-and `releaseCallScope` leaves them intact. The omission exists in the baseline
-`f9d731c` as well. `nextForScope` explicitly refreshes both fields, so this
+Previously neither `resetCallScope` nor `acquireSimpleCallScope` refreshed these
+fields, and `releaseCallScope` left them intact. The omission exists in the
+baseline `f9d731c` as well. `nextForScope` explicitly refreshed both fields, so this
 reproducer identifies a pre-existing call-pool defect, not a loop-reuse defect.
 
 ## Impact and limits of the evidence
 
 - Confirmed: pooled activations can expose the wrong generation and retain a
   previous module's reference table.
+- Confirmed functional failure: when a native supplies an internal unresolved
+  reference marker, loading that local in a pooled function could return the
+  marker instead of raising `RefNotResolved`. Both acquisition paths now raise.
 - `materializedModuleRefValue` uses `scope.moduleRefs` as a fast-path gate. A
-  stale nil/empty table can skip required materialization. Actual lookup uses
+  stale nil/empty table skipped required materialization. Actual lookup uses
   `moduleRefRootScope`, so saying it directly resolves against the old table
   overstates what this code demonstrates.
 - `popRunnableFiber` compares the fiber scope's generation against the active
@@ -44,17 +51,27 @@ reproducer identifies a pre-existing call-pool defect, not a loop-reuse defect.
   such blanket clear in that routine. Pin lifetime needs its own audit rather
   than copying an assumed release recipe.
 
-## Recommended correction
+## Implemented correction
 
-Centralize parent-derived metadata initialization and use it for fresh scopes,
-both call-pool acquisition paths, and reused loop scopes. Cover transitions
-between distinct tables and from a table/nonzero generation to nil/zero.
-Keep slot mirroring tied to the actual chunk's layout, and audit clearing and
-retention separately; not every Scope field has the same lifetime.
+`inheritScopeContext` centralizes parent-derived metadata for fresh scopes,
+both call-pool acquisition paths, and reused loop scopes. Release calls the
+same helper with a nil parent, dropping the old module table and clearing the
+generation ID along with the existing parent/application/budget references.
+Slot mirroring is an explicit reset argument for loop bodies; call activations
+start without mirroring. The general reset also clears import/export lookup
+metadata, matching fresh scopes and the release paths.
 
-Turn this probe into assertions once that correction is implemented. Add
-pending-reference and sandbox scheduling regressions to establish the impact
-at the language/runtime boundary.
+The probe now asserts correct inheritance through 101 → 202 → 0 and table →
+different table → nil. VM regressions also assert the same scope storage is
+reused, idle entries drop their inherited table/generation, and unresolved
+references raise at the local read. Managed binding-pin lifetime rules remain
+unchanged; this is not a blanket reset of every Scope field.
+
+Verification: 402 VM tests pass on ORC and AtomicArc, 115 module/sandbox tests
+pass, and 87 RC/lifetime tests pass. Ten selected ownership/reuse/retention cases
+pass under AddressSanitizer with leak detection disabled. The module suite
+includes prepared-generation activation, task handling, commit, and release;
+no new scheduler-stall reproducer is claimed. Logs are in `tmp/scope-pool-fix/`.
 
 ## Reproduction
 

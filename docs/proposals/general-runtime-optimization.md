@@ -63,17 +63,22 @@ GENE_USER_PACKAGES="$PWD/tmp/review-packages" nim c -r \
   -o:tmp/review-vm tests/test_vm.nim
 ```
 
-Final-source verification: 398 VM tests pass under ORC debug and AtomicArc;
+Initial follow-up verification: 398 VM tests pass under ORC debug and AtomicArc;
 87 RC/lifetime tests pass. AddressSanitizer passes the four new ownership/reuse
 tests plus the existing native-retention and loop-binding/exit tests (six
 selected cases, with leak detection disabled). Nim `--expandArc` confirms
 that the retained proc-local scope now has an owning reference and destructor.
 Local build and test logs are in `tmp/bench-review-fixes/`.
 
-Finding 3 is a confirmed pre-existing pooled-call metadata defect, documented
-with a diagnostic in [the reset investigation](scope-pool-reset-investigation.md).
-It remains separate from these fixes. The archived benchmark timings below
-precede this follow-up; performance has not been remeasured for these changes.
+Finding 3 was confirmed and fixed in a subsequent change. Fresh, pooled, and
+reused scopes share parent-context initialization; idle pool entries release
+old module tables and clear their generation IDs. Regressions verify both
+acquisition paths, transitions to nil/zero, and correct errors for unresolved
+references. The corrected runtime passes 402 VM tests on ORC and AtomicArc,
+115 module/sandbox tests, 87 lifetime tests, and ten targeted AddressSanitizer
+cases. See [the reset investigation](scope-pool-reset-investigation.md).
+The archived benchmark timings below precede these follow-ups; performance
+has not been remeasured for these changes.
 
 ## Measurement and qualification
 

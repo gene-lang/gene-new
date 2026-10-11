@@ -109,7 +109,88 @@ proc observeLoopScopeReuse() =
   discard run(chunk, scope)
   doAssert observedIterationScopes.len == 4
 
+var pooledMetadataObservations: seq[tuple[address: pointer, inherited, simple: bool]]
+
+proc observePooledMetadata(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  let scope {.cursor.} = call[].dispatchScope
+  let parent {.cursor.} = scope.parent
+  pooledMetadataObservations.add (cast[pointer](scope),
+    scope.moduleRefs == parent.moduleRefs and
+    scope.sandboxGenerationId == parent.sandboxGenerationId and
+    scope.application == parent.application and
+    scope.moduleBase == parent.moduleBase and
+    scope.evalBudget == parent.evalBudget and
+    scope.borrowedCallerEnv == parent.borrowedCallerEnv, scope.simpleCallScope)
+  NIL
+
+proc checkPooledMetadata(generalCall: bool) =
+  let params = if generalCall: "[x : Int] " else: "[x] "
+  let chunk = compileSource("(fn inspect " & params &
+    "(observe_metadata) x) (inspect 1)")
+  doAssert chunk.functions[0].poolCallScope
+  doAssert chunk.functions[0].simpleCall == not generalCall
+  pooledMetadataObservations.setLen(0)
+  for generation in [101'u64, 202'u64, 0'u64]:
+    let root = newGlobalScope()
+    root.sandboxGenerationId = generation
+    root.moduleRefs = if generation == 0: nil else: ModuleRefTable()
+    root.define("observe_metadata", newNativeCallFn("observe_metadata", observePooledMetadata))
+    discard run(chunk, root)
+    # A pooled function acquired an entry before releasing it, so this entry
+    # is still owned by the pool. Read it without creating another owner.
+    let idle {.cursor.} = cast[Scope](pooledMetadataObservations[^1].address)
+    doAssert idle.moduleRefs == nil
+    doAssert idle.sandboxGenerationId == 0
+  doAssert pooledMetadataObservations.len == 3
+  for observation in pooledMetadataObservations:
+    doAssert observation.inherited
+    doAssert observation.simple == not generalCall
+    # No intervening Gene calls: each invocation must take the same pool entry.
+    doAssert observation.address == pooledMetadataObservations[0].address
+
+proc nativePendingReference(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  newPendingModuleRef("pending")
+
+proc checkPooledPendingReference(generalCall: bool) =
+  # Seed the pool from a root with no module-reference table.
+  let seed = newGlobalScope()
+  seed.moduleRefs = nil
+  discard run(compileSource("(fn identity [x : Int] x) (identity 0)"), seed)
+  let root = newGlobalScope()
+  root.moduleRoot = true
+  root.define("pending_reference", newNativeCallFn("pending_reference", nativePendingReference))
+  let params = if generalCall: "[x : Int] " else: "[x] "
+  let chunk = compileSource("(fn " & params &
+    "(let pending (pending_reference)) pending)")
+  doAssert chunk.functions[0].poolCallScope
+  doAssert chunk.functions[0].simpleCall == not generalCall
+  let reader = run(chunk, root)
+  root.moduleRefs = ModuleRefTable(pendingStructural: 1)
+  root.moduleRefs.entries["pending"] = ModuleRefEntry(
+    name: "pending", state: mrsUnresolved, structuralPending: true)
+  # A native constructs the internal marker so the caller cannot materialize
+  # it first. Loading the local in the pooled function must raise immediately.
+  var raised = false
+  try:
+    discard call(reader, @[newInt(0)])
+  except GeneError as error:
+    doAssert "module reference is not resolved: pending" in error.msg
+    raised = true
+  doAssert raised, "a pooled call must not return an unresolved reference marker"
+
 suite "VM — scope ownership and reuse":
+  test "simple pooled calls inherit new module and generation metadata":
+    checkPooledMetadata(false)
+
+  test "general pooled calls inherit new module and generation metadata":
+    checkPooledMetadata(true)
+
+  test "simple pooled calls materialize pending references in their own module":
+    checkPooledPendingReference(false)
+
+  test "general pooled calls materialize pending references in their own module":
+    checkPooledPendingReference(true)
+
   test "eligible iterations reuse storage only with supported refcounts":
     observeLoopScopeReuse()
     for i in 1 ..< observedIterationScopes.len:
