@@ -578,13 +578,16 @@
   (var png_kind "observation.png")
   (var svg_kind "scene.svg")
   (var observation : Str artifacts/%png_kind)
-  (var vector : Str artifacts/%svg_kind)
-  ($dom/set_attribute image "src" (if bench/vector vector observation))
+  (var vector : Str (text_or artifacts/%svg_kind ""))
+  (var use_vector (&& bench/vector (!= vector "")))
+  (var toggle ($dom/element "vector_preview"))
+  (set toggle/disabled (== vector ""))
+  ($dom/set_attribute image "src" (if use_vector vector observation))
   (var id : Str data/id)
   (var quality : Str data/quality)
   # The clean observation PNG is the default and is what the model sees; only
   # the browser's own rendering is called out.
-  (var suffix (if bench/vector " · vector preview, browser renderer" ""))
+  (var suffix (if use_vector " · vector preview, browser renderer" ""))
   ($dom/set_text label $"${id} · ${quality}${suffix}")
   (var parents : (List Str) data/parents)
   (var blank (== ($size parents) 0))
@@ -618,6 +621,9 @@
       ($dom/set_attribute ($dom/element "export_svg") "href" $"${base}&format=svg")
       ($dom/set_attribute ($dom/element "export_pdf") "href" $"${base}&format=pdf")
       ($dom/set_attribute ($dom/element "export_png") "href" $"${base}&format=png")
+      (var raster (== (text_or data/media "svg-scene/v1") "raster-painting/v1"))
+      (set_hidden "export_svg" raster)
+      (set_hidden "export_pdf" raster)
       (var parents : (List Str) data/parents)
       (if_yes (> ($size parents) 0)
         ($dom/set_input_value ($dom/element "compare_left") parents/0))
@@ -861,6 +867,7 @@
   (var prompt : Str ($dom/input_value ($dom/element "new_prompt")))
   (var width : Any ($json/parse ($dom/input_value ($dom/element "new_width"))))
   (var height : Any ($json/parse ($dom/input_value ($dom/element "new_height"))))
+  (var medium : Str ($dom/input_value ($dom/element "new_media")))
   # Planning is a model call: say so, and take one request at a time.
   (var submit ($dom/element "new_project_submit"))
   (set submit/disabled true)
@@ -868,7 +875,7 @@
     "Planning the goal from your request. This is one model call, usually 10 to 20 seconds.")
   (notice bench "Planning the goal from your request…")
   (api bench/token "POST" "/projects"
-    {^name name ^prompt prompt ^width width ^height height ^idempotency_key ($browser/request_id)}
+    {^name name ^prompt prompt ^media medium ^width width ^height height ^idempotency_key ($browser/request_id)}
     (fn [status : Int, data : Any] : Void
       (set submit/disabled false)
       ($dom/set_text ($dom/element "new_project_note") "")

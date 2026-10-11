@@ -13,7 +13,8 @@
 (import [StoreError DomainError RenderError ModelError kind_of node? children_named
          child_named text_of field_label sorted_keys] ^from "./types")
 (import [valid_id?] ^from "./scene_schema")
-(import [canonical read_canonical read_domain digest_of index_scene world_bounds] ^from "./scene")
+(import [canonical read_canonical read_domain digest_of] ^from "./scene")
+(import [index_scene world_bounds raster? open_profile raster_profile?] ^from "./media")
 (import [validate_goal requirements_of] ^from "./evaluation")
 (import [edges_svg] ^from "./svg")
 (import [describe_diff] ^from "./diff")
@@ -53,6 +54,16 @@
 (fn project_dir [bench, name : Str] : Str
   ($path/join bench/home name))
 
+(fn profile_for [bench, medium]
+  (let raster (["raster" "raster-painting/v1"] .contains? medium))
+  (if_not (["raster" "raster-painting/v1" "svg" "svg-scene/v1"] .contains? medium)
+    (api_failure 400 "unknown_medium" "Choose svg or raster."))
+  (if (== raster (raster_profile? bench/profile)) (return bench/profile))
+  (let key (if raster "raster_profile" "svg_profile"))
+  (if ($absent? (bench .get key))
+    (bench .put key (open_profile ($path/join bench/home ".work") ^media medium)))
+  (bench .get key))
+
 (fn project_names [bench] : Any
   (var names [])
   (if_not ($fs/exists? bench/home) (return names))
@@ -69,7 +80,8 @@
   (if_not ($absent? open) (return open))
   (if_not ($fs/exists? ($path/join (project_dir bench name) "project.gene"))
     (api_failure 404 "not_found" $"there is no project ${name}"))
-  (let evolution (open_evolution (project_dir bench name) bench/profile))
+  (let record (read_canonical ($fs/read_text ($path/join (project_dir bench name) "project.gene"))))
+  (let evolution (open_evolution (project_dir bench name) (profile_for bench record/media)))
   (bench/projects .put name evolution)
   evolution)
 
@@ -161,7 +173,7 @@
     (item .put "phase_age_ms" (- now row/updated_ms))
     (item .put "pending_render" (pending_render evolution row))
     (recent .push item))
-  {^name name ^id evolution/project/record/id
+  {^name name ^id evolution/project/record/id ^media evolution/project/record/media
    ^render_profile evolution/project/record/render_profile
    ^selected (selected evolution) ^metadata_version (metadata_version evolution)
    ^lines line_list ^goals goals ^runs recent
@@ -186,9 +198,10 @@
       (effects .push (canonical effect))))
   (let manifest (verify_bundle evolution/project row/render))
   (var artifacts {})
-  (for kind in ["observation.png" "thumbnail.png" "scene.svg" "scene.pdf" "manifest.gene"]
-    (artifacts .put kind (artifact_url name row/render kind)))
-  {^id id ^number row/number ^kind row/kind ^quality row/quality ^goal row/goal
+  (for item in (children_named manifest "artifact")
+    (artifacts .put item/kind (artifact_url name row/render item/kind)))
+  (artifacts .put "manifest.gene" (artifact_url name row/render "manifest.gene"))
+  {^id id ^media evolution/project/record/media ^number row/number ^kind row/kind ^quality row/quality ^goal row/goal
    ^parents parents ^actor row/actor ^run row/run ^intent row/intent ^summary row/summary
    ^image row/image ^render row/render ^created_ms row/created_ms
    ^patch (if ($absent? row/patch) nil (get_object evolution/project row/patch))
@@ -467,9 +480,11 @@
     (api_failure 409 "exists" $"A project named ${name} already exists."))
   (let width (int_field data "width" ^default 1024))
   (let height (int_field data "height" ^default 1024))
-  (let goal (plan_goal (require_agent bench) ($str/trim prompt) "goal-01"))
+  (let medium (text_field data "media" ^default "svg-scene/v1"))
+  (let profile (profile_for bench medium))
+  (let goal (plan_goal (require_agent bench) ($str/trim prompt) "goal-01" ^media medium))
   (let evolution
-    (create_evolution (project_dir bench name) name goal bench/profile
+    (create_evolution (project_dir bench name) name goal profile
       ^width width ^height height
       ^background (text_field data "background" ^default "#ffffff" ^limit 16)))
   (bench/projects .put name evolution)
@@ -500,7 +515,8 @@
     (let current (goal_of evolution source/goal))
     (let goal_id (next_goal_id evolution))
     (let planned
-      (plan_goal (require_agent bench) $"${current/request}\nNew direction: ${direction}" goal_id))
+      (plan_goal (require_agent bench) $"${current/request}\nNew direction: ${direction}" goal_id
+        ^media evolution/project/record/media))
     (let request planned/request)
     (let predecessor current/id)
     (set goal
@@ -619,6 +635,9 @@
                  (label "What should be drawn?"
                    (textarea ^id "new_prompt" ^rows "3" ^^required ^maxlength "4000" ^placeholder "A cat at a window overlooking a rainy city at night."))
                  (div ^class "row"
+                   (label "Medium" (select ^id "new_media"
+                     (option ^value "svg-scene/v1" "SVG")
+                     (option ^value "raster-painting/v1" "Raster painting")))
                    (label ^class "grow" "Name (optional)"
                      (input ^id "new_name" ^maxlength "64" ^placeholder "taken from the request when empty"))
                    (label "Width" (input ^id "new_width" ^type "number" ^min "16" ^max "4096" ^value "1024"))

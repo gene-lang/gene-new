@@ -9,7 +9,7 @@
 (import [reject node? kind_of str? list? children_named child_named text_of
          sorted_keys limits] ^from "./types")
 (import [valid_id? printable?] ^from "./scene_schema")
-(import [index_scene] ^from "./scene")
+(import [index_scene medium_of] ^from "./media")
 
 (let results ["pass" "partial" "fail" "unknown"])
 (let severities ["major" "minor"])
@@ -32,9 +32,9 @@
 # ── goals ──────────────────────────────────────────────────────────────────
 
 # The structural requirement every goal carries: the scene is valid in the
-# supported SVG subset. The application computes it; a model never judges it.
+# selected medium. The application computes it; a model never judges it.
 (const medium_requirement
-  "(requirement ^id \"medium\" ^strength \"hard\" ^check \"structural\" \"All visible content uses the supported SVG subset.\")")
+  "(requirement ^id \"medium\" ^strength \"hard\" ^check \"structural\" \"The program uses the supported artwork medium.\")")
 
 # Validate a (goal ...) node and return it frozen, with the medium requirement
 # present. Requirements are (requirement ^id ^strength ^check [^text] "...").
@@ -72,6 +72,9 @@
                       (printable? item/text))
             (reject "invalid_goal" "^text is an exact string on a structural requirement"
               ^target item/id ^field ["text"])))
+        (if (&& (== item/check "structural") ($void? item/text) (!= item/id "medium"))
+          (reject "invalid_goal" "Only the medium check and exact ^text checks have structural evaluators; describe visible requirements with ^check visual."
+            ^target item/id ^field ["check"]))
         (if (== item/check "visual") (set visual (+ visual 1)))
         (if (== item/id "medium") (set has_medium true))
         (body .push item))
@@ -139,7 +142,9 @@
       (if ($void? item/text)
         (then
           (checks .push
-            (check_node item/id "pass" "The scene passes svg-scene/v1 validation." "structural")))
+            (if (== item/id "medium")
+              (check_node item/id "pass" $"The program passes ${(medium_of scene)} validation." "structural")
+              (check_node item/id "unknown" "No deterministic evaluator exists for this stored structural requirement." "structural"))))
         (else
           (let wanted item/text)
           (if ((text_contents scene) .contains? wanted)

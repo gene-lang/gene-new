@@ -1,0 +1,52 @@
+# Minimal medium boundary. Revision storage still calls the canonical value
+# `scene` for compatibility; its root/schema identify its actual medium.
+(mod imagination_media)
+(import [kind_of child_named reject] ^from "./types")
+(import [normalize_scene : normalize_svg blank_scene : blank_svg index_scene : index_svg
+  world_bounds : bounds_svg defs_node : defs_svg top_level : top_svg] ^from "./scene")
+(import [apply_patch : patch_svg replay_normalized : replay_svg] ^from "./patch")
+(import [diff_scenes : diff_svg] ^from "./diff")
+(import [render_scene : render_svg render_crop : crop_svg profile_manifest : profile_svg
+  open_profile : open_svg] ^from "./render")
+(import [normalize_program blank_program] ^from "./raster/schema")
+(import [index_program diff_programs] ^from "./raster/program")
+(import [apply_program_patch replay_program_patch] ^from "./raster/patch")
+(import [render_program open_raster_profile raster_profile_manifest raster_crop] ^from "./raster/render")
+
+(fn raster? [value] (== (kind_of value) "painting"))
+(fn raster_profile? [profile] (== profile/id "raster-cairo-linear/v1"))
+(fn medium_of [value] (if (raster? value) "raster-painting/v1" "svg-scene/v1"))
+(fn open_profile [directory : Str, ^media media = "svg-scene/v1"]
+  (if (["raster" "raster-painting/v1"] .contains? media) (return (open_raster_profile)))
+  (if_not (["svg" "svg-scene/v1"] .contains? media) (reject "unknown_medium" $"unknown medium ${media}"))
+  (open_svg directory))
+(fn profile_manifest [profile]
+  (if (raster_profile? profile) (raster_profile_manifest profile) (profile_svg profile)))
+(fn normalize_scene [value] (if (raster? value) (normalize_program value) (normalize_svg value)))
+(fn blank_scene [^width width = 1024, ^height height = 1024, ^background background = "#ffffff", ^media media = "svg-scene/v1"]
+  (if (["raster" "raster-painting/v1"] .contains? media)
+    (blank_program ^width width ^height height ^background
+      (if (== background "none") "#00000000" (if (== ($str/byte_size background) 7) $"${background}ff" background)))
+    (blank_svg ^width width ^height height ^background background)))
+(fn index_scene [value] (if (raster? value) (index_program value) (index_svg value)))
+(fn world_bounds [entries, id]
+  (let entry (entries .get id))
+  (if (&& (! ($absent? entry)) ($has_key? entry "bounds")) entry/bounds (bounds_svg entries id)))
+(fn defs_node [value] (if (raster? value) (child_named value "resources") (defs_svg value)))
+(fn top_level [value] (if (raster? value) ($drop ($body value) 1) (top_svg value)))
+(fn apply_patch [value, patch, ^expected_base expected_base = nil, ^expected_goal expected_goal = nil,
+                 ^prefix prefix = "", ^taken taken = nil, ^policy policy = nil]
+  (let apply (if (raster? value) apply_program_patch patch_svg))
+  (apply value patch ^expected_base expected_base ^expected_goal expected_goal ^prefix prefix ^taken taken ^policy policy))
+(fn replay_normalized [value, patch, ^policy policy = nil]
+  (if (raster? value) (replay_program_patch value patch ^policy policy) (replay_svg value patch ^policy policy)))
+(fn diff_scenes [left, right, ^left_name left_name = "", ^right_name right_name = ""]
+  (if (!= (raster? left) (raster? right)) (reject "wrong_media" "cannot compare different media"))
+  (let compare (if (raster? left) diff_programs diff_svg))
+  (compare left right ^left_name left_name ^right_name right_name))
+(fn render_scene [profile, value, out : Str, ^assets assets = nil]
+  (if (!= (raster? value) (raster_profile? profile)) (reject "wrong_media" "program and renderer profile disagree"))
+  (if (raster? value) (render_program profile value out ^assets assets) (render_svg profile value out)))
+(fn render_crop [profile, value, source : Str, out : Str, rectangle, ^zoom zoom = 2]
+  (if (raster? value) (raster_crop profile value source out rectangle ^zoom zoom)
+    (crop_svg profile value source out rectangle ^zoom zoom)))

@@ -10,14 +10,15 @@
 (import [reject DomainError RenderError ModelError StoreError default_budgets limits
          node? kind_of str? list? children_named child_named text_of sorted_keys
          field_label] ^from "./types")
-(import [read_domain canonical digest_of index_scene world_bounds top_level defs_node]
+(import [read_domain canonical digest_of]
   ^from "./scene")
 (import [finite?] ^from "./scene_schema")
-(import [apply_patch] ^from "./patch")
+(import [apply_patch index_scene world_bounds top_level defs_node raster?] ^from "./media")
 (import [validate_goal validate_policy read_review build_evaluation accept_candidate
          completion better? check_line requirements_of requirement_ids result_of
          major_issues] ^from "./evaluation")
 (import [system_prompt planner_prompt reviewer_prompt prompt_version] ^from "./prompts/agent")
+(import [raster_system_prompt] ^from "./raster/prompts")
 (import [VisionAgent] ^from "./adapters/model")
 (import [note seconds first_line] ^from "./log")
 
@@ -255,7 +256,7 @@
   (repeat i in depth (set pad $"${pad}  "))
   (let label (?? (($props node) .get "label") ""))
   (lines .push $"${pad}${node/id} ${(kind_of node)} ${label}")
-  (if (["g" "linear_gradient" "radial_gradient" "clip_path"] .contains? (kind_of node))
+  (if (["g" "linear_gradient" "radial_gradient" "clip_path" "layer" "gradient"] .contains? (kind_of node))
     (for child in ($body node) (outline child (+ depth 1) lines)))
   nil)
 
@@ -354,7 +355,7 @@
        ^media "image/png" ^bytes crop/bytes}))
   # `context` restates the identifiers in the text for the application's own
   # use (logging, fixtures); a provider adapter does not send it.
-  {^system (system_prompt) ^parts parts ^max_tokens 16000
+  {^system (if (raster? head/scene) (raster_system_prompt) (system_prompt)) ^parts parts ^max_tokens 16000
    ^context {^head head/id ^pending (if ($absent? pending) nil pending/id)
              ^newest newest/id ^image newest/image ^goal goal/id
              ^patch_id state/allocation/patch_id ^prefix state/allocation/prefix}})
@@ -371,14 +372,15 @@
 # ── planning and standalone review ─────────────────────────────────────────
 
 # Convert a request into a validated goal record with one model call.
-(fn plan_goal [agent, request : Str, goal_id : Str, ^attempts attempts : Int = 3] : Any
+(fn plan_goal [agent, request : Str, goal_id : Str, ^attempts attempts : Int = 3,
+               ^media media = "svg-scene/v1"] : Any
   (var feedback "")
   (repeat attempt in attempts
     (note "planner" $"asking ${(model_name agent)} to turn the request into a goal (attempt ${(+ attempt 1)} of ${attempts})…")
     (let asked ($os/monotonic_ms))
     (let reply
       (agent .VisionAgent:plan
-        {^system (planner_prompt) ^max_tokens 4000
+        {^system (planner_prompt ^media media) ^max_tokens 4000
          ^parts [(text_part $"Goal id: ${goal_id}\nRequest: ${request}${feedback}")]}))
     (note "planner" $"model replied in ${(seconds (- ($os/monotonic_ms) asked))}")
     (try
@@ -465,9 +467,10 @@
   (state .put "best" state/head)
   (let budgets state/budgets)
   (let profile (session .DrawingSession:profile))
+  (let active_prompt_version (if (raster? state/head/scene) "raster-agent/v1" prompt_version))
   (state/seen .put (digest_of (canonical state/head/scene)) true)
   (session .DrawingSession:event "run_started"
-    {^goal state/goal/id ^head state/head/id ^budgets budgets ^prompt prompt_version})
+    {^goal state/goal/id ^head state/head/id ^budgets budgets ^prompt active_prompt_version})
 
   (fn remaining_of [view] : Any
     (let report (completion state/goal view/evaluation view/id view/image profile))
@@ -543,7 +546,7 @@
     (state .put "input_tokens" (+ state/input_tokens reply/usage/input))
     (state .put "output_tokens" (+ state/output_tokens reply/usage/output))
     (session .DrawingSession:event "model_call"
-      {^purpose "decide" ^model reply/model ^usage reply/usage ^prompt prompt_version
+      {^purpose "decide" ^model reply/model ^usage reply/usage ^prompt active_prompt_version
        ^submitted reply/submitted ^response reply/text ^ms (- ($os/monotonic_ms) asked)})
     # What was asked for is consumed by this response, whatever it says.
     (state .put "feedback" [])

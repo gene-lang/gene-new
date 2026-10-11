@@ -1,8 +1,8 @@
 # Imagination
 
 An autonomous drawing agent written in Gene. A multimodal model draws by
-writing small, validated patches to a structured SVG scene; the application
-renders each state through PDF to a clean PNG, shows the model the actual
+writing small, validated patches to an SVG scene or a deterministic raster
+painting program. The application renders each state to a clean PNG, shows the model the actual
 pixels, and keeps every step in a branching history (`Evolution`) that a
 person can inspect, compare, and continue from.
 
@@ -32,6 +32,13 @@ the decisions made during implementation, and what is still open.
 The DejaVu fonts in `fonts/` are bundled (license in `fonts/LICENSE_DEJAVU`);
 rendering never reaches a system font.
 
+Raster painting uses Cairo for path coverage, project-owned linear-light
+brushes/compositing and libpng. It does not require the SVG/PDF tools. Build
+the worker with `gene run src/genex/raster/tools/build.gene` from the repository
+root, then set `GENE_RASTER_WORKER` to its printed absolute path. See
+[raster setup and behavior](docs/raster-implementation.md) for dependencies,
+profiles, limits and deterministic pixel verification.
+
 ## Quick start
 
 ```sh
@@ -41,6 +48,11 @@ bin/imagination create cat-window --prompt "A stylized cat beside a rainy city w
 bin/imagination run cat-window --max-iterations 8
 bin/imagination serve                        # prints http://127.0.0.1:<port>/
 ```
+
+For raster, use `create sphere --media raster --prompt "A red sphere with soft
+lighting."` and `serve --media raster`. The workbench also offers **Raster
+painting** when creating a project. Every edit repaints the saved program
+from blank; no image-generation service is invoked by the renderer.
 
 `bin/imagination` runs `${GENE_BINARY:-gene}`. Projects live in
 `$IMAGINATION_HOME` (default `examples/imagination/projects/`).
@@ -64,7 +76,7 @@ two revisions, and **Choose as result** to record the selection.
 | Command | Purpose |
 | --- | --- |
 | `doctor [--no-model] [--save FILE]` | Check tool paths and flags, font isolation, a conversion fixture, the PNG header, and image transport |
-| `render <scene.gene> <out>` | Export SVG, PDF, PNG, and a manifest for one scene |
+| `render <program.gene> <out>` | Render SVG or raster; raster produces PNG and a manifest |
 | `draw <out> <patch.gene>...` | Apply handwritten patches to a blank scene, exporting every step |
 | `spike <run-dir> --prompt TEXT` | The milestone 2 loop: draw with a live model, keeping each step as files |
 | `create`, `run`, `history`, `show`, `continue`, `apply`, `compare`, `replay`, `export` | Project operations on an Evolution |

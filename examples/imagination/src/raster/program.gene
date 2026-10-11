@@ -1,0 +1,82 @@
+(mod imagination_raster_program)
+(import [kind_of node? child_named] ^from "../types")
+(import [canonical] ^from "../scene")
+
+(fn index_program [program]
+  (let entries {})
+  (let canvas [0 0 program/width program/height])
+  (fn walk [node, parent, position]
+    (let kind (kind_of node))
+    (let id (if (== kind "painting") "painting" (if (== kind "resources") "resources" node/id)))
+    (if_not ($absent? id)
+      (entries .put id {^id id ^kind kind ^parent parent ^position position ^node node ^bounds canvas}))
+    (var index 0)
+    (for child in ($body node)
+      (if (node? child) (walk child (?? id parent) index))
+      (set index (+ index 1))))
+  (walk program nil 0)
+  entries)
+
+# Rebuilding preserves immutable input snapshots and all list order.
+(fn replace [program, target : Str, replacement]
+  (let kind (kind_of program))
+  (let id (if (== kind "painting") "painting" (if (== kind "resources") "resources" program/id)))
+  (if (== id target) (return replacement))
+  (let body [])
+  (for child in ($body program)
+    (let result (if (node? child) (replace child target replacement) child))
+    (if_not ($nil? result) (body .push result)))
+  ($node/rebuild program ^body body))
+
+(fn resource_ids [node]
+  (let found [])
+  (fn walk [value]
+    (for field in ["brush" "paint" "mask"]
+      (let id (($props value) .get field))
+      (if (&& (! ($absent? id)) (! (found .contains? id))) (found .push id)))
+    (for child in ($body value) (if (node? child) (walk child))))
+  (walk node)
+  found)
+
+(fn diff_programs [before, after, ^left_name left_name = "", ^right_name right_name = ""]
+  (let left (index_program before))
+  (let right (index_program after))
+  (let changes [])
+  (for [key entry] in left
+    (let id entry/id)
+    (if_not ($has_key? right id)
+      (let kind entry/kind) (let parent entry/parent)
+      (changes .push `(removed ^id %id ^kind %kind ^parent %parent ^^pixel))))
+  (for [key entry] in right
+    (let id entry/id)
+    (let other (left .get id))
+    (let kind entry/kind) (let parent entry/parent)
+    (if ($absent? other)
+      (then (changes .push `(added ^id %id ^kind %kind ^parent %parent ^^pixel)))
+      (else
+        (let names {})
+        (for [key value] in ($props entry/node) (names .put ($to_str key) true))
+        (for [key value] in ($props other/node) (names .put ($to_str key) true))
+        (for [key unused] in names
+          (let name ($to_str key))
+          (let old (($props other/node) .get name)) (let new (($props entry/node) .get name))
+          (if_yes (!= old new)
+            (let field [name]) (let pixel (! (["label" "role"] .contains? name)))
+            (changes .push `(changed ^id %id ^field %field ^before %old ^after %new ^pixel %pixel))))
+        (if_yes (!= parent other/parent)
+          (let old other/parent)
+          (changes .push `(reparented ^id %id ^before %old ^after %parent ^^pixel)))
+        (let old ($body other/node)) (let new ($body entry/node))
+        (if (["painting" "resources" "layer"] .contains? kind)
+          (then
+            (let prior ($map old (fn [n] (?? n/id (kind_of n)))))
+            (let current ($map new (fn [n] (?? n/id (kind_of n)))))
+            (if (!= prior current) (changes .push `(reordered ^parent %id ^before %prior ^after %current ^^pixel))))
+          (else
+            (if (!= (canonical old) (canonical new))
+              (changes .push `(changed ^id %id ^field ["content"] ^before %old ^after %new ^^pixel))))))))
+  (var pixel_changes 0) (var semantic_changes 0)
+  (for change in changes
+    (if change/pixel (set pixel_changes (+ pixel_changes 1)) (set semantic_changes (+ semantic_changes 1))))
+  ($freeze `(diff ^schema 1 ^left %left_name ^right %right_name
+    ^pixel_changes %pixel_changes ^semantic_changes %semantic_changes %changes...)))

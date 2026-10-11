@@ -1,0 +1,4 @@
+{^format 1 ^name "genex/raster" ^version "0.1.0"
+ ^description "Deterministic CPU painting: linear-light surfaces, paths and pressure brushes"
+ ^library {^entry "src/raster.gene"}
+ ^files {^include ["package.gene" "README.md" "src/**" "native/**" "tools/**"]}}

@@ -7,8 +7,8 @@
 (mod imagination_rundir)
 
 (import [StoreError kind_of node? str? list? map? number? sorted_keys] ^from "./types")
-(import [canonical digest_of read_canonical blank_scene] ^from "./scene")
-(import [render_scene render_crop profile_manifest] ^from "./render")
+(import [canonical digest_of read_canonical] ^from "./scene")
+(import [blank_scene render_scene render_crop profile_manifest raster? raster_profile?] ^from "./media")
 (import [build_evaluation] ^from "./evaluation")
 (import [DrawingSession] ^from "./agent")
 (import [note event_line] ^from "./log")
@@ -73,7 +73,8 @@
               ^quiet quiet}))
   (write_node ($path/join root "goal.gene") goal)
   (write_node ($path/join root "render-profile.gene") (profile_manifest profile))
-  (let scene (blank_scene ^width width ^height height ^background background))
+  (let scene (blank_scene ^width width ^height height ^background background
+    ^media (if (raster_profile? profile) "raster-painting/v1" "svg-scene/v1")))
   (let directory (revision_dir run "r000"))
   (let bundle (render_scene profile scene directory))
   (write_node ($path/join directory "scene.gene") scene)
@@ -166,7 +167,8 @@
 
   (message crop [revision, rectangle] : Any
     (let prefix ($path/join self/root $"crops/${revision/id}-${($crypto/random_hex 4)}"))
-    (let crop (render_crop self/profile revision/scene revision/pdf_path prefix rectangle))
+    (let crop (render_crop self/profile revision/scene
+      (if (raster? revision/scene) revision/png_path revision/pdf_path) prefix rectangle))
     (crop .put "bytes" ($fs/read_bytes $"${prefix}.png"))
     crop)
 

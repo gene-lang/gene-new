@@ -235,7 +235,8 @@
     (let current (goal_of self/evolution self/state/goal))
     (let goal_id (next_goal_id self/evolution))
     (let planned
-      (plan_goal self/agent $"${current/request}\nAdditional instruction: ${instruction}" goal_id))
+      (plan_goal self/agent $"${current/request}\nAdditional instruction: ${instruction}" goal_id
+        ^media self/evolution/project/record/media))
     (let request planned/request)
     (let predecessor current/id)
     (let goal

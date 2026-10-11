@@ -174,6 +174,27 @@
 (fn put_node [project, node] : Str
   (put_object project (canonical node)))
 
+# Immutable grayscale mask assets. Bytes are verified on every read, just as
+# canonical text objects are; dimensions and sampling live in the program.
+(fn put_asset [project, bytes : Bytes] : Str
+  (if (> ($binary/size bytes) 4194304) (store_failure "asset_too_large" "mask assets are at most 4 MiB"))
+  (let digest (digest_of bytes))
+  (let directory ($path/join project/root "assets"))
+  ($fs/make_dir directory)
+  (let path ($path/join directory (hex_of digest)))
+  (if ($fs/exists? path)
+    (then
+      (if (!= (digest_of ($fs/read_bytes path)) digest) (store_failure "corrupt_asset" "stored mask asset is corrupt")))
+    (else ($fs/write_bytes_atomic path bytes)))
+  digest)
+
+(fn get_asset [project, digest : Str] : Bytes
+  (let path ($path/join project/root "assets" (hex_of digest)))
+  (if_not ($fs/exists? path) (store_failure "missing_asset" $"mask asset ${digest} is missing"))
+  (let bytes ($fs/read_bytes path))
+  (if (!= (digest_of bytes) digest) (store_failure "corrupt_asset" $"mask asset ${digest} changed"))
+  bytes)
+
 # Read an object and verify its digest. A mismatch is corruption: it is
 # reported precisely and never repaired by recreating evidence.
 (fn get_object [project, digest : Str] : Str
@@ -322,9 +343,10 @@
   (let id $"project-${($crypto/random_hex 8)}")
   (let created ($os/wall_ms))
   (let profile_id profile_manifest/id)
+  (let medium (if (== profile_id "raster-cairo-linear/v1") "raster-painting/v1" media_id))
   (let record
     ($freeze
-      `(project ^schema 1 ^id %id ^name %name ^media %media_id
+      `(project ^schema 1 ^id %id ^name %name ^media %medium
          ^render_profile %profile_id ^canonical %canonical_version ^created_ms %created)))
   ($fs/write_text_atomic ($path/join root "project.gene") (canonical record))
   ($fs/write_text_atomic ($path/join root "render-profile.gene") (canonical profile_manifest))

@@ -1,0 +1,68 @@
+(mod raster)
+(type RasterError ^props {^message Str} ^impl [Error])
+(impl Error for RasterError)
+(let root ($path/parent ($path/parent this_mod/.path)))
+
+(fn checked [command : Str, args, ^dir dir = nil, ^timeout_ms timeout_ms = 30000]
+  (let result (if ($absent? dir)
+    ($os/exec command args... ^timeout_ms timeout_ms ^max_bytes 1048576)
+    ($os/exec command args... ^timeout_ms timeout_ms ^max_bytes 1048576 ^dir dir)))
+  (if (|| result/timed_out result/truncated (!= result/status 0))
+    (fail (RasterError ^message $"Raster tool failed: ${result/stderr}")))
+  ($str/trim result/stdout))
+
+(fn default_worker [] : Str
+  (?? ($os/env? "GENE_RASTER_WORKER") ($path/join root "build" "raster-worker")))
+
+# Runtime dependency bytes enter profile identity; a version string alone
+# cannot distinguish patched builds. Resolve all Mach-O dependencies, including
+# Cairo's coverage engine, recursively. Linux uses ldd's resolved full paths.
+(fn dependencies [worker : Str]
+  (let pending [worker])
+  (let seen {})
+  (let records [])
+  (var cursor 0)
+  (while (< cursor pending/.size)
+    (let file pending/%cursor)
+    (set cursor (+ cursor 1))
+    (if_not ($has_key? seen file)
+      (seen .put file true)
+      (let mac ($fs/exists? "/usr/bin/otool"))
+      (let output (checked (if mac "/usr/bin/otool" "/usr/bin/ldd") (if mac ["-L" file] [file])))
+      (for line in ($str/split output "\n")
+        (let text ($str/trim line))
+        (var path "")
+        (if mac
+          (set path (($str/split text " ") .first))
+          (then
+            (let parts ($str/split text "=> "))
+            (if (== parts/.size 2) (set path (($str/split parts/1 " ") .first)))))
+        (if (&& ($str/starts_with? path "/") (! ($str/ends_with? path ":")) (! ($has_key? seen path)))
+          (if ($fs/exists? path)
+            (then
+              (records .push [path ($crypto/sha256 ($fs/read_bytes path))])
+              (pending .push path))
+            # macOS system libraries live in the dyld shared cache; uname's
+            # complete OS build pins this part of the profile.
+            (else (records .push [path "system-shared-cache"])))))))
+  ($order/sort_by records (fn [item] item/0)))
+
+(fn worker_profile [^worker worker : Str = (default_worker)]
+  (if_not ($fs/exists? worker)
+    (fail (RasterError ^message "Build genex/raster/tools/build.gene first, or set GENE_RASTER_WORKER.")))
+  (let binary ($fs/real_path worker))
+  (let version (checked binary ["--profile"]))
+  {^worker binary ^worker_digest ($crypto/sha256 ($fs/read_bytes binary))
+   ^version version ^system (checked "/usr/bin/uname" ["-s" "-r" "-m" "-v"])
+   ^dependencies (dependencies binary)})
+
+# The caller owns a private staging directory. No output path is carried in
+# the numeric request. Assets are verified by the caller and named by mask
+# index. All output files have fixed names; each call starts a fresh process.
+(fn worker_render [profile, request : Str, directory : Str]
+  (if (> ($str/byte_size request) 8388608)
+    (fail (RasterError ^message "Raster request exceeds 8 MiB.")))
+  (if (!= profile/worker_digest ($crypto/sha256 ($fs/read_bytes profile/worker)))
+    (fail (RasterError ^message "Raster worker changed since profile admission.")))
+  ($fs/write_text ($path/join directory "request.txt") request)
+  (checked profile/worker [] ^dir directory ^timeout_ms 25000))

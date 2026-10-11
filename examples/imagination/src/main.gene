@@ -5,9 +5,8 @@
 (mod imagination_main)
 
 (import [DomainError RenderError StoreError ModelError field_label] ^from "./types")
-(import [normalize_scene blank_scene read_domain canonical scene_digest digest_of] ^from "./scene")
-(import [apply_patch] ^from "./patch")
-(import [open_profile render_scene] ^from "./render")
+(import [read_domain read_canonical canonical scene_digest digest_of] ^from "./scene")
+(import [normalize_scene blank_scene apply_patch open_profile render_scene medium_of raster?] ^from "./media")
 (import [run_doctor print_doctor transport_image transport_word] ^from "./doctor")
 (import [model_config open_model check_image_transport public_config] ^from "./adapters/model")
 (import [validate_goal validate_policy check_line] ^from "./evaluation")
@@ -18,35 +17,37 @@
          selected goal_of next_goal_id] ^from "./evolution")
 (import [start_run execute_run run_row] ^from "./jobs")
 (import [serve_workbench] ^from "./server")
+(import [put_asset] ^from "./store")
 
 (const usage "Usage: imagination <command> [options]
 
 Deterministic drawing
   doctor [--no-model] [--save FILE]      check tools, fonts, conversion, and
                                          image transport to the model
-  render <scene.gene> <out-dir>          export SVG, PDF, and PNG for a scene
+  render <program.gene> <out-dir>        render an SVG scene or raster painting
   draw <out-dir> <patch.gene>...         apply handwritten patches to a blank
        [--width N] [--height N]          scene, exporting every step
-       [--background #rrggbb] [--prefix P]
+       [--background #rrggbb] [--prefix P] [--media svg|raster]
 
 Projects (IMAGINATION_HOME, default examples/imagination/projects)
   create <project> --prompt TEXT         plan a goal and create a blank history
-       [--goal goal.gene] [--policy policy.gene] [--width N] [--height N]
+       [--media svg|raster] [--goal goal.gene] [--policy policy.gene] [--width N] [--height N]
   run <project> [--line NAME] [--max-iterations N]   draw on a line
   history <project>                      list lines and revisions
   show <project> --revision R            one revision's record
   continue <project> --from R --line NAME [--prompt TEXT]   fork a line
   apply <project> <patch.gene> [--line NAME] [--prefix P]   publish a patch
+  asset <project> <grayscale.raw>        store an immutable raster mask; print its digest
   compare <project> --left R --right R   structural diff of two revisions
   replay <project> --path FROM:TO        exact replay, no model
   export <project> --revision R --format svg|pdf|png [--out FILE]
-  serve [project] [--port N]             the web workbench on 127.0.0.1
+  serve [project] [--port N] [--media svg|raster]   the web workbench on 127.0.0.1
 
 Drawing-loop spike (files only, live model)
   spike <run-dir> --prompt TEXT          draw from a blank canvas, keeping each
        [--goal goal.gene]                step in the run directory
        [--policy policy.gene] [--max-iterations N]
-       [--width N] [--height N] [--background #rrggbb]
+       [--width N] [--height N] [--background #rrggbb] [--media svg|raster]
 ")
 
 # ── arguments ──────────────────────────────────────────────────────────────
@@ -113,14 +114,16 @@ Drawing-loop spike (files only, live model)
 
 (fn command_render [args] : Int
   (if (!= args/words/.size 2) (usage_error "render needs <scene.gene> <out-dir>"))
-  (let scene (normalize_scene (read_domain ($fs/read_text (absolute args/words/0)) ^head "scene")))
+  (let text ($fs/read_text (absolute args/words/0)))
+  (let scene (normalize_scene (try (read_domain text ^head "painting") catch DomainError (read_domain text ^head "scene"))))
   (let out (ensure_dir (absolute args/words/1)))
-  (let profile (open_profile ($path/join out ".work")))
+  (let profile (open_profile ($path/join out ".work") ^media (medium_of scene)))
   (let bundle (render_scene profile scene out))
   ($fs/write_text ($path/join out "scene.gene") (canonical scene))
   ($println $"scene ${bundle/scene_digest}")
-  ($println $"svg   ${bundle/svg_digest}")
-  ($println $"pdf   ${bundle/pdf_digest}")
+  (if (raster? scene)
+    (then ($println $"pixel ${bundle/pixel_digest}"))
+    (else ($println $"svg   ${bundle/svg_digest}") ($println $"pdf   ${bundle/pdf_digest}")))
   ($println $"png   ${bundle/png_digest} ${bundle/width} x ${bundle/height}")
   ($println $"wrote ${out}")
   0)
@@ -134,12 +137,13 @@ Drawing-loop spike (files only, live model)
 (fn command_draw [args] : Int
   (if (< args/words/.size 2) (usage_error "draw needs <out-dir> and at least one patch file"))
   (let out (ensure_dir (absolute args/words/0)))
-  (let profile (open_profile ($path/join out ".work")))
+  (let medium (?? (args/options .get "media") "svg-scene/v1"))
+  (let profile (open_profile ($path/join out ".work") ^media medium))
   (let prefix (?? (args/options .get "prefix") ""))
   (var scene
     (blank_scene ^width (int_option args/options "width" 1024)
                  ^height (int_option args/options "height" 1024)
-                 ^background (?? (args/options .get "background") "#ffffff")))
+                 ^background (?? (args/options .get "background") "#ffffff") ^media medium))
   (var steps [])
   (var used {})
   (fn publish [index : Int, result] : Nil
@@ -175,7 +179,7 @@ Drawing-loop spike (files only, live model)
     (publish index result))
   (let base (canonical (blank_scene ^width (int_option args/options "width" 1024)
                                     ^height (int_option args/options "height" 1024)
-                                    ^background (?? (args/options .get "background") "#ffffff"))))
+                                    ^background (?? (args/options .get "background") "#ffffff") ^media medium)))
   (let rsvg profile/rsvg_version)
   (let poppler profile/poppler_version)
   ($fs/write_text ($path/join out "record.gene")
@@ -205,10 +209,11 @@ Drawing-loop spike (files only, live model)
     (usage_error "spike needs --prompt \"...\" or --goal <goal.gene>"))
   (let root (ensure_dir (absolute args/words/0)))
   (let agent (open_model))
-  (let profile (open_profile ($path/join root ".work")))
+  (let medium (?? (args/options .get "media") "svg-scene/v1"))
+  (let profile (open_profile ($path/join root ".work") ^media medium))
   (let goal
     (if ($absent? goal_file)
-      (plan_goal agent prompt "goal-01")
+      (plan_goal agent prompt "goal-01" ^media medium)
       (validate_goal (read_domain ($fs/read_text (absolute goal_file)) ^head "goal"))))
   (let policy_file (args/options .get "policy"))
   (let policy
@@ -242,11 +247,12 @@ Drawing-loop spike (files only, live model)
 (fn project_root [name : Str] : Str
   ($path/join (projects_home) name))
 
-(fn work_profile [] : Any
-  (open_profile ($path/join (projects_home) ".work")))
+(fn work_profile [^media media = "svg-scene/v1"] : Any
+  (open_profile ($path/join (projects_home) ".work") ^media media))
 
 (fn with_project [name : Str, body] : Any
-  (let evolution (open_evolution (project_root name) (work_profile)))
+  (let record (read_canonical ($fs/read_text ($path/join (project_root name) "project.gene"))))
+  (let evolution (open_evolution (project_root name) (work_profile ^media record/media)))
   (try (body evolution) ensure (close_evolution evolution)))
 
 (fn command_create [args] : Int
@@ -257,13 +263,15 @@ Drawing-loop spike (files only, live model)
   (if (&& ($absent? prompt) ($absent? goal_file))
     (usage_error "create needs --prompt TEXT or --goal <goal.gene>"))
   ($fs/make_dir (projects_home))
+  (let medium (?? (args/options .get "media") "svg-scene/v1"))
+  (let profile (work_profile ^media medium))
   (let goal
     (if ($absent? goal_file)
-      (plan_goal (open_model) prompt "goal-01")
+      (plan_goal (open_model) prompt "goal-01" ^media medium)
       (validate_goal (read_domain ($fs/read_text (absolute goal_file)) ^head "goal"))))
   (let policy_file (args/options .get "policy"))
   (let evolution
-    (create_evolution (project_root name) name goal (work_profile)
+    (create_evolution (project_root name) name goal profile
       ^width (int_option args/options "width" 1024)
       ^height (int_option args/options "height" 1024)
       ^background (?? (args/options .get "background") "#ffffff")
@@ -330,7 +338,7 @@ Drawing-loop spike (files only, live model)
         (let current (goal_of evolution (/goal (revision_row evolution from))))
         (let goal_id (next_goal_id evolution))
         (let planned (plan_goal (open_model) $"${current/request}
-New direction: ${direction}" goal_id))
+New direction: ${direction}" goal_id ^media evolution/project/record/media))
         (let request planned/request)
         (let predecessor current/id)
         (set goal ($node/rebuild planned
@@ -363,6 +371,13 @@ New direction: ${direction}" goal_id))
       (for line in report/lines ($println $"- ${line}"))
       0)))
 
+(fn command_asset [args] : Int
+  (if (!= args/words/.size 2) (usage_error "asset needs <project> <grayscale.raw>"))
+  (with_project args/words/0
+    (fn [evolution]
+      ($println (put_asset evolution/project ($fs/read_bytes (absolute args/words/1))))
+      0)))
+
 (fn command_replay [args] : Int
   (if (!= args/words/.size 1) (usage_error "replay needs <project> --path FROM:TO"))
   (let range ($str/split (?? (args/options .get "path") "") ":"))
@@ -372,8 +387,8 @@ New direction: ${direction}" goal_id))
       (let report (replay_exact evolution range/0 range/1))
       (for step in report/steps
         (let scene_mark (if step/scene_ok "ok" "MISMATCH"))
-        (let svg_mark (if step/svg_ok "ok" "MISMATCH"))
-        ($println $"${step/revision} scene ${scene_mark} svg ${svg_mark} ${step/problem}"))
+        (let render_mark (if step/render_ok "ok" "MISMATCH"))
+        ($println $"${step/revision} program ${scene_mark} render ${render_mark} ${step/problem}"))
       ($println (if report/ok "exact replay reproduced every digest"
                   $"first mismatch at ${report/first_mismatch}"))
       (if report/ok 0 1))))
@@ -398,7 +413,8 @@ New direction: ${direction}" goal_id))
   (if_yes (== args/words/.size 1)
     (if_not ($fs/exists? ($path/join (project_root args/words/0) "project.gene"))
       (usage_error $"there is no project ${args/words/0} in ${home}")))
-  (serve_workbench home (work_profile) agent ^port (int_option args/options "port" 0)))
+  (serve_workbench home (work_profile ^media (?? (args/options .get "media") "svg-scene/v1")) agent
+    ^port (int_option args/options "port" 0)))
 
 # ── routing ────────────────────────────────────────────────────────────────
 
@@ -420,6 +436,7 @@ New direction: ${direction}" goal_id))
     (when "show" (command_show args))
     (when "continue" (command_continue args))
     (when "apply" (command_apply args))
+    (when "asset" (command_asset args))
     (when "compare" (command_compare args))
     (when "replay" (command_replay args))
     (when "export" (command_export args))

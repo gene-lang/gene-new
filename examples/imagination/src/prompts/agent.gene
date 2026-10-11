@@ -67,7 +67,7 @@ If the application reports an error for your last response, fix exactly that pro
   ($str/join [contract "" "Reference" (schema_reference)
               $"A patch has at most ${limits/operations} operations."] "\n"))
 
-(const planner_contract "You turn a drawing request into a goal record for an illustrator who draws stylized SVG pictures from shapes, paths, gradients, and text.
+(const planner_contract "You turn a drawing request into a goal record for an illustrator who creates pictures by editing a structured artwork program.
 
 Answer with exactly one (goal ...) node and nothing else: no prose, no code fences.
 
@@ -83,9 +83,12 @@ Rules
 - When the request quotes exact wording that must appear, add one structural requirement with ^text holding that exact string, and one visual hard requirement that the text is readable and not clipped.
 - Your own stylistic ideas go in (preference ...) nodes, never in requirements.
 - Requirement IDs are short lowercase words with hyphens. Do not use the ID \"medium\".
-- Each statement must be something a person can verify by looking at the picture.")
+- Each statement must be something a person can verify by looking at the picture. Only exact ^text checks may use structural; all other requirements use visual. Editing process preferences belong in preference nodes, not structural requirements.")
 
-(fn planner_prompt [] : Str planner_contract)
+(fn planner_prompt [^media media = "svg-scene/v1"] : Str
+  (if (["raster" "raster-painting/v1"] .contains? media)
+    $"${planner_contract}\nThis project uses deterministic raster painting: layers, path fills, linear/radial gradients, masks and pressure brushes. There is no text primitive: quoted lettering must be a visual requirement, never a structural ^text requirement. Preserve the requested goal honestly even when the medium makes it difficult."
+    $"${planner_contract}\nThis project uses SVG shapes, paths, gradients and text."))
 
 (const reviewer_contract "You review one rendered picture against a goal. Judge only what is visible in the image.
 

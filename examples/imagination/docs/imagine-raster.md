@@ -1,6 +1,6 @@
 # Imagine Raster: deterministic painting in the Gene Imagination framework
 
-**Status:** implementation design, version 0.1  
+**Status:** implemented core painting profile, design version 0.2
 **Framework:** [Evolution design](design.md) and the [proposed Media boundary](follow-on.md#4-a-generic-media-protocol)<br>
 **Authoritative medium:** an editable Gene painting program  
 **Visual output:** PNG rendered directly from raster surfaces  
@@ -22,7 +22,9 @@ Render(canonical_program, immutable_assets, renderer_profile) -> pixels, PNG, ma
 
 Identical complete inputs must produce identical pixel bytes within a certified renderer profile. The pinned PNG encoder must also produce identical PNG bytes. Model decisions and evaluation are outside this pure rendering function and can be nondeterministic; saved decisions are never regenerated during rendering.
 
-This document specializes the existing SVG application and the proposed Media boundary. It replaces the optional integer/pixel-art raster adapter in `follow-on.md` for this application. Extract the shared history/artifact boundary while retaining the SVG implementation and its tests; a generic Media interface is not yet implemented. Restoration and merging remain follow-on capabilities, not prerequisites already supplied by the application.
+This document specializes the existing SVG application. `src/media.gene` now supplies the minimum shared dispatch boundary for SVG and raster validation, editing, rendering, inspection and replay. It replaces the optional integer/pixel-art raster adapter in `follow-on.md`. Restoration, merging and adaptive replay remain follow-on capabilities; their sections below describe future work.
+
+Version 0.2 implements Cairo A8 path coverage, project-owned linear-light color/brush code, and libpng in a fresh subprocess per repaint. This replaces the proposed Skia bridge without delegating color blending to Cairo's gamma-encoded surfaces. See [raster-implementation.md](raster-implementation.md) for the executable contract, limits and remaining capabilities.
 
 ## 2. What is reused and what changes
 
@@ -31,7 +33,7 @@ This document specializes the existing SVG application and the proposed Media bo
 | `Evolution[T]`, immutable revisions, named lines, provenance | Instantiate conceptually as `Evolution[RasterPainting]` |
 | Drafts and atomic validated patches | Apply edits to the painting program |
 | Goals, locks, budgets, acceptance and completion | Reuse; add raster selection/dependency rules |
-| Proposed `Media` adapter boundary | Extract the minimum interface for SVG and `raster-painting/v1` |
+| `src/media.gene` dispatch boundary | Shared callers, separate SVG and `raster-painting/v1` implementations |
 | SQLite index and immutable object store | Store complete programs, assets, patches, evaluations, and renders |
 | Multimodal model adapter | Submit actual PNG bytes plus bounded program summaries |
 | Jobs, cancellation, idempotency, WebSockets | Reuse the same lifecycle and publication rules |
@@ -62,17 +64,18 @@ No generative image service is called inside the renderer. Initial texture asset
 | Dependency | Responsibility | Initial status |
 | --- | --- | --- |
 | Gene runtime and its Nim/native bridge | Program representation, application logic, history, model loop | Required, pin revision |
-| Skia CPU build | Geometry rasterization, gradient evaluation, surface operations, PNG encoding | Required, pin build |
-| Small project-owned C++ renderer bridge | Versioned ABI, program execution, deterministic brush stamper | Required |
+| Cairo CPU / A8 | Nonzero path coverage, gray antialiasing, tolerance 0.1 | Required, pin binary dependencies |
+| libpng / zlib | Fixed PNG encoding | Required, pin builds |
+| Project-owned C++ worker under `genex/raster` | Linear-light gradients/compositing, deterministic brush stamper, bounded numeric protocol | Required |
 | SQLite adapter | Transactional history/index operations | Reuse existing framework |
 | Gene web profile | Workbench and history visualization | Reuse existing frontend |
 | Image-capable model transport | Actual image submission and validated responses | Reuse existing model adapter |
 | libmypaint | Richer brush behavior through a separate profile | Optional after basic renderer |
 | CanvasKit | Browser-side interactive rendering if later needed | Optional |
 
-Skia provides gradient, shader, blend, and PNG facilities; it is not by itself a natural-media brush planner. Implement the initial brush stamper with explicit rules. Expose the renderer through a narrow project-owned C ABI wrapping Skia's C++ API; do not assume Skia provides the exact stable C ABI Gene needs.
+Cairo supplies only scalar coverage; its image format is explicitly A8 with queried row stride. The worker supplies float32 premultiplied linear-sRGB surfaces, gradient evaluation, the brush stamper and compositing. libpng supplies fixed Sub filtering, compression level 6, and one sRGB relative-colorimetric declaration. No gamma-space Cairo RGB blending is used. These narrow responsibilities avoid a larger Skia build dependency and keep the color contract directly testable.
 
-Start with a subprocess worker as the application boundary if direct FFI is inconvenient in the pinned checkout. A worker accepts one bounded structured request and writes artifacts under an application-owned staging directory. It cannot select arbitrary output paths or load arbitrary code. Direct FFI can later use the same request/result schema and ownership contract.
+The application uses a subprocess worker. It accepts a bounded numeric request in a private staging directory and writes fixed artifact names there. Requests contain no paths or code. Gene owns schema validation, canonical hashing, asset verification and invocation deadlines; the worker independently checks numeric ranges, normalization, references, memory/work limits and trailing data. Direct FFI can later reuse the pixel engine without changing the painting program.
 
 The browser initially displays backend-generated PNGs. It does not need its own painting engine. Any later browser preview is advisory unless verified under the same renderer profile. Inkscape, Poppler, and PDF conversion are not runtime dependencies for this raster route. Direct PNG export preserves the renderer's pixels; routing existing raster pixels through PDF cannot create missing detail.
 
@@ -161,7 +164,7 @@ A renderer profile is immutable and includes:
 | Input | Record |
 | --- | --- |
 | Semantics | Painting schema, normalization, brush and mask algorithm versions |
-| Executable | Worker/bridge digest, Skia revision and build configuration |
+| Executable | Worker digest, Cairo/libpng/zlib and recursively resolved library byte digests, compiler and flags |
 | Numerical environment | OS/architecture, selected CPU features, floating-point mode, compiler options |
 | Processing | CPU backend, operation order, threading policy, raster sampling rules |
 | Color | Working format, color conversion and blending policy, output profile |
@@ -213,7 +216,7 @@ Pressure zero deposits no paint. Default `min_radius_ratio` is 0.25. The initial
 
 ### 7.2 Coverage, texture, and opacity
 
-For each dab, evaluate its radial footprint at four fixed subpixel sample locations per affected pixel: `(1/4,1/4)`, `(3/4,1/4)`, `(1/4,3/4)`, `(3/4,3/4)`, relative to that pixel's top-left corner. Hard-round coverage is 1 inside the radius and 0 outside. For soft-round, coverage is 1 up to `hardness * r`, then falls linearly to zero at `r`; hardness 1 uses the hard-round rule. Average the four sample coverages. This is the custom brush's antialiasing contract; geometry fills use the pinned Skia coverage implementation.
+For each dab, evaluate its radial footprint at four fixed subpixel sample locations per affected pixel: `(1/4,1/4)`, `(3/4,1/4)`, `(1/4,3/4)`, `(3/4,3/4)`, relative to that pixel's top-left corner. Hard-round coverage is 1 inside or on the radius and 0 outside. For soft-round, coverage is 1 up to `hardness * r`, then falls linearly to zero at `r`; hardness 1 uses the hard-round rule. Average the four sample coverages. This is the custom brush's antialiasing contract; geometry fills use pinned Cairo A8 gray coverage.
 
 Multiply coverage by the defined texture sample, operation mask value, brush flow, stroke opacity, color alpha, and pressure. Clamp the result to `[0,1]`. All modulation inputs are explicitly defined, including texture origin, nearest/bilinear filtering, and transparent/clamped/repeated boundaries.
 
@@ -232,13 +235,13 @@ a_out = a_src + (1 - a_src) * a_dst
 
 `C_src` and `C_dst` are premultiplied linear RGB vectors. For eraser coverage `e`, multiply destination color and alpha by `1-e`. RGB at alpha zero is zero. Group/layer opacity scales both premultiplied color and alpha exactly once before layer compositing.
 
-Skia geometry/gradient output must be configured or converted into this same representation before project-owned compositing. Specify surface color type, channel order, row stride, and alpha representation explicitly at the bridge boundary. Do not assume raw Skia or libmypaint buffers share a format.
+Cairo A8 geometry coverage divides unsigned bytes by 255; it does not carry color. Project-owned gradients directly produce the float32 premultiplied representation. A future libmypaint adapter must explicitly convert its own pixel format.
 
 ## 8. Gradients, masks, filters, and richer brushes
 
 ### 8.1 Gradients and masks
 
-Gradient stop offsets are ordered in `[0,1]`, with explicit endpoints at 0 and 1; v1 rejects duplicate offsets. Colors are supplied as straight encoded sRGB RGBA, converted to linear premultiplied RGBA, then interpolated. Linear gradients project onto the defined axis; radial gradients use distance from the defined center divided by positive radius. Clamp the parameter outside the gradient extent. The implementation must verify that configured Skia behavior matches this policy, or evaluate the gradient in project-owned code.
+Gradient stop offsets are ordered in `[0,1]`, with explicit endpoints at 0 and 1; v1 rejects duplicate offsets. Colors are supplied as straight encoded sRGB RGBA, converted to linear premultiplied RGBA, then interpolated. Linear gradients project onto the defined axis; radial gradients use distance from the defined center divided by positive radius. Clamp the parameter outside the gradient extent. The worker evaluates gradients at pixel centers in project-owned code.
 
 Path masks rasterize at canvas resolution with the pinned coverage policy. Mask values represent scalar coverage, not sRGB color. A bitmap mask's placement, decode rules, and filtering are part of its resource definition. Rendering a mask is pure and may be reused within a single render; previous revision surfaces are not reused.
 
@@ -264,6 +267,7 @@ Supported patch operations are `insert_layer`, `remove_layer`, `set_layer`, `ins
 
 ```gene
 (patch
+  ^schema 1 ^id "patch-08" ^goal "goal-01"
   ^base "revision-07"
   ^media "raster-painting/v1"
   (intent "Move the highlight upward and make it narrower.")
@@ -293,7 +297,7 @@ RenderResult:
   diagnostics, render_statistics
 ```
 
-The application resolves asset refs and controls staging handles. The worker rechecks schema limits and verifies program/asset digests. Requests cannot introduce network loads, arbitrary executable flags, callbacks, or model-generated shader code. Error results are bounded typed data.
+The application resolves and verifies full asset digests, canonicalizes the program and controls staging directories. The worker receives only bounded numeric geometry and fixed-index raw grayscale files; it independently validates counts, bounds and file lengths. Gene computes identities from the actual returned pixel/PNG bytes. Requests cannot introduce network loads, arbitrary executable flags, callbacks, or model-generated shader code. Failures become bounded typed application errors.
 
 ### 10.2 Full render procedure
 
@@ -425,10 +429,10 @@ Publication order remains: validate/apply, full repaint, evaluate, write and flu
 | `raster/schema.gene` | Registered fields, limits, normalization, model documentation |
 | `raster/program.gene` | Immutable program traversal, identity, resource closure |
 | `raster/patch.gene` | Atomic editing, preconditions, locks, order anchors |
-| `raster/media.gene` | Implementation of the Media descriptor/interface extracted for the second medium |
+| `src/media.gene` | Minimum dispatch boundary shared by SVG and raster |
 | `raster/dependencies.gene` | Conservative regions, consumers, reads and order interactions |
 | `raster/render.gene` | Worker orchestration, full repaint, profiles, manifests and PNG handoff |
-| `native/raster/` | Skia wrapper, custom dab engine, asset decode and fixed encoder settings |
+| `src/genex/raster/` | Reusable native coverage/dab/compositing engine, Gene build/transport and fixed PNG encoder settings |
 | Existing evolution/store/jobs/server modules | Shared framework responsibilities |
 | `prompts/raster/` | Schema-derived drawing, evaluation and merge templates |
 | Existing `web/` | Raster inspectors and workbench specialization |
@@ -470,7 +474,7 @@ Implement schema/normalization, static masks, fills/gradients, round brushes, er
 
 ### Milestone 2: framework integration and web history
 
-Implement the raster `Media` adapter, program patches, transactional revisions, branches, restoration, program inspector, PNG viewer, and structural comparison.
+Implement the raster adapter, program patches, transactional revisions, branches, program inspector, PNG viewer, and structural comparison. Restoration remains a separate follow-on feature.
 
 **Acceptance:** branch from an early painting, develop two versions, reopen/restart the app, inspect all saved PNGs, and explicitly repaint each selected program with matching digests. Invalid/stale patches and render failures leave the accepted line unchanged.
 
@@ -529,9 +533,9 @@ Before coding, confirm the target Gene checkout's parser, numeric representation
 The rendering rules, schemas, limits, and milestone choices here are proposed application contracts. They must be implemented and verified; existing dependencies do not automatically guarantee them.
 
 - [design.md](design.md) and [follow-on.md](follow-on.md): implemented SVG/Evolution contracts and proposed Media, merge and restoration boundaries. This companion defines the deterministic raster specialization; its full-program repaint rule overrides the optional materialized-tile raster proposal for this application.
-- [Skia SkPaint overview](https://skia.org/docs/user/api/skpaint_overview/): primary documentation for gradient/shader and blending capabilities.
-- [Skia color management](https://skia.org/docs/user/color/): primary documentation for color-space conversion and alpha handling. The project's linear working/compositing policy still needs explicit configuration.
-- [Skia PNG encoder interface](https://skia.googlesource.com/skia/+/refs/heads/main/include/encode/SkPngEncoder.h): direct pixel/image encoding and encoder options.
+- [Cairo paths](https://www.cairographics.org/manual/cairo-Paths.html): geometry path construction and coverage.
+- [Cairo image surfaces](https://www.cairographics.org/manual/cairo-Image-Surfaces.html): A8 format, surface data and row stride.
+- [libpng manual](https://www.libpng.org/pub/png/libpng-manual.txt): explicit filtering, compression and sRGB chunk configuration.
 - [libmypaint](https://github.com/mypaint/libmypaint) and [surface interface](https://github.com/mypaint/libmypaint/blob/master/mypaint-surface.h): reusable brush engine and required drawing/color-sampling callbacks. Choose a specific release/build during implementation; master URLs are discovery references.
 - [CanvasKit documentation](https://skia.org/docs/user/modules/canvaskit/): optional browser rendering route, not required for the initial PNG workbench.
 - [Hertzmann's painterly rendering project](https://mrl.cs.nyu.edu/publications/painterly98/) and [author's implementation](https://github.com/hertzmann/painterJava): reference-guided coarse-to-fine stroke placement.

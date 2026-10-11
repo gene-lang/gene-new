@@ -5,4 +5,5 @@
  ^applications [
    (application "imagination" ^entry "src/main.gene")
  ]
- ^dependencies {}}
+ ^dependencies {
+   ^raster (dep "genex/raster" "0.1.0" ^path "../../src/genex/raster")}}

@@ -1,0 +1,211 @@
+(import $test [describe it assert_equal run])
+(import [blank_program normalize_program grid] ^from "../src/raster/schema")
+(import [canonical read_domain] ^from "../src/scene")
+(import [open_raster_profile render_program] ^from "../src/raster/render")
+(import [scratch] ^from "./support")
+(import [apply_program_patch] ^from "../src/raster/patch")
+(import [error_code] ^from "./support")
+
+(fn painting [resources : Str, layers : Str, ^background background = "#00000000", ^width width = 1, ^height height = 1]
+  (normalize_program (read_domain
+    $"(painting ^width ${width} ^height ${height} ^background \"${background}\" (resources ${resources}) ${layers})" ^head "painting")))
+(let native_profile ($cell nil))
+(fn raster_profile []
+  (if ($absent? native_profile/.get) (native_profile .set (open_raster_profile)))
+  native_profile/.get)
+(fn pixels [program]
+  (let dir (scratch "raster-pixels"))
+  ($fs/write_text ($path/join dir "program.gene") (canonical program))
+  (render_program (raster_profile) program dir)
+  ($binary/to_list ($fs/read_bytes ($path/join dir "pixels.rgba"))))
+(const square "(path (M 0 0) (L 1 0) (L 1 1) (L 0 1) (Z))")
+(describe "raster schema"
+  (it "normalizes an explicit fresh canvas" []
+    (let value (blank_program ^width 16 ^height 16))
+    (assert_equal value/schema "raster-painting/v1")
+    (assert_equal value/background "#ffffffff"))
+  (it "rounds geometry ties to even and canonicalizes signed zero" []
+    (assert_equal (grid (/ 0.5 1024) 1024 -1 1) 0)
+    (assert_equal (grid (/ 1.5 1024) 1024 -1 1) (/ 2.0 1024))
+    (assert_equal (grid (/ -1.5 1024) 1024 -1 1) (/ -2.0 1024))))
+(describe "raster pixels"
+  (it "renders a transparent fresh canvas with separate pixel and PNG identities" []
+    (let dir (scratch "raster-transparent"))
+    (let result (render_program (open_raster_profile) (blank_program ^width 1 ^height 1 ^background "#ffffff00") dir))
+    (assert_equal ($binary/to_list ($fs/read_bytes ($path/join dir "pixels.rgba"))) [0 0 0 0])
+    ($assert (!= result/pixel_digest result/png_digest))))
+(describe "raster paint semantics"
+  (it "blends half-opacity white over black in linear light" []
+    (assert_equal (pixels (painting "" $"(layer ^id \"l\" (fill_path ^id \"f\" ^color \"#ffffffff\" ^opacity 0.5 ${square}))" ^background "#000000ff")) [188 188 188 255]))
+  (it "interpolates gradients in premultiplied linear light" []
+    (assert_equal (pixels (painting "(gradient ^id \"g\" ^kind \"linear\" ^from [0 0] ^to [1 0] (stop ^offset 0 ^color \"#000000ff\") (stop ^offset 1 ^color \"#ffffffff\"))"
+      $"(layer ^id \"l\" (fill_path ^id \"f\" ^paint \"g\" ${square}))")) [188 188 188 255]))
+  (it "applies layer opacity once after overlapping opaque fills" []
+    (assert_equal (pixels (painting "" $"(layer ^id \"l\" ^opacity 0.5 (fill_path ^id \"a\" ^color \"#ffffffff\" ${square}) (fill_path ^id \"b\" ^color \"#ffffffff\" ${square}))")) [255 255 255 128]))
+  (it "pressure zero paints nothing and erase leaves the background intact" []
+    (let brushes "(brush ^id \"b\" ^kind \"hard-round/v1\")")
+    (assert_equal (pixels (painting brushes "(layer ^id \"l\" (stroke ^id \"s\" ^brush \"b\" ^radius 2 ^color \"#ffffffff\" (points [0.5 0.5 0 0])))")) [0 0 0 0])
+    (assert_equal (pixels (painting brushes $"(layer ^id \"l\" (fill_path ^id \"f\" ^color \"#ffffffff\" ${square}) (erase ^id \"e\" ^brush \"b\" ^radius 2 (points [0.5 0.5 1 0])))" ^background "#ff0000ff")) [255 0 0 255]))
+  (it "repeats in fresh worker processes with identical pixels and PNG bytes" []
+    (let program (painting "(brush ^id \"b\" ^kind \"soft-round/v1\" ^hardness 0.2)"
+      "(layer ^id \"l\" (stroke ^id \"s\" ^brush \"b\" ^radius 3 ^opacity 0.3 ^color \"#4080c0ff\" (points [1 1 0.2 0] [8 8 1 100] [12 4 0.5 200])))" ^width 16 ^height 16))
+    (let a (render_program (raster_profile) program (scratch "raster-repeat-a")))
+    (let b (render_program (raster_profile) program (scratch "raster-repeat-b")))
+    (assert_equal a/pixel_digest b/pixel_digest)
+    (assert_equal a/png_digest b/png_digest)
+    (assert_equal a/digest b/digest)))
+(describe "raster patches"
+  (it "inserts a layer atomically and rejects a stale placement anchor" []
+    (let base (blank_program ^width 16 ^height 16))
+    (let patch (read_domain "(patch ^schema 1 ^id \"p\" ^base \"r0\" ^goal \"g\" (intent \"layer\") (insert_layer ^position \"end\" (layer ^id \"new-layer\")))" ^head "patch"))
+    (let result (apply_program_patch base patch ^expected_base "r0" ^prefix "new-"))
+    (assert_equal ($size ($body result/scene)) 2)
+    (assert_equal ($size ($body base)) 1)
+    (let bad (read_domain "(patch ^schema 1 ^id \"p\" ^base \"r0\" ^goal \"g\" (intent \"layer\") (insert_layer ^before \"gone\" (layer ^id \"new-layer\")))" ^head "patch"))
+    (assert_equal (error_code (fn [] (apply_program_patch base bad ^expected_base "r0" ^prefix "new-"))) "stale_anchor")))
+
+(import [create_evolution open_evolution close_evolution commit_patch view fork line_row replay_exact crop_of export_artifact compare] ^from "../src/evolution")
+(import [fixture_agent] ^from "../src/adapters/model")
+(import [start_run execute_run model_view] ^from "../src/jobs")
+(import [new_workbench revision_json] ^from "../src/server")
+
+(fn raster_goal []
+  (read_domain "(goal ^id \"goal-01\" ^request \"Paint a bright red mark.\" (requirement ^id \"subject\" ^strength \"hard\" ^check \"visual\" \"A bright red mark is visible.\"))" ^head "goal"))
+(fn patch_text [base, body]
+  (read_domain $"(patch ^schema 1 ^id \"p\" ^base \"${base}\" ^goal \"goal-01\" (intent \"paint\") ${body})" ^head "patch"))
+(const mark_ops "(add_resource ^position \"end\" (brush ^id \"n-b\" ^kind \"hard-round/v1\")) (insert_layer ^position \"end\" (layer ^id \"n-l\" (stroke ^id \"n-s\" ^brush \"n-b\" ^color \"#ff0000ff\" ^radius 3 (points [8 8 1 0]))))")
+
+(describe "raster history and loop"
+  (it "publishes, branches, replays, crops and exports the saved exact PNG" []
+    (let root ($path/join (scratch "raster-history") "project"))
+    (let evo (create_evolution root "paint" (raster_goal) (raster_profile) ^width 16 ^height 16))
+    (try
+      (assert_equal evo/project/record/media "raster-painting/v1")
+      (let mask_bytes ($binary/from_list [0 128 255]))
+      (let mask_digest (put_asset evo/project mask_bytes))
+      (assert_equal (get_asset evo/project mask_digest) mask_bytes)
+      (commit_patch evo "main" (patch_text "r000" mark_ops) ^prefix "n-")
+      (let first (view evo "r001"))
+      (fork evo "r001" "alternate")
+      (commit_patch evo "alternate" (patch_text "r001" "(set_layer ^target \"n-l\" ^label \"Red mark\")") ^prefix "m-")
+      (assert_equal (/head (line_row evo "main")) "r001")
+      (let second (view evo "r002"))
+      (assert_equal first/image second/image)
+      (let changes (compare evo "r001" "r002"))
+      (assert_equal changes/diff/pixel_changes 0)
+      (assert_equal changes/diff/semantic_changes 1)
+      ($assert (/ok (replay_exact evo "r000" "r002")))
+      (let crop (crop_of evo first [4 4 8 8]))
+      (assert_equal [crop/width crop/height] [16 16])
+      (assert_equal crop/source first/image)
+      (let out ($path/join root "export.png"))
+      (export_artifact evo "r002" "png" out)
+      (assert_equal ($fs/read_bytes out) ($fs/read_bytes second/png_path))
+      (assert_equal (error_code (fn [] (export_artifact evo "r002" "svg" out))) "invalid_format")
+      (let bench (new_workbench ($path/parent root) (raster_profile) nil 8080))
+      (bench/projects .put "paint" evo)
+      (let json (revision_json bench "paint" "r002"))
+      (assert_equal json/media "raster-painting/v1")
+      ($assert ($absent? (json/artifacts .get "scene.svg")))
+    ensure (close_evolution evo))
+    (let reopened (open_evolution root (raster_profile)))
+    (assert_equal (/head (line_row reopened "alternate")) "r002")
+    (close_evolution reopened))
+  (it "submits actual raster PNGs to the model and completes only after review" []
+    (let evo (create_evolution ($path/join (scratch "raster-loop") "project") "paint" (raster_goal) (raster_profile) ^width 16 ^height 16))
+    (try
+      (let agent (fixture_agent [
+        (fn [input]
+          ($assert ($str/contains? input/system "round/v1"))
+          (let c input/context)
+          $"(agent_response ^schema 1 ^observed_revision \"${c/newest}\" ^observed_image \"${c/image}\" ^action \"edit\" (review (check ^requirement \"subject\" ^result \"fail\" ^evidence \"Blank image.\")) (plan \"Paint a red mark.\") (patch ^schema 1 ^id \"${c/patch_id}\" ^base \"${c/head}\" ^goal \"${c/goal}\" (intent \"Red mark\") (add_resource ^position \"end\" (brush ^id \"${c/prefix}b\" ^kind \"hard-round/v1\")) (insert_layer ^position \"end\" (layer ^id \"${c/prefix}l\" (stroke ^id \"${c/prefix}s\" ^brush \"${c/prefix}b\" ^color \"#ff0000ff\" ^radius 3 (points [8 8 1 0]))))))")
+        (fn [input]
+          (let c input/context)
+          $"(agent_response ^schema 1 ^observed_revision \"${c/newest}\" ^observed_image \"${c/image}\" ^action \"done\" (review (check ^requirement \"subject\" ^result \"pass\" ^evidence \"Red mark visible in supplied PNG.\")) (summary \"Red mark\"))")]))
+      (let run (start_run evo "main"))
+      (let result (execute_run evo agent run/id))
+      (assert_equal result/status "complete")
+      (let submitted (/submitted (model_view evo run/id)))
+      (assert_equal submitted/.size 2)
+      (assert_equal submitted/1/digest (/image (view evo "r001")))
+    ensure (close_evolution evo))))
+
+(import [grid_decimal digest_of] ^from "../src/scene")
+(import [put_asset get_asset] ^from "../src/store")
+(describe "raster validation and locks"
+  (it "writes normalized binary-grid values as exact terminating decimals" []
+    (assert_equal (grid_decimal (/ 1.0 65536)) "0.0000152587890625")
+    (assert_equal (grid_decimal (/ -1.0 1024)) "-0.0009765625")
+    (let p (painting "(brush ^id \"b\" ^kind \"soft-round/v1\" ^flow 0.0000152587890625)" ""))
+    ($assert ($str/contains? (canonical p) "0.0000152587890625"))
+    (assert_equal (canonical (normalize_program (read_domain (canonical p) ^head "painting"))) (canonical p)))
+  (it "rejects dangling resources, duplicate IDs, unknown fields and degenerate gradients" []
+    (assert_equal (error_code (fn [] (painting "" "(layer ^id \"l\" (stroke ^id \"s\" ^brush \"missing\" ^radius 1 ^color \"#ffffffff\" (points [0 0 1 0])))"))) "missing_resource")
+    (assert_equal (error_code (fn [] (painting "" "(layer ^id \"same\") (layer ^id \"same\")"))) "duplicate_id")
+    (assert_equal (error_code (fn [] (painting "" "(layer ^id \"l\" ^shader \"code\")"))) "unknown_field")
+    (assert_equal (error_code (fn [] (painting "(gradient ^id \"g\" ^kind \"linear\" ^from [0 0] ^to [0 0] (stop ^offset 0 ^color \"#ffffffff\") (stop ^offset 1 ^color \"#000000ff\"))" ""))) "invalid_gradient"))
+  (it "protects locked strokes from indirect brush edits and leaves rejected drafts unchanged" []
+    (let base (/scene (apply_program_patch (blank_program ^width 16 ^height 16) (patch_text "r0" mark_ops) ^expected_base "r0")))
+    (let original (canonical base))
+    (let policy (read_domain "(policy (lock ^target \"n-s\" ^scope \"appearance\"))" ^head "policy"))
+    (let patch (patch_text "r0" "(replace_resource ^target \"n-b\" (brush ^id \"n-b\" ^kind \"hard-round/v1\" ^flow 0.2))"))
+    (assert_equal (error_code (fn [] (apply_program_patch base patch ^expected_base "r0" ^policy policy))) "locked_dependency")
+    (assert_equal (canonical base) original)
+    (assert_equal (error_code (fn [] (apply_program_patch base (patch_text "r0" "(set_operation ^opacity 0.5)") ^expected_base "r0"))) "missing_field")))
+
+(describe "raster coverage"
+  (it "applies a fill mask once and a layer mask as a separate multiplier" []
+    (let resources "(mask ^id \"m\" ^kind \"path\" (path (M 0 0) (L 0.5 0) (L 0.5 1) (L 0 1) (Z)))")
+    (assert_equal (pixels (painting resources "(layer ^id \"l\" (fill_mask ^id \"f\" ^mask \"m\" ^color \"#ffffffff\"))")) [255 255 255 128])
+    (assert_equal (pixels (painting resources "(layer ^id \"l\" ^mask \"m\" (fill_mask ^id \"f\" ^mask \"m\" ^color \"#ffffffff\"))")) [255 255 255 64]))
+  (it "preserves dab spacing across segment boundaries and zero-length segments" []
+    (let b "(brush ^id \"b\" ^kind \"soft-round/v1\" ^hardness 0.2 ^spacing 0.5)")
+    (fn stroke [points]
+      (painting b $"(layer ^id \"l\" (stroke ^id \"s\" ^brush \"b\" ^radius 2 ^color \"#ffffffff\" ^opacity 0.3 (points ${points})))" ^width 16 ^height 4))
+    (assert_equal (pixels (stroke "[1 2 0.25 0] [13 2 1 120]"))
+      (pixels (stroke "[1 2 0.25 0] [5 2 0.5 40] [5 2 0.5 40] [13 2 1 120]"))))
+  (it "loads immutable grayscale bitmap masks and rejects changed asset bytes" []
+    (let bytes ($binary/from_list [128]))
+    (let digest (digest_of bytes))
+    (let p (painting $"(mask ^id \"m\" ^kind \"bitmap\" ^asset \"${digest}\" ^width 1 ^height 1 ^origin [0 0])"
+      "(layer ^id \"l\" (fill_mask ^id \"f\" ^mask \"m\" ^color \"#ffffffff\"))"))
+    (let dir (scratch "raster-bitmap"))
+    (render_program (raster_profile) p dir ^assets (fn [id] bytes))
+    (assert_equal ($binary/to_list ($fs/read_bytes ($path/join dir "pixels.rgba"))) [255 255 255 128])
+    (assert_equal (error_code (fn [] (render_program (raster_profile) p (scratch "raster-changed") ^assets (fn [id] ($binary/from_list [127]))))) "invalid_asset")))
+
+(import [validate_goal structural_checks] ^from "../src/evaluation")
+(describe "structural evidence"
+  (it "rejects unsupported structural requirements and never passes legacy unknown checks" []
+    (let goal (read_domain "(goal ^id \"g\" ^request \"paint\" (requirement ^id \"subject\" ^strength \"hard\" ^check \"visual\" \"A subject.\") (requirement ^id \"edits\" ^strength \"hard\" ^check \"structural\" \"At least two edits.\"))" ^head "goal"))
+    (assert_equal (error_code (fn [] (validate_goal goal))) "invalid_goal")
+    (assert_equal (/result ((structural_checks goal (blank_program ^width 16 ^height 16)) .first)) "unknown")))
+
+(describe "raster patch coverage"
+  (it "moves, replaces, edits points and removes resources in an atomic draft" []
+    (let base (/scene (apply_program_patch (blank_program ^width 16 ^height 16) (patch_text "r0" mark_ops))))
+    (let moved (apply_program_patch base (patch_text "r0" "(insert_layer ^position \"end\" (layer ^id \"m-l\")) (move_operation ^target \"n-s\" ^layer \"m-l\" ^position \"start\") (move_layer ^target \"m-l\" ^before \"n-l\") (set_points ^target \"n-s\" [4 4 1 0] [8 8 0.5 10]) (replace_operation ^target \"n-s\" (stroke ^id \"n-s\" ^brush \"n-b\" ^radius 2 ^color \"#00ff00ff\" (points [8 8 1 0])))") ^prefix "m-"))
+    (let result (apply_program_patch moved/scene (patch_text "r0" "(remove_operation ^target \"n-s\") (remove_layer ^target \"n-l\") (remove_resource ^target \"n-b\")")))
+    (assert_equal ($size ($body result/scene)) 2)
+    (assert_equal ($size ($body (($body result/scene) .first))) 0))
+  (it "rejects indirect layer-mask edits and paint-order moves for locked strokes" []
+    (let p (painting "(brush ^id \"b\" ^kind \"hard-round/v1\") (mask ^id \"m\" (path (M 0 0) (L 16 0) (L 16 16) (Z)))"
+      "(layer ^id \"l\" ^mask \"m\" (stroke ^id \"s\" ^brush \"b\" ^radius 2 ^color \"#ffffffff\" (points [8 8 1 0]))) (layer ^id \"other\")" ^width 16 ^height 16))
+    (let policy (read_domain "(policy (lock ^target \"s\" ^scope \"geometry\"))" ^head "policy"))
+    (assert_equal (error_code (fn [] (apply_program_patch p (patch_text "r0" "(move_layer ^target \"l\" ^position \"end\")") ^policy policy))) "locked_dependency")
+    (assert_equal (error_code (fn [] (apply_program_patch p (patch_text "r0" "(replace_resource ^target \"m\" (mask ^id \"m\" (path (M 0 0) (L 8 0) (L 8 8) (Z))))") ^policy policy))) "locked_dependency")))
+
+(import [checked] ^from "." ^pkg "raster")
+(describe "native raster boundary"
+  (it "rejects malformed requests independently of the Gene schema" []
+    (let profile (raster_profile))
+    (for text in ["1 1 1 nan" "1 2048 2048 0 0 0 0 128" "1 1 1 0 0 0 0 0 0 trailing"]
+      (let dir (scratch "raster-invalid-wire"))
+      ($fs/write_text ($path/join dir "request.txt") text)
+      ($assert (!= (error_code (fn [] (checked profile/native/worker [] ^dir dir))) "accepted"))))
+  (it "preflights excessive dab counts without publishing partial output" []
+    (let program (painting "(brush ^id \"b\" ^kind \"hard-round/v1\" ^spacing 0.0000152587890625)"
+      "(layer ^id \"l\" (stroke ^id \"s\" ^brush \"b\" ^radius 1 ^color \"#ffffffff\" (points [-1000000 0 1 0] [1000000 0 1 1])))"))
+    (let dir (scratch "raster-dab-limit"))
+    (assert_equal (error_code (fn [] (render_program (raster_profile) program dir))) "raster_failed")
+    ($assert (! ($fs/exists? ($path/join dir "manifest.gene"))))))

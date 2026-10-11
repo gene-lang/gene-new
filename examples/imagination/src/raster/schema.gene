@@ -1,0 +1,190 @@
+# Inert painting data. This registry is shared by normalization and the model
+# reference; no field or operation outside it is executable.
+(mod imagination_raster_schema)
+(import [reject kind_of node? str? list? number? int? sorted_keys limits] ^from "../types")
+(import [valid_id? finite? normal_number printable?] ^from "../scene_schema")
+(import [canonical] ^from "../scene")
+(const media_id "raster-painting/v1")
+(let colors (Regex "^#[0-9a-fA-F]{8}$"))
+(let hashes (Regex "^sha256:[0-9a-f]{64}$"))
+# Fields: name -> [type, default]. A nil default makes a field mandatory;
+# optional references use the empty string and are omitted from normalization.
+(let registry #{
+ ^painting {^schema ["schema" "raster-painting/v1"] ^width ["size" nil] ^height ["size" nil]
+   ^background ["color" "#ffffffff"] ^working_space ["space" "linear-srgb"]}
+ ^resources {}
+ ^layer {^id ["id" nil] ^label ["text" ""] ^role ["text" ""] ^opacity ["unit" 1]
+   ^blend ["blend" "source_over"] ^visible ["bool" true] ^mask ["ref" ""]}
+ ^brush {^id ["id" nil] ^kind ["brush_kind" nil] ^hardness ["unit" 1]
+   ^spacing ["spacing" 0.25] ^flow ["unit" 1] ^min_radius_ratio ["unit" 0.25]}
+ ^gradient {^id ["id" nil] ^kind ["gradient_kind" nil] ^from ["point" ""] ^to ["point" ""]
+   ^center ["point" ""] ^radius ["radius" ""]}
+ ^stop {^offset ["unit" nil] ^color ["color" nil]}
+ ^mask {^id ["id" nil] ^kind ["mask_kind" "path"] ^fill_rule ["fill_rule" "nonzero"]
+   ^asset ["digest" ""] ^width ["size" ""] ^height ["size" ""] ^origin ["origin" ""]}
+ ^fill_path {^id ["id" nil] ^label ["text" ""] ^role ["text" ""] ^color ["color" ""]
+   ^paint ["ref" ""] ^opacity ["unit" 1] ^mask ["ref" ""] ^fill_rule ["fill_rule" "nonzero"]}
+ ^fill_mask {^id ["id" nil] ^label ["text" ""] ^role ["text" ""] ^color ["color" ""]
+   ^paint ["ref" ""] ^opacity ["unit" 1] ^mask ["ref" nil]}
+ ^stroke {^id ["id" nil] ^label ["text" ""] ^role ["text" ""] ^brush ["ref" nil]
+   ^color ["color" nil] ^radius ["radius" nil] ^opacity ["unit" 1] ^mask ["ref" ""] ^seed ["seed" 0]}
+ ^erase {^id ["id" nil] ^label ["text" ""] ^role ["text" ""] ^brush ["ref" nil]
+   ^radius ["radius" nil] ^opacity ["unit" 1] ^mask ["ref" ""] ^seed ["seed" 0]}
+ ^path {} ^points {}})
+
+(fn grid [value, scale, low, high]
+  (if_not (&& (finite? value) (>= value low) (<= value high))
+    (reject "invalid_field" $"expected a finite number in [${low}, ${high}]"))
+  (let scaled (* value scale))
+  (let floor ($math/floor scaled))
+  (let fraction (- scaled floor))
+  (let rounded (if (< fraction 0.5) floor
+    (if (> fraction 0.5) (+ floor 1) (if (== (// ($to_int floor) 2) 0) floor (+ floor 1)))))
+  (normal_number (/ rounded (* scale 1.0))))
+
+(fn field_value [type : Str, value]
+  (match type
+    (when "unit" (grid value 65536 0 1))
+    (when "spacing" (grid value 65536 (/ 1.0 65536) 16))
+    (when "radius" (grid value 1024 (/ 1.0 1024) 4096))
+    (when "point"
+      (if_not (&& (list? value) (== value/.size 2)) (reject "invalid_field" "expected [x y]"))
+      [(grid value/0 1024 -1000000 1000000) (grid value/1 1024 -1000000 1000000)])
+    (when "origin"
+      (if_not (&& (list? value) (== value/.size 2) (int? value/0) (int? value/1)
+                  (<= ($math/abs value/0) 1000000) (<= ($math/abs value/1) 1000000))
+        (reject "invalid_field" "bitmap origin needs two bounded integer coordinates")) value)
+    (when "id"
+      (if_not (&& (valid_id? value) (! (["painting" "resources"] .contains? value)))
+        (reject "invalid_field" "expected a non-reserved stable ID")) value)
+    (when "ref" (field_value "id" value))
+    (when "text"
+      (if_not (&& (str? value) (<= ($str/byte_size value) 200) (printable? value))
+        (reject "invalid_field" "expected at most 200 printable UTF-8 bytes")) value)
+    (when "color"
+      (if_not (&& (str? value) (! ($absent? ($regex/match colors value))))
+        (reject "invalid_field" "colors are eight-digit #rrggbbaa sRGB literals")) ($str/lower value))
+    (when "digest"
+      (if_not (&& (str? value) (! ($absent? ($regex/match hashes value))))
+        (reject "invalid_field" "expected a full sha256 asset digest")) value)
+    (when "size"
+      (if_not (&& (int? value) (>= value 1) (<= value 2048))
+        (reject "invalid_field" "canvas and bitmap edges are integers in [1, 2048]")) value)
+    (when "seed"
+      (if_not (&& (int? value) (>= value 0) (<= value 2147483647))
+        (reject "invalid_field" "seed/time must be an integer in [0, 2147483647]")) value)
+    (when "bool"
+      (if_not (|| (== value true) (== value false)) (reject "invalid_field" "expected boolean")) value)
+    (else
+      (let options (match type
+        (when "schema" [media_id]) (when "space" ["linear-srgb"])
+        (when "blend" ["source_over"]) (when "fill_rule" ["nonzero"])
+        (when "brush_kind" ["hard-round/v1" "soft-round/v1"])
+        (when "gradient_kind" ["linear" "radial"])
+        (when "mask_kind" ["path" "bitmap"]) (else [])))
+      (if_not (options .contains? value) (reject "invalid_field" $"expected one of ${options}")) value)))
+
+(fn normalized_node [node, state, where : Str]
+  (let kind (kind_of node))
+  (let spec (registry .get kind))
+  (if ($absent? spec) (reject "unknown_node" $"unsupported painting node ${kind}"))
+  (let allowed (match where
+    (when "root" ["painting"]) (when "painting" ["resources" "layer"])
+    (when "resources" ["brush" "gradient" "mask"])
+    (when "layer" ["fill_path" "fill_mask" "stroke" "erase"])
+    (when "gradient" ["stop"]) (when "mask" ["path"])
+    (when "fill_path" ["path"]) (when "stroke" ["points"]) (when "erase" ["points"])
+    (else [])))
+  (if_not (allowed .contains? kind) (reject "invalid_node" $"${kind} cannot appear in ${where}"))
+  (if (> ($size ($meta node)) 0) (reject "invalid_node" "painting nodes have no metadata"))
+  (var props {})
+  (for name in (sorted_keys ($props node))
+    (if_not ($has_key? spec name) (reject "unknown_field" $"${kind} has no ^${name}" ^field [name])))
+  (for [name rule] in spec
+    (let field ($to_str name))
+    (let value (if ($has_key? ($props node) field) (($props node) .get field) rule/1))
+    (if ($nil? value) (reject "missing_field" $"${kind} needs ^${field}" ^field [field]))
+    (if_not (&& (== value "") (!= rule/0 "text") (! ($has_key? ($props node) field)))
+      (props .put field (field_value rule/0 value))))
+  (if ($has_key? props "id")
+    (then
+      (if ($has_key? state/ids props/id) (reject "duplicate_id" $"duplicate ID ${props/id}"))
+      (state/ids .put props/id kind)
+      (if (> ($size state/ids) 2000) (reject "too_large" "painting exceeds 2000 identities"))))
+  (var body [])
+  (if (== kind "path")
+    (then
+      (let arities {^M 2 ^L 2 ^C 6 ^Q 4 ^Z 0})
+      (for command in ($body node)
+        (let arity (arities .get (kind_of command)))
+        (if (|| ($absent? arity) (!= ($size ($body command)) arity) (> ($size ($props command)) 0)
+                (> ($size ($meta command)) 0))
+          (reject "malformed_path" "use only M L C Q Z with their coordinate arguments"))
+        (let values [])
+        (for value in ($body command) (values .push (grid value 1024 -1000000 1000000)))
+        (body .push ($node/rebuild command ^body values)))
+      (if (|| (== body/.size 0) (!= (kind_of body/0) "M")) (reject "malformed_path" "path must start with M"))
+      (state .put "commands" (+ state/commands body/.size))
+      (if (> state/commands 20000) (reject "too_large" "painting exceeds 20000 path commands")))
+    (elif (== kind "points")
+      (var time -1)
+      (for point in ($body node)
+        (if_not (&& (list? point) (== point/.size 4)) (reject "invalid_points" "points are [x y pressure time_ms]"))
+        (let now (field_value "seed" point/3))
+        (if (< now time) (reject "invalid_points" "stroke times must be nondecreasing"))
+        (set time now)
+        (body .push [(grid point/0 1024 -1000000 1000000) (grid point/1 1024 -1000000 1000000)
+          (field_value "unit" point/2) now]))
+      (if (|| (== body/.size 0) (> body/.size 5000)) (reject "too_large" "a stroke needs 1–5000 points")))
+    (else (for child in ($body node) (body .push (normalized_node child state kind)))))
+  (if (== kind "painting")
+    (then
+      (if (|| (== body/.size 0) (!= (kind_of body/0) "resources"))
+        (reject "invalid_program" "painting starts with one resources node"))
+      (for child in ($drop body 1)
+        (if (!= (kind_of child) "layer") (reject "invalid_program" "only layers follow resources"))))
+    (elif (["stroke" "erase" "fill_path"] .contains? kind)
+      (if (!= body/.size 1) (reject "invalid_program" $"${kind} needs exactly one geometry child")))
+    (elif (== kind "mask")
+      (if (== props/kind "path")
+        (then
+          (if (!= body/.size 1) (reject "invalid_program" "path mask needs one path"))
+          (for key in ["asset" "width" "height" "origin"]
+            (if ($has_key? props key) (reject "invalid_field" "path mask has bitmap fields"))))
+        (else
+          (if (!= body/.size 0) (reject "invalid_program" "bitmap masks have no children"))
+          (for key in ["asset" "width" "height" "origin"]
+            (if_not ($has_key? props key) (reject "missing_field" $"bitmap mask needs ^${key}"))))))
+    (elif (== kind "gradient")
+      (if (|| (< body/.size 2) (> body/.size 32)) (reject "invalid_gradient" "gradient needs 2–32 stops"))
+      (var last -1)
+      (for stop in body
+        (if (<= stop/offset last) (reject "invalid_gradient" "stop offsets must strictly increase after normalization"))
+        (set last stop/offset))
+      (if (|| (!= body/0/offset 0) (!= last 1)) (reject "invalid_gradient" "gradient needs endpoints 0 and 1"))
+      (let required (if (== props/kind "linear") ["from" "to"] ["center" "radius"]))
+      (for key in ["from" "to" "center" "radius"]
+        (if (!= (required .contains? key) ($has_key? props key))
+          (reject "invalid_gradient" $"${props/kind} gradient requires only ${required}")))
+      (if (&& (== props/kind "linear") (== props/from props/to))
+        (reject "invalid_gradient" "gradient axis cannot be zero length"))))
+  (if (["fill_path" "fill_mask"] .contains? kind)
+    (if (== ($has_key? props "color") ($has_key? props "paint"))
+      (reject "invalid_field" "fill needs exactly one of ^color or ^paint")))
+  ($node/rebuild node ^props props ^body body))
+
+(fn normalize_program [program]
+  (let state {^ids {} ^commands 0})
+  (let value (normalized_node program state "root"))
+  (fn references [node]
+    (for [field type] in [["brush" "brush"] ["paint" "gradient"] ["mask" "mask"]]
+      (let id (($props node) .get field))
+      (if (&& (! ($absent? id)) (!= (state/ids .get id) type))
+        (reject "missing_resource" $"${field} references missing or wrong-kind resource ${id}")))
+    (for child in ($body node) (if (node? child) (references child))))
+  (references value)
+  (if (> ($str/byte_size (canonical value)) limits/scene_bytes) (reject "too_large" "painting exceeds 4 MiB"))
+  ($freeze value))
+
+(fn blank_program [^width width = 1024, ^height height = 1024, ^background background = "#ffffffff"]
+  (normalize_program `(painting ^width %width ^height %height ^background %background (resources))))

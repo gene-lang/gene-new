@@ -1,0 +1,18 @@
+# Run with: gene run src/genex/raster/tools/build.gene [output-directory]
+# SDKROOT/CXX/PKG_CONFIG are explicit operator overrides. No shell execution.
+(import [checked] ^from "../src/raster")
+(fn main [argv]
+  (let words ($body argv))
+  (let root ($path/parent ($path/parent this_mod/.path)))
+  (let out (if (> words/.size 0) words/0 ($path/join root "build")))
+  ($fs/make_dir out)
+  (let pkg (?? ($os/env? "PKG_CONFIG") "pkg-config"))
+  (let flags ($filter ($str/split (checked pkg ["--cflags" "--libs" "cairo" "libpng"]) " ")
+    (fn [s] (!= s ""))))
+  (let args ["-std=c++17" "-O2" "-fno-fast-math" "-ffp-contract=off"
+    ($path/join root "native" "worker.cpp") "-o" ($path/join out "raster-worker")])
+  (for flag in flags (args .push flag))
+  (args .push "-lz")
+  (checked (?? ($os/env? "CXX") "clang++") args ^timeout_ms 120000)
+  ($println ($path/join out "raster-worker"))
+  0)

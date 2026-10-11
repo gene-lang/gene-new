@@ -9,18 +9,19 @@
 (mod imagination_evolution)
 
 (import $db/sqlite [Db])
-(import [StoreError DomainError reject kind_of node? children_named child_named text_of
+(import [StoreError DomainError RenderError reject kind_of node? children_named child_named text_of
          str?] ^from "./types")
 (import [valid_id?] ^from "./scene_schema")
-(import [canonical digest_of scene_digest blank_scene normalize_scene read_canonical] ^from "./scene")
+(import [canonical digest_of scene_digest read_canonical] ^from "./scene")
 (import [scene_svg] ^from "./svg")
-(import [apply_patch replay_normalized] ^from "./patch")
-(import [diff_scenes describe_diff] ^from "./diff")
-(import [render_scene render_crop profile_manifest profile_fingerprint] ^from "./render")
+(import [describe_diff] ^from "./diff")
+(import [profile_fingerprint] ^from "./render")
+(import [blank_scene normalize_scene apply_patch replay_normalized diff_scenes render_scene render_crop
+         profile_manifest raster? raster_profile?] ^from "./media")
 (import [validate_goal validate_policy build_evaluation] ^from "./evaluation")
 (import [Project create_project open_project close_project in_transaction put_node
          put_object get_node get_object publish_bundle verify_bundle new_staging remove_tree
-         artifact_path next_number meta_get meta_put append_event store_failure]
+         artifact_path next_number meta_get meta_put append_event store_failure get_asset]
   ^from "./store")
 
 (type Evolution ^props {^project Any ^profile Any})
@@ -118,7 +119,7 @@
   (let staging (new_staging project))
   (var bundle nil)
   (try
-    (set bundle (render_scene evolution/profile result/scene staging))
+    (set bundle (render_scene evolution/profile result/scene staging ^assets (fn [digest] (get_asset project digest))))
     (publish_bundle project bundle)
   ensure
     (remove_tree staging))
@@ -254,7 +255,8 @@
   (let rules (validate_policy policy))
   (let project (create_project root name (profile_manifest profile)))
   (let evolution (Evolution ^project project ^profile profile))
-  (let scene (blank_scene ^width width ^height height ^background background))
+  (let scene (blank_scene ^width width ^height height ^background background
+    ^media (if (raster_profile? profile) "raster-painting/v1" "svg-scene/v1")))
   (let candidate
     (stage evolution nil
       {^scene scene ^patch nil ^normalized nil ^effects [] ^diff nil}
@@ -482,9 +484,8 @@
          (== left_manifest/profile_fingerprint right_manifest/profile_fingerprint)))})
 
 # Exact replay (section 11.3): reapply the stored normalized operations along
-# a path to their recorded bases and verify the scene and SVG digests at every
-# step. No model is called. Returns
-#   {^ok ^steps [{^revision ^scene_ok ^svg_ok}] ^first_mismatch}.
+# a path to their recorded bases and verify program/render identities at every
+# step. Raster executes a fresh repaint and checks pixel and PNG digests.
 (fn replay_exact [evolution, from : Str, to : Str] : Any
   (let project evolution/project)
   (let trail (path_between evolution from to))
@@ -498,19 +499,34 @@
     (let line ((db_of evolution) .Db:query_one "SELECT policy FROM lines WHERE head = ?" id))
     (var scene_ok false)
     (var svg_ok false)
+    (var render_ok false)
+    (var pixel_ok nil)
+    (var png_ok nil)
     (var problem "")
     (try
       (let result (replay_normalized scene (get_node project row/normalized)))
       (set scene result/scene)
       (set scene_ok (== result/digest row/scene))
       (let manifest (verify_bundle project row/render))
+      (if_yes (raster? scene)
+        (let staging (new_staging project))
+        (try
+          (let rendered (render_scene evolution/profile scene staging ^assets (fn [digest] (get_asset project digest))))
+          (set pixel_ok (== rendered/pixel_digest manifest/pixel))
+          (set png_ok (== rendered/png_digest row/image))
+          (set render_ok (&& pixel_ok png_ok))
+        ensure (remove_tree staging)))
       (for artifact in (children_named manifest "artifact")
         (if (== artifact/kind "scene.svg")
           (set svg_ok (== (digest_of (scene_svg result/scene)) artifact/digest))))
+      (if_not (raster? scene) (set render_ok svg_ok))
     catch DomainError
+      (set problem $"${$err/code}: ${$err/message}")
+    catch RenderError
       (set problem $"${$err/code}: ${$err/message}"))
-    (steps .push {^revision id ^scene_ok scene_ok ^svg_ok svg_ok ^problem problem})
-    (if_yes (&& ($absent? first_mismatch) (! (&& scene_ok svg_ok)))
+    (steps .push {^revision id ^scene_ok scene_ok ^render_ok render_ok
+      ^svg_ok (if (raster? scene) nil svg_ok) ^pixel_ok pixel_ok ^png_ok png_ok ^problem problem})
+    (if_yes (&& ($absent? first_mismatch) (! (&& scene_ok render_ok)))
       (set first_mismatch id)
       # Later steps replay from the stored snapshot, so one mismatch does not
       # hide the state of the rest of the path.
@@ -520,6 +536,8 @@
 # Copy a saved artifact of a revision to `destination`.
 (fn export_artifact [evolution, revision_id : Str, format : Str, destination : Str] : Str
   (let row (revision_row evolution revision_id))
+  (if (&& (raster_profile? evolution/profile) (!= format "png"))
+    (store_failure "invalid_format" "Raster paintings export as PNG."))
   (let kind
     (if (== format "svg") "scene.svg"
       (if (== format "pdf") "scene.pdf"
@@ -535,7 +553,8 @@
   (let staging (new_staging evolution/project))
   (try
     (let prefix ($path/join staging "crop"))
-    (let crop (render_crop evolution/profile revision_view/scene revision_view/pdf_path prefix rectangle))
+    (let crop (render_crop evolution/profile revision_view/scene
+      (if (raster? revision_view/scene) revision_view/png_path revision_view/pdf_path) prefix rectangle))
     (crop .put "bytes" ($fs/read_bytes $"${prefix}.png"))
     crop
   ensure

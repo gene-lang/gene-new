@@ -30,7 +30,23 @@
       (else (bytes .push byte))))
   ($binary/to_str ($binary/from_list bytes)))
 
-(fn write_canonical [value, out] : Nil
+# Raster's binary grid has an exact terminating decimal representation. Keep
+# the established SVG serializer unchanged to preserve historical digests.
+(fn grid_decimal [value] : Str
+  (let scaled ($to_int ($math/abs (* value 65536))))
+  (let whole (/ scaled 65536))
+  (var remainder (// scaled 65536))
+  (var text $"${(if (< value 0) \"-\" \"\")}${whole}")
+  (if (== remainder 0) (return text))
+  (set text $"${text}.")
+  (while (!= remainder 0)
+    (set remainder (* remainder 10))
+    (set text $"${text}${(/ remainder 65536)}")
+    (set remainder (// remainder 65536)))
+  text)
+
+(fn write_canonical [value, out, ^exact_grid exact_grid = false] : Nil
+  (let exact (|| exact_grid (== (kind_of value) "painting")))
   (if (node? value)
     (then
       (out .push "(")
@@ -40,10 +56,10 @@
         (out .push " ^")
         (out .push name)
         (out .push " ")
-        (write_canonical (props .get name) out))
+        (write_canonical (props .get name) out ^exact_grid exact))
       (for child in ($body value)
         (out .push " ")
-        (write_canonical child out))
+        (write_canonical child out ^exact_grid exact))
       (out .push ")"))
     (elif (str? value)
       (out .push "\"")
@@ -55,10 +71,10 @@
       (for item in value
         (if_not first (out .push " "))
         (set first false)
-        (write_canonical item out))
+        (write_canonical item out ^exact_grid exact))
       (out .push "]"))
     (elif (number? value)
-      (out .push ($to_str (normal_number value))))
+      (out .push (if exact (grid_decimal value) ($to_str (normal_number value)))))
     (elif (== value true) (out .push "true"))
     (elif (== value false) (out .push "false"))
     (elif ($absent? value) (out .push "nil"))

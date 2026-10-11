@@ -10,6 +10,10 @@ package with gzip I/O adapters and ZIP extraction.
 [tls](tls/README.md) is an experimental PKG-2 OpenSSL adapter for direct
 native-service TLS; its HTTP listener integration is pending.
 
+[raster](raster/README.md) supplies deterministic CPU painting through a
+bounded native worker, with Gene build tooling. It uses Cairo coverage,
+project-owned linear-light brushes/compositing and fixed libpng encoding.
+
 Build the SDL2/OpenGL and WebSocket libraries from the repository root:
 
 ```sh
