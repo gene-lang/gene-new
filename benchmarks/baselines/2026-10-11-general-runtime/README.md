@@ -110,8 +110,10 @@ types, enums, protocols, impls, macros, FFI, web modules or imports are still
 walked on every spawn, because their walk reaches scopes or runtime state;
 so is every scope. The Nim suites (including the AtomicArc VM suite and the
 atomic generation-retirement test), the differential programs and the
-complete Harness suite (179 passed) were rerun with this change; the
-sanitizer, Cordis, benchmark-tooling and wasm rows below predate it. GIR
+complete Harness suite (179 passed) were rerun with this change. The
+sanitizer, lifetime, Cordis, benchmark-tooling and wasm rows below were
+rerun on the final head, after both service-time changes, with the same
+counts and no sanitizer reports. GIR
 format advances to 30 for the two runtime-state fields on a chunk.
 
 A later change skips the caller-env escape walk in a process that has never
