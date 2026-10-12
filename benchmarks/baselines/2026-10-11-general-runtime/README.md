@@ -255,7 +255,11 @@ run once under the sanitizer build of the fixed runtime: no sanitizer
 report in 200 examples; three examples failed there on latency bounds the
 slower build cannot meet. The Cordis suite, the benchmark specs, the
 differential programs, the scheduler and loop probes and forty turns of the
-service probe also ran under that build with no sanitizer report.
+service probe also ran under that build with no sanitizer report. The broad
+test suite itself cannot be used this way: built with the sanitizer it
+overflows the stack in nested dispatch loops (its frames grow several-fold)
+after 215 cases and no sanitizer report, so the sanitizer evidence is the
+lifetime and VM suites plus the runs of the runtime binary listed here.
 
 ## Build provenance
 
