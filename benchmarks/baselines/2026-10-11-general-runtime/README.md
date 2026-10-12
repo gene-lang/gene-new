@@ -235,6 +235,21 @@ that was not fully quiet ([service/summary-final.json](service/summary-final.jso
 
 That is 2.67x on service time and 3.08x on whole-process time.
 
+## A crash found by repeating the suite
+
+Running the complete Harness suite three more times on the final build
+crashed once, inside the allocator, in `input_modes_spec`. macOS crash
+reports with the same signature exist for an intermediate build of this pass
+and for a binary built on 10 October, the day before it started. A sanitizer
+build of the runtime reported a heap use-after-free on that spec file in
+every run: a resumed fiber's frames borrowed its saved function name, which
+the next capture from a deeper function freed. The fix (the name is taken
+from the function prototype, or from a table of names that are never freed)
+leaves the sanitizer with nothing to report on the spec, and a short
+reproduction is in the VM scheduler suite. The rows under Qualification are
+from the runtime with the fix; the benchmark captures were taken just
+before it, and the change is confined to fiber resume.
+
 ## Build provenance
 
 ```sh
@@ -258,22 +273,22 @@ compiler-known set). Rebuild older GIR artifacts.
 
 | Check | Result |
 | --- | ---: |
-| Broad compiler/runtime/integration suite | 1688 passed |
+| Broad compiler/runtime/integration suite | 1689 passed |
 | Executable language specs (46 new) | 892 passed |
-| VM, ORC | 402 passed |
-| VM, AtomicArc | 402 passed |
+| VM, ORC | 403 passed |
+| VM, AtomicArc | 403 passed |
 | Reference-count/lifetime suite (2 new) | 89 passed |
 | Harness, complete suite from a clean export | 200 passed |
 | AddressSanitizer: lifetime suite | 89 passed, 0 reports |
-| AddressSanitizer: VM suites except env/eval | 390 passed, 0 reports |
+| AddressSanitizer: VM suites except env/eval | 391 passed, 0 reports |
 | Cordis | 21 passed |
 | Benchmark tooling | 15 passed |
 | wasm ABI cases, scratch build | 46 passed |
 
 Every row is from the final runtime (slice rule, `==`/`!=` lowered, cheaper
 walks, in-place reads, in-place counting of published objects, nested-loop
-scope reuse). The binary and the suites were built from clean exports of
-`2fc14a5` with the changed files laid over them. One VM test that pinned the
+scope reuse, the fiber-resume fix). The binary and the suites were built
+from clean exports of `0f3b187` with the changed files laid over them. One VM test that pinned the
 old rule (any nested `for` makes the outer body allocate) was updated to the
 new one; the broad, VM and sanitizer VM rows are from the rerun with it. On the build before the walk changes one file-watch spec (`recursive watch discovers files in newly
 created directories`) failed once while five suites compiled in parallel and
