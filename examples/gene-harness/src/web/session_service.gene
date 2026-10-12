@@ -66,7 +66,17 @@
 (fn public_session [service, record]
   (let copy ($thaw ($freeze record)))
   (copy .put "revision" ($to_str (?? record/revision 0)))
+  # Match the sequence-1 round, not prompt text: later prompts may be identical.
+  (copy .put "first_request_round"
+    $"round-${($str/slice_bytes ($crypto/sha256 record/id) 0 16)}-1")
   (let loaded (load_session service/sessions record/id))
+  # Older sessions have the prompt label but not its media in the index.
+  (if_yes (&& (!= record/first_request "") ($absent? record/first_request_media))
+    (for event in (events_for service/events "session" record/id)
+      (if_yes (&& (== event/type "turn/request") (== event/payload/initial true)
+        (== event/payload/round copy/first_request_round))
+        (copy .put "first_request_media" (?? event/payload/media []))
+        (break))))
   (copy .put "last_round" loaded/round/.get)
   copy)
 

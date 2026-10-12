@@ -4,6 +4,8 @@
   [
     terminal
     merge_blocks
+    submission_blocks
+    first_prompt_block
     query_value
     draft_key
     bounded_blocks
@@ -14,7 +16,7 @@
     revision_before
     status_is_current])
 (import ^from "../src/web/contract.gene" [protocol_version])
-(import ^from "./view.gene" [block_view step_view run_status_view not_durable])
+(import ^from "./view.gene" [block_view step_view run_status_view not_durable append_history_start])
 (import ^from "./media.gene"
   [MediaComposer create_media media_select media_move media_ids media_has
    media_blocked media_admitted media_controls])
@@ -603,13 +605,25 @@
     (if_yes retained (expanded .push id)))
   (set client/expanded expanded)
   ($dom/clear client/transcript)
-  (if_yes client/has_older
-    ($dom/append client/transcript
-      ($dom/render
-        `(button ^type "button" ^class_name "older_messages" ^disabled %client/loading_older
-           ^on_click %(fn [event : Any] : Void (load_older client))
-           %(if client/loading_older "Loading…" "Load earlier messages")))))
-  (if (&& (== ($size client/records) 0) (== ($size client/preview) 0))
+  (var all_visible : (List Any) client/records)
+  # Durable records lead; append previews only when no durable version exists.
+  (for block in client/preview
+    (var found false)
+    (for record in client/records (if_yes (== record/id block/id) (set found true)))
+    (if_not found (set all_visible (merge_blocks all_visible [block]))))
+  (var tab (session_tab client client/selected))
+  (var cache : Any tab/cache)
+  (var first : Any (first_prompt_block cache/session client/records client/preview))
+  (if_not client/viewing_history
+    (var runs : (List Any) client/rounds)
+    (if_not ($absent? client/round) (set runs (merge_blocks runs [client/round])))
+    (set all_visible (submission_blocks client/selected client/pending runs all_visible
+      ^shown_round (if ($absent? first) "" (string_or first/round_id "")))))
+  (append_history_start client/transcript cache/session client/records client/preview
+    client/has_older client/loading_older
+    (fn [text : Str] : Void (copy_text client text))
+    (fn [] : Void (load_older client)))
+  (if (&& (== all_visible/.size 0) (== (string_or cache/session/first_request "") ""))
     (if_not (render_plugin_slot client client/transcript "welcome")
       ($dom/append client/transcript
       ($dom/render
@@ -627,12 +641,6 @@
                  ($dom/set_input_value client/prompt "/help")
                  ($dom/focus client/prompt)) "Browse commands"
                (span ^class_name "suggestion_symbol" ^aria-hidden "true" "/"))))))))
-  (var all_visible : (List Any) client/records)
-  # Durable records lead; append previews only when no durable version exists.
-  (for block in client/preview
-    (var found false)
-    (for record in client/records (if_yes (== record/id block/id) (set found true)))
-    (if_not found (set all_visible (merge_blocks all_visible [block]))))
   (var visible : (List Any) [])
   (var console "")
   (var count 0)
@@ -1061,6 +1069,13 @@
           # never be overwritten by this potentially late accepted response.
           (var status : Str data/state)
           (if_yes (terminal status) (acknowledge_run client data session))
+          (if_yes (== session client/selected)
+            (var install ($absent? client/round))
+            (if_not install
+              (var current_seq : Int client/round/submission_seq)
+              (var accepted_seq : Int data/submission_seq)
+              (set install (< current_seq accepted_seq)))
+            (if_yes install (apply_run client session data)))
           ($session_storage/remove "gene-harness/pending")
           (var submitted : Str pending/text)
           (var attachments : MediaComposer client/media)
@@ -1103,6 +1118,7 @@
                 (var socket : EventTarget client/socket)
                 ($ws/close socket))))))
       (set_hidden "resolve_submission" ($absent? client/pending))
+      (render_transcript client)
       (update_controls client))))
 
 (fn stage_submission [client : Client, text : Str] : Void
@@ -1119,6 +1135,7 @@
       client
       "Browser storage is required to safely recover a submission. Enable it and try again.")
     (return))
+  (render_transcript client)
   (send_pending client))
 
 (fn send_command [client : Client, text : Str, ^clear clear : Bool = true] : Void
@@ -1325,11 +1342,12 @@
             (var id : Str data/id)
             (media_move attachments "" id)
             (select_session client id)
-            (set client/queued_prompt text)
-            (set client/queued_submit true)
             ($dom/set_input_value client/prompt text)
             (remember_draft client)
-            ($session_storage/remove (draft_key "new")))
+            ($session_storage/remove (draft_key "new"))
+            (if (&& (str/starts_with? text "/") (! (str/starts_with? text "//")))
+              (do (set client/queued_prompt text) (set client/queued_submit true))
+              (stage_submission client text)))
           (else
             (show_error client data)))
         (update_controls client)))

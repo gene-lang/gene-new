@@ -3,6 +3,7 @@
 (import [create_session submit snapshot close_session_service] ^from "../../../src/web/session_service")
 (import [open_media_store put_media_base64 put_media] ^from "../../../src/storage/media")
 (import [RoundError] ^from "../../../src/runtime/round_controller")
+(import [update_session] ^from "../../../src/runtime/sessions")
 
 (describe "Harness attachment model input"
   (it "admits image-only input and preserves attachments through retries and restart" []
@@ -30,6 +31,9 @@
           (let view (snapshot service session/id))
           (let first ($first ($filter view/records (fn [record] (== record/role "user")))))
           ($assert (== first/media [image]))
+          ($assert (== view/session/first_request "Attachment: pixel.png"))
+          ($assert (== view/session/first_request_media [image]))
+          ($assert (== view/session/first_request_round admitted/id))
           (let replay (submit ^media [image/id] service session/id "image-only" 1 ""))
           ($assert (== replay/id admitted/id))
           ($assert (== captured/.get/.size 1))
@@ -39,12 +43,23 @@
         ensure (close_session_service service))
         (set service (test_service ^workspace workspace ^provider provider))
         (try
+          (let restored (snapshot service session/id))
+          ($assert (== restored/session/first_request "Attachment: pixel.png"))
+          ($assert (== restored/session/first_request_media [image]))
           (submit service session/id "after-restart" 2 "Use the earlier image.")
           (service/controller/watchers .get; .get session/id; .join)
           ($assert (== captured/.get/.size 2))
           (let restored_messages captured/.get/1)
           ($assert (== restored_messages/1/images/0/data encoded))
           ($assert (== restored_messages/1/media/0/id image/id))
+          (let continued (snapshot service session/id))
+          ($assert (== continued/session/first_request "Attachment: pixel.png"))
+          ($assert (== continued/session/first_request_media [image]))
+          # Before this change, attachment-only records saved just the label.
+          (update_session service/sessions session/id {^first_request_media nil})
+          (let legacy (snapshot service session/id))
+          ($assert (== legacy/session/first_request "Attachment: pixel.png"))
+          ($assert (== legacy/session/first_request_media [image]))
         ensure (close_session_service service)))))
 
   (it "extracts uploaded UTF-8 documents and never treats them as slash commands" []

@@ -216,7 +216,8 @@
       ^trigger trigger
       ^occurrence occurrence
       ^turns 0
-      ^first_request first_request})
+      ^first_request first_request
+      ^first_request_media []})
   (record_core_state
     manager/events
     "workspace"

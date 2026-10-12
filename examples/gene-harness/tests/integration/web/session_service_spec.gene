@@ -183,6 +183,76 @@
         ensure (close_session_service service))))))
 
 (describe "Harness web paging"
+  (it "keeps the full saved initial prompt through rename, paging and restart" []
+    (isolated this_mod/.path "keeps the full saved initial prompt through rename, paging and restart"
+      (fn [workspace]
+        (var service (test_service ^workspace workspace
+          ^provider (fn [request] "(Outcome ^^done ^reply \"ok\")")))
+        (let session (create_session service))
+        (var prompt "Original first paragraph.
+
+")
+        (repeat part in 128 (set prompt ($to_str prompt "Full prompt text 世界. ")))
+        (var round_id "")
+        (try
+          (let admitted (submit service session/id "first" 1 prompt))
+          (set round_id admitted/id)
+          (service/controller/watchers .get; .get session/id; .join)
+          (let initial (snapshot service session/id))
+          ($assert (== initial/session/first_request prompt) "first_request truncated the prompt")
+          ($assert (== (/first_request_media (service/sessions/index/.get .get session/id)) [])
+            "text-only first submission omitted stored empty media")
+          ($assert (== initial/session/first_request_round round_id))
+          ($assert (== initial/round/state "done"))
+          (let first_request ($first ($filter initial/records (fn [record]
+            (&& (== record/role "user") (== record/phase "turn/request"))))))
+          ($assert (== first_request/text prompt))
+          ($assert (unload_session service/sessions session/id))
+          (let renamed (edit_session service session/id {^title "A different title"}
+            ($parse/parse_int initial/session/revision)))
+          ($assert (== renamed/first_request prompt) "rename changed the saved prompt")
+          ($assert (== renamed/first_request_media []))
+          ($assert (== (service/events/streams/.get .get $"session:${session/id}") void)
+            "rename loaded the text-only session event stream")
+          ($assert (unload_session service/sessions session/id))
+          (let pinned (edit_session service session/id {^^pinned}
+            ($parse/parse_int renamed/revision)))
+          ($assert (== pinned/first_request_media []))
+          ($assert (== (service/events/streams/.get .get $"session:${session/id}") void)
+            "pin loaded the text-only session event stream")
+          # A later identical prompt must not stand in for the first round.
+          (submit service session/id "same-again" 2 prompt)
+          (service/controller/watchers .get; .get session/id; .join)
+          (repeat number in 230
+            (transcript service/runtime session/id
+              {^type "reply" ^round "tail" ^turn number ^text ($to_str number) ^^final}))
+          (let latest (snapshot service session/id))
+          ($assert latest/has_older)
+          ($assert (== latest/records/.size 200))
+          ($assert (== latest/session/first_request prompt))
+          ($assert (== latest/session/title "A different title"))
+          ($assert (== ($size ($filter latest/records (fn [record] (== record/round_id round_id)))) 0))
+          (let earlier (snapshot service session/id
+            ^before ($parse/parse_int latest/records/0/seq)))
+          (let requests ($filter earlier/records (fn [record]
+            (&& (== record/role "user") (== record/phase "turn/request")))))
+          ($assert (== requests/.size 2))
+          ($assert (== requests/0/round_id round_id))
+          ($assert (!= requests/1/round_id round_id))
+          ($assert (== earlier/session/first_request prompt))
+        ensure (close_session_service service))
+        (set service (test_service ^workspace workspace
+          ^provider (fn [request] "(Outcome ^^done ^reply \"ok\")")))
+        (try
+          ($assert (== (/first_request_media (service/sessions/index/.get .get session/id)) [])
+            "restart lost stored empty first-request media")
+          (let restored (snapshot service session/id))
+          ($assert restored/has_older)
+          ($assert (== restored/session/first_request prompt))
+          ($assert (== restored/session/first_request_round round_id))
+          ($assert (== restored/session/title "A different title"))
+        ensure (close_session_service service)))))
+
   (it "bounds the tail and retrieves earlier transcript pages without loss" []
     (isolated this_mod/.path "bounds the tail and retrieves earlier transcript pages without loss"
       (fn [workspace]

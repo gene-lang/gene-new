@@ -2,7 +2,7 @@
 
 (import [markdown_view] ^from "./markdown.gene")
 (import [code_view] ^from "./highlight.gene")
-(import [run_label terminal] ^from "./state.gene")
+(import [run_label terminal first_prompt_block] ^from "./state.gene")
 (import [attachment_view] ^from "./media.gene")
 
 (fn execution_view [text : Str, summary : Str, is_gene : Bool,
@@ -69,6 +69,20 @@
     ($dom/append article ($dom/render `(p ^class_name "muted" "Output shortened for display."))))
   article)
 
+# Render the conversation start without inserting synthetic records into paging.
+(fn append_history_start [target : EventTarget, session : Any,
+  records : (List Any), preview : (List Any), has_older : Bool, loading : Bool,
+  on_copy : (Fn [Str] Void), on_load : (Fn [] Void)] : Void
+  (var first : Any (first_prompt_block session records preview))
+  (if_not ($absent? first)
+    ($dom/append target (block_view first false on_copy false (fn [open : Bool] : Void nil))))
+  (if_yes has_older
+    ($dom/append target
+      ($dom/render
+        `(button ^type "button" ^class_name "older_messages" ^disabled %loading
+           ^on_click %(fn [event : Any] : Void (on_load))
+           %(if loading "Loading…" "Load earlier messages"))))))
+
 (fn not_durable [block : Any] : Bool
   (var durable : Bool block/durable) (! durable))
 
@@ -106,6 +120,7 @@
   (for block in blocks
     (var id : Str block/id)
     (var phase : Str block/phase)
+    (if (== phase "reply") (continue))
     ($dom/append content
       (block_view block (not_durable block) on_copy (is_open id)
         (fn [open : Bool] : Void (on_toggle id open))

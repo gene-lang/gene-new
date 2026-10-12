@@ -66,10 +66,26 @@ Closing a tab releases its viewer, allowing later idle unloading.
 A session can be renamed and pinned or unpinned. Metadata edits carry the last
 seen revision; a stale edit fails rather than overwriting a newer one.
 
+A submitted prompt appears immediately as a “You” message and replaces the
+welcome content, including while a newly created session connects. Pending
+submissions and admitted receipts keep it visible through delayed snapshots
+and request preparation. The real request record replaces this display
+fallback by round identity. A definite rejection removes the unadmitted
+message and preserves the composer draft; an uncertain outcome keeps the
+recoverable submission visible.
+
+History opens on its latest bounded page. The saved `first_request` is always
+shown as the first “You” prompt, above “Load earlier messages” when earlier
+history is omitted. It is the full submitted prompt text, not the conversation
+title; rename does not change it. Attachment-only submissions save an
+“Attachment: <name>” label and their media descriptors, and trigger sessions save
+the trigger's request. When the sequence-1 request record is loaded, it replaces
+the fallback rather than appearing twice. Identical later prompts remain visible.
+
 Each turn has a disclosure containing response code, attachment/patch stubs,
-patch results, next-request items, and progress replies. An intermediate
-Outcome's concise `^reply` also appears in the disclosure heading as
-`Turn N: <reply>`, so progress is visible while the turn is collapsed. A final reply appears
+patch results, and next-request items. An intermediate
+Outcome's concise `^reply` appears only in the disclosure heading as
+`Turn N: <reply>`, not again inside the expanded turn. A final reply appears
 once at the conversation level, outside its turn disclosure. Completed status
 shows the status label without repeating reply text. Response code is
 highlighted when expanded. The console is a separate collapsible pane;
@@ -305,6 +321,24 @@ To verify the browser import graph from the repository root:
 ```text
 bin/gene build --target web --out-dir tmp/harness-web-client examples/gene-harness/client/main.gene
 ```
+
+The compiled initial-prompt rendering regression can then be run from the
+repository root with:
+
+```text
+node examples/gene-harness/tests/history_start.mjs tmp/harness-web-client/view.mjs
+node examples/gene-harness/tests/first_submission.mjs tmp/harness-web-client/main.mjs
+```
+
+It checks
+prompt styling and ordering above the history gap, identity-based duplicate
+suppression, safe full text, rename independence, triggers and attachments.
+It also checks heading-only intermediate replies in expanded turns and unchanged
+conversation-level final reply rendering.
+The submission check delays admission and snapshots, covers prompt replacement,
+late completion, rejection and uncertain recovery, session creation, identical
+prompts in different rounds, and attachment-only input.
+This DOM-fixture check is not a live-browser acceptance check.
 
 The server compiles and publishes these assets at startup; this command is a
 development check. The web builder currently requires unique source basenames

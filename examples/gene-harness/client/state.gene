@@ -16,6 +16,75 @@
     (if_not found (out .push item)))
   out)
 
+# A saved first prompt leads paged history until its real request is visible.
+# Do not infer it from a renameable title or suppress an identical later prompt.
+(fn first_prompt_block [session : Any, records : (List Any), preview : (List Any)] : Any
+  (var text : Str (status_text session/first_request))
+  (var round_id : Str (status_text session/first_request_round))
+  (if_yes (== text "") (return nil))
+  (for blocks in [records preview]
+    (for block in blocks
+      (var role : Str (status_text block/role))
+      (var phase : Str (status_text block/phase))
+      (var run : Str (status_text block/round_id))
+      (if_yes (&& (== role "user") (== phase "turn/request")
+        (!= round_id "") (== run round_id))
+        (return nil))))
+  (var media : (List Any) [])
+  (if_not ($absent? session/first_request_media) (set media session/first_request_media))
+  {^id "first-request" ^round_id round_id ^turn 0 ^role "user"
+   ^phase "turn/request" ^text text ^media media
+   ^^durable})
+
+# Display a submitted prompt before request preparation or a snapshot finishes.
+# These display-only blocks never become records or paging cursors. A receipt
+# binds the pending request to its round; the real user record then replaces it.
+(fn submission_blocks [session : Str, pending : Any, rounds : (List Any), blocks : (List Any),
+  ^shown_round shown_round : Str = ""] : (List Any)
+  (var submitting (&& (! ($absent? pending)) (== (status_text pending/session) session)))
+  (var receipt : Any nil)
+  (var sequence : Int 0)
+  (for run in rounds
+    (var request_id : Str (status_text run/request_id))
+    (var next : Int run/submission_seq)
+    (if (if submitting (== request_id (status_text pending/request_id)) (> next sequence))
+      (set receipt run)
+      (set sequence next)))
+  (if_yes (&& (! submitting) ($absent? receipt)) (return blocks))
+  (var round_id : Str (status_text receipt/id))
+  (if_yes (&& (!= round_id "") (== round_id shown_round)) (return blocks))
+  (if_yes (!= round_id "")
+    (for block in blocks
+      (if_yes (&& (== (status_text block/role) "user")
+        (== (status_text block/phase) "turn/request")
+        (== (status_text block/round_id) round_id))
+        (return blocks))))
+  (var text : Str (if ($absent? receipt) (status_text pending/text) (status_text receipt/prompt)))
+  (var media : (List Any) [])
+  (if_not ($absent? receipt/media) (set media receipt/media))
+  (if_yes (&& (== (str/trim text) "") (> media/.size 0))
+    (var first : Any media/0)
+    (set text $"Attachment: ${(status_text first/name)}"))
+  (if_yes (&& (== (str/trim text) "") submitting)
+    (var ids : (List Any) [])
+    (if_not ($absent? pending/media) (set ids pending/media))
+    (if_yes (> ids/.size 0) (set text "Attachments")))
+  (if_yes (== (str/trim text) "") (return blocks))
+  (var request_id : Str (if submitting (status_text pending/request_id) (status_text receipt/request_id)))
+  (var prompt : Any {^id $"submission/${request_id}"
+    ^round_id (if (== round_id "") $"submission/${request_id}" round_id)
+    ^turn 0 ^role "user" ^phase "turn/request" ^text text ^media media
+    ^durable (! ($absent? receipt))})
+  (var out : (List Any) [])
+  (var inserted false)
+  (for block in blocks
+    (if_yes (&& (! inserted) (!= round_id "") (== (status_text block/round_id) round_id))
+      (out .push prompt)
+      (set inserted true))
+    (out .push block))
+  (if_not inserted (out .push prompt))
+  out)
+
 (fn query_value [source : Str, name : Str] : Str
   (var normalized : Str (str/join (str/split source "?") ""))
   (set normalized (str/join (str/split normalized "#") ""))

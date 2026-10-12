@@ -30,7 +30,7 @@
           "(Outcome ^^done ^reply \"checked\")")))
         (let manager (open_trigger_manager runtime controller ^!start ^now 1000))
         (try
-          (create_trigger manager {^id "beat" ^kind "heartbeat" ^every_ms 100 ^request "inspect"} ^now 1000)
+          (create_trigger manager {^id "beat" ^kind "heartbeat" ^every_ms 100 ^request "inspect\nFull trigger prompt 世界"} ^now 1000)
           (tick_triggers manager ^now 1100)
           (for [id watcher] in controller/watchers/.get watcher/.join)
           (tick_triggers manager ^now 1100)
@@ -41,6 +41,14 @@
           (let record (require_record runtime/sessions occurrences/0/session))
           ($assert (== record/kind "heartbeat") "wrong trigger session kind")
           ($assert (== record/trigger "beat") "trigger metadata missing")
+          ($assert (== record/first_request_media []) "trigger session omitted empty first-request media")
+          ($assert (== record/first_request "inspect
+Full trigger prompt 世界")
+            "trigger session lost the full initial request")
+          (update_session runtime/sessions record/id {^title "Renamed trigger"})
+          ($assert (== (/first_request (require_record runtime/sessions record/id))
+            "inspect
+Full trigger prompt 世界") "trigger rename changed the initial request")
           ($assert (== (list_sessions runtime/sessions; .size) 1) "heartbeat appeared in default sidebar")
           (tick_triggers manager ^now 1100)
           ($assert (== (calls .get; .size) 1) "same scheduled time repeated")
