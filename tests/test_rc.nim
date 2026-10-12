@@ -1467,5 +1467,30 @@ when defined(geneRcStats):
       check heapGrowth(
         "(var e (env)) (set e (e .extend {^f (fn [] e)}))",
         N) < 100_000
+
+  suite "rc — published values (geneRcStats)":
+    # A spawn marks everything its scope reaches as published, and a published
+    # object's count is atomic. These programs spawn first and then count the
+    # published values many times over; nothing may outlive the program.
+    test "data published by a spawn is counted and freed like any other":
+      check leakedManaged(
+        "(var rows []) (var i 0) " &
+        "(while (< i 40) (rows .push {^id i ^name $\"row${i}\" " &
+        "^tags [i (+ i 1) $\"t${i}\"]}) (set i (+ i 1))) " &
+        "(fn pick [row] row/name) " &
+        "(var task (spawn ^lane root ($size rows))) (await task) " &
+        "(var total 0) (var round 0) " &
+        "(while (< round 20) (for row in rows (var name (pick row)) " &
+        "(var tags row/tags) (set total (+ total ($size tags)))) " &
+        "(set round (+ round 1))) total") == 0
+
+    test "published nodes and nested containers are freed after use":
+      check leakedManaged(
+        "(var nodes []) (var i 0) " &
+        "(while (< i 20) (nodes .push `(item %i [%i {^k %i}])) (set i (+ i 1))) " &
+        "(var task (spawn ^lane root ($size nodes))) (await task) " &
+        "(var kept []) (var round 0) " &
+        "(while (< round 20) (for n in nodes (var same n) (var head ($head n)) " &
+        "(kept .push same)) (set round (+ round 1))) ($size kept)") == 0
 else:
   echo "test_rc: compile with -d:geneRcStats to run leak assertions; skipping."

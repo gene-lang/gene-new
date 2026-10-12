@@ -2922,6 +2922,27 @@ template countsInPlace(p: untyped): bool =
   when threadedRc: not isSharedFlag(p.shared)
   else: true
 
+template retainPublished(p: untyped) =
+  ## A published object's count, raised where it stands: the atomic add the
+  ## full body makes for it, without the call. A program that spawns publishes
+  ## most of its data, so this is the common case there, not the rare one.
+  when threadedRc:
+    if isSharedFlag(p.shared):
+      discard atomicFetchAdd(addr p.refCount, 1, ATOMIC_RELAXED)
+      return
+
+template releasePublished(p: untyped, noBookkeeping: bool) =
+  ## A published object's count, lowered where it stands while it stays above
+  ## one. The exchange never takes the count to zero, so destruction stays in
+  ## the full body, as does a release the object has bookkeeping for.
+  when threadedRc:
+    if isSharedFlag(p.shared) and noBookkeeping:
+      var current = atomicLoadN(addr p.refCount, ATOMIC_RELAXED)
+      while current > 1:
+        if atomicCompareExchangeN(addr p.refCount, addr current, current - 1,
+                                  true, ATOMIC_ACQ_REL, ATOMIC_RELAXED):
+          return
+
 proc rcRetain(bits: uint64) =
   ## A manual object whose count is an ordinary integer is bumped in place. A
   ## published one in a threaded build needs the atomic path, and a Node
@@ -2934,36 +2955,43 @@ proc rcRetain(bits: uint64) =
     if countsInPlace(p):
       p.refCount = p.refCount +% 1
       return
+    retainPublished(p)
   of INT64_TAG:
     let p = cast[ptr GeneInt64](payload)
     if countsInPlace(p):
       p.refCount = p.refCount +% 1
       return
+    retainPublished(p)
   of LIST_TAG:
     let p = cast[ptr GeneList](payload)
     if countsInPlace(p):
       p.refCount = p.refCount +% 1
       return
+    retainPublished(p)
   of MAP_TAG:
     let p = cast[ptr GeneMap](payload)
     if countsInPlace(p):
       p.refCount = p.refCount +% 1
       return
+    retainPublished(p)
   of NODE_TAG:
     let p = cast[ptr GeneNode](payload)
     if countsInPlace(p) and p.errorEvidence == nil:
       p.refCount = p.refCount +% 1
       return
+    retainPublished(p)
   of FUNCTION_TAG:
     let p = cast[ptr GeneFunction](payload)
     if countsInPlace(p):
       p.refCount = p.refCount +% 1
       return
+    retainPublished(p)
   of NATIVE_FN_TAG:
     let p = cast[ptr GeneNativeFn](payload)
     if countsInPlace(p):
       p.refCount = p.refCount +% 1
       return
+    retainPublished(p)
   else:
     discard
   rcRetainOther(bits)
@@ -4446,23 +4474,27 @@ proc rcRelease(bits: uint64) =
       if countsInPlace(p) and p.refCount > 1:
         p.refCount = p.refCount -% 1
         return
+      releasePublished(p, true)
     of INT64_TAG:
       let p = cast[ptr GeneInt64](payload)
       if countsInPlace(p) and p.refCount > 1:
         p.refCount = p.refCount -% 1
         return
+      releasePublished(p, true)
     of LIST_TAG:
       let p = cast[ptr GeneList](payload)
       if countsInPlace(p) and p.refCount > 1 and
           not p.cycleWatched and not p.holdsEscapedFn:
         p.refCount = p.refCount -% 1
         return
+      releasePublished(p, not p.cycleWatched)
     of MAP_TAG:
       let p = cast[ptr GeneMap](payload)
       if countsInPlace(p) and p.refCount > 1 and
           not p.cycleWatched and not p.holdsEscapedFn:
         p.refCount = p.refCount -% 1
         return
+      releasePublished(p, not p.cycleWatched)
     of NODE_TAG:
       let p = cast[ptr GeneNode](payload)
       if countsInPlace(p) and p.refCount > 1 and
@@ -4470,17 +4502,20 @@ proc rcRelease(bits: uint64) =
           p.errorEvidence == nil:
         p.refCount = p.refCount -% 1
         return
+      releasePublished(p, not p.cycleWatched)
     of FUNCTION_TAG:
       let p = cast[ptr GeneFunction](payload)
       if countsInPlace(p) and p.refCount > 1 and
           not p.cycleWatched and not (p.weakable and p.scope != nil):
         p.refCount = p.refCount -% 1
         return
+      releasePublished(p, not p.cycleWatched and not (p.weakable and p.scope != nil))
     of NATIVE_FN_TAG:
       let p = cast[ptr GeneNativeFn](payload)
       if countsInPlace(p) and p.refCount > 1:
         p.refCount = p.refCount -% 1
         return
+      releasePublished(p, true)
     else:
       discard
   rcReleaseOther(bits)

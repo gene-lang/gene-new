@@ -359,10 +359,18 @@ of the walks could be skipped outright; each got cheaper.
   set. The inline entries now move into the set with the first one that does
   not fit. The capture walk also returns at once for an immediate.
 
-The count fast paths also take their shared-mark test from one template
-(`countsInPlace`), which is a no-op today: every build compiles with
-threads, so a published object still counts atomically through the full
-body.
+**Counting published objects.** The count fast paths from the first part of
+this pass stopped at the shared mark: a published object counts atomically,
+so it went to the full body. A program that spawns publishes most of its
+data, so in the Harness nearly every count took the call. A published
+object's count is now raised with the same atomic add in place, and lowered
+in place by a compare-and-exchange that only succeeds while the count stays
+above one; reaching zero, and every object with release-time bookkeeping,
+still goes to the full body. A probe that publishes 2,000 rows and then
+reads them in a loop runs in 206-215 ms instead of 268-273 ms (four
+alternating runs, best of seven rounds each). Two lifetime tests publish
+data and plain nodes, count them several hundred times and require that
+nothing outlives the program.
 
 Service median, three samples per build in one capture: 14.87 s before
 these changes, 13.82 s with the first two, 12.29 s with the leaf rule. The
@@ -484,3 +492,22 @@ from this optimization:
    expectations and one LSP column expectation were aligned with independently
    verified baseline behavior. These test-only repairs are a separate commit;
    they did not alter the reader or message-resolution rules.
+
+4. A program-level value that a spawn publishes is not reclaimed when it is a
+   typed instance or a closure created in a nested scope. With the lifetime
+   suite's `leakedManaged` helper, on the tree before the counting change:
+
+   ```gene
+   (type Box ^props {^value Any})
+   (var boxes []) (var i 0)
+   (while (< i 20) (boxes .push (Box ^value [i])) (set i (+ i 1)))
+   (var task (spawn ^lane root ($size boxes))) (await task)
+   ```
+
+   followed by twenty passes that read each box, leaves 41 managed objects
+   behind, and the same shape with `(fns .push (fn [x] (+ x i)))` and calls
+   to each function leaves 21. Published Maps, Lists, Strs and
+   untyped nodes are all reclaimed. Publication pins the scopes a type or
+   closure refers to; whether those pins are meant to outlive the program
+   scope, and what that costs a long-running service that spawns from
+   request-scoped closures, has not been investigated.
