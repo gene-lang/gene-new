@@ -5,9 +5,8 @@
 # is one source compiled twice, and the only thing that keeps the two honest is
 # running them against the same inputs and diffing.
 #
-# It reports rather than throws, for the same reason `probes/divergence.gene`
-# does — a diff of two reports names *which* assertion moved, where a thrown
-# error names only the first.
+# It reports rather than throws: a diff of two reports names *which* assertion
+# moved, where a thrown error names only the first.
 
 (mod world_spec ^profile web)
 

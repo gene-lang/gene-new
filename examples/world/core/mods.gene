@@ -1,42 +1,27 @@
-# The content list — Miclone design.md §9's load step.
+# The content list — docs/proposals/world.md §13.1: a selected module list and
+# normal Gene loading.
 #
-# **One list, and this is it.** Everything that needs the game — the server and
-# every probe that generates terrain — calls `load_mods` and reads the
-# registries off the `Game` it gets back. The browser client does not: it is
-# handed the registries over the wire (server-selected content).
+# **One list, and this is it.** The world process calls `load_mods` once and
+# reads the registries off the `Content` it gets back. The browser client does
+# not: it is handed the registries over the wire (server-selected content,
+# §15.6).
 #
-# ## The content is compiled in
+# Content here is trusted code in this package, compiled in like any other
+# module. There is no runtime loader and no grant model (§1.2, §1.4).
 #
-# `mods/default` is imported like any other module and its `register_all` is
-# called. That is the Commons' loading model — a selected module list and
-# normal Gene loading (docs/proposals/world.md §13.1). Miclone also had a
-# runtime loader that read `mods/` off disk into a sandbox with manifest
-# `^grants`; the Commons dropped it, because the proposal asks for neither
-# grants (§1.2) nor the mod framework as a prerequisite (§1.4). Content here is
-# trusted code in this package.
-#
-# `^profile web` keeps the module portable, so the web-profile specs and
-# `tools/mesh_bench.mjs`/`tools/world_build.mjs` generate the same game the
-# server does.
+# `^profile web` keeps the module portable, so a web-profile spec can register
+# the same content the server does.
 
 (mod mods ^profile web)
 
-(import [Game new_game] ^from "./api.gene")
-(import [register_all] ^from "../mods/default/src/default.gene")
-(import [register_all : register_neighborhood]
-        ^from "../mods/neighborhood/src/neighborhood.gene")
+(import [Content new_content] ^from "./content.gene")
+(import [register_all] ^from "../mods/neighborhood/src/neighborhood.gene")
 
-# The game, registered. Called once per process, before anything reads a
-# content id — which is every caller's first line, because §2 assigns ids at
-# load and nothing means anything before that.
-#
-# Mod order is the list's order, and with one mod there is nothing to say about
-# it. §9's `depends`/`optional_depends` ordering arrives with the second mod and
-# with the manifest that declares the dependency; a topological sort over one
-# node would be a sort nobody could get wrong and nobody could check.
-(fn load_mods [] : Game
-  (var game (new_game))
-  (register_all game)
-  # After the default set, so every id it assigns keeps its value.
-  (register_neighborhood game)
-  game)
+# The content, registered. Called once per process, before anything reads a
+# content id: ids are assigned as modules register, in this list's order, and
+# a module added later must come after the ones already here. A saved region
+# keeps node names, not ids (§5.3), so it means the same thing either way.
+(fn load_mods [] : Content
+  (var content (new_content))
+  (register_all content)
+  content)

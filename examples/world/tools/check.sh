@@ -1,7 +1,7 @@
 #!/bin/sh
 # The Commons' whole suite, as one command.
 #
-#   tools/check.sh           # everything, about two minutes
+#   tools/check.sh           # everything, about two and a half minutes
 #   tools/check.sh --fast    # no server: VM + web specs and their diffs
 #
 # Every step prints `ok` or `FAIL`, and the script exits non-zero if any step
@@ -62,14 +62,11 @@ echo "gene/world check — logs in $WORK"
 
 # --- VM ---------------------------------------------------------------------
 echo "VM"
-SPECS="world wire protocol inventory edit loaded physics light mapgen abm"
+SPECS="world light loaded raycast"
 for s in $SPECS; do
   "$GENE_EXE" run "${s}_spec" >"$WORK/vm_$s.log" 2>&1
   verdict "${s}_spec" "$WORK/vm_$s.log" $?
 done
-
-"$GENE_EXE" run divergence >"$WORK/vm_divergence.log" 2>&1
-if [ $? -eq 0 ]; then ok "divergence"; else fail "divergence" "$WORK/vm_divergence.log"; fi
 
 # --- web profile ------------------------------------------------------------
 echo "web"
@@ -91,22 +88,10 @@ if [ "$FAST" -ne 2 ]; then
       fail "${s}_spec: VM and web reports differ" "$WORK/web_$s.log"
     fi
   done
-  node tools/web_spec.mjs web_divergence >"$WORK/web_divergence.log" 2>&1
-  if cmp -s "$WORK/vm_divergence.log" "$WORK/web_divergence.log"; then
-    ok "divergence: VM and web checksums identical"
-  else
-    fail "divergence: VM and web checksums differ" "$WORK/web_divergence.log"
-  fi
 fi
 
 # --- servers ----------------------------------------------------------------
 if [ "$FAST" -eq 0 ]; then
-  echo "VM budgets"
-  "$GENE_EXE" run worldgen >"$WORK/worldgen.log" 2>&1
-  verdict "worldgen (reading B is a documented expected-fail)" "$WORK/worldgen.log" $?
-  "$GENE_EXE" run wire_bench >"$WORK/wire_bench.log" 2>&1
-  if [ $? -eq 0 ]; then ok "wire_bench runs"; else fail "wire_bench" "$WORK/wire_bench.log"; fi
-
   echo "the Commons world process (Milestone 1)"
   COMMONS_SMOKE_PORT=${COMMONS_SMOKE_PORT:-8097} \
     node tools/commons_smoke.mjs >"$WORK/commons_smoke.log" 2>&1

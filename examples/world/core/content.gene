@@ -1,0 +1,116 @@
+# The Commons' content registries, and how a content module fills them —
+# docs/proposals/world.md §13.1, §15.6.
+#
+# Content is data a client receives rather than code it runs: a node's tiles
+# and flags, and the appearance tiles an entity names in its `core/appearance`
+# component. A content module is an ordinary Gene module that calls
+# `register_tile` and `register_node` on the `Content` it is handed;
+# `core/mods.gene` is the list of them.
+#
+# This replaced the mod API copied from Miclone, which also carried items,
+# groups, drops, crafting, forms, entities, biomes, ores and ambient triggers.
+# The Commons' scene is laid out by `server/scene.gene` and its operations are
+# the world process's own; they use none of that. SOURCES.md has the record.
+
+(mod content ^profile web)
+
+(import [Registry new_registry register draw_normal] ^from "./registry.gene")
+(import [TileRegistry new_tiles add_tile tile_id] ^from "./tiles.gene")
+
+# The node registry arrives with its three reserved ids installed (air,
+# unknown, ignore), so a module's first node is id 3.
+(type Content
+  ^props {^nodes Registry
+          ^tiles TileRegistry}
+
+  (ctor []
+    (set self/nodes (new_registry))
+    (set self/tiles (new_tiles))))
+
+(fn new_content [] : Content
+  (new Content))
+
+# --- errors ------------------------------------------------------------------
+
+(type UnknownTile
+  ^props {^message Str}
+  (ctor [message : Str] (set self/message message)))
+
+(impl Error for UnknownTile)
+
+(fn resolve_tile [content : Content name : Str for_node : Str] : F64
+  (var id (tile_id content/tiles name))
+  (if_yes (< id 0.0)
+    # Named rather than defaulted to tile 0: a node that silently draws as
+    # something else is the mistake a small content set is least likely to
+    # notice, so a wrong definition fails when it is registered.
+    (fail (new UnknownTile
+               $"node ${for_node} names tile ${name}, which is not registered")))
+  id)
+
+# --- tiles -------------------------------------------------------------------
+#
+# Registered before the nodes that name them, because a node's `^tiles` is
+# resolved at registration.
+#
+# The defaults are the ones a flat tile wants; an overlay needs its second
+# colour, and a kind that does not use a column leaves it at zero. `^density`
+# is a percentage (62, not 0.62) — see `core/tiles.gene` for why the columns
+# are whole numbers.
+
+(fn register_tile [content : Content name : Str
+                   ^kind : F64
+                   ^red : F64 ^green : F64 ^blue : F64
+                   ^spread : F64?
+                   ^seed : F64?
+                   ^base_red : F64? ^base_green : F64? ^base_blue : F64?
+                   ^base_spread : F64? ^base_seed : F64?
+                   ^density : F64?] : F64
+  (add_tile content/tiles name kind red green blue
+            (?? spread 20.0) (?? seed 0.0)
+            (?? base_red 0.0) (?? base_green 0.0) (?? base_blue 0.0)
+            (?? base_spread 20.0) (?? base_seed 0.0)
+            (?? density 50.0)))
+
+# --- nodes -------------------------------------------------------------------
+#
+# `^tiles` is one, two, or three tile names: one is every face, two is
+# top-and-bottom then sides, three is top, sides, bottom — the order
+# `core/registry.gene`'s columns are in, which is the order the mesher reads.
+#
+# Everything else is what a node is unless it says otherwise: drawn as a cube,
+# blocking, hiding what is behind it, dark, and stopping light.
+
+# `xs/%i` needs a lexical index, so the three positions come through one
+# accessor rather than three float literals in selector position.
+(fn nth_tile [names : (List Str) i : F64] : Str
+  names/%i)
+
+(fn register_node [content : Content name : Str
+                   ^tiles : (List Str)
+                   ^drawtype : F64?
+                   ^solid : Bool?
+                   ^opaque : Bool?
+                   ^propagates_light : Bool?
+                   # "Do not draw a face against another node of my own kind."
+                   # For anything see-through that grows in clumps — leaves —
+                   # where the internal faces of the clump are most of what
+                   # would be meshed and none of it is visible. Off by default:
+                   # it is wrong for anything opaque (which culls already).
+                   ^merges_same : Bool?
+                   ^light_source : F64?] : F64
+  (var given ($to_float tiles/.size))
+  (if_yes (|| (< given 1.0) (> given 3.0))
+    (fail (new UnknownTile
+               $"node ${name} names $($to_int given) tiles; it takes one, two, or three")))
+  (var top (resolve_tile content (nth_tile tiles 0.0) name))
+  (var side (if (> given 1.0) (resolve_tile content (nth_tile tiles 1.0) name) top))
+  (var bottom
+    (if (> given 2.0) (resolve_tile content (nth_tile tiles 2.0) name)
+      (if (> given 1.0) top side)))
+  (register content/nodes name (?? drawtype draw_normal)
+            (?? solid true) (?? opaque true)
+            (?? propagates_light false)
+            (?? merges_same false)
+            (?? light_source 0.0)
+            top side bottom ""))

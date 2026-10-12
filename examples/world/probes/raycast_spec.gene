@@ -1,0 +1,235 @@
+# Cross-backend spec for pointing at a node — `core/raycast.gene`, which the
+# browser client uses to turn a click into the cell or object under it.
+#
+# Two kinds of check, and the second is the one worth reading:
+#
+#   * the cases anyone would think of: straight down, sideways, into the sky,
+#     out of reach, through water, at glass;
+#   * **the traversal never skips.** Every hit must be one step from the node
+#     the ray was in when it struck, on exactly one axis, with the first
+#     pointable and the second not. Cast over a few hundred directions, that
+#     says the traversal is a traversal — a stepped sample passes a head-on
+#     fixture and fails this at a grazing angle.
+#
+# These checks came with the copied node-edit spec; the Commons has no node
+# edits, so the pointing half is what remains.
+
+(mod raycast_spec ^profile web)
+
+(import [Registry new_registry register_uniform id_of registered_count
+         draw_normal draw_liquid draw_glasslike]
+        ^from "../core/registry.gene")
+(import [content_air] ^from "../core/world.gene")
+(import [World new_world set_node node_at
+         world_dx world_dy world_dz world_nodes open_sky]
+        ^from "../core/loaded.gene")
+(import [new_hit cast hit? hit_x hit_y hit_z before_x before_y before_z
+         hit_distance pointable?]
+        ^from "../core/raycast.gene")
+(import [light_region queue_overhead] ^from "../core/light.gene")
+
+# --- reporting ---------------------------------------------------------------
+
+(fn check [out : (List Str) label : Str got : Str want : Str] : Nil
+  (if (== got want)
+    (then (out .push $"ok   ${label}"))
+    (else (out .push $"FAIL ${label}: got ${got}, want ${want}"))))
+
+(fn check_f [out : (List Str) label : Str got : F64 want : F64] : Nil
+  (check out label $"$($to_int got)" $"$($to_int want)"))
+
+(fn check_b [out : (List Str) label : Str got : Bool want : Bool] : Nil
+  (check out label $"${got}" $"${want}"))
+
+# --- the fixture world -------------------------------------------------------
+#
+# 2x2x2 blocks — 32 nodes on a side — with a floor, a hill on it, a sealed
+# cavern under the floor, a pool, and a pane of glass: something to hit head
+# on, something to graze, something to pass through, and something to miss.
+
+(let side 32.0)
+(let floor_top 11.0)
+(let ground 12.0)
+
+(fn fixture_registry [] : Registry
+  (var r (new_registry))
+  (register_uniform r "t:stone" draw_normal true true false 0.0 0.0)
+  (register_uniform r "t:glass" draw_glasslike true false true 0.0 1.0)
+  (register_uniform r "t:water" draw_liquid false true true 0.0 2.0)
+  (register_uniform r "t:lamp" draw_normal true true false 14.0 3.0)
+  r)
+
+(fn fill_box [w : World x0 : F64 y0 : F64 z0 : F64
+              x1 : F64 y1 : F64 z1 : F64 id : F64] : Nil
+  (var z z0)
+  (while (<= z z1)
+    (var y y0)
+    (while (<= y y1)
+      (var x x0)
+      (while (<= x x1)
+        (set_node w x y z id)
+        (set x (+ x 1.0)))
+      (set y (+ y 1.0)))
+    (set z (+ z 1.0))))
+
+# Built the same way every time it is called.
+(fn fixture_world [r : Registry] : World
+  (var w (new_world 0.0 0.0 0.0 2.0 2.0 2.0))
+  (var stone (id_of r "t:stone"))
+  (fill_box w 0.0 0.0 0.0 (- side 1.0) floor_top (- side 1.0) stone)
+  # A hill, four nodes tall, in one corner of the floor.
+  (fill_box w 4.0 ground 4.0 11.0 (+ ground 3.0) 11.0 stone)
+  # A sealed cavern, well under the floor.
+  (fill_box w 16.0 4.0 16.0 26.0 8.0 26.0 content_air)
+  # A pool set into the floor.
+  (fill_box w 20.0 (- ground 2.0) 4.0 26.0 (- ground 1.0) 10.0
+            (id_of r "t:water"))
+  # And a pane of glass standing on the floor.
+  (fill_box w 14.0 ground 20.0 14.0 (+ ground 2.0) 22.0 (id_of r "t:glass"))
+  w)
+
+(fn light_world [r : Registry w : World] : Nil
+  (var sky ($buffer F32 (* (world_dx w) (world_dz w))))
+  (open_sky w sky)
+  (var q ($buffer F32 (+ (world_nodes w) queue_overhead)))
+  (light_region w/light w/content (world_dx w) (world_dy w) (world_dz w)
+                r sky q (registered_count r)))
+
+(fn lit_fixture [r : Registry] : World
+  (var w (fixture_world r))
+  (light_world r w)
+  w)
+
+# --- raycast: the cases anyone would think of --------------------------------
+
+(fn cast_checks [out : (List Str)] : Nil
+  (var r (fixture_registry))
+  (var w (lit_fixture r))
+  (var h (new_hit))
+
+  # Straight down onto the floor from well above it.
+  (cast w r h 2.5 24.0 2.5  0.0 -1.0 0.0  32.0)
+  (check_b out "looking down finds the floor" (hit? h) true)
+  (check_f out "at the top node of it" (hit_y h) floor_top)
+  (check_f out "and the node above it is where a placement goes"
+           (before_y h) ground)
+  (check_f out "with x unchanged" (hit_x h) 2.0)
+  (check_f out "and the distance is how far it fell"
+           ($math/round (hit_distance h)) 12.0)
+
+  # Straight at the side of the hill.
+  (cast w r h 1.5 (+ ground 1.0) 6.5  1.0 0.0 0.0  16.0)
+  (check_b out "looking sideways finds the hill" (hit? h) true)
+  (check_f out "at its near face" (hit_x h) 4.0)
+  (check_f out "with the empty node before it" (before_x h) 3.0)
+
+  # Into the sky: a miss is a result.
+  (cast w r h 2.5 24.0 2.5  0.0 1.0 0.0  32.0)
+  (check_b out "looking up finds nothing" (hit? h) false)
+
+  # Out of reach: the floor is 12 below and the reach is 4.
+  (cast w r h 2.5 24.0 2.5  0.0 -1.0 0.0  4.0)
+  (check_b out "and neither does a short reach" (hit? h) false)
+
+  # Water is drawn but not pointable, so a ray through the pool reaches the
+  # floor under it rather than stopping at the surface.
+  (cast w r h 22.5 24.0 6.5  0.0 -1.0 0.0  32.0)
+  (check_b out "a liquid is not pointable" (hit? h) true)
+  (check_f out "so the ray goes through it to the floor"
+           (hit_y h) (- ground 3.0))
+
+  # Glass is drawn and *is* pointable — the distinction §5 needs for meshing is
+  # not the one §7 needs for pointing, and this is the check that says so.
+  (cast w r h 10.0 (+ ground 1.0) 21.5  1.0 0.0 0.0  16.0)
+  (check_b out "glass is pointable" (hit? h) true)
+  (check_f out "at the pane" (hit_x h) 14.0))
+
+# --- raycast: the property ---------------------------------------------------
+#
+# §7 rejects a stepped sample because "stepping misses thin nodes at grazing
+# angles". The fixture above would not catch that: every one of those rays is
+# axis-aligned and hits a thick wall head on. So this casts a few hundred rays
+# over a fan of directions and asserts what a traversal guarantees and a sampler
+# does not — **every hit is one step from the node the ray was in**, on exactly
+# one axis, with the first pointable and the second not.
+#
+# The directions are arithmetic rather than random: a spec that runs on two
+# backends cannot share a generator.
+
+(fn fan_checks [out : (List Str)] : Nil
+  (var r (fixture_registry))
+  (var w (lit_fixture r))
+  (var h (new_hit))
+
+  (var hits 0.0)
+  (var not_adjacent 0.0)
+  (var wrong_pointable 0.0)
+  (var before_pointable 0.0)
+
+  # From a point above the hill, sweeping a full turn of yaw and a range of
+  # pitch — so most rays graze the hill's corners and edges, which is exactly
+  # where a stepped sample skips a node.
+  (var i 0.0)
+  (while (< i 24.0)
+    (var yaw (* i 0.2617993877991494))          # 2*pi / 24
+    (var j 0.0)
+    (while (< j 13.0)
+      # Steeply downward, from straight down to about 11 degrees off it. Not
+      # taste: this world is 32 nodes across and the eye is 5 above the floor,
+      # so a ray shallower than about 12 degrees leaves the world before it
+      # reaches anything, and a fan made of misses asserts nothing. Every one of
+      # these is still off-axis in two dimensions, which is what makes it graze
+      # node corners — the case §7 says a stepped sample drops.
+      (var pitch (- (* j 0.1) 1.4))
+      (var cp ($math/cos pitch))
+      (var dx (* cp ($math/sin yaw)))
+      (var dy ($math/sin pitch))
+      (var dz (* cp ($math/cos yaw)))
+      (cast w r h 8.37 (+ ground 5.0) 8.63  dx dy dz  48.0)
+      (if_yes (hit? h)
+        (set hits (+ hits 1.0))
+        (var d (+ (abs_f (- (hit_x h) (before_x h)))
+                  (+ (abs_f (- (hit_y h) (before_y h)))
+                     (abs_f (- (hit_z h) (before_z h))))))
+        (if_yes (!= d 1.0) (set not_adjacent (+ not_adjacent 1.0)))
+        (if_not (pointable? r (node_at w (hit_x h) (hit_y h) (hit_z h)))
+          (set wrong_pointable (+ wrong_pointable 1.0)))
+        (if_yes (pointable? r (node_at w (before_x h) (before_y h)
+                                       (before_z h)))
+          (set before_pointable (+ before_pointable 1.0))))
+      (set j (+ j 1.0)))
+    (set i (+ i 1.0)))
+
+  # The fan must actually hit things, or the three properties below are true of
+  # nothing at all.
+  (check_b out "the fan of 312 rays mostly hits something"
+           (> hits 200.0) true)
+  (check_f out "every hit is one node from the node before it" not_adjacent 0.0)
+  (check_f out "every hit node is pointable" wrong_pointable 0.0)
+  (check_f out "and no node before a hit is" before_pointable 0.0))
+
+(fn abs_f [v : F64] : F64
+  (if (< v 0.0) (- 0.0 v) v))
+
+# --- the report --------------------------------------------------------------
+
+(fn collect [out : (List Str)] : Nil
+  (cast_checks out)
+  (fan_checks out))
+
+(fn report [] : Str
+  (var out : (List Str) [])
+  (collect out)
+  ($str/join out "\n"))
+
+(fn failures [] : F64
+  (var out : (List Str) [])
+  (collect out)
+  (var bad 0.0)
+  (var i 0.0)
+  (var n ($to_float out/.size))
+  (while (< i n)
+    (if_yes ($str/starts_with? out/%i "FAIL")
+      (set bad (+ bad 1.0)))
+    (set i (+ i 1.0)))
+  bad)

@@ -59,7 +59,7 @@
         ^from "./protocol.gene")
 
 (let rules_revision "commons-rules-1")
-(let content_revision "commons/default@0.1.0+commons/neighborhood@0.1.0")
+(let content_revision "commons/neighborhood@0.2.0")
 (let step_ms 100)
 (let checkpoint_interval_ms 1000)
 (let heartbeat_expiry_ms 45000)
@@ -138,8 +138,8 @@
 (fn create_world [root : Str] : Map
   (let store (create_store root))
   (try
-    (let game (load_mods))
-    (let region (region_record game/nodes (layout game/nodes)))
+    (let content (load_mods))
+    (let region (region_record content/nodes (layout content/nodes)))
     (let world_id $"commons-$($crypto/random_hex 4)")
     (let history_id $"history-$($crypto/random_hex 4)")
     (in_transaction store (fn []
@@ -166,12 +166,12 @@
     (if_not (== meta/rules_revision rules_revision)
       (fault "rules_mismatch"
         $"The world was created under rules ${meta/rules_revision}; this build runs ${rules_revision}."))
-    (let game (load_mods))
+    (let content (load_mods))
     (let regions (regions_all store))
     (if (== regions/.size 0) (fault "no_region" "The world store has no region."))
     (let region regions/0)
-    (let nodes (region_nodes game/nodes region))
-    (let nav (build_nav size_x size_y size_z floor_y (solid_lookup game/nodes nodes)))
+    (let nodes (region_nodes content/nodes region))
+    (let nav (build_nav size_x size_y size_z floor_y (solid_lookup content/nodes nodes)))
     (let entities {})
     (let committed {})
     (for entity in (entities_all store)
@@ -184,7 +184,7 @@
     (let w {^store store ^root root ^world_id meta/world_id ^history_id meta/history_id
             ^rules_revision meta/rules_revision
             ^region region ^nodes nodes ^nav nav
-            ^content (content_data game/nodes game/tiles)
+            ^content (content_data content/nodes content/tiles)
             ^entities entities ^committed committed
             ^dirty {} ^dirty_actions {} ^dirty_participants {}
             ^participants participants ^actions actions

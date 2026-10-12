@@ -25,22 +25,13 @@ fi
 mkdir -p dist
 
 MODULES="
-core/exact core/noise core/field core/world core/registry
-core/tiles core/texture core/shaders core/groups core/item core/biome core/cave core/ore
-core/decor core/abm core/craft core/entity core/formspec
-core/api core/mods core/mapgen core/light core/mesh core/loaded
-core/physics core/raycast core/edit core/inventory core/drops
-core/vec core/container core/wire core/protocol core/client_world
-mods/default/src/default
-client/atlas client/render client/sound client/main
-probes/divergence probes/world_spec probes/mapgen_spec probes/light_spec
-probes/loaded_spec probes/physics_spec probes/edit_spec probes/inventory_spec
-probes/wire_spec probes/protocol_spec probes/abm_spec
-core/seen
-probes/web_world_spec probes/web_mapgen_spec probes/web_light_spec
-probes/web_loaded_spec probes/web_physics_spec probes/web_edit_spec
-probes/web_inventory_spec probes/web_wire_spec probes/web_protocol_spec
-probes/web_divergence probes/web_abm_spec
+core/exact core/world core/registry core/tiles core/texture core/shaders
+core/content core/mods core/light core/mesh core/loaded core/raycast core/vec
+mods/neighborhood/src/neighborhood
+client/atlas client/render client/main
+probes/world_spec probes/light_spec probes/loaded_spec probes/raycast_spec
+probes/web_world_spec probes/web_light_spec probes/web_loaded_spec
+probes/web_raycast_spec
 "
 
 for m in $MODULES; do
