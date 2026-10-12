@@ -436,7 +436,15 @@ more than the two allocations.
   but not free: in a function that runs one three-item loop, reusing the
   scope and binding the item are about a quarter of the time. A compile-time
   "simple body" class, like `simpleCall` for functions, would allow a
-  slots-only reset.
+  slots-only reset. Across the suite this path (`reuseForScope`,
+  `resetCallScope`, `bindForItem`, `storeSlot`) is 20-25% of records, event
+  replay and text indexing. The existing scope-free whitelist is too narrow
+  to reuse (it admits no calls), and a wider one cannot prove much: a native
+  called from the body receives the scope and may define into it, which is
+  why every iteration resets about forty fields that are almost always
+  already clear. The change that would remove the cost is structural: move
+  the rarely used fields of `Scope` behind one optional extension object, so
+  that a reset is one pointer test.
 - A match branch and the first iteration of every loop allocate a fresh
   `Scope` (about sixty fields). Pooling them needs the same ownership proof
   loop reuse uses.
