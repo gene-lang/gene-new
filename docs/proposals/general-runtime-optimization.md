@@ -480,6 +480,34 @@ VM scheduler suite, which the sanitizer run covers.
   already clear. The change that would remove the cost is structural: move
   the rarely used fields of `Scope` behind one optional extension object, so
   that a reset is one pointer test.
+
+  A narrower route that needs no change to `Scope`'s layout, checked against
+  the code but not implemented:
+
+  1. Only one kind of native can reach the caller's scope. A `NativeProc`
+     takes its arguments and nothing else; a `NativeCallProc` also takes a
+     `NativeCall` carrying the scope. There are 67 of the second kind and
+     they are all invoked from one place in `applyCall`
+     (`callee.nativeCallImpl`). A flag set on the scope there records "a
+     native that could have changed this scope ran".
+  2. A body is *plain* when, beyond what `chunkCanPoolCallScope` already
+     excludes, it has no instruction that writes scope state other than a
+     slot: no define or set by name, no type declaration, no syntax call. That
+     is a property of the instruction list and can be worked out once per
+     body. It must not be stored on `ForProto` or in any field the artifact
+     codec walks generically, or a compiled artifact would depend on whether
+     the loop had run; a run-time-only `Chunk` field excluded the way
+     `spawnPublished` is would do.
+  3. For a plain body whose scope carries no such flag, the next iteration
+     needs only what the body can have changed: release the defined slots,
+     clear the defined bits, bind the item. `resetCallScope`,
+     `prepareChunkScope` and `prepareImplAssembly` are skipped. Anything else
+     takes today's full reset, which also clears the flag.
+
+  The same per-iteration cost appears at the first iteration of every loop,
+  so the measure of success is the single-short-loop kernel in
+  `differential/loop_kernels.gene`, where the reset and the binding are about
+  a quarter of the time.
 - A match branch and the first iteration of every loop allocate a fresh
   `Scope` (about sixty fields). Pooling them needs the same ownership proof
   loop reuse uses.
