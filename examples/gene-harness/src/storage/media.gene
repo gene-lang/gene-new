@@ -5,7 +5,7 @@
 (type MediaError ^props {^code Str ^message Str} ^impl [Error])
 (impl Error for MediaError)
 (type MediaStore ^props {^root Str ^max_file_bytes Int ^max_total_bytes Int ^max_records Int})
-(var ^^private media_gate ($cell false))
+(var ^^private media_gate ($sync/gate))
 
 (fn media_error [code : Str, message : Str]
   (fail (MediaError ^code code ^message message)))
@@ -91,8 +91,7 @@
   (let metadata (try (inspect_bytes name data)
     catch DocumentError (media_error "invalid_request" $err/message)))
   (let digest ($crypto/sha256 data))
-  (while (media_gate .swap true) ($sleep 1))
-  (try
+  (media_gate (fn []
     (let index (read_index store))
     (if (>= ($size index/assets) store/max_records)
       (media_error "too_large" "The workspace attachment count limit has been reached."))
@@ -116,8 +115,7 @@
     ($fs/write_bytes_atomic path data)
     (index/assets .put id metadata)
     ($fs/write_text_atomic ^^owner_only (index_path store) ($serde/write_data index))
-    (media_descriptor store id)
-  ensure (media_gate .set false)))
+    (media_descriptor store id))))
 
 (fn put_media_base64 [store : MediaStore, name : Str, encoded : Str]
   # Enforce the encoded bound before allocating decoded bytes.

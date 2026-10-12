@@ -1,0 +1,32 @@
+# Isolate repeated store/return validation of one unchanged frozen history.
+# Run identical inputs with baseline and candidate binaries. Building/freezing
+# the data is explicitly outside the measured region; its cost is not hidden
+# in a claim about complete application turns.
+(fn touch! [] (eval (quote nil) ^in caller_env))
+(fn keep [holder, data]
+  (holder .set data)
+  data)
+(fn main [args] : Int
+  ($assert (> args/body/.size 0) "usage: benchmark_frozen_checks.gene ROWS [REPETITIONS] [--stats]")
+  (let rows ($parse/parse_int args/body/0))
+  ($assert (<= args/body/.size 3) "too many benchmark arguments")
+  (let repetitions (if (&& (> args/body/.size 1) (!= args/body/1 "--stats"))
+    ($parse/parse_int args/body/1) 1000))
+  (if (== args/body/.size 3)
+    ($assert (&& (!= args/body/1 "--stats") (== args/body/2 "--stats")) "expected ROWS REPETITIONS --stats"))
+  ($assert (&& (> rows 0) (> repetitions 0)) "rows and repetitions must be positive")
+  (let collect (args/body .contains? "--stats"))
+  (let data [])
+  (repeat i in rows (data .push {^id i ^text $"record-${i}" ^values [i (+ i 1)]}))
+  (let frozen ($freeze data))
+  (let holder ($cell nil))
+  (touch!)
+  (repeat warmup in 10 (keep holder frozen))
+  (if collect ($runtime/test_graph_scans "start"))
+  (let started ($os/monotonic_ms))
+  (repeat iteration in repetitions (keep holder frozen))
+  (let elapsed (- ($os/monotonic_ms) started))
+  (let scans (if collect ($runtime/test_graph_scans "stop") nil))
+  ($assert (== holder/.get/.size rows))
+  ($println ($json/stringify {^rows rows ^repetitions repetitions ^elapsed_ms elapsed ^checksum holder/.get/.size ^scans scans}))
+  0)

@@ -1,0 +1,6 @@
+[passed] scheduler variation contract reports the selected test quantum
+[passed] scheduler variation contract keeps straight-line queue read and mutation together
+[passed] scheduler variation contract lets peers progress during loops and recursion
+[passed] scheduler variation contract does not consume a queued value when a parked receiver is cancelled
+[passed] scheduler variation contract runs cancellation cleanup exactly once
+5 passed, 0 failed, 0 errors, 0 skipped

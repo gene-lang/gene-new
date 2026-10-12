@@ -1,0 +1,2 @@
+[passed] frozen subtree proofs keeps mixed closures and cycles on the full check path
+1 passed, 0 failed, 0 errors, 0 skipped

@@ -10122,6 +10122,8 @@ proc biNativeModuleStatus(args: openArray[Value],
     raise newException(GeneError, "managed native module adapter is unavailable")
   nativeModuleAdapter.status(args, call)
 
+const syncGateSource = staticRead("lib/sync.gene")
+
 proc registerStdlibNamespaces(root: Scope) =
   let app = root.application()
   ## Define the importable stdlib namespaces (gene/*, str, html, url, net/http,
@@ -10292,6 +10294,21 @@ proc registerStdlibNamespaces(root: Scope) =
   root.define("stream", newNamespace("stream", stdStreamScope))
   root.define("node", newNamespace("node", stdNodeScope))
   root.define("parse", newNamespace("parse", stdParseScope))
+  # Ordinary Gene wrappers use private native acquisition and unwind ownership.
+  # Their bookkeeping must survive an exhausted execution budget.
+  let syncScope = newScope(root)
+  let gateScope = newScope(root)
+  gateScope.define("gate_owner", builtinNativeCallFn("sync/gate_owner",
+    biSyncGateOwner, acceptsNamed = false))
+  gateScope.define("gate_acquire", builtinNativeCallFn("sync/gate_acquire",
+    biSyncGateAcquire, acceptsNamed = false))
+  gateScope.define("track_enter", builtinNativeCallFn("sync/track_enter",
+    biSyncTrackEnter, acceptsNamed = false))
+  let syncProtos = compileSource(syncGateSource, "<builtin gene/sync>").functions
+  for index, name in ["gate", "track"]:
+    let proto = syncProtos[index]
+    syncScope.define(name, newFunction("sync/" & name, proto.params, proto, gateScope))
+  root.define("sync", newNamespace("sync", syncScope))
   # `gene/bit` and `gene/bytes` — the primitives a binary format needs.
   let bitScope = newScope(root)
   bitScope.define("and", builtinNativeFn("bit/and", biBitAnd))

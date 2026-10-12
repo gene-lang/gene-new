@@ -24,7 +24,7 @@
         loaded/records/inbox))
     (if (!= state/format 1)
       (notification_error "unavailable" "Unsupported notification inbox format."))
-    (Inbox ^backend backend ^state ($cell state) ^gate ($cell false) ^observer ($cell nil) ^progress ($cell {}))
+    (Inbox ^backend backend ^state ($cell state) ^gate ($sync/gate) ^observer ($cell nil) ^progress ($cell {}))
   catch Any
     backend/.Store:close
     (fail $err)))
@@ -39,8 +39,7 @@
 
 (fn mutate [inbox : Inbox, body]
   (writable)
-  (while (inbox/gate .swap true) ($sleep 1))
-  (try
+  (inbox/gate (fn []
     (let next (copy inbox/state/.get))
     (let result (body next))
     (if_yes (!= next inbox/state/.get)
@@ -50,8 +49,7 @@
       # Delivery failure cannot change the outcome of a committed publication.
       (let observer inbox/observer/.get)
       (if_not ($absent? observer) (try (observer "notifications/state" (inbox_snapshot inbox)) catch Any nil)))
-    result
-  ensure (inbox/gate .set false)))
+    result)))
 
 (fn visible [message, now : Int] : Bool
   (&& (< message/cleared_revision message/revision) (> message/expires_at now)))

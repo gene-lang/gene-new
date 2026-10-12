@@ -1,0 +1,99 @@
+/Users/gcao/gene-workspace/gene-new/src/gene/types.nim(1405, 3) Warning: pass a finalizer of the 'proc (x: T) {.nimcall.}' type; new is deprecated [Deprecated]
+/Users/gcao/gene-workspace/gene-new/src/gene/types.nim(1419, 3) Warning: pass a finalizer of the 'proc (x: T) {.nimcall.}' type; new is deprecated [Deprecated]
+/Users/gcao/gene-workspace/gene-new/src/gene/types.nim(4124, 3) Warning: unreachable code after 'return' statement or '{.noReturn.}' proc [UnreachableCode]
+/Users/gcao/gene-workspace/gene-new/src/gene/types.nim(4127, 3) Warning: unreachable code after 'return' statement or '{.noReturn.}' proc [UnreachableCode]
+/Users/gcao/gene-workspace/gene-new/src/gene/types.nim(4128, 3) Warning: unreachable code after 'return' statement or '{.noReturn.}' proc [UnreachableCode]
+/Users/gcao/gene-workspace/gene-new/src/gene/types.nim(4129, 7) Warning: unreachable code after 'return' statement or '{.noReturn.}' proc [UnreachableCode]
+/Users/gcao/gene-workspace/gene-new/src/gene/types.nim(4132, 7) Warning: unreachable code after 'return' statement or '{.noReturn.}' proc [UnreachableCode]
+/Users/gcao/gene-workspace/gene-new/src/gene/types.nim(4135, 3) Warning: unreachable code after 'return' statement or '{.noReturn.}' proc [UnreachableCode]
+/Users/gcao/gene-workspace/gene-new/src/gene/error_analysis.nim(168, 6) template/generic instantiation from here
+/Users/gcao/gene-workspace/gene-new/src/gene/error_analysis.nim(208, 10) Warning: visit(analysis.rootEnvironment) can raise an unlisted exception: Exception [Effect]
+/Users/gcao/gene-workspace/gene-new/src/gene/stdlib.nim(4874, 3) Warning: unreachable code after 'return' statement or '{.noReturn.}' proc [UnreachableCode]
+/Users/gcao/gene-workspace/gene-new/src/gene/vm.nim(21657, 11) Warning: unreachable code after 'return' statement or '{.noReturn.}' proc [UnreachableCode]
+/Users/gcao/gene-workspace/gene-new/src/gene/vm.nim(21683, 11) Warning: unreachable code after 'return' statement or '{.noReturn.}' proc [UnreachableCode]
+/Users/gcao/gene-workspace/gene-new/src/gene/macro_runtime.nim(89, 6) template/generic instantiation from here
+/Users/gcao/gene-workspace/gene-new/src/gene/macro_runtime.nim(95, 17) Warning: `=destroy`(state.application) can raise an unlisted exception: Exception [Effect]
+/Users/gcao/gene-workspace/gene-new/tests/test_native_api_threads.nim(224, 1) template/generic instantiation of `suite` from here
+/Users/gcao/gene-workspace/gene-new/tests/test_native_api_threads.nim(304, 3) template/generic instantiation of `test` from here
+/Users/gcao/gene-workspace/gene-new/tests/test_native_api_threads.nim(310, 17) template/generic instantiation of `createThread` from here
+/Users/gcao/.choosenim/toolchains/nim-2.2.4/lib/std/typedthreads.nim(286, 50) template/generic instantiation of `threadProcWrapper` from here
+/Users/gcao/.choosenim/toolchains/nim-2.2.4/lib/system/threadimpl.nim(101, 27) template/generic instantiation of `threadProcWrapStackFrame` from here
+/Users/gcao/.choosenim/toolchains/nim-2.2.4/lib/system/threadimpl.nim(95, 27) template/generic instantiation of `threadProcWrapDispatch` from here
+/Users/gcao/.choosenim/toolchains/nim-2.2.4/lib/system/threadimpl.nim(74, 5) Warning: The bare except clause is deprecated; use `except CatchableError:` instead [BareExcept]
+/Users/gcao/gene-workspace/gene-new/tests/test_native_api_threads.nim(224, 1) template/generic instantiation of `suite` from here
+/Users/gcao/gene-workspace/gene-new/tests/test_native_api_threads.nim(568, 3) template/generic instantiation of `test` from here
+/Users/gcao/gene-workspace/gene-new/tests/test_native_api_threads.nim(608, 19) template/generic instantiation of `createThread` from here
+/Users/gcao/.choosenim/toolchains/nim-2.2.4/lib/std/typedthreads.nim(286, 50) template/generic instantiation of `threadProcWrapper` from here
+/Users/gcao/.choosenim/toolchains/nim-2.2.4/lib/system/threadimpl.nim(101, 27) template/generic instantiation of `threadProcWrapStackFrame` from here
+/Users/gcao/.choosenim/toolchains/nim-2.2.4/lib/system/threadimpl.nim(95, 27) template/generic instantiation of `threadProcWrapDispatch` from here
+/Users/gcao/.choosenim/toolchains/nim-2.2.4/lib/system/threadimpl.nim(74, 5) Warning: The bare except clause is deprecated; use `except CatchableError:` instead [BareExcept]
+/Users/gcao/gene-workspace/gene-new/tests/test_native_api_threads.nim(224, 1) template/generic instantiation of `suite` from here
+/Users/gcao/gene-workspace/gene-new/tests/test_native_api_threads.nim(628, 3) template/generic instantiation of `test` from here
+/Users/gcao/gene-workspace/gene-new/tests/test_native_api_threads.nim(659, 19) template/generic instantiation of `createThread` from here
+/Users/gcao/.choosenim/toolchains/nim-2.2.4/lib/std/typedthreads.nim(286, 50) template/generic instantiation of `threadProcWrapper` from here
+/Users/gcao/.choosenim/toolchains/nim-2.2.4/lib/system/threadimpl.nim(101, 27) template/generic instantiation of `threadProcWrapStackFrame` from here
+/Users/gcao/.choosenim/toolchains/nim-2.2.4/lib/system/threadimpl.nim(95, 27) template/generic instantiation of `threadProcWrapDispatch` from here
+/Users/gcao/.choosenim/toolchains/nim-2.2.4/lib/system/threadimpl.nim(74, 5) Warning: The bare except clause is deprecated; use `except CatchableError:` instead [BareExcept]
+/Users/gcao/gene-workspace/gene-new/tests/test_native_api_threads.nim(224, 1) template/generic instantiation of `suite` from here
+/Users/gcao/gene-workspace/gene-new/tests/test_native_api_threads.nim(673, 3) template/generic instantiation of `test` from here
+/Users/gcao/gene-workspace/gene-new/tests/test_native_api_threads.nim(701, 19) template/generic instantiation of `createThread` from here
+/Users/gcao/.choosenim/toolchains/nim-2.2.4/lib/std/typedthreads.nim(286, 50) template/generic instantiation of `threadProcWrapper` from here
+/Users/gcao/.choosenim/toolchains/nim-2.2.4/lib/system/threadimpl.nim(101, 27) template/generic instantiation of `threadProcWrapStackFrame` from here
+/Users/gcao/.choosenim/toolchains/nim-2.2.4/lib/system/threadimpl.nim(95, 27) template/generic instantiation of `threadProcWrapDispatch` from here
+/Users/gcao/.choosenim/toolchains/nim-2.2.4/lib/system/threadimpl.nim(74, 5) Warning: The bare except clause is deprecated; use `except CatchableError:` instead [BareExcept]
+/Users/gcao/gene-workspace/gene-new/tests/test_native_api_threads.nim(224, 1) template/generic instantiation of `suite` from here
+/Users/gcao/gene-workspace/gene-new/tests/test_native_api_threads.nim(717, 3) template/generic instantiation of `test` from here
+/Users/gcao/gene-workspace/gene-new/tests/test_native_api_threads.nim(731, 19) template/generic instantiation of `createThread` from here
+/Users/gcao/.choosenim/toolchains/nim-2.2.4/lib/std/typedthreads.nim(286, 50) template/generic instantiation of `threadProcWrapper` from here
+/Users/gcao/.choosenim/toolchains/nim-2.2.4/lib/system/threadimpl.nim(101, 27) template/generic instantiation of `threadProcWrapStackFrame` from here
+/Users/gcao/.choosenim/toolchains/nim-2.2.4/lib/system/threadimpl.nim(95, 27) template/generic instantiation of `threadProcWrapDispatch` from here
+/Users/gcao/.choosenim/toolchains/nim-2.2.4/lib/system/threadimpl.nim(74, 5) Warning: The bare except clause is deprecated; use `except CatchableError:` instead [BareExcept]
+/Users/gcao/gene-workspace/gene-new/tests/test_native_api_threads.nim(224, 1) template/generic instantiation of `suite` from here
+/Users/gcao/gene-workspace/gene-new/tests/test_native_api_threads.nim(744, 3) template/generic instantiation of `test` from here
+/Users/gcao/gene-workspace/gene-new/tests/test_native_api_threads.nim(753, 17) template/generic instantiation of `createThread` from here
+/Users/gcao/.choosenim/toolchains/nim-2.2.4/lib/std/typedthreads.nim(286, 50) template/generic instantiation of `threadProcWrapper` from here
+/Users/gcao/.choosenim/toolchains/nim-2.2.4/lib/system/threadimpl.nim(101, 27) template/generic instantiation of `threadProcWrapStackFrame` from here
+/Users/gcao/.choosenim/toolchains/nim-2.2.4/lib/system/threadimpl.nim(95, 27) template/generic instantiation of `threadProcWrapDispatch` from here
+/Users/gcao/.choosenim/toolchains/nim-2.2.4/lib/system/threadimpl.nim(74, 5) Warning: The bare except clause is deprecated; use `except CatchableError:` instead [BareExcept]
+/Users/gcao/gene-workspace/gene-new/tests/test_native_api_threads.nim(224, 1) template/generic instantiation of `suite` from here
+/Users/gcao/gene-workspace/gene-new/tests/test_native_api_threads.nim(768, 3) template/generic instantiation of `test` from here
+/Users/gcao/gene-workspace/gene-new/tests/test_native_api_threads.nim(777, 17) template/generic instantiation of `createThread` from here
+/Users/gcao/.choosenim/toolchains/nim-2.2.4/lib/std/typedthreads.nim(286, 50) template/generic instantiation of `threadProcWrapper` from here
+/Users/gcao/.choosenim/toolchains/nim-2.2.4/lib/system/threadimpl.nim(101, 27) template/generic instantiation of `threadProcWrapStackFrame` from here
+/Users/gcao/.choosenim/toolchains/nim-2.2.4/lib/system/threadimpl.nim(95, 27) template/generic instantiation of `threadProcWrapDispatch` from here
+/Users/gcao/.choosenim/toolchains/nim-2.2.4/lib/system/threadimpl.nim(74, 5) Warning: The bare except clause is deprecated; use `except CatchableError:` instead [BareExcept]
+/Users/gcao/gene-workspace/gene-new/tests/test_native_api_threads.nim(224, 1) template/generic instantiation of `suite` from here
+/Users/gcao/gene-workspace/gene-new/tests/test_native_api_threads.nim(787, 3) template/generic instantiation of `test` from here
+/Users/gcao/gene-workspace/gene-new/tests/test_native_api_threads.nim(803, 17) template/generic instantiation of `createThread` from here
+/Users/gcao/.choosenim/toolchains/nim-2.2.4/lib/std/typedthreads.nim(286, 50) template/generic instantiation of `threadProcWrapper` from here
+/Users/gcao/.choosenim/toolchains/nim-2.2.4/lib/system/threadimpl.nim(101, 27) template/generic instantiation of `threadProcWrapStackFrame` from here
+/Users/gcao/.choosenim/toolchains/nim-2.2.4/lib/system/threadimpl.nim(95, 27) template/generic instantiation of `threadProcWrapDispatch` from here
+/Users/gcao/.choosenim/toolchains/nim-2.2.4/lib/system/threadimpl.nim(74, 5) Warning: The bare except clause is deprecated; use `except CatchableError:` instead [BareExcept]
+/Users/gcao/gene-workspace/gene-new/tests/test_native_api_threads.nim(224, 1) template/generic instantiation of `suite` from here
+/Users/gcao/gene-workspace/gene-new/tests/test_native_api_threads.nim(864, 3) template/generic instantiation of `test` from here
+/Users/gcao/gene-workspace/gene-new/tests/test_native_api_threads.nim(871, 17) template/generic instantiation of `createThread` from here
+/Users/gcao/.choosenim/toolchains/nim-2.2.4/lib/std/typedthreads.nim(286, 50) template/generic instantiation of `threadProcWrapper` from here
+/Users/gcao/.choosenim/toolchains/nim-2.2.4/lib/system/threadimpl.nim(101, 27) template/generic instantiation of `threadProcWrapStackFrame` from here
+/Users/gcao/.choosenim/toolchains/nim-2.2.4/lib/system/threadimpl.nim(95, 27) template/generic instantiation of `threadProcWrapDispatch` from here
+/Users/gcao/.choosenim/toolchains/nim-2.2.4/lib/system/threadimpl.nim(74, 5) Warning: The bare except clause is deprecated; use `except CatchableError:` instead [BareExcept]
+/Users/gcao/gene-workspace/gene-new/tests/test_native_api_threads.nim(2, 41) Warning: imported and not used: 'native_managed' [UnusedImport]
+
+[Suite] native api threaded attachment
+  [OK] ingress C ingress copies foreign notifications and waits for entry quiescence
+  [OK] ingress ingress wake interrupts a long root scheduler sleep
+  [OK] ingress unregister runs off-root and retains context through late C entry
+  [OK] ingress Gene IoResource wrapper waits for physical native retirement
+  [OK] ingress abandoned Gene handle requests close and retires after unregister
+  [OK] ingress C registration bridge creates a Gene-owned subscription
+  [OK] ingress failed registration keeps cleanup until C unregister returns
+  [OK] concurrent awaits consume once while joins retain a consistent outcome
+  [OK] native failure publication checks payload and formatter Send requirements
+  [OK] concurrent failures retain one complete witness and every trace contribution
+  [OK] concurrent route creation and emission serialize complete records
+  [OK] wrong-thread detach does not consume owner attachment
+  [OK] foreign thread can complete a native async task awaited at root
+  [OK] a foreign thread cannot publish on a bus owned by another lane
+  [OK] runtime require_root_lane rejects a non-owner lane with a typed error
+  [OK] sync ownership operations reject a non-owner lane
+  [OK] sandbox transaction handles reject a non-owner lane
+  [OK] foreign thread can cancel a native async task awaited at root

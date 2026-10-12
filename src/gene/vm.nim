@@ -221,7 +221,16 @@ type
     stackLen: int           # shared-operand-stack length at try entry; unwinding
                             # truncates back to it before running catch clauses
 
+  NativeOwnershipLease = object
+    # Private stdlib wrappers own these for one call frame. A scope can be
+    # shared by scopeless calls; its address is not a dynamic-extent identity.
+    depth: int
+    target: Value
+    auxiliary: Value
+    mapEntry: bool
+
   Fiber = ref object of RootObj
+    ownershipLeases: seq[NativeOwnershipLease]
     taskContext: Value
     nativeTask: Value
     initializationLease: RootRef
@@ -961,7 +970,10 @@ var macroContextRetirementHook: proc() {.nimcall, gcsafe.}
 type RuntimeMacroSlots = ref object of RootObj
   entries: seq[RuntimeMacroDefinition]
 var activeVmScope {.threadvar.}: ptr Scope
+var activeOwnershipLeases {.threadvar.}: ptr seq[NativeOwnershipLease]
+var activeOwnershipFrames {.threadvar.}: ptr seq[Frame]
 var activeTask {.threadvar.}: Value
+var activeFiberIdentity {.threadvar.}: uint64
 var activeFiberTasks {.threadvar.}: seq[Value]
 var activeTaskContext {.threadvar.}: Value
 var activeVmFiber {.threadvar.}: Fiber
@@ -1187,7 +1199,8 @@ proc generatorFiberEdges(continuation: RootRef, scopes: var seq[pointer],
   if continuation == nil or not (continuation of Fiber):
     return false
   let fiber {.cursor.} = cast[Fiber](continuation)
-  if fiber.initializationLease != nil or fiber.callError != nil or
+  if fiber.ownershipLeases.len != 0 or
+      fiber.initializationLease != nil or fiber.callError != nil or
       fiber.pendingError != nil or fiber.pendingPanic != nil or
       fiber.pendingCancel != nil or fiber.pendingReturn != nil or
       fiber.ensureBody != nil or fiber.ensureScope != nil or
@@ -4492,6 +4505,34 @@ type ValueGraphVisited = object
   scan: ptr StampedSet   # the thread's reusable set, for a walk that owns it
   spilled: bool          # the inline entries have moved into the set
 
+when defined(geneGraphProofTests):
+  type FrozenProofStats = object
+    escapeVisits, escapeSkips, captureVisits, captureSkips: int64
+  var frozenProofStats {.threadvar.}: FrozenProofStats
+  var collectingFrozenProofStats {.threadvar.}: bool
+
+  proc biFrozenProofStats(args: openArray[Value]): Value {.nimcall.} =
+    if args.len != 1 or args[0].kind != vkString or
+        args[0].strVal notin ["start", "stop"]:
+      raise newException(GeneError, "runtime/test_graph_scans expects start or stop")
+    if args[0].strVal == "start":
+      frozenProofStats = FrozenProofStats()
+      collectingFrozenProofStats = true
+      beginFrozenEscapeStats()
+      return NIL
+    collectingFrozenProofStats = false
+    let weak = finishFrozenEscapeStats()
+    var props = initPropTable()
+    props["escape_visits"] = newInt(frozenProofStats.escapeVisits)
+    props["escape_skips"] = newInt(frozenProofStats.escapeSkips)
+    props["capture_visits"] = newInt(frozenProofStats.captureVisits)
+    props["capture_skips"] = newInt(frozenProofStats.captureSkips)
+    props["weak_visits"] = newInt(weak.visits)
+    props["weak_skips"] = newInt(weak.skips)
+    props["weak_walk_visits"] = newInt(weak.walkVisits)
+    props["weak_walk_skips"] = newInt(weak.walkSkips)
+    newMap(props)
+
 var graphScanSet {.threadvar.}: StampedSet
 var graphScanBusy {.threadvar.}: bool
 
@@ -4521,6 +4562,13 @@ proc carriesCallerEnv(value: Value, seen: var ValueGraphVisited): bool =
   ## Detect direct or captured borrowed authority at publication boundaries.
   ## Walk containers without copying their backing storage or property names.
   ## The walk invokes no user code and does not mutate the graph.
+  when defined(geneGraphProofTests):
+    if collectingFrozenProofStats: inc frozenProofStats.escapeVisits
+  when not defined(geneDisableFrozenGraphProofs):
+    if (value.frozenGraphProofs and FrozenNoCallerEnv) != 0:
+      when defined(geneGraphProofTests):
+        if collectingFrozenProofStats: inc frozenProofStats.escapeSkips
+      return false
   case value.kind
   of vkCallerEnv: return true
   of vkFunction: return value.fnCapturesCallerEnv
@@ -8554,6 +8602,12 @@ proc biRuntimeConfigureModule(args: openArray[Value],
                               call: ptr NativeCall): Value {.nimcall.}
 proc biRuntimeRequireRootLane(args: openArray[Value],
                               call: ptr NativeCall): Value {.nimcall.}
+when defined(geneSchedulerTests):
+  proc schedulerTestQuantum*(): int
+  proc biSchedulerTestQuantum(args: openArray[Value]): Value {.nimcall.} =
+    if args.len != 0:
+      raise newException(GeneError, "runtime/test_scheduler_quantum expects no arguments")
+    newInt(schedulerTestQuantum())
 proc biRuntimeSandboxTransaction(args: openArray[Value],
                                  call: ptr NativeCall): Value {.nimcall.}
 proc biSandboxTransactionPrepare(args: openArray[Value],
@@ -8754,6 +8808,54 @@ proc biRuntimeRequireRootLane(args: openArray[Value],
     e.errVal = newNode(head, props = props)
     e.hasErrVal = true
     raise e
+  NIL
+
+proc biSyncGateOwner(args: openArray[Value],
+                     call: ptr NativeCall): Value {.nimcall.} =
+  ## Private leaf for the Gene gate implementation. Never retain the Task:
+  ## the owner identity lives only while its native-owned body is active.
+  discard biRuntimeRequireRootLane(args, call)
+  newInt(cast[int64](activeFiberIdentity))
+
+proc releaseOwnershipLeases(leases: var seq[NativeOwnershipLease],
+                            depth: int) =
+  while leases.len > 0 and leases[^1].depth >= depth:
+    let lease = leases.pop()
+    if lease.mapEntry:
+      lease.target.putMapEntry(lease.auxiliary.strVal, VOID)
+    else:
+      lease.auxiliary.setCellValue(NIL)
+      # The channel is private, capacity one, and its token is held here.
+      doAssert lease.target.tryPushChannel(NIL).pushed
+      wakeChannelWaiters(lease.target, wakeSenders = false)
+
+proc biSyncGateAcquire(args: openArray[Value],
+                       call: ptr NativeCall): Value {.nimcall.} =
+  discard biRuntimeRequireRootLane([], call)
+  doAssert args.len == 2 and activeOwnershipLeases != nil
+  let identity = newInt(cast[int64](activeFiberIdentity))
+  if args[1].cellValue == identity:
+    raise newException(GeneError, "sync/gate is non-reentrant: this execution already owns the gate")
+  # Receive either parks without consuming a token, or records its native
+  # owner before another budget check or scheduler safepoint can intervene.
+  discard biChannelRecv([args[0]], call)
+  activeOwnershipLeases[].add NativeOwnershipLease(
+    depth: activeOwnershipFrames[].len, target: args[0], auxiliary: args[1])
+  args[1].setCellValue(identity)
+  NIL
+
+proc biSyncTrackEnter(args: openArray[Value],
+                      call: ptr NativeCall): Value {.nimcall.} =
+  discard biRuntimeRequireRootLane([], call)
+  doAssert args.len == 2 and activeOwnershipLeases != nil
+  requireMap("sync/track", args[0])
+  requireStr("sync/track key", args[1])
+  if args[0].mapEntries.getOrDefault(args[1].strVal, VOID).kind != vkVoid:
+    raise newException(GeneError, "sync/track key is already registered")
+  args[0].putMapEntry(args[1].strVal, TRUE)
+  activeOwnershipLeases[].add NativeOwnershipLease(
+    depth: activeOwnershipFrames[].len, target: args[0],
+    auxiliary: args[1], mapEntry: true)
   NIL
 
 proc biCPtrClose(args: openArray[Value]): Value {.nimcall.} =
@@ -9763,6 +9865,9 @@ proc buildBuiltins(app: Application): Scope =
   result.define("SandboxGeneration", sandboxGenerationType)
   let runtimeScope = newScope(result)
   runtimeScope.define("context", builtinNativeFn("runtime/context", biRuntimeContext))
+  when defined(geneSchedulerTests):
+    runtimeScope.define("test_scheduler_quantum", builtinNativeFn(
+      "runtime/test_scheduler_quantum", biSchedulerTestQuantum))
   runtimeScope.define("sandbox_namespaces", builtinNativeFn(
     "runtime/sandbox_namespaces", biRuntimeSandboxNamespaces))
   block:
@@ -9778,6 +9883,9 @@ proc buildBuiltins(app: Application): Scope =
   runtimeScope.define("gc_stats",
                       builtinNativeCallFn("runtime/gc_stats", biRuntimeGcStats,
                                           acceptsNamed = false))
+  when defined(geneGraphProofTests):
+    runtimeScope.define("test_graph_scans", builtinNativeFn(
+      "runtime/test_graph_scans", biFrozenProofStats))
   when defined(geneRcStats):
     runtimeScope.define("test_collect", builtinNativeCallFn(
       "runtime/test_collect", biRuntimeTestCollect, acceptsNamed = false))
@@ -16955,7 +17063,24 @@ proc appendNativeTrace(e: ref GeneError, calleeName: string,
 # A slice is a minimum: once spent, the fiber pauses at the next loop iteration
 # or function entry (`sliceMayEndHere`), never in the middle of straight-line
 # code.
-const schedulerInstructionBudget = 512
+when defined(geneSchedulerTests):
+  # Test binaries can perturb the quantum without moving any safepoint.
+  # Production builds do not inspect this environment variable.
+  let schedulerInstructionBudget = block:
+    let configured = getEnv("GENE_TEST_SCHEDULER_QUANTUM", "512")
+    var quantum: int
+    try:
+      quantum = parseInt(configured)
+    except ValueError:
+      raise newException(ValueError,
+        "GENE_TEST_SCHEDULER_QUANTUM must be an integer in 1..1000000")
+    if quantum < 1 or quantum > 1000000:
+      raise newException(ValueError,
+        "GENE_TEST_SCHEDULER_QUANTUM must be an integer in 1..1000000")
+    quantum
+  proc schedulerTestQuantum*(): int = schedulerInstructionBudget
+else:
+  const schedulerInstructionBudget = 512
 const schedulerWorkerTimerPollMs = 1
 
 when compileOption("threads") and defined(gcAtomicArc):
@@ -17344,6 +17469,16 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
   # no longer grows the Nim stack. The initial frame's stack/ip alias the var
   # params so generators can still persist and resume them.
   var frames: seq[Frame]
+  var ownershipLeases: seq[NativeOwnershipLease]
+  if fiber != nil:
+    ownershipLeases = move fiber.ownershipLeases
+  let previousOwnershipLeases = activeOwnershipLeases
+  let previousOwnershipFrames = activeOwnershipFrames
+  activeOwnershipLeases = addr ownershipLeases
+  activeOwnershipFrames = addr frames
+  defer:
+    activeOwnershipLeases = previousOwnershipLeases
+    activeOwnershipFrames = previousOwnershipFrames
   var chunk = chunkArg
   var scope = scopeArg
   let previousVmScope = activeVmScope
@@ -17646,6 +17781,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     ## Save the whole running continuation into `fiber` so the scheduler can resume
     ## it later. `resumeIp` is the instruction to re-execute on resume (the parking
     ## op, whose operands are still on the stack). The caller sets the wait reason.
+    fiber.ownershipLeases = move ownershipLeases
     fiber.chunk = chunk
     fiber.scope = scope
     fiber.recycleScope = recycleScope
@@ -17684,6 +17820,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     fiber.stackBase = curStackBase
 
   template releaseCurrentCallScope() =
+    if ownershipLeases.len != 0:
+      releaseOwnershipLeases(ownershipLeases, frames.len)
     if recycleScope:
       releaseCallScope(gVmPools, scope)
       recycleScope = false
@@ -17696,7 +17834,10 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     # An error, panic, cancellation, or `return` unwinding past a function or
     # loop activation ends it without a return: check its scope as a return
     # would. A `return` target still gets its own return.
-    if not target: discardFrameLoops()
+    if not target:
+      discardFrameLoops()
+      if ownershipLeases.len != 0:
+        releaseOwnershipLeases(ownershipLeases, frames.len)
     if unlikely(not recycleScope) and frames.len > 0 and not target and
         curFrameKind in {fkNormal, fkForBody} and frames[^1].scope != scope and
         scope.scopeHasOtherOwners:
@@ -17714,6 +17855,13 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                           seen: var ValueGraphVisited): bool =
     # This is a read-only reachability proof, not a value snapshot. The caller
     # owns the roots and no user code runs while the graph is inspected.
+    when defined(geneGraphProofTests):
+      if collectingFrozenProofStats: inc frozenProofStats.captureVisits
+    when not defined(geneDisableFrozenGraphProofs):
+      if (value.frozenGraphProofs and FrozenNoScopeCapture) != 0:
+        when defined(geneGraphProofTests):
+          if collectingFrozenProofStats: inc frozenProofStats.captureSkips
+        return false
     if not value.isManaged:
       return false
     let kind = value.kind
@@ -17843,12 +17991,14 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     if f.recycleScope:
       releaseCallScope(gVmPools, f.scope)
 
-  proc releaseUnwoundFrameScope(f: var Frame, owned: bool) =
+  proc releaseUnwoundFrameScope(f: var Frame, owned: bool, depth: int) =
     ## A panic or cancellation discards every frame at once. An owned function
     ## or loop scope is checked as its return would check it, innermost first;
     ## dropping each frame's reference keeps an inner scope from pinning the
     ## outer ones still to be checked. The root frame's scope belongs to the
     ## runLoop caller.
+    if ownershipLeases.len != 0:
+      releaseOwnershipLeases(ownershipLeases, depth)
     releaseFrameCallScope(f)
     if owned and not f.recycleScope and f.kind in {fkNormal, fkForBody} and
         f.scope.scopeHasOtherOwners:
@@ -17867,6 +18017,17 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         owned.closeOwnedActors()
     elif f.kind == fkSupervisorBody and f.extra.ownedScope != nil:
       f.extra.ownedScope.closeOwnedActors()
+
+  proc unwindNativeOwnershipTo(depth: int) =
+    # Panic/cancellation handlers can skip saved frames without popping them.
+    # Retire inner structured children before releasing a surrounding native
+    # permit/registration, then enter the outer Gene cleanup. These native
+    # scope operations are idempotent when final frame retirement revisits them.
+    if ownershipLeases.len == 0:
+      return
+    for i in countdown(frames.high, depth):
+      settleUnwoundOwnership(frames[i], true)
+      releaseOwnershipLeases(ownershipLeases, i)
 
   template retireEndingLoopScope() =
     # Each iteration's scope ends here. Its bindings can hold closures that
@@ -18271,7 +18432,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
   template canReplaceCurrentTailCall(calleeScope: Scope, tailMarked: bool,
                                      operandBase: int,
                                      boundValuesMayCapture: bool): bool =
-    tailMarked and curInitializationLease == nil and operandBase == curStackBase and
+    tailMarked and
+      (ownershipLeases.len == 0 or ownershipLeases[^1].depth < frames.len) and
+      curInitializationLease == nil and operandBase == curStackBase and
       curFrameKind == fkNormal and returnDepth == frames.len and
       not validateImplRequirements and
       returnType.kind == vkNil and returnLabel.len == 0 and
@@ -21822,6 +21985,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       while handlers.len > 0:
         let h = handlers.pop()
         if h.tp.ensureBody != nil:
+          # Panic skips catch frames without physically popping them yet.
+          # Crossed native owners must retire before the outer ensure runs.
+          unwindNativeOwnershipTo(h.framesLen)
           strunc(curStackBase)
           enterFrame(h.tp.ensureBody, h.scope, false, fkEnsurePanicBody)
           curPendingPanic = p
@@ -21831,7 +21997,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         continue
       for i in countdown(frames.high, 0):
         settleUnwoundOwnership(frames[i], true)
-        releaseUnwoundFrameScope(frames[i], owned = i > 0)
+        releaseUnwoundFrameScope(frames[i], owned = i > 0, depth = i)
       releaseFrameStack(gVmPools, frames)
       raise
     except GeneCancel as c:
@@ -21864,6 +22030,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       while handlers.len > 0:
         let h = handlers.pop()
         if h.tp.ensureBody != nil:
+          unwindNativeOwnershipTo(h.framesLen)
           strunc(curStackBase)
           enterFrame(h.tp.ensureBody, h.scope, false, fkEnsureCancelBody)
           curPendingCancel = c
@@ -21873,7 +22040,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         continue
       for i in countdown(frames.high, 0):
         settleUnwoundOwnership(frames[i], true)
-        releaseUnwoundFrameScope(frames[i], owned = i > 0)
+        releaseUnwoundFrameScope(frames[i], owned = i > 0, depth = i)
       releaseFrameStack(gVmPools, frames)
       if fiber != nil:
         return RunStop(kind: rskCancel, value: NIL)
@@ -22558,9 +22725,11 @@ proc runFiber(f: Fiber) =
   var dummyIp = 0
   let savedActive = currentFiberActive
   let savedTask = activeTask
+  let savedIdentity = activeFiberIdentity
   let savedContext = activeTaskContext
   currentFiberActive = true
   activeTask = f.task
+  activeFiberIdentity = uint64(cast[uint](cast[pointer](f)))
   activeFiberTasks.add f.task
   activeTaskContext = f.taskContext
   defer:
@@ -22569,6 +22738,7 @@ proc runFiber(f: Fiber) =
     activeTaskContext = savedContext
     currentFiberActive = savedActive
     activeTask = savedTask
+    activeFiberIdentity = savedIdentity
   let actor = f.actorOwner
   let isActorFiber = actor.kind == vkActorRef
   try:

@@ -1,0 +1,4 @@
+[failed] Harness responsiveness serves HTTP and cancels CPU, native callback and process work within the latency bounds
+    example: HTTP listing took 142 ms
+      at /Users/gcao/gene-workspace/gene-new/examples/gene-harness/tests/integration/runtime/call_supervision_spec.gene:63:13
+0 passed, 1 failed, 0 errors, 0 skipped

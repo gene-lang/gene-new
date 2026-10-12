@@ -24,18 +24,15 @@
 (type SessionManager ^props {^runtime Any ^events Any ^state_root Str ^index Any ^loaded Any ^idle_timeout_ms Int ^closed Any ^mutating Any ^index_writing Any ^gates Any ^gate_mutex Any ^before_remove Any?})
 
 (fn with_session_gate [manager, key : Str, thunk]
-  (while (manager/gate_mutex .swap true) ($sleep 1))
-  (let gate (try
+  (let gate (manager/gate_mutex (fn []
     (let previous (manager/gates/.get .get key))
     (if ($absent? previous)
       (then
-        (let created ($cell false))
+        (let created ($sync/gate))
         (manager/gates/.get .put key created)
         created)
-      (else previous))
-    ensure (manager/gate_mutex .set false)))
-  (while (gate .swap true) ($sleep 1))
-  (try (thunk) ensure (gate .set false)))
+      (else previous)))))
+  (gate thunk))
 
 (fn notify_session [manager, record]
   (if_not ($absent? manager/runtime/h)
@@ -69,14 +66,10 @@
   round)
 
 (fn write_index [manager : SessionManager]
-  (while (manager/index_writing .swap true)
-    ($sleep 1))
-  (try
+  (manager/index_writing (fn []
     ($fs/write_text_atomic
       $"${manager/state_root}/sessions/index"
-      ($serde/write_data {^format 1 ^sessions manager/index/.get}))
-  ensure
-    (manager/index_writing .set false)))
+      ($serde/write_data {^format 1 ^sessions manager/index/.get})))))
 
 (fn open_session_manager [runtime, events, state_root : Str,
                           ^idle_timeout_ms idle_timeout_ms : Int = 600000] : SessionManager
@@ -90,8 +83,8 @@
     (if (&& ($str/starts_with? ($to_str key) "session/") (!= record/deleted true)) (index .put record/id record)))
   (let manager (SessionManager ^runtime runtime ^events events ^state_root state_root
     ^index ($cell index) ^loaded ($cell {}) ^idle_timeout_ms idle_timeout_ms ^closed ($cell false)
-    ^mutating ($cell false) ^index_writing ($cell false)
-    ^gates ($cell {}) ^gate_mutex ($cell false)))
+    ^mutating ($sync/gate) ^index_writing ($sync/gate)
+    ^gates ($cell {}) ^gate_mutex ($sync/gate)))
   (write_index manager)
   (recover_sessions manager)
   manager)
@@ -170,12 +163,7 @@
 
 (fn update_session [manager : SessionManager, id : Str, changes]
   (require_open manager)
-  (while (manager/mutating .swap true)
-    ($sleep 1))
-  (try
-    (update_session_unlocked manager id changes)
-  ensure
-    (manager/mutating .set false)))
+  (manager/mutating (fn [] (update_session_unlocked manager id changes))))
 
 (fn update_session_unlocked [manager : SessionManager, id : Str, changes]
   (let record (copy_data (require_record manager id)))
@@ -194,13 +182,9 @@
 
 (fn create_session [manager : SessionManager, ^id id : Str = "", ^kind kind : Str = "interactive", ^title title : Str = "New conversation", ^trigger trigger = nil, ^occurrence occurrence = nil, ^first_request first_request : Str = "", ^pinned pinned : Bool = false]
   (require_open manager)
-  (while (manager/mutating .swap true)
-    ($sleep 1))
-  (try
+  (manager/mutating (fn []
     (create_session_unlocked ^id id ^kind kind ^title title ^trigger trigger ^occurrence occurrence ^first_request first_request ^pinned pinned
-      manager)
-  ensure
-    (manager/mutating .set false)))
+      manager))))
 
 (fn create_session_unlocked [manager : SessionManager, ^id id : Str = "", ^kind kind : Str = "interactive", ^title title : Str = "New conversation", ^trigger trigger = nil, ^occurrence occurrence = nil, ^first_request first_request : Str = "", ^pinned pinned : Bool = false]
   (require_open manager)
@@ -355,8 +339,7 @@
 
 (fn delete_session_locked [manager : SessionManager, id : Str] : Bool
   (require_open manager)
-  (while (manager/mutating .swap true) ($sleep 1))
-  (try
+  (manager/mutating (fn []
     (let record (require_record manager id))
     (let loaded (manager/loaded/.get .get id))
     (if (|| record/pinned record/attention (["running" "waiting"] .contains? record/status)
@@ -373,8 +356,7 @@
     (write_index manager)
     (manager/runtime/body_gc_pending .set true)
     (notify_session manager tombstone)
-    true
-  ensure (manager/mutating .set false)))
+    true)))
 
 (fn close_session_manager [manager : SessionManager]
   (if manager/closed/.get (return nil))

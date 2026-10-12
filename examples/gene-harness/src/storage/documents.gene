@@ -1,19 +1,17 @@
 (mod documents)
 (import [extract_document extract_pdf_page] ^from "./extract" ^pkg "documents")
 (import [media_record media_bytes put_media MediaError] ^from "./media")
-(var ^^private extraction_gate ($cell false))
+(var ^^private extraction_gate ($sync/gate))
 
 (fn cached_extraction [store, key : Str, extract]
-  (while (extraction_gate .swap true) ($sleep 1))
-  (try
+  (extraction_gate (fn []
     (let root ($path/join store/root "extracted"))
     ($fs/make_dir root)
     (let path ($path/join root $"${key}.gene"))
     (if ($fs/exists? path) (return ($serde/read_data ($fs/read_text path))))
     (let result (extract ($path/join store/root "converting")))
     ($fs/write_text_atomic ^^owner_only path ($serde/write_data result))
-    result
-  ensure (extraction_gate .set false)))
+    result)))
 
 (fn media_document [store, id : Str]
   (let record (media_record store id))

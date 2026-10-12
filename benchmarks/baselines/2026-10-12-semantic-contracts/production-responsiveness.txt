@@ -1,0 +1,9 @@
+responsiveness quantum=512, latency bound=100 ms
+cancellation work: 15 ms; receipt: 45 ms
+responsive scenario 1: HTTP 22 ms, cancellation 15 ms
+cancellation work: 16 ms; receipt: 46 ms
+responsive scenario 2: HTTP 25 ms, cancellation 16 ms
+cancellation work: 7 ms; receipt: 38 ms
+responsive scenario 3: HTTP 3 ms, cancellation 7 ms
+[passed] Harness responsiveness serves HTTP and cancels CPU, native callback and process work within the latency bounds
+1 passed, 0 failed, 0 errors, 0 skipped

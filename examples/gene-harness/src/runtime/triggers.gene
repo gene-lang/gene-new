@@ -129,24 +129,20 @@
 (fn create_trigger [manager, input, ^now now = nil]
   (require_accepting manager)
   (let definition (validate_definition input (?? now ($os/wall_ms))))
-  (while (manager/mutating .swap true) ($sleep 1))
-  (try
+  (manager/mutating (fn []
     (if_not ($absent? (manager/definitions/.get .get definition/id))
       (fail (TriggerError ^code "conflict" ^message "Trigger already exists")))
-    (save_definition manager definition)
-  ensure (manager/mutating .set false)))
+    (save_definition manager definition))))
 
 (fn delete_trigger [manager, id : Str]
   (require_accepting manager)
-  (while (manager/mutating .swap true) ($sleep 1))
-  (try
+  (manager/mutating (fn []
     (let definition (manager/definitions/.get .get id))
     (if ($absent? definition) (fail (TriggerError ^code "not_found" ^message "Trigger does not exist")))
     (let removed (copy_data definition))
     (removed .put "enabled" false)
     (removed .put "deleted" true)
-    (save_definition manager removed)
-  ensure (manager/mutating .set false)))
+    (save_definition manager removed))))
 
 (fn list_triggers [manager]
   (let result [])
@@ -303,8 +299,7 @@
 
 (fn tick_triggers [manager, ^now now = nil, ^boot boot : Bool = false]
   (if (|| manager/closed/.get manager/runtime/stopping/.get) (return nil))
-  (while (manager/mutating .swap true) ($sleep 1))
-  (try
+  (manager/mutating (fn []
     (sync_plugin_triggers manager (?? now ($os/wall_ms)))
     (expire_trigger_questions manager (?? now ($os/wall_ms)))
     (reconcile_occurrences manager)
@@ -318,8 +313,7 @@
     (if_yes (>= (- (?? now ($os/wall_ms)) manager/last_retention/.get) 3600000)
       (apply_retention manager ^now now)
       (manager/last_retention .set (?? now ($os/wall_ms))))
-    (unload_idle_sessions manager/runtime/sessions)
-  ensure (manager/mutating .set false)))
+    (unload_idle_sessions manager/runtime/sessions))))
 
 (fn expire_trigger_questions [manager, now]
   (for record in (list_sessions manager/runtime/sessions ^status "waiting")
@@ -416,7 +410,7 @@
     ^occurrences ($cell occurrences) ^cap cap ^task ($cell nil) ^closed ($cell false)
     ^pending ($cell pending) ^watermarks ($cell watermarks) ^last_finished ($cell finished) ^occurrence_keep keep
     ^last_gc ($cell 0) ^gc_interval gc_interval
-    ^mutating ($cell false) ^hook hook ^last_retention ($cell 0)))
+    ^mutating ($sync/gate) ^hook hook ^last_retention ($cell 0)))
   (set runtime/triggers manager)
   (if boot (tick_triggers manager ^^boot ^now now))
   (if start

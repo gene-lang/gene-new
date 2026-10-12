@@ -1,0 +1,18 @@
+/Users/gcao/gene-workspace/gene-new/src/gene/types.nim(1405, 3) Warning: pass a finalizer of the 'proc (x: T) {.nimcall.}' type; new is deprecated [Deprecated]
+/Users/gcao/gene-workspace/gene-new/src/gene/types.nim(1419, 3) Warning: pass a finalizer of the 'proc (x: T) {.nimcall.}' type; new is deprecated [Deprecated]
+/Users/gcao/gene-workspace/gene-new/src/gene/error_analysis.nim(168, 6) template/generic instantiation from here
+/Users/gcao/gene-workspace/gene-new/src/gene/error_analysis.nim(208, 10) Warning: visit(analysis.rootEnvironment) can raise an unlisted exception: Exception [Effect]
+/Users/gcao/gene-workspace/gene-new/src/gene/stdlib.nim(4874, 3) Warning: unreachable code after 'return' statement or '{.noReturn.}' proc [UnreachableCode]
+/Users/gcao/gene-workspace/gene-new/src/gene/vm.nim(21657, 11) Warning: unreachable code after 'return' statement or '{.noReturn.}' proc [UnreachableCode]
+/Users/gcao/gene-workspace/gene-new/src/gene/vm.nim(21683, 11) Warning: unreachable code after 'return' statement or '{.noReturn.}' proc [UnreachableCode]
+/Users/gcao/gene-workspace/gene-new/src/gene/macro_runtime.nim(89, 6) template/generic instantiation from here
+/Users/gcao/gene-workspace/gene-new/src/gene/macro_runtime.nim(95, 17) Warning: `=destroy`(state.application) can raise an unlisted exception: Exception [Effect]
+/Users/gcao/gene-workspace/gene-new/tests/test_frozen_graph_proofs.nim(1, 13) Warning: imported and not used: 'tables' [UnusedImport]
+
+[Suite] frozen graph proof eligibility
+  [OK] deep scalar List and PropMap compose all three negative proofs
+  [OK] shallow freeze and thaw never inherit a certificate
+  [OK] frozen types and typed errors retain full checks
+  [OK] nodes and their hidden runtime evidence are not certified
+  [OK] a deep flag on a mutable constructor cannot authorize skipping
+  [OK] native callers cannot certify a type by setting a deep flag

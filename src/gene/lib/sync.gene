@@ -1,0 +1,20 @@
+# Embedded as gene/sync by the stdlib. State stays in this closure rather than
+# exposing a channel that a caller could drain or close. Private native leaves
+# own the permit for the wrapper's dynamic extent, even when a
+# depleted execution budget prevents Gene ensure code from completing.
+(fn gate []
+  (gate_owner)
+  (let token ($channel ^capacity 1))
+  (token .send nil)
+  (let owner ($cell nil))
+  (fn [thunk]
+    (gate_acquire token owner)
+    (let result (thunk))
+    result))
+
+# Temporary membership used by owners that must await admitted invocations.
+# Native removal shares the same unwind support as the private gate permit.
+(fn track [entries, key : Str, thunk]
+  (track_enter entries key)
+  (let result (thunk))
+  result)

@@ -1,0 +1,202 @@
+composition: immutable views, turn leases, deferred retirement and queue passed
+[passed] Progressive capability discovery searches metadata without loading bodies or executing callbacks, and pages results
+[passed] Progressive capability discovery keeps discovery and docs on the turn's lease through replacement, then retires them
+[passed] Progressive capability discovery keeps manuals out of the prompt and withdraws each disabled plugin's references
+[passed] Harness UI publication feedback repairs render and action failures across model turns without a browser
+[passed] Harness history enforces UTF-8 byte bounds and retains recall and stable prefixes across restart
+[passed] Harness history compacts whole rounds while retaining the newest request and durable summary
+[passed] Harness retention removes sessions and streams while preserving shared recall and checkpoint fallbacks
+[passed] Leased turn hooks skips a failure, preserves protocol records and honors the lease
+[passed] Leased turn hooks skips a timed-out listener and runs the next one
+[passed] Leased turn hooks runs downstream listeners once when a hook calls next twice
+[passed] Leased turn hooks skips a panicking plugin listener
+[passed] Registry-backed instructions renders concise orientation and dynamic context while loading manuals on demand
+[passed] Attachment retention during compaction preserves a deduplicated catalog through summaries and restart without resending pixels
+[passed] Harness attachment model input admits image-only input and preserves attachments through retries and restart
+[passed] Harness attachment model input extracts uploaded UTF-8 documents and never treats them as slash commands
+[passed] Model media functions publishes image content and a transcript preview before allowing a done reply
+[passed] Media across questions retains queued image context through a question pause and host restart
+[passed] Durable model calls records the frozen prepared value and reuses shared body blobs
+[passed] Durable model calls records compaction and main calls from the same turn
+[passed] Durable model calls uses one leased provider for summary and main calls
+[passed] Durable model calls repairs an in-flight retry with one unknown outcome and one turn end
+[passed] Model-call failure records retains a large provider error referenced by a model result
+[passed] Model-call failure records ends a pre-dispatch failure without inventing a model request
+[passed] Model-call failure records records provider errors and both timeout attempts
+[passed] Model-call failure records records a cancelled in-flight provider attempt
+[passed] Model-call failure records ends a turn at the summary stage when its provider fails
+[passed] Harness provider response bytes retries one provider timeout and preserves other failures
+[passed] Provider selection retries one timeout in the loop
+[passed] Provider selection uses profile, environment, configuration and ranked availability
+[passed] Provider selection pins scripted and offline provider plugins in their profiles
+[passed] Harness turn evaluation reports actionable response diagnostics without host source line numbers
+[passed] Harness turn evaluation renders an applied patch alongside continuation and error items
+[passed] Harness turn evaluation rejects copied history attachment placeholders before file writes
+[passed] Harness turn evaluation captures outcomes, errors, console and patches within the child scope and budget
+[passed] Harness turn loop retains task and recent failed patch context and exposes per-round budgets
+[passed] Harness turn loop executes full attachment bytes while recording elided history
+[passed] Harness turn loop handles concurrent code responses, receipts and waiting question resumption
+[passed] Provider rows in the turn loop runs a scripted round through prepare and send
+[passed] Scoped computer actions binds exact browser tabs and converts screenshot pixels without accepting stale refs
+[passed] Scoped computer actions normalizes actual CLI JSON and separate screenshot bytes into model content
+[passed] Scoped computer actions cleans unused grants locally and releases a contacted session only once
+[passed] Scoped computer actions isolates owners, rejects stale observations and persists completed or uncertain actions without replay
+[passed] Computer cancellation leaves a durable unknown outcome and releases its gate when dispatch is cancelled
+[passed] Harness provider requests keeps serialized Anthropic content stable with two moving cache checkpoints
+[passed] Harness provider response bytes wraps real HTTP timeout errors and retries the transfer once
+[passed] Harness provider image content uses native image blocks in actual provider preparation
+[passed] Harness provider image content supports image-only messages and rejects unsupported image roles or formats
+[passed] Harness provider image content keeps ordinary text-only message shapes unchanged
+[passed] Harness REPL plugin refreshes saved function forwarders and new names while keeping user shadowing
+[passed] Trigger host plugin fires a one-shot through the web host after its activation budget expires
+[passed] Trigger host plugin automatically fires all trigger kinds after activation returns
+[passed] Trigger host plugin waits for the loop seam and stops with it
+[passed] Harness kernel snapshots retains functions, named arguments and turn leases until retirement
+[passed] Harness composition publishes contributions on the next turn through the origin-owned queue
+[passed] Durable event bus publishes every appended record and unwinds an observer with its plugin
+[passed] Harness workspace selection uses the environment across hosts, clients, maintenance and supervised restarts
+[passed] Harness owner clients shares sessions, literal prompts, commands and receipts across independent CLI clients
+[passed] Harness owner credentials reuses owner links, preserves independent clients and resets access without cancelling work
+[passed] Harness CLI control answers and dismisses questions, rejects busy submissions and cancels host work explicitly
+[passed] Harness host lifecycle remembers ports and credentials across fresh starts and announces only remembered-port fallback
+[passed] Harness host lifecycle restarts under supervision on the same port with the same credentials
+[passed] Harness connection recovery revokes browser streams while retaining work and enforcing browser request checks
+[passed] Harness connection recovery cleans up failed startup and preserves offline repair and credential reset
+[passed] Harness durable interruption recovers crashed rounds and commands without replaying uncertain submissions
+[passed] Harness shutdown grace bounds uncooperative cleanup and preserves cancelled receipts and waiting questions
+[passed] Producer notification inbox isolates publishers, acknowledgment, cosmetic changes and revision clears across restart
+[passed] Notification publishers and actions opens a workspace view reference without a conversation or shared layout change
+[passed] Notification publishers and actions keeps writes isolated, owns source keys, freezes actions and reports publication failures separately
+[passed] Notification owner transport stores messages without viewers and shares CLI clear and acknowledgment with browser snapshots
+[passed] Harness process cleanup terminates captured groups on INT, TERM, HUP and normal exit
+[passed] Built-in contributions unwinds command, plugin and reference rows while retaining loop controls
+[passed] Built-in contributions uses the response budget for host plugin callbacks
+[passed] First-party provider rows prepares each provider's model-visible input without credentials
+[passed] Harness responsiveness serves HTTP and cancels CPU, native callback and process work within the latency bounds
+[passed] Harness commands parses raw commands and preserves run isolation, streamed shell output and attachments
+[passed] Harness commands caps output, retains recall and cancels process groups while viewing directories and binaries
+[passed] Harness command I/O closes omitted stdin and supports shell-neutral stderr merging and colon paths
+[passed] Harness plugin commands shares context and result identity and delivers raw input, output and attachments
+[passed] Harness command request identity deduplicates concurrent admission and retains running work while refusing expired sequences
+[passed] Harness composition keeps Cordis instance and function snapshots alive during replacement
+[passed] Harness input modes cancels busy inputs while other sessions and heartbeats progress and closes on replacement
+[passed] Harness input modes keeps the scope after a deadline and cancels active input before shutdown
+[passed] Harness input modes lets the host leave a mode whose classifier refuses and whose cleanup panics
+[passed] Harness input modes preserves REPL declarations, routes slash paths and never attaches activity
+[passed] Harness input modes rejects stale instances and returns one receipt for each input identity
+[passed] Harness input modes closes modes on viewer grace, session removal and plugin withdrawal
+[passed] Harness disconnected work lets admitted commands finish before viewer grace and idle collection close their session
+[passed] Harness patches preflights add, update, delete and move operations and rolls back failed renames
+[passed] Harness patches preserves modes, symlinks and CRLF and accepts implicit and anchored hunks
+[passed] Harness patch recovery reports a partial rename and removes staged siblings after a process crash
+[passed] Harness patch recovery reports partial commits and interruption after SIGKILL between real renames
+[passed] Harness patch recovery records affected paths and partial warnings and removes staging files
+[passed] Harness questions validates partial answers and resumes idempotently across restart
+[passed] Harness rounds rejects an uncertain answer after the owning round was cancelled
+[passed] Harness rounds refuses busy sessions while allowing independent rounds and cancellation
+[passed] Harness rounds admits one load, submission and answer resumption and publishes one stop receipt
+[passed] Harness round recovery interrupts current and historical receipts without replaying them
+[passed] Profile readiness refuses a round missing instructions or its selected provider
+[passed] Profile readiness fails a running round before a call after its provider disappears
+[passed] Harness sessions shares the runtime while preserving histories, idle unload and recovery
+[passed] Harness triggers creates deterministic occurrences and trigger sessions with default filters and cron
+[passed] Harness trigger policies enforces caps, queueing, coalescing and retention protections
+[passed] Harness trigger administration requires a running host and accepts plain maps through its shared service
+[passed] Harness trigger recovery recovers due work without losing occurrences or replaying admitted rounds
+[passed] Harness trigger queue recovery retains waiting rounds and queued occurrences and starts them when a slot opens
+[passed] Harness retention bounds terminal occurrences, prevents replay and collects obsolete history blobs
+[passed] Profile readiness leaves a due trigger occurrence unadmitted while the profile is unready
+[passed] Harness workspace locking refuses duplicate owners and preserves the owner identity
+[passed] Document extraction keeps converter truncation on a UTF-8 boundary
+[passed] Document extraction extracts PDF text, preserves scanned page images, bounds pages and cleans conversion files
+[passed] Document extraction extracts real DOCX text and rejects a corrupt container
+[passed] Harness media storage stores immutable bytes and descriptors across reopen without exposing paths
+[passed] Harness media storage retains binary images and canonical base64 without text conversion
+[passed] Harness media storage bounds file count and distinct binary storage while deduplicating content
+[passed] Harness media storage rejects traversal invalid text duplicate references and corrupt objects
+[passed] Harness event storage loads streams lazily and preserves projections and retention across restart
+[passed] Harness event storage reuses sealed segment digests and safely changes segment sizes
+[passed] Built-in plugin lifecycle persists disable, enable and restore across restart
+[passed] Profile and stored plugin admission requires explicit replacement and isolates a legacy id clash
+[passed] Harness plugins shares only the API while allowing direct activation, I/O and explicit session state
+[passed] Plugin publication reports the durable boundary result before accepting done
+[passed] Plugin publication keeps the last active revision when a stored replacement fails
+[passed] Plugin publication discards a cancelled turn's queued registration
+[passed] Workspace action log persists admission before execution and recovers without replay
+[passed] Workspace action retention rotates admission generations and preserves old running identities
+[passed] Experimental UI actions isolates runtime context and receipt invalidation while preserving cancellation
+[passed] Workspace action integration serializes the revision check and write across conversations
+[passed] Workspace action integration runs workspace actions without conversations and never attaches domain failures
+[passed] Workspace action crash recovery persists saved domain data before done and never replays an interrupted effect
+[passed] Workspace action transport uses owner-authenticated workspace routes and restores receipts without sessions
+[passed] Experimental UI views bounds publication outlines and renders only successfully published owners
+[passed] Experimental UI views does not render stateful descriptors and refuses durable writes during rendering
+[passed] Experimental UI views renders the board on demand and invalidates it without resetting browser state
+[passed] Harness browser authentication preserves the secret, cookie and CSRF token across restart
+[passed] Harness owner authentication keeps reusable credentials until reset and rejects an old cookie file after reset
+[passed] Harness owner authentication upgrades still-valid legacy cookies without reviving expired ones
+[passed] Harness media HTTP transport requires owner authentication and CSRF and serves exact safe attachment bytes
+[passed] Harness web turn loop versions ordinary component status before rendering and preserves session context
+[passed] Harness web turn loop publishes provider failures as timed turn records for live delivery and snapshots
+[passed] Harness web turn loop serves code responses and questions with deduplicated replies
+[passed] Harness web metadata handles pinning, titles, revision conflicts and attention acknowledgement
+[passed] Harness web paging bounds the tail and retrieves earlier transcript pages without loss
+[passed] Harness shared runtime runs concurrent isolated sessions and lists the index lazily
+[passed] Harness live delivery separates command inputs from execution output in live and restored history
+[passed] Harness live delivery publishes prompts, responses, console and progress before completion
+[passed] Harness live delivery routes detached console after turn closure and session unload
+[passed] Harness patch delivery publishes applied patches with completed outcomes and reports preflight failures
+[passed] Harness web components publishes a named renderer immediately during fresh multi-plugin registration
+[passed] Harness web components isolates renderer failures and bounds a runaway render
+[passed] Harness web components isolates render panics and cancels spawned children before continuing
+[passed] Harness web components renders generated plugin state and restores slots after disable and restart
+[passed] Harness responses evaluates without exposing a controller's lexical bindings
+[passed] Harness outcomes correlates output labels with source lines and disambiguates duplicate labels
+[passed] Harness outcomes keeps implicit result IDs stable when a labeled output uses result
+[passed] Harness outcomes omits reader metadata from path heads in output headers
+[passed] Harness outcomes continues with a plain result as its prompt
+[passed] Harness outcomes rejects completion without a reply
+[passed] Harness outcomes rejects empty continuations
+[passed] Harness outcomes finishes and reports discarded appended items
+[passed] Harness outcomes attributes plugin output to its function
+[passed] Harness outcomes rejects output after turn closure
+[passed] Harness outcomes rejects dynamic output labels
+[passed] Harness responses preserves the code prefix and exact attachment bytes
+[passed] Harness responses keeps block-like text inside multiline code strings
+[passed] Harness responses rejects unreadable code
+[passed] Harness responses rejects unterminated attachments
+[passed] Harness responses rejects duplicate attachment names
+[passed] Harness responses rejects multiple patches
+[passed] Harness responses rejects code after a raw block
+[passed] Harness responses accepts patch-only responses with either a newline or EOF terminator
+[passed] Harness responses recognizes CRLF delimiters without changing attachment bytes
+[passed] Harness responses preserves authored source locations
+[passed] Harness provider requests retains the conversation history
+[passed] Harness provider requests marks the previous assistant cache checkpoint
+[passed] Harness provider requests marks the latest assistant cache checkpoint
+[passed] Harness provider response bytes preserves Anthropic output text and EOF blocks
+[passed] Harness provider response bytes preserves Claude CLI output text and EOF blocks
+[passed] Harness provider response bytes selects final answers from phased Codex output without duplicating code
+[passed] Harness provider response bytes selects phased final answers when completed SSE output arrives as separate items
+[passed] Harness provider response bytes preserves OpenAI output text and EOF blocks
+[passed] Harness provider response bytes preserves OpenRouter output text and EOF blocks
+[passed] Workspace view navigation keeps tab choices above workspace defaults and preserves missing destinations
+[passed] Workspace view navigation resolves explicit and remembered presentation before legacy defaults
+[passed] Notification workflow identities keeps sessions and batches independent even with separators in ids
+[passed] Notification workflow identities rejects background fetches superseded by invalidation or process restart
+[passed] Notification workflow identities retains uncertain replies through transport, authentication and server failures
+[passed] Notification workflow identities projects only an owning waiting round, never question-shaped text
+[passed] Browser status freshness rejects stale cached tabs, former processes and out-of-order renders
+[passed] Harness activation keeps direct closures alive across module and frame boundaries
+[passed] Harness composition retains immutable views and turn leases through deferred retirement
+[passed] Harness trigger calendar skips nonexistent spring minutes
+[passed] Harness trigger calendar chooses the earlier fall minute and avoids a duplicate execution
+[passed] Harness trigger calendar supports named month and weekday fields
+[passed] Harness trigger calendar rejects invalid scheduled hours
+[passed] Harness trigger calendar rejects trigger IDs that escape the definition directory
+[passed] Harness web components unifies full and docked views and validates explicit navigation
+[passed] Harness web components preserves textarea text defaults for keyed fields and honors explicit values
+[passed] Harness web components admits keyed forms and structured arguments only for the experiment
+[passed] Harness web components rejects ambiguous keys, unowned fields and nested forms before display
+[passed] Harness web components normalizes quoted views and rejects invalid elements, actions and replacement names
+200 passed, 0 failed, 0 errors, 0 skipped

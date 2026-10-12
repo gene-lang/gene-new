@@ -1,0 +1,65 @@
+# Run with a -d:geneSchedulerTests binary at several quanta. Assertions describe
+# observable safety/liveness, not the precise order of scheduler instructions.
+(import $test [describe it assert_equal])
+
+(describe "scheduler variation contract"
+  (it "reports the selected test quantum" []
+    (assert_equal ($runtime/test_scheduler_quantum)
+      ($parse/parse_int (?? ($os/env? "GENE_TEST_SCHEDULER_QUANTUM") "512"))))
+
+  (it "keeps straight-line queue read and mutation together" []
+    (fn spin [n] (repeat i in n nil))
+    (fn submit [state, padding, value]
+      (spin padding)
+      (let queue state/queue/.get)
+      (state/padding .set 1)
+      (state/padding .set 2)
+      (state/padding .set 3)
+      (state/padding .set 4)
+      (queue .push value)
+      (state/wake .try_send nil))
+    (repeat padding in 100
+      (let state {^queue ($cell []) ^wake ($channel ^capacity 1) ^seen ($cell 0) ^padding ($cell 0)})
+      (let consumer (spawn ^lane root
+        (while true
+          state/wake/.recv
+          (let pending (state/queue .swap []))
+          (state/seen .set (+ state/seen/.get pending/.size)))))
+      (let a (spawn ^lane root (submit state padding "a")))
+      (let b (spawn ^lane root (submit state (+ padding 3) "b")))
+      (let c (spawn ^lane root (submit state (+ padding 17) "c")))
+      a/.join b/.join c/.join
+      (assert_equal (+ state/seen/.get state/queue/.get/.size) 3)
+      consumer/.cancel consumer/.join))
+
+  (it "lets peers progress during loops and recursion" []
+    (fn recurse [n] (if (== n 0) 0 (recurse (- n 1))))
+    (fn work [] (repeat i in 20000 nil) (recurse 20000))
+    (let order [])
+    (let slow (spawn ^lane root (do (work) (order .push "slow"))))
+    (let peer (spawn ^lane root (order .push "peer")))
+    slow/.join peer/.join
+    (assert_equal order ["peer" "slow"]))
+
+  (it "does not consume a queued value when a parked receiver is cancelled" []
+    (let channel ($channel ^capacity 1))
+    (let ready ($channel ^capacity 1))
+    (let receiver (spawn ^lane root (do (ready .send true) channel/.recv)))
+    ready/.recv
+    receiver/.cancel
+    (channel .send 42)
+    receiver/.join
+    (assert_equal channel/.recv 42))
+
+  (it "runs cancellation cleanup exactly once" []
+    (let ready ($channel ^capacity 1))
+    (let blocked ($channel ^capacity 1))
+    (let cleanups ($cell 0))
+    (let task (spawn ^lane root
+      (try
+        (ready .send true)
+        blocked/.recv
+      ensure (cleanups .set (+ cleanups/.get 1)))))
+    ready/.recv
+    task/.cancel task/.join task/.join
+    (assert_equal cleanups/.get 1)))

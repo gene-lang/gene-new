@@ -827,6 +827,22 @@ suite "native api threaded attachment":
     check not args.raised
     check args.output == "other"
 
+  test "sync ownership operations reject a non-owner lane":
+    for expression in ["($sync/gate)", "(gate (fn [] 42))",
+                       "($sync/track entries \"other\" (fn [] 42))"]:
+      let scope = newGlobalScope()
+      discard run(compileSource("(let gate ($sync/gate)) (let entries {})"), scope)
+      let args = EventLaneArgs(scope: scope, chunk: compileSource(
+        "(try (do " & expression & " `accepted) catch RuntimeLaneError `other)"))
+      var worker: Thread[EventLaneArgs]
+      createThread(worker, publishOnWorker, args)
+      joinThread(worker)
+      check args.lane != currentEventLane()
+      check not args.raised
+      check args.output == "other"
+      check run(compileSource("(gate (fn [] 42))"), scope) == newInt(42)
+      check run(compileSource("($size entries)"), scope) == newInt(0)
+
   test "sandbox transaction handles reject a non-owner lane":
     let scope = newGlobalScope()
     discard run(compileSource(

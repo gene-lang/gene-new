@@ -1,0 +1,2 @@
+[passed] frozen subtree proofs does not retain a borrowed caller environment through a shallow alias
+1 passed, 0 failed, 0 errors, 0 skipped

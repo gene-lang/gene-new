@@ -62,7 +62,7 @@
 
 (type RegistryRow ^props {^row_id Str ^owner Str ^registry Str ^key Str ^payload Any ^priority Int ^config_order Int ^acquired Int ^effects Any? ^cleanup_state Any?})
 
-(type Harness ^props {^plugins Any ^plugin_errors Any ^log Any ^log_hydrated Any ^bus Any ^registries Any ^ledger Any ^row_index Any ^next_row_id Any ^event_store Any ^event_scope Str ^event_stream Str ^plugin_policies Any ^plugin_depth Any ^workspace Any ^ui_epoch Str? ^readiness Any? ^registry_observer Any? ^composition Any? ^composition_entries Any? ^snapshots Any? ^publishing Any? ^published_plugins Any? ^notifications Any? ^ui_action_log Any?})
+(type Harness ^props {^plugins Any ^plugin_errors Any ^log Any ^log_hydrated Any ^bus Any ^registries Any ^ledger Any ^row_index Any ^next_row_id Any ^event_store Any ^event_scope Str ^event_stream Str ^plugin_policies Any ^plugin_depth Any ^workspace Any ^ui_epoch Str? ^readiness Any? ^registry_observer Any? ^composition Any? ^composition_entries Any? ^snapshots Any? ^publishing Any? ^publication_gate Any? ^published_plugins Any? ^notifications Any? ^ui_action_log Any?})
 
 (type Host ^props {^h Harness ^owner Str ^effects Any ^notification_revision Str})
 
@@ -860,6 +860,7 @@
   (set h/composition_entries ($cell (fresh_map)))
   (var package_root (module_dir (module_dir this_mod/.path)))
   (set h/publishing ($cell false))
+  (set h/publication_gate ($sync/gate))
   (set h/published_plugins ($cell {}))
   (set h/snapshots (new_composition_state (snapshot_registries h) []
     (fn [ticket] (h/composition .retire ticket))))
@@ -885,8 +886,8 @@
   h)
 
 (fn reconcile_cordis_harness [h : Harness]
-  (while (h/publishing .swap true)
-    ($sleep 1))
+  (h/publication_gate (fn []
+  (h/publishing .set true)
   (let publication ($cell true))
   (try
     ($runtime/with_context
@@ -895,7 +896,7 @@
         (reconcile_cordis_harness_serial h)))
   ensure
     (publication .set false)
-    (h/publishing .set false)))
+    (h/publishing .set false)))))
 
 (fn hide_owner_rows [h : Harness, owner : Str]
   (let ids (copy_list (?? (h/ledger .get; .get owner) [])))

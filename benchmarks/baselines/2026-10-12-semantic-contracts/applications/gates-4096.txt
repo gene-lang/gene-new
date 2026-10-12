@@ -1,0 +1,14 @@
+[passed] blocking root-lane gates serializes yielding bodies and returns their values
+[passed] blocking root-lane gates releases on errors and rejects reentry without stranding the token
+[passed] blocking root-lane gates cancels a blocked waiter without losing the next acquisition
+[passed] blocking root-lane gates releases when the owning body is cancelled
+[passed] blocking root-lane gates survives cancelling a waiter as release makes it runnable
+[passed] gate owner identities distinguishes actor handler fibers from each other
+[passed] native ownership cleanup retires structured children before releasing a crossed native owner
+[passed] native ownership cleanup releases crossed owners before an outer cancellation cleanup reacquires them
+[passed] native ownership cleanup releases crossed owners before an outer panic cleanup reacquires them
+[passed] native ownership cleanup cannot strand ownership at instruction-budget boundaries
+[passed] native ownership cleanup releases a gate and registration when the instruction budget expires
+[passed] native ownership cleanup releases registrations on cancellation and rejects duplicate keys
+[passed] native ownership cleanup releases nested ownership on panic and preserves outer caught ownership
+13 passed, 0 failed, 0 errors, 0 skipped

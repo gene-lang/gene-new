@@ -1,0 +1,84 @@
+# Fresh-process schedule matrix; orchestration is Gene. A test-only runtime
+# reports its quantum so production binaries cannot silently "pass" this task.
+# gene run tools/verify_scheduler.gene TEST_GENE OUTPUT [--gates] [--proofs] [--applications]
+(fn main [args] : Int
+  (let words args/body)
+  ($assert (>= words/.size 2) "usage: verify_scheduler.gene TEST_GENE NEW_OUTPUT [--gates] [--proofs] [--applications]")
+  (let binary ($fs/real_path words/0))
+  (let out (if (== words/1 "auto") $"tmp/semantic-contracts/run-${($os/wall_ms)}" words/1))
+  ($assert (! ($fs/exists? out)) "output directory must be new")
+  ($fs/make_dir out)
+  ($println $"qualification logs: ${out}")
+  (let root ($path/parent ($path/parent this_mod/.path)))
+  (var quanta [1 7 512 4096])
+  (var selected false)
+  (repeat index in words/.size
+    (if (< index 2) (continue))
+    (let option words/%index)
+    (if ($str/starts_with? option "--quantum=")
+      (then
+        ($assert (! selected) "select at most one quantum")
+        (let parts ($str/split option "="))
+        ($assert (== parts/.size 2) "expected --quantum=N")
+        (let quantum ($parse/parse_int parts/1))
+        ($assert ([1 7 512 4096] .contains? quantum) "select quantum 1, 7, 512 or 4096")
+        (set quanta [quantum])
+        (set selected true))
+      (else
+        ($assert (["--gates" "--proofs" "--applications"] .contains? option) $"unknown option: ${option}"))))
+  (let revision ($os/exec "git" "rev-parse" "HEAD" ^dir root))
+  (let changes ($os/exec "git" "diff" "--no-ext-diff" ^dir root ^max_bytes 16777216))
+  ($assert (&& (== revision/status 0) (== changes/status 0) (! changes/truncated)) "cannot record source provenance")
+  ($fs/write_text ($path/join out "source.diff") changes/stdout)
+  (let listed ($os/exec "git" "ls-files" "--cached" "--others" "--exclude-standard" "--"
+    "src/gene" "src/gene.nim" "config.nims" "tests/fixtures"
+    "examples/cordis" "examples/gene-harness" "examples/imagination"
+    "tools/verify_scheduler.gene" ^dir root ^max_bytes 16777216))
+  ($assert (&& (== listed/status 0) (! listed/truncated)) "cannot enumerate source files")
+  (let manifest [])
+  (for path in ($str/split listed/stdout "\n")
+    (if (== path "") (continue))
+    (let absolute ($path/join root path))
+    (manifest .push {^path path ^sha256 (if ($fs/exists? absolute)
+      ($crypto/sha256 ($fs/read_bytes absolute)) nil)}))
+  ($fs/write_text ($path/join out "source-manifest.json") ($json/stringify manifest))
+  ($fs/write_text ($path/join out "metadata.json") ($json/stringify
+    {^binary binary ^binary_sha256 ($crypto/sha256 ($fs/read_bytes binary))
+     ^revision revision/stdout ^source_diff_sha256 ($crypto/sha256 changes/stdout)
+     ^arguments words ^quanta quanta}))
+  # Bad settings must fail before any program runs. A collection failure can
+  # currently exit zero, so suite success below also requires a real summary.
+  (for setting in ["0" "-1" "1000001" "nonsense"]
+    (let rejected ($os/exec "/usr/bin/env" $"GENE_TEST_SCHEDULER_QUANTUM=${setting}"
+      binary "eval" "nil" ^dir root ^timeout_ms 30000))
+    ($fs/write_text ($path/join out $"invalid-${setting}.log") $"${rejected/stdout}\n${rejected/stderr}")
+    ($assert (&& (!= rejected/status 0) (! rejected/timed_out)
+      ($str/contains? rejected/stderr "GENE_TEST_SCHEDULER_QUANTUM")) "invalid quantum was not rejected"))
+  (let applications (words .contains? "--applications"))
+  (let cases [{^name "scheduler" ^dir root ^args ["test" "tests/fixtures/scheduler_contracts.gene"]}])
+  (if (words .contains? "--gates")
+    (cases .push {^name "gates" ^dir root ^args ["test" "tests/fixtures/sync_gate.gene"]}))
+  (if (words .contains? "--proofs")
+    (cases .push {^name "proofs" ^dir root ^args ["test" "tests/fixtures/frozen_graph_proofs.gene"]}))
+  (if applications
+    (for [name directory] in [["harness" "examples/gene-harness"] ["cordis" "examples/cordis"] ["imagination" "examples/imagination"]]
+      (cases .push {^name name ^dir ($path/join root directory) ^args ["test"]})))
+  (let results [])
+  (for quantum in quanta
+    (for entry in cases
+      (let started ($os/monotonic_ms))
+      (let argv [$"GENE_TEST_SCHEDULER_QUANTUM=${quantum}" binary])
+      (for arg in entry/args (argv .push arg))
+      (let result ($os/exec "/usr/bin/env" argv... ^dir entry/dir ^timeout_ms 3600000 ^max_bytes 16777216))
+      ($fs/write_text ($path/join out $"${entry/name}-${quantum}.log") $"${result/stdout}\n${result/stderr}")
+      (let passed (&& ($str/contains? result/stdout "[passed]")
+        ($str/contains? result/stdout " passed, 0 failed, 0 errors,")
+        (! ($str/contains? result/stdout "collection:"))
+        (! ($str/contains? result/stderr "collection:"))))
+      (results .push {^case entry/name ^quantum quantum ^status result/status ^passed passed ^timed_out result/timed_out
+        ^truncated result/truncated ^ms (- ($os/monotonic_ms) started)})
+      ($fs/write_text ($path/join out "results.json") ($json/stringify results))
+      ($println $"${entry/name} quantum=${quantum} status=${result/status}")
+      ($io/flush_stdout)
+      ($assert (&& (== result/status 0) passed (! result/timed_out) (! result/truncated)) "schedule qualification failed; inspect saved log")))
+  0)

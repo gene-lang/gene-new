@@ -1,0 +1,5 @@
+[passed] Cordis quiescence never admits a callback after its owner's cleanup
+[passed] Cordis quiescence releases concurrent and cancelled admissions before disposal
+[passed] Cordis quiescence waits for entered hook calls before running owner cleanup
+[passed] Cordis inherited deadlines retires a supervised evaluator before an expired caller returns
+4 passed, 0 failed, 0 errors, 0 skipped

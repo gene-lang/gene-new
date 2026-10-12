@@ -1,0 +1,1 @@
+{"workload_version":2,"turns":3,"elapsed_ms":412,"record_checksum":24,"workspace":"/Users/gcao/gene-workspace/gene-new/tmp/semantic-contracts/asan-final-service-3"}

@@ -35,20 +35,16 @@
   (snapshots .put "0" snapshot)
   (let counts {})
   (counts .put "0" ($atomic_cell 0))
-  (CompositionState ^current ($cell snapshot) ^next_id ($cell 1) ^snapshots ($cell snapshots) ^counts ($cell counts) ^pending ($cell []) ^retiring ($cell []) ^retire retire ^closed ($cell false) ^publishing ($cell false) ^mutating ($cell false)))
+  (CompositionState ^current ($cell snapshot) ^next_id ($cell 1) ^snapshots ($cell snapshots) ^counts ($cell counts) ^pending ($cell []) ^retiring ($cell []) ^retire retire ^closed ($cell false) ^publishing ($sync/gate) ^mutating ($sync/gate)))
 
 (fn run_composition_change [state : CompositionState, change]
   (require_open state)
   (let context (?? ($runtime/context) {}))
   (if (same? context/composition_step state) (return (change)))
-  (while (state/mutating .swap true)
-    ($sleep 1))
-  (try
+  (state/mutating (fn []
     (let scoped ($thaw ($freeze_shallow context)))
     (scoped .put "composition_step" state)
-    ($runtime/with_context scoped change)
-  ensure
-    (state/mutating .set false)))
+    ($runtime/with_context scoped change))))
 
 (fn adjust_count [counter, delta : Int]
   (while true
@@ -138,12 +134,7 @@
 
 (fn publish_snapshot [state : CompositionState, registries, instances, ^plugins plugins = []] : CompositionSnapshot
   (require_open state)
-  (while (state/publishing .swap true)
-    ($sleep 1))
-  (try
-    (publish_snapshot_serial state registries instances ^plugins plugins)
-  ensure
-    (state/publishing .set false)))
+  (state/publishing (fn [] (publish_snapshot_serial state registries instances ^plugins plugins))))
 
 (fn publish_snapshot_serial [state : CompositionState, registries, instances, ^plugins plugins = []] : CompositionSnapshot
   (let previous state/current/.get)

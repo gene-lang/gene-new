@@ -1,0 +1,23 @@
+[passed] Cordis actor processes messages sequentially and closes the mailbox with its owner
+[passed] Cordis cycles keeps a provider cycle pending and reports unavailable dependencies
+[passed] Cordis effects starts host work outside the submitting invocation budget
+[passed] Cordis effects owns acquired values and unwinds cleanup and tasks deterministically
+[passed] Cordis hooks dispatches each hook mode and respects service realms and owner lifetime
+[passed] Cordis include patches stable entries and rejects writes to a read-only include
+[passed] Cordis lifecycle_edges validates updates, recovers failed activations, and permits self-disposal
+[passed] Cordis lifecycle activates consumers and restarts them when their provider changes
+[passed] Cordis loader publishes staged revisions and preserves the live composition on rejection
+[passed] Cordis loader reconciles host plugins per entry and keeps activation failures local
+[passed] Cordis loader keeps healthy staged entries when a host allows failed activations
+[passed] Cordis quiescence never admits a callback after its owner's cleanup
+[passed] Cordis quiescence releases concurrent and cancelled admissions before disposal
+[passed] Cordis quiescence waits for entered hook calls before running owner cleanup
+[passed] Cordis inherited deadlines retires a supervised evaluator before an expired caller returns
+[passed] Cordis recovery keeps the published replacement visible after old cleanup fails
+[passed] Cordis deferred retirement keeps old effect calls alive until the host releases the retirement ticket
+[passed] Cordis deferred retirement keeps a generated module's resource alive across an await and closes it on retirement
+[passed] Cordis services binds and caches services within exact provider realms
+[passed] Cordis stop_start tears down and replaces plugins with the reduced reload guarantee
+[passed] Cordis timer_service keeps consumer-owned timers alive beyond their activation deadline
+[passed] Cordis timer delivers and coalesces callbacks until the owning instance is disposed
+22 passed, 0 failed, 0 errors, 0 skipped

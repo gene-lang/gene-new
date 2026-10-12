@@ -232,7 +232,7 @@
 
 (type RuntimeRecord ^^private ^props {^token Any ^options Any ^invoker Any ^default_limits Any ^state Any ^root Any ^next_uid Any ^next_realm Any ^next_context Any ^contexts Any ^instances Any ^service_keys Any ^hook_keys Any ^providers Any ^reservations Any ^dependants Any ^hooks Any ^binding_cache Any ^subjects Any ^resources Any ^loaders Any ^diagnostics Any ^executor Any ^owns_executor Bool})
 
-(type HostExecutor ^^private ^props {^queue Cell ^wake Channel ^task Cell ^active Cell})
+(type HostExecutor ^^private ^props {^queue Cell ^queue_gate Any ^wake Channel ^task Cell ^active Cell})
 
 (type HostRequest ^^private ^props {^scope Any ^label Str ^callable Any ^args List ^ready Channel ^result Cell ^error Cell ^cancelled Cell})
 
@@ -251,7 +251,7 @@
 
 (type ContextRecord ^^private ^props {^token Any ^id Int ^runtime RuntimeRecord ^parent Any ^owner Any ^operator Bool ^alive Any ^realms Any ^overlays Any ^allowed Any ^limits InvocationLimits ^generation Any})
 
-(type InstanceRecord ^^private ^props {^token Any ^runtime RuntimeRecord ^uid Int ^plugin PluginSpec ^entry_id Any ^parent_context ContextRecord ^context Any ^config Any ^state Any ^error Any ^desired_epoch Any ^active_epoch Any ^transition Any ^dirty Any ^retry Any ^dispose_requested Any ^root_effect Any ^providers Any ^provided Any ^children Any ^invocations Any ^gate_open Any ^teardown Any})
+(type InstanceRecord ^^private ^props {^token Any ^runtime RuntimeRecord ^uid Int ^plugin PluginSpec ^entry_id Any ^parent_context ContextRecord ^context Any ^config Any ^state Any ^error Any ^desired_epoch Any ^active_epoch Any ^transition Any ^dirty Any ^retry Any ^dispose_requested Any ^root_effect Any ^providers Any ^provided Any ^children Any ^invocations Any ^admission_gate Any ^gate_open Any ^teardown Any})
 
 (type EffectRecord ^^private ^props {^token Any ^runtime RuntimeRecord ^owner InstanceRecord ^parent Any ^context Context ^label Str ^active Any ^accepting Any ^entries Any ^value Any})
 
@@ -574,18 +574,18 @@
         (default_invoke_for call instance registration_scope)
         (runtime/invoker .PluginInvoker:invoke call))))
   (let invocation ($crypto/random_hex 16))
-  (try
-    # Install cleanup before admission. A cancelled caller can otherwise leave
-    # the old increment-before-try counter permanently nonzero. Keyed admission
-    # also avoids a yielding read/modify/write race between concurrent calls.
-    (instance/invocations/.get .put invocation true)
+  # Register before checking acceptance: unload either sees this invocation,
+  # or closes admission before it can enter. Native tracking removes the entry
+  # even when an inherited budget is exhausted during supervised cleanup.
+  ($sync/track instance/invocations/.get invocation (fn []
+    (instance/admission_gate (fn []
+      # Preparing limits/context above can yield. Recheck acceptance at the
+      # actual admission boundary, serialized with closing the gate.
+      (if (&& (!= kind PluginCallKind/cleanup) (! instance/gate_open/.get))
+        (plugin_error InstanceDisposed "plugin instance no longer accepts external invocations" instance))))
     (if (== ($head runtime/invoker) DefaultPluginInvoker)
       (default_invoke_for call instance registration_scope)
-      (runtime/invoker .PluginInvoker:invoke call))
-  ensure
-    (instance/invocations/.get .delete invocation)
-    (if (&& (== ($size instance/invocations/.get) 0) instance/dispose_requested/.get)
-      (request_transition instance false))))
+      (runtime/invoker .PluginInvoker:invoke call)))))
 
 # --- runtime and contexts --------------------------------------------------
 
@@ -617,12 +617,22 @@
     (request/error .set (EffectDisposed ^message "effect no longer accepts background work")))
   (finish_host_request request))
 
+(fn take_host_requests [executor] ^^private
+  (executor/queue_gate (fn [] (executor/queue .swap (fresh_list)))))
+
+(fn enqueue_host_request [executor, request] ^^private
+  (executor/queue_gate (fn []
+    (if_not executor/active/.get (cordis_failure EffectDisposed "runtime executor is closed"))
+    (executor/queue/.get .push request)
+    (executor/wake .try_send nil)
+    nil)))
+
 (fn host_executor_loop [executor] ^^private
   (var pending (fresh_list))
   (try
     (while true
       executor/wake/.recv
-      (set pending (executor/queue .swap (fresh_list)))
+      (set pending (take_host_requests executor))
       (for request in pending
         (if (|| request/cancelled/.get (! (host_request_accepting? request)))
           (reject_host_request request)
@@ -644,12 +654,12 @@
     executor/wake/.close
     (for request in pending
       (reject_host_request request))
-    (for request in (executor/queue .swap (fresh_list))
+    (for request in (take_host_requests executor)
       (reject_host_request request))))
 
 (fn new_host_executor [] ^^private
   (var executor
-    (HostExecutor ^queue ($cell (fresh_list)) ^wake ($channel ^capacity 1) ^task ($cell nil) ^active ($cell true)))
+    (HostExecutor ^queue ($cell (fresh_list)) ^queue_gate ($sync/gate) ^wake ($channel ^capacity 1) ^task ($cell nil) ^active ($cell true)))
   (var task (spawn ^lane root (host_executor_loop executor)))
   (executor/task .set task)
   task/.detach
@@ -958,7 +968,7 @@
   (var uid runtime/next_uid/.get)
   (runtime/next_uid .set (+ uid 1))
   (var record
-    (InstanceRecord ^token ($cell nil) ^runtime runtime ^uid uid ^plugin plugin ^entry_id entry_id ^parent_context parent ^context ($cell nil) ^config ($cell nil) ^state ($cell InstanceState/pending) ^error ($cell nil) ^desired_epoch ($cell "inactive") ^active_epoch ($cell "") ^transition ($cell nil) ^dirty ($cell true) ^retry ($cell false) ^dispose_requested ($cell false) ^root_effect ($cell nil) ^providers ($cell (fresh_list)) ^provided ($cell (fresh_map)) ^children ($cell (fresh_list)) ^invocations ($cell (fresh_map)) ^gate_open ($cell true) ^teardown ($cell false)))
+    (InstanceRecord ^token ($cell nil) ^runtime runtime ^uid uid ^plugin plugin ^entry_id entry_id ^parent_context parent ^context ($cell nil) ^config ($cell nil) ^state ($cell InstanceState/pending) ^error ($cell nil) ^desired_epoch ($cell "inactive") ^active_epoch ($cell "") ^transition ($cell nil) ^dirty ($cell true) ^retry ($cell false) ^dispose_requested ($cell false) ^root_effect ($cell nil) ^providers ($cell (fresh_list)) ^provided ($cell (fresh_map)) ^children ($cell (fresh_list)) ^invocations ($cell (fresh_map)) ^admission_gate ($sync/gate) ^gate_open ($cell true) ^teardown ($cell false)))
   (record/config .set (validate_instance_config record config))
   (var context
     (new_context_record
@@ -1027,6 +1037,10 @@
   nil)
 
 (fn request_transition ^^private [instance, retry : Bool]
+  # Ticket publication, enqueue and wakeup share the queue's owner gate. A
+  # cancelled task cannot publish a ticket and then park before enqueueing it.
+  (instance/runtime/executor/queue_gate (fn []
+  (if_not instance/runtime/executor/active/.get (return nil))
   (if (== instance/state/.get InstanceState/disposed) (return nil))
   (instance/dirty .set true)
   (if retry (instance/retry .set true))
@@ -1042,7 +1056,7 @@
   (instance/transition .set (TransitionTicket ^request request))
   (instance/runtime/executor/queue/.get .push request)
   (instance/runtime/executor/wake .try_send nil)
-  nil)
+  nil)))
 
 (fn notify_service [runtime, key] ^^private
   (runtime/binding_cache .set (fresh_map))
@@ -1125,8 +1139,9 @@
 
 (fn unload_instance ^^private [instance, disposing : Bool]
   (if (== instance/state/.get InstanceState/disposed) (return nil))
-  (instance/state .set InstanceState/unloading)
-  (instance/gate_open .set false)
+  (instance/admission_gate (fn []
+    (instance/state .set InstanceState/unloading)
+    (instance/gate_open .set false)))
   (var root instance/root_effect/.get)
   (var cleanup_failure nil)
   (if_not (absent? root) (root/accepting .set false))
@@ -1516,10 +1531,9 @@
     (HostRequest ^scope scope ^label label ^callable callable ^args (copy_list args)
       ^ready ($channel ^capacity 1) ^result ($cell nil) ^error ($cell nil)
       ^cancelled ($cell false)))
-  (executor/queue/.get .push request)
-  (executor/wake .try_send nil)
   (var accepted false)
   (try
+    (enqueue_host_request executor request)
     (try request/ready/.recv catch ChannelClosed nil)
     (var error request/error/.get)
     (if_not (absent? error) (fail error))
@@ -1541,10 +1555,9 @@
   (if_not executor/active/.get (cordis_failure EffectDisposed "runtime executor is closed"))
   (var request
     (HostRequest ^scope nil ^label label ^callable callable ^args (copy_list args) ^ready ($channel ^capacity 1) ^result ($cell nil) ^error ($cell nil) ^cancelled ($cell false)))
-  (executor/queue/.get .push request)
-  (executor/wake .try_send nil)
   (var accepted false)
   (try
+    (enqueue_host_request executor request)
     (try
       request/ready/.recv
     catch ChannelClosed

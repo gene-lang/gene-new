@@ -1,0 +1,193 @@
+(import $test [describe it assert_equal])
+
+(describe "blocking root-lane gates"
+  (it "serializes yielding bodies and returns their values" []
+    (let gate ($sync/gate))
+    (let counter ($cell 0))
+    (let jobs [])
+    (repeat i in 20
+      (jobs .push (spawn ^lane root
+        (gate (fn []
+          (let before counter/.get)
+          ($sleep 1)
+          (counter .set (+ before 1)))))))
+    (for task in jobs task/.join)
+    (assert_equal counter/.get 20)
+    (assert_equal (gate (fn [] 42)) 42))
+
+  (it "releases on errors and rejects reentry without stranding the token" []
+    (let gate ($sync/gate))
+    (let message (try (gate (fn [] (gate (fn [] nil)))) "not rejected" catch Any $err/message))
+    ($assert ($str/contains? message "non-reentrant"))
+    (try (gate (fn [] (fail (RuntimeError ^message "body failed")))) catch Any nil)
+    (assert_equal (gate (fn [] "free")) "free"))
+
+  (it "cancels a blocked waiter without losing the next acquisition" []
+    (let gate ($sync/gate))
+    (let entered ($channel ^capacity 1))
+    (let release ($channel ^capacity 1))
+    (let owner (spawn ^lane root (gate (fn [] (entered .send true) release/.recv))))
+    entered/.recv
+    (let cancelled (spawn ^lane root (gate (fn [] (fail (RuntimeError ^message "cancelled waiter entered"))))))
+    ($sleep 1)
+    cancelled/.cancel
+    (let next (spawn ^lane root (gate (fn [] 99))))
+    (release .send true)
+    owner/.join cancelled/.join
+    (assert_equal (await next) 99)
+    (assert_equal (gate (fn [] "free")) "free"))
+
+  (it "releases when the owning body is cancelled" []
+    (let gate ($sync/gate))
+    (let entered ($channel ^capacity 1))
+    (let blocked ($channel ^capacity 1))
+    (let owner (spawn ^lane root (gate (fn [] (entered .send true) blocked/.recv))))
+    entered/.recv
+    (let next (spawn ^lane root (gate (fn [] 99))))
+    owner/.cancel owner/.join
+    (assert_equal (await next) 99))
+
+  (it "survives cancelling a waiter as release makes it runnable" []
+    (repeat i in 50
+      (let gate ($sync/gate))
+      (let entered ($channel ^capacity 1))
+      (let release ($channel ^capacity 1))
+      (let owner (spawn ^lane root (gate (fn [] (entered .send true) release/.recv))))
+      entered/.recv
+      (let waiter (spawn ^lane root (gate (fn [] i))))
+      ($sleep 1)
+      (release .send true)
+      waiter/.cancel
+      owner/.join waiter/.join
+      (assert_equal (gate (fn [] 7)) 7))))
+
+(describe "gate owner identities"
+  (it "distinguishes actor handler fibers from each other" []
+    (let gate ($sync/gate))
+    (let done ($channel ^capacity 2))
+    (let inside ($cell 0))
+    (fn handle [ctx state msg]
+      (gate (fn []
+        (assert_equal inside/.get 0)
+        (inside .set 1)
+        ($sleep 1)
+        (inside .set 0)))
+      (done .send msg)
+      ($actor/stop))
+    (let first ($actor/spawn ^init (fn [] 0) ^handle handle))
+    (let second ($actor/spawn ^init (fn [] 0) ^handle handle))
+    (first .send 1) (second .send 2)
+    (let a done/.recv) (let b done/.recv)
+    (assert_equal (+ a b) 3)))
+
+(describe "native ownership cleanup"
+  (it "retires structured children before releasing a crossed native owner" []
+    (let gate ($sync/gate))
+    (let entered ($channel ^capacity 1))
+    (let blocked ($channel ^capacity 1))
+    (let child_cleaned ($cell false))
+    (let outer_cleaned ($cell false))
+    (fn crash [] ($panic "stop"))
+    (let task (spawn ^lane root
+      (try
+        (gate (fn [] (scope
+          (spawn ^lane root (try
+            (entered .send true) blocked/.recv
+            ensure (child_cleaned .set true)))
+          entered/.recv
+          (crash))))
+      ensure
+        (gate (fn []
+          ($assert child_cleaned/.get)
+          (outer_cleaned .set true))))))
+    (let outcome task/.join)
+    ($assert outer_cleaned/.get)
+    ($assert (== ($head outcome) TaskOutcome/panic)))
+
+  (it "releases crossed owners before an outer cancellation cleanup reacquires them" []
+    (let gate ($sync/gate))
+    (let entries {})
+    (let entered ($channel ^capacity 1))
+    (let blocked ($channel ^capacity 1))
+    (let cleaned ($cell false))
+    (let task (spawn ^lane root
+      (try
+        ($sync/track entries "call" (fn []
+          (gate (fn [] (entered .send true) blocked/.recv))))
+      ensure
+        ($sync/track entries "call" (fn [] (gate (fn [] (cleaned .set true))))))))
+    entered/.recv
+    task/.cancel
+    (let outcome task/.join)
+    ($assert cleaned/.get)
+    ($assert (== outcome TaskOutcome/cancelled))
+    (assert_equal ($size entries) 0))
+
+  (it "releases crossed owners before an outer panic cleanup reacquires them" []
+    (let gate ($sync/gate))
+    (let entries {})
+    (let cleaned ($cell false))
+    (let task (spawn ^lane root
+      (try
+        ($sync/track entries "call" (fn [] (gate (fn [] ($panic "stop")))))
+      ensure
+        ($sync/track entries "call" (fn [] (gate (fn [] (cleaned .set true))))))))
+    (let outcome task/.join)
+    ($assert cleaned/.get)
+    ($assert (== ($head outcome) TaskOutcome/panic))
+    (assert_equal ($size entries) 0))
+
+  (it "cannot strand ownership at instruction-budget boundaries" []
+    (let gate ($sync/gate))
+    (let entries {})
+    (repeat steps in 160
+      (let limited ($runtime/bind_call ^policy {^max_steps (+ steps 1)}
+        (fn [] ($sync/track entries "call" (fn []
+          (gate (fn [] (repeat 10 nil) 42))))) []))
+      (let task (spawn ^lane root (limited)))
+      task/.join
+      (assert_equal ($size entries) 0)
+      (assert_equal (gate (fn [] 99)) 99)))
+
+  (it "releases a gate and registration when the instruction budget expires" []
+    (let gate ($sync/gate))
+    (let entries {})
+    (let entered ($cell false))
+    (let limited ($runtime/bind_call ^policy {^max_steps 1000}
+      (fn [] ($sync/track entries "call" (fn []
+        (gate (fn [] (entered .set true) (repeat 10000 nil)))))) []))
+    (let owner (spawn ^lane root (limited)))
+    (let outcome owner/.join)
+    ($assert entered/.get)
+    ($assert (== ($head outcome) TaskOutcome/error))
+    (assert_equal ($size entries) 0)
+    (assert_equal (gate (fn [] 42)) 42))
+
+  (it "releases registrations on cancellation and rejects duplicate keys" []
+    (let entries {})
+    (let entered ($channel ^capacity 1))
+    (let blocked ($channel ^capacity 1))
+    (let task (spawn ^lane root ($sync/track entries "call" (fn []
+      (entered .send true) blocked/.recv))))
+    entered/.recv
+    (assert_equal entries/call true)
+    (let error (try ($sync/track entries "call" (fn [] nil)) "accepted" catch Any $err/message))
+    ($assert ($str/contains? error "already registered"))
+    (assert_equal entries/call true)
+    task/.cancel task/.join
+    (assert_equal ($size entries) 0)
+    (assert_equal ($sync/track entries "call" (fn [] 99)) 99)
+    (assert_equal ($size entries) 0))
+
+  (it "releases nested ownership on panic and preserves outer caught ownership" []
+    (let gate ($sync/gate))
+    (let entries {})
+    (let task (spawn ^lane root ($sync/track entries "panic" (fn []
+      (gate (fn [] ($panic "stop")))))))
+    ($assert (== ($head task/.join) TaskOutcome/panic))
+    (assert_equal ($size entries) 0)
+    ($sync/track entries "outer" (fn []
+      (try (gate (fn [] (fail (RuntimeError ^message "inner")))) catch Any nil)
+      (assert_equal entries/outer true)
+      (assert_equal (gate (fn [] 42)) 42)))
+    (assert_equal ($size entries) 0)))

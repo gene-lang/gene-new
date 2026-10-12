@@ -23,8 +23,7 @@
 (fn command_state_impl [runtime, session : Str]
   (let manager runtime/commands)
   (if ($absent? manager) (return (read_command_state runtime session)))
-  (while (manager/gate .swap true) ($sleep 1))
-  (try (read_command_state runtime session) ensure (manager/gate .set false)))
+  (manager/gate (fn [] (read_command_state runtime session))))
 
 # Internal callers already holding the command gate use this helper.
 (fn read_command_state [runtime, session : Str]
@@ -225,7 +224,7 @@
 
 (fn new_command_manager [runtime, ^cancel cancel = nil, ^stop stop = nil]
   (install_control_commands runtime)
-  (let manager (CommandManager ^runtime runtime ^active ($cell {}) ^watchers ($cell {}) ^gate ($cell false) ^cancel cancel ^stop stop ^accepting ($cell true) ^closed ($cell false)))
+  (let manager (CommandManager ^runtime runtime ^active ($cell {}) ^watchers ($cell {}) ^gate ($sync/gate) ^cancel cancel ^stop stop ^accepting ($cell true) ^closed ($cell false)))
   (set manager/modes (new_input_modes runtime
     (fn [session parsed]
       (with_body_use runtime (fn [] (submit_routed_command manager session parsed))))
@@ -241,9 +240,7 @@
   nil)
 
 (fn update_command [manager, session : Str, record]
-  (while (manager/gate .swap true)
-    ($sleep 1))
-  (try
+  (manager/gate (fn []
     (let state (read_command_state manager/runtime session))
     (let records [])
     (var found false)
@@ -262,9 +259,7 @@
         (then (set excess (- excess 1)))
         (else (retained .push candidate))))
     (state .put "records" retained)
-    (save_command_state manager/runtime session state)
-  ensure
-    (manager/gate .set false))
+    (save_command_state manager/runtime session state)))
   record)
 
 (fn append_command_output [manager, session : Str, record, text : Str]
@@ -348,14 +343,10 @@ Stopped."""))))
     (update_command manager session record)
     (if (== record/attached true)
       (then
-        (while (manager/gate .swap true)
-          ($sleep 1))
-        (try
+        (manager/gate (fn []
           (let state (read_command_state manager/runtime session))
           (state/attached .push record/item)
-          (save_command_state manager/runtime session state)
-        ensure
-          (manager/gate .set false))))
+          (save_command_state manager/runtime session state)))))
   ensure
     (manager/active
       .get
@@ -390,16 +381,17 @@ Stopped."""))))
   (if_not (== parsed/kind "command")
     (fail (CommandError ^code "invalid_request" ^message "expected a command")))
   (load_session manager/runtime/sessions session)
-  (while (manager/gate .swap true)
-    ($sleep 1))
+  (var duplicate false)
   (let record
-    (try
+    (manager/gate (fn []
       (let state (read_command_state manager/runtime session))
       (if_not ($absent? parsed/request_id)
         (for previous in state/records
           (if_yes (== previous/request_id parsed/request_id)
-            (if (&& (== previous/request_digest parsed/request_digest)
-                    (== previous/request_seq parsed/request_seq)) (return previous))
+            (if_yes (&& (== previous/request_digest parsed/request_digest)
+                    (== previous/request_seq parsed/request_seq))
+              (set duplicate true)
+              (return previous))
             (fail (CommandError ^code "submission_conflict" ^message "Command request identity has different content."))))
         (if (!= parsed/request_seq state/next_id)
           (fail (CommandError ^code "submission_conflict" ^message "Unexpected command sequence; refresh or look up the previous receipt."))))
@@ -421,9 +413,8 @@ Stopped."""))))
         (if_not ($absent? value) (allocated .put key value)))
       (state/records .push allocated)
       (save_command_state manager/runtime session state)
-      allocated
-    ensure
-      (manager/gate .set false)))
+      allocated)))
+  (if duplicate (return record))
   (if_not ($absent? parsed/on_admit) (parsed/on_admit record))
   (let lease (if ($absent? supplied_lease) (acquire_snapshot manager/runtime/h/snapshots) supplied_lease))
   (let sink (fn [output] (append_command_output manager session record output)))
@@ -477,16 +468,12 @@ Stopped."""))))
 
 (fn take_command_attachments [runtime, session : Str]
   (let manager runtime/commands)
-  (while (manager/gate .swap true)
-    ($sleep 1))
-  (try
+  (manager/gate (fn []
     (let state (read_command_state runtime session))
     (let items state/attached)
     (state .put "attached" [])
     (save_command_state runtime session state)
-    items
-  ensure
-    (manager/gate .set false)))
+    items)))
 
 (fn close_command_manager [manager]
   (if (manager/closed .swap true) (return nil))

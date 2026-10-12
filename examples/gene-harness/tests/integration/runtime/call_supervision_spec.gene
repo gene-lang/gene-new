@@ -13,6 +13,13 @@
   (it "serves HTTP and cancels CPU, native callback and process work within the latency bounds" []
     (isolated this_mod/.path "serves HTTP and cancels CPU, native callback and process work within the latency bounds"
       (fn [workspace]
+        # The production contract is measured with its 512-instruction slice.
+        # Stress binaries may deliberately run longer slices; permit the same
+        # proportional latency there while keeping all progress/cleanup checks.
+        # Ordinary binaries have no test query and retain the 100 ms bound.
+        (let quantum (try ($runtime/test_scheduler_quantum) catch Any 512))
+        (let latency_bound ($math/max 100 (/ (* 100 quantum) 512)))
+        ($println $"responsiveness quantum=${quantum}, latency bound=${latency_bound} ms")
         (let entered ($cell false))
         (let code ($cell ""))
         (let ticks ($cell 0))
@@ -60,7 +67,7 @@
             (let response (await (request ^url url ^timeout_ms 1000)))
             (let latency (- ($os/monotonic_ms) before))
             ($assert (== response/status 200) "HTTP listing failed during busy response")
-            ($assert (< latency 100) $"HTTP listing took ${latency} ms")
+            ($assert (< latency latency_bound) $"HTTP listing took ${latency} ms (bound ${latency_bound}, quantum ${quantum})")
             (let cancellation ($os/monotonic_ms))
             (let active (service/controller/active/.get .get "busy"))
             ($assert (! active/.done?) "responsiveness fixture completed before the cancel request")
@@ -73,7 +80,7 @@
             (service/controller/watchers .get; .get "busy"; .join)
             (let delay (- ($os/monotonic_ms) cancellation))
             ($println $"cancellation work: ${stopped_after} ms; receipt: ${delay} ms")
-            ($assert (< stopped_after 100) $"response work took ${stopped_after} ms to cancel")
+            ($assert (< stopped_after latency_bound) $"response work took ${stopped_after} ms to cancel (bound ${latency_bound}, quantum ${quantum})")
             ($assert (== (/state (round_receipt service/controller "busy" slow/id)) "cancelled") "busy response ignored cancellation")
             ($println $"responsive scenario ${sequence}: HTTP ${latency} ms, cancellation ${stopped_after} ms"))
         ensure

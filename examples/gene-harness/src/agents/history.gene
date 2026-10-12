@@ -4,7 +4,7 @@
 (import ^from "./response" [split_response])
 (import $store/fs [Store])
 
-(var ^^private history_gate ($cell false))
+(var ^^private history_gate ($sync/gate))
 (type HistoryError ^props {^message Str} ^impl [Error])
 (impl Error for HistoryError)
 
@@ -141,16 +141,12 @@
   text)
 
 (fn store_body [runtime, session : Str, id : Str, text : Str]
-  (while (history_gate .swap true)
-    ($sleep 1))
-  (try
+  (history_gate (fn []
     (let digest (write_body runtime text))
     (let state (history_state runtime session))
     (state/outputs .put id digest)
     (save_history runtime session state)
-    digest
-  ensure
-    (history_gate .set false)))
+    digest)))
 
 (fn recall_body [runtime, session : Str, id : Str] : Str
   (let state (history_state runtime session))
@@ -275,16 +271,12 @@ ELIDED
     ^blobs refs})
 
 (fn append_message [runtime, session : Str, role : Str, text : Str, ^settled settled = nil, ^round round : Str = "", ^turn turn : Int = 0, ^media media = []]
-  (while (history_gate .swap true)
-    ($sleep 1))
-  (try
+  (history_gate (fn []
     (let state (history_state runtime session))
     (let message {^role role ^content text ^settled (?? settled text) ^round round ^turn turn})
     (if_not media/.empty? (message .put "media" media))
     (state/messages .push message)
-    (save_history runtime session state)
-  ensure
-    (history_gate .set false)))
+    (save_history runtime session state))))
 
 (fn context_from_state [state, instructions : Str]
   (let messages [{^role "system" ^content instructions}])
@@ -429,10 +421,8 @@ ELIDED
         (for message in tail (state/messages .push message)))))
   (if (>= (context_bytes state instructions) target)
     (fail (HistoryError ^message "compaction could not fit the current context below its target")))
-  (while (history_gate .swap true) ($sleep 1))
-  (try
+  (history_gate (fn []
     (let fresh_state (history_state runtime session))
     (state .put "outputs" fresh_state/outputs)
-    (save_history runtime session state)
-    ensure (history_gate .set false))
+    (save_history runtime session state)))
   true)

@@ -1,5 +1,36 @@
 # Assertions and unit testing
 
+For scheduler stress qualification, build a separate runtime with
+`-d:geneSchedulerTests`. `GENE_TEST_SCHEDULER_QUANTUM` selects an integer quantum
+from 1 to 1000000 (default 512); ordinary builds ignore it. The quantum only
+changes when a slice is exhausted, never where it may yield or deliver
+cancellation. Use:
+
+```sh
+gene run tools/verify_scheduler.gene TEST_GENE NEW_OUTPUT --gates --proofs --applications
+```
+
+`nimble contracts` builds the instrumented runtime, checks proof eligibility,
+and runs the small scheduler/gate/proof matrix. Use `auto` for `NEW_OUTPUT` to
+create a fresh timestamped directory under `tmp/semantic-contracts`.
+Use `--quantum=1`, `7`, `512` or `4096` to repeat one setting in a new output
+directory without discarding the original attempt's evidence.
+
+This runs fresh processes at 1, 7, 512 and 4096 and saves individual logs and
+results, binary digest, source revision, tracked diff, and a source manifest
+including untracked implementation and fixture files. `--proofs` requires
+the additional `-d:geneGraphProofTests` build flag. Invalid quantum settings are
+checked before the suites. Success requires a nonempty passing test summary as
+well as a zero exit status. The scheduler fixture verifies the effective setting, so a production
+binary cannot silently pass as an instrumented binary. Application qualification
+requires the normal native dependencies and permission to bind loopback sockets.
+Very short quanta and sanitizer builds are correctness stress modes; investigate
+timing failures separately from safety failures.
+The Harness responsiveness fixture keeps its 100 ms bound at production's
+quantum 512 and at smaller quanta. Instrumented larger quanta scale that bound
+in proportion to the instruction slice; progress, cancellation completion and
+stopped-work assertions remain unchanged. It reports the selected bound.
+
 Gene provides a standalone `$assert` function and RSpec-style example groups
 under `$test`. Both are implemented in the native VM. Try the complete
 [testing demo](../examples/testing_demo.gene):

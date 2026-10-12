@@ -104,14 +104,12 @@
 
 (fn unload_event_stream [events : EventStore, scope : Str, stream : Str]
   (var key (stream_key scope stream))
-  (acquire_event_writer events)
-  (try
+  (with_event_writer events (fn []
     (if_not (== (events/dirty_streams/.get .get key) void)
       (flush_event_store_unlocked events))
     (events/streams/.get .delete key)
     (events/projections/.get .delete key)
-    (events/core_projections/.get .delete key)
-  ensure (events/writing .set false))
+    (events/core_projections/.get .delete key)))
   nil)
 
 (fn set_current_events [events : EventStore, key : Str, values]
@@ -162,9 +160,8 @@
   (byte_size (write_data
     (stamped_envelope scope stream event "core" "core" projection 9223372036854775807))))
 
-(fn acquire_event_writer [events : EventStore]
-  (while (events/writing .swap true) ($sleep 1))
-  nil)
+(fn with_event_writer [events : EventStore, thunk]
+  (events/writing thunk))
 
 (fn append_stamped_event
   [events : EventStore, scope : Str, stream : Str, event,
@@ -173,12 +170,9 @@
   (let context ($runtime/context))
   (if (== context/ui_render true)
     (fail (HarnessStateError ^message "UI render callbacks cannot write durable Harness state.")))
-  (acquire_event_writer events)
   (let envelope
-    (try
-      (append_stamped_event_unlocked events scope stream event origin owner projection)
-    ensure
-      (events/writing .set false)))
+    (with_event_writer events (fn []
+      (append_stamped_event_unlocked events scope stream event origin owner projection))))
   (if_not ($absent? events/observer)
     (try (events/observer envelope)
       catch Any nil))
@@ -493,9 +487,7 @@
 # Publication removes the descriptor before reclaiming unreachable segments.
 # Retained older generations age out through the normal event-store GC.
 (fn delete_event_stream [events : EventStore, scope : Str, stream : Str]
-  (acquire_event_writer events)
-  (try (delete_event_stream_unlocked events scope stream)
-    ensure (events/writing .set false)))
+  (with_event_writer events (fn [] (delete_event_stream_unlocked events scope stream))))
 
 (fn delete_event_stream_unlocked [events : EventStore, scope : Str, stream : Str]
   (require_open events)
@@ -541,9 +533,7 @@
 
 (fn flush_event_store [events : EventStore]
   (require_open events)
-  (acquire_event_writer events)
-  (try (flush_event_store_unlocked events)
-    ensure (events/writing .set false)))
+  (with_event_writer events (fn [] (flush_event_store_unlocked events))))
 
 (fn flush_event_store_unlocked [events : EventStore]
   (if_not events/dirty/.get
@@ -653,7 +643,7 @@
                 ^last_manifest ($cell nil) ^dirty ($cell false)
                 ^dirty_streams ($cell (fresh_map))
                 ^catalog ($cell nil) ^quarantined ($cell (fresh_list))
-                ^writing ($cell false)
+                ^writing ($sync/gate)
                 ^formats_validated ($cell false)
                 ^closed ($cell false) ^observer nil
                 ^segment_events segment_events

@@ -1,0 +1,45 @@
+# Paired, rotated samples. Run only while qualification builds/tests are idle.
+(fn main [args] : Int
+  (let root ($fs/real_path "."))
+  (let out args/body/0)
+  ($assert (! ($fs/exists? out)) "measurement directory must be new")
+  ($fs/make_dir out)
+  (let variants [
+    {^name "baseline" ^binary ($path/join root "tmp/semantic-contracts/gene-baseline")
+      ^source ($path/join root "tmp/semantic-contracts/baseline")}
+    {^name "candidate" ^binary ($path/join root "tmp/semantic-contracts/gene-production-final") ^source root}])
+  (let provenance [])
+  (for variant in variants
+    (let version ($os/exec variant/binary "--version"))
+    ($assert (== version/status 0) "cannot identify benchmark binary")
+    (provenance .push {^name variant/name ^binary variant/binary
+      ^sha256 ($crypto/sha256 ($fs/read_bytes variant/binary)) ^source variant/source ^version version/stdout}))
+  ($fs/write_text ($path/join out "provenance.json") ($json/stringify provenance))
+  (let results [])
+  (var reverse false)
+  (repeat sample in 3
+    (let order (if reverse [variants/1 variants/0] variants))
+    (for turns in [25 120]
+      (for variant in order
+        (let name $"service-${variant/name}-${turns}-${sample}")
+        (let workspace ($path/join root out name))
+        (let response ($os/exec variant/binary "run"
+          ($path/join variant/source "examples/gene-harness/probes/performance.gene") workspace ($to_str turns)
+          ^dir variant/source ^timeout_ms 180000 ^max_bytes 1048576))
+        ($fs/write_text ($path/join out $"${name}.log") $"${response/stdout}\n${response/stderr}")
+        ($assert (&& (== response/status 0) (! response/timed_out) (! response/truncated)) $"failed ${name}")
+        (results .push {^case "service" ^variant variant/name ^sample sample ^metrics ($json/parse response/stdout)})
+        ($fs/write_text ($path/join out "results.json") ($json/stringify results))
+        ($println $"finished ${name}") ($io/flush_stdout)))
+    (for rows in [10 100 1000 10000]
+      (for variant in order
+        (let name $"frozen-${variant/name}-${rows}-${sample}")
+        (let response ($os/exec variant/binary "run" ($path/join root "tools/benchmark_frozen_checks.gene")
+          ($to_str rows) "10000" ^dir root ^timeout_ms 180000 ^max_bytes 1048576))
+        ($fs/write_text ($path/join out $"${name}.log") $"${response/stdout}\n${response/stderr}")
+        ($assert (&& (== response/status 0) (! response/timed_out) (! response/truncated)) $"failed ${name}")
+        (results .push {^case "frozen" ^variant variant/name ^sample sample ^metrics ($json/parse response/stdout)})
+        ($fs/write_text ($path/join out "results.json") ($json/stringify results))
+        ($println $"finished ${name}") ($io/flush_stdout)))
+    (set reverse (! reverse)))
+  0)

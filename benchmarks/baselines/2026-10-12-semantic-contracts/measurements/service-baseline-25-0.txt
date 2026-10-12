@@ -1,0 +1,1 @@
+{"workload_version":2,"turns":25,"elapsed_ms":1624,"record_checksum":1300,"workspace":"/Users/gcao/gene-workspace/gene-new/tmp/semantic-contracts/measure-final/service-baseline-25-0"}

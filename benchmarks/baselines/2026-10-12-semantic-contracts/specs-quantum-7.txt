@@ -1,0 +1,1083 @@
+/Users/gcao/gene-workspace/gene-new/src/gene/types.nim(1405, 3) Warning: pass a finalizer of the 'proc (x: T) {.nimcall.}' type; new is deprecated [Deprecated]
+/Users/gcao/gene-workspace/gene-new/src/gene/types.nim(1419, 3) Warning: pass a finalizer of the 'proc (x: T) {.nimcall.}' type; new is deprecated [Deprecated]
+/Users/gcao/gene-workspace/gene-new/src/gene/error_analysis.nim(168, 6) template/generic instantiation from here
+/Users/gcao/gene-workspace/gene-new/src/gene/error_analysis.nim(208, 10) Warning: visit(analysis.rootEnvironment) can raise an unlisted exception: Exception [Effect]
+/Users/gcao/gene-workspace/gene-new/src/gene/stdlib.nim(4874, 3) Warning: unreachable code after 'return' statement or '{.noReturn.}' proc [UnreachableCode]
+/Users/gcao/gene-workspace/gene-new/src/gene/vm.nim(21657, 11) Warning: unreachable code after 'return' statement or '{.noReturn.}' proc [UnreachableCode]
+/Users/gcao/gene-workspace/gene-new/src/gene/vm.nim(21683, 11) Warning: unreachable code after 'return' statement or '{.noReturn.}' proc [UnreachableCode]
+/Users/gcao/gene-workspace/gene-new/src/gene/macro_runtime.nim(89, 6) template/generic instantiation from here
+/Users/gcao/gene-workspace/gene-new/src/gene/macro_runtime.nim(95, 17) Warning: `=destroy`(state.application) can raise an unlisted exception: Exception [Effect]
+/Users/gcao/gene-workspace/gene-new/src/gene/web.nim(4, 8) Warning: imported and not used: 'vm' [UnusedImport]
+/Users/gcao/gene-workspace/gene-new/tests/spec_runner.nim(12, 13) Warning: imported and not used: 'aot_runtime' [UnusedImport]
+
+[Suite] spec — reader surface from design
+  [OK] Path literals and construction have the same callable value
+  [OK] receiver paths construct dynamic segments before traversal
+  [OK] qualified, held, and optional message Paths agree
+  [OK] a literal-key stage bypasses message interpretation and serializes
+  [OK] programs contain multiple top-level forms
+x
+  [OK] $x selects from the gene root without occupying a bare name
+  [OK] Path literals and context-neutral paths stay distinct
+  [OK] template unquote supports interpolation and dynamic paths
+  [OK] datum comments are spacing, not values
+  [OK] strings decode Unicode escapes
+  [OK] interpolation lowers to an ordinary gene/to_str call
+  [OK] interpolation closes only at lexer-visible delimiters
+  [OK] ordered literal dispatch covers every documented prefix family
+  [OK] an immutable node used as data is quoted before evaluation
+  [OK] each literal family rejects a recognized malformed form
+  [OK] a line comment requires whitespace or '!' after '#'
+  [OK] unrecognized '#' forms are reserved read errors
+  [OK] ordinary props require values and flags are explicit
+  [OK] malformed syntax is rejected
+  [OK] dot descriptors require a send position
+  [OK] documented inventory matches compiler dispatch and has fixtures
+
+[Suite] spec — value spread from design
+  [OK] spread flattens values in calls and list literals
+
+[Suite] spec — sequenced value pipelines
+  [OK] default and explicit slots build ordinary call shapes
+  [OK] the incoming value is evaluated first and exactly once
+  [OK] failures short-circuit callees, arguments, and later stages
+  [OK] a head slot composes with dot sends
+  [OK] syntax heads and mixed delimiter forms are rejected
+  [OK] quoted pipeline syntax prints and eval compiles it later
+  [OK] macro expansion traverses and can return pipeline syntax
+  [OK] typed boundaries retain the VM fallback when AOT cannot lower syntax
+  [OK] the final pipeline stage remains a tail position
+  [OK] the value before the first delimiter is a single form
+  [OK] a final iterate stage is lazy and explicit each drives effects
+  [OK] a non-final iterate stage maps lazily into the next stage
+  [OK] an unbounded producer flows through without materializing
+  [OK] an iterate stage evaluates its callee and arguments once
+  [OK] lazy iterate failures preserve completed per-item effects
+  [OK] a Stream-to-List boundary points at the explicit collector
+  [OK] iterate stages mix with call stages and reject syntax heads
+  [OK] quoted iterate syntax prints its own delimiter
+
+[Suite] spec — enums from design
+  [OK] unit variants are qualified singleton values with reflection
+  [OK] tuple variants construct payload values and match by tag
+  [OK] enums are annotation types and generic arguments erase at runtime
+  [OK] backed unit enums round-trip through backing values
+  [OK] enum messages and inline impls dispatch on variants
+
+[Suite] spec — templates from design
+  [OK] quasiquote unquote builds generated nodes
+  [OK] eval executes generated template nodes
+  [OK] quasiquote unquote-splicing merges generated bodies
+
+[Suite] spec — macros from design
+  [OK] local macros expand in the live definition environment
+  [OK] template macros expand before calls
+  [OK] macro call arguments are syntax nodes
+  [OK] macro bodies evaluate ordinary code before compiling the result
+  [OK] macro call props bind named syntax parameters
+  [OK] macro parameters destructure syntax patterns
+  [OK] macro typed patterns match syntax values
+  [OK] macro parameter defaults bind syntax values
+  [OK] template macros expand in default arguments
+  [OK] macro result locals stay confined to their expansion
+  [OK] macro result helpers stay confined to their expansion
+  [OK] macro match binders retain their ordinary arm scope
+  [OK] template names retain property message quote and path roles
+  [OK] plain substitution deliberately captures caller collision operands
+  [OK] template body siblings use ordinary binding visibility
+  [OK] compound macro results confine declarations without changing caller bindings
+  [OK] ordinary quote constructs residual path and pin unquotes
+  [OK] macro splices use ordinary quasiquote node anatomy
+
+[Suite] spec — explicit fexprs from design (§3/§11.1)
+  [OK] a bang-named fn receives raw syntax
+  [OK] fn! definition syntax is removed
+  [OK] ordinary alias calls stay eager and cannot invoke fexprs
+  [OK] only fexpr declarations may bind a trailing-bang name
+  [OK] anonymous functions remain ordinary eager Fn values
+  [OK] message names may not use the fexpr marker
+  [OK] set handles lexical rebinding and path mutation without bang
+  [OK] Fexpr is the runtime type of a syntax callable
+  [OK] fexpr values print with their defining fn form
+  [OK] a fexpr evaluates selected syntax through caller_env
+  [OK] syntax_call carries the raw envelope including site
+  [OK] fexpr values may be held for reflection
+  [OK] Fexpr is a sibling of Fn, not a subtype
+  [OK] higher-order calls stay eager and reject held fexprs
+  [OK] eval recognizes explicit trailing-bang calls
+  [OK] sends resolve receiver-first and raise before evaluating arguments
+  [OK] fexpr prints as its fn declaration form
+  [OK] fexpr arity errors count only syntax parameters
+  [OK] caller_env is borrowed and explicit snapshots are durable
+  [OK] caller_env escape boundaries reject borrowed authority
+
+[Suite] spec — typed native compilation prototype from design
+  [OK] simple typed Int arithmetic can use a native direct op
+  [OK] fixed representation functions expose an experimental C backend
+  [OK] selected typed functions AOT emit direct typed C calls
+  [OK] C minimum I64 literals preserve signed comparisons
+  [OK] checked C integers preserve intermediate values and source evaluation order
+  [OK] loaded checked native errors preserve TypeError values and native frames
+  [OK] checked native comparisons and wide literals agree with the VM
+  [OK] native equality uses the ordinary Gene operator and never drops FFI props
+  [OK] native recursion reaches a checked limit and recovers without corrupting later calls
+  [OK] native stores reject null strings and non-null pointers before mutation
+  [OK] the exported C support header needs no source-tree includes
+  [OK] typed-native pointer parameters lower foreign fields to direct C loads
+  [OK] a generated typed-native getter executes against a real C struct
+  [OK] typed-native functions require a machine representation for every parameter
+  [OK] typed-native metadata remains available inside lexical child units
+  [OK] a namespace-local native Type is visible to forms that precede it
+  [OK] a nested namespace resolves its own native Type
+  [OK] a private namespace still resolves its own native Type
+  [OK] typed-native mutable fields lower stores without dynamic helpers
+  [OK] typed-native stores reject narrowing ABI conversions
+  [OK] a typed-native body is a sequence, not a single form
+  [OK] Str crosses typed-native edges as a borrowed const char *
+  [OK] ^out passes an argument by address and writes through it
+  [OK] several ^out parameters need no product result
+  [OK] an ^out argument must be a mutable local
+  [OK] ^out must name a declared parameter
+  [OK] an ^out function has no dynamic entry wrapper yet
+  [OK] I32 crosses typed-native edges and widens into I64
+  [OK] arithmetic never produces an I32
+  [OK] an I64 does not narrow into an I32 edge
+  [OK] typed-native bodies compute with arithmetic, comparison and if
+  [OK] typed-native bodies loop with while and block-scoped locals
+  [OK] a typed-native loop cannot use a local after its block ends
+  [OK] typed-native if arms must share the result representation
+  [OK] typed-native paths reject operations that require runtime dispatch
+  [OK] typed-native sends specialize a visible impl for a concrete receiver
+  [OK] typed-native prefix sends use the same specialized implementation
+  [OK] two slot-compiled chunks cannot silently share one scope
+  [OK] name-bound chunks accumulate in one scope
+  [OK] Gene calls a natively compiled function through an AOT library
+  [OK] AOT ffi wrappers marshal strings, bools and sized integers
+  [OK] compiled FFI wrappers marshal identically to the dynamic FFI path
+  [OK] compiled FFI wrappers enforce the pointer contract
+  [OK] a compiled Buffer argument is written back, a C/Slice is not
+  [OK] a managed wrapper crosses the AOT boundary in both directions
+  [OK] a protocol message may return a native pointer
+  [OK] a bare typed-native send never resolves to a protocol impl
+  [OK] a lexical binding shadows a protocol name during send lowering
+  [OK] an overlay impl anywhere in the unit blocks a direct send
+  [OK] an unlowerable impl body fails emission instead of returning 0
+  [OK] native release and copy symbols must be C identifiers
+  [OK] an ffi symbol must be a C identifier
+  [OK] typed-native functions call typed FFI symbols directly
+  [OK] an ffi/fn-bearing module links without the dynamic entry helpers
+  [OK] a lexical binding shadows a typed FFI symbol during lowering
+  [OK] typed-native pointer locals stay unboxed
+  [OK] typed-native pointer vars rebind without boxing
+  [OK] typed-native functions call other typed-native functions directly
+  [OK] typed-native pointer fields preserve nominal type and nullability
+  [OK] an imported layout's pointer field keeps the declarer's pointee
+  [OK] ordinary and opaque C pointees need no nominal identity
+  [OK] a pointer field naming an ffi/struct records its ABI identity
+  [OK] a layout fingerprint tracks the declaration, not the struct's name
+  [OK] a contract fingerprint covers policy the layout hash cannot see
+  [OK] the native-type manifest covers transitively reachable types
+  [OK] the wrapper handle's ownership flavor is part of the contract
+  [OK] typed-native field stores preserve their result's nominal type
+  [OK] an explicit native entry borrows a managed wrapper for the call
+  [OK] an explicit native entry transfers a wrapper pointer and result
+  [OK] native entry argument acquisition rolls back before returning an error
+  [OK] two AOT libraries exporting the same name stay isolated
+  [OK] aot/load rejects a library built against a changed layout
+  [OK] an already-loaded callable rejects a call after its type is redeclared
+  [OK] each library's owned result runs its own release function
+  [OK] a rolled-back transfer leaves the wrapper usable
+  [OK] an explicit native entry copies a wrapper pointer before reboxing
+  [OK] an explicit native entry copies a borrowed native result
+  [OK] a native entry cannot expose a borrowed pointer result
+  [OK] a native entry cannot transfer a result derived from a borrowed parameter
+  [OK] a native entry executes null and copied wrapper boundaries
+  [OK] typed-native FFI calls reject narrowing scalar arguments
+  [OK] typed-native scalar loads reject values wider than I64
+  [OK] nullable typed-native pointers stay unboxed and guard field loads
+  [OK] nullable typed-native pointers cannot flow into non-null FFI parameters
+  [OK] native calls fill omitted nullable parameters with NULL
+  [OK] nullable typed-native stores guard before assigning
+  [OK] nullable typed-native bases guard pointer-valued fields with a pointer trap
+  [OK] fixed scalar AOT covers branching and direct recursion
+  [OK] task-frame lowering metadata is emitted for resumable functions
+  [OK] direct protocol calls record selected impl dependencies
+  [OK] ffi/library declarations expose target metadata manifests
+  [OK] ffi/fn declarations expose generated C wrappers
+  [OK] GIR round-trips only inert ffi/fn native stubs
+  [OK] ffi/fn C wrappers marshal scalar, pointer, slice, and buffer ABI shapes
+  [OK] ffi/struct declarations expose C layout metadata manifests
+  [OK] ffi/union declarations expose C layout metadata manifests
+  [OK] callback and dynamic FFI signatures expose metadata manifests
+
+[Suite] spec — strings from design
+  [OK] strings expose explicit chars and bytes iteration
+  [OK] graphemes expose combining scalar clusters
+  [OK] to_str joins display conversions through either standard library spelling
+  [OK] bare dollar is an ordinary unbound or locally bound symbol
+  [OK] interpolation calls gene/to_str display conversion
+
+[Suite] spec — hashable collections and bytes from design
+  [OK] Bytes literals read as immutable byte strings
+  [OK] hex integers are Int values, not bytes
+  [OK] Set deduplicates hash-stable values in insertion order
+  [OK] general maps evaluate any hash-stable keys
+
+[Suite] spec — regular expressions from design
+  [OK] Regex literals are raw and constructor strings escape normally
+  [OK] regex sends return Match values and streams
+  [OK] regex replacement templates and split use PCRE captures
+
+[Suite] spec — equality and identity from design
+  [OK] same question mark is scalar identity or heap identity
+  [OK] hash follows equality for hash-stable values
+  [OK] freeze helpers make mutability explicit
+  [OK] deep freeze traverses node metadata
+  [OK] Send validation traverses node metadata
+
+[Suite] spec — numeric boundaries from design
+  [OK] Int has mathematical integer semantics
+  [OK] // is truncated remainder; sign follows the dividend
+  [OK] remainder matches bounded integral application reductions bit for bit
+  [OK] // is an operator, never the empty selector
+  [OK] fixed-width integer annotations are range checked
+  [OK] C ABI scalar annotations are explicit range checked boundaries
+  [OK] C pointer annotations are opaque checked boundaries
+  [OK] C slice annotations are opaque pointer-length boundaries
+  [OK] Buffer annotations are Gene-owned typed storage
+  [OK] Device buffers are opaque native-compute handles
+
+[Suite] spec — nominal types from design
+  [OK] child types preserve inherited field schemas
+  [OK] type body schemas validate positional node body
+  [OK] type layout promises are reserved
+
+[Suite] spec — direct construction, new, and ctor (design §7.1.1)
+  [OK] new invokes the type constructor unless its head collides
+  [OK] ctor mutates pre-created self and returns the validated instance
+  [OK] ctor uses function-style argument matching with named defaults
+  [OK] ctor declares checked errors
+  [OK] new validates the completed instance against the schema
+  [OK] (T ...) is direct data construction and never runs the ctor
+  [OK] direct construction still schema-validates on a ctor type
+  [OK] typed instance property writes preserve field types
+  [OK] functional updates preserve typed instance schemas
+  [OK] typed instance body mutation preserves the declared body schema
+  [OK] the immutable node reader preserves typed-instance immutability
+  [OK] construct_type validates a runtime map against one real type schema
+  [OK] types reflect their closed property schema as Gene data
+  [OK] new fails when the type hierarchy has no ctor
+  [OK] child ctor covers inherited schema; parent ctor is not chained
+  [OK] new inherits the nearest ancestor ctor
+  [OK] ctor fills body fields through mutable node APIs
+  [OK] a type defines at most one ctor
+  [OK] in-progress instances cannot escape construction
+  [OK] successful construction clears the publication guard
+  [OK] failed construction unwinds ensure cleanup
+
+[Suite] spec — native wrapper types (design §16.6)
+  [OK] ^repr native_wrapper marks the type and admits only ctor construction
+  [OK] every other construction path rejects a native wrapper head
+  [OK] wrapper fields are initializer-only after construction
+  [OK] the wrapper rule is inherited through the nominal parent
+  [OK] ^repr accepts only the native_wrapper marker
+  [OK] in-tree native surfaces are wrapper types
+  [OK] Bytes round-trip through a blob column
+  [OK] an empty blob reads back as empty Bytes, not nil
+  [OK] shipped wrappers declare their schema, including the handle flavour
+  [OK] native receivers are admitted by Type identity, never by name
+  [OK] deep freeze rejects a wrapper; shallow freeze and thaw pass it through
+
+[Suite] spec — sequence indexing by integral Float (§7.4)
+  [OK] an integral Float indexes a List for both read and write
+  [OK] a non-integral Float names no element
+  [OK] a negative index counts from the end
+  [OK] an out-of-range write raises where an out-of-range read is void
+
+[Suite] spec — bulk buffer moves
+  [OK] fill writes a whole buffer, or a half-open range of one
+  [OK] fill checks the element once, against the buffer's type
+  [OK] copy_from copies a whole buffer only into an equal-length one
+  [OK] copy_from takes a source range and a destination offset
+  [OK] copy_from onto itself moves rather than smears
+  [OK] a range endpoint past the end is an error, not a clamp
+
+[Suite] spec — loop body scoping from design (§9)
+  [OK] a var in a loop body is one declaration run many times
+  [OK] try and ensure bodies retain enclosing loop declarations
+  [OK] try subchunks retain strict declarations outside shared loop scope
+  [OK] a genuine redeclaration is still an error
+  [OK] branch shadowing and nested functions keep the strict rule
+
+[Suite] spec — gene/bit and gene/binary from design (§7.9)
+  [OK] bitwise operations work over Int
+  [OK] shr is logical, so a checksum's high byte survives
+  [OK] shift counts outside 0..63 are rejected
+  [OK] Bytes round-trip through a List of Int
+  [OK] Bytes bridge to and from a (Buffer U8)
+  [OK] Buffer/to_bytes accepts only U8
+  [OK] Bytes concatenate and slice
+  [OK] Bytes carry a string's UTF-8 encoding
+  [OK] out-of-range bytes and indices are rejected
+  [OK] Bytes carry numbers, little-endian at a byte offset
+  [OK] i32 is two's complement, so a negative coordinate round-trips
+  [OK] the offset is in bytes, so mixed-width records read correctly
+  [OK] put_f32 is lossy and says so; get_f32 widens without further loss
+  [OK] an out-of-range number raises rather than wrapping
+  [OK] reading past the end raises rather than inventing bytes
+
+[Suite] spec — gene/math from design (§7.8)
+  [OK] rounding is kind-preserving
+  [OK] to_int and to_float are the explicit numeric conversions
+  [OK] abs and sign preserve kind
+  [OK] transcendental functions return Float
+  [OK] min, max, and clamp keep the winning argument
+  [OK] domain violations raise rather than returning NaN
+  [OK] the namespace is reachable both ways
+
+[Suite] spec — statement return types from design (§7.7)
+  [OK] a Nil return discards the body value and yields nil
+  [OK] a Void return discards the body value and yields void
+  [OK] return needs no argument under a statement signature
+  [OK] statement returns are bare Nil and Void, not any nil-admitting type
+
+[Suite] spec — typed variable boundaries from design
+  [OK] var annotations check gradual boundaries
+  [OK] set checks typed variable boundaries
+  [OK] optional type sugar T? is (? T) (design §7.2)
+  [OK] callable runtime values have explicit boundary types
+
+[Suite] spec — proper tail calls from design §3.1
+  [OK] mutual and higher-order tail calls are iteration-safe
+  [OK] tail-position match arms do not retain expression frames
+  [OK] exact typed returns and tail sends remain elidable
+  [OK] user Callable and held protocol messages tail-dispatch bytecode
+
+[Suite] spec — generic functions from design
+  [OK] generic function calls infer type parameters locally
+  [OK] generic calls can request selective monomorphization metadata
+
+[Suite] spec — static effects from design
+  [OK] ^effects rows are reserved in MVP
+
+[Suite] spec — short-circuit operators from design
+  [OK] && and || yield the last operand evaluated
+  [OK] && and || stop evaluating at the deciding operand
+  [OK] ! is unary truthiness negation over false, nil, void
+
+[Suite] spec — absence vocabulary from design §1.6
+  [OK] nil?/void?/absent?/present? follow the two-absence truth table
+  [OK] ?? yields the first present operand and keeps stored false
+  [OK] ?? short-circuits at the first present operand
+
+[Suite] spec — type aliases from design §7.4.1
+  [OK] (alias ...) expands transparently in annotation position
+  [OK] a type alias rejects a non-conforming value and is not constructible
+  [OK] an alias may be marked ^private
+  [OK] a cyclic alias raises rather than crashing
+  [OK] (| A B) is a value, not only annotation syntax
+  [OK] pattern and annotation uses of | are untouched by the binding
+  [OK] a namespaced stdlib type resolves in annotation position
+
+[Suite] spec — checked errors from design
+  [OK] Never contributes no errors and rows deduplicate
+  [OK] (fail $err) re-raises a caught error without losing its message
+
+[Suite] spec — pattern destructuring from design
+  [OK] match/for bindings and $err are branch-local
+  [OK] var pattern bindings extend the enclosing scope per design §8.0.1
+  [OK] match bindings are branch-local at runtime per §8.0.1
+  [OK] for iterates streams lazily and closes on pattern failure
+  [OK] for treats strings as char streams
+  [OK] loops support break and continue
+  [OK] for iterates maps sets nodes and ranges per design §8.1
+  [OK] for over streams returns nil and skips the body when empty
+  [OK] alternation alternatives bind the same names
+  [OK] meta patterns opt into matching meta
+  [OK] typed patterns bind and require the declared type
+
+[Suite] spec — Fn type call-shape admission per design §7.4.1
+  [OK] an Fn type admits every usable call shape of an ordinary fn
+  [OK] unlisted required named parameters stay outside the typed view
+  [OK] a typed rest parameter checks each gathered argument
+  [OK] generic fns instantiate consistently and T? equals (? T)
+
+[Suite] spec — Int overflow contract per design §7.4
+  [OK] small Int arithmetic stays in the int64 fixnum fast path
+  [OK] int64 boundary arithmetic promotes to an exact bignum
+  [OK] Int arithmetic never wraps silently
+
+[Suite] spec — Range type
+  [OK] range constructs immutable integer ranges
+  [OK] range exposes start stop step inclusive and size
+  [OK] range streams lazily and for iterates ranges
+  [OK] range satisfies Range and typed Stream boundaries
+
+[Suite] spec — Date/time type family
+  [OK] date time and datetime literals print canonically
+  [OK] constructors expose date time timezone and duration values
+  [OK] date time family accessors and annotations work
+  [OK] date time values are immutable and hash stable
+  [OK] temporal calendar days and elapsed durations have distinct rules
+  [OK] temporal instant operations require offsets and normalize UTC
+  [OK] RFC3339 parsing and formatting use exact microseconds
+
+[Suite] spec — implicit self in message bodies from design §10
+  [OK] self is implicit; the receiver leaves the parameter vector
+  [OK] a held message value is sent with (x .%m)
+  [OK] sending a held fexpr value is a CallKindError
+  [OK] a dynamic send requires a message value, not an arbitrary function
+  [OK] a qualified send requires a protocol message, not a namespace member
+  [OK] a built-in surface is a type, so it can receive impls
+  [OK] every reader-produced shape projects as a node
+  [OK] the canonical representation is what the pattern engine matches
+  [OK] a rest pattern binds in node-body position, not only in a list
+  [OK] a node-shape pattern destructures through the projection
+  [OK] a gene-root annotation spelling means what the bare name means
+  [OK] an impl receiver must be a type, and says so catchably
+  [OK] leaf? names the base case for a generic walk
+  [OK] node anatomy is universal; the Node type is not
+  [OK] a message in head position normalizes to a send
+  [OK] a message in value position is a dispatching message value
+  [OK] a dynamic send accepts an expression that yields a message value
+  [OK] a leading self send takes held, qualified, and selector callees
+  [OK] an inline impl message binds self implicitly
+  [OK] enum messages bind self implicitly
+  [OK] the legacy explicit-self form still binds the receiver
+  [OK] Self in annotation position is declaration-bound
+  [OK] self is immutable inside a message body
+  [OK] super delegates to the implementation above, relative to the enclosing type
+  [OK] super passes arguments to the parent implementation
+  [OK] super with no parent is a compile error
+  [OK] a type cannot qualify a super send
+  [OK] super delegates a protocol message from the nominal parent
+  [OK] super still rejects a dynamic callee
+  [OK] super is robust against a local shadowing the parent or enclosing name
+  [OK] super works inside a closure nested in the message body
+  [OK] super stays per-type when one declaration is created with two parents
+  [OK] self cannot be rebound by a nested binder in a message body
+  [OK] super keeps its parent through task and control-flow sub-bodies
+  [OK] a qualified send with no visible impl raises a catchable MessageError
+  [OK] a receiver with no nominal type still raises a catchable MessageError
+
+[Suite] spec — respond_to? (design §3)
+  [OK] respond_to? answers whether a bare send would resolve
+  [OK] respond_to? is not an optional dot send
+  [OK] respond_to? rejects a bad arity or a non-name
+
+[Suite] spec — absence-guarded sends (design §3)
+  [OK] an absent receiver yields itself; a present one dispatches
+  [OK] zero-argument path sends support qualified held and optional forms
+  [OK] absence is decided before the message name, but never hides a typo
+  [OK] a guarded send evaluates its receiver once and skips arguments
+  [OK] an optional dot send does not change what a plain dot send means for nil
+  [OK] every .callee form guards identically
+  [OK] named arguments and spreads are skipped when the receiver is absent
+  [OK] optional dot sends are rejected where a receiver cannot be absent
+
+[Suite] spec — protocol intersection types
+  [OK] an intersection requires every operand
+  [OK] intersections compose inside containers and props
+  [OK] operand order is insignificant at every comparison site
+  [OK] union signatures are order-insensitive too (shared canonical form)
+  [OK] operands must be resolved protocols, checked on use not definition
+  [OK] intersections honor protocol inheritance and receiver ancestry
+  [OK] forward-referenced protocols resolve inside an intersection
+
+[Suite] spec — hidden impl diagnostics (docs/spec/protocols.md)
+  [OK] an exported scoped impl names the module the import must land in
+  [OK] the named module is the annotation's, not the caller's
+  [OK] an unexported scoped impl advises export before import
+  [OK] a hidden impl found through ancestry names its own pair
+  [OK] a qualified send gets the same advice
+  [OK] no hint when nothing is hidden
+
+[Suite] spec — protocol derive from design
+  [OK] protocol-local derive can generate an impl
+  [OK] derive may target another protocol but only the deriving type
+
+[Suite] spec — binding forms from design §12.1
+  [OK] bound special-form heads report the collision
+  [OK] binding declarations reject extra values and unknown props
+  [OK] binding shape checks preserve omitted values and typed constants
+  [OK] let binds a fixed value; var is rebindable
+  [OK] set on a let binding is a compile error
+  [OK] const binds a value that resolves before runtime
+  [OK] set on a const binding is a compile error
+  [OK] a const initializer must already be a constant
+  [OK] const is a module-level declaration
+  [OK] a const use is folded to its value, and a shadow still wins
+  [OK] a const must be declared unconditionally, so a fold cannot outrank it
+  [OK] an aggregate const does not poison typed_native lowering
+  [OK] folding a namespace const does not leak across namespaces
+  [OK] a folded const aggregate is still frozen
+  [OK] a const aggregate is frozen, where a let aggregate is not
+  [OK] set rejects extra arguments and requires a glued path target
+  [OK] set assigns in place through a path
+  [OK] set is checked by the same rules as construction
+  [OK] set path segments are keys, never applied
+  [OK] set rejects the virtual Node projections
+  [OK] set may populate self during construction
+  [OK] set requires a target and exactly two operands
+  [OK] let destructuring names are immutable
+  [OK] a const is a fixed binding like a named declaration
+  [OK] an inner var shadows an outer let without freezing it
+  [OK] an inner let over an outer var is immutable in that scope
+  [OK] a function parameter shadowing an outer let stays rebindable
+  [OK] a match-arm binding shadowing an outer let stays rebindable
+  [OK] typed let checks its value at the boundary
+  [OK] named declarations are immutable bindings
+  [OK] arrow delimiters are pipeline syntax rather than bindable symbols
+
+[Suite] spec — cells from design
+  [OK] Cell get, set, swap, and update are explicit mutation
+  [OK] typed cells retain and enforce their value type
+  [OK] typed cell writes use the captured protocol visibility scope
+  [OK] typed cell aliases retain the write invariant
+  [OK] typed cells retain their invariant inside container boundaries
+  [OK] typed cell mismatches report their retained invariant
+
+[Suite] spec — atomic cells from design
+  [OK] AtomicCell load, store, swap, and compare_exchange are explicit mutation
+
+[Suite] spec — mutable containers from design
+  [OK] persistent and mutating container updates are explicit
+  [OK] List/push rejects immutable lists
+  [OK] built-in operations are type-direct messages (unqualified and path)
+  [OK] built-in sends use the unqualified form
+  [OK] pipeline operations are messages: to_stream on iterables, map/filter/take/into on streams
+  [OK] the Node accessors are messages on a node receiver
+
+[Suite] spec — void normalization from design
+  [OK] void does not persist in prop storage
+
+[Suite] spec — optionality lives on the type, not the key
+  [OK] a nil-admitting field type is omissible and nilable
+  [OK] present nil and absent stay distinguishable by pattern
+  [OK] Any stays a required field — gradual slack is not optionality
+  [OK] an omitted nil-admitting named parameter binds nil
+  [OK] nil-admitting positional parameters have an implicit nil default
+  [OK] ?-suffixed declaration names are loud errors with hints
+
+[Suite] spec — streams from design
+  [OK] streams expose pull operations
+  [OK] next on an exhausted stream raises EndOfStream
+  [OK] has_next surfaces producer errors without EndOfStream
+  [OK] stream helpers map, filter, take, and materialize
+  [OK] closing downstream stream helpers closes upstream
+  [OK] lazy streams own inline callables beyond the defining frame
+  [OK] stream helpers are lazy
+  [OK] yield functions return lazy streams
+  [OK] yield skips void and resumes while loops
+  [OK] yield resumes for loops lazily
+  [OK] typed stream boundaries check items when pulled
+  [OK] yield is only valid inside functions
+  [OK] yield-void skips the item but does not leave the generator
+  [OK] natural fall-through closes the generator with no item remaining
+  [OK] Stream/close after natural take exhaustion stays local
+  [OK] generator return is terminal and close unwinds ensure blocks
+  [OK] producer errors are terminal and close upstream
+  [OK] has_next on an empty stream returns false without raising
+  [OK] Stream/close is idempotent
+  [OK] Stream/try_next returns exhausted when empty
+  [OK] Stream/try_next returns value for each item then exhausted
+  [OK] Stream/try_next preserves nil as a distinct value
+  [OK] Stream/try_next returns error for producer errors
+  [OK] Stream/try_next returns exhausted after a producer error
+  [OK] TryNext can be used as an annotation type
+  [OK] selectors map static lookup over stream items
+  [OK] selector strict and default options make missing lookup explicit
+  [OK] list path sends expose behavior while selectors stay generic
+  [OK] complex selector stages adapt stream helpers
+  [OK] selector key wrappers force dynamic key lookup
+  [OK] declarations is an ordinary stream selector stage
+  [OK] declaration records expose source @meta through %$meta
+  [OK] this_mod exposes the current module declaration stream
+
+[Suite] spec — generic collection operations from design (§6.2)
+  [OK] reverse and drop return fresh shallow Lists with the same mutability
+  [OK] reverse and drop forward to type-direct messages
+  [OK] drop stages are lazy and close their owned upstream exactly once
+  [OK] has_key distinguishes missing keys from stored nil
+  [OK] the three spellings are one dispatch
+  [OK] eager kinds answer in their own kind
+  [OK] filter keeps truthy items in the receiver's kind
+  [OK] a Map callback sees the value, not the pair
+  [OK] take slices a List and bounds a Stream
+  [OK] into collects an iterable receiver into the target
+  [OK] each runs the callback on every item and yields nil
+  [OK] map normalizes void results before collection storage
+  [OK] a receiver with no method raises the send's MessageError
+  [OK] a user type joins the generic by declaring the message
+  [OK] a pipeline runs eagerly on a raw List without to_stream
+  [OK] stream methods keep the lazy contract
+  [OK] immutability class is preserved through eager map
+
+[Suite] spec — structured tasks from design
+  [OK] scope owns spawned tasks and await returns the result
+  [OK] spawn queues child work and CPU tasks yield at safepoints
+  [OK] worker-candidate spawns snapshot Send captures
+  [OK] timer waits suspend only the current task
+  [OK] zero-duration sleep yields a scheduler turn
+  [OK] scope normal exit waits for live child tasks
+  [OK] spawn can require the owning root lane
+  [OK] root-lane spawn returns its task before the child body begins
+  [OK] runtime require_root_lane accepts root-lane calls
+  [OK] runtime require_root_lane is stable through protocol dispatch
+  [OK] sandbox transaction handles are opaque, non-freezable, and non-Send
+  [OK] Task/join returns repeatable successful outcomes without consuming await
+  [OK] Task/done? observes settlement after consuming await
+  [OK] Task/join turns recoverable errors and panics into outcomes
+  [OK] Task/join repeats failed, panicked, and cancelled outcomes
+  [OK] Task/join bounds panic summaries
+  [OK] Task/join waits for cancellation cleanup and returns cancelled
+  [OK] Task/join suspends a scheduled joiner until its task settles
+  [OK] cancelling a joining task does not cancel the joined task
+  [OK] await propagates recoverable task errors
+  [OK] await propagates task cancellation outside catch
+  [OK] scope normal-exit deadlock cancels owned children
+  [OK] scope error exit cancels pending child tasks
+  [OK] scope error exit waits for child cancellation cleanup
+  [OK] explicit Task/cancel still runs the ensure cleanup
+  [OK] catch Any does not intercept task cancellation
+  [OK] detached tasks outlive scope ownership
+  [OK] Task annotations accept task handles
+  [OK] Task annotations validate results and errors when awaited
+
+[Suite] spec — bounded channels from design
+  [OK] channels send, receive, and close in FIFO order
+  [OK] try_send and try_recv expose non-suspending channel checks
+  [OK] try_recv tags empty and preserves Void and Nil payloads
+  [OK] typed channel boundaries check items before enqueue
+  [OK] channel sends enforce dynamic Send values
+
+[Suite] spec — actors from design
+  [OK] Actor is the type; actor is the function namespace
+  [OK] namespaces receive messages
+  [OK] actor send processes messages sequentially
+  [OK] actor try_send returns immediately
+  [OK] actor snapshots expose idle state metadata
+  [OK] actor upgrade replaces idle handlers with migration rollback
+  [OK] actor stop closes the actor
+  [OK] actor sends require typed Send messages
+  [OK] actor ask uses an explicit one-shot ReplyTo capability
+  [OK] a second send on a ReplyTo raises ReplyAlreadySent
+  [OK] scope shutdown cancels pending actor asks
+  [OK] scope owns spawned actors until scope exit
+  [OK] restart budget stops the actor when max_restarts is exhausted
+  [OK] restart budget window resets after within_ms
+  [OK] supervisor owns actors and restarts after recoverable handler errors
+
+[Suite] spec — Env and eval from design
+  [OK] a captured function does not retain an expired defining budget
+  [OK] persistent REPL uses its creating Application's protocol registry
+  [OK] persistent REPL eval keeps declarations, imports, macros and base shadowing
+  [OK] persistent REPL eval parks and shares the execution quantum
+  [OK] persistent REPL eval cancels saved functions and remains usable
+  [OK] persistent REPL eval takes fresh caller budgets and output context
+  [OK] incremental REPL sessions retain declarations and incomplete source
+  [OK] Env extend creates a child environment
+  [OK] eval sees explicit Env imports before built-ins
+  [OK] eval sees an optional Env module namespace
+  [OK] eval module context does not mutate the source namespace
+  [OK] eval declarations shadow Env bindings without mutating Env
+  [OK] eval rejects ambient imports inside evaluated code
+  [OK] Env bindings may reuse a namespace name
+  [OK] runtime GC stats expose optimization diagnostics
+  [OK] eval policy can limit execution steps
+  [OK] eval step limits remain active across imported callable boundaries
+  [OK] runtime guard_call contains panic only at an explicit boundary
+
+[Suite] spec — task context
+  [OK] sandbox namespace reflection matches the runtime's grant vocabulary
+  [OK] now uses the same ISO offset convention as DateTime literals
+  [OK] context is dynamically scoped, inherited by spawn, and restored on error
+  [OK] native process exit validates its portable status range
+  [OK] parallel fibers retain separate console sinks across pauses
+  [OK] fiber execution quantum applies inside eager collection callbacks
+  [OK] a console sink can await in its calling fiber
+  [OK] synchronous subprocess calls park fibers and preserve argument evaluation
+  [OK] full-command subprocess calls evaluate once across fiber suspension
+  [OK] collection callbacks can await and preserve eager receiver shapes
+  [OK] sorting callbacks pause, compute keys once, and preserve stable order
+  [OK] cancelling callback and subprocess work remains responsive
+  [OK] cancellation propagates while a parent joins its scoped child
+  [OK] synchronous file operations retain byte content and typed failures in fibers
+  [OK] filesystem info exposes file and directory metadata
+  [OK] file pages preserve ranges, bound a long line and work inside a fiber
+  [OK] file mode and symlink metadata support atomic editors
+  [OK] a sparse multi-GB file is inspected without allocating the whole file
+  [OK] async stdin parks on partial lines, permits scheduler progress and cancels
+  [OK] set_cwd changes relative paths while preserving the launch directory
+
+[Suite] spec — parser helpers from design
+  [OK] node rebuild preserves source metadata and original structure
+  [OK] located reading exposes metadata and eval preserves nested error locations
+  [OK] located eval compilation reports the inner form's line
+  [OK] read_one feeds eval and read_all returns a stream
+  [OK] reader failures preserve structured location and open-form context
+  [OK] lex_all exposes a token stream
+
+[Suite] spec — modules from design
+  [OK] explicit mod declarations are top-level and unique
+  [OK] explicit mod names the current module root
+  [OK] duplicate bindings in one namespace are rejected
+
+[Suite] spec — packages (docs/workflows.md)
+  [OK] format 1 is required and nested schemas are closed
+  [OK] nearest manifest and ad-hoc discovery retain package boundaries
+  [OK] running inside a co-lived member selects the member package
+  [OK] dependency aliases isolate duplicate package versions
+  [OK] one library root is the only module base and `.` is its entry
+  [OK] this_pkg exposes the format-1 record with alias-keyed dependencies
+  [OK] the committed examples use format 1
+
+[Suite] spec — macros across modules (design §11/§15)
+  [OK] module macros import alongside values and expand at compile time
+  [OK] macro-only imports and selection aliases work
+  [OK] compile artifacts expose macros without running dependency top levels
+  [OK] runtime initialization remains separate and runs once
+  [OK] macro dependency cycles have a compile-phase diagnostic
+  [OK] imported macros are usable but not re-exported
+  [OK] importing a macro over a local macro name is a duplicate
+  [OK] one name means one thing in head and value positions
+  [OK] importing a macro over a value binding is rejected both ways
+
+[Suite] spec — fexprs across modules (design §11.1/§15)
+  [OK] imported fexpr names keep syntax_call sites
+
+[Suite] spec — impl visibility across modules (design §10)
+  [OK] a co-located canonical impl dispatches when its protocol is in scope
+  [OK] a canonical impl dispatches through a transitive value producer
+  [OK] a canonical impl is global without an import path to its own module
+
+[Suite] spec — core value protocol admission
+  [OK] Types seal an empty or selected witness set at unit completion
+  [OK] file-module activation seals all five core protocols together
+  [OK] an eval unit may select witnesses only for its own Type
+  [OK] reload seals a fresh Type without changing the old witness
+  [OK] late core impls cannot alter an activated Type
+  [OK] an unfinished same-unit core impl keeps earlier value use pending
+  [OK] hash and indexed writes require their paired read contracts
+  [OK] a derived protocol cannot implicitly extend a core VM fallback
+  [OK] child equality overrides invalidate an inherited hash
+  [OK] core protocols use normal signatures and explicit sends
+  [OK] a function-local Type cannot add an implicit VM provider
+  [OK] a foreign module cannot supply a scoped core implementation
+
+[Suite] spec — semantic equality and hashing
+  [OK] strict error analysis keeps scalar equality pure and flags possible witnesses
+  [OK] custom witnesses apply recursively and to Set and general-map keys
+  [OK] unrelated nominal Types do not use each other's equality witness
+  [OK] a failed key callback leaves persistent map association unpublished
+  [OK] equality-only values and nested keys have no structural hash escape
+  [OK] a witness cannot recursively compare or hash the same value
+  [OK] a key witness cannot reenter the same collection lookup
+
+[Suite] spec — indexed value witnesses
+  [OK] paths, selector calls, size, and set share IndexRead/Write
+  [OK] huge and fractional reads are absent; invalid writes do not call put_at
+  [OK] read-only and immutable Nodes reject indexed writes
+  [OK] void normalizes to nil before the IndexWrite callback
+  [OK] IndexRead size must be a nonnegative Int
+  [OK] a recursive indexed read raises instead of exhausting the VM stack
+
+[Suite] spec — value ordering and stable sort
+  [OK] numeric operators gain same-Type ValueOrder and built-in text order
+  [OK] ordering errors in a distinct application keep their Error identity in fibers
+  [OK] default sort is stable and sort_by evaluates each key once
+  [OK] an explicit comparator may choose descending order
+  [OK] invalid comparator results and mixed default keys raise OrderError
+  [OK] a comparator cannot suspend the scheduler
+
+[Suite] spec — gene/io qualified contracts
+  [OK] third-party adapters work without direct read or close messages
+  [OK] bounded copy borrows both endpoints and stops at its limit
+  [OK] read size validation is synchronous and EOF Tasks remain fresh
+  [OK] a stateful adapter rejects concurrent writes and waits for retirement
+  [OK] scope exit waits for an unawaited write_all Task
+  [OK] Application-root helper Tasks retire from diagnostics on completion
+  [OK] zero-progress writers fail instead of looping forever
+  [OK] copy rejects empty Bytes and invalid chunk options
+
+[Suite] spec — native I/O lifecycle adapter
+  [OK] I/O diagnostics follow the caller's Application
+  [OK] read admission, busy direction, EOF, and repeatable close
+  [OK] close cancels the user Task but retains native bytes until completion
+  [OK] close errors remain attached to every fresh wait_closed Task
+  [OK] byte backpressure rejects before admission and close blocks new work
+  [OK] scope cleanup waits for a physically completed late write
+
+[Suite] spec — stdlib namespaces from stdlib plan
+  [OK] parse incomplete status is inert and distinguishes malformed input
+  [OK] io/flush_stdout is available to streaming CLIs
+  [OK] gene/stream, gene/node, and gene/parse resolve as namespace imports
+  [OK] str module covers join/split/trim/lower and predicates
+  [OK] html/escape neutralizes markup and quote characters
+  [OK] url module encodes, decodes, and parses queries
+  [OK] response helpers build typed Response nodes
+  [OK] Server and Response types construct with typed props
+  [OK] serve validates its Server argument
+  [OK] client entry points are importable
+
+[Suite] spec — net/http_client native client contract
+  [OK] client rejects non-http URL schemes before starting work
+  [OK] setup errors carry ^kind so fallbacks match only unavailability
+
+[Suite] spec — structured logging contract
+  [OK] Logger API is importable and eager/lazy evaluation is explicit
+  [OK] built-in namespace macros support selection aliases
+  [OK] a lazy logging macro carries its LogLevel dependency
+  [OK] logging payload rejects process-bound values
+  [OK] logging payload reserves event envelope keys
+
+[Suite] spec — db protocol from stdlib plan
+  [OK] sqlite backend covers CRUD, typed params, and typed rows
+  [OK] sqlite transactions roll back on recoverable failure
+  [OK] connections close explicitly and reject further use
+  [OK] sqlite and postgres share one Db protocol
+
+[Suite] spec — store persistence protocol
+  [OK] crypto sha256 matches the standard known vector
+  [OK] crypto sha256 hashes raw Bytes including NUL and non-UTF8 octets
+  [OK] crypto random_hex returns the requested number of random bytes
+  [OK] crypto secure_equal? compares credentials without an early-exit API
+  [OK] sqlite store round-trips data records and missing/default semantics
+  [OK] sqlite store supports full mode refs, keys, delete, clear, and close
+  [OK] filesystem store uses encoded keys and ignores junk files
+  [OK] filesystem atomic text replacement publishes the last write
+  [OK] filesystem atomic text ^owner_only restricts the published file
+  [OK] sqlite checkpoints publish one hash-validated generation atomically
+  [OK] checkpoint generations are exclusive CAS claims
+  [OK] a retained-out stale generation cannot roll CURRENT backward
+  [OK] sqlite store files are owner-only
+  [OK] file sqlite persists through the filesystem provider without sidecars
+  [OK] sqlite open_file commits incrementally, rolls back, and reopens
+  [OK] sqlite close rolls back unfinished writes without publishing them
+  [OK] sqlite publishes an outer savepoint release but not an inner release
+  [OK] sqlite scripts publish each commit before later statements or errors
+  [OK] sqlite preserves committed partial writes when OR FAIL raises
+  [OK] filesystem checkpoints fall back from a corrupt newest generation
+  [OK] filesystem checkpoint load never promotes above CURRENT
+  [OK] malformed checkpoint CURRENT is corruption, never an empty store
+
+[Suite] spec — filesystem watching
+  [OK] watch reports create, modify, and remove in order
+  [OK] watch overflow requests a rescan
+  [OK] watch pairs a filesystem rename by stable identity
+  [OK] recursive watch discovers files in newly created directories
+  [OK] recursive watch never follows a symlink outside its root
+  [OK] a cancelled receive leaves the watcher usable
+  [OK] close wakes a pending receiver and is idempotent
+  [OK] close drains buffered watcher changes before WatcherClosed
+  [OK] os/get_env reads, defaults, and errors
+
+[Suite] spec — os and json from ai-agent plan
+  [OK] os/executable_path identifies the running Gene executable
+  [OK] os/launch_dir reports the application's captured launch directory
+  [OK] os/exec runs a program, captures output, and enforces timeout
+  [OK] os/exec preserves literal argument boundaries and supports argument spreading
+  [OK] os/exec full commands use shell quoting, pipelines, redirection and exit status
+  [OK] exec rejects ambiguous command forms and invalid full flags before launching
+  [OK] positional exec preserves spaces in executable paths
+  [OK] async and streaming exec variants share positional and full command forms
+  [OK] os/exec_stream invokes stdout callbacks while retaining captured output
+  [OK] os/exec_stdio runs with parent streams and returns status
+  [OK] os/exec_stdio_async inherits streams without blocking the scheduler
+  [OK] os/exec_async settles a task off-thread with the exec result map
+  [OK] root await polls external tasks before unrelated distant timers
+  [OK] os/exec_stream_async feeds stdout lines through a channel then closes it
+  [OK] os turn interrupt polling is scoped and consumptive
+  [OK] os/monotonic_ms is nondecreasing
+  [OK] Task/cancel terminates an async exec child and closes its channel
+  [OK] captured execution supplies EOF when input is omitted
+  [OK] Task/cancel terminates an inherited-stream async child
+  [OK] async exec cancellation stops the shell's background process group
+  [OK] async exec join waits for reaping even when the child ignores TERM
+  [OK] scheduler stays live while an async exec child runs
+  [OK] fs sync helpers read, write, and list
+  [OK] $fs/real_path resolves an existing file and a not-yet-created path
+  [OK] $fs/real_path resolves a dangling symlink to where it would write
+  [OK] json round-trips objects, arrays, scalars, and escapes
+  [OK] json/parse raises JsonError on malformed input and trailing junk
+  [OK] json/parse ^strict rejects duplicate keys and ^max_depth bounds nesting
+  [OK] json/parse ^strict rejects text that is not valid UTF-8
+  [OK] json/stringify raises JsonError for unsupported values
+
+[Suite] spec — equality and guard sugar (design §1.5/§3)
+  [OK] == is structural equality and chains
+  [OK] != is exactly (! (== ...))
+  [OK] bare = is no longer bound
+  [OK] if_yes evaluates its whole tail as the then branch
+  [OK] if_not evaluates its whole tail as the else branch
+  [OK] map ^^k is true-flag sugar, consistent with node props
+  [OK] contains? is structural membership on lists and sets
+  [OK] contains? rejects non-collection receivers
+
+[Suite] spec — serde data core (docs/stdlib.md stage 1)
+  [OK] scalars and containers round-trip under structural equality
+  [OK] dates, times, ranges, sets, durations, timezones round-trip
+  [OK] regexes round-trip as source plus flags
+  [OK] nodes round-trip including props, meta, children, immutability
+  [OK] reserved serde heads in user data are escaped and round-trip
+  [OK] shared identity-bearing values use #Ref/#Deref and preserve identity
+  [OK] repeated identity-free values stay inline
+  [OK] unsupported cycles fail explicitly
+  [OK] float specials use canonical serde_float forms
+  [OK] symbols that do not re-read verbatim are escaped
+  [OK] maps with non-literal keys use the serde_map escape
+  [OK] cells are rejected with clear errors
+  [OK] serde/data? classifies without raising
+  [OK] serde rejects executable Paths and traverses node metadata
+  [OK] cycles are detected with a path
+  [OK] policy limits are enforced and named
+  [OK] envelope versioning is enforced
+  [OK] unknown control tags and malformed shapes are rejected
+
+[Suite] spec — serde references (stage 3)
+  [OK] builtin function references round-trip by identity
+  [OK] builtin references carry a path but no module
+  [OK] write_data refuses references
+  [OK] read_data refuses reference tags
+  [OK] unresolved module reference errors without loading
+  [OK] reserved ref props are rejected
+  [OK] a reference resolving to the wrong kind errors
+  [OK] cells snapshot through serde/write, outside the equality guarantee
+  [OK] write_data refuses cells; read_data refuses snapshot-cells
+  [OK] atomic cells never serialize
+
+[Suite] spec — qualified message spelling
+  [OK] Proto:msg names a protocol message
+  [OK] a type cannot qualify a direct message send
+  [OK] a type cannot qualify a message value
+  [OK] Self:msg is the value spelling for a type-direct message
+  [OK] built-in type identity is process-wide, not per application
+  [OK] Self is reserved
+  [OK] a delimited colon keeps its existing meanings
+
+[Suite] spec — declaration case
+  [OK] types and protocols are uppercase, namespaces lowercase
+
+[Suite] spec — documentation contract
+  [OK] focused normative specification files exist
+  [OK] referenced concrete example files exist
+  [OK] user guide examples never call a pruned stdlib name bare
+  [OK] every documented gene block parses
+["Write a small app"]
+Hello, Ada!
+21
+  [OK] documented gene blocks marked runnable actually run
+
+[Suite] spec — Tier 0 HTML renderer (transpile proposal P0)
+  [OK] html/render escapes text and attributes through the public namespace
+  [OK] html/render handles boolean attrs, void tags, and raw-text elements
+  [OK] html/render rejects children on a void element
+
+[Suite] spec — Tier 0 CSS data DSL (transpile proposal P0)
+  [OK] css/render preserves declaration order and lowers nested rules
+  [OK] css/scoped generates deterministic classes from meta-blind data
+  [OK] css/scoped rewrites local keyframe declarations and references
+
+[Suite] spec — application event bus (docs/stdlib.md)
+  [OK] a typed event is subscribed and published through a bus
+  [OK] only event/Event descendants can be published
+  [OK] a family base type recursively matches its nominal descendants
+  [OK] event/exact excludes descendants
+  [OK] a concrete type selector still matches its own descendants
+  [OK] matching preserves subscription order across exact and family buckets
+  [OK] event matching uses declaration identity, not printed names
+  [OK] separate overlapping subscriptions invoke the handler separately
+  [OK] subscribe rejects a handler too narrow for its selector
+  [OK] an unannotated handler parameter accepts any event
+  [OK] subscribe rejects a selector that is not an event type
+  [OK] publish delivers a frozen copy, leaving the publisher's value mutable
+  [OK] every subscriber receives the same frozen value
+  [OK] cancellation is explicit and idempotent
+  [OK] a subscription added during publication starts with the next event
+  [OK] a one-shot subscription is consumed before its handler runs
+  [OK] nested publication is depth-first
+  [OK] nested publication past the bus limit raises EventRecursionError
+  [OK] handler failures do not prevent later handlers from running
+  [OK] raise_after is the default and reports the ordered failures
+  [OK] EventSink:emit reports handler failures under collect too
+  [OK] close is idempotent, releases handlers, and rejects later use
+  [OK] a recording sink collects the events emitted to it
+  [OK] a composite sink fans out in order and the null sink discards
+  [OK] a union selector matches every alternative and nothing else
+  [OK] a union subscription is one subscription, invoked once
+  [OK] cancelling a union subscription unhooks every alternative
+  [OK] an alias naming a union selects the same way
+  [OK] a nested union selector flattens
+  [OK] a union selector survives a cyclic or duplicated alias
+  [OK] a union selector rejects a non-event alternative
+  [OK] a handler must accept every alternative of a union selector
+  [OK] a bus cannot be frozen, sent, or published as an event
+  [OK] a bus is lane-owned and usable from any fiber on that lane
+  [OK] event is a namespace under gene, never a bare root
+
+[Suite] spec — lexical path library
+  [OK] joining and normalizing preserve relative parents
+  [OK] components and relative paths are lexical
+  [OK] incompatible roots and absolute later components fail before work
+
+[Suite] spec — bounded filesystem walking
+  [OK] ordered lazy traversal and depth bounds
+  [OK] a followed link to an ancestor reports a cycle
+
+[Suite] spec — CSV data library
+  [OK] headers and quoted records preserve only string field values
+  [OK] CSV writer quotes only fields that need it
+  [OK] invalid quoting, headers and configured limits are typed failures
+
+[Suite] spec — naming convention
+  [OK] registered names use underscores and reserve trailing bang
+
+[Suite] spec — runtime fast paths keep ordinary semantics
+  [OK] remainder and division of small Ints truncate toward zero
+  [OK] remainder and division widen past the small Int range
+  [OK] remainder and division keep their Float and n-ary rules
+  [OK] equality operators compare small Ints and fall back for everything else
+  [OK] a zero divisor is still an error on the fast path
+  [OK] a module-level operator definition wins over the built-in
+  [OK] a local operator binding wins over the built-in
+  [OK] operators remain first-class values
+  [OK] operators inside a loop match the unlooped results
+  [OK] a dynamic one-segment path indexes Lists from either end
+  [OK] a dynamic one-segment path reads Map keys and message segments
+  [OK] a namespace member read sees every rebinding
+  [OK] a nested namespace member read sees every rebinding
+  [OK] one path site serves two namespaces
+  [OK] a by-name load sees every rebinding of a module-level name
+  [OK] a by-name call sees a rebound function
+  [OK] a name defined after its user is found once it exists
+  [OK] a repeated standard-library call resolves the same function
+  [OK] Map get and put accept Str and Sym keys without interning a missed key
+  [OK] Map iteration yields Sym keys in insertion order
+  [OK] a Map literal drops void entries
+  [OK] json/parse reads plain, signed, long and fractional numbers
+  [OK] json/parse keeps key order across repeated and escaped keys
+  [OK] json/stringify escapes quotes and backslashes and passes text through
+  [OK] json/parse reports malformed keys, strings and numbers
+  [OK] sort_by is stable and a failing comparator leaves its input alone
+  [OK] a literal match clause binds nothing and still selects
+  [OK] loop iterations keep distinct captured variables
+  [OK] a function forty containers deep in a stored value outlives its scope
+  [OK] a stored ring of containers with a shared part keeps its function
+  [OK] a tail call may pass a large value holding a closure over the caller
+  [OK] repeated spawns see a captured List as it is each time
+  [OK] storing the same large value twice leaves it intact
+  [OK] an inner loop sums into a variable of the outer iteration
+  [OK] break leaves only the inner loop
+  [OK] continue skips one inner item and keeps the outer bindings
+  [OK] return from an inner loop leaves the function
+  [OK] three nested loops visit every combination in order
+  [OK] an outer binding made after the inner loop is fresh each time
+  [OK] closures made in an inner loop keep their own item
+  [OK] an inner loop over no items leaves the outer iteration untouched
+  [OK] a function called from a loop body runs its own loop
+  [OK] a loop inside a recursive function keeps each call separate
+  [OK] a loop that throws leaves the next call clean
+
+[Suite] spec — a scheduler slice ends at a loop iteration or a function entry
+  [OK] straight-line read-then-update code is not split between fibers
+  [OK] every loop and recursion form still yields a spent slice to a peer

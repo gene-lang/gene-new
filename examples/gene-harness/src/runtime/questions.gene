@@ -3,7 +3,7 @@
 
 (type QuestionError ^props {^message Str} ^impl [Error])
 (impl Error for QuestionError)
-(var answer_gate ^^private ($cell false))
+(var answer_gate ^^private ($sync/gate))
 
 (fn validate_questions [questions, ^validators validators = {}]
   (if (|| (!= ($head questions) List) (== ($size questions) 0) (> ($size questions) 8))
@@ -79,9 +79,7 @@
   batch)
 
 (fn answer_questions [events, session : Str, id : Str, values, ^dismiss dismiss : Bool = false, ^validators validators = {}]
-  (while (answer_gate .swap true) ($sleep 1))
-  (try (answer_questions_serial events session id values ^dismiss dismiss ^validators validators)
-    ensure (answer_gate .set false)))
+  (answer_gate (fn [] (answer_questions_serial events session id values ^dismiss dismiss ^validators validators))))
 
 (fn answer_questions_serial [events, session : Str, id : Str, values, ^dismiss dismiss : Bool = false, ^validators validators = {}]
   (let batch (core_state events "session" session $"questions/${id}"))

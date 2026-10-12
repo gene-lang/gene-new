@@ -1,0 +1,71 @@
+(import $test [describe it assert_equal])
+# Make the borrowed-authority checks active before measuring ordinary stores.
+(fn mark! [] (eval (quote nil) ^in caller_env))
+(mark!)
+
+(fn rows [count]
+  (let data [])
+  (repeat i in count (data .push {^id i ^text $"record-${i}" ^values [i (+ i 1)]}))
+  data)
+(fn measure_stores [data]
+  (let holder ($cell nil))
+  ($runtime/test_graph_scans "start")
+  (repeat i in 20 (holder .set data))
+  ($runtime/test_graph_scans "stop"))
+(fn returned [data] (let holder ($cell data)) holder/.get)
+(fn forward [data]
+  # A live mutable capture requires the dynamic tail-call capture check;
+  # otherwise the compiler/runtime can bypass the whole scan already.
+  (var local 0)
+  (let captured (fn [] (set local (+ local 1))))
+  (returned data))
+(fn measure_returns [data]
+  ($runtime/test_graph_scans "start")
+  (repeat i in 20 (forward data))
+  ($runtime/test_graph_scans "stop"))
+
+(describe "frozen subtree proofs"
+  (it "keeps tail capture checks independent of unchanged data size" []
+    (let small (measure_returns ($freeze (rows 10))))
+    (let large (measure_returns ($freeze (rows 1000))))
+    ($assert (> small/capture_skips 0))
+    (assert_equal small/capture_visits large/capture_visits)
+    (assert_equal small/capture_skips large/capture_skips))
+
+  (it "keeps repeated escape checks independent of unchanged data size" []
+    (let small (measure_stores ($freeze (rows 10))))
+    (let large (measure_stores ($freeze (rows 1000))))
+    ($assert (> small/escape_skips 0))
+    (assert_equal small/escape_visits large/escape_visits)
+    (assert_equal small/escape_skips large/escape_skips)
+    ($assert (> small/weak_skips 0))
+    (assert_equal small/weak_visits large/weak_visits)
+    (assert_equal small/weak_skips large/weak_skips))
+
+  (it "retains full traversal for mutable and shallow-frozen containers" []
+    (let small (measure_stores (rows 10)))
+    (let large (measure_stores ($freeze_shallow (rows 1000))))
+    ($assert (> large/escape_visits (* small/escape_visits 10))))
+
+  (it "does not retain a borrowed caller environment through a shallow alias" []
+    (let mutable [])
+    (let shallow ($freeze_shallow [mutable]))
+    (fn bad! [] (mutable .push caller_env))
+    (let error (try (bad!) "accepted" catch Any $err/message))
+    ($assert ($str/contains? error "CallerEnv"))
+    (assert_equal mutable/.size 0)
+    (assert_equal shallow/0/.size 0))
+
+  (it "keeps mixed closures and cycles on the full check path" []
+    (fn make [value]
+      (let shared ($freeze (rows 50)))
+      (let ring [])
+      (let local (fn [] value))
+      (ring .push ring)
+      (ring .push shared)
+      (ring .push local)
+      (let holder ($cell ring))
+      holder/.get)
+    (let held (make 42))
+    (assert_equal (held/2) 42)
+    ($assert (same? held held/0))))

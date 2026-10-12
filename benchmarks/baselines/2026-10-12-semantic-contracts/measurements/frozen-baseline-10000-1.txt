@@ -1,0 +1,1 @@
+{"rows":10000,"repetitions":10000,"elapsed_ms":13182,"checksum":10000,"scans":null}

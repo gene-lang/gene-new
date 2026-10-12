@@ -793,11 +793,19 @@ names. Embedded `web_module` code can enhance server-rendered markup; see
 
 ## More libraries
 
+`($sync/gate)` creates a non-reentrant, root-lane gate. Invoke the returned
+callable with a zero-argument body: `(gate (fn [] ...))`. Contending callers
+park on a channel; normal return, error, cancellation and budget exhaustion
+release ownership. `($sync/track entries key thunk)` maintains a temporary
+Map entry for the body's lifetime, with the same native cleanup guarantee.
+See the [synchronization contract](spec/sync.md) for ownership and limitations.
+
 | Need | Starting point |
 | --- | --- |
 | Collection operations | `$map`, `$filter`, `$filter_map`, `$take`, `$into`, `$each` |
 | Assertions and unit tests | `$assert` and the [`$test` framework](testing.md) |
 | Structured concurrency | `scope`, `spawn`, `await`, `$channel`, `$actor` |
+| Root-lane mutual exclusion | `$sync/gate` |
 | Numeric data/native buffers | `$buffer` and the [native example](../examples/native/README.md) |
 | URLs and forms | `$url`; [Todo app](../examples/todo_app/src/main.gene) |
 | Command execution/environment | `$os`, subject to the active context |

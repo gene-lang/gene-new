@@ -1,0 +1,1 @@
+{"workload_version":2,"turns":120,"elapsed_ms":8978,"record_checksum":19100,"workspace":"/Users/gcao/gene-workspace/gene-new/tmp/semantic-contracts/measure-final/service-candidate-120-2"}

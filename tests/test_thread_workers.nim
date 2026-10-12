@@ -42,6 +42,9 @@ proc biRecordThread(args: openArray[Value]): Value {.nimcall.} =
   os.sleep(sleepMs)
   NIL
 
+proc biFrozenProofBits(args: openArray[Value]): Value {.nimcall.} =
+  newInt(int64(args[0].frozenGraphProofs))
+
 proc biRaiseWorkerError(args: openArray[Value]): Value {.nimcall.} =
   if currentEventLane() == int(args[1].intVal):
     raise newException(GeneError, "error probe ran on the root lane")
@@ -457,6 +460,32 @@ suite "threaded scheduler workers":
          "  (set base 100) " &
          "  [(await a) (add 40)])",
          "[41 140]"
+
+  test "frozen graph certificates survive worker publication and repeated local stores":
+    resetThreadProbe()
+    let scope = newGlobalScope()
+    scope.define("record-thread", newNativeFn("record-thread", biRecordThread))
+    scope.define("proof-bits", newNativeFn("proof-bits", biFrozenProofBits))
+    withGeneWorkerSetting "4":
+      let result = run(compileSource("""
+        (let data ($freeze [{^payload [1 2 3]}]))
+        ($assert (== (proof-bits data) 7))
+        (scope
+          (let tasks [])
+          (repeat i in 32
+            (tasks .push (spawn (do
+              (record-thread 1)
+              ($assert (== (proof-bits data) 7))
+              (let local ($cell nil))
+              (repeat 20 (local .set data))
+              ($assert (== local/.get data))
+              local/.get/0/payload/2))))
+          (var total 0)
+          (for task in tasks (set total (+ total (await task))))
+          total)
+      """), scope)
+      check result == newInt(96)
+    check seenThreadCount() >= 2
 
   test "worker-candidate tasks share AtomicCell through CAS":
     withGeneWorkerSetting "8":

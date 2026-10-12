@@ -348,6 +348,7 @@ type
     when defined(geneAtomicGenerationRetirementProbe): rawPublished: int
     immutable: bool
     deepFrozen: bool
+    frozenGraphProofs: uint8 # predicate-specific, certified at construction
     holdsEscapedFn: bool   # holds a promoted binding function; recheck on release
     cycleWatched: bool     # returned out of a closure cycle; recheck on release
     items: seq[Value]
@@ -358,6 +359,7 @@ type
     when defined(geneAtomicGenerationRetirementProbe): rawPublished: int
     immutable: bool
     deepFrozen: bool
+    frozenGraphProofs: uint8
     holdsEscapedFn: bool   # holds a promoted binding function; recheck on release
     cycleWatched: bool     # returned out of a closure cycle; recheck on release
     entries: PropTable
@@ -7702,6 +7704,14 @@ proc newSymFromKeyId*(id: int32): Value {.inline.} =
 proc newBool*(v: bool): Value {.inline.} =
   if v: TRUE else: FALSE
 
+const
+  FrozenNoCallerEnv* = 1'u8
+  FrozenNoScopeCapture* = 2'u8
+  FrozenNoWeakScope* = 4'u8
+  FrozenPlainDataProofs = FrozenNoCallerEnv or FrozenNoScopeCapture or FrozenNoWeakScope
+
+proc frozenGraphProofs*(v: Value): uint8
+
 proc newList*(items: sink seq[Value] = @[], immutable = false,
               deepFrozen = false): Value =
   let p = createObj(GeneList)
@@ -7709,6 +7719,11 @@ proc newList*(items: sink seq[Value] = @[], immutable = false,
   p.immutable = immutable
   p.deepFrozen = deepFrozen
   p.items = items
+  if immutable and deepFrozen:
+    p.frozenGraphProofs = FrozenPlainDataProofs
+    for i in 0 ..< p.items.len:
+      p.frozenGraphProofs = p.frozenGraphProofs and frozenGraphProofs(p.items[i])
+      if p.frozenGraphProofs == 0: break
   boxPtr(LIST_TAG, p)
 
 proc withoutVoidEntries(entries: sink PropTable): PropTable =
@@ -7734,6 +7749,11 @@ proc newMap*(entries: sink PropTable = initPropTable(),
   p.immutable = immutable
   p.deepFrozen = deepFrozen
   p.entries = withoutVoidEntries(entries)
+  if immutable and deepFrozen:
+    p.frozenGraphProofs = FrozenPlainDataProofs
+    for i in 0 ..< p.entries.data.len:
+      p.frozenGraphProofs = p.frozenGraphProofs and frozenGraphProofs(p.entries.data[i].val)
+      if p.frozenGraphProofs == 0: break
   boxPtr(MAP_TAG, p)
 
 proc newSet*(items: sink seq[Value] = @[]): Value =
@@ -8316,6 +8336,18 @@ type
 var escapeScanSet {.threadvar.}: StampedSet
 var escapeScanBusy {.threadvar.}: bool
 
+when defined(geneGraphProofTests):
+  type FrozenEscapeStats* = object
+    visits*, skips*, walkVisits*, walkSkips*: int64
+  var frozenEscapeStats {.threadvar.}: FrozenEscapeStats
+  var collectingFrozenEscapeStats {.threadvar.}: bool
+  proc beginFrozenEscapeStats*() =
+    frozenEscapeStats = FrozenEscapeStats()
+    collectingFrozenEscapeStats = true
+  proc finishFrozenEscapeStats*(): FrozenEscapeStats =
+    collectingFrozenEscapeStats = false
+    frozenEscapeStats
+
 proc firstVisit(visited: var EscapeVisited, bits: uint64): bool =
   ## True the first time `bits` is reached.
   if not visited.overflowUsed:
@@ -8358,6 +8390,13 @@ proc mayNeedEscape(v: Value, guard: WeakScopeGuard, visited: var EscapeVisited,
   ## directly in a list, map or node the walk would still have to mark. The scan
   ## reads values in place without copying them, and reaches each container
   ## once, so cycles and shared structure end it.
+  when defined(geneGraphProofTests):
+    if collectingFrozenEscapeStats: inc frozenEscapeStats.visits
+  when not defined(geneDisableFrozenGraphProofs):
+    if (v.frozenGraphProofs and FrozenNoWeakScope) != 0:
+      when defined(geneGraphProofTests):
+        if collectingFrozenEscapeStats: inc frozenEscapeStats.skips
+      return false
   case v.bits shr TAG_SHIFT
   of LIST_TAG:
     if not visited.firstVisit(v.bits):
@@ -8961,6 +9000,13 @@ proc escapeKind(v: Value, guard: WeakScopeGuard, walk: var EscapeWalk): Value =
     v
 
 proc escapeWalk(v: Value, guard: WeakScopeGuard, walk: var EscapeWalk): Value =
+  when defined(geneGraphProofTests):
+    if collectingFrozenEscapeStats: inc frozenEscapeStats.walkVisits
+  when not defined(geneDisableFrozenGraphProofs):
+    if (v.frozenGraphProofs and FrozenNoWeakScope) != 0:
+      when defined(geneGraphProofTests):
+        if collectingFrozenEscapeStats: inc frozenEscapeStats.walkSkips
+      return v
   ## Escapes each container once. A container met again gets what its first
   ## escape produced, or itself while that escape is still running: it is then
   ## part of a cycle, and a mutable container changes in place, so the reference
@@ -10277,6 +10323,24 @@ proc isImmutable*(v: Value): bool =
   of vkMap: v.mapImmutable
   of vkNode: v.nodeImmutable
   else: false
+
+proc frozenGraphProofs*(v: Value): uint8 =
+  ## A stronger, predicate-specific certificate than deepFrozen. Plain lists
+  ## and property maps compose it once, during construction. There is no lazy
+  ## write to a published object, global memo table, or caller-dependent cache.
+  ## Nodes are deliberately not admitted: even structurally frozen nodes may
+  ## acquire runtime error evidence. Types and all scope/resource-bearing
+  ## values also keep their full checks. An ancestor containing any such value
+  ## receives no certificate; eligible children can still be skipped locally.
+  case v.kind
+  of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString, vkBytes, vkChar, vkSymbol:
+    FrozenPlainDataProofs
+  of vkList:
+    cast[ptr GeneList](v.bits and PAYLOAD_MASK).frozenGraphProofs
+  of vkMap:
+    cast[ptr GeneMap](v.bits and PAYLOAD_MASK).frozenGraphProofs
+  else:
+    0'u8
 
 proc isDeepFrozen*(v: Value): bool =
   ## "Nothing reachable from here can change" — the answer `event/Bus publish`

@@ -1,0 +1,275 @@
+10:45:08 [circle run-01] run started on r000 for goal-01, up to 12 edits
+10:45:08 [circle run-01] call 1: asking the model to review r000 and decide… (this can take a minute)
+10:45:08 [circle run-01] model replied in 0.0 s: 0 tokens in, 0 out
+10:45:08 [circle run-01] call 2: asking the model to review r000 and candidate r001 and decide… (this can take a minute)
+10:45:08 [circle run-01] model replied in 0.0 s: 0 tokens in, 0 out
+10:45:08 [circle run-01] run finished complete at r001 after 2 model calls (0 tokens in, 0 out): A red circle.
+10:45:08 [circle run-01] run started on r000 for goal-01, up to 12 edits
+10:45:08 [circle run-01] call 1: asking the model to review r000 and decide… (this can take a minute)
+10:45:08 [circle run-01] model replied in 0.0 s: 0 tokens in, 0 out
+10:45:09 [circle run-01] call 2: asking the model to review r000 and candidate r001 and decide… (this can take a minute)
+10:45:09 [circle run-01] model replied in 0.0 s: 0 tokens in, 0 out
+10:45:09 [circle run-01] run finished complete at r001 after 2 model calls (0 tokens in, 0 out): A red circle.
+10:45:09 [circle run-01] run started on r000 for goal-01, up to 12 edits
+10:45:09 [circle run-01] call 1: asking the model to review r000 and decide… (this can take a minute)
+10:45:09 [circle run-01] model replied in 0.0 s: 0 tokens in, 0 out
+10:45:09 [circle run-01] call 2: asking the model to review r000 and candidate r001 and decide… (this can take a minute)
+10:45:09 [circle run-01] model replied in 0.0 s: 0 tokens in, 0 out
+10:45:09 [circle run-01] run finished complete at r001 after 2 model calls (0 tokens in, 0 out): A red circle.
+10:45:09 [circle run-01] run started on r000 for goal-01, up to 12 edits
+10:45:09 [circle run-01] call 1: asking the model to review r000 and decide… (this can take a minute)
+10:45:09 [circle run-01] model replied in 0.0 s: 0 tokens in, 0 out
+10:45:09 [circle run-01] run finished cancelled at r000 after 1 model calls (0 tokens in, 0 out): The run was cancelled.
+10:45:10 [circle run-01] run started on r000 for goal-01, up to 12 edits
+10:45:10 [planner] asking the model to turn the request into a goal (attempt 1 of 3)…
+10:45:10 [planner] model replied in 0.0 s
+10:45:10 [circle run-01] the goal changed to goal-02
+10:45:10 [circle run-01] call 1: asking the model to review r000 and decide… (this can take a minute)
+10:45:10 [circle run-01] model replied in 0.0 s: 0 tokens in, 0 out
+10:45:10 [circle run-01] call 2: asking the model to review r000 and candidate r001 and decide… (this can take a minute)
+10:45:10 [circle run-01] model replied in 0.0 s: 0 tokens in, 0 out
+10:45:10 [circle run-01] run finished complete at r001 after 3 model calls (0 tokens in, 0 out): A red circle.
+10:45:10 [circle run-01] run started on r000 for goal-01, up to 12 edits
+10:45:10 [circle run-01] call 1: asking the model to review r000 and decide… (this can take a minute)
+10:45:10 [circle run-01] model replied in 0.0 s: 0 tokens in, 0 out
+10:45:10 [circle run-01] call 2: asking the model to review r000 and candidate r001 and decide… (this can take a minute)
+10:45:10 [circle run-01] the model call failed (transport_failed): the fixture simulates a failed model call
+10:45:10 [circle run-01] run finished failed at r000 after 2 model calls (0 tokens in, 0 out): The model call failed: the fixture simulates a failed model call
+10:45:10 [circle run-01] run started on r000 for goal-01, up to 11 edits
+10:45:10 [circle run-01] call 1: asking the model to review r000 and decide… (this can take a minute)
+10:45:10 [circle run-01] model replied in 0.0 s: 0 tokens in, 0 out
+10:45:10 [circle run-01] call 2: asking the model to review r000 and candidate r002 and decide… (this can take a minute)
+10:45:10 [circle run-01] model replied in 0.0 s: 0 tokens in, 0 out
+10:45:10 [circle run-01] run finished complete at r002 after 4 model calls (0 tokens in, 0 out): A red circle.
+10:45:15 [reference run-01] run started on r002 for g, up to 12 edits
+10:45:15 [reference run-01] call 1: asking the model to review r002 and decide… (this can take a minute)
+10:45:15 [reference run-01] model replied in 0.0 s: 0 tokens in, 0 out
+10:45:15 [reference run-01] run finished complete at r002 after 1 model calls (0 tokens in, 0 out): Painted
+10:45:22 [paint run-01] run started on r000 for goal-01, up to 12 edits
+10:45:22 [paint run-01] call 1: asking the model to review r000 and decide… (this can take a minute)
+10:45:22 [paint run-01] model replied in 0.0 s: 0 tokens in, 0 out
+10:45:22 [paint run-01] call 2: asking the model to review r000 and candidate r001 and decide… (this can take a minute)
+10:45:22 [paint run-01] model replied in 0.0 s: 0 tokens in, 0 out
+10:45:22 [paint run-01] run finished complete at r001 after 2 model calls (0 tokens in, 0 out): Red mark
+10:45:25 [review run-01] run started on r000 for goal-01, up to 1 edits
+10:45:25 [review run-01] call 1: asking the model to review r000 and decide… (this can take a minute)
+10:45:25 [review run-01] model replied in 0.0 s: 0 tokens in, 0 out
+10:45:25 [review run-01] the patch changed nothing; the working revision is unchanged
+10:45:25 [review run-01] call 2: asking the model to review r000 and decide… (this can take a minute)
+10:45:25 [review run-01] model replied in 0.0 s: 0 tokens in, 0 out
+10:45:25 [review run-01] run finished partial at r000 after 2 model calls (0 tokens in, 0 out): The agent is blocked: Need another step.
+10:45:25 [review run-01] run started on r000 for goal-01, up to 0 edits
+10:45:25 [review run-01] run finished partial at r000 after 2 model calls (0 tokens in, 0 out): The edit budget is used up.
+10:45:25 [review run-01] run started on r000 for goal-01, up to 12 edits
+10:45:25 [planner] asking the model to turn the request into a goal (attempt 1 of 3)…
+10:45:25 [planner] model replied in 0.0 s
+10:45:25 [review run-01] the goal changed to goal-02
+10:45:25 [review run-01] call 1: asking the model to review r000 and decide… (this can take a minute)
+10:45:25 [review run-01] model replied in 0.0 s: 0 tokens in, 0 out
+10:45:25 [planner] asking the model to turn the request into a goal (attempt 1 of 3)…
+10:45:25 [planner] model replied in 0.0 s
+10:45:25 [review run-01] the goal changed to goal-03
+10:45:25 [review run-01] call 2: asking the model to review r000 and decide… (this can take a minute)
+10:45:25 [review run-01] model replied in 0.0 s: 0 tokens in, 0 out
+10:45:25 [review run-01] run finished complete at r000 after 4 model calls (0 tokens in, 0 out): Complete.
+10:45:26 [review run-01] run started on r000 for goal-01, up to 12 edits
+10:45:26 [review run-01] call 1: asking the model to review r000 and decide… (this can take a minute)
+10:45:26 [review run-01] model replied in 0.0 s: 0 tokens in, 0 out
+10:45:26 [review run-01] run finished partial at r000 after 1 model calls (0 tokens in, 0 out): The agent is blocked: Need another step.
+10:45:26 [review run-01] run started on r000 for goal-01, up to 12 edits
+10:45:26 [review run-01] run finished partial at r000 after 1 model calls (0 tokens in, 0 out): The model-call budget is used up.
+10:45:26 [review run-01] run started on r000 for goal-01, up to 12 edits
+10:45:26 [planner] asking the model to turn the request into a goal (attempt 1 of 3)…
+10:45:26 [review run-01] run started on r000 for goal-01, up to 12 edits
+10:45:26 [review run-01] run finished partial at r000 after 1 model calls (0 tokens in, 0 out): The model-call budget is used up.
+10:45:26 [review run-01] run started on r000 for goal-01, up to 12 edits
+10:45:26 [review run-01] call 1: asking the model to review r000 and decide… (this can take a minute)
+10:45:27 [review run-01] the model call failed (budget_exhausted): The run's time budget expired during a model call.
+10:45:27 [review run-01] run finished partial at r000 after 1 model calls (0 tokens in, 0 out): The run's time budget expired during a model call.
+10:45:27 [review run-01] run started on r000 for goal-01, up to 12 edits
+10:45:27 [review run-01] run finished partial at r000 after 1 model calls (0 tokens in, 0 out): The time budget is used up.
+10:45:30 [landscape run-01] run started on r000 for goal-01, up to 12 edits
+10:45:30 [landscape run-01] call 1: asking the model to review r000 and decide… (this can take a minute)
+10:45:30 [landscape run-01] model replied in 0.0 s: 0 tokens in, 0 out
+10:45:30 [landscape run-01] call 2: asking the model to review r000 and candidate r001 and decide… (this can take a minute)
+10:45:30 [landscape run-01] model replied in 0.0 s: 0 tokens in, 0 out
+10:45:30 [landscape run-01] call 3: asking the model to review r001 and candidate r002 and decide… (this can take a minute)
+10:45:30 [landscape run-01] model replied in 0.0 s: 0 tokens in, 0 out
+10:45:30 [landscape run-01] call 4: asking the model to review r002 and candidate r003 and decide… (this can take a minute)
+10:45:30 [landscape run-01] model replied in 0.0 s: 0 tokens in, 0 out
+10:45:30 [landscape run-01] run finished complete at r003 after 4 model calls (0 tokens in, 0 out): A sunset landscape: an orange-to-purple sky, a low yellow sun half hidden behind distant purple hills on the right, a single dark tree on the left bank, and a winding river through the green ground with a shimmer of sunlight on its surface.
+10:45:30 [poster run-01] run started on r000 for goal-01, up to 12 edits
+10:45:30 [poster run-01] call 1: asking the model to review r000 and decide… (this can take a minute)
+10:45:30 [poster run-01] model replied in 0.0 s: 0 tokens in, 0 out
+10:45:31 [poster run-01] call 2: asking the model to review r000 and candidate r001 and decide… (this can take a minute)
+10:45:31 [poster run-01] model replied in 0.0 s: 0 tokens in, 0 out
+10:45:31 [poster run-01] call 3: asking the model to review r001 and candidate r002 and decide… (this can take a minute)
+10:45:31 [poster run-01] model replied in 0.0 s: 0 tokens in, 0 out
+10:45:31 [poster run-01] run finished complete at r002 after 3 model calls (0 tokens in, 0 out): A portrait poster titled 'RAIN CITY'. A bold, near-white headline with a pale blue underline sits at the top over a dark blue-gray gradient sky. Below it is a dark city skyline with a spired tower, and faint diagonal rain streaks fall acros…
+10:45:31 [cat run-01] run started on r000 for goal-01, up to 12 edits
+10:45:31 [cat run-01] call 1: asking the model to review r000 and decide… (this can take a minute)
+10:45:31 [cat run-01] model replied in 0.0 s: 0 tokens in, 0 out
+10:45:31 [cat run-01] call 2: asking the model to review r000 and candidate r001 and decide… (this can take a minute)
+10:45:31 [cat run-01] model replied in 0.0 s: 0 tokens in, 0 out
+10:45:32 [cat run-01] call 3: asking the model to review r001 and candidate r002 and decide… (this can take a minute)
+10:45:32 [cat run-01] model replied in 0.0 s: 0 tokens in, 0 out
+10:45:32 [cat run-01] call 4: asking the model to review r002 and candidate r003 and decide… (this can take a minute)
+10:45:32 [cat run-01] model replied in 0.0 s: 0 tokens in, 0 out
+10:45:32 [cat run-01] the reply was rejected (surplus_content): a response with ^action "edit" holds only review, plan, patch; found (issue ...); asking for a repair (1 of 2)
+10:45:32 [cat run-01] call 5: asking the model to review r002 and candidate r003 and decide… (this can take a minute)
+10:45:32 [cat run-01] model replied in 0.0 s: 0 tokens in, 0 out
+10:45:32 [cat run-01] call 6: asking the model to review r003 and candidate r004 and decide… (this can take a minute)
+10:45:32 [cat run-01] model replied in 0.0 s: 0 tokens in, 0 out
+10:45:32 [cat run-01] run finished complete at r004 after 6 model calls (0 tokens in, 0 out): A stylized ginger cat sits on a windowsill, gazing out through a rain-streaked four-pane window at a dusky blue city skyline with lit windows. A steaming red mug and a warm lamp glow on the wall make the interior feel cozy.
+[passed] the drawing loop draws, reviews the render in the next decision, and completes
+[passed] the drawing loop gives the adapter the saved PNG bytes, not a path
+[passed] the drawing loop accepts the newest image's digest without its sha256: prefix
+[passed] the drawing loop closes a reply that stops a parenthesis short, without a repair call
+[passed] the drawing loop recovers from malformed output and a wrong image digest within the repair budget
+[passed] the drawing loop fails truthfully when a review is missing past the repair budget
+[passed] the drawing loop keeps a rejected candidate as a trial and discards a patch based on it
+[passed] the drawing loop stops with no_progress after repeated no-ops
+[passed] the drawing loop answers an inspection with scene data and a crop, then honours blocked
+[passed] the drawing loop returns partial at the iteration limit, never complete
+[passed] the drawing loop refuses done while a hard requirement is open
+[passed] the drawing loop publishes a held candidate as an unreviewed trial when the run is cancelled
+[passed] the drawing loop reports a failed model call as failed and keeps what was published
+[passed] responses are data rejects surplus content, a second action, and unknown properties
+[passed] evidence rules does not let a node labelled cat satisfy a visual check
+[passed] evidence rules ignores a model check of a structural requirement and refuses an unknown one
+[passed] evidence rules invalidates a completion review when the goal changes
+[passed] evidence rules rejects a candidate that makes any requirement worse
+[passed] Codex credentials reads the access token and account from auth.json
+[passed] Codex credentials refuses missing, malformed, and API-key-only files without echoing them
+[passed] Codex requests streams without storage and sends the PNG bytes as an input_image
+[passed] Codex streams uses only the completed response, and only its final answer
+[passed] Codex streams fails a stream that never completed or that failed
+[passed] an evolution starts from a rendered blank root that cannot complete a request
+[passed] an evolution publishes handwritten patches as immutable revisions on a line
+[passed] an evolution leaves the line, the head, and the revision count alone when a patch fails
+[passed] an evolution forks from an old revision without changing any existing revision or line
+[passed] an evolution keeps object identities unique across independent forks
+[passed] an evolution compares two revisions by stable ID
+[passed] an evolution replays a saved path exactly, without a model
+[passed] an evolution reports the first digest mismatch when stored operations do not reproduce a scene
+[passed] an evolution treats selection as metadata guarded by a version
+[passed] an evolution keeps a goal change as a new immutable record
+[passed] an evolution exports the stored artifacts of a revision
+[passed] publication lets exactly one of two line-head updates succeed
+[passed] publication shows no revision when the process stops after blobs and before the index commit
+[passed] publication emits history events only for committed changes, in order
+[passed] publication survives a restart with the same history and artifacts
+[passed] publication reports a corrupt object precisely instead of recreating it
+[passed] publication refuses a second process on the same project
+[passed] a drawing run on an evolution publishes its revisions on the line and records a truthful terminal state
+[passed] a drawing run on an evolution emits events in commit order, each after its change is visible
+[passed] a drawing run on an evolution shows the model view of the newest call: the submitted PNG digests
+[passed] a drawing run on an evolution refuses a stale head and a second active run on one line
+[passed] a drawing run on an evolution cancels before the next step and keeps a held candidate as an unreviewed trial
+[passed] a drawing run on an evolution turns a steering instruction into a new goal at a safe boundary
+[passed] a drawing run on an evolution keeps an instruction that is still waiting when another arrives
+[passed] a drawing run on an evolution resumes a stopped run from the saved line head without repeating published work
+[passed] a drawing run on an evolution marks a run that was active at a restart as stopped, not running
+[passed] painterly profile keeps bristles out of legacy schema and normalizes v2 defaults
+[passed] painterly profile repeats seeded texture in fresh processes and responds to seed changes
+[passed] painterly profile expands region helpers into replayable explicit strokes
+[passed] reference guided painting stores guidance separately, expands its colors and replays without replanning
+[passed] reference guided painting rejects missing guidance and oversized helper requests before publication
+[passed] painterly boundaries rotates an elongated tip and keeps seed irrelevant when texture is zero
+[passed] painterly boundaries materializes an opaque underpainting and keeps legacy worker profile intact
+[passed] painterly boundaries rejects invalid PNGs without moving the line
+[passed] reference HTTP boundary deduplicates reference imports and serves only attached guidance
+[passed] atomic patches leaves the base unchanged when a later operation fails
+[passed] atomic patches rejects a stale base or goal before touching anything
+[passed] atomic patches rejects unknown operations, properties, and an empty or oversized batch
+[passed] atomic patches requires new IDs to be new and to use the allocated prefix
+[passed] atomic patches rejects hierarchy cycles and misplaced nodes
+[passed] atomic patches fails a removal that leaves a reference dangling, blaming the removal
+[passed] atomic patches allows a reference to be repaired later in the same batch
+[passed] atomic patches lets a later operation use a node added earlier in the batch
+[passed] atomic patches refuses to change a primitive's kind through replace_geometry
+[passed] normalized effects records before and after for sugar operations
+[passed] normalized effects converts a canvas-space move through the ancestor transform
+[passed] normalized effects keeps an object in place when reparenting with preserve_world
+[passed] normalized effects reports an unrepresentable preserve_world transform precisely
+[passed] normalized effects detects an exact no-op
+[passed] normalized effects replays its normalized operations to the same digest
+[passed] locks blocks direct edits of each locked scope and allows the rest
+[passed] locks blocks an indirect change through an ancestor transform
+[passed] locks blocks an indirect change through reparenting
+[passed] locks blocks an indirect change through a shared gradient
+[passed] locks names the lock, the target, and the expected condition
+[passed] raster schema normalizes an explicit fresh canvas
+[passed] raster schema rounds geometry ties to even and canonicalizes signed zero
+[passed] raster pixels renders a transparent fresh canvas with separate pixel and PNG identities
+[passed] raster paint semantics blends half-opacity white over black in linear light
+[passed] raster paint semantics interpolates gradients in premultiplied linear light
+[passed] raster paint semantics applies layer opacity once after overlapping opaque fills
+[passed] raster paint semantics pressure zero paints nothing and erase leaves the background intact
+[passed] raster paint semantics repeats in fresh worker processes with identical pixels and PNG bytes
+[passed] raster patches inserts a layer atomically and rejects a stale placement anchor
+[passed] raster history and loop publishes, branches, replays, crops and exports the saved exact PNG
+[passed] raster history and loop submits actual raster PNGs to the model and completes only after review
+[passed] raster validation and locks writes normalized binary-grid values as exact terminating decimals
+[passed] raster validation and locks rejects dangling resources, duplicate IDs, unknown fields and degenerate gradients
+[passed] raster validation and locks protects locked strokes from indirect brush edits and leaves rejected drafts unchanged
+[passed] raster coverage applies a fill mask once and a layer mask as a separate multiplier
+[passed] raster coverage preserves dab spacing across segment boundaries and zero-length segments
+[passed] raster coverage loads immutable grayscale bitmap masks and rejects changed asset bytes
+[passed] structural evidence rejects unsupported structural requirements and never passes legacy unknown checks
+[passed] raster patch coverage moves, replaces, edits points and removes resources in an atomic draft
+[passed] raster patch coverage rejects indirect layer-mask edits and paint-order moves for locked strokes
+[passed] native raster boundary rejects malformed requests independently of the Gene schema
+[passed] native raster boundary preflights excessive dab counts without publishing partial output
+[passed] request receipts deduplicates the steering HTTP route rather than appending an instruction twice
+[passed] request receipts fingerprints arbitrary JSON property names without ambiguous serialization
+[passed] request receipts joins concurrent identical requests, checks input identity and survives a new workbench
+[passed] request receipts does not repeat an uncertain effect after cancellation
+[passed] request receipts keeps project receipts through close and reopen
+[passed] bundle publication and cleanup recovers an unreferenced partial directory but preserves referenced corrupt evidence
+[passed] bundle publication and cleanup leaves no published directory after a pre-rename failure and can retry
+[passed] bundle publication and cleanup removes directory trees without following links outside them
+[passed] renderer identity rejects edge, tool-version and font changes and releases the lock on refusal
+[passed] renderer identity accepts relocated legacy profiles only when every recorded setting matches
+[passed] steering and cumulative budgets applies line policy budgets when no run override was supplied
+[passed] steering and cumulative budgets counts no-op edit attempts across resume
+[passed] steering and cumulative budgets plans an instruction arriving during planning before allowing completion
+[passed] steering and cumulative budgets does not reset the call allowance after resume
+[passed] steering and cumulative budgets counts failed and planner calls before dispatch
+[passed] steering and cumulative budgets retains the wall deadline across resume and cancels an overlong call
+[passed] the default render route produces one PDF page, exact PNG dimensions, and recorded digests
+[passed] the default render route renders the same scene to the same SVG and PNG bytes
+[passed] the default render route embeds only bundled fonts and keeps text editable
+[passed] the default render route matches direct SVG rasterization in size
+[passed] canvas geometry never stretches a rectangular canvas
+[passed] canvas geometry records the view-box-to-PNG transform, including letterboxing
+[passed] canvas geometry maps a crop rectangle through the recorded transform
+[passed] transparent artwork gives the model an opaque viewing PNG on a declared matte
+[passed] conversion failures name their stage reports a failed SVG to PDF stage
+[passed] conversion failures name their stage rejects a multi-page PDF
+[passed] conversion failures name their stage rejects an invalid PDF
+[passed] conversion failures name their stage reports a failed PDF to PNG stage
+[passed] conversion failures name their stage reports a stage that exceeds its time limit
+[passed] conversion failures name their stage reports a missing tool as a missing dependency
+[passed] conversion failures name their stage refuses an effect surface above the limit before converting
+[passed] exact replay of a recorded drawing reproduces every saved scene and SVG digest
+[passed] scene validation rejects duplicate IDs
+[passed] scene validation rejects a dangling paint reference and a reference of the wrong kind
+[passed] scene validation rejects malformed paths
+[passed] scene validation rejects nonfinite and oversized numbers
+[passed] scene validation rejects unknown elements, unknown fields, and children of a leaf
+[passed] scene validation rejects a color and its reference set together
+[passed] scene validation rejects an unbundled font instead of substituting one
+[passed] scene validation rejects duplicate properties, executable reader forms, and oversized text
+[passed] scene validation bounds nesting depth and node count
+[passed] scene validation reports the target and field of a failure
+[passed] canonical form is independent of property order and number spelling
+[passed] canonical form keeps child order and semantic fields in the digest
+[passed] canonical form reads back to the same canonical text and SVG
+[passed] canonical form escapes text content without changing it
+[passed] derived geometry computes world bounds through ancestor transforms
+[passed] derived geometry rotates about the pivot with the y-down convention
+[passed] saved live transcripts replays the landscape run to the same picture
+[passed] saved live transcripts replays the poster run to the same picture
+[passed] saved live transcripts replays the cat run, including its repaired response, to the same picture
+151 passed, 0 failed, 0 errors, 0 skipped

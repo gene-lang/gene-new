@@ -99,6 +99,11 @@ task test, "Run the test suite":
 task spec, "Run executable language surface specs":
   exec "nim c -r --path:src --hints:off tests/spec_runner.nim"
 
+task contracts, "Qualify scheduler, synchronization and frozen graph contracts":
+  exec "nim c -d:geneSchedulerTests -d:geneGraphProofTests --path:src --hints:off -o:bin/gene-contracts src/gene.nim"
+  exec "nim c -r --path:src --hints:off tests/test_frozen_graph_proofs.nim"
+  exec "bin/gene-contracts run tools/verify_scheduler.gene bin/gene-contracts auto --gates --proofs"
+
 task transpile_spec, "Run shared VM/web-profile conformance fixtures":
   exec "node tools/check_host_bindings.mjs"
   exec "nim c -r --path:src --hints:off tests/transpile_fixture_runner.nim"

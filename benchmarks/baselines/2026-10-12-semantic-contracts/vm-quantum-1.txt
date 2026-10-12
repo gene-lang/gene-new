@@ -1,0 +1,473 @@
+/Users/gcao/gene-workspace/gene-new/src/gene/types.nim(1405, 3) Warning: pass a finalizer of the 'proc (x: T) {.nimcall.}' type; new is deprecated [Deprecated]
+/Users/gcao/gene-workspace/gene-new/src/gene/types.nim(1419, 3) Warning: pass a finalizer of the 'proc (x: T) {.nimcall.}' type; new is deprecated [Deprecated]
+/Users/gcao/gene-workspace/gene-new/src/gene/error_analysis.nim(168, 6) template/generic instantiation from here
+/Users/gcao/gene-workspace/gene-new/src/gene/error_analysis.nim(208, 10) Warning: visit(analysis.rootEnvironment) can raise an unlisted exception: Exception [Effect]
+/Users/gcao/gene-workspace/gene-new/src/gene/stdlib.nim(4874, 3) Warning: unreachable code after 'return' statement or '{.noReturn.}' proc [UnreachableCode]
+/Users/gcao/gene-workspace/gene-new/src/gene/vm.nim(21657, 11) Warning: unreachable code after 'return' statement or '{.noReturn.}' proc [UnreachableCode]
+/Users/gcao/gene-workspace/gene-new/src/gene/vm.nim(21683, 11) Warning: unreachable code after 'return' statement or '{.noReturn.}' proc [UnreachableCode]
+/Users/gcao/gene-workspace/gene-new/src/gene/macro_runtime.nim(89, 6) template/generic instantiation from here
+/Users/gcao/gene-workspace/gene-new/src/gene/macro_runtime.nim(95, 17) Warning: `=destroy`(state.application) can raise an unlisted exception: Exception [Effect]
+
+[Suite] VM — scope ownership and reuse
+  [OK] simple pooled calls inherit new module and generation metadata
+  [OK] general pooled calls inherit new module and generation metadata
+  [OK] simple pooled calls materialize pending references in their own module
+  [OK] general pooled calls materialize pending references in their own module
+  [OK] eligible iterations reuse storage only with supported refcounts
+  [OK] proc locals retain namespace scopes after their owners are released
+  [OK] namespace lookup preserves an aliased heap-valued output
+
+[Suite] VM — proper tail calls
+  [OK] mutual and higher-order tail chains keep physical frames flat
+  [OK] tail match arms collapse expression frames
+  [OK] proven exact typed returns remain tail-elidable
+  [OK] dynamic return policies fall back without changing semantics
+  [OK] a passed closure keeps its captured pooled caller scope alive
+  [OK] tail capture checks reach closures beyond cyclic containers and node heads
+  [OK] defensive eligibility guards preserve malformed internal GIR
+  [OK] user Callable bytecode participates in tail transfer
+  [OK] tail sends and bound protocol messages share call entry
+  [OK] explicit return tail calls transfer from plain functions
+  [OK] tail trace history is bounded and reports elision
+  [OK] fiber suspension preserves bounded tail continuation state
+
+[Suite] compiler — GIR emission
+  [OK] for scope reuse is conservative and survives GIR cloning
+  [OK] tail-position proof reaches calls, match arms, and callable bodies
+  [OK] tail context propagates only through the documented control forms
+  [OK] GIR round-trips tail metadata and rejects the previous format
+  [OK] GIR retains standalone and inline impl source locations
+  [OK] GIR rejects runtime Self binding state at encoding and decoding
+  [OK] GIR values round-trip quoted pipeline syntax
+  [OK] GIR preserves constructed symbols inside syntax containers
+  [OK] GIR rejects invalid private-slot metadata
+  [OK] GIR rejects invalid runtime macro instruction metadata
+  [OK] compiler-owned pipeline locals stay out of reflected bindings
+  [OK] top-level pipeline scratch does not retain values after evaluation
+  [OK] emits a callable-first bytecode sequence
+  [OK] ordinary callees evaluate argument bytecode eagerly
+  [OK] emits nested function prototypes
+  [OK] marks trivial functions as not requiring a call scope
+  [OK] emits generic function type parameters
+  [OK] caches typed Int call fast-bind metadata
+  [OK] records generic monomorphization requests
+  [OK] records direct protocol call dependencies
+  [OK] marks simple typed Int arithmetic as native compiled
+  [OK] emits local slots for function parameters and locals
+  [OK] rewrites stable recursive var-bound closures to recur
+  [OK] keeps mutable recursive var-bound calls callable-first
+  [OK] marks worker-candidate spawns without outer mutation
+  [OK] spawn validates explicit lane placement
+  [OK] emits slots for match branch bindings and outer updates
+  [OK] emits slots for var destructuring bindings
+  [OK] emits one branch slot for typed pattern binders
+  [OK] emits slots for for and catch child scopes
+  [OK] normalizes checked error rows
+  [OK] emits slots for imported bindings
+  [OK] emits slots for namespace declarations and captures
+  [OK] protocol messages get no scope slots; sends resolve by name
+  [OK] emits call prop names and named parameter specs
+  [OK] emits rest parameter specs
+  [OK] emits runtime construction for dynamic selectors
+  [OK] emits runtime construction for quasiquote nodes
+  [OK] emits runtime construction for quasiquote list splices
+  [OK] emits runtime construction for value-position spreads
+  [OK] emits optional and default parameter specs
+  [OK] emits typed var boundary checks
+  [OK] compile errors use the runtime error channel
+  [OK] leading flipped calls require lexical self
+
+[Suite] module references
+  [OK] all reader and runtime forms share one module table
+  [OK] reference namespace is separate from lexical bindings
+  [OK] identity-bearing values are shared and scalar values compare by value
+  [OK] structural dereferences support forward definitions
+  [OK] runtime errors are typed and initializers can retry after failure
+  [OK] invalid definitions and unresolved completed units fail
+
+[Suite] gir — disassembly
+  [OK] prints constants and instructions
+  [OK] prints nested function chunks
+  [OK] prints typed integer fast ops
+  [OK] prints same-scope typed integer recur ops
+  [OK] runs same-scope tail recursion through recur ops
+  [OK] runs simple tail-call wrappers
+  [OK] prints direct local zero-arg calls
+  [OK] prints direct local multi-arg calls
+
+[Suite] vm — literals and self-evaluation
+  [OK] scalars evaluate to themselves
+  [OK] empty program is nil
+  [OK] vector evaluates its elements
+  [OK] value-position spread flattens lists and nodes
+  [OK] map evaluates its values
+  [OK] general map evaluates keys and values
+  [OK] set constructor deduplicates hash-stable values
+  [OK] bytes literals are self-evaluating
+  [OK] regex literals and constructor are self-evaluating
+  [OK] regex match returns a typed Match node
+  [OK] regex find_all returns a stream
+  [OK] regex replace and split
+  [OK] map and node storage drops void props
+  [OK] quote suppresses evaluation
+
+[Suite] vm — strings and interpolation
+  [OK] to_str converts values to display text
+  [OK] strings iterate explicitly by chars and bytes
+  [OK] graphemes group combining scalars
+  [OK] to_str is an ordinary variadic callable
+  [OK] bare dollar has no builtin behavior and accepts an ordinary binding
+  [OK] interpolated strings execute through gene/to_str
+
+[Suite] vm — quasiquote templates
+  [OK] quasiquote evaluates unquoted body values
+  [OK] quasiquote evaluates unquoted heads, props, and map values
+  [OK] quasiquote drops void props and map entries
+  [OK] nested quasiquote preserves inner unquote depth
+  [OK] quasiquote splices list values into node bodies
+  [OK] quasiquote splices map and node anatomy into nodes
+  [OK] quasiquote splices list values into list literals
+  [OK] vector unquote spellings evaluate and splice through nested containers
+  [OK] nested quasiquote preserves inner splice depth
+  [OK] quasiquote rejects scalar splices
+  [OK] eval executes generated template nodes
+  [OK] malformed template forms are compile errors
+
+[Suite] vm — macros
+  [OK] cached macro bodies evaluate fresh syntax arguments and lexical definitions
+  [OK] runtime compiler preparations remain inert across artifact round trips
+  [OK] local macro bodies expand against each live function invocation
+  [OK] local macro expansion follows runtime branches and repeated calls
+  [OK] runtime macro results retain caller mutation return and loop targets
+  [OK] runtime macro environments retain definition values after the function returns
+  [OK] runtime macros keep syntax matching defaults and suspension
+  [OK] runtime macro definitions retain identity through GIR cloning and namespaces
+  [OK] runtime pipeline macros classify slots after their bodies execute
+  [OK] runtime macro recursion is bounded within an expansion
+  [OK] runtime macro mutation invalidates caller value and capture assumptions
+  [OK] runtime macro syntax errors retain call and definition locations
+  [OK] runtime macros preserve loop and shared-scope binding lifetimes
+  [OK] namespace macros are callable in their defining unit
+  [OK] eval uses the selected environment's macro context
+  [OK] Env macro metadata cannot hide borrowed caller authority
+  [OK] borrowed authority scan reaches cyclic graphs beyond inline visitation
+  [OK] for activations preserve bindings snapshots and exits
+  [OK] native retention overrides the compiler's iteration reuse proof
+  [OK] escaping closed snapshots retain helpers and their selected macros
+  [OK] compiled macro environments survive deterministic artifact cloning
+  [OK] macro artifacts preserve shared definitions without recursive duplication
+  [OK] REPL macros commit after compilation and survive runtime failures
+  [OK] marked results confine bindings and retain ordinary shadowing
+  [OK] binding-only macro scopes retain direct caller local slots
+  [OK] internal block slot labels cannot capture constructed caller names
+  [OK] macro-local annotation values retain their lexical scope
+  [OK] repeated expansions retain distinct mutable captures
+  [OK] expression macros and grouping preserve typed identity fast paths
+  [OK] expansion scopes preserve function-body bindings and escaped closures
+  [OK] runtime macro blocks preserve caller loop exits and cleanup
+  [OK] impl-only macro results have local implementation visibility
+  [OK] marked locals preserve 300000-deep tail recursion
+  [OK] marked impls preserve 300000-deep tail recursion
+  [OK] macro bodies execute ordinary Gene code over syntax arguments
+  [OK] eval policies bound executable macro bodies
+  [OK] macro body helpers use the definition environment
+  [OK] macro templates construct vectors and residual pin syntax
+  [OK] ordinary lexical bindings shadow outer macros in calls and values
+  [OK] shared expansion artifact preserves source and macro provenance
+  [OK] result marking preserves shared argument syntax and node annotations
+  [OK] shared expansion respects function binders and quoted data
+  [OK] parameters shadow macros in executable defaults on both frontends
+  [OK] shared expansion distinguishes declaration data from executable bodies
+  [OK] pipeline macro results preserve slots and confine declarations
+  [OK] macro calls bind named syntax props
+  [OK] macro parameters destructure syntax patterns
+
+[Suite] vm — arithmetic
+  [OK] addition
+  [OK] native fast loads respect shadowing
+  [OK] subtraction and negation
+  [OK] multiplication
+  [OK] integer division
+  [OK] integer arithmetic promotes beyond int64
+  [OK] float contagion
+  [OK] division by zero raises
+  [OK] non-numbers raise
+
+[Suite] vm — comparison and logic
+  [OK] ordering is chained
+  [OK] structural equality
+  [OK] hash follows stable structural equality
+  [OK] same compares scalar values and heap identity
+  [OK] freeze and thaw convert container mutability explicitly
+  [OK] not
+
+[Suite] vm — special forms
+  [OK] derive is reserved for protocol-local use only
+  [OK] task scopes, spawn, and await produce completed Task values
+  [OK] task scope and spawn bodies are branch-local
+  [OK] await propagates recoverable task errors
+  [OK] do returns last
+  [OK] if compact form
+  [OK] if full form with then/elif/else
+  [OK] var binds and returns the value
+  [OK] typed var checks gradual boundaries
+  [OK] set reassigns an existing binding
+  [OK] set checks typed binding boundaries
+  [OK] slotted conditional locals remain undefined when not executed
+  [OK] set on an undefined name raises
+  [OK] undefined symbol raises
+  [OK] duplicate bindings in one scope are rejected
+
+[Suite] vm — functions and closures
+  [OK] anonymous function application
+  [OK] named function in scope
+  [OK] named function declarations bind in scope
+  [OK] arity mismatch raises
+  [OK] duplicate parameter bindings are rejected
+  [OK] closures capture their environment
+  [OK] lexical capture is by reference to the defining scope
+  [OK] closures see updates to slot-backed locals
+  [OK] closures copy stable values from the activations they are created in
+  [OK] a pooled call scope a closure falls back on outlives its activation
+  [OK] capture plans copy only bindings that are never rebound
+  [OK] values returned to the owner of their functions keep identity
+  [OK] a mutable container escaping its function's scope keeps identity
+  [OK] a function stored into a cell outlives its defining call
+  [OK] storing a cyclic container terminates
+  [OK] returning a cyclic container terminates
+  [OK] storing a value that shares substructure visits it once
+  [OK] default expressions see earlier slot-backed parameters
+  [OK] recursion via a var-bound self reference
+  [OK] recursion via a named function declaration
+  [OK] deep non-tail recursion runs on the heap frame stack, not the Nim stack
+  [OK] deep recursion through a typed (general-path) function uses heap frames
+  [OK] deep recursion through an ^errors function uses heap frames
+  [OK] recoverable errors expose bytecode frame traces
+  [OK] native-compiled typed Int arithmetic uses dynamic boundary adapters
+  [OK] calling a non-callable raises
+
+[Suite] vm — named arguments
+  [OK] function calls bind node props to named parameters
+  [OK] named argument values are evaluated
+  [OK] named parameters can bind to a custom local
+  [OK] missing and unexpected named arguments raise
+  [OK] native functions reject named arguments
+  [OK] native call envelope carries named arguments
+
+[Suite] vm — rest parameters
+  [OK] rest parameter gathers extra positional args
+  [OK] rest parameter can gather zero args
+  [OK] rest-only functions gather all positional args
+  [OK] rest parameters still require fixed positional args
+  [OK] rest and named parameters compose when named params come first
+
+[Suite] vm — optional and default parameters
+  [OK] optional positional parameters use defaults
+  [OK] positional defaults are evaluated at call time
+  [OK] positional defaults can reference earlier parameters
+  [OK] defaults see the call-time captured scope
+  [OK] optional named parameters bind nil when omitted
+  [OK] named defaults are evaluated at call time
+  [OK] custom local named defaults bind the local
+  [OK] too many positional arguments still raise
+
+[Suite] vm — Paths
+  [OK] Path literals are first-class values
+  [OK] expression paths apply static Paths to lexical values
+  [OK] missing Path lookup propagates void
+  [OK] Path options handle missing lookups explicitly
+  [OK] Paths read list indexes and path sends expose list behavior
+  [OK] Paths read node props, body indexes, and projections
+  [OK] Path calls validate their call envelope
+  [OK] static Path lookup maps over streams and skips void
+  [OK] first-class Paths map over streams
+
+[Suite] vm — dynamic Paths
+  [OK] dynamic Path keys are evaluated
+  [OK] dynamic segments are captured before path message traversal
+  [OK] dynamic Path indexes are evaluated
+  [OK] Path values capture dynamic segments
+  [OK] explicit Path construction can capture dynamic segments
+  [OK] callable dynamic segments act as Path stages
+  [OK] dynamic Path keys can be forced explicitly
+  [OK] complex selector stages adapt stream helpers
+
+[Suite] vm — node projection built-ins
+  [OK] projection built-ins expose value anatomy
+  [OK] projection built-ins work as dynamic selector stages
+  [OK] projection built-ins validate arity
+  [OK] projection containers are detached shallow snapshots
+
+[Suite] vm — functional Path updates
+  [OK] assoc_in updates maps without mutating the original
+  [OK] assoc_in updates lists and node bodies
+  [OK] assoc_in preserves immutable container class
+  [OK] assoc_in writes void as delete for maps and nil for positions
+  [OK] assoc_in updates nested existing paths
+  [OK] update_in applies a callable to the selected value
+  [OK] functional updates reject unsupported paths
+
+[Suite] vm — container update built-ins
+  [OK] List/assoc returns an updated copy
+  [OK] List/set mutates mutable lists
+  [OK] List/push grows mutable lists in place
+  [OK] List/push supports linear accumulator growth
+  [OK] Map/put mutates mutable maps
+  [OK] Map/delete removes an entry and returns what was there
+  [OK] to_sym is the inverse of to_str for names
+  [OK] Map/assoc returns an updated copy
+  [OK] Map/get reads entries without selector staging
+  [OK] Node/set_prop mutates mutable node props
+
+[Suite] vm — entrypoint support
+  [OK] top-level bindings can be looked up and called after run
+  [OK] optional lookup reports missing bindings without raising
+  [OK] undefined symbols identify their containing top-level form
+
+[Suite] vm — namespaces
+  [OK] ns declares a namespace and binds it
+  [OK] qualified access reads namespace exports
+  [OK] nested namespaces resolve through a qualified path
+  [OK] ns body sees outer bindings and built-ins
+  [OK] ns rejects duplicate local bindings only
+  [OK] a missing namespace member is void
+  [OK] namespace exports do not leak into the enclosing scope
+  [OK] namespaces compare by identity
+  [OK] namespace reflection exposes bindings and lookup
+  [OK] declarations exposes namespace bindings as a stream
+  [OK] namespace reflection operations require namespaces
+
+[Suite] vm — env and eval
+  [OK] fexpr caller environments expose pooled frame parameters and locals
+  [OK] env values are opaque display values
+  [OK] eval compiles and executes a quoted node inside env bindings
+  [OK] eval inherits the scope it is written in, and Env bindings add to it
+  [OK] a caller_env snapshot stays closed over the evaluating scope
+  [OK] env parent bindings are visible to eval
+  [OK] env child bindings shadow parent bindings
+  [OK] eval policy limits execution by steps, time, and memory
+  [OK] eval compile failures are typed CompileError values
+  [OK] Env annotations accept env values
+  [OK] functions returned from eval retain their evaluation scope
+  [OK] eval impls stay in the retained overlay
+
+[Suite] vm — cells
+  [OK] cell values are opaque display values
+  [OK] cell get and set mutate the referenced value
+  [OK] cell swap returns the old value
+  [OK] cell update applies a callable and stores the result
+  [OK] cells compare by identity
+  [OK] Cell annotations accept cells only
+  [OK] env eval can mutate explicitly passed cells
+  [OK] cell operations require cells
+
+[Suite] vm — atomic cells
+  [OK] atomic cell values are opaque display values
+  [OK] atomic cell load, store, and swap mutate the referenced value
+  [OK] atomic compare_exchange stores when the expected value matches
+  [OK] atomic cells compare by identity
+  [OK] AtomicCell annotations accept atomic cells only
+  [OK] atomic cell operations require atomic cells
+
+[Suite] vm — channels
+  [OK] channel values are opaque display values
+  [OK] channels send and receive FIFO values
+  [OK] try_send and try_recv are non-blocking
+  [OK] try_recv distinguishes empty, Void, Nil, and ordinary payloads
+  [OK] closed channels drain buffered values before ChannelClosed
+  [OK] typed channels check items on send
+  [OK] channel sends require Send values
+  [OK] channel operations require channels
+
+[Suite] vm — cooperative scheduler
+  [OK] a resumed fiber's function name survives a capture in a deeper call
+  [OK] a task blocked on recv is woken by a sender task
+  [OK] a producer that fills the channel parks until the root drains it
+  [OK] multiple producers blocked on a full channel are all drained
+  [OK] suspension preserves a deep call chain across the channel block
+  [OK] suspension preserves match, for, and catch sub-bodies
+  [OK] suspension preserves scope, supervisor, eval, and namespace sub-bodies
+  [OK] await with no way to make progress is a deadlock error
+  [OK] a task awaiting another parks until it settles
+  [OK] a chain of awaiting tasks resolves in order
+  [OK] spawn queues child work instead of running inline
+  [OK] worker-candidate spawns snapshot sendable captures
+  [OK] non-worker-safe spawns keep cooperative shared captures
+  [OK] applications keep scheduler queues isolated
+  [OK] CPU-bound fibers yield at scheduler safepoints
+  [OK] sleep parks only the current task
+  [OK] sleep zero yields one scheduler turn
+  [OK] $fs/read_bytes is the read half fs/write_bytes was missing
+  [OK] root channel waits can be unblocked by sleeping tasks
+  [OK] zero-argument path sends retain operands across suspension
+  [OK] path message calls preserve void and nil traversal
+  [OK] closing a channel wakes parked receivers and senders
+  [OK] cancelling a pending task makes await observe cancellation
+  [OK] cancelling a sleeping task wakes it for cleanup
+  [OK] a running root task cancels itself only after its cleanup settles
+  [OK] cancelling a task wakes fibers awaiting it
+  [OK] cancelled task fibers do not resume when their blocker clears
+  [OK] task scope normal exit waits for live child tasks
+  [OK] task scope normal exit reports deadlocked child tasks
+  [OK] task scope error exit cancels pending child tasks
+  [OK] task scope error exit waits for child cancellation cleanup
+  [OK] task cancellation cleanup can suspend before await observes cancellation
+  [OK] detached tasks are not awaited on normal scope exit
+  [OK] detached tasks are not cancelled on scope error exit
+  [OK] detached eval tasks retain pooled lexical ancestors and task context
+  [OK] an actor handler can suspend on a channel mid-message
+  [OK] an actor handler can suspend on a timer mid-message
+  [OK] actor ask returns a pending task instead of driving synchronously
+  [OK] actor ask awaited inside a fiber parks until the reply is sent
+  [OK] actor ask timeout fails pending request and ignores late reply
+  [OK] a cancelled actor ask task is not completed by a late reply
+  [OK] closing an owned actor cancels a scheduled ask reply
+  [OK] closing an owned actor removes blocked handler fibers
+  [OK] try_send in a fiber wakes a peer parked in recv
+  [OK] try_recv in a fiber wakes a peer parked in send
+
+[Suite] vm — actors
+  [OK] actor values are opaque display values
+  [OK] actor send processes messages sequentially
+  [OK] actor try_send returns before running the handler
+  [OK] actor stop closes the actor
+  [OK] actor sends check message type and Send
+  [OK] actor message type is explicit inferred or Any
+  [OK] actor refs are Send values
+  [OK] actor ask returns a task with a one-shot reply
+  [OK] actor ask enforces ReplyTo result type and reports missing replies
+  [OK] task scopes close owned actors on exit
+  [OK] supervisors own actors and apply failure strategies
+  [OK] supervisor failure retries are bounded FIFO with observable drops
+  [OK] supervisor failure delivery uses event and dead_letter channels
+  [OK] actor handler must return an ActorStep
+  [OK] actor operations require actors
+
+[Suite] vm — streams
+  [OK] read_one and read_all expose parsed forms
+  [OK] lex_all exposes typed reader tokens
+  [OK] stream values are opaque display values
+  [OK] stream has_next, peek, next, and close pull values
+  [OK] streams skip void items
+  [OK] map pairs can be streamed
+  [OK] stream map transforms pulled values
+  [OK] stream map normalizes void results to nil
+  [OK] stream map is lazy
+  [OK] stream filter keeps truthy predicate results
+  [OK] stream filter is lazy
+  [OK] stream take limits pulled values
+  [OK] stream take does not over-pull upstream
+  [OK] naturally exhausted take detaches and leaves upstream resumable
+  [OK] producer errors are terminal and close owned upstream once
+  [OK] generator close unwinds nested ensures in LIFO order
+  [OK] generator close preserves the first cleanup error and finishes ensures
+  [OK] task cancellation closes an active generator and runs ensure once
+  [OK] return exits functions and terminates generators without an item
+  [OK] stream into materializes list and map targets
+  [OK] stream next and peek raise EndOfStream shape
+  [OK] Stream annotations accept streams only
+  [OK] stream operations require streams
+
+[Suite] vm — printer view of callables
+  [OK] functions print a display form
+  [OK] namespaces print a display form

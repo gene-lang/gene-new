@@ -10,6 +10,34 @@
   (after_each [t]
     (if_not ($absent? t/runtime) t/runtime/.close))
 
+  (it "never admits a callback after its owner's cleanup" []
+    # Vary the relative phase of invocation preparation and disposal. A call
+    # may be rejected before entry, or finish before cleanup; starting after
+    # cleanup (or continuing through it) is never a permitted outcome.
+    (repeat padding in 30
+      (let events [])
+      (let owner ($cell nil))
+      (let runtime (new_runtime (RuntimeOptions ^logger nil ^invoker (default_plugin_invoker)
+        ^default_limits (invocation_limits))))
+      (try
+        (let plugin (PluginSpec ^id "admission-boundary" ^config_schema nil ^requires []
+          ^provides [] ^reload nil ^activate (fn [ctx config]
+            (ctx .defer (fn [] (events .push "cleanup")))
+            (ctx .effect "calls" (fn [scope] (owner .set scope))))))
+        (let instance (runtime .install runtime/.root plugin nil))
+        instance/.await_ready
+        (let call (spawn ^lane root
+          (invoke_effect_owner owner/.get PluginCallKind/operation
+            (fn [] (events .push "start") ($sleep 1) (events .push "end")) [])))
+        (let disposal (spawn ^lane root
+          (do (repeat delay in padding nil) instance/.dispose)))
+        disposal/.join
+        runtime/.await_settled
+        call/.join
+        ($assert (|| (== events ["cleanup"]) (== events ["start" "end" "cleanup"]))
+          $"callback crossed its owner's cleanup: ${events}")
+      ensure runtime/.close)))
+
   (it "releases concurrent and cancelled admissions before disposal" [t]
     (let owner ($cell nil))
     (let cleaned ($cell false))
@@ -38,11 +66,14 @@
   (it "waits for entered hook calls before running owner cleanup" [t]
     (var hook (hook_key "slow" HookMode/emit))
     (var events ($cell ($thaw #[])))
+    (let entered ($channel ^capacity 1))
+    (let release ($channel ^capacity 1))
     (fn record [name : Str] (events/.get .push name))
 
     (fn slow_handler [payload]
       (record "handler-start")
-      ($sleep 20)
+      (entered .send true)
+      release/.recv
       (record "handler-end"))
 
     (fn activate [ctx, config]
@@ -62,8 +93,10 @@
     instance/.await_ready
     (var dispatch
       (spawn ^lane root (runtime/.root .dispatch hook nil)))
-    ($sleep 2)
+    entered/.recv
     instance/.dispose
+    (assert_equal events/.get ["handler-start"])
+    (release .send true)
     runtime/.await_settled
     dispatch/.join
     (assert_equal events/.get ["handler-start" "handler-end" "cleanup"]

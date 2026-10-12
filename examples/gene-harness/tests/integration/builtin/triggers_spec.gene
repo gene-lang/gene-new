@@ -99,7 +99,17 @@
             $"automatic triggers did not invoke the provider: calls=${calls/.get}; occurrences=${(list_occurrences manager)}")
           (let scheduler manager/task/.get)
           (withdraw_seam service/runtime/h "core" "loop")
-          ($assert manager/closed/.get "seam loss did not close the scheduler")
+          # A heartbeat may already have admitted another round before its
+          # first finished occurrence was observed and the definition deleted.
+          # Withdrawal stops discovery immediately; retained snapshot leases
+          # deliberately defer the old activation's cleanup until those rounds
+          # finish. Wait for their actual completion, not a timing assumption.
+          ($assert (== (status_of service/runtime/h "triggers") "pending"))
+          (let watchers [])
+          (for [session watcher] in service/controller/watchers/.get
+            (watchers .push watcher))
+          (for watcher in watchers watcher/.join)
+          ($assert manager/closed/.get "seam loss did not close the retired scheduler after its rounds finished")
           ($assert scheduler/.done? "scheduler task survived plugin deactivation")
         ensure (close_session_service service)))))
 

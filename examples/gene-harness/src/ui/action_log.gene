@@ -24,7 +24,7 @@
       {^format 1 ^revision 0 ^generation 1 ^floor 1 ^admissions 0 ^sequence 0 ^records []}
       loaded/records/actions))
     (if (!= state/format 1) (ui_error "unavailable" "Unsupported workspace action log format."))
-    (let log (ActionLog ^backend backend ^state ($cell state) ^gate ($cell false) ^observer ($cell nil)))
+    (let log (ActionLog ^backend backend ^state ($cell state) ^gate ($sync/gate) ^observer ($cell nil)))
     (let recovered (copy_data state))
     (var changed false)
     (for record in recovered/records
@@ -70,8 +70,7 @@
   (state .put "records" kept))
 
 (fn admit_action [log : ActionLog, request, validate]
-  (while (log/gate .swap true) ($sleep 1))
-  (try
+  (log/gate (fn []
     (let state (copy_data log/state/.get))
     (let previous (find_action state request/input_id))
     (if_not ($absent? previous)
@@ -107,17 +106,18 @@
     # can disappear while the durable state still permits its admission.
     (prune_actions state)
     (checkpoint log state)
-    {^record (copy_data record) ^^admitted}
-  ensure (log/gate .set false)))
+    {^record (copy_data record) ^^admitted})))
 
 (fn update_action [log : ActionLog, id : Str, changes]
-  (while (log/gate .swap true) ($sleep 1))
+  (var changed true)
   (let result
-    (try
+    (log/gate (fn []
       (let state (copy_data log/state/.get))
       (let record (find_action state id))
       (if ($absent? record) (ui_error "receipt_expired" "Action receipt is no longer retained."))
-      (if (action_terminal? record/status) (return (copy_data record)))
+      (if_yes (action_terminal? record/status)
+        (set changed false)
+        (return (copy_data record)))
       (for [key value] in changes
         (if (== ($to_str key) "append_output")
           (record .put "output" (byte_prefix ($to_str record/output value) 16384))
@@ -126,9 +126,8 @@
       (let saved (copy_data record))
       (prune_actions state)
       (checkpoint log state)
-      saved
-    ensure (log/gate .set false)))
-  (notify_action log result)
+      saved)))
+  (if changed (notify_action log result))
   result)
 
 (fn action_output [log : ActionLog, id : Str, value : Str]
