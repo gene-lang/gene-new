@@ -48,7 +48,7 @@
   (if (== op "cancel_routine") (return (routines/cancel tx data/id)))
   (if (["get" "put"] .contains? op)
     (then
-      (for prefix in ["meta" "world" "event/" "cycle/" "execution/" "schedule/" "job/"
+      (for prefix in ["meta" "creation" "world" "event/" "cycle/" "execution/" "schedule/" "job/"
                       "owner/" "code/" "organization/" "conversation/" "delivery/" "connector/" "history_gap/" "outcome/" "selection/" "routine/" "commit/" "timezone/" "timezone_selection/" "budget/"]
         (if_yes ($str/starts_with? data/key prefix)
           (p/problem "Operational records require their adapter APIs")))

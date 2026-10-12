@@ -13,6 +13,7 @@
 (import * : world_network ^from "../body/world_network")
 (import * : world_records ^from "../body/world_records")
 (import [wall_ms] ^from "./clock")
+(import * : seeds ^from "../seeds")
 
 # `world_profile` is "local" (the original co-located world) or "network" (a
 # shared Commons world, docs/proposals/world.md §1.1), fixed at creation.
@@ -21,14 +22,22 @@
 (type Host
   ^props {^store Any ^clock Any ^worker Str ^brain Any ^decisions Any
           ^active Cell ^thought Cell ^late Cell ^stopped Cell ^calls Cell ^fault Any ^background_dispatches Cell ^network Cell
-          ^world_profile Str ^world Cell ^world_transport Any})
+          ^world_profile Str ^world Cell ^world_transport Any ^seed Any})
 
+# What a Life is told once is provenance; what it is inclined to now is its
+# own data (docs/proposals/world.md §3.5). `creation` is written here and never
+# again. `state/disposition` starts as the seed's text and is the Life's to
+# rewrite; every context is built from it.
 (fn initialize [host]
   (let tx (p/begin host/store "create"))
-  (let seed "Curiosity about the surroundings and interest in tending a small garden")
-  (p/tx_put tx "meta" {^id (p/id "life") ^version 1 ^mode "running" ^!clean
-    ^disposition seed ^organization "starter@1" ^model {^provider "fake"}
+  (let seed (?? host/seed (seeds/named "garden")))
+  (let id (p/id "life"))
+  (p/tx_put tx "meta" {^id id ^version 1 ^mode "running" ^!clean
+    ^organization "starter@1" ^model {^provider "fake"}
     ^model_calls_per_hour 100 ^last_wall (host/clock) ^world_profile host/world_profile})
+  (p/tx_put tx "creation" {^life_id id ^seed seed ^created_at (host/clock)
+    ^world_profile host/world_profile ^organization "starter@1" ^model {^provider "fake"}})
+  (p/tx_put tx "state/disposition" seed/inclination)
   (p/tx_put tx "organization/starter@1" {^id "starter@1" ^roots ["state/" "memory/"]
     ^code [] ^documentation "Starter keyed state and provenance-bearing memories"})
   (if (world_records/network? host)
@@ -37,7 +46,7 @@
       ^places {^home 0 ^garden 10 ^shade 20}
       ^objects {^plant-a {^id "plant-a" ^position 10 ^status "dry" ^version 1}
                 ^watering-can {^id "watering-can" ^position 0 ^version 1}}}))
-  (body/event host tx "first_start" {^disposition seed})
+  (body/event host tx "first_start" {^disposition seed/inclination})
   (p/commit tx))
 
 (fn restore [host]
@@ -51,6 +60,13 @@
   (for revision in selected/code
     (code/read host/store revision))
   (let tx (p/begin host/store "recovery"))
+  # A Life created before the seed was kept apart from the disposition: its
+  # one text becomes both, once, and nothing else of it is touched.
+  (if_yes (&& ($absent? (p/tx_get tx "creation")) (! ($absent? meta/disposition)))
+    (p/tx_put tx "creation" {^life_id meta/id ^seed {^name nil ^inclination meta/disposition ^revision nil}
+      ^created_at nil ^world_profile (?? meta/world_profile "local") ^^recovered})
+    (if ($absent? (p/tx_get tx "state/disposition"))
+      (p/tx_put tx "state/disposition" meta/disposition)))
   (let interrupted [])
   (for prefix in ["cycle/" "execution/" "job/"]
     (for key in (p/tx_keys tx prefix)
@@ -99,7 +115,8 @@
 (fn open_life [home, ^create create = false, ^clock clock = wall_ms,
                ^brain provider = nil, ^decisions decisions = nil,
                ^worker worker = "examples/life/src/worker/worker.gene", ^fault fault = nil,
-               ^profile profile = "local", ^storage storage = nil, ^world_transport transport = nil]
+               ^profile profile = "local", ^storage storage = nil, ^world_transport transport = nil,
+               ^seed seed = nil]
   (if_not (["local" "network"] .contains? profile) (p/problem "Unknown world profile"))
   (let backend (?? storage (if (== profile "network") "file"
     (if ($os/env? "LIFE_STORAGE") ($os/get_env "LIFE_STORAGE") "image"))))
@@ -110,7 +127,8 @@
     ^stopped ($cell false) ^calls ($cell 0) ^fault fault ^background_dispatches ($cell 0)
     ^network ($cell {^requests {} ^next {} ^lanes {}})
     ^world_profile (if create profile (?? retained/world_profile "local"))
-    ^world ($cell (world_network/fresh_state)) ^world_transport transport))
+    ^world ($cell (world_network/fresh_state)) ^world_transport transport
+    ^seed (if ($absent? seed) nil (seeds/named seed))))
   (try
     (if create (initialize host) (restore host))
     host
@@ -149,7 +167,8 @@
   (for key in (take_last (p/keys host/store "state/") 32) (state .put key (p/get host/store key)))
   (let memories [])
   (for key in (take_last (p/keys host/store "memory/") 12) (memories .push (p/get host/store key)))
-  {^life_id meta/id ^context_id (p/id "context") ^now (host/clock) ^disposition meta/disposition
+  {^life_id meta/id ^context_id (p/id "context") ^now (host/clock)
+   ^disposition (?? (p/get host/store "state/disposition") (?? meta/disposition nil))
    ^policy_revisions {^organization meta/organization} ^focus focus ^observations selected
    ^recent_decisions notes ^pending_work pending ^state state
    ^memory_excerpt memories
