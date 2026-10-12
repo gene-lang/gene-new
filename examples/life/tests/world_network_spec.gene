@@ -655,4 +655,53 @@
       (assert_equal ((world_peer/commands peer ^operation "movement.walk_to") .size) 1)
       # Its speech is sent before the continuation's worker has finished.
       (wait_for host (fn [] (== (cont_status host walk_id) "completed")) "continuation finished")
+      ensure (close host)))
+
+  (it "asks the world to hold its walk when paused, claims the pause only once the world answers, and decides for itself after resuming" []
+    (let a (attach ^^thinking))
+    (let host a/host)
+    (let peer a/peer)
+    (try
+      (wait_for host (fn [] (== ((world_peer/commands peer ^operation "movement.walk_to") .size) 1))
+        "first walk" ^timeout_ms 30000)
+      (let walk (world_peer/commands peer ^operation "movement.walk_to"))
+      (let walk_id (walk/0 .get "operation_id"))
+      (wait_for host (fn [] (== (status_of host walk_id) "running")) "running")
+      (runtime/settle host)
+      (let action_id (field host $"world_result/${walk_id}" "action_id"))
+      # Paused while the world cannot be reached: nothing says the avatar
+      # stopped, so the pause is reported as pending.
+      (peer .put "down" true)
+      (world_peer/disconnect peer)
+      (wait_for host (fn [] (!= (phase host) "ready")) "disconnected")
+      (assert_equal (runtime/pause host) "pause_pending_remote")
+      (assert_equal ((world_peer/commands peer ^operation "movement.suspend") .size) 0)
+      # Reachable again: the request goes out although the Life is paused.
+      (peer .put "down" false)
+      (wait_for host (fn [] (== (net/pause_status host) "paused")) "the world held the walk" ^timeout_ms 30000)
+      (let asked (world_peer/commands peer ^operation "movement.suspend"))
+      (assert_equal asked/.size 1)
+      (assert_equal (asked/0 .get "input") {^action_id action_id ^reason "life_paused"})
+      (assert_equal (status_of host walk_id) "suspended")
+      # The request is finished once admitted; the walk it named is what is
+      # suspended. Nothing more is asked, and nothing is resumed, while paused.
+      (assert_equal (status_of host (asked/0 .get "operation_id")) "completed")
+      (pump host ^times 40)
+      (assert_equal ((world_peer/commands peer ^operation "movement.suspend") .size) 1)
+      (assert_equal ((world_peer/commands peer ^operation "movement.resume") .size) 0)
+      # Resumed, the Life learns why its walk stopped and decides: the fixture
+      # continues the same action, and the walk's own result follows it.
+      (runtime/resume host)
+      (wait_for host (fn [] (== ((world_peer/commands peer ^operation "movement.resume") .size) 1))
+        "the Life resumed it" ^timeout_ms 30000)
+      (wait_for host (fn [] (== (status_of host walk_id) "running")) "running again")
+      (var noticed nil)
+      (for e in (p/values host/store "event/") (if_yes (== e/kind "world_activity_suspended") (set noticed e)))
+      (assert_equal noticed/data/reason "life_paused")
+      (assert_equal ((world_peer/commands peer ^operation "movement.walk_to") .size) 1)
+      # Paused while attached, the world answers at once.
+      (runtime/settle host)
+      (assert_equal (runtime/pause host) "paused")
+      (assert_equal ((world_peer/commands peer ^operation "movement.suspend") .size) 2)
+      (assert_equal (status_of host walk_id) "suspended")
       ensure (close host))))

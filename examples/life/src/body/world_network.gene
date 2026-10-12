@@ -56,6 +56,11 @@
 (let known_events ["movement.completed" "movement.failed" "movement.cancelled" "movement.suspended"
                    "object.picked_up" "object.put_down" "conversation.said"])
 
+# Requests that change an activity this Life already has instead of starting
+# one. The world answers with that activity's status; the request itself is
+# finished as soon as it is admitted.
+(let activity_controls ["movement.resume" "movement.suspend"])
+
 (fn require [condition, message] (if_not condition (p/problem message)))
 (fn fault [host, phase] (if_not ($absent? host/fault) (host/fault phase)))
 (fn int_of [value]
@@ -259,6 +264,8 @@
         (return nil)))
   (try
     (poll host state)
+    (let meta (p/get host/store "meta"))
+    (if (!= meta/mode "running") (request_suspension host))
     (send_next host state (p/get host/store "world_binding"))
     catch Any
       (if_not ($absent? host/store/fault/.get) (fail $err))
@@ -411,20 +418,44 @@
   (send_json host state {^kind "ack" ^stream_id cursor/stream_id ^event_seq $"${cursor/received}"})
   (if gap (disconnect host state "Event sequence gap; resynchronizing")))
 
+# An admitted control request is complete; what its receipt says about the
+# activity it named is `^activity`, for the operation that started it.
 (fn receipt_observation [receipt]
   (let admission receipt/admission)
+  (let control (activity_controls .contains? receipt/operation))
+  (let accepted (&& (!= admission "rejected") (!= admission "cancelled")))
   {^status (if (== admission "rejected") "rejected"
-             (if (== admission "cancelled") "cancelled" (?? receipt/action_status "completed")))
+             (if (== admission "cancelled") "cancelled"
+               (if control "completed" (?? receipt/action_status "completed"))))
    ^admission admission ^action_id (?? receipt/action_id nil) ^reason (?? receipt/reason nil)
    ^detail (?? receipt/detail nil) ^result (?? receipt/result nil)
-   ^status_revision (?? receipt/action_status_revision nil)
-   ^world_revision (int_of receipt/world_revision)})
+   ^status_revision (if control nil (?? receipt/action_status_revision nil))
+   ^world_revision (int_of receipt/world_revision)
+   ^activity (if (&& control accepted (! ($absent? receipt/action_id)) (! ($absent? receipt/action_status)))
+     {^action_id receipt/action_id ^status receipt/action_status
+      ^status_revision (?? receipt/action_status_revision nil)}
+     nil)})
+
+# An activity's status lives in the result of the operation that started it,
+# whichever request or event reports it.
+(fn activity_owner [host, action_id]
+  (let found (p/peek_where host/store "world_result/" (fn [result]
+    (&& (== result/action_id action_id) (! (activity_controls .contains? result/operation))))))
+  (if (== found/.size 0) nil found/0/operation_id))
 
 (fn record_observation [host, op_id, observation, source]
   (let tx (p/begin host/store "world-result"))
   (let normalized (records/normalize host tx op_id observation source))
   (if_yes (&& (! ($absent? normalized)) normalized/result/terminal)
     (records/mark_routing tx op_id))
+  (let activity observation/activity)
+  (if_not ($absent? activity)
+    (let owner (activity_owner host activity/action_id))
+    (if_not ($absent? owner)
+      (let moved (records/normalize host tx owner
+        {^status activity/status ^admission "accepted" ^action_id activity/action_id
+         ^status_revision activity/status_revision} $"${source}:${op_id}"))
+      (if_yes (&& (! ($absent? moved)) moved/result/terminal) (records/mark_routing tx owner))))
   (if (!= tx/writes {}) (p/commit tx) (p/abort tx)))
 
 (fn install_snapshot [host, state, binding, message]
@@ -603,14 +634,17 @@
     (state .put "queries_sent" (+ state/queries_sent 1))
     (send_json host state {^kind "query" ^request_id request_id ^query "view.current" ^args {}})
     (return nil))
+  # A paused Life starts nothing new, but it still reconciles what it sent and
+  # still sends its own control requests (§12.4).
+  (let meta (p/get host/store "meta"))
+  (let running (== meta/mode "running"))
   (let candidates [])
   (for op in (p/peek_where host/store "world_op/" open_or_uncertain?)
-    (if_yes (|| (== op/status "pending")
-                (>= (- now (?? (state/attempted .get op/id) 0)) reconcile_interval_ms))
+    (if_yes (if (== op/status "pending") (|| running (== op/control true))
+              (>= (- now (?? (state/attempted .get op/id) 0)) reconcile_interval_ms))
       (candidates .push op)))
   (if (== candidates/.size 0) (return nil))
-  (let meta (p/get host/store "meta"))
-  (let sending (&& (== meta/mode "running") (>= now state/send_after_ms)
+  (let sending (&& (>= now state/send_after_ms)
     (|| (> (- now state/window_start) 1000) (< state/window_count state/commands_per_second))))
   # Pending requests go in local outbox order; uncertain ones rotate by their
   # last attempt. The shared lane rule alternates the two.
@@ -797,11 +831,59 @@
     (return "The world's rules changed after this continuation was registered; reconsider it"))
   "ready")
 
+# --- pause (§12.4) ---------------------------------------------------------------------------
+
+# This Life's activities the world last reported running: action id -> the
+# status revision of that report.
+(fn running_activities [host]
+  (let found {})
+  (for result in (p/peek_where host/store "world_result/" (fn [result]
+      (&& (== result/status "running") (! ($absent? result/action_id))
+          (! (activity_controls .contains? result/operation)))))
+    (found .put result/action_id (?? result/status_revision 0)))
+  found)
+
+# A paused Life asks the world to hold what it was doing. One request per
+# running activity and status revision, under an ID made from both, so asking
+# again while the answer is outstanding is the same request. It runs on every
+# heartbeat while paused: a walk whose start was still unconfirmed when the
+# pause began is caught when the world reports it. Answers the IDs prepared.
+(fn request_suspension [host]
+  (if_not (records/network? host) (return []))
+  (let ids [])
+  (let running (running_activities host))
+  (if (== running {}) (return ids))
+  (let tx (p/begin host/store "pause"))
+  (for pair in running
+    (let action_id ($to_str pair/0))
+    (let ref (records/prepare host tx {^id "pause"} "movement.suspend"
+      {^action_id action_id ^reason "life_paused"}
+      ^id $"suspend-${action_id}-r${pair/1}" ^^control))
+    (ids .push ref/id))
+  (if (!= tx/writes {}) (p/commit tx) (p/abort tx))
+  ids)
+
+# "paused" once the world has confirmed that nothing of this Life's is still
+# moving; "pause_pending_remote" while a suspension is unanswered, an activity
+# is last known running, or a request that could have started one is still
+# unconfirmed. A Life cut off from the world cannot claim its avatar stopped.
+(fn pause_status [host]
+  (if_not (records/network? host) (return "paused"))
+  (var moving 0)
+  (for pair in (running_activities host) (set moving (+ moving 1)))
+  (let unsettled (p/count_where host/store "world_op/" (fn [op]
+    (|| (&& (== op/control true) (records/open_op? op))
+        (&& (["attempting" "needs_reconciliation"] .contains? op/status)
+            (["movement.walk_to" "movement.resume"] .contains? op/operation))))))
+  (if (|| (> moving 0) (> unsettled 0)) "pause_pending_remote" "paused"))
+
 # --- operator view and shutdown ----------------------------------------------------------
 
 (fn status [host]
   (let state host/world/.get)
+  (let meta (p/get host/store "meta"))
   {^phase state/phase ^last_error state/last_error ^connects state/connects
+   ^pause (if (== meta/mode "paused") (pause_status host) nil)
    ^generation state/generation ^server_epoch state/epoch ^in_flight state/in_flight
    ^messages_in state/messages_in ^commands_sent state/commands_sent ^queries_sent state/queries_sent
    ^binding (p/get host/store "world_binding") ^cursor (p/get host/store "world_cursor")

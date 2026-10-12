@@ -23,6 +23,9 @@
 //   - the world killed mid-walk while a Life commits a request and is then
 //     killed itself: the request reaches the restarted world once, under the
 //     same operation ID (R2, D2);
+//   - the operator pauses a Life mid-walk: the Life asks the world to hold the
+//     walk, the pause settles on the world's answer, and after resuming the
+//     Life continues that action itself (§12.4);
 //   - a missing native library is a clear, slow-retrying preflight failure
 //     (F11).
 //
@@ -358,6 +361,37 @@ try {
   say(resultOf("aster", hallWalk.id).status === "completed"
       && opsOf("aster", "movement.walk_to").filter((o) => o.input.place_id === "hall").length === 1,
       "Aster resumed it on its own; the walk completed once and its continuation ran");
+
+  // --- the operator pauses a Life mid-walk (§12.4) ---------------------------------------------
+  const gardenWalks = () => opsOf("aster", "movement.walk_to").filter((o) => o.input.place_id === "garden");
+  const gardenBefore = gardenWalks().length;
+  const resumesBefore = opsOf("aster", "movement.resume").length;
+  decide("aster", "I will walk back to the garden.", walkThen(`"garden"`, sayAfterWalk("I am back in the garden.")));
+  const gardenWalk = await until(() => {
+    const w = gardenWalks()[gardenBefore];
+    return w && resultOf("aster", w.id)?.status === "running" ? w : null;
+  }, "Aster walking back to the garden", 30000);
+  await sleep(800);
+  const paused = command("aster", { op: "pause" });
+  say(paused === "paused" && worldStatus("aster").pause === "paused",
+      "pausing a Life mid-walk settles once the world holds its walk", paused);
+  const heldOp = opsOf("aster", "movement.suspend").pop();
+  say(heldOp?.control === true && resultOf("aster", heldOp.id)?.status === "completed"
+      && resultOf("aster", gardenWalk.id).status === "suspended",
+      "the Life asked the world to suspend it, and the world's answer is what marks it suspended");
+  await sleep(1500);
+  say(opsOf("aster", "movement.resume").length === resumesBefore
+      && resultOf("aster", gardenWalk.id).status === "suspended",
+      "nothing resumes it while the Life stays paused");
+  command("aster", { op: "resume" });
+  // Nobody need be near enough to hear it arrive: the Life's own records say.
+  await until(() => contOf("aster", gardenWalk.id)?.status === "completed", "Aster's garden continuation", 120000);
+  const pauseNotice = values(inspect("aster", "event/")).find((e) =>
+    e.kind === "world_activity_suspended" && e.data.operation_id === gardenWalk.id);
+  say(pauseNotice?.data.reason === "life_paused" && gardenWalks().length === gardenBefore + 1
+      && opsOf("aster", "movement.resume").length === resumesBefore + 1
+      && resultOf("aster", gardenWalk.id).status === "completed",
+      "resumed, the Life was shown the held walk and continued that action itself to its end");
 
   // --- preflight: no native library (F11) -----------------------------------------------------
   command("brin", { op: "stop" });

@@ -139,9 +139,11 @@
 # Prepare one outbound world operation inside `tx` and answer its reference.
 # The request is immutable from here on; a repeat under the same explicit ID
 # with the same request returns the existing reference, a different one fails.
+# `^control` marks a request the body makes for the operator rather than for
+# the brain: it is sent even while the Life is paused (§12.4).
 (fn prepare [host, tx, record, operation, input, ^owner owner = nil,
              ^preconditions preconditions = [], ^id id = nil, ^delivery_id delivery_id = nil,
-             ^target target = nil]
+             ^target target = nil, ^control control = false]
   (require (token? operation 64) "A world operation name is required")
   (require (&& (== ($head input) Map) (plain? input 0)) "World operation input must be plain data")
   (require (== ($head preconditions) List) "World preconditions must be a list")
@@ -154,7 +156,7 @@
   (let op {^id op_id ^operation operation ^contract_version 1 ^input input
     ^preconditions preconditions ^owner owner ^cause record/id
     ^organization (?? record/organization nil) ^target_operation_id target
-    ^delivery_id delivery_id ^status "pending" ^!needs_reconciliation ^attempts 0
+    ^delivery_id delivery_id ^control control ^status "pending" ^!needs_reconciliation ^attempts 0
     ^last_error nil ^created_at (host/clock)})
   (if_not ($absent? previous)
     (require (== (semantic previous) (semantic op)) "World operation ID reused with a different request")

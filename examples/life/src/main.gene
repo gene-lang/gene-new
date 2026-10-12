@@ -46,7 +46,7 @@
         ^recovery (== request/recovery true))))
     (p/commit tx)
     (return value))
-  (if_yes (== op "pause") (runtime/pause host) (return "paused"))
+  (if (== op "pause") (return (runtime/pause host)))
   (if_yes (== op "resume") (runtime/resume host) (return "running"))
   (if_yes (== op "tick") (body/tick host (?? request/ms 1000))
     (return (p/get host/store (if (world_records/network? host) "world_view" "world"))))

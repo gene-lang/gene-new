@@ -534,7 +534,10 @@
       (if_yes (> (p/count_where host/store prefix runnable?) 0) (set pending true)))
     (if (&& (! pending) ($absent? host/active/.get) ($absent? host/thought/.get)) (return nil))))
 
-(fn pause [host]
+# Answers "paused", or "pause_pending_remote" when a shared world has not yet
+# confirmed that this Life's activity there is held (§12.4). `^!remote` is the
+# local half alone: a stopping Life detaches, and the world suspends it then.
+(fn pause [host, ^remote remote = true]
   (let meta (p/get host/store "meta"))
   (meta .put "mode" "paused")
   (p/put host/store "meta" meta "pause-request")
@@ -547,7 +550,16 @@
     (cycle .put "status" "superseded")
     (cycle .put "result" "Operator paused")
     (p/put host/store $"cycle/${cycle/id}" cycle "pause"))
-  (p/put host/store "meta" meta "pause-settled"))
+  (p/put host/store "meta" meta "pause-settled")
+  (if_not (&& remote (world_records/network? host)) (return "paused"))
+  # Ask the world to hold what this Life was doing, and give it a moment to
+  # answer. The request stays in the outbox either way.
+  (world_network/request_suspension host)
+  (let deadline (+ ($os/monotonic_ms) 1500))
+  (while (&& (!= (world_network/pause_status host) "paused") (< ($os/monotonic_ms) deadline))
+    (heartbeat host)
+    ($sleep 5))
+  (world_network/pause_status host))
 (fn resume [host]
   (let tx (p/begin host/store "resume"))
   (let meta (p/tx_get tx "meta"))
@@ -576,7 +588,7 @@
 (fn clean_stop [host]
   (let meta (p/get host/store "meta"))
   (let mode meta/mode)
-  (pause host)
+  (pause host ^!remote)
   (connector/stop host)
   (world_network/stop host)
   (let thought host/thought/.get)

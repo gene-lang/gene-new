@@ -93,6 +93,9 @@
    {^operation "movement.resume" ^contract_version 1 ^label "Resume"
     ^input {^action_id "Str"}
     ^doc "Continue a suspended walk from its committed progress."}
+   {^operation "movement.suspend" ^contract_version 1 ^label "Pause walk"
+    ^input {^action_id "Str" ^reason "Str?"}
+    ^doc "Suspend a running walk at its committed step. Only `movement.resume` continues it; `core.cancel` ends it."}
    {^operation "core.cancel" ^contract_version 1 ^label "Cancel"
     ^input {^operation_id "Str" ^fingerprint "Str?"}
     ^doc "Cancel an operation: stop its activity, or tombstone it if it has not arrived."}
@@ -891,11 +894,12 @@
         {^admission "rejected" ^reason "unsupported_contract_version"}
         (if (== operation "movement.walk_to") (walk_to w participant op_id input)
           (if (== operation "movement.resume") (resume_walk w participant input)
-            (if (== operation "core.cancel") (cancel_operation w participant op_id input)
-              (if (== operation "object.pick_up") (pick_up w participant op_id input)
-                (if (== operation "object.put_down") (put_down w participant op_id input)
-                  (if (== operation "conversation.say") (say w participant op_id input)
-                    {^admission "rejected" ^reason "unknown_operation"})))))))))
+            (if (== operation "movement.suspend") (suspend_walk w participant input)
+              (if (== operation "core.cancel") (cancel_operation w participant op_id input)
+                (if (== operation "object.pick_up") (pick_up w participant op_id input)
+                  (if (== operation "object.put_down") (put_down w participant op_id input)
+                    (if (== operation "conversation.say") (say w participant op_id input)
+                      {^admission "rejected" ^reason "unknown_operation"}))))))))))
   (let seq participant/next_operation_seq)
   (participant .put "next_operation_seq" (+ seq 1))
   (mark_participant w participant)
@@ -1057,6 +1061,27 @@
   (action .put "suspended_reason" nil)
   (mark_action w action)
   {^admission "accepted" ^action_id action/action_id ^action_status "running"})
+
+# Suspend a running walk because its controller asked (§12.4): the transition
+# a detach makes, requested instead of inferred. A walk that is already
+# suspended is in the state asked for, so the request is accepted again and
+# nothing new is announced. `reason` is the controller's own label for why.
+(fn suspend_walk [w : Map participant : Map input : Map] : Map
+  (let action (w/actions .get (?? input/action_id "")))
+  (if (|| (== action void) (!= action/participant_id participant/participant_id))
+    (return {^admission "rejected" ^reason "not_found" ^detail "You have no such activity."}))
+  (if (== action/status "suspended")
+    (return {^admission "accepted" ^action_id action/action_id ^action_status "suspended"}))
+  (if (!= action/status "running")
+    (return {^admission "rejected" ^reason "not_running" ^result {^status action/status}}))
+  (let reason (if (valid_token? input/reason 64) input/reason "controller_requested"))
+  (set_status action "suspended")
+  (action .put "suspended_reason" reason)
+  (mark_action w action)
+  {^admission "accepted" ^action_id action/action_id ^action_status "suspended"
+   ^events [(owner_event w action "movement.suspended"
+              {^action_id action/action_id ^reason reason ^progress (progress_of w action)
+               ^position (position_of w action/entity_id)})]})
 
 (fn cancel_operation [w : Map participant : Map op_id : Str input : Map] : Map
   (let target (?? input/operation_id ""))

@@ -23,6 +23,8 @@
 //   - a confirmed pickup survives `kill -9`, and an uncheckpointed motion tail
 //     is corrected to the last checkpoint on restart, with the walk suspended
 //     until the player resumes it (§6.1, §6.3, R2).
+//   - a controller can ask for its own walk to be held, and only a resume
+//     continues it (§12.4).
 //
 // The world is kept on failure (its path is printed) and removed on success.
 import { spawn, execFileSync } from "node:child_process";
@@ -309,6 +311,22 @@ try {
   const dAction = dSnap.actions.find((x) => x.action_id === walk3.action_id);
   say(dAction && dAction.status === "suspended" && dAction.suspended_reason === "controller_detached",
       "closing the controlling socket suspends its walk", dAction?.suspended_reason);
+
+  // --- a controller may hold its own walk (§12.4) ------------------------------------------------
+  const resume3 = await d.receipt(d.command("movement.resume", { action_id: walk3.action_id }));
+  const held = await d.receipt(d.command("movement.suspend", { action_id: walk3.action_id, reason: "smoke_pause" }));
+  say(resume3.action_status === "running" && held.admission === "accepted" && held.action_status === "suspended",
+      "a controller can suspend its own running walk", `${held.admission} ${held.action_status ?? held.reason}`);
+  const heldEvent = await d.next((m) => m.kind === "event" && m.type === "movement.suspended"
+    && m.payload.reason === "smoke_pause");
+  say(heldEvent.payload.action_id === walk3.action_id && heldEvent.payload.status_revision > resume3.action_status_revision,
+      "and hears the suspension with its own reason and a newer status revision");
+  const heldAgain = await d.receipt(d.command("movement.suspend", { action_id: walk3.action_id }));
+  say(heldAgain.admission === "accepted" && heldAgain.action_status === "suspended"
+      && heldAgain.action_status_revision === held.action_status_revision,
+      "asking again is accepted and changes nothing");
+  const stray = await d.receipt(d.command("movement.suspend", { action_id: "action-none" }));
+  say(stray.admission === "rejected" && stray.reason === "not_found", "an activity that is not theirs is not found");
   const health = await (await fetch(`${ORIGIN}/health`)).json();
   say(health.status === "running" && health.durability.journal_mode === "wal",
       "health reports the running world and its durability settings",

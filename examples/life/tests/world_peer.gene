@@ -239,6 +239,22 @@
         (return {^admission "rejected" ^reason "not_suspended"}))
       (set_action_status action "running")
       (return {^admission "accepted" ^action_id action/action_id ^action_status "running"})))
+  (if (== operation "movement.suspend")
+    (then
+      (let action ((peer .get "actions") .get input/action_id))
+      (if (|| ($absent? action) (== action void)) (return {^admission "rejected" ^reason "not_found"}))
+      (if (== action/status "suspended")
+        (return {^admission "accepted" ^action_id action/action_id ^action_status "suspended"}))
+      (if (!= action/status "running")
+        (return {^admission "rejected" ^reason "not_running" ^result {^status action/status}}))
+      (set_action_status action "suspended")
+      (action .put "reason" (?? input/reason "controller_requested"))
+      (return {^admission "accepted" ^action_id action/action_id ^action_status "suspended"
+               ^events [{^type "movement.suspended" ^operation_id action/operation_id
+                         ^payload {^action_id action/action_id ^reason action/reason
+                                   ^status_revision action/status_revision
+                                   ^progress {^total_mm 20000 ^remaining_mm 12000}
+                                   ^position {^x_mm 25000 ^y_mm 1000 ^z_mm 5000}}}]})))
   (if (== operation "object.pick_up")
     (then
       (if_not ($absent? (peer .get "can_holder"))
