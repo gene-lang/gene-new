@@ -392,6 +392,17 @@ millisecond more per turn for every turn already taken, because each walk
 covers a record history that keeps growing. The 100-turn figure used
 throughout is one point on that line.
 
+One option was measured and not taken. Publication exists so that a fiber
+can run on a worker thread under atomic counting, and the default build has
+no worker lane: a root-lane spawn shares its captured graph with nothing on
+another thread. A scratch build that publishes at `spawn` only for
+worker-safe tasks ran the 100-turn probe in 8.59 s and 8.67 s against
+9.23 s and 9.58 s (alternating runs on a busy machine), about 8%. It would
+also stop most of the service's data from being marked shared, which the
+runtime reads elsewhere (whether a released holder re-weakens its
+functions, whether a count is atomic), so it is a scheduler design decision
+rather than an optimization to slip in here.
+
 What these walks still cost is the walking itself: publication is a third
 of the service profile, the escape scan about an eighth. Each re-reads a
 graph that has not changed since the last store or spawn, and avoiding that
