@@ -3342,6 +3342,14 @@ suite "vm — channels":
     expect GeneError: discard runStr("(1 .recv)")
 
 suite "vm — cooperative scheduler":
+  test "a resumed fiber's function name survives a capture in a deeper call":
+    # Frames borrow their function name. After a resume the outer frame's
+    # name used to borrow the fiber's saved copy, which the next capture from
+    # a function with a longer name freed; returning to the outer frame and
+    # suspending again then read freed memory. The sanitizer run of this
+    # suite is what notices; the result is right either way.
+    ck "(fn inner_step_with_a_name_much_longer_than_the_outer_one [] ($sleep 1) 1) (fn outer [] ($sleep 1) (var a (inner_step_with_a_name_much_longer_than_the_outer_one)) ($sleep 1) (var b (inner_step_with_a_name_much_longer_than_the_outer_one)) ($sleep 1) (+ a b)) (var tasks []) (var i 0) (while (< i 4) (tasks .push (spawn ^lane root (outer))) (set i (+ i 1))) (var total 0) (for t in tasks (set total (+ total (await t)))) total", "8"
+
   test "a task blocked on recv is woken by a sender task":
     # The consumer parks on an empty channel; the producer's send wakes it and the
     # whole task resumes — real cooperative suspension across the frame stack.

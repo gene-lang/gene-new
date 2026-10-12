@@ -11650,6 +11650,17 @@ proc bindMatchedValues(scope: Scope, binds: Table[string, Value],
         continue
     scope.define(k, v)
 
+var resumedFnNames {.threadvar.}: Table[string, string]
+
+proc stableResumedFnName(fiber: Fiber): lent string =
+  ## The text of `fiber.fnName` from an owner that outlives the fiber's frames.
+  let owner {.cursor.} = if fiber.chunk != nil: fiber.chunk.owner else: nil
+  if owner != nil and owner.name == fiber.fnName:
+    return owner.name
+  # Names that are not their chunk's prototype name are few (they come from
+  # program text), so keeping one copy of each for the thread's life is cheap.
+  resumedFnNames.mgetOrPut(fiber.fnName, fiber.fnName)
+
 proc bindForItem(scope: Scope, pattern, item: Value): bool =
   ## A single binding needs neither a match scratch table nor a second walk
   ## over that table. Destructuring keeps the complete matcher unchanged.
@@ -17394,7 +17405,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     returnDepth = fiber.returnDepth
     curChecksErrors = fiber.checksErrors
     curErrorTypes = fiber.errorTypes
-    curFnName = fiber.fnName
+    # `curFnName` and every frame's `fnName` borrow their text. A function
+    # prototype's name outlives them; the fiber's saved copy does not, because
+    # the next capture from a different function replaces it. So a resumed
+    # name is taken from the prototype when that is where it came from, and
+    # otherwise from a table of names that are never freed.
+    curFnName = stableResumedFnName(fiber)
     curFrameKind = fiber.frameKind
     curEnsureValue = fiber.ensureValue
     curEnsureBody = fiber.ensureBody

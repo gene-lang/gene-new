@@ -433,6 +433,27 @@ each worked and each left a function that runs one short loop at the same
 speed: in that profile the per-iteration reset and item binding cost far
 more than the two allocations.
 
+### A use-after-free in fiber resume
+
+Repeating the complete Harness suite on the final build crashed once in
+three runs, in the allocator, under `input_modes_spec`. Crash reports with
+the same signature exist for earlier builds of this pass and for a binary
+built the day before it started, so the fault was already there.
+
+A sanitizer build of the runtime, run on that one spec file, reported a heap
+use-after-free in every run, at `captureContinuation`. A frame's function
+name is a borrowed string, on the assumption that the text belongs to a
+function prototype. On resume the dispatch loop took the name from the
+fiber's own saved copy instead, and frames pushed afterwards borrowed that.
+The next capture from a function with a longer name replaced the saved copy
+and freed the old text; returning to the outer frame and suspending again
+read it. A resumed name is now taken from the prototype when that is where
+it came from, and otherwise from a per-thread table of names that are never
+freed (`stableResumedFnName`). The sanitizer build reports nothing on the
+spec with the change, and a twelve-line reproduction (a task that sleeps,
+calls a function with a longer name that sleeps, and sleeps again) is in the
+VM scheduler suite, which the sanitizer run covers.
+
 ### What is still slow
 
 - Each `for` iteration is a frame with its own scope. The reset is now cheap
