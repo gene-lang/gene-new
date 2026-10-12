@@ -14,18 +14,18 @@ order, 5,000 input items per batch, 300 ms calibration per workload
 
 | Workload | Baseline ms/batch | Optimized ms/batch | Baseline / optimized | Optimized / Python |
 | --- | ---: | ---: | ---: | ---: |
-| Integer loop | 2.707 | 0.872 | 3.10x | 4.81 |
-| Closure dispatch | 6.992 | 2.781 | 2.51x | 7.02 |
-| Filter/group/sort records | 10.078 | 4.086 | 2.47x | 4.63 |
-| Text indexing | 26.750 | 14.469 | 1.85x | 8.71 |
-| JSON round trip | 5.867 | 2.543 | 2.31x | 0.93 |
-| Event replay | 11.484 | 4.402 | 2.61x | 6.99 |
+| Integer loop | 2.855 | 0.799 | 3.58x | 4.28 |
+| Closure dispatch | 7.500 | 2.781 | 2.70x | 6.84 |
+| Filter/group/sort records | 10.563 | 4.082 | 2.59x | 4.54 |
+| Text indexing | 28.625 | 14.719 | 1.94x | 8.66 |
+| JSON round trip | 6.211 | 2.559 | 2.43x | 0.91 |
+| Event replay | 12.000 | 4.512 | 2.66x | 6.97 |
 
 This capture is of the final runtime, taken on a quiet machine after the
-last change (samples of one build within 14% of each other). Earlier
-captures in this directory's history bracket it: 3.18x, 2.55x, 2.38x, 1.80x,
-2.32x and 2.29x while the `==` lowering was withdrawn, and 3.09x, 2.57x,
-2.45x, 1.81x, 2.30x and 2.61x before the last three changes.
+last change (samples of one build within 9% of each other). Earlier captures
+in this directory's history lead up to it: 3.18x, 2.55x, 2.38x, 1.80x, 2.32x
+and 2.29x while the `==` lowering was withdrawn, and 3.10x, 2.51x, 2.47x,
+1.85x, 2.31x and 2.61x before the plain-body loop reset.
 
 The last change of the pass lets a loop body that contains only reusable
 loops reuse its own iteration scope. Its kernel
@@ -36,7 +36,7 @@ capture of the workloads reads 15.63 ms to 14.69 ms for text indexing.
 A later change gives a loop body that can only change its own slots a
 slots-only reset between iterations. On the same kernels, alternating runs:
 the single short loop goes from 318-330 ms to 303-305 ms and the nested
-loop from 213-217 ms to 184-187 ms. The table above predates it; a clean
+loop from 213-217 ms to 184-187 ms. A clean
 before/after of this change alone on the six workloads (six samples each,
 samples within 14%) reads, in ms per batch: integer loop 0.948 to 0.790,
 closures 2.887 to 2.781, records 4.320 to 4.059, text indexing 15.266 to

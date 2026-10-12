@@ -186,12 +186,12 @@ calibration:
 
 | Workload | Before ms/batch | After ms/batch | Speedup | After / Python |
 | --- | ---: | ---: | ---: | ---: |
-| Integer loop | 2.707 | 0.872 | 3.10x | 4.81 |
-| Closure dispatch | 6.992 | 2.781 | 2.51x | 7.02 |
-| Filter/group/sort records | 10.078 | 4.086 | 2.47x | 4.63 |
-| Text indexing | 26.750 | 14.469 | 1.85x | 8.71 |
-| JSON round trip | 5.867 | 2.543 | 2.31x | 0.93 |
-| Event replay | 11.484 | 4.402 | 2.61x | 6.99 |
+| Integer loop | 2.855 | 0.799 | 3.58x | 4.28 |
+| Closure dispatch | 7.500 | 2.781 | 2.70x | 6.84 |
+| Filter/group/sort records | 10.563 | 4.082 | 2.59x | 4.54 |
+| Text indexing | 28.625 | 14.719 | 1.94x | 8.66 |
+| JSON round trip | 6.211 | 2.559 | 2.43x | 0.91 |
+| Event replay | 12.000 | 4.512 | 2.66x | 6.97 |
 
 This capture is of the final runtime, with everything described below.
 While the `==` lowering was withdrawn event replay read 2.29x; the nested

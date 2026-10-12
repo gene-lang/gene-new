@@ -6,22 +6,22 @@ Ratio = Gene median / Python median; greater than 1 means Gene took longer.
 
 | Workload | Gene ms/batch | Python ms/batch | Ratio |
 | --- | ---: | ---: | ---: |
-| integer_loop | 0.872 | 0.181 | 4.814 |
-| closure_dispatch | 2.781 | 0.396 | 7.024 |
-| records | 4.086 | 0.883 | 4.63 |
-| text_index | 14.469 | 1.661 | 8.708 |
-| json_roundtrip | 2.543 | 2.742 | 0.927 |
-| event_replay | 4.402 | 0.63 | 6.988 |
+| integer_loop | 0.799 | 0.187 | 4.277 |
+| closure_dispatch | 2.781 | 0.407 | 6.839 |
+| records | 4.082 | 0.899 | 4.538 |
+| text_index | 14.719 | 1.699 | 8.661 |
+| json_roundtrip | 2.559 | 2.824 | 0.906 |
+| event_replay | 4.512 | 0.648 | 6.967 |
 
 Baseline / current Gene ratio: greater than 1 means current Gene is faster.
 
 | Workload | Baseline ms/batch | Current ms/batch | Speedup |
 | --- | ---: | ---: | ---: |
-| integer_loop | 2.707 | 0.872 | 3.104 |
-| closure_dispatch | 6.992 | 2.781 | 2.514 |
-| records | 10.078 | 4.086 | 2.467 |
-| text_index | 26.75 | 14.469 | 1.849 |
-| json_roundtrip | 5.867 | 2.543 | 2.307 |
-| event_replay | 11.484 | 4.402 | 2.609 |
+| integer_loop | 2.855 | 0.799 | 3.575 |
+| closure_dispatch | 7.5 | 2.781 | 2.697 |
+| records | 10.563 | 4.082 | 2.588 |
+| text_index | 28.625 | 14.719 | 1.945 |
+| json_roundtrip | 6.211 | 2.559 | 2.427 |
+| event_replay | 12.0 | 4.512 | 2.66 |
 
 Process wall times include startup, input construction, calibration and reporting; they are not kernel speed ratios.
