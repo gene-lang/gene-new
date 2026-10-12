@@ -193,8 +193,9 @@ calibration:
 | JSON round trip | 6.078 | 2.645 | 2.30x | 0.96 |
 | Event replay | 11.750 | 4.504 | 2.61x | 7.06 |
 
-This is the final runtime, with `==`/`!=` lowered, the slice rule and the
-cheaper value-graph walks below. While the lowering was withdrawn event
+This capture has `==`/`!=` lowered, the slice rule and the first value-graph
+walk changes below. The last of those (in-place reads) came after it and
+does not touch these workloads. While the lowering was withdrawn event
 replay read 2.29x; nothing else moved beyond run-to-run variation.
 
 Verification for this pass, on the final runtime: 1,688 broad-suite cases,
@@ -348,6 +349,15 @@ of the walks could be skipped outright; each got cheaper.
   and not entered in either set. The two sets are `StampedSet`s now, and the
   thread reuses one pair across spawns instead of rebuilding it for the
   whole reachable graph each time.
+- **Containers are read in place.** Publication and shared-marking iterated
+  by value: `for item in list` copied and counted every item, and a Map's or
+  Node's `pairs` copied every key string as well. They index the storage
+  directly now, as the capture walk already did; nothing either walk reaches
+  adds to or removes from a List, Map or Node.
+- **Spilled entries stay spilled.** A walk past its sixteen inline entries
+  kept comparing each new container against all sixteen before asking the
+  set. The inline entries now move into the set with the first one that does
+  not fit. The capture walk also returns at once for an immediate.
 
 The count fast paths also take their shared-mark test from one template
 (`countsInPlace`), which is a no-op today: every build compiles with
@@ -358,8 +368,10 @@ Service median, three samples per build in one capture: 14.87 s before
 these changes, 13.82 s with the first two, 12.29 s with the leaf rule. The
 final capture, with the reused publication sets as well, reads 15.50 s
 before and 11.75 s after (1.32x), and 26.68 s on the tree this pass started
-from: 2.27x on service time overall, 2.56x on whole-process time. The
-complete Harness suite runs in 407 s instead of 527 s. Five specs put more than sixteen
+from: 2.27x on service time overall, 2.56x on whole-process time. Reading
+containers in place and spilling the inline entries then take a separate
+quiet capture from 11.34 s to 9.69 s (1.17x), about 2.7x overall. The
+complete Harness suite runs in 329 s; it took 527 s before these changes. Five specs put more than sixteen
 containers in one graph for each walk (a function forty containers deep in
 a stored value, a stored ring with a shared part, a tail call passing a
 large value that holds a closure over the caller, repeated spawns over a

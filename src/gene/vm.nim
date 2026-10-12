@@ -4490,22 +4490,30 @@ type ValueGraphVisited = object
   count: int
   overflow: HashSet[uint64]
   scan: ptr StampedSet   # the thread's reusable set, for a walk that owns it
-  scanStarted: bool
+  spilled: bool          # the inline entries have moved into the set
 
 var graphScanSet {.threadvar.}: StampedSet
 var graphScanBusy {.threadvar.}: bool
 
 proc firstGraphVisit(seen: var ValueGraphVisited, bits: uint64): bool =
-  for i in 0 ..< seen.count:
-    if seen.inline[i] == bits: return false
-  if seen.count < seen.inline.len:
-    seen.inline[seen.count] = bits
-    inc seen.count
-    return true
-  if seen.scan != nil:
-    if not seen.scanStarted:
+  if not seen.spilled:
+    for i in 0 ..< seen.count:
+      if seen.inline[i] == bits: return false
+    if seen.count < seen.inline.len:
+      seen.inline[seen.count] = bits
+      inc seen.count
+      return true
+    # The inline entries move into the set with the first one that does not
+    # fit, so a large graph is not compared against all of them at every step.
+    seen.spilled = true
+    if seen.scan != nil:
       seen.scan[].reset()
-      seen.scanStarted = true
+      for i in 0 ..< seen.count:
+        discard seen.scan[].containsOrIncl(seen.inline[i])
+    else:
+      for i in 0 ..< seen.count:
+        seen.overflow.incl seen.inline[i]
+  if seen.scan != nil:
     return not seen.scan[].containsOrIncl(bits)
   not seen.overflow.containsOrIncl(bits)
 
@@ -15011,16 +15019,22 @@ proc publishSpawnValue(value: Value, seenScopes: var HashSet[pointer],
   if completePublication:
     for child in value.publicationValueChildren:
       publishSpawnValue(child, seenScopes, seenValues, seenChunks)
+  # Containers are read in place, as valueCapturesScope reads them: nothing
+  # the walk reaches adds to or removes from a List, Map or Node, and
+  # iterating by value would copy and count every item and every Map key.
   case value.kind
   of vkList:
-    for item in value.listItems:
-      publishSpawnValue(item, seenScopes, seenValues, seenChunks)
+    let items {.cursor.} = value.listItems
+    for i in 0 ..< items.len:
+      publishSpawnValue(items[i], seenScopes, seenValues, seenChunks)
   of vkMap:
-    for _, item in value.mapEntries:
+    let entries {.cursor.} = value.mapEntries
+    for item in entries.borrowedValues:
       publishSpawnValue(item, seenScopes, seenValues, seenChunks)
   of vkSet:
-    for item in value.setItems:
-      publishSpawnValue(item, seenScopes, seenValues, seenChunks)
+    let items {.cursor.} = value.setItems
+    for i in 0 ..< items.len:
+      publishSpawnValue(items[i], seenScopes, seenValues, seenChunks)
   of vkHashMap:
     for entry in value.hashMapEntries:
       publishSpawnValue(entry.key, seenScopes, seenValues, seenChunks)
@@ -15035,7 +15049,7 @@ proc publishSpawnValue(value: Value, seenScopes: var HashSet[pointer],
   of vkAtomicCell:
     publishSpawnValue(value.atomicCellValue, seenScopes, seenValues, seenChunks)
   of vkNode:
-    publishSpawnValue(value.head, seenScopes, seenValues, seenChunks)
+    publishSpawnValue(value.borrowedNodeHead, seenScopes, seenValues, seenChunks)
     let evidence = value.errorEvidence
     if evidence != nil:
       publishSpawnValue(evidence.protocol, seenScopes, seenValues, seenChunks)
@@ -15043,11 +15057,14 @@ proc publishSpawnValue(value: Value, seenScopes: var HashSet[pointer],
       publishSpawnScope(evidence.environment, seenScopes, seenValues, seenChunks)
       for _, item in evidence.diagnostics:
         publishSpawnValue(item, seenScopes, seenValues, seenChunks)
-    for _, item in value.props:
+    let props {.cursor.} = value.props
+    for item in props.borrowedValues:
       publishSpawnValue(item, seenScopes, seenValues, seenChunks)
-    for item in value.body:
-      publishSpawnValue(item, seenScopes, seenValues, seenChunks)
-    for _, item in value.meta:
+    let body {.cursor.} = value.body
+    for i in 0 ..< body.len:
+      publishSpawnValue(body[i], seenScopes, seenValues, seenChunks)
+    let meta {.cursor.} = value.meta
+    for item in meta.borrowedValues:
       publishSpawnValue(item, seenScopes, seenValues, seenChunks)
   of vkFunction:
     publishSpawnScope(value.fnScope, seenScopes, seenValues, seenChunks)
@@ -17626,11 +17643,14 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                           seen: var ValueGraphVisited): bool =
     # This is a read-only reachability proof, not a value snapshot. The caller
     # owns the roots and no user code runs while the graph is inspected.
-    if value.kind in {vkList, vkMap, vkSet, vkHashMap, vkNode, vkModule,
-                      vkEnv, vkCell, vkAtomicCell, vkStream, vkCallableView}:
+    if not value.isManaged:
+      return false
+    let kind = value.kind
+    if kind in {vkList, vkMap, vkSet, vkHashMap, vkNode, vkModule,
+                vkEnv, vkCell, vkAtomicCell, vkStream, vkCallableView}:
       if not seen.firstGraphVisit(value.bits):
         return false
-    case value.kind
+    case kind
     of vkFunction:
       scopeChainContains(cast[Scope](value.fnScopeAddr), target)
     of vkCallableView:

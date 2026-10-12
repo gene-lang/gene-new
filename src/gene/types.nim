@@ -2824,15 +2824,17 @@ proc markSharedBits(bits: uint64, seen: var StampedSet) =
     return
   case tag
   of LIST_TAG:
+    # Children are read in place: iterating by value would copy and count
+    # every item, and a Map's pairs would copy every key as well.
     let p = cast[ptr GeneList](bits and PAYLOAD_MASK)
     markManualShared(p)
-    for item in p.items:
-      markSharedBits(item.bits, seen)
+    for i in 0 ..< p.items.len:
+      markSharedBits(p.items[i].bits, seen)
   of MAP_TAG:
     let p = cast[ptr GeneMap](bits and PAYLOAD_MASK)
     markManualShared(p)
-    for _, item in p.entries:
-      markSharedBits(item.bits, seen)
+    for i in 0 ..< p.entries.data.len:
+      markSharedBits(p.entries.data[i].val.bits, seen)
   of NODE_TAG:
     let p = cast[ptr GeneNode](bits and PAYLOAD_MASK)
     var evidence: ErrorEvidence
@@ -2849,12 +2851,12 @@ proc markSharedBits(bits: uint64, seen: var StampedSet) =
       markSharedBits(evidence.formatter.bits, seen)
       for _, item in evidence.diagnostics:
         markSharedBits(item.bits, seen)
-    for _, item in p.props:
-      markSharedBits(item.bits, seen)
-    for item in p.body:
-      markSharedBits(item.bits, seen)
-    for _, item in p.meta:
-      markSharedBits(item.bits, seen)
+    for i in 0 ..< p.props.data.len:
+      markSharedBits(p.props.data[i].val.bits, seen)
+    for i in 0 ..< p.body.len:
+      markSharedBits(p.body[i].bits, seen)
+    for i in 0 ..< p.meta.data.len:
+      markSharedBits(p.meta.data[i].val.bits, seen)
   of FUNCTION_TAG:
     let p = cast[ptr GeneFunction](bits and PAYLOAD_MASK)
     pinPublishedScope(p.scope)
@@ -8280,21 +8282,27 @@ var escapeScanBusy {.threadvar.}: bool
 
 proc firstVisit(visited: var EscapeVisited, bits: uint64): bool =
   ## True the first time `bits` is reached.
-  for i in 0 ..< visited.count:
-    if visited.inline[i] == bits:
-      return false
-  if visited.count < visited.inline.len:
-    visited.inline[visited.count] = bits
-    inc visited.count
-    return true
-  if visited.scan != nil:
-    if not visited.overflowUsed:
-      visited.scan[].reset()
-      visited.overflowUsed = true
-    return not visited.scan[].containsOrIncl(bits)
   if not visited.overflowUsed:
-    visited.overflow = initHashSet[uint64]()
+    for i in 0 ..< visited.count:
+      if visited.inline[i] == bits:
+        return false
+    if visited.count < visited.inline.len:
+      visited.inline[visited.count] = bits
+      inc visited.count
+      return true
+    # The inline entries move into the set with the first one that does not
+    # fit, so a large graph is not compared against all of them at every step.
     visited.overflowUsed = true
+    if visited.scan != nil:
+      visited.scan[].reset()
+      for i in 0 ..< visited.count:
+        discard visited.scan[].containsOrIncl(visited.inline[i])
+    else:
+      visited.overflow = initHashSet[uint64]()
+      for i in 0 ..< visited.count:
+        visited.overflow.incl visited.inline[i]
+  if visited.scan != nil:
+    return not visited.scan[].containsOrIncl(bits)
   not visited.overflow.containsOrIncl(bits)
 
 proc clearVisited(visited: var EscapeVisited) =
@@ -8304,6 +8312,7 @@ proc clearVisited(visited: var EscapeVisited) =
     visited.overflowUsed = false
   elif visited.overflowUsed:
     visited.overflow.clear()
+    visited.overflowUsed = false
 
 proc mayNeedEscape(v: Value, guard: WeakScopeGuard, visited: var EscapeVisited,
                    markHolder: bool): bool =
