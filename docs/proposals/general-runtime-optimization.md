@@ -484,8 +484,10 @@ VM scheduler suite, which the sanitizer run covers.
   A narrower route that needs no change to `Scope`'s layout is now in place
   (`loopBodyIsPlain`, `Scope.nativeTouched`, the short path in
   `reuseForScope`). With its checks it gives the single-short-loop kernel
-  318-330 ms to 303-305 ms and the nested kernel 213-217 ms to 184-187 ms;
-  the remaining distance to the bound below is the extension-object change.
+  318-330 ms to 303-305 ms and the nested kernel 213-217 ms to 184-187 ms,
+  and in a clean before/after the six workloads are all faster: the integer
+  loop by 20%, the others by 2% to 7%. The remaining distance to the bound
+  below is the extension-object change.
   How it works:
 
   1. Only one kind of native can reach the caller's scope. A `NativeProc`
