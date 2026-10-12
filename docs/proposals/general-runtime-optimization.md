@@ -413,8 +413,12 @@ of the starting tree against the final build then reads 35.42 s and 11.97 s
 (2.96x on service time, 3.64x whole-process), on a machine slower than in
 the quiet captures.
 
-What these walks still cost is the walking itself: publication is a third
-of the service profile, the escape scan about an eighth. Each re-reads a
+With lane-bound tasks no longer published, the final profile of the service
+probe is the escape scan (17% of samples), the capture walk (12%), the
+workload's own checkpoint and file writes (15%) and serialization (8%), and
+17% asleep between one-millisecond polls in the Harness's own wait loops.
+
+What the two remaining walks cost is the walking itself. Each re-reads a
 graph that has not changed since the last store or spawn, and avoiding that
 needs a record of what changed, which no container keeps today.
 
