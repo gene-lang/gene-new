@@ -408,7 +408,10 @@ and 12.19 s whole-process; the complete Harness suite runs in 285 s instead
 of about 345 s. Every suite passes unchanged, including the VM suite under
 AtomicArc, where worker-safe tasks are still published; no test relied on a
 lane-bound task marking its captures. What this does change is which values
-carry the shared mark, so it is called out in the change log.
+carry the shared mark, so it is called out in the change log. A direct capture
+of the starting tree against the final build then reads 35.42 s and 11.97 s
+(2.96x on service time, 3.64x whole-process), on a machine slower than in
+the quiet captures.
 
 What these walks still cost is the walking itself: publication is a third
 of the service profile, the escape scan about an eighth. Each re-reads a

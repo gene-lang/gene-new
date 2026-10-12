@@ -251,7 +251,14 @@ That is about 8% on service time and 14% on whole-process time, and the
 complete Harness suite runs in 285 s instead of about 345 s. A lifetime test
 now holds the typed-instance program that used to keep 41 objects at zero.
 The general table and the direct baseline capture above predate this change;
-the general workloads do not spawn.
+the general workloads do not spawn. Four complete Harness runs soaked the
+change afterwards, all passing in 270-288 s with no crash report.
+
+A direct capture of the starting tree against this final build, three
+samples each on a machine that was slower than in the quiet captures
+([service/summary-final-worker-publication.json](service/summary-final-worker-publication.json)):
+35.42 s and 11.97 s on service time (2.96x), 48.71 s and 13.39 s
+whole-process (3.64x).
 
 ## A crash found by repeating the suite
 
