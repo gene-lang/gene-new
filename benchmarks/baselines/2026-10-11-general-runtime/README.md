@@ -253,7 +253,9 @@ Harness runs on the fixed build (the qualification run and a three-run
 soak) all passed with no crash report. The complete Harness suite was also
 run once under the sanitizer build of the fixed runtime: no sanitizer
 report in 200 examples; three examples failed there on latency bounds the
-slower build cannot meet.
+slower build cannot meet. The Cordis suite, the benchmark specs, the
+differential programs, the scheduler and loop probes and forty turns of the
+service probe also ran under that build with no sanitizer report.
 
 ## Build provenance
 
