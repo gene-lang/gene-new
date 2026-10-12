@@ -21,6 +21,12 @@ order, 5,000 input items per batch, 300 ms calibration per workload
 | JSON round trip | 6.078 | 2.645 | 2.30x | 0.96 |
 | Event replay | 11.750 | 4.504 | 2.61x | 7.06 |
 
+This capture was taken one change before the final runtime. The last change
+touches only spawn publication and the walks' visited sets, which these
+workloads do not exercise; a recapture afterwards was disturbed by other
+load on the machine (samples of one build six times apart) and is not
+recorded, though its fastest samples are within 3% of this table.
+
 Every result matches the baseline runtime and Python at sizes 1, 17, 257 and
 2048 and in every timed process. These are separate workloads, not a weighted
 language score. Python remains faster on five of the six.
@@ -181,11 +187,28 @@ implementation notes). One capture, three samples per build
 That is 1.32x over the previous build and, against the starting tree,
 2.27x on service time and 2.56x on whole-process time.
 
+A last change reads containers in place during publication instead of
+copying every item and key, and moves a walk's inline visited entries into
+its set once they overflow. One quiet capture, three samples per build
+([service/summary-walks2.json](service/summary-walks2.json)):
+
+| Build | Service samples (ms) | Service median (ms) | Whole-process median (ms) |
+| --- | --- | ---: | ---: |
+| With the cheaper walks | 11343, 11332, 11494 | 11343 | 13718 |
+| Reading containers in place | 9792, 9802, 9934 | 9802 | 11592 |
+| And spilling inline entries | 9670, 9690, 9705 | 9690 | 11393 |
+
+That is a further 1.17x. The starting tree was not in this capture; three
+later attempts to measure all three builds together were disturbed by other
+load on the machine (single samples two to four times the rest) and are not
+recorded. Taking the two captures together the service workload is about
+2.7x faster than on the starting tree.
+
 ## Build provenance
 
 ```sh
 nim c --nimcache:tmp/perf2/cache-baseline --hints:off -o:tmp/perf2/gene-baseline src/gene.nim   # at 1e3f539, before any edit
-nim c --nimcache:<scratch>/ncfix --hints:off --warnings:off -o:tmp/perf2/gene-walk3 src/gene.nim   # clean export of 08a651f plus the cheaper walks
+nim c --nimcache:<scratch>/ncfix --hints:off --warnings:off -o:tmp/perf2/gene-walk5 src/gene.nim   # clean export of 83eeaf9 plus in-place reads and the spill change
 ```
 
 Both report `release; macosx/arm64; Nim 2.2.4; mm=orc; nim-opt=speed;
@@ -217,13 +240,12 @@ compiler-known set). Rebuild older GIR artifacts.
 | wasm ABI cases, scratch build | 46 passed |
 
 Every row is from the final runtime (slice rule, `==`/`!=` lowered, cheaper
-walks). The binary was built from a clean export of `08a651f` with the
-changed files laid over it; the suites were compiled and run from a clean
-export of `6c744c6` with the same files, which differs only by another
-session's Imagination and genex-tooling commits. On the build before the walk changes one file-watch spec (`recursive watch discovers files in newly
+walks, in-place reads). The binary and the suites were built from clean
+exports of `83eeaf9` with the changed files laid over them. On the build before the walk changes one file-watch spec (`recursive watch discovers files in newly
 created directories`) failed once while five suites compiled in parallel and
 passed six of six alone and in a solo rerun; it depends on how the OS
-batches file events, and passed in the run recorded here.
+batches file events. It failed the same way once more in the final run's
+parallel phase and passed in the solo run recorded here.
 
 The 28 new specs (`spec — runtime fast paths keep ordinary semantics`) pin
 the behaviours a shortcut could change: operator results and errors, operator
@@ -256,8 +278,8 @@ and `web/gene.wasm` were not regenerated.
 ### Harness
 
 The complete Harness suite passes with the final runtime: 200 passed,
-0 failed in 407 seconds (`verification/harness-final.log.gz`; 527 seconds
-on the build before the walk changes), run
+0 failed in 329 seconds (`verification/harness-final.log.gz`; 527 seconds
+before the walk changes, 407 before the in-place reads), run
 from a clean export so that edits another session was making could not
 affect it. The suite grew from 179 examples during the day through that
 session's commits; the runtime that withdrew the lowering passed all 179. Earlier runs are not counted: one overlapped

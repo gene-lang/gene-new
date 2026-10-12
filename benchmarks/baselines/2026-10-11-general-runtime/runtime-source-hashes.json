@@ -2,11 +2,12 @@
   "base_revision": "1e3f539",
   "executables_sha256": {
     "baseline": "7b0ccfa29b7df4ff276ad05debc3e17d526069ea6f6c006c35378ba0b53b41f1",
-    "optimized": "58ad8e926c9997dbc7f043ba3356c7af8a9db3f8d7673db39a8faff6f1372cb6"
+    "optimized": "738f74fce5876870a4d129a897144f795b50adb33093eba3b771595f0a52497a",
+    "optimized_at_general_capture": "58ad8e926c9997dbc7f043ba3356c7af8a9db3f8d7673db39a8faff6f1372cb6"
   },
   "source_sha256_of_measured_tree": {
-    "src/gene/vm.nim": "f390fc6c8927d73fbcbe8bcbd051a6477162276183f7250f5eeb02e6c7347126",
-    "src/gene/types.nim": "08c40ece6665f4ba0350016219ad688988093644e785600648b9edf77cf6d5c3",
+    "src/gene/vm.nim": "56c38af948499586dc190bb8425c16f8d2d8e5642b0530a568c1f6420c1980fa",
+    "src/gene/types.nim": "17677a3b61e510e99a825923981cb4b24ab4477eba6ae726154f9bb17d81ac1a",
     "src/gene/stdlib.nim": "bc6de6affeda5d2d3904ff3ad3ff5a460464454245a22ab139f2b6189d7f2641",
     "src/gene/compiler.nim": "9bacf4a334658f1c788b88c33453766e176de13fc3139c17228c7a0346c02403",
     "src/gene/error_analysis.nim": "d7fb4ff0e237944552c7ff0c58f71ab7ddbbcba1d24d8d4fb640ef630e91b717",
