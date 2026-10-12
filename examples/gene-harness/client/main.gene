@@ -258,6 +258,10 @@
   (set create_button/disabled (|| (! client/ready) (! client/connected) client/sending))
   (set client/prompt/disabled (! client/ready))
   (set_hidden "leave_mode" (! in_mode))
+  (var mode_label : Str (if in_mode client/mode/label "mode"))
+  (var mode_prompt : Str (if in_mode client/mode/prompt "Ask a question or describe a task…"))
+  ($dom/set_text ($dom/element "leave_mode") $"Leave ${mode_label}")
+  (set client/prompt/placeholder mode_prompt)
   ($dom/set_text ($dom/element "input_mode_label") (if in_mode client/mode/label ""))
   ($dom/set_text
     ($dom/element "composer_hint")
@@ -1213,7 +1217,7 @@
       (return)))
   (notice ^key "mode-input" ^scope client/selected ^^sticky
     client
-    "Input outcome is unknown. Check the transcript; Eval resolves the same input id."))
+    "Input outcome is unknown. Check the transcript; submit again to resolve the same input id."))
 
 (fn send_mode_input [client : Client] : Void
   (if_yes (|| (! client/ready) (! client/connected) client/sending (! ($absent? client/mode/running)))
@@ -1232,7 +1236,7 @@
     (else
       (var previous_text : Str pending/text)
       (if_yes (!= previous_text text)
-        (notice client "Resolve the previous REPL input before submitting different code.")
+        (notice client "Resolve the pending input before submitting another one.")
         (return))))
   (if_not ($session_storage/set (mode_pending_key client/selected) ($json/stringify pending))
     (notice client "Browser storage is required to recover an input receipt.")

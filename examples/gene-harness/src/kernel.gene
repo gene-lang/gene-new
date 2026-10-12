@@ -724,6 +724,8 @@
   (for field in ["classify" "run" "close"]
     (if_not ($runtime/callable? (candidate .get field))
       (fail (HarnessError ^message $"an input mode needs a callable ${field}"))))
+  (if (&& (! ($absent? candidate/reset_on_interrupt)) (!= ($head candidate/reset_on_interrupt) Bool))
+    (fail (HarnessError ^message "input mode reset_on_interrupt must be Bool")))
   candidate)
 
 (fn validate_provider_row [candidate]

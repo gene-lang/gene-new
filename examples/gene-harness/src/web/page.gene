@@ -93,7 +93,7 @@
                    (h1 ^id "conversation_title" "New conversation")
                    (div ^id "mode" ^class "mode" "Local workspace")
                    (span ^id "input_mode_label" ^class "mode"))
-                 (button ^id "leave_mode" ^class "quiet" ^type "button" ^^hidden "Leave REPL")
+                 (button ^id "leave_mode" ^class "quiet" ^type "button" ^^hidden "Leave mode")
                  (button ^id "rename_session" ^class "quiet" ^type "button" "Rename")
                  (button ^id "pin_session" ^class "quiet" ^type "button" "Pin"))
                (div ^id "web_toolbar" ^class "web_components web_toolbar")

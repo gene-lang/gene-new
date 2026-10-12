@@ -140,6 +140,13 @@ first and always clears the mode even if cleanup fails. An operator can leave
 through the host control regardless of what `classify` returns. Deactivation
 should release any resources left as a backstop.
 
+A mode that owns native processes can set `^reset_on_interrupt true`. After a
+cancelled input, or a failed input without an exit status, the host invokes
+`close(session, "interrupted")` outside the input's exhausted execution budget.
+It keeps the mode instance open; the next input can recreate its resources.
+Normal command failures with an exit status preserve state. The shell mode
+opts in; the Gene REPL keeps its existing bindings after interruption.
+
 ### Shape a request or compaction decision
 
 `request/prepare` receives a context with `items`, session, round, turn and

@@ -248,6 +248,12 @@ it becomes Stop during a chat round and cancels that round. Enter still sends
 slash commands during a chat round. A short guard after completion prevents
 a late Stop click from submitting a draft.
 
+`/sh <command>` runs once; bare `/sh` enters Shell mode with a Run button.
+Subsequent input is shell code rather than a model prompt. Cwd, variables and
+exports persist in the session's shell until `exit`, `quit`, or Leave. Stop
+cancels the running input and resets the shell process. The same input identity
+and receipt recovery rules apply to both Shell and REPL modes.
+
 Snapshots include `mode` with its instance and running command id. Input and
 leave requests name that instance; `mode_open` and `mode_closed` return 409
 with the current state when the browser and server disagree. Mode input ids

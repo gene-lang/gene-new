@@ -25,7 +25,16 @@ other running sessions require `--confirm`.
 
 - `/run <Gene code>` evaluates Gene with session_id, workspace_root, discover,
   doc, plugin functions and the standard library. It records the result.
-- `/sh <shell command>` runs a non-interactive process with streamed output.
+- `/sh <shell command>` runs one non-interactive process with streamed output
+  and an exit status, then returns to chat.
+- `/sh` opens Shell mode. Enter commands directly; `exit`, `quit`, `:exit`,
+  `:quit`, or the browser's Leave control returns to chat. A session-specific
+  `/bin/sh` process starts in the workspace and preserves cwd, variables,
+  exports and functions. Its inputs use ordinary command receipts, stream
+  output and do not attach to model history. Programs receive empty stdin;
+  this is a command composer, with no terminal emulation. Stop or a command
+  deadline resets the shell; the next input starts a fresh process. Leaving,
+  session collection, plugin withdrawal and shutdown release the process.
 - `/view <path>[:from-to]` reads a file or directory, up to 400 lines per page.
 - `/repl` opens persistent evaluation if the repl plugin is active; load
   `harness/repl` for its state/import behavior.

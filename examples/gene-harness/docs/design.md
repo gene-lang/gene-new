@@ -884,3 +884,13 @@ they live in different directories (`client/state.gene` and
 `client/ui/model.gene`, for example). Preserving directory identity in web
 output is a tooling improvement to pursue in Gene; it requires no language
 syntax change. Compile `client/main.gene` after changing its import graph.
+
+Shell mode uses Gene's existing asynchronous subprocess pipes. Each persistent
+shell occupies a captured-process worker until it closes; the current runtime
+pool has 32 workers. A reusable persistent-process API with readiness-based
+I/O would avoid dedicating workers to idle shells. This is a runtime/library
+capability to develop if simultaneous shell sessions approach that limit.
+The existing `stdout_chan` adapter also assembles a complete line before
+delivery, independently of its captured-output cap. Shell mode bounds the
+text it retains, but a bounded line adapter over `gene/io` byte readers would
+also bound native buffering for long lines.

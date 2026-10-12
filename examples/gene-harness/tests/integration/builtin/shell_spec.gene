@@ -1,0 +1,151 @@
+# Tests one-shot /sh and the session-specific shell input mode.
+(import $test [describe it])
+(import [isolated run_spec test_service] ^from "../../support")
+(import [create_session close_session_service submit] ^from "../../../src/web/session_service")
+(import [submit_command command_receipt command_state take_command_attachments cancel_command]
+  ^from "../../../src/runtime/commands")
+(import [mode_state submit_mode_input close_mode ModeError] ^from "../../../src/runtime/input_modes")
+(import [set_plugin_enabled] ^from "../../../src/storage/workspace")
+(import [recall_body] ^from "../../../src/agents/history")
+
+(fn command [service, session, text]
+  (let record (submit_command service/runtime/commands session text))
+  (service/runtime/commands/watchers/.get .get $"${session}:${record/id}"; .join)
+  (command_receipt service/runtime/commands session record/id))
+
+(fn input [service, session, id, text]
+  (let mode (mode_state service/runtime/modes session))
+  (let record (submit_mode_input service/runtime/modes session mode/instance id text))
+  (if_not ($absent? record/id)
+    (service/runtime/commands/watchers/.get .get $"${session}:${record/id}"; .join)
+    (return (command_receipt service/runtime/commands session record/id)))
+  record)
+
+(fn require_gone [pid]
+  (let deadline (+ ($os/monotonic_ms) 3000))
+  (loop
+    (let result (await ($os/exec_async "/bin/kill" "-0" pid)))
+    (if (!= result/status 0) (return nil))
+    ($assert (< ($os/monotonic_ms) deadline) $"shell ${pid} was left running")
+    ($sleep 10)))
+
+(describe "Harness shell mode"
+  (it "supports one-shot commands, persistent input and exit or quit without model calls" []
+    (isolated this_mod/.path "supports one-shot commands, persistent input and exit or quit without model calls"
+      (fn [workspace]
+        (let calls ($cell 0))
+        (let service (test_service ^workspace workspace ^provider (fn [request]
+          (calls .set (+ calls/.get 1)) "(Outcome ^^done ^reply \"chat\")")))
+        (try
+          (let session (create_session service))
+          (let once (command service session/id "/sh printf 'one shot\\n'"))
+          ($assert (&& (== once/status "done") (== once/exit 0)) once/display)
+          ($assert ($str/contains? once/display "one shot\n"))
+          ($assert ($absent? (mode_state service/runtime/modes session/id)))
+          ($assert (== ($size (take_command_attachments service/runtime session/id)) 1))
+          ($assert (== (/status (command service session/id "/sh")) "done"))
+          ($assert (== (/name (mode_state service/runtime/modes session/id)) "sh"))
+          (let setup (input service session/id "setup"
+            "mkdir -p shell-work; cd shell-work; saved=41; export GENE_HARNESS_SHELL_TEST='hello world'"))
+          ($assert (== setup/status "done") setup/display)
+          (let cwd (input service session/id "cwd" "pwd"))
+          ($assert ($str/contains? cwd/display $"${service/runtime/root}/shell-work"))
+          (let values (input service session/id "values"
+            "printf '%s|%s\\n' \"$GENE_HARNESS_SHELL_TEST\" \"$saved\""))
+          ($assert ($str/contains? values/display "hello world|41\n") values/display)
+          (let path (input service session/id "path" "/bin/echo absolute-path"))
+          ($assert ($str/contains? path/display "absolute-path\n"))
+          (let failed (input service session/id "failed" "printf partial; printf 'err\\n' >&2; false"))
+          ($assert (&& (== failed/status "failed") (== failed/exit 1)) failed/display)
+          ($assert ($str/contains? failed/display "partialerr\n") failed/display)
+          ($assert ($str/contains? (/display (input service session/id "retained" "printf '%s' \"$saved\"")) "41"))
+          (input service session/id "function" "greet() { printf '%s' \"hello $1\"; }")
+          ($assert ($str/contains? (/display (input service session/id "call" "greet 'quoted world'")) "hello quoted world"))
+          ($assert (== (/exit (input service session/id "stdin" "cat")) 0)
+            "a command consumed the shell control input")
+          (let large (input service session/id "large" "head -c 2097152 /dev/zero | tr '\\0' x"))
+          ($assert (== large/exit 0) large/display)
+          (let body (recall_body service/runtime session/id $"${large/id}.sh"))
+          ($assert (== ($str/byte_size body) 1048576) "shell-mode output exceeded its cap")
+          ($assert ($str/ends_with? body "[output truncated at 1 MiB]"))
+          ($assert (== (take_command_attachments service/runtime session/id) []))
+          ($assert (== calls/.get 0) "shell input called the model")
+          ($assert (/ignored (input service session/id "blank" "  ")))
+          ($assert (try (submit service session/id "blocked" 1 "chat") false
+            catch ModeError (== $err/code "mode_open")))
+          ($assert (/closed (input service session/id "exit" "exit")))
+          ($assert ($absent? (mode_state service/runtime/modes session/id)))
+          (command service session/id "/sh   ")
+          ($assert ($str/contains? (/display (input service session/id "fresh" "pwd")) service/runtime/root))
+          (let exited (input service session/id "explicit-exit" "exit 7"))
+          ($assert (&& (== exited/status "failed") (== exited/exit 7)) exited/display)
+          ($assert ($str/contains? (/display (input service session/id "restart-shell" "printf fresh")) "fresh"))
+          ($assert (/closed (input service session/id "quit" " quit ")))
+          (submit service session/id "chat" 1 "hello")
+          (service/controller/watchers/.get .get session/id; .join)
+          ($assert (== calls/.get 1))
+        ensure (close_session_service service)))))
+
+  (it "isolates sessions, deduplicates input and reaps shells on leave or plugin disable" []
+    (isolated this_mod/.path "isolates sessions, deduplicates input and reaps shells on leave or plugin disable"
+      (fn [workspace]
+        (let service (test_service ^workspace workspace ^provider (fn [request] "(Outcome ^^done ^reply \"chat\")")))
+        (try
+          (let a (create_session service))
+          (let b (create_session service))
+          (command service a/id "/sh")
+          (command service b/id "/sh")
+          (input service a/id "a-init" "saved=left; count=0; printf '%s' \"$$\" > a.pid")
+          (input service b/id "b-init" "saved=right; printf '%s' \"$$\" > b.pid")
+          (let once (input service a/id "once" "count=$((count + 1)); printf '%s' \"$count\""))
+          (let replay (input service a/id "once" "count=$((count + 1)); printf '%s' \"$count\""))
+          ($assert (== once/id replay/id))
+          ($assert ($str/contains? (/display (input service a/id "a-read" "printf '%s:%s' \"$saved\" \"$count\"")) "left:1"))
+          ($assert ($str/contains? (/display (input service b/id "b-read" "printf '%s' \"$saved\"")) "right"))
+          (let a_pid ($fs/read_text $"${service/runtime/root}/a.pid"))
+          (let b_pid ($fs/read_text $"${service/runtime/root}/b.pid"))
+          ($assert (/closed (input service a/id "leave" "quit")))
+          (require_gone a_pid)
+          (set_plugin_enabled service/runtime/workspace service/runtime/h "core_commands" false)
+          (for job in service/runtime/modes/jobs/.get job/.join)
+          ($assert ($absent? (mode_state service/runtime/modes b/id)))
+          (require_gone b_pid)
+        ensure (close_session_service service)))))
+
+  (it "cancels a running shell group and starts cleanly on the next input" []
+    (isolated this_mod/.path "cancels a running shell group and starts cleanly on the next input"
+      (fn [workspace]
+        (let service (test_service ^workspace workspace ^provider (fn [request] "(Outcome ^^done ^reply \"chat\")")))
+        (try
+          (let session (create_session service))
+          (command service session/id "/sh")
+          (let mode (mode_state service/runtime/modes session/id))
+          (let busy (submit_mode_input service/runtime/modes session/id mode/instance "busy"
+            "printf '%s' \"$$\" > busy.pid; sleep 30"))
+          (let deadline (+ ($os/monotonic_ms) 5000))
+          (while (! ($fs/exists? $"${service/runtime/root}/busy.pid"))
+            ($assert (< ($os/monotonic_ms) deadline) "shell did not start")
+            ($sleep 1))
+          (let pid ($fs/read_text $"${service/runtime/root}/busy.pid"))
+          (cancel_command service/runtime/commands session/id busy/id)
+          (service/runtime/commands/watchers/.get .get $"${session/id}:${busy/id}"; .join)
+          ($assert (== (/status (command_receipt service/runtime/commands session/id busy/id)) "cancelled"))
+          (require_gone pid)
+          ($assert ($str/contains? (/display (input service session/id "after" "printf recovered")) "recovered"))
+          (input service session/id "timeout-pid" "printf '%s' \"$$\" > timeout.pid")
+          (let timed_pid ($fs/read_text $"${service/runtime/root}/timeout.pid"))
+          (let config_path $"${service/runtime/state_root}/config.gene")
+          (let config ($serde/read_data ($fs/read_text config_path)))
+          (config .put "response_budget" {^timeout_ms 200 ^max_memory_mb 1024})
+          ($fs/write_text_atomic config_path ($serde/write_data config))
+          (let timed (input service session/id "timeout" "sleep 30"))
+          ($assert (|| (== timed/status "cancelled")
+            (&& (== timed/status "failed") ($str/contains? timed/display "eval timeout exceeded"))) timed/display)
+          (require_gone timed_pid)
+          (config .put "response_budget" {^timeout_ms 600000 ^max_memory_mb 1024})
+          ($fs/write_text_atomic config_path ($serde/write_data config))
+          ($assert ($str/contains? (/display (input service session/id "after-timeout" "printf recovered")) "recovered"))
+          (close_mode service/runtime/modes session/id "left")
+        ensure (close_session_service service))))))
+
+(fn main [args] : Int (run_spec args))

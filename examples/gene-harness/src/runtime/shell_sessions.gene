@@ -1,0 +1,89 @@
+(mod shell_sessions)
+(import [CommandResult] ^from "../plugin_api")
+(import [byte_prefix] ^from "../text")
+
+(let IoResource $io/IoResource)
+
+(fn classify_shell [text : Str]
+  (let trimmed ($str/trim text))
+  (if (["exit" "quit" ":exit" ":quit"] .contains? trimmed) (return "leave"))
+  (if (== trimmed "") "ignored" "input"))
+
+(fn shell_quote [text : Str] : Str
+  ($to_str "'" ($str/join ($str/split text "'") "'\"'\"'") "'"))
+
+(fn shell_display [parts, truncated : Bool] : Str
+  (let text ($str/join parts ""))
+  (if_not truncated (return text))
+  (let notice "\n[output truncated at 1 MiB]")
+  ($to_str (byte_prefix text (- 1048576 ($str/byte_size notice))) notice))
+
+(fn close_shell [sessions, session : Str]
+  (let state (sessions/.get .get session))
+  (if ($absent? state) (return nil))
+  state/process/.cancel
+  (for endpoint in state/input
+    endpoint/.IoResource:close)
+  (for endpoint in state/input
+    (await endpoint/.IoResource:wait_closed))
+  # Retain ownership until physical cleanup completes. Budget exhaustion in
+  # an input's ensure must not hide resources from the mode owner's backstop.
+  (sessions/.get .delete session)
+  nil)
+
+(fn close_shells [sessions]
+  (let ids [])
+  (for [id state] in sessions/.get (ids .push ($to_str id)))
+  (for id in ids (close_shell sessions id))
+  nil)
+
+(fn evaluate_shell [sessions, ctx]
+  (var state (sessions/.get .get ctx/session))
+  (if_yes ($absent? state)
+    (let input ($io/pipe))
+    (let channel ($channel ^capacity 128))
+    # A non-interactive POSIX shell keeps cwd and bindings between inputs.
+    # Each eval receives EOF on stdin so programs cannot consume the protocol.
+    (let process ($os/exec_stream_async "/bin/sh" "-s" ^dir ctx/runtime/root
+      ^stdin_pipe input/0 ^stdout_chan channel ^^merge_stderr ^max_bytes 1048576))
+    (set state {^input input ^channel channel ^process process})
+    (sessions/.get .put ctx/session state))
+  (let token ($crypto/random_hex 16))
+  (let marker $"__gene_harness_${token}:")
+  (let status_name $"__gene_harness_status_${token}")
+  (let packet ($to_str
+    "eval " (shell_quote ctx/raw) " </dev/null\n"
+    status_name "=$?\n"
+    "printf '\n" marker "%s\n' \"$" status_name "\"\n"))
+  (let parts [])
+  (var bytes 0)
+  (var first_line true)
+  (var truncated false)
+  (var complete false)
+  (try
+    (await ($io/write_all state/input/1 ($binary/from_str packet)))
+    (loop
+      (let line state/channel/.recv)
+      (if_yes ($str/starts_with? line marker)
+        (let code ($parse/parse_int ($str/slice_bytes line ($str/byte_size marker)
+          (- ($str/byte_size line) ($str/byte_size marker)))))
+        (set complete true)
+        # The protocol contributes the delimiter before its marker. Delimiters
+        # between earlier lines belong to the command's output.
+        (return (CommandResult ^display (shell_display parts truncated)
+          ^status (if (== code 0) "done" "failed") ^exit code ^!attached)))
+      (let text ($to_str (if first_line "" "\n") line))
+      (set first_line false)
+      (let captured (byte_prefix text ($math/max 0 (- 1048576 bytes))))
+      (if (!= captured text) (set truncated true))
+      (if (!= captured "")
+        (parts .push captured)
+        (set bytes (+ bytes ($str/byte_size captured)))
+        (ctx/output captured)))
+  catch ChannelClosed
+    (let result (await state/process))
+    (CommandResult ^display ($to_str (shell_display parts truncated)
+      "\nShell exited; the next input starts a fresh shell.")
+      ^status "failed" ^exit result/status ^!attached)
+  ensure
+    (if_not complete (close_shell sessions ctx/session))))

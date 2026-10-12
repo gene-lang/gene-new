@@ -67,6 +67,16 @@
     (changed manager session "opened")
     (mode_state manager session))))
 
+(fn close_mode_resources [state, session : Str, reason : Str]
+  (scope
+    (let cleanup (spawn ^lane root (scope (state/row/payload/close session reason))))
+    (match cleanup/.join
+      (when (TaskOutcome/ok value) nil)
+      (when (TaskOutcome/error error) ($println $"Input mode cleanup: ${error/message}"))
+      (when (TaskOutcome/panic message) ($println $"Input mode cleanup panic: ${message}"))
+      (else ($println "Input mode cleanup was cancelled."))))
+  nil)
+
 # Called with round/ID held, including by session removal. The command watcher
 # signals completed after persisting its result and releasing its lease, before
 # it takes this gate to clear running. Waiting here therefore cannot deadlock it.
@@ -78,13 +88,7 @@
     (if_not ($absent? state/running)
       (manager/cancel session state/running)
       (while (! state/completed/.get) ($sleep 1)))
-    (scope
-      (let cleanup (spawn ^lane root (scope (state/row/payload/close session reason))))
-      (match cleanup/.join
-        (when (TaskOutcome/ok value) nil)
-        (when (TaskOutcome/error error) ($println $"Input mode cleanup: ${error/message}"))
-        (when (TaskOutcome/panic message) ($println $"Input mode cleanup panic: ${message}"))
-        (else ($println "Input mode cleanup was cancelled."))))
+    (close_mode_resources state session reason)
   ensure
     (manager/states/.get .delete session)
     (changed manager session reason))
@@ -139,6 +143,12 @@
   (with_session_gate manager/runtime/sessions $"round/${session}" (fn []
     (let current (manager/states/.get .get session))
     (if_yes (&& (same? current state) (== state/running record/id))
+      # A failed input may have exhausted its budget before Gene ensure ran.
+      # The owner resets opted-in native state using its own cleanup context.
+      (if_yes (&& (== state/row/payload/reset_on_interrupt true)
+        (|| (== record/status "cancelled")
+          (&& (== record/status "failed") ($absent? record/exit))))
+        (close_mode_resources state session "interrupted"))
       (state .put "running" nil)
       (changed manager session "finished"))))
   nil)

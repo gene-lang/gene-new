@@ -272,13 +272,13 @@ Commands run without the model in their own tasks, with per-session ids.
 | /help [name] | List commands or show documentation |
 | /run code | Evaluate Gene code; display its bounded value, errors and console |
 | /repl | Open a persistent Gene REPL for this session |
-| /sh command | Run a shell command, stream output and show exit status |
+| /sh [command] | Run one shell command, or open shell mode until `exit` or `quit` |
 | /view path[:from-to] | View a file/range, list a directory, or inspect binary metadata |
 | /cancel | Cancel this session's current round or pending questions |
 | /stop | Stop admission, cancel running work, flush and exit |
 | /restart | Stop and restart under the launcher |
 
-/run, /sh and /view can run during a round. Their results attach to the next
+/run, one-shot /sh and /view can run during a round. Their results attach to the next
 user-initiated request after the current round; /view attaches a pointer.
 Other commands remain operator-only. Unknown commands report a closest match.
 `//text` sends the literal `/text` to the model.
@@ -287,6 +287,15 @@ Pass complete code to CLI `run`, or use `run --file FILE` for multiline code.
 Outcome and append_prompt are response-only bindings. Shell commands
 have empty stdin and no terminal. Stored output is capped at 1 MiB and can be
 recalled. File views use 400-line pages.
+
+Bare `/sh` opens a session-specific shell mode. Enter commands directly, then
+`exit` or `quit` to return to chat, or use Leave. Its non-interactive `/bin/sh`
+process starts in the workspace and preserves `cd`, shell variables, exports
+and functions across inputs. The button reads Run while idle and Stop while
+executing. Shell-mode activity stays in the operator transcript and does not
+attach to the next model request. Cancellation or shell exit resets the process;
+the next input starts a fresh shell. Leaving, session removal, plugin withdrawal
+and host shutdown close it.
 
 Stop and restart require confirmation when other sessions have running rounds.
 Shutdown gives cancellation a five-second grace period; an uncooperative
