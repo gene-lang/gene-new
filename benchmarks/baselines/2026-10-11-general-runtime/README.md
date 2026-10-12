@@ -250,7 +250,10 @@ reproduction is in the VM scheduler suite. The rows under Qualification are
 from the runtime with the fix; the benchmark captures were taken just
 before it, and the change is confined to fiber resume. Four further complete
 Harness runs on the fixed build (the qualification run and a three-run
-soak) all passed with no crash report.
+soak) all passed with no crash report. The complete Harness suite was also
+run once under the sanitizer build of the fixed runtime: no sanitizer
+report in 200 examples; three examples failed there on latency bounds the
+slower build cannot meet.
 
 ## Build provenance
 
