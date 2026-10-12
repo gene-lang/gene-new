@@ -394,17 +394,21 @@ millisecond more per turn for every turn already taken, because each walk
 covers a record history that keeps growing. The 100-turn figure used
 throughout is one point on that line.
 
-One option was measured and not taken. Publication exists so that a fiber
-can run on a worker thread under atomic counting, and the default build has
-no worker lane: a root-lane spawn shares its captured graph with nothing on
-another thread. A scratch build that publishes at `spawn` only for
-worker-safe tasks ran the 100-turn probe in 8.59 s and 8.67 s against
-9.23 s and 9.58 s (alternating runs on a busy machine), about 8%. It would
-also stop most of the service's data from being marked shared, which the
-runtime reads elsewhere (whether a released holder re-weakens its
-functions, whether a count is atomic), so it is a scheduler design decision
-rather than an optimization to slip in here. The same scratch build also
-reclaims the published typed instances described under existing issue 4.
+**Publishing only what can leave the lane.** Publication exists so that a
+fiber can run on a worker thread under atomic counting. An actor's handler
+fiber is published only when it is worker-safe (`actorFiber`); a `spawn`
+published its captured graph every time, including for a task that cannot
+leave its lane and shares its scope with code on the same thread. `spawn`
+now follows the actor rule. For a task that stays on its lane this removes
+the walk altogether, and its values are no longer marked shared, so the
+runtime can again re-weaken and reclaim cycles through them (existing issue
+4 below). Five samples per build in one capture on a moderately loaded
+machine: 11.83 s before and 10.94 s after on service time (about 8%), 14.24 s
+and 12.19 s whole-process; the complete Harness suite runs in 285 s instead
+of about 345 s. Every suite passes unchanged, including the VM suite under
+AtomicArc, where worker-safe tasks are still published; no test relied on a
+lane-bound task marking its captures. What this does change is which values
+carry the shared mark, so it is called out in the change log.
 
 What these walks still cost is the walking itself: publication is a third
 of the service profile, the escape scan about an eighth. Each re-reads a
@@ -583,10 +587,11 @@ from this optimization:
    The cause is the shared mark, not a held reference: an instance, its type
    and the scope that declares the type form a cycle, the runtime breaks such
    cycles by re-weakening on release, and it does not do that to a value
-   marked shared. A scratch build that does not publish root-lane spawns
-   (see "Value-graph walks") leaves nothing behind for this program. What it
-   costs a long-running service that spawns from scopes declaring types has
-   not been measured.
+   marked shared. This is fixed for the common case by the last change of
+   the pass (see "Publishing only what can leave the lane"): a task that
+   stays on its lane no longer marks what it captures, and a lifetime test
+   holds this program at zero. A worker-safe task's captures are still
+   marked and would still be kept.
 
    A separate observation from the same helper, which needs no spawn: twenty
    closures made in a top-level `while` loop and pushed onto a top-level List

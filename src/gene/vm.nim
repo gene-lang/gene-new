@@ -21281,7 +21281,14 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               if frame.recycleScope and scopeChainContains(scope, frame.scope):
                 frame.scope.holdCallScope(frame.chunk.localNames)
                 frame.recycleScope = false
-          publishSpawnCapture(scope, body)
+          # Publication prepares a captured graph for another thread. Only a
+          # worker-safe task can leave this lane, as with an actor's handler
+          # fiber (`actorFiber`); a task that stays shares its scope with code
+          # on the same thread, and marking everything it reaches as shared
+          # would cost a walk per spawn and stop the runtime from reclaiming
+          # cycles through those values.
+          if workerSafe:
+            publishSpawnCapture(scope, body)
           let taskParent =
             if workerSafe: snapshotSpawnScope(scope, body)
             else: scope

@@ -1492,5 +1492,18 @@ when defined(geneRcStats):
         "(var kept []) (var round 0) " &
         "(while (< round 20) (for n in nodes (var same n) (var head ($head n)) " &
         "(kept .push same)) (set round (+ round 1))) ($size kept)") == 0
+
+    test "typed instances captured by a spawn that stays on its lane are reclaimed":
+      # Marking them shared used to stop the runtime re-weakening the cycle of
+      # instance, type and declaring scope, and all forty-one objects stayed.
+      check leakedManaged(
+        "(type Box ^props {^value Any}) " &
+        "(var boxes []) (var i 0) " &
+        "(while (< i 20) (boxes .push (Box ^value [i])) (set i (+ i 1))) " &
+        "(var task (spawn ^lane root ($size boxes))) (await task) " &
+        "(var total 0) (var round 0) " &
+        "(while (< round 20) " &
+        "(for b in boxes (set total (+ total ($size b/value)))) " &
+        "(set round (+ round 1))) total") == 0
 else:
   echo "test_rc: compile with -d:geneRcStats to run leak assertions; skipping."
