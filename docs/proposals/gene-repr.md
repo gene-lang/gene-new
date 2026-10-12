@@ -665,3 +665,167 @@ Use the same test data and report cold/warm cache conditions, platform, compiler
 > **Gene code and data share one structural model.** Binary Gene extends that model into a portable serialized representation. A simple codec can reduce text parsing overhead; a validated immutable `FrozenGene` view can enable selective reads and cheap structural sharing without materializing the whole tree. Text and structural editors can operate over one document model, with optional presentation metadata for lossless source editing. In ordinary development, `.gene` remains the source of truth while an optional Gene-native build/watch workflow publishes and verifies derived `.gnb` files. Compilation remains Gene compilation, and versioned binary persistence remains distinct from live VM state or bytecode caches.
 
 **One structure; textual or binary representation; lazy views where useful; source semantics preserved.**
+
+---
+
+## Review comments (2026-10-12)
+
+Reviewed against the tree at `bb22e64b`. These comments are about scope and premises; wording and layout details are left alone.
+
+**Summary.** The proposal bundles three projects that have different answers: faster code startup, a structural editor, and selective access to large data. Measured here, the first is not worth building. The second is better served by text plus the source index that already exists. Only the third needs binary bytes, and it has no named consumer yet. I would narrow the proposal to the third and gate it on a consumer.
+
+### R1. The startup question in §13.1 can be answered today, and the answer is small
+
+The text reader is about 4% of fresh-process startup for a mid-size script, so that is the ceiling on what a binary source format can save.
+
+Reader and digest cost, in-process (release build, macOS arm64; p50 of 50 rounds after 10 warm-up rounds, timing `readAllWithLocs` and `sha256Hex` on the same bytes):
+
+| File | Lines | Bytes | Read p50 | SHA-256 p50 |
+| --- | ---: | ---: | ---: | ---: |
+| `examples/events.gene` | 328 | 13,310 | 0.30 ms | 0.07 ms |
+| `examples/life/src/body/world_network.gene` | 900 | 46,394 | 1.30 ms | 0.22 ms |
+| `examples/gene-harness/src/kernel.gene` | 1,545 | 64,216 | 1.72 ms | 0.28 ms |
+| `examples/gene-harness/client/main.gene` | 1,909 | 77,212 | 2.24 ms | 0.34 ms |
+| `examples/cordis/src/runtime.gene` | 3,563 | 145,948 | 4.16 ms | 0.66 ms |
+
+Fresh-process launches of the release `bin/gene` (p50 of 40 launches after 5 warm-up; `/usr/bin/true` costs 1.7 ms through the same driver):
+
+| Command | p50 | p95 |
+| --- | ---: | ---: |
+| `gene run` of a one-line file | 6.4 ms | 7.4 ms |
+| `gene run examples/events.gene` (328 lines) | 7.3 ms | 9.4 ms |
+
+What this says:
+
+- The reader is 0.30 ms of the 7.3 ms. The whole cost of 328 lines over one line is 0.9 ms.
+- With a decoder 3.76x faster than the reader (the figure the retired packed format measured, see R2), binary saves 0.22 ms, which is 3% of startup.
+- Source-backed mode S pays 0.07 ms of that back for the digest, leaving 0.15 ms, or 2%.
+- The p50-to-p95 spread of the same command is 2.1 ms, so §13.1's own rule against advertising differences inside measurement noise would apply.
+- A 500-line file scales to roughly 0.5–0.7 ms of reading.
+
+This is one machine, one script run end to end, and a scratch probe that is not checked in. It sets the order of magnitude; it does not replace a benchmark.
+
+I would drop code startup as a goal: Goal 2 as it applies to source files, mode S, §8, Phase A2, and most of §13.1. The build, watch, and freshness machinery in §8 exists only for this case. If code startup becomes a concern, the larger terms are runtime initialization (6.4 ms before any user code) and compilation. The artifact that skips compilation already exists: `gene build` reuses executable GIR by derivation identity (`src/gene/gir_codec.nim`, `src/gene/build.nim`), with source snapshots and digest verification already in place. §8 would duplicate that pipeline for a smaller saving.
+
+### R2. A packed format was already built, measured, and retired
+
+`2ca4eb43` implemented a versioned, comment-preserving packed encoding of Gene programs (`program_document.nim`, `packed_format.nim`), with round-trip tests over the repository's `.gene` corpus and a benchmark that measured loading at 3.76x faster than `readAll`. `0b44059b` (2026-08-13) removed it because nothing consumed it.
+
+The Status line is accurate about the tree, but the proposal should cite that work and say what has changed since August. Two things carry over:
+
+- Phase A and most of Phase B are recoverable from git, including the value inventory §2 leaves open. That encoder covered nil, void, bool, int64, float, string, bytes, char, symbol, node, list, map, and hash map, and rejected regex, range, date, time, datetime, timezone, duration, and big integers at encode time. The §2 table lists none of the rejected kinds.
+- It was retired for lack of a consumer. That is the question this proposal has to answer first.
+
+### R3. Source mode has to reproduce `SourceUnit`, not a value tree
+
+The compiler does not take forms. It takes a `SourceUnit` (`src/gene/reader.nim:92`): the forms, per-form locations, a `locs` table and a `wraps` table keyed by each value's bits (its identity), and the full source text, which is kept so an embedded block can slice the author's exact characters.
+
+- Locations are required in the source profile. §4 puts spans in an optional editing/diagnostics section; without them every compile error loses its line.
+- Phase D option 1 has to allocate the whole tree and rebuild both identity-keyed tables. That is the reader's allocation work minus lexing, which fits a 3.76x ceiling rather than an order of magnitude.
+- Phase D option 2 has no value identity to key on, so the compiler's location lookup has to change along with its traversal.
+- The `.gnb` has to embed the source text or re-read the `.gene`.
+
+### R4. The cost of FrozenGene is in the VM, and the proposal does not size it
+
+§5 shows `root/name` and `root/children` working on a view. For that to hold, every operation that accepts a node, list, or map needs either a second implementation for a byte-backed kind or a materialization on access: path access, iteration, equality, hashing, printing, matching, serde, freezing, and publication to workers. Phase C lists buffer ownership and accessors, which is the small part of that work.
+
+I would make the v1 view an explicit handle with its own accessors (`get`, `children`, `materialize`) that return ordinary values, and state that it is not substitutable for a node. That leaves the VM untouched and still covers the 100 MB selective-read case.
+
+"Frozen" already names deeply immutable values in Gene (`docs/spec/frozen-graph-proofs.md`). A byte-backed view is a different thing, and a different name avoids the question of whether a `FrozenGene` is frozen.
+
+### R5. Data mode should be defined against serde
+
+Gene's durable data path today is `$serde` (`write_data` / `read_data`) for values and `$store` for named records, both described in `docs/stdlib.md` under "Serialization and persistence". The Harness reads its config and web session state through `$serde/read_data`. The proposal does not mention either.
+
+If Binary Gene data encodes raw reader output, it sits beside serde as a second data format with a different value model, and R2's inventory shows the gaps. If it encodes serde's model, the tag inventory comes from serde rather than from the reader, and "data mode" becomes "a binary encoding for `$serde`". That is smaller, clearer, and comes with callers already attached. I did not check how `$store` encodes its records, so whether it is a second caller is open.
+
+### R6. The editor goal is better served by text and the existing source index
+
+`src/tools/source_index.nim`, behind `gene view`, is already a lazy structural view. It stores token ranges over the text, derives children on demand, and keeps comments, duplicate properties, and exact byte spans. That is the concrete-syntax layer §3.3 and §7 say must be added to `.gnb` before editing can be lossless. Text has it for free.
+
+A `.gnb`-primary editor also gives up diff, review, and merge. I would move §7 and Phase E to a separate proposal that builds structural editing as span edits over text, and remove the editing sections from the format.
+
+### R7. What I would keep
+
+Selective access to large data (§5, and the 100 MB row in §13.2) is the one case that needs binary bytes. The design for it is sound: flat indexed layout, eager bounded validation, no cycles, atomic whole-file writes.
+
+Before building it, name the consumer and measure its real file: the cost of the text read against what the consumer actually needs from it. Without a consumer, this ends where the August format did.
+
+### R8. Potential direction: a slot-based layout for random access
+
+This is a candidate replacement for the table layout in §4, worked out in discussion after the review. It is a direction to evaluate, not a decision. It targets the large-data case in R7 and does not change the startup numbers in R1.
+
+The record header and the keys-then-values ordering are the owner's design. Items marked *(review)* are the review's additions to it.
+
+#### Slots
+
+Everything after a record header is an 8-byte little-endian slot. A slot holds either a direct value or the address of a record. The encoding follows the VM's NaN-box in `src/gene/types.nim`, with the pointer range given a new meaning: the VM uses it for heap pointers, a file never stores one, so in a file that range means "file offset".
+
+| Slot bits | Meaning |
+| --- | --- |
+| All 64 bits zero | nil |
+| Top 16 bits below `0xFFF1` | An IEEE float64, stored directly |
+| Top 16 bits `0xFFF1`–`0xFFF6` | An immediate: void, bool, small integer, char, `+0.0`, symbol |
+| Top 16 bits equal to the address tag | An address: the low 48 bits are the file offset of a record |
+| Other values from `0xFFF7` up | Reserved |
+
+Telling a direct value from an address is one comparison. Four rules make that sound:
+
+- *(review)* **Tag values belong to the format, not the VM.** They start equal to today's VM values, so nil, bool, integer, char, and float decode by copy. The numbers are written into the format spec, so the VM can repack its tags without breaking files.
+- *(review)* **One address tag.** The record header already says what a record is, so a slot only has to say "address". The header is the single authority on type. The rest of the pointer range stays reserved; short inline strings are the obvious later use.
+- *(review)* **Symbols are remapped.** In the VM a symbol's payload is a runtime intern id. In a file it is an index into the file's symbol table, and the reader maps it to a runtime symbol.
+- *(review)* **Floats have two special cases.** The writer emits one canonical positive NaN, because a negative NaN falls in the tag range and would read as an address. `+0.0` has its own tag, as in the VM, because all-zero bits mean nil.
+
+Integers that fit the 48-bit payload are inline. Larger ones are records.
+
+#### Records
+
+Every record starts with one 8-byte header, so records stay 8-byte aligned:
+
+```text
+header: [type:2 | nprops:3 | nchildren:3]
+
+node:   header  head  key1..keyK  value1..valueK  child1..childN
+map:    header        key1..keyK  value1..valueK                  (nchildren unused)
+array:  header                                    child1..childN  (nprops unused)
+string: [type:2 | byte length:6]  bytes, padded to 8
+```
+
+Node, map, and array are the same record with different regions in use, so one reader routine covers all three. Every position is computed from the header with no hop: child *i* of a node is at slot `2 + 2K + i`, value *j* of a map is at slot `1 + K + j`, and item *i* of an array is at slot `1 + i`. Other built-in types follow the same pattern, a header and then slots or a padded payload.
+
+- *(review)* **The node's head is the first slot after the header.** The original sketch had no place for it.
+- *(review)* **A count of `0xFFFFFF` means the real count is in an extra slot after the header**, property count first if both overflow. Three bytes cap a count at 16,777,215. An array that long is about 128 MB of slots, which is within reach of the large-data case, and adding the escape later would be a format break.
+- *(review)* **Strings and bytes fuse the two 3-byte fields into one 48-bit byte length.** A 3-byte length would cap a payload at 16 MB.
+- Node and property-map keys are symbol slots. General-map (`{{...}}`) keys can be any slot. Both keep insertion order and are scanned linearly, as the runtime's `PropTable` is.
+
+#### Addresses only point backward
+
+*(review)* The writer emits children before parents and the root last, and puts the root's address in a trailer.
+
+- Cycles are impossible by construction, because every hop strictly decreases the offset. §10's cycle detection becomes one comparison per slot.
+- Lazy validation is safe and bounded, so opening a 100 MB file costs constant time instead of a full validation pass.
+- Shared subtrees need no extra machinery (§4.3).
+- An edit can append a new root that reuses old subtrees, which covers most of what §6.2 defers.
+
+Symbol slots hold indexes, not addresses, so the symbol table can be written last and found through the trailer.
+
+#### Deferred to later type codes
+
+The 2-byte type leaves room to add these without a format break, so neither needs deciding now:
+
+- **An indexed map.** A linear key scan is fine for small maps and slow for very large ones.
+- **A node with a shared key vector.** Keys are repeated in every node. A million rows with the same five properties carry 40 MB of duplicated keys. A node type that points to one shared key record would remove that.
+
+#### Costs to accept
+
+- At 8 bytes per atom, a source file is larger as `.gnb` than as text. That is acceptable for data, which is the case this layout serves.
+- The writer works bottom-up. That is natural when serializing an in-memory tree, and it rules out streaming a document whose children are not known yet.
+
+#### Still open
+
+- The concrete tag and type code assignments.
+- Absolute backward offsets or relative ones. Relative offsets make a subtree relocatable, apart from its symbol references.
+- Record layouts for the remaining built-in types. R2 lists the ones the August encoder rejected: regex, range, the temporal types, and big integers.
+- The trailer's contents (root address, symbol table, format version) and how it relates to the header in §4.
+
+This layout would settle four rows of §14: indexed slots over streaming TLV, fixed-width references, lazy validation over eager, and shared acyclic references allowed.
