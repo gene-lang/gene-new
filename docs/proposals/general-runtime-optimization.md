@@ -186,21 +186,21 @@ calibration:
 
 | Workload | Before ms/batch | After ms/batch | Speedup | After / Python |
 | --- | ---: | ---: | ---: | ---: |
-| Integer loop | 2.805 | 0.908 | 3.09x | 4.94 |
-| Closure dispatch | 7.219 | 2.809 | 2.57x | 6.99 |
-| Filter/group/sort records | 10.344 | 4.215 | 2.45x | 4.78 |
-| Text indexing | 27.656 | 15.250 | 1.81x | 9.07 |
-| JSON round trip | 6.078 | 2.645 | 2.30x | 0.96 |
-| Event replay | 11.750 | 4.504 | 2.61x | 7.06 |
+| Integer loop | 2.707 | 0.872 | 3.10x | 4.81 |
+| Closure dispatch | 6.992 | 2.781 | 2.51x | 7.02 |
+| Filter/group/sort records | 10.078 | 4.086 | 2.47x | 4.63 |
+| Text indexing | 26.750 | 14.469 | 1.85x | 8.71 |
+| JSON round trip | 5.867 | 2.543 | 2.31x | 0.93 |
+| Event replay | 11.484 | 4.402 | 2.61x | 6.99 |
 
-This capture has `==`/`!=` lowered, the slice rule and the first value-graph
-walk changes below. The last of those (in-place reads) came after it and
-does not touch these workloads. While the lowering was withdrawn event
-replay read 2.29x; nothing else moved beyond run-to-run variation.
+This capture is of the final runtime, with everything described below.
+While the `==` lowering was withdrawn event replay read 2.29x; the nested
+loop change moved text indexing from about 1.81x to 1.85x; nothing else
+moved beyond run-to-run variation after the first part of the pass.
 
 Verification for this pass, on the final runtime: 1,688 broad-suite cases,
-881 language specs (35 new: 33 pinning what a shortcut could change, 2
-pinning the slice rule), 402 VM cases under both ORC and AtomicArc, 87
+892 language specs (46 new: 44 pinning what a shortcut could change, 2
+pinning the slice rule), 402 VM cases under both ORC and AtomicArc, 89
 lifetime cases, and the complete Harness suite (200 cases) run from a clean
 export. AddressSanitizer (lifetime suite and 390 VM cases, no reports),
 Cordis, benchmark tooling and wasm ABI cases also pass on it. The evidence

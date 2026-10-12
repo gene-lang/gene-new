@@ -2,8 +2,7 @@
   "base_revision": "1e3f539",
   "executables_sha256": {
     "baseline": "7b0ccfa29b7df4ff276ad05debc3e17d526069ea6f6c006c35378ba0b53b41f1",
-    "optimized": "f63329afc563290379790918bda062a2ca6fbc8bea497a9867dc2e7018260627",
-    "optimized_at_general_capture": "58ad8e926c9997dbc7f043ba3356c7af8a9db3f8d7673db39a8faff6f1372cb6"
+    "optimized": "f63329afc563290379790918bda062a2ca6fbc8bea497a9867dc2e7018260627"
   },
   "source_sha256_of_measured_tree": {
     "src/gene/vm.nim": "d55907eeabbf634ea24af7aa4208ff1a03d4228fd0641509aa90ca420c722db0",

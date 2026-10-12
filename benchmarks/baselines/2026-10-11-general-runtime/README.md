@@ -14,27 +14,24 @@ order, 5,000 input items per batch, 300 ms calibration per workload
 
 | Workload | Baseline ms/batch | Optimized ms/batch | Baseline / optimized | Optimized / Python |
 | --- | ---: | ---: | ---: | ---: |
-| Integer loop | 2.805 | 0.908 | 3.09x | 4.94 |
-| Closure dispatch | 7.219 | 2.809 | 2.57x | 6.99 |
-| Filter/group/sort records | 10.344 | 4.215 | 2.45x | 4.78 |
-| Text indexing | 27.656 | 15.250 | 1.81x | 9.07 |
-| JSON round trip | 6.078 | 2.645 | 2.30x | 0.96 |
-| Event replay | 11.750 | 4.504 | 2.61x | 7.06 |
+| Integer loop | 2.707 | 0.872 | 3.10x | 4.81 |
+| Closure dispatch | 6.992 | 2.781 | 2.51x | 7.02 |
+| Filter/group/sort records | 10.078 | 4.086 | 2.47x | 4.63 |
+| Text indexing | 26.750 | 14.469 | 1.85x | 8.71 |
+| JSON round trip | 5.867 | 2.543 | 2.31x | 0.93 |
+| Event replay | 11.484 | 4.402 | 2.61x | 6.99 |
 
-This capture was taken two changes before the final runtime. Those changes
-touch only spawn publication, the walks' visited sets and the counting of
-published objects, none of which these workloads exercise. Two recaptures on
-a less quiet machine agree with the table within their wider spread and are
-not recorded: 3.20x, 2.55x, 2.42x, 1.73x, 2.22x and 2.47x after the first
-change (samples of one build up to 1.7x apart), and 2.81x, 2.47x, 2.52x,
-1.80x, 2.27x and 2.38x on the final runtime (up to 2.3x apart).
+This capture is of the final runtime, taken on a quiet machine after the
+last change (samples of one build within 14% of each other). Earlier
+captures in this directory's history bracket it: 3.18x, 2.55x, 2.38x, 1.80x,
+2.32x and 2.29x while the `==` lowering was withdrawn, and 3.09x, 2.57x,
+2.45x, 1.81x, 2.30x and 2.61x before the last three changes.
 
 The last change of the pass lets a loop body that contains only reusable
 loops reuse its own iteration scope. Its kernel
 ([differential/loop_kernels.gene](differential/loop_kernels.gene), 200 rows
 of three items) runs in 200-214 ms instead of 230-239 ms, and a before/after
-capture of the workloads on a noisy machine reads 15.63 ms to 14.69 ms for
-text indexing with the other five within 4% either way.
+capture of the workloads reads 15.63 ms to 14.69 ms for text indexing.
 
 Every result matches the baseline runtime and Python at sizes 1, 17, 257 and
 2048 and in every timed process. These are separate workloads, not a weighted
@@ -103,10 +100,9 @@ entry, `for` iteration, backward loop jump or `continue`, never inside
 straight-line code. With that rule the probe loses nothing and the spec
 passes with `==` and `!=` lowered, so the lowering is back.
 
-The table under Results is from that final runtime. The capture taken while
-the lowering was withdrawn read 3.18x, 2.55x, 2.38x, 1.80x, 2.32x and 2.29x
-in the same order; event replay, the one workload with `==` in its timed
-loop, is the only one that moved beyond run-to-run variation.
+Event replay, the one workload with `==` in its timed loop, is the only one
+the lowering moved beyond run-to-run variation: 2.29x without it, 2.5-2.6x
+with it.
 
 ## Independent rebuild
 
