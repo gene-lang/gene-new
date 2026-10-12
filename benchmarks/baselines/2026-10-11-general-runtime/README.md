@@ -248,7 +248,9 @@ from the function prototype, or from a table of names that are never freed)
 leaves the sanitizer with nothing to report on the spec, and a short
 reproduction is in the VM scheduler suite. The rows under Qualification are
 from the runtime with the fix; the benchmark captures were taken just
-before it, and the change is confined to fiber resume.
+before it, and the change is confined to fiber resume. Four further complete
+Harness runs on the fixed build (the qualification run and a three-run
+soak) all passed with no crash report.
 
 ## Build provenance
 
