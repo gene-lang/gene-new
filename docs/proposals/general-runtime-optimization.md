@@ -186,19 +186,19 @@ calibration:
 
 | Workload | Before ms/batch | After ms/batch | Speedup | After / Python |
 | --- | ---: | ---: | ---: | ---: |
-| Integer loop | 2.844 | 0.927 | 3.07x | 5.01 |
-| Closure dispatch | 7.289 | 2.875 | 2.54x | 7.16 |
-| Filter/group/sort records | 10.531 | 4.363 | 2.41x | 4.81 |
-| Text indexing | 28.188 | 15.422 | 1.83x | 9.06 |
-| JSON round trip | 6.180 | 2.719 | 2.27x | 0.96 |
-| Event replay | 11.984 | 4.781 | 2.51x | 7.49 |
+| Integer loop | 2.805 | 0.908 | 3.09x | 4.94 |
+| Closure dispatch | 7.219 | 2.809 | 2.57x | 6.99 |
+| Filter/group/sort records | 10.344 | 4.215 | 2.45x | 4.78 |
+| Text indexing | 27.656 | 15.250 | 1.81x | 9.07 |
+| JSON round trip | 6.078 | 2.645 | 2.30x | 0.96 |
+| Event replay | 11.750 | 4.504 | 2.61x | 7.06 |
 
-This is the final runtime, with `==`/`!=` lowered and the slice rule below.
-While the lowering was withdrawn event replay read 2.29x; nothing else moved
-beyond run-to-run variation.
+This is the final runtime, with `==`/`!=` lowered, the slice rule and the
+cheaper value-graph walks below. While the lowering was withdrawn event
+replay read 2.29x; nothing else moved beyond run-to-run variation.
 
 Verification for this pass, on the final runtime: 1,688 broad-suite cases,
-876 language specs (30 new: 28 pinning what a shortcut could change, 2
+881 language specs (35 new: 33 pinning what a shortcut could change, 2
 pinning the slice rule), 402 VM cases under both ORC and AtomicArc, 87
 lifetime cases, and the complete Harness suite (200 cases) run from a clean
 export. AddressSanitizer (lifetime suite and 390 VM cases, no reports),
@@ -318,6 +318,57 @@ With that rule the probe loses nothing, the spec that hung passes with
 `==`/`!=` lowered, and two specs pin the rule: straight-line read-then-update
 code is not split, and every loop and recursion form still yields a spent
 slice to a peer.
+
+### Value-graph walks
+
+With the slice rule in, the service profile was three walks over the same
+large values: spawn publication (26% of samples), the weak-function escape
+scan behind every store and return (20%), and the tail-call capture check
+(18%). About 18% of all samples were hash-set bookkeeping inside them. None
+of the walks could be skipped outright; each got cheaper.
+
+- **A reason nobody read.** When a tail-marked call cannot reuse its frame
+  the VM works out why, which includes the capture walk over every bound
+  value, and hands the answer to the tail-call statistics and the
+  `--report_tail_fallbacks` report. Both are off by default. The reason is
+  now computed only when one of them is on.
+- **A visited set that is emptied by one increment.** The escape scan and
+  the capture walk keep the first sixteen containers inline and used to put
+  the rest in a fresh `HashSet`, growing and rehashing it on every store of
+  a large value. `StampedSet` (`types.nim`) is an open-addressing table whose
+  slots carry a stamp; a new walk bumps the stamp and reuses the table. Each
+  thread keeps one for the escape scan and one for the capture walk. Both
+  walks only read, so nothing can start a second one inside them; a flag
+  still sends a nested walk to its own `HashSet`. The escape walk proper,
+  which mutates and can release values, keeps a private set as before.
+- **Leaves are not remembered during publication.** Publication inserted
+  every value into two hash sets, immediates included. An immediate has
+  nothing to publish and is skipped. A Str, a wide Int and a native function
+  have no children and marking them shared is idempotent, so they are marked
+  and not entered in either set. The two sets are `StampedSet`s now, and the
+  thread reuses one pair across spawns instead of rebuilding it for the
+  whole reachable graph each time.
+
+The count fast paths also take their shared-mark test from one template
+(`countsInPlace`), which is a no-op today: every build compiles with
+threads, so a published object still counts atomically through the full
+body.
+
+Service median, three samples per build in one capture: 14.87 s before
+these changes, 13.82 s with the first two, 12.29 s with the leaf rule. The
+final capture, with the reused publication sets as well, reads 15.50 s
+before and 11.75 s after (1.32x), and 26.68 s on the tree this pass started
+from: 2.27x on service time overall, 2.56x on whole-process time. The
+complete Harness suite runs in 407 s instead of 527 s. Five specs put more than sixteen
+containers in one graph for each walk (a function forty containers deep in
+a stored value, a stored ring with a shared part, a tail call passing a
+large value that holds a closure over the caller, repeated spawns over a
+captured List, and a large value stored twice).
+
+What these walks still cost is the walking itself: publication is a third
+of the service profile, the escape scan about an eighth. Each re-reads a
+graph that has not changed since the last store or spawn, and avoiding that
+needs a record of what changed, which no container keeps today.
 
 ### What is still slow
 

@@ -1620,7 +1620,7 @@ proc isObjectTagged(v: Value): bool {.inline.} =
   let tag = v.bits shr TAG_SHIFT
   tag == OBJECT_TAG or tag == CYCLE_OBJECT_TAG
 
-proc isManaged(v: Value): bool {.inline.} =
+proc isManaged*(v: Value): bool {.inline.} =
   (v.bits shr TAG_SHIFT) >= MANAGED_MIN
 
 proc isImmediateFloat(v: Value): bool {.inline.} =
@@ -2611,15 +2611,76 @@ proc pinLegacyManagedScopes*(scopes: openArray[Scope]) =
       markSharedFlag(current.retirementPublished)
       current = current.parent
 
-proc markSharedBits(bits: uint64, seen: var HashSet[uint64])
+type
+  StampedSet* = object
+    ## A set of object addresses that is emptied by one increment, so a walk
+    ## that runs for every stored value can reuse it without clearing or
+    ## reallocating. A slot belongs to the current walk when its stamp matches.
+    keys: seq[uint64]
+    stamps: seq[uint32]
+    stamp: uint32
+    used: int
+    shift: int
 
-proc markObjectSharedGraph(data: GeneObjectData, seen: var HashSet[uint64]) =
+proc reset*(s: var StampedSet) =
+  ## Empty the set for a new walk. The table itself is allocated on first use.
+  if s.keys.len > 1 shl 18:
+    # One very large graph should not pin its table for the thread's life.
+    s.keys = @[]
+    s.stamps = @[]
+  s.used = 0
+  if s.stamp == high(uint32):
+    # Stamps written before the wrap must stop matching.
+    for i in 0 ..< s.stamps.len:
+      s.stamps[i] = 0
+    s.stamp = 0
+  inc s.stamp
+
+proc grow(s: var StampedSet) =
+  if s.keys.len == 0:
+    s.keys = newSeq[uint64](64)
+    s.stamps = newSeq[uint32](64)
+    s.shift = 64 - 6
+    if s.stamp == 0:
+      s.stamp = 1
+    return
+  var keys = newSeq[uint64](s.keys.len * 2)
+  var stamps = newSeq[uint32](s.keys.len * 2)
+  let shift = s.shift - 1
+  let mask = keys.len - 1
+  for i in 0 ..< s.keys.len:
+    if s.stamps[i] == s.stamp:
+      var slot = int((s.keys[i] * 0x9E3779B97F4A7C15'u64) shr shift)
+      while stamps[slot] == s.stamp:
+        slot = (slot + 1) and mask
+      stamps[slot] = s.stamp
+      keys[slot] = s.keys[i]
+  s.keys = move keys
+  s.stamps = move stamps
+  s.shift = shift
+
+proc containsOrIncl*(s: var StampedSet, key: uint64): bool =
+  if s.used * 2 >= s.keys.len:
+    s.grow()
+  let mask = s.keys.len - 1
+  var slot = int((key * 0x9E3779B97F4A7C15'u64) shr s.shift)
+  while s.stamps[slot] == s.stamp:
+    if s.keys[slot] == key:
+      return true
+    slot = (slot + 1) and mask
+  s.stamps[slot] = s.stamp
+  s.keys[slot] = key
+  inc s.used
+  false
+
+proc markSharedBits(bits: uint64, seen: var StampedSet)
+
+proc markObjectSharedGraph(data: GeneObjectData, seen: var StampedSet) =
   if data == nil:
     return
   let key = objectPayload(data)
-  if seen.contains(key):
+  if seen.containsOrIncl(key):
     return
-  seen.incl key
   markObjectShared(data)
   block:
     # Private compiler scopes also need publication pins in ordinary builds:
@@ -2741,18 +2802,27 @@ proc markObjectSharedGraph(data: GeneObjectData, seen: var HashSet[uint64]) =
     forObjectEdges(data, edgeBits):
       markSharedBits(edgeBits, seen)
 
-proc markSharedBits(bits: uint64, seen: var HashSet[uint64]) =
+proc markSharedBits(bits: uint64, seen: var StampedSet) =
   let tag = bits shr TAG_SHIFT
   if tag < MANAGED_MIN:
     return
-  if seen.contains(bits):
-    return
-  seen.incl bits
+  # A leaf has nothing below it and marking is idempotent, so it is marked
+  # without an entry in the visited set; most of a data graph is leaves.
   case tag
   of STRING_TAG:
     markManualShared(cast[ptr GeneString](bits and PAYLOAD_MASK))
+    return
   of INT64_TAG:
     markManualShared(cast[ptr GeneInt64](bits and PAYLOAD_MASK))
+    return
+  of NATIVE_FN_TAG:
+    markManualShared(cast[ptr GeneNativeFn](bits and PAYLOAD_MASK))
+    return
+  else:
+    discard
+  if seen.containsOrIncl(bits):
+    return
+  case tag
   of LIST_TAG:
     let p = cast[ptr GeneList](bits and PAYLOAD_MASK)
     markManualShared(p)
@@ -2792,8 +2862,6 @@ proc markSharedBits(bits: uint64, seen: var HashSet[uint64]) =
     markManualShared(p)
     for item in p.errorTypes:
       markSharedBits(item.bits, seen)
-  of NATIVE_FN_TAG:
-    markManualShared(cast[ptr GeneNativeFn](bits and PAYLOAD_MASK))
   of CYCLE_OBJECT_TAG, OBJECT_TAG:
     markObjectSharedGraph(
       cast[GeneObjectData](cast[pointer](bits and PAYLOAD_MASK)), seen)
@@ -2805,7 +2873,11 @@ type SharedValuePublication* = object
   ## Keep separate from VM Scope/code visitation: marking does not walk those
   ## edges. Never reuse across publications or mutations, since a shared
   ## container may acquire children that have not yet been published.
-  seen: HashSet[uint64]
+  seen: StampedSet
+
+proc reset*(publication: var SharedValuePublication) =
+  ## Forget one publication so the next can reuse this scratch state.
+  publication.seen.reset()
 
 proc markSharedValue*(value: Value, publication: var SharedValuePublication) =
   markSharedBits(value.bits, publication.seen)
@@ -2839,45 +2911,55 @@ proc publicationValueChildren*(value: Value): seq[Value] =
         rcRetain(weakBits)
         result.add Value(bits: weakBits)
 
+template countsInPlace(p: untyped): bool =
+  ## Whether this object's count is an ordinary integer: always in a build
+  ## whose values stay on one thread, where the shared mark changes nothing
+  ## about counting, and for an unpublished object otherwise. A program that
+  ## spawns publishes most of its data, so testing the mark here would send
+  ## nearly every count through the full body for no reason.
+  when threadedRc: not isSharedFlag(p.shared)
+  else: true
+
 proc rcRetain(bits: uint64) =
-  ## An unshared manual object's count is bumped in place. A shared one needs
-  ## the atomic path, and a Node carrying error evidence may have to restore
-  ## its environment; both, and every object kind, go to the full body.
+  ## A manual object whose count is an ordinary integer is bumped in place. A
+  ## published one in a threaded build needs the atomic path, and a Node
+  ## carrying error evidence may have to restore its environment; both, and
+  ## every object kind, go to the full body.
   let payload = bits and PAYLOAD_MASK
   case bits shr TAG_SHIFT
   of STRING_TAG:
     let p = cast[ptr GeneString](payload)
-    if not isSharedFlag(p.shared):
+    if countsInPlace(p):
       p.refCount = p.refCount +% 1
       return
   of INT64_TAG:
     let p = cast[ptr GeneInt64](payload)
-    if not isSharedFlag(p.shared):
+    if countsInPlace(p):
       p.refCount = p.refCount +% 1
       return
   of LIST_TAG:
     let p = cast[ptr GeneList](payload)
-    if not isSharedFlag(p.shared):
+    if countsInPlace(p):
       p.refCount = p.refCount +% 1
       return
   of MAP_TAG:
     let p = cast[ptr GeneMap](payload)
-    if not isSharedFlag(p.shared):
+    if countsInPlace(p):
       p.refCount = p.refCount +% 1
       return
   of NODE_TAG:
     let p = cast[ptr GeneNode](payload)
-    if not isSharedFlag(p.shared) and p.errorEvidence == nil:
+    if countsInPlace(p) and p.errorEvidence == nil:
       p.refCount = p.refCount +% 1
       return
   of FUNCTION_TAG:
     let p = cast[ptr GeneFunction](payload)
-    if not isSharedFlag(p.shared):
+    if countsInPlace(p):
       p.refCount = p.refCount +% 1
       return
   of NATIVE_FN_TAG:
     let p = cast[ptr GeneNativeFn](payload)
-    if not isSharedFlag(p.shared):
+    if countsInPlace(p):
       p.refCount = p.refCount +% 1
       return
   else:
@@ -4350,8 +4432,8 @@ proc weakenEscapedMapItems(p: ptr GeneMap) =
     weakenOwnedFunctions(candidates)
 
 proc rcRelease(bits: uint64) =
-  ## Most releases leave the object alive. For an unshared manual object with
-  ## no release-time bookkeeping that is a single decrement: no call is made,
+  ## Most releases leave the object alive. For a manual object that counts in
+  ## place and has no release-time bookkeeping that is a single decrement: no call is made,
   ## so no pending-exception check can cut it short. The count is known to
   ## exceed one, so the unchecked decrement cannot wrap.
   let payload = bits and PAYLOAD_MASK
@@ -4359,42 +4441,42 @@ proc rcRelease(bits: uint64) =
     case bits shr TAG_SHIFT
     of STRING_TAG:
       let p = cast[ptr GeneString](payload)
-      if not isSharedFlag(p.shared) and p.refCount > 1:
+      if countsInPlace(p) and p.refCount > 1:
         p.refCount = p.refCount -% 1
         return
     of INT64_TAG:
       let p = cast[ptr GeneInt64](payload)
-      if not isSharedFlag(p.shared) and p.refCount > 1:
+      if countsInPlace(p) and p.refCount > 1:
         p.refCount = p.refCount -% 1
         return
     of LIST_TAG:
       let p = cast[ptr GeneList](payload)
-      if not isSharedFlag(p.shared) and p.refCount > 1 and
+      if countsInPlace(p) and p.refCount > 1 and
           not p.cycleWatched and not p.holdsEscapedFn:
         p.refCount = p.refCount -% 1
         return
     of MAP_TAG:
       let p = cast[ptr GeneMap](payload)
-      if not isSharedFlag(p.shared) and p.refCount > 1 and
+      if countsInPlace(p) and p.refCount > 1 and
           not p.cycleWatched and not p.holdsEscapedFn:
         p.refCount = p.refCount -% 1
         return
     of NODE_TAG:
       let p = cast[ptr GeneNode](payload)
-      if not isSharedFlag(p.shared) and p.refCount > 1 and
+      if countsInPlace(p) and p.refCount > 1 and
           not p.cycleWatched and not p.holdsEscapedFn and
           p.errorEvidence == nil:
         p.refCount = p.refCount -% 1
         return
     of FUNCTION_TAG:
       let p = cast[ptr GeneFunction](payload)
-      if not isSharedFlag(p.shared) and p.refCount > 1 and
+      if countsInPlace(p) and p.refCount > 1 and
           not p.cycleWatched and not (p.weakable and p.scope != nil):
         p.refCount = p.refCount -% 1
         return
     of NATIVE_FN_TAG:
       let p = cast[ptr GeneNativeFn](payload)
-      if not isSharedFlag(p.shared) and p.refCount > 1:
+      if countsInPlace(p) and p.refCount > 1:
         p.refCount = p.refCount -% 1
         return
     else:
@@ -8187,10 +8269,14 @@ type
     count: int
     overflow: HashSet[uint64]
     overflowUsed: bool
+    scan: ptr StampedSet   # the thread's reusable set, while this walk owns it
 
   EscapeWalk = object
     visited: EscapeVisited
     rebuilt: seq[tuple[source, escaped: Value]]
+
+var escapeScanSet {.threadvar.}: StampedSet
+var escapeScanBusy {.threadvar.}: bool
 
 proc firstVisit(visited: var EscapeVisited, bits: uint64): bool =
   ## True the first time `bits` is reached.
@@ -8201,6 +8287,11 @@ proc firstVisit(visited: var EscapeVisited, bits: uint64): bool =
     visited.inline[visited.count] = bits
     inc visited.count
     return true
+  if visited.scan != nil:
+    if not visited.overflowUsed:
+      visited.scan[].reset()
+      visited.overflowUsed = true
+    return not visited.scan[].containsOrIncl(bits)
   if not visited.overflowUsed:
     visited.overflow = initHashSet[uint64]()
     visited.overflowUsed = true
@@ -8208,7 +8299,10 @@ proc firstVisit(visited: var EscapeVisited, bits: uint64): bool =
 
 proc clearVisited(visited: var EscapeVisited) =
   visited.count = 0
-  if visited.overflowUsed:
+  if visited.scan != nil:
+    visited.scan = nil
+    visited.overflowUsed = false
+  elif visited.overflowUsed:
     visited.overflow.clear()
 
 proc mayNeedEscape(v: Value, guard: WeakScopeGuard, visited: var EscapeVisited,
@@ -8862,7 +8956,17 @@ proc escapeWeakFunctions*(v: Value, guard: WeakScopeGuard): Value =
         weakScopeProtected(guard, p.weakScope):
       return v
   var walk: EscapeWalk
-  if not mayNeedEscape(v, guard, walk.visited, markHolder = false):
+  # The scan below only reads: it runs no destructor and calls nothing that
+  # could start another escape, so it may use the thread's reusable set. The
+  # walk after it mutates and can release values, and keeps its own.
+  let ownsScanSet = not escapeScanBusy
+  if ownsScanSet:
+    escapeScanBusy = true
+    walk.visited.scan = addr escapeScanSet
+  let needed = mayNeedEscape(v, guard, walk.visited, markHolder = false)
+  if ownsScanSet:
+    escapeScanBusy = false
+  if not needed:
     return v
   walk.visited.clearVisited()
   escapeWalk(v, guard, walk)

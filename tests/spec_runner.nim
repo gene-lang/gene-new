@@ -12646,6 +12646,29 @@ suite "spec — runtime fast paths keep ordinary semantics":
     check_eval("""(var fns []) (for item in [1 2 3] (fns .push (fn [] (* item 10)))) (var called []) (for f in fns (called .push (f))) called""",
                """[10 20 30]""")
 
+  # The value-graph walks behind a store, a tail call and a spawn remember
+  # the containers they have reached: a few inline, the rest in a set the
+  # thread reuses. These cases put more than the inline few in one graph.
+  test "a function forty containers deep in a stored value outlives its scope":
+    check_eval("""(fn make [] (var xs []) (var i 0) (while (< i 40) (xs .push [i]) (set i (+ i 1))) (fn local [x] (+ x 1)) (xs/39 .push local) (var c ($cell nil)) (c .set xs) c) (var c (make)) (var held c/.get) (var f held/39/1) [(f 41) ($size held) held/0/0 held/39/0]""",
+               """[42 40 0 39]""")
+
+  test "a stored ring of containers with a shared part keeps its function":
+    check_eval("""(fn make [] (var shared [1 2 3]) (var ring []) (var i 0) (while (< i 40) (ring .push [i shared ring]) (set i (+ i 1))) (fn local [x] (* x 2)) (shared .push local) (var m {}) (m .put "ring" ring) m) (var m (make)) (var ring (m .get "ring")) (var g ring/7/1/3) [(g 21) ($size ring) ($size ring/0/1) ($size ring/39/2)]""",
+               """[42 40 4 40]""")
+
+  test "a tail call may pass a large value holding a closure over the caller":
+    check_eval("""(fn consume [data, k] (var f data/39/1) (f k)) (fn produce [n] (var xs []) (var i 0) (while (< i 40) (xs .push [i]) (set i (+ i 1))) (var local (fn [x] (+ x n))) (xs/39 .push local) (consume xs 1)) [(produce 41) (produce 9)]""",
+               """[42 10]""")
+
+  test "repeated spawns see a captured List as it is each time":
+    check_eval("""(var xs []) (var i 0) (while (< i 40) (xs .push [i (+ i 1)]) (set i (+ i 1))) (fn total [] (var t 0) (for x in xs (set t (+ t x/0))) t) (var a (await (spawn ^lane root (total)))) (var b (await (spawn ^lane root (total)))) (xs .push [100 0]) (var c (await (spawn ^lane root (total)))) [a b c]""",
+               """[780 780 880]""")
+
+  test "storing the same large value twice leaves it intact":
+    check_eval("""(fn build [n] (var rows []) (var i 0) (while (< i n) (rows .push {^id i ^tags [i (* i 2)] ^name $"row${i}"}) (set i (+ i 1))) rows) (fn keep [rows] (var c ($cell nil)) (c .set rows) (c .set rows) c/.get) (var rows (keep (build 60))) [($size rows) rows/59/id rows/59/tags/1 rows/0/name]""",
+               """[60 59 118 "row0"]""")
+
 suite "spec — a scheduler slice ends at a loop iteration or a function entry":
   test "straight-line read-then-update code is not split between fibers":
     ## Three producers each read the queue's List, make eight more native

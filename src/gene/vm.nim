@@ -4489,6 +4489,11 @@ type ValueGraphVisited = object
   inline: array[16, uint64]
   count: int
   overflow: HashSet[uint64]
+  scan: ptr StampedSet   # the thread's reusable set, for a walk that owns it
+  scanStarted: bool
+
+var graphScanSet {.threadvar.}: StampedSet
+var graphScanBusy {.threadvar.}: bool
 
 proc firstGraphVisit(seen: var ValueGraphVisited, bits: uint64): bool =
   for i in 0 ..< seen.count:
@@ -4497,6 +4502,11 @@ proc firstGraphVisit(seen: var ValueGraphVisited, bits: uint64): bool =
     seen.inline[seen.count] = bits
     inc seen.count
     return true
+  if seen.scan != nil:
+    if not seen.scanStarted:
+      seen.scan[].reset()
+      seen.scanStarted = true
+    return not seen.scan[].containsOrIncl(bits)
   not seen.overflow.containsOrIncl(bits)
 
 proc carriesCallerEnv(value: Value, seen: var ValueGraphVisited): bool =
@@ -14722,8 +14732,15 @@ proc snapshotSpawnScope(source: Scope, body: Chunk): Scope =
 var managedPublishedScopes {.threadvar.}: seq[Scope]
 
 type SpawnPublicationValues = object
-  visited: HashSet[uint64]
+  visited: StampedSet
   shared: SharedValuePublication
+
+# One publication's scratch sets cover the whole graph reachable from the
+# spawning scope, and a program that spawns often builds them again each
+# time. The thread keeps one pair and empties it instead; a publication that
+# starts while another is running takes fresh ones.
+var spawnPublicationValues {.threadvar.}: SpawnPublicationValues
+var spawnPublicationBusy {.threadvar.}: bool
 
 proc publishSpawnScope(scope: Scope, seenScopes: var HashSet[pointer],
                        seenValues: var SpawnPublicationValues,
@@ -14981,9 +14998,15 @@ proc publishSpawnFunctionProto(proto: FunctionProto,
 proc publishSpawnValue(value: Value, seenScopes: var HashSet[pointer],
                        seenValues: var SpawnPublicationValues,
                        seenChunks: var HashSet[pointer]) =
-  if seenValues.visited.contains(value.bits):
+  # An immediate has nothing to publish. A Str or wide Int is a leaf: it is
+  # marked and never revisited for children, so it needs no visited entry.
+  if not value.isManaged:
     return
-  seenValues.visited.incl value.bits
+  if value.kind == vkString or value.kind == vkInt:
+    markSharedValue(value, seenValues.shared)
+    return
+  if seenValues.visited.containsOrIncl(value.bits):
+    return
   markSharedValue(value, seenValues.shared)
   if completePublication:
     for child in value.publicationValueChildren:
@@ -15254,10 +15277,20 @@ proc publishSpawnScope(scope: Scope, seenScopes: var HashSet[pointer],
 
 proc publishSpawnCapture(scope: Scope, chunk: Chunk) =
   var seenScopes = initHashSet[pointer]()
-  var seenValues: SpawnPublicationValues
   var seenChunks = initHashSet[pointer]()
-  publishSpawnScope(scope, seenScopes, seenValues, seenChunks)
-  publishSpawnChunk(chunk, seenScopes, seenValues, seenChunks)
+  if spawnPublicationBusy:
+    var seenValues: SpawnPublicationValues
+    publishSpawnScope(scope, seenScopes, seenValues, seenChunks)
+    publishSpawnChunk(chunk, seenScopes, seenValues, seenChunks)
+    return
+  spawnPublicationBusy = true
+  try:
+    spawnPublicationValues.visited.reset()
+    spawnPublicationValues.shared.reset()
+    publishSpawnScope(scope, seenScopes, spawnPublicationValues, seenChunks)
+    publishSpawnChunk(chunk, seenScopes, spawnPublicationValues, seenChunks)
+  finally:
+    spawnPublicationBusy = false
 
 when defined(geneAtomicGenerationRetirementProbe):
   proc publishNativeScopeForRetirement*(scope: Scope) =
@@ -17661,10 +17694,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     else:
       false
 
-  proc scopeValuesCaptureScope(candidate, target: Scope): bool =
-    if candidate == nil or target == nil:
-      return false
-    var seen: ValueGraphVisited
+  proc scopeValuesCaptureScopeIn(candidate, target: Scope,
+                                 seen: var ValueGraphVisited): bool =
     for i in 0 ..< candidate.slots.len:
       if candidate.slotDefined(i) and valueCapturesScope(candidate.slots[i], target, seen):
         return true
@@ -17672,6 +17703,20 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       if valueCapturesScope(item, target, seen):
         return true
     false
+
+  proc scopeValuesCaptureScope(candidate, target: Scope): bool =
+    if candidate == nil or target == nil:
+      return false
+    var seen: ValueGraphVisited
+    # The walk only reads and runs nothing that could start another one, so
+    # it may use the thread's reusable set for graphs past the inline few.
+    let ownsScan = not graphScanBusy
+    if ownsScan:
+      graphScanBusy = true
+      seen.scan = addr graphScanSet
+    result = scopeValuesCaptureScopeIn(candidate, target, seen)
+    if ownsScan:
+      graphScanBusy = false
 
   template currentScopeCapturedBy(calleeScope: Scope): bool =
     ## Whether a value bound in `calleeScope` captures the current scope.
@@ -18351,12 +18396,15 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           nextValidateImpls, nextReturnType, nextReturnLabel,
           nextChecksErrors, nextErrorTypes, nextFnName, operandBase,
           keepOperands)
-      let fallbackReason = tailFallbackReason(nextScope, operandBase,
-                                              boundValuesMayCapture)
-      if collectTailCallStats:
-        inc currentTailCallStats.fallbacks
-        inc currentTailCallStats.fallbackByReason[fallbackReason]
-      reportTailFallback(fallbackReason)
+      # The reason is only read by the statistics and the fallback report;
+      # working it out walks every bound value's graph.
+      if collectTailCallStats or reportTailFallbacks:
+        let fallbackReason = tailFallbackReason(nextScope, operandBase,
+                                                boundValuesMayCapture)
+        if collectTailCallStats:
+          inc currentTailCallStats.fallbacks
+          inc currentTailCallStats.fallbackByReason[fallbackReason]
+        reportTailFallback(fallbackReason)
     pushCallFrame()
     chunk = nextChunk
     scope = nextScope
