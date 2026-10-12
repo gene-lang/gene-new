@@ -205,14 +205,25 @@ recorded. A fourth, with every build slowed by about a third but only one
 stray sample
 ([service/summary-walks3-loaded.json](service/summary-walks3-loaded.json)),
 reads 34.72 s on the starting tree, 16.18 s with the cheaper walks and
-13.15 s on the final build: 2.64x. The two quiet captures taken together
-give about 2.7x.
+13.15 s on the build with in-place reads: 2.64x. The two quiet captures
+taken together give about 2.7x.
+
+The final change counts published objects in place (an atomic add, and a
+compare-and-exchange that never reaches zero) instead of calling the full
+body for each. A CPU-only probe that publishes 2,000 rows and reads them in
+a loop ([differential/published_counting_probe.gene](differential/published_counting_probe.gene))
+runs in 206-215 ms instead of 268-273 ms over four alternating runs. The
+service capture for it was again taken under load
+([service/summary-counting-loaded.json](service/summary-counting-loaded.json)):
+35.31 s on the starting tree, 14.70 s before the change and 13.53 s after
+(samples 13.27-14.98 s and 13.14-14.15 s), so about 8% on this workload and
+2.6x overall in that capture.
 
 ## Build provenance
 
 ```sh
 nim c --nimcache:tmp/perf2/cache-baseline --hints:off -o:tmp/perf2/gene-baseline src/gene.nim   # at 1e3f539, before any edit
-nim c --nimcache:<scratch>/ncfix --hints:off --warnings:off -o:tmp/perf2/gene-walk5 src/gene.nim   # clean export of 83eeaf9 plus in-place reads and the spill change
+nim c --nimcache:<scratch>/ncfix --hints:off --warnings:off -o:tmp/perf2/gene-walk6 src/gene.nim   # clean export of 41ccb12 plus in-place counting of published objects
 ```
 
 Both report `release; macosx/arm64; Nim 2.2.4; mm=orc; nim-opt=speed;
@@ -235,21 +246,22 @@ compiler-known set). Rebuild older GIR artifacts.
 | Executable language specs (35 new) | 881 passed |
 | VM, ORC | 402 passed |
 | VM, AtomicArc | 402 passed |
-| Reference-count/lifetime suite | 87 passed |
+| Reference-count/lifetime suite (2 new) | 89 passed |
 | Harness, complete suite from a clean export | 200 passed |
-| AddressSanitizer: lifetime suite | 87 passed, 0 reports |
+| AddressSanitizer: lifetime suite | 89 passed, 0 reports |
 | AddressSanitizer: VM suites except env/eval | 390 passed, 0 reports |
 | Cordis | 21 passed |
 | Benchmark tooling | 15 passed |
 | wasm ABI cases, scratch build | 46 passed |
 
 Every row is from the final runtime (slice rule, `==`/`!=` lowered, cheaper
-walks, in-place reads). The binary and the suites were built from clean
-exports of `83eeaf9` with the changed files laid over them. On the build before the walk changes one file-watch spec (`recursive watch discovers files in newly
+walks, in-place reads, in-place counting of published objects). The binary
+and the suites were built from clean exports of `41ccb12` with the changed
+files laid over them. On the build before the walk changes one file-watch spec (`recursive watch discovers files in newly
 created directories`) failed once while five suites compiled in parallel and
 passed six of six alone and in a solo rerun; it depends on how the OS
-batches file events. It failed the same way once more in the final run's
-parallel phase and passed in the solo run recorded here.
+batches file events. It failed the same way once more in a later run's
+parallel phase and passed alone, and passed in the final run recorded here.
 
 The 28 new specs (`spec — runtime fast paths keep ordinary semantics`) pin
 the behaviours a shortcut could change: operator results and errors, operator
@@ -282,8 +294,9 @@ and `web/gene.wasm` were not regenerated.
 ### Harness
 
 The complete Harness suite passes with the final runtime: 200 passed,
-0 failed in 329 seconds (`verification/harness-final.log.gz`; 527 seconds
-before the walk changes, 407 before the in-place reads), run
+0 failed in 347 seconds (`verification/harness-final.log.gz`; 527 seconds
+before the walk changes, 407 before the in-place reads, and 329 on the
+build before the counting change, on a quieter machine), run
 from a clean export so that edits another session was making could not
 affect it. The suite grew from 179 examples during the day through that
 session's commits; the runtime that withdrew the lowering passed all 179. Earlier runs are not counted: one overlapped
