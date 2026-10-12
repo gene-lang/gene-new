@@ -33,6 +33,11 @@ loops reuse its own iteration scope. Its kernel
 of three items) runs in 200-214 ms instead of 230-239 ms, and a before/after
 capture of the workloads reads 15.63 ms to 14.69 ms for text indexing.
 
+A later change gives a loop body that can only change its own slots a
+slots-only reset between iterations. On the same kernels, alternating runs:
+the single short loop goes from 318-330 ms to 303-305 ms and the nested
+loop from 213-217 ms to 184-187 ms. The table above predates it.
+
 Every result matches the baseline runtime and Python at sizes 1, 17, 257 and
 2048 and in every timed process. These are separate workloads, not a weighted
 language score. Python remains faster on five of the six.
@@ -330,9 +335,9 @@ compiler-known set). Rebuild older GIR artifacts.
 
 Every row is from the final runtime (slice rule, `==`/`!=` lowered, cheaper
 walks, in-place reads, in-place counting of published objects, nested-loop
-scope reuse, the fiber-resume fix, worker-only publication). The binary and
-the suites were built from clean exports of `084b888` with the changed
-files laid over them. One VM test that pinned the
+scope reuse, the fiber-resume fix, worker-only publication, the plain-body
+loop reset). The binary and the suites were built from clean exports of
+`230352c` with the changed files laid over them. One VM test that pinned the
 old rule (any nested `for` makes the outer body allocate) was updated to the
 new one; the broad, VM and sanitizer VM rows are from the rerun with it. On the build before the walk changes one file-watch spec (`recursive watch discovers files in newly
 created directories`) failed once while five suites compiled in parallel and
