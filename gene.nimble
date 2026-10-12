@@ -85,6 +85,7 @@ task test, "Run the test suite":
   exec "nim c -r --path:src --hints:off tests/test_value_backend_boundaries.nim"
   exec "python3 tests/test_owned_http_client.py"
   exec "python3 tests/test_genex_package.py"
+  exec "python3 tests/test_genex_toolchain.py"
   exec "python3 tests/test_genex_libuv_timer.py"
   exec "python3 tests/test_genex_native_module.py"
   exec "python3 tests/test_genex_tzdb.py"

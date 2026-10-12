@@ -31,6 +31,12 @@ The build locates Homebrew curl automatically. For other SDK locations, use
 `python3 src/genex/tools/build.py --pkg-config-path PATH`; the option is repeatable.
 `GENE_EXE` and `CC` override the Gene and C compilers.
 
+On macOS the native build driver probes `CC` before building. If its default
+SDK cannot link, it selects the newest compatible SDK installed alongside
+the active Xcode/Command Line Tools SDK and passes `SDKROOT` to every build
+step. An explicit `SDKROOT` is always preserved. This also applies when
+running an individual package's `tools/build.py` directly.
+
 Libraries are written to `src/genex/sdl2/build/` and
 `src/genex/websocket/build/`. See [SDL2](sdl2/README.md) and
 [WebSocket](websocket/README.md) for their APIs and tests.

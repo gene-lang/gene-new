@@ -12,6 +12,7 @@ tests/*
 !tests/wasm_browser.html
 !tests/test_owned_http_client.py
 !tests/test_genex_package.py
+!tests/test_genex_toolchain.py
 !tests/test_genex_libuv_timer.py
 !tests/test_genex_tzdb.py
 !tests/test_archive_codec.py
