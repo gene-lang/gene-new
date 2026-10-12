@@ -378,8 +378,10 @@ final capture, with the reused publication sets as well, reads 15.50 s
 before and 11.75 s after (1.32x), and 26.68 s on the tree this pass started
 from: 2.27x on service time overall, 2.56x on whole-process time. Reading
 containers in place and spilling the inline entries then take a separate
-quiet capture from 11.34 s to 9.69 s (1.17x), about 2.7x overall. The
-complete Harness suite runs in 329 s; it took 527 s before these changes. Five specs put more than sixteen
+quiet capture from 11.34 s to 9.69 s (1.17x). A final capture of the
+starting tree against the end of the pass reads 31.36 s and 11.76 s: 2.67x
+on service time, 3.08x on whole-process time. The complete Harness suite
+runs in 329 s; it took 527 s before these changes. Five specs put more than sixteen
 containers in one graph for each walk (a function forty containers deep in
 a stored value, a stored ring with a shared part, a tail call passing a
 large value that holds a closure over the caller, repeated spawns over a

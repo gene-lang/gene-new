@@ -224,6 +224,17 @@ service capture for it was again taken under load
 (samples 13.27-14.98 s and 13.14-14.15 s), so about 8% on this workload and
 2.6x overall in that capture.
 
+A last capture measures the starting tree against the final build of the
+whole pass directly, three samples each with no stray sample, on a machine
+that was not fully quiet ([service/summary-final.json](service/summary-final.json)):
+
+| Build | Service samples (ms) | Service median (ms) | Whole-process median (ms) |
+| --- | --- | ---: | ---: |
+| Baseline `1e3f539` | 29474, 31421, 31355 | 31355 | 41592 |
+| Final build | 9581, 11758, 12029 | 11758 | 13489 |
+
+That is 2.67x on service time and 3.08x on whole-process time.
+
 ## Build provenance
 
 ```sh
