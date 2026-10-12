@@ -1,0 +1,57 @@
+# Tests authenticated workspace image delivery in an independent host.
+(import $test [describe it])
+(import ^from "../../support" [isolated run_spec])
+(import ^from "../../web_support" [start_host stop_host])
+(import ^from "../../../src/cli/client" [connect wire])
+(import $net/http_client [request])
+
+(fn download_image [client, path]
+  (let task
+    (request ^url $"${client/connection/origin}/api/v8/ui/image?path=${($url/encode_component path)}" ^headers {^cookie client/credentials/cookie} ^timeout_ms 15000 ^max_bytes 2097152))
+  (try
+    (await task)
+  ensure
+    task/.cancel))
+
+(describe
+  "Harness workspace image HTTP transport"
+  (it
+    "authenticates image reads and serves inert images without exposing other workspace files"
+    []
+    (isolated ^timeout_ms 300000
+      this_mod/.path
+      "authenticates image reads and serves inert images without exposing other workspace files"
+      (fn [workspace]
+        ($fs/make_dir $"${workspace}/assets")
+        (let svg """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><circle cx="50" cy="50" r="40" fill="#111111"/></svg>
+""")
+        ($fs/write_text $"${workspace}/assets/board.svg" svg)
+        ($fs/write_text $"${workspace}/assets/bad.svg" "<svg><script>alert(1)</script></svg>")
+        ($fs/write_text $"${workspace}/private.txt" "not an image")
+        ($fs/write_text $"${workspace}/assets/fake.png" "<html>not an image</html>")
+        (let host (start_host workspace))
+        (try
+          (let client (connect workspace))
+          ($assert
+            (==
+              ((Path "status") (wire client/connection "GET" "/ui/image?path=assets%2Fboard.svg"))
+              401))
+          (let shown (download_image client "assets/board.svg"))
+          ($assert (== shown/status 200))
+          ($assert (== shown/body svg))
+          ($assert (== shown/headers/content-type "image/svg+xml"))
+          ($assert (== shown/headers/cache-control "no-store"))
+          ($assert (== shown/headers/x-content-type-options "nosniff"))
+          ($assert ($str/contains? shown/headers/content-security-policy "sandbox"))
+          ($assert ($str/contains? shown/headers/content-security-policy "script-src 'none'"))
+          (for path in ["../private.txt" "private.txt" ".gene-harness/auth.svg" "assets/bad.svg" "assets/fake.png" "assets/missing.svg" "/etc/x.svg" "https://example.com/x.svg"]
+            ($assert (== ((Path "status") (download_image client path)) 404)))
+          (let foreign
+            (await
+              (request ^url $"${client/connection/origin}/api/v8/ui/image?path=assets%2Fboard.svg" ^headers {^cookie client/credentials/cookie ^origin "https://example.com"} ^timeout_ms 15000)))
+          ($assert (== foreign/status 403))
+        ensure
+          (stop_host host))))))
+
+(fn main [args]
+  (run_spec args))

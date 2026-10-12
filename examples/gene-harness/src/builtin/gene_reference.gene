@@ -27,7 +27,7 @@
         (contribute_doc host $"gene/${entry/0}" entry/2
           $"tools/gene-lang-skill/reference/${entry/1}.md" ^tags entry/3))
       (contribute_doc host "harness/web_components"
-        "Complete contract for UI slots, keyed forms, browser state and actions."
+        "Complete contract for UI slots, keyed forms, browser state, actions and safe workspace images."
         "examples/gene-harness/docs/web-components.md"
         ^tags ["ui" "web" "components" "reference"]
         ^docs ["harness/ui" "harness/ui/forms" "harness/ui/drafts" "harness/ui/revisions"])

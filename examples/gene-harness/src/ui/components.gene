@@ -1,4 +1,5 @@
 (mod web_component_spec)
+(import ^from "./images" [image_source])
 
 (type WebComponentError ^props {^message Str} ^impl [Error])
 (impl Error for WebComponentError)
@@ -29,7 +30,8 @@
     "code"
     "progress"
     "hr"
-    "br"])
+    "br"
+    "img"])
 (const component_attributes
   [
     "class"
@@ -47,7 +49,13 @@
     "command"
     "prompt"
     "switch_view"
-    "presentation"])
+    "presentation"
+    "src"
+    "alt"
+    "width"
+    "height"
+    "columns"
+    "inset"])
 
 (fn component_error [message : Str]
   (fail (WebComponentError ^message ($to_str message
@@ -89,6 +97,23 @@
       (if (!= ($head item) List) (component_error "positional action arguments must be a list"))
       ($serde/write_data item)
       (attributes .put name item)
+      (continue))
+    # Images and overlay geometry are scalar, bounded, and never CSS strings.
+    (if_yes (== name "src")
+      (if (!= tag "img") (component_error "src requires img"))
+      (attributes .put "src" (image_source item))
+      (continue))
+    (if_yes (["alt" "width" "height"] .contains? name)
+      (if (!= tag "img") (component_error "image attributes require img"))
+      (if_yes (!= name "alt")
+        (if (|| (!= ($head item) Int) (< item 1) (> item 2048))
+          (component_error "image dimensions must be integers from 1 to 2048"))))
+    (if_yes (["columns" "inset"] .contains? name)
+      (if (|| (!= tag "div") (!= ($head item) Int)
+              (< item (if (== name "columns") 1 0))
+              (> item 25))
+        (component_error "overlay columns must be 1–25; inset must be 0–25"))
+      (attributes .put ($to_str "data-" name) ($to_str item))
       (continue))
     (if_not ([Str Int Float Bool Nil] .contains? ($head item))
       (component_error "web component attributes must be scalar data"))
@@ -142,6 +167,12 @@
       (if (|| (== attributes/key "") (! ($absent? (keys .get attributes/key))))
         (component_error "view keys must be nonempty and unique"))
       (keys .put attributes/key true)))
+  (if_yes (== tag "img")
+    (if (|| ($absent? attributes/src) ($absent? attributes/alt) (! children/.empty?))
+      (component_error "img requires workspace src, alt text (empty allowed), and no children")))
+  (if_yes (|| (! ($absent? attributes/data-columns)) (! ($absent? attributes/data-inset)))
+    (if (!= (?? attributes/class "") "web_image_grid")
+      (component_error "columns and inset require web_image_grid")))
   (let field_names (if (== tag "form") {} form))
   (let body ($map children (fn [child] (component_view ^depth (+ depth 1) ^experimental experimental ^keys keys ^form field_names child))))
   # A textarea's ordinary text content is its initial value. The keyed browser

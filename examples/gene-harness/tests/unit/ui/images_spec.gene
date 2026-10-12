@@ -1,0 +1,55 @@
+# Tests src/ui/images.gene: workspace containment and inert bounded files.
+(import $test [describe it])
+(import ^from "../../../src/ui/images" [image_source workspace_image safe_svg])
+
+(describe
+  "Harness workspace images"
+  (it
+    "admits workspace image paths and refuses URL and traversal sources"
+    []
+    ($assert (== (image_source "assets/board.svg") "/api/v8/ui/image?path=assets%2Fboard.svg"))
+    (for path in ["/etc/a.svg" "../a.svg" "a/../a.svg" "a//b.svg" "a/.private/b.svg" "https://evil/a.svg" "data:image/png,x" "a.svg?x=1" "a.svg#x" "a%2Fb.svg" ".harness/a.svg" "a.txt" "a\\b.svg"]
+      ($assert (try (image_source path) false catch Any true))))
+  (it
+    "allows inert vector drawing and rejects active SVG content"
+    []
+    (safe_svg "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 10 10\"><circle cx=\"5\" cy=\"5\" r=\"4\" fill=\"#fff\"/></svg>")
+    (for text in ["<svg><script>alert(1)</script></svg>" "<svg onload=\"alert(1)\"></svg>" "<svg><foreignObject>html</foreignObject></svg>" "<svg><image href=\"https://evil/x\"/></svg>" "<svg><style>body{}</style></svg>" "<svg><rect style=\"fill:red\"/></svg>" "<svg><animate attributeName=\"x\"/></svg>" "<!DOCTYPE svg><svg></svg>" "<svg>&entity;</svg>" "<svg><rect fill=\"url(https://evil/a)\"/></svg>" "<svg xmlns=\"https://evil\"></svg>"]
+      ($assert (try (safe_svg text) false catch Any true))))
+  (it
+    "bounds file bytes, checks image content and blocks symlink escape"
+    []
+    (let root $"tmp/image-spec-${($crypto/random_hex 8)}")
+    ($fs/make_dir root)
+    (let svg """<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><circle cx="5" cy="5" r="4"/></svg>
+""")
+    ($fs/write_text $"${root}/good.svg" svg)
+    (let image (workspace_image root "good.svg"))
+    ($assert (== image/mime "image/svg+xml"))
+    ($assert (== ($binary/decode_utf8 image/data) svg))
+    ($fs/write_text $"${root}/fake.png" "<script>not an image</script>")
+    ($assert (try (workspace_image root "fake.png") false catch Any true))
+    ($fs/write_text $"${root}/empty.svg" "")
+    ($assert (try (workspace_image root "empty.svg") false catch Any true))
+    (var large "x")
+    (repeat index in 21
+      (set large ($to_str large large)))
+    ($fs/write_text $"${root}/large.svg" large)
+    ($assert (try (workspace_image root "large.svg") false catch Any true))
+    (let outside $"${root}-outside.svg")
+    ($fs/write_text outside svg)
+    ($fs/create_symlink ($fs/real_path outside) $"${root}/escape.svg")
+    ($assert (try (workspace_image root "escape.svg") false catch Any true))
+    ($assert (try (workspace_image root "missing.svg") false catch Any true))))
+
+(describe
+  "Harness SVG paint references"
+  (it
+    "rejects mixed local and remote paint references"
+    []
+    ($assert
+      (try
+        (safe_svg "<svg><rect fill=\"url(#safe) url(//evil/x)\"/></svg>")
+        false
+      catch Any
+        true))))

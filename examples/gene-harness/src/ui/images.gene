@@ -1,0 +1,73 @@
+# Workspace-only image URLs and inert, bounded image delivery.
+(mod workspace_images)
+(import $io [AsyncReader IoResource])
+(import ^from "." ^pkg "documents" [inspect_bytes])
+
+(type WorkspaceImageError ^props {^message Str} ^impl [Error])
+(impl Error for WorkspaceImageError)
+(fn image_error []
+  (fail (WorkspaceImageError ^message "Workspace image is unavailable or invalid.")))
+
+(fn image_path [path]
+  # Reject traversal, hidden paths, external URLs and URL metacharacters.
+  (if (|| (!= ($head path) Str) (> ($str/byte_size path) 240)
+          ($absent? (#"^[A-Za-z0-9_-][A-Za-z0-9_./-]*[.](svg|png|jpg|jpeg|webp)$" .match path)))
+    (image_error))
+  (for part in ($str/split path "/")
+    (if (|| (== part "") (== part ".") (== part "..") ($str/starts_with? part "."))
+      (image_error)))
+  path)
+
+(fn image_source [path]
+  $"/api/v8/ui/image?path=${($url/encode_component (image_path path))}")
+
+(fn safe_svg [text]
+  # A small inert SVG subset. No entities, namespaces beyond SVG, CSS, event
+  # attributes, links, embedded images, animation, scripts or foreign HTML.
+  (if_not ($str/starts_with? ($str/trim text) "<svg") (image_error))
+  (let tokens ($into ($regex/find_all #"<[^>]*>" text) []))
+  (for found in tokens
+    (let token found/text)
+    (if ($absent? (#"^</?(svg|defs|linearGradient|radialGradient|stop|g|rect|path|line|circle|ellipse|text)([ \t\r\n]+(xmlns=\"http://www.w3.org/2000/svg\"|(id|viewBox|width|height|x|y|x1|x2|y1|y2|cx|cy|r|rx|ry|d|fill|stroke|stroke-width|opacity|offset|stop-color|stop-opacity|font-family|font-size|font-weight|text-anchor|dominant-baseline|gradientUnits|transform)=\"[A-Za-z0-9_#().,% /+-]*\"))*[ \t\r\n]*/?>$" .match token))
+      (image_error))
+    # Paint references may only point to a fragment in this same SVG.
+    (let paint ($regex/replace_all #"url[(]#[A-Za-z0-9_-]+[)]" token ""))
+    (if ($str/contains? paint "url(") (image_error)))
+  (let remaining ($regex/replace_all #"<[^>]*>" text ""))
+  (if (! ($absent? (#"[<>&]" .match remaining))) (image_error))
+  text)
+
+(fn read_bounded [file]
+  # Keep allocation bounded even if a file grows after metadata inspection.
+  (let reader (await ($io/open_read file)))
+  (try
+    (var data ($binary/from_list []))
+    (loop
+      (let part (await (reader .AsyncReader:read 65536)))
+      (if ($nil? part) (break))
+      (if (> (+ ($binary/size data) ($binary/size part)) 1048576) (image_error))
+      (set data ($binary/concat [data part])))
+    data
+    ensure
+      reader/.IoResource:close
+      (await reader/.IoResource:wait_closed)))
+
+(fn workspace_image [root : Str, path : Str]
+  (image_path path)
+  (let canonical_root ($fs/real_path root))
+  (let file (try ($fs/real_path $"${canonical_root}/${path}") catch Any (image_error)))
+  (if_not ($str/starts_with? file $"${canonical_root}/") (image_error))
+  (let info (try ($fs/info file) catch Any (image_error)))
+  (if (|| (!= info/kind "file") (< info/size 1) (> info/size 1048576)) (image_error))
+  (let data (try (read_bounded file) catch Any (image_error)))
+  (let extension (($str/split path ".") .last))
+  (var mime "")
+  (if (== extension "svg")
+    (then
+      (safe_svg (try ($binary/decode_utf8 data) catch Any (image_error)))
+      (set mime "image/svg+xml"))
+    (else
+      (let metadata (try (inspect_bytes path data) catch Any (image_error)))
+      (if_not (== metadata/kind "image") (image_error))
+      (set mime metadata/mime)))
+  {^data data ^mime mime})

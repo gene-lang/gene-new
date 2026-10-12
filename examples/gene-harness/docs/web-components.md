@@ -46,9 +46,9 @@ are disabled while disconnected or submitting. Components do not replace
 authentication, submission recovery or cancellation controls.
 
 Supported elements: div, section, p, h2, h3, h4, span, strong, small, em, ul,
-ol, li, button, a, details, summary, pre, code, progress, hr, br. Supported
+ol, li, button, a, details, summary, pre, code, progress, hr, br, img. Supported
 attributes: class/class_name, title, role, aria-label/aria_label, type, href,
-value, max, open, disabled, command, prompt. Attributes contain scalar data;
+value, max, open, disabled, command, prompt, src, alt, width, height, columns, inset (the image properties are detailed below). Attributes contain scalar data;
 there are no inline scripts or raw HTML. Links use local paths, fragments or
 HTTPS URLs. View text becomes DOM text, including user-supplied strings.
 
@@ -271,3 +271,53 @@ Navigation buttons may use `^switch_view "name"` and optionally
 have a presentation override. Navigation cannot share a button with a function,
 command, prompt, or view-state action. A `prompt` button stages in Classic
 Harness and offers Replace/Append/Keep when an unsent draft already exists.
+
+
+## Workspace images and image surfaces
+
+`img` is available in ordinary components and stateful views. It requires `src`
+and `alt` (empty alt is permitted for decorative images) and has no children.
+`src` is a workspace-relative image filename, not a URL. Supported extensions
+are lowercase `.svg`, `.png`, `.jpg`, `.jpeg`, `.webp`. Paths are limited to
+240 bytes and ASCII letters, digits, `_`, `-`, `.`, `/`; absolute, hidden,
+empty, `.` and `..` segments, URL schemes, query strings and fragments are
+rejected. The validator maps it to `/api/v8/ui/image?path=...`; this GET route
+requires the existing owner authentication and same-origin policy.
+
+Optional `width` and `height` are integer intrinsic dimensions from 1 to 2048.
+Files must be regular, nonempty, at most 1 MiB, and resolve canonically inside
+the workspace (escaping symlinks are refused). Reads are bounded even if a
+file grows. Raster image signatures are checked. SVG is an inert drawing
+subset: svg/defs, gradients/stops, groups, rectangles, paths, lines, circles,
+ellipses and text, with bounded lexical drawing attributes. No scripts,
+event handlers, CSS, entities, foreign HTML, embedded images, animation or
+external references are accepted. Paint references use local `url(#id)` only.
+Images are served with explicit MIME type, no-store and nosniff; their response
+has a sandbox CSP with default/script/style sources disabled. Arbitrary HTML
+and custom CSS remain unsupported.
+
+Use host-owned classes to overlay ordinary accessible controls on an image:
+
+```gene
+(quote (div ^class_name "web_image_surface"
+  (img ^src "assets/diagram.svg" ^alt "Diagram" ^width 1000 ^height 1000)
+  (div ^class_name "web_image_grid" ^columns 9 ^inset 5
+    (button ^key "point-a" ^class_name "web_image_point"
+      ^action "choose" ^args {^point "0"} ^aria_label "Choose point A"
+      (img ^src "assets/marker.svg" ^alt "Marker at point A"
+        ^width 100 ^height 100)))))
+```
+
+`web_image_surface` is responsive with a 960px maximum width. Its direct image
+sets the aspect ratio. `web_image_grid` is a transparent absolutely positioned
+equal-cell overlay. Only this exact div class accepts integer `columns` (1–25)
+and `inset` (0–25 percent), normalized to data attributes using fixed host CSS.
+Supply rows implicitly through the child count (use complete equal-length rows).
+Cell centers, not corners, are the clickable positions. `web_image_point`
+removes ordinary button chrome but preserves a visible keyboard focus ring,
+hover highlight and disabled-state semantics. Its image children fill 96% of
+the cell; disabled stones remain fully opaque. No plugin-provided style strings
+or arbitrary positioning are introduced. Existing keyed actions, validation,
+tree bounds and revision checks are unchanged. Preview validates structure,
+but alignment and actual image loading must also be checked after host restart
+and browser reload.

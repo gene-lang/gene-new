@@ -20,6 +20,7 @@
     acknowledge_attention
     RoundError])
 (import ^from "./page" [page])
+(import ^from "../ui/images" [workspace_image WorkspaceImageError])
 (import ^from "../kernel" [row])
 (import ^from "../ui/state" [ui_status UiError])
 (import ^from "../ui/views" [ui_render])
@@ -101,7 +102,9 @@
     (result/headers .put "referrer-policy" "no-referrer")
     (result/headers .put
       "content-security-policy"
-      "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"))
+      (??
+        result/headers/content-security-policy
+        "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")))
   result)
 
 (fn main [argv]
@@ -221,6 +224,15 @@
         (if (== action "restart") 75 0) (== data/confirm true))
       (return (response 200 {^^ok ^restart (== host/runtime/exit_code/.get 75)
         ^message (if (== host/runtime/exit_code/.get 75) "Restarting." "Stopped.")})))
+    # This route is deliberately below owner authentication.
+    (if_yes (&& (== request/method "GET") (== request/path "/api/v8/ui/image"))
+      (let image (workspace_image root (field request/params "path" ^default "")))
+      (let result (http_bytes 200 image/data))
+      (result/headers .put "content-type" image/mime)
+      # SVG documents remain inert even when opened directly.
+      (result/headers .put "content-security-policy"
+        "sandbox; default-src 'none'; script-src 'none'; style-src 'none'; base-uri 'none'; frame-ancestors 'none'")
+      (return result))
     (if_yes (&& (== request/method "GET") (== request/path "/api/v8/status"))
       (var result (host_status ^safe safe ^session (field request/params "session" ^default "") host))
       (result .put "csrf" browser/csrf)
@@ -389,6 +401,7 @@
   (fn safe_handle [request]
     (secure_response
       (try (handle request)
+        catch WorkspaceImageError (response 404 {^code "not_found" ^message $err/message})
         catch AuthError (response 401 {^code $err/code ^message $err/message})
         catch MediaError (response (error_status $err/code) {^code $err/code ^message $err/message})
         catch UiError (response (error_status $err/code) {^code $err/code ^message $err/message})
