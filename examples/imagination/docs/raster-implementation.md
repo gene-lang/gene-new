@@ -1,5 +1,9 @@
 # Raster implementation
 
+This document records the original v1 profile. [Textured painting v2](painterly.md)
+adds directional bristles, stroke-field expansion and reference guidance in
+a separate profile; v1 programs and binaries retain their original behavior.
+
 The authoritative value is a normalized `(painting ^schema "raster-painting/v1" ...)` program. `src/media.gene` dispatches the small set of medium-specific operations; history, SQLite transactions, candidate reviews, budgets, steering and WebSockets retain their existing lifecycle. Historical `scene` field/column names store either medium without rewriting existing SVG projects.
 
 ## Build and use

@@ -4,6 +4,7 @@
 (import [canonical digest_of] ^from "../scene")
 (import [normalize_program registry media_id] ^from "./schema")
 (import [index_program replace resource_ids diff_programs] ^from "./program")
+(import [expand_region] ^from "./generate")
 
 (fn entry_of [program, id]
   (if_not (str? id) (reject "missing_field" "operation needs a target/destination ID"))
@@ -70,10 +71,10 @@
 
 (fn apply_program_patch [program, patch, ^expected_base expected_base = nil,
   ^expected_goal expected_goal = nil, ^prefix prefix : Str = "", ^taken taken = nil,
-  ^policy policy = nil, ^replay replay = false]
+  ^policy policy = nil, ^replay replay = false, ^reference_loader reference_loader = nil]
   (let props ($thaw ($freeze ($props patch))))
   (let patch_media (props .get "media"))
-  (if (&& (! ($absent? patch_media)) (!= patch_media media_id)) (reject "wrong_media" "patch belongs to another medium"))
+  (if (&& (! ($absent? patch_media)) (!= patch_media program/schema)) (reject "wrong_media" "patch belongs to another medium"))
   (let envelope_props {})
   (for [key value] in props (if (!= ($to_str key) "media") (envelope_props .put ($to_str key) value)))
   (let envelope (read_envelope ($node/rebuild patch ^props envelope_props)))
@@ -82,6 +83,7 @@
   (var draft program)
   (let original (index_program program)) (let allocated {})
   (let effects [])
+  (let expanded [])
   (fn add_ids [node]
     (if_not ($absent? node/id)
       (if (|| ($has_key? original node/id) ($has_key? allocated node/id)
@@ -93,7 +95,11 @@
       (let id node/id) (effects .push `(effect ^kind "insert" ^target %id)))
     (for child in ($body node) (if (node? child) (add_ids child))))
   (var index 0)
-  (for operation in envelope/operations
+  (for proposed in envelope/operations
+    (if (&& replay (== (kind_of proposed) "paint_region")) (reject "invalid_patch" "exact replay requires saved expanded strokes"))
+    (let operation (if (== (kind_of proposed) "paint_region")
+      (expand_region draft proposed ^reference_loader reference_loader) proposed))
+    (expanded .push operation)
     (let kind (kind_of operation))
     (let body ($body operation))
     (if (["insert_layer" "insert_operation" "add_resource"] .contains? kind)
@@ -162,7 +168,9 @@
       (let target (?? change/id change/parent))
       (effects .push `(effect ^kind %kind ^target %target))))
   (let digest (digest_of (canonical value)))
-  {^scene value ^digest digest ^patch ($freeze patch) ^normalized ($freeze patch)
+  (let intent (child_named patch "intent"))
+  (let normalized ($freeze ($node/rebuild patch ^body [intent expanded...])))
+  {^scene value ^digest digest ^patch ($freeze patch) ^normalized normalized
    ^effects effects ^diff diff ^changed (!= (canonical program) (canonical value))
    ^noop (== (canonical program) (canonical value))})
 

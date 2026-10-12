@@ -16,7 +16,10 @@
  ^layer {^id ["id" nil] ^label ["text" ""] ^role ["text" ""] ^opacity ["unit" 1]
    ^blend ["blend" "source_over"] ^visible ["bool" true] ^mask ["ref" ""]}
  ^brush {^id ["id" nil] ^kind ["brush_kind" nil] ^hardness ["unit" 1]
-   ^spacing ["spacing" 0.25] ^flow ["unit" 1] ^min_radius_ratio ["unit" 0.25]}
+   ^spacing ["spacing" 0.25] ^flow ["unit" 1] ^min_radius_ratio ["unit" 0.25]
+   ^aspect ["aspect" ""] ^angle ["angle" ""] ^texture ["unit" ""] ^bristles ["bristles" ""]}
+ ^reference {^id ["id" nil] ^asset ["digest" nil] ^source ["digest" nil]
+   ^width ["size" nil] ^height ["size" nil] ^label ["text" ""]}
  ^gradient {^id ["id" nil] ^kind ["gradient_kind" nil] ^from ["point" ""] ^to ["point" ""]
    ^center ["point" ""] ^radius ["radius" ""]}
  ^stop {^offset ["unit" nil] ^color ["color" nil]}
@@ -45,6 +48,10 @@
 (fn field_value [type : Str, value]
   (match type
     (when "unit" (grid value 65536 0 1))
+    (when "aspect" (grid value 65536 0.0625 1))
+    (when "angle" (grid value 1024 -360 360))
+    (when "bristles"
+      (if_not (&& (int? value) (>= value 1) (<= value 64)) (reject "invalid_field" "bristles must be 1–64")) value)
     (when "spacing" (grid value 65536 (/ 1.0 65536) 16))
     (when "radius" (grid value 1024 (/ 1.0 1024) 4096))
     (when "point"
@@ -77,9 +84,9 @@
       (if_not (|| (== value true) (== value false)) (reject "invalid_field" "expected boolean")) value)
     (else
       (let options (match type
-        (when "schema" [media_id]) (when "space" ["linear-srgb"])
+        (when "schema" [media_id "raster-painting/v2"]) (when "space" ["linear-srgb"])
         (when "blend" ["source_over"]) (when "fill_rule" ["nonzero"])
-        (when "brush_kind" ["hard-round/v1" "soft-round/v1"])
+        (when "brush_kind" ["hard-round/v1" "soft-round/v1" "bristle/v1"])
         (when "gradient_kind" ["linear" "radial"])
         (when "mask_kind" ["path" "bitmap"]) (else [])))
       (if_not (options .contains? value) (reject "invalid_field" $"expected one of ${options}")) value)))
@@ -90,13 +97,15 @@
   (if ($absent? spec) (reject "unknown_node" $"unsupported painting node ${kind}"))
   (let allowed (match where
     (when "root" ["painting"]) (when "painting" ["resources" "layer"])
-    (when "resources" ["brush" "gradient" "mask"])
+    (when "resources" ["brush" "gradient" "mask" "reference"])
     (when "layer" ["fill_path" "fill_mask" "stroke" "erase"])
     (when "gradient" ["stop"]) (when "mask" ["path"])
     (when "fill_path" ["path"]) (when "stroke" ["points"]) (when "erase" ["points"])
     (else [])))
   (if_not (allowed .contains? kind) (reject "invalid_node" $"${kind} cannot appear in ${where}"))
   (if (> ($size ($meta node)) 0) (reject "invalid_node" "painting nodes have no metadata"))
+  (if (&& (== kind "reference") (!= state/schema "raster-painting/v2"))
+    (reject "unsupported_schema" "reference resources require raster-painting/v2"))
   (var props {})
   (for name in (sorted_keys ($props node))
     (if_not ($has_key? spec name) (reject "unknown_field" $"${kind} has no ^${name}" ^field [name])))
@@ -106,6 +115,14 @@
     (if ($nil? value) (reject "missing_field" $"${kind} needs ^${field}" ^field [field]))
     (if_not (&& (== value "") (!= rule/0 "text") (! ($has_key? ($props node) field)))
       (props .put field (field_value rule/0 value))))
+  (if_yes (== kind "brush")
+    (let textured (== props/kind "bristle/v1"))
+    (if (&& textured (!= state/schema "raster-painting/v2"))
+      (reject "unsupported_schema" "bristle brushes require raster-painting/v2"))
+    (for [key default] in [["aspect" 0.35] ["angle" 0] ["texture" 0.7] ["bristles" 24]]
+      (if textured
+        (then (if_not ($has_key? props key) (props .put key (field_value (/0 (spec .get key)) default))))
+        (else (if ($has_key? props key) (reject "invalid_field" "textured fields require bristle/v1"))))))
   (if ($has_key? props "id")
     (then
       (if ($has_key? state/ids props/id) (reject "duplicate_id" $"duplicate ID ${props/id}"))
@@ -174,7 +191,7 @@
   ($node/rebuild node ^props props ^body body))
 
 (fn normalize_program [program]
-  (let state {^ids {} ^commands 0})
+  (let state {^ids {} ^commands 0 ^schema (?? program/schema media_id)})
   (let value (normalized_node program state "root"))
   (fn references [node]
     (for [field type] in [["brush" "brush"] ["paint" "gradient"] ["mask" "mask"]]
@@ -183,8 +200,10 @@
         (reject "missing_resource" $"${field} references missing or wrong-kind resource ${id}")))
     (for child in ($body node) (if (node? child) (references child))))
   (references value)
+  (let images ($filter ($body (($body value) .first)) (fn [item] (== (kind_of item) "reference"))))
+  (if (> images/.size 4) (reject "too_large" "at most four reference images may be attached"))
   (if (> ($str/byte_size (canonical value)) limits/scene_bytes) (reject "too_large" "painting exceeds 4 MiB"))
   ($freeze value))
 
-(fn blank_program [^width width = 1024, ^height height = 1024, ^background background = "#ffffffff"]
-  (normalize_program `(painting ^width %width ^height %height ^background %background (resources))))
+(fn blank_program [^width width = 1024, ^height height = 1024, ^background background = "#ffffffff", ^schema schema = media_id]
+  (normalize_program `(painting ^schema %schema ^width %width ^height %height ^background %background (resources))))

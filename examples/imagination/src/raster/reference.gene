@@ -1,0 +1,35 @@
+# Reference images are immutable guidance assets. They are decoded only while
+# planning new strokes, never sampled by the repaint interpreter.
+(mod imagination_raster_reference)
+(import [decode_png RasterError dependencies] ^from "." ^pkg "raster")
+(import [reject RenderError] ^from "../types")
+(import [digest_of] ^from "../scene")
+(import [put_asset get_asset new_staging remove_tree] ^from "../store")
+
+(fn decode [project, profile, bytes]
+  (if (!= profile/id "raster-cairo-linear/v2") (reject "unsupported_schema" "reference guidance requires a textured painting project"))
+  (let staging (new_staging project))
+  (try
+    (if (!= profile/native/dependencies (dependencies profile/native/worker))
+      (reject "profile_mismatch" "reference decoder libraries changed"))
+    (decode_png profile/native bytes staging)
+  catch RasterError
+    (fail (RenderError ^code "invalid_reference" ^stage "reference_decode" ^message $err/message ^detail nil))
+  ensure (remove_tree staging)))
+
+(fn reference_resource [project, profile, bytes, id : Str, label : Str]
+  (if (> ($binary/size bytes) 4194304) (reject "too_large" "reference PNG must be at most 4 MiB"))
+  (let image (decode project profile bytes))
+  (let source (put_asset project bytes))
+  (let asset (put_asset project image/png))
+  (let width image/width) (let height image/height)
+  `(reference ^id %id ^asset %asset ^source %source ^width %width ^height %height ^label %label))
+
+(fn load_reference [project, profile, resource]
+  (let image (decode project profile (get_asset project resource/asset)))
+  (if (!= [image/width image/height] [resource/width resource/height])
+    (reject "invalid_reference" "reference dimensions disagree with saved asset"))
+  # Verify original provenance too; never silently repair a missing asset.
+  (get_asset project resource/source)
+  (image .put "digest" resource/asset)
+  image)

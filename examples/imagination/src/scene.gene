@@ -126,9 +126,10 @@
 # The reader runs with duplicate properties rejected and nesting bounded; the
 # result is then checked to contain only inert data kinds, so an executable
 # reader form can never reach the interpreter. Nothing here is evaluated.
-(fn read_domain [text : Str, ^head head : Str] : Any
-  (if (> ($str/byte_size text) limits/response_bytes)
-    (reject "too_large" $"the response exceeds ${limits/response_bytes} bytes"))
+(fn read_domain [text : Str, ^head head : Str, ^max_bytes max_bytes = nil] : Any
+  (let cap (?? max_bytes limits/response_bytes))
+  (if (> ($str/byte_size text) cap)
+    (reject "too_large" $"the domain data exceeds ${cap} bytes"))
   (var forms
     (try
       ($into ($parse/read_all text ^^reject_duplicate_props ^max_depth limits/reader_depth) [])

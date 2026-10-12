@@ -14,9 +14,13 @@
 (import [render_program open_raster_profile raster_profile_manifest raster_crop] ^from "./raster/render")
 
 (fn raster? [value] (== (kind_of value) "painting"))
-(fn raster_profile? [profile] (== profile/id "raster-cairo-linear/v1"))
-(fn medium_of [value] (if (raster? value) "raster-painting/v1" "svg-scene/v1"))
+(fn raster_profile? [profile] (["raster-cairo-linear/v1" "raster-cairo-linear/v2"] .contains? profile/id))
+(fn medium_of [value] (if (raster? value) value/schema "svg-scene/v1"))
+(fn profile_medium [profile]
+  (if (== profile/id "raster-cairo-linear/v2") "raster-painting/v2"
+    (if (raster_profile? profile) "raster-painting/v1" "svg-scene/v1")))
 (fn open_profile [directory : Str, ^media media = "svg-scene/v1"]
+  (if (["painterly" "raster-painting/v2"] .contains? media) (return (open_raster_profile ^version 2)))
   (if (["raster" "raster-painting/v1"] .contains? media) (return (open_raster_profile)))
   (if_not (["svg" "svg-scene/v1"] .contains? media) (reject "unknown_medium" $"unknown medium ${media}"))
   (open_svg directory))
@@ -24,8 +28,8 @@
   (if (raster_profile? profile) (raster_profile_manifest profile) (profile_svg profile)))
 (fn normalize_scene [value] (if (raster? value) (normalize_program value) (normalize_svg value)))
 (fn blank_scene [^width width = 1024, ^height height = 1024, ^background background = "#ffffff", ^media media = "svg-scene/v1"]
-  (if (["raster" "raster-painting/v1"] .contains? media)
-    (blank_program ^width width ^height height ^background
+  (if (["raster" "raster-painting/v1" "painterly" "raster-painting/v2"] .contains? media)
+    (blank_program ^width width ^height height ^schema (if (["painterly" "raster-painting/v2"] .contains? media) "raster-painting/v2" "raster-painting/v1") ^background
       (if (== background "none") "#00000000" (if (== ($str/byte_size background) 7) $"${background}ff" background)))
     (blank_svg ^width width ^height height ^background background)))
 (fn index_scene [value] (if (raster? value) (index_program value) (index_svg value)))
@@ -35,9 +39,10 @@
 (fn defs_node [value] (if (raster? value) (child_named value "resources") (defs_svg value)))
 (fn top_level [value] (if (raster? value) ($drop ($body value) 1) (top_svg value)))
 (fn apply_patch [value, patch, ^expected_base expected_base = nil, ^expected_goal expected_goal = nil,
-                 ^prefix prefix = "", ^taken taken = nil, ^policy policy = nil]
-  (let apply (if (raster? value) apply_program_patch patch_svg))
-  (apply value patch ^expected_base expected_base ^expected_goal expected_goal ^prefix prefix ^taken taken ^policy policy))
+                 ^prefix prefix = "", ^taken taken = nil, ^policy policy = nil, ^reference_loader reference_loader = nil]
+  (if (raster? value)
+    (apply_program_patch value patch ^expected_base expected_base ^expected_goal expected_goal ^prefix prefix ^taken taken ^policy policy ^reference_loader reference_loader)
+    (patch_svg value patch ^expected_base expected_base ^expected_goal expected_goal ^prefix prefix ^taken taken ^policy policy)))
 (fn replay_normalized [value, patch, ^policy policy = nil]
   (if (raster? value) (replay_program_patch value patch ^policy policy) (replay_svg value patch ^policy policy)))
 (fn diff_scenes [left, right, ^left_name left_name = "", ^right_name right_name = ""]

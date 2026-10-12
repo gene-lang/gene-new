@@ -86,7 +86,7 @@ Rules
 - Each statement must be something a person can verify by looking at the picture. Only exact ^text checks may use structural; all other requirements use visual. Editing process preferences belong in preference nodes, not structural requirements.")
 
 (fn planner_prompt [^media media = "svg-scene/v1"] : Str
-  (if (["raster" "raster-painting/v1"] .contains? media)
+  (if (["raster" "raster-painting/v1" "painterly" "raster-painting/v2"] .contains? media)
     $"${planner_contract}\nThis project uses deterministic raster painting: layers, path fills, linear/radial gradients, masks and pressure brushes. There is no text primitive: quoted lettering must be a visual requirement, never a structural ^text requirement. Preserve the requested goal honestly even when the medium makes it difficult."
     $"${planner_contract}\nThis project uses SVG shapes, paths, gradients and text."))
 

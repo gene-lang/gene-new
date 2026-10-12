@@ -9,10 +9,16 @@
   (let pkg (?? ($os/env? "PKG_CONFIG") "pkg-config"))
   (let flags ($filter ($str/split (checked pkg ["--cflags" "--libs" "cairo" "libpng"]) " ")
     (fn [s] (!= s ""))))
-  (let args ["-std=c++17" "-O2" "-fno-fast-math" "-ffp-contract=off"
-    ($path/join root "native" "worker.cpp") "-o" ($path/join out "raster-worker")])
-  (for flag in flags (args .push flag))
-  (args .push "-lz")
-  (checked (?? ($os/env? "CXX") "clang++") args ^timeout_ms 120000)
-  ($println ($path/join out "raster-worker"))
+  (for [source name] in [["worker_v1.cpp" "raster-worker"] ["worker.cpp" "raster-worker-v2"]]
+    # Keep a previously certified v1 executable intact. A clean installation
+    # can build the frozen source; restoring an old profile requires its binary.
+    (if_not (&& (== name "raster-worker") ($fs/exists? ($path/join out name)))
+      (let temporary ($path/join out $"${name}.new"))
+      (let args ["-std=c++17" "-O2" "-fno-fast-math" "-ffp-contract=off"
+        ($path/join root "native" source) "-o" temporary])
+      (for flag in flags (args .push flag))
+      (args .push "-lz")
+      (checked (?? ($os/env? "CXX") "clang++") args ^timeout_ms 120000)
+      ($fs/rename temporary ($path/join out name)))
+    ($println ($path/join out name)))
   0)

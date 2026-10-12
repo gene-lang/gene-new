@@ -54,6 +54,11 @@ lighting."` and `serve --media raster`. The workbench also offers **Raster
 painting** when creating a project. Every edit repaints the saved program
 from blank; no image-generation service is invoked by the renderer.
 
+For textured directional brushes, regional stroke helpers and PNG reference
+guidance, use **Textured painting** or `--media painterly`. See the
+[painterly guide](docs/painterly.md), including `reference` and
+`paint-reference` commands. Its separate v2 renderer preserves existing v1 projects.
+
 `bin/imagination` runs `${GENE_BINARY:-gene}`. Projects live in
 `$IMAGINATION_HOME` (default `examples/imagination/projects/`).
 

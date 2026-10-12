@@ -8,7 +8,7 @@
 
 (import [StoreError kind_of node? str? list? map? number? sorted_keys] ^from "./types")
 (import [canonical digest_of read_canonical] ^from "./scene")
-(import [blank_scene render_scene render_crop profile_manifest raster? raster_profile?] ^from "./media")
+(import [blank_scene render_scene render_crop profile_manifest raster? raster_profile? profile_medium] ^from "./media")
 (import [build_evaluation] ^from "./evaluation")
 (import [DrawingSession] ^from "./agent")
 (import [note event_line] ^from "./log")
@@ -74,7 +74,7 @@
   (write_node ($path/join root "goal.gene") goal)
   (write_node ($path/join root "render-profile.gene") (profile_manifest profile))
   (let scene (blank_scene ^width width ^height height ^background background
-    ^media (if (raster_profile? profile) "raster-painting/v1" "svg-scene/v1")))
+    ^media (profile_medium profile)))
   (let directory (revision_dir run "r000"))
   (let bundle (render_scene profile scene directory))
   (write_node ($path/join directory "scene.gene") scene)
@@ -88,6 +88,8 @@
   run)
 
 (impl DrawingSession for RunDirectory
+  (message reference [resource] : Any
+    (fail (StoreError ^code "missing_reference" ^message "Use a project history to attach reference assets." ^detail resource/id)))
   (message head [] : Any self/state/head)
 
   (message allocate [] : Any

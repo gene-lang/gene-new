@@ -127,7 +127,13 @@ Mask path(Reader& r,int w,int h) {
 }
 struct Point { double x,y,p,t; };
 double quant(double x,double grid) { return std::nearbyint(x*grid)/grid; }
+// hash32/v1: defined uint32 wraparound; independent channels, no ambient RNG.
+uint32_t hash32(uint32_t x) {
+  x ^= x >> 16; x *= 0x7feb352dU; x ^= x >> 15; x *= 0x846ca68bU; return x ^ (x >> 16);
+}
+struct Tip { double aspect=1,angle=0,texture=0; int bristles=1; uint32_t seed=0; };
 struct Engine {
+  int protocol=2;
   int w,h; size_t work=0,dabs=0; std::vector<Mask> masks;
   void charge(size_t count) {
     if(count>max_work-work) throw std::runtime_error("raster work limit exceeded");
@@ -136,12 +142,14 @@ struct Engine {
   float mask(int id,size_t i) const { return id<0?1:masks.at(id)[i]; }
   int mask_ref(Reader& r) { return r.integer(-1,int(masks.size())-1); }
   void dab(Surface& layer,Point p,double base,double hardness,double ratio,float flow,
-           float opacity,Pixel c,int mask_id,bool erase) {
+           float opacity,Pixel c,int mask_id,bool erase,Tip tip={},double tangent=0) {
     if(++dabs>1000000) throw std::runtime_error("dab limit exceeded");
     p.x=quant(p.x,1024); p.y=quant(p.y,1024); p.p=quant(p.p,65536);
     if(p.p==0) return;
     double radius=base*(ratio+(1-ratio)*p.p);
     if(radius<=0) return;
+    double angle=tangent+tip.angle*3.14159265358979323846/180;
+    double cosine=std::cos(angle),sine=std::sin(angle);
     int x0=int(std::clamp(std::floor(p.x-radius),0.0,double(w)));
     int y0=int(std::clamp(std::floor(p.y-radius),0.0,double(h)));
     int x1=int(std::clamp(std::ceil(p.x+radius),0.0,double(w)));
@@ -150,8 +158,18 @@ struct Engine {
     for(int y=y0;y<y1;y++) for(int x=x0;x<x1;x++) {
       double coverage=0;
       for(double dy:{0.25,0.75}) for(double dx:{0.25,0.75}) {
-        double d=std::hypot(x+dx-p.x,y+dy-p.y)/radius;
-        coverage+=d<=hardness?1:(d>=1?0:(1-d)/(1-hardness));
+        double px=x+dx-p.x,py=y+dy-p.y;
+        double u=(px*cosine+py*sine)/radius,v=(-px*sine+py*cosine)/(radius*tip.aspect);
+        double d=tip.aspect==1 && tip.texture==0?std::hypot(px,py)/radius:std::hypot(u,v);
+        double radial=d<=hardness?1:(d>=1?0:(1-d)/(1-hardness));
+        if(tip.texture>0 && radial>0) {
+          double band=(v+1)*.5*tip.bristles;
+          int index=std::clamp(int(std::floor(band)),0,tip.bristles-1);
+          double strength=.35+.65*(hash32(tip.seed ^ (uint32_t(index)*0x9e3779b9U))/4294967296.0);
+          double rib=.25+.75*std::pow(std::sin((band-std::floor(band))*3.14159265358979323846),2);
+          radial*=1-tip.texture+tip.texture*strength*rib;
+        }
+        coverage+=radial;
       }
       size_t i=size_t(y)*w+x;
       float f=std::clamp(float(coverage*.25*p.p)*flow*opacity*mask(mask_id,i),0.f,1.f);
@@ -159,11 +177,14 @@ struct Engine {
     }
   }
   void stroke(Reader& r,Surface& layer,bool erase) {
-    int kind=r.integer(0,1);
+    int kind=r.integer(0,2);
     double hardness=r.unit(),spacing=r.grid(1.0/65536,16,65536);
     float flow=r.unit(); double ratio=r.unit();
     double radius=r.grid(1.0/1024,4096); float opacity=r.unit();
-    Pixel c=color(r); int m=mask_ref(r); r.integer(0,2147483647); // seed, no jitter in v1
+    Pixel c=color(r); int m=mask_ref(r); uint32_t seed=r.integer(0,2147483647);
+    Tip tip;
+    if(kind==2) { tip.aspect=r.grid(1.0/16,1,65536); tip.angle=r.grid(-360,360);
+      tip.texture=r.unit(); tip.bristles=r.integer(1,64); tip.seed=seed; }
     if(!kind) hardness=1;
     int n=r.integer(1,5000); std::vector<Point> points;
     double total=0;
@@ -175,7 +196,10 @@ struct Engine {
     }
     double step=std::max(1.0/1024,radius*spacing);
     if(total/step+1>1000000-dabs) throw std::runtime_error("dab limit exceeded");
-    dab(layer,points[0],radius,hardness,ratio,flow,opacity,c,m,erase);
+    double initial_angle=0;
+    for(size_t i=1;i<points.size();i++) if(points[i].x!=points[0].x || points[i].y!=points[0].y) {
+      initial_angle=std::atan2(points[i].y-points[0].y,points[i].x-points[0].x); break; }
+    dab(layer,points[0],radius,hardness,ratio,flow,opacity,c,m,erase,tip,kind==2?initial_angle:0);
     double travelled=0; size_t next=1;
     for(size_t i=1;i<points.size();i++) {
       auto a=points[i-1],b=points[i]; double len=std::hypot(b.x-a.x,b.y-a.y);
@@ -183,7 +207,7 @@ struct Engine {
       while(next*step<=travelled+len) {
         double f=(next*step-travelled)/len;
         dab(layer,{a.x+(b.x-a.x)*f,a.y+(b.y-a.y)*f,a.p+(b.p-a.p)*f,a.t+(b.t-a.t)*f},
-          radius,hardness,ratio,flow,opacity,c,m,erase);
+          radius,hardness,ratio,flow,opacity,c,m,erase,tip,kind==2?std::atan2(b.y-a.y,b.x-a.x):0);
         ++next;
       }
       travelled+=len;
@@ -283,6 +307,22 @@ int main(int argc,char** argv) {
   using namespace raster;
   try {
     std::fesetround(FE_TONEAREST);
+    if(argc==2 && std::string(argv[1])=="--decode") {
+      png_image input{}; input.version=PNG_IMAGE_VERSION;
+      if(!png_image_begin_read_from_file(&input,"source.png")) throw std::runtime_error("invalid reference PNG");
+      if(input.width>2048 || input.height>2048 || !input.width || !input.height) {
+        png_image_free(&input); throw std::runtime_error("reference pixel limit"); }
+      input.format=PNG_FORMAT_RGBA;
+      std::vector<unsigned char> pixels(PNG_IMAGE_SIZE(input));
+      if(!png_image_finish_read(&input,nullptr,pixels.data(),0,nullptr)) {
+        png_image_free(&input); throw std::runtime_error("reference decode failed"); }
+      int w=input.width,h=input.height; png_image_free(&input);
+      png("reference.png",w,h,pixels);
+      std::ofstream raw("pixels.rgba",std::ios::binary);
+      raw.write(reinterpret_cast<const char*>(pixels.data()),pixels.size()); raw.close();
+      if(!raw) throw std::runtime_error("reference output failed");
+      std::cout<<w<<" "<<h<<"\n"; return 0;
+    }
     if(argc==2 && std::string(argv[1])=="--crop") {
       Reader r;
       int x=r.integer(0,2047),y=r.integer(0,2047),w=r.integer(1,2048),h=r.integer(1,2048);
@@ -305,14 +345,14 @@ int main(int argc,char** argv) {
       return 0;
     }
     if(argc==2 && std::string(argv[1])=="--profile") {
-      std::cout<<"raster-cairo-linear/v1 cairo="<<cairo_version_string()<<" libpng="<<png_get_libpng_ver(nullptr)
+      std::cout<<"raster-cairo-linear/v2 bristle-hash32/v1 cairo="<<cairo_version_string()<<" libpng="<<png_get_libpng_ver(nullptr)
         <<" zlib="<<zlibVersion()<<" compiler="<<__VERSION__<<" float32 nearest no-fast-math fp-contract-off single-thread\n";
       return 0;
     }
     if(argc!=1) throw std::runtime_error("unexpected arguments");
     std::ifstream sizecheck("request.txt",std::ios::binary|std::ios::ate);
     if(!sizecheck || sizecheck.tellg()>8388608) throw std::runtime_error("request size limit");
-    Reader r; if(r.integer(1,1)!=1) return 1;
+    Reader r; if(r.integer(2,2)!=2) return 1;
     Engine e; auto pixels=rgba(e.render(r));
     png("observation.png",e.w,e.h,pixels);
     std::ofstream raw("pixels.rgba",std::ios::binary);

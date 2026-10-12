@@ -6,6 +6,10 @@
 **Visual output:** PNG rendered directly from raster surfaces  
 **Required behavior:** after every completed edit, repaint the entire program from a fresh canvas
 
+The subsequent [textured-painting implementation](painterly.md) adds a v2
+profile, materialized stroke helpers and explicit reference guidance while
+preserving this full-repaint contract and the original v1 profile.
+
 ## 1. Purpose and governing decision
 
 Build a Gene example that creates raster artwork through brushes, gradients, masks, textures, and compositing. A multimodal model edits a compact painting program, receives its actual rendered PNG, and continues refining the result. The same creation framework supports inspection, alternatives, restoration, merging, and continuation from any saved revision.

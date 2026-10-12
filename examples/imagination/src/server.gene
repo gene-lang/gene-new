@@ -21,11 +21,11 @@
 (import [plan_goal] ^from "./agent")
 (import [create_evolution open_evolution close_evolution view line_row lines revisions
          revision_row parents_of value fork select selected metadata_version compare
-         replay_exact goal_of effective_evaluation next_goal_id] ^from "./evolution")
+         replay_exact goal_of effective_evaluation next_goal_id import_reference] ^from "./evolution")
 (import [start_run execute_run cancel_run steer_run resume_run run_row runs active_run
          model_view] ^from "./jobs")
 (import [first_line] ^from "./log")
-(import [events_after last_event_seq get_node get_object artifact_path artifact_kinds hex_of verify_bundle]
+(import [events_after last_event_seq get_node get_object get_asset artifact_path artifact_kinds hex_of verify_bundle]
   ^from "./store")
 (import [styles] ^from "./style")
 
@@ -55,10 +55,15 @@
   ($path/join bench/home name))
 
 (fn profile_for [bench, medium]
+  (if_yes (["painterly" "raster-painting/v2"] .contains? medium)
+    (if (== bench/profile/id "raster-cairo-linear/v2") (return bench/profile))
+    (if ($absent? bench/painterly_profile)
+      (bench .put "painterly_profile" (open_profile ($path/join bench/home ".work") ^media medium)))
+    (return bench/painterly_profile))
   (let raster (["raster" "raster-painting/v1"] .contains? medium))
   (if_not (["raster" "raster-painting/v1" "svg" "svg-scene/v1"] .contains? medium)
     (api_failure 400 "unknown_medium" "Choose svg or raster."))
-  (if (== raster (raster_profile? bench/profile)) (return bench/profile))
+  (if (&& (!= bench/profile/id "raster-cairo-linear/v2") (== raster (raster_profile? bench/profile))) (return bench/profile))
   (let key (if raster "raster_profile" "svg_profile"))
   (if ($absent? (bench .get key))
     (bench .put key (open_profile ($path/join bench/home ".work") ^media medium)))
@@ -201,6 +206,13 @@
   (for item in (children_named manifest "artifact")
     (artifacts .put item/kind (artifact_url name row/render item/kind)))
   (artifacts .put "manifest.gene" (artifact_url name row/render "manifest.gene"))
+  (let references [])
+  (let scene (value evolution id))
+  (if_yes (== scene/schema "raster-painting/v2")
+    (for resource in ($body (($body scene) .first))
+      (if_yes (== (kind_of resource) "reference")
+        (references .push {^id resource/id ^label resource/label ^asset resource/asset
+          ^url $"/api/v1/projects/${name}/references/${id}/${resource/id}"}))))
   {^id id ^media evolution/project/record/media ^number row/number ^kind row/kind ^quality row/quality ^goal row/goal
    ^parents parents ^actor row/actor ^run row/run ^intent row/intent ^summary row/summary
    ^image row/image ^render row/render ^created_ms row/created_ms
@@ -210,7 +222,7 @@
    ^original_evaluation (evaluation_json original)
    ^goal_record (goal_json (goal_of evolution row/goal))
    ^render_profile manifest/profile ^output manifest/output
-   ^artifacts artifacts})
+   ^artifacts artifacts ^references references})
 
 # ── history layout (section 14.2) ──────────────────────────────────────────
 
@@ -637,7 +649,8 @@
                  (div ^class "row"
                    (label "Medium" (select ^id "new_media"
                      (option ^value "svg-scene/v1" "SVG")
-                     (option ^value "raster-painting/v1" "Raster painting")))
+                     (option ^value "raster-painting/v1" "Raster painting")
+                     (option ^value "raster-painting/v2" "Textured painting")))
                    (label ^class "grow" "Name (optional)"
                      (input ^id "new_name" ^maxlength "64" ^placeholder "taken from the request when empty"))
                    (label "Width" (input ^id "new_width" ^type "number" ^min "16" ^max "4096" ^value "1024"))
@@ -661,6 +674,12 @@
                    (span ^id "run_status" ^class "run_status" "No run on this line yet.")
                    (span ^id "run_clock" ^class "run_clock"))
                  (p ^id "run_queue" ^class "run_queue" ^^hidden)
+                 (details ^id "reference_panel" ^^hidden
+                   (summary ^id "reference_title" "Reference images")
+                   (label "Reference PNG (up to 4 MiB)"
+                     (input ^id "reference_file" ^type "file" ^accept "image/png"))
+                   (p ^class "muted" "Reference images guide stroke placement and are shown to the drawing model.")
+                   (div ^id "reference_images"))
                  (form ^id "composer_form" ^class "composer"
                    (textarea ^id "composer_text" ^rows "2" ^maxlength "2000"
                      ^aria-label "What should change in the drawing")
@@ -805,6 +824,24 @@
   (let name rest/1)
   (let evolution (project_of bench name))
   (let section (if (> count 2) rest/2 ""))
+  (if_yes (&& (== section "references") (== count 3) (== method "POST"))
+    (let data (request_data request))
+    (let line (text_field data "line" ^default "main" ^limit 64))
+    (if_not ($absent? (active_run evolution line)) (api_failure 409 "line_busy" "Finish or cancel the drawing run before attaching a reference."))
+    (let encoded (text_field data "data" ^limit 5592410))
+    (let image (try ($base64/decode encoded) catch Any (api_failure 400 "invalid_image" "Invalid PNG base64.")))
+    (return (respond 201 (idempotent ^input data bench evolution
+      (text_field data "idempotency_key" ^limit 128) "reference"
+      (fn [] (import_reference evolution line image ^label (text_field data "label" ^default "Reference" ^limit 200)))))))
+  (if_yes (&& (== section "references") (== count 5) (== method "GET"))
+    (let scene (value evolution rest/3))
+    (if_yes (== scene/schema "raster-painting/v2")
+      (for resource in ($body (($body scene) .first))
+        (if_yes (&& (== (kind_of resource) "reference") (== resource/id rest/4))
+          (let result (bytes 200 (get_asset evolution/project resource/asset)))
+          (result/headers .put "content-type" "image/png")
+          (return result))))
+    (api_failure 404 "not_found" "Reference is not attached to this revision."))
   (if (&& (== count 2) (== method "GET"))
     (return (respond 200 (project_json bench name))))
   (if (&& (== section "history") (== method "GET"))
@@ -955,7 +992,7 @@
   (if_not ($absent? on_ready) (on_ready actual))
   (try
     (serve server ^handler (fn [request] (secure (guarded bench request)))
-      ^max_connections 64 ^max_in_flight 32 ^max_body_bytes 300000
+      ^max_connections 64 ^max_in_flight 32 ^max_body_bytes 5700000
       ^request_timeout_ms 180000 ^tick_ms 250
       ^on_tick (fn [] (pump bench)))
   ensure

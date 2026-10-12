@@ -343,7 +343,8 @@
   (let id $"project-${($crypto/random_hex 8)}")
   (let created ($os/wall_ms))
   (let profile_id profile_manifest/id)
-  (let medium (if (== profile_id "raster-cairo-linear/v1") "raster-painting/v1" media_id))
+  (let medium (if (== profile_id "raster-cairo-linear/v2") "raster-painting/v2"
+    (if (== profile_id "raster-cairo-linear/v1") "raster-painting/v1" media_id)))
   (let record
     ($freeze
       `(project ^schema 1 ^id %id ^name %name ^media %medium

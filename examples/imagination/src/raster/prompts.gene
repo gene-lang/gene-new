@@ -47,12 +47,22 @@ Atomic patch operations (maximum 50). All insert/move operations require exactly
 
 The registry below lists accepted fields and types; do not add other properties. References must resolve in the final atomic draft. Resource changes cannot bypass locks. If an edit fails, repair the reported problem without changing unrelated work.")
 
-(fn raster_system_prompt []
+(const painterly_contract "Textured painting v2 adds bristle/v1 brushes. Fields: ^aspect in [0.0625,1] (default .35), ^angle in [-360,360] degrees relative to path tangent (default 0), ^texture in [0,1] (default .7), ^bristles 1–64 (default 24). Texture is seeded independently per stroke. Use pressure points that start/end low to taper marks. Favor visible directional strokes and purposeful color variation over smooth gradients when the request asks for painterly work.
+
+Use the deterministic paint_region helper for broad stroke fields; it expands into a new named layer of ordinary saved strokes:
+(paint_region ^id \"<prefix>sky\" ^brush \"brush-ID\" ^region [0 0 256 128] ^count 180 ^radius 7 ^length 24 ^seed 42 ^color \"#34659fff\" ^pattern \"swirl\" ^angle 0 ^bend 0.2 ^jitter 0.6 ^color_variation 0.08 ^opacity 0.85 ^label \"Sky\")
+Required fields are id, brush, region, count, radius, length, seed. Optional angle, bend [-1,1], jitter [0,1], color_variation [0,1], opacity [0,1], pattern parallel|swirl|reference, label, and ^underpaint true. Underpainting adds an 8x8 grid of 64 ordinary color-block fills before the strokes; use it for the first reference pass to avoid white cracks, and omit it for refinements. Choose exactly one color or reference. Count is 1–1800, but the whole program must stay within 2000 identities, so usually use 100–500 strokes per pass. Generated stroke IDs are layer-ID-s0, -s1, etc. Marks' centerlines fit the region, but their brush footprints can extend outside it; use a layer mask to clip silhouettes. The helper always inserts its new layer at the end. Subsequent move_layer/set_layer operations can reposition it or apply a mask. Each generated stroke can also be edited individually. Begin original compositions with an opaque colored ground and broad subject masses before adding textured fields.
+
+Attached reference resources identify immutable PNGs shown separately in the input. For reference-guided color and contour flow, replace ^color with ^reference \"resource-ID\" and use ^pattern \"reference\". The image maps across the whole canvas. Use a broad pass then a finer pass. This samples the reference to plan explicit strokes; the saved painting never embeds a hidden image layer. Never invent reference resources or asset digests. Keep requested style/composition goals distinct from the reference's visible contents. References are guidance, not evidence that the current painting is complete.")
+
+(fn raster_system_prompt [^version version = 1]
   (let lines [contract "" "Painting registry:"])
+  (if (== version 2) (lines .push painterly_contract))
   (for kind in (sorted_keys registry)
     (let fields [])
     (for name in (sorted_keys (registry .get kind))
       (let rule ((registry .get kind) .get name))
       (fields .push $"^${name}:${rule/0}"))
-    (lines .push $"${kind}: ${($str/join fields \" \")}"))
+    (if (|| (== version 2) (!= kind "reference"))
+      (lines .push $"${kind}: ${($str/join fields \" \")}")))
   ($str/join lines "\n"))

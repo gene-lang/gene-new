@@ -17,8 +17,9 @@
 (import [describe_diff] ^from "./diff")
 (import [profile_fingerprint] ^from "./render")
 (import [blank_scene normalize_scene apply_patch replay_normalized diff_scenes render_scene render_crop
-         profile_manifest raster? raster_profile?] ^from "./media")
+         profile_manifest raster? raster_profile? profile_medium] ^from "./media")
 (import [validate_goal validate_policy build_evaluation] ^from "./evaluation")
+(import [reference_resource load_reference] ^from "./raster/reference")
 (import [Project create_project open_project close_project in_transaction put_node
          put_object get_node get_object publish_bundle verify_bundle new_staging remove_tree
          artifact_path next_number meta_get meta_put append_event store_failure get_asset]
@@ -119,6 +120,11 @@
   (let staging (new_staging project))
   (var bundle nil)
   (try
+    (if_yes (== result/scene/schema "raster-painting/v2")
+      (for resource in ($body (($body result/scene) .first))
+        (if_yes (== (kind_of resource) "reference")
+          (get_asset project resource/asset)
+          (get_asset project resource/source))))
     (set bundle (render_scene evolution/profile result/scene staging ^assets (fn [digest] (get_asset project digest))))
     (publish_bundle project bundle)
   ensure
@@ -256,7 +262,7 @@
   (let project (create_project root name (profile_manifest profile)))
   (let evolution (Evolution ^project project ^profile profile))
   (let scene (blank_scene ^width width ^height height ^background background
-    ^media (if (raster_profile? profile) "raster-painting/v1" "svg-scene/v1")))
+    ^media (profile_medium profile)))
   (let candidate
     (stage evolution nil
       {^scene scene ^patch nil ^normalized nil ^effects [] ^diff nil}
@@ -325,7 +331,20 @@
 (fn apply_to_draft [evolution, draft, patch, ^prefix prefix : Str, ^policy policy = nil,
                     ^expected_goal expected_goal = nil] : Any
   (apply_patch draft/scene patch ^expected_base draft/base ^expected_goal expected_goal
-    ^prefix prefix ^taken (fn [id] (id_taken? evolution id)) ^policy policy))
+    ^prefix prefix ^taken (fn [id] (id_taken? evolution id)) ^policy policy
+    ^reference_loader (fn [resource] (load_reference evolution/project evolution/profile resource))))
+
+(fn import_reference [evolution, line_id : Str, bytes : Bytes, ^label label : Str = "Reference"]
+  (let line (line_row evolution line_id))
+  (let prefix (allocate_prefix evolution))
+  (let id $"${prefix}reference")
+  (let resource (reference_resource evolution/project evolution/profile bytes id label))
+  (let base line/head) (let goal line/goal)
+  (let patch `(patch ^schema 1 ^id %id ^base %base ^goal %goal
+    (intent "Attach an immutable reference image for painting guidance.")
+    (add_resource ^position "end" %resource)))
+  (let publication (commit_patch evolution line_id patch ^prefix prefix))
+  {^id id ^asset resource/asset ^revision publication/revision/id ^width resource/width ^height resource/height})
 
 # Apply a handwritten or saved patch to the head of a working line and publish
 # the result on it. No model is involved: the revision carries structural

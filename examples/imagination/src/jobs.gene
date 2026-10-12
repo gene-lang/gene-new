@@ -17,6 +17,7 @@
 (import [DrawingSession run_drawing plan_goal budgets_from] ^from "./agent")
 (import [VisionAgent] ^from "./adapters/model")
 (import [note event_line first_line] ^from "./log")
+(import [load_reference] ^from "./raster/reference")
 
 # One run's session on one working line of an Evolution.
 (type EvolutionSession
@@ -125,6 +126,8 @@
   (if ($absent? row) nil (read_canonical row/body)))
 
 (impl DrawingSession for EvolutionSession
+  (message reference [resource] : Any
+    (load_reference self/evolution/project self/evolution/profile resource))
   (message head [] : Any
     (let line (line_row self/evolution self/line))
     (view self/evolution line/head ^goal self/state/goal))

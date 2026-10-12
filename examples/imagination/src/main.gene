@@ -4,7 +4,7 @@
 # prints the usage and fails; nothing is simulated.
 (mod imagination_main)
 
-(import [DomainError RenderError StoreError ModelError field_label] ^from "./types")
+(import [DomainError RenderError StoreError ModelError field_label limits] ^from "./types")
 (import [read_domain read_canonical canonical scene_digest digest_of] ^from "./scene")
 (import [normalize_scene blank_scene apply_patch open_profile render_scene medium_of raster?] ^from "./media")
 (import [run_doctor print_doctor transport_image transport_word] ^from "./doctor")
@@ -14,7 +14,7 @@
 (import [create_run] ^from "./rundir")
 (import [create_evolution open_evolution close_evolution view line_row lines revisions
          revision_row parents_of commit_patch fork compare replay_exact export_artifact
-         selected goal_of next_goal_id] ^from "./evolution")
+         selected goal_of next_goal_id import_reference allocate_prefix] ^from "./evolution")
 (import [start_run execute_run run_row] ^from "./jobs")
 (import [serve_workbench] ^from "./server")
 (import [put_asset] ^from "./store")
@@ -27,27 +27,29 @@ Deterministic drawing
   render <program.gene> <out-dir>        render an SVG scene or raster painting
   draw <out-dir> <patch.gene>...         apply handwritten patches to a blank
        [--width N] [--height N]          scene, exporting every step
-       [--background #rrggbb] [--prefix P] [--media svg|raster]
+       [--background #rrggbb] [--prefix P] [--media svg|raster|painterly]
 
 Projects (IMAGINATION_HOME, default examples/imagination/projects)
   create <project> --prompt TEXT         plan a goal and create a blank history
-       [--media svg|raster] [--goal goal.gene] [--policy policy.gene] [--width N] [--height N]
+       [--media svg|raster|painterly] [--goal goal.gene] [--policy policy.gene] [--width N] [--height N]
   run <project> [--line NAME] [--max-iterations N]   draw on a line
   history <project>                      list lines and revisions
   show <project> --revision R            one revision's record
   continue <project> --from R --line NAME [--prompt TEXT]   fork a line
   apply <project> <patch.gene> [--line NAME] [--prefix P]   publish a patch
   asset <project> <grayscale.raw>        store an immutable raster mask; print its digest
+  reference <project> <image.png> [--line NAME]    attach guidance to a textured painting
+  paint-reference <project> <reference-ID> [--count N] [--radius N] [--length N] [--seed N]
   compare <project> --left R --right R   structural diff of two revisions
   replay <project> --path FROM:TO        exact replay, no model
   export <project> --revision R --format svg|pdf|png [--out FILE]
-  serve [project] [--port N] [--media svg|raster]   the web workbench on 127.0.0.1
+  serve [project] [--port N] [--media svg|raster|painterly]   the web workbench on 127.0.0.1
 
 Drawing-loop spike (files only, live model)
   spike <run-dir> --prompt TEXT          draw from a blank canvas, keeping each
        [--goal goal.gene]                step in the run directory
        [--policy policy.gene] [--max-iterations N]
-       [--width N] [--height N] [--background #rrggbb] [--media svg|raster]
+       [--width N] [--height N] [--background #rrggbb] [--media svg|raster|painterly]
 ")
 
 # ── arguments ──────────────────────────────────────────────────────────────
@@ -115,7 +117,8 @@ Drawing-loop spike (files only, live model)
 (fn command_render [args] : Int
   (if (!= args/words/.size 2) (usage_error "render needs <scene.gene> <out-dir>"))
   (let text ($fs/read_text (absolute args/words/0)))
-  (let scene (normalize_scene (try (read_domain text ^head "painting") catch DomainError (read_domain text ^head "scene"))))
+  (let scene (normalize_scene (try (read_domain text ^head "painting" ^max_bytes limits/scene_bytes)
+    catch DomainError (read_domain text ^head "scene" ^max_bytes limits/scene_bytes))))
   (let out (ensure_dir (absolute args/words/1)))
   (let profile (open_profile ($path/join out ".work") ^media (medium_of scene)))
   (let bundle (render_scene profile scene out))
@@ -378,6 +381,36 @@ New direction: ${direction}" goal_id ^media evolution/project/record/media))
       ($println (put_asset evolution/project ($fs/read_bytes (absolute args/words/1))))
       0)))
 
+(fn command_reference [args] : Int
+  (if (!= args/words/.size 2) (usage_error "reference needs <project> <image.png>"))
+  (with_project args/words/0 (fn [evolution]
+    (let result (import_reference evolution (?? (args/options .get "line") "main")
+      ($fs/read_bytes (absolute args/words/1)) ^label (?? (args/options .get "label") "Reference image")))
+    ($println $"reference ${result/id}, revision ${result/revision}, ${result/width} x ${result/height}")
+    0)))
+
+(fn command_paint_reference [args] : Int
+  (if (!= args/words/.size 2) (usage_error "paint-reference needs <project> <reference-ID>"))
+  (with_project args/words/0 (fn [evolution]
+    (let name (?? (args/options .get "line") "main"))
+    (let line (line_row evolution name)) (let current (view evolution line/head))
+    (let prefix (allocate_prefix evolution))
+    (let brush $"${prefix}brush") (let layer $"${prefix}paint")
+    (let reference args/words/1) (let base line/head) (let goal line/goal)
+    (let region [0 0 current/scene/width current/scene/height])
+    (let count (int_option args/options "count" 300))
+    (let radius (int_option args/options "radius" 8))
+    (let length (int_option args/options "length" 24))
+    (let seed (int_option args/options "seed" 42))
+    (let underpaint (== ($size ($body current/scene)) 1))
+    (let patch `(patch ^schema 1 ^id %layer ^base %base ^goal %goal (intent "Reference-guided textured stroke pass.")
+      (add_resource ^position "end" (brush ^id %brush ^kind "bristle/v1" ^hardness 0.8 ^aspect 0.4 ^texture 0.6))
+      (paint_region ^id %layer ^brush %brush ^reference %reference ^region %region ^count %count
+        ^radius %radius ^length %length ^seed %seed ^pattern "reference" ^color_variation 0.035 ^underpaint %underpaint)))
+    (let result (commit_patch evolution name patch ^prefix prefix))
+    ($println $"painted ${result/revision/id}")
+    0)))
+
 (fn command_replay [args] : Int
   (if (!= args/words/.size 1) (usage_error "replay needs <project> --path FROM:TO"))
   (let range ($str/split (?? (args/options .get "path") "") ":"))
@@ -437,6 +470,8 @@ New direction: ${direction}" goal_id ^media evolution/project/record/media))
     (when "continue" (command_continue args))
     (when "apply" (command_apply args))
     (when "asset" (command_asset args))
+    (when "reference" (command_reference args))
+    (when "paint-reference" (command_paint_reference args))
     (when "compare" (command_compare args))
     (when "replay" (command_replay args))
     (when "export" (command_export args))

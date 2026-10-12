@@ -47,6 +47,8 @@
   (message event [kind : Str, data] : Nil)
   # Render a detail crop of a revision: {^bytes ^digest ^rectangle ^width ^height}.
   (message crop [revision, rectangle] : Any)
+  # Verified immutable guidance PNG and decoded pixels for stroke planning.
+  (message reference [resource] : Any)
   (message cancelled [] : Bool)
   # A goal change waiting for a safe boundary: nil or {^goal ^policy ^instruction}.
   (message steer [] : Any)
@@ -295,6 +297,10 @@
   (if (>= state/iterations budgets/max_iterations)
     (opening .push "The edit budget is used up: review the newest image, then answer done or blocked. An edit will not be rendered."))
   (parts .push (text_part ($str/join opening "\n")))
+  (if_not ($absent? state/references)
+    (for reference in state/references
+      (parts .push (text_part $"REFERENCE GUIDANCE ${reference/id}, asset ${reference/digest}. This is a target/reference, not a rendered revision; assess the working and candidate PNGs separately."))
+      (parts .push {^type "image" ^label $"reference ${reference/id}" ^digest reference/digest ^media "image/png" ^bytes reference/png})))
 
   (parts .push
     (text_part
@@ -355,7 +361,7 @@
        ^media "image/png" ^bytes crop/bytes}))
   # `context` restates the identifiers in the text for the application's own
   # use (logging, fixtures); a provider adapter does not send it.
-  {^system (if (raster? head/scene) (raster_system_prompt) (system_prompt)) ^parts parts ^max_tokens 16000
+  {^system (if (raster? head/scene) (raster_system_prompt ^version (if (== head/scene/schema "raster-painting/v2") 2 1)) (system_prompt)) ^parts parts ^max_tokens 16000
    ^context {^head head/id ^pending (if ($absent? pending) nil pending/id)
              ^newest newest/id ^image newest/image ^goal goal/id
              ^patch_id state/allocation/patch_id ^prefix state/allocation/prefix}})
@@ -467,7 +473,8 @@
   (state .put "best" state/head)
   (let budgets state/budgets)
   (let profile (session .DrawingSession:profile))
-  (let active_prompt_version (if (raster? state/head/scene) "raster-agent/v1" prompt_version))
+  (let active_prompt_version (if (== state/head/scene/schema "raster-painting/v2") "raster-agent/v2"
+    (if (raster? state/head/scene) "raster-agent/v1" prompt_version)))
   (state/seen .put (digest_of (canonical state/head/scene)) true)
   (session .DrawingSession:event "run_started"
     {^goal state/goal/id ^head state/head/id ^budgets budgets ^prompt active_prompt_version})
@@ -530,6 +537,14 @@
     (session .DrawingSession:event "phase_changed"
       {^phase "deciding" ^iteration state/iterations ^head state/head/id
        ^pending (if ($absent? state/pending) nil state/pending/id)})
+    (let references [])
+    (let reference_view (if ($absent? state/pending) state/head state/pending))
+    (if_yes (== reference_view/scene/schema "raster-painting/v2")
+      (for resource in ($body (defs_node reference_view/scene))
+        (if_yes (== (kind_of resource) "reference")
+          (let reference (session .DrawingSession:reference resource))
+          (references .push {^id resource/id ^digest reference/digest ^png reference/png}))))
+    (state .put "references" references)
     (let request (build_request state))
     (session .DrawingSession:event "model_request"
       {^call (+ state/calls 1) ^model (model_name agent) ^head state/head/id
@@ -707,7 +722,7 @@
             (apply_patch working/scene patch ^expected_base working/id
               ^expected_goal state/goal/id ^prefix state/allocation/prefix
               ^taken (fn [id] (session .DrawingSession:taken id))
-              ^policy state/policy))
+              ^policy state/policy ^reference_loader (fn [resource] (session .DrawingSession:reference resource))))
         catch DomainError
           (let line
             (if (== $err/code "stale_base")

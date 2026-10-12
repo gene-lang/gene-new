@@ -1,0 +1,133 @@
+# Region planning is pure Gene. Every generated point/color is materialized
+# before publication; the renderer never executes these helpers.
+(mod imagination_raster_generate)
+(import [reject kind_of list? int? str? sorted_keys] ^from "../types")
+(import [field_value grid] ^from "./schema")
+(import [require_props] ^from "../patch")
+
+(fn random_unit [seed, index, channel : Str]
+  (let hex ($crypto/sha256 $"stroke-field/v1:${seed}:${index}:${channel}"))
+  (let bytes ($binary/from_str hex))
+  (var value 0)
+  (repeat i in 8
+    (let byte ($binary/get bytes i))
+    (set value (+ (* value 16) (if (<= byte 57) (- byte 48) (- byte 87)))))
+  (/ value 4294967296.0))
+
+(fn color_hex [channels]
+  (let digits "0123456789abcdef")
+  (var text "#")
+  (for value in channels
+    (let n ($math/max 0 ($math/min 255 ($to_int ($math/floor (+ value 0.5))))))
+    (set text $"${text}${($str/slice_bytes digits (/ n 16) 1)}${($str/slice_bytes digits (// n 16) 1)}"))
+  text)
+
+(fn rgb [color]
+  (let bytes ($binary/from_str color))
+  (fn digit [i] (let n ($binary/get bytes i)) (if (<= n 57) (- n 48) (- n 87)))
+  (let result [])
+  (repeat i in 4 (result .push (+ (* 16 (digit (+ 1 (* i 2)))) (digit (+ 2 (* i 2))))))
+  result)
+
+(fn sample [reference, canvas, x, y]
+  (let sx ($math/max 0 ($math/min (- reference/width 1) ($to_int ($math/floor (/ (* x reference/width) canvas/0))))))
+  (let sy ($math/max 0 ($math/min (- reference/height 1) ($to_int ($math/floor (/ (* y reference/height) canvas/1))))))
+  (let offset (* (+ (* sy reference/width) sx) 4))
+  [($binary/get reference/pixels offset) ($binary/get reference/pixels (+ offset 1))
+   ($binary/get reference/pixels (+ offset 2)) ($binary/get reference/pixels (+ offset 3))])
+(fn luminance [color] (+ (* color/0 0.2126) (* color/1 0.7152) (* color/2 0.0722)))
+
+# Produces an insert_layer operation. IDs are stable and checked by the same
+# ordinary patch interpreter as hand-authored strokes.
+(fn expand_region [program, operation, ^reference_loader reference_loader = nil]
+  (if (!= program/schema "raster-painting/v2") (reject "unsupported_schema" "paint_region requires textured painting v2"))
+  (require_props operation ["id" "brush" "region" "count" "radius" "length" "seed"
+    "color?" "reference?" "angle?" "bend?" "jitter?" "color_variation?" "opacity?" "pattern?" "label?" "underpaint?"] nil)
+  (if (> ($size ($body operation)) 0) (reject "invalid_operation" "paint_region takes properties only"))
+  (let id (field_value "id" operation/id))
+  (let brush (field_value "id" operation/brush))
+  (let seed (field_value "seed" operation/seed))
+  (let count operation/count)
+  (if_not (&& (int? count) (>= count 1) (<= count 1800)) (reject "too_large" "region count must be 1–1800 strokes"))
+  (let region operation/region)
+  (if_not (&& (list? region) (== region/.size 4)) (reject "invalid_field" "region is [x y width height]"))
+  (let x (grid region/0 1024 0 program/width)) (let y (grid region/1 1024 0 program/height))
+  (let width (grid region/2 1024 (/ 1.0 1024) program/width))
+  (let height (grid region/3 1024 (/ 1.0 1024) program/height))
+  (if (|| (> (+ x width) program/width) (> (+ y height) program/height)) (reject "invalid_field" "region must fit the canvas"))
+  (let radius (field_value "radius" operation/radius))
+  (let length (field_value "radius" operation/length))
+  (let angle (* (field_value "angle" (?? operation/angle 0)) (/ $math/pi 180.0)))
+  (let bend (grid (?? operation/bend 0.2) 65536 -1 1))
+  (let jitter (field_value "unit" (?? operation/jitter 0.6)))
+  (let variation (field_value "unit" (?? operation/color_variation 0.08)))
+  (let opacity (field_value "unit" (?? operation/opacity 0.85)))
+  (let label (field_value "text" (?? operation/label "Generated strokes")))
+  (let pattern (?? operation/pattern "parallel"))
+  (if_not (["parallel" "swirl" "reference"] .contains? pattern) (reject "invalid_field" "pattern is parallel, swirl or reference"))
+  (var reference nil)
+  (if_not ($absent? operation/reference)
+    (if ($absent? reference_loader) (reject "missing_reference" "no reference loader is available"))
+    (let ref_id (field_value "id" operation/reference))
+    (var resource nil)
+    (for item in ($body (($body program) .first))
+      (if (&& (== (kind_of item) "reference") (== item/id ref_id)) (set resource item)))
+    (if ($absent? resource) (reject "missing_reference" $"unknown reference ${ref_id}"))
+    (set reference (reference_loader resource)))
+  (if (&& (== pattern "reference") ($absent? reference)) (reject "missing_reference" "reference pattern needs ^reference"))
+  (if (== ($absent? operation/color) ($absent? reference)) (reject "invalid_field" "use exactly one ^color or ^reference"))
+  (let color (if ($absent? reference) (rgb (field_value "color" operation/color)) nil))
+  (let columns ($math/max 1 ($to_int ($math/ceil ($math/sqrt (/ (* count width 1.0) height))))))
+  (let rows ($to_int ($math/ceil (/ (* count 1.0) columns))))
+  (let dx (/ (* width 1.0) columns)) (let dy (/ (* height 1.0) rows))
+  (let strokes [])
+  # A coarse, editable color block-in prevents unintended white cracks. It
+  # consists of 64 ordinary path fills, never an embedded source-image layer.
+  (if_yes (field_value "bool" (?? operation/underpaint false))
+    (repeat row in 8
+      (repeat column in 8
+        (let x0 (grid (+ x (* width (/ column 8.0))) 1024 -1000000 1000000))
+        (let y0 (grid (+ y (* height (/ row 8.0))) 1024 -1000000 1000000))
+        (let x1 (grid (+ x (* width (/ (+ column 1) 8.0))) 1024 -1000000 1000000))
+        (let y1 (grid (+ y (* height (/ (+ row 1) 8.0))) 1024 -1000000 1000000))
+        (let sampled (if ($absent? reference) color
+          (sample reference [program/width program/height] (/ (+ x0 x1) 2.0) (/ (+ y0 y1) 2.0))))
+        (let ink (color_hex sampled))
+        (let block_id $"${id}-base${row}-${column}")
+        (strokes .push `(fill_path ^id %block_id ^color %ink
+          (path (M %x0 %y0) (L %x1 %y0) (L %x1 %y1) (L %x0 %y1) (Z)))))))
+  (repeat i in count
+    (let cx (+ x (* (+ (// i columns) 0.5 (* jitter (- (random_unit seed i "x") 0.5))) dx)))
+    (let cy (+ y (* (+ (/ i columns) 0.5 (* jitter (- (random_unit seed i "y") 0.5))) dy)))
+    (var direction angle)
+    (var channels color)
+    (if (== pattern "swirl")
+      (set direction (+ angle ($math/atan2 (- cy (+ y (/ height 2.0))) (- cx (+ x (/ width 2.0)))) (/ $math/pi 2.0))))
+    (if_not ($absent? reference)
+      (set channels (sample reference [program/width program/height] cx cy))
+      (if_yes (== pattern "reference")
+        (let distance ($math/max 1 radius))
+        (let gx (- (luminance (sample reference [program/width program/height] (+ cx distance) cy))
+                   (luminance (sample reference [program/width program/height] (- cx distance) cy))))
+        (let gy (- (luminance (sample reference [program/width program/height] cx (+ cy distance)))
+                   (luminance (sample reference [program/width program/height] cx (- cy distance)))))
+        (if (> (+ ($math/abs gx) ($math/abs gy)) 2)
+          (set direction (+ angle ($math/atan2 gy gx) (/ $math/pi 2.0))))))
+    (let delta (* 255 variation (- (* 2 (random_unit seed i "color")) 1)))
+    (let ink (color_hex [(+ channels/0 delta) (+ channels/1 delta) (+ channels/2 delta) channels/3]))
+    (let extent (* length (+ 0.7 (* 0.6 (random_unit seed i "length")))))
+    (let points [])
+    (repeat j in 5
+      (let t (/ j 4.0))
+      (let along (* (- t 0.5) extent))
+      (let across (* bend extent ($math/sin (* t $math/pi))))
+      (let px ($math/max x ($math/min (+ x width) (+ cx (* along ($math/cos direction)) (* (- 0 across) ($math/sin direction))))))
+      (let py ($math/max y ($math/min (+ y height) (+ cy (* along ($math/sin direction)) (* across ($math/cos direction))))))
+      (let pressures [0.18 0.75 1 0.75 0.18])
+      (let pressure (grid pressures/%j 65536 0 1))
+      (points .push [(grid px 1024 -1000000 1000000) (grid py 1024 -1000000 1000000) pressure (* j 20)]))
+    (let stroke_id $"${id}-s${i}")
+    (let stroke_seed ($to_int (* (random_unit seed i "seed") 2147483647)))
+    (strokes .push `(stroke ^id %stroke_id ^brush %brush ^color %ink ^radius %radius ^opacity %opacity
+      ^seed %stroke_seed (points %points...))))
+  `(insert_layer ^position "end" (layer ^id %id ^label %label %strokes...)))

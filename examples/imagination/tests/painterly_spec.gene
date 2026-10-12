@@ -1,0 +1,138 @@
+(import $test [describe it assert_equal])
+(import [scratch error_code] ^from "./support")
+(import [blank_program normalize_program] ^from "../src/raster/schema")
+(import [read_domain canonical digest_of] ^from "../src/scene")
+(import [open_raster_profile render_program] ^from "../src/raster/render")
+(import [apply_program_patch replay_program_patch] ^from "../src/raster/patch")
+(import [expand_region] ^from "../src/raster/generate")
+(let profile_cell ($cell nil))
+(fn painter_profile []
+  (if ($absent? profile_cell/.get) (profile_cell .set (open_raster_profile ^version 2)))
+  profile_cell/.get)
+(fn painting [content]
+  (normalize_program (read_domain $"(painting ^schema \"raster-painting/v2\" ^width 64 ^height 64 ^background \"#00000000\" ${content})" ^head "painting")))
+(fn patch_for [body]
+  (read_domain $"(patch ^schema 1 ^id \"p\" ^base \"r0\" ^goal \"g\" (intent \"paint\") ${body})" ^head "patch"))
+(const brush "(brush ^id \"b\" ^kind \"bristle/v1\" ^hardness 0.7 ^aspect 0.25 ^texture 0.8 ^bristles 10)")
+(const region "(paint_region ^id \"n-field\" ^brush \"b\" ^region [0 0 64 64] ^count 30 ^radius 5 ^length 15 ^seed 42 ^color \"#d0a030ff\" ^pattern \"swirl\")")
+(describe "painterly profile"
+  (it "keeps bristles out of legacy schema and normalizes v2 defaults" []
+    (assert_equal (error_code (fn [] (normalize_program (read_domain $"(painting ^width 64 ^height 64 (resources ${brush}))" ^head "painting")))) "unsupported_schema")
+    (let p (painting "(resources (brush ^id \"b\" ^kind \"bristle/v1\"))"))
+    (assert_equal (/bristles (($body (($body p) .first)) .first)) 24))
+  (it "repeats seeded texture in fresh processes and responds to seed changes" []
+    (fn p [seed]
+      (painting $"(resources ${brush}) (layer ^id \"l\" (stroke ^id \"s\" ^brush \"b\" ^color \"#f0c040ff\" ^radius 12 ^seed ${seed} (points [12 32 0.2 0] [32 32 1 20] [52 32 0.2 40])))"))
+    (let a (render_program (painter_profile) (p 42) (scratch "bristle-a")))
+    (let b (render_program (painter_profile) (p 42) (scratch "bristle-b")))
+    (let c (render_program (painter_profile) (p 43) (scratch "bristle-c")))
+    (assert_equal a/png_digest b/png_digest)
+    ($assert (!= a/pixel_digest c/pixel_digest)))
+  (it "expands region helpers into replayable explicit strokes" []
+    (let base (painting $"(resources ${brush})"))
+    (let patch (patch_for region))
+    (let result (apply_program_patch base patch ^expected_base "r0" ^prefix "n-"))
+    ($assert (! ($str/contains? (canonical result/normalized) "paint_region")))
+    (assert_equal ($size ($body ($last ($body result/scene)))) 30)
+    (let replay (replay_program_patch base result/normalized))
+    (assert_equal (canonical replay/scene) (canonical result/scene))
+    (assert_equal (canonical (/scene (apply_program_patch base patch ^expected_base "r0" ^prefix "n-"))) (canonical result/scene))
+    (render_program (painter_profile) result/scene (scratch "region"))))
+
+(import [create_evolution open_evolution close_evolution import_reference commit_patch view replay_exact line_row] ^from "../src/evolution")
+(import [get_asset] ^from "../src/store")
+(import [load_reference] ^from "../src/raster/reference")
+(import [fixture_agent] ^from "../src/adapters/model")
+(import [start_run execute_run model_view] ^from "../src/jobs")
+(import [new_workbench revision_json route] ^from "../src/server")
+(let package_root ($path/parent ($path/parent this_mod/.path)))
+(fn reference_png [] ($fs/read_bytes ($path/join package_root "fixtures/raster/apple.png")))
+(fn goal [] (read_domain "(goal ^id \"g\" ^request \"Paint the reference with visible brush strokes.\" (requirement ^id \"subject\" ^check \"visual\" ^strength \"hard\" \"Recognizable subject.\"))" ^head "goal"))
+(describe "reference guided painting"
+  (it "stores guidance separately, expands its colors and replays without replanning" []
+    (let root ($path/join (scratch "reference-history") "project"))
+    (let evo (create_evolution root "reference" (goal) (painter_profile) ^width 64 ^height 64))
+    (try
+      (let attached (import_reference evo "main" (reference_png)))
+      (assert_equal attached/revision "r001")
+      (assert_equal evo/project/record/media "raster-painting/v2")
+      (let ref attached/id)
+      (let patch (read_domain $"(patch ^schema 1 ^id \"p\" ^base \"r001\" ^goal \"g\" (intent \"Reference pass\") (add_resource ^position \"end\" ${brush}) (paint_region ^id \"field\" ^brush \"b\" ^region [0 0 64 64] ^count 60 ^radius 6 ^length 15 ^seed 5 ^reference \"${ref}\" ^pattern \"reference\"))" ^head "patch"))
+      (commit_patch evo "main" patch ^prefix "")
+      ($assert (/ok (replay_exact evo "r000" "r002")))
+      (let shown (view evo "r002"))
+      (let direct (render_program (painter_profile) shown/scene (scratch "reference-independent")))
+      (assert_equal direct/png_digest shown/image)
+      (let bench (new_workbench ($path/parent root) (painter_profile) nil 8080))
+      (bench/projects .put "reference" evo)
+      (let json (revision_json bench "reference" "r002"))
+      (assert_equal json/references/0/id attached/id)
+      (let resource (($body (($body shown/scene) .first)) .first))
+      (let decoded (load_reference evo/project evo/profile resource))
+      (assert_equal [decoded/width decoded/height] [256 256])
+      # The current revision receives exactly the immutable guidance PNG.
+      (let agent (fixture_agent [(fn [input]
+        (let images ($filter input/parts (fn [part] (== part/type "image"))))
+        (assert_equal images/.size 2)
+        (assert_equal images/0/digest attached/asset)
+        (assert_equal images/0/bytes (get_asset evo/project attached/asset))
+        (let c input/context)
+        $"(agent_response ^schema 1 ^observed_revision \"${c/newest}\" ^observed_image \"${c/image}\" ^action \"done\" (review (check ^requirement \"subject\" ^result \"pass\" ^evidence \"Subject visible in the painted PNG.\")) (summary \"Painted\"))")]))
+      (let run (start_run evo "main"))
+      (assert_equal (/status (execute_run evo agent run/id)) "complete")
+    ensure (close_evolution evo))
+    (let reopened (open_evolution root (painter_profile)))
+    (assert_equal (/head (line_row reopened "main")) "r002")
+    (close_evolution reopened))
+  (it "rejects missing guidance and oversized helper requests before publication" []
+    (let base (painting $"(resources ${brush})"))
+    (assert_equal (error_code (fn [] (apply_program_patch base (patch_for "(paint_region ^id \"f\" ^brush \"b\" ^region [0 0 64 64] ^count 1801 ^radius 4 ^length 12 ^seed 1 ^color \"#ffffffff\")")))) "too_large")
+    (assert_equal (error_code (fn [] (apply_program_patch base (patch_for "(paint_region ^id \"f\" ^brush \"b\" ^region [0 0 64 64] ^count 10 ^radius 4 ^length 12 ^seed 1 ^reference \"missing\")")))) "missing_reference")))
+
+(describe "painterly boundaries"
+  (it "rotates an elongated tip and keeps seed irrelevant when texture is zero" []
+    (fn render_tip [angle, seed]
+      (let p (painting $"(resources (brush ^id \"b\" ^kind \"bristle/v1\" ^aspect 0.25 ^angle ${angle} ^texture 0 ^hardness 1)) (layer ^id \"l\" (stroke ^id \"s\" ^brush \"b\" ^radius 12 ^seed ${seed} ^color \"#ffffffff\" (points [32 32 1 0])))"))
+      (let dir (scratch "tip"))
+      (let result (render_program (painter_profile) p dir))
+      {^result result ^pixels ($fs/read_bytes ($path/join dir "pixels.rgba"))})
+    (let horizontal (render_tip 0 1)) (let vertical (render_tip 90 1))
+    (assert_equal ($binary/get horizontal/pixels (+ (* (+ (* 32 64) 40) 4) 3)) 255)
+    (assert_equal ($binary/get vertical/pixels (+ (* (+ (* 32 64) 40) 4) 3)) 0)
+    (assert_equal horizontal/result/png_digest (/png_digest (/result (render_tip 0 2)))))
+  (it "materializes an opaque underpainting and keeps legacy worker profile intact" []
+    (let p (painting $"(resources ${brush})"))
+    (let op (read_domain "(paint_region ^id \"f\" ^brush \"b\" ^region [0 0 64 64] ^count 1 ^radius 2 ^length 8 ^seed 0 ^color \"#305080ff\" ^underpaint true)" ^head "paint_region"))
+    (let expanded (expand_region p op))
+    (assert_equal ($size ($body (($body expanded) .first))) 65)
+    (let result (apply_program_patch p (patch_for (canonical op))))
+    (let dir (scratch "underpaint"))
+    (render_program (painter_profile) result/scene dir)
+    (let pixels ($fs/read_bytes ($path/join dir "pixels.rgba")))
+    (repeat i in 4096 (assert_equal ($binary/get pixels (+ (* i 4) 3)) 255))
+    (assert_equal (/id (open_raster_profile)) "raster-cairo-linear/v1"))
+  (it "rejects invalid PNGs without moving the line" []
+    (let evo (create_evolution ($path/join (scratch "bad-reference") "project") "bad" (goal) (painter_profile) ^width 64 ^height 64))
+    (try
+      (assert_equal (error_code (fn [] (import_reference evo "main" ($binary/from_str "not a PNG")))) "invalid_reference")
+      (assert_equal (/head (line_row evo "main")) "r000")
+    ensure (close_evolution evo))))
+
+(describe "reference HTTP boundary"
+  (it "deduplicates reference imports and serves only attached guidance" []
+    (let root ($path/join (scratch "reference-http") "project"))
+    (let evo (create_evolution root "reference" (goal) (painter_profile) ^width 64 ^height 64))
+    (try
+      (let bench (new_workbench ($path/parent root) (painter_profile) nil 8080))
+      (bench/projects .put "reference" evo)
+      (let request {^method "POST" ^path "/api/v1/projects/reference/references"
+        ^body ($json/stringify {^line "main" ^label "Apple" ^data ($base64/encode (reference_png)) ^idempotency_key "upload-once"})})
+      (route bench request)
+      (route bench request)
+      (assert_equal (/head (line_row evo "main")) "r001")
+      (let json (revision_json bench "reference" "r001"))
+      (let response (route bench {^method "GET" ^path json/references/0/url}))
+      (assert_equal response/status 200)
+      (assert_equal (digest_of (($body response) .first)) json/references/0/asset)
+      (assert_equal (error_code (fn [] (route bench {^method "GET" ^path "/api/v1/projects/reference/references/r000/n1-reference"}))) "not_found")
+    ensure (close_evolution evo))))

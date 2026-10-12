@@ -621,9 +621,22 @@
       ($dom/set_attribute ($dom/element "export_svg") "href" $"${base}&format=svg")
       ($dom/set_attribute ($dom/element "export_pdf") "href" $"${base}&format=pdf")
       ($dom/set_attribute ($dom/element "export_png") "href" $"${base}&format=png")
-      (var raster (== (text_or data/media "svg-scene/v1") "raster-painting/v1"))
+      (var raster (!= (text_or data/media "svg-scene/v1") "svg-scene/v1"))
       (set_hidden "export_svg" raster)
       (set_hidden "export_pdf" raster)
+      (set_hidden "reference_panel" (!= (text_or data/media "") "raster-painting/v2"))
+      (var file_input ($dom/element "reference_file"))
+      (set file_input/disabled (running? bench))
+      (var reference_list ($dom/element "reference_images"))
+      ($dom/set_text reference_list "")
+      (var references : (List Any) data/references)
+      ($dom/set_text ($dom/element "reference_title") $"Reference images (${references/.size})")
+      (for reference in references
+        (var label : Str reference/label)
+        (var id : Str reference/id)
+        (var url : Str reference/url)
+        ($dom/append reference_list ($dom/render `(figure
+          (img ^src %url ^alt %label ^width "120") (figcaption %id)))))
       (var parents : (List Str) data/parents)
       (if_yes (> ($size parents) 0)
         ($dom/set_input_value ($dom/element "compare_left") parents/0))
@@ -862,6 +875,36 @@
           (refresh bench false))
         (else (show_error bench data))))))
 
+(fn upload_reference [bench : Bench] : Void
+  (if_not (loaded bench) (return))
+  (var input ($dom/element "reference_file"))
+  (var files : (List Any) ($files/from_input input))
+  (if_yes (== files/.size 0) (return))
+  (var file : Any files/0)
+  (var label : Str ($files/name file))
+  (var destination : Str (project_path bench "/references"))
+  (var project : Str bench/project)
+  (var line : Str bench/line)
+  (set input/disabled true)
+  (notice bench "Importing reference image…")
+  (try
+  ($files/read_base64 file 4194304
+    (fn [data : Str] : Void
+      (api bench/token "POST" destination {^line line ^label label ^data data ^idempotency_key ($browser/request_id)}
+        (fn [status : Int, result : Any] : Void
+          (set input/disabled false)
+          ($dom/set_input_value input "")
+          (if_yes (!= bench/project project) (return))
+          (if (== status 201)
+            (then (notice bench "Reference attached. Describe the style you want, then draw.") (refresh bench true))
+            (else (show_error bench result))))))
+    (fn [message : Str] : Void
+      (set input/disabled false)
+      (notice bench message)))
+  catch Any
+    (set input/disabled false)
+    (notice bench "Choose a PNG file no larger than 4 MiB.")))
+
 (fn create_project [bench : Bench] : Void
   (var name : Str (str/trim ($dom/input_value ($dom/element "new_name"))))
   (var prompt : Str ($dom/input_value ($dom/element "new_prompt")))
@@ -949,6 +992,8 @@
     (fn [event : Any] : Void
       (set bench/vector (checkbox "vector_preview"))
       (render_canvas bench)))
+  ($dom/add_event_listener ($dom/element "reference_file") "change"
+    (fn [event : Any] : Void (upload_reference bench)))
   ($dom/add_event_listener ($dom/element "show_trials") "change"
     (fn [event : Any] : Void
       (set bench/show_trials (checkbox "show_trials"))

@@ -7,10 +7,12 @@
 (import [normalize_program] ^from "./schema")
 (const profile_id "raster-cairo-linear/v1")
 
-(fn open_raster_profile []
+(fn open_raster_profile [^version version = 1]
   (try
-    (let native (worker_profile))
-    {^id profile_id ^native native ^edge 2048 ^stage_ms 25000 ^pipeline_ms 25000}
+    (let native (worker_profile ^version version))
+    (let id (if (== version 2) "raster-cairo-linear/v2" profile_id))
+    (if_not ($str/starts_with? native/version id) (reject "profile_mismatch" "wrong raster worker version"))
+    {^id id ^version version ^native native ^edge 2048 ^stage_ms 25000 ^pipeline_ms 25000}
   catch RasterError
     (fail (RenderError ^code "raster_dependency" ^stage "raster_profile" ^message $err/message ^detail nil))))
 
@@ -20,9 +22,12 @@
   (let system native/system)
   (let executable native/worker_digest)
   (let libraries native/dependencies)
-  (let manifest `(render_profile ^schema 1 ^id %profile_id ^worker %executable ^native %version
-    ^system %system ^libraries %libraries ^schema_version "raster-painting/v1"
-    ^brush "round-dab/v1" ^geometry "cairo-a8-gray-tolerance-0.1-nonzero"
+  (let id profile/id)
+  (let schema (if (== profile/version 2) "raster-painting/v2" "raster-painting/v1"))
+  (let brush (if (== profile/version 2) "round-dab/v1+bristle-hash32/v1" "round-dab/v1"))
+  (let manifest `(render_profile ^schema 1 ^id %id ^worker %executable ^native %version
+    ^system %system ^libraries %libraries ^schema_version %schema
+    ^brush %brush ^geometry "cairo-a8-gray-tolerance-0.1-nonzero"
     ^working "linear-srgb-premultiplied-float32" ^encoding "straight-rgba8-srgb-half-up"
     ^png "compression6-sub-sRGB-relative-no-metadata" ^thumbnail "nearest-center-max256"))
   (let props ($thaw ($freeze ($props manifest))))
@@ -46,7 +51,7 @@
 # Versioned numeric wire format. No strings, paths, executable forms, shaders
 # or callbacks reach the worker. Resource references become bounded indexes.
 (fn render_request [program, directory : Str, assets]
-  (let tokens [1 program/width program/height])
+  (let tokens [(if (== program/schema "raster-painting/v2") 2 1) program/width program/height])
   (fn emit [values] (for v in values (tokens .push v)))
   (fn color [value] (emit (color_numbers value)))
   (color program/background)
@@ -64,6 +69,9 @@
       (emit ($body command))))
   (let asset_digests [])
   (for item in definitions
+    (if_yes (== (kind_of item) "reference")
+      (asset_digests .push item/asset)
+      (asset_digests .push item/source))
     (if_yes (== (kind_of item) "mask")
       (if (== item/kind "path")
         (then (tokens .push 0) (emit_path (child_named item "path")))
@@ -94,10 +102,11 @@
       (if (["stroke" "erase"] .contains? kind)
         (then
           (let brush (resources .get operation/brush))
-          (emit [(if (== kind "stroke") 2 3) (if (== brush/kind "hard-round/v1") 0 1)
+          (emit [(if (== kind "stroke") 2 3) (if (== brush/kind "bristle/v1") 2 (if (== brush/kind "hard-round/v1") 0 1))
             brush/hardness brush/spacing brush/flow brush/min_radius_ratio operation/radius operation/opacity])
           (color (if (== kind "erase") "#ffffffff" operation/color))
           (emit [(mask_ref operation) operation/seed])
+          (if (== brush/kind "bristle/v1") (emit [brush/aspect brush/angle brush/texture brush/bristles]))
           (let points ($body (child_named operation "points")))
           (tokens .push points/.size)
           (for point in points (emit point)))
@@ -112,6 +121,8 @@
 
 (fn render_program [profile, painting, directory : Str, ^assets assets = nil]
   (let program (normalize_program painting))
+  (if (!= (== program/schema "raster-painting/v2") (== profile/version 2))
+    (reject "profile_mismatch" "painting schema and renderer version disagree"))
   (let request (render_request program directory assets))
   (try
     (if (!= (dependencies profile/native/worker) profile/native/dependencies)
@@ -134,7 +145,8 @@
   (let artifacts [(artifact_node "observation.png" png_path {^width size/0 ^height size/1})
     (artifact_node "thumbnail.png" thumb_path {^width thumb_size/0 ^height thumb_size/1 ^source "observation.png"})])
   (let asset_digests request/assets)
-  (let manifest `(render_manifest ^schema 1 ^profile %profile_id ^profile_fingerprint %fingerprint
+  (let id profile/id)
+  (let manifest `(render_manifest ^schema 1 ^profile %id ^profile_fingerprint %fingerprint
     ^scene %scene ^program %scene ^pixel %pixel_digest ^assets %asset_digests ^canvas %size ^output %size
     ^color "straight RGBA8 sRGB" ^matte nil ^full_repaint true %artifacts...))
   (let text (canonical manifest))

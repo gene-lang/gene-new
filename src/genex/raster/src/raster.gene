@@ -11,8 +11,10 @@
     (fail (RasterError ^message $"Raster tool failed: ${result/stderr}")))
   ($str/trim result/stdout))
 
-(fn default_worker [] : Str
-  (?? ($os/env? "GENE_RASTER_WORKER") ($path/join root "build" "raster-worker")))
+(fn default_worker [^version version = 1] : Str
+  (if (== version 2)
+    (?? ($os/env? "GENE_RASTER_WORKER_V2") ($path/join root "build" "raster-worker-v2"))
+    (?? ($os/env? "GENE_RASTER_WORKER") ($path/join root "build" "raster-worker"))))
 
 # Runtime dependency bytes enter profile identity; a version string alone
 # cannot distinguish patched builds. Resolve all Mach-O dependencies, including
@@ -47,13 +49,14 @@
             (else (records .push [path "system-shared-cache"])))))))
   ($order/sort_by records (fn [item] item/0)))
 
-(fn worker_profile [^worker worker : Str = (default_worker)]
+(fn worker_profile [^version version = 1, ^worker override = nil]
+  (let worker (?? override (default_worker ^version version)))
   (if_not ($fs/exists? worker)
     (fail (RasterError ^message "Build genex/raster/tools/build.gene first, or set GENE_RASTER_WORKER.")))
   (let binary ($fs/real_path worker))
-  (let version (checked binary ["--profile"]))
+  (let description (checked binary ["--profile"]))
   {^worker binary ^worker_digest ($crypto/sha256 ($fs/read_bytes binary))
-   ^version version ^system (checked "/usr/bin/uname" ["-s" "-r" "-m" "-v"])
+   ^version description ^system (checked "/usr/bin/uname" ["-s" "-r" "-m" "-v"])
    ^dependencies (dependencies binary)})
 
 # The caller owns a private staging directory. No output path is carried in
@@ -66,3 +69,14 @@
     (fail (RasterError ^message "Raster worker changed since profile admission.")))
   ($fs/write_text ($path/join directory "request.txt") request)
   (checked profile/worker [] ^dir directory ^timeout_ms 25000))
+
+(fn decode_png [profile, bytes : Bytes, directory : Str]
+  (if (> ($binary/size bytes) 16777216) (fail (RasterError ^message "Reference PNG exceeds 16 MiB.")))
+  (if (!= profile/worker_digest ($crypto/sha256 ($fs/read_bytes profile/worker)))
+    (fail (RasterError ^message "Decoder worker changed since profile admission.")))
+  ($fs/write_bytes ($path/join directory "source.png") bytes)
+  (let size ($str/split (checked profile/worker ["--decode"] ^dir directory) " "))
+  (let width ($parse/parse_int size/0)) (let height ($parse/parse_int size/1))
+  (let pixels ($fs/read_bytes ($path/join directory "pixels.rgba")))
+  (if (!= ($binary/size pixels) (* width height 4)) (fail (RasterError ^message "Invalid decoded pixel count.")))
+  {^width width ^height height ^pixels pixels ^png ($fs/read_bytes ($path/join directory "reference.png"))})
