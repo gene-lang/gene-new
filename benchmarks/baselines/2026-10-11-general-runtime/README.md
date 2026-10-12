@@ -252,7 +252,8 @@ complete Harness suite runs in 285 s instead of about 345 s. A lifetime test
 now holds the typed-instance program that used to keep 41 objects at zero.
 The general table and the direct baseline capture above predate this change;
 the general workloads do not spawn. Four complete Harness runs soaked the
-change afterwards, all passing in 270-288 s with no crash report.
+change afterwards, all passing in 270-288 s with no crash report, and on the
+final tree the VM suite passed six times in a row and the spec suite three.
 
 A direct capture of the starting tree against this final build, three
 samples each on a quiet machine
