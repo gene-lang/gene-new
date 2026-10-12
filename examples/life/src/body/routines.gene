@@ -82,12 +82,12 @@
     (let events [])
     (if (== spec/clock "events")
       (then
-        (for event_key in (p/tx_keys tx "event/")
+        (for event_key in (p/tx_keys_where tx "event/" (fn [event]
+            (&& (spec/events .contains? event/kind) (! (registration/seen_events .contains? event/id)))))
+          (if (>= events/.size 32) (break))
           (let event (p/tx_get tx event_key))
-          (if_yes (&& (spec/events .contains? event/kind) (! (registration/seen_events .contains? event/id))
-                       (< events/.size 32))
-            (events .push event)
-            (registration/seen_events .push event/id)))
+          (events .push event)
+          (registration/seen_events .push event/id))
         (if (== events/.size 0) (continue)))
       (else (if (< at registration/next_due) (continue))))
     (let execution_id (p/id "execution"))

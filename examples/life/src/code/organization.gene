@@ -57,8 +57,7 @@
   (&& (== record/organization request/from) (["queued" "running" "active" "suspended"] .contains? record/status)))
 (fn has_work? [store, request]
   (for prefix in ["execution/" "job/" "schedule/" "routine/"]
-    (for record in (p/values store prefix)
-      (if_yes (affected? record request) (return true))))
+    (if (> (p/count_where store prefix (fn [record] (affected? record request))) 0) (return true)))
   false)
 
 (fn disposition [tx, request]

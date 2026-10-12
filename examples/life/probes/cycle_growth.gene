@@ -1,0 +1,94 @@
+# How long one decision cycle takes as a Life's history grows.
+#
+#   bin/gene run examples/life/probes/cycle_growth.gene [CYCLES] [image|file] [WINDOW]
+#
+# A fake-brain Life is given CYCLES (default 200) visitor messages, one at a
+# time. Each one is a complete cycle: receipt, context, decision, validation in
+# a fresh process, execution in a fresh process, and the outcome. The program a
+# cycle runs does the same small amount of work every time (one state write,
+# one memory), so any change in cycle time comes from the retained history, not
+# from the work. Times are reported per WINDOW (default 20) cycles, with the
+# store's size at the end of each window, and then as one JSON summary line.
+(mod cycle_growth)
+(import * : p ^from "../src/host/persistence")
+(import * : runtime ^from "../src/host/runtime")
+(import * : body ^from "../src/body/body")
+(import * : brain ^from "../src/brain")
+(import * : budget ^from "../src/host/budget")
+(import gene/order [sort])
+
+(let program "(do (state .put \"count\" (+ (?? (state .get \"count\") 0) 1))
+  (memory .remember {^kind \"visit\" ^source context/focus/event_id}) nil)")
+
+(fn cycle [host, number]
+  (host/decisions/.get .push (brain/response $"Visit ${number}: count it and remember it." program))
+  (let started ($os/monotonic_ms))
+  (body/receive host $"Visit ${number}" ^speaker "visitor" ^conversation "garden")
+  (runtime/settle host)
+  (- ($os/monotonic_ms) started))
+
+(fn size_of [path] (let info ($fs/info path)) info/size)
+(fn store_bytes [home, backend]
+  (let file (if (== backend "file") "life.db" "life.sqlite"))
+  (let path $"${home}/${file}")
+  (+ (size_of path) (if ($fs/exists? $"${path}-wal") (size_of $"${path}-wal") 0)))
+(fn median [values]
+  (let ordered (sort values))
+  (let middle (/ ordered/.size 2))
+  ordered/%middle)
+# The probe's own Life home, and nothing else: every entry is removed by name.
+(fn remove_tree [path]
+  (let info ($fs/info path ^!follow))
+  (if (|| info/symlink (!= info/kind "directory")) (return ($fs/remove path)))
+  (for name in ($fs/list_dir path) (remove_tree $"${path}/${name}"))
+  ($fs/remove_dir path))
+
+(fn main [arguments]
+  (let args arguments/.body)
+  (let cycles ($parse/parse_int (?? args/0 "200")))
+  (let backend (?? args/1 "image"))
+  (let window ($parse/parse_int (?? args/2 "20")))
+  (let name (p/id "growth"))
+  (let home $"examples/life/tmp/${name}")
+  (let host (runtime/open_life home ^^create ^clock (fn [] 1000) ^storage backend
+    ^decisions [(brain/response "Quiet first start" "nil")]))
+  (let summary {^cycles cycles ^storage backend ^window window ^windows []})
+  (try
+    (runtime/settle host)
+    (budget/configure host 10000)
+    ($println $"storage=${backend} cycles=${cycles} window=${window}")
+    ($println "cycles      median_ms  mean_ms   max_ms   records   store_kb")
+    (var done 0)
+    (var first_median nil)
+    (var last_median nil)
+    (while (< done cycles)
+      (let times [])
+      (var total 0)
+      (var worst 0)
+      (var index 0)
+      (while (&& (< index window) (< done cycles))
+        (set done (+ done 1))
+        (let ms (cycle host done))
+        (times .push ms)
+        (set total (+ total ms))
+        (if (> ms worst) (set worst ms))
+        (set index (+ index 1)))
+      (let middle (median times))
+      (let mean (/ total times/.size))
+      (let records ((p/keys host/store "") .size))
+      (let kb (/ (store_bytes home backend) 1024))
+      (if ($absent? first_median) (set first_median middle))
+      (set last_median middle)
+      (summary/windows .push {^through done ^median_ms middle ^mean_ms mean ^max_ms worst
+        ^records records ^store_kb kb})
+      (let first (+ (- done times/.size) 1))
+      ($println $"${first}-${done}   ${middle}   ${mean}   ${worst}   ${records}   ${kb}"))
+    (let count (p/get host/store "state/count"))
+    (if_not (== count cycles) (p/problem $"Expected ${cycles} completed cycles, counted ${count}"))
+    (summary .put "first_window_median_ms" first_median)
+    (summary .put "last_window_median_ms" last_median)
+    (summary .put "growth" (/ ($to_float last_median) ($to_float first_median)))
+    ($println ($json/stringify summary))
+    ensure (runtime/close_life host))
+  (remove_tree home)
+  0)

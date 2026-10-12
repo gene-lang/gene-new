@@ -127,7 +127,8 @@
 
 (fn due [host, emit]
   (let tx (p/begin host/store "scheduler"))
-  (for key in (p/tx_keys tx "schedule/")
+  (let now (host/clock))
+  (for key in (p/tx_keys_where tx "schedule/" (fn [item] (&& (== item/status "queued") (<= item/due now))))
     (let item (p/tx_get tx key))
     (if_yes (&& (== item/status "queued") (<= item/due (host/clock)))
       (try (deliver host tx item emit)

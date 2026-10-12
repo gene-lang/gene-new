@@ -194,10 +194,10 @@
     (let send_key $"delivery:${registration/id}")
     (if_yes (|| (! ($absent? (network/requests .get send_key))) (< now (?? (network/next .get send_key) 0))) (continue))
     (let meta (p/get host/store "meta"))
-    (let mine [])
-    (for delivery in (p/values host/store "delivery/")
-      (if_yes (&& (== delivery/destination/adapter "http") (== delivery/destination/connector registration/id))
-        (mine .push delivery)))
+    # Only what a lane can still serve; settled deliveries stay where they are.
+    (let mine (p/values_where host/store "delivery/" (fn [delivery]
+      (&& (== delivery/destination/adapter "http") (== delivery/destination/connector registration/id)
+          (["pending" "needs_reconciliation"] .contains? delivery/status)))))
     # The shared lane rule: sends and reconciliation alternate, each serving
     # its least recently attempted delivery.
     (let chosen (delivery_state/next_item mine

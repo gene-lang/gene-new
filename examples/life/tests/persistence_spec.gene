@@ -1,5 +1,10 @@
 (import $test [describe it assert_equal assert_raises])
 (import * : p ^from "../src/host/persistence")
+(import $db/sqlite [Db])
+
+(fn fresh [label]
+  (let name (p/id label))
+  (p/open_store $"examples/life/tmp/${name}" ^^create))
 
 (describe "Life durable storage"
   (it "commits snapshots and retains immutable revisions" []
@@ -42,4 +47,138 @@
       (assert_equal (p/get store "b") nil)
       (assert_equal store/fault/.get nil)
       (p/put store "after-conflict" true)
-      ensure (p/close_store store))))
+      ensure (p/close_store store)))
+
+  (it "shows a transaction the store as it was when it began" []
+    (let store (fresh "view"))
+    (try
+      (p/put store "k/a" 1)
+      (p/put store "k/b" {^n [1]})
+      (let original (p/read store "k/a"))
+      (let tx (p/begin store "reader"))
+      (p/put store "k/a" 2)
+      (p/put store "k/b" {^n [2]})
+      (p/put store "k/c" 3)
+      (assert_equal (p/tx_get tx "k/a") 1)
+      (assert_equal (p/tx_get tx "k/b") {^n [1]})
+      (assert_equal (p/tx_get tx "k/c") nil)
+      (assert_equal (tx/reads .get "k/a") original/revision)
+      (assert_equal (tx/reads .get "k/c") nil)
+      (assert_equal (p/tx_keys tx "k/") ["k/a" "k/b"])
+      # Later commits change neither what it has read nor what it has yet to read.
+      (p/put store "k/a" 5)
+      (p/put store "k/d" 4)
+      (assert_equal (p/tx_get tx "k/a") 1)
+      (assert_equal (p/tx_get tx "k/d") nil)
+      (assert_equal (p/tx_keys tx "k/") ["k/a" "k/b"])
+      (assert_equal (p/get store "k/a") 5)
+      (assert_equal (p/keys store "k/") ["k/a" "k/b" "k/c" "k/d"])
+      (p/abort tx)
+      ensure (p/close_store store)))
+
+  (it "lists a transaction's staged records once, after the ones it found" []
+    (let store (fresh "staged"))
+    (try
+      (p/put store "k/a" 1)
+      (p/put store "k/b" 2)
+      (let tx (p/begin store "writer"))
+      (p/tx_put tx "k/z" 26)
+      (p/tx_put tx "k/a" 10)
+      (p/put store "k/m" 13)
+      (assert_equal (p/tx_get tx "k/a") 10)
+      (assert_equal (p/tx_keys tx "k/") ["k/a" "k/b" "k/z"])
+      (assert_equal (p/get store "k/a") 1)
+      # The record it replaced has not moved, so the group still publishes.
+      (p/commit tx)
+      (assert_equal (p/get store "k/a") 10)
+      (assert_equal (p/keys store "k/") ["k/a" "k/b" "k/m" "k/z"])
+      ensure (p/close_store store)))
+
+  (it "finds records by what they hold and copies only those" []
+    (let store (fresh "filter"))
+    (try
+      (p/put store "job/a" {^status "queued" ^n 1})
+      (p/put store "job/b" {^status "done" ^n 2})
+      (p/put store "job/c" {^status "queued" ^n 3})
+      (p/put store "jobless" {^status "queued"})
+      (let queued (fn [job] (== job/status "queued")))
+      (assert_equal (p/count_where store "job/" queued) 2)
+      (let found (p/values_where store "job/" queued))
+      (assert_equal found [{^status "queued" ^n 1} {^status "queued" ^n 3}])
+      (found/0 .put "status" "changed")
+      (assert_equal (p/count_where store "job/" queued) 2)
+      # A transaction filters what it sees: the store when it began, and its own writes.
+      (let tx (p/begin store "filter"))
+      (p/tx_put tx "job/b" {^status "queued" ^n 2})
+      (p/tx_put tx "job/d" {^status "queued" ^n 4})
+      (p/put store "job/e" {^status "queued" ^n 5})
+      (assert_equal (p/tx_keys_where tx "job/" queued) ["job/a" "job/b" "job/c" "job/d"])
+      # Looking is not reading: only what it fetched can make it conflict.
+      ($assert (== (tx/reads .get "job/a") void) "A filtered record was counted as read")
+      (p/put store "job/a" {^status "done" ^n 1})
+      (p/commit tx)
+      (assert_equal (p/count_where store "job/" queued) 4)
+      ensure (p/close_store store)))
+
+  (it "reads an earlier revision from a store created before the key index" []
+    (let store (fresh "unindexed"))
+    (try
+      (store/db .Db:exec "DROP INDEX records_by_key")
+      (p/put store "k/a" 1)
+      (let tx (p/begin store "reader"))
+      (p/put store "k/a" 2)
+      (p/put store "k/a" 3)
+      (assert_equal (p/tx_get tx "k/a") 1)
+      (p/abort tx)
+      ensure (p/close_store store)))
+
+  (it "keeps commit receipts in the database, readable by key and by prefix" []
+    (let name (p/id "receipts"))
+    (let home $"examples/life/tmp/${name}")
+    (let store (p/open_store home ^^create))
+    (var key nil)
+    (try
+      (let revisions (p/put store "k/a" 1 "first-cause"))
+      (let receipts (p/values store "commit/"))
+      (assert_equal receipts/.size 1)
+      (assert_equal receipts/0/cause "first-cause")
+      (assert_equal (receipts/0/writes .get "k/a") (revisions .get "k/a"))
+      (set key $"commit/${receipts/0/id}")
+      (assert_equal (p/keys store "commit/") [key])
+      (assert_equal (p/get store key) receipts/0)
+      (assert_equal (p/keys store "") ["k/a" key])
+      (assert_equal (p/count_where store "commit/" (fn [receipt] (== receipt/cause "first-cause"))) 1)
+      # One receipt per commit would otherwise be most of what a Life holds.
+      (for pair in store/records/.get (assert_equal ($to_str pair/0) "k/a"))
+      # A transaction does not see the receipt of a commit made after it began,
+      # and nothing but a commit writes one.
+      (let tx (p/begin store "reader"))
+      (p/put store "k/b" 2)
+      (assert_equal (p/tx_keys tx "commit/") [key])
+      (assert_equal (p/tx_get tx key) receipts/0)
+      (let both (p/keys store "commit/"))
+      (assert_equal both/.size 2)
+      (assert_equal (p/tx_get tx both/1) nil)
+      (let newer (p/get store both/1))
+      ($assert (! ($absent? (newer/writes .get "k/b"))) "The store itself has the later receipt")
+      (assert_raises (fn [] (p/tx_put tx "commit/forged" 1)) p/LifeError)
+      (p/abort tx)
+      # A publication that fails leaves no receipt behind.
+      (store/fail_next .set true)
+      (assert_raises (fn [] (p/put store "k/c" 3)) p/LifeError)
+      (assert_equal ((p/values store "commit/") .size) 2)
+      ensure (p/close_store store))
+    (let restored (p/open_store home))
+    (try
+      (assert_equal (p/get restored "k/a") 1)
+      (assert_equal (p/get restored "k/b") 2)
+      (assert_equal (p/get restored "k/c") nil)
+      (assert_equal ((p/values restored "commit/") .size) 2)
+      (assert_equal ((p/keys restored "k/") .size) 2)
+      (for pair in restored/records/.get
+        ($assert (! ($str/starts_with? ($to_str pair/0) "commit/")) "A receipt was loaded into memory"))
+      (let later (p/begin restored "after-reopen"))
+      (p/put restored "k/a" 7)
+      (assert_equal (p/tx_get later "k/a") 1)
+      (p/abort later)
+      ensure (p/close_store restored))))

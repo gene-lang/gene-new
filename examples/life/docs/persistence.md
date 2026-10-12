@@ -14,6 +14,68 @@ after commit but before its response can inspect that receipt and the retained
 records without replaying its callback. Immutable revisions remain readable
 through `store.revision` while retained.
 
+## What a read, a transaction and a commit cost
+
+The host keeps the head of every record in memory, by key, with one list of
+keys for each leading path segment (`cycle/`, `event/`, `job/`, …). A commit
+writes its records and its receipt to the database and replaces those heads; it
+leaves the others alone. Beginning a transaction copies nothing. A cycle
+therefore costs what it reads and writes, however much the Life has retained.
+
+A transaction still sees the store as it was when it began. It notes the
+store's newest revision at that moment: a head that a later commit replaced is
+read back from the database at that revision, and a key first written later is
+absent. Its reads are checked at commit as before, and a record that moved
+rejects the whole group.
+
+Commit receipts are not held in memory. Every commit writes one and almost
+none is read again, so a `commit/<id>` record is read from the database, by key
+or under the `commit/` prefix, when it is asked for. Only a commit writes one.
+
+The scans that run on every heartbeat — runnable work, observations not yet
+considered, due schedules, active walks, open deliveries — use `count_where`,
+`values_where` and `tx_keys_where`. They test records where they are and copy
+only the ones that match. `values` and `keys` over a whole prefix remain for
+recovery, inspection and tests.
+
+### Cycle time as history grows
+
+`probes/cycle_growth.gene` gives a fake-brain Life one visitor message at a
+time. Every cycle runs the same small program (one state write, one memory),
+so a change in cycle time comes from what the Life has retained:
+
+```sh
+bin/gene run examples/life/probes/cycle_growth.gene 200 file
+```
+
+Median milliseconds per cycle, over windows of 20 cycles, before and after the
+store stopped copying itself (2026-10-12; macOS 27, Apple M4 Pro, APFS, SQLite
+3.54.0, optimized `gene` built from `eed4045`):
+
+| Cycles | Before, `life.sqlite` | Before, `life.db` | After, `life.sqlite` | After, `life.db` |
+| --- | ---: | ---: | ---: | ---: |
+| 1–20 | 178 | 182 | 90 | 99 |
+| 41–60 | 527 | 517 | 99 | 104 |
+| 81–100 | 938 | 909 | 108 | 108 |
+| 141–160 | 1765 | 1566 | 118 | 112 |
+| 181–200 | 2239 | 2141 | 126 | 111 |
+
+Before, each transaction serialized every head twice, and each heartbeat copied
+every cycle, observation and execution to find the few still open; both
+backends slowed alike, by about 10 ms for every cycle already lived. After,
+the incremental store is flat across this run. Over 1,000 cycles on `life.db`
+the median goes from 100 ms to 179 ms.
+
+What still grows, and belongs to retention (world.md §12.8):
+
+- `life.sqlite` republishes its whole image on every commit, 8 MB after 200
+  cycles here. A Life meant to run for long should be created on `life.db`.
+- A conversation is one record holding every message, rewritten for each new
+  one. With retained revisions that is the larger part of the 105 MB the
+  1,000-cycle store reached.
+- A heartbeat scan still tests every retained cycle, observation and
+  execution, without copying it. Nothing archives finished ones yet.
+
 ## Grouped writes
 
 `store.commit(callback)` supplies a short-lived transaction handle. Participating
