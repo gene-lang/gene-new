@@ -403,7 +403,8 @@ worker-safe tasks ran the 100-turn probe in 8.59 s and 8.67 s against
 also stop most of the service's data from being marked shared, which the
 runtime reads elsewhere (whether a released holder re-weakens its
 functions, whether a count is atomic), so it is a scheduler design decision
-rather than an optimization to slip in here.
+rather than an optimization to slip in here. The same scratch build also
+reclaims the published typed instances described under existing issue 4.
 
 What these walks still cost is the walking itself: publication is a third
 of the service profile, the escape scan about an eighth. Each re-reads a
@@ -545,9 +546,9 @@ from this optimization:
    verified baseline behavior. These test-only repairs are a separate commit;
    they did not alter the reader or message-resolution rules.
 
-4. A program-level value that a spawn publishes is not reclaimed when it is a
-   typed instance or a closure created in a nested scope. With the lifetime
-   suite's `leakedManaged` helper, on the tree before the counting change:
+4. A program-level typed instance that a spawn publishes is not reclaimed.
+   With the lifetime suite's `leakedManaged` helper, on the tree before the
+   counting change:
 
    ```gene
    (type Box ^props {^value Any})
@@ -557,12 +558,20 @@ from this optimization:
    ```
 
    followed by twenty passes that read each box, leaves 41 managed objects
-   behind, and the same shape with `(fns .push (fn [x] (+ x i)))` and calls
-   to each function leaves 21. Published Maps, Lists, Strs and
-   untyped nodes are all reclaimed. Publication pins the scopes a type or
-   closure refers to; whether those pins are meant to outlive the program
-   scope, and what that costs a long-running service that spawns from
-   request-scoped closures, has not been investigated.
+   behind. Published Maps, Lists, Strs and untyped nodes are all reclaimed.
+   The cause is the shared mark, not a held reference: an instance, its type
+   and the scope that declares the type form a cycle, the runtime breaks such
+   cycles by re-weakening on release, and it does not do that to a value
+   marked shared. A scratch build that does not publish root-lane spawns
+   (see "Value-graph walks") leaves nothing behind for this program. What it
+   costs a long-running service that spawns from scopes declaring types has
+   not been measured.
+
+   A separate observation from the same helper, which needs no spawn: twenty
+   closures made in a top-level `while` loop and pushed onto a top-level List
+   leave 21 objects behind when the program scope is dropped, called or not.
+   That is a cycle through the program's own root scope at teardown and was
+   not looked into further.
 
 5. The Harness performance probe cannot run much past 120 turns.
    `examples/gene-harness/probes/performance.gene <workspace> 140` (and 160,
