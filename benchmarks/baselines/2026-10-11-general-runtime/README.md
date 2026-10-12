@@ -23,9 +23,9 @@ order, 5,000 input items per batch, 300 ms calibration per workload
 
 This capture was taken one change before the final runtime. The last change
 touches only spawn publication and the walks' visited sets, which these
-workloads do not exercise; a recapture afterwards was disturbed by other
-load on the machine (samples of one build six times apart) and is not
-recorded, though its fastest samples are within 3% of this table.
+workloads do not exercise. A recapture of the final runtime on a less quiet
+machine (samples of one build up to 1.7x apart) reads 3.20x, 2.55x, 2.42x,
+1.73x, 2.22x and 2.47x in the same order, so the table is kept.
 
 Every result matches the baseline runtime and Python at sizes 1, 17, 257 and
 2048 and in every timed process. These are separate workloads, not a weighted
@@ -198,11 +198,15 @@ its set once they overflow. One quiet capture, three samples per build
 | Reading containers in place | 9792, 9802, 9934 | 9802 | 11592 |
 | And spilling inline entries | 9670, 9690, 9705 | 9690 | 11393 |
 
-That is a further 1.17x. The starting tree was not in this capture; three
-later attempts to measure all three builds together were disturbed by other
-load on the machine (single samples two to four times the rest) and are not
-recorded. Taking the two captures together the service workload is about
-2.7x faster than on the starting tree.
+That is a further 1.17x. The starting tree was not in this capture, and the
+machine did not stay quiet for another: three attempts to measure all three
+builds together had single samples two to four times the rest and are not
+recorded. A fourth, with every build slowed by about a third but only one
+stray sample
+([service/summary-walks3-loaded.json](service/summary-walks3-loaded.json)),
+reads 34.72 s on the starting tree, 16.18 s with the cheaper walks and
+13.15 s on the final build: 2.64x. The two quiet captures taken together
+give about 2.7x.
 
 ## Build provenance
 
