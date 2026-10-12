@@ -588,11 +588,18 @@ suite "compiler — GIR emission":
     for source in [
         "(for x in [1 2] (fn [] x))",
         "(for x in [1 2] (env))",
-        "(for x in [1 2] (for y in [3] (+ x y)))",
+        "(for x in [1 2] (for y in [3] (fn [] y)))",
+        "(for x in [1 2] (for y in [3] (try y ensure nil)))",
         "(for x in [1 2] (try x ensure nil))",
         "(for x in [1 2] (spawn x))"]:
       let chunk = compileSource(source)
       check not chunk.forLoops[0].reuseScope
+    # A nested loop is no reason by itself: its iterations are children of the
+    # outer scope and are gone when it ends, unless its own body can hold one.
+    let nested = compileSource("(for x in [1 2] (for y in [3] (+ x y)))")
+    check nested.forLoops[0].reuseScope
+    check nested.forLoops[0].body.forLoops[0].reuseScope
+    check cloneCompiledChunk(nested).forLoops[0].reuseScope
 
   test "tail-position proof reaches calls, match arms, and callable bodies":
     let chunk = compileSource(

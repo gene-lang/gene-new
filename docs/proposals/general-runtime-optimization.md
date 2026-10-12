@@ -390,11 +390,35 @@ of the service profile, the escape scan about an eighth. Each re-reads a
 graph that has not changed since the last store or spawn, and avoiding that
 needs a record of what changed, which no container keeps today.
 
+### Nested loops
+
+A `for` body reuses its iteration scope from one item to the next when the
+compiler proves nothing made in the body can hold that scope and the VM
+finds, at run time, that nothing else owns it. The compile-time half used
+to reject any body containing another `for`, so the outer loop of a nested
+pair allocated a fresh scope per item. A body now passes when its inner
+loops pass the same test; the run-time ownership check is unchanged. A
+kernel of 200 rows of three items runs in 200-214 ms instead of 230-239 ms,
+and text indexing, whose inner loop walks the words of each line, is about
+6% faster (15.63 ms to 14.69 ms in one before/after capture). Eleven specs
+cover break, continue and return from an inner loop, bindings made before
+and after it, closures made inside it, empty inner loops, and loops reached
+through calls and recursion.
+
+Two related changes were measured and dropped. Taking a loop's first
+iteration scope from the call-scope pool and returning it when the loop
+ends, and pooling the call scope of a function whose loops pass the test,
+each worked and each left a function that runs one short loop at the same
+speed: in that profile the per-iteration reset and item binding cost far
+more than the two allocations.
+
 ### What is still slow
 
 - Each `for` iteration is a frame with its own scope. The reset is now cheap
-  but not free; a compile-time "simple body" class, like `simpleCall` for
-  functions, would allow a slots-only reset.
+  but not free: in a function that runs one three-item loop, reusing the
+  scope and binding the item are about a quarter of the time. A compile-time
+  "simple body" class, like `simpleCall` for functions, would allow a
+  slots-only reset.
 - A match branch and the first iteration of every loop allocate a fresh
   `Scope` (about sixty fields). Pooling them needs the same ownership proof
   loop reuse uses.

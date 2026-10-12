@@ -1475,12 +1475,25 @@ proc chunkHasDeferredImplValidation(chunk: Chunk): bool =
       return true
   false
 
-proc chunkCanPoolCallScope(chunk: Chunk, closures = false): bool =
+proc chunkCanPoolCallScope(chunk: Chunk, closures = false,
+                           nestedLoops = false): bool =
   ## Whether nothing made in `chunk` can hold its call scope. With `closures`,
-  ## the closures it makes are left to closuresCopyCaptures.
-  if chunk.subchunks.len > 0 or chunk.forLoops.len > 0 or
-      chunk.matches.len > 0 or chunk.tries.len > 0:
+  ## the closures it makes are left to closuresCopyCaptures. With
+  ## `nestedLoops`, a `for` inside is accepted when its own body passes: its
+  ## iterations run in children of this scope, and a child is gone when its
+  ## loop ends unless something made in the body holds it, which is this same
+  ## question asked of that body. Only a loop body asks with `nestedLoops`:
+  ## the VM checks again at run time that nothing else owns an iteration scope
+  ## before reusing it, while a function's call scope is pooled on this answer
+  ## alone.
+  if chunk.subchunks.len > 0 or chunk.matches.len > 0 or chunk.tries.len > 0:
     return false
+  if chunk.forLoops.len > 0:
+    if not nestedLoops:
+      return false
+    for loop in chunk.forLoops:
+      if not chunkCanPoolCallScope(loop.body, nestedLoops = true):
+        return false
   for i, inst in chunk.instructions:
     case inst.op
     of opBindMessage:
@@ -1491,10 +1504,13 @@ proc chunkCanPoolCallScope(chunk: Chunk, closures = false): bool =
     of opMakeFn:
       if not closures:
         return false
+    of opForEach:
+      if not nestedLoops:
+        return false
     of opPreparePipelineCall, opMakeEnv, opMakeNamespace, opMakeType, opMakeEnum, opMakeProtocol,
        opMakeImpl, opImport, opImportImpl, opMatch, opMatchBind,
        opMatchBindReplace,
-       opForEach, opTry, opTaskScope, opSupervisor, opSpawn, opAwait, opYield:
+       opTry, opTaskScope, opSupervisor, opSpawn, opAwait, opYield:
       return false
     of opDefineRuntimeMacro, opInvokeRuntimeMacro, opExecuteRuntimeMacro, opRuntimePipelineStage:
       return false
@@ -8395,7 +8411,7 @@ proc compileFor(c: var Compiler, node: Value) =
   discard bodyCompiler.emit(opReturn)
   bodyCompiler.chunk.localNames = bodyCompiler.localNames
   let fp = ForProto(pattern: body[0], body: bodyCompiler.chunk,
-    reuseScope: chunkCanPoolCallScope(bodyCompiler.chunk))
+    reuseScope: chunkCanPoolCallScope(bodyCompiler.chunk, nestedLoops = true))
   discard c.emit(opForEach, c.chunk.addForLoop(fp))
 
 proc compileYield(c: var Compiler, node: Value) =

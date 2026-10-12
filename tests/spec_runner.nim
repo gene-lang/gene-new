@@ -12669,6 +12669,52 @@ suite "spec — runtime fast paths keep ordinary semantics":
     check_eval("""(fn build [n] (var rows []) (var i 0) (while (< i n) (rows .push {^id i ^tags [i (* i 2)] ^name $"row${i}"}) (set i (+ i 1))) rows) (fn keep [rows] (var c ($cell nil)) (c .set rows) (c .set rows) c/.get) (var rows (keep (build 60))) [($size rows) rows/59/id rows/59/tags/1 rows/0/name]""",
                """[60 59 118 "row0"]""")
 
+  # A loop body that contains only loops of the same kind reuses its iteration
+  # scope from one item to the next, as an innermost body always could.
+  test "an inner loop sums into a variable of the outer iteration":
+    check_eval("""(var out []) (for row in [[1 2] [3 4] [5 6]] (var sum 0) (for x in row (set sum (+ sum x))) (out .push sum)) out""",
+               """[3 7 11]""")
+
+  test "break leaves only the inner loop":
+    check_eval("""(var out []) (for row in [[1 2 3] [4 5 6] [7 8 9]] (for x in row (if (== x 5) (break)) (out .push x))) out""",
+               """[1 2 3 4 7 8 9]""")
+
+  test "continue skips one inner item and keeps the outer bindings":
+    check_eval("""(var out []) (for row in [[1 2 3] [4 5 6]] (var kept []) (for x in row (if (== (// x 2) 0) (continue)) (kept .push x)) (out .push kept)) out""",
+               """[[1 3] [5]]""")
+
+  test "return from an inner loop leaves the function":
+    check_eval("""(fn first_over [rows, limit] (for row in rows (for x in row (if (> x limit) (return [row x])))) nil) [(first_over [[1 2] [3 9] [7 8]] 5) (first_over [[1 2]] 5)]""",
+               """[[[3 9] 9] nil]""")
+
+  test "three nested loops visit every combination in order":
+    check_eval("""(var out []) (for a in [1 2] (for b in [10 20] (for c in [100 200] (out .push (+ a (+ b c)))))) [($size out) out/0 out/7]""",
+               """[8 111 222]""")
+
+  test "an outer binding made after the inner loop is fresh each time":
+    check_eval("""(var out []) (for row in [[1 2] [3 4]] (var first row/0) (for x in row (set first (+ first x))) (out .push first) (var late (* first 2)) (out .push late)) out""",
+               """[4 8 10 20]""")
+
+  test "closures made in an inner loop keep their own item":
+    check_eval("""(var fns []) (for row in [[1 2] [3 4]] (for x in row (fns .push (fn [] (+ x 100))))) (var got []) (for f in fns (got .push (f))) got""",
+               """[101 102 103 104]""")
+
+  test "an inner loop over no items leaves the outer iteration untouched":
+    check_eval("""(var out []) (for row in [[1 2] [] [3]] (var seen "none") (for x in row (set seen x)) (out .push seen)) out""",
+               """[2 "none" 3]""")
+
+  test "a function called from a loop body runs its own loop":
+    check_eval("""(fn inner [xs] (var t 0) (for x in xs (set t (+ t x))) t) (fn outer [rows] (var out []) (for row in rows (out .push (inner row))) out) [(outer [[1 2] [3 4] []]) (outer [[10]])]""",
+               """[[3 7 0] [10]]""")
+
+  test "a loop inside a recursive function keeps each call separate":
+    check_eval("""(fn depth [n] (var t 0) (for x in [1 2] (if (> n 0) (set t (+ t (depth (- n 1)))) (set t (+ t x)))) t) [(depth 0) (depth 1) (depth 3)]""",
+               """[3 6 24]""")
+
+  test "a loop that throws leaves the next call clean":
+    check_eval("""(fn risky [xs] (var t 0) (for x in xs (if (== x 3) (throw "three")) (set t (+ t x))) t) [(try (risky [1 2 3 4]) catch Any "caught") (risky [1 2]) (try (risky [3]) catch Any "again") (risky [5 6])]""",
+               """["caught" 3 "again" 11]""")
+
 suite "spec — a scheduler slice ends at a loop iteration or a function entry":
   test "straight-line read-then-update code is not split between fibers":
     ## Three producers each read the queue's List, make eight more native

@@ -12264,6 +12264,8 @@ proc reuseForScope(previous, parent: Scope, body: Chunk, reusable: bool): bool =
   ## Reuse storage only after both compiler and ownership proofs. The old
   ## bindings are released before the next item is installed; captured scopes,
   ## dynamic declarations, suspension and nested scopes use fresh activations.
+  ## The one nested scope the compiler accepts is another loop that passes the
+  ## same proof, and the ownership test below still has to hold once it ends.
   ##
   ## Answers whether `previous` is now the next iteration's scope. It is not
   ## returned: handing the same reference back through a result would count it
