@@ -235,6 +235,24 @@ that was not fully quiet ([service/summary-final.json](service/summary-final.jso
 
 That is 2.67x on service time and 3.08x on whole-process time.
 
+## Publishing only worker-safe tasks
+
+The last change makes `spawn` publish its captured graph only for a
+worker-safe task, the rule an actor's handler fiber already followed. Five
+samples per build in one capture on a moderately loaded machine
+([service/summary-worker-publication.json](service/summary-worker-publication.json)):
+
+| Build | Service samples (ms) | Service median (ms) | Whole-process median (ms) |
+| --- | --- | ---: | ---: |
+| Before | 11981, 11467, 11834, 11539, 12399 | 11834 | 14238 |
+| Publishing only worker-safe tasks | 10478, 11169, 10335, 12264, 10935 | 10935 | 12188 |
+
+That is about 8% on service time and 14% on whole-process time, and the
+complete Harness suite runs in 285 s instead of about 345 s. A lifetime test
+now holds the typed-instance program that used to keep 41 objects at zero.
+The general table and the direct baseline capture above predate this change;
+the general workloads do not spawn.
+
 ## A crash found by repeating the suite
 
 Running the complete Harness suite three more times on the final build
@@ -288,9 +306,9 @@ compiler-known set). Rebuild older GIR artifacts.
 | Executable language specs (46 new) | 892 passed |
 | VM, ORC | 403 passed |
 | VM, AtomicArc | 403 passed |
-| Reference-count/lifetime suite (2 new) | 89 passed |
+| Reference-count/lifetime suite (3 new) | 90 passed |
 | Harness, complete suite from a clean export | 200 passed |
-| AddressSanitizer: lifetime suite | 89 passed, 0 reports |
+| AddressSanitizer: lifetime suite | 90 passed, 0 reports |
 | AddressSanitizer: VM suites except env/eval | 391 passed, 0 reports |
 | Cordis | 21 passed |
 | Benchmark tooling | 15 passed |
@@ -298,8 +316,9 @@ compiler-known set). Rebuild older GIR artifacts.
 
 Every row is from the final runtime (slice rule, `==`/`!=` lowered, cheaper
 walks, in-place reads, in-place counting of published objects, nested-loop
-scope reuse, the fiber-resume fix). The binary and the suites were built
-from clean exports of `0f3b187` with the changed files laid over them. One VM test that pinned the
+scope reuse, the fiber-resume fix, worker-only publication). The binary and
+the suites were built from clean exports of `084b888` with the changed
+files laid over them. One VM test that pinned the
 old rule (any nested `for` makes the outer body allocate) was updated to the
 new one; the broad, VM and sanitizer VM rows are from the rerun with it. On the build before the walk changes one file-watch spec (`recursive watch discovers files in newly
 created directories`) failed once while five suites compiled in parallel and

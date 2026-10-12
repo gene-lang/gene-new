@@ -2,11 +2,11 @@
   "base_revision": "1e3f539",
   "executables_sha256": {
     "baseline": "7b0ccfa29b7df4ff276ad05debc3e17d526069ea6f6c006c35378ba0b53b41f1",
-    "optimized": "6062aebae93f554f4df8f419ce695100e6b3de42b28748ac1748780684474dc6",
+    "optimized": "1eecb4a368a522d2911c715b5122859b2603b6abed677ce162f96471420cf1db",
     "optimized_at_captures": "f63329afc563290379790918bda062a2ca6fbc8bea497a9867dc2e7018260627"
   },
   "source_sha256_of_measured_tree": {
-    "src/gene/vm.nim": "03f9a2c54d29ca6456fceaa405299f39b3aa52a724e7a6bf2e94b19182dceac2",
+    "src/gene/vm.nim": "9954ed7bdebbd0654a33025c7beff8b040621f7d205240c9a07565bd99e80147",
     "src/gene/types.nim": "7b22773fa52c422e0ed4490fcaf1f44334632da606820d3b42f4866f3756e033",
     "src/gene/stdlib.nim": "bc6de6affeda5d2d3904ff3ad3ff5a460464454245a22ab139f2b6189d7f2641",
     "src/gene/compiler.nim": "bb7ce65329cc1ca03e89778759429ab66818674103c1eedb7655366b3e3daaae",
