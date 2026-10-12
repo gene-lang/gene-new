@@ -385,6 +385,13 @@ a stored value, a stored ring with a shared part, a tail call passing a
 large value that holds a closure over the caller, repeated spawns over a
 captured List, and a large value stored twice).
 
+The service's cost per turn also grows with the session. On the final
+runtime the same probe takes 62 ms per turn over 25 turns, 71 ms over 50,
+78 ms over 75, 86 ms over 100 and 93 ms over 120: about a third of a
+millisecond more per turn for every turn already taken, because each walk
+covers a record history that keeps growing. The 100-turn figure used
+throughout is one point on that line.
+
 What these walks still cost is the walking itself: publication is a third
 of the service profile, the escape scan about an eighth. Each re-reads a
 graph that has not changed since the last store or spawn, and avoiding that
@@ -535,3 +542,11 @@ from this optimization:
    closure refers to; whether those pins are meant to outlive the program
    scope, and what that costs a long-running service that spawns from
    request-scoped closures, has not been investigated.
+
+5. The Harness performance probe cannot run much past 120 turns.
+   `examples/gene-harness/probes/performance.gene <workspace> 140` (and 160,
+   180, 200) stops with `SessionError: session ... still has a round` from
+   `src/runtime/sessions.gene`, on the starting tree and on every build of
+   this pass alike; 120 turns complete. The probe joins the session's watcher
+   and submits the next round, so something still holds a round for the
+   session at that point. Not investigated.
