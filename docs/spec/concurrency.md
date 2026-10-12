@@ -26,6 +26,16 @@ suites in `tests/test_vm.nim`.
 - `spawn ^lane root` enqueues and returns its `Task` before the child body can
   begin. `$runtime/require_root_lane` returns `nil` on that lane and raises the
   typed `RuntimeLaneError` everywhere else.
+- Fibers of one lane are time-sliced. A fiber stops running at a suspension
+  point (a wait on a task, channel, timer or I/O) or, once its instruction
+  slice is spent, at the next function entry, `for` iteration, backward loop
+  jump or `continue`. It is not descheduled anywhere else, and a requested
+  cancellation is delivered only where it stops. Code that neither calls a
+  function written in Gene nor loops is therefore atomic with respect to the
+  other fibers of its lane: `(queue/.get .push item)` cannot interleave with
+  a `(queue .swap [])` elsewhere. A sequence that calls a Gene function or
+  loops between a read and its update has no such guarantee, and neither does
+  anything shared with a worker lane, which runs in parallel.
 - Worker publication requires Send-safe captured snapshots. Runtime worker
   lanes may not allocate or release shared Gene heap objects unsafely.
 - Channel and actor sends enforce `Send` independently of nominal message type.

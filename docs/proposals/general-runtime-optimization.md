@@ -127,13 +127,11 @@ without changing what a program can observe.
   declines a zero divisor); every other operand pair calls the same native
   function as before. The static error analysis models them as that call,
   not as error-free arithmetic. GIR format advances to 29.
-- **`==` and `!=` were lowered the same way and then withdrawn.** With them
-  lowered, one Harness spec hung at service startup while every direct
-  comparison of equality results still matched the old runtime; bisection
-  isolated the lowering but not the mechanism. They remain ordinary calls
-  (the native keeps its own small-Int shortcut). Scopeless-call eligibility
-  of small `==` predicates was tested and ruled out as the cause. Anyone
-  retrying this must run the Harness suite, not only the specs.
+- **`==` and `!=` are lowered the same way**, after a detour. Their fast
+  path compares two small Ints by their bits; every other operand pair calls
+  the native `==`/`!=`. The first build that lowered them made one Harness
+  spec hang, so they were withdrawn until the cause was known. The cause was
+  not equality at all: see "Slice boundaries" below.
 - **By-name load cache.** A name the compiler cannot bind lexically (an
   imported function, a type, the root `gene` before every `$ns/fn`) is found
   by walking the scope chain. The activation scopes are still inspected on
@@ -188,21 +186,24 @@ calibration:
 
 | Workload | Before ms/batch | After ms/batch | Speedup | After / Python |
 | --- | ---: | ---: | ---: | ---: |
-| Integer loop | 2.883 | 0.905 | 3.18x | 4.86 |
-| Closure dispatch | 7.422 | 2.906 | 2.55x | 7.23 |
-| Filter/group/sort records | 10.609 | 4.461 | 2.38x | 4.97 |
-| Text indexing | 28.344 | 15.766 | 1.80x | 9.27 |
-| JSON round trip | 6.234 | 2.691 | 2.32x | 0.95 |
-| Event replay | 11.953 | 5.211 | 2.29x | 8.12 |
+| Integer loop | 2.844 | 0.927 | 3.07x | 5.01 |
+| Closure dispatch | 7.289 | 2.875 | 2.54x | 7.16 |
+| Filter/group/sort records | 10.531 | 4.363 | 2.41x | 4.81 |
+| Text indexing | 28.188 | 15.422 | 1.83x | 9.06 |
+| JSON round trip | 6.180 | 2.719 | 2.27x | 0.96 |
+| Event replay | 11.984 | 4.781 | 2.51x | 7.49 |
 
-Verification for this pass, on the corrected runtime: 1,685 broad-suite
-cases, 874 language specs (28 new, pinning what a shortcut could change), 402
-VM cases under both ORC and AtomicArc, 87 lifetime cases, and the complete
-Harness suite (179 cases) run from a clean export of the committed tree.
-AddressSanitizer (lifetime suite and 390 VM cases, no reports), Cordis,
-benchmark tooling and wasm ABI cases also pass on it, and an independent
-fresh-cache rebuild repeats the speedups within about 3%. The evidence README
-records the regression, how it was bisected, and what remains unexplained.
+This is the final runtime, with `==`/`!=` lowered and the slice rule below.
+While the lowering was withdrawn event replay read 2.29x; nothing else moved
+beyond run-to-run variation.
+
+Verification for this pass, on the final runtime: 1,688 broad-suite cases,
+876 language specs (30 new: 28 pinning what a shortcut could change, 2
+pinning the slice rule), 402 VM cases under both ORC and AtomicArc, 87
+lifetime cases, and the complete Harness suite (200 cases) run from a clean
+export. AddressSanitizer (lifetime suite and 390 VM cases, no reports),
+Cordis, benchmark tooling and wasm ABI cases also pass on it. The evidence
+README records the regression, how it was traced, and the artefacts.
 
 ### Spawn publication
 
@@ -257,6 +258,66 @@ to 14.94 s (1.69x), and whole-process time from 34.5 s to 18.2 s.
 What remains at the top of the service profile is the per-spawn scope walk
 (20% before this change) and weak-function escape (12%), both whole-graph
 walks with a visited set over the same large values.
+
+### Slice boundaries
+
+Lowering `==` changes nothing a program can compute, but it replaces three
+instructions and a call with one instruction. A root-lane fiber is paused
+after 512 instructions, wherever that count happened to fall, so every pause
+after the first lowered comparison moved.
+
+One of them moved into Cordis's `request_transition`, between the two halves
+of `(instance/runtime/executor/queue/.get .push request)`: the fiber had read
+the executor's queue List and resolved `.push`, and was paused before making
+the call. The executor then ran, took the List with
+`(executor/queue .swap (fresh_list))`, and went back to waiting. The resumed
+fiber pushed its request onto the List the executor had already taken, the
+wake-up found an empty queue, and the fiber that later joined that
+transition waited forever. The Harness turn that had published a plugin hung
+in `await_transition_task`.
+
+How this was established, since no added trace survived it (any statement
+added near the site moved the pause again and the hang vanished):
+
+1. Source bisection without rebuilding. A lexical binding named `==` turns
+   the lowering off for one file, and a renamed alias turns it off for one
+   call. The hang needed exactly two of the 200 equality sites in
+   `cordis/src/runtime.gene` lowered together, both executed in the fiber's
+   last slice before the push.
+2. A VM built from the hanging commit with three additions that leave the
+   bytecode alone: a dump of every fiber's Gene stack once the scheduler has
+   idled for 30 s, a log of every cancellation injected at a resume, and a
+   log of every budget pause. The dump showed the turn fiber parked on the
+   ticket's `ready` channel and the executor parked on its wake channel. The
+   cancellation log ruled cancellation out (all 231 hit deadline timers or
+   tasks that had not started). The pause log showed that fiber's last pause
+   at `runtime.gene:1043`, instruction 92: after `opResolveMessage`, before
+   the argument load.
+3. A stand-alone probe. Three producers read a queue List, make eight more
+   built-in sends and push, while a consumer swaps the List; 11 of 400
+   preemption phases lose a push. The same count on the tree this pass
+   started from, so the hazard predates every change here.
+
+The change log entry that introduced the short slices says scheduling
+remains cooperative. It was not, for exactly this kind of code: nothing in
+`(queue/.get .push request)` suspends, and it could still be interleaved.
+
+The fix is in the scheduler, not in Cordis. A spent slice no longer ends
+between any two instructions. The fiber runs on to the next point where work
+is about to repeat — a function entry, a `for` iteration, a backward loop
+jump or `continue` — and pauses there (`sliceMayEndHere` in `vm.nim`). Every
+unbounded computation passes such a point, so a CPU-bound fiber still yields
+after about 512 instructions; a slice is now a minimum rather than an exact
+length. Straight-line code is never split, and because a requested
+cancellation is injected when a paused fiber resumes, cancellation cannot
+land inside straight-line code either. Code that calls a Gene function or
+loops between a read and its update can still be interleaved there, as
+before.
+
+With that rule the probe loses nothing, the spec that hung passes with
+`==`/`!=` lowered, and two specs pin the rule: straight-line read-then-update
+code is not split, and every loop and recursion form still yields a spent
+slice to a peer.
 
 ### What is still slow
 

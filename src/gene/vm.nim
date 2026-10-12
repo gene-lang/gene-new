@@ -16836,6 +16836,9 @@ proc appendNativeTrace(e: ref GeneError, calleeName: string,
 # root-level channel use keeps its original synchronous behavior.
 # Short instruction slices keep root-lane HTTP and cancellation responsive as
 # application scopes grow, while always making forward progress before yielding.
+# A slice is a minimum: once spent, the fiber pauses at the next loop iteration
+# or function entry (`sliceMayEndHere`), never in the middle of straight-line
+# code.
 const schedulerInstructionBudget = 512
 const schedulerWorkerTimerPollMs = 1
 
@@ -18468,6 +18471,19 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               targetProto.checksErrors, nextErrorTypes, target.fnName,
               operandBase, tailMarked)
 
+  template sliceMayEndHere(): bool =
+    ## An exhausted slice runs on to the next point where work is about to
+    ## repeat: a function or `for` body entry, a backward jump, or `continue`.
+    ## Every unbounded computation passes one, so a CPU-bound fiber still
+    ## yields, while straight-line code is never split. A sequence that reads
+    ## shared state and updates it without calling a Gene function or looping,
+    ## such as `(queue/.get .push x)`, therefore cannot interleave with another
+    ## fiber, and a requested cancellation cannot land inside it either.
+    (ip == 0 and (curFrameKind == fkNormal or curFrameKind == fkForBody)) or
+      (chunk.instructions[ip].op == opJump and
+        chunk.instructions[ip].intArg <= ip) or
+      chunk.instructions[ip].op == opLoopContinue
+
   while true:
     try:
       if cancelAtSafepoint:
@@ -18479,7 +18495,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           frameReturn(NIL)
           continue
         if instructionBudget > 0:
-          if remainingBudget <= 0:
+          if remainingBudget <= 0 and sliceMayEndHere():
             if fiber == nil:
               raise newException(GeneError,
                 "internal: scheduler pause outside a fiber")

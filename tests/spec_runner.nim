@@ -12645,3 +12645,20 @@ suite "spec — runtime fast paths keep ordinary semantics":
   test "loop iterations keep distinct captured variables":
     check_eval("""(var fns []) (for item in [1 2 3] (fns .push (fn [] (* item 10)))) (var called []) (for f in fns (called .push (f))) called""",
                """[10 20 30]""")
+
+suite "spec — a scheduler slice ends at a loop iteration or a function entry":
+  test "straight-line read-then-update code is not split between fibers":
+    ## Three producers each read the queue's List, make eight more native
+    ## sends, and push; the consumer swaps the List out. No producer calls a
+    ## Gene function or loops between the read and the push, so no slice may
+    ## end there. When a slice could end between any two instructions, 11 of
+    ## these 300 phases pushed onto a List the consumer had already taken.
+    check_eval("""(fn spin [n : Int] (var i 0) (while (< i n) (set i (+ i 1))) i) (fn drain [ex] (while true ex/wake/.recv (var pending (ex/queue .swap [])) (ex/done .set (+ ex/done/.get ($size pending))))) (fn submit [ex, pad : Int, tag] (spin pad) (var q ex/queue/.get) (ex/mark .set 1) (ex/mark .set 2) (ex/mark .set 3) (ex/mark .set 4) (ex/mark .set 5) (ex/mark .set 6) (ex/mark .set 7) (ex/mark .set 8) (q .push tag) (ex/wake .try_send nil) nil) (fn phase [pad : Int] : Int (let ex {^queue ($cell []) ^wake ($channel ^capacity 1) ^done ($cell 0) ^mark ($cell 0)}) (let consumer (spawn ^lane root (drain ex))) (let b (spawn ^lane root (submit ex pad "b"))) (let a (spawn ^lane root (submit ex (+ 1 (// pad 5)) "a"))) (let c (spawn ^lane root (submit ex (+ 9 (* 2 pad)) "c"))) (a .join) (b .join) (c .join) (let seen (+ ex/done/.get ($size ex/queue/.get))) consumer/.cancel (if (== seen 3) 0 1)) (var lost 0) (var pad 0) (while (< pad 300) (set lost (+ lost (phase pad))) (set pad (+ pad 1))) lost""",
+               """0""")
+
+  test "every loop and recursion form still yields a spent slice to a peer":
+    ## A slice that could only end at a suspension point would let a CPU-bound
+    ## fiber starve the rest: each kind of repetition has to reach a point
+    ## where a spent slice ends. The peer is spawned second and finishes first.
+    check_eval("""(fn rec [n] (if (< n 2) n (+ (rec (- n 1)) (rec (- n 2))))) (fn even_ [n] (if (== n 0) true (odd_ (- n 1)))) (fn odd_ [n] (if (== n 0) false (even_ (- n 1)))) (fn tail_ [n, acc] (if (== n 0) acc (tail_ (- n 1) (+ acc 1)))) (fn w [n] (var i 0) (while (< i n) (set i (+ i 1))) i) (fn l [n] (var i 0) (loop (set i (+ i 1)) (if (< i n) (continue)) (break)) i) (fn r [n] (var t 0) (repeat n (set t (+ t 1))) t) (fn f [xs] (var t 0) (for x in xs (for y in xs (set t (+ t 1)))) t) (fn first_to_finish [work] (let order []) (let a (spawn ^lane root (do (work) (order .push "work")))) (let b (spawn ^lane root (order .push "peer"))) (a .join) (b .join) order/0) (var xs []) (var i 0) (while (< i 200) (xs .push i) (set i (+ i 1))) [(first_to_finish (fn [] (rec 20))) (first_to_finish (fn [] (even_ 3000))) (first_to_finish (fn [] (tail_ 20000 0))) (first_to_finish (fn [] (w 20000))) (first_to_finish (fn [] (l 20000))) (first_to_finish (fn [] (r 20000))) (first_to_finish (fn [] (f xs)))]""",
+               """["peer" "peer" "peer" "peer" "peer" "peer" "peer"]""")
