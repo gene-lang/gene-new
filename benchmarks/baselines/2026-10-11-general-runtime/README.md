@@ -40,8 +40,9 @@ loop from 213-217 ms to 184-187 ms. A clean
 before/after of this change alone on the six workloads (six samples each,
 samples within 14%) reads, in ms per batch: integer loop 0.948 to 0.790,
 closures 2.887 to 2.781, records 4.320 to 4.059, text indexing 15.266 to
-14.297, JSON 2.715 to 2.547, event replay 4.605 to 4.516. Three complete
-Harness runs soaked the change, all passing with no crash report.
+14.297, JSON 2.715 to 2.547, event replay 4.605 to 4.516. Eight complete
+Harness runs soaked the change in two batches, all passing with no crash
+report.
 
 Every result matches the baseline runtime and Python at sizes 1, 17, 257 and
 2048 and in every timed process. These are separate workloads, not a weighted
