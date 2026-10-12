@@ -80,11 +80,11 @@ store, attached through `genex/websocket`, beside a browser player. Run it:
 ```sh
 gene run world create
 gene run world player add ada "Ada"
-bin/gene run examples/life/src/main.gene create examples/life/tmp/aster --network   # → its id
+bin/gene run examples/life/src/main.gene create examples/life/homes/aster --network   # → its id
 gene run world life add <id> "Aster" --credential-out /tmp/aster.credential
-bin/gene run examples/life/src/main.gene bind examples/life/tmp/aster ws://127.0.0.1:8096/world/v1 /tmp/aster.credential
+bin/gene run examples/life/src/main.gene bind examples/life/homes/aster ws://127.0.0.1:8096/world/v1 /tmp/aster.credential
 gene run world run &
-bin/gene run examples/life/src/main.gene run examples/life/tmp/aster
+bin/gene run examples/life/src/main.gene run examples/life/homes/aster
 ```
 
 (`gene run world …` from `examples/world`, `bin/gene run examples/life/…` from
@@ -166,6 +166,76 @@ Three gaps a review of world.md/life.md found in this milestone, closed
 Evidence: Life suite 128 passed (3 new: status ordering, gating, a suspension
 seen only in a snapshot and resumed by the Life itself).
 
+### Follow-up from review (2026-10-12)
+
+A review of both proposals against this tree (`examples/world`,
+`examples/life`) found the items below; they were closed before any
+Milestone 3 storage work.
+
+- **The Commons had stopped building.** Since the compiler change of
+  2026-10-03 the web profile reported a name declared in two sibling loops as
+  a duplicate binding, so `core/light.gene` no longer compiled for the web and
+  the world process, which compiles its own client, could not create or run a
+  world. A `while` or `loop` body is now its own binding scope in the web
+  profile, as a `repeat` or `for` body already was and as the VM allows
+  (`src/gene/web_backend.nim`, conformance case
+  `control.sibling_loops_redeclare`); two sibling `if_yes` bodies in
+  `client/main.gene` that declared the same names were given their own.
+- **Life cycle time no longer follows retained history.** The slowdown the
+  design was warned about [D2] reproduced: 104 ms for the first cycle and a
+  median of 2.2 s for cycles 181–200. Life's store copied its whole record map
+  for every transaction, kept one receipt per commit in it, and each heartbeat
+  copied every retained cycle, observation and execution. A transaction now
+  reads the store as it was when it began without copying it, receipts stay
+  in the database, and heartbeat scans copy only what they act on: 0.11 s at
+  200 cycles on `life.db`, 0.18 s at 1,000
+  (`examples/life/probes/cycle_growth.gene`,
+  `examples/life/docs/persistence.md`).
+- **Pause holds the avatar (§12.4).** `movement.suspend` is a world operation:
+  a controller asks for its own running walk to be held, and only
+  `movement.resume` continues it. A paused Life sends that request although it
+  sends nothing else, reports `pause_pending_remote` until the world has
+  answered — including while it cannot reach the world — and after resuming is
+  shown the suspended walk and decides for itself. On the Life side a resume
+  or suspend request is complete once admitted, and what it reports is applied
+  to the walk it names, so a resumed walk no longer reads as suspended.
+- **Seed and disposition are two things (§3.5).** A Life keeps what it was
+  told at creation in an immutable `creation` record and what it is inclined
+  to now in `state/disposition`, which its programs may rewrite and from which
+  every context is built. `create --seed` offers §3.3's four seeds; a Life
+  created earlier is given both records from its one text when it next opens.
+- **Only what the Commons loads (§1.4).** Twenty-three copied `core/` modules,
+  the default game's content and the specs, probes and benches for them were
+  removed (12,300 lines); `core/content.gene` registers nodes and tiles
+  directly, and a world saved before the change opens unchanged.
+  [`SOURCES.md`](SOURCES.md) lists what went and what remains. The web build
+  is 25 modules instead of 62.
+- **Housekeeping.** `SOURCES.md` is in the package, where the README and this
+  file link to it; the README describes the tree as it is.
+
+Evidence (macOS 27, Apple M4 Pro, optimized `gene` from `eed4045` plus the
+web-profile fix): `tools/check.sh` 17 steps, all passing — four cross-backend
+specs with identical VM/web reports, `commons_smoke` 41 checks, `client_smoke`
+16, the Life network specs 19, `life_smoke` 34. Life suite: 137 passed on
+`life.sqlite`; on `life.db` the same except the six that compare `life.sqlite`
+bytes. Compiler: `test_all` 1689, `spec_runner` 892, the 317 shared
+conformance cases on both backends, the Harness suite 200.
+
+Noticed along the way, and not changed:
+
+- **A test cannot keep its scratch only on failure.** `$test` runs
+  `after_each` whether or not the example passed and does not tell the hook
+  which, so Life's specs leave their homes in `examples/life/tmp/`. Kept Lives
+  now go in `examples/life/homes/` so that `tmp/` is safe to empty.
+- **The smokes are Node and the gate is shell.** Porting `commons_smoke` and
+  `life_smoke` to Gene needs a way to kill a child process outright (a
+  cancelled `$os/exec_async` task is sent TERM first); `client_smoke` needs a
+  DOM, so it stays in Node.
+- **`$str` has no substring search**; finding a key's first `/` goes through
+  `$str/split`.
+- **A loop body that redeclares an outer name** reads as the outer variable
+  afterwards on the VM and is rejected in the web profile.
+
 ### Carried into Milestone 3
 
 - **Lost world reply with real processes.** The in-memory peer drops a
@@ -173,14 +243,15 @@ seen only in a snapshot and resumed by the Life itself).
   and the world mid-walk, but not between the world's commit and the Life's
   receipt. §17's Milestone 3 test list names it.
 - **Retention.** Received events, canonical results and continuation records
-  are kept; nothing archives them yet, and Life's store still copies its
-  record map per transaction — the §12.8 growth benchmark will show the cost.
-- **Pause** does not yet ask the world to suspend the Life's activity (§12.4).
+  are kept and nothing archives them yet. What that costs is measured (see the
+  2026-10-12 follow-up): a conversation is one record rewritten per message,
+  and heartbeat scans still test every retained record.
 - **Views** are still not filtered by perception (§7.1); a Life's view is
   updated from its own events and snapshots, and other avatars' movement only
-  by `refresh`.
-- **`movement.resume`**'s own receipt stays non-terminal: the walk's outcome
-  belongs to the original operation.
+  by `refresh`. The experiment's question depends on this (people knowing
+  different things), so it should come before any behavioral comparison.
+- **A real brain adapter** is not built; every framing, budget and timing
+  decision has met only the deterministic fixture.
 - **Registration race.** A group that registers a continuation for an
   already-sent request fails whole with a revision conflict if that request's
   result lands while the group is open — correct serialization, but it is not

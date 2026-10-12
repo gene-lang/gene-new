@@ -4,7 +4,7 @@
 **Date:** 2026-09-19.  
 **Focus:** A persistent virtual being with an AI brain, a long-running body, and behavior expressed through Gene code.
 
-**Updated:** 2026-09-20.
+**Updated:** 2026-10-12 (pointers to the networked world profile in §7 and §13; no design change).
 
 > Gene Life observes, remembers, chooses, and acts over time. Its brain writes a brief decision note alongside an executable Gene program. The note preserves its expressed state of mind; the program directs its body.
 
@@ -302,6 +302,8 @@ Start with basic limits on model calls, repeated failures, and queued work. This
 ## 7. Asynchronous behavior through ordinary code
 
 The difference between an immediate action, a long activity, and future reconsideration should be visible in the library APIs—not encoded in a fixed brain-response format.
+
+**Two world profiles.** This section, §10 and §13 describe a Life whose world is its own: the body and the world share one store, so starting a walk and writing state can publish in one commit, and the walk advances locally. A Life can instead inhabit a world run by another process (`world.md` §1.1). There a commit publishes a *request*, the world reports what happened later, and walk-then-act is a continuation stored as data rather than a waiting program (`world.md` §8.3–§8.4). The profile is chosen when a Life is created; everything else in this document applies to both.
 
 ### Immediate computation and operations
 
@@ -675,6 +677,8 @@ The initial participant presents itself as Gene Life, an AI participant. There i
 ## 13. A small 3D world
 
 A 3D world is a natural environment for the experiment, not just a visual status indicator. Start with a room, workshop, or garden containing a few objects and meaningful interactions.
+
+The shared version of that environment, with human players in a browser and several Lives in one place, is `world.md`; its networked profile changes the brain–world boundary as §7 notes.
 
 The world should make actions observable: Life moves toward an object, examines it, changes something, responds to a visitor, or returns to an unfinished activity.
 

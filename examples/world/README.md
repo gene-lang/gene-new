@@ -33,15 +33,22 @@ Commons references name `docs/proposals/world.md` explicitly.
 ## Layout
 
 ```
-core/      portable Gene, VM and web profile: world, mapgen, light, mesh,
-           physics, inventory, entities, wire + protocol codecs
-client/    the browser client (net_main.gene) and its WebGL2 renderer
-server/    world process: $net/http WebSocket loop, SQLite store, block format
-mods/      the default content set (commons/default), compiled in by core/mods.gene
-probes/    specs and their VM/web runners, network probes, fixtures
-tools/     web build, suite runner, smoke and bench harnesses
-index.html the player page
+core/      portable Gene, VM and web profile: the node and tile registries,
+           the content API, and the world array, lighting, meshing, pointing
+           and texture helpers the browser client draws with
+client/    the browser client (main.gene), its WebGL2 renderer and atlas
+server/    the world process: the HTTP/WebSocket host and the player page it
+           serves, the runtime, navigation, the scene, participants, the
+           protocol and the SQLite store
+mods/      content, compiled in by core/mods.gene: the neighborhood's nodes and
+           tiles
+probes/    cross-backend specs for core/, each with a VM and a web runner
+tools/     the web build, the suite (check.sh) and the process smokes
 ```
+
+There is no page file: `server/host.gene` renders the player page and serves
+the client compiled from `client/main.gene`. `dist/` (web build output),
+`.gene/` and `data/` (the default world directory) are generated and ignored.
 
 ## Build and run
 
@@ -81,15 +88,16 @@ a WebSocket with a credential the operator issues for its id. It needs the
 # once, from the repository root
 python3 src/genex/websocket/tools/build.py --pkg-config-path "$(brew --prefix curl)/lib/pkgconfig"
 
-bin/gene run examples/life/src/main.gene create examples/life/tmp/aster --network
+bin/gene run examples/life/src/main.gene create examples/life/homes/aster --network
 #   → {"id":"life-…", …}
 (cd examples/world && gene run world life add life-… "Aster" --credential-out /tmp/aster.credential)
-bin/gene run examples/life/src/main.gene bind examples/life/tmp/aster ws://127.0.0.1:8096/world/v1 /tmp/aster.credential
-bin/gene run examples/life/src/main.gene run examples/life/tmp/aster
+bin/gene run examples/life/src/main.gene bind examples/life/homes/aster ws://127.0.0.1:8096/world/v1 /tmp/aster.credential
+bin/gene run examples/life/src/main.gene run examples/life/homes/aster
 ```
 
-Life homes live under `examples/life/tmp/` (a Life runs its programs in
-sandboxed directories inside its package). The fake brain walks to the garden
+A Life's home must be inside the Life package (it runs its programs in
+sandboxed directories there); `examples/life/homes/` is the place for one you
+keep. The fake brain walks to the garden
 and says so when it arrives — a data continuation, not a waiting program —
 and acknowledges a person who speaks to it. `bind` copies the credential into
 an owner-only file beside the Life's store; delete the one you were handed.
@@ -111,18 +119,16 @@ profile, so each spec's two reports must be byte-identical:
 
 ```sh
 tools/build_web.sh --clean        # after adding or removing a module
-for s in world wire protocol inventory edit loaded physics light mapgen abm; do
+for s in world light loaded raycast; do
   gene run ${s}_spec | diff - <(node tools/web_spec.mjs web_${s}_spec)
 done
-gene run divergence | diff - <(node tools/web_spec.mjs web_divergence)
-gene run persistence create && gene run persistence verify   # fresh process; /tmp/gene_world_probe
 ```
 
 ### The world process
 
 ```sh
-node tools/commons_smoke.mjs     # protocol, receipts, fencing, kill -9 recovery (37 checks)
-tools/build_web.sh && node tools/client_smoke.mjs   # the real client, stubbed DOM (13 checks)
+node tools/commons_smoke.mjs     # protocol, receipts, fencing, kill -9 recovery (41 checks)
+tools/build_web.sh && node tools/client_smoke.mjs   # the real client, stubbed DOM (16 checks)
 ```
 
 Each creates a throwaway world and starts its own `gene run world run` (ports
@@ -131,7 +137,7 @@ Each creates a throwaway world and starts its own `gene run world run` (ports
 ### Networked Lives (Milestone 2)
 
 ```sh
-node tools/life_smoke.mjs      # a world, two Life processes and a human (28 checks, ~80 s)
+node tools/life_smoke.mjs      # a world, two Life processes and a human (34 checks, ~80 s)
 bin/gene test --package-root examples/life examples/life/tests/world_network_spec.gene \
                                            examples/life/tests/delivery_spec.gene   # from the repo root
 ```
@@ -139,15 +145,7 @@ bin/gene test --package-root examples/life examples/life/tests/world_network_spe
 `life_smoke.mjs` (port 8099) runs real processes: native admission, walk-then-
 act continuations, speech both ways, a human and two Lives contending for the
 can, a Life and then the world killed mid-walk, a request committed while the
-world is down, and the missing-library preflight. The Life specs drive the same
+world is down, an operator pausing a Life mid-walk, and the missing-library
+preflight. The Life specs drive the same
 code against an in-memory world that can lose replies, answer `unknown`, replay
 and skip sequences.
-
-### Budgets and benches
-
-```sh
-gene run worldgen                 # generation budget; reading B is a documented expected-fail
-gene run wire_bench               # what a block message costs to encode on the VM
-node tools/mesh_bench.mjs         # generation + meshing budget per chunk
-node tools/world_build.mjs        # what opening a world costs, and a 2-minute walk
-```

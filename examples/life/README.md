@@ -20,22 +20,32 @@ Gene-defined sleep controller at energy 42 before waking once at 70. It creates
 an explicit new Life under `tmp/`, prints its checkpoints, and leaves the retained
 experiment available for inspection. An optional path argument chooses a new home.
 
+A Life's home is a directory inside this package. Keep one you mean to keep
+under `homes/`; `tmp/` is where the demo, the tests and the probes put theirs,
+and it can be emptied at any time. Both are ignored by git.
+
 To run the long-lived body and local chat directly:
 
 ```sh
-bin/gene run examples/life/src/main.gene create examples/life/tmp/garden
-bin/gene run examples/life/src/main.gene run examples/life/tmp/garden
+bin/gene run examples/life/src/main.gene create examples/life/homes/garden
+bin/gene run examples/life/src/main.gene run examples/life/homes/garden
 ```
 
 In another terminal:
 
 ```sh
-bin/gene run examples/life/src/main.gene send examples/life/tmp/garden 'I prefer shade.'
-bin/gene run examples/life/src/main.gene command examples/life/tmp/garden '{"op":"inspect","prefix":"conversation/"}'
-bin/gene run examples/life/src/main.gene command examples/life/tmp/garden '{"op":"pause"}'
-bin/gene run examples/life/src/main.gene command examples/life/tmp/garden '{"op":"resume"}'
-bin/gene run examples/life/src/main.gene command examples/life/tmp/garden '{"op":"stop"}'
+bin/gene run examples/life/src/main.gene send examples/life/homes/garden 'I prefer shade.'
+bin/gene run examples/life/src/main.gene command examples/life/homes/garden '{"op":"inspect","prefix":"conversation/"}'
+bin/gene run examples/life/src/main.gene command examples/life/homes/garden '{"op":"pause"}'
+bin/gene run examples/life/src/main.gene command examples/life/homes/garden '{"op":"resume"}'
+bin/gene run examples/life/src/main.gene command examples/life/homes/garden '{"op":"stop"}'
 ```
+
+`create HOME --seed NAME` chooses what the Life is told once, at its creation:
+`garden` (the default), or one of the Commons' four — `aster`, `brin`, `cove`,
+`dara`. The seed is kept unchanged in the `creation` record. What the Life is
+inclined to now is its own `state/disposition`, which starts as the seed's
+text; a program may rewrite it, and every later context is built from it.
 
 `create` never overwrites an existing Life. `run` restores it before invoking
 the brain. The fake brain inspects on first start, requests a later wake, and
@@ -126,10 +136,10 @@ The profile is chosen once, at creation; the local world stays the default and
 is unchanged.
 
 ```sh
-bin/gene run examples/life/src/main.gene create examples/life/tmp/aster --network
-bin/gene run examples/life/src/main.gene bind examples/life/tmp/aster ws://127.0.0.1:8096/world/v1 CREDENTIAL_FILE
-bin/gene run examples/life/src/main.gene run examples/life/tmp/aster
-bin/gene run examples/life/src/main.gene command examples/life/tmp/aster '{"op":"world"}'
+bin/gene run examples/life/src/main.gene create examples/life/homes/aster --network
+bin/gene run examples/life/src/main.gene bind examples/life/homes/aster ws://127.0.0.1:8096/world/v1 CREDENTIAL_FILE
+bin/gene run examples/life/src/main.gene run examples/life/homes/aster
+bin/gene run examples/life/src/main.gene command examples/life/homes/aster '{"op":"world"}'
 ```
 
 The world's operator issues the credential for this Life's id
@@ -155,6 +165,13 @@ continuation, committed with the request:
   (body/world .on_result walk arrival {} ^tx tx)
   walk/operation_id))
 ```
+
+Pausing a networked Life also asks the world to hold what it was doing: the
+body sends `movement.suspend` for each of its running walks although it sends
+nothing else while paused, and the `pause` command answers `paused` once the
+world has confirmed, or `pause_pending_remote` while it has not — including
+while the world cannot be reached. After `resume` the Life is shown the
+suspended walk and decides for itself whether to continue it.
 
 The one standing dispatcher makes it ready when the walk's outcome is terminal
 — whichever of the receipt, a status query or the event stream reports it
@@ -182,5 +199,14 @@ bin/gene test --package-root examples/life examples/life/tests/
 ```
 
 The tests execute real Gene subprocesses, including fixtures killed with
-`SIGKILL`. Temporary Life homes remain under the ignored `tmp/` directory for
-inspection. No Python runtime, test runner, or source file is required.
+`SIGKILL`. Their Life homes remain under the ignored `tmp/` directory for
+inspection; nothing removes them, so empty it now and then. No Python runtime,
+test runner, or source file is required.
+
+`probes/cycle_growth.gene` measures how long a decision cycle takes as a Life's
+history grows ([docs/persistence.md](docs/persistence.md) has the method and
+the numbers):
+
+```sh
+bin/gene run examples/life/probes/cycle_growth.gene 200 file
+```

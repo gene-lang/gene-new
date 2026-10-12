@@ -1,13 +1,15 @@
 # Gene World: An Expandable Human–AI Commons
 
-**Status:** Experimental design proposal, not an implementation report.  
-**Date:** 2026-09-21.  
-**Updated:** 2026-09-23.  
-**Revision:** 6 — ordered non-terminal action statuses (status revisions), a decision path for suspended activity, and continuations admitted only against a synchronized view (§6.3, §8.4, §12.3). Revision 5 — one world-result dispatcher with data continuations; physical revision/receipt retention; incremental disk-backed storage in milestones 1–3. Preserve the copy-and-adapt policy and browser-first rollout.  
+**Status:** Experimental design proposal, not an implementation report. Implementation status and evidence: `examples/world/MILESTONES.md`.
+**Date:** 2026-09-21.
+**Updated:** 2026-10-12.
+**Revision:** 7 — reorganization, no design change: a reading note; the former §19 and §20 (decisions kept visible, basis and references, review disposition) are now Appendix A, which also holds the review attributions that stood in §8.4 and §12.8 and the dispositions of the 2026-10-12 review; milestone status is delegated to `examples/world/MILESTONES.md`; storage statements that had been overtaken are corrected (the incremental `$db/sqlite/open_file` store exists and the reported Life slowdown was reproduced and fixed). Revision 6 — ordered non-terminal action statuses (status revisions), a decision path for suspended activity, and continuations admitted only against a synchronized view (§6.3, §8.4, §12.3). Revision 5 — one world-result dispatcher with data continuations; physical revision/receipt retention; incremental disk-backed storage in milestones 1–3. Preserve the copy-and-adapt policy and browser-first rollout.
 **Companion:** The latest reviewed `life.md`
 **Decision:** One authoritative world process, one separate process per AI Life, and a browser player client for humans. Human and AI controllers use the same world-action contracts over WebSocket. Keep HTTP for pages/assets and explicit application-level receipts, replay, and reconnection for live interaction. Miclone is a source reference for copied code, not a required package, engine, or service.
 
 > One shared reality for human players and independent AI Lives. Humans act through a browser; each Life acts through Gene code in its own process. Places, possessions, conversations, and consequences persist as the world grows.
+
+**How to read this document.** It has three parts. **Part I, the design (§1–§16)**, is the stable specification: processes, world model, protocol, delivery, persistence, expansion and the browser. Its rules hold regardless of how much has been built. **Part II, the plan (§17–§18)**, lists the milestones and acceptance tests; what each milestone delivered, and the evidence, is recorded in `examples/world/MILESTONES.md`, not here. **Appendix A, decisions and rationale**, keeps the review findings, alternatives and revision notes behind the design; each entry is keyed to the section it explains. Section numbers are stable: code comments, tests and `MILESTONES.md` cite them.
 
 ## 1. Purpose and scope
 
@@ -61,6 +63,7 @@ Start locally with separate operating-system processes. Tests may use in-memory 
 | Extending content, rules, and regions | 13–14 |
 | Human play, observer/operator modes, and initial deployment | 15–16 |
 | Implementation milestones and acceptance tests | 17–18 |
+| Decisions, review findings, and revision notes | Appendix A |
 
 ### 1.4 Implementation decision: copy and adapt, then develop independently
 
@@ -74,7 +77,7 @@ The previously reviewed Miclone sources provide useful transport wiring, portabl
 | Gene web-profile browser, WebGL2 renderer, camera, picking, meshing, and input | Copy the needed shell, helpers, shader/asset recipes, and build steps. Add click-to-move and interaction controls locally; simplify or replace rendering assumptions as the neighborhood evolves. |
 | Portable geometry, inventory, entity, and content helpers | Copy the useful functions and required dependencies, then reshape their APIs and data for the Commons. Do not preserve an unsuitable voxel representation merely to minimize the diff. |
 | Server-selected content and recipe-driven presentation | Adapt the data-only appearance and interaction machinery. Do not import the whole mod framework or the removed Gene capability machinery as prerequisites. |
-| SQLite world integration and batched publication | Copy useful interfaces and fixtures, not the whole-image write path as the target backend. Plan the incremental disk-backed connection in milestones 1–3; retain §6.1’s publication contract. |
+| SQLite world integration and batched publication | Copy useful interfaces and fixtures, not the whole-image write path as the target backend. The incremental disk-backed connection (`$db/sqlite/open_file`, §12.8) is the backend from milestone 1; retain §6.1’s publication contract. |
 | Native WebSocket integration example | Copy useful application-level connection/polling code. Depend directly on the independent Gene `genex/websocket` library and its documented prerequisites, not on Miclone's native client or launcher. [R2] |
 | Client-simulated player motion | **Replace this authority model.** Commons walking, collision, speed, possession, and action preconditions remain server-owned for both humans and Lives. |
 | Byte-oriented game protocol and codec helpers | Copy helpers only where they fit. Commons owns its versioned envelope and has no compatibility obligation to Miclone clients, messages, or saves. |
@@ -98,11 +101,11 @@ This policy preserves source reuse while allowing the two applications to diverg
 
 Revision 3 combined the prior world proposal, the supplied implementation review [D2], and a focused read of Miclone and native-WebSocket sources at `228d3304b872927aa1d82b5a46934e8ec8c479fe`. Revision 4 clarified selective copying and independent maintenance (§1.4). Revision 5 incorporates the approved follow-up review of continuation registrations and physical storage growth (§8.4, §12.8). These revisions do not claim another repository audit or that source has already been copied or changed. [D1, D3, R1, R2, R3]
 
-The review reports a 3-second Life program limit, worker-process execution, a 100-call/hour default, an HTTP mailbox connector with crash tests, no real brain adapter in that reviewed implementation, and 110 existing Life tests. Those Life implementation details and the reported 128 ms → 1.24 s cycle timings over 200 cycles were **not independently reproduced here**. Record the actual Life checkout/revision and rerun its baseline before integration; do not turn these reported numbers into achieved targets or a permanent test-count promise.
+The review reports a 3-second Life program limit, worker-process execution, a 100-call/hour default, an HTTP mailbox connector with crash tests, no real brain adapter in that reviewed implementation, and 110 existing Life tests. Those Life implementation details were not independently reproduced when the design was written. The reported 128 ms → 1.24 s cycle timings over 200 cycles have since been reproduced and their cause removed (Appendix A.2, §12.8). Do not turn reported numbers into achieved targets or a permanent test-count promise.
 
 The follow-up review reports routine-registration limits, unbounded per-subscription `seen_events`, and append-only record revisions and commit receipts in the Life store. Those source findings are attributed to that review rather than independently verified here. They motivate a standing dispatcher, data continuations, sequence-based delivery tracking, and physical history maintenance—not merely larger limits or shorter prompts. [D3]
 
-The design accommodates these constraints while retaining short ordinary Gene programs, explicit real-brain work, the existing local-world adapter, and separate private stores. Proposed API names and acceptance tests are not claims of implemented support.
+The design accommodates these constraints while retaining short ordinary Gene programs, explicit real-brain work, the existing local-world adapter, and separate private stores. Proposed API names and acceptance tests are not claims of implemented support. The paragraphs above describe the baseline at the time of design; what has been built since (the incremental store, the network adapter, the dispatcher and cursors) is recorded with evidence in `examples/world/MILESTONES.md`.
 
 ## 2. The initial environment: The Commons
 
@@ -571,7 +574,7 @@ No single commit covers these two stores. Correlation IDs and deduplication conn
 
 Use event-driven continuation: **submit, retain the next step, return; run short Gene code when the outcome arrives**. A world walk may last minutes without keeping a Life program, worker, or model request alive.
 
-**A continuation is a data record, not a body-routine registration.** Keep one standing world-result dispatcher per Life, subscribed to normalized world-result notifications, with separate source cursors where required. Use Life's existing bounded foreground execution path for ready continuation programs. Do not allocate a subscription, timer, or permanent worker for each outstanding operation, and do not increase the routine-registration limit as the fix. The reported registration, batch, and `seen_events` constraints are implementation findings from the supplied review. [D3]
+**A continuation is a data record, not a body-routine registration.** Keep one standing world-result dispatcher per Life, subscribed to normalized world-result notifications, with separate source cursors where required. Use Life's existing bounded foreground execution path for ready continuation programs. Do not allocate a subscription, timer, or permanent worker for each outstanding operation, and do not increase the routine-registration limit as the fix. [D3]
 
 #### Continuation records and the public API
 
@@ -1196,11 +1199,9 @@ Logout ends only the human application session and requests orderly detach; when
 
 ### 12.8 Incremental storage, physical retention, and measured limits
 
-**Plan a genuine incremental disk-backed SQLite connection in milestones 1–2; complete its retention and load validation in milestone 3.** This is the selected execution backend, not an optional fallback after the world becomes slow. Keep `WorldStore` and Life's record/commit interfaces; adapt a narrow binding to the existing database rather than build a new database engine. Sharing that low-level implementation is appropriate, but the world and each Life retain separate files, connections, schemas, transactions, and writer ownership.
+**The world and every networked Life use a genuine incremental disk-backed SQLite connection (`$db/sqlite/open_file`); its retention and load validation are milestone 3 work.** This is the selected execution backend, not an optional fallback after the world becomes slow. Keep `WorldStore` and Life's record/commit interfaces; adapt a narrow binding to the existing database rather than build a new database engine. Sharing that low-level implementation is appropriate, but the world and each Life retain separate files, connections, schemas, transactions, and writer ownership.
 
-The reason is specific to the reviewed Gene path. Miclone's storage source describes connection-image publication through Gene's filesystem layer. The supplied reviews report serializing and synchronously fsyncing the whole database per commit; the follow-up also reports that Life appends a revision row on every record write and a receipt on every commit without deleting historical rows. These are attributed findings, not new measurements or a claim about all SQLite connections. [R3, D2, D3]
-
-A tiny whole-image fixture may temporarily unblock milestone-1 browser work behind the same interface. It is explicitly a development backend with a recorded small-data/load limit. Do not complete the networked-Life integration or advertise sustained human–AI sessions on the assumption that a shorter prompt, fewer current records, or less frequent checkpoints has fixed its physical write amplification. Select the incremental world path by milestone 2; apply the low-level path to the networked Life store before sustained-use qualification in milestone 3. Preserve the existing local-world adapter and its regressions through explicit backend selection/migration, not silent replacement of its behavior.
+The reason is specific to Gene's other SQLite path, which republishes the whole database image on every commit, so its cost follows everything retained (Appendix A.2 has the findings and the measurement). That whole-image backend remains Life's local default and is a development backend with a recorded small-data limit. Do not advertise sustained human–AI sessions on the assumption that a shorter prompt, fewer current records, or less frequent checkpoints has fixed its physical write amplification. Preserve the existing local-world adapter and its regressions through explicit backend selection/migration, not silent replacement of its behavior.
 
 #### Incremental connection and publication contract
 
@@ -1294,11 +1295,11 @@ Select a workload/size envelope that meets the 250 ms p95 receipt target and the
 
 #### Life growth and migration qualification
 
-Use a deterministic fake-brain workload at 200, 2,000, and 10,000 accumulated cycles with increasing world events. Also repeatedly update a small fixed set of keys so immutable revisions and commit receipts grow while the logical current-record count does not. Record cycle cost excluding model time, worker startup, result-routing/continuation latency, physical revision/receipt counts, bytes written per commit, and exact cold-lookup/reconnect cost. The supplied 128 ms → 1.24 s timings remain an attributed warning, not an independently reproduced benchmark. [D2, D3]
+Use a deterministic fake-brain workload at 200, 2,000, and 10,000 accumulated cycles with increasing world events. Also repeatedly update a small fixed set of keys so immutable revisions and commit receipts grow while the logical current-record count does not. Record cycle cost excluding model time, worker startup, result-routing/continuation latency, physical revision/receipt counts, bytes written per commit, and exact cold-lookup/reconnect cost. The supplied 128 ms → 1.24 s timings were reproduced at 200 cycles and their cause removed (Appendix A.2); the 2,000- and 10,000-cycle runs and the fixed-key benchmark remain to do. [D2, D3]
 
 Demonstrate that an ordinary incremental commit does not serialize all cold history, and that the bounded active-query path does not perform whole-history scans. After archive maintenance, show that the selected physical rows have left the active database and the expected space-reuse/reclamation policy actually applies. Both the old and new backend must reconstruct the same retained contexts, commit receipts, and current roots when testing migration; do not rerun saved Gene programs to migrate their effects.
 
-Test process exit before and after archive selection, duplicate receipts after compaction, source-cursor gaps, outstanding continuations referencing old revisions, and a restart after a locally committed continuation whose return was lost. Complete the incremental world integration in milestone 2, the networked-Life storage integration and physical retention qualification by milestone 3, and the mixed-load/crash tests before sustained or paid multi-Life sessions. No achieved throughput, latency, or passing test is claimed here.
+Test process exit before and after archive selection, duplicate receipts after compaction, source-cursor gaps, outstanding continuations referencing old revisions, and a restart after a locally committed continuation whose return was lost. Complete the physical retention qualification by milestone 3, and the mixed-load/crash tests before sustained or paid multi-Life sessions. No achieved throughput, latency, or passing test is claimed here; `examples/world/MILESTONES.md` records what has been measured.
 
 ## 13. Expansion through versioned Gene world modules
 
@@ -1624,6 +1625,8 @@ Specify and measure the action/interaction targets in §7.5 and the physical-sto
 
 ## 17. Implementation milestones
 
+This section is the plan: what each milestone must deliver. Milestones 0–2 are delivered; what each one built, the evidence, and what it carried forward are in `examples/world/MILESTONES.md`. The text of a delivered milestone is kept as it was approved.
+
 ### Milestone 0: make a self-contained source starting point
 
 Select the useful Miclone files at a recorded source commit and copy them, their necessary dependencies, relevant tests, and selected assets/build steps into the Commons tree. Remove cross-project imports and paths, adapt package/entrypoint names, and establish a clean Commons build with `examples/miclone` and its outputs unavailable. Record provenance and baseline results. An original Miclone build can help diagnose a copy but is not a permanent prerequisite. Establish the actual storage-publication behavior on the copied/adapted path and identify the narrow direct on-disk SQLite integration to implement; do not treat accepting a pragma as a backend change.
@@ -1802,7 +1805,11 @@ One human enters through the browser while two independent Lives inhabit the sam
 
 Then expand to four lightly seeded Lives, stop/restart one during a walk, and have the human return later to inspect persistent changes. Add an adjacent place or feature while preserving identities and receipts. New browser interactions and Life documentation should expose the addition without resetting inhabitants or scripting their roles. Human play and independent AI continuity are both demonstrated by actual outcomes, not just by displaying several avatars.
 
-## 19. Decisions to keep visible
+## Appendix A. Decisions, review findings, and revision notes
+
+This appendix is the record behind the design: the choices it made, where its findings came from, and what each review changed. Sections 1–18 do not depend on it. It was §19 and §20 before revision 7.
+
+### A.1 Decisions to keep visible
 
 The following are selected design choices, not unresolved hidden defaults:
 
@@ -1810,7 +1817,7 @@ The following are selected design choices, not unresolved hidden defaults:
 | --- | --- |
 | Deployment | Separate world process and process per AI Life; human controllers run in browsers, not extra Life processes |
 | World consistency | One authoritative writer; no world sharding or replicated writers |
-| Storage | Separate owners and transactions; planned incremental disk-backed SQLite integration in milestones 1–2, networked-Life/physical-history qualification by milestone 3; action-boundary commits plus periodic checkpoints |
+| Storage | Separate owners and transactions; incremental disk-backed SQLite for the world and networked Lives, with physical-history qualification by milestone 3; action-boundary commits plus periodic checkpoints |
 | Continuations | Per-operation data records and one standing result dispatcher per Life; bounded ready programs, no routine registration per action |
 | Delivery progress | Scoped contiguous receipt and dispatcher cursors plus independent continuation status; no unbounded world-subscription `seen_events` |
 | Retained history | Exact active/cold revision and local/world receipt lookup; archive physical rows and verify space/write behavior, not only logical current-record counts |
@@ -1833,9 +1840,17 @@ The following are selected design choices, not unresolved hidden defaults:
 | Language permissions | No dependency on the removed Gene capability system; normal world/session validation remains |
 | Extensible UI | Data-only interaction discovery and appearance fallback, not executable scripts in world packets |
 
-The renderer/server source origins and independent native transport dependency are selected (§1.4, §9.7); Miclone itself is not an installed dependency. Remaining implementation work includes exact adapter signatures, Commons session integration, the planned incremental disk-backed connection, the standing dispatcher and cursor integration, physical revision/receipt archival with exact lookup, one real brain provider, physical constants, and calibrated deployment limits. These are explicit gates, not assumptions of existing support. No new core Gene syntax is required.
+The renderer/server source origins and independent native transport dependency are selected (§1.4, §9.7); Miclone itself is not an installed dependency. Remaining implementation work includes actor-scoped views, physical revision/receipt archival with exact lookup, one real brain provider, physical constants, and calibrated deployment limits; `examples/world/MILESTONES.md` lists what each milestone carried forward. These are explicit gates, not assumptions of existing support. No new core Gene syntax is required.
 
-## 20. Basis and references
+### A.2 Notes by section
+
+**§8.4 — continuations.** The registration, batch, and `seen_events` constraints that shaped this section are implementation findings from the supplied follow-up review [D3]: at most 64 routine registrations, one pending invocation per registration, kind-matched batches of up to 32, and an unbounded per-subscription `seen_events` list. The 32-record routing pass is an integration limit, not a reason to run 32 programs in one callback. The networked profile was built to this section: one dispatcher, data continuations and sequence cursors.
+
+**§12.8 — storage.** Miclone's storage source describes connection-image publication through Gene's filesystem layer [R3]. The supplied reviews reported serializing and synchronously fsyncing the whole database per commit, and that Life appends a revision row on every record write and a receipt on every commit without deleting historical rows [D2, D3]. Those were attributed findings when the section was written. The original plan staged the incremental connection over milestones 1–2 and allowed a tiny whole-image fixture for milestone-1 browser work; in the event the world used `$db/sqlite/open_file` from milestone 1 and networked Lives from milestone 2, and the fixture was never needed.
+
+The reported Life slowdown was reproduced on 2026-10-12 with a fake brain and one small fixed program per cycle: 104 ms for the first cycle, a median of 2.2 s for cycles 181–200, on both backends alike. Its cause was not the database. Life's store deep-copied its whole in-memory record map at the start of every transaction and again at every commit, kept one commit receipt per commit in that map, and each heartbeat copied every retained cycle, observation and execution to find the few still open. With those removed the median is 0.11 s at 200 cycles and 0.18 s at 1,000 on the incremental store. What still grows is retention work this section already names: the whole-image backend rewrites its file per commit, a conversation is one record rewritten per message, and scans still test every retained record. `examples/life/docs/persistence.md` has the method and the table.
+
+### A.3 Basis and references
 
 **[D1] World-design discussion, 2026-09-21.** The project owner requested an expandable human-like world, separate world and Life processes, WebSocket interaction, and human browser players; removed Gene capabilities; and requested incorporation of a second agent's implementation review. The subsequent clarification selects copying and adapting useful Miclone code without depending on Miclone. Revision 4 applies that decision to source ownership, builds, tests, maintenance, and milestones. Revision 5 incorporates the subsequently approved continuation/storage corrections; the other product decisions remain unchanged.
 
@@ -1871,7 +1886,7 @@ Repository sources below were read for revision 3 at **`gene-lang/gene-new@228d3
 
 The curl/SQLite references and repository baseline were checked for revision 3; revisions 4–5 apply the owner’s clarifications and approved review without a new repository audit. T7–T8 record the technical references used in the preceding review discussion. No application source was copied or implemented, and no Gene build, browser execution, Life suite, independence test, or latency/storage benchmark was run for this document edit. All new APIs, tests, limits, and milestones are proposed targets.
 
-### Review disposition
+### A.4 Review disposition
 
 | Supplied comment | Decision |
 | --- | --- |
@@ -1884,6 +1899,22 @@ The curl/SQLite references and repository baseline were checked for revision 3; 
 | Drop required IndexedDB journal | Accepted with a qualification: same-ID retry and server fencing/recovery preserve known effects; lost browser intent is not recreated, and a fresh ID is not deduplicated merely because the human meant the same thing. |
 | One routine registration per result does not scale | Accepted: one standing dispatcher, operation-keyed data continuations, atomic late-result matching, distinct receive/routing/execution progress, and bounded cursor-based dispatch. |
 | Hot-record bounds miss physical revision and receipt growth | Accepted: exact revision/receipt archival and physical row removal/reclamation, incremental on-disk storage planned in milestones 1–3, and workload/latency-derived thresholds instead of unmeasured MiB limits. |
+
+The review of 2026-10-12 read both proposals against `examples/world` and `examples/life`. Its findings that were acted on, and the ones left for the owner:
+
+| Finding | Disposition |
+| --- | --- |
+| Life commit cost follows total records; measure the reported growth before designing archival around it | Done: reproduced, cause removed, measurement recorded (A.2, §12.8). |
+| Pause does not suspend world activity (§12.4) | Done: `movement.suspend`, requested by a paused Life; the pause reports `pause_pending_remote` until the world answers. |
+| The Commons carries most of a voxel game it does not use (§1.4) | Done: pruned to what the scene and client load; `examples/world/SOURCES.md` records it. |
+| Provenance record outside version control; stale README | Done. |
+| This document mixes design, decision log and status | Done as revision 7; the body of §1–§18 is otherwise unchanged. |
+| Perception filtering (§7.1) is a premise of the experiment and should gate behavioral comparisons | Open. Views are still unfiltered. Proposed as the first Milestone 3 item. |
+| Milestone 3 is too large: split correctness (lost reply with real processes, crash matrix), measurement (benchmarks, calibrated limits) and archival, and defer archival until the measurement shows the need | Open: an owner decision. The measurement above is input to it. |
+| Split the immutable seed from the editable disposition before the real adapter (§3.5) | Done: a `creation` record and `state/disposition`; contexts use the latter. |
+| Build a minimal real brain adapter with a prompt harness before the storage work | Open: an owner decision on ordering; not built. |
+| Strict `rules_revision` on every mutation means content additions must not bump it (§9.6, §13.2) | Noted. The content change of 2026-10-12 kept `rules_revision`; a saved world opens unchanged. |
+| A table of what a client must send and store per message kind (§9–§11) | Open. |
 
 **Copy useful foundations; own the result. Commit what matters. Let humans play first, then let independent Lives join and evolve.**
 

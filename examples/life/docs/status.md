@@ -8,7 +8,11 @@ in Gene. This is a progress record, not a reduction of that scope.
 `bin/gene test --package-root examples/life examples/life/tests/` exercises the
 Gene implementation:
 
-- Explicit create/open, first-start observation, recorded disposition, fake brain.
+- Explicit create/open, first-start observation, fake brain.
+- An immutable creation seed kept apart from the disposition the Life has now
+  (world.md §3.5): contexts are built from `state/disposition`, a program can
+  rewrite that and cannot rewrite `creation`, both survive a restart, and a
+  Life created before the split is given the two records from its one text.
 - Strict text/program framing, validation before effects, bounded rejected cycles.
 - Ordinary functions, loops, saved function reuse, and fresh execution processes.
 - Silent consideration, internal notes, explicit communication and failed outcomes.
@@ -91,6 +95,11 @@ Gene implementation:
   non-terminal statuses ordered by the world's status revision; ready
   continuations held until synchronized and invalidated after a rules change;
   a walk suspended while away surfaced to the Life, which resumes it itself.
+- Pausing a networked Life (world.md §12.4): it asks the world to hold each
+  running walk, sends that request although paused, reports
+  `pause_pending_remote` until the world answers or while it is unreachable,
+  and after resuming decides for itself about the suspended walk. A resume or
+  suspend request is complete once admitted and updates the walk it names.
 - The transport-independent delivery kernel shared by the HTTP connector and
   the world profile, one conformance table over both record shapes.
 - Real processes (examples/world/tools/life_smoke.mjs): two networked Lives and
@@ -100,6 +109,14 @@ Gene implementation:
 - The local suite also passes with every new Life on the incremental file store
   (`LIFE_STORAGE=file`), except the six checks that compare `life.sqlite`
   image bytes, which only apply to the whole-image backend.
+
+- Cycle time that does not follow retained history. A transaction reads the
+  store as it was when it began without copying it, commit receipts stay in
+  the database, and heartbeat scans copy only the records they act on. Over
+  200 fake-brain cycles the median cycle fell from 2.1 s to 0.11 s on the
+  incremental store and stays level there
+  (`probes/cycle_growth.gene`; [persistence.md](persistence.md) has the table
+  and what still grows).
 
 The CLI create/run/send/inspect/stop path has also been exercised with two live
 Gene processes. Stop acknowledges only after committing its continuation point.
@@ -112,10 +129,10 @@ withdrawn-request cancellation, and sleep/restart/wake demonstration headlessly.
   experiment metadata. Routine event subscriptions still retain delivered IDs
   (`seen_events`); the networked world path uses sequence cursors instead, and
   both need to participate in the eventual history/retention policy. Received
-  world events and results are retained without archival yet.
-- Longer histories and richer activity checkpoints; pause does not yet request
-  suspension of the Life's world activity (world.md §12.4); a real brain
-  adapter.
+  world events and results are retained without archival yet. A conversation
+  is one record holding every message, rewritten for each new one, and a
+  heartbeat scan still tests every retained cycle, observation and execution.
+- Longer histories and richer activity checkpoints; a real brain adapter.
 - Small browser/3D presentation of authoritative world state and additional
   meaningful activities, preserving headless use.
 - Repeatable behavioral comparison harness and reports for memory access,
