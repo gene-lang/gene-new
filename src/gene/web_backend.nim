@@ -4130,21 +4130,31 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
     let condition = analysis.analyzeExpr(value.body[0], bindings)
     inc analysis.loopDepth
     var loopBindings = copyBindings(bindings)
+    # A loop body is its own binding scope, as it is for `repeat` and `for`:
+    # the VM lets two loops of one function declare the same name.
+    let previousBindingScope = analysis.bindingScopeId
+    inc analysis.nextBindingScopeId
+    analysis.bindingScopeId = analysis.nextBindingScopeId
+    defer: analysis.bindingScopeId = previousBindingScope
     var bodyForms: seq[Value]
     for i in 1 ..< value.body.len: bodyForms.add value.body[i]
     let body = analysis.analyzeSequence(bodyForms, loopBindings, nil, loc)
     dec analysis.loopDepth
     inc analysis.nextBranchGroup
-    retainBranchNames(bindings, loopBindings, analysis.nextBranchGroup)
+    retainBranchNames(bindings, loopBindings, analysis.nextBranchGroup, previousBindingScope)
     return WebExpr(kind: wekWhile, typ: webType(wtkNil), loc: loc,
       children: @[condition, body])
   if name == "loop":
     inc analysis.loopDepth
     var loopBindings = copyBindings(bindings)
+    let previousBindingScope = analysis.bindingScopeId
+    inc analysis.nextBindingScopeId
+    analysis.bindingScopeId = analysis.nextBindingScopeId
+    defer: analysis.bindingScopeId = previousBindingScope
     let body = analysis.analyzeSequence(value.body, loopBindings, nil, loc)
     dec analysis.loopDepth
     inc analysis.nextBranchGroup
-    retainBranchNames(bindings, loopBindings, analysis.nextBranchGroup)
+    retainBranchNames(bindings, loopBindings, analysis.nextBranchGroup, previousBindingScope)
     return WebExpr(kind: wekLoop, typ: webType(wtkNil), loc: loc,
       children: @[body])
   if name == "repeat":

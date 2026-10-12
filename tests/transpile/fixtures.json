@@ -1944,6 +1944,21 @@
       }
     },
     {
+      "id": "control.sibling_loops_redeclare",
+      "source": "(fn run [] : Int (var total : Int 0) (var i : Int 0) (while (< i 2) (var x : Int 1) (set total (+ total x)) (set i (+ i 1))) (set i 0) (while (< i 2) (var x : Int 10) (set total (+ total x)) (set i (+ i 1))) (loop (var x : Int 100) (set total (+ total x)) (break)) (loop (var x : Int 1000) (set total (+ total x)) (break)) total) (run)",
+      "web_source": "(mod control_sibling_loops_redeclare ^profile web) (fn run [] : Int (var total : Int 0) (var i : Int 0) (while (< i 2) (var x : Int 1) (set total (+ total x)) (set i (+ i 1))) (set i 0) (while (< i 2) (var x : Int 10) (set total (+ total x)) (set i (+ i 1))) (loop (var x : Int 100) (set total (+ total x)) (break)) (loop (var x : Int 1000) (set total (+ total x)) (break)) total)",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "int",
+        "value": "1122"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
       "id": "statement_return.nil_discards_body",
       "source": "(fn f [] : Nil 42) (f)",
       "web_source": "(mod stmt_nil ^profile web) (fn f [] : Nil 42.0) (fn run [] : Nil (f))",
