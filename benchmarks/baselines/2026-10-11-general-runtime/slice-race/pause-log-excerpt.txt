@@ -1,0 +1,17 @@
+# Budget pauses inside request_transition (cordis/src/runtime.gene:1029-1045), in order
+PAUSE fiber=4508066432 before-line=1042 next-line=1029 ip=84 last-op=opCall2 next-op=opPop next-name=
+PAUSE fiber=4512127808 before-line=1044 next-line=1029 ip=101 last-op=opCall2 next-op=opPop next-name=
+PAUSE fiber=4511257216 before-line=1029 next-line=1042 ip=76 last-op=opPop next-op=opLoadLocal next-name=instance
+PAUSE fiber=4511257216 before-line=1043 next-line=1029 ip=94 last-op=opCall2 next-op=opPop next-name=
+PAUSE fiber=4511257216 before-line=1043 next-line=1043 ip=93 last-op=opLoadLocal next-op=opCall2 next-name=
+PAUSE fiber=4511257216 before-line=1043 next-line=1043 ip=92 last-op=opResolveMessage next-op=opLoadLocal next-name=request
+
+# Last 8 pauses of the run (703 in all)
+PAUSE fiber=4508140160 before-line=373 next-line=373 ip=12 last-op=opJump next-op=opPushConst next-name=
+PAUSE fiber=4511257216 before-line=396 next-line=396 ip=16 last-op=opCall2 next-op=opJumpIfFalse next-name=
+PAUSE fiber=4511257216 before-line=396 next-line=396 ip=16 last-op=opCall2 next-op=opJumpIfFalse next-name=
+PAUSE fiber=4511257216 before-line=399 next-line=398 ip=21 last-op=opPushConst next-op=opReturn next-name=
+PAUSE fiber=4511257216 before-line=373 next-line=373 ip=7 last-op=opApplySelectorTop next-op=opCall2 next-name=
+PAUSE fiber=4511257216 before-line=3473 next-line=3470 ip=12 last-op=opDefineLocal next-op=opPop next-name=
+PAUSE fiber=4511257216 before-line=1043 next-line=1043 ip=92 last-op=opResolveMessage next-op=opLoadLocal next-name=request
+PAUSE fiber=4515099264 before-line=373 next-line=373 ip=4 last-op=opApplySelectorTop next-op=opLoadOuterLocal next-name=context

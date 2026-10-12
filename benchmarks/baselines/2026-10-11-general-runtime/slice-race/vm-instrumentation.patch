@@ -1,0 +1,130 @@
+[1;37m--- /dev/fd/11	2026-10-11 19:52:28[0;0m
+[1;37m+++ /private/tmp/claude-501/-Users-gcao-gene-workspace-gene-new/c9853b60-0eb6-4966-8996-9d638b09c528/scratchpad/src400/src/gene/vm.nim	2026-10-11 19:31:46[0;0m
+[0;36m@@ -22109,7 +22109,85 @@[0;0m
+           result.has = true[0;0m
+           result.deadline = item.deadline[0;0m
+ [0;0m
+[0;32m+var fiberDumpDone {.threadvar.}: bool[0;0m
+[0;32m+var fiberDumpArmed {.threadvar.}: bool[0;0m
+[0;32m+var fiberDumpStart {.threadvar.}: MonoTime[0;0m
+[0;32m+[0;0m
+[0;32m+proc describeFiberForDebug(text: var string, f: Fiber, label: string,[0;0m
+[0;32m+                           now: MonoTime) =[0;0m
+[0;32m+  text.add(label)[0;0m
+[0;32m+  text.add(" fiber=")[0;0m
+[0;32m+  text.add($cast[uint](cast[pointer](f)))[0;0m
+[0;32m+  text.add(" fn=")[0;0m
+[0;32m+  text.add(f.fnName)[0;0m
+[0;32m+  text.add(" started=")[0;0m
+[0;32m+  text.add($f.started)[0;0m
+[0;32m+  text.add(" kind=")[0;0m
+[0;32m+  text.add($f.frameKind)[0;0m
+[0;32m+  if f.chunk != nil:[0;0m
+[0;32m+    let loc = instructionLocBefore(f.chunk, f.ip)[0;0m
+[0;32m+    text.add(" at ")[0;0m
+[0;32m+    text.add(loc.sourceName)[0;0m
+[0;32m+    text.add(":")[0;0m
+[0;32m+    text.add($loc.line)[0;0m
+[0;32m+  if f.waitTimer:[0;0m
+[0;32m+    text.add(" waitTimerMs=")[0;0m
+[0;32m+    text.add($((f.waitDeadline - now).inMilliseconds))[0;0m
+[0;32m+  text.add(" waitChan=")[0;0m
+[0;32m+  text.add($(f.waitChannel.kind != vkNil))[0;0m
+[0;32m+  text.add(" waitIsSend=")[0;0m
+[0;32m+  text.add($f.waitIsSend)[0;0m
+[0;32m+  text.add(" waitTask=")[0;0m
+[0;32m+  text.add($(f.waitTask.kind != vkNil))[0;0m
+[0;32m+  text.add(" waitActor=")[0;0m
+[0;32m+  text.add($(f.waitActor.kind != vkNil))[0;0m
+[0;32m+  text.add(" waitRes=")[0;0m
+[0;32m+  text.add($f.waitResourceId)[0;0m
+[0;32m+  text.add(" pendCancel=")[0;0m
+[0;32m+  text.add($(f.pendingCancel != nil))[0;0m
+[0;32m+  text.add(" pendErr=")[0;0m
+[0;32m+  text.add($(f.pendingError != nil))[0;0m
+[0;32m+  text.add(" pendRet=")[0;0m
+[0;32m+  text.add($(f.pendingReturn != nil))[0;0m
+[0;32m+  text.add('\n')[0;0m
+[0;32m+  for i in countdown(f.frames.high, 0):[0;0m
+[0;32m+    text.add("    frame ")[0;0m
+[0;32m+    text.add(f.frames[i].fnName)[0;0m
+[0;32m+    text.add(" kind=")[0;0m
+[0;32m+    text.add($f.frames[i].kind)[0;0m
+[0;32m+    if f.frames[i].chunk != nil:[0;0m
+[0;32m+      let loc = instructionLocBefore(f.frames[i].chunk, f.frames[i].ip)[0;0m
+[0;32m+      text.add(" at ")[0;0m
+[0;32m+      text.add(loc.sourceName)[0;0m
+[0;32m+      text.add(":")[0;0m
+[0;32m+      text.add($loc.line)[0;0m
+[0;32m+    text.add('\n')[0;0m
+[0;32m+[0;0m
+[0;32m+proc dumpFibersForDebug() =[0;0m
+[0;32m+  if fiberDumpDone:[0;0m
+[0;32m+    return[0;0m
+[0;32m+  let path = getEnv("GENE_FIBER_DUMP")[0;0m
+[0;32m+  if path.len == 0:[0;0m
+[0;32m+    fiberDumpDone = true[0;0m
+[0;32m+    return[0;0m
+[0;32m+  let now = getMonoTime()[0;0m
+[0;32m+  if not fiberDumpArmed:[0;0m
+[0;32m+    fiberDumpArmed = true[0;0m
+[0;32m+    fiberDumpStart = now[0;0m
+[0;32m+    return[0;0m
+[0;32m+  if (now - fiberDumpStart).inMilliseconds < 30000:[0;0m
+[0;32m+    return[0;0m
+[0;32m+  fiberDumpDone = true[0;0m
+[0;32m+  var text = ""[0;0m
+[0;32m+  let s = currentScheduler()[0;0m
+[0;32m+  for f in s.runQueue:[0;0m
+[0;32m+    describeFiberForDebug(text, f, "RUNNABLE", now)[0;0m
+[0;32m+  for f in s.waiters:[0;0m
+[0;32m+    describeFiberForDebug(text, f, "WAITING", now)[0;0m
+[0;32m+  writeFile(path & "." & $getCurrentProcessId(), text)[0;0m
+[0;32m+[0;0m
+ proc sleepUntil(deadline: MonoTime) =[0;0m
+[0;32m+  dumpFibersForDebug()[0;0m
+   let remaining = deadline - getMonoTime()[0;0m
+   if remaining <= initDuration():[0;0m
+     return[0;0m
+[0;36m@@ -22344,6 +22422,15 @@[0;0m
+     let injectCancel =[0;0m
+       f.task.kind == vkTask and f.task.taskCancelRequested and[0;0m
+         not f.task.taskDone and not f.inCancelCleanup()[0;0m
+[0;32m+    if injectCancel:[0;0m
+[0;32m+      let cancelDumpPath = getEnv("GENE_FIBER_DUMP")[0;0m
+[0;32m+      if cancelDumpPath.len > 0:[0;0m
+[0;32m+        var cancelText = ""[0;0m
+[0;32m+        describeFiberForDebug(cancelText, f, "CANCEL-INJECT", getMonoTime())[0;0m
+[0;32m+        let cancelFile = open(cancelDumpPath & ".cancel." & $getCurrentProcessId(),[0;0m
+[0;32m+                              fmAppend)[0;0m
+[0;32m+        cancelFile.write(cancelText)[0;0m
+[0;32m+        cancelFile.close()[0;0m
+     if injectCancel and f.nativeTask.kind == vkTask:[0;0m
+       f.nativeTask.requestTaskCancellation()[0;0m
+       f.nativeTask = NIL[0;0m
+[0;36m@@ -22407,6 +22494,25 @@[0;0m
+       of rskSuspend:[0;0m
+         parkFiber(f)[0;0m
+       of rskPause:[0;0m
+[0;32m+        block pauseLog:[0;0m
+[0;32m+          let pauseDumpPath = getEnv("GENE_FIBER_DUMP")[0;0m
+[0;32m+          if pauseDumpPath.len > 0 and f.chunk != nil:[0;0m
+[0;32m+            let pauseLoc = instructionLocBefore(f.chunk, f.ip)[0;0m
+[0;32m+            let nextLoc = instructionLocAt(f.chunk, f.ip)[0;0m
+[0;32m+            if pauseLoc.sourceName.endsWith("cordis/src/runtime.gene"):[0;0m
+[0;32m+              var pauseText = "PAUSE fiber=" & $cast[uint](cast[pointer](f)) &[0;0m
+[0;32m+                " before-line=" & $pauseLoc.line & " next-line=" & $nextLoc.line &[0;0m
+[0;32m+                " ip=" & $f.ip[0;0m
+[0;32m+              if f.ip > 0 and f.ip <= f.chunk.instructions.len:[0;0m
+[0;32m+                pauseText.add(" last-op=" & $f.chunk.instructions[f.ip - 1].op)[0;0m
+[0;32m+              if f.ip < f.chunk.instructions.len:[0;0m
+[0;32m+                pauseText.add(" next-op=" & $f.chunk.instructions[f.ip].op &[0;0m
+[0;32m+                  " next-name=" & f.chunk.instructions[f.ip].name)[0;0m
+[0;32m+              pauseText.add('\n')[0;0m
+[0;32m+              let pauseFile = open(pauseDumpPath & ".pause." & $getCurrentProcessId(),[0;0m
+[0;32m+                                   fmAppend)[0;0m
+[0;32m+              pauseFile.write(pauseText)[0;0m
+[0;32m+              pauseFile.close()[0;0m
+         enqueueRunnable(f)[0;0m
+       of rskCancel:[0;0m
+         f.task.finishTaskCancel()[0;0m

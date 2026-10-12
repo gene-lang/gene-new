@@ -1,0 +1,24 @@
+WAITING fiber=4511259456 fn= started=true kind=fkTryBody at examples/gene-harness/src/runtime/round_controller.gene:178 waitChan=false waitIsSend=false waitTask=true waitActor=false waitRes=0 pendCancel=false pendErr=false pendRet=false
+    frame  kind=fkTryBody at examples/gene-harness/src/runtime/round_controller.gene:178
+    frame  kind=fkNormal at examples/gene-harness/src/runtime/round_controller.gene:178
+WAITING fiber=4439149936 fn= started=true kind=fkTryBody at examples/cordis/src/runtime.gene:624 waitChan=true waitIsSend=false waitTask=false waitActor=false waitRes=0 pendCancel=false pendErr=false pendRet=false
+    frame host_executor_loop kind=fkNormal at examples/cordis/src/runtime.gene:622
+    frame  kind=fkNormal at examples/cordis/src/runtime.gene:653
+WAITING fiber=4511257216 fn= started=true kind=fkTryBody at examples/cordis/src/runtime.gene:244 waitChan=true waitIsSend=false waitTask=false waitActor=false waitRes=0 pendCancel=false pendErr=false pendRet=false
+    frame join kind=fkNormal at examples/cordis/src/runtime.gene:243
+    frame await_transition_task kind=fkNormal at examples/cordis/src/runtime.gene:1112
+    frame  kind=fkForBody at examples/cordis/src/runtime.gene:1142
+    frame unload_instance kind=fkNormal at examples/cordis/src/runtime.gene:1141
+    frame  kind=fkTryBody at examples/cordis/src/runtime.gene:3484
+    frame %?Q?????????? kind=fkNormal at examples/cordis/src/runtime.gene:3483
+    frame retire kind=fkNormal at examples/cordis/src/runtime.gene:192
+    frame  kind=fkForBody at examples/gene-harness/src/runtime/composition.gene:192
+    frame drain_retirements kind=fkNormal at examples/gene-harness/src/runtime/composition.gene:192
+    frame release_snapshot kind=fkNormal at examples/gene-harness/src/runtime/composition.gene:85
+    frame  kind=fkEnsureValueBody at examples/gene-harness/src/agents/turn_loop.gene:251
+    frame ????????? kind=fkNormal at examples/gene-harness/src/agents/turn_loop.gene:99
+    frame  kind=fkNormal at examples/gene-harness/src/runtime/round_controller.gene:168
+WAITING fiber=4507714736 fn=list_occurren started=true kind=fkNormal at examples/gene-harness/src/runtime/triggers.gene:386 waitTimerMs=99 waitChan=false waitIsSend=false waitTask=false waitActor=false waitRes=0 pendCancel=false pendErr=false pendRet=false
+    frame  kind=fkNormal at examples/cordis/src/runtime.gene:631
+WAITING fiber=4507714176 fn=list_occurren started=true kind=fkNormal at examples/gene-harness/src/runtime/triggers.gene:386 waitTimerMs=99 waitChan=false waitIsSend=false waitTask=false waitActor=false waitRes=0 pendCancel=false pendErr=false pendRet=false
+    frame  kind=fkNormal at examples/cordis/src/runtime.gene:631
