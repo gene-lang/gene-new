@@ -489,6 +489,11 @@ VM scheduler suite, which the sanitizer run covers.
   and in a clean before/after the six workloads are all faster: the integer
   loop by 20%, the others by 2% to 7%. The remaining distance to the bound
   below is the extension-object change.
+  Binding a plain loop's variable straight into its first slot, instead of
+  re-deriving that from the pattern each iteration, was also built and passed
+  every suite; it moved the nested kernel by about 3% and the single-loop
+  kernel not at all, and it would have dropped `_` patterns from the plain
+  class, so it was not kept.
   How it works:
 
   1. Only one kind of native can reach the caller's scope. A `NativeProc`
