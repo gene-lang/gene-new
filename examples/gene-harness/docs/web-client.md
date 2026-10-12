@@ -67,7 +67,9 @@ A session can be renamed and pinned or unpinned. Metadata edits carry the last
 seen revision; a stale edit fails rather than overwriting a newer one.
 
 Each turn has a disclosure containing response code, attachment/patch stubs,
-patch results, next-request items, and progress replies. A final reply appears
+patch results, next-request items, and progress replies. An intermediate
+Outcome's concise `^reply` also appears in the disclosure heading as
+`Turn N: <reply>`, so progress is visible while the turn is collapsed. A final reply appears
 once at the conversation level, outside its turn disclosure. Completed status
 shows the status label without repeating reply text. Response code is
 highlighted when expanded. The console is a separate collapsible pane;

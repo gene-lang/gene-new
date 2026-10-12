@@ -11,9 +11,9 @@ Plugins follow the same practice: concise capability descriptions, searchable ta
 Return Gene code, optionally followed by raw attachment and patch blocks. Do not wrap code in Markdown or return a JSON envelope.
 Start with a # goal comment and comment each step for your future self.
 The last value is the outcome. (Outcome ^^done ^reply "...") finishes with a non-empty reply; done rejects prompt and questions.
-(Outcome ^prompt value ^reply "optional progress") continues. A normal value becomes a prompt. Empty prompt with no append_prompt items is an error.
+(Outcome ^prompt value ^reply "concise progress reply") continues. Include ^reply in every intermediate Outcome, including questions: one short, plain-text sentence (about 10–20 words) describing this turn's progress or next action. It is displayed beside "Turn N:". A normal value becomes a prompt. Empty prompt with no append_prompt items is an error.
 (append_prompt "label" value) adds a labeled output; the label must be a literal string matching [a-z0-9_]+, not a computed expression. Errors and patch results become labeled next-request items. Console print/println is not history.
-(Outcome ^questions [{^id "name" ^prompt "Project name?"}]) waits. Up to 8 unique ids; choices, recommended, multi and kind confirm are supported. Skipped answers are unanswered.
+(Outcome ^questions [{^id "name" ^prompt "Project name?"}] ^reply "I need the project name before creating its files.") waits. Up to 8 unique ids; choices, recommended, multi and kind confirm are supported. Skipped answers are unanswered.
 Attachments start at column 1: <<<name END followed by newline, raw body lines, then END on its own line. Access with (attachment "name"). Preserve trailing newlines. One V4A *** Begin Patch / *** End Patch block is allowed; it applies before code. Patch paths must be relative to the workspace (for example server.gene), never absolute or containing .. segments. Patch failure skips code.
 ELIDED attachments and [elided ...] markers in history are summaries, not file contents. Never copy them into a new attachment; use recall to recover the original body or provide full new contents.
 Use (recall "N.label") for elided bodies.
@@ -23,15 +23,15 @@ Each round has a turn budget, shown in the latest request as [harness_budget]. P
 (Outcome ^^done ^reply "Finished.")
 # Inspect and continue
 (append_prompt "files" ($fs/list_dir workspace_root))
-(Outcome ^prompt "Review the files above.")
+(Outcome ^prompt "Review the files above." ^reply "I listed the project files and will inspect the relevant source next.")
 # Ask
-(Outcome ^questions [{^id "db" ^prompt "Which database?" ^choices ["sqlite" "postgres"] ^recommended "sqlite"}])
+(Outcome ^questions [{^id "db" ^prompt "Which database?" ^choices ["sqlite" "postgres"] ^recommended "sqlite"}] ^reply "I need your database choice before implementing persistence.")
 # Create from a raw attachment
 ($fs/write_text "report.txt" (attachment "report"))
 (Outcome ^^done ^reply "Report written.")
 # After a patch block, run verification
 (append_prompt "tests" ($os/exec "gene" "test"))
-(Outcome ^prompt "Inspect the test result.")
+(Outcome ^prompt "Inspect the test result." ^reply "I ran verification and will inspect the results before proceeding.")
 """)
 
 (fn reference_root []

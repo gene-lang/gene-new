@@ -365,12 +365,16 @@ The last value steers the loop:
 | Last value | Effect |
 | --- | --- |
 | `(Outcome ^^done ^reply r)` | Finish the round and show `r` |
-| `(Outcome ^prompt p)` | Take another turn; an optional `^reply` is progress text |
+| `(Outcome ^prompt p ^reply r)` | Take another turn; show concise progress `r` beside `Turn N:` |
 | `(Outcome ^questions [...])` | Ask the operator, then continue with the answers |
 | any other value | Continue, with the value as `[N.result]` |
 | error, timeout or read error | Continue, with the diagnostic as `[N.error]` |
 
 A done Outcome requires a non-empty reply and drops appended prompt items.
+LLM responses should include a short, plain-text `^reply` in every intermediate
+Outcome, including one that asks questions. Describe the turn's progress or
+next action in about 10–20 words. The browser shows it in the turn heading,
+for example `Turn 3: I added the routes and will verify two-player login next.`
 `^^attention` flags the session for the operator. Printing reaches the
 operator's console and never becomes model history.
 

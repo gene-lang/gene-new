@@ -111,7 +111,9 @@
       (fn [workspace]
         (let calls ($cell 0))
         (let service
-          (test_service ^workspace workspace ^provider (fn [request] (let count (calls .swap (+ calls/.get 1))) (if (== count 0) "# Ask\n(Outcome ^questions [{^id \"ok\" ^prompt \"Continue?\" ^kind \"confirm\"}])" "# Finish\n(Outcome ^^done ^reply \"web done\")"))))
+          (test_service ^workspace workspace ^provider (fn [request] (let count (calls .swap (+ calls/.get 1))) (if (== count 0) "# Ask\n(Outcome ^questions [{^id \"ok\" ^prompt \"Continue?\" ^kind \"confirm\"}] ^reply \"I need your confirmation before continuing.\")" "# Finish\n(Outcome ^^done ^reply \"web done\")"))))
+        (let published ($cell []))
+        (service/publisher .set (fn [message] (published/.get .push message)))
         (try
           (let session (create_session ^title "Web scripted" service))
           (let round (submit service session/id "web-1" 1 "start"))
@@ -124,6 +126,14 @@
           (let view (snapshot service session/id))
           ($assert (== view/protocol 8) "snapshot retained an older protocol")
           ($assert (== view/questions/questions/.size 1) "web snapshot lost the batch")
+          (let progress (view/records .filter (fn [record] (== record/phase "reply"))))
+          ($assert (== progress/.size 1) "snapshot lost the intermediate reply")
+          ($assert (== progress/0/text "I need your confirmation before continuing."))
+          ($assert (&& (== progress/0/turn 1) (! progress/0/final))
+            "intermediate reply was not associated with its turn")
+          (let live (published/.get .filter (fn [message] (== message/type "reply"))))
+          ($assert (== live/.size 1) "intermediate reply was not published live")
+          ($assert (== live/0/data/id progress/0/id) "live and saved replies have different identities")
           (answer service session/id waiting/questions/id {^^ok})
           (service/controller/watchers
             .get
@@ -131,6 +141,11 @@
             ; .join)
           (let done (receipt service session/id round/id))
           ($assert (== done/reply "web done") "web answer did not execute a code response")
+          (let completed (snapshot service session/id))
+          (let replies (completed/records .filter (fn [record] (== record/phase "reply"))))
+          ($assert (== replies/.size 2) "completion duplicated or dropped a reply")
+          ($assert (&& (! replies/0/final) replies/1/final)
+            "intermediate and final replies lost their distinction")
           (let replay (answer service session/id waiting/questions/id {^^ok}))
           ($assert (== replay/id round/id) "answer retry changed the round")
           ($assert

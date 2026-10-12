@@ -80,16 +80,23 @@
   (var round : Int first/turn)
   (var key : Str $"${round_id}/turn-${round}")
   (var progress "")
+  (var reply "")
   (var has_code false)
   (var has_result false)
   (for block in blocks
     (var phase : Str block/phase)
     (if_yes (== phase "code") (set has_code true))
-    (if_yes (== phase "turn/request") (set has_result true)))
+    (if_yes (== phase "turn/request") (set has_result true))
+    (if_yes (== phase "reply")
+      (var final false)
+      (if_not ($absent? block/final) (set final block/final))
+      (if_not final
+        (var text : Str (str/trim block/text))
+        (if_yes (!= text "") (set reply text)))))
   (if_yes active
     (set progress (if has_result " · Continuing…"
       (if has_code " · Evaluating code…" " · Generating response…"))))
-  (var title $"Turn ${round}${progress}")
+  (var title ($to_str $"Turn ${round}" (if (== reply "") "" $": ${reply}") progress))
   (var details ($dom/render
     `(details ^class_name "step" ^open %opened
        ^on_toggle %(fn [event : Any] : Void
