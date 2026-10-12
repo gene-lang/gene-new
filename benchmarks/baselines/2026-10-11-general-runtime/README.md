@@ -330,7 +330,10 @@ after every batch and compared byte for byte. They are kept in
 scratch binaries).
 
 The wasm target was compiled to a scratch directory and passed
-`tests/test_wasm.mjs` through `GENE_WASM_MODULE`. The tracked `web/gene.js`
+`tests/test_wasm.mjs` through `GENE_WASM_MODULE`. Built the same way, the
+wasm payload is 7,850,848 bytes at `1e3f539` and 7,960,874 bytes at the
+branch head, 110 KB (1.4%) more; that difference includes another session's
+commits on the same branch as well as this pass. The tracked `web/gene.js`
 and `web/gene.wasm` were not regenerated.
 
 ### Harness
