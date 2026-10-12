@@ -2,17 +2,17 @@
   "base_revision": "1e3f539",
   "executables_sha256": {
     "baseline": "7b0ccfa29b7df4ff276ad05debc3e17d526069ea6f6c006c35378ba0b53b41f1",
-    "optimized": "d8476e72fba71773b5613b31010b53940449b9810c8d87c20c18cdc4978c961b"
+    "optimized": "58ad8e926c9997dbc7f043ba3356c7af8a9db3f8d7673db39a8faff6f1372cb6"
   },
   "source_sha256_of_measured_tree": {
-    "src/gene/vm.nim": "f914d4e5b6f0e62b0ee6fb44444eb523bbeb9c2d7eb4e7338e66e9655e294e98",
-    "src/gene/types.nim": "d4de09c244bf87a9fc368dd23d6c2d79d3a43b336139c472e3c4bdd4836231e5",
+    "src/gene/vm.nim": "f390fc6c8927d73fbcbe8bcbd051a6477162276183f7250f5eeb02e6c7347126",
+    "src/gene/types.nim": "08c40ece6665f4ba0350016219ad688988093644e785600648b9edf77cf6d5c3",
     "src/gene/stdlib.nim": "bc6de6affeda5d2d3904ff3ad3ff5a460464454245a22ab139f2b6189d7f2641",
     "src/gene/compiler.nim": "9bacf4a334658f1c788b88c33453766e176de13fc3139c17228c7a0346c02403",
     "src/gene/error_analysis.nim": "d7fb4ff0e237944552c7ff0c58f71ab7ddbbcba1d24d8d4fb640ef630e91b717",
     "src/gene/error_runtime.nim": "c0d0fa7c7b365c8de092779fc068d10bf6b2d3fa54f5bb20385508279b74b94f",
     "src/gene/macro_runtime.nim": "fd9f6421149e1f04afce1b4a3ed359b0bbdb13e16a00e4205e4a2b5dea8dda49",
     "src/gene/gir_codec.nim": "92467bfef400da07650b2b0d06f5a6ea682933ececa38e5d4d354d3c4bf3dbd1",
-    "tests/spec_runner.nim": "f9e7c2f9e730c2433e0a3b4dc8fc2843efad7cf17d3808bfafa5ae992347d6fd"
+    "tests/spec_runner.nim": "c66da46cf5c85a0a73006336cd4326854641f052db2b05bfdd9f7ff61cff7a6f"
   }
 }

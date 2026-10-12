@@ -14,12 +14,12 @@ order, 5,000 input items per batch, 300 ms calibration per workload
 
 | Workload | Baseline ms/batch | Optimized ms/batch | Baseline / optimized | Optimized / Python |
 | --- | ---: | ---: | ---: | ---: |
-| Integer loop | 2.844 | 0.927 | 3.07x | 5.01 |
-| Closure dispatch | 7.289 | 2.875 | 2.54x | 7.16 |
-| Filter/group/sort records | 10.531 | 4.363 | 2.41x | 4.81 |
-| Text indexing | 28.188 | 15.422 | 1.83x | 9.06 |
-| JSON round trip | 6.180 | 2.719 | 2.27x | 0.96 |
-| Event replay | 11.984 | 4.781 | 2.51x | 7.49 |
+| Integer loop | 2.805 | 0.908 | 3.09x | 4.94 |
+| Closure dispatch | 7.219 | 2.809 | 2.57x | 6.99 |
+| Filter/group/sort records | 10.344 | 4.215 | 2.45x | 4.78 |
+| Text indexing | 27.656 | 15.250 | 1.81x | 9.07 |
+| JSON round trip | 6.078 | 2.645 | 2.30x | 0.96 |
+| Event replay | 11.750 | 4.504 | 2.61x | 7.06 |
 
 Every result matches the baseline runtime and Python at sizes 1, 17, 257 and
 2048 and in every timed process. These are separate workloads, not a weighted
@@ -165,11 +165,27 @@ first):
 | Final build above | 15883 | 16185 |
 | With the slice rule and lowering | 15417 | 16248 |
 
+The walks that dominated the profile at that point were then made cheaper
+(a tail-fallback reason computed only for the diagnostics that read it, a
+reusable visited set for the escape scan and the capture walk, leaves kept
+out of the publication sets, and those sets reused across spawns; see the
+implementation notes). One capture, three samples per build
+([service/summary-walks.json](service/summary-walks.json)):
+
+| Build | Service samples (ms) | Service median (ms) | Whole-process median (ms) |
+| --- | --- | ---: | ---: |
+| Baseline `1e3f539` | 27311, 26564, 26684 | 26684 | 36197 |
+| With the slice rule and lowering | 15499, 15470, 15893 | 15499 | 18836 |
+| With the cheaper walks | 11752, 11681, 11807 | 11752 | 14152 |
+
+That is 1.32x over the previous build and, against the starting tree,
+2.27x on service time and 2.56x on whole-process time.
+
 ## Build provenance
 
 ```sh
 nim c --nimcache:tmp/perf2/cache-baseline --hints:off -o:tmp/perf2/gene-baseline src/gene.nim   # at 1e3f539, before any edit
-nim c --nimcache:<scratch>/ncfix --hints:off --warnings:off -o:tmp/perf2/gene-safe src/gene.nim   # clean export of 8f77537 plus the slice rule and the restored lowering
+nim c --nimcache:<scratch>/ncfix --hints:off --warnings:off -o:tmp/perf2/gene-walk3 src/gene.nim   # clean export of 08a651f plus the cheaper walks
 ```
 
 Both report `release; macosx/arm64; Nim 2.2.4; mm=orc; nim-opt=speed;
@@ -189,7 +205,7 @@ compiler-known set). Rebuild older GIR artifacts.
 | Check | Result |
 | --- | ---: |
 | Broad compiler/runtime/integration suite | 1688 passed |
-| Executable language specs (30 new) | 876 passed |
+| Executable language specs (35 new) | 881 passed |
 | VM, ORC | 402 passed |
 | VM, AtomicArc | 402 passed |
 | Reference-count/lifetime suite | 87 passed |
@@ -200,12 +216,14 @@ compiler-known set). Rebuild older GIR artifacts.
 | Benchmark tooling | 15 passed |
 | wasm ABI cases, scratch build | 46 passed |
 
-Every row is from the final runtime (slice rule, `==`/`!=` lowered), built
-and run from a clean export of `8f77537` with this pass's three changed files
-laid over it. One file-watch spec (`recursive watch discovers files in newly
+Every row is from the final runtime (slice rule, `==`/`!=` lowered, cheaper
+walks). The binary was built from a clean export of `08a651f` with the
+changed files laid over it; the suites were compiled and run from a clean
+export of `6c744c6` with the same files, which differs only by another
+session's Imagination and genex-tooling commits. On the build before the walk changes one file-watch spec (`recursive watch discovers files in newly
 created directories`) failed once while five suites compiled in parallel and
-passed six of six alone and in the solo rerun recorded here; it depends on
-how the OS batches file events.
+passed six of six alone and in a solo rerun; it depends on how the OS
+batches file events, and passed in the run recorded here.
 
 The 28 new specs (`spec — runtime fast paths keep ordinary semantics`) pin
 the behaviours a shortcut could change: operator results and errors, operator
@@ -217,6 +235,13 @@ Two more (`spec — a scheduler slice ends at a loop iteration or a function
 entry`) pin the slice rule: straight-line read-then-update code is not split
 between fibers (the baseline loses a push in 11 of its 300 phases), and every
 loop and recursion form still yields a spent slice to a peer.
+
+Five more put over sixteen containers in one graph for each value-graph
+walk, past what the walks keep inline: a function forty containers deep in a
+stored value, a stored ring with a shared part, a tail call passing a large
+value that holds a closure over the caller, repeated spawns over a captured
+List, and a large value stored twice. Their expectations also come from the
+baseline binary.
 
 During development the same programs, plus a multi-module import case and
 thirteen `gene eval` sources, were run on the baseline and candidate binaries
@@ -231,7 +256,8 @@ and `web/gene.wasm` were not regenerated.
 ### Harness
 
 The complete Harness suite passes with the final runtime: 200 passed,
-0 failed in under nine minutes (`verification/harness-final.log.gz`), run
+0 failed in 407 seconds (`verification/harness-final.log.gz`; 527 seconds
+on the build before the walk changes), run
 from a clean export so that edits another session was making could not
 affect it. The suite grew from 179 examples during the day through that
 session's commits; the runtime that withdrew the lowering passed all 179. Earlier runs are not counted: one overlapped
