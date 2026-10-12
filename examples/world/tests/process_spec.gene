@@ -1,0 +1,41 @@
+# The Commons with real processes — docs/proposals/world.md §17, §18.1.
+#
+# Each example starts its own throwaway world (`gene run world run`) and plays
+# it from outside. The players are Node scripts in `tools/`: a browser-shaped
+# peer needs a WebSocket client that sends a session cookie and an Origin, the
+# compiled client needs a DOM, and a crash test needs to kill a process
+# outright — none of which Gene offers a test yet. What they check, and how,
+# is at the top of each script.
+#
+#   gene test tests/process_spec.gene    # from examples/world, about two minutes
+(import $test [describe it])
+(import [build] ^from "../tools/build_web.gene")
+
+(fn tail [text]
+  (let size ($str/byte_size text))
+  (let from ($math/max 0 (- size 3000)))
+  ($str/slice_bytes text from (- size from)))
+
+# The script judges itself: it prints `ok`/`FAIL` per check and exits non-zero
+# if any failed. It is told which `gene` to start, the one running this test.
+(fn smoke [script, port_name, port]
+  (let exe ($os/executable_path))
+  (let result ($os/exec "env" $"GENE=${exe}" $"GENE_EXE=${exe}" $"${port_name}=${port}"
+    "node" $"tools/${script}.mjs" ^timeout_ms 900000))
+  ($assert (== result/status 0) (tail $"${result/stdout}${result/stderr}")))
+
+(describe "the Commons with real processes"
+  (it "serves one browser-shaped player: admission, walking, receipts, fencing and a crash" []
+    (smoke "commons_smoke" "COMMONS_SMOKE_PORT" 8097))
+
+  (it "drives the compiled client against a real world" []
+    (build)
+    (smoke "client_smoke" "CLIENT_SMOKE_PORT" 8098))
+
+  (it "holds two Life processes and a human in one world" []
+    # Life attaches through genex/websocket; without its native library this
+    # would fail slowly and obscurely, so say what is missing instead.
+    (let library "../../src/genex/websocket/build/libgene_websocket")
+    ($assert (|| ($fs/exists? $"${library}.dylib") ($fs/exists? $"${library}.so"))
+      "Build the genex/websocket native library first: python3 src/genex/websocket/tools/build.py --pkg-config-path <curl with WebSocket>/lib/pkgconfig")
+    (smoke "life_smoke" "LIFE_SMOKE_PORT" 8099)))

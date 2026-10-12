@@ -10,12 +10,7 @@
     # The Commons world process (docs/proposals/world.md §16.3).
     (application "world" ^entry "server/main.gene")
 
-    # Cross-backend specs: each prints the same report on the VM as its
-    # `probes/web_*_spec.gene` twin does in the web profile. They cover the
-    # `core/` modules the browser client and the world process share.
-    (application "world_spec" ^entry "probes/run_world_spec.gene")
-    (application "light_spec" ^entry "probes/run_light_spec.gene")
-    (application "loaded_spec" ^entry "probes/run_loaded_spec.gene")
-    (application "raycast_spec" ^entry "probes/run_raycast_spec.gene")
+    # The web build of every portable module (`gene run build_web`).
+    (application "build_web" ^entry "tools/build_web.gene")
   ]
 }

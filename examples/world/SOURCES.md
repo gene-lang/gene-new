@@ -47,8 +47,8 @@ responsibilities, beside its copy source and `examples/life`.
 >
 > What remains of the copy is `core/{exact, light, loaded, mesh, raycast,
 > registry, shaders, texture, tiles, vec, world}.gene`, the renderer in
-> `client/`, the world, light and loaded specs, and the pointing half of the
-> edit spec (`probes/raycast_spec.gene`). `core/content.gene` and
+> `client/`, the world, light and loaded checks, and the pointing half of the
+> edit spec (`tests/checks/raycast_checks.gene`). `core/content.gene` and
 > `core/mods.gene` are Commons code that replaced the mod API. The six nodes
 > and nine tiles the scene uses from the default content (grass, sand, water,
 > tree, leaves, lamp) moved into `mods/neighborhood` with their names, colours

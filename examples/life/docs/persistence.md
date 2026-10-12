@@ -40,12 +40,12 @@ recovery, inspection and tests.
 
 ### Cycle time as history grows
 
-`probes/cycle_growth.gene` gives a fake-brain Life one visitor message at a
+`tests/cycle_growth_spec.gene` gives a fake-brain Life one visitor message at a
 time. Every cycle runs the same small program (one state write, one memory),
 so a change in cycle time comes from what the Life has retained:
 
 ```sh
-bin/gene run examples/life/probes/cycle_growth.gene 200 file
+bin/gene run examples/life/tests/cycle_growth_spec.gene 200 file
 ```
 
 Median milliseconds per cycle, over windows of 20 cycles, before and after the

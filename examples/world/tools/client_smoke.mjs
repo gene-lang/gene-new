@@ -1,6 +1,6 @@
 // The browser client's wiring, against a real world process.
 //
-//   tools/build_web.sh && node tools/client_smoke.mjs
+//   gene run build_web && node tools/client_smoke.mjs
 //
 // `tools/commons_smoke.mjs` proves the world is right by speaking the protocol
 // itself. This proves `client/main.gene` uses it right: the compiled client

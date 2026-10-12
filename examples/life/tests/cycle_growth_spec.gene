@@ -1,15 +1,19 @@
 # How long one decision cycle takes as a Life's history grows.
 #
-#   bin/gene run examples/life/probes/cycle_growth.gene [CYCLES] [image|file] [WINDOW]
+# As a test (`gene test`): a Life lives 60 cycles on the incremental store and
+# its last twenty must not take twice as long as its first twenty. Every cycle
+# runs the same small program (one state write, one memory), so a change in
+# cycle time comes from what the Life has retained, not from the work. Before
+# the store stopped copying itself the ratio at this length was 3.
 #
-# A fake-brain Life is given CYCLES (default 200) visitor messages, one at a
-# time. Each one is a complete cycle: receipt, context, decision, validation in
-# a fresh process, execution in a fresh process, and the outcome. The program a
-# cycle runs does the same small amount of work every time (one state write,
-# one memory), so any change in cycle time comes from the retained history, not
-# from the work. Times are reported per WINDOW (default 20) cycles, with the
-# store's size at the end of each window, and then as one JSON summary line.
-(mod cycle_growth)
+# As a measurement (`gene run`), for any length and either backend:
+#
+#   bin/gene run examples/life/tests/cycle_growth_spec.gene [CYCLES] [image|file] [WINDOW]
+#
+# prints the median, mean and maximum per WINDOW (default 20) cycles with the
+# store's size, then one JSON summary line. docs/persistence.md has the method
+# and the recorded numbers.
+(import $test [describe it])
 (import * : p ^from "../src/host/persistence")
 (import * : runtime ^from "../src/host/runtime")
 (import * : body ^from "../src/body/body")
@@ -36,18 +40,16 @@
   (let ordered (sort values))
   (let middle (/ ordered/.size 2))
   ordered/%middle)
-# The probe's own Life home, and nothing else: every entry is removed by name.
+# This run's own Life home, and nothing else: every entry is removed by name.
 (fn remove_tree [path]
   (let info ($fs/info path ^!follow))
   (if (|| info/symlink (!= info/kind "directory")) (return ($fs/remove path)))
   (for name in ($fs/list_dir path) (remove_tree $"${path}/${name}"))
   ($fs/remove_dir path))
 
-(fn main [arguments]
-  (let args arguments/.body)
-  (let cycles ($parse/parse_int (?? args/0 "200")))
-  (let backend (?? args/1 "image"))
-  (let window ($parse/parse_int (?? args/2 "20")))
+# Live `cycles` cycles; print a row per window when `report`. Answers the
+# summary.
+(fn measure [cycles, backend, window, report]
   (let name (p/id "growth"))
   (let home $"examples/life/tmp/${name}")
   (let host (runtime/open_life home ^^create ^clock (fn [] 1000) ^storage backend
@@ -56,8 +58,9 @@
   (try
     (runtime/settle host)
     (budget/configure host 10000)
-    ($println $"storage=${backend} cycles=${cycles} window=${window}")
-    ($println "cycles      median_ms  mean_ms   max_ms   records   store_kb")
+    (if_yes report
+      ($println $"storage=${backend} cycles=${cycles} window=${window}")
+      ($println "cycles      median_ms  mean_ms   max_ms   records   store_kb"))
     (var done 0)
     (var first_median nil)
     (var last_median nil)
@@ -82,13 +85,25 @@
       (summary/windows .push {^through done ^median_ms middle ^mean_ms mean ^max_ms worst
         ^records records ^store_kb kb})
       (let first (+ (- done times/.size) 1))
-      ($println $"${first}-${done}   ${middle}   ${mean}   ${worst}   ${records}   ${kb}"))
+      (if report ($println $"${first}-${done}   ${middle}   ${mean}   ${worst}   ${records}   ${kb}")))
     (let count (p/get host/store "state/count"))
     (if_not (== count cycles) (p/problem $"Expected ${cycles} completed cycles, counted ${count}"))
     (summary .put "first_window_median_ms" first_median)
     (summary .put "last_window_median_ms" last_median)
     (summary .put "growth" (/ ($to_float last_median) ($to_float first_median)))
-    ($println ($json/stringify summary))
     ensure (runtime/close_life host))
   (remove_tree home)
+  summary)
+
+(describe "Life cycle time"
+  (it "does not follow how much the Life has retained" []
+    (let summary (measure 60 "file" 20 false))
+    ($assert (< summary/growth 2.0)
+      $"Cycles 41-60 took ${summary/last_window_median_ms} ms against ${summary/first_window_median_ms} ms for cycles 1-20")))
+
+(fn main [arguments]
+  (let args arguments/.body)
+  (let summary (measure ($parse/parse_int (?? args/0 "200")) (?? args/1 "image")
+    ($parse/parse_int (?? args/2 "20")) true))
+  ($println ($json/stringify summary))
   0)

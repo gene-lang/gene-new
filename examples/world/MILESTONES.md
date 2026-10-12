@@ -189,7 +189,7 @@ Milestone 3 storage work.
   reads the store as it was when it began without copying it, receipts stay
   in the database, and heartbeat scans copy only what they act on: 0.11 s at
   200 cycles on `life.db`, 0.18 s at 1,000
-  (`examples/life/probes/cycle_growth.gene`,
+  (`examples/life/tests/cycle_growth_spec.gene`,
   `examples/life/docs/persistence.md`).
 - **Pause holds the avatar (§12.4).** `movement.suspend` is a world operation:
   a controller asks for its own running walk to be held, and only
@@ -212,11 +212,18 @@ Milestone 3 storage work.
   is 25 modules instead of 62.
 - **Housekeeping.** `SOURCES.md` is in the package, where the README and this
   file link to it; the README describes the tree as it is.
+- **The suite is Gene tests.** The copied specs predate `$test` and were run
+  as programs whose printed verdict a shell script judged. They are
+  `tests/core_spec.gene` now: each shared web-profile module of checks must
+  hold on the VM and print the same report from its web build.
+  `tests/process_spec.gene` starts the Node players. `gene test` replaces
+  `tools/check.sh`, and the web build is `gene run build_web`. Life's
+  cycle-growth measurement is a test in its suite too.
 
 Evidence (macOS 27, Apple M4 Pro, optimized `gene` from `eed4045` plus the
-web-profile fix): `tools/check.sh` 17 steps, all passing — four cross-backend
-specs with identical VM/web reports, `commons_smoke` 41 checks, `client_smoke`
-16, the Life network specs 19, `life_smoke` 34. Life suite: 137 passed on
+web-profile fix): `gene test` in `examples/world`, 7 examples, all passing —
+four shared modules agreeing on the VM and in the web profile, `commons_smoke`
+41 checks, `client_smoke` 16, `life_smoke` 34. Life suite: 138 passed on
 `life.sqlite`; on `life.db` the same except the six that compare `life.sqlite`
 bytes. Compiler: `test_all` 1689, `spec_runner` 892, the 317 shared
 conformance cases on both backends, the Harness suite 200.

@@ -1,16 +1,16 @@
 {
   ^lock_format 1
-  ^root_manifest_digest "sha256:ec9beed4832c6b7b4bcce6626896431daadbe396a5515db39d345b80b30c2317"
+  ^root_manifest_digest "sha256:1454f738b73340e692990213b6764d765711dac695a6bf2427e31232c6f11c7b"
   ^workspace_digest "sha256:fc2162cc3f53253d71cefe2b0b1aff86e38baedf5c3e230b17d47d035a38ca06"
   ^registry_snapshots [
   ]
-  ^roots [ "workspace:gene/world@0.1.0#sha256:6327245c6ceede0f362bbce5c8f76b91fdcd409933827e3bf0ca619109cee095"]
+  ^roots [ "workspace:gene/world@0.1.0#sha256:046fd3a900f9a29cde13401fb21ebc66f0e7338617817ecf8c7baea7bfd3c89a"]
   ^packages [
     (locked_package
-      ^id "workspace:gene/world@0.1.0#sha256:6327245c6ceede0f362bbce5c8f76b91fdcd409933827e3bf0ca619109cee095"
+      ^id "workspace:gene/world@0.1.0#sha256:046fd3a900f9a29cde13401fb21ebc66f0e7338617817ecf8c7baea7bfd3c89a"
       ^name "gene/world"
       ^version "0.1.0"
-      ^manifest_digest "sha256:ec9beed4832c6b7b4bcce6626896431daadbe396a5515db39d345b80b30c2317"
+      ^manifest_digest "sha256:1454f738b73340e692990213b6764d765711dac695a6bf2427e31232c6f11c7b"
       ^source (workspace ^path ".")
       ^features []
       ^dependencies {

@@ -115,7 +115,7 @@ Gene implementation:
   the database, and heartbeat scans copy only the records they act on. Over
   200 fake-brain cycles the median cycle fell from 2.1 s to 0.11 s on the
   incremental store and stays level there
-  (`probes/cycle_growth.gene`; [persistence.md](persistence.md) has the table
+  (`tests/cycle_growth_spec.gene`; [persistence.md](persistence.md) has the table
   and what still grows).
 
 The CLI create/run/send/inspect/stop path has also been exercised with two live

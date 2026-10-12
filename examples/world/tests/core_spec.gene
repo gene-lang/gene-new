@@ -1,0 +1,39 @@
+# The `core/` modules the world process and the browser client share must
+# behave the same on the VM and in the web profile. Each module of checks in
+# `tests/checks/` builds a report. Here that report must hold on the VM, and
+# the web build of the same module, run under node, must print exactly it —
+# the web profile has no `$test`, so the shared half reports instead of
+# asserting, and this is where the assertions are.
+#
+#   gene test                        # from examples/world: these and the process tests
+#   gene test tests/core_spec.gene   # these alone, well under a minute
+(import $test [describe it assert_equal])
+(import [build] ^from "../tools/build_web.gene")
+(import [report : world_report failures : world_failures] ^from "./checks/world_checks.gene")
+(import [report : light_report failures : light_failures] ^from "./checks/light_checks.gene")
+(import [report : loaded_report failures : loaded_failures] ^from "./checks/loaded_checks.gene")
+(import [report : raycast_report failures : raycast_failures] ^from "./checks/raycast_checks.gene")
+
+# One web build per run, however many examples need it.
+(let built ($cell false))
+(fn web_output [shell]
+  (if_not built/.get
+    (build ^^clean)
+    (built .set true))
+  (let result ($os/exec "node" "tools/web_spec.mjs" shell ^timeout_ms 120000))
+  ($assert (== result/status 0) $"${shell} did not run under node:\n${result/stderr}")
+  result/stdout)
+
+(fn agree [text, bad, shell]
+  (assert_equal bad 0.0 text)
+  (assert_equal (web_output shell) $"${text}\n\nPASS — every check agrees\n"))
+
+(describe "core, on the VM and in the web profile"
+  (it "agrees about the world model and the registry" []
+    (agree (world_report) (world_failures) "web_world"))
+  (it "agrees about lighting" []
+    (agree (light_report) (light_failures) "web_light"))
+  (it "agrees about the loaded world and its meshes" []
+    (agree (loaded_report) (loaded_failures) "web_loaded"))
+  (it "agrees about pointing at a node" []
+    (agree (raycast_report) (raycast_failures) "web_raycast")))

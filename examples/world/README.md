@@ -42,8 +42,10 @@ server/    the world process: the HTTP/WebSocket host and the player page it
            protocol and the SQLite store
 mods/      content, compiled in by core/mods.gene: the neighborhood's nodes and
            tiles
-probes/    cross-backend specs for core/, each with a VM and a web runner
-tools/     the web build, the suite (check.sh) and the process smokes
+tests/     the suite: core on both backends (checks/ holds the shared
+           web-profile halves) and the world with real processes
+tools/     the web build (build_web.gene) and the Node players the process
+           tests start
 ```
 
 There is no page file: `server/host.gene` renders the player page and serves
@@ -104,48 +106,51 @@ an owner-only file beside the Life's store; delete the one you were handed.
 
 ## Test
 
+The suite is Gene tests, run from `examples/world/`:
+
 ```sh
-tools/check.sh            # everything, a few minutes on an idle machine; non-zero exit on failure
-tools/check.sh --fast     # no server: VM + web specs and their diffs, under a minute
+gene test                        # everything, about three minutes on an idle machine
+gene test tests/core_spec.gene   # no server: the shared core on both backends, a few seconds
 ```
 
-`check.sh` runs every step below and applies the verdict rule: a Gene runner
-exits 0 either way, and its verdict is the last `PASS — …` / `FAIL — …` line.
-
-### Cross-backend specs
+### The shared core, on both backends
 
 Every `core/` module must behave identically on the VM and in the web
-profile, so each spec's two reports must be byte-identical:
+profile. The web profile has no `$test`, so the checks live in web-profile
+modules that build a report (`tests/checks/*_checks.gene`), and
+`tests/core_spec.gene` asserts two things about each: the report holds on the
+VM, and the web build of the same module prints exactly that report under
+node.
 
 ```sh
-tools/build_web.sh --clean        # after adding or removing a module
-for s in world light loaded raycast; do
-  gene run ${s}_spec | diff - <(node tools/web_spec.mjs web_${s}_spec)
-done
+gene run build_web --clean       # the web build alone, after adding or removing a module
 ```
 
-### The world process
+### The world process, and networked Lives
+
+`tests/process_spec.gene` starts real processes: a throwaway world
+(`gene run world run`, ports 8097–8099) and whoever plays it. The players are
+Node scripts, each of which can also be run alone:
 
 ```sh
 node tools/commons_smoke.mjs     # protocol, receipts, fencing, kill -9 recovery (41 checks)
-tools/build_web.sh && node tools/client_smoke.mjs   # the real client, stubbed DOM (16 checks)
+gene run build_web && node tools/client_smoke.mjs   # the real client, stubbed DOM (16 checks)
+node tools/life_smoke.mjs        # a world, two Life processes and a human (34 checks, ~80 s)
 ```
 
-Each creates a throwaway world and starts its own `gene run world run` (ports
-8097 and 8098), and refuses a port that is already serving.
+`life_smoke.mjs` covers native admission, walk-then-act continuations, speech
+both ways, a human and two Lives contending for the can, a Life and then the
+world killed mid-walk, a request committed while the world is down, an
+operator pausing a Life mid-walk, and the missing-library preflight. Each
+script refuses a port that is already serving. They stay in Node because a
+browser-shaped peer needs a WebSocket client that sends a cookie and an
+Origin, the compiled client needs a DOM, and a crash test needs to kill a
+process outright.
 
-### Networked Lives (Milestone 2)
+The Life package has its own suite, which drives the same network code
+against an in-memory world that can lose replies, answer `unknown`, replay
+and skip sequences (from the repository root):
 
 ```sh
-node tools/life_smoke.mjs      # a world, two Life processes and a human (34 checks, ~80 s)
-bin/gene test --package-root examples/life examples/life/tests/world_network_spec.gene \
-                                           examples/life/tests/delivery_spec.gene   # from the repo root
+bin/gene test --package-root examples/life examples/life/tests/
 ```
-
-`life_smoke.mjs` (port 8099) runs real processes: native admission, walk-then-
-act continuations, speech both ways, a human and two Lives contending for the
-can, a Life and then the world killed mid-walk, a request committed while the
-world is down, an operator pausing a Life mid-walk, and the missing-library
-preflight. The Life specs drive the same
-code against an in-memory world that can lose replies, answer `unknown`, replay
-and skip sequences.

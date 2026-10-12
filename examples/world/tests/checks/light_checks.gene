@@ -13,15 +13,15 @@
 # Runs on the VM and through the web profile and must produce byte-identical
 # output, as every `core/` module's spec does (§14 layer 2).
 
-(mod light_spec ^profile web)
+(mod light_checks ^profile web)
 
 (import [Registry new_registry register register_uniform id_of
          registered_count draw_normal draw_airlike draw_glasslike]
-        ^from "../core/registry.gene")
+        ^from "../../core/registry.gene")
 (import [day_of night_of with_day with_night queue_overhead
          region_index light_region relight_node light_max]
-        ^from "../core/light.gene")
-(import [light_day light_night pack_light] ^from "../core/world.gene")
+        ^from "../../core/light.gene")
+(import [light_day light_night pack_light] ^from "../../core/world.gene")
 
 # --- reporting ---------------------------------------------------------------
 

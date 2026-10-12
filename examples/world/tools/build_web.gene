@@ -1,0 +1,46 @@
+# Build every portable module for the web profile into dist/.
+#
+#   gene run build_web            # incremental
+#   gene run build_web --clean    # after a module was added or removed
+#
+# Run it from this package's directory. The profile emits one flat output
+# directory keyed by basename, so this list is the whole graph rather than a
+# set of entry points — and a module deleted from the tree would leave its
+# `dist/*.mjs` behind for a harness to keep importing, which is what `--clean`
+# is for. `tests/core_spec.gene` and the client smoke both use this build.
+(mod build_web)
+
+(let modules [
+  "core/exact" "core/world" "core/registry" "core/tiles" "core/texture" "core/shaders"
+  "core/content" "core/mods" "core/light" "core/mesh" "core/loaded" "core/raycast" "core/vec"
+  "mods/neighborhood/src/neighborhood"
+  "client/atlas" "client/render" "client/main"
+  "tests/checks/world_checks" "tests/checks/light_checks" "tests/checks/loaded_checks"
+  "tests/checks/raycast_checks"
+  "tests/checks/web_world" "tests/checks/web_light" "tests/checks/web_loaded"
+  "tests/checks/web_raycast"])
+
+(type BuildError ^props {^message Str} ^impl [Error])
+(impl Error for BuildError)
+
+(fn clean []
+  (if_not ($fs/exists? "dist") (return nil))
+  (for name in ($fs/list_dir "dist") ($fs/remove $"dist/${name}"))
+  ($fs/remove_dir "dist"))
+
+# Answers the number of modules built; fails with the compiler's own message.
+(fn build [^clean wipe = false]
+  (if wipe (clean))
+  ($fs/make_dir "dist")
+  (for module in modules
+    (let result ($os/exec ($os/executable_path) "build" "--target" "web" $"${module}.gene"
+      "--out-dir" "dist" ^timeout_ms 120000))
+    (if_not (== result/status 0)
+      (fail (BuildError ^message $"Failed to build ${module}.gene:\n${result/stdout}${result/stderr}"))))
+  modules/.size)
+
+(fn main [arguments]
+  (let args arguments/.body)
+  (let count (build ^clean (== (?? args/0 "") "--clean")))
+  ($println $"built ${count} modules into dist/")
+  0)

@@ -1,0 +1,17 @@
+# The web-profile shell for the world checks: `tests/core_spec.gene` builds it and
+# runs it under node, and its output must be what the VM prints for the same
+# module. It adds nothing to the report. The work is in `main` because the web
+# profile has no top-level statements — a module exports an entry and the host
+# calls it.
+
+(mod web_world ^profile web)
+
+(import [report failures] ^from "./world_checks.gene")
+
+(fn main [] : Void
+  ($console/log (report))
+  ($console/log "")
+  (var bad (failures))
+  (if (== bad 0.0)
+    (then ($console/log "PASS — every check agrees"))
+    (else ($console/log $"FAIL — ${bad} check(s) failed"))))

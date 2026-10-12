@@ -203,10 +203,10 @@ The tests execute real Gene subprocesses, including fixtures killed with
 inspection; nothing removes them, so empty it now and then. No Python runtime,
 test runner, or source file is required.
 
-`probes/cycle_growth.gene` measures how long a decision cycle takes as a Life's
-history grows ([docs/persistence.md](docs/persistence.md) has the method and
-the numbers):
+`tests/cycle_growth_spec.gene` holds a Life to a cycle time that does not
+follow its history, and run directly it prints the measurement for any length
+([docs/persistence.md](docs/persistence.md) has the method and the numbers):
 
 ```sh
-bin/gene run examples/life/probes/cycle_growth.gene 200 file
+bin/gene run examples/life/tests/cycle_growth_spec.gene 200 file
 ```
