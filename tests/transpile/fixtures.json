@@ -3975,8 +3975,8 @@
     },
     {
       "id": "self.direct_override",
-      "source": "(type Dog ^props {} (message accepts [other : Self] : Bool true))\n(type Pup : Dog ^props {} (message accepts [other : Dog] : Bool ^^!override)) (fn run [] : Bool (Self:accepts (Pup) (Dog))) (run)",
-      "web_source": "(mod self_direct_override ^profile web) (type Dog ^props {} (message accepts [other : Self] : Bool true))\n(type Pup : Dog ^props {} (message accepts [other : Dog] : Bool ^^!override)) (fn run [] : Bool (Self:accepts (Pup) (Dog)))",
+      "source": "(type Dog ^props {} (message accepts [other : Self] : Bool true))\n(type Pup : Dog ^props {} (message accepts [other : Dog] : Bool ^^override false)) (fn run [] : Bool (Self:accepts (Pup) (Dog))) (run)",
+      "web_source": "(mod self_direct_override ^profile web) (type Dog ^props {} (message accepts [other : Self] : Bool true))\n(type Pup : Dog ^props {} (message accepts [other : Dog] : Bool ^^override false)) (fn run [] : Bool (Self:accepts (Pup) (Dog)))",
       "web_export": "run",
       "expected_value": {
         "kind": "bool",
@@ -4079,8 +4079,8 @@
     },
     {
       "id": "self.forbidden_replacement_self",
-      "source": "(type Base ^props {} (message value [x : Self] : Bool true)) (type Child : Base ^props {} (message value [x : Self] : Bool ^^^override))",
-      "web_source": "(mod self_forbidden_replacement_self ^profile web) (type Base ^props {} (message value [x : Self] : Bool true)) (type Child : Base ^props {} (message value [x : Self] : Bool ^^^override))",
+      "source": "(type Base ^props {} (message value [x : Self] : Bool true)) (type Child : Base ^props {} (message value [x : Self] : Bool ^^override true))",
+      "web_source": "(mod self_forbidden_replacement_self ^profile web) (type Base ^props {} (message value [x : Self] : Bool true)) (type Child : Base ^props {} (message value [x : Self] : Bool ^^override true))",
       "expected_error": "Self",
       "expected_stdout": "",
       "profile": {
