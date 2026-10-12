@@ -21,11 +21,13 @@ order, 5,000 input items per batch, 300 ms calibration per workload
 | JSON round trip | 6.078 | 2.645 | 2.30x | 0.96 |
 | Event replay | 11.750 | 4.504 | 2.61x | 7.06 |
 
-This capture was taken one change before the final runtime. The last change
-touches only spawn publication and the walks' visited sets, which these
-workloads do not exercise. A recapture of the final runtime on a less quiet
-machine (samples of one build up to 1.7x apart) reads 3.20x, 2.55x, 2.42x,
-1.73x, 2.22x and 2.47x in the same order, so the table is kept.
+This capture was taken two changes before the final runtime. Those changes
+touch only spawn publication, the walks' visited sets and the counting of
+published objects, none of which these workloads exercise. Two recaptures on
+a less quiet machine agree with the table within their wider spread and are
+not recorded: 3.20x, 2.55x, 2.42x, 1.73x, 2.22x and 2.47x after the first
+change (samples of one build up to 1.7x apart), and 2.81x, 2.47x, 2.52x,
+1.80x, 2.27x and 2.38x on the final runtime (up to 2.3x apart).
 
 Every result matches the baseline runtime and Python at sizes 1, 17, 257 and
 2048 and in every timed process. These are separate workloads, not a weighted
