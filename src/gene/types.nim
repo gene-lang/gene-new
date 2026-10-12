@@ -2915,10 +2915,9 @@ proc publicationValueChildren*(value: Value): seq[Value] =
 
 template countsInPlace(p: untyped): bool =
   ## Whether this object's count is an ordinary integer: always in a build
-  ## whose values stay on one thread, where the shared mark changes nothing
-  ## about counting, and for an unpublished object otherwise. A program that
-  ## spawns publishes most of its data, so testing the mark here would send
-  ## nearly every count through the full body for no reason.
+  ## without threads, where the shared mark changes nothing about counting,
+  ## and for an unpublished object otherwise. A published object's count is
+  ## atomic; `retainPublished` and `releasePublished` handle it.
   when threadedRc: not isSharedFlag(p.shared)
   else: true
 
@@ -2944,10 +2943,10 @@ template releasePublished(p: untyped, noBookkeeping: bool) =
           return
 
 proc rcRetain(bits: uint64) =
-  ## A manual object whose count is an ordinary integer is bumped in place. A
-  ## published one in a threaded build needs the atomic path, and a Node
-  ## carrying error evidence may have to restore its environment; both, and
-  ## every object kind, go to the full body.
+  ## A manual object whose count is an ordinary integer is bumped in place,
+  ## and a published one with an atomic add. An unpublished Node carrying
+  ## error evidence may have to restore its environment; it, and every object
+  ## kind, go to the full body.
   let payload = bits and PAYLOAD_MASK
   case bits shr TAG_SHIFT
   of STRING_TAG:
