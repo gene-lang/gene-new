@@ -409,9 +409,9 @@ of about 345 s. Every suite passes unchanged, including the VM suite under
 AtomicArc, where worker-safe tasks are still published; no test relied on a
 lane-bound task marking its captures. What this does change is which values
 carry the shared mark, so it is called out in the change log. A direct capture
-of the starting tree against the final build then reads 35.42 s and 11.97 s
-(2.96x on service time, 3.64x whole-process), on a machine slower than in
-the quiet captures.
+of the starting tree against the final build on a quiet machine then reads
+25.48 s and 8.54 s on service time (2.98x) and 34.39 s and 9.71 s
+whole-process (3.54x).
 
 With lane-bound tasks no longer published, the final profile of the service
 probe is the escape scan (17% of samples), the capture walk (12%), the

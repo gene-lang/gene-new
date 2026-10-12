@@ -255,10 +255,16 @@ the general workloads do not spawn. Four complete Harness runs soaked the
 change afterwards, all passing in 270-288 s with no crash report.
 
 A direct capture of the starting tree against this final build, three
-samples each on a machine that was slower than in the quiet captures
+samples each on a quiet machine
 ([service/summary-final-worker-publication.json](service/summary-final-worker-publication.json)):
-35.42 s and 11.97 s on service time (2.96x), 48.71 s and 13.39 s
-whole-process (3.64x).
+
+| Build | Service samples (ms) | Service median (ms) | Whole-process median (ms) |
+| --- | --- | ---: | ---: |
+| Baseline `1e3f539` | 25161, 25480, 25816 | 25480 | 34392 |
+| Final build | 8394, 8539, 8618 | 8539 | 9714 |
+
+That is 2.98x on service time and 3.54x on whole-process time for the pass
+as a whole.
 
 ## A crash found by repeating the suite
 
