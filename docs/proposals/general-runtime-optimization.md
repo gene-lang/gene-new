@@ -504,10 +504,12 @@ VM scheduler suite, which the sanitizer run covers.
      `prepareChunkScope` and `prepareImplAssembly` are skipped. Anything else
      takes today's full reset, which also clears the flag.
 
-  The same per-iteration cost appears at the first iteration of every loop,
-  so the measure of success is the single-short-loop kernel in
-  `differential/loop_kernels.gene`, where the reset and the binding are about
-  a quarter of the time.
+  A scratch build that takes the slots-only path for every reusable body,
+  with none of the checks, bounds what this can save: the single-short-loop
+  kernel in `differential/loop_kernels.gene` goes from 325-332 ms to
+  288-294 ms (about 11%) and the nested kernel from 221-223 ms to 177-178 ms
+  (about 20%). A short capture of the six workloads on a busy machine put
+  all of them between 5% and 11% faster, which is no better than indicative.
 - A match branch and the first iteration of every loop allocate a fresh
   `Scope` (about sixty fields). Pooling them needs the same ownership proof
   loop reuse uses.
