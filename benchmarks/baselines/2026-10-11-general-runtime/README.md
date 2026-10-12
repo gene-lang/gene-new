@@ -274,8 +274,11 @@ samples each on a quiet machine
 | Baseline `1e3f539` | 25161, 25480, 25816 | 25480 | 34392 |
 | Final build | 8394, 8539, 8618 | 8539 | 9714 |
 
-That is 2.98x on service time and 3.54x on whole-process time for the pass
-as a whole.
+That is 2.98x on service time and 3.54x on whole-process time. With the
+plain-body loop reset added afterwards, a further capture
+([service/summary-final.json](service/summary-final.json), three samples
+each) reads 26.36 s on the starting tree and 8.42 s on the final build:
+3.13x on service time, and 36.07 s against 9.61 s whole-process (3.75x).
 
 ## A crash found by repeating the suite
 

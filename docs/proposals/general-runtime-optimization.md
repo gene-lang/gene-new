@@ -411,7 +411,8 @@ lane-bound task marking its captures. What this does change is which values
 carry the shared mark, so it is called out in the change log. A direct capture
 of the starting tree against the final build on a quiet machine then reads
 25.48 s and 8.54 s on service time (2.98x) and 34.39 s and 9.71 s
-whole-process (3.54x).
+whole-process (3.54x); with the plain-body loop reset added, 26.36 s and
+8.42 s (3.13x) and 36.07 s and 9.61 s (3.75x).
 
 With lane-bound tasks no longer published, the final profile of the service
 probe is the escape scan (17% of samples), the capture walk (12%), the
