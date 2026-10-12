@@ -29,6 +29,13 @@ not recorded: 3.20x, 2.55x, 2.42x, 1.73x, 2.22x and 2.47x after the first
 change (samples of one build up to 1.7x apart), and 2.81x, 2.47x, 2.52x,
 1.80x, 2.27x and 2.38x on the final runtime (up to 2.3x apart).
 
+The last change of the pass lets a loop body that contains only reusable
+loops reuse its own iteration scope. Its kernel
+([differential/loop_kernels.gene](differential/loop_kernels.gene), 200 rows
+of three items) runs in 200-214 ms instead of 230-239 ms, and a before/after
+capture of the workloads on a noisy machine reads 15.63 ms to 14.69 ms for
+text indexing with the other five within 4% either way.
+
 Every result matches the baseline runtime and Python at sizes 1, 17, 257 and
 2048 and in every timed process. These are separate workloads, not a weighted
 language score. Python remains faster on five of the six.
@@ -225,7 +232,7 @@ service capture for it was again taken under load
 
 ```sh
 nim c --nimcache:tmp/perf2/cache-baseline --hints:off -o:tmp/perf2/gene-baseline src/gene.nim   # at 1e3f539, before any edit
-nim c --nimcache:<scratch>/ncfix --hints:off --warnings:off -o:tmp/perf2/gene-walk6 src/gene.nim   # clean export of 41ccb12 plus in-place counting of published objects
+nim c --nimcache:<scratch>/ncfix --hints:off --warnings:off -o:tmp/perf2/gene-loop4 src/gene.nim   # clean export of 2fc14a5 plus nested-loop scope reuse
 ```
 
 Both report `release; macosx/arm64; Nim 2.2.4; mm=orc; nim-opt=speed;
@@ -245,7 +252,7 @@ compiler-known set). Rebuild older GIR artifacts.
 | Check | Result |
 | --- | ---: |
 | Broad compiler/runtime/integration suite | 1688 passed |
-| Executable language specs (35 new) | 881 passed |
+| Executable language specs (46 new) | 892 passed |
 | VM, ORC | 402 passed |
 | VM, AtomicArc | 402 passed |
 | Reference-count/lifetime suite (2 new) | 89 passed |
@@ -257,13 +264,15 @@ compiler-known set). Rebuild older GIR artifacts.
 | wasm ABI cases, scratch build | 46 passed |
 
 Every row is from the final runtime (slice rule, `==`/`!=` lowered, cheaper
-walks, in-place reads, in-place counting of published objects). The binary
-and the suites were built from clean exports of `41ccb12` with the changed
-files laid over them. On the build before the walk changes one file-watch spec (`recursive watch discovers files in newly
+walks, in-place reads, in-place counting of published objects, nested-loop
+scope reuse). The binary and the suites were built from clean exports of
+`2fc14a5` with the changed files laid over them. One VM test that pinned the
+old rule (any nested `for` makes the outer body allocate) was updated to the
+new one; the broad, VM and sanitizer VM rows are from the rerun with it. On the build before the walk changes one file-watch spec (`recursive watch discovers files in newly
 created directories`) failed once while five suites compiled in parallel and
 passed six of six alone and in a solo rerun; it depends on how the OS
-batches file events. It failed the same way once more in a later run's
-parallel phase and passed alone, and passed in the final run recorded here.
+batches file events. It has failed that way in three parallel phases in all
+and passed every time alone, including the solo run recorded here.
 
 The 28 new specs (`spec — runtime fast paths keep ordinary semantics`) pin
 the behaviours a shortcut could change: operator results and errors, operator
@@ -283,6 +292,10 @@ value that holds a closure over the caller, repeated spawns over a captured
 List, and a large value stored twice. Their expectations also come from the
 baseline binary.
 
+Eleven more cover nested loops: break, continue and return from an inner
+loop, bindings made before and after it, closures made inside it, empty
+inner loops, and loops reached through calls and recursion.
+
 During development the same programs, plus a multi-module import case and
 thirteen `gene eval` sources, were run on the baseline and candidate binaries
 after every batch and compared byte for byte. They are kept in
@@ -296,7 +309,8 @@ and `web/gene.wasm` were not regenerated.
 ### Harness
 
 The complete Harness suite passes with the final runtime: 200 passed,
-0 failed in 347 seconds (`verification/harness-final.log.gz`; 527 seconds
+0 failed in 353 seconds, started on a loaded machine
+(`verification/harness-final.log.gz`; 347 seconds on the build before; 527 seconds
 before the walk changes, 407 before the in-place reads, and 329 on the
 build before the counting change, on a quieter machine), run
 from a clean export so that edits another session was making could not

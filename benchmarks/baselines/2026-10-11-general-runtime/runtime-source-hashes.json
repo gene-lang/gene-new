@@ -2,18 +2,18 @@
   "base_revision": "1e3f539",
   "executables_sha256": {
     "baseline": "7b0ccfa29b7df4ff276ad05debc3e17d526069ea6f6c006c35378ba0b53b41f1",
-    "optimized": "4e6d5fd5d84f87244c659272c99250147ae6dbb0aabafa55e9856d1e028fc337",
+    "optimized": "f63329afc563290379790918bda062a2ca6fbc8bea497a9867dc2e7018260627",
     "optimized_at_general_capture": "58ad8e926c9997dbc7f043ba3356c7af8a9db3f8d7673db39a8faff6f1372cb6"
   },
   "source_sha256_of_measured_tree": {
-    "src/gene/vm.nim": "56c38af948499586dc190bb8425c16f8d2d8e5642b0530a568c1f6420c1980fa",
+    "src/gene/vm.nim": "d55907eeabbf634ea24af7aa4208ff1a03d4228fd0641509aa90ca420c722db0",
     "src/gene/types.nim": "972e3c638b711234376511dfbb7230fd1d2daa6c23ab480a7111cf4511d78c9d",
     "src/gene/stdlib.nim": "bc6de6affeda5d2d3904ff3ad3ff5a460464454245a22ab139f2b6189d7f2641",
-    "src/gene/compiler.nim": "9bacf4a334658f1c788b88c33453766e176de13fc3139c17228c7a0346c02403",
+    "src/gene/compiler.nim": "bb7ce65329cc1ca03e89778759429ab66818674103c1eedb7655366b3e3daaae",
     "src/gene/error_analysis.nim": "d7fb4ff0e237944552c7ff0c58f71ab7ddbbcba1d24d8d4fb640ef630e91b717",
     "src/gene/error_runtime.nim": "c0d0fa7c7b365c8de092779fc068d10bf6b2d3fa54f5bb20385508279b74b94f",
     "src/gene/macro_runtime.nim": "fd9f6421149e1f04afce1b4a3ed359b0bbdb13e16a00e4205e4a2b5dea8dda49",
     "src/gene/gir_codec.nim": "92467bfef400da07650b2b0d06f5a6ea682933ececa38e5d4d354d3c4bf3dbd1",
-    "tests/spec_runner.nim": "c66da46cf5c85a0a73006336cd4326854641f052db2b05bfdd9f7ff61cff7a6f"
+    "tests/spec_runner.nim": "379c1f5d1d6513d6a740ad5011d5a3183bbafa5853fe07f515892a7d5616ef6e"
   }
 }
