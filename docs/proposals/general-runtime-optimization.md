@@ -194,9 +194,9 @@ calibration:
 | Event replay | 12.000 | 4.512 | 2.66x | 6.97 |
 
 This capture is of the final runtime, with everything described below.
-While the `==` lowering was withdrawn event replay read 2.29x; the nested
-loop change moved text indexing from about 1.81x to 1.85x; nothing else
-moved beyond run-to-run variation after the first part of the pass.
+While the `==` lowering was withdrawn event replay read 2.29x. The loop
+changes late in the pass moved the integer loop from about 3.1x to 3.6x and
+text indexing from about 1.81x to 1.94x, and the others by a few percent.
 
 Verification for this pass, on the final runtime: 1,688 broad-suite cases,
 892 language specs (46 new: 44 pinning what a shortcut could change, 2
