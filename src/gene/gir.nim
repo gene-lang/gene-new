@@ -878,6 +878,9 @@ type
     ## walk saw; a chunk restamped with another type is walked again.
     spawnPublished*: bool
     spawnPublishedSuperBits*: uint64
+    ## Run-time note for a `for` body, never stored: 0 = not yet classified,
+    ## 1 = an iteration can only change its own slots, 2 = anything else.
+    plainLoopBody*: int8
     diagnostics*: seq[CompileDiagnostic]
     forLoops*: seq[ForProto]
     matches*: seq[MatchProto]

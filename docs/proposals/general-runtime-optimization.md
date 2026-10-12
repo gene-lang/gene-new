@@ -481,8 +481,12 @@ VM scheduler suite, which the sanitizer run covers.
   the rarely used fields of `Scope` behind one optional extension object, so
   that a reset is one pointer test.
 
-  A narrower route that needs no change to `Scope`'s layout, checked against
-  the code but not implemented:
+  A narrower route that needs no change to `Scope`'s layout is now in place
+  (`loopBodyIsPlain`, `Scope.nativeTouched`, the short path in
+  `reuseForScope`). With its checks it gives the single-short-loop kernel
+  318-330 ms to 303-305 ms and the nested kernel 213-217 ms to 184-187 ms;
+  the remaining distance to the bound below is the extension-object change.
+  How it works:
 
   1. Only one kind of native can reach the caller's scope. A `NativeProc`
      takes its arguments and nothing else; a `NativeCallProc` also takes a

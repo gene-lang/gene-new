@@ -507,6 +507,7 @@ proc toJsonHook(chunk: Chunk,
   portable.dispatchCache = @[]
   portable.spawnPublished = false
   portable.spawnPublishedSuperBits = 0
+  portable.plainLoopBody = 0
   portable.macroRuntimeLease = nil
   toJson(portable, options)
 
@@ -586,6 +587,7 @@ proc restoreChunkOwners(root: Chunk, allowRuntimeState = false) =
     chunk.dispatchCache = @[]
     chunk.spawnPublished = false
     chunk.spawnPublishedSuperBits = 0
+    chunk.plainLoopBody = 0
     for dependency in chunk.errorProofDependencies: validateDependency(dependency)
     for fn in chunk.functions:
       restoreFunction(fn)
@@ -658,7 +660,7 @@ proc copyExecutionTemplate[T](source: T, copies: var Table[pointer, pointer]): T
   elif T is object or T is tuple:
     for name, original, copied in fieldPairs(source, result):
       when T is typeof(default(Chunk)[]) and name in ["owner", "dispatchCache", "spawnPublished",
-                                                  "spawnPublishedSuperBits"]:
+                                                  "spawnPublishedSuperBits", "plainLoopBody"]:
         discard
       else:
         copied = copyExecutionTemplate(original, copies)

@@ -11853,6 +11853,7 @@ proc resetCallScope(scope, parent: Scope, names: seq[string], mirror = false) =
   scope.inheritScopeContext(parent)
   scope.slotMirror = mirror
   scope.simpleCallScope = false
+  scope.nativeTouched = false
   scope.typeBoundaryToken = nil
   scope.typeBoundarySnapshot = false
   scope.annotationSelfType = NIL
@@ -12271,7 +12272,50 @@ proc releaseCallScope(pools: var VmPools, scope: Scope) =
 proc releaseCallScope(scope: Scope) =
   releaseCallScope(gVmPools, scope)
 
-proc reuseForScope(previous, parent: Scope, body: Chunk, reusable: bool): bool =
+const plainLoopBodyOps = {
+  opNoop, opPushConst, opPop, opNot, opLoadName, opLoadNativeFast, opLoadLocal,
+  opLoadLocalFast, opLoadOuterLocal, opDefineLocal, opRedefineLocal,
+  opSetLocal, opSetOuterLocal, opMakeList, opMakeListSplice, opMakeMap,
+  opMakeHashMap, opMakeNode, opMakeSelector, opApplySelector,
+  opApplySelectorTop, opCall0, opCall1, opCall2, opCall, opCallSplice,
+  opCallName0, opCallName1, opCallNameN, opCallLocal0, opCallLocal1,
+  opCallLocalN, opCallParentLocal0, opCallParentLocal1, opCallOuterLocal0,
+  opCallOuterLocal1, opNew, opResolveMessage, opResolveQualifiedMessage,
+  opQualifiedSend, opSetPath, opPlaceSendReceiver, opIntAdd2, opIntSub2,
+  opIntMul2, opIntLt2, opIntGt2, opIntLe2, opIntGe2, opIntAddConst,
+  opIntSubConst, opIntMulConst, opIntLtConst, opIntGtConst, opIntLeConst,
+  opIntGeConst, opIntFast2, opIntFastConst, opNativeFast2, opNativeFastConst,
+  opForEach, opMakeIterator, opIteratorHasNext, opIteratorNext,
+  opIteratorClose, opLoopBreak, opLoopContinue, opLoopEnter, opLoopLeave,
+  opFail, opPanic, opExplicitReturn, opJump, opJumpIfFalse,
+  opJumpIfFalseOrPop, opJumpIfTrueOrPop, opJumpIfPresentOrPop,
+  opJumpIfAbsent, opReturn, opCheckType, opCheckCallableArguments,
+  opCheckCallableResult}
+
+proc loopBodyIsPlain(loop: ForProto): bool =
+  ## Whether one iteration of `loop` can change nothing in its scope but its
+  ## own slots: the pattern is a single name, the body brings no scope-level
+  ## setup of its own, and every instruction is one that reads, calls, or
+  ## writes a slot. Defining or setting by name, declaring a type, a syntax
+  ## call, eval and every declaration are absent from the list. What a called
+  ## native does is not visible here; `Scope.nativeTouched` covers that.
+  let body = loop.body
+  if body.plainLoopBody == 0:
+    var plain = loop.pattern.kind == vkSymbol and not body.mirrorSlots and
+      body.finalMacroContext == nil and body.privateLocalSlots.len == 0 and
+      body.exportExcludedNames.len == 0 and body.moduleRefNames.len == 0 and
+      body.subchunks.len == 0 and body.matches.len == 0 and
+      body.tries.len == 0 and body.functions.len == 0
+    if plain:
+      for inst in body.instructions:
+        if inst.op notin plainLoopBodyOps:
+          plain = false
+          break
+    body.plainLoopBody = if plain: 1 else: 2
+  body.plainLoopBody == 1
+
+proc reuseForScope(previous, parent: Scope, body: Chunk, reusable: bool,
+                   plain = false): bool =
   ## Reuse storage only after both compiler and ownership proofs. The old
   ## bindings are released before the next item is installed; captured scopes,
   ## dynamic declarations, suspension and nested scopes use fresh activations.
@@ -12283,6 +12327,15 @@ proc reuseForScope(previous, parent: Scope, body: Chunk, reusable: bool): bool =
   ## twice more per iteration, each time registering an ORC cycle candidate.
   if reusable and not previous.closureHeld and previous.scopeIsUniquelyOwned:
     previous.clearDefinedCallSlots()
+    if plain and not previous.nativeTouched and previous.vars.len == 0 and
+        previous.varTypes.len == 0 and previous.slotTypes.len == 0 and
+        previous.impls.len == 0 and previous.wildcardFallbacks.len == 0 and
+        previous.ownedTasks.len == 0:
+      # Nothing but the slots just cleared can differ from a freshly reset
+      # scope: the body is plain, no scope-taking native ran, and the
+      # containers such a native or a stray path would fill are empty.
+      previous.inheritScopeContext(parent)
+      return true
     previous.resetCallScope(parent, body.localNames, mirror = body.mirrorSlots)
     previous.prepareChunkScope(body, layoutInstalled = true)
     return true
@@ -17830,7 +17883,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     let ownerChunk {.cursor.} = frames[^1].chunk
     let loopIndex = ownerChunk.instructions[frames[^1].ip - 1].intArg
     if reuseForScope(scope, ownerScope, curForBody,
-                     ownerChunk.forLoops[loopIndex].reuseScope):
+                     ownerChunk.forLoops[loopIndex].reuseScope,
+                     ownerChunk.forLoops[loopIndex].reuseScope and
+                       loopBodyIsPlain(ownerChunk.forLoops[loopIndex])):
       if not bindForItem(scope, curForPattern, item):
         onMismatch
         raiseMatchError(scope, "for pattern did not match an item")
@@ -31575,6 +31630,9 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
       return impl(args)
     let callImpl = callee.nativeCallImpl
     let contextImpl = callee.nativeContextCallImpl
+    # These natives are handed the caller's scope and may define into it.
+    if dispatchScope != nil:
+      dispatchScope.nativeTouched = true
     if callImpl == nil and contextImpl == nil:
       raise newException(GeneError,
         "native function '" & callee.nativeFnName & "' has no implementation")
