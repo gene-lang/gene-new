@@ -24,6 +24,7 @@
 (import ^from "./ui/model.gene" [UiClient UiNavigation])
 (import ^from "./ui/router.gene" [navigate update_url])
 (import ^from "./ui/navigation.gene" [view_url])
+(import ^from "./sidebar.gene" [close_mobile_sidebar])
 (import ^from "./notices.gene" [Notices create_notices put_notice remove_notice])
 (import ^from "./confirmations.gene" [Confirmations create_confirmations command_confirmation])
 (import ^from "./question_state.gene" [waiting_batch])
@@ -970,7 +971,8 @@
   ($browser/replace_url
     (view_url id ((Path "navigation" "active") client/ui)
       ((Path "navigation" "presentation") client/ui) client/safe_ui))
-  ($dom/set_class client/root "menu_open" false)
+  (var sidebar_ui : UiClient client/ui)
+  (close_mobile_sidebar sidebar_ui/navigation/sidebar)
   (notice client "")
   (render_sessions client)
   (var tab (session_tab client id))
@@ -1855,16 +1857,6 @@
     "scroll"
     (fn [event : Any] : Void
       (set client/autoscroll ($dom/near_end client/transcript 80.0))))
-  ($dom/add_event_listener
-    ($dom/element "menu")
-    "click"
-    (fn [event : Any] : Void
-      ($dom/set_class root "menu_open" true)))
-  ($dom/add_event_listener
-    ($dom/element "close_menu")
-    "click"
-    (fn [event : Any] : Void
-      ($dom/set_class root "menu_open" false)))
   ($dom/add_event_listener
     ($dom/element "status_button")
     "click"

@@ -64,6 +64,12 @@ records, round state and reconnect state. Switching tabs preserves the draft
 and cached transcript. Background streams continue updating their tabs.
 Closing a tab releases its viewer, allowing later idle unloading.
 
+The hamburger button at the start of the conversation tab bar toggles the left
+conversation menu. On desktop, hiding it gives the space to the conversation
+and any docked plugin view; the choice is remembered in the current browser
+tab. On narrow screens it opens a drawer, which closes after selecting a
+conversation, using Close menu, or pressing Escape.
+
 A session can be renamed and pinned or unpinned. Metadata edits carry the last
 seen revision; a stale edit fails rather than overwriting a newer one.
 

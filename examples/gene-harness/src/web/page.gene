@@ -86,9 +86,13 @@
                  (button ^id "status_button" ^type "button" "Workspace status")
                  (a ^href "/about/" "About Gene Harness")))
              (main ^id "classic_workspace" ^class "workspace"
-               (nav ^id "session_tabs" ^class "session_tabs" ^aria-label "Open sessions")
+               (div ^class "session_tab_bar"
+                 (button ^id "menu" ^class "quiet menu_toggle" ^type "button"
+                   ^aria-label "Hide conversations" ^aria-controls "classic_sidebar"
+                   ^aria-expanded "true" ^title "Hide conversations"
+                   (span ^aria-hidden "true" "☰"))
+                 (nav ^id "session_tabs" ^class "session_tabs" ^aria-label "Open sessions"))
                (header ^class "topbar"
-                 (button ^id "menu" ^class "mobile_only quiet" ^type "button" ^aria-label "Open conversations" "☰")
                  (div ^class "heading"
                    (h1 ^id "conversation_title" "New conversation")
                    (div ^id "mode" ^class "mode" "Local workspace")

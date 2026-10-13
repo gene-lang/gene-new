@@ -1,0 +1,66 @@
+# Conversation navigation visibility belongs to this browser tab.
+(mod harness_sidebar ^profile web)
+
+(type Sidebar ^props {^root EventTarget ^desktop_open Bool ^mobile_open Bool ^full_view Bool})
+
+(fn narrow_sidebar? [] : Bool
+  (<= ($dom/inner_width) 900.0))
+
+(fn render_sidebar [state : Sidebar] : Void
+  (var root state/root)
+  (var sidebar ($dom/element "classic_sidebar"))
+  (var toggle ($dom/element "menu"))
+  (var narrow (narrow_sidebar?))
+  (var open (&& (! state/full_view) (if narrow state/mobile_open state/desktop_open)))
+  (set sidebar/hidden (! open))
+  ($dom/set_class root "sidebar_collapsed" (! state/desktop_open))
+  ($dom/set_class root "menu_open" (&& narrow open))
+  ($dom/set_attribute toggle "aria-expanded" (if open "true" "false"))
+  (var label (if open "Hide conversations" "Show conversations"))
+  ($dom/set_attribute toggle "aria-label" label)
+  ($dom/set_attribute toggle "title" label))
+
+(fn sidebar_layout [state : Sidebar, full : Bool] : Void
+  (set state/full_view full)
+  (if_yes full (set state/mobile_open false))
+  (render_sidebar state))
+
+(fn close_mobile_sidebar [state : Sidebar] : Void
+  (set state/mobile_open false)
+  (render_sidebar state))
+
+(fn create_sidebar [root : EventTarget] : Sidebar
+  (var preference : Str (?? ($session_storage/get "gene-harness/sidebar") "open"))
+  (var state (Sidebar ^root root ^desktop_open (!= preference "closed") ^!mobile_open ^!full_view))
+  ($dom/add_event_listener
+    ($dom/element "menu")
+    "click"
+    (fn [event : Any] : Void
+      (if (narrow_sidebar?)
+        (set state/mobile_open (! state/mobile_open))
+        (do
+          (set state/desktop_open (! state/desktop_open))
+          ($session_storage/set "gene-harness/sidebar" (if state/desktop_open "open" "closed"))))
+      (render_sidebar state)))
+  ($dom/add_event_listener
+    ($dom/element "close_menu")
+    "click"
+    (fn [event : Any] : Void
+      (close_mobile_sidebar state)
+      ($dom/focus ($dom/element "menu"))))
+  ($dom/add_event_listener
+    ($dom/window)
+    "resize"
+    (fn [event : Any] : Void
+      (if_not (narrow_sidebar?) (set state/mobile_open false))
+      (render_sidebar state)))
+  ($dom/add_event_listener
+    ($dom/element "harness_root")
+    "keydown"
+    (fn [event : Any] : Void
+      (if_yes (&& state/mobile_open (== ($event/key event) "Escape"))
+        ($dom/prevent_default event)
+        (close_mobile_sidebar state)
+        ($dom/focus ($dom/element "menu")))))
+  (render_sidebar state)
+  state)

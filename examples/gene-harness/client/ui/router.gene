@@ -3,6 +3,7 @@
 (import [UiClient UiNode UiNavigation text flag copy_map notice persist_view sync_controls] ^from "./model.gene")
 (import [find_view initial_view presentation_for return_view view_url] ^from "./navigation.gene")
 (import [query_value] ^from "../state.gene")
+(import [sidebar_layout] ^from "../sidebar.gene")
 
 (fn navigation_key [ui : UiClient] : Str
   $"gene-harness/ui-navigation/${ui/workspace}")
@@ -55,13 +56,11 @@
   (var panel ($dom/element "ui_panel"))
   (set panel/hidden (! active))
   (var classic ($dom/element "classic_workspace"))
-  (var sidebar ($dom/element "classic_sidebar"))
   (set classic/hidden full)
-  (set sidebar/hidden full)
+  (sidebar_layout nav/sidebar full)
   ($dom/set_class ui/root "has_ui_panel" docked)
   ($dom/set_class ui/root "ui_full" full)
   ($dom/set_class ui/root "ui_right" (== nav/side "right"))
-  (if_yes full ($dom/set_class ui/root "menu_open" false))
   (var toggle ($dom/element "ui_toggle"))
   (set toggle/hidden (! active))
   ($dom/set_text toggle (if full "Show chat" "Hide chat"))
