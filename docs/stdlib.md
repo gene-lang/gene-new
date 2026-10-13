@@ -668,7 +668,8 @@ pages it changed, and nothing is republished.
 A missing file is an error unless `^^create`; a created file (and its WAL
 and journal sidecars) is owner-only. Connections share the same `Db` protocol
 and report `db/storage` as `"file"`. The Commons world store
-(`examples/world/server/persistence.gene`) is the worked example.
+(`server/persistence.gene` in the
+[Commons repository](https://github.com/gene-lang/world)) is the worked example.
 
 Postgres is available through `$db/postgres` with the same Db operations and
 its backend-specific connection and placeholder syntax. Do not interpolate

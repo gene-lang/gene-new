@@ -419,7 +419,13 @@
 
   (set connection (publish_connection root host/epoch port auth/secret))
   ($println "Gene Harness is ready.")
-  ($println $"Host: ${origin}. Use gene-harness --workspace ${root} link to connect a browser.")
+  ($println $"Host: ${origin}")
+  (if ($os/stdout_tty?)
+    (then
+      (let browser_link ($fs/read_text ($path/join root ".gene-harness/link")))
+      ($println $"Browser: ${browser_link}"))
+    (else
+      ($println $"Use gene-harness --workspace ${root} link to connect a browser.")))
   ($io/flush_stdout)
   ($println (if offline
     "Command demo mode: no model connected. Restart without --offline or GENE_HARNESS_OFFLINE=1 to chat."

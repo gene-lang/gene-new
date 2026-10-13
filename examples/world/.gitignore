@@ -1,8 +1,0 @@
-# Generated web output — never edited by hand.
-/dist/
-
-# Project build views and sandboxes (gene clean).
-/.gene/
-
-# The default world directory of `gene run world` (--root data/world).
-/data/

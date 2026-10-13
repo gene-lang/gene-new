@@ -121,8 +121,10 @@ its cookie in an owner-only file. Loopback, Host, Origin and CSRF checks remain.
 An exchange carrying a valid cookie reuses its cookie/CSRF pair, so reopening
 the link in another tab does not invalidate the CSRF value cached by older tabs.
 
-`link` reads the live connection metadata and owner-only URL. Startup diagnostics
-do not print the token. An owner reset replaces the token, clears client records,
+`link` reads the live connection metadata and owner-only URL. Startup prints
+that authenticated URL when stdout is a terminal, including through the
+foreground supervisor. Redirected startup diagnostics omit the token. An
+owner reset replaces the token, clears client records,
 updates the link and closes authenticated streams without cancelling admitted
 work. Reset clears persisted cookies before publishing the new secret. Cookie
 records also carry a hash identifying the secret generation, so stale cookie

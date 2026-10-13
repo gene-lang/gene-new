@@ -4,15 +4,15 @@
 
 ```text
 bin/gene run examples/gene-harness/src/main.gene web --workspace /path/to/project
-# In another terminal:
-bin/gene run examples/gene-harness/src/main.gene --workspace /path/to/project link
+# Open the Browser URL printed at startup.
 ```
 
 The web host owns the workspace lock and is the only production profile.
 Multiple browser and CLI clients share it. The host runs independently of its
 clients; closing a client leaves admitted rounds and operator commands running.
 
-The owner retrieves a reusable connection link with `link`. Its token is stored
+Interactive startup prints the reusable connection link; `link` retrieves it
+again later or for a host whose stdout is redirected. Its token is stored
 in an owner-only file and stays valid across restart until explicit reset. The
 page exchanges it for an HttpOnly, SameSite cookie and CSRF value, then removes
 the token from the URL. Cookies have a one-year browser lifetime; the host keeps
@@ -31,7 +31,8 @@ automatically migrated.
 `auth reset` replaces the token, invalidates all client credentials and closes
 authenticated streams. Admitted work continues. The CLI uses the same exchange,
 cookie and CSRF checks, with an owner-only local cookie cache. Every authenticated
-client has full owner permissions. Startup diagnostics omit the connection token.
+client has full owner permissions. Captured or redirected startup diagnostics
+omit the connection token.
 
 The host binds to 127.0.0.1. It checks Host and Origin, and mutations require
 the current CSRF value. Responses have no-store and restrictive content

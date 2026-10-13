@@ -40,8 +40,10 @@ maintenance commands. Set the variable once to omit `--workspace`:
 ```sh
 export GENE_HARNESS_WORKSPACE=/path/to/project
 examples/gene-harness/bin/gene-harness web
+# Open the Browser URL printed at startup.
 # In another terminal with the same variable exported:
 examples/gene-harness/bin/gene-harness status
+# Retrieve the connection URL again when needed:
 examples/gene-harness/bin/gene-harness link
 ```
 
@@ -58,14 +60,16 @@ For restart supervision, put Gene on PATH or set GENE_BINARY and use:
 
 ```text
 examples/gene-harness/bin/gene-harness web --workspace /path/to/project
+# Optional: retrieve the URL again later.
 examples/gene-harness/bin/gene-harness --workspace /path/to/project link
 ```
 
 The foreground supervisor is written in Gene and restarts the host after exit
 status 75. With no command, the launcher starts `web`. Use an external process
 supervisor for unattended/background operation; host diagnostics go to stdout
-and stderr. The connection token is retrieved with `link`, not printed in
-startup diagnostics.
+and stderr. When stdout is a terminal (including tmux), startup prints a
+ready-to-open authenticated Browser URL. Redirected startup output omits its
+token; use `link` to retrieve the URL from another terminal.
 
 The first start selects a free loopback port. Later starts reuse the remembered
 port; a fresh start announces a new address if that port is occupied. `--port
@@ -79,7 +83,7 @@ using Codex OAuth, including continuation, verification and recovery.
 
 | Command | Effect |
 | --- | --- |
-| `web` | Start the foreground workspace host. This is the default. |
+| `web` | Start the foreground workspace host and print the Browser URL in a terminal. This is the default. |
 | `status`, `link` | Inspect the running host or print its reusable owner connection URL. |
 | `sessions [create --title TITLE]` | List sessions or create one and return its id. |
 | `send [--wait] TEXT` | Submit a literal prompt to `--session ID`; optionally wait for its result. |
@@ -209,8 +213,9 @@ questions pauses a trigger round's running budget.
 
 ## Browser and CLI
 
-The workspace owner retrieves a reusable connection URL with `gene-harness
---workspace DIR link`. Its token survives restarts and remains valid until
+Interactive `web` startup prints the reusable connection URL. The workspace
+owner can retrieve it again with `gene-harness --workspace DIR link`.
+Its token survives restarts and remains valid until
 explicit reset. Every authenticated browser and CLI client has the same full
 workspace permissions; opening another client does not invalidate existing ones.
 
