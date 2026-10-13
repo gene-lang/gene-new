@@ -2,22 +2,19 @@
 (import ^from "../kernel" [rows contribute])
 
 (const discovery_instructions """
-Discover before guessing an API. (discover "topic") searches active documentation and capabilities by names, summaries and tags; results include owners, callable signatures and chapter references. Narrow with ^kind "docs" or "functions", or ^owner "plugin_id". Results are paged: pass next_offset as ^offset to continue. (doc "chapter/name") loads one chapter. These helpers, session_id and workspace_root are always available; discovered functions are already callable in response code, /run and the REPL.
-Read (doc "gene/overview") before authoring Gene. Load focused chapters and recipes when needed; do not read every chapter in advance. For UI work, start with (discover "ui") and follow the relevant recipes. Persist incremental source early, check publication feedback, and distinguish server previews from actual browser verification.
-Plugins follow the same practice: concise capability descriptions, searchable tags and references, detailed instructions/examples in owned docs rows. Keep prompt contributions to essential orientation, not full manuals.
+(discover "topic") searches active documentation and capabilities by names, summaries and tags; results include owners, callable signatures and chapter references. Narrow with ^kind "docs" or "functions", or ^owner "plugin_id". Results are paged: pass next_offset as ^offset to continue. (doc "chapter/name") loads one chapter. These helpers, session_id and workspace_root are always available; discovered functions are already callable in response code, /run and the REPL.
 """)
 
 (const response_format """
 Return Gene code, optionally followed by raw attachment and patch blocks. Do not wrap code in Markdown or return a JSON envelope.
-Start with a # goal comment and comment each step for your future self.
 The last value is the outcome. (Outcome ^^done ^reply "...") finishes with a non-empty reply; done rejects prompt and questions.
-(Outcome ^prompt value ^reply "concise progress reply") continues. Include ^reply in every intermediate Outcome, including questions: one short, plain-text sentence (about 10–20 words) describing this turn's progress or next action. It is displayed beside "Turn N:". A normal value becomes a prompt. Empty prompt with no append_prompt items is an error.
+(Outcome ^prompt value ^reply "concise progress reply") continues. A normal value becomes a prompt. Empty prompt with no append_prompt items is an error.
 (append_prompt "label" value) adds a labeled output; the label must be a literal string matching [a-z0-9_]+, not a computed expression. Errors and patch results become labeled next-request items. Console print/println is not history.
 (Outcome ^questions [{^id "name" ^prompt "Project name?"}] ^reply "I need the project name before creating its files.") waits. Up to 8 unique ids; choices, recommended, multi and kind confirm are supported. Skipped answers are unanswered.
 Attachments start at column 1: <<<name END followed by newline, raw body lines, then END on its own line. Access with (attachment "name"). Preserve trailing newlines. One V4A *** Begin Patch / *** End Patch block is allowed; it applies before code. Patch paths must be relative to the workspace (for example server.gene), never absolute or containing .. segments. Patch failure skips code.
 ELIDED attachments and [elided ...] markers in history are summaries, not file contents. Never copy them into a new attachment; use recall to recover the original body or provide full new contents.
 Use (recall "N.label") for elided bodies.
-Each round has a turn budget, shown in the latest request as [harness_budget]. Plan exploration, implementation and verification within it. A continuation message starts another round with the existing files and history.
+Each round has a turn budget. When budget_advisory is active, it is shown in the latest request as [harness_budget].
 
 # Finish
 (Outcome ^^done ^reply "Finished.")

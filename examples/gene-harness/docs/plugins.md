@@ -96,6 +96,13 @@ only contributed capabilities so retirement withdraws the guidance with them.
 Docs rows have the same ownership and lease semantics as function rows.
 See [discovery](discovery.md) for search, pagination and metadata behavior.
 
+The baseline's `working_instructions` plugin supplies the default preferences
+for goal comments, progress replies, discovery and verification. Replace it
+with `register_plugin ^^replace "working_instructions" ...`, disable it, or
+restore it like any other built-in. Its prompt contribution is optional; the
+host always supplies the response grammar, runtime constraints, discovery
+helper contracts and dynamic workspace/session context.
+
 `prepare` on a provider row returns plain model-visible data
 without credentials; `send` adds transport authentication and makes one
 attempt. A provider row is inert until selected. Callback limits apply to
@@ -157,11 +164,41 @@ as `turn/request`, then records the final provider-specific input as
 skipped with a `trace` diagnostic. A listener may call `next` once; a second
 call is diagnosed and does not rerun later listeners.
 
-`history/compact` takes the first valid policy containing `trigger_bytes`
-and `target_bytes`. The built-in `history_basic` policy applies the usual
-75% and 55% thresholds. The baseline profile requires it. Hook rows come from
-the turn's leased composition, so a concurrent plugin replacement does not
-change an in-progress turn.
+`history/compact` receives a frozen context containing `session`, `round`,
+`turn`, `window_tokens`, `instructions` and `messages`. Messages are the current
+history records, including their round ids, content and settled forms. The hook
+takes the first valid policy; returning nil delegates to the next listener.
+Policies are plain data, with finite numbers satisfying
+`trigger_bytes > target_bytes > 0` and these optional fields:
+
+| Field | Default | Effect |
+| --- | --- | --- |
+| `retain_rounds` | `[]` | Round ids whose messages must survive compaction without assistant-code elision or summarization. Unknown ids have no effect. |
+| `elide_assistant` | `true` | Allow older, unretained assistant code to be shortened to comments, append_prompt, Outcome and elision lines before summarization. |
+| `summary_instructions` | `"Summarize earlier work, decisions, outputs and recall ids."` | The summary task; the host appends the prose-only and byte-budget constraints. |
+
+For example, a hook can choose retained rounds from `context/messages` and
+return:
+
+```gene
+{^trigger_bytes (* context/window_tokens 2.625)
+ ^target_bytes (* context/window_tokens 1.925)
+ ^retain_rounds ["round-with-important-decisions"]
+ ^!elide_assistant
+ ^summary_instructions "Preserve deployment decisions, test failures and recall ids."}
+```
+
+Threshold-only plugins retain the existing defaults. Invalid policies are
+diagnosed and skipped. Retention applies to the current history representation;
+it cannot recover text already elided or summarized. The host still protects
+the active task and latest assistant/request pair, preserves media references,
+records model calls and persists history. If retained context cannot fit below
+the target, compaction fails without publishing a replacement history.
+
+The built-in `history_basic` policy applies the usual 75% and 55% thresholds.
+The baseline requires its `history/compact/history_basic` hook, so a replacement
+must contribute that key. Hook rows come from the turn's leased composition;
+a concurrent plugin replacement does not change an in-progress turn.
 
 ### Observe durable facts
 

@@ -7,6 +7,7 @@
 (import [workspace_bindings] ^from "../../../src/agents/harness_turn")
 (import [acquire_snapshot release_snapshot] ^from "../../../src/runtime/composition")
 (import [contribute doc] ^from "../../../src/kernel")
+(import [register_plugin set_plugin_enabled restore_plugin] ^from "../../../src/storage/workspace")
 
 (describe "Registry-backed instructions"
   (it "renders concise orientation and dynamic context while loading manuals on demand" []
@@ -54,5 +55,46 @@
             (release_snapshot runtime/h/snapshots lease))
         ensure
           (close_runtime runtime))))))
+
+(describe "Working instruction plugin"
+  (it "replaces preferences on new snapshots and restores the profile default" []
+    (isolated this_mod/.path "replaces preferences on new snapshots and restores the profile default"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (try
+          (let session {^kind "interactive"})
+          (let lease (acquire_snapshot runtime/h/snapshots))
+          (try
+            (register_plugin ^^replace runtime/workspace runtime/h "working_instructions"
+              (quote (mod plugin
+                (import ^from "src/plugin_api.gene" [Plugin PluginHost])
+                (fn init [descriptor]
+                  (Plugin ^id "working_instructions"
+                    ^activate (fn [host]
+                      (host .PluginHost:contribute "prompt"
+                        {^name "working_instructions" ^text "Prefer short investigation notes."})))))))
+            (let current (assemble_instructions runtime session))
+            ($assert ($str/contains? current "Prefer short investigation notes."))
+            ($assert (! ($str/contains? current "Start with a # goal comment")))
+            ($assert (! ($str/contains? current "Include ^reply in every intermediate")))
+            ($assert (! ($str/contains? current "Discover before guessing an API")))
+            ($assert ($str/starts_with? current response_format))
+            ($assert ($str/contains? current "(discover \"topic\")"))
+            (let previous
+              ($runtime/with_context {^composition runtime/h/snapshots ^snapshot lease/snapshot}
+                (fn [] (assemble_instructions runtime session))))
+            ($assert ($str/contains? previous "Start with a # goal comment"))
+            ($assert (! ($str/contains? previous "Prefer short investigation notes.")))
+          ensure
+            (release_snapshot runtime/h/snapshots lease))
+          (set_plugin_enabled runtime/workspace runtime/h "working_instructions" false)
+          (let disabled (assemble_instructions runtime session))
+          ($assert (! ($str/contains? disabled "Prefer short investigation notes.")))
+          ($assert ($str/starts_with? disabled response_format))
+          ($assert ($str/contains? disabled "session_id and workspace_root"))
+          (restore_plugin runtime/workspace runtime/h "working_instructions")
+          ($assert ($str/contains? (assemble_instructions runtime session)
+            "Start with a # goal comment"))
+        ensure (close_runtime runtime))))))
 
 (fn main [args] : Int (run_spec args))

@@ -1,5 +1,6 @@
 (mod hooks)
 (import ^from "../storage/state" [append_core_event])
+(import ^from "./history_policy" [normalize_history_policy])
 
 (type HookDispatchError ^props {^message Str} ^impl [Error])
 (impl Error for HookDispatchError)
@@ -63,19 +64,14 @@
 
 (fn history_policy [runtime, snapshot, context]
   (let caller_context ($runtime/context))
+  (let input ($freeze context))
   (for listener in (hook_rows snapshot "history/compact")
     (try
       (let decision
         ($runtime/with_context caller_context
-          (fn [] (listener/run context))))
+          (fn [] (listener/run input))))
       (if_not ($absent? decision)
-        (if (&& (! ($absent? decision/trigger_bytes))
-                (! ($absent? decision/target_bytes))
-                (> decision/trigger_bytes decision/target_bytes)
-                (> decision/target_bytes 0))
-          (return decision)
-          (hook_failure runtime context/session "history/compact"
-            listener/name "listener returned invalid thresholds")))
+        (return (normalize_history_policy decision)))
     catch Any
       ($runtime/with_context caller_context
         (fn []

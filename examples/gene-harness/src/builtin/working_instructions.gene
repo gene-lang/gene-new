@@ -1,0 +1,19 @@
+(mod working_instructions)
+(import ^from "../plugin_api" [Plugin PluginHost])
+
+(const working_preferences """
+Start with a # goal comment and comment each step for your future self.
+Include ^reply in every intermediate Outcome, including questions: one short, plain-text sentence (about 10–20 words) describing this turn's progress or next action. It is displayed beside "Turn N:".
+Discover before guessing an API. Read (doc "gene/overview") before authoring Gene. Load focused chapters and recipes when needed; do not read every chapter in advance. For UI work, start with (discover "ui") and follow the relevant recipes. Persist incremental source early, check publication feedback, and distinguish server previews from actual browser verification.
+Plugins follow the same practice: concise capability descriptions, searchable tags and references, detailed instructions/examples in owned docs rows. Keep prompt contributions to essential orientation, not full manuals.
+Plan exploration, implementation and verification within the round's turn budget. A continuation message starts another round with the existing files and history.
+""")
+
+(fn working_instructions [] : Plugin
+  (Plugin ^id "working_instructions"
+    ^provides [["prompt" "working_instructions"]]
+    ^activate (fn [host]
+      (host .PluginHost:contribute "prompt"
+        {^name "working_instructions" ^text working_preferences
+         ^summary "Default discovery, progress and verification preferences."
+         ^tags ["instructions" "workflow" "prompt"]}))))

@@ -10,6 +10,7 @@
     recall_body
     bounded_request
     compact_history
+    history_state
     write_body])
 (import ^from "../text" [byte_prefix])
 (import ^from "./provider_selection" [readiness_report select_provider])
@@ -156,7 +157,8 @@
           (fn []
             (history_policy runtime lease/snapshot
               {^session session ^round round/id ^turn number
-               ^window_tokens window_tokens}))))
+               ^window_tokens window_tokens ^instructions instructions
+               ^messages ((history_state runtime session) .get "messages")}))))
       (if_not ($absent? policy)
         (compact_history ^policy policy
           runtime

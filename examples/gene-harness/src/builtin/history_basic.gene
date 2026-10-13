@@ -1,10 +1,12 @@
 (mod history_basic)
 (import ^from "../plugin_api" [Plugin PluginHost])
 (import ^from "./documentation" [contribute_text_doc])
+(import ^from "../agents/history_policy" [normalize_history_policy])
 
 (fn basic_history_policy [context]
-  {^trigger_bytes (* context/window_tokens 2.625)
-   ^target_bytes (* context/window_tokens 1.925)})
+  (normalize_history_policy
+    {^trigger_bytes (* context/window_tokens 2.625)
+     ^target_bytes (* context/window_tokens 1.925)}))
 
 (fn history_basic [] : Plugin
   (Plugin ^id "history_basic"
@@ -12,10 +14,10 @@
     ^activate (fn [host]
       (host .PluginHost:contribute "hooks"
         {^point "history/compact" ^name "history_basic"
-         ^summary "Supply history compaction thresholds for the selected context window."
+         ^summary "Supply history thresholds, retention and summary instructions."
          ^tags ["history" "compaction" "hooks"] ^docs ["harness/history"]
          ^run basic_history_policy})
       (contribute_text_doc host "harness/history"
-        "History compaction thresholds, elision and recovering exact bodies."
-        "The history/compact hook supplies trigger_bytes = window_tokens * 2.625 and target_bytes = window_tokens * 1.925 (75% and 55% of the estimated byte window). The baseline requires this policy. Large historical attachments/patches may become stubs; use recall with the original item id to recover exact bodies. ELIDED text is not source and must not be written into files."
+        "History compaction policy, elision and recovering exact bodies."
+        "The history/compact hook receives session, round, turn, window_tokens, instructions and a frozen messages snapshot. Return trigger_bytes > target_bytes > 0. Optional retain_rounds (round ids) protects those messages from compaction; elide_assistant (Bool, default true) controls assistant-code shortening; summary_instructions customizes the summary task. Threshold-only policies retain the defaults. The basic policy uses window_tokens * 2.625 and * 1.925 (75% and 55% of the estimated byte window). The host preserves the active task, latest pair and media references, records summary calls, and refuses compaction if retained context cannot fit. The baseline requires this policy. Large historical attachments/patches may become stubs; use recall with the original item id to recover exact bodies. ELIDED text is not source and must not be written into files."
         ^tags ["history" "compaction" "recall" "hooks"]))))

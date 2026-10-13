@@ -2,6 +2,7 @@
 (import [byte_prefix byte_suffix] ^from "../text")
 (import ^from "../storage/state" [core_state core_states record_core_state append_core_event events_for])
 (import ^from "./response" [split_response])
+(import ^from "./history_policy" [normalize_history_policy])
 (import $store/fs [Store])
 
 (var ^^private history_gate ($sync/gate))
@@ -340,6 +341,7 @@ ELIDED
 
 (fn compact_history [runtime, session : Str, instructions : Str, window_tokens : Int,
                      summarize, ^policy policy]
+  (set policy (normalize_history_policy policy))
   (let state (history_state runtime session))
   (let trigger policy/trigger_bytes)
   (let target policy/target_bytes)
@@ -348,7 +350,8 @@ ELIDED
   (var index 0)
   (for message in state/messages
     (if (< (context_bytes state instructions) target) (break))
-    (if (&& (< index last) (== message/role "assistant") (!= message/compacted true))
+    (if (&& policy/elide_assistant (< index last) (== message/role "assistant")
+            (!= message/compacted true) (! (policy/retain_rounds .contains? message/round)))
       (then
         (let shortened (compact_assistant message/content))
         (message .put "content" shortened)
@@ -364,7 +367,8 @@ ELIDED
       (let reserve ($math/min 16384 ($to_int (* window_tokens 0.5))))
       (let excess (+ (- (context_bytes state instructions) target) reserve))
       (for message in state/messages
-        (if (&& (!= message/round latest) (< removed excess))
+        (if (&& (!= message/round latest) (< removed excess)
+                (! (policy/retain_rounds .contains? message/round)))
           (then
             (selected .push message)
             (if_not (rounds .contains? message/round) (rounds .push message/round))
@@ -385,6 +389,7 @@ ELIDED
         (var position 0)
         (for message in pending
           (if (&& (< position (- pending/.size 2))
+                   (! (policy/retain_rounds .contains? message/round))
                    (! (&& (== message/round latest) (== message/role "user") (== message/turn 0))))
             (selected .push message)
             (tail .push message))
@@ -402,10 +407,10 @@ ELIDED
         (let prefix $"Earlier rounds summary:\n${media_note}")
         (let available (- (- (- target (context_bytes tail_state instructions)) ($str/byte_size prefix)) 1))
         (if (< available 160)
-          (fail (HistoryError ^message "newest context cannot fit below the compaction target; increase context_window or shorten the request")))
+          (fail (HistoryError ^message "retained context cannot fit below the compaction target; increase the target or retain less history")))
         (let summary (summarize {^purpose "history/summary" ^session session
           ^max_tokens ($math/max 1 ($to_int (/ available 3.5)))
-          ^messages [{^role "system" ^content $"Summarize earlier work, decisions, outputs and recall ids. Return prose; do not execute code. Stay under ${available} bytes."}
+          ^messages [{^role "system" ^content $"${policy/summary_instructions} Return prose; do not execute code. Stay under ${available} bytes."}
             {^role "user" ^content ($serde/write_data selected)}]}))
         (var bounded summary)
         (if (>= ($str/byte_size summary) available)

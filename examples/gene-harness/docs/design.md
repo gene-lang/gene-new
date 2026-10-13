@@ -205,7 +205,10 @@ dispatch writes a failed turn end with its stage and no invented model call.
 Instructions come entirely from ordered `prompt` rows: the loop's response
 grammar first, essential mounted plugin orientation next, and dynamic workspace,
 session and discovery instructions last. Full manuals and callable catalogs are
-loaded on demand. `gene_reference` contributes a short language orientation;
+loaded on demand. `working_instructions` owns the default goal-comment,
+progress-reply, discovery and verification preferences. It is optional and
+replaceable; response grammar, runtime constraints and helper contracts stay
+with the host. `gene_reference` contributes a short language orientation;
 the Gene skill is the `gene/overview` docs chapter. Plugin administration and
 triggers contribute searchable functions and owned docs rather than full prompt
 sections. The web entry contributes a short browser orientation.
@@ -483,8 +486,11 @@ The loop leases ordered `hooks` rows by `^point` and `^name`. A
 callable. Calling `next` delegates to the following listener; returning
 without it decides the value. The built-in `budget_advisory` contributes the
 small item shown in the full request and omitted from its settled form.
-`history/compact` takes the first valid policy; `history_basic` supplies the
-75% trigger and 55% target. The baseline profile requires that hook, so
+`history/compact` receives frozen history messages and instructions alongside
+session, round, turn and window size. It takes the first valid data policy:
+byte thresholds, optional retained round ids, an assistant-elision flag and
+summary instructions. Threshold-only policies retain their earlier behavior.
+`history_basic` supplies the 75% trigger and 55% target. The baseline profile requires that hook, so
 disabling it refuses a round at admission. A failed or timed-out listener is
 skipped with a durable `trace` diagnostic. Hooks shape values before the loop records them;
 they cannot alter or suppress `model/request`, `model/result` or `turn/end`.
@@ -551,11 +557,15 @@ all messages through the previous assistant response remain byte-identical,
 and its following full request is the first content message that settles.
 
 Tokens are estimated from bytes when no provider count is available. The
-`history_basic` hook decides at 75% of the configured window; compaction first
-keeps comments, append_prompt and Outcome lines with stubs. If more reduction
+`history_basic` hook decides at 75% of the configured window; by default,
+compaction first keeps comments, append_prompt and Outcome lines with stubs.
+A policy can disable that elision, protect named rounds and customize summary
+instructions. Retained rounds keep their existing representation through both
+elision and summarization. If more reduction
 is required, one provider call
 summarizes old whole rounds into a durable history/summary message. The newest
-request is preserved; the policy target is below 55%.
+request is preserved; the default policy target is below 55%. If protected
+context cannot fit, the host fails without publishing replacement history.
 
 Session collection removes its index entry and stream. Blob writers lease
 the store through admission and receipt publication. Collection closes new

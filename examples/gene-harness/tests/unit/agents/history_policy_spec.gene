@@ -1,0 +1,34 @@
+(import $test [describe it])
+(import [normalize_history_policy default_summary_instructions]
+  ^from "../../../src/agents/history_policy")
+
+(describe "History policy data"
+  (it "preserves threshold-only defaults and freezes the returned policy" []
+    (let policy (normalize_history_policy {^trigger_bytes 2625.0 ^target_bytes 1925.0}))
+    ($assert (== policy/retain_rounds []))
+    ($assert (== policy/elide_assistant true))
+    ($assert (== policy/summary_instructions default_summary_instructions))
+    ($assert (try (policy/retain_rounds .push "r1") false catch Any true))
+    ($assert (try (policy .put "target_bytes" 0) false catch Any true)))
+
+  (it "rejects malformed thresholds and optional fields" []
+    (for invalid in [nil []
+        {^trigger_bytes "900" ^target_bytes 400}
+        {^trigger_bytes 900 ^target_bytes 0}
+        {^trigger_bytes 400 ^target_bytes 400}
+        {^trigger_bytes 900 ^target_bytes 400 ^retain_rounds "r1"}
+        {^trigger_bytes 900 ^target_bytes 400 ^retain_rounds [1]}
+        {^trigger_bytes 900 ^target_bytes 400 ^retain_rounds [""]}
+        {^trigger_bytes 900 ^target_bytes 400 ^elide_assistant 1}
+        {^trigger_bytes 900 ^target_bytes 400 ^summary_instructions false}
+        {^trigger_bytes 900 ^target_bytes 400 ^summary_instructions "  "}]
+      ($assert (try (normalize_history_policy invalid) false catch Any true)
+        $"accepted invalid history policy: ${invalid}")))
+
+  (it "rejects nonfinite byte thresholds" []
+    (for spelling in ["nan" "+inf" "-inf"]
+      (let value ($serde/read_data ($to_str "(serde_v1 (serde_float \"" spelling "\"))")))
+      ($assert (try
+        (normalize_history_policy {^trigger_bytes value ^target_bytes 400})
+        false
+      catch Any true) $"accepted nonfinite threshold ${spelling}"))))

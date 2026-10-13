@@ -1,0 +1,163 @@
+(import $test [describe it])
+(import [isolated run_spec test_controller] ^from "../../support")
+(import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
+(import [baseline_profile] ^from "../../../src/profiles/baseline")
+(import [append_message compact_history history_state]
+  ^from "../../../src/agents/history")
+(import [history_policy] ^from "../../../src/agents/hooks")
+(import [contribute] ^from "../../../src/kernel")
+(import [acquire_snapshot release_snapshot] ^from "../../../src/runtime/composition")
+(import [register_plugin] ^from "../../../src/storage/workspace")
+(import [events_for] ^from "../../../src/storage/state")
+(import [load_part] ^from "../../../src/agents/model_call")
+(import [submit_round round_receipt close_round_controller]
+  ^from "../../../src/runtime/round_controller")
+
+(fn large_text []
+  (let parts [])
+  (repeat 10000 (parts .push "x"))
+  ($str/join parts ""))
+
+(describe "Pluggable history policy"
+  (it "retains named rounds and customizes summaries without losing persistence" []
+    (isolated this_mod/.path "retains named rounds and customizes summaries without losing persistence"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (let root runtime/root)
+        (try
+          (append_message ^round "old" runtime "default" "user" (large_text))
+          (append_message ^round "old" ^turn 1 runtime "default" "assistant" "(work_to_summarize)")
+          (append_message ^round "pinned" runtime "default" "user" "Keep the exact decision.")
+          (append_message ^round "pinned" ^turn 2 runtime "default" "assistant" "(retained_code)")
+          (append_message ^round "active" runtime "default" "user" "Active task.")
+          (append_message ^round "active" ^turn 3 runtime "default" "assistant" "# latest response")
+          (append_message ^round "active" ^turn 3 runtime "default" "user" "continue")
+          (let policy {^trigger_bytes 3000 ^target_bytes 2000
+            ^retain_rounds ["pinned"] ^!elide_assistant
+            ^summary_instructions "Preserve test failures and decisions."})
+          (compact_history ^policy policy runtime "default" "" 1000
+            (fn [request]
+              ($assert ($str/starts_with? request/messages/0/content
+                "Preserve test failures and decisions. Return prose;"))
+              (let selected ($serde/read_data request/messages/1/content))
+              ($assert (== selected/.size 2) "summary included retained or active messages")
+              ($assert (== selected/1/content "(work_to_summarize)")
+                "disabled assistant elision changed the summary input")
+              "Earlier work summarized."))
+          (let state (history_state runtime "default"))
+          ($assert (== state/messages/.size 6))
+          ($assert (== state/messages/1/content "Keep the exact decision."))
+          ($assert (== state/messages/2/content "(retained_code)"))
+          ($assert (== state/messages/3/content "Active task."))
+          ($assert (== state/messages/5/content "continue"))
+          # Even with assistant elision enabled, pinned code must remain exact.
+          (append_message ^round "another" runtime "default" "user" (large_text))
+          (append_message ^round "newest" runtime "default" "user" "Newest task.")
+          (compact_history ^policy {^trigger_bytes 3000 ^target_bytes 2000
+            ^retain_rounds ["pinned"]} runtime "default" "" 1000
+            (fn [request] "More work summarized."))
+          (let saved (history_state runtime "default"))
+          ($assert (== saved/messages/2/content "(retained_code)"))
+          # A policy cannot silently sacrifice a retained round to meet its target.
+          (let before ($serde/write_data saved))
+          ($assert (try
+            (compact_history ^policy {^trigger_bytes 50 ^target_bytes 40
+              ^retain_rounds ["pinned"]} runtime "default" "" 1000
+              (fn [request] (fail "unfittable policy called the model")))
+            false
+          catch Any ($str/contains? $err/message "cannot fit")))
+          ($assert (== ($serde/write_data (history_state runtime "default")) before)
+            "failed compaction changed persisted history")
+        ensure (close_runtime runtime))
+        (let reopened (open_runtime root "default" (baseline_profile)))
+        (try
+          (let restored (history_state reopened "default"))
+          ($assert (== restored/messages/2/content "(retained_code)"))
+          ($assert (== (($last restored/messages) .get "content") "Newest task."))
+        ensure (close_runtime reopened)))))
+
+  (it "skips invalid policies and prevents mutation of the history snapshot" []
+    (isolated this_mod/.path "skips invalid policies and prevents mutation of the history snapshot"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (try
+          (contribute ^priority -20 runtime/h "core" "hooks"
+            {^point "history/compact" ^name "invalid"
+             ^run (fn [context] {^trigger_bytes 900 ^target_bytes 400 ^retain_rounds [1]})})
+          (contribute ^priority -10 runtime/h "core" "hooks"
+            {^point "history/compact" ^name "mutating"
+             ^run (fn [context]
+               (context/messages/0 .put "content" "corrupted")
+               {^trigger_bytes 900 ^target_bytes 400})})
+          (let lease (acquire_snapshot runtime/h/snapshots))
+          (try
+            (let context {^session "default" ^window_tokens 1000
+              ^messages [{^round "r" ^role "user" ^content "original"}]})
+            (let chosen (history_policy runtime lease/snapshot context))
+            ($assert (== chosen/trigger_bytes 2625.0))
+            ($assert (== context/messages/0/content "original"))
+            (let traces [])
+            (for event in (events_for runtime/events "session" "default")
+              (if (== event/type "trace") (traces .push event/payload/text)))
+            ($assert (== traces/.size 2) $"invalid policies were not diagnosed: ${traces}")
+            ($assert ($str/contains? traces/0 "retain_rounds"))
+          ensure (release_snapshot runtime/h/snapshots lease))
+        ensure (close_runtime runtime)))))
+
+  (it "uses a stored replacement to plan history and records its summary call" []
+    (isolated this_mod/.path "uses a stored replacement to plan history and records its summary call"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (let controller (test_controller runtime
+          (fn [prepared]
+            (if (== prepared/purpose "history/summary")
+              "Summary from the replacement."
+              "(Outcome ^^done ^reply \"done\")"))))
+        (try
+          (let lease (acquire_snapshot runtime/h/snapshots))
+          (try
+            (register_plugin ^^replace runtime/workspace runtime/h "history_basic"
+              (quote (mod plugin
+                (import ^from "src/plugin_api.gene" [Plugin PluginHost])
+                (fn init [descriptor]
+                  (Plugin ^id "history_basic"
+                    ^provides [["hooks" "history/compact/history_basic"]]
+                    ^activate (fn [host]
+                      (host .PluginHost:contribute "hooks"
+                        {^point "history/compact" ^name "history_basic"
+                         ^run (fn [context]
+                           ($assert (> context/messages/.size 0) "history snapshot missing")
+                           ($assert ($str/contains? context/instructions "Return Gene code"))
+                           (let retained [])
+                           (for message in context/messages
+                             (if (== message/content "Pinned decision.") (retained .push message/round)))
+                           {^trigger_bytes 14000 ^target_bytes 12000 ^retain_rounds retained
+                            ^!elide_assistant ^summary_instructions "Keep deployment decisions."})})))))))
+            (let old_policy (history_policy runtime lease/snapshot
+              {^session "default" ^window_tokens 1000}))
+            ($assert (== old_policy/trigger_bytes 2625.0)
+              "a leased turn switched history policies")
+          ensure (release_snapshot runtime/h/snapshots lease))
+          (append_message ^round "old" runtime "default" "user" ($to_str (large_text) (large_text)))
+          (append_message ^round "pinned" runtime "default" "user" "Pinned decision.")
+          (let accepted (submit_round controller "default" "custom-history" 1 "Finish."))
+          (controller/watchers .get; .get "default"; .join)
+          (let receipt (round_receipt controller "default" accepted/id))
+          ($assert (== receipt/state "done") $"replacement failed: ${receipt/message}")
+          (let requests [])
+          (for event in (events_for runtime/events "session" "default")
+            (if (== event/type "model/request") (requests .push event/payload)))
+          ($assert (== requests/.size 2) "summary and main call were not both recorded")
+          ($assert (== requests/0/purpose "history/summary"))
+          (let prepared (load_part runtime requests/0/prepared))
+          ($assert ($str/contains? ($serde/write_data prepared) "Keep deployment decisions."))
+          (let state (history_state runtime "default"))
+          (var found false)
+          (for message in state/messages
+            (if (== message/content "Pinned decision.") (set found true)))
+          ($assert found "replacement policy lost its retained round")
+        ensure
+          (close_round_controller controller)
+          (close_runtime runtime))))))
+
+(fn main [args] : Int (run_spec args))
