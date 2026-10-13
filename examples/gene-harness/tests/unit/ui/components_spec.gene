@@ -117,6 +117,35 @@
     (for source in [(quote (img ^src "https://example.com/x.svg" ^alt "bad")) (quote (img ^src "../x.svg" ^alt "bad")) (quote (img ^src "x.html" ^alt "bad")) (quote (img ^src "x.svg")) (quote (img ^src "x.svg" ^alt "bad" "child")) (quote (img ^src "x.svg" ^alt "bad" ^width 2049)) (quote (img ^src "x.svg" ^alt "bad" ^height 0)) (quote (img ^src "x.svg" ^alt "bad" ^width "100%")) (quote (img ^src "x.svg" ^alt "bad" ^onerror "alert(1)")) (quote (img ^src "x.svg" ^alt "bad" ^style "position:fixed")) (quote (div ^src "x.svg")) (quote (div ^class_name "web_image_grid" ^columns 26)) (quote (div ^class_name "web_image_grid" ^columns 0)) (quote (div ^class_name "web_image_grid" ^inset -1)) (quote (div ^class_name "web_image_grid" ^inset 26)) (quote (div ^class_name "web_image_grid" ^columns "9")) (quote (div ^columns 9)) (quote (button ^class_name "web_image_grid" ^columns 9))]
       ($assert (try (bounded_component_view ^^experimental source) false catch Any true)))))
 
+(describe "Conversation sidebar component contract"
+  (it "admits named host controls only in the sidebar replacement" []
+    (let component
+      (validate_web_component
+        {^name "conversation_sidebar" ^slot "conversation_sidebar"
+         ^view (quote (div ^class_name "sidebar_content"
+           (h3 "Project") (host_widget ^name "filters")
+           (host_widget ^name "conversations")))}))
+    ($assert (== component/view/children/1/tag "host_widget"))
+    ($assert (== component/view/children/2/props/name "conversations"))
+    ($assert (try
+      (bounded_component_view (quote (host_widget ^name "conversations")))
+      false
+    catch Any ($str/contains? $err/message "only available"))))
+
+  (it "rejects duplicate, unknown and decorated host controls" []
+    (for invalid in [
+        (quote (host_widget ^name "unknown"))
+        (quote (host_widget ^name "filters" ^id "sessions"))
+        (quote (host_widget ^name "filters" "extra child"))
+        (quote (div (host_widget ^name "filters")
+          (section (host_widget ^name "filters"))))]
+      ($assert (try (bounded_component_view ^sidebar true invalid) false catch Any true)))
+    ($assert (try
+      (validate_web_component {^name "another_sidebar" ^slot "conversation_sidebar"
+        ^view (quote (p "wrong key"))})
+      false
+    catch Any ($str/contains? $err/message "name must equal")))))
+
 (fn main [args] : Int
   (let result (run ^name (?? args/0 "")))
   result/exit_code)

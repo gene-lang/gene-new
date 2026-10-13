@@ -139,6 +139,12 @@ restore it like any other built-in. Its prompt contribution is optional; the
 host always supplies the response grammar, runtime constraints, discovery
 helper contracts and dynamic workspace/session context.
 
+The baseline's optional `sidebar` plugin owns the conversation sidebar layout.
+It can be disabled, replaced and restored in the same way. Its
+`conversation_sidebar` component composes named host navigation controls with
+ordinary plugin content. The hamburger and Recovery UI remain host-owned.
+See [sidebar plugins](sidebar.md).
+
 `prepare` on a provider row returns plain model-visible data
 without credentials; `send` adds transport authentication and makes one
 attempt. A provider row is inert until selected. Callback limits apply to

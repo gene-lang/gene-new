@@ -46,42 +46,46 @@
                  (strong "Connect to your local Harness")
                  "Run gene-harness --workspace DIR link, then open the returned owner connection URL."))
              (aside ^id "classic_sidebar" ^class "sidebar"
-               (div ^class "brand"
+               (button ^id "close_menu" ^class "mobile_only close_menu" ^type "button" "Close menu")
+               (div ^id "sidebar_view" ^class "sidebar_content"))
+             # Host-owned controls retain their state and handlers while a plugin
+             # chooses where to mount them. Omitted controls stay parked here.
+             (div ^id "sidebar_storage" ^^hidden
+               (div ^id "sidebar_brand" ^class "brand"
                  (span ^class "brand_name" "Gene")
                  (span ^class "brand_detail" "Harness")
                  (span ^class "local" "Local"))
-               (button ^id "close_menu" ^class "mobile_only close_menu" ^type "button" "Close menu")
                (button ^id "create_session" ^class "new_session" ^type "button"
                  (span ^class "plus" ^aria-hidden "true" "+")
                  "New conversation")
-               (input ^id "session_filter" ^class "filter" ^type "search" ^placeholder "Search conversations…" ^aria-label "Find a conversation")
-               (div ^class "session_filters"
-                 (select ^id "kind_filter" ^aria-label "Session kind"
-                   (option ^value "" "Interactive + pinned")
-                   (option ^value "interactive" "Interactive")
-                   (option ^value "heartbeat" "Heartbeat")
-                   (option ^value "scheduled" "Scheduled")
-                   (option ^value "cron" "Cron"))
-                 (select ^id "status_filter" ^aria-label "Round status"
-                   (option ^value "" "Any status")
-                   (option ^value "running" "Running")
-                   (option ^value "waiting" "Waiting")
-                   (option ^value "done" "Done")
-                   (option ^value "failed" "Failed")
-                   (option ^value "cancelled" "Cancelled")
-                   (option ^value "interrupted" "Interrupted"))
-                 (details
-                   (summary "More filters")
-                   (input ^id "trigger_filter" ^placeholder "Trigger id" ^aria-label "Trigger id")
-                   (label "Active since" (input ^id "since_filter" ^type "date"))
-                   (label "Active until" (input ^id "until_filter" ^type "date"))))
+               (div ^id "sidebar_filters"
+                 (input ^id "session_filter" ^class "filter" ^type "search" ^placeholder "Search conversations…" ^aria-label "Find a conversation")
+                 (div ^class "session_filters"
+                   (select ^id "kind_filter" ^aria-label "Session kind"
+                     (option ^value "" "Interactive + pinned")
+                     (option ^value "interactive" "Interactive")
+                     (option ^value "heartbeat" "Heartbeat")
+                     (option ^value "scheduled" "Scheduled")
+                     (option ^value "cron" "Cron"))
+                   (select ^id "status_filter" ^aria-label "Round status"
+                     (option ^value "" "Any status")
+                     (option ^value "running" "Running")
+                     (option ^value "waiting" "Waiting")
+                     (option ^value "done" "Done")
+                     (option ^value "failed" "Failed")
+                     (option ^value "cancelled" "Cancelled")
+                     (option ^value "interrupted" "Interrupted"))
+                   (details
+                     (summary "More filters")
+                     (input ^id "trigger_filter" ^placeholder "Trigger id" ^aria-label "Trigger id")
+                     (label "Active since" (input ^id "since_filter" ^type "date"))
+                     (label "Active until" (input ^id "until_filter" ^type "date")))))
                (div ^id "attention_section" ^^hidden
                  (button ^id "attention_shortcut" ^type "button" "Needs attention")
                  (nav ^id "attention_sessions" ^aria-label "Needs attention"))
-               (div ^class "section_label" "Conversations")
                (div ^id "web_sidebar" ^class "web_components")
                (nav ^id "sessions" ^class "session_list" ^aria-label "Conversations")
-               (div ^class "sidebar_footer"
+               (div ^id "sidebar_tools" ^class "sidebar_footer"
                  (button ^id "triggers_button" ^type "button" "Triggers")
                  (button ^id "status_button" ^type "button" "Workspace status")
                  (a ^href "/about/" "About Gene Harness")))

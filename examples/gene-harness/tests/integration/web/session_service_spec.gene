@@ -15,6 +15,10 @@
 (fn named_component [components, name : Str]
   ($first ($filter components (fn [item] (== item/name name)))))
 
+# These cases count their own contributions independently of the default sidebar.
+(fn fixture_component_count [components]
+  ($size ($filter components (fn [item] (!= item/name "conversation_sidebar")))))
+
 (describe "Harness web turn loop"
   (it "versions ordinary component status before rendering and preserves session context" []
     (isolated this_mod/.path "versions ordinary component status before rendering and preserves session context"
@@ -548,17 +552,17 @@ child/.detach
             "workspace_pulse"
             ($fs/read_text (fixture_path "web_pulse_plugin")))
           (let status (host_status service))
-          ($assert (== status/web_components/.size 3) "ready renderer contribution was dropped")
+          ($assert (== (fixture_component_count status/web_components) 3) "ready renderer contribution was dropped")
           (let pulse
             ($first ($filter status/web_components (fn [item] (== item/name "workspace_pulse")))))
           ($assert (! ($absent? pulse/view)) "named renderer did not render")
           ($assert ($absent? pulse/error) "named renderer failed")
           (set_plugin_enabled service/runtime/workspace service/runtime/h "workspace_pulse" false)
           (let disabled (host_status service))
-          ($assert (== disabled/web_components/.size 2) "disable left named renderer rows")
+          ($assert (== (fixture_component_count disabled/web_components) 2) "disable left named renderer rows")
           (set_plugin_enabled service/runtime/workspace service/runtime/h "workspace_pulse" true)
           (let enabled (host_status service))
-          ($assert (== enabled/web_components/.size 3) "re-enable dropped named renderer")
+          ($assert (== (fixture_component_count enabled/web_components) 3) "re-enable dropped named renderer")
         ensure
           (close_session_service service)))))
 
@@ -585,8 +589,9 @@ child/.detach
           (let before ($os/monotonic_ms))
           (let status (host_status service))
           ($assert (< (- ($os/monotonic_ms) before) 1500) "runaway renderer was not bounded")
-          ($assert (== status/web_components/.size 2) "component failures aborted status")
-          (for item in status/web_components
+          ($assert (== (fixture_component_count status/web_components) 2) "component failures aborted status")
+          (for name in ["welcome" "slow"]
+            (let item (named_component status/web_components name))
             ($assert ($absent? item/view) "failed renderer returned a view")
             ($assert (! ($absent? item/error)) "failed renderer was not reported"))
         ensure
@@ -617,7 +622,7 @@ child/.detach
           ($assert
             (< (- ($os/monotonic_ms) before) 1500)
             "spawned render child escaped its deadline")
-          ($assert (== status/web_components/.size 3) "render task failure aborted status")
+          ($assert (== (fixture_component_count status/web_components) 3) "render task failure aborted status")
           (let panicking (named_component status/web_components "panicking"))
           (let child (named_component status/web_components "child"))
           (let healthy (named_component status/web_components "healthy"))
@@ -661,7 +666,7 @@ child/.detach
           (register_plugin service/runtime/workspace service/runtime/h "counter" ($to_str source))
           (let session (create_session service))
           (let initial (host_status ^session session/id service))
-          ($assert (== initial/web_components/.size 2) "generated components were not published")
+          ($assert (== (fixture_component_count initial/web_components) 2) "generated components were not published")
           (let initial_counter (named_component initial/web_components "counter"))
           ($assert
             (== initial_counter/view/children/0/children/0 "0")
@@ -697,20 +702,20 @@ child/.detach
             ; .get $"${session/id}:${disable/id}"
             ; .join)
           (let disabled (host_status service))
-          ($assert (== disabled/web_components/.size 0) "disabled plugin left stale components")
+          ($assert (== (fixture_component_count disabled/web_components) 0) "disabled plugin left stale components")
           (let enable (command service session/id "/run (enable_plugin \"counter\")"))
           (service/runtime/commands/watchers
             .get
             ; .get $"${session/id}:${enable/id}"
             ; .join)
           (let enabled (host_status service))
-          ($assert (== enabled/web_components/.size 2) "re-enabled components were missing")
+          ($assert (== (fixture_component_count enabled/web_components) 2) "re-enabled components were missing")
         ensure
           (close_session_service service))
         (let reopened (open_session_service ^workspace root ^^offline))
         (try
           (let restored (host_status reopened))
-          ($assert (== restored/web_components/.size 2) "components did not survive restart")
+          ($assert (== (fixture_component_count restored/web_components) 2) "components did not survive restart")
           (let restored_counter (named_component restored/web_components "counter"))
           ($assert
             (== restored_counter/view/children/0/children/0 "1")

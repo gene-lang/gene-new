@@ -24,7 +24,7 @@
 (import ^from "./ui/model.gene" [UiClient UiNavigation])
 (import ^from "./ui/router.gene" [navigate update_url])
 (import ^from "./ui/navigation.gene" [view_url])
-(import ^from "./sidebar.gene" [close_mobile_sidebar])
+(import ^from "./sidebar.gene" [close_mobile_sidebar update_sidebar])
 (import ^from "./notices.gene" [Notices create_notices put_notice remove_notice])
 (import ^from "./confirmations.gene" [Confirmations create_confirmations command_confirmation])
 (import ^from "./question_state.gene" [waiting_batch])
@@ -68,6 +68,14 @@
     buttons))
 
 (fn render_extensions [client : Client] : Void
+  (if_not ($absent? client/ui)
+    (var sidebar_ui : UiClient client/ui)
+    (update_sidebar sidebar_ui/navigation/sidebar client/components
+      (fn [text : Str] : Void (component_command client text))
+      (fn [text : Str] : Void
+        (if_yes (&& client/ready client/connected (! client/sending)) (stage_prompt client text)))
+      (fn [target : Str, presentation : Str] : Void (navigate sidebar_ui target presentation))
+      (&& client/ready client/connected (! client/sending))))
   (for slot in ["sidebar" "toolbar" "composer" "status"]
     (var target ($dom/element $"web_${slot}"))
     ($dom/clear target)

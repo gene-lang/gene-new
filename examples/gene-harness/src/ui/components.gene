@@ -4,7 +4,8 @@
 (type WebComponentError ^props {^message Str} ^impl [Error])
 (impl Error for WebComponentError)
 
-(const component_slots ["sidebar" "toolbar" "composer" "status" "welcome" "status_summary" "panel" "view"])
+(const component_slots ["sidebar" "conversation_sidebar" "toolbar" "composer" "status" "welcome" "status_summary" "panel" "view"])
+(const sidebar_widgets ["brand" "new_conversation" "filters" "attention" "extensions" "conversations" "workspace_tools"])
 (const interactive_tags ["form" "label" "input" "textarea" "select" "option" "table" "thead" "tbody" "tr" "th" "td"])
 (const interactive_attributes ["key" "field" "state" "action" "args" "positional" "name" "placeholder" "checked" "selected" "for" "rows" "required"])
 (const component_tags
@@ -61,7 +62,7 @@
   (fail (WebComponentError ^message ($to_str message
     "; read (doc \"harness/ui/forms\") for keyed controls or (doc \"harness/web_components\") for the full contract"))))
 
-(fn component_view [value, ^depth depth : Int = 0, ^experimental experimental : Bool = false, ^keys keys = nil, ^form form = nil]
+(fn component_view [value, ^depth depth : Int = 0, ^experimental experimental : Bool = false, ^keys keys = nil, ^form form = nil, ^widgets widgets = nil]
   (if (> depth 24) (component_error "web component view exceeds 24 levels"))
   (if ([Str Int Float Bool Nil] .contains? ($head value))
     (return (if ($absent? value) "" ($to_str value))))
@@ -79,10 +80,19 @@
       (set children (?? data/children [])))
     (else
       (component_error "web component view must be a quoted element or data tree")))
-  (if_not (|| (component_tags .contains? tag) (&& experimental (interactive_tags .contains? tag)))
-    (component_error $"unsupported web component element ${tag}"))
   (if (|| (!= ($head props) Map) (!= ($head children) List))
     (component_error "web component props and children must be a map and list"))
+  (if_yes (== tag "host_widget")
+    (if ($absent? widgets)
+      (component_error "host_widget is only available in conversation_sidebar"))
+    (if (|| (!= ($size props) 1) (! (sidebar_widgets .contains? props/name)) (! children/.empty?))
+      (component_error "host_widget requires one supported name and no children"))
+    (if_not ($absent? (widgets .get props/name))
+      (component_error $"duplicate sidebar widget ${props/name}"))
+    (widgets .put props/name true)
+    (return {^tag "host_widget" ^props {^name props/name} ^children []}))
+  (if_not (|| (component_tags .contains? tag) (&& experimental (interactive_tags .contains? tag)))
+    (component_error $"unsupported web component element ${tag}"))
   (let attributes {})
   (for [key item] in props
     (let name ($to_str key))
@@ -174,7 +184,7 @@
     (if (!= (?? attributes/class "") "web_image_grid")
       (component_error "columns and inset require web_image_grid")))
   (let field_names (if (== tag "form") {} form))
-  (let body ($map children (fn [child] (component_view ^depth (+ depth 1) ^experimental experimental ^keys keys ^form field_names child))))
+  (let body ($map children (fn [child] (component_view ^depth (+ depth 1) ^experimental experimental ^keys keys ^form field_names ^widgets widgets child))))
   # A textarea's ordinary text content is its initial value. The keyed browser
   # adapter needs that value in props; explicit value still takes precedence.
   (if_yes (&& (== tag "textarea") ($absent? attributes/value) (! body/.empty?))
@@ -183,8 +193,8 @@
     (attributes .put "value" ($str/join body "")))
   {^tag tag ^props attributes ^children body})
 
-(fn bounded_component_view [value, ^experimental experimental : Bool = false]
-  (let view (component_view ^experimental experimental ^keys {} value))
+(fn bounded_component_view [value, ^experimental experimental : Bool = false, ^sidebar sidebar : Bool = false]
+  (let view (component_view ^experimental experimental ^keys {} ^widgets (if sidebar {} nil) value))
   (if (> ($str/byte_size ($json/stringify view)) 65536)
     (component_error "web component view exceeds 64 KiB"))
   view)
@@ -195,7 +205,7 @@
   (if (== candidate/name "harness") (component_error "harness is reserved for Classic Harness"))
   (if_not (component_slots .contains? candidate/slot)
     (component_error "unknown web component slot"))
-  (if (&& (["welcome" "status_summary"] .contains? candidate/slot) (!= candidate/name candidate/slot))
+  (if (&& (["welcome" "status_summary" "conversation_sidebar"] .contains? candidate/slot) (!= candidate/name candidate/slot))
     (component_error "replacement component name must equal its slot"))
   (if (== ($absent? candidate/view) ($absent? candidate/render))
     (component_error "web component requires exactly one of view or render"))
@@ -223,5 +233,6 @@
     (checked .put "title" title)
     (checked .put "default_presentation" (if (== candidate/slot "panel") "docked" "full"))
     (checked .put "slot" "view"))
-  (if_not ($absent? candidate/view) (checked .put "view" (bounded_component_view candidate/view)))
+  (if_not ($absent? candidate/view)
+    (checked .put "view" (bounded_component_view ^sidebar (== candidate/slot "conversation_sidebar") candidate/view)))
   checked)

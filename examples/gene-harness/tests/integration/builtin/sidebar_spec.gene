@@ -1,0 +1,101 @@
+(import $test [describe it])
+(import ^from "../../support" [isolated run_spec])
+(import ^from "../../../src/web/session_service"
+  [open_session_service close_session_service host_status create_session submit receipt])
+(import ^from "../../../src/storage/workspace" [register_plugin set_plugin_enabled restore_plugin])
+
+(fn sidebar_component [service, ^safe safe : Bool = false]
+  (let status (host_status ^safe safe service))
+  (for component in status/web_components
+    (if (== component/name "conversation_sidebar") (return component)))
+  nil)
+
+(fn custom_sidebar []
+  (quote
+    (mod plugin
+      (import ^from "src/plugin_api.gene" [Plugin PluginHost])
+      (fn init [descriptor]
+        (Plugin ^id "sidebar" ^activate (fn [host] (host .PluginHost:contribute "web_components" {^name "conversation_sidebar" ^slot "conversation_sidebar" ^render (fn [context] (quote (div ^class_name "sidebar_content" (h3 "Custom navigation") (host_widget ^name "conversations") (host_widget ^name "new_conversation"))))})))))))
+
+(describe
+  "Sidebar plugin lifecycle"
+  (it
+    "disables, replaces, reloads and restores navigation without blocking sessions"
+    []
+    (isolated
+      this_mod/.path
+      "disables, replaces, reloads and restores navigation without blocking sessions"
+      (fn [workspace]
+        (let service (open_session_service ^workspace workspace ^^offline))
+        (let root service/runtime/root)
+        (try
+          (let original (sidebar_component service))
+          ($assert (== original/view/tag "div"))
+          ($assert (== original/view/children/0/props/name "brand"))
+          (let session (create_session ^title "Retained conversation" service))
+          (set_plugin_enabled service/runtime/workspace service/runtime/h "sidebar" false)
+          ($assert ($absent? (sidebar_component service)))
+          ($assert ($absent? (service/runtime/h/readiness)))
+          (let started (submit service session/id "without-sidebar" 1 "hello"))
+          (service/controller/watchers
+            .get
+            ; .get session/id
+            ; .join)
+          ($assert
+            (== ((Path "state") (receipt service session/id started/id)) "done")
+            "sidebar removal blocked an existing session")
+          (set_plugin_enabled service/runtime/workspace service/runtime/h "sidebar" true)
+          ($assert (! ($absent? (sidebar_component service))))
+          (register_plugin ^^replace
+            service/runtime/workspace
+            service/runtime/h
+            "sidebar"
+            (custom_sidebar))
+          (let replaced (sidebar_component service))
+          ($assert (== replaced/view/children/0/children/0 "Custom navigation"))
+          ($assert (== replaced/view/children/1/props/name "conversations"))
+          ($assert
+            ($absent? (sidebar_component ^^safe service))
+            "recovery status executed plugin UI")
+        ensure
+          (close_session_service service))
+        (let reopened (open_session_service ^workspace root ^^offline))
+        (try
+          (let persisted (sidebar_component reopened))
+          ($assert (== persisted/view/children/0/children/0 "Custom navigation"))
+          (restore_plugin reopened/runtime/workspace reopened/runtime/h "sidebar")
+          (let restored (sidebar_component reopened))
+          ($assert (== restored/view/children/0/props/name "brand"))
+        ensure
+          (close_session_service reopened)))))
+  (it
+    "isolates invalid dynamic sidebar trees and keeps recovery available"
+    []
+    (isolated
+      this_mod/.path
+      "isolates invalid dynamic sidebar trees and keeps recovery available"
+      (fn [workspace]
+        (let service (open_session_service ^workspace workspace ^^offline))
+        (try
+          (register_plugin ^^replace
+            service/runtime/workspace
+            service/runtime/h
+            "sidebar"
+            (quote
+              (mod plugin
+                (import ^from "src/plugin_api.gene" [Plugin PluginHost])
+                (fn init [descriptor]
+                  (Plugin ^id "sidebar" ^activate (fn [host] (host .PluginHost:contribute "web_components" {^name "conversation_sidebar" ^slot "conversation_sidebar" ^render (fn [context] (quote (host_widget ^name "arbitrary_dom_element")))})))))))
+          (let broken (sidebar_component service))
+          ($assert ($absent? broken/view))
+          ($assert ($str/contains? broken/error "supported name"))
+          (let recovery (host_status ^^safe service))
+          ($assert recovery/web_components/.empty?)
+          ($assert ($absent? recovery/readiness))
+          (restore_plugin service/runtime/workspace service/runtime/h "sidebar")
+          ($assert (! ($absent? (sidebar_component service))))
+        ensure
+          (close_session_service service))))))
+
+(fn main [args] : Int
+  (run_spec args))

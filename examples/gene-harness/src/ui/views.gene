@@ -8,7 +8,7 @@
 (import [ui_settings ui_record ui_revision ui_data_revision ui_descriptor ui_error] ^from "./state")
 (import [view_outline outline_text] ^from "./outline")
 
-(fn render_component [h, callback, context, ^experimental experimental : Bool = false]
+(fn render_component [h, callback, context, ^experimental experimental : Bool = false, ^sidebar sidebar : Bool = false]
   (let outcome
     (scope
       (let task (spawn_composition_call h/composition callback [context]
@@ -20,7 +20,7 @@
           deadline/.cancel
           deadline/.join)))
   (match outcome
-    (when (TaskOutcome/ok value) (bounded_component_view ^experimental experimental value))
+    (when (TaskOutcome/ok value) (bounded_component_view ^experimental experimental ^sidebar sidebar value))
     (when (TaskOutcome/error error) (fail (WebComponentError ^message error/message)))
     (when (TaskOutcome/panic message) (fail (WebComponentError ^message $"component render panicked: ${message}")))
     (else (fail (WebComponentError ^message "component render exceeded its budget or was cancelled")))))

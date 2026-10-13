@@ -429,7 +429,8 @@
       (let view
         (if ($absent? candidate/render)
           candidate/view
-          (render_component service/runtime/h candidate/render context)))
+          (render_component ^sidebar (== candidate/slot "conversation_sidebar")
+            service/runtime/h candidate/render context)))
       (item .put "view" view)
     catch Any
       (item .put "error" $err/message))

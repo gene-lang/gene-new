@@ -679,6 +679,16 @@ the current link restores access but does not migrate browser-local drafts.
 
 ## Plugin-driven UI
 
+The optional `sidebar` built-in owns the conversation sidebar composition via
+the `conversation_sidebar` slot. Its validated tree may mount named
+`host_widget` controls, each at most once. The client reuses the host nodes so
+filters, sessions and handlers survive plugin layout replacement. Omitted
+controls are parked in hidden host storage. Removal withdraws the panel and
+hamburger; the host retains session transport, tabs and responsive layout.
+Recovery UI mounts host controls without executing sidebar plugin callbacks.
+Existing additive `sidebar` contributions appear through the `extensions`
+widget in the default layout.
+
 The native `ui/` modules define and render component data without depending on
 HTTP or a browser. Both model publication feedback and browser render requests
 use this layer. The web host owns the conversation, composer, questions,

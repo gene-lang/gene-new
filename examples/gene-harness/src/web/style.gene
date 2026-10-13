@@ -42,6 +42,7 @@ input::placeholder, textarea::placeholder { color: var(--muted); opacity: 1; }
   --action-ink: var(--surface);
   display: grid; grid-template-columns: 232px minmax(0, 1fr); height: 100dvh; overflow: hidden; }
 .sidebar { display: flex; flex-direction: column; min-height: 0; padding: 1.6rem .9rem 1rem; background: var(--sidebar); }
+.sidebar_content { display: flex; flex: 1; flex-direction: column; min-height: 0; }
 .brand { display: flex; align-items: baseline; gap: .45rem; padding: 0 .65rem 2.2rem; }
 .brand_name { font-size: 1.4rem; font-weight: 650; letter-spacing: -.065em; }
 .brand_detail { font-size: .85rem; color: var(--muted); }

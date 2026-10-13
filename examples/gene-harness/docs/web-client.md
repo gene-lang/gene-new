@@ -70,6 +70,11 @@ and any docked plugin view; the choice is remembered in the current browser
 tab. On narrow screens it opens a drawer, which closes after selecting a
 conversation, using Close menu, or pressing Escape.
 
+The layout comes from the optional [sidebar plugin](sidebar.md). Disabling
+that plugin removes the panel and hamburger, while existing conversation tabs
+and work remain available. Recovery UI provides host-owned navigation even
+when the plugin is missing or broken.
+
 A session can be renamed and pinned or unpinned. Metadata edits carry the last
 seen revision; a stale edit fails rather than overwriting a newer one.
 

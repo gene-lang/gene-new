@@ -8,6 +8,7 @@ module loading, replacement and retirement as functions and commands.
 | Slot | Behaviour |
 | --- | --- |
 | `sidebar` | Add panels above the conversation list. |
+| `conversation_sidebar` | Replace the whole conversation sidebar layout; its name must equal the slot. See [sidebar](sidebar.md) for host navigation widgets. |
 | `toolbar` | Add compact components below the heading. |
 | `composer` | Add components above the composer and questions. |
 | `status` | Add panels in the workspace status drawer. |

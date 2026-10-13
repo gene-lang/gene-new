@@ -1,11 +1,16 @@
 (mod harness_web_components ^profile web)
 
-(fn render_element [tree : Any, on_command : (Fn [Str] Void), on_prompt : (Fn [Str] Void), on_navigate : (Fn [Str Str] Void), enabled : Bool, buttons : (List Any)] : EventTarget
+(fn render_element [tree : Any, on_command : (Fn [Str] Void), on_prompt : (Fn [Str] Void), on_navigate : (Fn [Str Str] Void), enabled : Bool, buttons : (List Any), ^widgets widgets : Any = nil] : EventTarget
   (if_yes ($absent? tree) (return ($dom/create_text "")))
   (if_yes ($absent? tree/tag)
     (var text : Str tree)
     (return ($dom/create_text text)))
   (var tag : Str tree/tag)
+  (if_yes (== tag "host_widget")
+    (if_yes ($absent? widgets) (return ($dom/create_text "")))
+    (var resolve : (Fn [Str] EventTarget) widgets)
+    (var name : Str tree/props/name)
+    (return (resolve name)))
   (var element ($dom/create_element tag))
   (var props : PropMap tree/props)
   (for [key value] in props
@@ -15,7 +20,7 @@
     ($dom/set_attribute element name text))
   (var children : (List Any) tree/children)
   (for child in children
-    ($dom/append element (render_element child on_command on_prompt on_navigate enabled buttons)))
+    ($dom/append element (render_element ^widgets widgets child on_command on_prompt on_navigate enabled buttons)))
   (if_not ($absent? props/switch-view)
     (var destination : Str props/switch-view)
     (var presentation : Str "")

@@ -1,7 +1,8 @@
 # Conversation navigation visibility belongs to this browser tab.
 (mod harness_sidebar ^profile web)
+(import ^from "./components.gene" [render_element])
 
-(type Sidebar ^props {^root EventTarget ^desktop_open Bool ^mobile_open Bool ^full_view Bool})
+(type Sidebar ^props {^root EventTarget ^desktop_open Bool ^mobile_open Bool ^full_view Bool ^available Bool ^safe Bool ^signature Str ^widgets PropMap ^target EventTarget ^pool EventTarget ^buttons (List Any)})
 
 (fn narrow_sidebar? [] : Bool
   (<= ($dom/inner_width) 900.0))
@@ -11,9 +12,11 @@
   (var sidebar ($dom/element "classic_sidebar"))
   (var toggle ($dom/element "menu"))
   (var narrow (narrow_sidebar?))
-  (var open (&& (! state/full_view) (if narrow state/mobile_open state/desktop_open)))
+  (var open
+    (&& state/available (! state/full_view) (if narrow state/mobile_open state/desktop_open)))
   (set sidebar/hidden (! open))
-  ($dom/set_class root "sidebar_collapsed" (! state/desktop_open))
+  (set toggle/hidden (! state/available))
+  ($dom/set_class root "sidebar_collapsed" (|| (! state/available) (! state/desktop_open)))
   ($dom/set_class root "menu_open" (&& narrow open))
   ($dom/set_attribute toggle "aria-expanded" (if open "true" "false"))
   (var label (if open "Hide conversations" "Show conversations"))
@@ -29,9 +32,66 @@
   (set state/mobile_open false)
   (render_sidebar state))
 
-(fn create_sidebar [root : EventTarget] : Sidebar
+(fn update_sidebar [state : Sidebar, components : (List Any), on_command : (Fn [Str] Void),
+                    on_prompt : (Fn [Str] Void), on_navigate : (Fn [Str Str] Void), enabled : Bool] : Void
+  (if_yes state/safe (return))
+  (var chosen : Any nil)
+  (for component in components
+    (var slot : Str component/slot)
+    (if_yes (== slot "conversation_sidebar") (set chosen component) (break)))
+  (var signature ($json/stringify chosen))
+  (if_yes (!= signature state/signature)
+    # Keep real host nodes (and their handlers, filter values and list state)
+    # across plugin layouts. Never reconstruct them from plugin-provided HTML.
+    (var focused : Str "")
+    (for id in ["session_filter" "kind_filter" "status_filter" "trigger_filter" "since_filter" "until_filter"]
+      (if_yes ($dom/focused? ($dom/element id)) (set focused id)))
+    (for [name raw] in state/widgets
+      (var widget : EventTarget raw)
+      ($dom/append state/pool widget))
+    ($dom/clear state/target)
+    (set state/buttons [])
+    (set state/available (! ($absent? chosen)))
+    (if_yes state/available
+      (if ($absent? chosen/view)
+        (do
+          (var raw_error : Any (?? chosen/error "No sidebar view was returned."))
+          (var error : Str raw_error)
+          ($dom/append state/target
+            ($dom/render `(p ^class_name "sidebar_empty"
+              "Sidebar could not render: " %error
+              " Open Recovery UI to repair its plugin."))))
+        ($dom/append state/target
+          (render_element ^widgets (fn [name : Str] : EventTarget
+              (var widget : EventTarget state/widgets/%name)
+              widget)
+            chosen/view on_command on_prompt on_navigate enabled state/buttons))))
+    (set state/signature signature)
+    (render_sidebar state)
+    (if_yes (&& state/available (!= focused ""))
+      ($dom/focus ($dom/element focused))))
+  (for item in state/buttons
+    (var element : EventTarget item/element)
+    (var disabled : Bool item/disabled)
+    (set element/disabled (|| disabled (! enabled)))))
+
+(fn create_sidebar [root : EventTarget, safe : Bool] : Sidebar
   (var preference : Str (?? ($session_storage/get "gene-harness/sidebar") "open"))
-  (var state (Sidebar ^root root ^desktop_open (!= preference "closed") ^!mobile_open ^!full_view))
+  (var widgets : PropMap {})
+  (for pair in [["brand" "sidebar_brand"] ["new_conversation" "create_session"]
+               ["filters" "sidebar_filters"] ["attention" "attention_section"]
+               ["extensions" "web_sidebar"] ["conversations" "sessions"] ["workspace_tools" "sidebar_tools"]]
+    (var name : Str pair/0)
+    (var id : Str pair/1)
+    (set widgets/%name ($dom/element id)))
+  (var state (Sidebar ^root root ^desktop_open (!= preference "closed") ^!mobile_open ^!full_view
+    ^available safe ^safe safe ^signature "" ^widgets widgets
+    ^target ($dom/element "sidebar_view") ^pool ($dom/element "sidebar_storage") ^buttons []))
+  # Recovery navigation uses only host controls and never invokes a plugin.
+  (if_yes safe
+    (for name in ["brand" "new_conversation" "filters" "attention" "conversations" "workspace_tools"]
+      (var widget : EventTarget widgets/%name)
+      ($dom/append state/target widget)))
   ($dom/add_event_listener
     ($dom/element "menu")
     "click"
