@@ -123,18 +123,6 @@
   (let value (evaluate_response `(scope %forms...) environment))
   (CommandResult ^display value ^^attached ^status "done"))
 
-(fn shell_command [ctx]
-  (let config ($serde/read_data ($fs/read_text $"${ctx/runtime/state_root}/config.gene")))
-  (let shell (?? ($os/env? "SHELL") "/bin/sh"))
-  (let channel ($channel ^capacity 128))
-  (let process
-    ($os/exec_stream_async shell "-c" ctx/raw ^dir ctx/runtime/root ^^merge_stderr ^stdout_chan channel ^timeout_ms (?? config/response_budget/timeout_ms 600000) ^max_bytes 1048576))
-  (let output
-    (spawn ^lane root (try (loop (let line channel/.recv) (ctx/output ($to_str line "\n"))) catch ChannelClosed nil)))
-  (let result (try (await process) ensure process/.cancel (if_not process/.done? process/.join)))
-  output/.join
-  (CommandResult ^display ($str/join [result/stdout result/stderr] "") ^status (if (== result/status 0) "done" "failed") ^exit result/status ^^attached))
-
 (fn view_command [ctx]
   (let specification ($str/trim ctx/raw))
   (let pieces ($str/split specification ":"))
@@ -182,9 +170,6 @@
     {^name "run" ^usage "/run <Gene code>"
      ^doc "Evaluate Gene with plugin functions and the standard library."
      ^run run_command ^^raw_input}
-    {^name "sh" ^usage "/sh <shell command>"
-     ^doc "Run a non-interactive shell command with streamed output."
-     ^run shell_command ^^raw_input}
     {^name "view" ^usage "/view <path>[:from-to]"
      ^doc "View a file or directory, up to 400 lines."
      ^run view_command ^^raw_input}])

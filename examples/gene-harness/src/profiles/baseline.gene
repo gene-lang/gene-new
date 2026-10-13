@@ -4,6 +4,7 @@
 (import ^from "../builtin/gene_reference" [gene_reference])
 (import ^from "../builtin/plugin_admin" [plugin_admin])
 (import ^from "../builtin/core_commands" [core_commands])
+(import ^from "../builtin/shell" [shell])
 (import ^from "../builtin/repl" [repl])
 (import ^from "../builtin/ui_experiment" [ui_experiment])
 (import ^from "../builtin/notifications" [notifications])
@@ -17,4 +18,4 @@
 (import ^from "../builtin/media" [media])
 (import ^from "../builtin/computer" [computer])
 (fn baseline_profile []
-  (Profile ^name "web" ^plugins [(gene_reference) (plugin_admin) (core_commands) (repl) (triggers) (ui_experiment) (notifications) (provider_codex) (provider_anthropic) (provider_claude) (provider_openrouter) (budget_advisory) (history_basic) (media) (computer)] ^requires [["prompt" "gene_reference"] ["hooks" "history/compact/history_basic"]] ^limits (ExecutionLimits ^max_steps 9223372036854775807 ^max_memory_mb 1024 ^timeout_ms 600000)))
+  (Profile ^name "web" ^plugins [(gene_reference) (plugin_admin) (core_commands) (shell) (repl) (triggers) (ui_experiment) (notifications) (provider_codex) (provider_anthropic) (provider_claude) (provider_openrouter) (budget_advisory) (history_basic) (media) (computer)] ^requires [["prompt" "gene_reference"] ["hooks" "history/compact/history_basic"]] ^limits (ExecutionLimits ^max_steps 9223372036854775807 ^max_memory_mb 1024 ^timeout_ms 600000)))

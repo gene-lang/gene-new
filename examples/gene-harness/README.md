@@ -296,6 +296,9 @@ executing. Shell-mode activity stays in the operator transcript and does not
 attach to the next model request. Cancellation or shell exit resets the process;
 the next input starts a fresh shell. Leaving, session removal, plugin withdrawal
 and host shutdown close it.
+The built-in `shell` plugin owns both forms of `/sh` and can be disabled,
+enabled or replaced independently of `core_commands`. See
+[Shell commands and mode](docs/shell.md), also available as `harness/shell`.
 
 Stop and restart require confirmation when other sessions have running rounds.
 Shutdown gives cancellation a five-second grace period; an uncooperative

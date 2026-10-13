@@ -7,6 +7,8 @@
 (import [mode_state submit_mode_input close_mode ModeError] ^from "../../../src/runtime/input_modes")
 (import [set_plugin_enabled] ^from "../../../src/storage/workspace")
 (import [recall_body] ^from "../../../src/agents/history")
+(import [row doc put_cordis_plugin] ^from "../../../src/kernel")
+(import [shell : shell_plugin] ^from "../../../src/builtin/shell")
 
 (fn command [service, session, text]
   (let record (submit_command service/runtime/commands session text))
@@ -108,8 +110,55 @@
           (require_gone a_pid)
           (set_plugin_enabled service/runtime/workspace service/runtime/h "core_commands" false)
           (for job in service/runtime/modes/jobs/.get job/.join)
+          ($assert (== (/name (mode_state service/runtime/modes b/id)) "sh")
+            "disabling core commands closed the independent shell")
+          ($assert ($str/contains? (/display (input service b/id "after-core-disable" "printf '%s' \"$saved\"")) "right"))
+          ($assert ($str/contains? (doc service/runtime/h "harness/shell") "Shell mode"))
+          (set_plugin_enabled service/runtime/workspace service/runtime/h "shell" false)
+          (for job in service/runtime/modes/jobs/.get job/.join)
           ($assert ($absent? (mode_state service/runtime/modes b/id)))
+          ($assert ($absent? (row service/runtime/h "commands" "sh")))
+          ($assert ($absent? (row service/runtime/h "input_modes" "sh")))
+          ($assert (try (doc service/runtime/h "harness/shell") false catch Any true))
           (require_gone b_pid)
+          (set_plugin_enabled service/runtime/workspace service/runtime/h "core_commands" true)
+          ($assert (== (/status (command service b/id "/run (+ 1 2)")) "done")
+            "core commands depended on the disabled shell")
+          (set_plugin_enabled service/runtime/workspace service/runtime/h "shell" true)
+          ($assert (== (/status (command service b/id "/sh")) "done"))
+          ($assert ($str/contains? (/display (input service b/id "after-enable" "printf restored")) "restored"))
+          (input service b/id "done" "exit")
+        ensure (close_session_service service)))))
+
+  (it "closes a running mode on shell plugin replacement and rejects its stale instance" []
+    (isolated this_mod/.path "closes a running mode on shell plugin replacement and rejects its stale instance"
+      (fn [workspace]
+        (let service (test_service ^workspace workspace ^provider (fn [request] "(Outcome ^^done ^reply \"chat\")")))
+        (try
+          (let session (create_session service))
+          (command service session/id "/sh")
+          (let previous (mode_state service/runtime/modes session/id))
+          (let busy (submit_mode_input service/runtime/modes session/id previous/instance "busy"
+            "saved=old; printf '%s' \"$$\" > replacing.pid; sleep 30"))
+          (let deadline (+ ($os/monotonic_ms) 5000))
+          (while (! ($fs/exists? $"${service/runtime/root}/replacing.pid"))
+            ($assert (< ($os/monotonic_ms) deadline) "shell did not start")
+            ($sleep 1))
+          (let pid ($fs/read_text $"${service/runtime/root}/replacing.pid"))
+          (put_cordis_plugin ^^replace service/runtime/h (shell_plugin)
+            {^^host ^limits service/runtime/profile/limits})
+          (for job in service/runtime/modes/jobs/.get job/.join)
+          (service/runtime/commands/watchers/.get .get $"${session/id}:${busy/id}"; .join)
+          ($assert (== (/status (command_receipt service/runtime/commands session/id busy/id)) "cancelled"))
+          ($assert ($absent? (mode_state service/runtime/modes session/id)))
+          (require_gone pid)
+          ($assert (try
+            (submit_mode_input service/runtime/modes session/id previous/instance "stale" "printf never")
+            false
+          catch ModeError (== $err/code "mode_closed")))
+          (command service session/id "/sh")
+          ($assert (!= (/instance (mode_state service/runtime/modes session/id)) previous/instance))
+          ($assert ($str/contains? (/display (input service session/id "fresh" "printf '%s' \"${saved-unset}\"")) "unset"))
         ensure (close_session_service service)))))
 
   (it "cancels a running shell group and starts cleanly on the next input" []

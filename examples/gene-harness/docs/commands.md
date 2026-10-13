@@ -27,19 +27,15 @@ other running sessions require `--confirm`.
   doc, plugin functions and the standard library. It records the result.
 - `/sh <shell command>` runs one non-interactive process with streamed output
   and an exit status, then returns to chat.
-- `/sh` opens Shell mode. Enter commands directly; `exit`, `quit`, `:exit`,
-  `:quit`, or the browser's Leave control returns to chat. A session-specific
-  `/bin/sh` process starts in the workspace and preserves cwd, variables,
-  exports and functions. Its inputs use ordinary command receipts, stream
-  output and do not attach to model history. Programs receive empty stdin;
-  this is a command composer, with no terminal emulation. Stop or a command
-  deadline resets the shell; the next input starts a fresh process. Leaving,
-  session collection, plugin withdrawal and shutdown release the process.
+- `/sh` opens persistent Shell mode until `exit`, `quit`, or Leave Shell.
+  Both forms belong to the built-in `shell` plugin; load `harness/shell` or
+  read [Shell commands and mode](shell.md) for state and lifecycle behavior.
 - `/view <path>[:from-to]` reads a file or directory, up to 400 lines per page.
 - `/repl` opens persistent evaluation if the repl plugin is active; load
   `harness/repl` for its state/import behavior.
 
 `/run` is one evaluation; use the REPL for persistent local bindings. Commands
 retain the submitting session and normal receipts/cancellation. Prefer Gene
-APIs/tooling when available. Disabling core_commands removes its commands and
-documentation; core cancellation controls remain available.
+APIs/tooling when available. Disabling `core_commands` removes `/help`, `/run`,
+`/view` and this chapter. Disabling `shell` independently removes `/sh` and
+Shell mode. Core cancellation controls remain available.

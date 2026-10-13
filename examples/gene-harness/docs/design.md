@@ -446,8 +446,9 @@ and discovery returns each with its captured `$runtime/signature` and short doc.
 Contributions may add a summary, topic tags and docs chapter references. A
 `prompt` row has `^name` and exactly one of `^text` or callable `^render`;
 `docs` rows have `^name` and `^text` or `^path`. The core reserves command
-names by owner: `core_commands` owns `/help`, `/run`, `/sh` and `/view`, while
-the loop owns `/cancel`, `/stop` and `/restart`, and `repl` owns `/repl`.
+names by owner: `core_commands` owns `/help`, `/run` and `/view`, `shell` owns
+`/sh` and its input mode, the loop owns `/cancel`, `/stop` and `/restart`, and
+`repl` owns `/repl`.
 `plugin_api` also exports
 `append_prompt`, which forwards to the current turn and labels the item
 `fn <name>`. Outside an open turn it raises TurnClosed.
@@ -602,7 +603,8 @@ host and does not open a second scheduler or runtime.
 ## Operator commands and shutdown
 
 Slash commands are registered rows with name, usage, documentation, run and
-raw_input. `core_commands` contributes the shared commands; the loop keeps
+raw_input. `core_commands` contributes help, run and view; `shell` contributes
+one-shot shell commands and persistent Shell mode. The loop keeps
 cancel, stop and restart available even if that plugin is disabled. Session
 creation/listing use service operations and CLI `sessions`; the retired
 `/new` and `/sessions` rows are absent. Unknown
@@ -851,7 +853,7 @@ The Harness relies on general runtime features, documented in
 | Composition snapshots and retirement | runtime/composition, runtime/cordis_adapter |
 | Plugin contract and activation | plugin_api, kernel, storage/workspace |
 | Patch preflight/commit/recovery | runtime/patch |
-| Built-in contributions | builtin/gene_reference, builtin/plugin_admin, builtin/core_commands, builtin/triggers, builtin/provider_* |
+| Built-in contributions | builtin/gene_reference, builtin/plugin_admin, builtin/core_commands, builtin/shell, builtin/repl, builtin/triggers, builtin/provider_* |
 | Commands, triggers and supervisor | runtime/commands, runtime/triggers, runtime/supervisor |
 | Operator modes and persistent REPL | runtime/input_modes, runtime/repl_sessions, builtin/repl |
 | Durable streams and catalog | storage/state, events.catalog |

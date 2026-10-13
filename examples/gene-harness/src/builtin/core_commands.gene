@@ -1,44 +1,18 @@
 (mod core_commands)
-(import ^from "../plugin_api" [Plugin PluginHost CommandResult])
-(import ^from "../runtime/commands" [shared_command_rows shell_command])
-(import ^from "../runtime/shell_sessions" [classify_shell evaluate_shell close_shell close_shells])
+(import ^from "../plugin_api" [Plugin PluginHost])
+(import ^from "../runtime/commands" [shared_command_rows])
 (import ^from "./documentation" [contribute_doc])
 
 (fn core_commands [] : Plugin
-  (let activations [])
-  (let shells ($cell {}))
   (Plugin ^id "core_commands"
     ^provides [["commands" "help"] ["commands" "run"]
-               ["commands" "sh"] ["commands" "view"] ["input_modes" "sh"]]
+               ["commands" "view"]]
     ^activate (fn [host]
-      (let active {^host host ^active ($cell true)})
-      (activations .push active)
       (for command in (shared_command_rows)
         (let row ($thaw ($freeze_shallow command)))
         (row .put "docs" ["harness/commands"])
         (row .put "tags" ["commands" "operator"])
-        (if_yes (== row/name "sh")
-          (row .put "usage" "/sh [shell command]")
-          (row .put "doc" "Run a shell command, or open shell mode until exit or quit.")
-          (row .put "run" (fn [ctx]
-            (if (== ($str/trim ctx/raw) "")
-              (CommandResult ^display "Shell open. Enter exit or quit to leave." ^!attached ^mode "sh")
-              (shell_command ctx)))))
         (host .PluginHost:contribute "commands" row))
-      (host .PluginHost:contribute "input_modes"
-        {^name "sh" ^label "Shell" ^hint "Shell · exit or quit to leave"
-         ^submit_label "Run" ^prompt "shell command"
-         ^^reset_on_interrupt
-         ^tags ["commands" "shell"] ^docs ["harness/commands"]
-         ^classify classify_shell ^run (fn [ctx] (evaluate_shell shells ctx))
-         ^close (fn [session reason] (close_shell shells session))})
       (contribute_doc host "harness/commands"
-        "Operator commands: help, Gene evaluation, shell processes and file inspection."
-        "examples/gene-harness/docs/commands.md" ^tags ["commands" "operator" "run" "files"]))
-    ^deactivate (fn [host]
-      (for active in activations
-        (if (same? active/host host) (active/active .set false)))
-      (let remains ($cell false))
-      (for active in activations
-        (if active/active/.get (remains .set true)))
-      (if_not remains/.get (close_shells shells)))))
+        "Operator commands: help, Gene evaluation and file inspection."
+        "examples/gene-harness/docs/commands.md" ^tags ["commands" "operator" "run" "files"]))))

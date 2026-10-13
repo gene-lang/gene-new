@@ -1,0 +1,38 @@
+(mod shell)
+(import [Plugin PluginHost CommandResult] ^from "../plugin_api")
+(import [shell_command classify_shell evaluate_shell close_shell close_shells]
+  ^from "../runtime/shell_sessions")
+(import [contribute_doc] ^from "./documentation")
+
+(fn shell [] : Plugin
+  (let activations [])
+  (let sessions ($cell {}))
+  (Plugin ^id "shell" ^provides [["commands" "sh"] ["input_modes" "sh"]]
+    ^activate (fn [host]
+      (let active {^host host ^active ($cell false)})
+      (activations .push active)
+      (host .PluginHost:contribute "commands"
+        {^name "sh" ^usage "/sh [shell command]"
+         ^doc "Run a shell command, or open shell mode until exit or quit."
+         ^tags ["commands" "shell" "processes"] ^docs ["harness/shell"]
+         ^^raw_input ^run (fn [ctx]
+           (if (== ($str/trim ctx/raw) "")
+             (CommandResult ^display "Shell open. Enter exit or quit to leave." ^!attached ^mode "sh")
+             (shell_command ctx)))})
+      (host .PluginHost:contribute "input_modes"
+        {^name "sh" ^label "Shell" ^hint "Shell · exit or quit to leave"
+         ^submit_label "Run" ^prompt "shell command" ^^reset_on_interrupt
+         ^tags ["commands" "shell" "processes"] ^docs ["harness/shell"]
+         ^classify classify_shell ^run (fn [ctx] (evaluate_shell sessions ctx))
+         ^close (fn [session reason] (close_shell sessions session))})
+      (contribute_doc host "harness/shell"
+        "One-shot shell commands, persistent shell mode and process cleanup."
+        "examples/gene-harness/docs/shell.md" ^tags ["commands" "shell" "processes"])
+      (active/active .set true))
+    ^deactivate (fn [host]
+      (for active in activations
+        (if (same? active/host host) (active/active .set false)))
+      (let remains ($cell false))
+      (for active in activations
+        (if active/active/.get (remains .set true)))
+      (if_not remains/.get (close_shells sessions)))))

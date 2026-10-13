@@ -403,12 +403,14 @@
   (if (== registry_name "commands")
     (then
       (let reserved_owner
-        (if (["help" "run" "sh" "view"] .contains? payload/name)
-          "core_commands"
-          (if (["cancel" "stop" "restart"] .contains? payload/name)
-            "core"
-            (if (["new" "sessions"] .contains? payload/name) "cli"
-              (if (== payload/name "repl") "repl" nil)))))
+        (if (== payload/name "sh")
+          "shell"
+          (if (["help" "run" "view"] .contains? payload/name)
+            "core_commands"
+            (if (["cancel" "stop" "restart"] .contains? payload/name)
+              "core"
+              (if (["new" "sessions"] .contains? payload/name) "cli"
+                (if (== payload/name "repl") "repl" nil))))))
       (if (&& (! ($absent? reserved_owner))
               (!= owner reserved_owner))
         (fail (HarnessError ^message
