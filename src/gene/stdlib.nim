@@ -1739,6 +1739,37 @@ proc selectedPackageValue(scope: Scope, value: Value): Package =
     raisePackageResourceError(scope, "pkg: package is not in this Application")
   result = scope.application().packagesById[id.strVal]
 
+proc requirePackageAuthority(scope: Scope, authority, operation: string) =
+  ## Immutable resource reads are capabilities supplied by the host. Creating
+  ## a filesystem lease or loading native code additionally needs the same
+  ## namespace authority as the direct fs/ffi API. `pkg` must not bypass an
+  ## empty-grant descriptor sandbox through an indirect spelling.
+  var gene, granted: Value
+  if scope == nil or not scope.lookupOptional("gene", gene) or
+      gene.kind != vkNamespace or
+      not gene.nsScope.lookupOptional(authority, granted):
+    raisePackageResourceError(scope, operation & " requires " & authority & " authority")
+
+proc biPkgApplication(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 0:
+    raise newException(GeneError, "pkg/application expects no arguments")
+  let scope = if call == nil: nil else: call[].dispatchScope
+  if scope == nil:
+    raise newException(GeneError, "pkg/application requires an Application")
+  let app = scope.application()
+  var fields = initPropTable()
+  fields["root"] = newStr(app.appPackage.root)
+  fields["source_root"] = newStr(
+    if app.executionSourceRoot.len > 0: app.executionSourceRoot
+    else: app.appPackage.root)
+  fields["provenance"] =
+    if app.executionProvenance.kind == vkMap: app.executionProvenance else: NIL
+  freezeValue(newMap(fields))
+
+proc biPkgCanonicalDigest(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("pkg/canonical_digest", args)
+  newStr(canonicalDigest(args[0]))
+
 proc packageResourceBytes(args: openArray[Value], call: ptr NativeCall,
                           text: bool): Value =
   let scope = if call == nil: nil else: call[].dispatchScope
@@ -1806,6 +1837,7 @@ proc biPkgDependency(args: openArray[Value], call: ptr NativeCall): Value {.nimc
 
 proc biPkgMaterialize(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   let scope = if call == nil: nil else: call[].dispatchScope
+  requirePackageAuthority(scope, "fs", "pkg/materialize")
   when defined(emscripten) or defined(geneWasm):
     raisePackageResourceError(scope, "pkg/materialize is unavailable on this target")
   else:
@@ -1948,6 +1980,7 @@ proc currentNativeModuleRuntimeIdentity(): string =
 proc biPkgNativeModule(args: openArray[Value],
                        call: ptr NativeCall): Value {.nimcall.} =
   let scope = if call == nil: nil else: call[].dispatchScope
+  requirePackageAuthority(scope, "ffi", "pkg/native_module")
   if scope == nil or args.len != 2 or args[1].kind != vkString:
     raisePackageResourceError(scope,
       "pkg/native_module expects Package and recipe alias Str")
@@ -9662,8 +9695,6 @@ proc storeLoadFilesystemCheckpoint(scope: Scope, store: Value,
   var candidates: seq[string]
   var publishedGeneration = int64(0)
   try:
-    if not fsPathExists(generations):
-      return NIL
     let currentPath = root / "CURRENT"
     if not fsPathExists(currentPath):
       return NIL
@@ -9677,6 +9708,9 @@ proc storeLoadFilesystemCheckpoint(scope: Scope, store: Value,
     except ValueError:
       raiseStoreError(scope, "corrupt",
         "Store/load_checkpoint: CURRENT is not a generation")
+    if not fsPathExists(generations):
+      raiseStoreError(scope, "corrupt",
+        "Store/load_checkpoint: CURRENT references missing generations")
     for name in fsListDir(generations):
       if name.len == 20 and name.allCharsInSet({'0'..'9'}):
         try:
@@ -10440,6 +10474,10 @@ proc registerStdlibNamespaces(root: Scope) =
                                              acceptsNamed = false))
   root.define("css", newNamespace("css", cssScope))
   let pkgScope = newScope(root)
+  pkgScope.define("application", builtinNativeCallFn("pkg/application",
+                   biPkgApplication, acceptsNamed = false))
+  pkgScope.define("canonical_digest", builtinNativeFn("pkg/canonical_digest",
+                   biPkgCanonicalDigest))
   pkgScope.define("read_bytes", builtinNativeCallFn("pkg/read_bytes",
                    biPkgReadBytes))
   pkgScope.define("read_text", builtinNativeCallFn("pkg/read_text",

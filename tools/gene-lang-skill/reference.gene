@@ -1,0 +1,2 @@
+# The reference package's content is data; consumers read its captured files.
+(mod gene_reference)

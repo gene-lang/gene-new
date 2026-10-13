@@ -57,6 +57,10 @@ its own module name and does not need `init`. Hash the canonical `$to_str` of
 the exact dependency node passed to `register_plugin`. Its import path is
 `./<64-character SHA-256 hex>.gene`. Hashing the original source file's bytes
 does not produce that path, because the reader expands source shorthand.
+Harness normalizes reader location metadata in newly stored module sources.
+For compatibility it also retains an exact-node dependency spelling when a
+supplied module explicitly imports that digest. Other metadata and frozen
+data literals are preserved.
 
 ```gene
 (let dependency
@@ -276,3 +280,41 @@ remains durable and visible to repair commands; it does not supply functions
 until it can activate. `doctor` does not commit a composition generation; it
 uses the last successful activation marker to distinguish pending work from a
 clean workspace.
+
+## History and version reversion
+
+Composition commits retain complete historical entries, including source and
+dependency digests, interfaces, limits, enabled state, and mutation origin.
+History extends beyond the store's short checkpoint-retention window.
+`plugin_history` reads the current archive; pass a plugin ID to focus on its
+stored versions, and use `^limit` and `^before` to select older revisions.
+Pass `^page true` for a result containing `history`, `revision`, and
+`next_before`, including when a filtered page has no entries.
+
+```gene
+(plugin_history "my_plugin")
+(revert_plugin "my_plugin" 12 ^expected 20)
+```
+
+Here 12 identifies the historical composition containing the version and 20
+is the expected current composition. Reversion creates a new revision. It
+retains application data and the current enabled/disabled preference; it does
+not prove that older code can read newer application data. A stale expected
+revision is rejected. Model reverts use the existing turn-boundary queue and
+report their publication result before the round can finish.
+
+`restore_plugin` continues to mean restoring the current built-in default.
+It is distinct from reverting a stored version and still fails when the
+profile has no default for that ID.
+
+The CLI exposes `history [ID]` and `revert ID --revision N`, with optional
+`--expected-revision N`. Their default mode talks to the running host. Add
+`--offline` while the host is stopped to inspect history or repair desired
+state under the exclusive workspace lock. Offline reversion checks records
+and source digests without invoking plugin code; activation remains unverified
+until normal startup. Online direct reversion retains the existing
+commit-before-activation and quarantine behavior.
+
+New history-enabled checkpoints use composition format 2. Existing format-1
+workspaces import their current baseline with unknown historical host identity;
+older Harness builds refuse format 2 rather than silently dropping history.

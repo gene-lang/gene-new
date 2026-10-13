@@ -1,0 +1,62 @@
+(mod plugin_control)
+(import ^from "../runtime/plugin_plans" [validate_plan apply_plan plan_result])
+
+(type PluginControl ^props {^runtime Any ^jobs Any ^tasks Any ^closed Any})
+
+(fn new_plugin_control [runtime]
+  (PluginControl ^runtime runtime ^jobs ($cell {}) ^tasks ($cell {}) ^closed ($cell false)))
+
+(fn start_plugin_job [control : PluginControl, kind : Str, request]
+  (if control/closed/.get (fail "plugin manager is stopping"))
+  (if (== kind "apply")
+    (for [id job] in control/jobs/.get
+      (if (&& (== job/kind "apply") (== job/plan request/id) (== job/state "running"))
+        (return {^id ($to_str id) ^state "running"}))))
+  (let id ($crypto/random_hex 16))
+  (let record {^id id ^kind kind ^plan (?? request/id nil) ^state "running" ^result nil})
+  (control/jobs/.get .put id record)
+  (let task
+    (spawn ^lane root ($runtime/with_context nil (fn [] (try (let result (if (== kind "validate") (validate_plan control/runtime request) (apply_plan control/runtime request/id))) (record .put "result" result) (record .put "state" "done") catch Any (record .put "result" {^state "failed" ^code (?? $err/code "error") ^message $err/message}) (record .put "state" "failed") ensure (control/tasks/.get .delete id))))))
+  (control/tasks/.get .put id task)
+  {^id id ^state "running"})
+
+(fn plugin_job [control : PluginControl, id : Str]
+  (let record (control/jobs/.get .get id))
+  (if ($absent? record) (return nil))
+  ($thaw ($freeze record)))
+
+(fn plugin_control_request [control : PluginControl, request]
+  (let path request/path)
+  (if_yes (&& (== request/method "POST") (["/api/v8/plugins/plans/validate" "/api/v8/plugins/plans/apply"] .contains? path))
+    (let body (try ($json/parse ^^strict ^max_depth 32 request/body) catch Any nil))
+    (if (!= ($head body) Map)
+      (return {^status 400 ^body {^code "invalid_request" ^message "A JSON object is required."}}))
+    (let kind (if (== path "/api/v8/plugins/plans/validate") "validate" "apply"))
+    (if (&& (== kind "apply") (!= ($head body/id) Str))
+      (return
+        {^status 400 ^body {^code "invalid_request" ^message "Validated plan id is required."}}))
+    (return {^status 202 ^body (start_plugin_job control kind body)}))
+  (if_yes (&& (== request/method "GET") ($str/starts_with? path "/api/v8/plugins/jobs/"))
+    (let id ($str/slice_bytes path 21 (- ($str/byte_size path) 21)))
+    (let job (plugin_job control id))
+    (return
+      (if ($absent? job)
+        {
+          ^status 404
+          ^body {
+                  ^code "not_found"
+                  ^message "This operation is unavailable after restart. Inspect its plan result."}}
+        {^status 200 ^body job})))
+  (if_yes (&& (== request/method "GET") (== path "/api/v8/plugins/plans/result"))
+    (let result (plan_result control/runtime (?? request/params/id "")))
+    (return {^status 200 ^body {^result result}}))
+  nil)
+
+(fn close_plugin_control [control : PluginControl]
+  (control/closed .set true)
+  (let tasks (control/tasks .swap {}))
+  (for [id task] in tasks
+    task/.cancel)
+  (for [id task] in tasks
+    task/.join)
+  nil)

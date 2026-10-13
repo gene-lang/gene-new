@@ -1,13 +1,23 @@
 {
   ^lock_format 1
-  ^root_manifest_digest "sha256:aa78f7b82fd0351aafb955e8a48f955c846ae6e8cb8b9d44e5512e6cd7be7146"
+  ^root_manifest_digest "sha256:040123ab8257a2179941f139eb99e851b2959d8390247702be52893448c9004a"
   ^workspace_digest "sha256:fc2162cc3f53253d71cefe2b0b1aff86e38baedf5c3e230b17d47d035a38ca06"
   ^registry_snapshots [
   ]
-  ^roots [ "workspace:gene/harness@0.1.0#sha256:2fd535a342a897e0f07c52163e71c463502971eacfc5bc6cd13d6054a712143c"]
+  ^roots [ "workspace:gene/harness@0.1.0#sha256:78abcccd15400a8383f104badb7f07067e1c76fb1afee1d9c1c26d5ddae13aed"]
   ^packages [
     (locked_package
-      ^id "path:genex/computer@0.1.0#sha256:e5f32a77229b7346a2a24f09c0d752d2435c01eba9743bef446893908ca7fbf4"
+      ^id "path:gene/reference@0.1.0#sha256:0687957942a84ad04e800e763aa663b0920bbff3a9e946ac10e6304c9e6307ef"
+      ^name "gene/reference"
+      ^version "0.1.0"
+      ^manifest_digest "sha256:f71f62e936371d313f8db901320f78046576814babbdd3c4855dce92283954bd"
+      ^source (path ^path "../../tools/gene-lang-skill")
+      ^features []
+      ^dependencies {
+      }
+      ^compatibility (compatibility ^package_format 1 ^runtime ">=0.1.0 <0.2.0"))
+    (locked_package
+      ^id "path:genex/computer@0.1.0#sha256:8ecee9a52da809c4b859193e82f4f4b1dcf1f3efc36338963b92868d072fef83"
       ^name "genex/computer"
       ^version "0.1.0"
       ^manifest_digest "sha256:9d03105dcffefa3ae765070c584940abfe814c030825a93a4238ce0c57307535"
@@ -17,17 +27,17 @@
       }
       ^compatibility (compatibility ^package_format 1 ^runtime ">=0.1.0 <0.2.0"))
     (locked_package
-      ^id "path:genex/cordis@0.1.0#sha256:53f81b85412c0eae65344e5889505b821ffed0d2a7a3185c2b0f83f1bdd98104"
+      ^id "path:genex/cordis@0.1.0#sha256:1fe48bed924ac56e1655192d2096af4c025c47c4ebb8fe01eb6c02d408dd8ef7"
       ^name "genex/cordis"
       ^version "0.1.0"
-      ^manifest_digest "sha256:1edd059df4b1812062dd8b34cd60f936755910e587f0cb2303055fcd7a524071"
+      ^manifest_digest "sha256:2cb48d7dfc2c847c2be017cbbcac9c393b62cd63713f1f877f5f7de7cc88b9ea"
       ^source (path ^path "../cordis")
       ^features []
       ^dependencies {
       }
       ^compatibility (compatibility ^package_format 1 ^runtime ">=0.1.0 <0.2.0"))
     (locked_package
-      ^id "path:genex/documents@0.1.0#sha256:a27aada00a1e2bac6577a2fbc8a4352ee0e528a50309adb035661f17d7e8cb14"
+      ^id "path:genex/documents@0.1.0#sha256:bbfb0ab197cf40d7e748c7b77736ee4ad04586bd75e6a96cdfa4801dc96f6dbf"
       ^name "genex/documents"
       ^version "0.1.0"
       ^manifest_digest "sha256:13390d8e58279543066d4e35b378454a1b9204000e4fe68da24d79a30277322e"
@@ -37,16 +47,17 @@
       }
       ^compatibility (compatibility ^package_format 1 ^runtime ">=0.1.0 <0.2.0"))
     (locked_package
-      ^id "workspace:gene/harness@0.1.0#sha256:2fd535a342a897e0f07c52163e71c463502971eacfc5bc6cd13d6054a712143c"
+      ^id "workspace:gene/harness@0.1.0#sha256:78abcccd15400a8383f104badb7f07067e1c76fb1afee1d9c1c26d5ddae13aed"
       ^name "gene/harness"
       ^version "0.1.0"
-      ^manifest_digest "sha256:aa78f7b82fd0351aafb955e8a48f955c846ae6e8cb8b9d44e5512e6cd7be7146"
+      ^manifest_digest "sha256:040123ab8257a2179941f139eb99e851b2959d8390247702be52893448c9004a"
       ^source (workspace ^path ".")
       ^features []
       ^dependencies {
-        ^computer (locked_edge ^scope runtime ^target "path:genex/computer@0.1.0#sha256:e5f32a77229b7346a2a24f09c0d752d2435c01eba9743bef446893908ca7fbf4")
-        ^cordis (locked_edge ^scope runtime ^target "path:genex/cordis@0.1.0#sha256:53f81b85412c0eae65344e5889505b821ffed0d2a7a3185c2b0f83f1bdd98104")
-        ^documents (locked_edge ^scope runtime ^target "path:genex/documents@0.1.0#sha256:a27aada00a1e2bac6577a2fbc8a4352ee0e528a50309adb035661f17d7e8cb14")
+        ^computer (locked_edge ^scope runtime ^target "path:genex/computer@0.1.0#sha256:8ecee9a52da809c4b859193e82f4f4b1dcf1f3efc36338963b92868d072fef83")
+        ^cordis (locked_edge ^scope runtime ^target "path:genex/cordis@0.1.0#sha256:1fe48bed924ac56e1655192d2096af4c025c47c4ebb8fe01eb6c02d408dd8ef7")
+        ^documents (locked_edge ^scope runtime ^target "path:genex/documents@0.1.0#sha256:bbfb0ab197cf40d7e748c7b77736ee4ad04586bd75e6a96cdfa4801dc96f6dbf")
+        ^gene_reference (locked_edge ^scope runtime ^target "path:gene/reference@0.1.0#sha256:0687957942a84ad04e800e763aa663b0920bbff3a9e946ac10e6304c9e6307ef")
       }
       ^compatibility (compatibility ^package_format 1 ^runtime ">=0.1.0 <0.2.0"))
   ]

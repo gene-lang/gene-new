@@ -321,6 +321,15 @@ example when publishing immutable blobs.
 Filesystem watching, locking, and asynchronous filesystem adapters are also
 available.
 
+`gene run --snapshot file.gene` executes a package and its dependencies from
+captured source snapshots. `($pkg/application)` returns frozen `root`,
+`source_root`, and `provenance` data. Snapshot execution and built targets
+record the runtime executable digest and selected source/artifact closure
+before loading code; ordinary mutable file execution reports nil provenance.
+The source location is separate from the location-independent identity.
+`($pkg/canonical_digest value)` uses the package system's canonical encoding
+to hash inert Gene data, independent of map insertion order.
+
 An application target can declare immutable resources with an existing
 format-1 `^build [(resources "assets" ^files ["data/schema.json"])]`
 recipe and select it through `^uses ["assets"]`. When the target is built and

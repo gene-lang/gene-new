@@ -34,6 +34,7 @@
                  (span ^id "ui_connection" ^role "status" "Connecting…")
                  (button ^id "notifications_button" ^type "button" ^aria-expanded "false" ^aria-controls "notification_center" "Notifications")
                  (a ^id "ui_default_link" ^href "/ui/default" "Recovery UI")
+                 (a ^id "plugin_manager_link" ^href "/plugins" "Plugins")
                  (a ^id "ui_workspace_link" ^href "/" ^^hidden "Return to workspace UI"))
                (div ^class "ui_host_actions"
                  (span ^id "ui_pending_owner")

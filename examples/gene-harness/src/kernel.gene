@@ -10,6 +10,7 @@
 # packages, `try`, and scoped impls.
 
 (mod kernel)
+(import ^from "./storage/plugin_metadata" [publication_metadata])
 
 (import ^from "./plugin_api" ^^export
   [
@@ -64,7 +65,7 @@
 
 (type Harness ^props {^plugins Any ^plugin_errors Any ^log Any ^log_hydrated Any ^bus Any ^registries Any ^ledger Any ^row_index Any ^next_row_id Any ^event_store Any ^event_scope Str ^event_stream Str ^plugin_policies Any ^plugin_depth Any ^workspace Any ^ui_epoch Str? ^readiness Any? ^registry_observer Any? ^composition Any? ^composition_entries Any? ^snapshots Any? ^publishing Any? ^publication_gate Any? ^published_plugins Any? ^notifications Any? ^ui_action_log Any?})
 
-(type Host ^props {^h Harness ^owner Str ^effects Any ^notification_revision Str})
+(type Host ^props {^h Harness ^owner Str ^effects Any ^notification_revision Str ^state_writer Any})
 
 (type GuardedHandler ^^private ^props {^h Harness ^owner Str ^handler Any})
 
@@ -310,6 +311,7 @@
         h/snapshots
         (snapshot_registries h)
         h/composition/.instances))
+    (publication_metadata h snapshot)
     (notify h (CompositionChanged ^revision snapshot/id)))
   nil)
 
@@ -645,6 +647,15 @@
 # activate into. Activations contribute to the live tables and each revision's
 # single deferred cleanup removes exactly its rows and callbacks, so reconciles
 # need no registry draft and an unchanged plugin stays live across them.
+(fn cleanup_registry_context [h : Harness, thunk]
+  (if h/publishing/.get
+    (do
+      (let publication ($cell true))
+      (try
+        ($runtime/with_context {^composition h/snapshots ^publication publication} thunk)
+      ensure (publication .set false)))
+    (registry_change h thunk)))
+
 (type CordisRegistryHost ^^private
   ^props {^h Harness}
   (impl RegistryHost
@@ -659,6 +670,7 @@
             ($runtime/with_context nil (fn [] ($print text))))} thunk)
       ensure (publication .set false)))
     (message enter_call [] : Nil (enter_plugin_execution self/h) nil)
+    (message cleanup [thunk] : Any (cleanup_registry_context self/h thunk))
     (message leave_call [] : Nil (leave_plugin_execution self/h) nil)
     (message describe [module, id : Str, limits] : Plugin
       (var h self/h)
@@ -671,7 +683,12 @@
     (message context [plugin, effects, observer, policy] : PluginHost
       (var h self/h)
       (set h/registry_observer observer)
-      (var context (Host ^h h ^owner plugin/id ^effects effects ^notification_revision ($crypto/random_hex 16)))
+      (let default (if ($absent? h/workspace) nil (h/workspace/profile_plugins/.get .get plugin/id)))
+      (let writer ($freeze
+        {^digest (?? policy/digest (if (same? default/plugin plugin) "builtin" "unknown"))
+         ^host_build_id (if ($absent? h/workspace) "unknown" h/workspace/history_build/.get)}))
+      (var context (Host ^h h ^owner plugin/id ^effects effects ^notification_revision ($crypto/random_hex 16)
+        ^state_writer writer))
       (var owned_rows ($cell (fresh_list)))
       (h/plugin_policies/.get .put plugin/id
         {^limits (ExecutionLimits ^max_steps policy/limits/max_steps
@@ -681,13 +698,25 @@
       # cleanup as a bounded plugin invocation, so a cleanup per contributed row
       # and per callback made retiring a generation cost one invocation per row.
       (effects .defer (fn []
-        (try (release_activation_rows h effects owned_rows)
-        ensure (release_activation_policy h plugin/id context))))
+        (cleanup_registry_context h (fn []
+          (try (release_activation_rows h effects owned_rows)
+          ensure (release_activation_policy h plugin/id context))))))
       context)
     (message selected [registry_name : Str, key : Str] : Any
       (var h self/h)
       (if_not (registry_exists? h registry_name) (return nil))
-      (var selected (row_record h registry_name key))
+      (var selected void)
+      # Cordis invokes selection callbacks outside RegistryHost.activate's
+      # dynamic publication context. During reconciliation they must still
+      # see candidate rows, otherwise newly provided dependencies remain
+      # pending against the old published snapshot. Ordinary leased reads
+      # continue through row_record and never enter this private bridge.
+      (if h/publishing/.get
+        (do
+          (let registry (registry_named h registry_name))
+          (for record in registry/rows/.get
+            (if (&& (== selected void) (== record/key key)) (set selected record))))
+        (set selected (row_record h registry_name key)))
       (if (== selected void) (return nil))
       {^row_id selected/row_id ^payload selected/payload ^effects selected/effects})))
 
@@ -889,7 +918,8 @@
             ^name envelope/type ^envelope envelope)))))
   h)
 
-(fn reconcile_cordis_harness [h : Harness]
+(fn reconcile_cordis_harness [h : Harness, ^strict strict : Bool = false,
+  ^pending pending : Bool = false, ^accept accept = nil, ^commit commit = nil, ^committed committed = nil, ^prepare prepare = nil]
   (h/publication_gate (fn []
   (h/publishing .set true)
   (let publication ($cell true))
@@ -897,7 +927,8 @@
     ($runtime/with_context
       {^composition h/snapshots ^publication publication}
       (fn []
-        (reconcile_cordis_harness_serial h)))
+        (reconcile_cordis_harness_serial ^strict strict ^pending pending ^accept accept
+          ^commit commit ^committed committed ^prepare prepare h)))
   ensure
     (publication .set false)
     (h/publishing .set false)))))
@@ -908,15 +939,20 @@
     (remove_registry_row ^!cleanup h id))
   nil)
 
-(fn reconcile_cordis_harness_serial [h : Harness]
+(fn reconcile_cordis_harness_serial [h : Harness, ^strict strict : Bool = false,
+  ^pending pending : Bool = false, ^accept accept = nil, ^commit commit = nil, ^committed committed = nil, ^prepare prepare = nil]
   (let baseline h/registries/.get)
   (let baseline_ledger h/ledger/.get)
   (let baseline_index h/row_index/.get)
   (let baseline_policies h/plugin_policies/.get)
   (let baseline_observer h/registry_observer)
   (try
-    (reconcile_registry_candidate h)
+    (reconcile_registry_candidate ^strict strict ^pending pending ^accept accept ^commit commit ^prepare prepare h)
   catch Any
+    (if_yes (&& (! ($absent? committed)) committed/.get)
+      (h/published_plugins .set h/composition/.current_plugins)
+      (publish_registry_snapshot h)
+      (fail $err))
     (h/registries .set baseline)
     (h/ledger .set baseline_ledger)
     (h/row_index .set baseline_index)
@@ -924,7 +960,8 @@
     (set h/registry_observer baseline_observer)
     (fail $err)))
 
-(fn reconcile_registry_candidate [h : Harness]
+(fn reconcile_registry_candidate [h : Harness, ^strict strict : Bool = false,
+  ^pending pending : Bool = false, ^accept accept = nil, ^commit commit = nil, ^prepare prepare = nil]
   (let previous h/published_plugins/.get)
   (h/registries .set (clone_registries h))
   (h/ledger .set (clone_ledger h))
@@ -945,6 +982,7 @@
     (for record in (copy_list registry/rows/.get)
       (remove_registry_row h record/row_id ^!cleanup))
     (h/registries/.get .delete name))
+  (if_not ($absent? prepare) (prepare))
   (var plugins (fresh_list))
   (var failed (fresh_list))
   (for [id plugin] in h/plugins/.get (plugins .push plugin))
@@ -952,13 +990,46 @@
   # Reconcile the candidate before publishing its immutable registry view.
   # A rejected candidate leaves the previous registry tables and leases live.
   (var result
-    (h/composition .reconcile_available plugins h/composition_entries/.get failed))
+    (if strict
+      {^snapshot (h/composition .reconcile_strict ^pending pending
+        plugins h/composition_entries/.get accept commit) ^failures []}
+      (h/composition .reconcile_available plugins h/composition_entries/.get failed)))
   (for failure in result/failures
     (h/plugin_errors/.get .put failure/id failure/message))
   (let active h/composition/.current_plugins)
   (h/published_plugins .set active)
   (publish_registry_snapshot h)
   result/snapshot)
+
+(fn apply_plugin_set [h : Harness, admissions, accept, commit, ^pending pending : Bool = false, ^prepare prepare = nil]
+  (run_composition_change h/snapshots (fn []
+    (let previous_plugins h/plugins/.get)
+    (let previous_options h/composition_entries/.get)
+    (let previous_errors h/plugin_errors/.get)
+    (let plugins {})
+    (let options {})
+    (for admission in admissions
+      (validate_plugin_descriptor h admission/plugin/id admission/plugin)
+      (if_not ($absent? (plugins .get admission/plugin/id))
+        (fail (HarnessError ^message "duplicate plugin in candidate composition")))
+      (plugins .put admission/plugin/id admission/plugin)
+      (options .put admission/plugin/id admission/options))
+    (let committed ($cell false))
+    (h/plugins .set plugins)
+    (h/composition_entries .set options)
+    (h/plugin_errors .set {})
+    (try
+      (reconcile_cordis_harness ^strict true ^pending pending ^accept accept
+        ^commit (fn [] (commit) (committed .set true)) ^committed committed ^prepare prepare h)
+      {^published true ^state "applied"}
+    catch Any
+      (if committed/.get
+        {^published true ^state "recovery_required" ^message $err/message}
+        (do
+          (h/plugins .set previous_plugins)
+          (h/composition_entries .set previous_options)
+          (h/plugin_errors .set previous_errors)
+          (fail $err)))))))
 
 (fn put_cordis_plugin [h : Harness, plugin : Plugin, entry_options, ^replace replace : Bool = false]
   (if ($absent? h/composition) (fail (HarnessError ^message "Harness has no Cordis composition")))
@@ -1395,7 +1466,9 @@
       (fail (HarnessError ^message "plugin state requires a durable event store")))
     (let scope (if ($absent? session) "workspace" "session"))
     (let stream (if ($absent? session) "workspace" ($to_str session)))
-    (var event (prepare_plugin_state record/h/event_store scope stream record/owner value))
+    (let writer ($thaw record/state_writer))
+    (writer .put "at" ($to_str ($now)))
+    (var event (prepare_plugin_state ^writer writer record/h/event_store scope stream record/owner value))
     (append_core_event ^projection record/owner record/h/event_store scope stream event)
     value))
 

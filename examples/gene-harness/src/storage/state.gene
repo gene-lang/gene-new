@@ -13,7 +13,7 @@
 
 (type EventStore
   ^props {^root Str ^backend Any ^streams Any ^next_sequences Any ^projections Any
-          ^core_projections Any
+          ^core_projections Any ^state_writers Any
           ^generation Any ^last_manifest Any ^dirty Any
           ^dirty_streams Any ^closed Any ^catalog Any ^quarantined Any ^writing Any
           ^observer Any?
@@ -204,7 +204,12 @@
   (set_current_events events key values)
   (set_next_sequence events key (+ seq 1))
   (if_yes (== ($to_str event/type) "plugin/state")
-    (update_projection events key ($to_str event/plugin) envelope/payload/state))
+    (update_projection events key ($to_str event/plugin) envelope/payload/state)
+    (let writers (?? (events/state_writers/.get .get key) {}))
+    (writers .put ($to_str event/plugin)
+      {^plugin ($to_str event/plugin) ^scope scope ^stream stream ^sequence seq
+       ^writer (?? envelope/payload/writer nil)})
+    (events/state_writers/.get .put key writers))
   (if_yes (&& (== origin "core")
               (["session/state" "round/state" "question/asked" "question/answered"
                 "command" "trigger/state" "trigger/occurrence" "history/summary"] .contains? event/type))
@@ -232,11 +237,12 @@
 
 (fn prepare_plugin_state
   [events : EventStore, scope : Str, stream : Str, plugin : Str, state,
-   ^version version : Int = 1]
+   ^version version : Int = 1, ^writer writer = nil]
   (require_open events)
   (validate_scope scope)
   (var event ($freeze
-    {^type "plugin/state" ^plugin plugin ^state_version version ^state state}))
+    {^type "plugin/state" ^plugin plugin ^state_version version ^state state
+     ^writer writer}))
   (var encoded (write_data event/state))
   (if (> (byte_size encoded) events/max_state_bytes)
     (fail (HarnessStateError
@@ -296,6 +302,24 @@
     (var found (stream_states .get plugin))
     # A detached copy, as `core_state` returns: changing it stores nothing.
     (if_not (== found void) (copy_data found))))
+
+# Provenance travels in the same checkpoint as the state it describes. Reading
+# it needs no application projections, event segments, or plugin callbacks.
+(fn manifest_state_writers [manifest]
+  (let result [])
+  (if_not ($absent? manifest)
+    (for [stream descriptor] in manifest/streams
+      (for [id record] in (?? descriptor/state_writers {})
+        (result .push (copy_data record)))))
+  result)
+
+(fn saved_state_writers [root : Str]
+  (if_not ($fs/exists? $"${root}/CURRENT") (return []))
+  (let backend (store_open ^root root))
+  (try
+    (let loaded backend/.Store:load_checkpoint)
+    (manifest_state_writers loaded/records/event_manifest)
+  ensure backend/.Store:close))
 
 (fn quarantine_projection [quarantined, seen, envelope]
   (var plugin ($to_str envelope/projection))
@@ -464,6 +488,7 @@
       (events/backend .Store:put $"projection/${projection_digest}" projection))
     (descriptors .put key
       {^segments segmented/digests ^projection projection_digest
+       ^state_writers (copy_data (?? (events/state_writers/.get .get key) {}))
        ^event_count values/.size ^segment_events events/segment_events ^next_seq (next_sequence events ($to_str key))})
     (streams .put key segmented/events))
   (events/streams .set streams)
@@ -495,6 +520,7 @@
   (events/streams/.get .delete key)
   (events/projections/.get .delete key)
   (events/core_projections/.get .delete key)
+  (events/state_writers/.get .delete key)
   (events/next_sequences/.get .delete key)
   (events/dirty_streams/.get .put key "deleted")
   (events/dirty .set true)
@@ -504,16 +530,19 @@
   (if_not (== manifest/format 3)
     (fail (HarnessStateError ^message "event store predates this Harness; start a fresh workspace")))
   (var sequences (fresh_map))
+  (let writers {})
   (for [key descriptor] in manifest/streams
-    (sequences .put key descriptor/next_seq))
+    (sequences .put key descriptor/next_seq)
+    (writers .put key (copy_data (?? descriptor/state_writers {}))))
   {^streams (fresh_map) ^sequences sequences ^projections (fresh_map)
-   ^core_projections (fresh_map)})
+   ^core_projections (fresh_map) ^state_writers writers})
 
 (fn install_manifest_data [events : EventStore, manifest, data]
   (events/streams .set data/streams)
   (events/next_sequences .set data/sequences)
   (events/projections .set data/projections)
   (events/core_projections .set data/core_projections)
+  (events/state_writers .set data/state_writers)
   (events/generation .set manifest/generation)
   (events/last_manifest .set manifest)
   (events/formats_validated .set false))
@@ -640,6 +669,7 @@
                 ^next_sequences ($cell (fresh_map))
                 ^projections ($cell (fresh_map)) ^generation ($cell 0)
                 ^core_projections ($cell (fresh_map))
+                ^state_writers ($cell (fresh_map))
                 ^last_manifest ($cell nil) ^dirty ($cell false)
                 ^dirty_streams ($cell (fresh_map))
                 ^catalog ($cell nil) ^quarantined ($cell (fresh_list))

@@ -1,6 +1,6 @@
 # Real CLI processes talk to the same host and HTTP contract as the browser.
 (import $test [describe it])
-(import ^from "../support" [isolated run_spec package_path])
+(import ^from "../support" [isolated run_spec source_path : package_path])
 (import ^from "../web_support" [start_host launch_host ready_host stop_host cli])
 (import ^from "../../src/cli/client" [connect api wire checked session_path wait_for])
 (import ^from "../../src/runtime/workspace_lock" [acquire_workspace_lock close_workspace_lock])
@@ -21,10 +21,10 @@
         (let process
           ($os/exec_async ^dir workspace ^timeout_ms 60000 ^max_bytes 1048576
             "env" "GENE_HARNESS_WORKSPACE=env host" ($os/executable_path)
-            "run" (package_path "src/runtime/supervisor.gene") "web" "--offline"))
+            "run" "--snapshot" (package_path "src/runtime/supervisor.gene") "web" "--offline"))
         (let host {^root root ^process process})
         (fn client [environment, arguments]
-          (let args [environment ($os/executable_path) "run" (package_path "src/main.gene") "--json"])
+          (let args [environment ($os/executable_path) "run" "--snapshot" (package_path "src/main.gene") "--json"])
           (for arg in arguments (args .push arg))
           (let result
             (await ($os/exec_async ^dir root ^timeout_ms 15000 "env" args...)))
@@ -41,7 +41,7 @@
           (let unset_result
             (await ($os/exec_async ^dir root ^timeout_ms 15000
               "env" "-u" "GENE_HARNESS_WORKSPACE" ($os/executable_path)
-              "run" (package_path "src/main.gene") "--json" "status")))
+              "run" "--snapshot" (package_path "src/main.gene") "--json" "status")))
           ($assert (== unset_result/status 0) unset_result/stderr)
           ($assert (== (/workspace ($json/parse ($str/trim unset_result/stdout))) root)
             "unset environment did not fall back to the launch directory")

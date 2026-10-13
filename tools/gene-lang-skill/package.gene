@@ -1,0 +1,4 @@
+{^format 1 ^name "gene/reference" ^version "0.1.0"
+ ^description "Gene authoring reference used by development tools and Harness"
+ ^library {^entry "reference.gene"}
+ ^files {^include ["package.gene" "reference.gene" "SKILL.md" "reference/**"]}}

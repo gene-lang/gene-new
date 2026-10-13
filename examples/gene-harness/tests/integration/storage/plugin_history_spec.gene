@@ -1,0 +1,289 @@
+(import $test [describe it])
+(import $store/fs [Store])
+(import ^from "../../support" [isolated run_spec])
+(import ^from "../../../src/runtime/bootstrap" [open_runtime close_runtime])
+(import ^from "../../../src/profiles/profile" [Profile])
+(import ^from "../../../src/builtin/plugin_admin" [plugin_admin])
+(import ^from "../../../src/agents/harness_turn" [evaluate_harness_turn])
+(import ^from "../../../src/storage/workspace"
+  [
+    register_plugin
+    composition_history
+    composition_revision
+    commit_composition
+    verify_stored_entry
+    set_plugin_enabled
+    disable_entry
+    revert_entry
+    revert_plugin])
+(import ^from "../../../src/storage/state" [record_plugin_state plugin_state])
+
+(fn sample []
+  (quote
+    (mod plugin
+      (import ^from "src/plugin_api.gene" [Plugin PluginHost])
+      (fn init [descriptor]
+        (Plugin ^id "example" ^provides [["functions" "answer"]] ^activate (fn [host] (host .PluginHost:contribute "functions" {^name "answer" ^doc "History fixture." ^fn (fn [] 42)})))))))
+
+(describe
+  "Workspace composition history"
+  (it
+    "archives model, direct, and offline origins across checkpoints and restart"
+    []
+    (isolated
+      this_mod/.path
+      "archives model, direct, and offline origins across checkpoints and restart"
+      (fn [root]
+        (let profile (Profile ^name "history_test" ^plugins [(plugin_admin)]))
+        (let runtime (open_runtime root "default" profile))
+        (var first nil)
+        (try
+          (let dependency (quote (mod helper (fn answer [] 42))))
+          (let path $"./${($crypto/sha256 ($to_str dependency))}.gene")
+          (let plugin
+            `(mod plugin
+               (import ^from "src/plugin_api.gene" [Plugin PluginHost])
+               (import ^from %path [answer])
+               (fn init [descriptor]
+                 (Plugin ^id "example" ^provides [["functions" "answer"]] ^activate (fn [host] (host .PluginHost:contribute "functions" {^name "answer" ^doc "Retained dependency." ^fn answer}))))))
+          (let program
+            ($to_str
+              "(register_plugin \"example\" (quote "
+              ($to_str plugin)
+              ") ^dependencies [(quote "
+              ($to_str dependency)
+              ")])"))
+          (let turn (evaluate_harness_turn ^session "history-session" runtime/h 7 root program))
+          ($assert (== turn/composition_changes/0/status "ready") ($to_str turn))
+          (let records (composition_history runtime/workspace))
+          (set first records/0)
+          ($assert (== first/origin/kind "model"))
+          ($assert (== first/origin/session "history-session"))
+          ($assert (== first/origin/turn 7))
+          ($assert (!= first/host_build_id "unknown"))
+          ($assert (== first/validation/kind "bounded_descriptor"))
+          ($assert (> first/profile/limits/max_steps 0))
+          (for enabled in [false true false true]
+            (set_plugin_enabled runtime/workspace runtime/h "example" enabled))
+          ($assert (== (composition_revision runtime/workspace) 5))
+          (let direct_records (composition_history runtime/workspace))
+          ($assert (== direct_records/0/origin/kind "direct"))
+        ensure
+          (close_runtime runtime))
+        (let repair (open_runtime ^!activate root "default" profile))
+        (try
+          (disable_entry ^h repair/h repair/workspace "example")
+          (let repair_records (composition_history repair/workspace))
+          ($assert (== repair_records/0/revision 6))
+          ($assert (== repair_records/0/origin/kind "offline"))
+          ($assert (== repair_records/5/id first/id))
+          ($assert (== repair_records/5/entries first/entries))
+        ensure
+          (close_runtime repair))
+        (let restarted (open_runtime root "default" profile))
+        (try
+          (let reopened_records (composition_history restarted/workspace))
+          ($assert (== reopened_records/.size 7))
+          ($assert (== reopened_records/5/id first/id))
+          ($assert (== reopened_records/0/entries/0/disabled true))
+          ($assert (== reopened_records/5/entries/0/closure/.size 2))
+          (verify_stored_entry restarted/workspace reopened_records/5/entries/0)
+          (for digest in reopened_records/5/entries/0/closure
+            (let source (restarted/workspace/blob_store .Store:get $"blob/${digest}"))
+            ($assert (== $"sha256:${($crypto/sha256 source)}" digest)))
+        ensure
+          (close_runtime restarted))))))
+
+(describe
+  "Plugin version reversion"
+  (it
+    "repairs a failed replacement offline while retaining application data"
+    []
+    (isolated
+      this_mod/.path
+      "repairs a failed replacement offline while retaining application data"
+      (fn [root]
+        (let profile (Profile ^name "history_test" ^plugins [(plugin_admin)]))
+        (let runtime (open_runtime root "default" profile))
+        (try
+          (register_plugin runtime/workspace runtime/h "example" (sample))
+          (record_plugin_state
+            runtime/events
+            "workspace"
+            "workspace"
+            "example"
+            {^workbook "retained"})
+          (let broken
+            (register_plugin ^^replace
+              runtime/workspace
+              runtime/h
+              "example"
+              (quote
+                (mod plugin
+                  (import ^from "src/plugin_api.gene" [Plugin])
+                  (fn init [descriptor]
+                    (Plugin ^id "example" ^activate (fn [host] (fail "broken replacement"))))))))
+          ($assert (== broken/status "error"))
+        ensure
+          (close_runtime runtime))
+        (let repair (open_runtime ^!activate root "default" profile))
+        (try
+          (let result (revert_entry repair/workspace "example" 1))
+          ($assert (== result/revision 3))
+          ($assert (== result/status "unverified"))
+        ensure
+          (close_runtime repair))
+        (let restarted (open_runtime root "default" profile))
+        (try
+          (let answer
+            (evaluate_harness_turn restarted/h 1 root "(Outcome ^^done ^reply ($to_str (answer)))"))
+          ($assert (== answer/validated/outcome/reply "42"))
+          ($assert
+            (==
+              (plugin_state restarted/events "workspace" "workspace" "example")
+              {^workbook "retained"}))
+          (let records (composition_history restarted/workspace))
+          ($assert (== records/0/origin/source_revision 1))
+          ($assert (== records/0/origin/kind "offline"))
+          ($assert (== records/0/entries/0/module_digest records/2/entries/0/module_digest))
+          ($assert (!= records/1/entries/0/module_digest records/2/entries/0/module_digest))
+          (set_plugin_enabled restarted/workspace restarted/h "example" false)
+          (let disabled_revert (revert_plugin restarted/workspace restarted/h "example" 1))
+          ($assert (== disabled_revert/status "disabled"))
+          (let blob_key $"blob/${records/0/entries/0/module_digest}")
+          (let bytes (restarted/workspace/blob_store .Store:get blob_key))
+          (restarted/workspace/blob_store .Store:delete blob_key)
+          ($assert
+            (try
+              (revert_plugin restarted/workspace restarted/h "example" 1)
+              false
+            catch Any
+              ($str/contains? $err/message "blob is missing")))
+          ($assert (== (composition_revision restarted/workspace) disabled_revert/revision))
+          (restarted/workspace/blob_store .Store:put blob_key bytes)
+        ensure
+          (close_runtime restarted)))))
+  (it
+    "rejects a queued stale reversion without quarantining the current plugin"
+    []
+    (isolated
+      this_mod/.path
+      "rejects a queued stale reversion without quarantining the current plugin"
+      (fn [root]
+        (let runtime
+          (open_runtime root "default" (Profile ^name "history_test" ^plugins [(plugin_admin)])))
+        (try
+          (register_plugin runtime/workspace runtime/h "example" (sample))
+          (scope
+            (let response
+              (spawn ^lane root (evaluate_harness_turn runtime/h 2 root "(append_prompt \"revert\" (revert_plugin \"example\" 1)) ($sleep 100) (Outcome ^prompt \"continue\")")))
+            (var attempts 0)
+            (while (&& runtime/h/snapshots/pending/.get/.empty? (< attempts 1000))
+              ($sleep 1)
+              (set attempts (+ attempts 1)))
+            ($assert (! runtime/h/snapshots/pending/.get/.empty?) "model did not queue a reversion")
+            (set_plugin_enabled runtime/workspace runtime/h "example" false)
+            (let result (await response))
+            ($assert (== result/composition_changes/0/status "stale"))
+            ($assert (== (composition_revision runtime/workspace) 2))
+            ($assert (== ($size runtime/workspace/errors/.get) 0)))
+        ensure
+          (close_runtime runtime))))))
+
+(describe
+  "Model dependency spellings"
+  (it
+    "retains exact-node dependency hashes computed inside a response"
+    []
+    (isolated
+      this_mod/.path
+      "retains exact-node dependency hashes computed inside a response"
+      (fn [root]
+        (let runtime
+          (open_runtime
+            root
+            "default"
+            (Profile ^name "model_dependencies" ^plugins [(plugin_admin)])))
+        (try
+          (let result
+            (evaluate_harness_turn
+              runtime/h
+              1
+              root
+              """
+(let dependency (quote (mod numbers (fn answer [] 73))))
+(let import_path ($to_str "./" ($crypto/sha256 ($to_str dependency)) ".gene"))
+(let plugin `(mod plugin
+  (import ^from "src/plugin_api.gene" [Plugin PluginHost])
+  (import ^from %import_path [answer])
+  (fn init [descriptor]
+    (Plugin ^id "numbers" ^activate (fn [host]
+      (host .PluginHost:contribute "functions" {^name "answer" ^doc "Exact-node dependency." ^fn answer}))))))
+(register_plugin "numbers" plugin ^dependencies [dependency])
+"""))
+          ($assert (== result/composition_changes/0/status "ready") ($to_str result))
+          (let answer
+            (evaluate_harness_turn runtime/h 2 root "(Outcome ^^done ^reply ($to_str (answer)))"))
+          ($assert (== answer/validated/outcome/reply "73") ($to_str answer))
+        ensure
+          (close_runtime runtime))))))
+
+(type CheckpointFixtureError ^props {^message Str} ^impl [Error])
+(impl Error for CheckpointFixtureError)
+(type CheckpointStore ^props {^inner Any ^mode Str}
+  (impl Store
+    (message put [key value]
+      (self/inner .Store:put key value))
+    (message get [key]
+      (self/inner .Store:get key))
+    (message has? [key]
+      (self/inner .Store:has? key))
+    (message delete [key]
+      (self/inner .Store:delete key))
+    (message keys []
+      self/inner/.Store:keys)
+    (message clear []
+      self/inner/.Store:clear)
+    (message checkpoint [generation records]
+      (if (!= self/mode "before") (self/inner .Store:checkpoint generation records))
+      (fail (CheckpointFixtureError ^message "checkpoint acknowledgement failed")))
+    (message load_checkpoint []
+      (if (== self/mode "unreadable")
+        (fail (CheckpointFixtureError ^message "authority unavailable")))
+      self/inner/.Store:load_checkpoint)
+    (message close []
+      self/inner/.Store:close)))
+
+(describe "Composition commit authority"
+  (it "distinguishes uncommitted archives, lost acknowledgements, and unreadable outcomes" []
+    (isolated this_mod/.path "distinguishes uncommitted archives, lost acknowledgements, and unreadable outcomes"
+      (fn [root]
+        (let profile (Profile ^name "commit_fault" ^plugins [(plugin_admin)]))
+        (let runtime (open_runtime ^^recovery root "default" profile))
+        (let original runtime/workspace/store)
+        (let disabled [{^id "plugin_admin" ^builtin true ^disabled true}])
+        (try
+          (set runtime/workspace/store (CheckpointStore ^inner original ^mode "before"))
+          ($assert (try (commit_composition runtime/workspace disabled) false catch Any true))
+          ($assert (== (composition_revision runtime/workspace) 0))
+          ($assert (== ((composition_history runtime/workspace) .size) 1))
+          (set runtime/workspace/store (CheckpointStore ^inner original ^mode "after"))
+          ($assert (== (commit_composition runtime/workspace disabled) 1))
+          ($assert (== (composition_revision runtime/workspace) 1))
+          (set runtime/workspace/store (CheckpointStore ^inner original ^mode "unreadable"))
+          ($assert (try (commit_composition runtime/workspace []) false catch Any (== $err/code "commit_uncertain")))
+          # In-memory state makes no false claim after an ambiguous write.
+          ($assert (== (composition_revision runtime/workspace) 1))
+        ensure
+          (set runtime/workspace/store original)
+          (close_runtime runtime))
+        (let reopened (open_runtime ^^recovery root "default" profile))
+        (try
+          ($assert (== (composition_revision reopened/workspace) 2))
+          (let history (composition_history reopened/workspace))
+          ($assert (== history/.size 3))
+          ($assert (== history/0/entries []))
+        ensure (close_runtime reopened))))))
+
+(fn main [args] : Int
+  (run_spec args))

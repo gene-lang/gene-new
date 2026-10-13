@@ -2,6 +2,7 @@
  ^name "genex/cordis"
  ^description "Spatial services, deterministic plugin lifetimes, and recoverable composition for Gene"
  ^version "0.1.0"
+ ^files {^exclude ["tmp/**"]}
  ^library {^entry "src/cordis.gene"}
  ^applications [
    (application "cordis_demo" ^entry "src/main.gene")

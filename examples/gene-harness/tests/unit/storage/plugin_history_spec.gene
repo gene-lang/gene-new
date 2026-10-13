@@ -1,0 +1,128 @@
+(import $test [describe it run])
+(import $store/fs [open : store_open Store])
+(import ^from "../../../src/storage/plugin_history"
+  [
+    archive_host_build
+    archive_baseline
+    archive_candidate
+    archived_record
+    history_list
+    history_revision
+    history_entry
+    append_history_result
+    history_results pin_history])
+
+(fn fixture [body]
+  (let root ($path/join ($os/launch_dir) $"tmp/history-spec-${($crypto/random_hex 12)}"))
+  ($fs/make_dir root)
+  (let store (store_open ^root root))
+  (try
+    (body store root)
+  ensure
+    store/.Store:close))
+
+(fn build []
+  {
+    ^format 1
+    ^runtime_digest "sha256:test-runtime"
+    ^host_inputs {^entry "fixture" ^packages []}
+    ^interfaces {^plugin "test:1"}})
+
+(fn entry [n]
+  {
+    ^id "probe"
+    ^module_digest $"sha256:module-${n}"
+    ^closure [$"sha256:module-${n}" "sha256:dependency"]
+    ^interfaces {^plugin "test:1"}
+    ^limits {^max_steps 1000}
+    ^!disabled})
+
+(describe
+  "Plugin history archive"
+  (it
+    "retains complete entries beyond checkpoint retention and ignores uncommitted candidates"
+    []
+    (fixture
+      (fn [store root]
+        (let host (archive_host_build store (build)))
+        (var head (archive_baseline store {^revision 0 ^entries []} host {^name "test"}))
+        (for revision in [1 2 3 4 5]
+          (let next
+            (archive_candidate
+              store
+              head
+              revision
+              [(entry revision)]
+              host
+              {^name "test"}
+              {^kind "model" ^session "s1" ^turn revision}))
+          (store .Store:checkpoint
+            revision
+            {
+              ^composition {
+                             ^format 1
+                             ^revision revision
+                             ^entries [(entry revision)]
+                             ^history_head next}})
+          (set head next))
+        (let orphan
+          (archive_candidate store head 6 [(entry 99)] host {^name "test"} {^kind "interrupted"}))
+        (let loaded store/.Store:load_checkpoint)
+        (let committed loaded/records/composition/history_head)
+        ($assert (== committed head))
+        ($assert (!= committed orphan))
+        ($assert (== ((history_list store committed) .size) 6))
+        ($assert (== (history_entry store committed "probe" 1) (entry 1)))
+        (let baseline (history_revision store committed 0))
+        ($assert (== baseline/host_build_id "unknown"))
+        ($assert (try (history_revision store committed 6) false catch Any true))
+        (let retry
+          (archive_candidate
+            store
+            head
+            6
+            [(entry 6)]
+            host
+            {^name "test"}
+            {^kind "offline" ^operation "revert"}))
+        ($assert (!= retry orphan))
+        (store .Store:checkpoint
+          6
+          {^composition {^format 1 ^revision 6 ^entries [(entry 6)] ^history_head retry}})
+        (let reopened (store_open ^root root))
+        (try
+          (let restored reopened/.Store:load_checkpoint)
+          ($assert
+            (==
+              (history_entry reopened restored/records/composition/history_head "probe" 1)
+              (entry 1)))
+        ensure
+          reopened/.Store:close))))
+  (it
+    "detects corrupted history and keeps outcomes separate from immutable revisions"
+    []
+    (fixture
+      (fn [store root]
+        (let host (archive_host_build store (build)))
+        (let head (archive_baseline store {^revision 4 ^entries [(entry 4)]} host {^name "test"}))
+        ($assert
+          (== head (archive_baseline store {^revision 4 ^entries [(entry 4)]} host {^name "test"}))
+          "reopening an unchanged legacy baseline must retain its history identity")
+        (let original (archived_record store head))
+        (pin_history store head 4 true)
+        (let pinned (history_revision store head 4))
+        ($assert pinned/pinned)
+        ($assert (== (archived_record store head) original))
+        (pin_history store head 4 false)
+        (let unpinned (history_revision store head 4))
+        ($assert (! unpinned/pinned))
+        (append_history_result store head {^state "quarantined" ^message "activation failed"})
+        (append_history_result store head {^state "ready"})
+        ($assert (== ((history_results store head) .size) 2))
+        ($assert (== (archived_record store head) original))
+        (store .Store:put $"plugin_history/revision/${head}" {^format 1 ^revision 999})
+        ($assert (try (history_list store head) false catch Any true))))))
+
+(fn main [args] : Int
+  (let result (run ^name (?? args/0 "")))
+  result/exit_code)

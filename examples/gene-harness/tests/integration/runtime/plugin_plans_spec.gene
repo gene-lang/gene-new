@@ -1,0 +1,422 @@
+(import $test [describe it])
+(import $store/fs [Store])
+(import ^from "../../support" [isolated run_spec source_path])
+(import ^from "../../../src/plugin_api" [Plugin PluginHost])
+(import ^from "../../../src/profiles/profile" [Profile profile_admissions])
+(import ^from "../../../src/runtime/bootstrap" [open_runtime close_runtime])
+(import ^from "../../../src/kernel" [apply_plugin_set row row_record CompositionChanged])
+(import ^from "../../../src/builtin/provider_offline" [provider_offline])
+(import ^from "../../../src/builtin/plugin_admin" [plugin_admin])
+(import ^from "../../../src/agents/harness_turn" [evaluate_harness_turn])
+(import ^from "../../../src/runtime/plugin_plans" [validate_plan apply_plan plan_result])
+(import ^from "../../../src/storage/workspace"
+  [composition_revision set_plugin_enabled register_plugin])
+(import ^from "../../../src/storage/plugin_history" [history_results])
+(import ^from "../../../src/runtime/composition"
+  [current_snapshot acquire_snapshot release_snapshot])
+
+(fn version [n, closed]
+  (Plugin ^id "version" ^provides [["functions" "version"]] ^activate (fn [host] (host .PluginHost:contribute "functions" {^name "version" ^doc "Version." ^fn (fn [] n)})) ^deactivate (fn [host] (closed/.get .push n))))
+
+(type CleanupFixtureError ^props {^message Str} ^impl [Error])
+(impl Error for CleanupFixtureError)
+
+(describe
+  "Strict plugin application"
+  (it
+    "rejects an entire failed candidate and commits once before a successful publication"
+    []
+    (isolated
+      this_mod/.path
+      "rejects an entire failed candidate and commits once before a successful publication"
+      (fn [root]
+        (let closed ($cell []))
+        (let original (version 1 closed))
+        (let runtime (open_runtime root "default" (Profile ^name "strict" ^plugins [original])))
+        (closed .set [])
+        (let committed ($cell 0))
+        (let lease (acquire_snapshot runtime/h/snapshots))
+        (try
+          (let before (current_snapshot runtime/h/snapshots))
+          (let old ((Path "fn") (row runtime/h "functions" "version")))
+          (let candidate (version 2 closed))
+          (let broken (Plugin ^id "broken" ^activate (fn [host] (fail "candidate failed"))))
+          ($assert
+            (try
+              (apply_plugin_set
+                runtime/h
+                (profile_admissions (Profile ^name "candidate" ^plugins [candidate broken]))
+                (fn []
+                  nil)
+                (fn []
+                  (committed .set (+ committed/.get 1))))
+              false
+            catch Any
+              true))
+          (let rejected (current_snapshot runtime/h/snapshots))
+          ($assert (== rejected/id before/id))
+          ($assert (== committed/.get 0))
+          ($assert (== (old) 1))
+          ($assert (closed/.get .contains? 2))
+          ($assert (! (closed/.get .contains? 1)))
+          (let result
+            (apply_plugin_set
+              runtime/h
+              (profile_admissions (Profile ^name "candidate" ^plugins [(version 3 closed)]))
+              (fn []
+                nil)
+              (fn []
+                (committed .set (+ committed/.get 1)))))
+          ($assert (== result/state "applied"))
+          ($assert (== committed/.get 1))
+          ($assert (== (old) 1))
+          ($assert (== (((Path "fn") (row runtime/h "functions" "version"))) 3))
+          ($assert (! (closed/.get .contains? 1)))
+          (release_snapshot runtime/h/snapshots lease)
+          ($assert (closed/.get .contains? 1))
+        ensure
+          (release_snapshot runtime/h/snapshots lease)
+          (close_runtime runtime))))))
+
+(describe
+  "Rejected candidate cleanup"
+  (it
+    "reports disposal errors without advancing the published snapshot"
+    []
+    (isolated
+      this_mod/.path
+      "reports disposal errors without advancing the published snapshot"
+      (fn [root]
+        (let runtime (open_runtime root "default" (Profile ^name "cleanup" ^plugins [])))
+        (try
+          (let before (current_snapshot runtime/h/snapshots))
+          (let acquired
+            (Plugin ^id "acquired" ^activate (fn [host] nil) ^deactivate (fn [host] (fail (CleanupFixtureError ^message "cleanup fixture failed")))))
+          (let broken
+            (Plugin ^id "broken" ^activate (fn [host] (fail (CleanupFixtureError ^message "activation fixture failed")))))
+          (let message
+            (try
+              (apply_plugin_set
+                runtime/h
+                (profile_admissions (Profile ^name "candidate" ^plugins [acquired broken]))
+                (fn []
+                  nil)
+                (fn []
+                  (fail "commit must not run")))
+              "unexpected success"
+            catch Any
+              $err/message))
+          ($assert ($str/contains? message "cleanup fixture failed") message)
+          (let after (current_snapshot runtime/h/snapshots))
+          ($assert (== before/id after/id))
+        ensure
+          (close_runtime runtime))))))
+
+(fn stored_version [id : Str, n : Int, bad : Bool]
+  ($to_str
+    `(mod plugin
+       (import ^from "src/plugin_api.gene" [Plugin PluginHost])
+       (type FixtureError ^props {^message Str} ^impl [Error])
+       (impl Error for FixtureError)
+       (fn init [descriptor]
+         (Plugin ^id %id ^provides [["functions" %id]] ^activate (fn [host] (if %bad (fail (FixtureError ^message "bad candidate")) (host .PluginHost:contribute "functions" {^name %id ^doc "Plan fixture." ^fn (fn [] %n)}))))))))
+
+(describe
+  "Validated plugin plans"
+  (it
+    "archives failed attempts, applies a complete set once, and rejects stale drafts"
+    []
+    (isolated
+      this_mod/.path
+      "archives failed attempts, applies a complete set once, and rejects stale drafts"
+      (fn [root]
+        (let closed ($cell []))
+        (let profile
+          (Profile ^name "plans" ^provider "offline" ^plugins [(provider_offline) (plugin_admin) (version 1 closed)]))
+        (let runtime (open_runtime root "default" profile))
+        (try
+          (let before (current_snapshot runtime/h/snapshots))
+          (let first
+            (validate_plan
+              runtime
+              {
+                ^base_revision 0
+                ^changes [
+                           {
+                             ^id "version"
+                             ^kind "replace"
+                             ^source (stored_version "version" 2 false)}
+                           {^id "bad" ^kind "replace" ^source (stored_version "bad" 2 true)}]}))
+          ($assert first/valid ($to_str first))
+          (let rejected (apply_plan runtime first/id))
+          ($assert (== rejected/state "failed") ($to_str rejected))
+          ($assert ($str/contains? rejected/message "bad candidate") ($to_str rejected))
+          ($assert (! ($str/contains? rejected/message "cleanup failed")) ($to_str rejected))
+          ($assert (== (composition_revision runtime/workspace) 0))
+          (let still (current_snapshot runtime/h/snapshots))
+          ($assert (== still/id before/id))
+          ($assert
+            (==
+              ((history_results ^kind "attempt" runtime/workspace/store runtime/workspace/history_head/.get) .size)
+              1))
+          (let valid
+            (validate_plan
+              runtime
+              {
+                ^base_revision 0
+                ^changes [
+                           {
+                             ^id "version"
+                             ^kind "replace"
+                             ^source (stored_version "version" 3 false)}]}))
+          (let applied (apply_plan runtime valid/id))
+          ($assert (== applied/state "applied") ($to_str applied))
+          ($assert (== applied/revision 1))
+          ($assert (== (((Path "fn") (row runtime/h "functions" "version"))) 3))
+          (let published (current_snapshot runtime/h/snapshots))
+          ($assert (== published/id (+ before/id 1)))
+          (let repeated (apply_plan runtime valid/id))
+          ($assert (== repeated applied))
+          (let unchanged (current_snapshot runtime/h/snapshots))
+          ($assert
+            (== unchanged/id published/id)
+            "retrying a completed plan republished its effects")
+          (let stale
+            (validate_plan runtime {^base_revision 1 ^changes [{^id "version" ^kind "restore"}]}))
+          (let model
+            (evaluate_harness_turn
+              runtime/h
+              1
+              root
+              "(disable_plugin \"version\") (Outcome ^prompt \"inspect the result\")"))
+          ($assert (== model/composition_changes/0/status "disabled"))
+          ($assert
+            (try
+              (apply_plan runtime stale/id)
+              false
+            catch Any
+              (== $err/code "stale_composition")))
+          ($assert (== (composition_revision runtime/workspace) 2))
+          (let config_plan (validate_plan runtime {^base_revision 2 ^changes []}))
+          (let path $"${runtime/state_root}/config.gene")
+          (let settings ($serde/read_data ($fs/read_text path)))
+          (settings .put "model" "changed")
+          ($fs/write_text_atomic path ($serde/write_data settings))
+          ($assert
+            (try
+              (apply_plan runtime config_plan/id)
+              false
+            catch Any
+              (== $err/code "stale_plan")))
+        ensure
+          (close_runtime runtime))))))
+
+(describe
+  "Atomic provider handoff"
+  (it
+    "never publishes an intermediate composition without the configured provider"
+    []
+    (isolated
+      this_mod/.path
+      "never publishes an intermediate composition without the configured provider"
+      (fn [root]
+        (let runtime
+          (open_runtime
+            root
+            "default"
+            (Profile ^name "providers" ^provider "offline" ^plugins [(provider_offline)])))
+        (let observed [])
+        (let listener
+          (runtime/h/bus .subscribe
+            CompositionChanged
+            (fn [event]
+              (let selected (row_record runtime/h "providers" "offline"))
+              (observed .push (?? selected/owner "missing")))))
+        (try
+          (let source
+            ($to_str
+              (quote
+                (mod plugin
+                  (import ^from "src/plugin_api.gene" [Plugin PluginHost])
+                  (fn init [descriptor]
+                    (Plugin ^id "replacement_provider" ^provides [["providers" "offline"]] ^activate (fn [host] (host .PluginHost:contribute "providers" {^name "offline" ^doc "Replacement offline provider." ^configure (fn [model effort timeout] {^model "replacement" ^effort "none" ^timeout_ms timeout}) ^prepare (fn [call] {}) ^send (fn [prepared] {^text "done"})}))))))))
+          (let plan
+            (validate_plan
+              runtime
+              {
+                ^base_revision 0
+                ^changes [
+                           {^id "provider_offline" ^kind "set_enabled" ^!enabled}
+                           {^id "replacement_provider" ^kind "replace" ^source source}]}))
+          ($assert plan/valid)
+          (let result (apply_plan runtime plan/id))
+          ($assert (== result/state "applied") ($to_str result))
+          ($assert (== observed ["replacement_provider"]) ($to_str observed))
+        ensure
+          listener/.cancel
+          (close_runtime runtime))))))
+
+(describe
+  "Plan identity and recovery"
+  (it
+    "rejects changed host/profile and full-grant descriptors and treats no-op plans as no change"
+    []
+    (isolated
+      this_mod/.path
+      "rejects changed host/profile and full-grant descriptors and treats no-op plans as no change"
+      (fn [root]
+        (let runtime (open_runtime root "default" (Profile ^name "identity" ^plugins [])))
+        (try
+          (let before (current_snapshot runtime/h/snapshots))
+          (let noop (validate_plan runtime {^base_revision 0 ^changes []}))
+          (let unchanged (apply_plan runtime noop/id))
+          ($assert unchanged/no_change)
+          (let after (current_snapshot runtime/h/snapshots))
+          ($assert (== after/id before/id))
+          (let host_plan
+            (validate_plan runtime {^base_revision 0 ^changes [] ^reason "host identity check"}))
+          (let build runtime/workspace/history_build/.get)
+          (runtime/workspace/history_build .set "changed-host")
+          ($assert
+            (try
+              (apply_plan runtime host_plan/id)
+              false
+            catch Any
+              (== $err/code "stale_plan")))
+          (runtime/workspace/history_build .set build)
+          (let profile_plan
+            (validate_plan runtime {^base_revision 0 ^changes [] ^reason "profile identity check"}))
+          (set runtime/profile/name "changed-profile")
+          ($assert
+            (try
+              (apply_plan runtime profile_plan/id)
+              false
+            catch Any
+              (== $err/code "stale_plan")))
+          (set runtime/profile/name "identity")
+          (let source
+            ($to_str
+              (quote
+                (mod plugin
+                  (import ^from "src/plugin_api.gene" [Plugin])
+                  (fn init [descriptor]
+                    (let mode (try ($fs/exists? ".") "full" catch Any "restricted"))
+                    (Plugin ^id "shape" ^provides [["functions" mode]] ^activate (fn [host] ($fs/write_text "must-not-activate" "bad"))))))))
+          (let plan
+            (validate_plan
+              runtime
+              {^base_revision 0 ^changes [{^id "shape" ^kind "replace" ^source source}]}))
+          ($assert plan/valid)
+          (let result (apply_plan runtime plan/id))
+          ($assert (== result/state "failed") ($to_str result))
+          ($assert
+            ($str/contains? result/message "differs from the reviewed descriptor")
+            result/message)
+          ($assert (== (composition_revision runtime/workspace) 0))
+          ($assert (! ($fs/exists? "must-not-activate")))
+        ensure
+          (close_runtime runtime)))))
+  (it
+    "does not replay activation after a process exits during Apply"
+    []
+    (isolated
+      this_mod/.path
+      "does not replay activation after a process exits during Apply"
+      (fn [root]
+        (let child
+          (await
+            ($os/exec_async ^timeout_ms 60000 ^max_bytes 262144
+              ($os/executable_path)
+              "run"
+              "--snapshot"
+              (source_path "tests/integration/runtime/plugin_plans_spec.gene")
+              root
+              "crash_apply")))
+        ($assert (== child/status 92) ($to_str child))
+        (let runtime (open_runtime ^^recovery root "default" (Profile ^name "crash" ^plugins [])))
+        (try
+          (let id ($fs/read_text $"${root}/plan-id"))
+          (let result (plan_result runtime id))
+          ($assert (== result/state "interrupted") ($to_str result))
+          ($assert (== (apply_plan runtime id) result))
+          ($assert (== (composition_revision runtime/workspace) 0))
+          ($assert (== ($fs/read_text $"${root}/activation-count") "1"))
+        ensure
+          (close_runtime runtime))))))
+
+(describe
+  "Validation history"
+  (it
+    "retains malformed drafts and invalid reports without publishing a revision"
+    []
+    (isolated
+      this_mod/.path
+      "retains malformed drafts and invalid reports without publishing a revision"
+      (fn [root]
+        (let profile (Profile ^name "validation_history" ^plugins []))
+        (let runtime (open_runtime root "default" profile))
+        (var baseline nil)
+        (try
+          (set baseline runtime/workspace/history_head/.get)
+          (let before (current_snapshot runtime/h/snapshots))
+          (let request
+            {
+              ^base_revision 0
+              ^changes [{^id "malformed" ^kind "replace" ^source "(mod plugin (fn"}]})
+          ($assert (try (validate_plan runtime request) false catch Any true))
+          (let attempts (history_results ^kind "attempt" runtime/workspace/store baseline))
+          ($assert (== attempts/.size 1))
+          ($assert (== attempts/0/result/stage "validation"))
+          ($assert (== attempts/0/result/request request))
+          ($assert (== (composition_revision runtime/workspace) 0))
+          (let after (current_snapshot runtime/h/snapshots))
+          ($assert (== after/id before/id))
+          (let published
+            (register_plugin runtime/workspace runtime/h "valid" (stored_version "valid" 1 false)))
+          (let key $"blob/${published/digest}")
+          (let source (runtime/workspace/blob_store .Store:get key))
+          (runtime/workspace/blob_store .Store:delete key)
+          (try
+            (let plan (validate_plan runtime {^base_revision 1 ^changes []}))
+            ($assert (! plan/valid))
+            (let reports
+              (history_results ^kind "attempt"
+                runtime/workspace/store
+                runtime/workspace/history_head/.get))
+            ($assert (== reports/0/result/plan plan/id))
+            ($assert (== reports/0/result/stage "validation"))
+            ($assert (== (composition_revision runtime/workspace) 1))
+          ensure
+            (runtime/workspace/blob_store .Store:put key source))
+        ensure
+          (close_runtime runtime))
+        (let reopened (open_runtime ^^recovery root "default" profile))
+        (try
+          (let retained (history_results ^kind "attempt" reopened/workspace/store baseline))
+          ($assert (== retained/0/result/request/changes/0/source "(mod plugin (fn"))
+        ensure
+          (close_runtime reopened))))))
+
+(fn crash_apply [root : Str]
+  (let runtime (open_runtime root "default" (Profile ^name "crash" ^plugins [])))
+  (let source
+    ($to_str
+      (quote
+        (mod plugin
+          (import ^from "src/plugin_api.gene" [Plugin])
+          (fn init [descriptor]
+            (Plugin ^id "crasher" ^activate (fn [host] (let count (if ($fs/exists? "activation-count") ($parse/parse_int ($fs/read_text "activation-count")) 0)) ($fs/write_text "activation-count" ($to_str (+ count 1))) ($os/exit 92))))))))
+  (let plan
+    (validate_plan
+      runtime
+      {^base_revision 0 ^changes [{^id "crasher" ^kind "replace" ^source source}]}))
+  ($assert plan/valid ($to_str plan))
+  ($fs/write_text $"${root}/plan-id" plan/id)
+  (apply_plan runtime plan/id))
+
+(fn main [args] : Int
+  (if (== args/1 "crash_apply")
+    (do
+      (crash_apply args/0)
+      1)
+    (run_spec args)))

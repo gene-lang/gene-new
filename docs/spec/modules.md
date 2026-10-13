@@ -65,6 +65,10 @@ budgets bound the second.
   `^!owned` reference nodes for admitted shared modules.
 - `$runtime/load_sandboxed` remains the non-transactional compatibility path.
   Its `grants` strings select namespace exposure.
+  Immutable selected package resources remain readable as host-supplied data;
+  materializing a resource requires `fs`, and loading a package native module
+  requires `ffi` (as well as `fs` for materialization). These APIs do not bypass
+  the namespace grants through the `pkg` namespace.
   Sandboxed code cannot create or manage either kind of sandbox load, even when
   the `runtime` namespace was granted accidentally.
 - Runtime `declarations` exposes only bindings with real runtime `^value`;
@@ -72,6 +76,17 @@ budgets bound the second.
 - `gene run [--package-root dir] file [--] [args...]` executes top level, then
   calls `main`. Positional strings form the first argument; everything after the
   entry file is ordinary program data.
+- `gene run --snapshot file` requires a package manifest and executes the
+  selected package/dependency closure from the build system's immutable source
+  snapshots. It preserves launch cwd, while module paths refer to those
+  snapshots. Ordinary file runs retain their existing editable-source behavior.
+- `($pkg/application)` returns frozen `root`, `source_root`, and `provenance`
+  data. Snapshot runs and built application/test targets capture format-1
+  provenance before loading code: exact runtime executable digest, entry, and
+  source/dependency/artifact identities without checkout paths. `source_root`
+  is a separate diagnostic/relaunch location. Ordinary mutable source runs
+  return nil provenance. `($pkg/canonical_digest value)` exposes the same
+  canonical inert-data digest used by package and build identities.
 - `main` returns `Nil` for exit 0 or an in-range `Int` exit code; other values
   are boundary errors.
 - Native code retains values only through roots. Borrowed CallerEnv and

@@ -1,0 +1,176 @@
+# Recovery serves only host-owned management APIs. It never opens event or
+# application-state streams and never constructs normal execution controllers.
+(mod recovery_server)
+(import $net/http [serve stop html])
+(import ^from "./server" [response secure_response cookie_value field number request_data])
+(import ^from "./auth" [open_auth authenticate exchange reset_auth AuthError])
+(import ^from "./connection" [bind_workspace publish_connection publish_link clear_connection])
+(import ^from "./plugin_page" [plugin_page manager_client])
+(import ^from "./plugin_control" [new_plugin_control plugin_control_request close_plugin_control])
+(import ^from "./startup" [mark_ready])
+(import ^from "./contract" [protocol_version])
+(import ^from "../runtime/bootstrap" [open_runtime close_runtime])
+(import ^from "../profiles/baseline" [baseline_profile])
+(import ^from "../runtime/plugin_manager" [plugin_catalog inspect_descriptor])
+(import ^from "../storage/workspace" [composition_revision plugin_history_page revert_entry])
+(import ^from "../storage/plugin_history" [pin_history])
+
+(fn main [options] : Int
+  (manager_client)
+  (let runtime
+    (open_runtime ^^recovery (?? options/workspace ($os/launch_dir)) "default" (baseline_profile)))
+  (var server nil)
+  (let control (new_plugin_control runtime))
+  (try
+    (clear_connection runtime/root "")
+    (set server
+      (bind_workspace ^port (if ($absent? options/port) nil ($parse/parse_int options/port)) ^restart_port (if ($absent? (options .get "restart-port")) nil ($parse/parse_int (options .get "restart-port")))
+        runtime/state_root))
+    (let port server/port)
+    (let origin $"http://127.0.0.1:${port}")
+    (let authority $"127.0.0.1:${port}")
+    (let cookie $"gene_harness_session_${port}")
+    (let auth (open_auth runtime/state_root))
+    (let connection (publish_connection runtime/root runtime/epoch port auth/secret))
+    (fn handle [request]
+      (if (!= (?? request/headers/host "") authority)
+        (return (response 403 {^code "forbidden" ^message "Use the canonical local address."})))
+      (let request_origin (?? request/headers/origin ""))
+      (if (|| (&& (!= request_origin "") (!= request_origin origin)) (&& (!= request/method "GET") (!= request_origin origin)))
+        (return (response 403 {^code "forbidden" ^message "A same-origin request is required."})))
+      (if (&& (== request/method "GET") (["/" "/plugins" "/plugins/" "/ui/default"] .contains? request/path))
+        (return (html (plugin_page))))
+      (if (&& (== request/method "GET") (== request/path "/api/v8/connection"))
+        (return (response 200 connection)))
+      (if_yes (&& (== request/method "POST") (== request/path "/api/v8/auth/exchange"))
+        (let data (request_data request))
+        (let session
+          (exchange ^cookie (cookie_value (?? request/headers/cookie "") cookie)
+            auth
+            (field data "token")))
+        (let result (response 200 {^csrf session/csrf}))
+        (result/headers .put
+          "set-cookie"
+          $"${cookie}=${session/cookie}; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000")
+        (return result))
+      (let browser (authenticate auth (cookie_value (?? request/headers/cookie "") cookie)))
+      (if (&& (!= request/method "GET") (!= request/headers/x-csrf-token browser/csrf))
+        (return (response 403 {^code "forbidden" ^message "Refresh before making a change."})))
+      (if runtime/stopping/.get
+        (return (response 503 {^code "stopped" ^message "Recovery host is stopping."})))
+      (let managed (plugin_control_request control request))
+      (if_not ($absent? managed) (return (response managed/status managed/body)))
+      (if_yes (&& (== request/method "GET") (== request/path "/api/v8/status"))
+        (return
+          (response
+            200
+            {
+              ^epoch runtime/epoch
+              ^protocol protocol_version
+              ^csrf browser/csrf
+              ^workspace runtime/root
+              ^profile runtime/profile/name
+              ^running 0
+              ^plugins []
+              ^mode "recovery"
+              ^readiness "Recovery mode; normal execution is disabled."})))
+      (if_yes (&& (== request/method "GET") (== request/path "/api/v8/plugins"))
+        (let result
+          (plugin_catalog ^query (field ^default "" request/params "q") ^state (field ^default "" request/params "state")
+            runtime))
+        (result .put "csrf" browser/csrf)
+        (result .put "epoch" runtime/epoch)
+        (let failure_path $"${runtime/state_root}/startup_failure")
+        (if ($fs/exists? failure_path) (result .put "startup_failure" ($fs/read_text failure_path)))
+        (return (response 200 result)))
+      (if (&& (== request/method "GET") (== request/path "/api/v8/plugins/history"))
+        (return
+          (response
+            200
+            (plugin_history_page ^limit (if ($absent? request/params/limit) 50 (number request/params "limit")) ^before (if ($absent? request/params/before) nil (number request/params "before"))
+              runtime/workspace
+              (field ^default "" request/params "id")))))
+      (if_yes (&& (== request/method "POST") (== request/path "/api/v8/plugins/inspect"))
+        (let data (request_data request))
+        (return
+          (response
+            200
+            (inspect_descriptor ^revision (?? data/revision nil) runtime (field data "id")))))
+      (if_yes (&& (== request/method "POST") (== request/path "/api/v8/plugins/history/pin"))
+        (let data (request_data request))
+        (if (|| (!= ($head data/revision) Int) (!= ($head data/pinned) Bool))
+          (return
+            (response
+              400
+              {^code "invalid_request" ^message "Integer revision and boolean pinned are required."})))
+        (return
+          (response
+            200
+            (pin_history
+              runtime/workspace/store
+              runtime/workspace/history_head/.get
+              data/revision
+              data/pinned))))
+      (if_yes (&& (== request/method "POST") (== request/path "/api/v8/plugins/revert"))
+        (let data (request_data request))
+        (if (|| (!= ($head data/revision) Int) (!= ($head data/expected) Int))
+          (return
+            (response 400 {^code "invalid_request" ^message "Integer revisions are required."})))
+        (return
+          (response
+            200
+            (revert_entry ^expected data/expected runtime/workspace (field data "id") data/revision))))
+      (if_yes (&& (== request/method "POST") (== request/path "/api/v8/auth/reset"))
+        (reset_auth auth)
+        (publish_link runtime/state_root origin auth/secret)
+        (return (response 200 {^^ok ^message "Owner credential reset. Use the new owner link."})))
+      (if_yes (&& (== request/method "POST") (== request/path "/api/v8/control"))
+        (let data (request_data request))
+        (if_not (["stop" "restart"] .contains? data/action)
+          (return (response 400 {^code "invalid_request" ^message "Use stop or restart."})))
+        (let restart (&& (== data/action "restart") (== options/supervised true)))
+        (if restart
+          ($fs/write_text_atomic
+            $"${runtime/state_root}/restart_notice"
+            ($serde/write_data {^port port ^^normal})))
+        (runtime/exit_code .set (if restart 75 0))
+        (runtime/stopping .set true)
+        (return
+          (response
+            200
+            {
+              ^^ok
+              ^restart restart
+              ^message (if restart
+                         "Retrying normal startup."
+                         "Stopped. Start the normal host from the terminal.")})))
+      (response
+        503
+        {
+          ^code "recovery_required"
+          ^message "Recovery mode permits plugin inspection and repair only. Normal execution is disabled."}))
+    (fn safe_handle [request]
+      (secure_response
+        (try
+          (handle request)
+        catch AuthError
+          (response 401 {^code $err/code ^message $err/message})
+        catch Any
+          (response 400 {^code (?? $err/code "recovery_error") ^message $err/message}))))
+    (mark_ready runtime/state_root (?? (options .get "startup-id") "") runtime/epoch port true)
+    ($println
+      ($to_str
+        """Gene Harness recovery is ready.
+Host: """
+        origin
+        """
+Workspace plugins are not running."""))
+    ($io/flush_stdout)
+    (serve ^handler safe_handle ^max_body_bytes 16777216 ^request_timeout_ms 10000 ^tick_ms 250 ^on_tick (fn [] (if runtime/stopping/.get (stop server)))
+      server)
+    runtime/exit_code/.get
+  ensure
+    (close_plugin_control control)
+    (clear_connection runtime/root runtime/epoch)
+    (if_not ($absent? server) (try (stop server) catch Any nil))
+    (close_runtime runtime)))

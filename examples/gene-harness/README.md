@@ -243,6 +243,12 @@ conversation in every connected browser.
 
 ## Workspace UI
 
+The host-owned [plugin manager](docs/plugin-manager-guide.md) is available through
+**Plugins** or `/plugins`. It shows capabilities and dependencies, stages and
+validates changes, applies complete batches, and retains version history.
+`gene-harness --workspace DIR --recovery` opens it without activating workspace
+plugins. The supervisor also falls back to recovery after startup failure.
+
 Plugins can contribute quoted Gene views to named slots in the browser.
 The opt-in [workspace UI experiment](experiments/ui/README.md) adds plugin views
 that fill the application area or dock beside Classic Harness. The host picker,

@@ -1,0 +1,32 @@
+(import $test [describe it run])
+(import $store/fs [open : store_open Store])
+(import ^from "../../../src/storage/plugin_metadata"
+  [remember_descriptor remember_observation saved_metadata contribution_data])
+
+(describe
+  "Retained plugin metadata"
+  (it
+    "keeps observations from an older host and separates restricted evidence"
+    []
+    (let root ($path/join ($os/launch_dir) $"tmp/metadata-spec-${($crypto/random_hex 12)}"))
+    ($fs/make_dir root)
+    (let store (store_open ^root root))
+    (try
+      (let old {^id "builtin" ^provides [["functions" "old"]] ^requires []})
+      (let current {^id "builtin" ^provides [["functions" "current"]] ^requires []})
+      (let observed [(contribution_data "functions" "old" {^doc "Old observed function."})])
+      (remember_observation store "host-one" "builtin" old observed)
+      (remember_descriptor ^mode "host" store "host-two" "builtin" current)
+      (remember_descriptor ^mode "restricted" store "host-two" "builtin" old)
+      (let metadata (saved_metadata store "builtin" "builtin" "host-two"))
+      ($assert (== metadata/declared/provides current/provides))
+      ($assert (== metadata/restricted/declared/provides old/provides))
+      ($assert (== metadata/historical_observation/host_build_id "host-one"))
+      ($assert (== metadata/historical_observation/contributions observed))
+      ($assert ($absent? metadata/contributions))
+    ensure
+      store/.Store:close)))
+
+(fn main [args] : Int
+  (let result (run ^name (?? args/0 "")))
+  result/exit_code)

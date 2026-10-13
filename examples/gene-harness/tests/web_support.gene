@@ -1,12 +1,12 @@
 (mod web_test_support)
-(import ^from "./support" [package_path])
+(import ^from "./support" [source_path : package_path])
 (import ^from "../src/cli/client" [connect api discover])
 
-(fn launch_host [root : Str, ^script responses = nil, ^port port = nil, ^restart_port restart_port = nil, ^supervised supervised : Bool = false, ^offline offline : Bool = true]
+(fn launch_host [root : Str, ^script responses = nil, ^port port = nil, ^restart_port restart_port = nil, ^supervised supervised : Bool = false, ^offline offline : Bool = true, ^recovery recovery : Bool = false]
   ($fs/make_dir root)
   (let canonical ($fs/real_path root))
   (let entry (if supervised "src/runtime/supervisor.gene" "src/main.gene"))
-  (let arguments ["run" (package_path entry) "web" "--workspace" canonical])
+  (let arguments ["run" "--snapshot" (package_path entry) "web" "--workspace" canonical])
   (if_not ($absent? port)
     (arguments .push "--port")
     (arguments .push ($to_str port)))
@@ -18,12 +18,13 @@
     (arguments .push "--script")
     (arguments .push $"${canonical}/responses.gene"))
   (if (&& offline ($absent? responses)) (arguments .push "--offline"))
+  (if recovery (arguments .push "--recovery"))
   (let process
     ($os/exec_async ^timeout_ms 120000 ^max_bytes 1048576 ($os/executable_path) arguments...))
   {^root canonical ^process process})
 
-(fn ready_host [host, ^previous previous : Str = ""]
-  (let due (+ ($os/monotonic_ms) 20000))
+(fn ready_host [host, ^previous previous : Str = "", ^timeout_ms timeout_ms : Int = 20000]
+  (let due (+ ($os/monotonic_ms) timeout_ms))
   (loop
     (if_yes host/process/.done?
       (let result (await host/process))
@@ -33,15 +34,16 @@
     ($assert (< ($os/monotonic_ms) due) "Host did not publish a ready connection")
     ($sleep 20)))
 
-(fn start_host [root : Str, ^script responses = nil, ^port port = nil, ^supervised supervised : Bool = false, ^offline offline : Bool = true]
-  (let host (launch_host ^script responses ^port port ^supervised supervised ^offline offline root))
+(fn start_host [root : Str, ^script responses = nil, ^port port = nil, ^supervised supervised : Bool = false, ^offline offline : Bool = true, ^recovery recovery : Bool = false, ^ready_timeout_ms ready_timeout_ms : Int = 20000]
+  (let host (launch_host ^script responses ^port port ^supervised supervised ^offline offline ^recovery recovery root))
   (try
-    (host .put "connection" (ready_host host))
+    (host .put "connection" (ready_host ^timeout_ms ready_timeout_ms host))
     host
   catch Any
+    (let message $err/message)
     host/process/.cancel
-    host/process/.join
-    (fail $err)))
+    (let stopped (try (await host/process) catch Any nil))
+    ($assert false ($to_str message "\n" (?? stopped/stdout "") (?? stopped/stderr "")))))
 
 (fn stop_host [host]
   (if_not host/process/.done?
@@ -56,7 +58,7 @@
   (await host/process))
 
 (fn cli [root : Str, arguments, ^expected expected : Int = 0]
-  (let args ["run" (package_path "src/main.gene") "--workspace" root "--json"])
+  (let args ["run" "--snapshot" (package_path "src/main.gene") "--workspace" root "--json"])
   (for arg in arguments
     (args .push arg))
   (let result

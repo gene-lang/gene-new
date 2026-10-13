@@ -11,7 +11,7 @@
       (fn [workspace]
         (for phase in ["saved" "interrupted"]
           (let root $"${workspace}/${phase}")
-          (let child (await ($os/exec_async ($os/executable_path) "run" (fixture_path "ui_action_crash")
+          (let child (await ($os/exec_async ($os/executable_path) "run" "--snapshot" (fixture_path "ui_action_crash")
             root phase ^timeout_ms 30000)))
           ($assert (== child/status (if (== phase "saved") 73 74)) ($to_str child/stdout child/stderr))
           (let service (open_session_service ^workspace root ^^offline))

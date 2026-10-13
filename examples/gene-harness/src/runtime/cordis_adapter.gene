@@ -15,6 +15,7 @@
     service_key
     InstanceState
     CompositionError
+    RecoveryRequired
     PluginInvoker
     invocation_limits
     default_plugin_invoker
@@ -27,6 +28,7 @@
 # a reconcile needs no registry draft and no whole-set publication.
 (protocol RegistryHost
   (message activate [thunk] : Any)
+  (message cleanup [thunk] : Any)
   (message enter_call [] : Nil)
   (message leave_call [] : Nil)
   (message describe [module, id : Str, limits] : Plugin)
@@ -47,6 +49,21 @@
     (reconcile_composition self plugins entries))
   (message reconcile_available [plugins, entries, failed_ids]
     (reconcile_available_plugins self plugins entries failed_ids))
+  (message reconcile_strict [plugins, entries, accept, commit, ^pending pending : Bool = false]
+    (let record (composition_record self))
+    (let previous_base record/base_owner/.get)
+    (let previous_policies record/policies/.get)
+    (let previous_specs ($thaw ($freeze_shallow record/specs)))
+    (record/base_owner .set nil)
+    (try
+      (reconcile_composition ^strict true ^allow_pending pending ^accept accept ^commit commit
+        self plugins entries)
+    catch RecoveryRequired (fail $err)
+    catch Any
+      (record/base_owner .set previous_base)
+      (record/policies .set previous_policies)
+      (set record/specs previous_specs)
+      (fail $err)))
   (message instances []
     (let record (composition_record self))
     record/loader/.instances)
@@ -59,6 +76,16 @@
     (for [id revision] in record/current/.get
       (plugins .put id revision/plugin))
     plugins)
+  (message current_revisions []
+    (let record (composition_record self))
+    (let revisions {})
+    (let states {})
+    (let snapshot record/loader/.inspect)
+    (for entry in snapshot/entries (states .put entry/id entry/state))
+    (for [id revision] in record/current/.get
+      (revisions .put id {^plugin revision/plugin ^options revision/options
+        ^active (== (states .get id) "active")}))
+    revisions)
   (message inspect []
     (let record (composition_record self))
     (let snapshot ($thaw #{}))
@@ -262,7 +289,7 @@
       (record/host .RegistryHost:activate (fn [] (plugin/activate receiver)))
       (if_not ($absent? plugin/deactivate)
         (fx .defer (fn []
-          (plugin/deactivate receiver))))
+          (record/host .RegistryHost:cleanup (fn [] (plugin/deactivate receiver))))))
       # Children can activate while their parent is still loading. Publish
       # selected-entry bindings only after all of this activation's rows exist.
       (ready .set true)
@@ -319,7 +346,8 @@
       (if_not (reported .contains? failure/id) (failures .push failure))))
   {^snapshot snapshot ^failures failures})
 
-(fn reconcile_composition ^^private [handle, plugins : (List Plugin), entry_options]
+(fn reconcile_composition ^^private [handle, plugins : (List Plugin), entry_options,
+  ^strict strict : Bool = false, ^allow_pending allow_pending : Bool = false, ^accept accept = nil, ^commit commit = nil]
   (let record (composition_record handle))
   (if record/busy/.get
     (fail (EffectDisposed ^message "Harness reconciliation is already active")))
@@ -368,9 +396,14 @@
   # into a revision still leased by a turn.
   (set record/projections {})
   (var snapshot nil)
+  (var retirement_failure nil)
   (try
     (set snapshot
-      (record/loader .reconcile_plugins {^format 1 ^entries entries} admitted))
+      (record/loader .reconcile_plugins ^strict strict ^pending allow_pending ^accept accept ^commit commit
+        {^format 1 ^entries entries} admitted))
+  catch RecoveryRequired
+    (set snapshot record/loader/.inspect)
+    (set retirement_failure $err)
   catch Any
     (set record/projections previous_projections)
     (record/base_owner .set previous_base)
@@ -388,6 +421,7 @@
       (if (!= prior void) (live .put plugin/id prior))
       (live .put plugin/id {^plugin plugin ^options (?? (entry_options .get plugin/id) #{})})))
   (record/current .set live)
+  (if_not ($absent? retirement_failure) (fail retirement_failure))
   snapshot)
 
 (fn close_composition [handle] ^^private

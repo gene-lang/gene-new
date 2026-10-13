@@ -1,0 +1,157 @@
+# Passive metadata is inert and belongs to an exact code + host revision.
+(mod plugin_metadata)
+(import $store/fs [Store])
+(import ^from "../text" [byte_prefix])
+
+(type PluginMetadataError ^props {^message Str} ^impl [Error])
+(impl Error for PluginMetadataError)
+
+(fn capabilities [items]
+  (let values (?? items []))
+  (if (!= ($head values) List)
+    (fail (PluginMetadataError ^message "plugin capabilities must be a list")))
+  (let result [])
+  (for item in values
+    (if (== ($head item) Str)
+      (result .push ["seams" item])
+      (do
+        (if (|| (!= ($head item) List) (!= item/.size 2) (!= ($head item/0) Str) (!= ($head item/1) Str))
+          (fail
+            (PluginMetadataError ^message "plugin capability must be a seam name or [registry key]")))
+        (result .push [item/0 item/1]))))
+  result)
+
+(fn descriptor_data [plugin]
+  {^id plugin/id ^provides (capabilities plugin/provides) ^requires (capabilities plugin/requires)})
+
+(fn metadata_texts [value]
+  (let result [])
+  (if_yes (== ($head value) List)
+    (for item in value
+      (if (== ($head item) Str) (result .push (byte_prefix item 256)))
+      (if (>= result/.size 32) (break))))
+  result)
+
+(fn contribution_data [registry, key, raw]
+  (let payload (if (== ($head raw) Map) raw {}))
+  (let summary (?? payload/summary (?? payload/doc "")))
+  {
+    ^registry ($to_str registry)
+    ^key ($to_str key)
+    ^summary (if (== ($head summary) Str)
+               (byte_prefix summary 1024)
+               "")
+    ^tags (metadata_texts payload/tags)
+    ^docs (metadata_texts payload/docs)})
+
+(fn metadata_key [id : Str, digest : Str, build : Str]
+  $"plugin_metadata/version/${($pkg/canonical_digest [id digest build])}")
+
+(fn metadata_latest_key [id : Str, digest : Str]
+  $"plugin_metadata/latest/${($pkg/canonical_digest [id digest])}")
+
+(fn observation_key [id : Str, digest : Str]
+  $"plugin_metadata/observed/${($pkg/canonical_digest [id digest])}")
+
+(fn saved_metadata [store, id : Str, digest : Str, build : Str]
+  (let exact (metadata_key id digest build))
+  (var record nil)
+  (if (store .Store:has? exact)
+    (set record (store .Store:get exact))
+    (do
+      (let latest (metadata_latest_key id digest))
+      (if_not (store .Store:has? latest) (return nil))
+      (let key (store .Store:get latest))
+      (if (store .Store:has? key) (set record (store .Store:get key)))))
+  (if ($absent? record) (return nil))
+  (if (|| (!= ($head record) Map) (!= record/format 1) (!= record/id id) (!= record/digest digest))
+    (fail (PluginMetadataError ^message "stored plugin metadata identity is invalid")))
+  ($pkg/canonical_digest record)
+  (let observed (observation_key id digest))
+  (if_yes (&& ($absent? record/contributions) (store .Store:has? observed))
+    (let previous (store .Store:get (store .Store:get observed)))
+    (record .put
+      "historical_observation"
+      {
+        ^host_build_id previous/host_build_id
+        ^contributions previous/contributions
+        ^at previous/observed_at}))
+  record)
+
+(fn store_metadata [store, record]
+  (let key (metadata_key record/id record/digest record/host_build_id))
+  (store .Store:put key record)
+  (store .Store:put (metadata_latest_key record/id record/digest) key)
+  record)
+
+(fn remember_descriptor [store, build : Str, digest : Str, plugin, ^mode mode : Str = "full"]
+  (let data (descriptor_data plugin))
+  (let key (metadata_key plugin/id digest build))
+  (let record
+    (if (store .Store:has? key)
+      (store .Store:get key)
+      {
+        ^format 1
+        ^id plugin/id
+        ^digest digest
+        ^host_build_id build
+        ^observed_at nil
+        ^contributions nil}))
+  (if_yes (== mode "restricted")
+    (record .put "restricted" {^declared data ^at ($to_str ($now))})
+    (if_yes (["full" "host"] .contains? record/read_mode) (return (store_metadata store record))))
+  (if (&& (== record/declared data) (== record/read_mode mode)) (return record))
+  (record .put "declared" data)
+  (record .put "read_mode" mode)
+  (record .put "descriptor_at" ($to_str ($now)))
+  (store_metadata store record))
+
+(fn remember_observation [store, build : Str, digest : Str, plugin, contributions]
+  (let record (remember_descriptor store build digest plugin))
+  (if_yes (!= record/contributions contributions)
+    (record .put "contributions" contributions)
+    (record .put "observed_at" ($to_str ($now)))
+    (store_metadata store record))
+  (store .Store:put (observation_key plugin/id digest) (metadata_key plugin/id digest build))
+  record)
+
+(fn remember_failure [store, build : Str, digest : Str, id : Str, message, ^mode mode : Str = "activation"]
+  (let key (metadata_key id digest build))
+  (let record
+    (if (store .Store:has? key)
+      (store .Store:get key)
+      {
+        ^format 1
+        ^id id
+        ^digest digest
+        ^host_build_id build
+        ^declared nil
+        ^observed_at nil
+        ^contributions nil}))
+  (record .put (if (== mode "restricted") "restricted_error" "last_error") message)
+  (record .put (if (== mode "restricted") "restricted_error_at" "error_at") ($to_str ($now)))
+  (store_metadata store record))
+
+(fn publication_metadata [h, snapshot]
+  (let workspace h/workspace)
+  (if (|| ($absent? workspace) ($absent? workspace/history_build/.get)) (return nil))
+  (let diagnostics [])
+  (for [id active] in h/composition/.current_revisions
+    (let owner ($to_str id))
+    (if_not active/active (continue))
+    (try
+      (let contributions [])
+      (for [registry records] in snapshot/registries
+        (for record in records
+          (if_yes (== record/owner owner)
+            (contributions .push (contribution_data registry record/key record/payload)))))
+      (remember_observation
+        workspace/store
+        workspace/history_build/.get
+        (?? active/options/digest "builtin")
+        active/plugin
+        contributions)
+    catch Any
+      (diagnostics .push {^id owner ^message $err/message})))
+  (workspace/metadata_errors .set diagnostics)
+  nil)

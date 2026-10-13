@@ -1,0 +1,276 @@
+# Host-owned management reads use inert metadata and registry snapshots.
+(mod plugin_manager)
+(import ^from "./composition" [acquire_snapshot release_snapshot run_composition_change])
+(import ^from "../storage/workspace"
+  [composition_entries composition_revision verify_stored_entry digest_hex entry_limits])
+(import ^from "../storage/plugin_history" [history_entry])
+(import ^from "../storage/state" [manifest_state_writers saved_state_writers])
+(import ^from "../storage/plugin_metadata"
+  [
+    saved_metadata
+    capabilities
+    contribution_data
+    descriptor_data
+    remember_descriptor
+    remember_failure])
+(import ^from "../plugin_api" [Plugin DescriptorContext ExecutionLimits])
+(import ^from "../kernel" [configure_plugin_module invoke_bounded])
+
+(fn requirement_status [snapshot, pair]
+  (let records (?? (snapshot/registries .get pair/0) []))
+  (for record in records
+    (if (== record/key pair/1)
+      (return {^registry pair/0 ^key pair/1 ^provider record/owner ^^satisfied})))
+  {^registry pair/0 ^key pair/1 ^provider nil ^!satisfied})
+
+(fn catalog_in_snapshot [runtime, snapshot, query : Str, state_filter : Str]
+  (let workspace runtime/workspace)
+  (let build workspace/history_build/.get)
+  (let profile_metadata workspace/history_profile/.get)
+  (let defaults workspace/profile_plugins/.get)
+  (let stored {})
+  (let ids [])
+  (for [id ignored] in defaults
+    (ids .push ($to_str id)))
+  (for entry in (composition_entries workspace)
+    (stored .put entry/id entry)
+    (if_not (ids .contains? entry/id) (ids .push entry/id)))
+  (let states {})
+  (for plugin in (?? snapshot/plugins [])
+    (states .put plugin/id plugin/status)
+    (if_not (ids .contains? plugin/id) (ids .push plugin/id)))
+  (let revisions runtime/h/composition/.current_revisions)
+  (let rows [])
+  (let by_id {})
+  (let diagnostics ($thaw ($freeze workspace/metadata_errors/.get)))
+  (var writers [])
+  (try
+    (set writers
+      (if ($absent? runtime/events)
+        (saved_state_writers $"${runtime/state_root}/events")
+        (manifest_state_writers runtime/events/last_manifest/.get)))
+  catch Any
+    (diagnostics .push {^kind "state_provenance" ^message $err/message}))
+  (for id in ids
+    (let entry (stored .get id))
+    (let builtin (! ($absent? (defaults .get id))))
+    (let digest (?? entry/module_digest "builtin"))
+    (let enabled (!= entry/disabled true))
+    (let active (revisions .get id))
+    (let active_digest (if (!= active/active true) nil (?? active/options/digest "builtin")))
+    (var metadata nil)
+    (try
+      (set metadata (saved_metadata workspace/store id digest build))
+    catch Any
+      (diagnostics .push {^id id ^message $err/message}))
+    (let provides (?? metadata/declared/provides []))
+    (let requirements [])
+    (for pair in (?? metadata/declared/requires [])
+      (requirements .push (requirement_status snapshot pair)))
+    (let observed [])
+    (for [registry records] in snapshot/registries
+      (for record in records
+        (if_yes (== record/owner id)
+          (observed .push (contribution_data registry record/key record/payload)))))
+    (let documentation [])
+    (var description "")
+    (let historical
+      (?? metadata/contributions (?? metadata/historical_observation/contributions [])))
+    (for item in (if observed/.empty? historical observed)
+      (if_yes (== item/registry "docs")
+        (documentation .push {^name item/key ^summary item/summary})
+        (if (== description "") (set description item/summary))))
+    (let error (?? (workspace/errors/.get .get id) (runtime/h/plugin_errors/.get .get id) nil))
+    (let status
+      (if (! enabled)
+        "disabled"
+        (if (! ($absent? error))
+          "error"
+          (if ($absent? (runtime/h/plugins/.get .get id))
+            "not_loaded"
+            (?? (states .get id) "pending")))))
+    (let row
+      {
+        ^id id
+        ^description description
+        ^source (if (== digest "builtin")
+                  "built_in"
+                  (if builtin
+                    "override"
+                    "workspace"))
+        ^builtin builtin
+        ^enabled enabled
+        ^state status
+        ^digest (if (== digest "builtin")
+                  nil
+                  digest)
+        ^active_digest active_digest
+        ^closure (?? entry/closure [])
+        ^interfaces (?? entry/interfaces workspace/interfaces)
+        ^limits (?? entry/limits profile_metadata/limits nil)
+        ^changed_at (?? entry/at nil)
+        ^provides provides
+        ^requires requirements
+        ^metadata_known (! ($absent? metadata/declared))
+        ^metadata_host (?? metadata/host_build_id nil)
+        ^metadata_mode (?? metadata/read_mode nil)
+        ^restricted (?? metadata/restricted nil)
+        ^inspection_error (?? metadata/restricted_error nil)
+        ^observed observed
+        ^last_observed historical
+        ^observed_at (?? metadata/observed_at (?? metadata/historical_observation/at nil))
+        ^observed_host (if ($absent? metadata/contributions)
+                         (?? metadata/historical_observation/host_build_id nil)
+                         metadata/host_build_id)
+        ^docs documentation
+        ^last_error (?? metadata/last_error nil)
+        ^error_at (?? metadata/error_at nil)
+        ^required_by []
+        ^transitive_required_by []
+        ^!required_by_profile
+        ^error error})
+    (let state_records [])
+    (for record in writers
+      (if (== record/plugin id) (state_records .push record)))
+    (row .put "state_writers" state_records)
+    (rows .push row)
+    (by_id .put id row))
+  (for consumer in rows
+    (for requirement in consumer/requires
+      (let provider (if ($absent? requirement/provider) nil (by_id .get requirement/provider)))
+      (if_yes (! ($absent? provider))
+        (if_not (provider/required_by .contains? consumer/id)
+          (provider/required_by .push consumer/id)))))
+  (let profile_requirements [])
+  (for pair in (capabilities runtime/profile/requires)
+    (let requirement (requirement_status snapshot pair))
+    (profile_requirements .push requirement)
+    (let provider (if ($absent? requirement/provider) nil (by_id .get requirement/provider)))
+    (if_not ($absent? provider) (provider .put "required_by_profile" true)))
+  (for provider in rows
+    (let visited [provider/id])
+    (let pending ($thaw ($freeze provider/required_by)))
+    (var offset 0)
+    (while (< offset pending/.size)
+      (let id pending/%offset)
+      (set offset (+ offset 1))
+      (if_not (visited .contains? id)
+        (visited .push id)
+        (provider/transitive_required_by .push id)
+        (let consumer (by_id .get id))
+        (if_not ($absent? consumer) (for other in consumer/required_by (pending .push other))))))
+  (let selected [])
+  (let needle ($str/lower ($str/trim query)))
+  (for row in rows
+    (let text ($str/lower $"${row/id} ${row/description} ${row/provides} ${row/requires}"))
+    (if (&& (|| (== needle "") ($str/contains? text needle)) (|| (== state_filter "") (== row/state state_filter)))
+      (selected .push row)))
+  {
+    ^workspace runtime/root
+    ^mode (if (== runtime/recovery true)
+            "recovery"
+            "normal")
+    ^revision (composition_revision workspace)
+    ^host_build_id build
+    ^active_revision workspace/active_revision/.get
+    ^profile runtime/profile/name
+    ^profile_requires profile_requirements
+    ^plugins selected
+    ^diagnostics diagnostics})
+
+(fn plugin_catalog [runtime, ^query query : Str = "", ^state state : Str = ""]
+  (run_composition_change
+    runtime/h/snapshots
+    (fn []
+      (let lease (acquire_snapshot runtime/h/snapshots))
+      (try
+        (catalog_in_snapshot runtime lease/snapshot query state)
+      ensure
+        (release_snapshot runtime/h/snapshots lease)))))
+
+(fn inspect_descriptor [runtime, id : Str, ^revision revision = nil, ^candidate candidate = nil]
+  (run_composition_change
+    runtime/h/snapshots
+    (fn []
+      ($runtime/with_context
+        nil
+        (fn []
+          (let workspace runtime/workspace)
+          (var entry candidate)
+          (if_yes ($absent? entry)
+            (if ($absent? revision)
+              (for item in (composition_entries workspace)
+                (if (== item/id id) (set entry item)))
+              (set entry (history_entry workspace/store workspace/history_head/.get id revision))))
+          (if ($absent? entry/module_digest)
+            (return
+              {
+                ^id id
+                ^!ok
+                ^message "No stored module for this plugin; built-in metadata comes from the host profile."}))
+          (var transaction nil)
+          (try
+            (verify_stored_entry workspace entry)
+            (let configured (entry_limits entry))
+            (let policy
+              {
+                ^max_steps ($math/min configured/max_steps 100000)
+                ^max_memory_mb ($math/min configured/max_memory_mb 64)
+                ^timeout_ms ($math/min configured/timeout_ms 2000)})
+            (set transaction ($runtime/sandbox_transaction))
+            (let generation
+              (transaction .prepare
+                {
+                  ^dir workspace/generated_dir
+                  ^entry $"${(digest_hex entry/module_digest)}.gene"
+                  ^grants []
+                  ^shared workspace/shared
+                  ^label $"inspect:${id}"
+                  ^policy policy}))
+            (let module generation/.module)
+            (let limits
+              (ExecutionLimits ^max_steps policy/max_steps ^max_memory_mb policy/max_memory_mb ^timeout_ms policy/timeout_ms))
+            (configure_plugin_module module limits)
+            (let plugin
+              (invoke_bounded
+                module/init
+                (DescriptorContext ^module_id id ^core_interface workspace/core_interface)
+                limits))
+            (if (|| (!= ($head plugin) Plugin) (!= plugin/id id) (! ($runtime/callable? plugin/activate)))
+              (fail "init must return the matching Plugin with a callable activate"))
+            (let data ($thaw ($freeze (descriptor_data plugin))))
+            (remember_descriptor ^mode "restricted"
+              workspace/store
+              workspace/history_build/.get
+              entry/module_digest
+              plugin)
+            {
+              ^id id
+              ^^ok
+              ^digest entry/module_digest
+              ^host_build_id workspace/history_build/.get
+              ^descriptor data
+              ^mode "restricted"
+              ^activation "unverified"}
+          catch Any
+            (let message $err/message)
+            (var metadata_error nil)
+            (try
+              (remember_failure ^mode "restricted"
+                workspace/store
+                workspace/history_build/.get
+                entry/module_digest
+                id
+                message)
+            catch Any
+              (set metadata_error $err/message))
+            {
+              ^id id
+              ^!ok
+              ^digest entry/module_digest
+              ^mode "restricted"
+              ^message message
+              ^metadata_error metadata_error
+              ^activation "unverified"}
+          ensure
+            (if_not ($absent? transaction) transaction/.discard)))))))

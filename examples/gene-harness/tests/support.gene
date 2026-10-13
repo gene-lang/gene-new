@@ -11,6 +11,8 @@
 (import [open_session_service] ^from "../src/web/session_service")
 
 (let package_root ($path/parent ($path/parent this_mod/.path)))
+(let application ($pkg/application))
+(let source_root application/source_root)
 (let active_workspace ($cell nil))
 (let callback_cells ($cell {}))
 
@@ -56,16 +58,19 @@
 (fn package_path [path : Str] : Str
   ($path/join package_root path))
 
+(fn source_path [path : Str] : Str
+  ($path/join source_root path))
+
 (fn fixture_path [name : Str] : Str
-  (package_path $"tests/fixtures/${name}.gene"))
+  ($path/join source_root $"tests/fixtures/${name}.gene"))
 
 (fn isolated [spec_path : Str, name : Str, body, ^timeout_ms timeout_ms : Int = 120000]
   (let selected active_workspace/.get)
   (if_not ($absent? selected) (return (body selected)))
-  (let workspace ($path/join package_root $"tmp/spec-${($crypto/random_hex 12)}"))
+  (let workspace ($path/join source_root $"tmp/spec-${($crypto/random_hex 12)}"))
   ($fs/make_dir workspace)
   (let result (await ($os/exec_async ($os/executable_path)
-    "run" spec_path workspace name ^dir package_root
+    "run" "--snapshot" ($path/join source_root ($path/relative spec_path package_root)) workspace name ^dir source_root
     ^timeout_ms timeout_ms ^max_bytes 1048576)))
   (assert_equal result/status 0
     $"Isolated spec failed. Workspace: ${workspace}\n${result/stdout}${result/stderr}")

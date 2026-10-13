@@ -1,5 +1,5 @@
 (import $test [describe it])
-(import ^from "../../support" [isolated run_spec package_path])
+(import ^from "../../support" [isolated run_spec source_path : package_path])
 (import ^from "../../web_support" [start_host stop_host cli])
 (import ^from "../../../src/cli/client" [connect api])
 
@@ -55,6 +55,7 @@
             ($os/exec_async ^timeout_ms 10000
               ($os/executable_path)
               "run"
+              "--snapshot"
               (package_path "src/main.gene")
               "--workspace"
               host/root

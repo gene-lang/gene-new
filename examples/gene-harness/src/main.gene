@@ -1,8 +1,15 @@
 (import ^from "./cli/options" [parse_options problem])
 (import ^from "./cli/main" [run_client usage])
 (import ^from "./web/server" [main : serve_web])
+(import ^from "./web/recovery" [main : serve_recovery])
 
 (fn main [args] : Int
+  (let application ($pkg/application))
+  (if_yes ($absent? application/provenance)
+    (let delegated ["run" "--snapshot"
+      ($path/join application/source_root "src/main.gene")])
+    (for arg in args (delegated .push ($to_str arg)))
+    (return (await ($os/exec_stdio_async ($os/executable_path) delegated...))))
   (var parsed nil)
   (try
     (set parsed (parse_options args))
@@ -12,10 +19,11 @@
     (if_yes (== parsed/command "web")
       (if (> parsed/words/.size 1) (problem "web accepts host options, not additional commands."))
       (for [key value] in parsed/options
-        (if_not (["workspace" "port" "restart-port" "script" "offline" "supervised"] .contains? ($to_str key))
+        (if_not (["workspace" "port" "restart-port" "startup-id" "script" "offline" "supervised" "recovery"] .contains? ($to_str key))
           (problem $"--${key} requires a client command.")))
+      (if (== parsed/options/recovery true) (return (serve_recovery parsed/options)))
       (let arguments [])
-      (for key in ["workspace" "port" "restart-port" "script"]
+      (for key in ["workspace" "port" "restart-port" "startup-id" "script"]
         (let value (parsed/options .get key))
         (if_not ($absent? value)
           (arguments .push $"--${key}")

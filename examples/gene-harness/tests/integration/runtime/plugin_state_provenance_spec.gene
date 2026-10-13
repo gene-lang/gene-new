@@ -1,0 +1,61 @@
+(import $test [describe it])
+(import ^from "../../support" [isolated run_spec])
+(import ^from "../../../src/plugin_api" [Plugin PluginHost])
+(import ^from "../../../src/profiles/profile" [Profile])
+(import ^from "../../../src/runtime/bootstrap" [open_runtime close_runtime])
+(import ^from "../../../src/kernel" [row])
+(import ^from "../../../src/storage/workspace" [register_plugin])
+(import ^from "../../../src/storage/state"
+  [flush_event_store saved_state_writers plugin_state record_plugin_state])
+(import ^from "../../../src/runtime/plugin_manager" [plugin_catalog])
+(import ^from "../../../src/runtime/composition" [acquire_snapshot release_snapshot])
+
+(fn writer_source [version : Int]
+  `(mod plugin
+     (import ^from "src/plugin_api.gene" [Plugin PluginHost])
+     (fn init [descriptor]
+       (Plugin ^id "writer" ^provides [["functions" "remember"]] ^activate (fn [host] (host .PluginHost:contribute "functions" {^name "remember" ^doc "Save managed state." ^fn (fn [value, ^session session = nil] (host ^session session .PluginHost:update_state {^version %version ^value value}))}))))))
+
+(describe "Managed state provenance"
+  (it "attributes leased writes to their executing revision and keeps metadata across restart" []
+    (isolated this_mod/.path "attributes leased writes to their executing revision and keeps metadata across restart"
+      (fn [root]
+        (let profile (Profile ^name "state_writers" ^plugins []))
+        (let runtime (open_runtime root "default" profile))
+        (let first (register_plugin runtime/workspace runtime/h "writer" (writer_source 1)))
+        (let lease (acquire_snapshot runtime/h/snapshots))
+        (try
+          (let old (/fn (row runtime/h "functions" "remember")))
+          (let second (register_plugin ^^replace runtime/workspace runtime/h "writer" (writer_source 2)))
+          (let latest (/fn (row runtime/h "functions" "remember")))
+          (latest ^session "example" "new")
+          (old "leased")
+          (flush_event_store runtime/events)
+          (let writers (saved_state_writers $"${runtime/state_root}/events"))
+          ($assert (== writers/.size 2))
+          (for record in writers
+            ($assert (== record/writer/digest (if (== record/scope "workspace") first/digest second/digest)))
+            ($assert (== record/writer/host_build_id runtime/workspace/history_build/.get))
+            ($assert (! ($absent? record/writer/at))))
+          ($assert (== (plugin_state runtime/events "workspace" "workspace" "writer") {^version 1 ^value "leased"}))
+        ensure
+          (release_snapshot runtime/h/snapshots lease)
+          (close_runtime runtime))
+        (let recovery (open_runtime ^^recovery root "default" profile))
+        (try
+          (let catalog (plugin_catalog recovery))
+          ($assert (== catalog/plugins/0/state_writers/.size 2))
+          ($assert ($absent? recovery/events))
+        ensure (close_runtime recovery))
+        (let restarted (open_runtime root "default" profile))
+        (try
+          ($assert (== (plugin_state restarted/events "workspace" "workspace" "writer") {^version 1 ^value "leased"}))
+          # A legacy/core write must not inherit a previous plugin's identity.
+          (record_plugin_state restarted/events "workspace" "workspace" "writer" {^legacy true})
+          (flush_event_store restarted/events)
+          (for record in (saved_state_writers $"${restarted/state_root}/events")
+            (if (== record/scope "workspace") ($assert ($absent? record/writer))))
+        ensure (close_runtime restarted))))))
+
+(fn main [args] : Int
+  (run_spec args))

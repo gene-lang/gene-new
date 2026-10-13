@@ -1,0 +1,171 @@
+# Immutable composition history. Only a checkpoint's history_head commits a
+# candidate; orphan records from interrupted writes are never history roots.
+(mod plugin_history)
+(import $store/fs [Store])
+
+(type PluginHistoryError ^props {^message Str} ^impl [Error])
+(impl Error for PluginHistoryError)
+
+(fn history_error [message : Str]
+  (fail (PluginHistoryError ^message message)))
+
+(fn copy_data [value]
+  ($serde/read_data ($serde/write_data value)))
+
+(fn store_object [store, kind : Str, value] : Str
+  (let digest ($pkg/canonical_digest value))
+  (let key $"plugin_history/${kind}/${digest}")
+  (if (store .Store:has? key)
+    (if (!= (store .Store:get key) value)
+      (history_error $"history object disagrees with its digest: ${digest}"))
+    (store .Store:put key value))
+  digest)
+
+(fn read_object [store, kind : Str, digest : Str]
+  (let key $"plugin_history/${kind}/${digest}")
+  (if_not (store .Store:has? key) (history_error $"missing history ${kind}: ${digest}"))
+  (let value (store .Store:get key))
+  (if (!= ($pkg/canonical_digest value) digest)
+    (history_error $"history ${kind} digest mismatch: ${digest}"))
+  value)
+
+(fn archive_host_build [store, build] : Str
+  (if (|| (!= build/format 1) (!= ($head build/runtime_digest) Str) (!= ($head build/host_inputs) Map) (!= ($head build/interfaces) Map))
+    (history_error "a complete format-1 host build record is required"))
+  (store_object store "host" build))
+
+(fn archived_host_build [store, id : Str]
+  (read_object store "host" id))
+
+(fn archive_baseline [store, manifest, importer : Str, profile]
+  (archived_host_build store importer)
+  (let seed ($pkg/canonical_digest {^revision manifest/revision ^entries manifest/entries}))
+  (let key $"plugin_history/baseline/${seed}")
+  (if_yes (store .Store:has? key)
+    (let saved (store .Store:get key))
+    (let record (archived_record store saved))
+    (if (|| (!= record/revision manifest/revision) (!= record/entries manifest/entries))
+      (history_error "history baseline does not match the imported checkpoint"))
+    (return saved))
+  (let head
+    (store_object
+      store
+      "revision"
+      {
+        ^format 1
+        ^revision manifest/revision
+        ^parent nil
+        ^entries (copy_data manifest/entries)
+        ^profile (copy_data profile)
+        ^host_build_id "unknown"
+        ^imported_by importer
+        ^origin {^kind "baseline" ^operation "imported" ^^profile_observed_at_import}
+        ^reason nil
+        ^validation {^kind "historical" ^status "unknown"}
+        ^at ($to_str ($now))}))
+  (store .Store:put key head)
+  head)
+
+(fn archived_record [store, id : Str]
+  (let record (read_object store "revision" id))
+  (if (|| (!= record/format 1) (!= ($head record/revision) Int) (< record/revision 0) (!= ($head record/entries) List) (!= ($head record/origin) Map))
+    (history_error "invalid composition history record"))
+  record)
+
+(fn archive_candidate [store, parent : Str, revision : Int, entries, build : Str, profile, origin] : Str
+  (let previous (archived_record store parent))
+  (if (!= revision (+ previous/revision 1))
+    (history_error "history revision must follow its committed parent"))
+  (archived_host_build store build)
+  (if (!= ($head origin) Map) (history_error "composition origin must be a map"))
+  (store_object
+    store
+    "revision"
+    {
+      ^format 1
+      ^revision revision
+      ^parent parent
+      ^entries (copy_data entries)
+      ^profile (copy_data profile)
+      ^host_build_id build
+      ^origin (copy_data origin)
+      ^reason (?? origin/reason nil)
+      ^validation (copy_data
+                    (??
+                      origin/validation
+                      (if ($absent? origin/plan)
+                        {^kind "entry_structure" ^status "passed"}
+                        {^kind "reviewed_plan" ^plan origin/plan})))
+      ^at ($to_str ($now))}))
+
+(fn history_list [store, head, ^limit limit : Int = 100, ^before before = nil]
+  (if (|| (< limit 1) (> limit 1000)) (history_error "history limit must be between 1 and 1000"))
+  (let items [])
+  (var current head)
+  (var expected nil)
+  (while (! ($absent? current))
+    (let record (archived_record store current))
+    (if (&& (! ($absent? expected)) (!= record/revision expected))
+      (history_error "broken composition history parent chain"))
+    (if_yes (|| ($absent? before) (< record/revision before))
+      (record .put "id" current)
+      (let pin_key $"plugin_history/pin/${current}")
+      (record .put "pinned" (store .Store:has? pin_key))
+      (items .push record)
+      (if (>= items/.size limit) (break)))
+    (set expected (- record/revision 1))
+    (set current record/parent))
+  items)
+
+(fn pin_history [store, head, revision : Int, pinned : Bool]
+  (let record (history_revision store head revision))
+  (let key $"plugin_history/pin/${record/id}")
+  (if pinned
+    (store .Store:put
+      key
+      {^revision revision ^record record/id ^at ($to_str ($now)) ^by "operator"})
+    (if (store .Store:has? key) (store .Store:delete key)))
+  {^revision revision ^pinned pinned})
+
+(fn history_revision [store, head, revision : Int]
+  (if (< revision 0) (history_error "history revision must be non-negative"))
+  (let items (history_list ^limit 1 ^before (+ revision 1) store head))
+  (if (|| items/.empty? (!= items/0/revision revision))
+    (history_error $"composition revision ${revision} is not retained"))
+  items/0)
+
+(fn history_entry [store, head, id : Str, revision : Int]
+  (let record (history_revision store head revision))
+  (for entry in record/entries
+    (if (== entry/id id) (return (copy_data entry))))
+  (history_error
+    $"plugin ${id} has no stored entry at revision ${revision}; restore defaults separately"))
+
+(fn append_history_result [store, reference : Str, result, ^kind kind : Str = "outcome"]
+  (if_not (["outcome" "attempt"] .contains? kind)
+    (history_error "history result kind must be outcome or attempt"))
+  # The caller holds the workspace mutation gate/ownership. Results are
+  # append-only objects and never rewrite their immutable revision record.
+  (let prefix $"plugin_history/${kind}/${reference}/")
+  (var sequence 0)
+  (for key in store/.Store:keys
+    (if ($str/starts_with? key prefix) (set sequence (+ sequence 1))))
+  (let record {^format 1 ^reference reference ^sequence (+ sequence 1)
+    ^at ($to_str ($now)) ^result (copy_data result)})
+  (let key $"${prefix}${(+ sequence 1)}")
+  (if (store .Store:has? key) (history_error "history result sequence conflict"))
+  (store .Store:put key record)
+  record)
+
+(fn history_results [store, reference : Str, ^kind kind : Str = "outcome"]
+  (if_not (["outcome" "attempt"] .contains? kind)
+    (history_error "history result kind must be outcome or attempt"))
+  (let records [])
+  (var sequence 1)
+  (loop
+    (let key $"plugin_history/${kind}/${reference}/${sequence}")
+    (if_not (store .Store:has? key) (break))
+    (let value (store .Store:get key))
+    (records .push value)
+    (set sequence (+ sequence 1)))
+  records)

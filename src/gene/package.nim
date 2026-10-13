@@ -1656,6 +1656,18 @@ proc selectedByFiles*(pkg: Package, relPath: string): bool =
       return false
   true
 
+proc excludedSubtree(pkg: Package, relPath: string): bool =
+  ## A matching exclusion ending in ** excludes every descendant as well.
+  ## Exclusions cannot be undone by includes. Other patterns may exclude a
+  ## directory's spelling without excluding its children, so keep walking them.
+  for pattern in immutableDefaultExcludes:
+    if pattern.endsWith("/**") and globMatches(pattern, relPath):
+      return true
+  for pattern in pkg.files.excludes:
+    if pattern.endsWith("/**") and globMatches(pattern, relPath):
+      return true
+  false
+
 proc resourceRecipeFiles*(pkg: Package, alias: string): seq[string] =
   ## A format-1 `(resources "name" ^files [...])` recipe. Only a target that
   ## names it through `^uses` activates it; unknown recipe heads retain the
@@ -1980,7 +1992,8 @@ proc sourceTreeEntries(pkg: Package): seq[SourceTreeEntry] =
       let rel = (if relativeDir.len > 0: relativeDir & "/" else: "") & name
       case child.kind
       of pcDir:
-        walk(child.path, rel)
+        if not pkg.excludedSubtree(rel):
+          walk(child.path, rel)
       of pcFile:
         if pkg.selectedByFiles(rel):
           let info = getFileInfo(child.path, followSymlink = false)

@@ -1,0 +1,121 @@
+(mod plugin_page)
+(import $html [render])
+(import $web [load script stylesheet])
+(import ^from "./style" [styles])
+
+(let client_cache ($cell nil))
+
+(fn manager_client []
+  (if ($absent? client_cache/.get)
+    (client_cache .set
+      ($web/load ($path/join ($path/parent this_mod/.path) "../../client/plugin_manager.gene"))))
+  client_cache/.get)
+(let manager_styles """
+.manager { max-width: 1280px; margin: auto; padding: 24px; }
+.manager header, .manager_bar, .manager_actions, .plugin_heading { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.manager header { justify-content: space-between; border-bottom: 1px solid var(--line); padding-bottom: 18px; }
+.manager h1 { margin: 0; font-size: 1.7rem; letter-spacing: -.04em; }
+.manager h2 { font-size: 1.2rem; margin: 0 0 12px; }
+.manager h3 { font-size: .95rem; margin: 20px 0 8px; }
+.manager p { margin: 8px 0; }
+.manager .muted, .plugin_meta { color: var(--muted); font-size: .85rem; }
+.manager_bar { margin: 20px 0; }
+.manager input[type=search] { flex: 1; min-width: 220px; }
+.manager input:not([type=checkbox]), .manager textarea, .manager select { border: 1px solid var(--line); border-radius: 7px; padding: 8px 10px; background: var(--surface); }
+.manager_grid { display: grid; grid-template-columns: minmax(280px, 38%) minmax(0, 1fr); gap: 20px; align-items: start; }
+.plugin_list { max-height: 68vh; overflow: auto; border: 1px solid var(--line); border-radius: 10px; }
+.plugin_row { display: flex; align-items: center; gap: 12px; padding: 12px; border-bottom: 1px solid var(--line); }
+.plugin_row:last-child { border-bottom: 0; }
+.plugin_row.selected { background: var(--soft); }
+.plugin_row > button { flex: 1; border: 0; padding: 0; text-align: left; background: transparent; }
+.plugin_name { font-weight: 650; display: block; overflow-wrap: anywhere; }
+.manager_card { border: 1px solid var(--line); border-radius: 10px; padding: 20px; min-width: 0; }
+.manager_card + .manager_card { margin-top: 20px; }
+.plugin_badge { display: inline-block; padding: 1px 7px; border-radius: 5px; background: var(--soft); font-size: .75rem; }
+.plugin_badge.error, .manager_error { color: #982c25; }
+.plugin_badge.ready { color: #285b36; }
+.capability { font-family: ui-monospace, monospace; font-size: .8rem; overflow-wrap: anywhere; padding: 4px 0; }
+.manager ul { padding-left: 20px; }
+.manager .primary { background: var(--accent); color: white; }
+.manager_notice { min-height: 28px; margin-top: 12px; overflow-wrap: anywhere; }
+.manager_draft { margin-top: 20px; border-color: #a9b7a3; }
+.manager_draft .manager_actions { margin-top: 16px; }
+.manager code { overflow-wrap: anywhere; font-size: .8rem; }
+.manager_editor label { display: block; margin: 12px 0; }
+.manager_editor input, .manager_editor textarea { display: block; width: 100%; }
+.manager_editor textarea { font-family: ui-monospace, monospace; font-size: .8rem; }
+.history_row { padding: 10px 0; border-bottom: 1px solid var(--line); }
+.history_row button { margin-top: 6px; }
+.manager details > summary { cursor: pointer; }
+@media (max-width: 760px) { .manager { padding: 16px; } .manager_grid { grid-template-columns: 1fr; } .plugin_list { max-height: 40vh; } }
+""")
+
+(fn plugin_page [] : Str
+  ($to_str
+    "<!doctype html>"
+    (render
+      `(html ^lang "en"
+         (head
+           (meta ^charset "utf-8")
+           (meta ^name "viewport" ^content "width=device-width,initial-scale=1")
+           (title "Plugins · Gene Harness")
+           %(stylesheet "harness-plugin-manager" ($to_str styles manager_styles)))
+         (body
+           (main ^id "plugin_manager" ^class "manager"
+             (header
+               (div
+                 (h1 "Plugin manager")
+                 (div ^id "manager_context" ^class "muted" "Connecting to this workspace…"))
+               (nav ^class "manager_actions" ^aria-label "Workspace navigation"
+                 (a ^href "/" "Workspace")
+                 (a ^href "/ui/default" "Recovery UI")
+                 (button ^id "retry_startup" ^^hidden "Retry normal startup")))
+             (div ^id "manager_notice" ^class "manager_notice" ^role "status")
+             (div ^class "manager_bar"
+               (input ^id "plugin_query" ^type "search" ^placeholder "Search plugins or capabilities" ^aria-label "Search plugins")
+               (select ^id "plugin_filter" ^aria-label "Filter plugin state"
+                 (option ^value "" "All states")
+                 (option ^value "ready" "Active")
+                 (option ^value "disabled" "Disabled")
+                 (option ^value "pending" "Pending")
+                 (option ^value "error" "Failed")
+                 (option ^value "not_loaded" "Not loaded"))
+               (button ^id "manager_refresh" "Refresh")
+               (button ^id "plugin_add" "Add plugin"))
+             (div ^class "manager_grid"
+               (section ^aria-label "Plugins" (div ^id "plugin_list" ^class "plugin_list"))
+               (section ^id "plugin_details" ^class "manager_card" ^aria-label "Plugin details"
+                 (p "Select a plugin to inspect its capabilities and history.")))
+             (section ^id "plugin_editor" ^class "manager_card manager_editor" ^^hidden
+               (h2 "Stage plugin source")
+               (label "Plugin ID" (input ^id "source_id" ^placeholder "my_plugin"))
+               (label
+                 "Root module"
+                 (textarea ^id "source_text" ^rows "10" ^placeholder "(mod plugin …)"))
+               (label
+                 "Dependency modules (optional)"
+                 (textarea ^id "source_dependencies" ^rows "4"))
+               (p ^class "muted" "Paste one mod form per dependency. Validation checks imports and source digests without activating the plugin.")
+               (div ^class "manager_actions"
+                 (button ^id "source_stage" "Add to draft")
+                 (button ^id "source_cancel" "Cancel")))
+             (section ^id "plugin_draft" ^class "manager_card manager_draft" ^^hidden
+               (h2 "Pending changes")
+               (p ^id "draft_base" ^class "muted")
+               (div ^id "draft_changes")
+               (label
+                 (input ^id "draft_repair" ^type "checkbox")
+                 " Allow a degraded workspace for repair")
+               (div ^id "draft_report")
+               (div ^class "manager_actions"
+                 (button ^id "draft_validate" "Validate changes")
+                 (button ^id "draft_apply" ^class "primary" ^^disabled "Apply changes")
+                 (button ^id "draft_rebase" ^^hidden "Rebase on current revision")
+                 (button ^id "draft_discard" "Discard draft")))
+             (section ^class "manager_card"
+               (details
+                 (summary "Composition history")
+                 (p ^class "muted" "Reversion creates a new revision. Application data is retained.")
+                 (button ^id "composition_history_load" "Load history")
+                 (div ^id "composition_history"))))
+           %(script ^mount "plugin_manager" (manager_client)))))))

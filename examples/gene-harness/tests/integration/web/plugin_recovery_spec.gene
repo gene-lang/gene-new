@@ -1,0 +1,110 @@
+(import $test [describe it])
+(import ^from "../../support" [isolated run_spec source_path])
+(import ^from "../../web_support" [start_host ready_host stop_host])
+(import ^from "../../../src/cli/client" [connect api wire])
+(import ^from "../../../src/runtime/bootstrap" [open_runtime close_runtime])
+(import ^from "../../../src/profiles/profile" [Profile])
+(import ^from "../../../src/profiles/baseline" [baseline_profile])
+(import ^from "../../../src/storage/workspace" [register_plugin])
+(import $net/http [listen stop])
+
+(fn wait_job [client, started]
+  (let due (+ ($os/monotonic_ms) 30000))
+  (loop
+    (let record (api client "GET" $"/plugins/jobs/${started/id}"))
+    (if (!= record/state "running") (return record/result))
+    ($assert (< ($os/monotonic_ms) due) "plugin job did not settle")
+    ($sleep 25)))
+
+(describe "Plugin recovery bootstrap"
+  (it "opens metadata without reading corrupt application streams or configuration" []
+    (isolated this_mod/.path "opens metadata without reading corrupt application streams or configuration"
+      (fn [root]
+        ($fs/make_dir $"${root}/.gene-harness/events")
+        ($fs/write_text $"${root}/.gene-harness/events/CURRENT" "not-a-checkpoint")
+        ($fs/write_text $"${root}/.gene-harness/config.gene" "(not valid configuration")
+        (let runtime (open_runtime ^^recovery root "default" (baseline_profile)))
+        (try
+          ($assert runtime/recovery)
+          ($assert ($absent? runtime/events))
+          ($assert ($absent? runtime/sessions))
+          ($assert ($absent? runtime/commands))
+          ($assert (== ($size runtime/h/plugins/.get) 0))
+          ($assert (== ($fs/read_text $"${root}/.gene-harness/events/CURRENT") "not-a-checkpoint"))
+        ensure (close_runtime runtime)))))
+  (it "falls back after a startup crash, refuses normal work, and retries a repaired composition" []
+    (isolated ^timeout_ms 180000 this_mod/.path "falls back after a startup crash, refuses normal work, and retries a repaired composition"
+      (fn [root]
+        (let seeded (open_runtime root "default" (Profile ^name "seed" ^plugins [])))
+        (try
+          (register_plugin seeded/workspace seeded/h "crasher"
+            (quote (mod plugin
+              (import ^from "src/plugin_api.gene" [Plugin])
+              (fn init [descriptor]
+                (let n (if ($fs/exists? "init-runs") ($parse/parse_int ($fs/read_text "init-runs")) 0))
+                ($fs/write_text "init-runs" ($to_str (+ n 1)))
+                (Plugin ^id "crasher" ^activate (fn [host]
+                  (if ($fs/exists? "crash-on-start") ($os/exit 93))))))))
+        ensure (close_runtime seeded))
+        ($fs/write_text $"${root}/crash-on-start" "yes")
+        (let before ($fs/read_text $"${root}/init-runs"))
+        (let explicit (start_host ^^recovery ^ready_timeout_ms 45000 root))
+        (try
+          (let explicit_state (api (connect root) "GET" "/plugins"))
+          ($assert (== explicit_state/mode "recovery"))
+          ($assert (== ($fs/read_text $"${root}/init-runs") before))
+        ensure (stop_host explicit))
+        (let host (start_host ^^supervised ^ready_timeout_ms 45000 root))
+        (try
+          (let client (connect root))
+          (let state (api client "GET" "/plugins"))
+          ($assert (== state/mode "recovery") ($to_str state))
+          ($assert ($str/contains? state/startup_failure "93"))
+          (let runs ($fs/read_text $"${root}/init-runs"))
+          (for path in ["/sessions" "/ui/actions" "/notifications/action"]
+            (let denied (wire ^credentials client/credentials client/connection "POST" path {}))
+            ($assert (== denied/status 503) ($to_str denied)))
+          (let unauthenticated (wire client/connection "GET" "/plugins"))
+          ($assert (== unauthenticated/status 401))
+          (let bad_csrf (wire ^credentials {^cookie client/credentials/cookie ^csrf "wrong"}
+            client/connection "POST" "/plugins/plans/validate" {}))
+          ($assert (== bad_csrf/status 403))
+          (let plan (wait_job client (api client "POST" "/plugins/plans/validate"
+            {^base_revision state/revision ^changes [{^id "crasher" ^kind "set_enabled" ^enabled false}]})))
+          ($assert plan/valid ($to_str plan))
+          (let saved (wait_job client (api client "POST" "/plugins/plans/apply" {^id plan/id})))
+          ($assert (== saved/state "saved") ($to_str saved))
+          ($assert (== ($fs/read_text $"${root}/init-runs") runs))
+          (api client "POST" "/control" {^action "restart" ^confirm true})
+          (let normal (ready_host ^previous client/connection/epoch host))
+          ($assert (== normal/port client/connection/port))
+          (let restored (api (connect root) "GET" "/plugins"))
+          ($assert (== restored/mode "normal"))
+          ($assert (== ($fs/read_text $"${root}/init-runs") runs))
+        ensure (stop_host host))))))
+
+(describe "Bounded recovery fallback"
+  (it "reports core-store and listener failures without restarting recovery repeatedly" []
+    (isolated ^timeout_ms 180000 this_mod/.path "reports core-store and listener failures without restarting recovery repeatedly"
+      (fn [root]
+        (let corrupt $"${root}/corrupt")
+        ($fs/make_dir $"${corrupt}/.gene-harness/composition")
+        ($fs/write_text $"${corrupt}/.gene-harness/composition/CURRENT" "invalid-generation")
+        (let failed (await ($os/exec_async ^timeout_ms 60000 ^max_bytes 262144
+          ($os/executable_path) "run" "--snapshot" (source_path "src/runtime/supervisor.gene")
+          "--workspace" corrupt "--offline")))
+        ($assert (!= failed/status 0))
+        ($assert (! failed/timed_out) ($to_str failed))
+        ($assert (== (($str/split failed/stdout "Starting the plugin recovery interface.") .size) 2) failed/stdout)
+        ($assert ($str/contains? failed/stdout "CURRENT") failed/stdout)
+        (let occupied (listen ^host "127.0.0.1" ^port 0))
+        (try
+          (let collision (await ($os/exec_async ^timeout_ms 60000 ^max_bytes 262144
+            ($os/executable_path) "run" "--snapshot" (source_path "src/runtime/supervisor.gene")
+            "--workspace" $"${root}/collision" "--offline" "--port" ($to_str occupied/port))))
+          ($assert (!= collision/status 0))
+          ($assert (! collision/timed_out) ($to_str collision))
+          ($assert (== (($str/split collision/stdout "Starting the plugin recovery interface.") .size) 2) collision/stdout)
+        ensure (stop occupied))))))
+
+(fn main [args] : Int (run_spec args))

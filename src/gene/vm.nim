@@ -593,6 +593,8 @@ type
     launchDir: string          # canonical launch cwd, captured once (§4)
     userStoreRoot: string      # canonical `~/.gene/packages` (§7)
     packageGraph: MaterializedGraph
+    executionProvenance: Value # captured before loading; NIL for mutable source runs
+    executionSourceRoot: string # diagnostic/relaunch location, never identity data
     packagesById: Table[string, Package]
     packagesByRoot: Table[string, Package]   # manifest cache, canonical root
     resourceIndex: Table[string, Table[string,
@@ -10277,6 +10279,16 @@ proc newApplicationForEntryFile*(entryFile: string): Application =
 
 proc applicationPackage*(app: Application): Package =
   app.appPackage
+
+proc materializedGraph*(app: Application): MaterializedGraph =
+  app.packageGraph
+
+proc setExecutionProvenance*(app: Application, provenance: Value,
+                             sourceRoot: string) =
+  if app.moduleCache.len > 0 or app.moduleCompileArtifacts.len > 0:
+    raise newException(GeneError, "capture execution provenance before loading modules")
+  app.executionProvenance = freezeValue(provenance)
+  app.executionSourceRoot = sourceRoot
 
 proc setErrorCheckingMode*(app: Application, mode: string) =
   discard parseErrorMode(mode)

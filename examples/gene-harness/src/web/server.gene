@@ -20,6 +20,8 @@
     acknowledge_attention
     RoundError])
 (import ^from "./page" [page])
+(import ^from "./plugin_page" [plugin_page manager_client])
+(import ^from "./startup" [mark_ready])
 (import ^from "../ui/images" [workspace_image WorkspaceImageError])
 (import ^from "../kernel" [row])
 (import ^from "../ui/state" [ui_status UiError])
@@ -36,6 +38,10 @@
 (import ^from "../runtime/commands" [CommandError])
 (import ^from "../runtime/round_controller" [request_stop submit_round])
 (import ^from "../runtime/bootstrap" [prepare_workspace_root])
+(import ^from "../runtime/plugin_manager" [plugin_catalog inspect_descriptor])
+(import ^from "./plugin_control" [new_plugin_control plugin_control_request close_plugin_control])
+(import ^from "../storage/workspace" [plugin_history_page composition_revision revert_plugin record_application_result CompositionConflict CompositionError])
+(import ^from "../storage/plugin_history" [PluginHistoryError pin_history])
 (import ^from "../runtime/workspace_lock" [acquire_workspace_lock close_workspace_lock])
 (import ^from "../runtime/input_modes" [submit_mode_input close_mode expire_modes ModeError])
 (import ^from "../runtime/questions" [QuestionError])
@@ -108,6 +114,7 @@
   result)
 
 (fn main [argv]
+  (manager_client)
   (var args [])
   (for arg in argv (args .push ($to_str arg)))
   (var offline (== (get_env "GENE_HARNESS_OFFLINE" "") "1"))
@@ -116,6 +123,7 @@
   (if (!= configured_port "") (set port ($parse/parse_int configured_port)))
   (var restart_port nil)
   (var supervised false)
+  (var startup_id "")
   (var workspace (get_env "GENE_HARNESS_WORKSPACE" ""))
   (var script_file "")
   (var i 0)
@@ -124,6 +132,9 @@
     (if (== arg "--offline")
       (then (set offline true))
       (elif (== arg "--supervised") (set supervised true))
+      (elif (&& (== arg "--startup-id") (< (+ i 1) args/.size))
+        (set i (+ i 1))
+        (set startup_id args/%i))
       (elif (&& (== arg "--port") (< (+ i 1) args/.size))
         (set i (+ i 1))
         (set port ($parse/parse_int args/%i)))
@@ -149,6 +160,7 @@
   (let ownership (acquire_workspace_lock root this_mod/.path))
   (var server nil)
   (var host nil)
+  (var plugin_control nil)
   (var connection nil)
   (try
   (clear_connection root "")
@@ -156,6 +168,7 @@
   (set port server/port)
   (set host (open_session_service ^workspace root ^offline offline
     ^profile selected_profile ^ownership ownership))
+  (set plugin_control (new_plugin_control host/runtime))
   (let media_store (open_media_store host/runtime/state_root))
   (set host/runtime/listen_port port)
   (set host/runtime/supervised supervised)
@@ -185,6 +198,8 @@
       (return (redirect ($to_str "/?ui=default&session=" ($url/encode_component session)))))
     (if_yes (&& (== request/method "GET") (== request/path "/"))
       (return (html (page))))
+    (if (&& (== request/method "GET") (["/plugins" "/plugins/"] .contains? request/path))
+      (return (html (plugin_page))))
     # The website needs no session: it reads no workspace records and makes no
     # model call, so it is answered before authentication.
     (if_yes (&& (== request/method "GET") (== request/path "/about"))
@@ -210,6 +225,8 @@
         (fail_request "forbidden" "Refresh this page before making a change.")))
     (if_yes (&& (!= request/method "GET") host/runtime/stopping/.get)
       (fail_request "stopped" "The workspace is stopping."))
+    (let management (plugin_control_request plugin_control request))
+    (if_not ($absent? management) (return (response management/status management/body)))
     (if_yes (&& (== request/method "POST") (== request/path "/api/v8/auth/reset"))
       (reset_auth auth)
       (disconnect_peers push)
@@ -237,6 +254,40 @@
       (var result (host_status ^safe safe ^session (field request/params "session" ^default "") host))
       (result .put "csrf" browser/csrf)
       (return (response 200 result)))
+    (if_yes (&& (== request/method "GET") (== request/path "/api/v8/plugins/history"))
+      (return (response 200
+        (plugin_history_page
+           ^limit (if ($absent? request/params/limit) 50 (number request/params "limit"))
+           ^before (if ($absent? request/params/before) nil (number request/params "before"))
+           host/runtime/workspace (field request/params "id" ^default "")))))
+    (if_yes (&& (== request/method "GET") (== request/path "/api/v8/plugins"))
+      (let result (plugin_catalog
+        ^query (field request/params "q" ^default "")
+        ^state (field request/params "state" ^default "") host/runtime))
+      (result .put "csrf" browser/csrf)
+      (result .put "epoch" host/runtime/epoch)
+      (return (response 200 result)))
+    (if_yes (&& (== request/method "POST") (== request/path "/api/v8/plugins/revert"))
+      (let data (request_data request))
+      (if (|| (!= ($head data/revision) Int) (!= ($head data/expected) Int))
+        (fail_request "invalid_request" "Revert requires integer revision and expected revision."))
+      (try
+        (return (response 200 (revert_plugin ^expected data/expected
+          host/runtime/workspace host/runtime/h (field data "id") data/revision)))
+      catch CompositionConflict
+        (return (response 409 {^code $err/code ^message $err/message}))))
+    (if_yes (&& (== request/method "POST") (== request/path "/api/v8/plugins/inspect"))
+      (let data (request_data request))
+      (if (&& (! ($absent? data/revision)) (!= ($head data/revision) Int))
+        (fail_request "invalid_request" "Historical revision must be an integer."))
+      (return (response 200 (inspect_descriptor ^revision (?? data/revision nil)
+        host/runtime (field data "id")))))
+    (if_yes (&& (== request/method "POST") (== request/path "/api/v8/plugins/history/pin"))
+      (let data (request_data request))
+      (if (|| (!= ($head data/revision) Int) (!= ($head data/pinned) Bool))
+        (fail_request "invalid_request" "Pin requires an integer revision and boolean pinned value."))
+      (return (response 200 (pin_history host/runtime/workspace/store
+        host/runtime/workspace/history_head/.get data/revision data/pinned))))
     (if_yes (== request/path "/api/v8/media")
       (if (== request/method "GET")
         (return (response 200 {^max_file_bytes media_store/max_file_bytes
@@ -413,11 +464,16 @@
         catch CommandError (response (error_status $err/code) {^code $err/code ^message $err/message})
         catch SessionError (response (error_status $err/code) {^code $err/code ^message $err/message})
         catch QuestionError (response 400 {^code "invalid_request" ^message $err/message})
+        catch CompositionConflict (response 409 {^code $err/code ^message $err/message})
+        catch CompositionError (response 400 {^code "composition_error" ^message $err/message})
+        catch PluginHistoryError (response 400 {^code "history_error" ^message $err/message})
         catch Any
           ($println $"Harness ${request/method} ${request/path} failed: ${$err/message}")
           (response 500 {^code "internal_error" ^message "The Harness could not complete this request. See the server output."}))))
 
+  (record_application_result host/runtime/workspace host/runtime/h {^status "startup"})
   (set connection (publish_connection root host/epoch port auth/secret))
+  (mark_ready host/runtime/state_root startup_id host/epoch port false)
   ($println "Gene Harness is ready.")
   ($println $"Host: ${origin}")
   (if ($os/stdout_tty?)
@@ -443,6 +499,7 @@
             (stop server)))))
   host/runtime/exit_code/.get
   ensure
+    (if_not ($absent? plugin_control) (close_plugin_control plugin_control))
     (try
       (clear_connection root (if ($absent? host) "" host/epoch))
     ensure

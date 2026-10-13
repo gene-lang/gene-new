@@ -1,0 +1,10 @@
+(mod startup)
+
+(fn mark_ready [state_root : Str, id : Str, epoch : Str, port : Int, recovery : Bool]
+  (if (== id "") (return nil))
+  (if ($absent? (#"^[0-9a-f]{32}$" .match id)) (fail "invalid startup handoff id"))
+  ($fs/make_dir $"${state_root}/startup")
+  ($fs/write_text_atomic ^^owner_only
+    $"${state_root}/startup/${id}"
+    ($serde/write_data {^^ready ^epoch epoch ^port port ^recovery recovery}))
+  nil)

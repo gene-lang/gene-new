@@ -31,14 +31,18 @@ Each round has a turn budget. When budget_advisory is active, it is shown in the
 (Outcome ^prompt "Inspect the test result." ^reply "I ran verification and will inspect the results before proceeding.")
 """)
 
-(fn reference_root []
-  (var directory ($path/parent this_mod/.path))
-  (while true
-    (if ($fs/exists? ($path/join directory "tools/gene-lang-skill/SKILL.md")) (return directory))
-    (let parent ($path/parent directory))
-    (if (== parent directory) (return nil))
-    (set directory parent))
-  nil)
+(fn reference_path [relative_path : Str] : Str
+  # Documentation is part of the captured package closure, not a search up a
+  # mutable checkout. Keep existing chapter paths as stable authoring names.
+  (let reference ($pkg/dependency this_pkg "gene_reference"))
+  (for [prefix root] in
+      [["examples/gene-harness/" this_pkg/root]
+       ["tools/gene-lang-skill/" reference/root]]
+    (if_yes ($str/starts_with? relative_path prefix)
+      (return ($path/join root
+        ($str/slice_bytes relative_path ($str/byte_size prefix)
+          (- ($str/byte_size relative_path) ($str/byte_size prefix)))))))
+  (fail $"Unknown bundled documentation path: ${relative_path}"))
 
 (fn render_context [runtime, session_record]
   ($to_str

@@ -1,0 +1,153 @@
+(import $test [describe it])
+(import ^from "../../support" [isolated run_spec])
+(import ^from "../../../src/plugin_api" [Plugin PluginHost])
+(import ^from "../../../src/profiles/profile" [Profile])
+(import ^from "../../../src/runtime/bootstrap" [open_runtime close_runtime])
+(import ^from "../../../src/runtime/plugin_manager" [plugin_catalog inspect_descriptor])
+(import ^from "../../../src/runtime/composition" [current_snapshot])
+(import ^from "../../../src/storage/workspace"
+  [
+    register_plugin
+    set_plugin_enabled
+    canonical_module_source
+    write_module_blob
+    commit_composition
+    default_limits_data])
+
+(fn named [catalog, id]
+  (for item in catalog/plugins
+    (if (== item/id id) (return item)))
+  (fail $"missing catalog entry ${id}"))
+
+(fn producer []
+  (Plugin ^id "producer" ^provides [["functions" "answer"]] ^activate (fn [host] (host .PluginHost:contribute "functions" {^name "answer" ^doc "The answer." ^fn (fn [] 42)}) (host .PluginHost:contribute "functions" {^name "extra" ^doc "An undeclared contribution." ^fn (fn [] 7)}))))
+
+(fn consumer [id, requirement, provided]
+  (Plugin ^id id ^requires [["functions" requirement]] ^provides [["functions" provided]] ^activate (fn [host] (host .PluginHost:contribute "functions" {^name provided ^doc "A consumer." ^fn (fn [] 1)}))))
+
+(describe
+  "Host plugin inventory"
+  (it
+    "resolves actual providers, transitive consumers, and retained disabled observations"
+    []
+    (isolated
+      this_mod/.path
+      "resolves actual providers, transitive consumers, and retained disabled observations"
+      (fn [root]
+        (let profile
+          (Profile ^name "catalog" ^requires [["functions" "answer"]] ^plugins [(consumer "leaf" "next" "end") (consumer "middle" "answer" "next") (producer)]))
+        (let runtime (open_runtime root "default" profile))
+        (try
+          (let catalog (plugin_catalog runtime))
+          ($assert catalog/diagnostics/.empty? ($to_str catalog/diagnostics))
+          (let provider (named catalog "producer"))
+          ($assert (== provider/provides [["functions" "answer"]]))
+          ($assert (== provider/observed/.size 2))
+          ($assert (== provider/required_by ["middle"]))
+          ($assert (provider/transitive_required_by .contains? "leaf") ($to_str catalog))
+          ($assert provider/required_by_profile)
+          (let middle (named catalog "middle"))
+          ($assert (== middle/state "ready"))
+          ($assert (== middle/requires/0/provider "producer"))
+          (set_plugin_enabled runtime/workspace runtime/h "producer" false)
+          (let disabled (named (plugin_catalog runtime) "producer"))
+          ($assert (== disabled/state "disabled"))
+          ($assert disabled/observed/.empty?)
+          ($assert (== disabled/last_observed/.size 2))
+          ($assert disabled/metadata_known)
+        ensure
+          (close_runtime runtime))
+        (let recovery (open_runtime ^!activate root "default" profile))
+        (try
+          (let reopened (named (plugin_catalog recovery) "producer"))
+          ($assert (== reopened/state "disabled"))
+          ($assert (== reopened/last_observed/.size 2))
+        ensure
+          (close_runtime recovery)))))
+  (it
+    "does not initialize stored plugins during passive recovery inspection"
+    []
+    (isolated
+      this_mod/.path
+      "does not initialize stored plugins during passive recovery inspection"
+      (fn [root]
+        (let profile (Profile ^name "catalog" ^plugins []))
+        (let runtime (open_runtime root "default" profile))
+        (try
+          (register_plugin
+            runtime/workspace
+            runtime/h
+            "observed"
+            (quote
+              (mod plugin
+                (import ^from "src/plugin_api.gene" [Plugin PluginHost])
+                (fn init [descriptor]
+                  ($fs/write_text "init-marker" "executed")
+                  (Plugin ^id "observed" ^provides [["functions" "stored"]] ^activate (fn [host] (host .PluginHost:contribute "functions" {^name "stored" ^doc "Stored function." ^fn (fn [] 1)})))))))
+        ensure
+          (close_runtime runtime))
+        ($fs/remove ($path/join root "init-marker"))
+        (let recovery (open_runtime ^!activate root "default" profile))
+        (try
+          (let catalog (plugin_catalog recovery))
+          (let plugin (named catalog "observed"))
+          ($assert plugin/metadata_known)
+          ($assert (== plugin/state "not_loaded") ($to_str plugin))
+          ($assert (! ($fs/exists? ($path/join root "init-marker"))))
+          ($assert (== plugin/last_observed/.size 1))
+          (let inspected (inspect_descriptor recovery "observed"))
+          ($assert (! inspected/ok))
+          ($assert ($str/contains? inspected/message "fs"))
+          (let retained (named (plugin_catalog recovery) "observed"))
+          ($assert ($str/contains? retained/inspection_error "fs"))
+          ($assert (! ($fs/exists? ($path/join root "init-marker"))))
+        ensure
+          (close_runtime recovery))
+        (let normal (open_runtime root "default" profile))
+        (try
+          ($assert ($fs/exists? ($path/join root "init-marker")))
+          (let normal_plugin (named (plugin_catalog normal) "observed"))
+          ($assert (== normal_plugin/state "ready"))
+        ensure
+          (close_runtime normal))))))
+
+(describe "Restricted plugin descriptors"
+  (it "reads the shared contract without activation and discards over-budget generations" []
+    (isolated this_mod/.path "reads the shared contract without activation and discards over-budget generations"
+      (fn [root]
+        (let runtime (open_runtime root "default" (Profile ^name "inspection" ^plugins [])))
+        (try
+          (register_plugin runtime/workspace runtime/h "pure"
+            (quote (mod plugin
+              (import ^from "src/plugin_api.gene" [Plugin])
+              (fn init [descriptor]
+                (Plugin ^id "pure" ^requires [["functions" "unavailable"]]
+                  ^activate (fn [host] ($fs/write_text "activation-marker" "activated")))))))
+          (let before (current_snapshot runtime/h/snapshots))
+          (let read (inspect_descriptor runtime "pure"))
+          ($assert read/ok ($to_str read))
+          ($assert (== read/descriptor/requires [["functions" "unavailable"]]))
+          ($assert (! ($fs/exists? ($path/join root "activation-marker"))))
+          (let after (current_snapshot runtime/h/snapshots))
+          ($assert (== before/id after/id))
+          # Model an unloaded/corrupt historical entry through the inert store
+          # boundary; ordinary registration correctly refuses a spinning init.
+          (let source (canonical_module_source
+            (quote (mod plugin
+              (import ^from "src/plugin_api.gene" [Plugin])
+              (fn init [descriptor] (while true nil))))))
+          (let digest $"sha256:${($crypto/sha256 source)}")
+          (write_module_blob runtime/workspace digest source)
+          (commit_composition runtime/workspace
+            [{^id "spin" ^module_digest digest ^closure [digest]
+              ^interfaces runtime/workspace/interfaces ^limits (default_limits_data) ^^disabled}])
+          (let rejected (inspect_descriptor runtime "spin"))
+          ($assert (! rejected/ok))
+          ($assert (|| ($str/contains? rejected/message "steps")
+                       ($str/contains? rejected/message "timeout")) ($to_str rejected))
+          (let final_snapshot (current_snapshot runtime/h/snapshots))
+          ($assert (== final_snapshot/id after/id))
+        ensure (close_runtime runtime))))))
+
+(fn main [args] : Int
+  (run_spec args))

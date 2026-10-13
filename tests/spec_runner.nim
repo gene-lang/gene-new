@@ -10683,6 +10683,16 @@ suite "spec — store persistence protocol":
                "  catch StoreError $err/kind)]",
                "[corrupt corrupt]", dir)
 
+    # An interrupted/corrupted store must not become an empty store merely
+    # because its generation directory is missing. Validate CURRENT first.
+    removeDir(dir / "generations")
+    for current in ["broken\n", "00000000000000000001\n"]:
+      writeFile(dir / "CURRENT", current)
+      check_eval_at("(import $store/fs [open : store_open Store StoreError]) " &
+                 "(var s (store_open ^root " & geneString(dir) & ")) " &
+                 "(try (s .Store:load_checkpoint) catch StoreError $err/kind)",
+                 "corrupt", dir)
+
 suite "spec — filesystem watching":
   test "watch reports create, modify, and remove in order":
     let root = getTempDir() / "gene-fs-watch-basic"

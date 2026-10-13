@@ -33,13 +33,23 @@
     module_dir])
 (import ^from "./state" [validate_event_catalog repair_interrupted_turns])
 (import ^from "../runtime/interface_policy" [current_interfaces])
+(import ^from "./plugin_history"
+  [archive_host_build archive_baseline archive_candidate archived_record
+   history_list history_revision history_entry append_history_result history_results])
+(import ^from "./plugin_metadata" [remember_descriptor remember_failure])
 (import ^from "../runtime/composition"
   [queue_composition_change take_composition_changes run_composition_change])
 
 (type CompositionError ^props {^message Str} ^impl [Error])
 (impl Error for CompositionError)
 
-(type Workspace ^props {^root Str ^state_root Str ^workspace_root Str ^store Any ^blob_store Any ^revision Any ^entries Any ^busy Any ^closed Any ^generated_dir Str ^shared Any ^interfaces Any ^core_interface Str ^errors Any ^active_revision Any ^profile_plugins Any})
+(type CompositionConflict ^props {^message Str ^code Str ^expected Int ^actual Int} ^impl [Error])
+(impl Error for CompositionConflict)
+
+(type CompositionCommitUncertain ^props {^message Str ^code Str} ^impl [Error])
+(impl Error for CompositionCommitUncertain)
+
+(type Workspace ^props {^root Str ^state_root Str ^workspace_root Str ^store Any ^blob_store Any ^revision Any ^entries Any ^busy Any ^closed Any ^generated_dir Str ^shared Any ^interfaces Any ^core_interface Str ^errors Any ^active_revision Any ^profile_plugins Any ^history_head Any ^history_build Any ^history_profile Any ^metadata_errors Any})
 
 (type WorkspaceRestorePlan ^props {^workspace Workspace ^entries Any ^descriptors Any ^session Str})
 
@@ -95,11 +105,14 @@
       (var manifest (loaded/records .get "composition"))
       (if (== manifest void)
         (fail (CompositionError ^message "composition generation has no composition record")))
-      (if_not (== manifest/format 1)
+      (if_not ([1 2] .contains? manifest/format)
         (fail
-          (CompositionError ^message $"unsupported composition format ${manifest/format}; expected 1")))
+          (CompositionError ^message $"unsupported composition format ${manifest/format}; expected 1 or 2")))
+      (if (&& (== manifest/format 2) (!= ($head manifest/history_head) Str))
+        (fail (CompositionError ^message "composition format 2 requires an archive head")))
       (var checked (validate_entries manifest/entries))
       (workspace/revision .set manifest/revision)
+      (workspace/history_head .set (?? manifest/history_head nil))
       (workspace/entries .set checked)))
   workspace)
 
@@ -134,7 +147,7 @@
         (real_path generated_dir))))
   (var interfaces (current_interfaces))
   (var workspace
-    (Workspace ^root canonical_root ^state_root canonical_state_root ^workspace_root canonical_workspace_root ^store (store_open ^root canonical_root) ^blob_store (store_open ^root canonical_blob_root) ^revision ($cell 0) ^entries ($cell (fresh_list)) ^busy ($cell false) ^closed ($cell false) ^generated_dir generated ^shared ["src/plugin_api.gene"] ^interfaces interfaces ^core_interface interfaces/core ^active_revision ($cell nil) ^errors ($cell (fresh_map)) ^profile_plugins ($cell (fresh_map))))
+    (Workspace ^root canonical_root ^state_root canonical_state_root ^workspace_root canonical_workspace_root ^store (store_open ^root canonical_root) ^blob_store (store_open ^root canonical_blob_root) ^revision ($cell 0) ^entries ($cell (fresh_list)) ^busy ($cell false) ^closed ($cell false) ^generated_dir generated ^shared ["src/plugin_api.gene"] ^interfaces interfaces ^core_interface interfaces/core ^active_revision ($cell nil) ^errors ($cell (fresh_map)) ^profile_plugins ($cell (fresh_map)) ^history_head ($cell nil) ^history_build ($cell nil) ^history_profile ($cell nil) ^metadata_errors ($cell [])))
   (load_composition workspace)
   (let marker (active_revision_path workspace))
   (if ($fs/exists? marker)
@@ -164,20 +177,91 @@
   (require_open workspace)
   (data_copy workspace/entries/.get))
 
-(fn commit_composition [workspace : Workspace, entries]
+(fn attach_history [workspace : Workspace, build, profile]
   (require_open workspace)
+  (let identity (archive_host_build workspace/store build))
+  (workspace/history_build .set identity)
+  (workspace/history_profile .set (data_copy profile))
+  (for builtin in (?? profile/builtins [])
+    (try (remember_descriptor ^mode "host" workspace/store identity "builtin" builtin)
+      catch Any (workspace/metadata_errors/.get .push {^id builtin/id ^message $err/message})))
+  (if ($absent? workspace/history_head/.get)
+    (workspace/history_head .set
+      (archive_baseline workspace/store
+        {^revision workspace/revision/.get ^entries workspace/entries/.get}
+        identity profile))
+    (do
+      (let saved (archived_record workspace/store workspace/history_head/.get))
+      (if (|| (!= saved/revision workspace/revision/.get) (!= saved/entries workspace/entries/.get))
+        (fail (CompositionError ^message "composition checkpoint disagrees with its history record")))))
+  identity)
+
+(fn composition_history [workspace : Workspace, ^limit limit : Int = 100, ^before before = nil]
+  (require_open workspace)
+  (history_list ^limit limit ^before before workspace/store workspace/history_head/.get))
+
+(fn composition_history_result [workspace : Workspace, result]
+  (if_not ($absent? workspace/history_head/.get)
+    (append_history_result workspace/store workspace/history_head/.get result)))
+
+(fn record_application_result [workspace : Workspace, h : Harness, result]
+  (let expected {})
+  (for [id default] in workspace/profile_plugins/.get
+    (expected .put ($to_str id) {^id ($to_str id) ^!disabled}))
+  (for entry in (composition_entries workspace) (expected .put entry/id entry))
+  (let active h/composition/.current_revisions)
+  (var reason nil)
+  (for [id entry] in expected
+    (if (== entry/disabled true) (continue))
+    (let live (active .get id))
+    (if (|| (!= live/active true) (!= (status_of h ($to_str id)) "ready")
+            (&& (! ($absent? entry/module_digest)) (!= entry/module_digest live/options/digest)))
+      (set reason $"${id} is not active at its requested revision")))
+  (if (&& ($absent? reason) (> ($size workspace/errors/.get) 0))
+    (set reason "The desired composition contains quarantined entries"))
+  (if_yes (&& ($absent? reason) (! ($absent? h/readiness)))
+    (set reason (try (h/readiness) catch Any $err/message)))
+  (let observation (data_copy result))
+  (observation .put "readiness" (if ($absent? h/readiness) "unverified" (if ($absent? reason) "ready" "degraded")))
+  (observation .put "readiness_reason" reason)
+  (observation .put "host_build_id" workspace/history_build/.get)
+  (observation .put "accepted_revision" workspace/active_revision/.get)
+  (composition_history_result workspace observation))
+
+(fn commit_composition [workspace : Workspace, entries, ^origin origin = nil]
+  (require_open workspace)
+  (if ($absent? workspace/history_build/.get)
+    (fail (CompositionError ^message "attach the executing host identity before changing archived composition")))
   (if workspace/busy/.get
     (fail (CompositionError ^message "composition mutation is already active")))
   (var actual workspace/revision/.get)
   (var checked (validate_entries (data_copy entries)))
   (if (== checked workspace/entries/.get) (return actual))
   (var next (+ actual 1))
-  (var manifest {^format 1 ^revision next ^entries checked})
+  # Older hosts must refuse this format instead of silently dropping history
+  # when committing a revision with their pre-archive writer.
+  (var manifest {^format 2 ^revision next ^entries checked})
   (workspace/busy .set true)
   (try
-    (workspace/store .Store:checkpoint next {^composition manifest})
+    (let history (archive_candidate workspace/store workspace/history_head/.get next checked
+      workspace/history_build/.get workspace/history_profile/.get
+      (?? origin {^kind "direct" ^operation "composition"})))
+    (manifest .put "history_head" history)
+    (try
+      (workspace/store .Store:checkpoint next {^composition manifest})
+    catch Any
+      (let original $err)
+      # A backend may report a maintenance/acknowledgment error after CURRENT
+      # advanced. Resolve that outcome before treating an accepted plan as a
+      # rejection. Unreadable authority is explicitly uncertain, never retried.
+      (let recovered (try workspace/store/.Store:load_checkpoint
+        catch Any (fail (CompositionCommitUncertain ^code "commit_uncertain"
+          ^message "Composition commit outcome is unreadable. Restart and inspect the authoritative checkpoint before another change."))))
+      (if (|| ($absent? recovered) (!= recovered/records/composition/history_head history))
+        (fail original)))
     (workspace/revision .set next)
     (workspace/entries .set checked)
+    (workspace/history_head .set history)
     next
   ensure
     (workspace/busy .set false)))
@@ -189,7 +273,7 @@
   safe)
 
 (fn digest_hex [digest : Str]
-  (if_not (contains? digest "sha256:")
+  (if ($absent? (#"^sha256:[0-9a-f]{64}$" .match digest))
     (fail (CompositionError ^message $"unsupported module digest ${digest}")))
   (slice_bytes digest 7 (- (byte_size digest) 7)))
 
@@ -204,6 +288,20 @@
   (if_not (== forms/.size 1)
     (fail (CompositionError ^message "plugin source must contain exactly one mod form")))
   forms/0)
+
+(fn source_without_locations [form]
+  (if (== ($head form) List) (return ($map form source_without_locations)))
+  (if (== ($head form) Map) (return ($map form source_without_locations)))
+  (match form
+    (when (node : Node)
+      (let meta ($meta form))
+      (for key in ["source" "line" "col"] (meta .delete key))
+      ($node/rebuild form
+        ^head (source_without_locations ($head form))
+        ^body ($map ($body form) source_without_locations)
+        ^props ($map ($props form) source_without_locations)
+        ^meta ($map meta source_without_locations)))
+    (else form)))
 
 (fn canonical_module_source
   [source, ^require_init require_init : Bool = true]
@@ -231,13 +329,41 @@
     (set i (+ i 1)))
   (if_yes (&& require_init (! saw_init))
     (fail (CompositionError ^message "generated module must define init")))
-  (var text ($to_str source))
+  # Model response readers attach diagnostic locations to quoted nodes.
+  # Those locations are not module content and must not change import hashes.
+  # Keep other metadata, literal container immutability, and syntax intact.
+  (var text ($to_str (source_without_locations source)))
   (if (> (byte_size text) 262144)
     (fail (CompositionError ^message "generated module exceeds 262144 bytes")))
   text)
 
 (fn module_digest [source] : Str
   $"sha256:${(sha256 (canonical_module_source ^!require_init source))}")
+
+(fn dependency_module_texts [source, dependencies]
+  (let modules [source])
+  (for dependency in dependencies (modules .push (parse_plugin_source dependency)))
+  (let requested [])
+  (for module in modules
+    (for form in module/body
+      (if (&& (["import" "import_impl"] .contains? ($to_str ($head form)))
+              (== ($head form/from) Str))
+        (requested .push form/from))))
+  (let texts [])
+  (for dependency in dependencies
+    (let parsed (parse_plugin_source dependency))
+    (let canonical (canonical_module_source ^!require_init parsed))
+    (texts .push canonical)
+    # Existing authors may hash the exact quoted node inside a model response,
+    # including its reader locations. Keep such explicitly referenced spellings
+    # valid while also accepting location-independent canonical imports.
+    (let original ($to_str parsed))
+    (if_yes (&& (!= original canonical)
+                (requested .contains? $"./${(sha256 original)}.gene"))
+      (if (> (byte_size original) 262144)
+        (fail (CompositionError ^message "generated module exceeds 262144 bytes")))
+      (texts .push original)))
+  texts)
 
 (fn relative_import_digest [path : Str]
   (if_yes (&& (starts_with? path "./") (ends_with? path ".gene"))
@@ -314,7 +440,7 @@
   (if_not found (out .push replacement))
   out)
 
-(fn load_entry_descriptor [workspace : Workspace, h : Harness, entry]
+(fn load_entry_descriptor [workspace : Workspace, h : Harness, entry, ^events events : Bool = true]
   (if_not (== entry/interfaces workspace/interfaces)
     (fail (CompositionError ^message "stored plugin predates interface 2; re-register it")))
   (if_not (entry/closure .contains? entry/module_digest)
@@ -343,7 +469,10 @@
       h
       loaded
       ($to_str entry/id)))
-  (validate_descriptor_events h descriptor)
+  (if events (validate_descriptor_events h descriptor))
+  (if_not ($absent? workspace/history_build/.get)
+    (try (remember_descriptor workspace/store workspace/history_build/.get entry/module_digest descriptor)
+      catch Any (workspace/metadata_errors/.get .push {^id entry/id ^message $err/message})))
   descriptor)
 
 (fn validate_descriptor_events [h : Harness, descriptor]
@@ -413,6 +542,39 @@
     ^active_revision workspace/active_revision/.get
     ^errors (data_copy workspace/errors/.get)})
 
+(fn change_origin [h : Harness, operation : Str, id : Str]
+  (let context ($runtime/context))
+  (let turn context/turn)
+  {^kind (if ($absent? turn) (if ($absent? context/command) "direct" "command") "model")
+   ^operation operation ^plugin id ^session (?? context/session h/event_stream)
+   ^turn (if ($absent? turn) nil turn/turn) ^command (?? context/command nil)})
+
+(fn stage_plugin_entry [workspace : Workspace, id : Str, source, ^dependencies dependencies = []]
+  (require_open workspace)
+  (if_not (safe_module_id? id) (fail (CompositionError ^message "unsafe plugin id")))
+  (if (!= ($head dependencies) List) (fail (CompositionError ^message "dependencies must be a list of modules")))
+  (let parsed (parse_plugin_source source))
+  (let text (canonical_module_source parsed))
+  (let digest $"sha256:${(sha256 text)}")
+  (let closure [digest])
+  (let blobs [{^digest digest ^text text ^parsed parsed}])
+  (for dependency in dependencies
+    (let module (parse_plugin_source dependency))
+    (let encoded (canonical_module_source ^!require_init module))
+    (let hash $"sha256:${(sha256 encoded)}")
+    (if_not (closure .contains? hash)
+      (closure .push hash)
+      (blobs .push {^digest hash ^text encoded ^parsed module})))
+  (for blob in blobs (validate_source_imports blob/parsed closure))
+  (for blob in blobs
+    (write_module_blob workspace blob/digest blob/text)
+    (materialize_module_blob workspace blob/digest blob/text))
+  (let entry {^id id ^module_digest digest ^closure closure
+    ^interfaces (data_copy workspace/interfaces) ^limits (default_limits_data) ^!disabled})
+  (if_not ($absent? (workspace/profile_plugins/.get .get id))
+    (entry .put "replaces_builtin" true))
+  entry)
+
 (fn register_plugin
   [workspace : Workspace, h : Harness, id : Str, source,
    ^limits limits = nil,
@@ -450,9 +612,7 @@
   (var dependency_blobs (fresh_list))
   (var dependency_sources
     (if ($absent? dependencies) (fresh_list) dependencies))
-  (for dependency in dependency_sources
-    (var dependency_text
-      (canonical_module_source (parse_plugin_source dependency) ^!require_init))
+  (for dependency_text in (dependency_module_texts source dependency_sources)
     (var dependency_digest $"sha256:${(sha256 dependency_text)}")
     (if_yes (! (closure .contains? dependency_digest))
       (closure .push dependency_digest)
@@ -470,13 +630,17 @@
      ^interfaces (data_copy workspace/interfaces)
      ^limits bounded ^!disabled
      ^by by ^model model ^at at
-     ^session h/event_stream ^turn authenticated_turn})
+     ^session (?? caller/session h/event_stream) ^turn authenticated_turn})
+  (entry .put "origin" (change_origin h (if replace "replace" "register") id))
   (if_not ($absent? (workspace/profile_plugins/.get .get id))
     (entry .put "replaces_builtin" true))
 
   # Descriptor-only preflight: load and run `init`, but do not install or
   # activate anything until the generation is authoritative.
   (var descriptor (load_entry_descriptor workspace h entry))
+  (entry/origin .put "validation"
+    {^kind "bounded_descriptor" ^status "passed" ^source_digest digest
+     ^host_build_id workspace/history_build/.get})
   # Only a valid descriptor enters the durable blob store. Materializations
   # used by a failed preflight are unreferenced content-addressed cache files.
   (for dependency in dependency_blobs
@@ -502,7 +666,7 @@
   (var before (composition_entries workspace))
   (var previous_digest (previous_module_digest before id))
   (var next_entries (entries_with before entry replace))
-  (var revision (commit_composition workspace next_entries))
+  (var revision (commit_composition ^origin entry/origin workspace next_entries))
   (var status "error")
   (try
     (register_descriptor_events h descriptor)
@@ -526,6 +690,8 @@
       "replaced"))
   (flush_harness h)
   (update_active_revision workspace h)
+  (record_application_result workspace h
+    {^plugin id ^status status ^message (workspace/errors/.get .get id)})
   {^id id ^revision revision ^digest digest ^status status
    ^state (if (== status "ready") "active"
      (if (== status "error") "quarantined" status))
@@ -540,6 +706,9 @@
       (for change in (take_composition_changes ^origin origin h/snapshots)
         (try
           (results .push (change/apply))
+        catch CompositionConflict
+          (results .push {^status "stale" ^state "unchanged"
+            ^id change/id ^message $err/message ^code $err/code})
         catch Any
           (record_quarantine workspace change/id ($to_str $err/message))
           (results .push {^status "error" ^state "quarantined"
@@ -566,7 +735,13 @@
 (fn record_quarantine [workspace : Workspace, id : Str, message : Str]
   (var errors workspace/errors/.get)
   (errors .put id message)
-  (workspace/errors .set errors))
+  (workspace/errors .set errors)
+  (if_not ($absent? workspace/history_build/.get)
+    (try
+      (remember_failure workspace/store workspace/history_build/.get
+        (?? (previous_module_digest (composition_entries workspace) id) "builtin") id message)
+    catch Any
+      (workspace/metadata_errors/.get .push {^id id ^message $err/message}))))
 
 (fn register_descriptor_events [h : Harness, descriptor]
   (var descriptor_owner $"descriptor:${descriptor/id}")
@@ -708,7 +883,7 @@
     (out .push $"composition desired ${desired}, active ${active}: reconciliation pending"))
   out)
 
-(fn set_entry_disabled [workspace : Workspace, id : Str, disabled : Bool, ^h h = nil]
+(fn set_entry_disabled [workspace : Workspace, id : Str, disabled : Bool, ^h h = nil, ^origin origin = nil]
   (var entries (composition_entries workspace))
   (var found false)
   (var next_entries (fresh_list))
@@ -732,7 +907,9 @@
         (next_entries .push {^id id ^^builtin ^^disabled})
         (return (composition_revision workspace)))))
   (if (== next_entries entries) (return (composition_revision workspace)))
-  (var revision (commit_composition workspace next_entries))
+  (var revision (commit_composition ^origin (?? origin
+    {^kind (if ($absent? h) "direct" "offline") ^operation (if disabled "disable" "enable") ^plugin id})
+    workspace next_entries))
   (if_not ($absent? h)
     (var digest (previous_module_digest next_entries id))
     (record_composition_change
@@ -745,13 +922,14 @@
       (if disabled
         "disabled"
         "enabled"))
-    (flush_harness h))
+    (flush_harness h)
+    (composition_history_result workspace {^plugin id ^status "unverified" ^operation "offline_repair"}))
   revision)
 
 (fn disable_entry [workspace : Workspace, id : Str, ^h h = nil]
   (set_entry_disabled ^h h workspace id true))
 
-(fn restore_entry [workspace : Workspace, id : Str, ^h h = nil]
+(fn restore_entry [workspace : Workspace, id : Str, ^h h = nil, ^origin origin = nil]
   (if ($absent? (workspace/profile_plugins/.get .get id))
     (fail (CompositionError ^message $"plugin ${id} has no profile default to restore")))
   (let entries (composition_entries workspace))
@@ -762,22 +940,26 @@
       (set removed true)
       (kept .push entry)))
   (if_not removed (return (composition_revision workspace)))
-  (let revision (commit_composition workspace kept))
+  (let revision (commit_composition ^origin (?? origin
+    {^kind (if ($absent? h) "direct" "offline") ^operation "restore_default" ^plugin id}) workspace kept))
   (if_not ($absent? h)
     (record_composition_change h id (previous_module_digest entries id) nil
       revision "recovery" "restored")
-    (flush_harness h))
+    (flush_harness h)
+    (composition_history_result workspace {^plugin id ^status "unverified" ^operation "offline_repair"}))
   revision)
 
 (fn set_plugin_enabled [workspace, h, id : Str, enabled : Bool]
   (let context ($runtime/context))
+  (let origin (change_origin h (if enabled "enable" "disable") id))
   (let apply (fn [] (run_composition_change h/snapshots (fn []
-    (let revision (set_entry_disabled workspace id (! enabled)))
+    (let revision (set_entry_disabled ^origin origin workspace id (! enabled)))
     (activate_desired_plugin workspace h id)
     (let digest (previous_module_digest (composition_entries workspace) id))
     (record_composition_change h id digest digest revision "runtime" (if enabled "enabled" "disabled"))
     (flush_harness h)
     (update_active_revision workspace h)
+    (record_application_result workspace h {^plugin id ^status (if enabled (status_of h id) "disabled")})
     {^id id ^revision revision ^status (if enabled (status_of h id) "disabled")}))))
   (if (&& (! ($absent? context/turn)) (== context/turn/state/.get "open"))
     (then (queue_composition_change h/snapshots {^id id ^kind "enabled" ^apply apply}) "queued")
@@ -804,12 +986,14 @@
 
 (fn restore_plugin [workspace : Workspace, h : Harness, id : Str]
   (let context ($runtime/context))
+  (let origin (change_origin h "restore_default" id))
   (let apply (fn [] (run_composition_change h/snapshots (fn []
-    (let revision (restore_entry workspace id))
+    (let revision (restore_entry ^origin origin workspace id))
     (activate_desired_plugin workspace h id)
     (record_composition_change h id nil nil revision "runtime" "restored")
     (flush_harness h)
     (update_active_revision workspace h)
+    (record_application_result workspace h {^plugin id ^status (status_of h id)})
     {^id id ^revision revision ^status (status_of h id)}))))
   (if (&& (! ($absent? context/turn)) (== context/turn/state/.get "open"))
     (then (queue_composition_change h/snapshots {^id id ^kind "restored" ^apply apply}) "queued")
@@ -817,6 +1001,132 @@
 
 (fn enable_entry [workspace : Workspace, id : Str, ^h h = nil]
   (set_entry_disabled ^h h workspace id false))
+
+(fn plugin_history [workspace : Workspace, id : Str = "", ^limit limit : Int = 50, ^before before = nil]
+  (let records (composition_history ^limit limit ^before before workspace))
+  (for record in records
+    (record .put "outcomes" (history_results workspace/store record/id))
+    (record .put "attempts" (history_results ^kind "attempt" workspace/store record/id))
+    (if_not ($absent? record/origin/plan)
+      (let key $"plugin_plan/${record/origin/plan}")
+      (if_yes (workspace/store .Store:has? key)
+        (let plan (workspace/store .Store:get key))
+        (if (!= ($pkg/canonical_digest plan) record/origin/plan)
+          (fail (CompositionError ^message "archived validation plan digest mismatch")))
+        (record .put "validation" {^plan record/origin/plan ^warnings plan/warnings ^errors plan/errors}))))
+  (if (== id "") (return records))
+  (let selected [])
+  (for record in records
+    (for item in record/entries
+      (if_yes (== item/id id)
+        (let row (data_copy record))
+        (row .put "entry" item)
+        (row .delete "entries")
+        (selected .push row)
+        (break))))
+  selected)
+
+(fn plugin_history_page [workspace : Workspace, id : Str = "", ^limit limit : Int = 50, ^before before = nil]
+  (let records (composition_history ^limit limit ^before before workspace))
+  (let history (plugin_history ^limit limit ^before before workspace id))
+  (var next nil)
+  (if_yes (&& (== records/.size limit) (> records/.size 0))
+    (let index (- records/.size 1))
+    (let last records/%index)
+    (if (> last/revision 0) (set next last/revision)))
+  {^revision (composition_revision workspace) ^history history ^next_before next})
+
+(fn verify_stored_entry [workspace : Workspace, saved]
+  (require_open workspace)
+  (validate_entry saved (fresh_map))
+  (if (|| (== saved/builtin true) ($absent? saved/module_digest))
+    (fail (CompositionError ^message "revert requires a stored plugin version; use restore for a built-in default")))
+  (if (!= saved/interfaces workspace/interfaces)
+    (fail (CompositionError ^message "historical plugin interfaces do not match this host")))
+  # Verify inert source bytes without loading or invoking the historical code.
+  (for digest in saved/closure
+    (digest_hex digest)
+    (let key $"blob/${digest}")
+    (if_not (workspace/blob_store .Store:has? key)
+      (fail (CompositionError ^message $"historical plugin blob is missing: ${digest}")))
+    (let source (workspace/blob_store .Store:get key))
+    (if (|| (!= ($head source) Str) (!= $"sha256:${(sha256 source)}" digest))
+      (fail (CompositionError ^message $"historical plugin blob digest mismatch: ${digest}")))
+    (let path (ensure_module_blob workspace digest))
+    (if (!= $"sha256:${(sha256 (read_text path))}" digest)
+      (fail (CompositionError ^message $"historical plugin blob digest mismatch: ${digest}"))))
+  saved)
+
+(fn prepare_reversion [workspace : Workspace, id : Str, revision : Int]
+  (let saved (history_entry workspace/store workspace/history_head/.get id revision))
+  (verify_stored_entry workspace saved)
+  (let current (composition_entries workspace))
+  (let index (find_entry_index current id))
+  (saved .put "disabled" (if (== index -1) false (== current/%index/disabled true)))
+  (if_not ($absent? (workspace/profile_plugins/.get .get id))
+    (saved .put "replaces_builtin" true))
+  saved)
+
+(fn check_reversion_base [workspace : Workspace, expected : Int]
+  (let actual (composition_revision workspace))
+  (if (!= expected actual)
+    (fail (CompositionConflict ^code "stale_composition" ^expected expected ^actual actual
+      ^message $"composition changed: expected revision ${expected}, current ${actual}; inspect history again"))))
+
+(fn revert_entry [workspace : Workspace, id : Str, revision : Int, ^expected expected = nil]
+  (let base (?? expected (composition_revision workspace)))
+  (check_reversion_base workspace base)
+  (let saved (prepare_reversion workspace id revision))
+  (check_reversion_base workspace base)
+  (let origin {^kind "offline" ^operation "revert" ^plugin id ^source_revision revision})
+  (saved .put "origin" origin)
+  (let next (entries_with (composition_entries workspace) saved true))
+  (let committed (commit_composition ^origin origin workspace next))
+  (composition_history_result workspace {^plugin id ^status "unverified" ^operation "revert"})
+  {^id id ^revision committed ^source_revision revision ^status "unverified"})
+
+(fn revert_plugin [workspace : Workspace, h : Harness, id : Str, revision : Int, ^expected expected = nil]
+  (let context ($runtime/context))
+  (let base (?? expected (composition_revision workspace)))
+  (check_reversion_base workspace base)
+  (let saved (prepare_reversion workspace id revision))
+  (let origin (change_origin h "revert" id))
+  (origin .put "source_revision" revision)
+  (saved .put "origin" origin)
+  (let descriptor (if (entry_enabled? saved) (load_entry_descriptor workspace h saved) nil))
+  (let apply (fn []
+    (run_composition_change h/snapshots (fn []
+      (check_reversion_base workspace base)
+      (let previous (previous_module_digest (composition_entries workspace) id))
+      (let committed (commit_composition ^origin origin workspace
+        (entries_with (composition_entries workspace) saved true)))
+      (var status "disabled")
+      (try
+        (if (entry_enabled? saved)
+          (do
+            (register_descriptor_events h descriptor)
+            (set status (activate_descriptor workspace h descriptor saved))
+            (if (== status "error")
+              (record_quarantine workspace id (plugin_error h id))
+              (workspace/errors/.get .delete id)))
+          (do
+            (if_not ($absent? (h/plugins/.get .get id)) (uninstall h id))
+            (workspace/errors/.get .delete id)))
+      catch Any
+        (set status "error")
+        (record_quarantine workspace id $err/message))
+      (record_composition_change h id previous saved/module_digest committed
+        (if ($absent? origin/turn) "direct" ($to_str origin/turn)) "reverted")
+      (flush_harness h)
+      (update_active_revision workspace h)
+      (record_application_result workspace h
+        {^plugin id ^status status ^message (?? (workspace/errors/.get .get id) nil)})
+      {^id id ^revision committed ^source_revision revision ^digest saved/module_digest ^status status}))))
+  (if (&& (! ($absent? context/turn)) (== context/turn/state/.get "open"))
+    (do
+      (queue_composition_change h/snapshots {^id id ^kind "revert" ^apply apply})
+      {^id id ^source_revision revision ^status "queued"})
+    (apply)))
 
 (fn close_workspace [workspace : Workspace]
   (if workspace/closed/.get (return))

@@ -67,6 +67,7 @@ proc usage() =
   echo "  gene run [--log-config path] [--package-root dir] [--debug]"
   echo "           [--report_tail_fallbacks]"
   echo "           [--errors-mode dynamic|warn|strict]"
+  echo "           [--snapshot] execute captured package sources with build provenance"
   echo "           <file.gene> [--] [args...]     execute a file and call main"
   echo "  gene runurl <https-url> [args...]  (experimental) run a remote entry module;"
   echo "                              relative imports resolve against the module's URL"
@@ -187,6 +188,7 @@ type RunCli = object
   offline: bool
   preferBinary: bool
   sourceOnly: bool
+  snapshot: bool
   rebuild: bool
   explain: bool
   jobs: int
@@ -238,6 +240,7 @@ proc parseRunCli(label = "run", pathNoun = "a file path",
     of "--offline": result.offline = true
     of "--prefer_binary": result.preferBinary = true
     of "--source": result.sourceOnly = true
+    of "--snapshot": result.snapshot = true
     of "--rebuild": result.rebuild = true
     of "--explain": result.explain = true
     of "--release": release = true
@@ -409,6 +412,8 @@ proc applicationForEntry(absPath, packageRootOverride: string): Application =
   result = newApplication(root)
   result.requireEntryWithinPackage(absPath)
 
+proc projectBuildEngine(): BuildEngine
+
 proc cmdRun(path: string, args: openArray[string] = [],
             packageRootOverride = "", options = RunCli()) =
   if not fileExists(path):
@@ -417,8 +422,17 @@ proc cmdRun(path: string, args: openArray[string] = [],
   var app: Application = nil
   var replScope: Scope = nil
   try:
-    let absPath = normalizedPath(absolutePath(path))
+    var absPath = normalizedPath(absolutePath(path))
+    let runtimeDigest = if options.snapshot: runningRuntimeDigest() else: ""
     app = applicationForEntry(absPath, packageRootOverride)
+    if options.snapshot:
+      let originalRoot = app.packageRoot()
+      let entry = relativePath(absPath, originalRoot)
+      let graph = projectBuildEngine().snapshotSources(app.materializedGraph())
+      let provenance = executionProvenance(graph, entry, runtimeDigest = runtimeDigest)
+      app = newApplication(graph)
+      app.setExecutionProvenance(provenance, originalRoot)
+      absPath = app.packageRoot() / entry
     if options.errorsMode.len > 0: app.setErrorCheckingMode(options.errorsMode)
     reportPipelineWarnings(app.compileFileModule(absPath))
     let entryModule = app.loadFileModule(absPath)
@@ -453,6 +467,8 @@ proc cmdRun(path: string, args: openArray[string] = [],
 
 proc cmdRunUrl(url: string, args: openArray[string] = [],
                packageRootOverride = "", options = RunCli()) =
+  if options.snapshot:
+    raise newException(ValueError, "--snapshot requires a local package entry")
   ## Experimental URL entry (design §15.9): run a remote module graph. URL
   ## sources are enabled only for this entry; `gene run` never fetches, and
   ## package resolution never fetches for either entry. A URL entry has no
@@ -854,6 +870,7 @@ proc selectedApplication(pkg: Package, name: string): ApplicationTarget =
     "package has no application target named " & name)
 
 proc cmdProjectRun(options: RunCli) =
+  let runtimeDigest = runningRuntimeDigest()
   let start =
     if options.packageRoot.len > 0: options.packageRoot else: getCurrentDir()
   var reportingScope: Scope
@@ -877,6 +894,8 @@ proc cmdProjectRun(options: RunCli) =
     let executionGraph = built.executionGraph
     let executionPackage = executionGraph.packagesById[pkg.id]
     let app = newApplication(executionGraph, executionPackage.root)
+    app.setExecutionProvenance(
+      executionProvenance(executionGraph, application.entry, built.artifacts, runtimeDigest), pkg.root)
     reportingScope = newGlobalScope(app)
     for artifact in built.artifacts:
       for resource in artifact.resources:
@@ -1018,6 +1037,8 @@ proc cmdProjectTest(options: ProjectBuildCli) =
       let executionGraph = built.executionGraph
       let executionPackage = executionGraph.packagesById[pkg.id]
       let app = newApplication(executionGraph, executionPackage.root)
+      app.setExecutionProvenance(
+        executionProvenance(executionGraph, relative, built.artifacts), pkg.root)
       reportingScope = newGlobalScope(app)
       for artifact in built.artifacts:
         for resource in artifact.resources:

@@ -24,6 +24,29 @@ proc appendTestU64(bytes: var string, value: uint64) =
     bytes.add char((value shr shift) and 0xff'u64)
 
 suite "package manager — format 1 workspace graph":
+  test "recursive file exclusions preserve selection while pruning subtrees":
+    let root = packageTestRoot("recursive_exclusions")
+    writePackageFile(root / "package.gene", """
+{^format 1 ^name "acme/app" ^version "1.0.0"
+ ^files {^include ["**"] ^exclude ["**/tmp/**" "scratch"]}
+ ^library {^entry "src/main.gene"}}
+""")
+    writePackageFile(root / "src/main.gene", "(var selected 1)")
+    writePackageFile(root / "scratch/keep.gene", "(var retained 2)")
+    let pkg = loadPackageAt(root, poEntry)
+    let before = sourceTreeDigest(pkg)
+    let stamp = sourceTreeStamp(pkg)
+    for relative in ["tmp/deep/ignored.gene", "src/tmp/ignored.gene",
+                     ".gene/cache/ignored.gene", ".git/objects/ignored"]:
+      writePackageFile(root / relative, "excluded source")
+    check sourceTreeDigest(pkg) == before
+    check sourceTreeStamp(pkg) == stamp
+    let bytes = sourceTreeBytes(pkg)
+    check "scratch/keep.gene" in bytes
+    check "excluded source" notin bytes
+    writePackageFile(root / "scratch/keep.gene", "(var retained 3)")
+    check sourceTreeDigest(pkg) != before
+
   test "package paths use pinned Unicode 15.1 NFC and full case folding":
     check unicodeNfc151("e\u0301") == "\u00E9"
     check unicodeNfc151("\u1100\u1161") == "\uAC00"

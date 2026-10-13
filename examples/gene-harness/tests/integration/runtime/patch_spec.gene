@@ -125,7 +125,7 @@
         ($fs/make_dir workspace)
         (let root ($fs/real_path workspace))
         (let child ($os/exec_async ($os/executable_path)
-          "run" (fixture_path "patch_crash_process") root ^timeout_ms 40000))
+          "run" "--snapshot" (fixture_path "patch_crash_process") root ^timeout_ms 40000))
         (try
           (let marker ($path/join root "owner-pid"))
           (let deadline (+ ($os/monotonic_ms) 30000))

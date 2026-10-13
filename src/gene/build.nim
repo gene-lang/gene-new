@@ -166,11 +166,14 @@ proc newBuildEngine*(environment: BuildEnvironment): BuildEngine =
     effective.sourceSnapshotter = defaultSourceSnapshot
   BuildEngine(environment: effective)
 
+proc runningRuntimeDigest*(): string =
+  "sha256:" & sha256File(getAppFilename())
+
 proc runningCompilerIdentity*(): string =
   ## The executable is the compiler boundary in Phase 1. Hashing its exact
   ## bytes covers Gene compiler changes, linked runtime changes, build flags,
   ## and the artifact ABI; NimVersion alone covers none of those.
-  "gene-phase1/abi-1/sha256:" & sha256File(getAppFilename())
+  "gene-phase1/abi-1/" & runningRuntimeDigest()
 
 proc valueList(values: seq[string]): Value =
   var items: seq[Value]
@@ -780,6 +783,84 @@ proc localGraph(graph: MaterializedGraph,
                     packagesById: graph.packagesById,
                     includeDevelopment: graph.includeDevelopment,
                     includeBuild: graph.includeBuild)
+
+proc snapshotSources*(engine: BuildEngine,
+                      graph: MaterializedGraph): MaterializedGraph =
+  ## Source execution uses the same authenticated snapshots as built targets.
+  ## This is explicit: ordinary `run file.gene` retains its editable-source
+  ## behavior, including its existing this_mod/.path contract.
+  if graph.packagesById[graph.activePackageId].kind != pkRegular:
+    raiseBuild(becRequestInvalid, "source snapshots require a package.gene manifest")
+  let root = engine.environment.artifactStore.root
+  createDir(root)
+  engine.snapshotGraph(graph, root, graph.activePackageId)
+
+proc executionProvenance*(graph: MaterializedGraph, entry: string,
+                          artifacts: seq[BuildArtifact] = @[],
+                          runtimeDigest = ""): Value =
+  ## Location-independent identity over already captured inputs. Never hash a
+  ## working tree here: callers must supply the graph they actually execute.
+  var keys = initTable[string, string]()
+  var pending = @[(id: graph.activePackageId, route: newSeq[string]())]
+  var position = 0
+  while position < pending.len:
+    let item = pending[position]
+    inc position
+    if keys.hasKey(item.id): continue
+    if not graph.packagesById.hasKey(item.id):
+      raiseBuild(becRequestInvalid, "execution provenance has an incomplete dependency graph")
+    # Logical alias routes distinguish equal source resolved against different
+    # dependencies, without embedding location-derived resolver package IDs.
+    keys[item.id] = canonicalDigest(valueList(item.route))
+    for alias in graph.dependencyAliases(item.id):
+      pending.add (graph.packagesById[item.id].dependencyEdges[alias], item.route & @[alias])
+  var nodes = initTable[string, Value]()
+  for id, pkg in graph.packagesById:
+    if not keys.hasKey(id): continue
+    if pkg.treeDigest.len == 0:
+      raiseBuild(becRequestInvalid, "execution provenance requires captured source digests")
+    var fields = initPropTable()
+    fields["name"] = newStr(pkg.name)
+    fields["version"] = newStr(pkg.version)
+    fields["source_digest"] = newStr(pkg.treeDigest)
+    fields["features"] = valueList(pkg.selectedFeatures.sorted())
+    let identity = newMap(fields)
+    nodes[id] = identity
+  var ordered: seq[tuple[key: string, value: Value]]
+  for id, pkg in graph.packagesById:
+    if not keys.hasKey(id): continue
+    var fields = nodes[id].mapEntries
+    fields["key"] = newStr(keys[id])
+    var edges: seq[Value]
+    for alias in graph.dependencyAliases(id):
+      let target = pkg.dependencyEdges[alias]
+      if not keys.hasKey(target):
+        raiseBuild(becRequestInvalid, "execution provenance has an incomplete dependency graph")
+      var edge = initPropTable()
+      edge["alias"] = newStr(alias)
+      edge["package"] = newStr(keys[target])
+      edges.add newMap(edge)
+    fields["dependencies"] = newList(edges)
+    var products: seq[string]
+    for artifact in artifacts:
+      if artifact.packageId == id: products.add artifact.artifactDigest
+    fields["artifacts"] = valueList(products.sorted())
+    let node = newMap(fields)
+    ordered.add (canonicalDigest(node), node)
+  ordered.sort(proc(a, b: tuple[key: string, value: Value]): int = cmp(a.key, b.key))
+  var packages: seq[Value]
+  for item in ordered: packages.add item.value
+  var inputs = initPropTable()
+  inputs["root"] = newStr(keys[graph.activePackageId])
+  inputs["entry"] = newStr(entry.replace('\\', '/'))
+  inputs["packages"] = newList(packages)
+  var record = initPropTable()
+  record["format"] = newInt(1)
+  record["runtime_digest"] = newStr(
+    if runtimeDigest.len > 0: runtimeDigest
+    else: runningRuntimeDigest())
+  record["host_inputs"] = newMap(inputs)
+  newMap(record)
 
 proc entryChunk(artifact: ExecutableGir): Chunk =
   for compiled in artifact.modules:

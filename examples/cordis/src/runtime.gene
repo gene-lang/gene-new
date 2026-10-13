@@ -178,8 +178,9 @@
 (type Loader ^props {^token Any}
   (message reconcile [manifest, mode = nil]
     (loader_reconcile self manifest mode))
-  (message reconcile_plugins [manifest, plugins]
-    (loader_reconcile_plugins self manifest plugins))
+  (message reconcile_plugins [manifest, plugins, ^strict strict : Bool = false,
+                              ^pending pending : Bool = false, ^accept accept = nil, ^commit commit = nil]
+    (loader_reconcile_plugins ^strict strict ^pending pending ^accept accept ^commit commit self manifest plugins))
   (message reload [changed_paths]
     (loader_reload self changed_paths))
   (message inspect []
@@ -2714,13 +2715,17 @@
   candidate)
 
 (fn discard_candidate_runtime [candidate] ^^private
+  (let errors [])
   (if_not (absent? candidate)
     (try
       (runtime_close (Runtime ^token candidate/token))
     catch Any
-      nil)
+      (errors .push $err/message))
+    (for diagnostic in candidate/diagnostics/.get
+      (if (== diagnostic/kind "cleanup_failed")
+        (errors .push $"${diagnostic/plugin}: ${diagnostic/message}")))
     (runtime_records .set (without_token runtime_records/.get candidate/token)))
-  nil)
+  errors)
 
 (fn staged_candidate_source [old_entries, row, transaction, loader, force_ids, host_plugins] ^^private
   (var host_plugin (host_plugins .get row/id))
@@ -3170,7 +3175,8 @@
     (if (== (staged_entries .get id) void) (changed .push id)))
   changed)
 
-(fn loader_reconcile_staged ^^private [loader, manifest, rows, force_ids = #[], host_plugins = nil]
+(fn loader_reconcile_staged ^^private [loader, manifest, rows, force_ids = #[], host_plugins = nil,
+  ^strict strict : Bool = false, ^pending pending : Bool = false, ^accept accept = nil, ^commit commit = nil]
   (var admitted (if (absent? host_plugins) loader/host_plugins/.get host_plugins))
   (var old_entries (copy_map loader/entries/.get))
   (var old_order (copy_list loader/order/.get))
@@ -3186,6 +3192,7 @@
   (var staged nil)
   (var ticket nil)
   (var prepared false)
+  (var modules_committed false)
   (try
     (if_not (absent? loader/options/publication)
       (set ticket loader/options/publication/.PublicationParticipant:prepare)
@@ -3198,23 +3205,33 @@
     (staged .put "direct_revisions"
       (build_direct_candidate_revisions candidate direct_roots))
     (staged .put "direct_replaced" replaced_direct)
-    (require_candidate_active candidate loader/options/allow_pending
-      loader/options/allow_failed)
+    (require_candidate_active candidate (if strict pending loader/options/allow_pending)
+      (if strict false loader/options/allow_failed))
+    (if_not (absent? accept) (accept))
     transaction/.commit
+    (set modules_committed true)
+    # The host's durable commit follows module acceptance and precedes public
+    # runtime indexes. A failed host commit disposes only the candidate.
+    (if_not (absent? commit) (commit))
   catch Any
     (var failure $err)
-    (discard_candidate_runtime candidate)
-    transaction/.discard
+    (let cleanup_errors (discard_candidate_runtime candidate))
+    (if modules_committed
+      (for generation in staged/prepared_generations
+        (try generation/.release catch Any (cleanup_errors .push $err/message)))
+      (try transaction/.discard catch Any (cleanup_errors .push $err/message)))
     (if prepared (loader/options/publication .PublicationParticipant:abort ticket))
     (cordis_failure CompositionError
-      "staged composition rejected before publication" failure))
+      (if cleanup_errors/.empty? "staged composition rejected before publication"
+        $"staged composition rejected; candidate cleanup failed: ${cleanup_errors}") failure))
   (var changed (staged_changed_ids old_entries staged/entries))
   # Gene publishes every prepared module graph first; the following Cordis
   # table replacement is a non-yielding turn containing no plugin call.
   (publish_staged_runtime loader candidate staged old_entries old_order manifest)
   (loader_snapshot loader "staged" ($freeze changed)))
 
-(fn loader_reconcile_plugins ^^private [handle : Loader, manifest, plugins]
+(fn loader_reconcile_plugins ^^private [handle : Loader, manifest, plugins,
+  ^strict strict : Bool = false, ^pending pending : Bool = false, ^accept accept = nil, ^commit commit = nil]
   ($runtime/require_root_lane)
   (var loader (loader_record handle))
   (if_not (== loader/state/.get "open")
@@ -3240,9 +3257,11 @@
   # A publication participant swaps host state for a whole candidate, so it
   # needs staged reconciliation. Without one, entries reconcile individually:
   # unchanged plugins stay live and a failed activation affects only its entry.
-  (if (&& (absent? loader/options/publication) (absent? loader/options/retirement))
+  (if (&& (! strict) (absent? accept) (absent? commit)
+          (absent? loader/options/publication) (absent? loader/options/retirement))
     (loader_reconcile_incremental loader manifest rows admitted)
-    (loader_reconcile_staged loader manifest rows #[] admitted)))
+    (loader_reconcile_staged ^strict strict ^pending pending ^accept accept ^commit commit
+      loader manifest rows #[] admitted)))
 
 (fn loader_reconcile [handle : Loader, manifest, mode] ^^private
   (var loader (loader_record handle))

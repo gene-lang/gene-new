@@ -2,12 +2,15 @@
 (import ^from "../plugin_api" [Plugin PluginHost])
 (import ^from "../runtime/composition" [current_snapshot])
 (import ^from "../storage/workspace"
-  [register_plugin set_plugin_enabled restore_plugin])
+  [register_plugin set_plugin_enabled restore_plugin plugin_history plugin_history_page revert_plugin])
 (import ^from "./documentation" [contribute_doc])
 
 (fn plugin_admin [] : Plugin
   (Plugin ^id "plugin_admin"
-    ^provides [["functions" "register_plugin"] ["docs" "harness/plugins"]]
+    ^provides [["functions" "register_plugin"] ["functions" "plugin_states"]
+      ["functions" "inspect_plugin"] ["functions" "enable_plugin"] ["functions" "disable_plugin"]
+      ["functions" "restore_plugin"] ["functions" "plugin_history"] ["functions" "revert_plugin"]
+      ["docs" "harness/plugins"] ["docs" "harness/plugin_manager"]]
     ^activate (fn [host]
       (let h host/h)
       (host .PluginHost:contribute "functions"
@@ -44,6 +47,21 @@
         {^name "restore_plugin" ^doc "Restore a built-in plugin to its profile default."
          ^tags ["plugins" "restore"] ^docs ["harness/plugins"]
          ^fn (fn [id : Str] (restore_plugin h/workspace h id))})
+      (host .PluginHost:contribute "functions"
+        {^name "plugin_history" ^doc "Inspect archived composition revisions or one plugin's stored versions."
+         ^tags ["plugins" "history" "revert"] ^docs ["harness/plugins"]
+         ^fn (fn [id : Str = "", ^limit limit : Int = 50, ^before before = nil, ^page page : Bool = false]
+           (if page
+             (plugin_history_page ^limit limit ^before before h/workspace id)
+             (plugin_history ^limit limit ^before before h/workspace id)))})
+      (host .PluginHost:contribute "functions"
+        {^name "revert_plugin" ^doc "Revert to a retained plugin entry, preserving application data and enabled state."
+         ^tags ["plugins" "history" "revert"] ^docs ["harness/plugins"]
+         ^fn (fn [id : Str, revision : Int, ^expected expected = nil]
+           (revert_plugin ^expected expected h/workspace h id revision))})
+      (contribute_doc host "harness/plugin_manager"
+        "Review plugin capabilities, validate batches, revert versions, and repair startup."
+        "examples/gene-harness/docs/plugin-manager-guide.md" ^tags ["plugins" "manager" "recovery" "history" "revert"])
       (contribute_doc host "harness/plugins"
         "Author self-describing plugins; publication, restricted imports, inert declarations and lifecycle."
         "examples/gene-harness/docs/plugins.md" ^tags ["plugins" "register" "publish" "discovery" "dependencies" "modules"]))))

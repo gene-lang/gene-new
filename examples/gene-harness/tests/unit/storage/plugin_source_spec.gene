@@ -1,0 +1,16 @@
+(import $test [describe it])
+(import ^from "../../../src/storage/workspace" [canonical_module_source])
+
+(describe
+  "Canonical plugin sources"
+  (it
+    "ignores reader locations while preserving authored metadata and frozen syntax"
+    []
+    (let located
+      (quote
+        (mod helper @source "response" @line 5 @col 2 @note "retain"
+          (fn value [] @source "response" @line 6 @col 4
+            #{^nested #[(quote x @line 7 @col 9)]}))))
+    (let plain (quote (mod helper @note "retain" (fn value [] #{^nested #[(quote x)]}))))
+    ($assert (== (canonical_module_source ^!require_init located) ($to_str plain)))
+    ($assert (== (($meta located) .get "line") 5) "normalization mutated its input")))

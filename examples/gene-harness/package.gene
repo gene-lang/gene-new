@@ -2,10 +2,14 @@
  ^name "gene/harness"
  ^description "A living plugin harness: seams, an effect ledger, and atomic activation"
  ^version "0.1.0"
+ ^files {^include ["package.gene" "README.md" "src/**" "client/**" "docs/**"
+                   "tests/**" "website/**" "experiments/**" "bin/**"]
+         ^exclude ["**/.gene-harness/**" "**/tmp/**"]}
  ^applications [
    (application "harness" ^entry "src/main.gene")
  ]
  ^dependencies {
+   ^gene_reference (dep "gene/reference" "0.1.0" ^path "../../tools/gene-lang-skill")
    ^cordis (dep "genex/cordis" "0.1.0" ^path "../cordis")
    ^computer (dep "genex/computer" "0.1.0" ^path "../../src/genex/computer")
    ^documents (dep "genex/documents" "0.1.0" ^path "../../src/genex/documents")}}

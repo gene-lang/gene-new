@@ -1,16 +1,16 @@
 {
   ^lock_format 1
-  ^root_manifest_digest "sha256:1edd059df4b1812062dd8b34cd60f936755910e587f0cb2303055fcd7a524071"
+  ^root_manifest_digest "sha256:2cb48d7dfc2c847c2be017cbbcac9c393b62cd63713f1f877f5f7de7cc88b9ea"
   ^workspace_digest "sha256:fc2162cc3f53253d71cefe2b0b1aff86e38baedf5c3e230b17d47d035a38ca06"
   ^registry_snapshots [
   ]
-  ^roots [ "workspace:genex/cordis@0.1.0#sha256:ab25eece1c53d179d98fa95a687df393b7cac53a9f6d7ee97d454d10ee75ea7f"]
+  ^roots [ "workspace:genex/cordis@0.1.0#sha256:59bf0c36448341e641af54b018059a4489b7b91d18610d23ed2b78282ad7ff86"]
   ^packages [
     (locked_package
-      ^id "workspace:genex/cordis@0.1.0#sha256:ab25eece1c53d179d98fa95a687df393b7cac53a9f6d7ee97d454d10ee75ea7f"
+      ^id "workspace:genex/cordis@0.1.0#sha256:59bf0c36448341e641af54b018059a4489b7b91d18610d23ed2b78282ad7ff86"
       ^name "genex/cordis"
       ^version "0.1.0"
-      ^manifest_digest "sha256:1edd059df4b1812062dd8b34cd60f936755910e587f0cb2303055fcd7a524071"
+      ^manifest_digest "sha256:2cb48d7dfc2c847c2be017cbbcac9c393b62cd63713f1f877f5f7de7cc88b9ea"
       ^source (workspace ^path ".")
       ^features []
       ^dependencies {
