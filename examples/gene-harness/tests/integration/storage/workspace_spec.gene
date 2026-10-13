@@ -422,4 +422,43 @@
         ensure
           (close_runtime runtime))))))
 
+(describe "Content-addressed plugin dependencies"
+  (it "preserves escaped regex quotes through publication and restart" []
+    (isolated this_mod/.path "preserves escaped regex quotes through publication and restart"
+      (fn [workspace]
+        (let profile (Profile ^name "test" ^plugins []))
+        (let runtime (open_runtime workspace "default" profile))
+        (let root runtime/root)
+        (let response "(Outcome ^^done ^reply (quote_text \"say \\\"hi\\\"\"))")
+        (try
+          (let dependency
+            (quote (mod quoted_dependency
+              (fn escape_quotes [text] ($regex/replace_all #"\"" text "\"\"")))))
+          (let canonical ($to_str dependency))
+          ($assert (== ($to_str ($read_one canonical)) canonical)
+            "dependency source is not stable across printing and reading")
+          (let path ($to_str "./" ($crypto/sha256 canonical) ".gene"))
+          (let plugin
+            `(mod plugin
+              (import ^from "src/plugin_api.gene" [Plugin PluginHost])
+              (import ^from %path [escape_quotes])
+              (fn init [descriptor]
+                (Plugin ^id "quoted_dependency"
+                  ^activate (fn [host]
+                    (host .PluginHost:contribute "functions"
+                      {^name "quote_text" ^doc "Escape CSV quotes." ^fn escape_quotes}))))))
+          (let result (register_plugin ^dependencies [dependency]
+            runtime/workspace runtime/h "quoted_dependency" plugin))
+          ($assert (== result/status "ready") ($to_str result))
+          (let evaluated (evaluate_harness_turn runtime/h 1 root response))
+          ($assert (== evaluated/validated/outcome/reply "say \"\"hi\"\"")
+            ($to_str evaluated/error))
+        ensure (close_runtime runtime))
+        (let reopened (open_runtime root "default" profile))
+        (try
+          (let restored (evaluate_harness_turn reopened/h 2 root response))
+          ($assert (== restored/validated/outcome/reply "say \"\"hi\"\"")
+            ($to_str restored/error))
+        ensure (close_runtime reopened))))))
+
 (fn main [args] : Int (run_spec args))

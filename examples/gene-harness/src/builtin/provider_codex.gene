@@ -4,6 +4,7 @@
 (import ^from "../kernel" [HarnessError])
 (import ^from "./provider_common" [nonempty configure_model http_json_attempt])
 (import [responses_content] ^from "../agents/content")
+(import [byte_prefix] ^from "../text")
 
 (fn auth_file []
   (let explicit (nonempty ($os/env? "CODEX_AUTH_FILE")))
@@ -58,6 +59,19 @@
     (fail (HarnessError ^message "codex returned no output text")))
   text)
 
+(fn stream_failure_message [event]
+  (let details [])
+  (for candidate in [event/error event/response/error event/response/incomplete_details event]
+    (if (== ($head candidate) Str)
+      (if_not (== candidate "") (details .push candidate)))
+    (if (== ($head candidate) Map)
+      (for key in ["code" "message" "reason"]
+        (let value (candidate .get key))
+        (if (&& (== ($head value) Str) (!= value "") (! (details .contains? value)))
+          (details .push value)))))
+  ($to_str $"codex stream failed (${event/type})"
+    (if details/.empty? "" ($to_str ": " (byte_prefix ($str/join details "; ") 1024)))))
+
 (fn codex_event [data : Str, items]
   (if (|| (== data "") (== data "[DONE]")) (return nil))
   (let event
@@ -66,7 +80,7 @@
         (fail (HarnessError ^message "codex returned an invalid stream event"))))
   (if (|| (== event/type "error") (== event/type "response.failed")
           (== event/type "response.incomplete"))
-    (fail (HarnessError ^message $"codex stream failed (${event/type})")))
+    (fail (HarnessError ^message (stream_failure_message event))))
   (if (== event/type "response.output_item.done") (items .push event/item))
   (if (|| (== event/type "response.completed") (== event/type "response.done"))
     (then

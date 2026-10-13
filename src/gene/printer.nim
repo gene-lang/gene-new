@@ -53,11 +53,16 @@ proc printBytes(data: string): string =
 
 proc printRegex(pattern, flags: string): string =
   result = "#\""
+  var escaped = false
   for ch in pattern:
-    if ch == '"':
+    # The regex reader retains escape pairs verbatim. Escaping an already
+    # escaped quote again makes its preceding slash run even, so it closes
+    # the literal when generated source is read back.
+    if ch == '"' and not escaped:
       result.add "\\\""
     else:
       result.add ch
+    escaped = ch == '\\' and not escaped
   result.add '"'
   result.add flags
 

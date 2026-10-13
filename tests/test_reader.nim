@@ -124,6 +124,23 @@ suite "reader — atoms and containers":
     check quoted.kind == vkRegex
     check quoted.regexPattern == "hello\\\"Gene"
     check_read("#\"\"\"^\\s*(\\w+)\\s*$\"\"\"", "#\"^\\s*(\\w+)\\s*$\"")
+  test "regex printing preserves escaped quotes and stable module source":
+    for slashCount in [1, 3, 5]:
+      let pattern = repeat("\\", slashCount) & "\"quoted"
+      let source = "#\"" & pattern & "\"im"
+      let original = read(source)
+      check original.regexPattern == pattern
+      let printed = original.print()
+      check printed == source
+      check read(printed).regexPattern == pattern
+      check read(printed).regexFlags == original.regexFlags
+      check read(printed).print() == printed
+      let formatted = formatSource(source)
+      check read(formatted).regexPattern == pattern
+      check formatSource(formatted) == formatted
+    let source = "(mod dependency (fn quoted [] #\"\\\"\"))"
+    let canonical = read(source).print()
+    check read(canonical).print() == canonical
   test "general map":
     check_read("{{\"a\" : 1 2 : \"b\"}}", "{{\"a\" : 1 2 : \"b\"}}")
 

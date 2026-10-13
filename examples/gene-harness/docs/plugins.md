@@ -50,6 +50,42 @@ exercise the action functions and verify the browser interactions as needed.
 
 ## Contributions
 
+### Package a helper module
+
+Each dependency is one quoted `mod` form, just like the root plugin; it may use
+its own module name and does not need `init`. Hash the canonical `$to_str` of
+the exact dependency node passed to `register_plugin`. Its import path is
+`./<64-character SHA-256 hex>.gene`. Hashing the original source file's bytes
+does not produce that path, because the reader expands source shorthand.
+
+```gene
+(let dependency
+  (quote (mod numbers
+    (fn double [value] (* value 2)))))
+(let import_path ($to_str "./" ($crypto/sha256 ($to_str dependency)) ".gene"))
+(let plugin
+  `(mod plugin
+    (import ^from "src/plugin_api.gene" [Plugin PluginHost])
+    (import ^from %import_path [double])
+    (fn init [descriptor]
+      (Plugin ^id "double_numbers"
+        ^activate (fn [host]
+          (host .PluginHost:contribute "functions"
+            {^name "double_number" ^doc "Double a number." ^fn double}))))))
+(register_plugin "double_numbers" plugin ^dependencies [dependency])
+```
+
+For source already written as one module, use
+`($read_one ($fs/read_text "numbers.gene"))` to obtain the dependency node.
+An ordinary file with `(mod numbers)` followed by separate declarations must
+first be packaged into one `mod` node containing those declarations. Supply
+the full dependency closure; imports between helpers use the same digest-path
+rule. Source imports remain restricted to the shared API and supplied closure.
+Persist human-editable source and publication tooling alongside the app so a
+new digest can be derived and imported after each edit.
+
+### Registry rows
+
 Activation receives a `PluginHost`. Each row it contributes is owned by that
 plugin and is removed when the activation unloads. Common rows are:
 

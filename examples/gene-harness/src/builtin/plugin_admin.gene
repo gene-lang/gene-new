@@ -46,4 +46,4 @@
          ^fn (fn [id : Str] (restore_plugin h/workspace h id))})
       (contribute_doc host "harness/plugins"
         "Author self-describing plugins; publication, restricted imports, inert declarations and lifecycle."
-        "examples/gene-harness/docs/plugins.md" ^tags ["plugins" "register" "publish" "discovery"]))))
+        "examples/gene-harness/docs/plugins.md" ^tags ["plugins" "register" "publish" "discovery" "dependencies" "modules"]))))

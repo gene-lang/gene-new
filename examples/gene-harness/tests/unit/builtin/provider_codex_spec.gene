@@ -82,6 +82,37 @@
                         ^role "assistant"
                         ^content [{^type "output_text" ^text text}]}]})))))
 
+(describe "Codex stream diagnostics"
+  (it "retains provider failure reasons without dumping the event" []
+    (for sample in [
+        {^event {^type "error" ^code "rate_limit_exceeded" ^message "Try later." ^private "hidden"}
+         ^detail "rate_limit_exceeded; Try later."}
+        {^event {^type "response.failed" ^response {^error {^code "server_error" ^message "Retry this request."} ^output "hidden"}}
+         ^detail "server_error; Retry this request."}
+        {^event {^type "response.incomplete" ^response {^incomplete_details {^reason "max_output_tokens"}}}
+         ^detail "max_output_tokens"}]
+      (let message
+        (try
+          (codex_stream_text ($to_str "data: " ($json/stringify sample/event) "\n\n"))
+          "did not reject failed stream"
+        catch Any $err/message))
+      ($assert ($str/contains? message sample/detail) message)
+      ($assert (! ($str/contains? message "hidden")) message)))
+
+  (it "bounds long provider errors and handles failures without details" []
+    (let parts [])
+    (repeat 2000 (parts .push "🙂"))
+    (let event {^type "error" ^error {^message ($str/join parts "")}})
+    (let message
+      (try (codex_stream_text ($to_str "data: " ($json/stringify event))) ""
+        catch Any $err/message))
+    ($assert (<= ($str/byte_size message) 1100))
+    ($assert ($str/contains? message "🙂"))
+    (assert_equal
+      (try (codex_stream_text "data: {\"type\":\"error\"}\n\n") ""
+        catch Any $err/message)
+      "codex stream failed (error)")))
+
 (fn main [args] : Int
   (let result (run ^name (?? args/0 "")))
   result/exit_code)
