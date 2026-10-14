@@ -55,9 +55,11 @@ cleanup measurements. Application sampling profiles must rank P1 work before
 microbenchmark changes are selected; the harness replay selection and a
 Miclone meshing pass are the initial application targets.
 
-For the native service path, `bin/gene run examples/gene-harness/probes/performance.gene
+For the native service path, `bin/gene run --snapshot examples/gene-harness/probes/performance.gene
 tmp/harness-profile 100` runs real service/turn/patch work against a deterministic
 provider and asserts that every patch was applied. Use a new workspace each run.
+Harness history requires captured host inputs, so the probe must run with
+`--snapshot`; the Harness package includes `probes/**` for that reason.
 Workload version 2 uses the supported scripted profile and checks completed
 round receipts and exact file contents. It is not directly comparable with the
 October 4 callback-based capture; compare runtime binaries on the same current
@@ -78,7 +80,8 @@ GENE_BENCH_SAMPLES=3 bin/gene run benchmarks/run_harness.gene tmp/harness-compar
 The runner alternates binary order, excludes one warmup per binary, and uses a
 fresh workspace for every 100-turn run. It preserves raw output, executable
 hashes, version/build information, source diff, result checksums, service timing
-and whole-process timing distributions. Keep builds and profiling out of the
+and whole-process timing distributions. Snapshot capture and startup fall in
+the whole-process time only. Keep builds and profiling out of the
 measurement window. The workspaces stay under the output directory for inspection;
 only logs and summaries belong in a checked-in baseline.
 

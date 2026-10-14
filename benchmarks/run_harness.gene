@@ -43,7 +43,9 @@
       (let index (// (+ slot round) ($size variants)))
       (let variant variants/%index)
       (let started ($os/monotonic_ms))
-      (let process (capture variant/executable ["run"
+      # Harness history requires captured host inputs, so the probe runs as a
+      # snapshot; capture time is in the process wall time, not the service time.
+      (let process (capture variant/executable ["run" "--snapshot"
         "examples/gene-harness/probes/performance.gene"
         $"${output}/workspaces/${index}-${round}" "100"]))
       (let wall (- ($os/monotonic_ms) started))
