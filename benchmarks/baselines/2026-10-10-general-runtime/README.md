@@ -11,7 +11,7 @@ The final runtime reduces scope allocation, temporary pattern-binding tables,
 reference-count churn during read-only lookup, and copying in graph-retention
 checks. Source syntax, execution budgets, construction/authority checks, and
 tail-call eligibility rules are preserved. See the
-[implementation and investigation notes](../../../docs/proposals/general-runtime-optimization.md).
+[implementation and investigation notes](../../../docs/reports/general-runtime-optimization.md).
 
 Six measured fresh processes per executable, one excluded warmup, rotating
 order, 5,000 input items per batch, and 300 ms calibration per workload:

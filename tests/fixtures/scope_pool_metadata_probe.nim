@@ -1,4 +1,4 @@
-## Diagnostic for docs/proposals/scope-pool-reset-investigation.md.
+## Diagnostic for docs/reports/scope-pool-reset-investigation.md.
 ## Reports observations and asserts that both pool acquisition paths reset metadata.
 ## Run from the repository root with --path:src and a writable GENE_USER_PACKAGES.
 import gene/[compiler, types, vm]

@@ -80,6 +80,7 @@ logs/
 out/
 *.out
 reports/
+!docs/reports/
 coverage/
 .cache/
 .claude/

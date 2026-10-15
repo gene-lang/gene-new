@@ -267,6 +267,9 @@ properties); an empty value removes it. Typed function fields can be called
 through paths, such as `(controller/send payload)`, with the callee evaluated
 before the argument expressions.
 
+Files the user selects, drops, or pastes are available through `$files`; see
+[browser-selected files](profiles/browser-files.md).
+
 The alternative is the wasm VM. `nimble wasm` requires Emscripten and builds
 the runtime for the browser. Choose it when you need the evaluator and broader
 VM semantics; host facilities still depend on what the embedding provides.

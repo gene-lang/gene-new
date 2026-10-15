@@ -2,7 +2,7 @@
 
 Runtime baseline: `1e3f539` (the tree after the 2026-10-10 pass and its review
 follow-ups). Optimized runtime: the working tree described in
-[the implementation notes](../../../docs/proposals/general-runtime-optimization.md#second-pass-2026-10-11).
+[the implementation notes](../../../docs/reports/general-runtime-optimization.md#second-pass-2026-10-11).
 Host: macOS arm64, Nim 2.2.4, portable release, ORC, bounds and overflow
 checks enabled. Python counterpart: Python 3.14.
 

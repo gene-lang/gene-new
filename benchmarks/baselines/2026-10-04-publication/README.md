@@ -2,7 +2,7 @@
 
 This capture follows `69fc074` (publication traversal) and `60768a8` (harness
 runner qualification). The implementation ledger is
-[`docs/proposals/optimization.md`](../../../docs/proposals/optimization.md).
+[`docs/reports/optimization.md`](../../../docs/reports/optimization.md).
 Host: macOS arm64, Nim 2.2.4, Apple clang 21, ORC, portable release with bounds
 and overflow checks. No assessment build or profile overlapped the timings.
 This is a shared workstation; substantial background OS activity was observed.
