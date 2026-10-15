@@ -12,6 +12,7 @@ tests/*
 !tests/wasm_browser.html
 !tests/test_owned_http_client.py
 !tests/test_genex_package.py
+!tests/test_genex_native_module.py
 !tests/test_genex_toolchain.py
 !tests/test_genex_libuv_timer.py
 !tests/test_genex_tzdb.py
@@ -21,6 +22,7 @@ tests/*
 !tests/test_tls_adapter.py
 !tests/test_genex_tls_package.py
 !tests/test_registry_https.py
+!tests/test_registry_service.py
 !tests/transpile/
 !tests/transpile/**
 # Hand-written Gene programs the test suites load as entry modules. They are
@@ -40,9 +42,6 @@ benchmarks/bench_pipeline
 # Built by `nimble wasm`; see web/README.md.
 web/gene.js
 web/gene.wasm
-
-training/corpus/
-training/checkpoints/
 
 .agents/
 
@@ -90,8 +89,6 @@ tmp/
 archive/
 !src/genex/archive/
 !src/genex/archive/**
-examples/ai_agent/logs/
-examples/ai_agent/home/
 *.vsix
 skills-lock.json
 nimble.develop

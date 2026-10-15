@@ -32,7 +32,7 @@
   ($fs/write_text ($path/join out "source.diff") changes/stdout)
   (let listed ($os/exec "git" "ls-files" "--cached" "--others" "--exclude-standard" "--"
     "src/gene" "src/gene.nim" "config.nims" "tests/fixtures"
-    "examples/cordis" "examples/gene-harness" "examples/imagination"
+    "examples/cordis" "examples/gene-harness"
     "tools/verify_scheduler.gene" ^dir root ^max_bytes 16777216))
   ($assert (&& (== listed/status 0) (! listed/truncated)) "cannot enumerate source files")
   (let manifest [])
@@ -61,7 +61,7 @@
   (if (words .contains? "--proofs")
     (cases .push {^name "proofs" ^dir root ^args ["test" "tests/fixtures/frozen_graph_proofs.gene"]}))
   (if applications
-    (for [name directory] in [["harness" "examples/gene-harness"] ["cordis" "examples/cordis"] ["imagination" "examples/imagination"]]
+    (for [name directory] in [["harness" "examples/gene-harness"] ["cordis" "examples/cordis"]]
       (cases .push {^name name ^dir ($path/join root directory) ^args ["test"]})))
   (let results [])
   (for quantum in quanta
