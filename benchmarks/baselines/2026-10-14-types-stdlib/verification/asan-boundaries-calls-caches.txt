@@ -1,0 +1,95 @@
+
+[Suite] VM — scope ownership and reuse
+
+[Suite] VM — proper tail calls
+
+[Suite] compiler — GIR emission
+
+[Suite] module references
+
+[Suite] gir — disassembly
+
+[Suite] vm — literals and self-evaluation
+
+[Suite] vm — strings and interpolation
+
+[Suite] vm — quasiquote templates
+
+[Suite] vm — macros
+
+[Suite] vm — arithmetic
+
+[Suite] vm — comparison and logic
+
+[Suite] vm — special forms
+
+[Suite] vm — functions and closures
+
+[Suite] vm — optimized typed boundaries
+  [OK] scalar definitions and stores retain their contracts for every spelling
+  [OK] Any keeps object identity and authored function annotations
+  [OK] refinements aliases optional types and Cell adaptation stay checked
+  [OK] parameter and assignment failures keep their complete diagnostics
+  [OK] return labels survive bytecode calls and native callbacks
+  [OK] lazy parameter labels preserve stream guidance
+  [OK] field labels keep their declaring type and index
+
+[Suite] vm — fused stdlib paths
+  [OK] static paths fuse while dynamic message and special paths keep their forms
+  [OK] one chunk respects separate module roots and host-local shadowing
+  [OK] member and intermediate namespace replacement invalidate borrowed entries
+  [OK] slot writes and missing names remain visible
+  [OK] non-namespace members and missing-call argument errors keep ordinary traversal
+  [OK] fused and expanded loads charge identical evaluation steps
+  [OK] GIR roundtrips extra cache layout and rejects corrupt offsets
+  [OK] a loop of fused loads still yields for cancellation and cleanup
+
+[Suite] vm — scalar call binding
+  [OK] compiler admits only the supported calling shapes
+  [OK] GIR retains and validates the scalar binding proof
+  [OK] captured parameter setters keep the activation contract
+  [OK] host scope access sees parameter names and enforces typed updates
+  [OK] direct outer computed spread and callback calls share scalar checks
+  [OK] pooled scalar and Any calls do not retain another call's contract
+
+[Suite] vm — plain native dispatch
+  [OK] zero local outer computed and variadic calls keep returned heap values
+  [OK] arity errors leave the stack usable and named calls keep their validation
+  [OK] plain natives can reenter Gene callbacks
+  [OK] plain-native bridges preserve timer suspension and frame requests
+
+[Suite] vm — named arguments
+
+[Suite] vm — rest parameters
+
+[Suite] vm — optional and default parameters
+
+[Suite] vm — Paths
+
+[Suite] vm — dynamic Paths
+
+[Suite] vm — node projection built-ins
+
+[Suite] vm — functional Path updates
+
+[Suite] vm — container update built-ins
+
+[Suite] vm — entrypoint support
+
+[Suite] vm — namespaces
+
+[Suite] vm — env and eval
+
+[Suite] vm — cells
+
+[Suite] vm — atomic cells
+
+[Suite] vm — channels
+
+[Suite] vm — cooperative scheduler
+
+[Suite] vm — actors
+
+[Suite] vm — streams
+
+[Suite] vm — printer view of callables

@@ -1,0 +1,98 @@
+
+[Suite] rc — macro compilation
+  [OK] runtime macro closures and saved environments release their invocations
+  [OK] an Env outliving its caller code retains macros and releases its phase
+  [OK] a helper outliving its caller code releases its phase after the final use
+  [OK] discarded expansions release their compile-time applications
+  [OK] definition module cycles retire after expansion
+  [OK] embedded helper values release after their compiled code is discarded
+  [OK] emitted helper values retain their definition environment
+
+[Suite] rc — closures and scopes (geneRcStats)
+  [OK] reused for activations release their values on normal and abrupt exits
+  [OK] a directly stored Path releases its held-message scope
+  [OK] a returned child-scope Path exposes the existing parent cycle limit
+  [OK] abandoned owned pointers retire before their borrowed FFI image
+  [OK] returned local types retain and release their declaration scopes
+  [OK] Self contracts and declaration assemblies release their receiver identities
+  [OK] scalar program leaks nothing (measurement sanity)
+  [OK] strict message proof signatures do not retain their owning scope
+  [OK] inferred returned-callable proofs release their source scopes
+  [OK] returned protocol messages retain and release their binding scope
+  [OK] selected core witnesses keep escaped code and release it with the Type
+  [OK] io helper Tasks release protocol captures after structured settlement
+  [OK] closed native test I/O resources release their Task and handle roots
+  [OK] closed worker-backed file readers release handles and Tasks
+  [OK] closed worker-backed file writers release copied buffers
+  [OK] closed pipe endpoints release both descriptor handles
+  [OK] subprocess stdout releases its duplicated pipe descriptor
+  [OK] subprocess stdout and stderr release both duplicated writers
+  [OK] subprocess stdin and stdout release borrowed pipe endpoints
+  [OK] CSV reader releases its source and parser state after close
+  [OK] TCP listener and duplex streams release native handles
+  [OK] owned HTTP Client retires its multi service after close
+  [OK] completed custom AsyncReader calls release their admission roots
+  [OK] released error witnesses reclaim their formatter environments
+  [OK] $runtime/gc_stats exposes live managed count
+  [OK] test-only collection runs at the root-lane safe point
+  [OK] transient anonymous closures are reclaimed
+  [OK] scope-owned named functions are reclaimed
+  [OK] escaped named functions release their scope once only it holds them
+  [OK] released bound calls reclaim captures arguments and policy metadata
+  [OK] checked callable views reclaim targets and invocation scopes
+  [OK] prepared pipeline captures are released on close and exhaustion
+  [OK] filesystem walk releases retained frames after early close
+  [OK] packed and generic buffer backing values are reclaimed
+  [OK] proper tail transfers reclaim frames scopes and trace windows
+  [OK] tail fallback retains no more than the equivalent non-tail closure
+  [OK] module reference targets and structural fixups are reclaimed
+  [OK] self-referential closures stored in their scope are reclaimed
+  [OK] eval overlays without escaping functions are reclaimed
+  [OK] protocol-typed cells do not retain their annotation scope
+  [OK] eval named functions are reclaimed when the result does not escape
+  [OK] this toolchain supports released-generation retirement
+  [OK] compiling numeric and dynamic paths releases partial spelling lists
+  [OK] isolated host retirement discovers nested eval Type cycles
+  [OK] isolated host retirement preserves externally held Types
+  [OK] reloaded module roots retire once nothing reaches them
+  [OK] a value retained from a reloaded module keeps it usable until dropped
+  [OK] a function escaping eval into its caller is reclaimed
+  [OK] an escaped eval function the caller keeps stays callable
+  [OK] mutable captures that later hold their closure retire with the activation
+  [OK] retained mutable captures keep their object identity and remain callable
+  [OK] child-scope closure cycles retire when their activation ends
+  [OK] a pooled call scope a closure came to hold retires like an unpooled one
+  [OK] a returned value closing a closure cycle retires once released
+  [OK] values kept from retiring closure cycles stay callable
+  [OK] deep tail recursion binding loop closures stays flat
+  [OK] released sandbox generations retire their module cycles
+  [OK] discarded and failed sandbox preparations retire their module cycles
+  [OK] a retained generator keeps yielding after its generation is released
+  [OK] a retained value keeps its released generation usable until dropped
+  [OK] container elements finish their destructors while an exception unwinds
+  [OK] a value destroyed while an exception unwinds is fully released
+  [OK] borrowed caller environments and snapshots are reclaimed
+  [OK] namespace and stream values are reclaimed when they do not capture functions
+  [OK] impls are globally retained, not reclaimed with their scope (design §10)
+  [OK] returned named functions keep their defining scope alive
+  [OK] returned containers strengthen contained functions
+  [OK] returned buffers strengthen contained functions
+  [OK] returned Env values strengthen contained functions
+  [OK] returned lazy streams keep mapper scopes alive
+  [OK] returned typed lazy streams keep wrapped mapper scopes alive
+  [OK] returned generator streams keep their defining scope alive
+  [OK] returned completed tasks keep result scopes alive
+  [OK] returned channels keep buffered values alive
+  [OK] returned actors keep handler scopes alive
+
+[Suite] rc — mutable-object cycles (geneRcStats)
+  [OK] control: acyclic cell mutation does not grow the heap
+  [OK] a self-referential cell is reclaimed
+  [OK] a two-cell cycle is reclaimed
+  [OK] an Env binding closure cycle is reclaimed
+  [OK] an Env extend binding closure cycle is reclaimed
+
+[Suite] rc — published values (geneRcStats)
+  [OK] data published by a spawn is counted and freed like any other
+  [OK] published nodes and nested containers are freed after use
+  [OK] typed instances captured by a spawn that stays on its lane are reclaimed

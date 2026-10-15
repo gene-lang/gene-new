@@ -763,6 +763,10 @@ var gBareScalarAnnotations: seq[tuple[id: int32, kind: ValueKind]]
   ## safe — never at module init, which crashes the wasm build. Symbol ids are
   ## process-wide, so a second `Application` finds the table already filled.
 
+var gAnyAnnotationId = -1'i32
+  ## Bare Any has no check or adaptation. -1 cannot match an interned symbol
+  ## before the built-in surface has initialized the id.
+
 var gRefinementTypes: HashSet[uint64]
   ## Identities of the fixed-width numeric types — `I8`..`U64`, `F32`, `F64`.
   ##
@@ -864,6 +868,37 @@ proc isBuiltinSurfaceType(v: Value): bool =
   ## only be a user declaration; now it usually is not.
   v.kind == vkType and gBuiltinSurfaceTypes.contains(v.bits)
 
+type
+  BoundaryLabelKind = enum
+    blkText, blkParameter, blkRestParameter, blkSet, blkReturn,
+    blkField, blkBodyField, blkPattern, blkBacking, blkPayload,
+    blkCallableArgument, blkCallableNamed, blkSuffix, blkIndexedSuffix
+  BoundaryLabel = object
+    ## Labels are rendered only when a boundary fails. Nested adapters borrow
+    ## the enclosing call's label; none of these pointers escapes adaptBoundary.
+    kind: BoundaryLabelKind
+    text {.cursor.}: string
+    owner {.cursor.}: string
+    parent: ptr BoundaryLabel
+    index: int
+
+proc renderBoundary(label: BoundaryLabel): string =
+  case label.kind
+  of blkText: label.text
+  of blkParameter: "parameter '" & label.text & "'"
+  of blkRestParameter: "rest parameter '" & label.text & "'"
+  of blkSet: "set '" & label.text & "'"
+  of blkReturn: "return from '" & label.text & "'"
+  of blkField: "field '" & label.text & "' for " & label.owner
+  of blkBodyField: "body field " & $label.index & " for " & label.owner
+  of blkPattern: "pattern '" & label.text & "'"
+  of blkBacking: "backing for " & label.owner & "/" & label.text
+  of blkPayload: "payload " & $label.index & " for " & label.owner & "/" & label.text
+  of blkCallableArgument: "Callable argument " & $label.index
+  of blkCallableNamed: "Callable named argument '" & label.text & "'"
+  of blkSuffix: renderBoundary(label.parent[]) & label.text
+  of blkIndexedSuffix: renderBoundary(label.parent[]) & label.text & $label.index
+
 proc raiseTypeError*(where, expected: string, value: Value, scope: Scope,
                     hint = "")
 proc raiseCallKindError(where, expected, actual: string, value: Value,
@@ -885,7 +920,30 @@ proc registerAotModuleRequirements*(path: string,
                                     reqs: sink seq[AotTypeRequirement]):
     AotModuleRequirements {.discardable.}
 proc ensureAotModuleValid*(module: AotModuleRequirements): string
-proc adaptBoundary(where: string, typeExpr, value: Value, scope: Scope): Value
+proc adaptBoundary(where: BoundaryLabel, typeExpr, value: Value, scope: Scope): Value
+proc bareScalarSatisfied*(typeExpr, value: Value): bool {.inline.}
+
+proc adaptBoundary(where: string, typeExpr, value: Value, scope: Scope): Value {.inline.} =
+  ## This wrapper owns the string argument's lifetime through adaptation. Do
+  ## not return a borrowed description from a converter: a computed argument
+  ## could otherwise be destroyed before the outer boundary call starts.
+  let label = BoundaryLabel(kind: blkText, text: where)
+  adaptBoundary(label, typeExpr, value, scope)
+
+proc adaptNamedBoundary(kind: BoundaryLabelKind, name: string,
+                        typeExpr, value: Value, scope: Scope,
+                        owner = "", index = 0): Value {.inline.} =
+  let label = BoundaryLabel(kind: kind, text: name, owner: owner, index: index)
+  adaptBoundary(label, typeExpr, value, scope)
+
+proc adaptFieldBoundary(owner, name: string, typeExpr, value: Value,
+                        scope: Scope): Value {.inline.} =
+  adaptNamedBoundary(blkField, name, typeExpr, value, scope, owner)
+
+proc adaptBodyFieldBoundary(owner: string, index: int, typeExpr, value: Value,
+                            scope: Scope): Value {.inline.} =
+  adaptNamedBoundary(blkBodyField, "", typeExpr, value, scope, owner, index)
+
 proc validateCallableSignature(signature: Value, scope: Scope): Value
 proc adaptCallableView(signature, target: Value, scope: Scope): Value
 proc checkedCallableArguments(payload: Value): Value
@@ -1838,9 +1896,9 @@ proc typeBindingScope(binding: TypeBinding): Scope {.inline.} =
 
 proc assignmentValue(scope: Scope, name: string, v: Value,
                      binding: TypeBinding): Value =
-  if binding.hasTypeBinding:
+  if binding.hasTypeBinding and not bareScalarSatisfied(binding.expr, v):
     let bindingScope = binding.typeBindingScope
-    adaptBoundary("set '" & name & "'", binding.expr, v,
+    adaptNamedBoundary(blkSet, name, binding.expr, v,
                   if bindingScope == nil: scope else: bindingScope)
   else:
     v
@@ -2350,39 +2408,32 @@ proc isBareIntType(expr: Value): bool {.inline.} =
   expr.kind == vkSymbol and expr.symVal == "Int"
 
 proc bareScalarSatisfied*(typeExpr, value: Value): bool {.inline.} =
-  ## True when `typeExpr` is a bare built-in scalar annotation that `value`
-  ## already satisfies, so the typed boundary has nothing to do.
-  ##
-  ## The general path is expensive in a way that only shows up in a loop. It
-  ## builds its `parameter 'x'` label by string concatenation *before* checking
-  ## anything — one heap allocation per typed parameter per call, for a message
-  ## used only on failure — and then reaches its answer through roughly ten
-  ## string comparisons in `matchesTypeExpr`. Measured on a one-argument
-  ## function: 183 ns/call untyped, 430 ns with `[x : F64]`, 557 ns with
-  ## `[x : F64] : F64`. The annotations cost twice the call they annotate.
-  ##
-  ## `Int` already had this fast path open-coded at a dozen call sites; this
-  ## generalizes it to the rest of the exact-kind scalars rather than adding a
-  ## second mechanism beside it.
-  ##
-  ## **Only exact-kind names belong here.** Every entry must agree with
-  ## `matchesBuiltinType`, and the list is deliberately a subset of it: the
-  ## refinement types (`I8`..`U64`, `F32`) carry range checks and the container
-  ## and nominal types can convert, so they stay on the general path. The
-  ## asymmetry is what makes this safe — a name omitted here merely takes the
-  ## slow path, while a name wrongly added here would skip a real check.
-  ## Dispatch is on the symbol's interned **id**, not its text. Reading
-  ## `symVal` indexes a global name table and then compares strings, which
-  ## measured ~70 ns per check — most of what this fast path was meant to
-  ## remove. An id is already in the value's payload bits, so the whole check
-  ## becomes a handful of integer comparisons over a table this short.
+  ## A satisfied exact-kind scalar, or bare Any, needs no boundary work.
+  ## Any is deliberately separate from the exact-kind table: it accepts every
+  ## value and neither closes a scoped annotation nor adapts the value.
+  ## Refinements (I8..U64/F32), aliases, containers, protocols and Self retain
+  ## the general checker. Omitting a name only costs speed; admitting an
+  ## adapting or context-dependent annotation here would change semantics.
+  ## Interned ids avoid reading/copying annotation text on the success path.
   if typeExpr.kind != vkSymbol:
     return false
   let id = typeExpr.symbolId
+  if id == gAnyAnnotationId:
+    return true
   for entry in gBareScalarAnnotations:
     if entry.id == id:
       return value.kind == entry.kind
   false
+
+proc checkedDefinitionValue(label: string, annotation, value: Value,
+                             scope: Scope): Value {.noinline.} =
+  ## Keep the scalar test outside the large computed-goto dispatch function.
+  ## Its extra branches should not change register pressure/code layout for
+  ## untyped loops, which never execute opCheckType.
+  if bareScalarSatisfied(annotation, value):
+    value
+  else:
+    adaptBoundary(label, annotation, value, scope)
 
 proc isBareNilType(expr: Value): bool {.inline.} =
   ## A declared `: Nil` return, as opposed to `NIL` meaning "no declared type".
@@ -6723,8 +6774,8 @@ proc validateTypedNodeParts(typ: Value, props: var PropTable,
     if props.tryGetById(f.nameId, stored):
       let fieldScope = f.typeFieldScope(fallbackScope)
       props.putById(f.nameId,
-                    adaptBoundary("field '" & f.name & "' for " & typeName,
-                                  f.typeExpr, stored, fieldScope))
+                    adaptFieldBoundary(typeName, f.name,
+                                       f.typeExpr, stored, fieldScope))
     elif not f.optional:
       case mode
       of tnvmMutation:
@@ -6764,7 +6815,7 @@ proc validateTypedNodeParts(typ: Value, props: var PropTable,
         prefix & $bodyFields.len & " body item(s), got " & $bodyLen)
     for i, f in bodyFields:
       let fieldScope = f.typeBodyFieldScope(fallbackScope)
-      body[i] = adaptBoundary("body field " & $i & " for " & typeName,
+      body[i] = adaptBodyFieldBoundary(typeName, i,
                               f.typeExpr, body[i], fieldScope)
   else:
     if bodyLen < restBody:
@@ -6776,12 +6827,12 @@ proc validateTypedNodeParts(typ: Value, props: var PropTable,
     for i in 0 ..< restBody:
       let f = bodyFields[i]
       let fieldScope = f.typeBodyFieldScope(fallbackScope)
-      body[i] = adaptBoundary("body field " & $i & " for " & typeName,
+      body[i] = adaptBodyFieldBoundary(typeName, i,
                               f.typeExpr, body[i], fieldScope)
     let restType = bodyFields[restBody]
     let fieldScope = restType.typeBodyFieldScope(fallbackScope)
     for i in restBody ..< bodyLen:
-      body[i] = adaptBoundary("body field " & $i & " for " & typeName,
+      body[i] = adaptBodyFieldBoundary(typeName, i,
                               restType.typeExpr, body[i], fieldScope)
 
 proc validatePatchedModuleRefValue(value: Value, root: Scope,
@@ -7474,9 +7525,8 @@ proc setCheckedNodeProp(node: Value, key: string, value: Value): Value =
           "cannot remove required field '" & key & "' from " & typ.typeName)
       node.setNodeProp(key, value)
       return value
-    let adapted = adaptBoundary("field '" & key & "' for " & typ.typeName,
-                                field.typeExpr, value,
-                                field.typeFieldScope(typ.typeScope))
+    let adapted = adaptFieldBoundary(typ.typeName, key, field.typeExpr, value,
+                                     field.typeFieldScope(typ.typeScope))
     node.setNodeProp(key, adapted)
     return adapted
 
@@ -9815,6 +9865,7 @@ proc buildBuiltins(app: Application): Scope =
                     ("Sym", vkSymbol), ("Symbol", vkSymbol),
                     ("Char", vkChar)]:
         gBareScalarAnnotations.add (newSym(entry[0]).symbolId, entry[1])
+      gAnyAnnotationId = newSym("Any").symbolId
   let deviceScope = newScope(result)
   deviceScope.define("buffer", builtinNativeCallFn("device/buffer", biDeviceBuffer,
                                                acceptsNamed = false))
@@ -11612,8 +11663,7 @@ proc tryMatch(pat, target: Value, scope: Scope,
         return false
       if pat.head.symVal != "_":
         binds[pat.head.symVal] =
-          adaptBoundary("pattern '" & pat.head.symVal & "'",
-                        pat.body[1], target, scope)
+          adaptNamedBoundary(blkPattern, pat.head.symVal, pat.body[1], target, scope)
       return true
     if pat.head.kind == vkSymbol:
       case pat.head.symVal
@@ -12214,7 +12264,7 @@ proc bindRequiredNamedCallScope(callee: Value, proto: FunctionProto,
         proto.paramTypes[i].kind != vkNil:
       declaredType = proto.paramTypes[i]
       if not (bareScalarSatisfied(declaredType, value)):
-        value = adaptBoundary("parameter '" & proto.params[i] & "'",
+        value = adaptNamedBoundary(blkParameter, proto.params[i],
                               declaredType, value, result)
     result.defineFreshCallSlot(proto.positionalSlots[i], value)
     if declaredType.kind != vkNil:
@@ -12227,7 +12277,7 @@ proc bindRequiredNamedCallScope(callee: Value, proto: FunctionProto,
     if proto.hasNamedParamTypes and p.typeExpr.kind != vkNil:
       declaredType = p.typeExpr
       if not (bareScalarSatisfied(declaredType, value)):
-        value = adaptBoundary("parameter '" & p.local & "'", declaredType,
+        value = adaptNamedBoundary(blkParameter, p.local, declaredType,
                               value, result)
     result.defineFreshCallSlot(proto.namedSlots[i], value)
     if declaredType.kind != vkNil:
@@ -12272,7 +12322,7 @@ proc bindRequiredNamedCallScope(callee: Value, proto: FunctionProto,
         proto.paramTypes[i].kind != vkNil:
       declaredType = proto.paramTypes[i]
       if not (bareScalarSatisfied(declaredType, value)):
-        value = adaptBoundary("parameter '" & proto.params[i] & "'",
+        value = adaptNamedBoundary(blkParameter, proto.params[i],
                               declaredType, value, result)
     result.defineFreshCallSlot(proto.positionalSlots[i], value)
     if declaredType.kind != vkNil:
@@ -12285,7 +12335,7 @@ proc bindRequiredNamedCallScope(callee: Value, proto: FunctionProto,
     if proto.hasNamedParamTypes and p.typeExpr.kind != vkNil:
       declaredType = p.typeExpr
       if not (bareScalarSatisfied(declaredType, value)):
-        value = adaptBoundary("parameter '" & p.local & "'", declaredType,
+        value = adaptNamedBoundary(blkParameter, p.local, declaredType,
                               value, result)
     result.defineFreshCallSlot(proto.namedSlots[i], value)
     if declaredType.kind != vkNil:
@@ -12393,7 +12443,7 @@ proc releaseCallScope(scope: Scope) =
   releaseCallScope(gVmPools, scope)
 
 const plainLoopBodyOps = {
-  opNoop, opPushConst, opPop, opNot, opLoadName, opLoadNativeFast, opLoadLocal,
+  opNoop, opPushConst, opPop, opNot, opLoadName, opLoadStdlibPath, opLoadNativeFast, opLoadLocal,
   opLoadLocalFast, opLoadOuterLocal, opDefineLocal, opRedefineLocal,
   opSetLocal, opSetOuterLocal, opMakeList, opMakeListSplice, opMakeMap,
   opMakeHashMap, opMakeNode, opMakeSelector, opApplySelector,
@@ -12753,6 +12803,7 @@ proc normalizeOptionalParameters(original: FunctionProto, scope: Scope): Functio
   result.simpleCall = false
   result.fastBindUnaryInt = false
   result.fastBindPositionalInt = false
+  result.fastBindPositionalScalars = false
   result.fastBindRequiredNamed = false
   result.needsCallScope = true
   result.nativeOp = ncoNone
@@ -14476,7 +14527,7 @@ proc chunkCapturesSendable(chunk: Chunk, fnScope, visibleScope: Scope,
     of opSetOuterLocal:
       if inst.depth > localDepth:
         return false
-    of opLoadName, opLoadNativeFast, opCallName0, opCallName1, opCallNameN:
+    of opLoadName, opLoadStdlibPath, opLoadNativeFast, opCallName0, opCallName1, opCallNameN:
       if not namedCaptureSendable(fnScope, visibleScope, inst.name, seen,
                                   ignoredNames, mode):
         return false
@@ -14674,7 +14725,7 @@ proc collectSpawnCaptures(chunk: Chunk, localDepth: int,
         opCallParentLocal1, opCallOuterLocal1:
       if inst.depth > localDepth:
         captures.addCaptureSlot(inst.depth - localDepth, inst.intArg, inst.name)
-    of opLoadName, opLoadNativeFast, opCallName0, opCallName1, opCallNameN:
+    of opLoadName, opLoadStdlibPath, opLoadNativeFast, opCallName0, opCallName1, opCallNameN:
       captures.addCaptureName(inst.name, ignoredNames)
     else:
       discard
@@ -16526,7 +16577,7 @@ when dispatchCacheEnabled:
     # Read-admission calls are temporary wrappers, not registry-owned code.
     if site < 0 or callee.isIoReadCall:
       return
-    if chunk.dispatchCache.len != chunk.instructions.len:
+    if chunk.dispatchCache.len < chunk.instructions.len:
       chunk.dispatchCache.setLen(chunk.instructions.len)
     chunk.dispatchCache[site] = DispatchCacheEntry(
       recvTypeBits: recvType.bits, msgBits: msgBits, epoch: epoch,
@@ -16609,7 +16660,7 @@ when dispatchCacheEnabled:
           outerStamp = outer.namesGen
         if not found:
           break resolve
-      if chunk.dispatchCache.len != chunk.instructions.len:
+      if chunk.dispatchCache.len < chunk.instructions.len:
         chunk.dispatchCache.setLen(chunk.instructions.len)
       chunk.dispatchCache[site] = DispatchCacheEntry(
         recvTypeBits: cast[uint64](cast[pointer](root)),
@@ -16697,7 +16748,7 @@ when dispatchCacheEnabled:
       nameStamps[i] = namespaceScope.namesGen
       slotStamps[i] = namespaceScope.slotsGen
       current = member
-    if chunk.dispatchCache.len != chunk.instructions.len:
+    if chunk.dispatchCache.len < chunk.instructions.len:
       chunk.dispatchCache.setLen(chunk.instructions.len)
     chunk.dispatchCache[site - 1] = DispatchCacheEntry(
       recvTypeBits: (if depth == 2: cast[uint64](scopes[1]) else: 0'u64),
@@ -16709,6 +16760,78 @@ when dispatchCacheEnabled:
     value = current
     true
 
+
+when dispatchCacheEnabled:
+  proc stdlibPathHit(chunk: Chunk, extra: int, targetBits: uint64,
+                      selector: Value, value: var Value): bool {.inline.} =
+    let count = selector.body.len
+    if extra < 0 or extra + count >= chunk.dispatchCache.len:
+      return false
+    let header = addr chunk.dispatchCache[extra]
+    if header.recvTypeBits != selector.bits or header.msgBits != targetBits:
+      return false
+    # Check ancestors before dereferencing each next borrowed Scope pointer.
+    # Unchanged parents still own the child whose address the cache remembers.
+    for i in 0 ..< count:
+      let guard = addr chunk.dispatchCache[extra + 1 + i]
+      if guard.recvTypeBits == 0: return false
+      let space {.cursor.} = cast[Scope](cast[pointer](guard.recvTypeBits))
+      if space.namesGen != guard.msgBits or space.slotsGen != guard.epoch:
+        return false
+    value = ownedValueFromBits(header.calleeBits)
+    true
+
+  proc selectStdlibMember(chunk: Chunk, extra: int, target, selector: Value,
+                           scope: Scope): Value =
+    if target.kind == vkNamespace:
+      if stdlibPathHit(chunk, extra, target.bits, selector, result):
+        return
+      block remember:
+        var guards: seq[DispatchCacheEntry]
+        var current = target
+        for segment in selector.body:
+          if current.kind != vkNamespace: break remember
+          let space {.cursor.} = current.borrowedNsScope
+          if space.namesGen == 0: break remember
+          let member = current.exportedBinding(segment.strVal)
+          if member.kind == vkVoid: break remember
+          guards.add DispatchCacheEntry(
+            recvTypeBits: cast[uint64](cast[pointer](space)),
+            msgBits: space.namesGen, epoch: space.slotsGen)
+          current = member
+        let needed = extra + 1 + guards.len
+        if chunk.dispatchCache.len < needed:
+          chunk.dispatchCache.setLen(needed)
+        for i, guard in guards:
+          chunk.dispatchCache[extra + 1 + i] = guard
+        chunk.dispatchCache[extra] = DispatchCacheEntry(
+          recvTypeBits: selector.bits, msgBits: target.bits,
+          calleeBits: current.bits)
+        return current
+    applySelector(selector, target, scope)
+
+  proc loadStdlibMember(chunk: Chunk, site, offset: int, selector: Value,
+                         scope: Scope): Value =
+    let extra = chunk.instructions.len + offset
+    var root {.cursor.} = scope
+    while root != nil and not root.moduleRoot:
+      # Source cannot bind gene, but an embedding native can. Preserve that
+      # dynamic scope behavior rather than assuming a fixed activation depth.
+      if root.vars.len != 0 or root.wildcardFallbacks.len != 0 or
+          root.slotIndex("gene") >= 0:
+        break
+      root = root.parent
+    if root != nil and root.moduleRoot and site < chunk.dispatchCache.len:
+      let entry = addr chunk.dispatchCache[site]
+      if entry.recvTypeBits == cast[uint64](cast[pointer](root)) and
+          entry.msgBits == root.namesGen and entry.msgBits != 0:
+        let outer {.cursor.} = root.parent
+        if entry.epoch == 0 or (outer != nil and outer.namesGen == entry.epoch):
+          if stdlibPathHit(chunk, extra, entry.calleeBits, selector, result):
+            return
+    let target = materializedModuleRefValue(scope,
+      scope.lookupThroughModuleRoot("gene", chunk, site))
+    selectStdlibMember(chunk, extra, target, selector, scope)
 
 proc appendSplicedBody(target: var seq[Value], value: Value) =
   case value.kind
@@ -18331,13 +18454,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         live: weakScopeLiveOnStack, ctx: addr liveFrames))
       if returnType.kind != vkNil:
         if not (bareScalarSatisfied(returnType, retValue)):
-          let label =
-            if returnLabel.len == 0 and curFnName.len > 0:
-              "return from '" & curFnName & "'"
-            else:
-              returnLabel
           try:
-            retValue = adaptBoundary(label, returnType, retValue, scope)
+            retValue =
+              if returnLabel.len == 0 and curFnName.len > 0:
+                adaptNamedBoundary(blkReturn, curFnName, returnType, retValue, scope)
+              else:
+                adaptBoundary(returnLabel, returnType, retValue, scope)
           except GeneError as error:
             annotateDefaultReturnFailure(error, chunk.owner, scope, frames)
             raise
@@ -18740,7 +18862,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               implProto.checkedFrameReturnType(bound.returnType)
             var lbl = ""
             if frameReturnType.kind != vkNil:
-              lbl = "return from '" & implFn.fnName & "'"
+              lbl = if implFn.fnName.len == 0: "return from ''" else: ""
             let nextErrorTypes =
               if implProto.checksErrors: implFn.fnErrorTypes else: @[]
             strunc(operandBase)
@@ -18777,7 +18899,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               targetProto.checkedFrameReturnType(bound.returnType)
             var lbl = ""
             if frameReturnType.kind != vkNil:
-              lbl = "return from '" & target.fnName & "'"
+              lbl = if target.fnName.len == 0: "return from ''" else: ""
             let nextErrorTypes =
               if targetProto.checksErrors: target.fnErrorTypes else: @[]
             strunc(operandBase)
@@ -18786,6 +18908,45 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               targetProto.frameNeedsImplValidation, frameReturnType, lbl,
               targetProto.checksErrors, nextErrorTypes, target.fnName,
               operandBase, tailMarked)
+
+  template tryPlainNative(calleeValue: Value, argsBegin, count, resultBase: int) =
+    ## A plain native has no Call envelope. Keep its operand owners until it
+    ## returns, and use exactly the normal call's frame/suspension handling.
+    ## The template continues the dispatch loop only when it handled the call.
+    if calleeValue.kind == vkNativeFn:
+      let implementation = calleeValue.nativeImpl
+      if implementation != nil:
+        let base = resultBase
+        var resultValue: Value
+        try:
+          if count == 0:
+            resultValue = implementation([])
+          elif count == 2:
+            let fast = tryFastNative2(calleeValue,
+              stack[argsBegin], stack[argsBegin + 1])
+            resultValue =
+              if fast.handled: fast.value
+              else: implementation(stack.toOpenArray(argsBegin, sp - 1))
+          else:
+            resultValue = implementation(stack.toOpenArray(argsBegin, sp - 1))
+        except NativeFrameRequest as request:
+          strunc(base)
+          enterBytecodeCall(request.chunk, request.scope, false, request.validateImpls,
+            NIL, "", false, @[], request.label, base, false)
+        except SuspendError as se:
+          if not se.timer or se.retry:
+            raise
+          if fiber == nil:
+            raise newException(GeneError, "internal: suspended outside a fiber")
+          strunc(base)
+          spush NIL
+          captureContinuation(ip)
+          fiber.waitTimer = true
+          fiber.waitDeadline = se.deadline
+          return RunStop(kind: rskSuspend, value: NIL)
+        strunc(base)
+        spush resultValue
+        continue
 
   template sliceMayEndHere(): bool =
     ## An exhausted slice runs on to the next point where work is about to
@@ -18844,6 +19005,32 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               scope.lookupThroughModuleRoot(inst[].name, chunk, ip - 1))
           else:
             spush materializedModuleRefValue(scope, scope.lookup(inst[].name))
+        of opLoadStdlibPath:
+          let selector {.cursor.} = chunk.constants[inst[].intArg]
+          if evalBudget == nil and instructionBudget <= 0:
+            when dispatchCacheEnabled:
+              spush loadStdlibMember(chunk, ip - 1, inst[].depth, selector, scope)
+            else:
+              let target = materializedModuleRefValue(scope, scope.lookup("gene"))
+              spush applySelector(selector, target, scope)
+          else:
+            # opLoadName has already been charged. Resolve it before charging
+            # the original push-constant and selector instructions, retaining
+            # both failure order and the original scheduler/evaluation cost.
+            let target =
+              when dispatchCacheEnabled:
+                materializedModuleRefValue(scope,
+                  scope.lookupThroughModuleRoot("gene", chunk, ip - 1))
+              else:
+                materializedModuleRefValue(scope, scope.lookup("gene"))
+            for _ in 0 ..< 2:
+              if instructionBudget > 0: dec remainingBudget
+              if evalBudget != nil: consumeEvalStep(evalBudget)
+            when dispatchCacheEnabled:
+              spush selectStdlibMember(chunk, chunk.instructions.len + inst[].depth,
+                target, selector, scope)
+            else:
+              spush applySelector(selector, target, scope)
         of opLoadNativeFast:
           spush scope.loadNativeFast(NativeFastKind(inst[].intArg), inst[].name)
         of opLoadLocal:
@@ -19446,9 +19633,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               if not variant.hasBacking:
                 raise newException(GeneError,
                   "backed enum variant requires a backing value: " & variant.name)
-              discard adaptBoundary("backing for " & proto.name & "/" &
-                                    variant.name, proto.backingType,
-                                    variant.backing, scope)
+              discard adaptNamedBoundary(blkBacking, variant.name,
+                proto.backingType, variant.backing, scope, proto.name)
               for existing in seenBacking:
                 if equal(existing, variant.backing):
                   raise newException(GeneError,
@@ -19716,6 +19902,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               scope.slots[slot]
             else:
               scope.loadSlot(slot, inst[].name)
+          tryPlainNative(callee, sp, 0, sp)
           if callee.kind == vkFunction:
             # Borrowed from `callee`, which this block holds: counted FunctionCode
             # and Scope copies cost an ORC cycle-candidate registration per call.
@@ -19769,7 +19956,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 let frameReturnType = proto.checkedFrameReturnType(bound.returnType)
                 var lbl = ""
                 if frameReturnType.kind != vkNil:
-                  lbl = "return from '" & callee.fnName & "'"
+                  lbl = if callee.fnName.len == 0: "return from ''" else: ""
                 let nextErrorTypes =
                   if proto.checksErrors: callee.fnErrorTypes else: @[]
                 enterBytecodeCall(proto.chunk, bound.scope,
@@ -19814,11 +20001,6 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           if sp < argCount:
             raise newException(GeneError, "VM stack underflow in direct call")
           let argsStart = sp - argCount
-          var callValuesMayCapture = false
-          for i in argsStart ..< sp:
-            if valueMayRetainScope(stack[i]):
-              callValuesMayCapture = true
-              break
           var callee =
             if inst[].op in {opCallName0, opCallName1, opCallNameN}:
               when dispatchCacheEnabled:
@@ -19857,6 +20039,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 outer.slots[slot]
               else:
                 scope.loadSlotAt(inst[].depth, slot, inst[].name)
+          tryPlainNative(callee, argsStart, argCount, argsStart)
+          var callValuesMayCapture = false
+          for i in argsStart ..< sp:
+            if valueMayRetainScope(stack[i]):
+              callValuesMayCapture = true
+              break
           if callee.kind == vkProtocolMessage and
               not callee.protocolMessageIsBound:
             # A *bound* message is applicable — that is decision 2. An unbound
@@ -19985,7 +20173,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 boundReturnType = proto.checkedFrameReturnType(boundReturnType)
                 var lbl = ""
                 if boundReturnType.kind != vkNil and not usedUnaryIntFast:
-                  lbl = "return from '" & callee.fnName & "'"
+                  lbl = if callee.fnName.len == 0: "return from ''" else: ""
                 let nextErrorTypes =
                   if proto.checksErrors: callee.fnErrorTypes else: @[]
                 enterBytecodeCall(proto.chunk, boundScope,
@@ -20334,12 +20522,14 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           if argsStart < 0 or argsStart < namedCount + 1:
             raise newException(GeneError, "VM stack underflow in call")
           let calleeIndex = argsStart - namedCount - 1
+          var callee = stack[calleeIndex]
+          if namedCount == 0:
+            tryPlainNative(callee, argsStart, argCount, calleeIndex)
           var callValuesMayCapture = false
           for i in calleeIndex + 1 ..< sp:
             if valueMayRetainScope(stack[i]):
               callValuesMayCapture = true
               break
-          var callee = stack[calleeIndex]
           # A message identity is not callable in head position (design §3):
           # qualified sends resolve their impl in opResolveQualifiedMessage, so a
           # message value reaching an ordinary call came from a dynamic value;
@@ -20463,7 +20653,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 strunc(calleeIndex)
                 var lbl = ""
                 if frameReturnType.kind != vkNil:
-                  lbl = "return from '" & callee.fnName & "'"
+                  lbl = if callee.fnName.len == 0: "return from ''" else: ""
                 let nextErrorTypes =
                   if proto.checksErrors: callee.fnErrorTypes else: @[]
                 enterBytecodeCall(proto.chunk, boundScope,
@@ -20684,7 +20874,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 strunc(calleeIndex)
                 var lbl = ""
                 if frameReturnType.kind != vkNil:
-                  lbl = "return from '" & callee.fnName & "'"
+                  lbl = if callee.fnName.len == 0: "return from ''" else: ""
                 let nextErrorTypes =
                   if fnProto.checksErrors: callee.fnErrorTypes else: @[]
                 enterBytecodeCall(fnProto.chunk, boundScope,
@@ -21854,8 +22044,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         of opCheckType:
           if sp == 0:
             raise newException(GeneError, "VM stack underflow in type check")
-          stack[sp - 1] = adaptBoundary(inst[].name, chunk.constants[inst[].intArg],
-                                    stack[sp - 1], scope)
+          stack[sp - 1] = checkedDefinitionValue(inst[].name,
+            chunk.constants[inst[].intArg], stack[sp - 1], scope)
         of opDeclareType:
           scope.declareType(inst[].name, chunk.constants[inst[].intArg])
         # All exits are via frameReturn / opYield above; the loop never falls through.
@@ -23727,7 +23917,7 @@ proc applyNativeCompiled(callee: Value, proto: FunctionProto,
     if proto.hasParamTypes and proto.paramTypes[0].kind != vkNil:
       let typeExpr = proto.paramTypes[0]
       if not (bareScalarSatisfied(typeExpr, lhs)):
-        lhs = adaptBoundary("parameter '" & positional[0] & "'",
+        lhs = adaptNamedBoundary(blkParameter, positional[0],
                             typeExpr, lhs, callee.fnScope)
     var rhs = NIL
     if args.len > 1:
@@ -23735,7 +23925,7 @@ proc applyNativeCompiled(callee: Value, proto: FunctionProto,
       if proto.hasParamTypes and proto.paramTypes[1].kind != vkNil:
         let typeExpr = proto.paramTypes[1]
         if not (bareScalarSatisfied(typeExpr, rhs)):
-          rhs = adaptBoundary("parameter '" & positional[1] & "'",
+          rhs = adaptNamedBoundary(blkParameter, positional[1],
                               typeExpr, rhs, callee.fnScope)
     var selected =
       if proto.nativeParamIndex == 0:
@@ -23751,7 +23941,7 @@ proc applyNativeCompiled(callee: Value, proto: FunctionProto,
             proto.paramTypes[i].kind != vkNil:
           let typeExpr = proto.paramTypes[i]
           if not (bareScalarSatisfied(typeExpr, value)):
-            value = adaptBoundary("parameter '" & positional[i] & "'",
+            value = adaptNamedBoundary(blkParameter, positional[i],
                                   typeExpr, value, callee.fnScope)
         if i == proto.nativeParamIndex:
           selected = value
@@ -23774,7 +23964,7 @@ proc applyNativeCompiled(callee: Value, proto: FunctionProto,
         NIL
 
     if proto.hasReturnType and not proto.returnKnownBareInt:
-      return (true, adaptBoundary("return from '" & callee.fnName & "'",
+      return (true, adaptNamedBoundary(blkReturn, callee.fnName,
                                   proto.returnType, resultValue, callee.fnScope))
     return (true, resultValue)
   except GeneError as e:
@@ -25588,10 +25778,11 @@ proc explainTypeMismatch(typeExpr, value: Value, scope: Scope,
   else:
     discard
 
-proc adaptBoundary(where: string, typeExpr, value: Value, scope: Scope): Value =
+proc adaptBoundary(where: BoundaryLabel, typeExpr, value: Value, scope: Scope): Value =
   if typeExpr.kind == vkNil:
     return value
   if not matchesTypeExpr(typeExpr, value, scope):
+    let label = renderBoundary(where)
     var hint =
       if value.kind == vkCell and value.cellValueType.kind != vkNil and
           typeExpr.kind == vkNode and typeExpr.head.isSymbol("Cell") and
@@ -25610,11 +25801,11 @@ proc adaptBoundary(where: string, typeExpr, value: Value, scope: Scope): Value =
         hint = hiddenImplHint(scope.application(), failure.protocol,
                               receiverType(failure.receiver), scope)
     if hint.len == 0 and value.kind == vkStream and
-        where.startsWith("parameter") and expectedLabel != "Stream" and
+        label.startsWith("parameter") and expectedLabel != "Stream" and
         not expectedLabel.startsWith("(Stream "):
       hint = "if this function should receive individual items, use '=>' " &
         "in the pipeline"
-    raiseTypeError(where, typeExpr.typeExprLabel, value, scope, hint)
+    raiseTypeError(label, typeExpr.typeExprLabel, value, scope, hint)
   let closedType = closeTypeExpr(typeExpr, scope)
   if closedType.bits != typeExpr.bits:
     return adaptBoundary(where, closedType, value, scope)
@@ -25626,7 +25817,8 @@ proc adaptBoundary(where: string, typeExpr, value: Value, scope: Scope): Value =
       typeExpr.body.len == 1 and value.kind == vkCell:
     if value.cellValueType.kind == vkNil:
       let storedType = closeTypeExpr(typeExpr.body[0], scope)
-      let checked = adaptBoundary(where & " value", storedType,
+      let checked = adaptBoundary(BoundaryLabel(kind: blkSuffix,
+                                  parent: unsafeAddr where, text: " value"), storedType,
                                   value.cellValue, scope)
       value.setCellValue(checked)
       let storedScope =
@@ -25643,7 +25835,8 @@ proc adaptBoundary(where: string, typeExpr, value: Value, scope: Scope): Value =
         var items: seq[Value]
         var changed = false
         for item in value.listItems:
-          let checked = adaptBoundary(where & " item", typeExpr.body[0], item, scope)
+          let checked = adaptBoundary(BoundaryLabel(kind: blkSuffix,
+            parent: unsafeAddr where, text: " item"), typeExpr.body[0], item, scope)
           items.add checked
           changed = changed or checked.bits != item.bits
         if changed: return newList(items, immutable = value.listImmutable)
@@ -25653,7 +25846,8 @@ proc adaptBoundary(where: string, typeExpr, value: Value, scope: Scope): Value =
       for i, itemType in typeExpr.body:
         let item = value.listItems[i]
         let checked = if typeExprNeedsNestedAdaptation(itemType):
-          adaptBoundary(where & " item " & $i, itemType, item, scope)
+          adaptBoundary(BoundaryLabel(kind: blkIndexedSuffix,
+            parent: unsafeAddr where, text: " item ", index: i), itemType, item, scope)
           else: item
         items.add checked
         changed = changed or checked.bits != item.bits
@@ -25666,7 +25860,8 @@ proc adaptBoundary(where: string, typeExpr, value: Value, scope: Scope): Value =
           var entries = initPropTable()
           var changed = false
           for key, item in value.mapEntries:
-            let checked = adaptBoundary(where & " value", valueType, item, scope)
+            let checked = adaptBoundary(BoundaryLabel(kind: blkSuffix,
+              parent: unsafeAddr where, text: " value"), valueType, item, scope)
             entries[key] = checked
             changed = changed or checked.bits != item.bits
           if changed: return newMap(entries, immutable = value.mapImmutable)
@@ -25674,7 +25869,8 @@ proc adaptBoundary(where: string, typeExpr, value: Value, scope: Scope): Value =
           var entries: seq[HashMapEntry]
           var changed = false
           for entry in value.hashMapEntries:
-            let checked = adaptBoundary(where & " value", valueType, entry.val, scope)
+            let checked = adaptBoundary(BoundaryLabel(kind: blkSuffix,
+              parent: unsafeAddr where, text: " value"), valueType, entry.val, scope)
             entries.add HashMapEntry(key: entry.key, val: checked)
             changed = changed or checked.bits != entry.val.bits
           if changed: return newHashMap(entries)
@@ -25936,8 +26132,8 @@ proc checkedCallableArguments(payload: Value): Value =
                      payload.listItems[1], scope)
     var checkedArgs: seq[Value]
     for i, value in args:
-      checkedArgs.add adaptBoundary("Callable argument " & $i,
-        if i < required: parameters[i] else: rest, value, scope)
+      checkedArgs.add adaptNamedBoundary(blkCallableArgument, "",
+        if i < required: parameters[i] else: rest, value, scope, index = i)
     let namedTypes = if signature.props.hasKey("named"):
       signature.props["named"].mapEntries else: initPropTable()
     var seen = initHashSet[string]()
@@ -25948,7 +26144,7 @@ proc checkedCallableArguments(payload: Value): Value =
         raiseTypeError("Callable named argument '" & key & "'",
           "a name declared in ^named", payload.listItems[3].listItems[i], scope)
       seen.incl key
-      checkedNamed.add adaptBoundary("Callable named argument '" & key & "'",
+      checkedNamed.add adaptNamedBoundary(blkCallableNamed, key,
         namedTypes[key], payload.listItems[3].listItems[i], scope)
     for key, typ in namedTypes:
       if key notin seen and not typeExprAdmitsNil(typ):
@@ -31031,11 +31227,41 @@ proc constructEnumVariant(variant: Value, args: openArray[Value],
     if enumType.isEnumTypeParam(payloadType):
       body.add args[i]
     else:
-      body.add adaptBoundary("payload " & $i & " for " &
-                             enumType.typeName & "/" &
-                             variant.enumVariantName,
-                             payloadType, args[i], enumScope)
+      body.add adaptNamedBoundary(blkPayload, variant.enumVariantName,
+        payloadType, args[i], enumScope, enumType.typeName, i)
   newNode(variant, body = body)
+
+proc canBindScalarArguments(proto: FunctionProto, args: openArray[Value],
+                            named: NamedArgs): bool {.inline.} =
+  if not proto.fastBindPositionalScalars or named.len != 0 or
+      args.len != proto.params.len:
+    return false
+  for i, annotation in proto.paramTypes:
+    if annotation.kind != vkNil and not bareScalarSatisfied(annotation, args[i]):
+      return false
+  true
+
+proc bindScalarCallScope(callee: Value, proto: FunctionProto,
+                         args: openArray[Value]): Scope =
+  let parent {.cursor.} = cast[Scope](callee.fnScopeAddr)
+  result =
+    if proto.poolCallScope:
+      # Retain the general typed-call scope lifecycle and name visibility.
+      # The faster convention removes generic argument processing and named
+      # slot lookup; it does not assume arbitrary callees cannot touch scope.
+      acquireCallScope(parent, proto.localNames)
+    else:
+      let fresh = newScope(parent)
+      fresh.prepareSlots(proto.localNames)
+      fresh
+  result.seedFunctionProtocolEntry(callee)
+  for i, value in args:
+    let slot = proto.positionalSlots[i]
+    result.defineFreshCallSlot(slot, value)
+    if proto.paramTypes[i].kind != vkNil:
+      # A closure or native may update a parameter even if its body has no
+      # direct opSetLocal. Keep the contract on the activation itself.
+      result.declareSlotType(slot, proto.paramTypes[i])
 
 proc bindCallScopeUnchecked(callee: Value, proto: FunctionProto, args: openArray[Value],
                             named: NamedArgs): tuple[scope: Scope, returnType: Value] =
@@ -31122,7 +31348,7 @@ proc bindCallScopeUnchecked(callee: Value, proto: FunctionProto, args: openArray
                                          proto.typeParams)
       declaredType = typeExpr
       if not (bareScalarSatisfied(typeExpr, value)):
-        value = adaptBoundary("parameter '" & positional[i] & "'",
+        value = adaptNamedBoundary(blkParameter, positional[i],
                               typeExpr, value, callScope)
     if i < proto.positionalSlots.len and proto.positionalSlots[i] >= 0:
       callScope.defineFreshCallSlot(proto.positionalSlots[i], value)
@@ -31140,7 +31366,7 @@ proc bindCallScopeUnchecked(callee: Value, proto: FunctionProto, args: openArray
                                            proto.typeParams)
         declaredType = typeExpr
         if not (bareScalarSatisfied(typeExpr, value)):
-          value = adaptBoundary("parameter '" & p.local & "'", typeExpr,
+          value = adaptNamedBoundary(blkParameter, p.local, typeExpr,
                                 value, callScope)
       if pIndex < proto.namedSlots.len and proto.namedSlots[pIndex] >= 0:
         callScope.defineFreshCallSlot(proto.namedSlots[pIndex], value)
@@ -31162,7 +31388,7 @@ proc bindCallScopeUnchecked(callee: Value, proto: FunctionProto, args: openArray
                                          proto.typeParams)
       declaredType = typeExpr
       if not (bareScalarSatisfied(typeExpr, value)):
-        boundValue = adaptBoundary("parameter '" & positional[i] & "'",
+        boundValue = adaptNamedBoundary(blkParameter, positional[i],
                                    typeExpr, value, callScope)
     if i < proto.positionalSlots.len and proto.positionalSlots[i] >= 0:
       callScope.defineFreshCallSlot(proto.positionalSlots[i], boundValue)
@@ -31176,7 +31402,7 @@ proc bindCallScopeUnchecked(callee: Value, proto: FunctionProto, args: openArray
       rest[i] = args[positional.len + i]
       rejectCallerEnvEscape("rest parameter '" & proto.restParam & "'", rest[i])
       if proto.restType.kind != vkNil:
-        rest[i] = adaptBoundary("rest parameter '" & proto.restParam & "'",
+        rest[i] = adaptNamedBoundary(blkRestParameter, proto.restParam,
                                 proto.restType, rest[i], callScope)
     if proto.restSlot >= 0:
       callScope.defineFreshCallSlot(proto.restSlot, newList(rest))
@@ -31192,7 +31418,7 @@ proc bindCallScopeUnchecked(callee: Value, proto: FunctionProto, args: openArray
                                              proto.typeParams)
           declaredType = typeExpr
           if not (bareScalarSatisfied(typeExpr, value)):
-            value = adaptBoundary("parameter '" & p.local & "'", typeExpr,
+            value = adaptNamedBoundary(blkParameter, p.local, typeExpr,
                                   value, callScope)
         if pIndex < proto.namedSlots.len and proto.namedSlots[pIndex] >= 0:
           callScope.defineFreshCallSlot(proto.namedSlots[pIndex], value)
@@ -31211,7 +31437,10 @@ proc bindCallScopeUnchecked(callee: Value, proto: FunctionProto, args: openArray
 proc bindCallScope(callee: Value, proto: FunctionProto, args: openArray[Value],
                    named: NamedArgs): tuple[scope: Scope, returnType: Value] =
   try:
-    bindCallScopeUnchecked(callee, proto, args, named)
+    if proto.canBindScalarArguments(args, named):
+      (bindScalarCallScope(callee, proto, args), proto.returnType)
+    else:
+      bindCallScopeUnchecked(callee, proto, args, named)
   except GeneError as error:
     let translated = translateErrorBoundary(callee.fnChecksErrors, callee.fnErrorTypes,
                                              callee.fnName, callee.fnScope, error)
@@ -31314,7 +31543,7 @@ proc applyFunctionCall(callee: Value, args: openArray[Value], named: NamedArgs,
                                          closeGeneratorStream)
     resultValue.setStreamGeneratorContinuation(fiber)
     if frameReturnType.kind != vkNil:
-      resultValue = adaptBoundary("return from '" & callee.fnName & "'",
+      resultValue = adaptNamedBoundary(blkReturn, callee.fnName,
                                   frameReturnType, resultValue, callScope)
     return resultValue
   try:
@@ -31330,7 +31559,7 @@ proc applyFunctionCall(callee: Value, args: openArray[Value], named: NamedArgs,
     if returnType.isStatementReturnType:
       resultValue = statementCallResult(returnType, resultValue)
     elif frameReturnType.kind != vkNil:
-      resultValue = adaptBoundary("return from '" & callee.fnName & "'",
+      resultValue = adaptNamedBoundary(blkReturn, callee.fnName,
                                   frameReturnType, resultValue, callScope)
     if not proto.poolCallScope or callScope.closureHeld:
       checked = true
@@ -31418,10 +31647,14 @@ proc constructTypedInstance(callee: Value, args: openArray[Value],
   # wrapper cannot be materialized as replayable data by any of them.
   rejectNativeWrapperConstruction(callee, "direct construction")
   ensureTypeContractReady(callee.typeScope, callee)
-  template adaptRefField(label: string, typeExpr: Value, value: Value,
+  template adaptRefField(owner, name: string, typeExpr: Value, value: Value,
                          fieldScope: Scope): Value =
     (if value.isPendingModuleRef: value
-     else: adaptBoundary(label, typeExpr, value, fieldScope))
+     else: adaptFieldBoundary(owner, name, typeExpr, value, fieldScope))
+  template adaptRefBodyField(owner: string, index: int, typeExpr: Value,
+                             value: Value, fieldScope: Scope): Value =
+    (if value.isPendingModuleRef: value
+     else: adaptBodyFieldBoundary(owner, index, typeExpr, value, fieldScope))
   let fields = callee.typeFields
   let bodyFields = callee.typeBodyFields
   if args.len != 0 and bodyFields.len == 0:
@@ -31440,8 +31673,8 @@ proc constructTypedInstance(callee: Value, args: openArray[Value],
         $bodyFields.len & " body item(s), got " & $args.len)
     for i, f in bodyFields:
       let fieldScope = f.typeBodyFieldScope(callee.typeScope)
-      body.add adaptRefField("body field " & $i & " for " &
-                             callee.typeName, f.typeExpr, args[i], fieldScope)
+      body.add adaptRefBodyField(callee.typeName, i,
+                             f.typeExpr, args[i], fieldScope)
   else:
     if args.len < restBody:
       raise newException(GeneError,
@@ -31450,14 +31683,13 @@ proc constructTypedInstance(callee: Value, args: openArray[Value],
     for i in 0 ..< restBody:
       let f = bodyFields[i]
       let fieldScope = f.typeBodyFieldScope(callee.typeScope)
-      body.add adaptRefField("body field " & $i & " for " &
-                             callee.typeName, f.typeExpr, args[i], fieldScope)
+      body.add adaptRefBodyField(callee.typeName, i,
+                             f.typeExpr, args[i], fieldScope)
     let restType = bodyFields[restBody]
     let fieldScope = restType.typeBodyFieldScope(callee.typeScope)
     for i in restBody ..< args.len:
-      body.add adaptRefField("body field " & $i & " for " &
-                             callee.typeName, restType.typeExpr, args[i],
-                             fieldScope)
+      body.add adaptRefBodyField(callee.typeName, i,
+                             restType.typeExpr, args[i], fieldScope)
   var props = initPropTable()
   for f in fields:
     let argIdx = named.argIndex(f.name)
@@ -31470,9 +31702,8 @@ proc constructTypedInstance(callee: Value, args: openArray[Value],
       else:
         let fieldScope = f.typeFieldScope(callee.typeScope)
         props.putById(f.nameId,
-                      adaptRefField("field '" & f.name & "' for " &
-                                    callee.typeName, f.typeExpr, value,
-                                    fieldScope))
+                      adaptRefField(callee.typeName, f.name,
+                                    f.typeExpr, value, fieldScope))
     elif not f.optional:
       raise newException(GeneError,
         "missing required field '" & f.name & "' for " & callee.typeName)

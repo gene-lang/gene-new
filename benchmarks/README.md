@@ -3,6 +3,33 @@
 Build the host in portable release mode with `nimble build`. Check
 `bin/gene --version`; `nimble debug` is for debugging, not performance baselines.
 
+## Matched VM operations
+
+```sh
+bin/gene run benchmarks/ops.gene 1000000
+GENE_BENCH_SAMPLES=5 bin/gene run benchmarks/run_ops.gene tmp/ops-comparison 1000000 path/to/before-gene path/to/after-gene
+```
+
+`ops.gene` retains the typed counter/empty-loop control and adds matched
+scalar, `Any`, nominal, optional and union calls, typed Float stores, and a
+stdlib call against the same native bound locally. Pairs receive identical
+values and use identical loop bodies. Branching helpers avoid the precompiled
+identity/arithmetic shortcuts. Results are checked, and each operation warms
+before timing. The existing identity-call control now uses Float arguments
+on both sides.
+
+`run_ops.gene` alternates fresh executable processes, excludes round zero,
+checks results and row sets, and records source/binary hashes, source state,
+raw output, gross and empty-loop-subtracted distributions. Use sufficiently
+many iterations for the millisecond clock and finish builds before timing.
+The net values locate operation costs; compare gross and application times
+as well. `ops.gene ITERATIONS json` exposes its structured worker output.
+
+`bin/gene run benchmarks/ops_stores.gene` is a short diagnostic using the same
+untyped/typed counter and Float-store loops at ten million iterations. Use it
+to investigate dispatch changes; the full paired runner remains the acceptance
+measurement.
+
 ## General-purpose Gene / Python comparison
 
 ```sh
@@ -76,6 +103,10 @@ then run (from the repository root):
 ```sh
 GENE_BENCH_SAMPLES=3 bin/gene run benchmarks/run_harness.gene tmp/harness-comparison path/to/before-gene path/to/after-gene
 ```
+
+`GENE_BENCH_TURNS` selects 1–10000 turns (default 100). Use 200 to exercise
+receipt retention beyond 128 entries. Compare both binaries against the same
+Harness source and turn count; the runner records and checks that count.
 
 The runner alternates binary order, excludes one warmup per binary, and uses a
 fresh workspace for every 100-turn run. It preserves raw output, executable

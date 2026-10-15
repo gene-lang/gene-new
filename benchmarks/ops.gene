@@ -2,23 +2,148 @@
 # Gross iteration cost includes loop/control work; net subtracts empty while.
 (mod ops)
 
-(fn plain [x] x)
-(fn typed [x : F64] : F64 x)
-(type Meter ^props {^v F64}
-  (message value [] : F64 self/v))
+(fn plain [x]
+  x)
+(fn typed [x : F64] : F64
+  x)
+(type Meter ^props {^v F64} (message value [] : F64 self/v))
+
+# Branches keep these out of the compiler's precompiled identity/arithmetic
+# helper shapes. Every pair receives identical values through the same loop.
+(fn int_plain [x]
+  (if (> x 10)
+    (- x 1)
+    (+ x 2)))
+(fn int_parameter [x : Int]
+  (if (> x 10)
+    (- x 1)
+    (+ x 2)))
+(fn int_result [x : Int] : Int
+  (if (> x 10)
+    (- x 1)
+    (+ x 2)))
+(fn float_plain [x]
+  (if (> x 10.0)
+    (- x 1.0)
+    (+ x 2.0)))
+(fn float_parameter [x : F64]
+  (if (> x 10.0)
+    (- x 1.0)
+    (+ x 2.0)))
+(fn float_result [x : F64] : F64
+  (if (> x 10.0)
+    (- x 1.0)
+    (+ x 2.0)))
+(fn any_result [x : Any] : Any
+  (if (> x 10.0)
+    (- x 1.0)
+    (+ x 2.0)))
+(fn string_plain [s]
+  (if (== s "")
+    "empty"
+    s))
+(fn string_result [s : Str] : Str
+  (if (== s "")
+    "empty"
+    s))
+(fn two_plain [s n]
+  (if (> n 10)
+    s
+    "b"))
+(fn two_result [s : Str n : Int] : Str
+  (if (> n 10)
+    s
+    "b"))
+(fn nominal_plain [m]
+  (if (> m/v 0.0)
+    m
+    m))
+(fn nominal_result [m : Meter] : Meter
+  (if (> m/v 0.0)
+    m
+    m))
+(fn optional_plain [m]
+  (if ($absent? m)
+    nil
+    m))
+(fn optional_result [m : Meter?] : Meter?
+  (if ($absent? m)
+    nil
+    m))
+(fn union_plain [x]
+  (if (== x "")
+    "empty"
+    x))
+(fn union_result [x : (| F64 Str)] : (| F64 Str)
+  (if (== x "")
+    "empty"
+    x))
+
+(fn repeat_one [n f x expected]
+  (var last nil)
+  (var i 0)
+  (while (< i n)
+    (set last (f x))
+    (set i (+ i 1)))
+  ($assert (== last expected) "unary benchmark returned the wrong result")
+  i)
+
+(fn repeat_two [n f x y expected]
+  (var last nil)
+  (var i 0)
+  (while (< i n)
+    (set last (f x y))
+    (set i (+ i 1)))
+  ($assert (== last expected) "binary benchmark returned the wrong result")
+  i)
+
+(fn float_local_plain [n]
+  (var value 0.0)
+  (var i 0)
+  (while (< i n)
+    (set value (+ value 1.5))
+    (set i (+ i 1)))
+  value)
+
+(fn float_local_typed [n]
+  (var value : F64 0.0)
+  (var i 0)
+  (while (< i n)
+    (set value (+ value 1.5))
+    (set i (+ i 1)))
+  value)
+
+(fn native_path [n x]
+  (var last 0)
+  (var i 0)
+  (while (< i n)
+    (set last ($math/abs x))
+    (set i (+ i 1)))
+  last)
+
+(fn native_local [n x]
+  (let abs $math/abs)
+  (var last 0)
+  (var i 0)
+  (while (< i n)
+    (set last (abs x))
+    (set i (+ i 1)))
+  last)
 
 (fn empty_loop [n]
   (var i 0)
-  (while (< i n) (set i (+ i 1))))
+  (while (< i n)
+    (set i (+ i 1))))
 
 (fn typed_counter [n]
   (var i : Int 0)
-  (while (< i n) (set i (+ i 1))))
+  (while (< i n)
+    (set i (+ i 1))))
 
 (fn call_plain [n]
   (var i 0)
   (while (< i n)
-    (plain 1)
+    (plain 1.0)
     (set i (+ i 1))))
 
 (fn call_typed [n]
@@ -53,7 +178,8 @@
 
 (fn for_list [n items]
   (var last 0)
-  (for item in items (set last item))
+  (for item in items
+    (set last item))
   last)
 
 (fn indexed_list [n items]
@@ -68,6 +194,7 @@
   (let n (if (> ($size args/body) 0)
              ($parse/parse_int args/body/0)
              1000000))
+  (let json (&& (> args/body/.size 1) (== args/body/1 "json")))
   ($assert (> n 0) "ops iteration count must be positive")
   (let meter (Meter ^v 1.0))
   (let point {^v 1})
@@ -90,14 +217,22 @@
   (empty_loop n)
   (let baseline_ms (- ($os/monotonic_ms) baseline_start))
   (let baseline_ns (/ (* ($to_float baseline_ms) 1000000.0) ($to_float n)))
-  ($println $"empty_while gross_ns=${baseline_ns} net_ns=0.0 ms=${baseline_ms}")
+  (let rows [{^name "empty_while" ^iterations n ^elapsed_ms baseline_ms
+    ^gross_ns baseline_ns ^net_ns 0.0 ^result nil}])
+  (if_not json
+    ($println $"empty_while gross_ns=${baseline_ns} net_ns=0.0 ms=${baseline_ms}"))
 
   (fn measure [label f]
-    (let started ($os/monotonic_ms))
+    # Validate and warm each shape before its measured invocation.
     (f)
+    (let started ($os/monotonic_ms))
+    (let value (f))
     (let elapsed (- ($os/monotonic_ms) started))
     (let gross (/ (* ($to_float elapsed) 1000000.0) ($to_float n)))
-    ($println $"${label} gross_ns=${gross} net_ns=$(- gross baseline_ns) ms=${elapsed}"))
+    (rows .push {^name label ^iterations n ^elapsed_ms elapsed
+      ^gross_ns gross ^net_ns (- gross baseline_ns) ^result (?? value nil)})
+    (if_not json
+      ($println $"${label} gross_ns=${gross} net_ns=$(- gross baseline_ns) ms=${elapsed}")))
 
   (measure "typed_counter" (fn [] (typed_counter n)))
   (measure "plain_call" (fn [] (call_plain n)))
@@ -108,4 +243,26 @@
   (measure "property_read" (fn [] (get_prop n point)))
   (measure "for_list" (fn [] (for_list n items)))
   (measure "indexed_while" (fn [] (indexed_list n items)))
+  (measure "int_plain" (fn [] (repeat_one n int_plain 20 19)))
+  (measure "int_parameter" (fn [] (repeat_one n int_parameter 20 19)))
+  (measure "int_result" (fn [] (repeat_one n int_result 20 19)))
+  (measure "float_plain" (fn [] (repeat_one n float_plain 20.0 19.0)))
+  (measure "float_parameter" (fn [] (repeat_one n float_parameter 20.0 19.0)))
+  (measure "float_result" (fn [] (repeat_one n float_result 20.0 19.0)))
+  (measure "any_result" (fn [] (repeat_one n any_result 20.0 19.0)))
+  (measure "string_plain" (fn [] (repeat_one n string_plain "text" "text")))
+  (measure "string_result" (fn [] (repeat_one n string_result "text" "text")))
+  (measure "two_plain" (fn [] (repeat_two n two_plain "text" 20 "text")))
+  (measure "two_result" (fn [] (repeat_two n two_result "text" 20 "text")))
+  (measure "nominal_plain" (fn [] (repeat_one n nominal_plain meter meter)))
+  (measure "nominal_result" (fn [] (repeat_one n nominal_result meter meter)))
+  (measure "optional_plain" (fn [] (repeat_one n optional_plain meter meter)))
+  (measure "optional_result" (fn [] (repeat_one n optional_result meter meter)))
+  (measure "union_plain" (fn [] (repeat_one n union_plain 20.0 20.0)))
+  (measure "union_result" (fn [] (repeat_one n union_result 20.0 20.0)))
+  (measure "float_local_plain" (fn [] (float_local_plain n)))
+  (measure "float_local_typed" (fn [] (float_local_typed n)))
+  (measure "native_path" (fn [] (native_path n -20)))
+  (measure "native_local" (fn [] (native_local n -20)))
+  (if json ($println ($json/stringify {^format 1 ^iterations n ^rows rows})))
   nil)

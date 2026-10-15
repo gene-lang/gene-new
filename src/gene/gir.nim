@@ -162,6 +162,7 @@ type
     opBlockScope             # lexical block; caller control-flow targets survive
     opLoopEnter              # record inline loop exit/continue targets and operand base
     opLoopLeave              # retire the inline loop target
+    opLoadStdlibPath          # constant Path from gene; depth indexes extra cache slots
 
   Instruction* = object
     op*: OpCode
@@ -390,6 +391,7 @@ type
     isSyntaxFn*: bool
     isMacroBody*: bool # keep the complete live definition environment
     preparedPipelineItem*: bool
+    fastBindPositionalScalars*: bool # use trailing flag padding; preserve existing hot offsets
     selfParentSlot*: int
     nativeOp*: NativeCompileOp
     nativeParamIndex*: int
@@ -872,6 +874,7 @@ type
     imports*: seq[ImportSpec]
     importImpls*: seq[ImportImplSpec]
     dispatchCache*: seq[DispatchCacheEntry] # inline send cache; lazily sized to instructions.len
+    stdlibCacheSlots*: int # compiler-owned extra slots after instruction cache entries
     ## Runtime state, like dispatchCache: set once a spawn's publication walk
     ## has covered this chunk and found nothing below it that can change, so
     ## later spawns skip it. `spawnPublishedSuperBits` is the superType the
@@ -1149,6 +1152,32 @@ proc addFunction*(chunk: Chunk, fn: FunctionProto): int =
   result = chunk.functions.len
   chunk.functions.add fn
 
+proc supportsScalarBinding*(proto: FunctionProto): bool =
+  ## Compiler-owned admission for the positional scalar/Any binder. Runtime
+  ## still checks each supplied value and falls back on mismatch. Keep this
+  ## separate from simpleCall: its scopeless lowering has different proofs.
+  if proto == nil or proto.isSyntaxFn or proto.isMacroBody or
+      proto.isGenerator or proto.checksErrors or proto.typeParams.len != 0 or
+      proto.restParam.len != 0 or proto.namedParams.len != 0 or
+      proto.requiredPositional != proto.params.len or
+      proto.positionalSlots.len != proto.params.len or
+      proto.paramTypes.len != proto.params.len or
+      proto.paramDefaults.len != proto.params.len or
+      (not proto.hasParamTypes and not proto.hasReturnType):
+    return false
+  template admitted(annotation: Value): bool =
+    annotation.kind == vkNil or
+      (annotation.kind == vkSymbol and annotation.symVal in
+        ["Any", "Int", "Integer", "Float", "F64", "Str", "String",
+         "Bool", "Sym", "Symbol", "Char"])
+  if not admitted(proto.returnType): return false
+  for i, annotation in proto.paramTypes:
+    if not admitted(annotation) or proto.paramDefaults[i].optional or
+        proto.positionalSlots[i] < 0 or
+        proto.positionalSlots[i] >= proto.localNames.len:
+      return false
+  true
+
 proc emit*(chunk: Chunk, inst: Instruction,
            loc = SourceLoc()): int =
   result = chunk.instructions.len
@@ -1207,6 +1236,8 @@ proc formatInstruction(inst: Instruction): string =
   case inst.op
   of opPushConst:
     result.add " const=" & $inst.intArg
+  of opLoadStdlibPath:
+    result.add " const=" & $inst.intArg & " cache=" & $inst.depth
   of opLoadName, opLoadNativeFast, opDefineName, opRedefineName, opSetName,
      opRefBegin, opRefFinish, opRefAbort, opRefGet, opRefGetStructural:
     result.add " name=" & inst.name

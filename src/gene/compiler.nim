@@ -2783,6 +2783,7 @@ proc compileMacro(c: var Compiler, node: Value) =
     let proto = c.chunk.functions[^1]
     proto.name = "macro " & definition.name
     proto.isMacroBody = true
+    proto.fastBindPositionalScalars = false
     proto.needsCallScope = true
     proto.poolCallScope = false
     proto.callScopeNeedsSlotNames = true
@@ -4715,6 +4716,7 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
                          errorTypeCount: errorTypeCount,
                          chunk: fnCompiler.chunk)
   result.chunk.owner = result
+  result.fastBindPositionalScalars = result.supportsScalarBinding()
   if c.dynamicNameLookup:
     if requiresTypedNative:
       raise newException(GeneError, "typed_native code cannot assume runtime macro caller bindings")
@@ -5381,6 +5383,7 @@ proc compileFexpr(c: var Compiler, node: Value) =
   proto.poolCallScope = false
   proto.fastBindUnaryInt = false
   proto.fastBindPositionalInt = false
+  proto.fastBindPositionalScalars = false
   proto.fastBindRequiredNamed = false
   discard c.emit(opMakeFn, c.chunk.addFunction(proto))
   if definesName:
@@ -7614,6 +7617,28 @@ proc compilePath(c: var Compiler, node: Value) =
     raise newException(GeneError,
       "macro '" & spelling.join("/") &
       "' cannot be used as a value; call it in head position")
+  if parts[0].isSymbol("gene") and node.props.len == 0 and
+      not c.dynamicNameLookup:
+    var segments: seq[Value]
+    var plain = true
+    for i in 1 ..< parts.len:
+      if parts[i].kind != vkSymbol:
+        plain = false
+        break
+      let segment = pathSegmentValue(parts[i])
+      if segment.kind != vkString or segment.strVal.startsWith(".") or
+          segment.strVal.startsWith("?.") or
+          segment.strVal in ["this_mod", "this_pkg", "err", "err_msg"]:
+        plain = false
+        break
+      segments.add segment
+    if plain:
+      let selector = selectorLiteral(segments, initPropTable())
+      let offset = c.chunk.stdlibCacheSlots
+      c.chunk.stdlibCacheSlots += segments.len + 1 # header plus namespace guards
+      discard c.emit(opLoadStdlibPath, c.chunk.addConst(selector),
+                     name = "gene", depth = offset)
+      return
   compileExpr(c, parts[0])
   c.compilePathSuffix(parts, 1, node)
 
@@ -10387,7 +10412,7 @@ const
                       opTaskScope, opSupervisor}
   captureDepthOps = {opLoadOuterLocal, opCallParentLocal0, opCallOuterLocal0,
                      opCallParentLocal1, opCallOuterLocal1}
-  captureNameOps = {opLoadName, opCallName0, opCallName1, opCallNameN,
+  captureNameOps = {opLoadName, opLoadStdlibPath, opCallName0, opCallName1, opCallNameN,
                     opSetName, opDefineName}
 
 iterator nestedChunks(chunk: Chunk): tuple[body: Chunk, scoped: bool] =

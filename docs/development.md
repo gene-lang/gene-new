@@ -39,7 +39,7 @@ Known limits worth carrying into design decisions:
   runtime.
 
 Application-scale examples include [Cordis](../examples/cordis/README.md),
-[Miclone](../examples/miclone/README.md), and the
+[Harness](../examples/gene-harness/README.md), and the
 [Todo app](../examples/todo_app/src/main.gene).
 
 ### Paused native-app and AtomicArc work (2026-09-28)

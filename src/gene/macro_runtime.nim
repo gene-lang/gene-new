@@ -229,7 +229,7 @@ proc macroNeedsDefinitionBindings(chunk: Chunk): bool =
     return false
   for instruction in chunk.instructions:
     case instruction.op
-    of opLoadName, opCallName0, opCallName1, opCallNameN, opSetName:
+    of opLoadName, opLoadStdlibPath, opCallName0, opCallName1, opCallNameN, opSetName:
       # Even an intrinsic spelling can be shadowed in the definition module.
       # Name-based access needs that lexical environment before it can choose
       # a binding; presence in the intrinsic parent is not sufficient evidence.

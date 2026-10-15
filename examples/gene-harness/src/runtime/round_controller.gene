@@ -76,9 +76,9 @@
       (else
         (receipts .push old))))
   (if_not found (receipts .push (copy_data receipt)))
-  (while (> receipts/.size 128)
-    (receipts .delete 0))
-  (let all {^next_seq ($math/max state/next_seq (+ receipt/submission_seq 1)) ^receipts receipts})
+  (let retained (if (> receipts/.size 128)
+    ($drop receipts (- receipts/.size 128)) receipts))
+  (let all {^next_seq ($math/max state/next_seq (+ receipt/submission_seq 1)) ^receipts retained})
   (record_core_state
     events
     "session"

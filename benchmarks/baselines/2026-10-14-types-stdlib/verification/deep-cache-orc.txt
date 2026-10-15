@@ -1,0 +1,78 @@
+
+[Suite] VM — scope ownership and reuse
+
+[Suite] VM — proper tail calls
+
+[Suite] compiler — GIR emission
+
+[Suite] module references
+
+[Suite] gir — disassembly
+
+[Suite] vm — literals and self-evaluation
+
+[Suite] vm — strings and interpolation
+
+[Suite] vm — quasiquote templates
+
+[Suite] vm — macros
+
+[Suite] vm — arithmetic
+
+[Suite] vm — comparison and logic
+
+[Suite] vm — special forms
+
+[Suite] vm — functions and closures
+
+[Suite] vm — optimized typed boundaries
+
+[Suite] vm — fused stdlib paths
+  [OK] static paths fuse while dynamic message and special paths keep their forms
+  [OK] one chunk respects separate module roots and host-local shadowing
+  [OK] member and intermediate namespace replacement invalidate borrowed entries
+  [OK] slot writes and missing names remain visible
+  [OK] non-namespace members and missing-call argument errors keep ordinary traversal
+  [OK] fused and expanded loads charge identical evaluation steps
+  [OK] GIR roundtrips extra cache layout and rejects corrupt offsets
+  [OK] a loop of fused loads still yields for cancellation and cleanup
+
+[Suite] vm — scalar call binding
+
+[Suite] vm — plain native dispatch
+
+[Suite] vm — named arguments
+
+[Suite] vm — rest parameters
+
+[Suite] vm — optional and default parameters
+
+[Suite] vm — Paths
+
+[Suite] vm — dynamic Paths
+
+[Suite] vm — node projection built-ins
+
+[Suite] vm — functional Path updates
+
+[Suite] vm — container update built-ins
+
+[Suite] vm — entrypoint support
+
+[Suite] vm — namespaces
+
+[Suite] vm — env and eval
+
+[Suite] vm — cells
+
+[Suite] vm — atomic cells
+
+[Suite] vm — channels
+
+[Suite] vm — cooperative scheduler
+
+[Suite] vm — actors
+
+[Suite] vm — streams
+
+[Suite] vm — printer view of callables

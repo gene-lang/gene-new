@@ -1,0 +1,52 @@
+
+[Suite] threaded scheduler workers
+  [OK] private compiler retirement refuses published and foreign-lane roots
+  [OK] published objects pin their private compiler definition scopes
+  [OK] publication retains scope edges beyond shared value graphs
+  [OK] a later publication visits new children of a previously shared graph
+  [OK] repeated macro compilations release their private phase applications
+  [OK] worker eval retains and publishes its lexical macro context
+  [OK] runtime local macros keep dynamic caller access on the owner lane
+  [OK] threaded build starts default worker pool
+  [OK] GENE_WORKERS=0 disables worker pool
+  [OK] nested worker leases can grow the running pool
+  [OK] worker lease spreads worker-candidate backlog across workers
+  [OK] worker leases keep application scheduler queues isolated
+  [OK] high worker counts do not false-deadlock task await chains
+  [OK] high worker counts wake task cancellation awaiters
+  [OK] high worker counts wake sleeping task cancellation
+  [OK] active worker-candidate cancellation wakes root awaiters
+  [OK] worker pool runs worker-candidate tasks
+  [OK] actor workers reject non-Send error data and formatter captures before replying
+  [OK] worker pool runs sendable actor handlers while root runs
+  [OK] worker pool runs sendable actor sends while root runs
+  [OK] root actor send errors stay on root lane
+  [OK] worker-candidate snapshots publish cloned closures
+  [OK] frozen graph certificates survive worker publication and repeated local stores
+  [OK] worker-candidate tasks share AtomicCell through CAS
+  [OK] worker-candidate channel try_send respects capacity
+  [OK] worker-candidate channel try_recv claims one item
+  [OK] worker-candidate try_recv may return its immutable tagged result
+  [OK] worker-candidate actor try_send respects mailbox capacity
+  [OK] actor mailbox reservations count toward capacity
+  [OK] root await helps drain worker-candidate queue
+  [OK] root await drives worker-backed async file read
+  [OK] worker-backed async file read burst drains queued requests
+  [OK] worker-backed async file read reports queue backpressure
+  [OK] root await drives worker-backed async file write
+  [OK] root await drives worker-backed async tcp read
+  [OK] root await drives worker-backed async tcp write
+  [OK] cancelled queued worker-backed async write is skipped
+  [OK] cancelled queued async IO releases queue capacity
+  [OK] worker-candidate task errors wake root awaiters
+  [OK] worker-candidate non-Send results are rejected before publication
+  [OK] worker-candidate task panics wake root awaiters
+  [OK] worker-candidate tasks race one ReplyTo safely
+  [OK] root channel waits run worker-candidate tasks on workers
+  [OK] root execution lease runs worker-candidate tasks before blocking waits
+  [OK] root function calls lease workers for worker-candidate tasks
+  [OK] generator pulls lease workers for worker-candidate tasks
+  [OK] worker pool wakes sleeping worker-candidate tasks while root runs
+  [OK] root await treats sleeping worker-candidate tasks as progress
+  [OK] ask timeouts wake parked workers while root runs
+  [OK] root await treats pending ask timeouts as worker progress

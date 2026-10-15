@@ -10,7 +10,7 @@ import ./[gir, printer, reader, types]
 # The number changes when the chunk layout or opcode/value meaning changes, so
 # a stale artifact fails closed. Path values replaced Selector values while
 # reusing the same bytecode slots, so that migration also advances the format.
-const GirArtifactFormat* = 30
+const GirArtifactFormat* = 32
 
 proc validateModuleSourcePath(path: string) =
   # Empty remains available to host-created, explicitly path-bound chunks.
@@ -488,6 +488,8 @@ proc toJsonHook(fn: FunctionProto, options = initToJsonOptions()): JsonNode
 
 proc validateUnlinkedFunction(fn: FunctionProto) =
   if fn == nil: return
+  if fn.fastBindPositionalScalars and not fn.supportsScalarBinding():
+    raise newException(ValueError, "executable GIR contains an invalid scalar binding proof")
   if fn.annotationSelfBits != 0 or fn.contractResolved or fn.signatureHadSelf or
       fn.builtinErrorMessage or fn.boundExecutionPolicy != nil:
     raise newException(ValueError, "executable GIR contains runtime-only invocation metadata")
@@ -569,8 +571,24 @@ proc restoreChunkOwners(root: Chunk, allowRuntimeState = false) =
           (not call.pipeline and (call.definition == nil or
             not call.definition.runtime or call.syntax.kind != vkNode)):
         raise newException(ValueError, "encoded GIR contains invalid runtime macro call")
+    var stdlibSlots = 0
     for inst in chunk.instructions:
       case inst.op
+      of opLoadStdlibPath:
+        if inst.intArg < 0 or inst.intArg >= chunk.constants.len or
+            inst.name != "gene" or inst.depth != stdlibSlots:
+          raise newException(ValueError, "encoded GIR contains an invalid stdlib path index")
+        let selector = chunk.constants[inst.intArg]
+        if selector.kind != vkNode or selector.head.kind != vkSymbol or
+            selector.head.symVal != "Path" or selector.props.len != 0 or
+            selector.body.len == 0:
+          raise newException(ValueError, "encoded GIR contains an invalid stdlib path")
+        for segment in selector.body:
+          if segment.kind != vkString or segment.strVal.startsWith(".") or
+              segment.strVal.startsWith("?.") or
+              segment.strVal in ["this_mod", "this_pkg", "err", "err_msg"]:
+            raise newException(ValueError, "encoded GIR contains a non-static stdlib path")
+        stdlibSlots += selector.body.len + 1
       of opDefineRuntimeMacro:
         if inst.intArg < 0 or inst.intArg >= chunk.runtimeMacroDefinitions.len:
           raise newException(ValueError, "encoded GIR contains invalid runtime macro definition index")
@@ -583,6 +601,8 @@ proc restoreChunkOwners(root: Chunk, allowRuntimeState = false) =
             chunk.functions[inst.intArg] == nil or not chunk.functions[inst.intArg].isMacroBody:
           raise newException(ValueError, "encoded GIR contains invalid runtime pipeline assembler")
       else: discard
+    if chunk.stdlibCacheSlots != stdlibSlots:
+      raise newException(ValueError, "encoded GIR contains an invalid stdlib cache layout")
     chunk.owner = owner
     chunk.dispatchCache = @[]
     chunk.spawnPublished = false

@@ -9064,7 +9064,8 @@ suite "spec — packages (docs/workflows.md)":
 
   test "the committed examples use format 1":
     check loadPackageAt("examples/todo_app", poEntry).name == "gene/todo_app"
-    check loadPackageAt("examples/miclone", poEntry).name == "gene/miclone"
+    check loadPackageAt("examples/gene-harness", poEntry).name == "gene/harness"
+    check loadPackageAt("examples/cordis", poEntry).name == "genex/cordis"
     check loadPackageAt("examples/utils", poEntry).library.entry ==
       "src/form.gene"
 suite "spec — macros across modules (design §11/§15)":

@@ -1591,6 +1591,13 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
         state.bindings[inst.name] = binding
     of opPushConst:
       push literalValue(chunk.constants[inst.intArg])
+    of opLoadStdlibPath:
+      if state.at(environment, "gene").value == nil:
+        errors.mergeErrors(oneError("RuntimeError"))
+      let selected = analysis.selectValue(load("gene"),
+        chunk.constants[inst.intArg], environment)
+      absorb(selected)
+      push selected.value
     of opLoadName, opLoadNativeFast, opLoadLocal, opLoadLocalFast, opLoadOuterLocal, opLoadArg:
       var name = inst.name
       if name.len == 0 and inst.intArg >= 0 and inst.intArg < chunk.localNames.len:

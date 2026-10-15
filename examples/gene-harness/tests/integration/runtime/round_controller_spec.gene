@@ -185,6 +185,30 @@
           ($println "round recovery: current and historical blobbed receipts interrupt without replay")
           ensure (close_runtime reopened))))))
 
+(describe "Harness round receipts"
+  (it "keeps only the newest 128 receipts of a session" []
+    (isolated this_mod/.path "keeps only the newest 128 receipts of a session"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (create_session runtime/sessions ^id "long")
+        (let controller (test_controller runtime (fn [request] "")))
+        (try
+          (repeat i in 130
+            (save_round controller "long" {^id $"r${(+ i 1)}" ^request_id $"u${(+ i 1)}"
+              ^submission_seq (+ i 1) ^state "done" ^prompt "test" ^digest "test"}))
+          (var kept 0)
+          (repeat j in 130
+            (if_not ($absent? (round_receipt controller "long" $"r${(+ j 1)}"))
+              (set kept (+ kept 1))))
+          ($assert (== kept 128) "session did not keep exactly 128 receipts")
+          ($assert ($absent? (round_receipt controller "long" "r2")) "an oldest receipt was kept")
+          (let newest (round_receipt controller "long" "r130"))
+          ($assert (== newest/state "done") "the newest receipt was dropped")
+          ($println "round receipts: a session keeps its newest 128")
+          ensure
+            (close_round_controller controller)
+            (close_runtime runtime))))))
+
 (describe "Profile readiness"
   (it "refuses a round missing instructions or its selected provider" []
     (isolated this_mod/.path "refuses a round missing instructions or its selected provider"

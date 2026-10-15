@@ -1,0 +1,15 @@
+# Focused control using the unchanged loops from the full operation benchmark.
+(import ^from "./ops" [empty_loop typed_counter float_local_plain float_local_typed])
+
+(fn main [args] : Int
+  (let n 10000000)
+  (let rows [])
+  (for [name work] in [["empty" empty_loop] ["typed_int" typed_counter] ["float_plain" float_local_plain] ["float_typed" float_local_typed]]
+    (work 1000)
+    (let start ($os/monotonic_ms))
+    (let value (work n))
+    (let elapsed (- ($os/monotonic_ms) start))
+    (if ($str/starts_with? name "float") ($assert (== value (* n 1.5)) "wrong accumulator"))
+    (rows .push {^name name ^ns (/ (* elapsed 1000000.0) n)}))
+  ($println ($json/stringify rows))
+  0)

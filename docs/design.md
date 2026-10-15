@@ -167,7 +167,7 @@ trusted scripts: evaluated code, an Env, or a namespace filter alone is not a
 sandbox, and code that can name `$fs` or `$os` can use it. What bounds untrusted
 code is the sandbox loader, which loads a module with only the namespaces it is
 granted, together with execution budgets on steps, memory, and time. See
-[the miclone design](../examples/miclone/docs/design.md) (§D5) for the loader.
+[the module loading contract](spec/modules.md) for the loader.
 
 ## One language, explicit backend limits
 

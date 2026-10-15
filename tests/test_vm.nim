@@ -63,6 +63,46 @@ proc nativeEnvelopeEcho(args: openArray[Value], call: ptr NativeCall): Value {.n
 var retainedIterationScopes: seq[Scope]
 var observedIterationScopes: seq[pointer]
 
+proc nativeIdentity(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 1:
+    raise newException(GeneError, "identity expects one argument")
+  args[0]
+
+proc nativePack(args: openArray[Value]): Value {.nimcall.} =
+  newList(@args)
+
+proc nativeReenter(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError, "reenter expects a function and an argument")
+  call(args[0], @[args[1]])
+
+var nativeBridgeTarget: Value
+var nativeBridgeScope: Scope
+
+proc nativeBridge(args: openArray[Value]): Value {.nimcall.} =
+  # Exercise a plain NativeProc forwarding to an envelope-aware native. It
+  # can raise either a timer suspension or a bytecode-frame request.
+  call(nativeBridgeTarget, @args, @[], @[], nativeBridgeScope)
+
+proc nativeParameterX(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if call == nil or call.dispatchScope == nil:
+    raise newException(GeneError, "missing parameter scope")
+  if args.len > 0:
+    call.dispatchScope.assign("x", args[0])
+  call.dispatchScope.lookup("x")
+
+proc testNamespace(name, value: string): Value =
+  let space = newScope()
+  space.define("value", newStr(value))
+  newNamespace(name, space)
+
+proc testStdlibRoot(value: string): Scope =
+  result = newScope(newGlobalScope())
+  result.moduleRoot = true
+  let geneScope = newScope()
+  geneScope.define("math", testNamespace("math", value))
+  result.define("gene", newNamespace("gene", geneScope))
+
 proc retainIterationScope(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   retainedIterationScopes.add call[].dispatchScope
   NIL
@@ -2638,6 +2678,391 @@ suite "vm — functions and closures":
        "\"return from 'add64'\""
   test "calling a non-callable raises":
     expect GeneError: discard runStr("(1 2 3)")
+
+suite "vm — optimized typed boundaries":
+  test "scalar definitions and stores retain their contracts for every spelling":
+    for (annotation, initial, next, wrong, expected) in [
+        ("Int", "1", "2", "\"bad\"", "2"),
+        ("Integer", "1", "2", "\"bad\"", "2"),
+        ("Float", "1.0", "2.0", "1", "2.0"),
+        ("F64", "1.0", "2.0", "1", "2.0"),
+        ("Str", "\"a\"", "\"b\"", "1", "\"b\""),
+        ("String", "\"a\"", "\"b\"", "1", "\"b\""),
+        ("Bool", "true", "false", "1", "false"),
+        ("Sym", "`a", "`b", "1", "b"),
+        ("Symbol", "`a", "`b", "1", "b"),
+        ("Char", "'a'", "'b'", "\"b\"", "'b'")]:
+      let declaration = "(var x : " & annotation & " " & initial & ") "
+      check runStr(declaration & "(set x " & next & ") x").print() == expected
+      check runStr(declaration & "(try (set x " & wrong &
+        ") catch TypeError $err/where)").print() == "\"set 'x'\""
+      check runStr("(try (var x : " & annotation & " " & wrong &
+        ") catch TypeError $err/where)").print() == "\"var 'x'\""
+
+  test "Any keeps object identity and authored function annotations":
+    let chunk = compileSource("(fn keep [x : Any] : Any x)")
+    check chunk.functions[0].paramTypes[0].kind == vkSymbol
+    check chunk.functions[0].paramTypes[0].symVal == "Any"
+    check chunk.functions[0].returnType.kind == vkSymbol
+    check chunk.functions[0].returnType.symVal == "Any"
+    ck """
+      (fn keep [x : Any] : Any x)
+      (let original ($cell 1))
+      (var value : Any (keep original))
+      (value .set 2)
+      (set value [1 2])
+      (set value nil)
+      [original/.get value]
+    """, "[2 nil]"
+
+  test "refinements aliases optional types and Cell adaptation stay checked":
+    ck """
+      (try (var x : I8 128) catch TypeError $err/where)
+    """, "\"var 'x'\""
+    ck """
+      (alias Narrow I8)
+      (var x : Narrow 1)
+      (try (set x 128) catch TypeError $err/where)
+    """, "\"set 'x'\""
+    ck """
+      (var x : F64? nil)
+      (try (set x "bad") catch TypeError $err/where)
+    """, "\"set 'x'\""
+    try:
+      discard runStr("""
+        (var x : (Cell Int) ($cell 1))
+        (x .set "bad")
+      """)
+      check false
+    except GeneError as error:
+      check "Cell/set value expected Int, got Str" in error.msg
+
+  test "parameter and assignment failures keep their complete diagnostics":
+    ck """
+      (fn text [x : Str] (if (== x "") "empty" x))
+      (try (text 7) catch TypeError
+        [$err/where $err/expected $err/actual $err/message])
+    """, "[\"parameter 'x'\" \"Str\" \"Int\" \"parameter 'x' expected Str, got Int\"]"
+    ck """
+      (try (var text : Str "ok") (set text 7) catch TypeError
+        [$err/where $err/expected $err/actual $err/message])
+    """, "[\"set 'text'\" \"Str\" \"Int\" \"set 'text' expected Str, got Int\"]"
+
+  test "return labels survive bytecode calls and native callbacks":
+    ck """
+      (fn text [x] : Str (if x 7 "ok"))
+      (try (text true) catch TypeError [$err/where $err/message])
+    """, "[\"return from 'text'\" \"return from 'text' expected Str, got Int\"]"
+    ck """
+      (fn text [x] : Str (if x 7 "ok"))
+      (try ($map [true] text) catch TypeError [$err/where $err/message])
+    """, "[\"return from 'text'\" \"return from 'text' expected Str, got Int\"]"
+    ck """
+      (try ((fn [x] : Str (if x 7 "ok")) true)
+        catch TypeError $err/where)
+    """, "\"return from ''\""
+
+  test "lazy parameter labels preserve stream guidance":
+    ck """
+      (fn number [x : Int] (if (> x 0) x 0))
+      (try (number ($to_stream [1])) catch TypeError $err/message)
+    """, "\"parameter 'x' expected Int, got Stream; if this function should receive individual items, use '=>' in the pipeline\""
+
+  test "field labels keep their declaring type and index":
+    ck """
+      (type Record ^props {^name Str})
+      (try (Record ^name 7) catch TypeError $err/where)
+    """, "\"field 'name' for Record\""
+    ck """
+      (type Record ^props {^name Str})
+      (let record (Record ^name "ok"))
+      (try (set record/name 7) catch TypeError $err/where)
+    """, "\"field 'name' for Record\""
+    ck """
+      (type Pair ^body [Int Str])
+      (try (Pair 1 7) catch TypeError $err/where)
+    """, "\"body field 1 for Pair\""
+
+suite "vm — fused stdlib paths":
+  test "static paths fuse while dynamic message and special paths keep their forms":
+    let chunk = compileSource("$math/pi")
+    check chunk.instructions[0].op == opLoadStdlibPath
+    check chunk.stdlibCacheSlots == 3
+    for source in ["$this_mod", "$this_pkg", "($math/.size)",
+                   "(let key \"pi\") $math/%key"]:
+      let other = compileSource(source)
+      for inst in other.instructions:
+        check inst.op != opLoadStdlibPath
+
+  test "one chunk respects separate module roots and host-local shadowing":
+    let chunk = compileSource("$math/value")
+    let first = testStdlibRoot("first")
+    let second = testStdlibRoot("second")
+    check run(chunk, first).print() == "\"first\""
+    check run(chunk, second).print() == "\"second\""
+    check run(chunk, first).print() == "\"first\""
+    let child = newScope(first)
+    let localGene = newScope()
+    localGene.define("math", testNamespace("math", "shadow"))
+    child.define("gene", newNamespace("gene", localGene))
+    check run(chunk, child).print() == "\"shadow\""
+    check run(chunk, first).print() == "\"first\""
+
+  test "member and intermediate namespace replacement invalidate borrowed entries":
+    let root = testStdlibRoot("first")
+    let chunk = compileSource("$math/value")
+    check run(chunk, root).print() == "\"first\""
+    let geneScope = root.lookup("gene").nsScope
+    geneScope.lookup("math").nsScope.assign("value", newStr("second"))
+    check run(chunk, root).print() == "\"second\""
+    geneScope.assign("math", testNamespace("math", "replacement"))
+    GC_fullCollect()
+    check run(chunk, root).print() == "\"replacement\""
+    let middle = newScope()
+    middle.define("leaf", testNamespace("leaf", "deep"))
+    geneScope.define("nested", newNamespace("nested", middle))
+    let deep = compileSource("$nested/leaf/value")
+    check run(deep, root).print() == "\"deep\""
+    middle.assign("leaf", testNamespace("leaf", "deep replacement"))
+    GC_fullCollect()
+    check run(deep, root).print() == "\"deep replacement\""
+    root.assign("gene", testStdlibRoot("new root").lookup("gene"))
+    GC_fullCollect()
+    check run(chunk, root).print() == "\"new root\""
+    when compileOption("threads") and defined(gcAtomicArc):
+      check chunk.dispatchCache.len == 0
+
+  test "slot writes and missing names remain visible":
+    let root = newGlobalScope()
+    discard run(compileSource("(ns example (var value \"first\"))"), root)
+    let example = root.lookup("example")
+    let isolated = testStdlibRoot("unused")
+    isolated.lookup("gene").nsScope.assign("math", example)
+    let chunk = compileSource("$math/value")
+    check run(chunk, isolated).print() == "\"first\""
+    let stamp = example.nsScope.namesGen
+    example.nsScope.assign("value", newStr("second"))
+    check example.nsScope.namesGen == stamp
+    check run(chunk, isolated).print() == "\"second\""
+    let missing = compileSource("$math/later")
+    check run(missing, isolated).kind == vkVoid
+    example.nsScope.define("later", newStr("added"))
+    check run(missing, isolated).print() == "\"added\""
+
+  test "non-namespace members and missing-call argument errors keep ordinary traversal":
+    let root = testStdlibRoot("unused")
+    var fields = initPropTable()
+    fields["value"] = newStr("map member")
+    root.lookup("gene").nsScope.assign("math", newMap(fields))
+    check run(compileSource("$math/value"), root).print() == "\"map member\""
+    ck """
+      (try ($math/nope ($parse/parse_int "bad"))
+        catch ParseError "argument failed first")
+    """, "\"argument failed first\""
+
+  test "fused and expanded loads charge identical evaluation steps":
+    let fused = compileSource("$math/pi")
+    let expanded = cloneCompiledChunk(fused)
+    expanded.instructions.setLen(0)
+    expanded.instructionLocs.setLen(0)
+    expanded.stdlibCacheSlots = 0
+    for i, inst in fused.instructions:
+      if inst.op == opLoadStdlibPath:
+        for part in [Instruction(op: opLoadName, name: "gene"),
+                     Instruction(op: opPushConst, intArg: inst.intArg),
+                     Instruction(op: opApplySelectorTop)]:
+          expanded.instructions.add part
+          expanded.instructionLocs.add fused.instructionLocs[i]
+      else:
+        expanded.instructions.add inst
+        expanded.instructionLocs.add fused.instructionLocs[i]
+    for limit in 1'i64 .. 8'i64:
+      var outcomes: seq[string]
+      var remaining: seq[int64]
+      for code in [fused, expanded]:
+        let scope = newGlobalScope()
+        scope.evalBudget = EvalBudget(remaining: limit)
+        try: outcomes.add run(code, scope).print()
+        except GeneError as error: outcomes.add error.msg
+        remaining.add scope.evalBudget.remaining
+      check outcomes[0] == outcomes[1]
+      check remaining[0] == remaining[1]
+
+  test "GIR roundtrips extra cache layout and rejects corrupt offsets":
+    let chunk = compileSource("[$math/pi $math/abs]")
+    let artifact = ExecutableGir(entryIdentity: "test/stdlib",
+      modules: @[CompiledModule(identity: "test/stdlib", chunk: chunk,
+        macroExports: initTable[string, MacroDef](), syntaxFnExports: @[],
+        compileInterface: CompileNamespaceInterface(
+          entries: initTable[string, CompileInterfaceEntry]()))])
+    let decoded = decodeExecutableGir(encodeExecutableGir(artifact))
+    check decoded.modules[0].chunk.stdlibCacheSlots == chunk.stdlibCacheSlots
+    check decoded.modules[0].chunk.dispatchCache.len == 0
+    inc chunk.instructions[0].depth
+    expect ValueError:
+      discard decodeExecutableGir(encodeExecutableGir(artifact))
+
+  test "a loop of fused loads still yields for cancellation and cleanup":
+    withoutGeneWorkers:
+      let scope = newGlobalScope()
+      var cancelled = false
+      try:
+        discard run(compileSource("""
+          (var started ($cell false))
+          (var cleaned ($cell 0))
+          (scope
+            (let task (spawn ^lane root
+              (try
+                (started .set true)
+                (while true ($math/abs -1))
+                ensure (cleaned .set (+ cleaned/.get 1)))))
+            (spawn ^lane root
+              (do (while (! started/.get) ($sleep 0)) (task .cancel)))
+            (await task))
+        """), scope)
+      except GeneCancel:
+        cancelled = true
+      check cancelled
+      check scope.lookup("started").cellValue.boolVal
+      check scope.lookup("cleaned").cellValue.intVal == 1
+
+suite "vm — scalar call binding":
+  test "compiler admits only the supported calling shapes":
+    for source in [
+      "(fn f [x : F64] : F64 (if (> x 0.0) x 0.0))",
+      "(fn f [x : Str] (if (== x \"\") \"empty\" x))",
+      "(fn f [x : Any] : Any (if ($absent? x) nil x))",
+      "(fn f [x : Int] (if (> x 0) x 0))",
+      "(fn f [] : Str (if true \"a\" \"b\"))"]:
+      let proto = compileSource(source).functions[^1]
+      check proto.fastBindPositionalScalars
+      check not proto.simpleCall
+    for source in [
+      "(fn f [x : I8] x)",
+      "(fn f [x : Str = \"a\"] x)",
+      "(fn f [^x : Str] x)",
+      "(fn f [xs... : Str] xs)",
+      "(fn (f item) [x : item] x)",
+      "(fn f ^^generator [x : Int] (yield x))"]:
+      check not compileSource(source).functions[^1].fastBindPositionalScalars
+
+  test "GIR retains and validates the scalar binding proof":
+    let chunk = compileSource("(fn f [x : Str] : Str (if (== x \"\") \"a\" x)) (f \"ok\")")
+    let artifact = ExecutableGir(entryIdentity: "test/scalar",
+      modules: @[CompiledModule(identity: "test/scalar", chunk: chunk,
+        macroExports: initTable[string, MacroDef](), syntaxFnExports: @[],
+        compileInterface: CompileNamespaceInterface(
+          entries: initTable[string, CompileInterfaceEntry]()))])
+    let decoded = decodeExecutableGir(encodeExecutableGir(artifact))
+    check decoded.modules[0].chunk.functions[0].fastBindPositionalScalars
+    check run(decoded.modules[0].chunk, newGlobalScope()).print() == "\"ok\""
+    chunk.functions[0].paramTypes[0] = newSym("I8")
+    expect ValueError:
+      discard encodeExecutableGir(artifact)
+
+  test "captured parameter setters keep the activation contract":
+    ck """
+      (fn setter [x : Str] : Any (fn [value] (set x value) x))
+      (let write (setter "first"))
+      (let valid (write "second"))
+      (let failure (try (write 7) catch TypeError $err/where))
+      [valid failure (write "third")]
+    """, "[\"second\" \"set 'x'\" \"third\"]"
+
+  test "host scope access sees parameter names and enforces typed updates":
+    let scope = newGlobalScope()
+    scope.define("parameter_x", newNativeCallFn("parameter_x", nativeParameterX))
+    check run(compileSource("""
+      (fn read [x : Str] : Str (parameter_x))
+      (fn update [x : Str] : Str (parameter_x "changed"))
+      (fn reject [x : Str] : Str (parameter_x 7))
+      [(read "initial") (update "initial")
+       (try (reject "initial") catch TypeError $err/where)
+       (read "last")]
+    """), scope).print() ==
+      "[\"initial\" \"changed\" \"set 'x'\" \"last\"]"
+
+  test "direct outer computed spread and callback calls share scalar checks":
+    ck """
+      (fn number [x : F64] : F64 (if (> x 0.0) (+ x 1.0) 0.0))
+      (fn outer [] : F64 (number 2.0))
+      [(number 1.0) (outer) ((if true number nil) 3.0)
+       (number [4.0]...) ($map [5.0 6.0] number)
+       (try (number 1) catch TypeError $err/where)]
+    """, "[2.0 3.0 4.0 5.0 [6.0 7.0] \"parameter 'x'\"]"
+
+  test "pooled scalar and Any calls do not retain another call's contract":
+    ck """
+      (fn text [x : Str] : Str (if (== x "") "empty" x))
+      (fn dynamic [x : Any] : Any (set x [x]) x)
+      (fn integer [x : Int] (if (> x 0) x 0))
+      (var last nil)
+      (repeat i in 100
+        (text "ok")
+        (integer 1)
+        (set last (dynamic "value")))
+      [last (try (text 1) catch TypeError $err/where) (integer 2)]
+    """, "[[\"value\"] \"parameter 'x'\" 2]"
+
+suite "vm — plain native dispatch":
+  test "zero local outer computed and variadic calls keep returned heap values":
+    let scope = newGlobalScope()
+    scope.define("identity", newNativeFn("identity", nativeIdentity))
+    scope.define("pack", newNativeFn("pack", nativePack))
+    check run(compileSource("""
+      (let zero pack)
+      (let outer identity)
+      (fn invoke []
+        (let local identity)
+        [(zero) (local ["one"]) (outer ["outer"])
+         ((if true identity pack) ["computed"])
+         (pack "x" 2 true) ((if true pack identity) "a" 2)])
+      [(zero) (invoke)]
+    """), scope).print() ==
+      "[[] [[] [\"one\"] [\"outer\"] [\"computed\"] [\"x\" 2 true] [\"a\" 2]]]"
+
+  test "arity errors leave the stack usable and named calls keep their validation":
+    let scope = newGlobalScope()
+    scope.define("identity", newNativeFn("identity", nativeIdentity))
+    check run(compileSource("""
+      (try (identity) catch Any nil)
+      (identity "ok")
+    """), scope).print() == "\"ok\""
+    expect GeneError:
+      discard run(compileSource("(identity ^extra 1 \"ignored\")"), scope)
+
+  test "plain natives can reenter Gene callbacks":
+    let scope = newGlobalScope()
+    scope.define("reenter", newNativeFn("reenter", nativeReenter))
+    check run(compileSource("""
+      (fn increment [x] (if (> x 0) (+ x 1) 0))
+      [(reenter increment 41) ((if true reenter nil) increment 9)]
+    """), scope).print() == "[42 10]"
+
+  test "plain-native bridges preserve timer suspension and frame requests":
+    withoutGeneWorkers:
+      let scope = newGlobalScope()
+      scope.define("bridge", newNativeFn("bridge", nativeBridge))
+      nativeBridgeScope = scope
+      try:
+        nativeBridgeTarget = scope.lookup("gene").nsScope.lookup("sleep")
+        check run(compileSource("""
+          (let job (spawn (do (bridge 1) 42)))
+          (await job)
+        """), scope).print() == "42"
+        let mappedScope = newGlobalScope()
+        mappedScope.define("bridge", newNativeFn("bridge", nativeBridge))
+        nativeBridgeScope = mappedScope
+        nativeBridgeTarget = mappedScope.lookup("gene").nsScope.lookup("map")
+        check run(compileSource("""
+          (let mapped (spawn
+            ((if true bridge nil) [1 2]
+              (fn [x] ($sleep 1) (+ x 1)))))
+          (await mapped)
+        """), mappedScope).print() == "[2 3]"
+      finally:
+        nativeBridgeTarget = NIL
+        nativeBridgeScope = nil
 
 suite "vm — named arguments":
   test "function calls bind node props to named parameters":
