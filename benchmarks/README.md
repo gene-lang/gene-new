@@ -91,11 +91,12 @@ Workload version 2 uses the supported scripted profile and checks completed
 round receipts and exact file contents. It is not directly comparable with the
 October 4 callback-based capture; compare runtime binaries on the same current
 probe. Scripted response preparation and service startup are outside its timer.
-The existing native numeric workload is
-`bin/gene run examples/miclone/probes/run_worldgen.gene --repeat-seconds 10`.
-It executes the server's real generation code. Miclone's client mesher runs in
-V8; profile `tools/mesh_bench.mjs` separately when considering web-backend work,
-and do not attribute its timings to the native VM.
+The native numeric workload lives in the standalone Miclone repository
+(`../miclone` beside this checkout): `gene run worldgen --repeat-seconds 10`
+there executes the server's real generation code.
+Miclone's client mesher runs in V8; profile its `tools/mesh_bench.mjs`
+separately when considering web-backend work, and do not attribute its timings
+to the native VM.
 
 For a reproducible uninstrumented service comparison, build both CLIs first,
 then run (from the repository root):
@@ -114,7 +115,7 @@ hashes, version/build information, source diff, result checksums, service timing
 and whole-process timing distributions. Snapshot capture and startup fall in
 the whole-process time only. Keep builds and profiling out of the
 measurement window. The workspaces stay under the output directory for inspection;
-only logs and summaries belong in a checked-in baseline.
+see [baselines](baselines/README.md) for what to check in.
 
 On macOS, `sample PID 10 1 -mayDie -file REPORT` captures native stacks.
 `bin/gene run benchmarks/summarize_sample.gene REPORT` accounts for main-thread

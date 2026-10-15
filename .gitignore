@@ -36,7 +36,6 @@ tests/*
 benchmarks/bench_core
 benchmarks/bench_self_type
 benchmarks/bench_pipeline
-benchmarks/bench_native_format
 
 # Built by `nimble wasm`; see web/README.md.
 web/gene.js
