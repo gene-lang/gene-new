@@ -277,8 +277,8 @@ the exported ABI through Node.
 For a fresh isolated artifact with shared value-operation and lifetime checks,
 follow the [wasm qualification audit](profiles/native-app.md#wasm-and-backend-parity).
 Its browser driver is Gene; the same host-side checks run in Node and Chromium.
-This leaves the tracked playground artifact untouched until it is regenerated
-deliberately with `nimble wasm`.
+The browser playground in `web/` loads the `nimble wasm` output; see
+[its README](../web/README.md).
 
 ## Native interop
 
