@@ -14,6 +14,23 @@ proc dataError(source: string): string =
   except CatchableError as error:
     error.msg
 
+suite "owned byte slices":
+  test "preserves binary bytes, empty boundaries, and source lifetime":
+    check evalData("""
+      (fn sliced []
+        (let input ($binary/from_list [0 255 128 65 0]))
+        ($binary/slice input 1 3))
+      [($binary/to_list (sliced))
+       ($binary/to_list ($binary/slice ($binary/from_list []) 0 0))
+       ($binary/to_list ($binary/slice ($binary/from_list [1 2]) 2 0))]
+    """).print() == "[[255 128 65] [] []]"
+
+  test "rejects negative, oversized, and overflowing ranges":
+    for bounds in ["-1 1", "0 -1", "3 0", "1 2",
+                   "9223372036854775807 1", "1 9223372036854775807"]:
+      check "bytes/slice range out of bounds" in dataError(
+        "($binary/slice ($binary/from_list [1 2]) " & bounds & ")")
+
 suite "UTF-8 byte decoding":
   test "decodes valid documents including empty text and non-ASCII characters":
     check evalData("($binary/decode_utf8 ($binary/from_str \"héllo 世界\"))").print() ==

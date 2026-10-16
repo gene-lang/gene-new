@@ -1,0 +1,27 @@
+diff --git a/src/gene/stdlib.nim b/src/gene/stdlib.nim
+index 8ba590d9..d1ba6ffb 100644
+--- a/src/gene/stdlib.nim
++++ b/src/gene/stdlib.nim
+@@ -340,12 +340,19 @@ proc biBytesSlice(args: openArray[Value]): Value {.nimcall.} =
+   requireBytes("binary/slice", args[0])
+   if args[1].kind != vkInt or args[2].kind != vkInt:
+     raise newException(GeneError, "bytes/slice start and len must be Int")
+-  let total = args[0].bytesVal.len
++  let payload = args[0].bytesVal
++  let total = payload.len
+   let start = args[1].intVal
+   let count = args[2].intVal
+-  if start < 0 or count < 0 or start + count > total:
++  if start < 0 or count < 0 or start > total or count > int64(total) - start:
+     raise newException(GeneError, "bytes/slice range out of bounds")
+-  newBytes(args[0].bytesVal[int(start) ..< int(start + count)])
++  # Nim's generic string slice copies one character at a time. This path is
++  # hot in write_all after partial pipe writes; preserve an owned slice while
++  # using the native bulk copy rather than repeating that byte loop.
++  var sliced = newString(int(count))
++  if count > 0:
++    copyMem(addr sliced[0], unsafeAddr payload[int(start)], int(count))
++  newBytes(move sliced)
+ 
+ proc biBytesFromStr(args: openArray[Value]): Value {.nimcall.} =
+   ## The string's UTF-8 encoding, which is what a wire format wants.

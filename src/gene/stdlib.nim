@@ -340,12 +340,19 @@ proc biBytesSlice(args: openArray[Value]): Value {.nimcall.} =
   requireBytes("binary/slice", args[0])
   if args[1].kind != vkInt or args[2].kind != vkInt:
     raise newException(GeneError, "bytes/slice start and len must be Int")
-  let total = args[0].bytesVal.len
+  let payload = args[0].bytesVal
+  let total = payload.len
   let start = args[1].intVal
   let count = args[2].intVal
-  if start < 0 or count < 0 or start + count > total:
+  if start < 0 or count < 0 or start > total or count > int64(total) - start:
     raise newException(GeneError, "bytes/slice range out of bounds")
-  newBytes(args[0].bytesVal[int(start) ..< int(start + count)])
+  # Nim's generic string slice copies one character at a time. This path is
+  # hot in write_all after partial pipe writes; preserve an owned slice while
+  # using the native bulk copy rather than repeating that byte loop.
+  var sliced = newString(int(count))
+  if count > 0:
+    copyMem(addr sliced[0], unsafeAddr payload[int(start)], int(count))
+  newBytes(move sliced)
 
 proc biBytesFromStr(args: openArray[Value]): Value {.nimcall.} =
   ## The string's UTF-8 encoding, which is what a wire format wants.
@@ -2235,8 +2242,44 @@ proc osExecText(name: string, value: Value, scope: Scope): string =
   if '\0' in result:
     raiseOsError(name & " must not contain NUL", scope)
 
+proc osExecEnvironmentKey(name: string): string =
+  when defined(windows): name.toUpperAscii()
+  else: name
+
+proc osExecEnvironment(name: string, value: Value,
+                       scope: Scope): Option[seq[string]] =
+  requirePropMap(name & " ^env", value)
+  if value.mapEntries.len == 0: return none(seq[string])
+  var values = initOrderedTable[string, tuple[name, value: string]]()
+  for key, text in envPairs():
+    values[osExecEnvironmentKey(key)] = (key, text)
+  var seen = initHashSet[string]()
+  for key, item in value.mapEntries:
+    if key.len == 0 or '=' in key or '\0' in key:
+      raiseOsError(name & " ^env has an invalid variable name", scope)
+    let canonical = osExecEnvironmentKey(key)
+    if canonical in seen:
+      raiseOsError(name & " ^env has conflicting variable names: " & key, scope)
+    seen.incl canonical
+    if item.kind == vkNil:
+      values.del(canonical)
+    else:
+      let text = osExecText(name & " ^env ^" & key, item, scope)
+      if canonical == "PATH":
+        if text.len == 0: continue
+        let inherited = values.getOrDefault(canonical).value
+        values[canonical] = (key, text &
+          (if inherited.len > 0: $PathSep & inherited else: ""))
+      else:
+        values[canonical] = (key, text)
+  var entries: seq[string]
+  for _, item in values:
+    entries.add item.name & "=" & item.value
+  some(entries)
+
 proc parseOsExecCommand(name: string, args: openArray[Value],
-                        call: ptr NativeCall): tuple[cmd: string, args: seq[string], full: bool] =
+                        call: ptr NativeCall): tuple[cmd: string, args: seq[string],
+                        full: bool, directory: string, environment: Option[seq[string]]] =
   ## Positional argv is literal. Shell parsing requires an explicit ^^full and
   ## exactly one command string. Keep the named form for existing callers, but
   ## do not guess how to combine it with positional arguments.
@@ -2259,6 +2302,18 @@ proc parseOsExecCommand(name: string, args: openArray[Value],
         if value.kind != vkBool:
           raiseOsError(name & " ^full expects Bool", scope)
         full = value.boolVal
+      of "dir":
+        result.directory = osExecText(name & " ^dir", value, scope)
+        if result.directory.len > 0:
+          try:
+            when defined(posix) and not defined(emscripten) and not defined(geneWasm):
+              result.directory = resolveProcessDirectory(result.directory)
+            else:
+              result.directory = absolutePath(result.directory)
+          except OSError as error:
+            raiseOsError(name & " ^dir: " & error.msg, scope)
+      of "env":
+        result.environment = osExecEnvironment(name, value, scope)
       else: discard # Each exec variant validates its own remaining options.
   if namedCmd or namedArgs:
     if args.len != 0 or full:
@@ -2277,7 +2332,13 @@ proc parseOsExecCommand(name: string, args: openArray[Value],
     result.full = true
     when defined(windows):
       result.args = @["/d", "/s", "/c", result.cmd]
-      result.cmd = getEnv("COMSPEC", "cmd.exe")
+      if result.environment.isSome:
+        result.cmd = "cmd.exe"
+        for entry in result.environment.get:
+          if entry.len >= 8 and entry[0 .. 7].toUpperAscii() == "COMSPEC=":
+            result.cmd = entry[8 .. ^1]
+      else:
+        result.cmd = getEnv("COMSPEC", "cmd.exe")
     else:
       result.args = @["-c", result.cmd]
       result.cmd = "/bin/sh"
@@ -2285,16 +2346,36 @@ proc parseOsExecCommand(name: string, args: openArray[Value],
     for i in 1 ..< args.len:
       result.args.add osExecText(name & " argument " & $i, args[i], scope)
 
+const nativeProcessBackend = defined(posix) and not defined(emscripten) and
+                             not defined(geneWasm)
+when nativeProcessBackend:
+  type OsExecProcess = ProcessHandle
+else:
+  type OsExecProcess = Process
+
 proc startOsExecProcess(cmd, workingDir: string, args: seq[string], full: bool,
-                         options: set[ProcessOption]): Process =
-  when defined(windows):
-    if full:
-      # cmd.exe parses its command tail itself. Normal argv quoting would add
-      # backslashes around embedded quotes, changing the user's shell command.
-      # On Windows poEvalCommand supplies CreateProcess with a raw command line.
-      return startProcess(quoteShellWindows(cmd) & " /d /s /c \"" & args[^1] & "\"",
-        workingDir = workingDir, options = options + {poEvalCommand})
-  startProcess(cmd, workingDir = workingDir, args = args, options = options)
+                         options: set[ProcessOption],
+                         environment = none(seq[string])): OsExecProcess =
+  when nativeProcessBackend:
+    launchProcess(cmd, args, workingDir, environment,
+      inheritStdio = poParentStreams in options,
+      mergeStderr = poStdErrToStdOut in options, ownGroup = poDaemon in options)
+  else:
+    var childEnv: StringTableRef
+    if environment.isSome:
+      childEnv = newStringTable(when defined(windows): modeCaseInsensitive
+                                else: modeCaseSensitive)
+      for entry in environment.get:
+        let separator = entry.find('=')
+        childEnv[entry[0 ..< separator]] = entry[separator + 1 .. ^1]
+    when defined(windows):
+      if full:
+        # Preserve cmd.exe's raw command-tail quoting.
+        return startProcess(quoteShellWindows(cmd) & " /d /s /c \"" & args[^1] & "\"",
+          workingDir = workingDir, env = childEnv,
+          options = options + {poEvalCommand})
+    startProcess(cmd, workingDir = workingDir, args = args,
+                 env = childEnv, options = options)
 
 proc biOsExecAsyncImpl(name: string, wantChan, inheritStdio: bool,
                        args: openArray[Value], call: ptr NativeCall): Value
@@ -2317,26 +2398,26 @@ proc biOsExec(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   let procArgs = command.args
   var timeoutMs = -1
   var maxBytes = osExecDefaultOutputCap
-  var workdir = ""
+  let workdir = command.directory
   if call != nil:
     for i, name in call[].namedNames:
       let v = call[].namedValues[i]
       case name
-      of "cmd", "args", "full": discard
+      of "cmd", "args", "full", "dir", "env": discard
       of "timeout_ms": timeoutMs = int(requireInt64("os/exec ^timeout_ms", v))
       of "max_bytes": maxBytes = int(requireInt64("os/exec ^max_bytes", v))
-      of "dir":
-        requireStr("os/exec ^dir", v)
-        workdir = v.strVal
       else:
         raiseOsError("os/exec got unexpected named argument: " & name, scope)
   if maxBytes <= 0:
     maxBytes = osExecDefaultOutputCap
-  var process: Process
+  var process: OsExecProcess
   try:
-    process = startOsExecProcess(cmd, workdir, procArgs, command.full, {poUsePath})
+    process = startOsExecProcess(cmd, workdir, procArgs, command.full, {poUsePath},
+                                 command.environment)
   except OSError as e:
     raiseOsError("os/exec could not start '" & cmd & "': " & e.msg, scope)
+  when nativeProcessBackend:
+    process.closeInput()
   var outText = ""
   var errText = ""
   var outTruncated = false
@@ -2363,7 +2444,21 @@ proc biOsExec(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   # (a large API response) blocks on write, never exits, and hits the timeout
   # with its output lost. Non-blocking reads also let the wall-clock timeout
   # fire on a child that produces no output (the `sleep` case).
-  when defined(posix):
+  when nativeProcessBackend:
+    var exitCode: int
+    try:
+      let pump = newProcessPump(process, maxBytes, timeoutMs)
+      pump.runProcessPump()
+      exitCode = pump.status
+      outText = pump.output[0]
+      errText = pump.output[1]
+      outTruncated = pump.truncated[0]
+      errTruncated = pump.truncated[1]
+      timedOut = pump.timedOut
+      if pump.failure.len > 0: raiseOsError("os/exec " & pump.failure, scope)
+    finally:
+      process.close()
+  elif defined(posix):
     let outFd = process.outputHandle.cint
     let errFd = process.errorHandle.cint
     discard fcntl(outFd, F_SETFL, fcntl(outFd, F_GETFL, 0) or O_NONBLOCK)
@@ -2426,7 +2521,7 @@ proc biOsExecStream(args: openArray[Value], call: ptr NativeCall): Value {.nimca
   let procArgs = command.args
   var timeoutMs = -1
   var maxBytes = osExecDefaultOutputCap
-  var workdir = ""
+  let workdir = command.directory
   var stdoutCb = NIL
   var stdoutLineCb = NIL
   var stderrCb = NIL
@@ -2434,12 +2529,9 @@ proc biOsExecStream(args: openArray[Value], call: ptr NativeCall): Value {.nimca
     for i, name in call[].namedNames:
       let v = call[].namedValues[i]
       case name
-      of "cmd", "args", "full": discard
+      of "cmd", "args", "full", "dir", "env": discard
       of "timeout_ms": timeoutMs = int(requireInt64("os/exec_stream ^timeout_ms", v))
       of "max_bytes": maxBytes = int(requireInt64("os/exec_stream ^max_bytes", v))
-      of "dir":
-        requireStr("os/exec_stream ^dir", v)
-        workdir = v.strVal
       of "stdout":
         stdoutCb = v
       of "stdout_line":
@@ -2451,11 +2543,14 @@ proc biOsExecStream(args: openArray[Value], call: ptr NativeCall): Value {.nimca
   if maxBytes <= 0:
     maxBytes = osExecDefaultOutputCap
 
-  var process: Process
+  var process: OsExecProcess
   try:
-    process = startOsExecProcess(cmd, workdir, procArgs, command.full, {poUsePath})
+    process = startOsExecProcess(cmd, workdir, procArgs, command.full, {poUsePath},
+                                 command.environment)
   except OSError as e:
     raiseOsError("os/exec_stream could not start '" & cmd & "': " & e.msg, scope)
+  when nativeProcessBackend:
+    process.closeInput()
 
   var outText = ""
   var errText = ""
@@ -2509,7 +2604,23 @@ proc biOsExecStream(args: openArray[Value], call: ptr NativeCall): Value {.nimca
     appendCapped(errText, errTruncated, chunk)
 
   try:
-    when defined(posix):
+    when nativeProcessBackend:
+      let pump = newProcessPump(process, 0, timeoutMs,
+        stdout = handleStdoutChunk, stderr = handleStderrChunk)
+      pump.runProcessPump()
+      timedOut = pump.timedOut
+      if pump.failure.len > 0: raiseOsError("os/exec_stream " & pump.failure, scope)
+      finishStdoutLine()
+      var props = initPropTable()
+      props["status"] = newInt(pump.status)
+      props["stdout"] = newStr(outText)
+      props["stderr"] = newStr(errText)
+      props["stdout_truncated"] = newBool(outTruncated)
+      props["stderr_truncated"] = newBool(errTruncated)
+      props["truncated"] = newBool(outTruncated or errTruncated)
+      props["timed_out"] = newBool(timedOut)
+      return newMap(props)
+    elif defined(posix):
       let outFd = process.outputHandle.cint
       let errFd = process.errorHandle.cint
       discard fcntl(outFd, F_SETFL, fcntl(outFd, F_GETFL, 0) or O_NONBLOCK)
@@ -2575,7 +2686,7 @@ proc biOsExecStream(args: openArray[Value], call: ptr NativeCall): Value {.nimca
     process.close()
 
 when compileOption("threads"):
-  when defined(posix):
+  when defined(posix) and not nativeProcessBackend:
     {.emit: """
 #include <signal.h>
 #include <pthread.h>
@@ -2621,6 +2732,12 @@ static int gene_os_exec_finish_stdin(int fd) {
   # and manipulate process-wide SIGINT disposition. Serialize both surfaces.
   var osExecStdioLock: Lock
   initLock(osExecStdioLock)
+  when nativeProcessBackend:
+    # The monitor lease lasts for the process lifetime. A synchronous handoff
+    # can therefore wake queued async handoffs safely after releasing the lock.
+    var osExecStdioWake: Atomic[pointer]
+    proc wakeOsExecStdioWaiters() =
+      signalWake(cast[NativeWakeSignal](osExecStdioWake.load(moAcquire)))
 
 proc biOsExecStdio(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   ## Run a subprocess attached to this process's stdin/stdout/stderr and return
@@ -2630,26 +2747,24 @@ proc biOsExecStdio(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
   let command = parseOsExecCommand("os/exec_stdio", args, call)
   let cmd = command.cmd
   let procArgs = command.args
-  var workdir = ""
+  let workdir = command.directory
   if call != nil:
     for i, name in call[].namedNames:
       let v = call[].namedValues[i]
       case name
-      of "cmd", "args", "full": discard
-      of "dir":
-        requireStr("os/exec_stdio ^dir", v)
-        workdir = v.strVal
+      of "cmd", "args", "full", "dir", "env": discard
       else:
         raiseOsError("os/exec_stdio got unexpected named argument: " & name, scope)
   when compileOption("threads"):
     acquire(osExecStdioLock)
-  var process: Process
+  var process: OsExecProcess
   try:
     process = startOsExecProcess(cmd, workdir, procArgs, command.full,
-                                {poUsePath, poParentStreams})
+                                {poUsePath, poParentStreams}, command.environment)
   except OSError as e:
     when compileOption("threads"):
       release(osExecStdioLock)
+      when nativeProcessBackend: wakeOsExecStdioWaiters()
     raiseOsError("os/exec_stdio could not start '" & cmd & "': " & e.msg, scope)
   # system(3) semantics: the child owns the terminal, so Ctrl-C must reach the
   # child (and whatever it runs), not kill this process while it waits.
@@ -2667,18 +2782,13 @@ proc biOsExecStdio(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
         discard sigaction(SIGINT, oldInt, nil)
     when compileOption("threads"):
       release(osExecStdioLock)
+      when nativeProcessBackend: wakeOsExecStdioWaiters()
     process.close()
 
-# --- os/exec_async + os/exec_stream_async: subprocess on a dedicated thread ---
-#
-# The synchronous exec natives block the scheduler thread, freezing every
-# fiber (and the net/http event loop) for the duration of the child. These
-# variants run the child on a dedicated OS thread and settle an external
-# Task, following the proven
-# foreign-thread pattern (tests/test_native_api_threads.nim, the aio worker's
-# runAsyncIoRequest): every value crossing threads is markSharedValue'd so its
-# refcount is atomic, handoff goes through the lock-protected channel/task
-# paths, and the worker never runs Gene code.
+# --- Async exec: native monitoring with owning-lane Task settlement ---
+# POSIX children share one readiness monitor, with inherited terminal handoffs
+# serialized. Legacy platforms use workers. Producers never run Gene
+# code or operate on GC-managed objects owned by the scheduler.
 
 when compileOption("threads"):
   # Job records cross the scheduler->worker thread boundary. On the default
@@ -2713,6 +2823,8 @@ when compileOption("threads"):
       name: SharedExecText
       cmd: SharedExecText
       procArgs: ptr SharedExecArg
+      processEnv: ptr SharedExecArg
+      hasEnvironment: bool
       workdir: SharedExecText
       inheritStdio: bool
       full: bool
@@ -2743,12 +2855,19 @@ when compileOption("threads"):
       # settles — wakes would be lost and fibers parked on the task/channel
       # would never resume.
       schedulerPtr: pointer
+      notified: bool
+      producerQueued: bool
+      when nativeProcessBackend:
+        completionWake: NativeWakeSignal
+        controlWake: NativeWakeSignal
+        nextMonitor: ptr OsExecAsyncCtx
       # Release-stored by the worker loop AFTER its final access to this job;
       # the scheduler frees the ctx (and drops the task/channel refs) only after
       # acquiring it. The scheduler then materializes and publishes the result.
       workerDone: bool
     OsExecPending {.acyclic.} = ref object
       ctx: ptr OsExecAsyncCtx
+      schedulerOwner: SchedulerState
       fileErrorScope: Scope
       filePath: string
       taskOwner: Value
@@ -2794,6 +2913,11 @@ when compileOption("threads"):
   proc freeOsExecCtx(ctx: ptr OsExecAsyncCtx) =
     if ctx == nil:
       return
+    when nativeProcessBackend:
+      if ctx.completionWake != nil:
+        if not ctx.producerQueued: releaseWake(ctx.completionWake)
+        releaseWake(ctx.completionWake)
+      releaseWake(ctx.controlWake)
     when defined(posix):
       if ctx.stdoutPipeFd >= 0:
         discard posix.close(ctx.stdoutPipeFd)
@@ -2811,21 +2935,20 @@ when compileOption("threads"):
     discard consumeSharedExecText(ctx.resultStderr)
     discard consumeSharedExecText(ctx.resultFailure)
     freeSharedExecLines(ctx.lineHead)
-    var arg = ctx.procArgs
-    while arg != nil:
-      let next = arg.next
-      if arg.text.data != nil:
-        deallocShared(arg.text.data)
-      deallocShared(arg)
-      arg = next
+    for head in [ctx.procArgs, ctx.processEnv]:
+      var arg = head
+      while arg != nil:
+        let next = arg.next
+        if arg.text.data != nil:
+          deallocShared(arg.text.data)
+        deallocShared(arg)
+        arg = next
     deinitLock(ctx.lineLock)
     deallocShared(ctx)
 
-  # Persistent exec-worker pool. Threads are created on demand up to a cap and
-  # kept for later jobs, matching the scheduler's aio lane and avoiding repeated
-  # thread startup for long-lived agents. Jobs queue when all workers are busy;
-  # the cap is generous because jobs can legitimately be long (60s streaming
-  # curl).
+  # Persistent workers handle file jobs and legacy process backends.
+  # Native POSIX children bypass this queue and do
+  # not occupy a worker while they wait or stream.
   const osExecAsyncMaxWorkers = 32
 
   var osExecAsyncLock: Lock
@@ -2852,234 +2975,36 @@ when compileOption("threads"):
       for pending in osExecAsyncPending:
         if pending.ctx != nil and pending.ctx.taskBits == task.bits:
           atomicStoreN(addr pending.ctx.cancelRequested, true, ATOMIC_RELEASE)
+          when nativeProcessBackend:
+            signalWake(pending.ctx.controlWake)
+            signalWake(pending.ctx.completionWake)
           return true
 
-  proc reapStoppedOsExec(process: Process) =
+  proc reapStoppedOsExec(process: OsExecProcess) =
     ## terminate was already requested. A child ignoring it must not strand
     ## cancellation or a configured execution timeout indefinitely.
-    discard process.waitForExit(1000)
-    if process.running:
-      process.kill()
-      discard process.waitForExit()
+    when nativeProcessBackend:
+      discard process.waitExit(1000)
+    else:
+      discard process.waitForExit(1000)
+    if process.running: process.kill()
+    discard process.waitForExit()
 
-  when defined(posix):
-    {.emit: """
-#include <pthread.h>
-#include <signal.h>
-#include <stdlib.h>
-#include <stdatomic.h>
-#include <time.h>
-#include <unistd.h>
-static atomic_int gene_captured_groups[4096];
-static atomic_int gene_captured_spawns, gene_captured_closing;
-static pthread_once_t gene_captured_once = PTHREAD_ONCE_INIT;
-static _Thread_local sigset_t gene_captured_old_mask;
-static int gene_captured_signals[3] = {SIGINT, SIGTERM, SIGHUP};
-static struct sigaction gene_captured_old_actions[3];
-static void gene_captured_cleanup(void) {
-  atomic_store(&gene_captured_closing, 1);
-  for (int i = 0; i < 4096; ++i) {
-    int pid = atomic_load(&gene_captured_groups[i]);
-    if (pid > 0) kill(-pid, SIGKILL);
-  }
-}
-static void gene_captured_signal(int signal, siginfo_t *info, void *context) {
-  int index = 0;
-  while (index < 3 && gene_captured_signals[index] != signal) ++index;
-  if (index == 3) return;
-  struct sigaction *old = &gene_captured_old_actions[index];
-  if (old->sa_handler == SIG_IGN) return;
-  if (old->sa_handler != SIG_DFL) {
-    gene_captured_cleanup();
-    if (old->sa_flags & SA_SIGINFO) old->sa_sigaction(signal, info, context);
-    else old->sa_handler(signal);
-    atomic_store(&gene_captured_closing, 0);
-    return;
-  }
-  atomic_store(&gene_captured_closing, 1);
-  struct timespec start, now;
-  clock_gettime(CLOCK_MONOTONIC, &start);
-  while (atomic_load(&gene_captured_spawns)) {
-    clock_gettime(CLOCK_MONOTONIC, &now);
-    if ((now.tv_sec - start.tv_sec) * 1000000000LL + now.tv_nsec - start.tv_nsec > 1000000000LL) break;
-  }
-  gene_captured_cleanup();
-  sigaction(signal, old, NULL);
-  raise(signal);
-}
-static void gene_captured_init(void) {
-  atexit(gene_captured_cleanup);
-  for (int i = 0; i < 3; ++i) {
-    struct sigaction action = {0};
-    sigemptyset(&action.sa_mask);
-    for (int j = 0; j < 3; ++j) sigaddset(&action.sa_mask, gene_captured_signals[j]);
-    action.sa_flags = SA_SIGINFO;
-    action.sa_sigaction = gene_captured_signal;
-    sigaction(gene_captured_signals[i], &action, &gene_captured_old_actions[i]);
-  }
-}
-static int gene_captured_begin(void) {
-  pthread_once(&gene_captured_once, gene_captured_init);
-  sigset_t mask;
-  sigemptyset(&mask);
-  for (int i = 0; i < 3; ++i) sigaddset(&mask, gene_captured_signals[i]);
-  pthread_sigmask(SIG_BLOCK, &mask, &gene_captured_old_mask);
-  atomic_fetch_add(&gene_captured_spawns, 1);
-  return atomic_load(&gene_captured_closing) ? -1 : 0;
-}
-static int gene_captured_finish(int pid) {
-  int slot = -1;
-  if (pid > 0) {
-    for (int i = 0; i < 4096; ++i) {
-      int empty = 0;
-      if (atomic_compare_exchange_strong(&gene_captured_groups[i], &empty, pid)) { slot = i; break; }
-    }
-    if (slot < 0 || atomic_load(&gene_captured_closing)) kill(-pid, SIGKILL);
-  }
-  atomic_fetch_sub(&gene_captured_spawns, 1);
-  pthread_sigmask(SIG_SETMASK, &gene_captured_old_mask, NULL);
-  return slot;
-}
-static void gene_captured_release(int slot) {
-  if (slot >= 0) atomic_store(&gene_captured_groups[slot], 0);
-}
-""".}
-    proc beginCapturedSpawn(): cint {.importc: "gene_captured_begin", nodecl.}
-    proc finishCapturedSpawn(pid: cint): cint {.importc: "gene_captured_finish", nodecl.}
-    proc releaseCapturedGroup(slot: cint) {.importc: "gene_captured_release", nodecl.}
-  else:
-    proc beginCapturedSpawn(): cint = 0
-    proc finishCapturedSpawn(pid: cint): cint = 0
-    proc releaseCapturedGroup(slot: cint) = discard
+  type CapturedOsExecProcess = OsExecProcess
 
-  when defined(linux) or defined(geneCapturedForkBackend):
-    # Nim's Linux osproc fork path ignores poDaemon. Create the pipes and
-    # process group in a native child, using only async-signal-safe operations
-    # between fork and exec, so cancellation has the same contract as spawn.
-    {.emit: """
-#include <unistd.h>
-#include <fcntl.h>
-#include <errno.h>
-#include <signal.h>
-#include <sys/wait.h>
-static int gene_spawn_captured(const char *cmd, char **argv, const char *dir, int merge,
-                              int *input, int *output, int *error) {
-  int pipes[4][2], made = 0, saved = 0;
-  for (; made < 4; ++made) {
-    if (pipe(pipes[made]) < 0) goto fail;
-    for (int end = 0; end < 2; ++end) {
-      if (pipes[made][end] <= STDERR_FILENO) {
-        int replacement = fcntl(pipes[made][end], F_DUPFD_CLOEXEC, STDERR_FILENO + 1);
-        if (replacement < 0) { ++made; goto fail; }
-        close(pipes[made][end]);
-        pipes[made][end] = replacement;
-      }
-    }
-    if (fcntl(pipes[made][0], F_SETFD, FD_CLOEXEC) < 0 ||
-        fcntl(pipes[made][1], F_SETFD, FD_CLOEXEC) < 0) {
-      ++made; goto fail;
-    }
-  }
-  pid_t pid = fork();
-  if (pid < 0) goto fail;
-  if (pid == 0) {
-    close(pipes[3][0]);
-    sigset_t mask;
-    sigemptyset(&mask);
-    if (setpgid(0, 0) < 0 || sigprocmask(SIG_SETMASK, &mask, NULL) < 0 ||
-        dup2(pipes[0][0], STDIN_FILENO) < 0 ||
-        dup2(pipes[1][1], STDOUT_FILENO) < 0 ||
-        dup2(merge ? pipes[1][1] : pipes[2][1], STDERR_FILENO) < 0 ||
-        (dir[0] && chdir(dir) < 0)) goto child_fail;
-    for (int i = 0; i < 3; ++i) { close(pipes[i][0]); close(pipes[i][1]); }
-    execv(cmd, argv);
-child_fail:
-    saved = errno;
-    while (write(pipes[3][1], &saved, sizeof(saved)) < 0 && errno == EINTR) {}
-    _exit(127);
-  }
-  close(pipes[3][1]);
-  int child_error = 0;
-  ssize_t read_result;
-  do { read_result = read(pipes[3][0], &child_error, sizeof(child_error)); }
-  while (read_result < 0 && errno == EINTR);
-  close(pipes[3][0]);
-  if (read_result != 0) {
-    saved = read_result > 0 ? child_error : errno;
-    kill(pid, SIGKILL);
-    while (waitpid(pid, NULL, 0) < 0 && errno == EINTR) {}
-    made = 3;
-    goto close_fail;
-  }
-  close(pipes[0][0]); close(pipes[1][1]); close(pipes[2][1]);
-  *input = pipes[0][1]; *output = pipes[1][0]; *error = pipes[2][0];
-  return pid;
-fail:
-  saved = errno;
-close_fail:
-  for (int i = 0; i < made; ++i) { close(pipes[i][0]); close(pipes[i][1]); }
-  errno = saved;
-  return -1;
-}
-""".}
-    proc spawnCapturedPosix(cmd: cstring, argv: cstringArray, dir: cstring, merge: cint,
-                           input, output, error: ptr cint): cint
-      {.importc: "gene_spawn_captured", nodecl.}
-    type CapturedOsExecProcess = ref object
-      pid: Pid
-      inputHandle, outputHandle, errorHandle: cint
-      finished: bool
-      exitStatus: int
-    proc startCapturedOsExec(cmd, workingDir: string,
-                            args: seq[string], mergeStderr, full: bool): CapturedOsExecProcess =
-      let executable = if cmd.contains(DirSep): cmd else: findExe(cmd)
-      if executable.len == 0:
-        raiseOSError(OSErrorCode(ENOENT), "command not found: " & cmd)
-      let argv = allocCStringArray(@[cmd] & args)
-      defer: deallocCStringArray(argv)
-      new(result)
-      let pid = spawnCapturedPosix(executable.cstring, argv, workingDir.cstring, cint(mergeStderr),
-        addr result.inputHandle, addr result.outputHandle, addr result.errorHandle)
-      if pid < 0: raiseOSError(osLastError())
-      result.pid = Pid(pid)
-    proc processID(process: CapturedOsExecProcess): int = int(process.pid)
-    proc running(process: CapturedOsExecProcess): bool =
-      if process.finished: return false
-      var status: cint
-      let waited = waitpid(process.pid, status, WNOHANG)
-      if waited == 0 or (waited < 0 and errno == EINTR): return true
-      process.finished = true
-      process.exitStatus = if waited < 0: -1
-        elif WIFEXITED(status): int(WEXITSTATUS(status))
-        elif WIFSIGNALED(status): 128 + int(WTERMSIG(status))
-        else: -1
-      false
-    proc waitForExit(process: CapturedOsExecProcess, timeout = -1): int =
-      let deadline = getMonoTime() + initDuration(milliseconds = max(0, timeout))
-      while process.running:
-        if timeout >= 0 and getMonoTime() >= deadline: return -1
-        os.sleep(1)
-      process.exitStatus
-    proc terminate(process: CapturedOsExecProcess) =
-      discard posix.kill(process.pid, SIGTERM)
-    proc kill(process: CapturedOsExecProcess) =
-      discard posix.kill(process.pid, SIGKILL)
-    proc close(process: CapturedOsExecProcess) =
-      discard posix.close(process.inputHandle)
-      discard posix.close(process.outputHandle)
-      discard posix.close(process.errorHandle)
-  else:
-    type CapturedOsExecProcess = Process
-    proc startCapturedOsExec(cmd, workingDir: string,
-                            args: seq[string], mergeStderr, full: bool): CapturedOsExecProcess =
-      startOsExecProcess(cmd, workingDir, args, full,
-        if mergeStderr: {poUsePath, poDaemon, poStdErrToStdOut}
-        else: {poUsePath, poDaemon})
+  proc startCapturedOsExec(cmd, workingDir: string,
+                          args: seq[string], mergeStderr, full: bool,
+                          environment = none(seq[string])): CapturedOsExecProcess =
+    startOsExecProcess(cmd, workingDir, args, full,
+      if mergeStderr: {poUsePath, poDaemon, poStdErrToStdOut}
+      else: {poUsePath, poDaemon}, environment)
 
   proc stopOsExecGroup(process: CapturedOsExecProcess) =
     ## Captured children own a process group, so shells cannot leave pipeline
     ## or background children running after timeout/cancellation.
-    when defined(posix):
+    when nativeProcessBackend:
+      process.terminateGroup()
+    elif defined(posix):
       let pid = Pid(process.processID)
       if posix.kill(-pid, SIGTERM) != 0:
         # Older/fork-based osproc implementations do not honor poDaemon.
@@ -3089,14 +3014,21 @@ close_fail:
       process.terminate()
 
   proc reapStoppedOsExecGroup(process: CapturedOsExecProcess) =
-    discard process.waitForExit(1000)
-    when defined(posix):
+    when nativeProcessBackend:
+      discard process.waitExit(1000)
+      process.killGroup()
+      if process.running: process.kill()
+      discard process.waitForExit()
+    else:
+      discard process.waitForExit(1000)
+    when defined(posix) and not nativeProcessBackend:
       # Also catch descendants that ignored TERM after their shell exited.
       discard posix.kill(-Pid(process.processID), SIGKILL)
       if process.running: process.kill()
-    else:
+    elif not nativeProcessBackend:
       if process.running: process.kill()
-    if process.running: discard process.waitForExit()
+    when not nativeProcessBackend:
+      if process.running: discard process.waitForExit()
 
   proc pollOsExecAsyncCompletions() =
     pollStdinLineCompletions()
@@ -3109,11 +3041,16 @@ close_fail:
       while i < osExecAsyncPending.len:
         let pending {.cursor.} = osExecAsyncPending[i]
         let ctx = pending.ctx
+        let owner {.cursor.} = cast[SchedulerState](ctx.schedulerPtr)
+        if owner != nil and currentEventLane() != owner.rootLane:
+          inc i
+          continue
         var task {.cursor.}: Value
         task.bits = ctx.taskBits
         let taskCancelled = task.taskCancelled or task.taskCancelRequested
         if taskCancelled:
           atomicStoreN(addr ctx.cancelRequested, true, ATOMIC_RELEASE)
+          when nativeProcessBackend: signalWake(ctx.controlWake)
         let workerDone = atomicLoadN(addr ctx.workerDone, ATOMIC_ACQUIRE)
         let cancelling = taskCancelled or (workerDone and ctx.resultCancelled)
         var lineHead, lineTail: ptr SharedExecLine
@@ -3210,7 +3147,7 @@ close_fail:
             discard consumeSharedExecText(ctx.resultFailure)
             if tryCancelTask(task):
               wakeTaskWaitersIn(cast[SchedulerState](ctx.schedulerPtr), task)
-          endExternalNativeOp()
+          endExternalNativeOp(ctx.notified)
           pending.ctx = nil
           freeOsExecCtx(ctx)
           let last = osExecAsyncPending.high
@@ -3225,6 +3162,619 @@ close_fail:
     pollHttpTlsReloadCompletions()
     pollCursesInputCompletions()
     pollNativeIngressHook()
+
+  when nativeProcessBackend:
+    type
+      ExecLineState = ref object
+        ctx: ptr OsExecAsyncCtx
+        buffer: string
+      NativeExecState = ref object
+        ctx: ptr OsExecAsyncCtx
+        pump: ProcessPump
+        lines: ExecLineState
+        oldInt: Sigaction
+        intIgnored: bool
+
+    proc publishExecLines(ctx: ptr OsExecAsyncCtx,
+                          head, tail: ptr SharedExecLine) =
+      if head == nil: return
+      withLock ctx.lineLock:
+        if ctx.lineTail == nil: ctx.lineHead = head
+        else: ctx.lineTail.next = head
+        ctx.lineTail = tail
+      signalWake(ctx.completionWake)
+
+    proc publishExecLine(ctx: ptr OsExecAsyncCtx, line: string) =
+      let node = cast[ptr SharedExecLine](allocShared0(sizeof(SharedExecLine)))
+      node.text = sharedExecText(line)
+      publishExecLines(ctx, node, node)
+
+    proc closeExecAdapters(ctx: ptr OsExecAsyncCtx) =
+      for fd in [addr ctx.stdoutPipeFd, addr ctx.stderrPipeFd, addr ctx.stdinPipeFd]:
+        if fd[] >= 0:
+          discard posix.close(fd[])
+          fd[] = -1
+
+    proc failNativeExec(ctx: ptr OsExecAsyncCtx, message: string) =
+      if ctx.resultFailed: return
+      ctx.resultFailed = true
+      ctx.resultFailure = sharedExecText(readSharedExecText(ctx.name) & " " & message)
+
+    proc startNativeExec(ctx: ptr OsExecAsyncCtx): NativeExecState =
+      if atomicLoadN(addr ctx.cancelRequested, ATOMIC_ACQUIRE):
+        ctx.resultCancelled = true
+        closeExecAdapters(ctx)
+        return
+      # Keep the existing async timeout origin: dequeue, before launch.
+      let started = getMonoTime()
+      let command = readSharedExecText(ctx.cmd)
+      var args: seq[string]
+      var argument = ctx.procArgs
+      while argument != nil:
+        args.add readSharedExecText(argument.text)
+        argument = argument.next
+      var environment = none(seq[string])
+      if ctx.hasEnvironment:
+        var entries: seq[string]
+        var entry = ctx.processEnv
+        while entry != nil:
+          entries.add readSharedExecText(entry.text)
+          entry = entry.next
+        environment = some(entries)
+      var process: ProcessHandle
+      try:
+        process = launchProcess(command, args, readSharedExecText(ctx.workdir),
+          environment, ctx.inheritStdio, ctx.mergeStderr, not ctx.inheritStdio)
+        let lines = ExecLineState(ctx: ctx)
+        var onOutput: ProcessChunk
+        if ctx.lineChanBits != 0:
+          onOutput = proc(chunk: string) =
+            var head, tail: ptr SharedExecLine
+            for ch in chunk:
+              if ch == '\n':
+                if lines.buffer.len > 0 and lines.buffer[^1] == '\r':
+                  lines.buffer.setLen(lines.buffer.len - 1)
+                let node = cast[ptr SharedExecLine](allocShared0(sizeof(SharedExecLine)))
+                node.text = sharedExecText(lines.buffer)
+                if tail == nil: head = node
+                else: tail.next = node
+                tail = node
+                lines.buffer.setLen(0)
+              else: lines.buffer.add ch
+            # One publication/wake per ready chunk, not one syscall per line.
+            publishExecLines(lines.ctx, head, tail)
+        result = NativeExecState(ctx: ctx, lines: lines,
+          pump: newProcessPump(process, ctx.maxBytes, ctx.timeoutMs, started,
+            ctx.stdinPipeFd, ctx.stdoutPipeFd, ctx.stderrPipeFd, onOutput))
+        if ctx.inheritStdio:
+          var ignoreInt: Sigaction
+          ignoreInt.sa_handler = SIG_IGN
+          discard sigemptyset(ignoreInt.sa_mask)
+          result.intIgnored = sigaction(SIGINT, ignoreInt, result.oldInt) == 0
+      except CatchableError as error:
+        if process != nil: process.close()
+        closeExecAdapters(ctx)
+        failNativeExec(ctx, "could not start '" & command & "': " & error.msg)
+        result = nil
+
+    proc finishNativeExec(state: NativeExecState) =
+      let ctx = state.ctx
+      defer:
+        if ctx.inheritStdio:
+          release(osExecStdioLock)
+          wakeOsExecStdioWaiters()
+      let pump = state.pump
+      if state.lines.buffer.len > 0:
+        publishExecLine(ctx, state.lines.buffer)
+        state.lines.buffer.setLen(0)
+      if pump.failure.len > 0: failNativeExec(ctx, pump.failure)
+      ctx.resultCancelled = pump.cancelled
+      ctx.resultStatus = pump.status
+      ctx.resultTimedOut = pump.timedOut
+      ctx.resultStdout = sharedExecText(pump.output[0])
+      ctx.resultStderr = sharedExecText(pump.output[1])
+      ctx.resultStdoutTruncated = pump.truncated[0]
+      ctx.resultStderrTruncated = pump.truncated[1]
+      if state.intIgnored: discard sigaction(SIGINT, state.oldInt, nil)
+      pump.process.close()
+      closeExecAdapters(ctx)
+
+    proc runNativeExecJob(ctx: ptr OsExecAsyncCtx) =
+      if ctx.inheritStdio: acquire(osExecStdioLock)
+      let state = startNativeExec(ctx)
+      if state == nil:
+        if ctx.inheritStdio:
+          release(osExecStdioLock)
+          wakeOsExecStdioWaiters()
+        return
+      try:
+        var descriptors: seq[TPollfd]
+        while not state.pump.done:
+          drainWake(ctx.controlWake)
+          state.pump.advance(atomicLoadN(addr ctx.cancelRequested, ATOMIC_ACQUIRE))
+          if state.pump.done: break
+          descriptors.setLen(0)
+          state.pump.addInterests(descriptors)
+          descriptors.add TPollfd(fd: wakeFd(ctx.controlWake), events: POLLIN)
+          waitProcessIo(descriptors, state.pump.waitTimeout())
+      except CatchableError as error:
+        failNativeExec(ctx, "failed: " & error.msg)
+      finally:
+        finishNativeExec(state)
+
+    proc publishExecDone(ctx: ptr OsExecAsyncCtx) =
+      let wake = ctx.completionWake
+      atomicStoreN(addr ctx.workerDone, true, ATOMIC_RELEASE)
+      # Publication is the final ctx access. The separate producer lease keeps
+      # the endpoint alive if the scheduler frees the context immediately.
+      signalWake(wake)
+      releaseWake(wake)
+
+    var execMonitorLock: Lock
+    var execMonitorThread: Thread[void]
+    var execMonitorStarted = false
+    var execMonitorWake: NativeWakeSignal
+    var execMonitorHead, execMonitorTail: ptr OsExecAsyncCtx
+    initLock(execMonitorLock)
+    when defined(geneExecTests):
+      var execMonitorActive, execMonitorPeak: Atomic[int]
+      var execMonitorPaused: Atomic[bool]
+      var execRejectSubmission: Atomic[bool]
+
+    proc execMonitorMain() {.thread.} =
+      {.cast(gcsafe).}:
+        # This thread constructs and destroys every ProcessHandle/ProcessPump
+        # it owns. Only raw contexts cross the scheduler/monitor boundary.
+        var active: seq[NativeExecState]
+        var terminalQueue: seq[ptr OsExecAsyncCtx]
+        var terminalActive = false
+        var descriptors: seq[TPollfd]
+        while true:
+          drainWake(execMonitorWake)
+          # Bound launch work as well as I/O so bursts cannot indefinitely hide
+          # existing deadlines or a ready child behind new submissions.
+          for launch in 0..<8:
+            when defined(geneExecTests):
+              if execMonitorPaused.load(moAcquire): break
+            var ctx: ptr OsExecAsyncCtx
+            withLock execMonitorLock:
+              ctx = execMonitorHead
+              if ctx != nil:
+                execMonitorHead = ctx.nextMonitor
+                if execMonitorHead == nil: execMonitorTail = nil
+                ctx.nextMonitor = nil
+            if ctx == nil: break
+            if ctx.inheritStdio:
+              terminalQueue.add ctx
+              continue
+            let state = startNativeExec(ctx)
+            if state == nil: publishExecDone(ctx)
+            else: active.add state
+          when defined(geneExecTests):
+            execMonitorActive.store(active.len, moRelease)
+            if active.len > execMonitorPeak.load(moRelaxed):
+              execMonitorPeak.store(active.len, moRelease)
+          var i = 0
+          while i < active.len:
+            let state = active[i]
+            let ctx = state.ctx
+            var failed = false
+            try:
+              drainWake(ctx.controlWake)
+              state.pump.advance(atomicLoadN(addr ctx.cancelRequested, ATOMIC_ACQUIRE))
+            except CatchableError as error:
+              failNativeExec(ctx, "failed: " & error.msg)
+              failed = true
+            if state.pump.done or failed:
+              if ctx.inheritStdio: terminalActive = false
+              finishNativeExec(state)
+              # Release monitor-local objects before publishing completion.
+              active.delete(i)
+              publishExecDone(ctx)
+            else: inc i
+          i = 0
+          while i < terminalQueue.len:
+            let ctx = terminalQueue[i]
+            drainWake(ctx.controlWake)
+            if atomicLoadN(addr ctx.cancelRequested, ATOMIC_ACQUIRE):
+              ctx.resultCancelled = true
+              closeExecAdapters(ctx)
+              terminalQueue.delete(i)
+              publishExecDone(ctx)
+            else: inc i
+          var retryTerminal = false
+          if not terminalActive and terminalQueue.len > 0 and tryAcquire(osExecStdioLock):
+            let ctx = terminalQueue[0]
+            terminalQueue.delete(0)
+            let state = startNativeExec(ctx)
+            if state == nil:
+              release(osExecStdioLock)
+              publishExecDone(ctx)
+              retryTerminal = terminalQueue.len > 0
+            else:
+              terminalActive = true
+              active.add state
+          when defined(geneExecTests):
+            execMonitorActive.store(active.len, moRelease)
+            if active.len > execMonitorPeak.load(moRelaxed):
+              execMonitorPeak.store(active.len, moRelease)
+          descriptors.setLen(0)
+          descriptors.add TPollfd(fd: wakeFd(execMonitorWake), events: POLLIN)
+          var timeout = -1
+          for state in active:
+            state.pump.addInterests(descriptors)
+            descriptors.add TPollfd(fd: wakeFd(state.ctx.controlWake), events: POLLIN)
+            let delay = state.pump.waitTimeout()
+            if delay >= 0: timeout = if timeout < 0: delay else: min(timeout, delay)
+          for ctx in terminalQueue:
+            descriptors.add TPollfd(fd: wakeFd(ctx.controlWake), events: POLLIN)
+          if retryTerminal: timeout = 0
+          withLock execMonitorLock:
+            if execMonitorHead != nil:
+              when defined(geneExecTests):
+                if not execMonitorPaused.load(moAcquire): timeout = 0
+              else: timeout = 0
+          waitProcessIo(descriptors, timeout)
+
+    proc enqueueExecMonitor(ctx: ptr OsExecAsyncCtx) =
+      withLock execMonitorLock:
+        if not execMonitorStarted:
+          let owner = newNativeWake(-1)
+          execMonitorWake = owner.signal
+          retainWake(execMonitorWake) # process-lifetime monitor lease
+          try: createThread(execMonitorThread, execMonitorMain)
+          except CatchableError:
+            releaseWake(execMonitorWake)
+            execMonitorWake = nil
+            raise
+          execMonitorStarted = true
+          osExecStdioWake.store(cast[pointer](execMonitorWake), moRelease)
+        if execMonitorTail == nil: execMonitorHead = ctx
+        else: execMonitorTail.nextMonitor = ctx
+        execMonitorTail = ctx
+        signalWake(execMonitorWake)
+
+    when defined(geneExecTests):
+      proc execRejectNextSubmission*() =
+        execRejectSubmission.store(true, moRelease)
+
+      proc execPauseMonitor*(paused: bool) =
+        withLock execMonitorLock:
+          execMonitorPaused.store(paused, moRelease)
+          signalWake(execMonitorWake)
+
+      proc execMonitorStats*(): tuple[active, peak, threads: int] =
+        withLock execMonitorLock:
+          result = (execMonitorActive.load(moAcquire),
+                    execMonitorPeak.load(moAcquire), int(execMonitorStarted))
+
+  when not nativeProcessBackend:
+    proc runLegacyExecJob(ctx: ptr OsExecAsyncCtx) {.gcsafe.} =
+      {.cast(gcsafe).}:
+        defer:
+          when defined(posix):
+            if ctx.stdoutPipeFd >= 0:
+              discard posix.close(ctx.stdoutPipeFd)
+              ctx.stdoutPipeFd = -1
+            if ctx.stderrPipeFd >= 0:
+              discard posix.close(ctx.stderrPipeFd)
+              ctx.stderrPipeFd = -1
+            if ctx.stdinPipeFd >= 0:
+              discard posix.close(ctx.stdinPipeFd)
+              ctx.stdinPipeFd = -1
+        let nativeName = readSharedExecText(ctx.name)
+        let nativeCmd = readSharedExecText(ctx.cmd)
+        let nativeWorkdir = readSharedExecText(ctx.workdir)
+        var nativeArgs: seq[string]
+        var nativeArg = ctx.procArgs
+        while nativeArg != nil:
+          nativeArgs.add readSharedExecText(nativeArg.text)
+          nativeArg = nativeArg.next
+        var nativeEnvironment = none(seq[string])
+        if ctx.hasEnvironment:
+          var entries: seq[string]
+          var entry = ctx.processEnv
+          while entry != nil:
+            entries.add readSharedExecText(entry.text)
+            entry = entry.next
+          nativeEnvironment = some(entries)
+        var outText = ""
+        var errText = ""
+        var outTruncated = false
+        var errTruncated = false
+        var timedOut = false
+        var cancelled = false
+        var stdoutPipeFailed = false
+        var stderrPipeFailed = false
+        var stdinPipeFailed = false
+        var lineBuf = ""
+        var exitCode = 0
+        var chanGone = ctx.lineChanBits == 0
+        let deadline =
+          if ctx.timeoutMs >= 0:
+            getMonoTime() + initDuration(milliseconds = ctx.timeoutMs)
+          else:
+            getMonoTime()
+
+        template appendCapped(into: var string, truncated: var bool,
+                              chunk: string) =
+          block:
+            if into.len >= ctx.maxBytes:
+              if chunk.len > 0:
+                truncated = true
+            elif into.len + chunk.len <= ctx.maxBytes:
+              into.add chunk
+            else:
+              truncated = true
+              into.add chunk.substr(0, ctx.maxBytes - into.len - 1)
+
+        template sendLine(line: string) =
+          ## Publish native text only. The scheduler turns it into Gene strings.
+          block sendBlock:
+            if not chanGone:
+              let node = cast[ptr SharedExecLine](allocShared0(sizeof(SharedExecLine)))
+              node.text = sharedExecText(line)
+              withLock ctx.lineLock:
+                if ctx.lineTail == nil:
+                  ctx.lineHead = node
+                  ctx.lineTail = node
+                else:
+                  ctx.lineTail.next = node
+                  ctx.lineTail = node
+              when nativeProcessBackend: signalWake(ctx.completionWake)
+
+        template writeOutputPipe(pipeFd: cint, chunk: string,
+                                 failed: var bool) =
+          block:
+            when defined(posix):
+              if pipeFd >= 0 and not failed:
+                var written = 0
+                while written < chunk.len:
+                  let count = osExecPipeWrite(pipeFd,
+                    unsafeAddr chunk[written], csize_t(chunk.len - written))
+                  if count > 0:
+                    written += count
+                  elif errno == EAGAIN or errno == EWOULDBLOCK:
+                    if atomicLoadN(addr ctx.cancelRequested, ATOMIC_ACQUIRE):
+                      cancelled = true
+                      break
+                    os.sleep(2)
+                  else:
+                    failed = true
+                    break
+
+        template handleStdoutChunk(chunk: string) =
+          block:
+            if ctx.stdoutPipeFd < 0:
+              appendCapped(outText, outTruncated, chunk)
+            writeOutputPipe(ctx.stdoutPipeFd, chunk, stdoutPipeFailed)
+            if not chanGone:
+              for ch in chunk:
+                if ch == '\n':
+                  if lineBuf.len > 0 and lineBuf[^1] == '\r':
+                    lineBuf.setLen(lineBuf.len - 1)
+                  sendLine(lineBuf)
+                  lineBuf.setLen(0)
+                else:
+                  lineBuf.add ch
+
+        template handleStderrChunk(chunk: string) =
+          block:
+            if ctx.stderrPipeFd < 0:
+              appendCapped(errText, errTruncated, chunk)
+            writeOutputPipe(ctx.stderrPipeFd, chunk, stderrPipeFailed)
+
+        template settleFail(message: string) =
+          block:
+            ctx.resultFailed = true
+            ctx.resultFailure = sharedExecText(message)
+
+        template cancellationRequested(): bool =
+          atomicLoadN(addr ctx.cancelRequested, ATOMIC_ACQUIRE)
+
+        if cancellationRequested():
+          ctx.resultCancelled = true
+          return
+
+        if ctx.inheritStdio:
+          # Parent-stream handoff is intentionally a separate path: attempting
+          # to inspect output handles from a poParentStreams Process is invalid,
+          # and inherited terminal bytes must never be captured or materialized
+          # as Gene values on this worker thread.
+          acquire(osExecStdioLock)
+          try:
+            if cancellationRequested():
+              ctx.resultCancelled = true
+              return
+            var process: OsExecProcess
+            try:
+              process = startOsExecProcess(nativeCmd, nativeWorkdir, nativeArgs,
+                                           ctx.full, {poUsePath, poParentStreams},
+                                           nativeEnvironment)
+            except CatchableError as e:
+              settleFail(nativeName & " could not start '" & nativeCmd & "': " &
+                         e.msg)
+              return
+            # system(3) semantics: after the child inherited the current signal
+            # handlers, ignore terminal Ctrl-C in the parent until handoff ends.
+            # The lock above prevents overlapping handoffs from restoring one
+            # another's signal disposition out of order.
+            when defined(posix):
+              var ignoreInt, oldInt: Sigaction
+              ignoreInt.sa_handler = SIG_IGN
+              discard sigemptyset(ignoreInt.sa_mask)
+              ignoreInt.sa_flags = 0
+              let intIgnored = sigaction(SIGINT, ignoreInt, oldInt) == 0
+            try:
+              while process.running:
+                if cancellationRequested():
+                  cancelled = true
+                  process.terminate()
+                  break
+                os.sleep(osExecPollMs)
+              if cancelled:
+                reapStoppedOsExec(process)
+                ctx.resultCancelled = true
+              else:
+                ctx.resultStatus = process.waitForExit()
+            except CatchableError as e:
+              settleFail(nativeName & " failed: " & e.msg)
+            finally:
+              when defined(posix):
+                if intIgnored:
+                  discard sigaction(SIGINT, oldInt, nil)
+              try:
+                process.close()
+              except CatchableError:
+                discard
+          finally:
+            release(osExecStdioLock)
+          return
+
+        var process: CapturedOsExecProcess
+        try:
+          process = startCapturedOsExec(nativeCmd, nativeWorkdir, nativeArgs,
+                                       ctx.mergeStderr, ctx.full, nativeEnvironment)
+        except CatchableError as e:
+          settleFail(nativeName & " could not start '" & nativeCmd & "': " & e.msg)
+          return
+        try:
+          try:
+            when defined(posix):
+              let outFd = process.outputHandle.cint
+              let errFd = process.errorHandle.cint
+              let inFd = process.inputHandle.cint
+              discard fcntl(outFd, F_SETFL,
+                            fcntl(outFd, F_GETFL, 0) or O_NONBLOCK)
+              discard fcntl(errFd, F_SETFL,
+                            fcntl(errFd, F_GETFL, 0) or O_NONBLOCK)
+              if ctx.stdinPipeFd >= 0:
+                if inFd < 0 or fcntl(inFd, F_SETFL,
+                    fcntl(inFd, F_GETFL, 0) or O_NONBLOCK) < 0:
+                  stdinPipeFailed = true
+              var buf: array[4096, char]
+              var stdinBuf: array[4096, char]
+              var stdinCount = 0
+              var stdinOffset = 0
+              var stdinDone = ctx.stdinPipeFd < 0
+              if stdinDone:
+                if osExecFinishStdin(inFd) != 0: stdinPipeFailed = true
+              template finishInput() =
+                block:
+                  if not stdinDone:
+                    stdinDone = true
+                    if osExecFinishStdin(inFd) != 0:
+                      stdinPipeFailed = true
+                    discard posix.close(ctx.stdinPipeFd)
+                    ctx.stdinPipeFd = -1
+              template pumpInput() =
+                block:
+                  if not stdinDone and not stdinPipeFailed:
+                    if stdinOffset >= stdinCount:
+                      let received = posix.read(ctx.stdinPipeFd,
+                                                addr stdinBuf[0], stdinBuf.len)
+                      if received > 0:
+                        stdinCount = received
+                        stdinOffset = 0
+                      elif received == 0:
+                        finishInput()
+                      elif errno != EAGAIN and errno != EWOULDBLOCK:
+                        stdinPipeFailed = true
+                    if not stdinDone and stdinOffset < stdinCount:
+                      let accepted = osExecPipeWrite(inFd,
+                        addr stdinBuf[stdinOffset],
+                        csize_t(stdinCount - stdinOffset))
+                      if accepted > 0:
+                        stdinOffset += accepted
+                      elif errno == EPIPE:
+                        finishInput()
+                      elif errno != EAGAIN and errno != EWOULDBLOCK:
+                        stdinPipeFailed = true
+              # Template, not a nested proc: a proc would capture the cursor
+              # views through the expanded helpers into a closure env.
+              template drainAvailable(fd: cint, isOut: bool) =
+                while true:
+                  let n = read(fd, addr buf[0], buf.len)
+                  if n > 0:
+                    var chunk = newString(n)
+                    copyMem(addr chunk[0], addr buf[0], n)
+                    when isOut:
+                      handleStdoutChunk(chunk)
+                    else:
+                      handleStderrChunk(chunk)
+                  else:
+                    break
+              while process.running:
+                drainAvailable(outFd, true)
+                if not ctx.mergeStderr: drainAvailable(errFd, false)
+                pumpInput()
+                if stdoutPipeFailed or stderrPipeFailed or stdinPipeFailed:
+                  stopOsExecGroup(process)
+                  break
+                if cancellationRequested():
+                  cancelled = true
+                  stopOsExecGroup(process)
+                  break
+                if ctx.timeoutMs >= 0 and getMonoTime() >= deadline:
+                  timedOut = true
+                  stopOsExecGroup(process)
+                  break
+                os.sleep(osExecPollMs)
+              exitCode = if timedOut or cancelled or stdoutPipeFailed or
+                            stderrPipeFailed or stdinPipeFailed:
+                           (reapStoppedOsExecGroup(process); -1)
+                         else:
+                           process.waitForExit()
+              drainAvailable(outFd, true)
+              if not ctx.mergeStderr: drainAvailable(errFd, false)
+            else:
+              while process.running:
+                if cancellationRequested():
+                  cancelled = true
+                  stopOsExecGroup(process)
+                  break
+                if ctx.timeoutMs >= 0 and getMonoTime() >= deadline:
+                  timedOut = true
+                  stopOsExecGroup(process)
+                  break
+                os.sleep(osExecPollMs)
+              exitCode = if timedOut or cancelled:
+                           (reapStoppedOsExecGroup(process); -1)
+                         else:
+                           process.waitForExit()
+              handleStdoutChunk(process.outputStream.readAll())
+              handleStderrChunk(process.errorStream.readAll())
+            if lineBuf.len > 0:
+              sendLine(lineBuf)
+              lineBuf.setLen(0)
+            if stdoutPipeFailed:
+              settleFail(nativeName & " stdout pipe closed during write")
+              return
+            if stderrPipeFailed:
+              settleFail(nativeName & " stderr pipe closed during write")
+              return
+            if stdinPipeFailed:
+              settleFail(nativeName & " stdin pipe transfer failed")
+              return
+            if cancelled:
+              ctx.resultCancelled = true
+              return
+            ctx.resultStatus = exitCode
+            ctx.resultStdout = sharedExecText(outText)
+            ctx.resultStderr = sharedExecText(errText)
+            ctx.resultStdoutTruncated = outTruncated
+            ctx.resultStderrTruncated = errTruncated
+            ctx.resultTimedOut = timedOut
+          except CatchableError as e:
+            settleFail(nativeName & " failed: " & e.msg)
+        finally:
+          try:
+            if process.running:
+              stopOsExecGroup(process)
+              reapStoppedOsExecGroup(process)
+            process.close()
+          except CatchableError:
+            discard
 
   proc runOsExecAsyncJob(jobPtr: pointer) {.gcsafe.} =
     {.cast(gcsafe).}:
@@ -3259,334 +3809,8 @@ close_fail:
           ctx.resultFailed = true
           ctx.resultFailure = sharedExecText(readSharedExecText(ctx.name) & ": " & error.msg)
         return
-      defer:
-        when defined(posix):
-          if ctx.stdoutPipeFd >= 0:
-            discard posix.close(ctx.stdoutPipeFd)
-            ctx.stdoutPipeFd = -1
-          if ctx.stderrPipeFd >= 0:
-            discard posix.close(ctx.stderrPipeFd)
-            ctx.stderrPipeFd = -1
-          if ctx.stdinPipeFd >= 0:
-            discard posix.close(ctx.stdinPipeFd)
-            ctx.stdinPipeFd = -1
-      let nativeName = readSharedExecText(ctx.name)
-      let nativeCmd = readSharedExecText(ctx.cmd)
-      let nativeWorkdir = readSharedExecText(ctx.workdir)
-      var nativeArgs: seq[string]
-      var nativeArg = ctx.procArgs
-      while nativeArg != nil:
-        nativeArgs.add readSharedExecText(nativeArg.text)
-        nativeArg = nativeArg.next
-      var outText = ""
-      var errText = ""
-      var outTruncated = false
-      var errTruncated = false
-      var timedOut = false
-      var cancelled = false
-      var stdoutPipeFailed = false
-      var stderrPipeFailed = false
-      var stdinPipeFailed = false
-      var lineBuf = ""
-      var exitCode = 0
-      var chanGone = ctx.lineChanBits == 0
-      let deadline =
-        if ctx.timeoutMs >= 0:
-          getMonoTime() + initDuration(milliseconds = ctx.timeoutMs)
-        else:
-          getMonoTime()
-
-      template appendCapped(into: var string, truncated: var bool,
-                            chunk: string) =
-        block:
-          if into.len >= ctx.maxBytes:
-            if chunk.len > 0:
-              truncated = true
-          elif into.len + chunk.len <= ctx.maxBytes:
-            into.add chunk
-          else:
-            truncated = true
-            into.add chunk.substr(0, ctx.maxBytes - into.len - 1)
-
-      template sendLine(line: string) =
-        ## Publish native text only. The scheduler turns it into Gene strings.
-        block sendBlock:
-          if not chanGone:
-            let node = cast[ptr SharedExecLine](allocShared0(sizeof(SharedExecLine)))
-            node.text = sharedExecText(line)
-            withLock ctx.lineLock:
-              if ctx.lineTail == nil:
-                ctx.lineHead = node
-                ctx.lineTail = node
-              else:
-                ctx.lineTail.next = node
-                ctx.lineTail = node
-
-      template writeOutputPipe(pipeFd: cint, chunk: string,
-                               failed: var bool) =
-        block:
-          when defined(posix):
-            if pipeFd >= 0 and not failed:
-              var written = 0
-              while written < chunk.len:
-                let count = osExecPipeWrite(pipeFd,
-                  unsafeAddr chunk[written], csize_t(chunk.len - written))
-                if count > 0:
-                  written += count
-                elif errno == EAGAIN or errno == EWOULDBLOCK:
-                  if atomicLoadN(addr ctx.cancelRequested, ATOMIC_ACQUIRE):
-                    cancelled = true
-                    break
-                  os.sleep(2)
-                else:
-                  failed = true
-                  break
-
-      template handleStdoutChunk(chunk: string) =
-        block:
-          if ctx.stdoutPipeFd < 0:
-            appendCapped(outText, outTruncated, chunk)
-          writeOutputPipe(ctx.stdoutPipeFd, chunk, stdoutPipeFailed)
-          if not chanGone:
-            for ch in chunk:
-              if ch == '\n':
-                if lineBuf.len > 0 and lineBuf[^1] == '\r':
-                  lineBuf.setLen(lineBuf.len - 1)
-                sendLine(lineBuf)
-                lineBuf.setLen(0)
-              else:
-                lineBuf.add ch
-
-      template handleStderrChunk(chunk: string) =
-        block:
-          if ctx.stderrPipeFd < 0:
-            appendCapped(errText, errTruncated, chunk)
-          writeOutputPipe(ctx.stderrPipeFd, chunk, stderrPipeFailed)
-
-      template settleFail(message: string) =
-        block:
-          ctx.resultFailed = true
-          ctx.resultFailure = sharedExecText(message)
-
-      template cancellationRequested(): bool =
-        atomicLoadN(addr ctx.cancelRequested, ATOMIC_ACQUIRE)
-
-      if cancellationRequested():
-        ctx.resultCancelled = true
-        return
-
-      if ctx.inheritStdio:
-        # Parent-stream handoff is intentionally a separate path: attempting
-        # to inspect output handles from a poParentStreams Process is invalid,
-        # and inherited terminal bytes must never be captured or materialized
-        # as Gene values on this worker thread.
-        acquire(osExecStdioLock)
-        try:
-          if cancellationRequested():
-            ctx.resultCancelled = true
-            return
-          var process: Process
-          try:
-            process = startOsExecProcess(nativeCmd, nativeWorkdir, nativeArgs,
-                                         ctx.full, {poUsePath, poParentStreams})
-          except CatchableError as e:
-            settleFail(nativeName & " could not start '" & nativeCmd & "': " &
-                       e.msg)
-            return
-          # system(3) semantics: after the child inherited the current signal
-          # handlers, ignore terminal Ctrl-C in the parent until handoff ends.
-          # The lock above prevents overlapping handoffs from restoring one
-          # another's signal disposition out of order.
-          when defined(posix):
-            var ignoreInt, oldInt: Sigaction
-            ignoreInt.sa_handler = SIG_IGN
-            discard sigemptyset(ignoreInt.sa_mask)
-            ignoreInt.sa_flags = 0
-            let intIgnored = sigaction(SIGINT, ignoreInt, oldInt) == 0
-          try:
-            while process.running:
-              if cancellationRequested():
-                cancelled = true
-                process.terminate()
-                break
-              os.sleep(osExecPollMs)
-            if cancelled:
-              reapStoppedOsExec(process)
-              ctx.resultCancelled = true
-            else:
-              ctx.resultStatus = process.waitForExit()
-          except CatchableError as e:
-            settleFail(nativeName & " failed: " & e.msg)
-          finally:
-            when defined(posix):
-              if intIgnored:
-                discard sigaction(SIGINT, oldInt, nil)
-            try:
-              process.close()
-            except CatchableError:
-              discard
-        finally:
-          release(osExecStdioLock)
-        return
-
-      var process: CapturedOsExecProcess
-      if beginCapturedSpawn() < 0:
-        discard finishCapturedSpawn(0)
-        settleFail(nativeName & " cannot start while the process exits")
-        return
-      var groupSlot: cint = -1
-      try:
-        process = startCapturedOsExec(nativeCmd, nativeWorkdir, nativeArgs,
-                                     ctx.mergeStderr, ctx.full)
-      except CatchableError as e:
-        discard finishCapturedSpawn(0)
-        settleFail(nativeName & " could not start '" & nativeCmd & "': " & e.msg)
-        return
-      groupSlot = finishCapturedSpawn(cint(process.processID))
-      if groupSlot < 0:
-        stopOsExecGroup(process)
-        reapStoppedOsExecGroup(process)
-        process.close()
-        settleFail(nativeName & " has too many captured subprocesses")
-        return
-      try:
-        try:
-          when defined(posix):
-            let outFd = process.outputHandle.cint
-            let errFd = process.errorHandle.cint
-            let inFd = process.inputHandle.cint
-            discard fcntl(outFd, F_SETFL,
-                          fcntl(outFd, F_GETFL, 0) or O_NONBLOCK)
-            discard fcntl(errFd, F_SETFL,
-                          fcntl(errFd, F_GETFL, 0) or O_NONBLOCK)
-            if ctx.stdinPipeFd >= 0:
-              if inFd < 0 or fcntl(inFd, F_SETFL,
-                  fcntl(inFd, F_GETFL, 0) or O_NONBLOCK) < 0:
-                stdinPipeFailed = true
-            var buf: array[4096, char]
-            var stdinBuf: array[4096, char]
-            var stdinCount = 0
-            var stdinOffset = 0
-            var stdinDone = ctx.stdinPipeFd < 0
-            if stdinDone:
-              if osExecFinishStdin(inFd) != 0: stdinPipeFailed = true
-            template finishInput() =
-              block:
-                if not stdinDone:
-                  stdinDone = true
-                  if osExecFinishStdin(inFd) != 0:
-                    stdinPipeFailed = true
-                  discard posix.close(ctx.stdinPipeFd)
-                  ctx.stdinPipeFd = -1
-            template pumpInput() =
-              block:
-                if not stdinDone and not stdinPipeFailed:
-                  if stdinOffset >= stdinCount:
-                    let received = posix.read(ctx.stdinPipeFd,
-                                              addr stdinBuf[0], stdinBuf.len)
-                    if received > 0:
-                      stdinCount = received
-                      stdinOffset = 0
-                    elif received == 0:
-                      finishInput()
-                    elif errno != EAGAIN and errno != EWOULDBLOCK:
-                      stdinPipeFailed = true
-                  if not stdinDone and stdinOffset < stdinCount:
-                    let accepted = osExecPipeWrite(inFd,
-                      addr stdinBuf[stdinOffset],
-                      csize_t(stdinCount - stdinOffset))
-                    if accepted > 0:
-                      stdinOffset += accepted
-                    elif errno == EPIPE:
-                      finishInput()
-                    elif errno != EAGAIN and errno != EWOULDBLOCK:
-                      stdinPipeFailed = true
-            # Template, not a nested proc: a proc would capture the cursor
-            # views through the expanded helpers into a closure env.
-            template drainAvailable(fd: cint, isOut: bool) =
-              while true:
-                let n = read(fd, addr buf[0], buf.len)
-                if n > 0:
-                  var chunk = newString(n)
-                  copyMem(addr chunk[0], addr buf[0], n)
-                  when isOut:
-                    handleStdoutChunk(chunk)
-                  else:
-                    handleStderrChunk(chunk)
-                else:
-                  break
-            while process.running:
-              drainAvailable(outFd, true)
-              if not ctx.mergeStderr: drainAvailable(errFd, false)
-              pumpInput()
-              if stdoutPipeFailed or stderrPipeFailed or stdinPipeFailed:
-                stopOsExecGroup(process)
-                break
-              if cancellationRequested():
-                cancelled = true
-                stopOsExecGroup(process)
-                break
-              if ctx.timeoutMs >= 0 and getMonoTime() >= deadline:
-                timedOut = true
-                stopOsExecGroup(process)
-                break
-              os.sleep(osExecPollMs)
-            exitCode = if timedOut or cancelled or stdoutPipeFailed or
-                          stderrPipeFailed or stdinPipeFailed:
-                         (reapStoppedOsExecGroup(process); -1)
-                       else:
-                         process.waitForExit()
-            drainAvailable(outFd, true)
-            if not ctx.mergeStderr: drainAvailable(errFd, false)
-          else:
-            while process.running:
-              if cancellationRequested():
-                cancelled = true
-                stopOsExecGroup(process)
-                break
-              if ctx.timeoutMs >= 0 and getMonoTime() >= deadline:
-                timedOut = true
-                stopOsExecGroup(process)
-                break
-              os.sleep(osExecPollMs)
-            exitCode = if timedOut or cancelled:
-                         (reapStoppedOsExecGroup(process); -1)
-                       else:
-                         process.waitForExit()
-            handleStdoutChunk(process.outputStream.readAll())
-            handleStderrChunk(process.errorStream.readAll())
-          if lineBuf.len > 0:
-            sendLine(lineBuf)
-            lineBuf.setLen(0)
-          if stdoutPipeFailed:
-            settleFail(nativeName & " stdout pipe closed during write")
-            return
-          if stderrPipeFailed:
-            settleFail(nativeName & " stderr pipe closed during write")
-            return
-          if stdinPipeFailed:
-            settleFail(nativeName & " stdin pipe transfer failed")
-            return
-          if cancelled:
-            ctx.resultCancelled = true
-            return
-          ctx.resultStatus = exitCode
-          ctx.resultStdout = sharedExecText(outText)
-          ctx.resultStderr = sharedExecText(errText)
-          ctx.resultStdoutTruncated = outTruncated
-          ctx.resultStderrTruncated = errTruncated
-          ctx.resultTimedOut = timedOut
-        except CatchableError as e:
-          settleFail(nativeName & " failed: " & e.msg)
-      finally:
-        try:
-          if process.running:
-            stopOsExecGroup(process)
-            reapStoppedOsExecGroup(process)
-          releaseCapturedGroup(groupSlot)
-          process.close()
-        except CatchableError:
-          discard
+      when nativeProcessBackend: runNativeExecJob(ctx)
+      else: runLegacyExecJob(ctx)
 
 when compileOption("threads"):
   proc osExecAsyncWorkerMain() {.thread.} =
@@ -3604,23 +3828,36 @@ when compileOption("threads"):
         # Must be this worker's final access to the job: once the scheduler
         # acquires the flag it frees the ctx and drops the task/channel refs.
         let doneCtx = cast[ptr OsExecAsyncCtx](jobPtr)
+        when nativeProcessBackend:
+          let wake = doneCtx.completionWake
         atomicStoreN(addr doneCtx.workerDone, true, ATOMIC_RELEASE)
+        when nativeProcessBackend:
+          signalWake(wake)
+          releaseWake(wake) # The producer lease survives publication of done.
 
   proc enqueueOsExecAsyncJob(jobPtr: pointer) =
-    var needThread = false
+    when nativeProcessBackend:
+      when defined(geneExecTests):
+        if execRejectSubmission.exchange(false, moAcquireRelease):
+          raiseOSError(OSErrorCode(EAGAIN), "injected exec submission failure")
+      let ctx = cast[ptr OsExecAsyncCtx](jobPtr)
+      if ctx.fileOperation == nfoNone:
+        enqueueExecMonitor(ctx)
+        return
     withLock osExecAsyncLock:
-      osExecAsyncQueue.add jobPtr
       if osExecAsyncIdle == 0 and
           osExecAsyncThreads.len < osExecAsyncMaxWorkers:
-        needThread = true
-      else:
-        signal(osExecAsyncCond)
-    if needThread:
-      var tr: ref Thread[void]
-      new(tr)
-      createThread(tr[], osExecAsyncWorkerMain)
-      withLock osExecAsyncLock:
-        osExecAsyncThreads.add tr
+        var tr: ref Thread[void]
+        new(tr)
+        try:
+          # Publish work only after the first worker exists. New workers block
+          # on this lock; failed growth can use an already existing worker.
+          createThread(tr[], osExecAsyncWorkerMain)
+          osExecAsyncThreads.add tr
+        except CatchableError:
+          if osExecAsyncThreads.len == 0: raise
+      osExecAsyncQueue.add jobPtr
+      signal(osExecAsyncCond)
 
 else:
   proc requestOsExecCancellation(task: Value): bool = false
@@ -3671,7 +3908,13 @@ proc startNativeFileTask(name, path, text: string, operation: NativeFileOperatio
     except CatchableError:
       endExternalNativeOp()
       withLock osExecAsyncLock:
-        osExecAsyncPending.setLen(osExecAsyncPending.len - 1)
+        for i in 0..<osExecAsyncPending.len:
+          if osExecAsyncPending[i] == pending:
+            let last = osExecAsyncPending.high
+            if i != last: osExecAsyncPending[i] = move osExecAsyncPending[last]
+            osExecAsyncPending.setLen(last)
+            break
+      pending.ctx = nil
       freeOsExecCtx(ctx)
       raise
     task
@@ -3688,7 +3931,7 @@ proc biOsExecAsyncImpl(name: string, wantChan: bool,
   let procArgs = command.args
   var timeoutMs = -1
   var maxBytes = osExecDefaultOutputCap
-  var workdir = ""
+  let workdir = command.directory
   var lineChan = NIL
   var stdoutPipe = NIL
   var stderrPipe = NIL
@@ -3698,7 +3941,7 @@ proc biOsExecAsyncImpl(name: string, wantChan: bool,
     for i, argName in call[].namedNames:
       let v = call[].namedValues[i]
       case argName
-      of "cmd", "args", "full": discard
+      of "cmd", "args", "full", "dir", "env": discard
       of "timeout_ms":
         if inheritStdio:
           raiseOsError(name & " got unexpected named argument: timeout_ms", scope)
@@ -3707,9 +3950,6 @@ proc biOsExecAsyncImpl(name: string, wantChan: bool,
         if inheritStdio:
           raiseOsError(name & " got unexpected named argument: max_bytes", scope)
         maxBytes = int(requireInt64(name & " ^max_bytes", v))
-      of "dir":
-        requireStr(name & " ^dir", v)
-        workdir = v.strVal
       of "merge_stderr":
         if inheritStdio or v.kind != vkBool:
           raiseOsError(name & " ^merge_stderr expects Bool on captured execution", scope)
@@ -3775,12 +4015,35 @@ proc biOsExecAsyncImpl(name: string, wantChan: bool,
       else:
         argTail.next = argNode
       argTail = argNode
+    if command.environment.isSome:
+      ctx.hasEnvironment = true
+      var envTail: ptr SharedExecArg
+      for entry in command.environment.get:
+        let node = cast[ptr SharedExecArg](allocShared0(sizeof(SharedExecArg)))
+        node.text = sharedExecText(entry)
+        if envTail == nil: ctx.processEnv = node
+        else: envTail.next = node
+        envTail = node
     initLock(ctx.lineLock)
     # `dup` is deliberate: task/lineChan are also returned/owned by the caller.
     # A sink into the ctx without the explicit retain would leave two logical
     # owners sharing one ref and completion cleanup would free the caller's
     # live handle.
     let pending = OsExecPending(ctx: ctx)
+    pending.schedulerOwner = schedulerForScope(scope)
+    when nativeProcessBackend:
+      try:
+        ctx.completionWake = schedulerNativeWake(pending.schedulerOwner)
+        retainWake(ctx.completionWake) # pending-context lease
+        retainWake(ctx.completionWake) # producer lease, handed off on enqueue
+        let control = newNativeWake(-1)
+        ctx.controlWake = control.signal
+        retainWake(ctx.controlWake)
+        ctx.notified = true
+      except CatchableError as error:
+        pending.ctx = nil
+        freeOsExecCtx(ctx)
+        raiseOsError(name & " could not create process notification: " & error.msg, scope)
     pending.taskOwner = retainedCopy(task)
     pending.lineChanOwner = retainedCopy(lineChan)
     if stdoutPipe.kind != vkNil:
@@ -3826,13 +4089,20 @@ proc biOsExecAsyncImpl(name: string, wantChan: bool,
     # worker borrows their raw bits. The worker ctx itself is shared raw memory.
     withLock osExecAsyncLock:
       osExecAsyncPending.add(pending)
-    beginExternalNativeOp()
+    beginExternalNativeOp(ctx.notified)
     try:
+      ctx.producerQueued = true
       enqueueOsExecAsyncJob(cast[pointer](ctx))
     except CatchableError as e:
-      endExternalNativeOp()
+      ctx.producerQueued = false
+      endExternalNativeOp(ctx.notified)
       withLock osExecAsyncLock:
-        osExecAsyncPending.setLen(osExecAsyncPending.len - 1)
+        for i in 0..<osExecAsyncPending.len:
+          if osExecAsyncPending[i] == pending:
+            let last = osExecAsyncPending.high
+            if i != last: osExecAsyncPending[i] = move osExecAsyncPending[last]
+            osExecAsyncPending.setLen(last)
+            break
       pending.ctx = nil
       freeOsExecCtx(ctx)
       if pending.pipeBorrow.resourceId != 0:

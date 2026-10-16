@@ -1,0 +1,76 @@
+# Run from the repository root: bin/gene run examples/exec.gene
+# Requires macOS or Linux and the standard POSIX tools.
+# Every command below only prints output; no files are created.
+
+($println "1. Direct arguments are literal")
+(let literal ($os/exec "printf" "%s\n" "hello world" "a; b" "a | b"))
+($assert (== literal/status 0))
+($assert (== literal/stdout "hello world\na; b\na | b\n"))
+($println ($str/trim literal/stdout))
+
+($println "\n2. Set the child's directory and environment")
+(let parent_dir ($fs/real_path "."))
+(let parent_mode ($os/env? "GENE_EXEC_MODE"))
+(let parent_path ($os/env? "PATH"))
+# Strings set variables; nil removes them. PATH prepends to the inherited PATH.
+# Here /bin takes priority when looking up sh. ^dir only changes the child.
+(let configured
+  ($os/exec ^dir "/"
+    ^env {^GENE_EXEC_MODE "demo" ^GENE_EXEC_REMOVED nil ^PATH "/bin"}
+    "sh" "-c"
+    "pwd; printf '%s\\n' \"$GENE_EXEC_MODE\" \"${GENE_EXEC_REMOVED-unset}\" \"${PATH%%:*}\""))
+($assert (== configured/status 0))
+($assert (== configured/stdout "/\ndemo\nunset\n/bin\n"))
+($println "Child directory, mode, removed variable, first PATH entry:")
+($println ($str/trim configured/stdout))
+($assert (== ($fs/real_path ".") parent_dir))
+($assert (== ($os/env? "GENE_EXEC_MODE") parent_mode))
+($assert (== ($os/env? "PATH") parent_path))
+
+($println "\n3. Explicit shell commands: sequencing and pipelines")
+# ^^full uses /bin/sh -c on POSIX. Only use trusted command text here;
+# pass dynamic values as separate arguments when launching a program directly.
+(let sequence ($os/exec ^^full "printf 'first\\n'; printf 'second\\n'"))
+($assert (== sequence/status 0))
+($assert (== sequence/stdout "first\nsecond\n"))
+($println ($str/trim sequence/stdout))
+(let pipeline
+  ($os/exec ^^full "printf 'hello gene\\n' | tr '[:lower:]' '[:upper:]'"))
+($assert (== pipeline/status 0))
+($assert (== pipeline/stdout "HELLO GENE\n"))
+($println ($str/trim pipeline/stdout))
+# The shell determines pipeline status. To request Bash's pipefail explicitly:
+# ($os/exec "bash" "-o" "pipefail" "-c" "producer | consumer")
+
+($println "\n4. Nonzero exit statuses are result data")
+(let failed
+  ($os/exec "/bin/sh" "-c" "printf 'example failure\\n' >&2; exit 7"))
+($assert (== failed/status 7))
+($assert (== failed/stderr "example failure\n"))
+($println "status:" failed/status "stderr:" ($str/trim failed/stderr))
+# A launch failure (such as a missing executable) instead raises OsError.
+
+($println "\n5. Start commands asynchronously, then await their results")
+# Both commands are submitted before either result is awaited.
+(let first ($os/exec_async "printf" "%s\n" "async one"))
+(let second
+  ($os/exec_async ^dir "/" ^env {^GENE_EXEC_MODE "async two"}
+    "/bin/sh" "-c" "printf '%s\\n' \"$GENE_EXEC_MODE\""))
+(let first_result (await first))
+(let second_result (await second))
+($assert (== first_result/status 0))
+($assert (== second_result/status 0))
+($assert (== first_result/stdout "async one\n"))
+($assert (== second_result/stdout "async two\n"))
+($println ($str/trim first_result/stdout))
+($println ($str/trim second_result/stdout))
+
+($println "\n6. Stream lines while also capturing the result")
+# Callbacks receive lines without their trailing newline.
+(let streamed
+  ($os/exec_stream "printf" "%s\n" "line one" "line two"
+    ^stdout_line (fn [line] ($println "received:" line))))
+($assert (== streamed/status 0))
+($assert (== streamed/stdout "line one\nline two\n"))
+
+($println "\nAll exec examples passed.")

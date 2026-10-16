@@ -39,6 +39,8 @@ static void gene_io_file_block_sigpipe(void) {
       resultPort: int
       resultCount: int
       errorCode: cint
+      completionWake: NativeWakeSignal
+      producerQueued: bool
       workerDone: bool
 
     IoFileRecord = ref object
@@ -116,9 +118,19 @@ static void gene_io_file_block_sigpipe(void) {
 
   proc freeIoFileJob(job: ptr IoFileJob) =
     if job == nil: return
+    if job.completionWake != nil:
+      if not job.producerQueued: releaseWake(job.completionWake)
+      releaseWake(job.completionWake)
     if job.path != nil: deallocShared(job.path)
     if job.buffer != nil: deallocShared(job.buffer)
     deallocShared(job)
+
+  proc publishIoFileDone(job: ptr IoFileJob) =
+    let wake = job.completionWake
+    atomicStoreN(addr job.workerDone, true, ATOMIC_RELEASE)
+    # The producer lease outlives the final job access, just as in exec.
+    signalWake(wake)
+    releaseWake(wake)
 
   proc runIoFileJob(job: ptr IoFileJob) {.gcsafe.} =
     {.cast(gcsafe).}:
@@ -307,7 +319,7 @@ static void gene_io_file_block_sigpipe(void) {
           for waiting in ioFileWaitQueue:
             let job = cast[ptr IoFileJob](waiting)
             job.errorCode = EIO
-            atomicStoreN(addr job.workerDone, true, ATOMIC_RELEASE)
+            publishIoFileDone(job)
           ioFileWaitQueue.setLen(0)
           ioFileReadinessStarted = false
 
@@ -334,27 +346,45 @@ static void gene_io_file_block_sigpipe(void) {
           continue
         # The root frees the job only after this release-store; no worker
         # access follows it.
-        atomicStoreN(addr job.workerDone, true, ATOMIC_RELEASE)
+        publishIoFileDone(job)
 
   proc enqueueIoFile(pending: IoFilePending, force = false): bool =
-    var needWorker = false
+    # Only local pipe adapters adopt notifications here: otherwise each chunk
+    # forwarded to/from exec still pays the legacy 1 ms completion poll. File
+    # and TCP operations retain their existing polling classification.
+    if pending.record.pipeEndpoint and not pending.record.duplex and
+        not pending.record.listener:
+      try:
+        pending.job.completionWake = schedulerNativeWake(pending.record.application.schedulerState())
+        retainWake(pending.job.completionWake)
+        retainWake(pending.job.completionWake)
+      except CatchableError:
+        if not force: return false
+    var runInline = false
     withLock ioFileLock:
       if not force and ioFileQueue.len >= IoFileMaxQueued:
         return false
-      beginExternalNativeOp()
-      ioFilePending.add pending
-      ioFileQueue.add cast[pointer](pending.job)
       if ioFileIdle == 0 and ioFileThreads.len < IoFileMaxWorkers:
-        needWorker = true
-      else:
+        var thread: ref Thread[void]
+        new(thread)
+        try:
+          createThread(thread[], ioFileWorkerMain)
+          ioFileThreads.add thread
+        except CatchableError:
+          if ioFileThreads.len == 0:
+            if not force: return false
+            # Forced close/discard jobs must retire even if thread creation
+            # fails; no live worker owns these descriptors yet.
+            runInline = true
+      beginExternalNativeOp(pending.job.completionWake != nil)
+      ioFilePending.add pending
+      pending.job.producerQueued = true
+      if not runInline:
+        ioFileQueue.add cast[pointer](pending.job)
         signal(ioFileCond)
-    if needWorker:
-      var thread: ref Thread[void]
-      new(thread)
-      createThread(thread[], ioFileWorkerMain)
-      withLock ioFileLock:
-        ioFileThreads.add thread
-        signal(ioFileCond)
+    if runInline:
+      runIoFileJob(pending.job)
+      publishIoFileDone(pending.job)
     true
 
   proc fileErrorText(code: cint): string =
@@ -725,8 +755,9 @@ static void gene_io_file_block_sigpipe(void) {
       try:
         settleIoFilePending(pending)
       finally:
+        let notified = pending.job.completionWake != nil
         freeIoFileJob(pending.job)
-        endExternalNativeOp()
+        endExternalNativeOp(notified)
 
   proc releaseIoFileResourceRecord(id: uint64) {.raises: [].} =
     var record: IoFileRecord

@@ -7,6 +7,7 @@ import ./native_api
 
 when defined(posix) and not defined(emscripten) and not defined(geneWasm):
   import std/posix
+  import ./process_launch
 
 type
   BuildMode* = enum
@@ -1035,8 +1036,11 @@ proc selectedResources(engine: BuildEngine, request: BuildRequest,
 
 proc runNativeTool(executable: string, args: seq[string], workDir: string) =
   ## Start argv directly. A shell would make cflags/ldflags executable input.
-  let process = startProcess(executable, workDir, args,
-                             options = {poParentStreams})
+  let process =
+    when defined(posix) and not defined(emscripten) and not defined(geneWasm):
+      launchProcess(executable, args, workDir, inheritStdio = true)
+    else:
+      startProcess(executable, workDir, args, options = {poParentStreams})
   try:
     let status = process.waitForExit(120_000)
     if status == -1:

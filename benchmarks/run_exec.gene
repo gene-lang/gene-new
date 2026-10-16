@@ -1,0 +1,89 @@
+# gene run benchmarks/run_exec.gene OUTPUT CHILD NATIVE CONTROL M1A FINAL
+# Build first; run on an otherwise idle host. Each host uses exec_workloads.gene.
+(fn capture [exe argv]
+  (let result ($os/exec exe argv... ^timeout_ms 120000 ^max_bytes 4194304))
+  result)
+
+(fn distribution [values]
+  (let sorted ($order/sort values))
+  (let count ($size sorted))
+  (let middle (/ count 2))
+  (let previous (- middle 1))
+  (let last (- count 1))
+  (let p95 (- (/ (+ (* count 95) 99) 100) 1))
+  (let median (if (== (// count 2) 0)
+    (/ (+ sorted/%previous sorted/%middle) 2.0) sorted/%middle))
+  {^count count ^median median ^p95 sorted/%p95
+   ^min sorted/0 ^max sorted/%last ^samples_ns values})
+
+(fn main [args] : Int
+  (let argv args/body)
+  ($assert (== ($size argv) 6)
+    "usage: run_exec.gene OUTPUT CHILD NATIVE CONTROL M1A FINAL")
+  (let output argv/0)
+  ($assert (! ($fs/exists? output)) "output directory must be new")
+  ($fs/make_dir output)
+  (let fixture ($fs/real_path argv/1))
+  (let workload ($fs/real_path "benchmarks/exec_workloads.gene"))
+  (let labels ["native" "control" "m1a" "final"])
+  (let variants [])
+  (repeat i in 4
+    (let index (+ i 2))
+    (let exe ($fs/real_path argv/%index))
+    (variants .push {^name labels/%i ^executable exe
+      ^sha256 ($crypto/sha256 ($fs/read_bytes exe)) ^rows {}}))
+  (let metadata {^format 1 ^rounds 3 ^warmup "one untimed action per process"
+    ^order "rotate variants each round; one host process per row"
+    ^fixture fixture ^fixture_sha256 ($crypto/sha256 ($fs/read_bytes fixture))
+    ^workload_sha256 ($crypto/sha256 ($fs/read_bytes workload))
+    ^runner_sha256 ($crypto/sha256 ($fs/read_bytes "benchmarks/run_exec.gene"))
+    ^git (capture "git" ["rev-parse" "HEAD"])
+    ^worktree (capture "git" ["status" "--porcelain"])
+    ^system (capture "uname" ["-srm"])
+    ^compiler (capture "nim" ["--version"])
+    ^cc (capture "cc" ["--version"])
+    ^machine (?? ($os/env? "GENE_BENCH_MACHINE") "")
+    ^source_revision (?? ($os/env? "GENE_BENCH_REVISION") "")})
+  ($fs/write_text $"${output}/metadata.json" ($json/stringify metadata))
+  (let cases ["clock_control" "capture_root" "capture_fiber" "async_root"
+    "async_fiber" "stdio_root" "stdio_fiber" "stdio_async" "stdio_async_fiber"
+    "stream_callback" "stream_callback_fiber" "stream_channel" "stream_channel_fiber"
+    "shell_sequence" "shell_pipeline" "stdout_bulk_root"
+    "stdout_bulk_fiber" "both_streams_bulk" "stdin_pipe_bulk" "stdout_pipe_bulk"
+    "concurrent_1" "concurrent_8" "concurrent_32" "concurrent_64" "first_line"])
+  (repeat round in 3
+    (for name in cases
+      (repeat slot in 4
+        (let index (// (+ slot round) 4))
+        (let variant variants/%index)
+        (let count (if (|| ($str/contains? name "bulk")
+          ($str/contains? name "concurrent")) "3"
+          (if (== name "first_line") "5" "40")))
+        (let command (if (== index 0) [fixture count name]
+          [workload fixture count name]))
+        (let result (capture variant/executable command))
+        (let stem $"${output}/${round}-${index}-${name}")
+        ($fs/write_text $"${stem}.stdout.jsonl" result/stdout)
+        ($fs/write_text $"${stem}.stderr.txt" result/stderr)
+        ($assert (&& (== result/status 0) (! result/timed_out) (! result/truncated))
+          $"failed ${variant/name} ${name}; inspect ${stem}")
+        (let row ($json/parse ($str/trim result/stdout)))
+        ($assert (== row/name name) "wrong row")
+        (if (! ($has_key? variant/rows name)) (variant/rows .put name []))
+        (let samples (variant/rows .get name))
+        (for sample in row/samples_ns (samples .push sample))))
+    ($println $"completed exec round ${round}")
+    ($io/flush_stdout))
+  (let summary [])
+  (for variant in variants
+    ($assert (== variant/sha256 ($crypto/sha256 ($fs/read_bytes variant/executable)))
+      "benchmark executable changed during measurement")
+    (let measurements [])
+    (for name in cases
+      (measurements .push {^name name
+        ^latency_ns (distribution (variant/rows .get name))}))
+    (summary .push {^name variant/name ^executable variant/executable
+      ^sha256 variant/sha256 ^measurements measurements}))
+  ($fs/write_text $"${output}/summary.json" ($json/stringify summary))
+  ($println $"saved ${output}/summary.json")
+  0)

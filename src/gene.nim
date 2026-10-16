@@ -22,6 +22,9 @@ import gene/ext/[logging, logging_config]
 # executable's dynamic symbol table for a dlopened AOT library to resolve.
 import gene/aot_runtime
 
+when defined(posix) and not defined(emscripten) and not defined(geneWasm):
+  import gene/process_launch
+
 when defined(posix):
   import std/posix
 
@@ -797,9 +800,13 @@ proc runParallelBuilds(options: ProjectBuildCli, graph: MaterializedGraph,
   ## collected and emitted in plan order for deterministic logs.
   let requested = if options.jobs > 0: options.jobs else: countProcessors()
   let parallelism = max(1, min(requested, work.len))
+  when defined(posix) and not defined(emscripten) and not defined(geneWasm):
+    type BuildProcess = ProcessHandle
+  else:
+    type BuildProcess = Process
   type RunningBuild = object
     index: int
-    process: Process
+    process: BuildProcess
   var running: seq[RunningBuild]
   var outputs = newSeq[string](work.len)
   var statuses = newSeq[int](work.len)
@@ -808,9 +815,15 @@ proc runParallelBuilds(options: ProjectBuildCli, graph: MaterializedGraph,
     while next < work.len and running.len < parallelism:
       let item = work[next]
       let packageRoot = graph.packagesById[item.packageId].root
-      let process = startProcess(getAppFilename(), graph.workspaceRoot,
-        args = childBuildArgs(options, packageRoot, item.target),
-        options = {poStdErrToStdOut})
+      let process =
+        when defined(posix) and not defined(emscripten) and not defined(geneWasm):
+          launchProcess(getAppFilename(),
+            childBuildArgs(options, packageRoot, item.target),
+            graph.workspaceRoot, mergeStderr = true)
+        else:
+          startProcess(getAppFilename(), graph.workspaceRoot,
+            args = childBuildArgs(options, packageRoot, item.target),
+            options = {poStdErrToStdOut})
       running.add RunningBuild(index: next, process: process)
       inc next
     let current = running[0]

@@ -1,0 +1,107 @@
+{
+  "format": 1,
+  "date": "2026-10-15",
+  "base_revision": "78e1ee21e7b0260a7e515d84b1ee33e3f3cfef23",
+  "implementation_committed": false,
+  "source": {
+    "archive": "source-snapshots.tar.xz",
+    "archive_final_stage": "final-v1",
+    "final_followup_patch": "final-bytes-copy.patch",
+    "final_source_manifest": "final-source.sha256",
+    "vendor": "use vendor/ from base checkout; symlink into each tree",
+    "note": "The working tree includes owner edits; the snapshots, not base revision alone, identify measured source."
+  },
+  "platforms": {
+    "macos": {
+      "hardware": "Apple M4 Pro, 14 CPUs, 48 GiB",
+      "os": "macOS 27.0.1 (26A434)",
+      "system": {
+        "status": 0,
+        "stdout": "Darwin 27.0.0 arm64\n",
+        "stderr": "",
+        "stdout_truncated": false,
+        "stderr_truncated": false,
+        "truncated": false,
+        "timed_out": false
+      },
+      "sdk": "MacOSX26.5.sdk",
+      "cli_and_fixture_sha256": "206dd1cf261f751d35c33d10fac265ce90acb4b4ad0842e5b631882adc68fcd4  tmp/exec-milestone/control/gene\n0bedd7c55db46ef46b4511e64610e2cfb79592dd642ff3e64d4b45c4098e7843  tmp/exec-milestone/final_gene\n221cf1ffd4dfb3c41e4f9936bf90dc42c6432f059614a04c4ffc1651c9610e50  tmp/exec-milestone/exec_child\n3fd2b91a5a813d8fe853f2dfb7cc7b9c85f49a67df93da463d5774c9d803475e  tmp/exec-milestone/exec_reference"
+    },
+    "linux": {
+      "virtualization": "Colima VZ native ARM64, 4 CPUs, 8 GiB",
+      "userspace": "Ubuntu 24.04",
+      "system": {
+        "status": 0,
+        "stdout": "Linux 6.8.0-117-generic aarch64\n",
+        "stderr": "",
+        "stdout_truncated": false,
+        "stderr_truncated": false,
+        "truncated": false,
+        "timed_out": false
+      },
+      "image": "sha256:3403fd40137d05290ae44815106bcc7e5b90e92a4ea4519e0536f883cfd58df4",
+      "cli_and_fixture_sha256": "3f2d1ad5aa5e53addea711458b9d49ad0d632d1594565a80c4f4bd581e506661  /out/control_gene\n497c0eb2b5ac5c01795ea6eacc0ddf69dcd4b6e5efec0b1649542eb975548c55  /out/final_gene\n3e38d8e4a6cad761aa8ea37c3b96c5615c8c953e0f98f5439a59619f4a67b746  /out/exec_child\n6012192512da7251f8a7baed8d258671b20c3b27732b8a8079d5523ce4af990e  /out/exec_reference",
+      "note": "Archived working tree has no .git; source_revision is recorded explicitly. Initial Rosetta amd64 probe was excluded."
+    }
+  },
+  "builds": {
+    "nim": "2.2.12",
+    "memory_manager": "orc",
+    "optimization": "release / opt:speed",
+    "host": "nim c -d:release --path:SNAPSHOT/src --nimcache:CACHE -o:HOST benchmarks/exec_clock_host.nim",
+    "cli": "nim c -d:release --path:src --nimcache:CACHE -o:CLI src/gene.nim",
+    "native": "cc -O2 -Wall -Wextra benchmarks/exec_REFERENCE_OR_CHILD.c -o OUTPUT",
+    "macos_native_extra": "-isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk",
+    "config": "Configuration files are included in the source archive; Linux legacy control uses useFork."
+  },
+  "measurement": {
+    "main_rounds": 3,
+    "short_samples": 120,
+    "bulk_and_concurrency_samples": 9,
+    "first_line_samples": 15,
+    "warmup": "One action per host process, excluded",
+    "ordering": "Rotate native/control/M1a/final order per round",
+    "simultaneous_builds_or_tests": false,
+    "options_samples_per_setting": 200,
+    "options_order": "Rotate default/dir/env within each iteration",
+    "supplemental_trials": 3,
+    "performance_memory_model": "ORC; AtomicArc is functionally qualified separately",
+    "failed_capture_retained": "macos-v1-*"
+  },
+  "qualification": {
+    "exec": 20,
+    "launcher": 16,
+    "native_io": 10,
+    "wake": 7,
+    "broad_pass": 1718,
+    "broad_missing_scripts": 2,
+    "language_specs": 892,
+    "atomic_vm": 427,
+    "atomic_workers": 50,
+    "atomic_native_threads": 18,
+    "atomic_io": 31,
+    "orc_lifetime": 90,
+    "data_followup": 15,
+    "harness_each_platform": 4,
+    "linux_build": 10,
+    "linux_cli_selected": 3,
+    "gates_each_platform": 44,
+    "apple_asan": "address,undefined; detect_leaks=0 (unsupported)",
+    "linux_native_asan": "address,undefined; detect_leaks=1"
+  },
+  "limitations": [
+    "Numerical budgets were fixed after prototype smoke runs, before paired qualification, not before implementation.",
+    "Two broad-suite checks require absent tools/qualify_inference_depth.py and tools/qualify_episode_depth.py.",
+    "Windows runtime/performance coverage is not claimed.",
+    "Cold CLI and idle CPU include whole invocation/workload costs; Bash uses external fixture batches.",
+    "Control source predates independent native-ABI worktree edits; complete source snapshots are retained."
+  ],
+  "local_raw_directories": [
+    "tmp/exec-milestone/mac-qual-v1",
+    "tmp/exec-milestone/mac-qual-v2",
+    "tmp/exec-milestone/mac-extra-v1",
+    "tmp/exec-milestone/mac-extra-v2",
+    "tmp/exec-milestone/linux-arm64/qual-final",
+    "tmp/exec-milestone/linux-arm64/extra-final2"
+  ]
+}

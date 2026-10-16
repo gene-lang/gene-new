@@ -1,0 +1,55 @@
+# gene run benchmarks/check_exec.gene SUMMARY_JSON GATES_JSON
+# Thresholds are the frozen milestone budgets; M1a remains an intermediate row.
+(fn main [args] : Int
+  (let argv args/body)
+  ($assert (== ($size argv) 2) "usage: check_exec.gene SUMMARY_JSON GATES_JSON")
+  (let data ($json/parse ($fs/read_text argv/0)))
+  (let gates [])
+  (fn row [host name]
+    (for variant in data
+      (if (== variant/name host)
+        (for measurement in variant/measurements
+          (if (== measurement/name name) (return measurement/latency_ns)))))
+    ($assert false $"missing measurement ${host}/${name}"))
+  (fn gate [name passed actual budget]
+    (gates .push {^name name ^passed passed ^actual actual ^budget budget}))
+  (for name in ["capture_root" "capture_fiber" "async_root" "async_fiber"
+    "stdio_async" "stdio_async_fiber" "stream_callback" "stream_callback_fiber"
+    "stream_channel" "stream_channel_fiber"]
+    (let baseline (row "control" name))
+    (let native (row "native" name))
+    (let final (row "final" name))
+    (let speedup (/ (* baseline/median 1.0) final/median))
+    (gate $"${name}/speedup" (>= speedup 2.5) speedup 2.5)
+    (gate $"${name}/median_overhead" (<= final/median (+ native/median 1000000))
+      (- final/median native/median) 1000000)
+    (gate $"${name}/p95_overhead" (<= final/p95 (+ native/p95 2000000))
+      (- final/p95 native/p95) 2000000))
+  (for name in ["stdio_root" "stdio_fiber"]
+    (let baseline (row "control" name))
+    (let final (row "final" name))
+    (let proportional (* baseline/median 0.15))
+    (let allowance (if (> proportional 200000) proportional 200000))
+    (gate $"${name}/regression" (<= final/median (+ baseline/median allowance))
+      (- final/median baseline/median) allowance))
+  (let first_native (row "native" "first_line"))
+  (let first_final (row "final" "first_line"))
+  (gate "first_line/median_overhead" (<= first_final/median (+ first_native/median 1000000))
+    (- first_final/median first_native/median) 1000000)
+  (gate "first_line/p95_overhead" (<= first_final/p95 (+ first_native/p95 2000000))
+    (- first_final/p95 first_native/p95) 2000000)
+  (for name in ["stdout_bulk_root" "stdout_bulk_fiber" "both_streams_bulk"
+                "stdin_pipe_bulk" "stdout_pipe_bulk"]
+    (let baseline (row "control" name))
+    (let native (row "native" name))
+    (let final (row "final" name))
+    (let speedup (/ (* baseline/median 1.0) final/median))
+    (let fraction (/ (* native/median 1.0) final/median))
+    (let minimum (if ($str/contains? name "pipe") 0.2 0.5))
+    (gate $"${name}/speedup" (>= speedup 2.0) speedup 2.0)
+    (gate $"${name}/native_throughput" (>= fraction minimum) fraction minimum))
+  (var failed 0)
+  (for item in gates (if (! item/passed) (set failed (+ failed 1))))
+  ($fs/write_text argv/1 ($json/stringify {^failed failed ^gates gates}))
+  ($println $"${failed} failed performance gates; saved ${argv/1}")
+  (if (> failed 0) 1 0))

@@ -1,0 +1,3 @@
+hw.memsize: 51539607552
+hw.ncpu: 14
+machdep.cpu.brand_string: Apple M4 Pro

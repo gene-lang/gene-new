@@ -95,9 +95,19 @@ task test, "Run the test suite":
   exec "python3 tests/test_tls_adapter.py"
   exec "python3 tests/test_genex_tls_package.py"
   exec "node tests/test_wasm.mjs"
+  when defined(posix): exec "nimble execTest"
 
 task spec, "Run executable language surface specs":
   exec "nim c -r --path:src --hints:off tests/spec_runner.nim"
+
+task execTest, "Run native process launch, I/O, notification and exec regressions":
+  when defined(posix):
+    exec "nim c -r -d:geneExecTests --path:src --hints:off tests/test_process_launch.nim"
+    exec "nim c -r -d:geneExecTests --path:src --hints:off tests/test_process_io.nim"
+    exec "nim c -r -d:geneExecTests --path:src --hints:off tests/test_native_wake.nim"
+    exec "nim c -r -d:geneExecTests --path:src --hints:off tests/test_exec.nim"
+  else:
+    echo "Native process qualification requires macOS or Linux"
 
 task contracts, "Qualify scheduler, synchronization and frozen graph contracts":
   exec "nim c -d:geneSchedulerTests -d:geneGraphProofTests --path:src --hints:off -o:bin/gene-contracts src/gene.nim"
@@ -138,6 +148,8 @@ task leakcheck, "Run refcount/scope leak tracking tests":
   exec "nim c -r -d:geneRcStats --path:src --hints:off tests/test_native_callback_abi.nim"
 
 task threadcheck, "Run threaded atomicArc smoke checks":
+  when defined(posix):
+    exec "nim c -r --mm:atomicArc --threads:on -d:geneExecTests --path:src --hints:off tests/test_exec.nim"
   exec "nim c -r --mm:atomicArc --threads:on -d:geneRcStats --path:src --hints:off tests/test_atomic_generation_retirement.nim"
   exec "nim c -r --mm:atomicArc --threads:on -d:geneRcStats --path:src --hints:off tests/test_native_managed_disabled.nim"
   exec "nim c -r --mm:atomicArc --threads:on -d:geneRcStats -d:geneAtomicGenerationRetirementProbe --path:src --hints:off tests/test_native_managed.nim"
@@ -157,6 +169,7 @@ task threadcheck, "Run threaded atomicArc smoke checks":
 
 task verify, "Run tests, executable specs, and benchmarks":
   exec "nim c -r -d:geneScopeReuseTests --path:src --hints:off tests/test_all.nim"
+  when defined(posix): exec "nimble execTest"
   exec "nim c -r --path:src --hints:off tests/spec_runner.nim"
   exec "nim c -r --path:src --hints:off tests/transpile_fixture_runner.nim"
   exec "nim c -r --path:src --hints:off tests/transpile_web_runner.nim"

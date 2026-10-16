@@ -1,7 +1,7 @@
 ## Stack VM for compiled Gene GIR chunks.
 
 import std/[algorithm, atomics, base64, dynlib, hashes, json, locks, math, monotimes, net, os,
-            options, osproc, sets, strutils, tables, times, unicode]
+            options, osproc, sets, strtabs, strutils, tables, times, unicode]
 import ./[compiler, diagnostics, digest, equality, gir, package, printer, reader, types,
           type_contracts]
 import ./[callable_reflection, error_analysis, gir_codec, native_errors]
@@ -35,6 +35,9 @@ when not defined(geneWasm):
   import ./web_backend
 
 when defined(posix) and not defined(emscripten) and not defined(geneWasm):
+  import ./process_launch
+  import ./process_io
+  import ./native_wake
   import ./ext/term/tui as tui_terminal
   import ./ext/term/[pty_process, terminal_session, vterm]
 
@@ -358,6 +361,8 @@ type
     supervisorRetryDrops: uint64
     supervisorRetryHighWater: int
     supervisorDrainActive: bool
+    when defined(posix) and not defined(emscripten) and not defined(geneWasm):
+      nativeWakeOwner: NativeWakeOwner
     when compileOption("threads") and defined(gcAtomicArc):
       # Heap-allocated so growing a running pool moves only references: a
       # running thread keeps using its Thread object's address.
@@ -1385,13 +1390,14 @@ template currentFiberActive: untyped =
 
 # Wake a fiber parked on `channel` (a receiver, or a sender when `wakeSenders`),
 # moving it from the wait list to the run queue. Defined with the scheduler below.
-proc wakeChannelWaiters(channel: Value, wakeSenders: bool)
+proc wakeChannelWaiters(channel: Value, wakeSenders: bool, notifyRoot = true)
 proc wakeAllChannelWaiters(channel: Value, wakeSenders: bool)
 # Explicit-scheduler variants for foreign threads that must not touch the
 # scheduler ref's (non-atomic) refcount: callers hold the SchedulerState via a
 # raw pointer + {.cursor.} cast (the Application keeps it alive for the
 # process lifetime).
-proc wakeChannelWaitersIn(s: SchedulerState, channel: Value, wakeSenders: bool)
+proc wakeChannelWaitersIn(s: SchedulerState, channel: Value, wakeSenders: bool,
+                         notifyRoot = true)
 proc wakeAllChannelWaitersIn(s: SchedulerState, channel: Value,
                              wakeSenders: bool)
 proc wakeTaskWaitersIn(s: SchedulerState, task: Value)
@@ -1405,6 +1411,8 @@ proc pruneIoReadGuards(s: SchedulerState)
 proc borrowProtocolRead(reader: Value, owner: uint64, scope: Scope)
 proc releaseProtocolRead(reader: Value, owner: uint64, scope: Scope)
 
+proc notifyExternalNativeClassChange()
+
 when compileOption("threads"):
   import std/atomics
 
@@ -1413,25 +1421,75 @@ when compileOption("threads"):
   # Root-level blocking waits consult this before declaring deadlock: an
   # external thread can still unblock them, so they poll instead of raising.
   var externalNativeOps: Atomic[int]
+  var pollingNativeOps: Atomic[int]
 
-  proc beginExternalNativeOp() =
-    discard externalNativeOps.fetchAdd(1, moRelease)
+  proc beginExternalNativeOp(notified = false) =
+    let first = externalNativeOps.fetchAdd(1, moRelease) == 0
+    let firstPolling = not notified and pollingNativeOps.fetchAdd(1, moRelease) == 0
+    if first or firstPolling: notifyExternalNativeClassChange()
 
-  proc endExternalNativeOp() =
-    discard externalNativeOps.fetchSub(1, moRelease)
+  proc endExternalNativeOp(notified = false) =
+    let lastPolling = not notified and pollingNativeOps.fetchSub(1, moRelease) == 1
+    let last = externalNativeOps.fetchSub(1, moRelease) == 1
+    if last or lastPolling: notifyExternalNativeClassChange()
 
   proc externalNativeOpsPending(): bool =
     externalNativeOps.load(moAcquire) > 0
+  proc pollingNativeOpsPending(): bool =
+    pollingNativeOps.load(moAcquire) > 0
 else:
   # Terminal/curses polling can make external progress without a worker thread.
   # Keep the same lifecycle counter for those adapters in unthreaded builds.
   var externalNativeOps = 0
-  proc beginExternalNativeOp() {.inline.} =
+  var pollingNativeOps = 0
+  proc beginExternalNativeOp(notified = false) {.inline.} =
     inc externalNativeOps
-  proc endExternalNativeOp() {.inline.} =
+    if not notified: inc pollingNativeOps
+    notifyExternalNativeClassChange()
+  proc endExternalNativeOp(notified = false) {.inline.} =
+    if not notified: dec pollingNativeOps
+    notifyExternalNativeClassChange()
     dec externalNativeOps
   proc externalNativeOpsPending(): bool {.inline.} =
     externalNativeOps > 0
+  proc pollingNativeOpsPending(): bool {.inline.} =
+    pollingNativeOps > 0
+
+when defined(posix) and not defined(emscripten) and not defined(geneWasm):
+  proc schedulerNativeWake(s: SchedulerState): NativeWakeSignal =
+    withSchedulerLock(s):
+      if s.nativeWakeOwner == nil:
+        s.nativeWakeOwner = newNativeWake(s.rootLane)
+      result = s.nativeWakeOwner.signal
+
+  proc waitExternalNativeProgress(maxWaitMs = -1) =
+    let scheduler = currentScheduler()
+    var created = false
+    withSchedulerLock(scheduler):
+      if scheduler.nativeWakeOwner == nil:
+        scheduler.nativeWakeOwner = newNativeWake(scheduler.rootLane)
+        created = true
+    # Recheck the caller's predicate once after installing its wake endpoint.
+    if created: return
+    let timeout = if pollingNativeOpsPending(): 1 else: maxWaitMs
+    discard waitNativeWake(currentEventLane(), timeout)
+else:
+  proc waitExternalNativeProgress(maxWaitMs = -1) = os.sleep(1)
+
+proc signalSchedulerWakeUnlocked(s: SchedulerState) {.inline.} =
+  when defined(posix) and not defined(emscripten) and not defined(geneWasm):
+    if s.nativeWakeOwner != nil: signalWake(s.nativeWakeOwner.signal)
+
+proc notifyExternalNativeClassChange() =
+  when defined(posix) and not defined(emscripten) and not defined(geneWasm):
+    signalRuntimeLanes()
+
+when defined(geneExecTests):
+  proc execPendingCounts*(): tuple[total, polling: int] =
+    when compileOption("threads"):
+      (externalNativeOps.load(moAcquire), pollingNativeOps.load(moAcquire))
+    else:
+      (externalNativeOps, pollingNativeOps)
 
 # Schedule a task's own fiber to observe a cancellation request. Awaiters are
 # woken when that fiber finishes cleanup and settles the task as cancelled.
@@ -3618,7 +3676,7 @@ proc biChannelSend(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
       if not workerLeaseOpen:
         workerLease = beginSchedulerWorkerLease()
         workerLeaseOpen = true
-      wakeChannelWaiters(args[0], wakeSenders = false)
+      wakeChannelWaiters(args[0], wakeSenders = false, notifyRoot = false)
       if not schedulerRunOneRoot(workerLease):
         let retry = args[0].channelSendState()
         if retry.closed or not retry.full:
@@ -3711,7 +3769,7 @@ proc biChannelRecv(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
       if not workerLeaseOpen:
         workerLease = beginSchedulerWorkerLease()
         workerLeaseOpen = true
-      wakeChannelWaiters(args[0], wakeSenders = true)
+      wakeChannelWaiters(args[0], wakeSenders = true, notifyRoot = false)
       if not schedulerRunOneRoot(workerLease):
         let retry = args[0].channelRecvState()
         if retry.closed or not retry.empty:
@@ -3720,7 +3778,7 @@ proc biChannelRecv(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
           # A dedicated-thread native op (os/exec_stream_async) may still feed
           # or close this channel; poll instead of raising.
           if externalNativeOpsPending():
-            os.sleep(1)
+            waitExternalNativeProgress()
             continue
         raise newException(GeneError, "Channel/recv would suspend on an empty channel")
       continue
@@ -8288,7 +8346,7 @@ proc biPrintln(args: openArray[Value]): Value {.nimcall.} =
 proc timerDeadline(milliseconds: int64): MonoTime =
   getMonoTime() + initDuration(milliseconds = milliseconds)
 
-proc sleepUntil(deadline: MonoTime)
+proc sleepUntil(deadline: MonoTime): bool
 
 proc biSleep(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("sleep", args)
@@ -8322,7 +8380,7 @@ proc biSleep(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
       workerLease = beginSchedulerWorkerLease()
       workerLeaseOpen = true
     if not schedulerRunOneRootUntil(deadline, workerLease):
-      sleepUntil(deadline)
+      discard sleepUntil(deadline)
   NIL
 
 proc requireFfiLibrary(name: string, value: Value) =
@@ -17287,6 +17345,7 @@ proc enqueueRunnableUnlocked(s: SchedulerState, f: Fiber) =
   ## covers fibers that arrive via the move path.
   clearWaitReason(f)
   s.runQueue.add f
+  signalSchedulerWakeUnlocked(s)
   when compileOption("threads") and defined(gcAtomicArc):
     if f.workerCandidate:
       broadcast(s.workerCond)
@@ -22709,20 +22768,32 @@ proc nextTimerDeadline(): tuple[has: bool, deadline: MonoTime] =
           result.has = true
           result.deadline = item.deadline
 
-proc sleepUntil(deadline: MonoTime) =
+proc sleepUntil(deadline: MonoTime): bool =
   let remaining = deadline - getMonoTime()
   if remaining <= initDuration():
-    return
+    return false
   let milliseconds = max(1, int(min(remaining.inMilliseconds,
                                     int64(high(int)))))
-  if nativeIngressSleepHook != nil and nativeIngressSleepHook(milliseconds):
+  when defined(posix) and not defined(emscripten) and not defined(geneWasm):
+    let scheduler = currentScheduler()
+    var created = false
+    withSchedulerLock(scheduler):
+      if scheduler.nativeWakeOwner == nil:
+        scheduler.nativeWakeOwner = newNativeWake(scheduler.rootLane)
+        created = true
+    if created: return true
+    result = waitNativeWake(currentEventLane(),
+      if pollingNativeOpsPending(): min(milliseconds, 1) else: milliseconds)
     pollOsExecAsyncCompletions()
-    return
-  if nativeIngressSleepHook == nil:
-    os.sleep(milliseconds)
+    pollNativeIngressHook()
+  else:
+    if nativeIngressSleepHook != nil and nativeIngressSleepHook(milliseconds):
+      pollOsExecAsyncCompletions()
+      return true
+    if nativeIngressSleepHook == nil: os.sleep(milliseconds)
 
 proc wakeChannelWaitersIn(s: SchedulerState, channel: Value,
-                          wakeSenders: bool) =
+                          wakeSenders: bool, notifyRoot: bool) =
   ## Move one fiber parked on `channel` — a receiver, or a sender when
   ## `wakeSenders` — from the wait list onto the run queue (FIFO over waiters).
   ## Runs on foreign threads (exec workers), so the transfer is rc-free: the
@@ -22731,9 +22802,11 @@ proc wakeChannelWaitersIn(s: SchedulerState, channel: Value,
   ## Wait reasons are cleared at the dequeue site instead of here (clearing
   ## releases the wait-field Values, which must happen on the scheduler).
   withSchedulerLock(s):
+    if notifyRoot: signalSchedulerWakeUnlocked(s)
     for i in 0 ..< s.waiters.len:
       let f {.cursor.} = s.waiters[i]
       if f.waitIsSend == wakeSenders and same(f.waitChannel, channel):
+        if not notifyRoot: signalSchedulerWakeUnlocked(s)
         when compileOption("threads") and defined(gcAtomicArc):
           if f.workerCandidate:
             broadcast(s.workerCond)
@@ -22741,8 +22814,8 @@ proc wakeChannelWaitersIn(s: SchedulerState, channel: Value,
         s.waiters.delete(i)
         return
 
-proc wakeChannelWaiters(channel: Value, wakeSenders: bool) =
-  wakeChannelWaitersIn(currentScheduler(), channel, wakeSenders)
+proc wakeChannelWaiters(channel: Value, wakeSenders: bool, notifyRoot: bool) =
+  wakeChannelWaitersIn(currentScheduler(), channel, wakeSenders, notifyRoot)
 
 proc wakeAllChannelWaitersIn(s: SchedulerState, channel: Value,
                              wakeSenders: bool) =
@@ -22751,6 +22824,7 @@ proc wakeAllChannelWaitersIn(s: SchedulerState, channel: Value,
   ## re-run their operation so they can raise ChannelClosed. Foreign-thread
   ## safe: rc-free move transfer, same discipline as wakeChannelWaitersIn.
   withSchedulerLock(s):
+    signalSchedulerWakeUnlocked(s)
     var i = 0
     while i < s.waiters.len:
       let f {.cursor.} = s.waiters[i]
@@ -22773,6 +22847,7 @@ proc wakeTaskWaitersIn(s: SchedulerState, task: Value) =
   ## counterpart). Foreign-thread safe: rc-free move transfer, same discipline
   ## as wakeChannelWaitersIn.
   withSchedulerLock(s):
+    signalSchedulerWakeUnlocked(s)
     var i = 0
     while i < s.waiters.len:
       let f {.cursor.} = s.waiters[i]
@@ -22793,6 +22868,7 @@ proc wakeResourceWaiters(id: uint64) =
     return
   let scheduler = currentScheduler()
   withSchedulerLock(scheduler):
+    signalSchedulerWakeUnlocked(scheduler)
     var i = 0
     while i < scheduler.waiters.len:
       let fiber {.cursor.} = scheduler.waiters[i]
@@ -23441,6 +23517,8 @@ proc schedulerRunOneRoot(lease: SchedulerWorkerLease): bool =
   if lease.active and schedulerRunOne(skipWorkerSafe = false):
     return true
   when compileOption("threads") and defined(gcAtomicArc):
+    if externalNativeOpsPending():
+      return false # The outer predicate waits on lane notifications/poll work.
     if lease.active and lease.scheduler != nil and
         waitForSchedulerWorkerProgressChange(lease.scheduler):
       return true
@@ -23484,7 +23562,7 @@ proc schedulerRunOne(skipWorkerSafe = false): bool =
     let next = nextTimerDeadline()
     if not next.has:
       return false
-    sleepUntil(next.deadline)
+    if sleepUntil(next.deadline): return true
     if wakeExpiredTimers() and not hasRunnableFiber():
       return true
     f = popRunnableFiber(skipWorkerSafe = skipWorkerSafe)
@@ -23508,7 +23586,7 @@ proc schedulerRunOneUntil(deadline: MonoTime, skipWorkerSafe = false): bool =
       return false
     if next.deadline > deadline:
       return false
-    sleepUntil(next.deadline)
+    if sleepUntil(next.deadline): return true
     if wakeExpiredTimers() and not hasRunnableFiber():
       return true
     f = popRunnableFiber(skipWorkerSafe = skipWorkerSafe)
@@ -23582,7 +23660,7 @@ proc pumpUntilDone(task: Value, parentTask: Value) =
     # operations even in a non-threaded build. Poll them at a short boundary
     # instead of sleeping indefinitely for another key or unrelated timer.
     let progressed =
-      if externalNativeOpsPending():
+      if pollingNativeOpsPending():
         schedulerRunOneRootUntil(timerDeadline(1), workerLease)
       else:
         schedulerRunOneRoot(workerLease)
@@ -23591,26 +23669,28 @@ proc pumpUntilDone(task: Value, parentTask: Value) =
         break
       if currentEventLane() == currentScheduler().rootLane and
           nativeRootResourceActive(currentScheduler()):
+        let delay = if pollingNativeOpsPending(): 1 else: 100
         if nativeIngressSleepHook != nil:
-          discard nativeIngressSleepHook(100)
+          discard nativeIngressSleepHook(delay)
         else:
-          os.sleep(100)
+          os.sleep(delay)
         continue
       if externalNativeOpsPending():
-        os.sleep(1)
+        waitExternalNativeProgress()
         continue
       when compileOption("threads") and defined(gcAtomicArc):
         if task.taskExternalPending:
           # os/exec-*-async is settled by scheduler polling, not by its worker.
           # Avoid a condition wait while any such native op may need this lane.
           if externalNativeOpsPending():
-            os.sleep(1)
+            waitExternalNativeProgress()
           elif currentEventLane() == currentScheduler().rootLane and
               nativeRootResourceActive(currentScheduler()):
+            let delay = if pollingNativeOpsPending(): 1 else: 100
             if nativeIngressSleepHook != nil:
-              discard nativeIngressSleepHook(100)
+              discard nativeIngressSleepHook(delay)
             else:
-              os.sleep(100)
+              os.sleep(delay)
           else:
             discard task.waitExternalTaskChange()
           if task.taskDone:
@@ -23621,7 +23701,7 @@ proc pumpUntilDone(task: Value, parentTask: Value) =
         # A dedicated-thread native op (os/exec-*-async) can still settle this
         # task or wake a fiber that will; poll instead of declaring deadlock.
         if task.taskExternalPending or externalNativeOpsPending():
-          os.sleep(1)
+          waitExternalNativeProgress()
           continue
       raise newException(GeneError,
         "deadlock: awaited task is blocked with no runnable task to unblock it")

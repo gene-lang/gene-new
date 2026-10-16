@@ -5,6 +5,7 @@
 import std/[algorithm, dynlib, json, locks, os, sets, tables]
 when defined(posix) and not defined(emscripten) and not defined(geneWasm):
   import std/posix
+  import ./native_wake
 
 import ./ext/logging
 import ./[types, vm]
@@ -221,8 +222,9 @@ var ingressPollActive: bool
 var ingressManagedHooks: GeneIngressManagedHooks
 var unregisterService: ptr GeneUnregisterService
 var unregisterThread: ref Thread[void]
-var ingressWakeRead = -1.cint
-var ingressWakeWrite = -1.cint
+when defined(posix) and not defined(emscripten) and not defined(geneWasm):
+  var ingressWakeOwner: NativeWakeOwner
+  var ingressWakeKey: byte
 var nativeWakeUsers: int # root-lane producer owners sharing the ingress wake pipe
 
 proc cMalloc(size: csize_t): pointer {.importc: "malloc", header: "<stdlib.h>".}
@@ -306,33 +308,17 @@ proc stopUnregisterWorker() =
 
 proc ensureIngressWakePipe() =
   when defined(posix) and not defined(emscripten) and not defined(geneWasm):
-    if ingressWakeRead >= 0: return
-    var fds: array[2, cint]
-    if posix.pipe(fds) != 0:
-      raise newException(GeneError, "native ingress wake pipe failed")
-    if fcntl(fds[0], F_SETFL, fcntl(fds[0], F_GETFL, 0) or O_NONBLOCK) < 0 or
-        fcntl(fds[1], F_SETFL, fcntl(fds[1], F_GETFL, 0) or O_NONBLOCK) < 0 or
-        fcntl(fds[0], F_SETFD, FD_CLOEXEC) < 0 or
-        fcntl(fds[1], F_SETFD, FD_CLOEXEC) < 0:
-      discard posix.close(fds[0])
-      discard posix.close(fds[1])
-      raise newException(GeneError, "native ingress wake pipe setup failed")
-    ingressWakeRead = fds[0]
-    ingressWakeWrite = fds[1]
+    if ingressWakeOwner == nil:
+      ingressWakeOwner = newNativeWake(currentEventLane(), addr ingressWakeKey)
 
 proc closeIngressWakePipe() =
   if nativeWakeUsers > 0: return
   when defined(posix) and not defined(emscripten) and not defined(geneWasm):
-    if ingressWakeRead >= 0: discard posix.close(ingressWakeRead)
-    if ingressWakeWrite >= 0: discard posix.close(ingressWakeWrite)
-    ingressWakeRead = -1
-    ingressWakeWrite = -1
+    ingressWakeOwner = nil
 
 proc signalIngressWake() {.gcsafe.} =
   when defined(posix) and not defined(emscripten) and not defined(geneWasm):
-    if ingressWakeWrite >= 0:
-      var byte = 'w'
-      discard posix.write(ingressWakeWrite, addr byte, 1)
+    signalWakeKey(addr ingressWakeKey)
 
 proc geneHoldNativeWake*() =
   ## Root-lane ownership; C producers keep the pipe open after ingress closes.
@@ -350,23 +336,11 @@ proc geneSignalNativeWake*() {.gcsafe.} =
   signalIngressWake()
 
 proc waitIngressWake(timeoutMs: int): bool {.nimcall.} =
-  if ingressSubscriptions.len == 0 and nativeWakeUsers == 0:
-    os.sleep(timeoutMs)
-    return false
   when defined(posix) and not defined(emscripten) and not defined(geneWasm):
-    if ingressWakeRead < 0:
-      os.sleep(timeoutMs)
-      return false
-    var descriptor = TPollfd(fd: ingressWakeRead, events: POLLIN)
-    let ready = posix.poll(addr descriptor, Tnfds(1), cint(timeoutMs))
-    if ready > 0:
-      var bytes: array[128, char]
-      while posix.read(ingressWakeRead, addr bytes[0], bytes.len) > 0:
-        discard
-      return true
+    waitNativeWake(currentEventLane(), timeoutMs)
   else:
     os.sleep(timeoutMs)
-  false
+    false
 
 proc newGeneIngressContext*(generation: uint64,
                             maxCount = GeneIngressMaxCount,

@@ -17,6 +17,7 @@ demonstrate.
 | [error_handling.gene](error_handling.gene) | Typed errors and recovery. |
 | [generators.gene](generators.gene) | Generators, including inherited generator messages. |
 | [concurrency.gene](concurrency.gene) | Structured tasks, channels, cancellation, actors, and supervisors. |
+| [exec.gene](exec.gene) | OS commands: literal arguments, child directory and environment, PATH prepending, shell pipelines, async execution, and streamed output (macOS/Linux). |
 | [events.gene](events.gene) | The event bus. |
 | [macro.gene](macro.gene) | Template macros. |
 | [fexpr_demo.gene](fexpr_demo.gene) | Fexprs, which interpret syntax at runtime. |

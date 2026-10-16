@@ -1,0 +1,198 @@
+# Executed by exec_clock_host. The same host/workloads instrument both VMs.
+# Source compilation, payload construction and each row's warmup are untimed.
+(let IoResource $io/IoResource)
+(let AsyncReader $io/AsyncReader)
+(let rows [])
+
+(fn check_result [result bytes]
+  ($assert (== result/status 0) "child failed")
+  ($assert (! result/timed_out) "child timed out")
+  ($assert (! result/truncated) "child output was truncated")
+  ($assert (== ($str/byte_size result/stdout) bytes) "stdout size changed")
+  bytes)
+
+(fn measure [name count action]
+  (if (&& (!= exec_case "all") (!= exec_case name)) (return nil))
+  (let expected (action))
+  (let samples [])
+  (repeat i in count
+    (let started (exec_clock_ns))
+    (let result (action))
+    (let elapsed (- (exec_clock_ns) started))
+    ($assert (== result expected) "workload result changed")
+    (samples .push elapsed))
+  ($println ($json/stringify
+    {^name name ^iterations count ^result expected ^samples_ns samples}))
+  ($io/flush_stdout))
+
+(measure "clock_control" exec_iterations (fn [] 0))
+(measure "capture_root" exec_iterations
+  (fn [] (check_result ($os/exec exec_fixture "noop") 0)))
+(measure "capture_fiber" exec_iterations
+  (fn [] (check_result (await (spawn ^lane root ($os/exec exec_fixture "noop"))) 0)))
+(measure "async_root" exec_iterations
+  (fn [] (check_result (await ($os/exec_async exec_fixture "noop")) 0)))
+(measure "async_fiber" exec_iterations
+  (fn [] (check_result (await (spawn ^lane root
+    (await ($os/exec_async exec_fixture "noop")))) 0)))
+(measure "stdio_root" exec_iterations
+  (fn [] ($assert (== ($os/exec_stdio exec_fixture "noop") 0) "stdio failure") 0))
+(measure "stdio_fiber" exec_iterations
+  (fn [] ($assert (== (await (spawn ^lane root
+    ($os/exec_stdio exec_fixture "noop"))) 0) "stdio fiber failure") 0))
+(measure "stdio_async" exec_iterations
+  (fn [] ($assert (== (await ($os/exec_stdio_async exec_fixture "noop")) 0)
+    "async stdio failure") 0))
+(measure "stdio_async_fiber" exec_iterations
+  (fn [] ($assert (== (await (spawn ^lane root
+    (await ($os/exec_stdio_async exec_fixture "noop")))) 0)
+    "async stdio fiber failure") 0))
+(measure "stream_callback" exec_iterations
+  (fn [] (check_result ($os/exec_stream exec_fixture "noop"
+    ^stdout (fn [chunk] nil)) 0)))
+(measure "stream_callback_fiber" exec_iterations
+  (fn [] (check_result (await (spawn ^lane root
+    ($os/exec_stream exec_fixture "noop" ^stdout (fn [chunk] nil)))) 0)))
+(measure "stream_channel" exec_iterations
+  (fn []
+    (let channel ($channel ^capacity 8))
+    (let task ($os/exec_stream_async exec_fixture "noop" ^stdout_chan channel))
+    (check_result (await task) 0)))
+(measure "stream_channel_fiber" exec_iterations
+  (fn [] (check_result (await (spawn ^lane root
+    (do
+      (let channel ($channel ^capacity 8))
+      (await ($os/exec_stream_async exec_fixture "noop" ^stdout_chan channel))))) 0)))
+
+# Opt-in rows: the old control does not accept ^env, and long idle runs belong
+# to CPU/worker measurements rather than the short-command latency matrix.
+(if (== exec_case "capture_env")
+  (measure "capture_env" exec_iterations
+    (fn [] (check_result ($os/exec ^env {^GENE_EXEC_BENCH "value" ^PATH ""}
+      exec_fixture "noop") 0))))
+(if (== exec_case "capture_dir")
+  (measure "capture_dir" exec_iterations
+    (fn [] (check_result ($os/exec ^dir "." exec_fixture "noop") 0))))
+(if (== exec_case "idle")
+  (measure "idle" 1 (fn []
+    (let tasks [])
+    (repeat i in 64 (tasks .push ($os/exec_async exec_fixture "sleep" "2000")))
+    (for task in tasks (check_result (await task) 0))
+    64)))
+
+(fn shell_quote [text]
+  ($to_str "'" ($str/join ($str/split text "'") "'\"'\"'") "'"))
+(let quoted (shell_quote exec_fixture))
+(measure "shell_sequence" exec_iterations
+  (fn [] (check_result ($os/exec ^^full
+    ($to_str quoted " noop; " quoted " noop")) 0)))
+(measure "shell_pipeline" exec_iterations
+  (fn [] (check_result ($os/exec ^^full
+    ($to_str quoted " noop | " quoted " noop")) 0)))
+
+(let bulk_bytes 1048576)
+(let bulk_text ($to_str bulk_bytes))
+(measure "stdout_bulk_root" 3
+  (fn [] (check_result ($os/exec exec_fixture "output" bulk_text
+    ^max_bytes (+ bulk_bytes 1)) bulk_bytes)))
+(measure "stdout_bulk_fiber" 3
+  (fn [] (check_result (await (spawn ^lane root
+    ($os/exec exec_fixture "output" bulk_text ^max_bytes (+ bulk_bytes 1))))
+    bulk_bytes)))
+(measure "both_streams_bulk" 3
+  (fn []
+    (let result (await ($os/exec_async exec_fixture "output" bulk_text "both"
+      ^max_bytes (+ bulk_bytes 1))))
+    (check_result result bulk_bytes)
+    ($assert (== ($str/byte_size result/stderr) bulk_bytes) "stderr size changed")
+    (* bulk_bytes 2)))
+
+(var payload_text "x")
+(repeat i in 20 (set payload_text ($to_str payload_text payload_text)))
+(let payload ($binary/from_str payload_text))
+
+(fn profile_stdin_action []
+    (let IoResource $io/IoResource)
+    (let input ($io/pipe))
+    (let task ($os/exec_stream_async exec_fixture "input" ^stdin_pipe input/0))
+    (repeat i in 16 (await ($io/write_all input/1 payload)))
+    input/1/.IoResource:close
+    (await input/1/.IoResource:wait_closed)
+    (let result (await task))
+    ($assert (== result/status 0) "profile stdin child failed")
+    ($assert (== ($str/trim result/stdout) "16777216") "profile stdin bytes")
+    16777216)
+
+(fn profile_output_action []
+    (check_result (await ($os/exec_async exec_fixture "output" "16777216"
+      ^max_bytes 16777217)) 16777216))
+
+(if (|| (== exec_case "profile_stdin") (== exec_case "profile_output"))
+  (then
+    (let action (if (== exec_case "profile_stdin") profile_stdin_action profile_output_action))
+    (let started (exec_clock_ns))
+    (let deadline (+ started 6000000000))
+    (var iterations 0)
+    (while (< (exec_clock_ns) deadline)
+      (action)
+      (set iterations (+ iterations 1)))
+    ($println ($json/stringify {^name exec_case ^iterations iterations
+      ^bytes_per_iteration 16777216 ^elapsed_ns (- (exec_clock_ns) started)}))
+    ($io/flush_stdout)))
+(measure "stdin_pipe_bulk" 3
+  (fn []
+    (let input ($io/pipe))
+    (let task ($os/exec_stream_async exec_fixture "input" ^stdin_pipe input/0))
+    (await ($io/write_all input/1 payload))
+    input/1/.IoResource:close
+    (await input/1/.IoResource:wait_closed)
+    (let result (await task))
+    ($assert (== result/status 0) "stdin child failed")
+    ($assert (== ($str/trim result/stdout) bulk_text) "stdin contents/size changed")
+    bulk_bytes))
+
+(measure "stdout_pipe_bulk" 3
+  (fn []
+    (let output ($io/pipe))
+    (let task ($os/exec_stream_async exec_fixture "output" bulk_text
+      ^stdout_pipe output/1))
+    (var bytes 0)
+    (loop
+      (let chunk (await (output/0 .AsyncReader:read 65536)))
+      (if ($nil? chunk) (break))
+      (set bytes (+ bytes ($binary/size chunk))))
+    output/0/.IoResource:close
+    (await output/0/.IoResource:wait_closed)
+    ($assert (== (/status (await task)) 0) "stdout pipe child failed")
+    ($assert (== bytes bulk_bytes) "stdout pipe size changed")
+    bytes))
+
+(fn concurrent [count]
+  (let tasks [])
+  (repeat i in count
+    (tasks .push ($os/exec_async exec_fixture "sleep" "20")))
+  (for task in tasks (check_result (await task) 0))
+  count)
+(for count in [1 8 32 64]
+  (measure ($to_str "concurrent_" count) 3 (fn [] (concurrent count))))
+
+(if (|| (== exec_case "all") (== exec_case "first_line"))
+  (then
+  (let samples [])
+  (let completions [])
+  (repeat round in 6
+    (let channel ($channel ^capacity 8))
+    (let started (exec_clock_ns))
+    (let task ($os/exec_stream_async exec_fixture "lines" ^stdout_chan channel))
+    ($assert (== channel/.recv "first") "first line changed")
+    (let first (- (exec_clock_ns) started))
+    ($assert (== channel/.recv "last") "last line changed")
+    ($assert (== (/status (await task)) 0) "line child failed")
+    (let completed (- (exec_clock_ns) started))
+    (if (> round 0)
+      (then
+        (samples .push first)
+        (completions .push completed))))
+  ($println ($json/stringify {^name "first_line" ^iterations 5 ^result 2
+    ^samples_ns samples ^completion_ns completions}))
+  ($io/flush_stdout)))

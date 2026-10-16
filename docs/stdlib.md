@@ -110,14 +110,23 @@ wildcards and shell metacharacters. Use the existing spread syntax for an argv l
 ```
 
 `($os/exec ^^full command_text)` instead accepts exactly one **Str** containing a
-complete shell command. It uses `/bin/sh -c` on POSIX and `cmd.exe /d /s /c` on
-Windows, so quoting, expansion, pipelines and redirection belong to the shell:
+complete shell command. It uses `/bin/sh -c` on POSIX and the effective `COMSPEC`
+(default `cmd.exe`) with `/d /s /c` on Windows. Quoting, expansion, pipelines and
+redirection belong to that shell:
 
 ```gene
 ($os/exec ^^full "printf 'hello world\\n' | tr a-z A-Z")
+($os/exec ^^full "a; b")
+($os/exec "bash" "-o" "pipefail" "-c" "a | b")
 ```
 
-Both forms accept the existing `^dir`, `^timeout_ms` and `^max_bytes` options.
+On POSIX, `a; b` ordinarily runs both commands and returns the last status;
+`a && b` runs `b` on success, and `a || b` runs it on failure. Pipeline status
+follows the selected shell and its options. Gene does not impose `pipefail` or
+return individual stage statuses. `/bin/sh` does not promise Bash syntax; use
+an explicit interpreter for shell-specific behavior.
+
+Both forms accept `^dir`, `^env`, `^timeout_ms` and `^max_bytes`.
 Only `^^full` requests shell interpretation; a single positional string such as
 `"git status"` is otherwise treated as an executable name. Commands cannot be
 empty, and commands/arguments cannot contain NUL. `^!full` selects literal
@@ -131,15 +140,72 @@ and return types remain: async variants return Tasks; captured variants return
 result maps; inherited-stdio variants return exit statuses (through a Task for
 `exec_stdio_async`).
 
+Run [the exec example](../examples/exec.gene) for literal arguments, child
+directory and environment settings, shell pipelines, async commands, and live
+output callbacks on macOS/Linux.
+
+All six variants accept `^dir` and `^env`, including before the program:
+
+```gene
+($os/exec ^dir "/work/project"
+  ^env {^APP_MODE "test" ^PORT "3000" ^PATH "/opt/tools/bin" ^OLD_FLAG nil}
+  "my-program" "arg1")
+```
+
+`^dir` is a string specifying the child's directory. Omission or `""` inherits
+the current directory; a nonempty relative path is resolved when the call is
+submitted. Invalid directories produce a launch error. Gene's directory and
+environment stay unchanged throughout launch, including failures. `^dir` does
+not synthesize `PWD`.
+
+`^env` merges a map into the inherited environment. String values add or replace
+variables, `""` sets an empty value, and `nil` removes a variable. A string
+`PATH` value prepends entries, separated from the inherited PATH by `:` on POSIX
+or `;` on Windows. An empty PATH prefix preserves inheritance, including an
+absent PATH; no separator is added to an empty side. `^PATH nil` removes PATH
+and uses the platform's absent-PATH default for program lookup. Relative and
+empty PATH entries, and relative executable paths, resolve in the child's
+directory. Prepended entries take priority. Values are literal: Gene does not
+expand variables, `~`, or shell substitutions.
+
+Names must be nonempty and contain neither `=` nor NUL; values must be strings
+or `nil` and cannot contain NUL. Platform case rules apply. A nonempty map is
+copied at submission so later map or environment changes cannot affect a queued
+command. Omitted `^env` and `{}` use normal inheritance without copying the
+environment. Full environment replacement is not supported.
+
+On macOS and Linux, executable scripts require a valid shebang or an explicit
+interpreter such as `($os/exec "sh" "script")`. Executable text without a
+shebang now reports a launch error on macOS too; older macOS builds implicitly
+tried `/bin/sh`. The explicit `^^full` form continues to interpret shell text.
+
 Inside a scheduled fiber, synchronous `$os/exec`, `$fs/read_text`, and
 `$fs/write_text` park the fiber while their asynchronous adapters do the I/O.
 They retain their synchronous results. Other sessions and cancellation can
 run while the operation is pending.
 
 Captured asynchronous subprocesses own a process group on POSIX. Cancelling
-or timing out the Task sends TERM to the group, waits for the child to exit,
-then sends KILL to remaining descendants before completing the Task. Inherited
-stdio execution retains the caller's terminal behavior.
+or timing out the Task sends TERM to the group, allows up to one second for
+the leader to exit, then sends KILL to remaining descendants before reaping
+and completing the Task. This also applies to `$os/exec` inside a scheduled
+fiber. Top-level synchronous captured calls retain their existing child-only
+cleanup policy; descendants can survive a timeout. Inherited stdio execution
+retains the caller's terminal behavior and serializes terminal handoffs.
+
+The async timeout starts after dequeue, before launch; queue time is excluded.
+Top-level synchronous capture starts its timeout after launch. Cleanup grace
+can extend elapsed time beyond `timeout_ms`. A nonzero child status remains
+result data. A timeout returns `status -1` and `timed_out true`.
+
+On macOS/Linux, captured async children share a native monitor instead of
+occupying one worker each. Pipe readiness, process exit and cancellation wake
+the monitor; output and completion wake the owning Gene lane. Linux falls back
+to bounded per-child exit checks when pollable process handles are unavailable;
+pipe I/O remains readiness driven. Other native adapters can still require
+scheduler polling. After normal leader exit, capture drains available output
+without waiting indefinitely for descendants holding its descriptors.
+See [the native exec design](exec-runtime.md) for ownership, wakeups and
+qualification details.
 Captured execution supplies EOF when `stdin_pipe` is omitted. Use
 `^^merge_stderr` to send both output streams through stdout and its line
 channel. Live captured groups are cleaned up on process signals and exit;

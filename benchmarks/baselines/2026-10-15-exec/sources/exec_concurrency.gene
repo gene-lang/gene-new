@@ -1,0 +1,49 @@
+# Supplemental workload through exec_clock_host. Measures responsiveness while
+# long children live, and verifies a deliberately slow binary consumer.
+(let IoResource $io/IoResource)
+(let AsyncReader $io/AsyncReader)
+(fn starvation [count]
+  (let children [])
+  (repeat child_index in count
+    (children .push ($os/exec_async exec_fixture "sleep" "600")))
+  (let started (exec_clock_ns))
+  (let quick ($os/exec_async exec_fixture "noop"))
+  (let small (spawn ^lane root ($fs/read_text "benchmarks/exec_child.c")))
+  ($assert (> ($str/byte_size (await small)) 0) "small file read failed")
+  (let file_ns (- (exec_clock_ns) started))
+  ($assert (== (/status (await quick)) 0) "short child failed")
+  (let short_ns (- (exec_clock_ns) started))
+  (for child in children
+    ($assert (== (/status (await child)) 0) "long child failed"))
+  {^children count ^file_ns file_ns ^short_ns short_ns})
+(fn slow_consumer []
+  (let endpoints ($io/pipe))
+  (let process ($os/exec_stream_async exec_fixture "output" "1048576"
+    ^stdout_pipe endpoints/1))
+  (var bytes 0)
+  (var reads 0)
+  (var short_ns 0)
+  (let started (exec_clock_ns))
+  (loop
+    (let part (await (endpoints/0 .AsyncReader:read 65536)))
+    (if ($nil? part) (break))
+    (set bytes (+ bytes ($binary/size part)))
+    (set reads (+ reads 1))
+    (if (== reads 1)
+      (then
+        (let quick_started (exec_clock_ns))
+        ($assert (== (/status (await ($os/exec_async exec_fixture "noop"))) 0)
+          "short child behind slow consumer failed")
+        (set short_ns (- (exec_clock_ns) quick_started))))
+    ($sleep 2))
+  ($assert (== bytes 1048576) "slow consumer lost bytes")
+  ($assert (== (/status (await process)) 0) "slow consumer child failed")
+  endpoints/0/.IoResource:close
+  (await endpoints/0/.IoResource:wait_closed)
+  {^bytes bytes ^reads reads ^short_ns short_ns ^elapsed_ns (- (exec_clock_ns) started)})
+(let observations [])
+(repeat probe_round in 3
+  (observations .push {^kind "starvation32" ^round probe_round ^result (starvation 32)})
+  (observations .push {^kind "starvation64" ^round probe_round ^result (starvation 64)})
+  (observations .push {^kind "slow_consumer" ^round probe_round ^result (slow_consumer)}))
+($println ($json/stringify observations))

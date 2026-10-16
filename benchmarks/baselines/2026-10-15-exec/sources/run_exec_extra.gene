@@ -1,0 +1,67 @@
+# Run through the final exec_clock_host, with a JSON configuration as its
+# second argument. This keeps the orchestration and nanosecond timing in Gene.
+# Config: output, fixture, workload, hosts [{name, executable}],
+#         control_cli, final_cli. Set profile true for macOS sample captures.
+(let config ($json/parse ($fs/read_text exec_fixture)))
+(let output config/output)
+($assert (! ($fs/exists? output)) "extra output directory must be new")
+($fs/make_dir output)
+(let records [])
+
+(fn checked [name exe argv]
+  (let started (exec_clock_ns))
+  (let result ($os/exec exe argv... ^timeout_ms 120000 ^max_bytes 4194304))
+  (let elapsed (- (exec_clock_ns) started))
+  ($fs/write_text $"${output}/${name}.stdout.jsonl" result/stdout)
+  ($fs/write_text $"${output}/${name}.stderr.txt" result/stderr)
+  ($assert (&& (== result/status 0) (! result/timed_out) (! result/truncated))
+    $"extra benchmark failed: ${name}")
+  {^elapsed_ns elapsed ^stdout result/stdout ^stderr result/stderr})
+
+(for host in config/hosts
+  (for mode in ["capture_dir" "capture_env"]
+    (if (&& (== host/name "control") (== mode "capture_env")) (continue))
+    (repeat option_round in 3
+      (let result (checked $"${host/name}-${mode}-${option_round}" host/executable
+        [config/workload config/fixture "40" mode]))
+      (records .push {^host host/name ^mode mode ^round option_round
+        ^row ($json/parse ($str/trim result/stdout))})))
+  (let idle (checked $"${host/name}-idle" "/usr/bin/time"
+    ["-p" host/executable config/workload config/fixture "1" "idle"]))
+  (records .push {^host host/name ^mode "idle" ^wall_ns idle/elapsed_ns
+    ^time_output idle/stderr ^row ($json/parse ($str/trim idle/stdout))}))
+
+(fn shell_quote [text]
+  ($to_str "'" ($str/join ($str/split text "'") "'\"'\"'") "'"))
+(let bash_script ($to_str "i=0; while [ $i -lt 40 ]; do "
+  (shell_quote config/fixture) " noop || exit; i=$((i+1)); done"))
+(repeat bash_round in 6
+  (let result (checked $"bash-${bash_round}" "bash" ["-c" bash_script]))
+  (if (> bash_round 0)
+    (records .push {^host "bash" ^mode "external_batch"
+      ^commands 40 ^elapsed_ns result/elapsed_ns})))
+
+(repeat cold_round in 21
+  (for which in (if (== (// cold_round 2) 0) ["control" "final"] ["final" "control"])
+    (let exe (if (== which "control") config/control_cli config/final_cli))
+    (let result (checked $"cold-${which}-${cold_round}" exe ["eval" "nil"]))
+    (if (> cold_round 0)
+      (records .push {^host which ^mode "cold_cli" ^elapsed_ns result/elapsed_ns}))))
+
+($fs/write_text $"${output}/summary.json" ($json/stringify records))
+
+(if (&& ($has_key? config "profile") config/profile)
+  (then
+    (let host config/hosts/.last)
+    (for mode in ["profile_stdin" "profile_output"]
+      (let pid_file $"${output}/${mode}.pid")
+      (let task ($os/exec_async ^env {^GENE_EXEC_PROFILE_PID_FILE pid_file}
+        host/executable config/workload config/fixture "100" mode
+        ^timeout_ms 120000 ^max_bytes 4194304))
+      (while (! ($fs/exists? pid_file)) ($sleep 10))
+      (let pid ($str/trim ($fs/read_text pid_file)))
+      (let profile (checked mode "sample" [pid "2" "-file" $"${output}/${mode}.sample.txt"]))
+      (let result (await task))
+      ($assert (== result/status 0) "profile workload failed")
+      ($fs/write_text $"${output}/${mode}.workload.jsonl" result/stdout))))
+($println $"saved ${output}/summary.json")

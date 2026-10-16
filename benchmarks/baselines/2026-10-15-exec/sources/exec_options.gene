@@ -1,0 +1,19 @@
+# Run through exec_clock_host; compare optional launch settings in one process,
+# rotating their order per sample. The child/environment/workload stay matched.
+(let samples [[] [] []])
+(fn execute [mode]
+  (let result
+    (if (== mode 0) ($os/exec exec_fixture "noop")
+      (if (== mode 1) ($os/exec ^dir "." exec_fixture "noop")
+        ($os/exec ^env {^GENE_EXEC_BENCH "value" ^PATH ""} exec_fixture "noop"))))
+  ($assert (== result/status 0) "option child failed")
+  ($assert (! result/timed_out) "option child timed out")
+  0)
+(for warm_mode in [0 1 2] (execute warm_mode))
+(repeat round in exec_iterations
+  (repeat slot in 3
+    (let mode (// (+ round slot) 3))
+    (let started (exec_clock_ns))
+    (execute mode)
+    (samples/%mode .push (- (exec_clock_ns) started))))
+($println ($json/stringify {^labels ["default" "dir" "env"] ^samples_ns samples}))
