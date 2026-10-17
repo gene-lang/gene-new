@@ -44,6 +44,17 @@ suite "UTF-8 byte decoding":
     check evalData("($str/byte_size ($binary/decode_utf8 ($binary/from_list [244 143 191 191])))").print() == "4"
     check evalData("($str/byte_size ($binary/to_str ($binary/from_list [255])))").print() == "1"
 
+suite "IEEE CRC-32":
+  test "matches standard, empty and binary checksum vectors":
+    check evalData("($binary/crc32 ($binary/from_str \"123456789\"))").print() == "3421780262"
+    check evalData("($binary/crc32 ($binary/from_list []))").print() == "0"
+    check evalData("($binary/crc32 ($binary/from_list [0]))").print() == "3523407757"
+    check evalData("($binary/crc32 ($binary/from_list [255]))").print() == "4278190080"
+    check evalData("($binary/crc32 ($binary/from_str \"IEND\"))").print() == "2923585666"
+
+  test "requires an explicit byte input":
+    check "Bytes" in dataError("($binary/crc32 \"123456789\")")
+
 suite "base64":
   test "encodes Str and Bytes with padding and no line breaks":
     check evalData("($base64/encode \"hello\")").print() == "\"aGVsbG8=\""

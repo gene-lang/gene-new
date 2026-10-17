@@ -15,12 +15,13 @@
 (import ^from "./commands" [new_command_manager close_command_manager])
 (import ^from "./appearance" [open_appearance install_appearance_rows])
 (import ^from "./triggers" [close_trigger_manager])
+(import [open_image_host recover_image_host close_image_host] ^from "./image_service")
 (import ^from "../agents/history" [collect_unreferenced_bodies])
 (import ^from "../agents/instructions" [install_core_prompt_rows])
 (import ^from "../agents/provider_selection" [readiness_report])
 (import ^from "../plugin_api" [ExecutionLimits response_execution_limits])
 
-(type HarnessRuntime ^props {^root Str ^state_root Str ^epoch Str ^h Any ^workspace Any ^profile Any ^events Any ^sessions Any ^commands Any ^triggers Any ^body_users Any ^body_collecting Any ^body_gc_pending Any ^stopping Any ^exit_code Any ^ownership Any ^owns_ownership Bool ^owns_events Bool ^closed Any ^restarted Bool ^shutdown_watchdog Any ^modes Any? ^listen_port Any? ^supervised Bool? ^actions Any? ^recovery Bool?})
+(type HarnessRuntime ^props {^root Str ^state_root Str ^epoch Str ^h Any ^workspace Any ^profile Any ^events Any ^sessions Any ^commands Any ^triggers Any ^body_users Any ^body_collecting Any ^body_gc_pending Any ^stopping Any ^exit_code Any ^ownership Any ^owns_ownership Bool ^owns_events Bool ^closed Any ^restarted Bool ^shutdown_watchdog Any ^modes Any? ^listen_port Any? ^supervised Bool? ^actions Any? ^images Any? ^recovery Bool?})
 (type RuntimeCleanupError ^props {^message Str} ^impl [Error])
 (impl Error for RuntimeCleanupError)
 
@@ -58,6 +59,7 @@
       (if_not ($absent? runtime/triggers) (close_trigger_manager runtime/triggers))
       (if_not ($absent? runtime/actions) (close_ui_actions runtime/actions))
       (if_not ($absent? runtime/commands) (close_command_manager runtime/commands))
+      (if_not ($absent? runtime/images) (close_image_host runtime/images))
       (if_not ($absent? runtime/sessions) (close_session_manager runtime/sessions))
       (set outcome (shutdown_harness runtime/h))
       (if runtime/body_gc_pending/.get (collect_unreferenced_bodies runtime))
@@ -145,6 +147,9 @@
         (let current ($serde/read_data ($fs/read_text $"${state_root}/config.gene")))
         (readiness_report runtime current)))
     (set runtime/sessions (open_session_manager runtime events state_root))
+    (set runtime/images (open_image_host runtime))
+    (recover_image_host runtime/images)
+    (provide h "core" "image/runtime" runtime/images)
     # Runtime-owned gates survive plugin replacement and serialize data edits
     # made by UI actions and direct model/REPL calls to the same function.
     (provide h "core" "ui/state_lock"
@@ -165,6 +170,8 @@
       (try
         (if (&& (! ($absent? runtime)) (! ($absent? runtime/actions)))
           (close_ui_actions runtime/actions))
+        (if (&& (! ($absent? runtime)) (! ($absent? runtime/images)))
+          (close_image_host runtime/images))
         (if (&& (! ($absent? runtime)) (! ($absent? runtime/sessions)))
           (close_session_manager runtime/sessions))
         (if_not ($absent? h)

@@ -5157,6 +5157,44 @@ proc biRuntimeContext(args: openArray[Value]): Value {.nimcall.} =
     raise newException(GeneError, "runtime/context expects no arguments")
   activeTaskContext
 
+proc biRuntimeExecutionBudget(args: openArray[Value]): Value {.nimcall.} =
+  ## Report enforced VM budgets, never caller-supplied task context. A copy of
+  ## the earliest deadline is useful for admitting bounded external work.
+  if args.len != 0:
+    raise newException(GeneError, "runtime/execution_budget expects no arguments")
+  let now = getMonoTime()
+  var budget = if activeVmBudget == nil: nil else: activeVmBudget[]
+  var seen = false
+  var remainingSteps = high(int64)
+  var hasDeadline = false
+  var deadline: MonoTime
+  var hasMemory = false
+  var remainingMemory = high(int64)
+  var memoryLimit = high(int64)
+  while budget != nil:
+    seen = true
+    remainingSteps = min(remainingSteps, budget.remaining)
+    if budget.hasDeadline and (not hasDeadline or budget.deadline < deadline):
+      hasDeadline = true
+      deadline = budget.deadline
+    if budget.hasMemoryLimit:
+      hasMemory = true
+      memoryLimit = min(memoryLimit, budget.memoryLimitBytes)
+      remainingMemory = min(remainingMemory,
+        budget.memoryLimitBytes - (getOccupiedMem().int64 - budget.memoryBaseline))
+    budget = budget.parent
+  var entries = initPropTable()
+  entries["now_ms"] = newInt(now.ticks div 1_000_000)
+  entries["deadline_ms"] = if hasDeadline:
+    newInt(deadline.ticks div 1_000_000) else: NIL
+  entries["remaining_ms"] = if hasDeadline:
+    newInt(max(0'i64, (deadline - now).inMilliseconds)) else: NIL
+  entries["remaining_steps"] = if seen: newInt(max(0'i64, remainingSteps)) else: NIL
+  entries["memory_limit_bytes"] = if hasMemory: newInt(memoryLimit) else: NIL
+  entries["memory_remaining_bytes"] = if hasMemory:
+    newInt(max(0'i64, remainingMemory)) else: NIL
+  newMap(entries, immutable = true)
+
 proc biRuntimeSandboxNamespaces(args: openArray[Value]): Value {.nimcall.}
 
 proc biSwapTaskContext(args: openArray[Value]): Value {.nimcall.} =
@@ -9976,6 +10014,8 @@ proc buildBuiltins(app: Application): Scope =
   result.define("SandboxGeneration", sandboxGenerationType)
   let runtimeScope = newScope(result)
   runtimeScope.define("context", builtinNativeFn("runtime/context", biRuntimeContext))
+  runtimeScope.define("execution_budget", builtinNativeFn(
+    "runtime/execution_budget", biRuntimeExecutionBudget))
   when defined(geneSchedulerTests):
     runtimeScope.define("test_scheduler_quantum", builtinNativeFn(
       "runtime/test_scheduler_quantum", biSchedulerTestQuantum))

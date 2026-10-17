@@ -1,0 +1,91 @@
+(import $test [describe it])
+(import [isolated run_spec source_path] ^from "../../support")
+(import [prepare_image_inspection inspect_generated_png has_transparent_pixels
+         with_image_scratch ImageInspectionError] ^from "../../../src/storage/image_inspection")
+(import [png] ^from "../../fixtures/png")
+
+(fn rejected [code : Str, operation]
+  (let actual (try (operation) "accepted" catch ImageInspectionError $err/code))
+  ($assert (== actual code) $"Expected ${code}, received ${actual}."))
+
+(describe "Generated PNG inspection"
+  (it "passes a short decoder timeout and removes partial scratch files" []
+    (isolated this_mod/.path "passes a short decoder timeout and removes partial scratch files"
+      (fn [workspace]
+        (let worker ($path/join workspace "slow-decoder"))
+        ($fs/write_text worker ($to_str "#!" ($os/executable_path)
+          " run\n(fn main [args] ($sleep 10000) 0)\n"))
+        ($fs/set_mode worker 448)
+        (let profile {^worker worker ^worker_digest ($crypto/sha256 ($fs/read_bytes worker))})
+        (let scratch ($path/join workspace "scratch"))
+        (let started ($os/monotonic_ms))
+        (rejected "decode_timeout" (fn []
+          (inspect_generated_png (png ^samples [0 80 100 120 0]) scratch
+            ^background "transparent" ^decoder profile ^timeout_ms 40)))
+        ($assert (< (- ($os/monotonic_ms) started) 2000))
+        ($assert (== ($fs/list_dir scratch) [])))))
+
+  (it "needs no native decoder for auto and opaque output" []
+    (isolated this_mod/.path "needs no native decoder for auto and opaque output"
+      (fn [workspace]
+        (let root ($path/join workspace "scratch"))
+        (for background in ["auto" "opaque"]
+          ($assert ($absent? (prepare_image_inspection root background ^worker "/missing/decoder")))
+          (let metadata (inspect_generated_png (png) root ^background background))
+          ($assert (== [metadata/width metadata/height metadata/has_alpha] [1 1 true]))
+          ($assert ($absent? metadata/has_transparent_pixels)))
+        ($assert (! ($fs/exists? root)))
+        (rejected "missing_dependency" (fn []
+          (prepare_image_inspection root "transparent" ^worker "/missing/decoder")))
+        (rejected "missing_dependency" (fn []
+          (prepare_image_inspection root "transparent" ^worker ($os/executable_path)))))))
+
+  (it "verifies v2 decoding, alpha and bounds while preserving source PNG bytes" []
+    (isolated this_mod/.path
+      "verifies v2 decoding, alpha and bounds while preserving source PNG bytes"
+      (fn [workspace]
+        (let root ($path/join workspace "scratch"))
+        (let worker (source_path "../../src/genex/raster/build/raster-worker-v2"))
+        (let profile (prepare_image_inspection root "transparent" ^worker worker))
+        (let source (png ^samples [0 80 100 120 0]))
+        (let digest ($crypto/sha256 source))
+        (let metadata (inspect_generated_png source root ^background "transparent" ^decoder profile))
+        ($assert (== metadata/has_transparent_pixels true))
+        ($assert (== ($crypto/sha256 source) digest))
+        ($assert (== ($fs/list_dir root) []))
+        (let palette (png ^color 3 ^depth 1 ^samples [0 0]
+          ^palette [20 40 60] ^transparency [128]))
+        ($assert (/has_transparent_pixels
+          (inspect_generated_png palette root ^background "transparent" ^decoder profile)))
+        (rejected "opaque_image" (fn []
+          (inspect_generated_png (png) root ^background "transparent" ^decoder profile)))
+        (rejected "opaque_image" (fn []
+          (inspect_generated_png (png ^color 2 ^samples [0 80 100 120]) root
+            ^background "transparent" ^decoder profile)))
+        (rejected "unsupported_dimensions" (fn []
+          (inspect_generated_png (png ^width 2049) root ^background "transparent" ^decoder profile)))
+        (rejected "missing_dependency" (fn []
+          (prepare_image_inspection root "transparent"
+            ^worker (source_path "../../src/genex/raster/build/raster-worker"))))
+        ($assert (== ($fs/list_dir root) [])))))
+
+  (it "handles first and last transparent pixels and cleans cancelled inspection scratch" []
+    (isolated this_mod/.path
+      "handles first and last transparent pixels and cleans cancelled inspection scratch"
+      (fn [workspace]
+        ($assert (has_transparent_pixels ($binary/from_list [1 2 3 0 4 5 6 255])))
+        ($assert (has_transparent_pixels ($binary/from_list [1 2 3 255 4 5 6 254])))
+        ($assert (! (has_transparent_pixels ($binary/from_list [1 2 3 255 4 5 6 255]))))
+        (let root ($path/join workspace "scratch"))
+        (let entered ($cell false))
+        (scope
+          (let pending (spawn ^lane root
+            (with_image_scratch root (fn [directory]
+              ($fs/write_text ($path/join directory "partial") "partial decoder output")
+              (entered .set true)
+              ($sleep 10000)))))
+          (while (! entered/.get) ($sleep 1))
+          pending/.cancel pending/.join)
+        ($assert (== ($fs/list_dir root) []))))))
+
+(fn main [args] (run_spec args))

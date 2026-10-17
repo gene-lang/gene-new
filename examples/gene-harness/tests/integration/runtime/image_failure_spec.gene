@@ -1,0 +1,183 @@
+(import $test [describe it])
+(import [isolated run_spec] ^from "../../support")
+(import [image_fixture evaluate_image review] ^from "../../fixtures/image")
+(import [close_runtime] ^from "../../../src/runtime/bootstrap")
+(import [read_image_run save_image_run image_catalog] ^from "../../../src/storage/image_runs")
+(import [events_for append_core_event flush_event_store] ^from "../../../src/storage/state")
+(import [open_media_store media_usage reserve_media media_bytes] ^from "../../../src/storage/media")
+
+(fn run_state [fixture] (read_image_run fixture/runtime "default" "image-round"))
+
+(describe "Bounded image failures and recovery"
+  (it "retains the correct candidate on first and later generation or review failures" []
+    (isolated this_mod/.path
+      "retains the correct candidate on first and later generation or review failures"
+      (fn [workspace]
+        (for mode in ["generation_failed" "generation_usage_error" "generation_failed2" "review_failed" "review_failed2" "invalid_png"]
+          (let fixture (image_fixture ($path/join workspace mode) [(review 72) (review 86)]))
+          (try
+            (fixture/mode .set mode)
+            (let evaluated (evaluate_image fixture "Draw a Gene logo."))
+            ($assert ($absent? evaluated/error) $"${mode}: ${evaluated/error}")
+            (let result fixture/captured/.get)
+            ($assert (== result/state "finished"))
+            ($assert (== result/stop_reason
+              (if ($str/starts_with? mode "review") "review_failed" "generation_failed")))
+            (if (["generation_failed" "generation_usage_error" "invalid_png"] .contains? mode)
+              (then ($assert ($absent? result/image_id)) ($assert evaluated/media/.empty?))
+              (else
+                ($assert (! ($absent? result/image_id)))
+                ($assert (== result/score (if (== mode "generation_failed2") 72 nil)))))
+            (if (== mode "generation_usage_error")
+              ($assert (== result/usage/0/usage/cost 0.02)))
+            ($assert (== (/reservations (media_usage (open_media_store fixture/runtime/state_root))) 0))
+          ensure (close_runtime fixture/runtime))))))
+
+  (it "repairs malformed reviews once and never retries transport timeouts" []
+    (isolated this_mod/.path
+      "repairs malformed reviews once and never retries transport timeouts"
+      (fn [workspace]
+        (for scenario in ["repaired" "invalid" "timeout"]
+          (let fixture (image_fixture ($path/join workspace scenario)
+            ["not JSON" (if (== scenario "repaired") (review 90) "still invalid")]))
+          (try
+            (if (== scenario "timeout") (fixture/mode .set "review_timeout"))
+            (let evaluated (evaluate_image fixture "Draw a Gene logo." ^options {^max_attempts 1}))
+            ($assert ($absent? evaluated/error) $"${scenario}: ${evaluated/error}")
+            (let result fixture/captured/.get)
+            ($assert (== result/attempts_used 1))
+            ($assert (== result/repair_calls (if (== scenario "timeout") 0 1)))
+            ($assert (== fixture/reviewed/.get/.size (if (== scenario "timeout") 1 2)))
+            ($assert (== result/score (if (== scenario "repaired") 90 nil)))
+            (if (== scenario "timeout")
+              ($assert (== result/usage/1/usage/cost 0.005)))
+            (if (== scenario "repaired")
+              ($assert (== fixture/reviewed/.get/1/messages/1/images/0/detail "high")))
+          ensure (close_runtime fixture/runtime))))))
+
+  (it "rejects unsupported capabilities and insufficient capacity before billing" []
+    (isolated this_mod/.path
+      "rejects unsupported capabilities and insufficient capacity before billing"
+      (fn [workspace]
+        (for scenario in ["reviewer" "generator" "capacity" "deadline"]
+          (let fixture (image_fixture ($path/join workspace scenario) []
+            ^config (if (== scenario "deadline") {^run_timeout_ms 100} {})))
+          (try
+            (if (== scenario "reviewer") (fixture/reviewer_caps .set {^image_input "no"}))
+            (if (== scenario "generator") (fixture/generator_caps .set {^image_output "no"}))
+            (if (== scenario "capacity")
+              (then
+                (let store (open_media_store fixture/runtime/state_root))
+                (repeat i in 25 (reserve_media store $"other-${i}" 1 "default" $"other-${i}"))))
+            (let evaluated (evaluate_image fixture "An image."))
+            ($assert fixture/generated/.get/.empty?)
+            ($assert fixture/reviewed/.get/.empty?)
+            (if (["reviewer" "generator"] .contains? scenario)
+              ($assert (! ($absent? evaluated/error)))
+              ($assert (== fixture/captured/.get/stop_reason
+                (if (== scenario "capacity") "storage_limit" "cancelled"))))
+          ensure (close_runtime fixture/runtime))))))
+
+  (it "keeps saved images when phases time out or the enclosing evaluation is cancelled" []
+    (isolated this_mod/.path
+      "keeps saved images when phases time out or the enclosing evaluation is cancelled"
+      (fn [workspace]
+        (for scenario in ["generation_wait2" "review_wait" "review_wait2" "cancel" "cancel_generation"]
+          (let fixture (image_fixture ($path/join workspace scenario) [(review 72)]
+            ^config {^generation_timeout_ms 120 ^review_timeout_ms 120}))
+          (try
+            (fixture/mode .set (if (== scenario "cancel") "review_wait"
+              (if (== scenario "cancel_generation") "generation_wait2" scenario)))
+            (if ($str/starts_with? scenario "cancel")
+              (scope
+                (let pending (spawn ^lane root
+                  (evaluate_image fixture "A logo.")))
+                (if (== scenario "cancel_generation")
+                  (while (< fixture/generated/.get/.size 2) ($sleep 1))
+                  (while fixture/reviewed/.get/.empty? ($sleep 1)))
+                pending/.cancel pending/.join)
+              (evaluate_image fixture "A logo."))
+            (let state (run_state fixture))
+            ($assert (== state/state "finished") $"Unfinished ${scenario}: ${state}")
+            ($assert (== state/stop_reason
+              (if ($str/starts_with? scenario "cancel") "cancelled"
+                (if (== scenario "generation_wait2") "generation_failed" "review_failed"))))
+            ($assert (! ((image_catalog fixture/runtime "default") .empty?)))
+            ($assert (== (/reservations (media_usage (open_media_store fixture/runtime/state_root))) 0))
+            (let records (events_for fixture/runtime/events "session" "default"))
+            (for event in records
+              (if (== event/type "model/request")
+                ($assert (! (($filter records (fn [result]
+                  (&& (== result/type "model/result") (== result/payload/call event/payload/call)
+                      (== result/payload/final true)))) .empty?)))))
+          ensure (close_runtime fixture/runtime))))))
+
+  (it "reuses a round across restart with frozen defaults and refuses changed inputs" []
+    (isolated this_mod/.path
+      "reuses a round across restart with frozen defaults and refuses changed inputs"
+      (fn [workspace]
+        (var fixture (image_fixture workspace [(review 90)]))
+        (var original nil)
+        (try
+          (evaluate_image fixture "Original requirements.")
+          (set original fixture/captured/.get)
+          (evaluate_image fixture "Original requirements.")
+          ($assert fixture/captured/.get/reused)
+          ($assert (== fixture/generated/.get/.size 1))
+        ensure (close_runtime fixture/runtime))
+        (set fixture (image_fixture workspace [] ^config {^generator "missing" ^size "2048x2048"}))
+        (try
+          (let repeated (evaluate_image fixture "Original requirements."))
+          ($assert ($absent? repeated/error))
+          ($assert (== fixture/captured/.get/run_id original/run_id))
+          ($assert (== fixture/captured/.get/output/size "1024x1024"))
+          ($assert fixture/captured/.get/reused)
+          ($assert fixture/captured/.get/further_attempts_require_new_request)
+          ($assert fixture/generated/.get/.empty?)
+          (let changed (evaluate_image fixture "Different requirements."))
+          ($assert (! ($absent? changed/error)))
+          (for options in [{^generator "other"} {^generation_model "other"}
+                          {^size "2048x2048"} {^background "opaque"}
+                          {^max_attempts 4} {^reference_images ["other-image"]}]
+            (let conflict (evaluate_image fixture "Original requirements." ^options options))
+            ($assert (! ($absent? conflict/error)) $"Repeated run accepted changed ${options}."))
+          ($assert fixture/generated/.get/.empty?)
+        ensure (close_runtime fixture/runtime)))))
+
+  (it "recovers committed media and recorded reviews after a missing checkpoint without replay" []
+    (isolated this_mod/.path
+      "recovers committed media and recorded reviews after a missing checkpoint without replay"
+      (fn [workspace]
+        (var fixture (image_fixture workspace [(review 72) (review 86)]))
+        (var saved nil)
+        (try
+          (evaluate_image fixture "A logo.")
+          (set saved (run_state fixture))
+          (saved .put "state" "running")
+          (saved .put "usage" [])
+          (saved/attempts/1 .put "image_id" nil)
+          (saved/attempts/1 .put "review" nil)
+          (saved/attempts/1 .put "state" "generating")
+          (saved/attempts/1 .put "review_status" "unreviewed")
+          (save_image_run fixture/runtime saved)
+          (append_core_event fixture/runtime/events "session" "default"
+            {^type "model/request" ^call "interrupted-image" ^turn 1 ^round "image-round"
+             ^purpose "image/generation" ^provider "mock" ^settings {} ^prepared {}})
+          (flush_event_store fixture/runtime/events)
+        ensure (close_runtime fixture/runtime))
+        (set fixture (image_fixture workspace []))
+        (try
+          (let recovered (run_state fixture))
+          ($assert (== recovered/state "finished"))
+          ($assert (== recovered/stop_reason "cancelled"))
+          ($assert (== recovered/error/code "interrupted"))
+          ($assert (== recovered/attempts/1/review/score 86))
+          ($assert (== recovered/usage/.size 4))
+          (media_bytes (open_media_store fixture/runtime/state_root) recovered/attempts/1/image_id)
+          ($assert fixture/generated/.get/.empty?)
+          (let repaired ($filter (events_for fixture/runtime/events "session" "default")
+            (fn [event] (&& (== event/type "model/result") (== event/payload/call "interrupted-image")))))
+          ($assert (== repaired/0/payload/outcome "interrupted"))
+        ensure (close_runtime fixture/runtime))))))
+
+(fn main [args] (run_spec args))

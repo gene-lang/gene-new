@@ -42,8 +42,7 @@
   (let context (?? ($runtime/context) {}))
   (if (same? context/composition_step state) (return (change)))
   (state/mutating (fn []
-    (let scoped ($thaw ($freeze_shallow context)))
-    (scoped .put "composition_step" state)
+    (let scoped (context .assoc "composition_step" state))
     ($runtime/with_context scoped change))))
 
 (fn adjust_count [counter, delta : Int]

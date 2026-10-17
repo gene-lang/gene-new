@@ -1,0 +1,122 @@
+(import $test [describe it])
+(import [isolated run_spec] ^from "../../support")
+(import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
+(import [Profile] ^from "../../../src/profiles/profile")
+(import [Plugin PluginHost] ^from "../../../src/plugin_api")
+(import [open_media_store put_media] ^from "../../../src/storage/media")
+(import [expand_media_messages] ^from "../../../src/agents/media_input")
+(import [prepared_record result_record safe_error] ^from "../../../src/agents/model_recording")
+(import [call_model store_part load_part] ^from "../../../src/agents/model_call")
+(import [events_for] ^from "../../../src/storage/state")
+(import [png] ^from "../../fixtures/png")
+
+(fn image_input [runtime]
+  (var note "pixel metadata")
+  (repeat index in 6 (set note ($to_str note note)))
+  (let image (put_media (open_media_store runtime/state_root) "input.png" (png ^note note)))
+  (let messages [{^role "user" ^content "Review this image."
+    ^media [{^id image/id ^detail "high"}]}])
+  (let inventory [])
+  (let expanded (expand_media_messages runtime messages ^inventory inventory))
+  {^image image ^messages messages ^expanded expanded ^inventory inventory})
+
+(fn assert_no_pixels [runtime, recorded, inventory]
+  (let text ($serde/write_data recorded))
+  (for image in inventory
+    ($assert (! ($str/contains? text image/base64)) "Image data entered a call record.")
+    (for path in ($fs/list_dir $"${runtime/state_root}/blobs")
+      (let body ($fs/read_text $"${runtime/state_root}/blobs/${path}"))
+      ($assert (! ($str/contains? body image/base64)) "Image data entered a text blob."))))
+
+(describe "Media-safe model recording"
+  (it "round-trips raw, data URL and embedded JSON payloads without persisting pixels" []
+    (isolated this_mod/.path
+      "round-trips raw, data URL and embedded JSON payloads without persisting pixels"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (Profile ^name "recording" ^plugins [])))
+        (try
+          (let input (image_input runtime))
+          (let image input/inventory/0)
+          (let wire {^raw image/base64 ^url image/data_url
+            ^embedded ($json/stringify {^image image/data_url})
+            ^escaped ($str/join ($str/split ($json/stringify {^image image/data_url}) "/") "\\/")
+            ^literal {^harness_blob {^kind "media" ^id "this is literal data"}}
+            ^older_literal {^harness_media {^id "also literal"}}
+            ^empty_marker {^harness_blob nil}})
+          (let stored (prepared_record runtime wire input/inventory "inventory"))
+          ($assert ($absent? stored/harness_prepared_omitted))
+          ($assert (== (load_part runtime stored) wire))
+          (assert_no_pixels runtime stored input/inventory)
+          ($assert (== (load_part runtime {^harness_blob nil}) {^harness_blob nil}))
+          ($assert (try
+            (load_part runtime {^harness_blob {^kind "media" ^id image/id
+              ^digest "wrong" ^mime "image/png" ^encoding "base64"}})
+            false catch Any true))
+          (let returned (result_record runtime $"Provider echoed ${image/data_url}" input/inventory))
+          (assert_no_pixels runtime returned input/inventory)
+          ($assert (== (load_part runtime returned) $"Provider echoed ${image/data_url}"))
+        ensure (close_runtime runtime)))))
+
+  (it "omits opaque or undeclared preparations and sanitizes errors" []
+    (isolated this_mod/.path "omits opaque or undeclared preparations and sanitizes errors"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (Profile ^name "recording" ^plugins [])))
+        (try
+          (let input (image_input runtime))
+          (let encoded input/inventory/0/base64)
+          (let opaque {^data ($base64/encode encoded)})
+          (let first (prepared_record runtime opaque input/inventory "inventory"))
+          ($assert (! ($absent? first/harness_prepared_omitted)))
+          ($assert (! ($str/contains? ($serde/write_data first) opaque/data)))
+          (let second (prepared_record runtime {^data encoded} input/inventory ""))
+          ($assert (! ($absent? second/harness_prepared_omitted)))
+          (assert_no_pixels runtime [first second] input/inventory)
+          (let inventory [])
+          (expand_media_messages runtime [{^role "user" ^content ""
+            ^images [{^mime "image/png" ^data encoded}]}] ^inventory inventory)
+          ($assert (! ($absent?
+            (/harness_prepared_omitted (prepared_record runtime {^data encoded} inventory "inventory")))))
+          ($assert (! ($str/contains? (safe_error $"Rejected ${encoded}" input/inventory) encoded)))
+          ($assert (== opaque/data ($base64/encode encoded)) "Recording modified the wire input.")
+        ensure (close_runtime runtime)))))
+
+  (it "sends original image inputs and permits a single transport attempt for reviews" []
+    (isolated this_mod/.path
+      "sends original image inputs and permits a single transport attempt for reviews"
+      (fn [workspace]
+        (let calls ($cell 0)) (let sent ($cell nil)) (let timeout ($cell false))
+        (let provider (Plugin ^id "recording_probe" ^provides [["providers" "recording"]]
+          ^activate (fn [host]
+            (host .PluginHost:contribute "providers"
+              {^name "recording" ^doc "Capture a model request." ^media_recording "inventory"
+               ^configure (fn [model effort milliseconds]
+                 {^model "reviewer" ^effort "none" ^timeout_ms 20})
+               ^prepare (fn [call] {^messages call/messages})
+               ^send (fn [prepared]
+                 (calls .set (+ calls/.get 1)) (sent .set prepared)
+                 (if timeout/.get {^^timeout}
+                   {^text "reviewed" ^usage {^cost 0.12}}))}))))
+        (let runtime (open_runtime workspace "default"
+          (Profile ^name "recording" ^provider "recording" ^plugins [provider])))
+        (try
+          (let input (image_input runtime))
+          (let request {^session "default" ^round "r" ^turn 1 ^purpose "image/review"
+            ^config {^provider "recording"} ^messages input/messages})
+          (let result (call_model runtime request ^!retry_timeouts))
+          ($assert (== result/text "reviewed"))
+          ($assert (== result/usage/cost 0.12))
+          ($assert (== sent/.get/messages/0/images/0/data input/inventory/0/base64))
+          ($assert (== sent/.get/messages/0/images/0/detail "high"))
+          (let requests ($filter (events_for runtime/events "session" "default")
+            (fn [event] (== event/type "model/request"))))
+          ($assert (== (load_part runtime requests/0/payload/prepared) sent/.get))
+          (let outcomes ($filter (events_for runtime/events "session" "default")
+            (fn [event] (== event/type "model/result"))))
+          ($assert (== outcomes/0/payload/usage/cost 0.12))
+          (assert_no_pixels runtime requests input/inventory)
+          (timeout .set true)
+          ($assert (try (call_model runtime request ^!retry_timeouts) false catch Any true))
+          ($assert (== calls/.get 2) "Review transport retried a timed-out call.")
+        ensure (close_runtime runtime))))))
+
+(fn main [args] (run_spec args))

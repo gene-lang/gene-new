@@ -1,8 +1,12 @@
 # Image generation with review
 
-Status: proposal, revised after both Claude reviews (2026-10-17). The registries,
-host services and provider changes described below are proposed work, not
-features already available in the Harness.
+Status: implemented PNG-only MVP (2026-10-17). The default workflow and
+OpenRouter generator are separate plugins backed by shared host services.
+The [usage guide](../examples/gene-harness/docs/image-generation.md) and
+[plugin API guide](../examples/gene-harness/docs/plugins.md#image-workflow-and-generator-plugins)
+describe the implementation. Transport contracts are tested with fixtures;
+no paid OpenRouter generation was performed. The reviews and their dispositions
+are preserved in [the review archive](image-generation-comments.md).
 
 ## Requirement
 
@@ -16,9 +20,8 @@ plugin for the workflow, with independently selectable generator plugins.
 Replacing the workflow or adding a generator must not require editing the turn
 loop, conversation UI or built-in provider modules.
 
-This portability applies after the shared host contract is implemented. Adding
-the registry, callback guards, discovery entry and host services is a one-time
-Harness change; installing later workflow or generator plugins uses that API.
+The registry, callback guards, discovery entry and host services are shared
+Harness infrastructure; later workflow or generator plugins use that API.
 
 ## Inputs and model roles
 
@@ -27,10 +30,16 @@ Harness change; installing later workflow or generator plugins uses that API.
 | `prompt` | Complete, authoritative requirements for this image. | Required, nonempty. |
 | `reference_images` | Media IDs for the original visual references. | Empty list. |
 | `max_attempts` | Named parameter limiting total generation attempts. | `3`; integer from 1 through 10. |
-| `generator` | Selected row in the proposed `image_generators` registry. | Explicit argument or image-plugin configuration; no automatic fallback. |
+| `generator` | Selected row in the `image_generators` registry. | Explicit argument or image-plugin configuration; no automatic fallback. |
 | `generation_model` | Model understood by the selected generator. | Explicit argument or image-plugin configuration. |
 | `size` | Requested output dimensions, subject to the selected adapter/model. | `"1024x1024"`. |
-| `output_format` | Supported raster output format. | `"png"`. |
+| `background` | Background mode: `auto`, `transparent` or `opaque`. | `"auto"`. |
+
+Generated images are always **PNG** in this version; there is no format input.
+PNG avoids additional lossy encoding when images are stored and reused, and
+supports transparency. Generation/refinement can still alter image quality or
+lettering, and the default dimensions do not guarantee a file will fit the
+byte limits. Other output formats are a later enhancement.
 
 The calling model must include relevant requirements from earlier conversation
 turns in `prompt`, and supply earlier reference images by ID. The review side
@@ -73,9 +82,10 @@ Expose the required host services through documented seams and shared types in
 `src/plugin_api.gene`. A stored replacement must work with that API and its
 declared dependencies, without importing private Harness modules or accessing
 the runtime object directly. In particular it needs bounded generator and
-main-model calls, media-ID resolution, durable attempt/result recording,
-effective execution limits/deadlines and final attachment publication. The
-host invokes the generator and validates/stores its output before returning
+main-model calls, media-ID resolution, image metadata/alpha inspection,
+durable attempt/result recording, operator progress, effective execution
+limits/deadlines and final attachment publication. The host invokes the
+generator and validates/stores its output before returning
 media IDs to the workflow. The workflow never needs image bytes or base64
 buffers; generator adapters still account for any buffers they allocate under
 their own effective memory limits. Provide shared transport/media helpers to
@@ -90,21 +100,24 @@ run finishes or is cancelled under its leased revision. Retirement must not
 erase its images or recorded results. Add the new registry to discovery and
 guard its callbacks like provider callbacks.
 
-Keep descriptor and callback budgets distinct. In the current code,
-`descriptor_entry_options` passes stored-entry `limits` as `init_limits`
-([workspace.gene](../examples/gene-harness/src/storage/workspace.gene)). Live
-callback limits default to `response_execution_limits` in
-[cordis_adapter.gene](../examples/gene-harness/src/runtime/cordis_adapter.gene),
-and activation configures the module for response execution in
-[kernel.gene](../examples/gene-harness/src/kernel.gene). Thus the stored
-2-second/64-MiB default is not a 2-second deadline on every callback. The normal
-callback default is 600 seconds/1,024 MiB, constrained by host and enclosing
-execution limits. Do not add a public `register_plugin ^limits` parameter just
-to address the second review's mistaken interpretation.
+Keep descriptor and callback budgets distinct. `descriptor_entry_options`
+passes stored-entry `limits` as `init_limits`
+([workspace.gene](../examples/gene-harness/src/storage/workspace.gene)); the
+2-second/64-MiB default bounds descriptor initialization. Live callbacks inherit
+the configured host response budget, as profile plugins do. The same policy
+applies to Cordis invocation and owned-module configuration in
+[cordis_adapter.gene](../examples/gene-harness/src/runtime/cordis_adapter.gene)
+and [kernel.gene](../examples/gene-harness/src/kernel.gene).
+
+This applies to stored workflows, generators and reviewers. The standard
+configuration gives callbacks 600 seconds/1,024 MiB, narrowed by enclosing
+limits. Larger or smaller host budgets must take effect consistently across
+built-in and stored implementations; descriptor initialization retains its
+independent budget.
 
 Expose the effective callback limits separately from descriptor limits in the
-shared host API, plugin inspection and manager UI; the current manager's
-stored `limits` display does not establish a callback's budget. Keep descriptor
+shared host API, plugin inspection and manager UI. A stored descriptor's
+`limits` do not establish a callback's budget. Keep descriptor
 initialization bounded independently. The acceptance check must exercise the
 actual stored workflow and generator callbacks beyond two seconds, and verify
 that the configured enclosing ceiling still cancels them.
@@ -113,13 +126,14 @@ that the configured enclosing ceiling still cancels them.
 
 Current `providers` rows and `call_model` return `{^text ^usage}`. Keep image
 output on a separate path rather than putting image bytes into `text`.
-Proposed `image_generators` rows have `name`, `doc`, `available`, `configure`,
+`image_generators` rows have `name`, `doc`, `available`, `configure`,
 `capabilities`, `prepare` and `send`, plus normal discovery metadata.
 
 - `capabilities` receives model settings and describes the selected transport:
   `image_input`, `image_output` and `image_edit`, each `yes`, `no` or `unknown`,
-  and any known input-count/size limits. Image editing means accepting the
-  previous candidate together with instructions for refinement.
+  plus known input-count/size limits and supported output settings. Image
+  editing means accepting the previous candidate together with instructions
+  for refinement.
 - `prepare` receives the original prompt, reference media IDs, optional latest
   candidate ID and revision instruction, configured model, output settings and
   call limits.
@@ -145,11 +159,21 @@ support is not a guarantee of compatibility. Always pass actual pixels to the
 models; descriptions cannot stand in for image input.
 
 Resolve output settings before generation and retain them across refinements.
-The calling model must set them consistently with any dimensions, format or
-transparency requirements in the prompt. Validate known model/endpoint support
-and reject settings known to exceed storage or transport limits before a billed
-call. A conservative size reduces the risk of an oversized response, but
-dimensions alone cannot guarantee an encoded file size: format, compression,
+Every generation requests PNG, and only a valid PNG response is accepted;
+any other format is `generation_failed`. Verify the actual bytes and store
+the accepted candidate as `image/png`; a PNG MIME label or filename cannot
+make another format valid. Do not silently transcode an unsupported response.
+Validate `background` against its three allowed values. Persist size and
+background with the other resolved settings so they participate in
+repeated-call identity.
+
+The calling model must set them consistently with any dimensions or
+transparency requirements in the prompt. A request that needs another file
+format cannot be met in this version; the function's doc says so, and the
+calling model reports it instead of generating. Validate known model/endpoint
+support and reject settings known to exceed storage or transport limits before
+a billed call. A conservative size reduces the risk of an oversized response,
+but dimensions alone cannot guarantee an encoded file size: compression,
 metadata and provider behavior also matter. Unknown output size bounds still
 require the post-response checks below; do not promise that every generated
 image will fit merely because `size` was supplied.
@@ -158,20 +182,103 @@ The first adapter target is an **OpenRouter image-generator plugin**, using
 the credential names the Harness already supports. OpenRouter's current
 [Image API documentation](https://openrouter.ai/docs/guides/overview/multimodal/image-generation)
 describes `POST /api/v1/images`, reference-image inputs and base64 image output.
-The adapter explicitly sends `n: 1`, the resolved `size` and `output_format`,
-and preserves returned usage, including `usage.cost` when present.
+The adapter explicitly sends `n: 1`, the resolved `size` and
+`output_format: "png"`. Treat PNG format selection as required: where endpoint
+metadata is available, route only to endpoints whose `supported_parameters`
+support `output_format` and allow the value `png`. Do not assume that a missing
+parameter will honor the requested format. Unknown support follows the
+unknown-support policy above, and a non-PNG response still fails the attempt.
+Use `size` as the sole dimension control; do not also send `resolution` or
+`aspect_ratio`. Send a supported `background` setting; `auto` may be omitted
+when an endpoint lacks that parameter, while an explicit `transparent` or
+`opaque` requirement must be supported. Preserve returned usage, including
+`usage.cost` when present.
 Select the model explicitly and verify generation, reference input and editing
 before declaring support. Do not assume that extending the existing chat-text
 parser is sufficient, or that the Codex OAuth transport supports generation.
 Other transports can be added through generator plugins.
 
+Use OpenRouter's model modalities and per-endpoint `supported_parameters` to
+populate capabilities and validate reference inputs and output settings. Its
+[endpoint capability documentation](https://openrouter.ai/docs/guides/overview/multimodal/image-generation#per-endpoint-records)
+distinguishes endpoint support from the model-wide union. An absent key in
+available endpoint metadata means unsupported, not `unknown`; unavailable
+discovery data remains `unknown`. Account for the documented normalization of
+`size` into endpoint dimension controls. When metadata is available, restrict
+routing and any provider fallback to compatible endpoints; a model-wide union
+must not authorize a parameter combination that no eligible endpoint supports.
+Discovery failure follows the explicit-configuration/unknown-support policy
+above and must not override any already known incompatibility. Record the
+selected routing and capability snapshot with the run.
+
+Where provider-level routing is available, enforce it with `provider.only`,
+populated from compatible endpoints' `provider_tag` routing identifiers.
+The Image API distinguishes these from `provider_slug`, which keys
+provider-specific options. Set
+`provider.allow_fallbacks` to `false` by default; enable it only within an
+explicit compatible allowlist. If a mixed compatible/incompatible route
+cannot be constrained (for example, routing identifiers are unavailable),
+reject it before generation. During discovery failure, preserve any configured
+allowlist, disable fallbacks and record unknown support rather than claiming
+automatic parameter filtering. See the documented
+[routing controls](https://openrouter.ai/docs/guides/overview/multimodal/image-generation#provider-routing).
+
 Use a separate bounded image-response limit, initially **16 MiB** of encoded
 response data, including protocol overhead. Validate decoded bytes against
-the media store's **10 MiB/image** limit and supported image formats before
-saving. Exceeding either limit is a generation failure, never a truncated
+the media store's **10 MiB/image** limit and the PNG signature and structure
+before saving. Exceeding either limit is a generation failure, never a truncated
 success. The initial adapter can use non-streaming responses; a streaming
 adapter must also bound aggregate traffic, including repeated/partial images.
 Do not increase every text provider's current 2,000,000-byte response cap.
+
+Shared `genex/documents/inspect_bytes` measures `width`, `height` and `has_alpha`
+from the actual PNG through its reusable PNG inspector. Read bounded,
+validated chunks: IHDR for dimensions and
+color type, and tRNS for transparency information. Include these facts in the
+media descriptor and attempt record. Reject a malformed PNG as
+`generation_failed`; a MIME label alone does not establish image validity. See
+the [PNG specification](https://www.w3.org/TR/png-3/).
+
+`has_alpha` reports transparency information in the file (an alpha color type
+or a tRNS chunk), not whether any decoded pixel is actually transparent.
+Record `has_transparent_pixels` as true, false or unknown, with unknown used
+when pixels have not been checked.
+
+For `background = transparent`, use the existing `genex/raster` PNG decoder
+through the host media service and the Harness's `genex/raster` dependency. Select
+`worker_profile ^version 2` and call `decode_png` with that profile. The default
+v1 worker does not support `--decode`. Version 2 uses `raster-worker-v2` or the
+configured `GENE_RASTER_WORKER_V2` executable.
+
+Build the worker from the repository root with
+`gene run src/genex/raster/tools/build.gene`; its native dependencies are Cairo,
+libpng and zlib. Preflight must verify the v2 decoder and its dependencies,
+not merely that an executable exists. Check this only for transparent
+requests; `auto` and `opaque` generation do not require the worker. The current
+decoder accepts at most **2048 pixels on each axis**. Reject transparent
+requests whose known normalized dimensions exceed that bound before generation,
+and validate the actual candidate dimensions again before decoding. Do not
+resize the result to evade that bound. See
+[the raster package](../src/genex/raster/README.md) and
+[decoder implementation](../src/genex/raster/native/worker.cpp).
+
+`decode_png` fully decodes the image and returns RGBA8 pixels. Scan only the
+alpha bytes and stop at the first value below 255. Early exit saves scan work;
+it does not avoid decoding or guarantee that transparency appears near the
+start of the image. A PNG with no transparency information, an entirely opaque
+result or a failed decode is `generation_failed`; do not ask the vision model
+to guess. Keep the original provider PNG as the candidate, rather than the
+decoder's re-encoded copy. Use a private scratch directory and remove decoded
+pixels and scratch PNGs on success, failure and cancellation. Inspection and
+worker cancellation remain bounded by the generation phase's remaining time
+and memory limits. Add an optional `^timeout_ms` to `decode_png`, retaining its
+30-second default for existing callers. The host passes the remaining
+generation-phase time explicitly so a slow worker can report its own timeout;
+the enclosing phase deadline remains authoritative if cancellation wins the
+race. A decode timeout is `generation_failed`, unless the enclosing run was
+cancelled. Transparent pixels still do not prove that the requested
+background was removed correctly; the review assesses the visual requirements
+with these facts available.
 
 ## Workflow
 
@@ -179,10 +286,12 @@ Do not increase every text provider's current 2,000,000-byte response cap.
    the requirements above, and durably record the run and its budgets.
 2. **Generate and save the first image.** Send the original prompt and
    reference images to the generator. Record the attempt before sending;
-   validate and save its single candidate immediately on completion.
+   validate its image data and metadata, then save its single candidate
+   immediately on completion.
 3. **Review it.** Send the original prompt, reference images and actual
-   generated image to the main model. Ask it to assess the image against the
-   requirements and return a score, comments and a revision instruction.
+   generated image, plus its measured dimensions and alpha facts, to the main
+   model. Ask it to assess the image against the requirements and return a
+   score, comments and a revision instruction.
    Save the validated review against that candidate.
 4. **Stop if the score is at least 85.** Return this image.
 5. **Otherwise, refine if attempts and execution budget remain.** Send the
@@ -210,6 +319,23 @@ enforces call admission and budgets. Each model call generates or reviews a
 single candidate; the model cannot ask the host to reset the attempt counter.
 
 ## Review contract
+
+Supply host-inspected image facts alongside the candidate's pixels, including
+actual width/height, alpha information and whether transparent pixels were
+verified. Keep requested dimensions separate from measured dimensions. The
+reviewer uses these facts for file properties and must not infer dimensions
+or transparency from a provider's rendered backdrop. Unknown metadata remains
+unknown; a valid review cannot turn it into a measured fact.
+
+Request `high` detail for the candidate image in both the initial review and
+any format repair, on reviewer transports that support this hint. References
+may use `auto` unless fine reference details also require `high`. Extend the
+host's media-expansion path to accept validated per-call/per-image detail
+overrides instead of always writing `auto`; keep the hint out of the immutable
+media record. The existing Responses/chat content adapters already preserve
+the detail field, while the Anthropic adapter omits it. Adapters without this
+setting still receive the actual image. Retain applied detail hints in the
+recorded request so review inputs remain inspectable.
 
 The main model returns a small structured result:
 
@@ -257,16 +383,16 @@ provider's 600-second timeout separately for every call or its automatic
 timeout retry. Image generation, review and repair each make one transport
 attempt; a timed-out generation is never silently repeated.
 
-Add a host execution-budget service to the shared plugin API. The current
-response and callback supervisors cancel through timer tasks; plugins cannot
-query their remaining time. The host must publish read-only absolute
+The shared `PluginHost:execution_budget` service publishes read-only absolute
 `response_deadline_ms`, `callback_deadline_ms` and the effective deadline,
 using the same monotonic clock as `$os/monotonic_ms`. Stamp each deadline when
 its enforcing timer starts, carry forward the earliest enclosing deadline
 through nested calls, and expose remaining time through the service. The host
 uses its own authoritative values for admission; caller-supplied context
-cannot extend them. This can use Harness context/services without adding Gene
-syntax or a new language-runtime API. Monotonic deadlines are process-local;
+cannot extend them. The implementation combines authenticated host scopes
+with the read-only `$runtime/execution_budget` snapshot of actual VM limits.
+This adds introspection without changing Gene syntax or limit enforcement.
+Monotonic deadlines are process-local;
 persist durations and wall-clock timestamps for inspection, not for resuming a
 run after restart.
 
@@ -284,9 +410,11 @@ A generation- or review-phase timeout is `generation_failed` or
 precedence and is recorded as `cancelled`.
 
 These are time ceilings, not promises that every request reaches
-`max_attempts`. A deployment needing longer work must increase compatible
-budgets or separately design a host-owned job API. An asynchronous job system
-is not a prerequisite of this first version.
+`max_attempts`. Longer inline runs require compatible host
+response/module/callback budgets and adjusted workflow ceilings. Stored
+plugins inherit the configured budget, including increases above 600 seconds.
+A host-owned job API is separate work; an
+asynchronous job system is not a prerequisite of this first version.
 
 Durable checkpoints must not depend on the function returning successfully:
 
@@ -299,6 +427,18 @@ Durable checkpoints must not depend on the function returning successfully:
   `media`: that would resend every candidate on later normal model calls.
 - Record review/repair outcomes, validated score/comments/revision, usage when
   available and the terminal result as each becomes available.
+
+Stream concise progress through the existing operator console/transcript sink,
+exposed through the shared host API. Emit a line when each attempt starts,
+when it moves to review/repair, and when it finishes. Include run/attempt
+identity, attempt number out of the limit, status and a validated score when
+available; otherwise show pending/unknown. For example: `Image attempt 2/3:
+reviewed, score 86/100; target reached.` Keep these lines out of model context
+and `append_prompt`, and include no pixels or payloads. Use durable attempt
+transitions to drive progress so a replacement plugin uses the same path and
+an identical repeat does not announce another generation. The host finalizer
+publishes the terminal failure/cancellation status even if evaluation cannot
+return. Progress delivery does not create another model call or retry.
 
 The host finalizes cancellation outside an exhausted plugin evaluation budget;
 the cancelled function cannot be relied on to return metadata. Operator cancel
@@ -337,6 +477,8 @@ Keep the following result metadata available:
 - generator/model and pinned reviewer identity;
 - resolved output settings and per-call usage/reported cost, including
   `usage.cost` when supplied; an absent cost is unknown, not zero;
+- inspected dimensions, alpha information and transparent-pixel verification
+  for the saved candidate;
 - stop reason and structured error detail, including the failing stage.
 
 Stop reasons are `target_reached`, `attempt_limit`, `generation_failed`,
@@ -452,15 +594,44 @@ shared contracts.
 - A known unsupported reviewer (including `claude`) or required generator
   capability is rejected before generation. Unknown support is recorded, and
   any provider rejection has the correct failure stage.
-- The first adapter sends `n: 1` and resolved size/format settings on every
-  generation. Reject known incompatible settings in preflight, retain the
-  returned usage/cost and still validate actual bytes when size was configured.
+- The first adapter sends `n: 1`, the size, `output_format: "png"` and
+  supported background settings on every generation, with no extra dimension
+  controls. Routing excludes endpoints known to lack PNG format selection.
+  A non-PNG response, including one mislabeled `image/png`, fails the attempt
+  without transcoding. Reject known incompatible settings in preflight;
+  retain usage and cost and still validate actual bytes when size was
+  configured.
+- Endpoint metadata drives capability checks. Missing parameter keys are
+  unsupported; unavailable discovery is unknown. Known endpoint restrictions
+  also constrain fallbacks. Assert the compatible `provider.only` list and
+  explicit fallback policy in outgoing requests. Refuse a known incompatible
+  route that cannot be constrained. Handle documented size normalization.
+- Measured dimensions and alpha facts survive storage and reach review/repair.
+  Cover PNG with an alpha color type, PNG with tRNS, opaque PNG and malformed
+  chunks. Transparent requests reject a PNG with no transparency information
+  and an all-opaque PNG; unknown metadata is never presented as verified
+  transparency. A missing, v1-only or unusable decoder worker fails preflight
+  only for transparent requests; `auto` and `opaque` still work without it.
+- Transparent requests use the v2 decoder and respect its 2048-pixel axis
+  limit at preflight and on the actual output. Scan stops at the first
+  non-opaque pixel, handles transparency only in the final pixel, and scans
+  the full buffer for an opaque image. Preserve the original PNG bytes and
+  clean scratch files after success, failure and cancellation. Verify the
+  decoder receives the remaining generation-phase timeout and that a worker
+  timeout reports `generation_failed` without losing earlier saved attempts.
+- Candidate images reach review and repair with `high` detail where supported.
+  Reference overrides also survive expansion; transports without a detail
+  option still receive pixels without an unsupported field.
 - Valid image responses above the old text-response cap work. Encoded responses
   above 16 MiB, decoded images above 10 MiB, invalid bytes and unexpected image
   counts fail explicitly without leaking their contents to logs.
 - Cancellation/deadline during generation, review or repair preserves saved
   attempts and durable metadata. Insufficient remaining time prevents another
   generation. Restart marks open work interrupted without replaying calls.
+- Each attempt streams operator-visible start, phase and completion status,
+  including the validated score or pending/unknown. Failure and cancellation
+  still produce terminal progress. These lines add neither images nor messages
+  to model context, and repeated invocations do not duplicate attempt starts.
 - Quota reservation prevents calls that cannot retain an output; concurrent
   storage use cannot steal reserved capacity. Saved attempts survive both
   quota exhaustion and plugin retirement.
@@ -491,269 +662,8 @@ shared contracts.
   limits; descriptor budgets remain separately bounded. Inspection shows both
   budgets. Published monotonic deadlines match enforcement, decrease while
   waiting and cannot be extended by nested calls or altered context.
-
-## Review disposition
-
-Claude's integration, prompt-context, revision, parsing, media and acceptance
-comments are incorporated above. The workflow itself is replaceable, in
-addition to the generator adapter. The first target uses OpenRouter's current
-dedicated Image API, rather than assuming its chat parser is the generation
-contract. Model access and edit support still require verification.
-
-The bounded inline option is chosen for the first version; a background-job
-system is deferred. One format repair is allowed within the review budget.
-Both reviews below are retained unchanged for context; the revised proposal
-above governs where they differ.
-
-The second review's points 2–4 and 6–9 are incorporated: intermediate attempts
-use a run catalog, deadlines become queryable host data, reviewer recording
-changes only the recorded copy, output count/cost and repeat behavior are
-explicit, reservations are durable, and initial host integration is identified.
-Point 5 is adopted with a qualification: an explicit size/format reduces
-oversize risk but is not a guarantee of a compressed file's byte size.
-
-Point 1's 2-second callback claim does not follow the current activation path:
-stored-entry limits become descriptor `init_limits`, while live callbacks use
-response-level limits. The proposal therefore clarifies effective budget
-reporting and adds a stored-callback acceptance check, rather than introducing
-the suggested registration parameter. The media boundary also keeps large
-payloads out of the workflow plugin.
-
-## Original review comments (Claude, 2026-10-17)
-
-The loop itself is well specified. The attempt count includes the first
-generation, 85 is inclusive, the last image wins, an unreviewed image never
-inherits an earlier score, and nothing retries without a bound. The gaps are in
-the Harness integration, which assumes paths the current code does not have.
-Checked against the code; paths are relative to `examples/gene-harness/`.
-
-### Blocking
-
-1. **No provider can return an image, and the transport would cut one off.**
-   - **Text-only contract.** A provider row's `send` returns `{^text ^usage}`,
-     and `call_model` fails anything else with "provider returned invalid text
-     content" (`src/agents/model_call.gene:123`). Codex's `response_text` keeps
-     only `output_text` parts. It drops an `image_generation_call` item, and a
-     response without a message fails with "codex returned no output text"
-     (`src/builtin/provider_codex.gene:42`). `openrouter_text` reads only
-     `message.content` and ignores `message.images`, which is where
-     OpenRouter's image-output models return images
-     (`src/builtin/provider_openrouter.gene:12`). Anthropic models and the
-     Claude CLI do not generate images.
-   - **Response cap.** Provider responses are limited to 2,000,000 bytes
-     (`src/builtin/provider_common.gene:29`, also `src/agents/model_client.gene`).
-     A 1024×1024 PNG is often 1–3 MB before base64 adds a third. A Codex stream
-     can also carry the image in both the item-done and the completed event.
-     Many first attempts would fail as oversized responses.
-   - **Effect.** With every current provider and its default model, "the main
-     model if it supports image generation" is never true. It is also
-     unverified that the Codex OAuth endpoint accepts the public
-     `image_generation` tool; the media report gives the same warning about
-     that transport.
-   - **Suggestion.** Add an `image_generators` registry. Its rows return
-     `{^images [{^mime ^bytes}] ^usage}` and have their own response limit,
-     for example 16 MiB. In the first version, require an explicit generator
-     setting and drop the automatic main-model fallback until a provider is
-     shown to work. Name the first target. An OpenRouter image-output model is
-     the only one reachable with credentials the Harness already reads.
-
-2. **"Report missing capabilities before starting" has nothing to check.**
-   Provider rows declare `^available`, `^configure`, `^prepare` and `^send`.
-   None of them says whether a model accepts or produces images. The Claude CLI
-   refuses images only during preparation (`require_text_messages`,
-   `src/builtin/provider_claude.gene:70`), and OpenRouter vision support depends
-   on the model. Suggest declared `^image_input` and `^image_output` fields with
-   the values yes, no or unknown. Refuse "no" before generating anything. The
-   reviewer check matters most: without it, the first image is generated and
-   paid for, and only then does the review fail. Let "unknown" run, and report
-   the provider's error as the stop reason.
-
-3. **The loop does not fit inside one response evaluation.** As a `functions`
-   row, the loop runs inside the model's code, under the response budget (600 s
-   by default, `src/agents/turn_loop.gene:227`). One provider call may take up
-   to `provider_timeout_ms` (also 600 s by default) and is retried once on
-   timeout. Image generation can take a minute or more. Three attempts plus
-   three reviews can exceed 600 s. When the deadline cancels the evaluation,
-   the function never returns, so the result metadata is lost. The images were
-   never attached, so `media_list` cannot find them either.
-   - Record each attempt durably as it completes: media ID, score, comments and
-     outcome. Use session state or the transcript, not only the final return
-     value.
-   - Add `cancelled` as a stop reason, covering an operator cancel and the
-     evaluation deadline.
-   - Give the loop a total deadline below the response budget. Do not start an
-     attempt that cannot finish within it. If that makes three attempts
-     impractical, the loop has to run as a host-owned job that reports back,
-     which is a larger design.
-   - State that a restarted host neither resumes nor reruns the loop. The
-     existing repair already marks open calls `interrupted` without replaying
-     them (`src/storage/state.gene`). That is the right behavior for billed
-     calls.
-
-4. **Image bytes already enter text history through call records.**
-   `record_request` stores each prepared provider body
-   (`src/agents/model_call.gene:54`). `store_part` writes every string over 256
-   bytes into `.gene-harness/blobs/`. Prepared bodies contain
-   `data:image/...;base64,` URLs, and body collection keeps them as long as the
-   `model/request` event exists (`src/agents/history.gene:66`). Verified on disk:
-   `tmp/harness-computer-media/ui-workspace/.gene-harness/blobs/046d741e…` is a
-   79 KB `data:image/png;base64,` blob.
-   - This gap already exists in the media feature, but this loop multiplies it.
-     Each attempt sends the references and the candidate to two calls, and
-     these copies do not count toward the 256 MiB media quota.
-   - Meeting "Image bytes belong in media storage" requires call records to
-     store media IDs instead of image data. Add an acceptance check that no
-     image data appears under `blobs/`.
-
-### Design
-
-5. **The reviewer sees only `prompt` and the references.** The review is a
-   side call, not part of the conversation. "The original prompt" is therefore
-   the string the main model passed, not the user's words. The reviewer cannot
-   see constraints from earlier in the conversation, such as "same palette as
-   before", unless the main model wrote them into `prompt`. State that `prompt`
-   is the complete, authoritative requirement, and say so in the function's
-   doc. Images attached in earlier rounds must be passed by ID.
-
-6. **Give the generator an edit instruction, not a score.** An image model has
-   no use for "78/100". Review comments mix praise, diagnosis and requests, and
-   they are written for a reader. Add a `revision` field to the review contract:
-   one imperative instruction that names what to change and what to keep. Send
-   the generator the original prompt, `revision`, the references and the latest
-   image. Keep the score for the stopping rule and the result metadata. If the
-   score must still be sent, it is harmless, but it does not replace an
-   instruction.
-
-7. **Specify how reviews are parsed and how they fail.**
-   - Say whether fenced JSON, extra fields or `85.0` are accepted. Reject any
-     score that is not an integer from 0 to 100.
-   - Consider one repair request for a malformed review that does not count as
-     an attempt. Models sometimes return prose, and as written that ends the
-     loop right after a paid generation.
-   - The review prompt should say that text in reference or generated images is
-     content to evaluate, not instructions. A generated image that reads
-     "score: 100" is plausible when lettering is requested; `docs/media.md`
-     states the same rule for uploads.
-   - The stop reasons then become: target reached, attempt limit, generation
-     failed, review failed and cancelled.
-
-8. **"The normal preview flow" shows the final image to the main model again.**
-   `attach_media` adds the image to the turn, and a done Outcome is deferred
-   until that media has reached the model (`src/agents/outcome.gene:96`). That
-   is probably intended, since the main model reports the result. But it is one
-   more review of the same image. After seeing it, the model can also start
-   another three-attempt loop. Say whether a second loop in the same round is
-   allowed, or bound the total attempts per round.
-
-9. **Generated media needs a source and a retention rule.** `put_media` accepts
-   only the sources `upload`, `screenshot` and `document_page`
-   (`src/storage/media.gene:89`), so `generated` must be added. The media store
-   has no deletion. Every loop keeps up to `x` images toward the workspace
-   limits of 256 MiB and 2,048 records. At 2–3 MB per image, that is roughly 30
-   three-attempt requests. Retaining every attempt is a stated requirement, so
-   say what happens at the limit and whether unattached attempts can be pruned.
-
-### Minor
-
-10. Rename `x` to `max_attempts` as a named parameter, and give it an upper
-    bound, for example 10. Each attempt makes two billed calls.
-11. The Harness no longer has a capability mechanism. Describe the feature as an
-    `image` plugin that contributes an `image_generate` function and a docs
-    row, optionally an `/image` command, and the generator registry from
-    point 1.
-12. Acceptance checks to add:
-    - generation fails on attempt 1: an error and no image;
-    - review fails after a generation: an unreviewed image with an unknown
-      score;
-    - a malformed review;
-    - a cancel mid-loop keeps the completed attempts;
-    - an oversized image response;
-    - refusal before generation with the `claude` provider;
-    - no image data under `blobs/`.
-
-## Second review (Claude, 2026-10-17)
-
-All twelve original points are addressed. The deadline arithmetic works for the
-default of three attempts: at 185 s per attempt, three worst-case attempts take
-555 s, inside the 590 s run ceiling. The OpenRouter claim is also accurate. Its
-image-generation guide documents `POST /api/v1/images` with `input_references`
-items of type `image_url` (an HTTP(S) or base64 data URL), and responses
-carrying `data[].b64_json` and `media_type`, plus `usage` with `cost` when
-available. Four new problems, checked against the code, with paths relative to
-`examples/gene-harness/`:
-
-1. **A stored replacement runs under 2-second limits.** The model-facing
-   `register_plugin` has no `^limits` parameter
-   (`src/builtin/plugin_admin.gene:19`). A stored entry therefore gets
-   `default_execution_limits`, which is 100,000 steps, 64 MB and **2,000 ms per
-   callback** (`src/plugin_api.gene:25`, `src/storage/workspace.gene:606`).
-   Built-in profile plugins get the response budget instead, 600 s and 1,024 MB
-   (`src/runtime/bootstrap.gene:106`).
-   - **Effect.** The default `image` plugin works, but `register_plugin ^^replace
-     "image" …` produces an `image_generate` that is cancelled after 2 s. A
-     stored generator's `send` cannot wait out a 120 s call either, or hold
-     base64 references plus a 16 MiB response in 64 MB.
-   - **Effect on the acceptance check.** "A stored plugin replaces `image` using
-     only the shared API" fails as the proposal is written.
-   - **Needed.** The workflow waits for minutes whoever makes the calls, so the
-     proposal needs a way for a stored plugin to declare larger limits. The
-     ceiling should be the response budget, and the declared limits should be
-     shown in the plugin manager. Separately, keep bytes in host services where
-     possible, so a generator's memory limit covers its own work, not the
-     images.
-
-2. **Associating attempts through message `media` resends every attempt on
-   every later call.** `context_from_state` copies `media` from every history
-   message (`src/agents/history.gene:286`). `expand_media_messages` then
-   base64-expands all of them for each model call; only the `media_refs` catalog
-   that compaction writes is left unexpanded. `history_media_refs` reads both
-   fields (`src/agents/history.gene:318`).
-   - Record non-final attempts as catalog references, or have `media_list`
-     include run records. Only the final attachment should be `media`.
-   - Writing to history mid-turn would also interleave with the turn's own
-     appends. Keeping run records in host state avoids that.
-
-3. **Running code cannot read its deadlines.** The response deadline is a
-   sleeper task that cancels the evaluation (`src/agents/turn_eval.gene:100`).
-   Plugin callback deadlines work the same way, through `supervised_call`.
-   `$runtime` offers `context`, `bind_call` and `guard_call`, but nothing
-   reports the time remaining. "The earliest of the run, response and plugin
-   deadlines" therefore needs the host to publish those deadlines, for example
-   as absolute milliseconds in `$runtime/context`. Add this to the host services
-   listed under "Plugin boundary".
-
-4. **Reviewer calls need a specific recording fix.** Generator rows are new and
-   can keep media references. Provider rows, however, receive images already
-   expanded: `call_model` runs `expand_media_messages` before `prepare`
-   (`src/agents/model_call.gene:87`). There are two ways to record references
-   for reviewer calls.
-   - Move expansion into `send` for every provider row. That changes the
-     contract for all provider plugins, including stored ones.
-   - Substitute media markers into the recorded copy. Expansion knows every
-     image it inserted, so `call_model` can replace those strings, both the
-     `data:` URL form and the raw base64 form, before `record_request`.
-   - I recommend the second: it stays inside `call_model` and leaves the
-     provider contract unchanged.
-
-Minor:
-
-5. **Avoid paying for an image that cannot be saved.** The 10 MiB decoded limit
-   is only checked after a billed generation. Set a default output `size`, which
-   the Images API accepts, so that outputs fit. Reject a configured size whose
-   output cannot fit, during preflight.
-6. **Set `n: 1` explicitly.** OpenRouter's `n` goes up to 10. Record
-   `usage.cost` in the result metadata when it is present.
-7. **Tell the model what a same-round repeat returns.** After a stop for a
-   deadline, a repeated call in the same round returns the recorded result. The
-   result should then say that further attempts need a new user request, and
-   that a new run can pass the last candidate as a reference. Also define which
-   inputs make two invocations identical: prompt, references, `max_attempts`,
-   generator and model.
-8. **Persist quota reservations.** Reservations must survive a restart in order
-   to be released. The current gate is in-process (`media_gate`), and media
-   index format 1 has no field for them.
-9. **Adding the registry is a one-time host change.** The `image_generators`
-   registry needs its declaration (`src/kernel.gene:875`), a guard case
-   (`src/kernel.gene:441`) and an entry in the discovery kinds
-   (`src/agents/discovery.gene:30`). The requirement that adding a generator
-   needs no edits to built-in modules applies after that.
+- Lower and higher configured response budgets reach both built-in and stored
+  workflows/generators, including their module policies. A raised budget must
+  not leave a hidden 600-second ceiling; a lowered budget must still cancel
+  work. Inspection reports the effective values and descriptor budgets remain
+  independent.

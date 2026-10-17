@@ -11,6 +11,8 @@
     ^activate (fn [host]
       (host .PluginHost:contribute "providers"
         {^name "scripted" ^tags ["provider" "model" "scripted"] ^docs ["harness/providers/scripted"] ^doc "Replay supplied model responses."
+         ^media_recording "inventory"
+         ^capabilities (fn [settings] {^image_input "no" ^image_output "no"})
          ^configure (fn [model, effort, timeout]
            {^model "scripted" ^effort "none" ^timeout_ms timeout})
          ^prepare (fn [call] {})

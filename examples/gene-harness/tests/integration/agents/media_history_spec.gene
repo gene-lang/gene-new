@@ -13,7 +13,7 @@
       (fn [workspace]
         (var runtime (open_runtime workspace "default" (baseline_profile)))
         (let root runtime/root)
-        (let encoded "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aU1sAAAAASUVORK5CYII=")
+        (let encoded "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAEElEQVR4AQEFAPr/AFBkeP8EYAIs1SXmQwAAAABJRU5ErkJggg==")
         (let image (put_media_base64 (open_media_store runtime/state_root) "image.png" encoded))
         (let policy {^trigger_bytes 3000 ^target_bytes 2000})
         (try

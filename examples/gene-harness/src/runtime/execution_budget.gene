@@ -1,0 +1,111 @@
+(mod execution_budget)
+(import [supervised_call] ^from "./call_supervision")
+
+(type CallbackCancelled ^props {^message Str ^deadline Bool} ^impl [Error])
+(impl Error for CallbackCancelled)
+
+(var ^^private scopes ($cell []))
+(var ^^private scope_gate ($sync/gate))
+
+(fn find_scope [token] ^^private
+  (if ($absent? token) (return nil))
+  (scope_gate (fn []
+    (for scope in scopes/.get
+      (if (same? scope/token token) (return scope)))
+    nil)))
+
+(fn earlier [left, right] ^^private
+  (if ($absent? left) (?? right nil)
+    (if ($absent? right) left ($math/min left right))))
+
+(fn open_execution_scope [kind : Str, limits, context, ^owner owner = nil]
+  (let source (if ($absent? context) {} context))
+  (let parent (find_scope source/execution_scope))
+  (let native ($runtime/execution_budget))
+  (let deadline (earlier (+ native/now_ms limits/timeout_ms) native/deadline_ms))
+  (let token ($cell nil))
+  (let nested (source .assoc "execution_scope" token))
+  (let origin (if (== kind "response")
+    {^session source/session ^round source/round ^turn source/turn
+     ^turn_number source/turn/turn ^snapshot source/snapshot
+     ^reviewer source/reviewer
+     ^composition source/composition ^active ($cell true) ^deadline_ms deadline
+     ^finalizers ($cell []) ^output source/output}
+    parent/origin))
+  (let scope {^token token ^kind kind ^context nested ^origin origin ^owner owner
+    ^response_deadline_ms (if (== kind "response") deadline parent/response_deadline_ms)
+    ^callback_deadline_ms (if (== kind "callback")
+      (earlier deadline parent/callback_deadline_ms) parent/callback_deadline_ms)
+    ^deadline_ms (earlier deadline parent/deadline_ms)
+    ^limits {^max_steps limits/max_steps ^max_memory_mb limits/max_memory_mb
+      ^timeout_ms limits/timeout_ms}})
+  (scope_gate (fn [] (scopes/.get .push scope)))
+  scope)
+
+(fn close_execution_scope [scope]
+  (let finalizers (if (== scope/kind "response") scope/origin/finalizers/.get []))
+  (scope_gate (fn []
+    (if_yes (== scope/kind "response")
+      (scope/origin/active .set false)
+      (scope/origin/finalizers .set []))
+    (scopes .set ($filter scopes/.get (fn [item]
+      (if (== scope/kind "response")
+        (! (same? item/origin scope/origin))
+        (! (same? item/token scope/token))))))))
+  # Response evaluation has already unwound. Do not run these under its
+  # exhausted budget or while holding the scope table's gate.
+  (for finalize in finalizers
+    (try (finalize)
+      catch Any
+        (if_not ($absent? scope/origin/output)
+          (try (scope/origin/output "Image-run cleanup could not be recorded.\n") catch Any nil))))
+  nil)
+
+(fn register_execution_finalizer [finalize]
+  (let origin (execution_origin))
+  (if ($absent? origin) (fail "Operation requires an active response."))
+  (origin/finalizers/.get .push finalize)
+  nil)
+
+(fn with_callback_budget [limits, operation, ^owner owner = nil]
+  (let scope (open_execution_scope "callback" limits ($runtime/context) ^owner owner))
+  (try
+    (let outcome ($runtime/with_context scope/context (fn []
+      (supervised_call operation [] limits ^deadline_ms scope/deadline_ms))))
+    (match outcome ^!exhaustive
+      (when (TaskOutcome/ok value) value)
+      (when (TaskOutcome/error error) (fail error))
+      (when (TaskOutcome/panic message)
+        (fail (CallbackCancelled ^deadline false ^message $"Plugin callback panic: ${message}")))
+      (when TaskOutcome/cancelled
+        (let expired (>= ($os/monotonic_ms) scope/deadline_ms))
+        (fail (CallbackCancelled ^deadline expired
+          ^message (if expired "Plugin callback deadline exceeded." "Plugin callback cancelled.")))))
+    ensure (close_execution_scope scope)))
+
+# Only host code receives the authenticated origin. Plugins see the numeric
+# budget snapshot, not mutable run/round admission state.
+(fn execution_origin []
+  (let context ($runtime/context))
+  (let scope (find_scope context/execution_scope))
+  (if (|| ($absent? scope/origin) (! scope/origin/active/.get)) nil scope/origin))
+
+(fn execution_owner []
+  (let context ($runtime/context))
+  (let scope (find_scope context/execution_scope))
+  (?? scope/owner nil))
+
+(fn execution_budget []
+  (let context ($runtime/context))
+  (let scope (find_scope context/execution_scope))
+  (let native ($runtime/execution_budget))
+  (let effective (earlier native/deadline_ms scope/deadline_ms))
+  ($freeze {^now_ms native/now_ms
+    ^response_deadline_ms (?? scope/response_deadline_ms nil)
+    ^callback_deadline_ms (?? scope/callback_deadline_ms nil)
+    ^effective_deadline_ms effective
+    ^remaining_ms (if ($absent? effective) nil ($math/max 0 (- effective native/now_ms)))
+    ^remaining_steps native/remaining_steps
+    ^memory_limit_bytes native/memory_limit_bytes
+    ^memory_remaining_bytes native/memory_remaining_bytes
+    ^callback_limits (?? scope/limits nil)}))

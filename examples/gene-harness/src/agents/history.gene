@@ -68,6 +68,7 @@
           (if (== event/type "model/result")
             (then
               (mark_body_references runtime event/payload/output live)
+              (mark_body_references runtime event/payload/usage live)
               (mark_body_references runtime event/payload/error live))))))
     # Retained event generations can still be selected after a damaged newest
     # checkpoint. Their projection blobs must remain readable too.

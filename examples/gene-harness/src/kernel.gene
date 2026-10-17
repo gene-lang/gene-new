@@ -38,6 +38,7 @@
 (import ^from "./notifications/publisher"
   [safe_publish update_notification list_source_messages clear_source_message])
 (import ^from "./runtime/call_supervision" [supervised_call])
+(import [execution_budget] ^from "./runtime/execution_budget")
 (import ^from "./runtime/cordis_adapter"
   [RegistryHost retain_callback retained_callback? expire_scope_callbacks new_composition])
 (import ^from "." ^pkg "cordis" [LoaderOptions])
@@ -181,10 +182,8 @@
     h/snapshots
     (fn []
       (let context (?? ($runtime/context) {}))
-      (let scoped ($thaw ($freeze_shallow context)))
-      (scoped .put "registry_step" true)
       (let publication ($cell true))
-      (scoped .put "publication" publication)
+      (let scoped ((context .assoc "registry_step" true) .assoc "publication" publication))
       (try
         ($runtime/with_context scoped thunk)
       ensure
@@ -289,10 +288,16 @@
     (let seen {})
     (for [id plugin] in h/plugins/.get
       (seen .put id true)
+      (let policy (h/plugin_policies/.get .get ($to_str id)))
       (plugins .push
         {
           ^id ($to_str id)
           ^status (status_of h ($to_str id))
+          ^callback_limits (execution_limits_data policy/limits)
+          ^descriptor_limits (execution_limits_data policy/init_limits)
+          ^source_digest policy/source_digest
+          ^host_build_id policy/host_build_id
+          ^activation_revision policy/activation_revision
           ^provides plugin/provides
           ^requires plugin/requires}))
     (if_not ($absent? h/workspace)
@@ -444,9 +449,9 @@
     (guarded .put "signature" ($runtime/signature checked/fn))
     (guarded .put "fn" (guard_callback h owner checked/fn false))
     (set checked guarded))
-  (if_yes (== registry_name "providers")
+  (if_yes (["providers" "image_generators"] .contains? registry_name)
     (let guarded ($thaw ($freeze_shallow checked)))
-    (for field in ["available" "configure" "prepare" "send"]
+    (for field in ["available" "configure" "capabilities" "prepare" "send"]
       (let callback (checked .get field))
       (if_not ($absent? callback)
         (guarded .put field (guard_callback h owner callback false))))
@@ -672,11 +677,11 @@
     (message enter_call [] : Nil (enter_plugin_execution self/h) nil)
     (message cleanup [thunk] : Any (cleanup_registry_context self/h thunk))
     (message leave_call [] : Nil (leave_plugin_execution self/h) nil)
-    (message describe [module, id : Str, limits] : Plugin
+    (message describe [module, id : Str, limits, callback_limits] : Plugin
       (var h self/h)
       (var bounded (ExecutionLimits ^max_steps limits/max_steps
         ^max_memory_mb limits/max_memory_mb ^timeout_ms limits/timeout_ms))
-      (configure_plugin_module module (response_execution_limits))
+      (configure_plugin_module module callback_limits)
       (describe_plugin_module h module id
         ^core_interface (if ($absent? h/workspace) "" h/workspace/core_interface)
         ^limits bounded))
@@ -693,6 +698,9 @@
       (h/plugin_policies/.get .put plugin/id
         {^limits (ExecutionLimits ^max_steps policy/limits/max_steps
            ^max_memory_mb policy/limits/max_memory_mb ^timeout_ms policy/limits/timeout_ms)
+         ^init_limits (if policy/host nil policy/init_limits)
+         ^source_digest writer/digest ^host_build_id writer/host_build_id
+         ^activation_revision context/notification_revision
          ^host policy/host ^context context ^effects effects ^owned_rows owned_rows})
       # One deferred cleanup per activation revision. Cordis runs every deferred
       # cleanup as a bounded plugin invocation, so a cleanup per contributed row
@@ -762,6 +770,18 @@
 (fn validate_provider_row [candidate]
   (if (|| ($absent? candidate/name) (== candidate/name "") ($absent? candidate/doc) (! ($runtime/callable? candidate/configure)) (! ($runtime/callable? candidate/prepare)) (! ($runtime/callable? candidate/send)) (&& (! ($absent? candidate/available)) (! ($runtime/callable? candidate/available))) (&& (! ($absent? candidate/auto)) (!= ($head candidate/auto) Int)))
     (fail (HarnessError ^message "a provider row needs name, doc, configure, prepare and send")))
+  (if (&& (! ($absent? candidate/capabilities)) (! ($runtime/callable? candidate/capabilities)))
+    (fail (HarnessError ^message "provider capabilities must be callable")))
+  (if (&& (! ($absent? candidate/media_recording))
+          (! (["inventory" "omit"] .contains? candidate/media_recording)))
+    (fail (HarnessError ^message "provider media_recording must be inventory or omit")))
+  candidate)
+
+(fn validate_image_generator_row [candidate]
+  (validate_provider_row candidate)
+  (for field in ["available" "capabilities"]
+    (if_not ($runtime/callable? (candidate .get field))
+      (fail (HarnessError ^message $"an image generator needs callable ${field}"))))
   candidate)
 
 (fn validate_hook_row [candidate]
@@ -874,6 +894,7 @@
   (registry h "input_modes" ^^unique ^schema validate_input_mode_row)
   (registry h "functions" ^^unique ^schema validate_function_row)
   (registry h "providers" ^^unique ^schema validate_provider_row)
+  (registry h "image_generators" ^^unique ^schema validate_image_generator_row)
   (registry h "hooks" ^^unique ^^ordered ^schema validate_hook_row)
   (registry h "triggers" ^^unique ^schema validate_trigger_row)
   (registry h "interactions" ^^unique ^schema validate_interaction_row)
@@ -1341,6 +1362,11 @@
   (var program (quote ($runtime/configure_module module policy)))
   (eval ^in (env ^bindings {^module module ^policy policy} ^imports [$runtime]) program))
 
+(fn execution_limits_data [limits]
+  (if ($absent? limits) (return nil))
+  {^max_steps limits/max_steps ^max_memory_mb limits/max_memory_mb
+   ^timeout_ms limits/timeout_ms})
+
 (fn policy_for_owner [h : Harness, owner : Str]
   (var policy (h/plugin_policies .get; .get owner))
   (if (== policy void)
@@ -1392,6 +1418,7 @@
   out)
 
 (impl PluginHost for Host
+  (message execution_budget [] : Any (execution_budget))
   (message notify [message] : Any
     (safe_publish ^revision self/notification_revision self/h self/owner message))
   (message notifications [] : Any

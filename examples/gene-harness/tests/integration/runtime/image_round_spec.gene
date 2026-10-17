@@ -1,0 +1,72 @@
+(import $test [describe it])
+(import [isolated run_spec] ^from "../../support")
+(import [image_fixture review] ^from "../../fixtures/image")
+(import [png] ^from "../../fixtures/png")
+(import [close_runtime] ^from "../../../src/runtime/bootstrap")
+(import [new_round_controller submit_round round_receipt close_round_controller]
+  ^from "../../../src/runtime/round_controller")
+(import [events_for] ^from "../../../src/storage/state")
+(import [read_image_run image_catalog recall_image_run] ^from "../../../src/storage/image_runs")
+(import [append_message compact_history collect_unreferenced_bodies provider_context]
+  ^from "../../../src/agents/history")
+(import [open_media_store media_bytes] ^from "../../../src/storage/media")
+
+(describe "Image generation in a user round"
+  (it "publishes only the final image, requires its preview, and keeps earlier attempts through compaction" []
+    (isolated this_mod/.path
+      "publishes only the final image, requires its preview, and keeps earlier attempts through compaction"
+      (fn [workspace]
+        (let calls ($cell []))
+        (let main (fn [request]
+          (calls/.get .push request)
+          (if (== calls/.get/.size 1)
+            "(image_generate \"A Gene logo.\") (Outcome ^^done ^reply \"Premature.\")"
+            "(image_generate \"A Gene logo.\") (Outcome ^^done ^reply \"Here is the finished image.\")")))
+        (var fixture (image_fixture workspace [(review 72) (review 86)] ^main_reply main))
+        (let controller (new_round_controller fixture/runtime))
+        (var saved nil)
+        (var round nil)
+        (try
+          (set round (submit_round controller "default" "image-e2e" 1 "Create a Gene logo."))
+          (controller/watchers .get; .get "default"; .join)
+          (let receipt (round_receipt controller "default" round/id))
+          ($assert (== receipt/state "done") $"Image round failed: ${receipt}")
+          ($assert (== calls/.get/.size 2) "Final preview did not reach the main model exactly once.")
+          ($assert (== fixture/generated/.get/.size 2) "The final preview started another image loop.")
+          ($assert (== fixture/reviewed/.get/.size 2))
+          (set saved (read_image_run fixture/runtime "default" round/id))
+          (let final ($last calls/.get/1/messages))
+          ($assert (== final/media/.size 1))
+          ($assert (== final/media/0/id saved/attempts/1/image_id))
+          ($assert (== final/images/.size 1))
+          (let records (events_for fixture/runtime/events "session" "default"))
+          (let previews ($filter records (fn [event] (!= (?? event/payload/media []) []))))
+          ($assert (== previews/.size 1))
+          (for attempt in saved/attempts
+            (let encoded ($base64/encode (media_bytes (open_media_store fixture/runtime/state_root) attempt/image_id)))
+            (for file in ($fs/list_dir $"${fixture/runtime/state_root}/blobs")
+              ($assert (! ($str/contains? ($fs/read_text $"${fixture/runtime/state_root}/blobs/${file}") encoded))
+                "Image pixels leaked into text blobs.")))
+          (var padding "earlier work ")
+          (repeat 10 (set padding ($to_str padding padding)))
+          (append_message fixture/runtime "default" "user" padding ^round "new-round")
+          (append_message fixture/runtime "default" "user" "Continue." ^round "latest-round")
+          (compact_history fixture/runtime "default" "" 1000
+            (fn [request] "Earlier work produced an image.")
+            ^policy {^trigger_bytes 3000 ^target_bytes 2000})
+          (collect_unreferenced_bodies fixture/runtime)
+          ($assert (== ($size (image_catalog fixture/runtime "default")) 2))
+          ($assert ($str/contains? (recall_image_run fixture/runtime "default" saved/id) "Correct the lettering"))
+        ensure
+          (close_round_controller controller)
+          (close_runtime fixture/runtime))
+        (set fixture (image_fixture workspace []))
+        (try
+          (let catalog (image_catalog fixture/runtime "default"))
+          ($assert (== catalog/.size 2))
+          (for image in catalog (media_bytes (open_media_store fixture/runtime/state_root) image/id))
+          (let recovered (read_image_run fixture/runtime "default" round/id))
+          ($assert (== recovered/attempts/1/review/score 86))
+        ensure (close_runtime fixture/runtime))))))
+
+(fn main [args] (run_spec args))

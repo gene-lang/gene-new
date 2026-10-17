@@ -4,6 +4,7 @@
 (import [open_media_store media_record media_descriptor put_media MediaError] ^from "../storage/media")
 (import [media_pdf_page] ^from "../storage/documents")
 (import [history_state history_media_refs] ^from "../agents/history")
+(import [image_catalog] ^from "../storage/image_runs")
 (import [require_turn] ^from "../agents/outcome")
 
 (fn attach_media [runtime, id : Str]
@@ -30,7 +31,12 @@
          ^fn (fn []
            (let context ($runtime/context))
            (let state (history_state runtime context/session))
-           (history_media_refs state/messages))}
+           (let items (history_media_refs state/messages))
+           (let seen {})
+           (for item in items (seen .put item/id true))
+           (for item in (image_catalog runtime context/session)
+             (if_not ($has_key? seen item/id) (items .push item)))
+           items)}
         {^name "media_show" ^doc "Show an attachment by ID to the model on the next turn and in the transcript."
          ^fn (fn [id : Str] (attach_media runtime id))}
         {^name "media_import" ^doc "Import a workspace image/document by relative path, then show it on the next turn."

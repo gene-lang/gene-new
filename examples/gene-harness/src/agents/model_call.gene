@@ -1,98 +1,74 @@
 (mod model_call)
 (import ^from "./provider_selection" [select_provider])
-(import ^from "./history" [write_body read_body])
+(import ^from "./model_recording"
+  [store_part : store_record_part load_part : load_record_part
+   prepared_record result_record safe_error redact_image_text])
 (import ^from "../storage/state" [append_core_event flush_event_store])
 (import ^from "../kernel" [HarnessError])
 (import [expand_media_messages] ^from "./media_input")
 
 (fn store_part [runtime, value]
-  (if (== ($head value) Str)
-    (return
-      (if (> ($str/byte_size value) 256)
-        {^harness_blob (write_body runtime value)}
-        value)))
-  (if (== ($head value) List)
-    (then
-      (let parts [])
-      (for item in value (parts .push (store_part runtime item)))
-      (return parts)))
-  (if (== ($head value) Map)
-    (then
-      (let parts {})
-      (for [key item] in value
-        (parts .put key (store_part runtime item)))
-      (return
-        (if (&& (== ($size value) 1)
-                (|| (! ($absent? value/harness_blob))
-                    (! ($absent? value/harness_literal))))
-          {^harness_literal parts}
-          parts))))
-  value)
+  (store_record_part runtime value))
 
 (fn load_part [runtime, value]
-  (if (== ($head value) Map)
-    (then
-      (if (&& (== ($size value) 1) (! ($absent? value/harness_blob)))
-        (return (read_body runtime value/harness_blob)))
-      (if (&& (== ($size value) 1) (! ($absent? value/harness_literal)))
-        (then
-          (let restored {})
-          (for [key item] in value/harness_literal
-            (restored .put key (load_part runtime item)))
-          (return restored)))
-      (let restored {})
-      (for [key item] in value
-        (restored .put key (load_part runtime item)))
-      (return restored)))
-  (if (== ($head value) List)
-    (then
-      (let restored [])
-      (for item in value (restored .push (load_part runtime item)))
-      (return restored)))
-  value)
+  (load_record_part runtime value))
 
-(fn record_request [runtime, request, call_id : Str, selected, prepared]
+(fn record_request [runtime, request, call_id : Str, selected, prepared,
+                    ^inventory inventory = []]
   (if ($absent? runtime/events) (return nil))
+  (let recorded (prepared_record runtime prepared inventory (?? selected/row/media_recording "")))
   (append_core_event runtime/events "session" request/session
     {^type "model/request" ^call call_id
      ^at_ms ($os/wall_ms)
      ^turn (?? request/turn 0) ^round (?? request/round "")
      ^purpose (?? request/purpose "turn")
+     ^image (?? request/image nil)
      ^provider selected/name ^settings selected/settings
-     ^prepared (store_part runtime prepared)})
+     ^prepared recorded})
   (flush_event_store runtime/events)
-  nil)
+  recorded)
 
 (fn record_result [runtime, request, call_id : Str, attempt : Int,
                    outcome : Str, final : Bool, elapsed : Int,
-                   ^output output = nil, ^usage usage = nil, ^error error = nil]
+                   ^output output = nil, ^usage usage = nil, ^error error = nil,
+                   ^inventory inventory = []]
   (if ($absent? runtime/events) (return nil))
   (append_core_event runtime/events "session" request/session
     {^type "model/result" ^call call_id ^attempt attempt
      ^at_ms ($os/wall_ms)
      ^turn (?? request/turn 0) ^round (?? request/round "")
      ^purpose (?? request/purpose "turn")
+     ^image (?? request/image nil)
      ^outcome outcome ^final final ^timing_ms elapsed
-     ^output (if ($absent? output) nil (store_part runtime output))
-     ^usage usage
-     ^error (if ($absent? error) nil (store_part runtime error))})
+     ^output (result_record runtime output inventory)
+     ^usage (result_record runtime usage inventory)
+     ^error (result_record runtime error inventory)})
   (flush_event_store runtime/events)
   nil)
 
-(fn call_model [runtime, request, ^selected supplied = nil]
+(fn call_model [runtime, request, ^selected supplied = nil,
+                ^retry_timeouts retry_timeouts : Bool = true,
+                ^call_id supplied_call_id = nil]
   (let selected (if ($absent? supplied)
     (select_provider runtime (?? request/config {}))
     supplied))
-  (let input (selected/row/prepare
-    {^purpose (?? request/purpose "turn")
-     ^session request/session ^round request/round ^turn request/turn
-     ^budget request/budget ^config request/config
-     ^messages (expand_media_messages runtime request/messages) ^settings selected/settings
-     ^max_tokens request/max_tokens}))
+  (let inventory [])
+  (let messages (expand_media_messages runtime request/messages ^inventory inventory))
+  (let input
+    (try
+      (selected/row/prepare
+        {^purpose (?? request/purpose "turn")
+         ^session request/session ^round request/round ^turn request/turn
+         ^budget request/budget ^config request/config
+         ^messages messages ^settings selected/settings ^max_tokens request/max_tokens})
+    catch Any
+      (if inventory/.empty? (fail $err))
+      (fail (HarnessError ^message $"${selected/name} could not prepare image inputs."))))
   (let prepared ($freeze input))
-  (let call_id ($crypto/random_hex 16))
-  (record_request runtime request call_id selected prepared)
-  (repeat attempt in 2
+  (let call_id (?? supplied_call_id ($crypto/random_hex 16)))
+  (let recorded_request (record_request runtime request call_id selected prepared ^inventory inventory))
+  (let attempts (if retry_timeouts 2 1))
+  (repeat attempt in attempts
     (let started ($os/monotonic_ms))
     (let number (+ attempt 1))
     (var result nil)
@@ -102,29 +78,34 @@
       (returned .set true)
     catch Any
       (returned .set true)
+      (let message (if inventory/.empty? ($to_str $err/message)
+        (if (|| ($absent? recorded_request) (! ($absent? recorded_request/harness_prepared_omitted)))
+          $"${selected/name} image-input request failed; opaque provider detail was omitted."
+          (safe_error ($to_str $err/message) inventory))))
       (record_result runtime request call_id number "error" true
-        (- ($os/monotonic_ms) started) ^error ($to_str $err/message))
+        (- ($os/monotonic_ms) started) ^error message ^inventory inventory)
+      (if_not inventory/.empty? (fail (HarnessError ^message message)))
       (fail $err)
     ensure
       (if_not returned/.get
         (record_result runtime request call_id number "cancelled" true
-          (- ($os/monotonic_ms) started))))
+          (- ($os/monotonic_ms) started) ^inventory inventory)))
     (let elapsed (- ($os/monotonic_ms) started))
     (if (== result/timeout true)
       (then
-        (record_result runtime request call_id number "timeout" (== attempt 1)
-          elapsed ^usage result/usage)
-        (if (== attempt 1)
+        (record_result runtime request call_id number "timeout" (== number attempts)
+          elapsed ^usage result/usage ^inventory inventory)
+        (if (== number attempts)
           (fail (HarnessError ^message
-            $"${selected/name} model provider request exceeded ${(/ selected/settings/timeout_ms 1000.0)} s (2 attempts). Send a continuation message or increase provider_timeout_ms."))))
+            $"${selected/name} model provider request exceeded ${(/ selected/settings/timeout_ms 1000.0)} s (${attempts} attempts). Send a continuation message or increase provider_timeout_ms."))))
       (else
         (if_not (== ($head result/text) Str)
           (record_result runtime request call_id number "error" true elapsed
-            ^error "provider returned invalid text content")
+            ^error "provider returned invalid text content" ^inventory inventory)
           (fail (HarnessError ^message
             $"${selected/name} provider returned invalid text content")))
         (record_result runtime request call_id number "ok" true elapsed
-          ^output result/text ^usage result/usage)
-        (return {^text result/text ^usage result/usage
+          ^output result/text ^usage result/usage ^inventory inventory)
+        (return {^text result/text ^safe_text (redact_image_text result/text inventory) ^usage result/usage
           ^call_id call_id ^provider selected/name}))))
   (fail (HarnessError ^message "provider returned no result")))

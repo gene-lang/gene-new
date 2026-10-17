@@ -1,5 +1,5 @@
 (mod raster)
-(type RasterError ^props {^message Str} ^impl [Error])
+(type RasterError ^props {^message Str ^timed_out Bool?} ^impl [Error])
 (impl Error for RasterError)
 (let root ($path/parent ($path/parent this_mod/.path)))
 
@@ -7,7 +7,9 @@
   (let result (if ($absent? dir)
     ($os/exec command args... ^timeout_ms timeout_ms ^max_bytes 1048576)
     ($os/exec command args... ^timeout_ms timeout_ms ^max_bytes 1048576 ^dir dir)))
-  (if (|| result/timed_out result/truncated (!= result/status 0))
+  (if result/timed_out
+    (fail (RasterError ^^timed_out ^message $"Raster tool timed out after ${timeout_ms} ms.")))
+  (if (|| result/truncated (!= result/status 0))
     (fail (RasterError ^message $"Raster tool failed: ${result/stderr}")))
   ($str/trim result/stdout))
 
@@ -70,12 +72,16 @@
   ($fs/write_text ($path/join directory "request.txt") request)
   (checked profile/worker [] ^dir directory ^timeout_ms 25000))
 
-(fn decode_png [profile, bytes : Bytes, directory : Str]
+(fn decode_png [profile, bytes : Bytes, directory : Str,
+                ^timeout_ms timeout_ms : Int = 30000]
+  (if (<= timeout_ms 0)
+    (fail (RasterError ^message "PNG decoding requires a positive time budget.")))
   (if (> ($binary/size bytes) 16777216) (fail (RasterError ^message "Reference PNG exceeds 16 MiB.")))
   (if (!= profile/worker_digest ($crypto/sha256 ($fs/read_bytes profile/worker)))
     (fail (RasterError ^message "Decoder worker changed since profile admission.")))
   ($fs/write_bytes ($path/join directory "source.png") bytes)
-  (let size ($str/split (checked profile/worker ["--decode"] ^dir directory) " "))
+  (let size ($str/split
+    (checked profile/worker ["--decode"] ^dir directory ^timeout_ms timeout_ms) " "))
   (let width ($parse/parse_int size/0)) (let height ($parse/parse_int size/1))
   (let pixels ($fs/read_bytes ($path/join directory "pixels.rgba")))
   (if (!= ($binary/size pixels) (* width height 4)) (fail (RasterError ^message "Invalid decoded pixel count.")))

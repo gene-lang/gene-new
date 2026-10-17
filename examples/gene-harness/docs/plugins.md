@@ -107,7 +107,8 @@ plugin and is removed when the activation unloads. Common rows are:
 | `input_modes` | `{^name ^label ^hint ^submit_label ^prompt ^classify ^run ^close}`; a transient operator input mode |
 | `prompt` | `{^name ^text}` or `{^name ^render}`; an instruction section |
 | `docs` | `{^name ^summary ^tags ^text}` or `{^name ^summary ^tags ^path}`; body read with `(doc name)` |
-| `providers` | `{^name ^doc ^available ^configure ^prepare ^send}`; a model adapter selected by the profile or configuration |
+| `providers` | `{^name ^doc ^available ^configure ^prepare ^send}`; a text model adapter, optionally declaring `capabilities` and `media_recording` |
+| `image_generators` | `{^name ^doc ^available ^configure ^capabilities ^prepare ^send}`; a separately selected image adapter returning exactly one PNG |
 | `hooks` | `{^point ^name ^run}`; an ordered listener at a published shaping point |
 | `triggers` | A definition that starts workspace work without a user |
 | `web_components` | `{^name ^slot ^view}` or `{^name ^slot ^render}`; quoted UI, with `view_state` and `actions` for experimental panel forms |
@@ -160,6 +161,80 @@ See [sidebar plugins](sidebar.md).
 without credentials; `send` adds transport authentication and makes one
 attempt. A provider row is inert until selected. Callback limits apply to
 generated provider and hook rows just as to other plugin callbacks.
+
+Stored descriptor evaluation has its own limits (normally two seconds and
+64 MiB). Live callbacks and their modules inherit the configured host response
+budget, just like built-ins; plugin inspection shows descriptor and effective
+callback limits separately. `host/.PluginHost:execution_budget` returns an
+immutable snapshot of response/callback deadlines, the effective deadline,
+remaining time/steps and memory budget. Deadlines use `$os/monotonic_ms` and
+cannot be extended by editing task context. Callback timers also cancel
+waiting work when its deadline expires.
+
+An image-aware provider can declare `^media_recording "inventory"` when its
+prepared data preserves the supplied base64 or data-URL encodings, including
+those embedded in JSON strings. The host records reversible media references
+in a separate copy; `send` receives the original frozen prepared value.
+Undeclared, uncatalogued or unsupported image transformations produce an
+explicit omitted-body record with media identities. This changes recording,
+not provider transport signatures. Credentials still belong only in `send`.
+
+### Image workflow and generator plugins
+
+The optional baseline `image` plugin contributes `image_generate` and
+`image/usage`. Replace the whole workflow with `register_plugin ^^replace
+"image" ...`; disabling it removes the function. The separate
+`image_openrouter` plugin contributes the `openrouter` image generator.
+Neither plugin makes provider calls until selected. See
+[image generation](image-generation.md) for public inputs, configuration,
+results and retention.
+
+A workflow imports `Plugin`, `PluginHost` and `ImageHost` from the shared
+`src/plugin_api.gene`, declares `^requires ["image/runtime"]`, then resolves
+that seam during activation. No private host imports are needed.
+
+| `ImageHost` operation | Contract |
+| --- | --- |
+| `begin request` | Validate and admit one run for the current user round. The request accepts `prompt`, ordered `reference_images`, `max_attempts`, `generator`, `generation_model`, `size`, `background`. Returns the run ID and state; `reused` means return the recorded result without another loop. |
+| `generate run instructions` | Reserve storage, invoke the pinned generator once, inspect and durably store one PNG. Returns metadata and media IDs. The prior candidate must have a valid review before refinement. |
+| `review run instructions` | Call the pinned main reviewer with original requirements, references, candidate pixels and measured facts. Validates integer `score`, nonempty `comments`, and `revision`. A malformed result can set `repair_allowed`. |
+| `review run instructions ^^repair` | Make the one permitted format repair within the same review-phase deadline. Transport failures never get a repair. |
+| `finish run reason` | Publish final metadata and media after `target_reached`, `attempt_limit` or `cancelled`. The host validates the stopping condition; failures already return a finished run. |
+| `image_input run id` | Return `{^id ^mime ^bytes}` only to the selected generator during its active `send`, and only for that call's references or previous candidate. Workflows never need image bytes. |
+
+These operations require an active model-response scope with an authenticated
+round and pinned reviewer. They cannot create image runs from the REPL or an
+operator `/run` without that context. The host enforces attempt limits,
+deadlines, reservations and durable results, and finalizes unfinished runs
+after response cancellation. The workflow supplies prompts and its bounded
+generation/review loop. Both roles use the current composition lease, so
+publication takes effect on subsequent runs.
+
+Generator callbacks have these shapes:
+
+- `available []` returns nil or a concise reason the adapter is unavailable.
+- `configure [input]` receives `model`, `size`, `background`, `max_attempts`,
+  `reference_count`, `timeout_ms`, `max_response_bytes`, `max_image_bytes` and
+  operator `options`; returns credential-free JSON settings.
+- `capabilities [settings]` returns `image_input`, `image_output`, `image_edit`
+  as `yes`, `no` or `unknown`. It may declare `max_images`, `max_input_bytes`,
+  `image_formats` (MIME names), `output_formats` (`["png"]`) and routing metadata.
+  Known `no` fails preflight. Reviewer `providers` can declare the same callback;
+  a missing callback means unknown support.
+- `prepare [call]` receives `run`, `attempt`, original `prompt`, ordered
+  `reference_images`, optional `candidate`, prior `revision`, workflow
+  `instructions`, settings and call limits. Return JSON data with media IDs.
+- `send [prepared]` expands those IDs through `ImageHost:image_input`, adds
+  authentication, and makes one bounded transport attempt. Return
+  `{^images [{^mime "image/png" ^bytes data}] ^usage usage}`. Enforce the
+  16 MiB response cap; the host also checks one image, valid PNG structure and
+  the 10 MiB decoded-file cap. Usage may include numeric cost and token fields.
+
+Store selected routing/capability details in settings or capabilities, never
+credentials, base64 data or response bodies. PNG output is mandatory and must
+not be transcoded silently. Provider errors should use `ImageError` with a
+short `code`, `message`, optional HTTP `status` and numeric `usage` when known,
+excluding transport bodies. Failed generation usage is retained with its call.
 
 ### Contribute UI
 
@@ -268,9 +343,11 @@ Select an exact record by `name`; `scope`, `stream` and the frozen `envelope`
 give its location and payload. The bus is for observation. Model calls have
 one `model/request` containing the frozen prepared value and one
 `model/result` per attempt, including timeout, error and interrupted
-outcomes. Large prepared strings use content-addressed blob references.
-Literal maps with the same shape are escaped, so replay preserves the exact
-provider input. Model-call records include wall-clock time and attempt results
+outcomes. Large prepared text strings use content-addressed blob references;
+image payloads use media references. Literal marker maps are escaped so
+inspection can restore supported provider inputs exactly, without replaying
+a model call. Opaque image preparations are explicitly marked as omitted.
+Model-call records include wall-clock time and attempt results
 also include elapsed timing. The loop writes these facts even if an observer
 or hook fails.
 

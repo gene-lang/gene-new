@@ -313,6 +313,26 @@ proc biBytesSize(args: openArray[Value]): Value {.nimcall.} =
   requireBytes("binary/size", args[0])
   newInt(args[0].bytesVal.len)
 
+const binaryCrc32Table = block:
+  var table: array[256, uint32]
+  for index in 0..<256:
+    var crc = uint32(index)
+    for bit in 0..<8:
+      crc = if (crc and 1'u32) != 0: (crc shr 1) xor 0xedb88320'u32
+            else: crc shr 1
+    table[index] = crc
+  table
+
+proc biBytesCrc32(args: openArray[Value]): Value {.nimcall.} =
+  ## IEEE CRC-32 (PNG, ZIP): unsigned result, no codec/native dependency.
+  requireOne("binary/crc32", args)
+  requireBytes("binary/crc32", args[0])
+  var crc = 0xffffffff'u32
+  for byte in args[0].bytesVal:
+    crc = binaryCrc32Table[int((crc xor uint32(uint8(byte))) and 255'u32)] xor
+          (crc shr 8)
+  newInt(int64(crc xor 0xffffffff'u32))
+
 proc biBytesGet(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 2:
     raise newException(GeneError, "bytes/get expects (bytes, index)")
@@ -10633,6 +10653,7 @@ proc registerStdlibNamespaces(root: Scope) =
   bytesScope.define("to_buffer",
                     builtinNativeFn("binary/to_buffer", biBytesToBuffer))
   bytesScope.define("size", builtinNativeFn("binary/size", biBytesSize))
+  bytesScope.define("crc32", builtinNativeFn("binary/crc32", biBytesCrc32))
   bytesScope.define("get", builtinNativeFn("binary/get", biBytesGet))
   bytesScope.define("concat", builtinNativeFn("binary/concat", biBytesConcat))
   bytesScope.define("slice", builtinNativeFn("binary/slice", biBytesSlice))

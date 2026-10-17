@@ -10,8 +10,14 @@
     media_bytes
     media_text
     media_data_url
+    reserve_media
+    release_media_reservation
+    recover_media_reservations
+    generated_media
+    media_usage
     validate_media_refs
     MediaError])
+(import [png] ^from "../../fixtures/png")
 
 (fn rejected [code : Str, action]
   (let result (try (action) "accepted" catch MediaError $err/code))
@@ -49,7 +55,7 @@
       "retains binary images and canonical base64 without text conversion"
       (fn [workspace]
         (let store (open_media_store ($path/join workspace ".gene-harness")))
-        (let encoded "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aU1sAAAAASUVORK5CYII=")
+        (let encoded "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAEElEQVR4AQEFAPr/AFBkeP8EYAIs1SXmQwAAAABJRU5ErkJggg==")
         (let image (put_media_base64 store "pixel.PNG" encoded))
         ($assert (== image/mime "image/png"))
         ($assert (== image/kind "image"))
@@ -113,7 +119,78 @@ name.txt"""
         ($fs/write_bytes_atomic
           ($path/join store/root "objects" record/digest)
           ($binary/from_str "corrupt"))
-        (rejected "unavailable" (fn [] (media_bytes store item/id)))))))
+        (rejected "unavailable" (fn [] (media_bytes store item/id))))))
+
+  (it "reserves quota durably and commits generated provenance atomically" []
+    (isolated this_mod/.path
+      "reserves quota durably and commits generated provenance atomically"
+      (fn [workspace]
+        (let root ($path/join workspace ".gene-harness"))
+        (let store (open_media_store root ^max_file_bytes 128 ^max_total_bytes 160 ^max_records 3))
+        (let reserved (reserve_media store "run-1" 1 "session-a" "round-a"))
+        ($assert (== (reserve_media store "run-1" 1 "session-a" "round-a") reserved))
+        (let reopened (open_media_store root ^max_file_bytes 128 ^max_total_bytes 160 ^max_records 3))
+        ($assert (== (media_usage reopened) {^bytes 128 ^records 1 ^reservations 1}))
+        (put_media reopened "other.txt" ($binary/from_str "unrelated upload"))
+        (rejected "too_large" (fn []
+          (put_media reopened "steal.txt" ($binary/from_str "12345678901234567890"))))
+        (let bytes (png))
+        (let saved (put_media store "candidate.png" bytes ^source "generated"
+          ^reservation reserved/id ^has_transparent_pixels false))
+        ($assert (== saved/id reserved/id))
+        ($assert (== saved/generation {^run "run-1" ^attempt 1 ^session "session-a" ^round "round-a"}))
+        ($assert (== [saved/width saved/height saved/has_alpha saved/has_transparent_pixels]
+          [1 1 true false]))
+        ($assert (== (media_bytes reopened saved/id) bytes))
+        ($assert (== (generated_media reopened ^session "session-a") [saved]))
+        ($assert (== (generated_media reopened ^session "session-b") []))
+        ($assert (== (recover_media_reservations reopened) []))
+        ($assert (== (/committed (reserve_media reopened "run-1" 1 "session-a" "round-a")) true))
+        ($assert (== (/reservations (media_usage reopened)) 0))
+        ($assert (== (/bytes (media_usage reopened)) (+ ($binary/size bytes) 16))))))
+
+  (it "releases interrupted reservations once and preserves committed candidates" []
+    (isolated this_mod/.path
+      "releases interrupted reservations once and preserves committed candidates"
+      (fn [workspace]
+        (let root ($path/join workspace ".gene-harness"))
+        (let store (open_media_store root ^max_file_bytes 128 ^max_total_bytes 256 ^max_records 2))
+        (let first (reserve_media store "run" 1 "session" "round"))
+        (let second (reserve_media store "run" 2 "session" "round"))
+        (rejected "too_large" (fn [] (put_media store "upload.txt" ($binary/from_str ""))))
+        (let saved (put_media store "first.png" (png) ^source "generated" ^reservation first/id))
+        (let orphan (png ^samples [0 10 20 30 255]))
+        (let orphan_path ($path/join store/root "objects" ($crypto/sha256 orphan)))
+        ($fs/write_bytes_atomic orphan_path orphan)
+        # Crash boundary: the image index committed but no run checkpoint exists.
+        (let restarted (open_media_store root ^max_file_bytes 128 ^max_total_bytes 256 ^max_records 2))
+        ($assert (== (recover_media_reservations restarted) [second]))
+        ($assert (! ($fs/exists? orphan_path)))
+        ($assert (== (media_bytes restarted saved/id) (png)))
+        ($assert (== (recover_media_reservations restarted) []))
+        ($assert (== (release_media_reservation restarted second/id) false))
+        ($assert (== (generated_media restarted ^run "run") [saved]))
+        (put_media restarted "after.txt" ($binary/from_str "room is available"))
+        ($assert (== (/records (media_usage restarted)) 2)))))
+
+  (it "migrates format 1 and releases failed generation reservations idempotently" []
+    (isolated this_mod/.path
+      "migrates format 1 and releases failed generation reservations idempotently"
+      (fn [workspace]
+        (let store (open_media_store ($path/join workspace ".gene-harness")))
+        ($fs/write_text_atomic ($path/join store/root "index.gene")
+          ($serde/write_data {^format 1 ^assets {}}))
+        (let reserved (reserve_media store "run" 1 "session" "round"))
+        (let index ($serde/read_data ($fs/read_text ($path/join store/root "index.gene"))))
+        ($assert (== index/format 2))
+        (rejected "invalid_request" (fn []
+          (put_media store "bad.png" ($binary/from_str "not PNG")
+            ^source "generated" ^reservation reserved/id)))
+        ($assert (== (/reservations (media_usage store)) 1))
+        ($assert (release_media_reservation store reserved/id))
+        ($assert (! (release_media_reservation store reserved/id)))
+        (rejected "invalid_request" (fn [] (put_media store "lost.png" (png) ^source "generated")))
+        ($assert (== (media_usage store) {^bytes 0 ^records 0 ^reservations 0}))))))
 
 (fn main [args]
   (run_spec args))

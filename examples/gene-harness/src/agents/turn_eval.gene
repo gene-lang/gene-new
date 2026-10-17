@@ -14,6 +14,7 @@
 (import ^from "./eval_site" [evaluate_response])
 (import ^from "../runtime/patch" [prepare_patch commit_patch])
 (import ^from "../text" [byte_prefix])
+(import [open_execution_scope close_execution_scope] ^from "../runtime/execution_budget")
 
 (fn response_error_line [failure]
   (?? failure/response_line (if (== failure/file "response") (?? failure/line nil) nil)))
@@ -32,9 +33,8 @@
   (let truncated ($cell false))
   (let turn (new_turn_items number ^recall recall_function))
   (if_not ($absent? turn_sink) (turn_sink .set turn))
-  (let context (if ($absent? inherited) {} ($thaw ($freeze_shallow inherited))))
-  (context .put "turn" turn)
-  (context .put "output" (fn [text]
+  (var context ((?? inherited {}) .assoc "turn" turn))
+  (set context (context .assoc "output" (fn [text]
     (let late (!= turn/state/.get "open"))
     (if truncated/.get (return nil))
     (let marker "[console truncated]\n")
@@ -46,7 +46,7 @@
     (bytes .set (+ bytes/.get ($str/byte_size kept)))
     (let item {^text kept ^late late})
     (if_not late (console/.get .push item))
-    (if_not ($absent? console_sink) (console_sink item))))
+    (if_not ($absent? console_sink) (console_sink item)))))
   (turn .put "console" (fn [text] (context/output text)))
   (var patch_result nil)
   (var validated nil)
@@ -91,16 +91,21 @@
             (let meta ($node/meta forms/%last_index))
             (set last_line (?? meta/line nil))
             (let expired ($cell false))
-            (let outcome (scope
+            (let execution (open_execution_scope "response"
+              {^timeout_ms timeout_ms ^max_memory_mb max_memory_mb
+               ^max_steps 9223372036854775807} context))
+            (let outcome (try (scope
               # The evaluation task itself is a child of the turn, as well as
               # owning the ordinary children created by response code.
               (let task (spawn ^lane root
-                ($runtime/with_context context (fn []
+                ($runtime/with_context execution/context (fn []
                   (evaluate_response `(scope %forms...) environment)))))
               (let deadline (spawn ^lane root
-                (do ($sleep timeout_ms) (expired .set true) task/.cancel)))
+                (do ($sleep ($math/max 0 (- execution/deadline_ms ($os/monotonic_ms))))
+                  (expired .set true) task/.cancel)))
               (try task/.join
-                ensure deadline/.cancel deadline/.join)))
+                ensure deadline/.cancel deadline/.join))
+              ensure (close_execution_scope execution)))
             (match outcome ^!exhaustive
               (when (TaskOutcome/ok value) (set validated (validate_outcome turn value ^validators validators)))
               (when (TaskOutcome/error failure)

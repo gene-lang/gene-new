@@ -1,0 +1,97 @@
+(mod image_fixtures)
+(import [Plugin PluginHost ImageHost ImageError] ^from "../../src/plugin_api")
+(import [image] ^from "../../src/builtin/image")
+(import [Profile] ^from "../../src/profiles/profile")
+(import [prepare_layout open_runtime] ^from "../../src/runtime/bootstrap")
+(import [select_provider] ^from "../../src/agents/provider_selection")
+(import [evaluate_harness_turn] ^from "../../src/agents/harness_turn")
+(import [png] ^from "./png")
+
+(fn review [score : Int]
+  ($json/stringify {^score score ^comments ["Check the requested lettering."]
+    ^revision (if (< score 85) "Correct the lettering; preserve the subject and palette." "")}))
+
+(fn image_fixture [workspace : Str, replies, ^config config = {}, ^extra_plugins extra_plugins = [],
+                   ^main_reply main_reply = nil]
+  (let generated ($cell [])) (let reviewed ($cell [])) (let reply_index ($cell 0))
+  (let mode ($cell "ok")) (let main_model ($cell "main-image-model"))
+  (let entered ($cell false))
+  (let reviewer_caps ($cell {^image_input "yes" ^image_output "no"}))
+  (let generator_caps ($cell {^image_input "yes" ^image_output "yes" ^image_edit "yes"
+    ^output_formats ["png"] ^max_images 16}))
+  (let generator (Plugin ^id "mock_image" ^requires ["image/runtime"]
+    ^provides [["image_generators" "mock"]]
+    ^activate (fn [host]
+      (let images (host .PluginHost:resolve "image/runtime"))
+      (host .PluginHost:contribute "image_generators"
+        {^name "mock" ^doc "Generate deterministic fixture PNGs."
+         ^available (fn [] nil) ^configure (fn [settings] settings)
+         ^capabilities (fn [settings] generator_caps/.get)
+         ^prepare (fn [call] call)
+         ^send (fn [prepared]
+           (generated/.get .push prepared)
+           (entered .set true)
+           (if (== mode/.get "generation_failed") (fail "generation failed"))
+           (if (== mode/.get "generation_usage_error")
+             (fail (ImageError ^code "image_too_large" ^message "Fixture output exceeds the limit."
+               ^usage {^cost 0.02})))
+           (if (&& (== mode/.get "generation_failed2") (== prepared/attempt 2)) (fail "generation failed"))
+           (if (== mode/.get "generation_wait") ($sleep 10000))
+           (if (&& (== mode/.get "generation_wait2") (== prepared/attempt 2)) ($sleep 10000))
+           (for id in prepared/reference_images (images .ImageHost:image_input prepared/run id))
+           (if_not ($absent? prepared/candidate)
+             (images .ImageHost:image_input prepared/run prepared/candidate))
+           {^images [{^mime "image/png"
+              ^bytes (if (== mode/.get "invalid_png") ($binary/from_str "not PNG")
+                (png ^note $"attempt ${prepared/attempt}"
+                  ^samples [0 80 100 120 (if (== prepared/settings/background "transparent") 0 255)]))}]
+            ^usage {^cost 0.01}})}))))
+  (let provider (Plugin ^id "vision_main" ^provides [["providers" "vision_main"]]
+    ^activate (fn [host]
+      (host .PluginHost:contribute "providers"
+        {^name "vision_main" ^doc "Review fixture images." ^media_recording "inventory"
+         ^configure (fn [model effort timeout]
+           {^model main_model/.get ^effort "none" ^timeout_ms timeout})
+         ^capabilities (fn [settings] reviewer_caps/.get)
+         ^prepare (fn [call] call)
+         ^send (fn [prepared]
+           (if (&& (== prepared/purpose "turn") (! ($absent? main_reply)))
+             (return {^text (main_reply prepared)}))
+           (reviewed/.get .push prepared)
+           (if (== mode/.get "review_failed") (fail "review failed"))
+           (if (&& (== mode/.get "review_failed2") (== reviewed/.get/.size 2)) (fail "review failed"))
+           (if (== mode/.get "review_wait") ($sleep 10000))
+           (if (&& (== mode/.get "review_wait2") (== reviewed/.get/.size 2)) ($sleep 10000))
+           (if (== mode/.get "review_timeout") (return {^^timeout ^usage {^cost 0.005}}))
+           (let index reply_index/.get)
+           (reply_index .set (+ index 1))
+           {^text (?? replies/%index (review 90)) ^usage {^cost 0.002}})}))))
+  (let root (prepare_layout workspace))
+  (let settings ($serde/read_data ($fs/read_text $"${root}/config.gene")))
+  (let image_settings {^generator "mock" ^generation_model "fixture-image"
+    ^run_timeout_ms 10000 ^generation_timeout_ms 1000 ^review_timeout_ms 1000
+    ^persistence_margin_ms 10})
+  (for [key value] in config (image_settings .put key value))
+  (settings .put "image" image_settings)
+  (settings .put "response_budget" {^timeout_ms 20000 ^max_memory_mb 1024})
+  ($fs/write_text_atomic $"${root}/config.gene" ($serde/write_data settings))
+  (let plugins [(image) generator provider])
+  (for plugin in extra_plugins (plugins .push plugin))
+  (let runtime (open_runtime workspace "default"
+    (Profile ^name "images" ^provider "vision_main" ^plugins plugins)))
+  {^runtime runtime ^generated generated ^reviewed reviewed ^mode mode ^entered entered
+   ^main_model main_model ^captured ($cell nil) ^reviewer_caps reviewer_caps ^generator_caps generator_caps})
+
+(fn evaluate_image [fixture, prompt : Str, ^options options = {}, ^round round : Str = "image-round",
+                    ^prefix prefix : Str = "", ^timeout_ms timeout_ms : Int = 20000]
+  (let parts ["(image_generate " ($to_str `(quote %prompt))])
+  (for [key value] in options
+    (parts .push ($to_str " ^" key " " ($to_str `(quote %value)))))
+  (parts .push ")")
+  (let code ($to_str prefix " (capture " ($str/join parts "")
+    ") (Outcome ^prompt \"Read the image result.\")"))
+  (let reviewer (select_provider fixture/runtime {}))
+  (evaluate_harness_turn fixture/runtime/h 1 fixture/runtime/root code
+    ^round round ^reviewer reviewer ^timeout_ms timeout_ms
+    ^bindings {^capture (fn [result] (fixture/captured .set result))
+      ^change_model (fn [] (fixture/main_model .set "changed-model"))}))

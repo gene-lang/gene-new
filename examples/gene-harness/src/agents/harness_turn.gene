@@ -32,8 +32,7 @@
   (impl Callable
     (message apply [self call]
       (let context ($runtime/context))
-      (let named_context (if ($absent? context) {} ($thaw ($freeze_shallow context))))
-      (named_context .put "function" self/name)
+      (let named_context ((?? context {}) .assoc "function" self/name))
       (let invoke ($runtime/bind_call ^named call/named self/callable call/body))
       ($runtime/with_context named_context invoke))))
 
@@ -85,15 +84,18 @@
 
 """))
 
-(fn evaluate_harness_turn [h : Harness, number : Int, workspace_root : Str, text : Str, ^session session : Str = "default", ^timeout_ms timeout_ms : Int = 600000, ^max_memory_mb max_memory_mb : Int = 1024, ^console_sink console_sink = nil, ^recall recall_function = nil, ^record record = nil, ^bindings extra_bindings = {}, ^lease supplied_lease = nil, ^after_patch_rename after_patch_rename = nil]
+(fn evaluate_harness_turn [h : Harness, number : Int, workspace_root : Str, text : Str, ^session session : Str = "default", ^round round = nil, ^reviewer reviewer = nil, ^timeout_ms timeout_ms : Int = 600000, ^max_memory_mb max_memory_mb : Int = 1024, ^console_sink console_sink = nil, ^recall recall_function = nil, ^record record = nil, ^bindings extra_bindings = {}, ^lease supplied_lease = nil, ^after_patch_rename after_patch_rename = nil]
   (let lease (if ($absent? supplied_lease) (acquire_snapshot h/snapshots) supplied_lease))
   (let turn_ref ($cell nil))
   (let drained ($cell false))
+  (let pinned_reviewer (if ($absent? reviewer) nil
+    ($freeze_shallow {^name reviewer/name ^settings ($freeze reviewer/settings)
+      ^row ($freeze_shallow reviewer/row)})))
   (try
     (let bindings
       (workspace_bindings ^extra extra_bindings h lease/snapshot session workspace_root))
     (let result
-      (evaluate_turn ^validators (question_validators lease/snapshot) ^bindings bindings ^timeout_ms timeout_ms ^max_memory_mb max_memory_mb ^console_sink console_sink ^recall recall_function ^record record ^after_patch_rename after_patch_rename ^turn_sink turn_ref ^context {^composition h/snapshots ^snapshot lease/snapshot ^session session}
+      (evaluate_turn ^validators (question_validators lease/snapshot) ^bindings bindings ^timeout_ms timeout_ms ^max_memory_mb max_memory_mb ^console_sink console_sink ^recall recall_function ^record record ^after_patch_rename after_patch_rename ^turn_sink turn_ref ^context {^composition h/snapshots ^snapshot lease/snapshot ^session session ^round round ^reviewer pinned_reviewer}
         number
         workspace_root
         text))

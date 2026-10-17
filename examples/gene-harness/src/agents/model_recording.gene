@@ -1,0 +1,174 @@
+(mod model_recording)
+(import [write_body read_body] ^from "./history")
+(import [open_media_store media_record media_bytes] ^from "../storage/media")
+
+(type MediaToken ^^private ^props {^reference Any ^encoding Str})
+(type TextTokens ^^private ^props {^parts Any})
+
+(fn media_reference [image]
+  {^id image/id ^digest image/digest
+   ^mime (if (["image/png" "image/jpeg" "image/webp"] .contains? image/mime)
+     image/mime "unknown")})
+
+(fn payload_key [image]
+  (if_not ($absent? image/digest) (return image/digest))
+  ($crypto/sha256 (if (== ($head image/base64) Str) image/base64 "uncatalogued")))
+
+(fn escaped_slashes [text : Str]
+  ($str/join ($str/split text "/") "\\/"))
+
+(fn payload_forms [image]
+  (if (!= ($head image/base64) Str) (return []))
+  [["json_data_url" (escaped_slashes image/data_url)] ["data_url" image/data_url]
+   ["json_base64" (escaped_slashes image/base64)] ["base64" image/base64]])
+
+(fn split_media_text [text : Str, inventory, matched]
+  (var parts [text])
+  (for image in inventory
+    (for form in (payload_forms image)
+      (if (== form/1 "") (continue))
+      (let next [])
+      (for part in parts
+        (if (!= ($head part) Str)
+          (then (next .push part))
+          (else
+            (let pieces ($str/split part form/1))
+            (if (> pieces/.size 1) (matched .put (payload_key image) true))
+            (var index 0)
+            (for piece in pieces
+              (if (!= piece "") (next .push piece))
+              (if (< index (- pieces/.size 1))
+                (next .push (if ($absent? image/id) "[uncatalogued image omitted]"
+                  (MediaToken ^reference (media_reference image) ^encoding form/0))))
+              (set index (+ index 1))))))
+      (set parts next)))
+  (if (== parts/.size 0) ""
+    (if (== parts/.size 1) parts/0 (TextTokens ^parts parts))))
+
+(fn replace_media [value, inventory, matched]
+  (if (== ($head value) Str) (return (split_media_text value inventory matched)))
+  (if (== ($head value) List)
+    (return ($map value (fn [item] (replace_media item inventory matched)))))
+  (if_yes (== ($head value) Map)
+    (let result {})
+    (for [key item] in value (result .put key (replace_media item inventory matched)))
+    (return result))
+  value)
+
+(fn store_part [runtime, value]
+  (if (== ($head value) MediaToken)
+    (return {^harness_blob {^kind "media" ^id value/reference/id ^digest value/reference/digest
+      ^mime value/reference/mime ^encoding value/encoding}}))
+  (if (== ($head value) TextTokens)
+    (return {^harness_blob {^kind "image_text"
+      ^parts ($map value/parts (fn [part] (store_part runtime part)))}}))
+  (if (== ($head value) Str)
+    (return (if (> ($str/byte_size value) 256)
+      {^harness_blob (write_body runtime value)} value)))
+  (if (== ($head value) List)
+    (return ($map value (fn [part] (store_part runtime part)))))
+  (if_yes (== ($head value) Map)
+    (let result {})
+    (for [key item] in value (result .put key (store_part runtime item)))
+    (if (&& (== ($size value) 1)
+            (|| ($has_key? value "harness_blob") ($has_key? value "harness_literal")))
+      (return {^harness_literal result}))
+    (return result))
+  value)
+
+(fn restore_media [runtime, reference]
+  (let store (open_media_store runtime/state_root))
+  (let record (media_record store reference/id))
+  (if (|| (!= record/digest reference/digest) (!= record/mime reference/mime))
+    (fail "Recorded image identity no longer matches media storage."))
+  (let encoded ($base64/encode (media_bytes store reference/id)))
+  (let url $"data:${record/mime};base64,${encoded}")
+  (if (== reference/encoding "base64") (return encoded))
+  (if (== reference/encoding "data_url") (return url))
+  (if (== reference/encoding "json_base64") (return (escaped_slashes encoded)))
+  (if (== reference/encoding "json_data_url") (return (escaped_slashes url)))
+  (fail "Recorded image encoding is unsupported."))
+
+(fn load_part [runtime, value]
+  (if_yes (== ($head value) Map)
+    (if (== ($size value) 1)
+      (then
+        (if_not ($absent? value/harness_blob)
+          (if (== ($head value/harness_blob) Str)
+            (return (read_body runtime value/harness_blob)))
+          (if (== value/harness_blob/kind "media")
+            (return (restore_media runtime value/harness_blob)))
+          (if (== value/harness_blob/kind "image_text")
+            (return ($str/join ($map value/harness_blob/parts
+              (fn [part] (load_part runtime part))) "")))
+          (fail "Unsupported recorded payload marker."))
+        (if_not ($absent? value/harness_literal)
+          (let result {})
+          (for [key item] in value/harness_literal (result .put key (load_part runtime item)))
+          (return result))))
+    (let result {})
+    (for [key item] in value (result .put key (load_part runtime item)))
+    (return result))
+  (if (== ($head value) List)
+    (return ($map value (fn [part] (load_part runtime part)))))
+  value)
+
+(fn image_catalog [inventory]
+  ($map inventory (fn [image] (media_reference image))))
+
+(fn opaque_value? [value]
+  (if (== ($head value) MediaToken) (return false))
+  (if (== ($head value) TextTokens) (return (opaque_value? value/parts)))
+  (if (== ($head value) Str)
+    (return ($str/contains? value "data:image/")))
+  (if_yes (== ($head value) List)
+    (for item in value (if (opaque_value? item) (return true)))
+    (return false))
+  (if_yes (== ($head value) Map)
+    (for [key item] in value
+      (if (|| ($str/contains? ($to_str key) "data:image/") (opaque_value? item))
+        (return true)))
+    (return false))
+  (! ([Int Float Bool Nil Void] .contains? ($head value))))
+
+# Opaque/custom preparation stays compatible with send. It simply cannot be
+# represented as an exact durable wire request until its adapter opts into
+# the reversible inventory encoding contract.
+(fn prepared_record [runtime, prepared, inventory, mode : Str]
+  (if inventory/.empty? (return (store_part runtime prepared)))
+  (var reason nil)
+  (if (!= mode "inventory") (set reason "Provider has not declared reversible image preparation."))
+  (for image in inventory
+    (if ($absent? image/id) (set reason "Prepared input includes uncatalogued image data.")))
+  (let matched {})
+  (let rewritten (if ($absent? reason) (replace_media prepared inventory matched) nil))
+  (for image in inventory
+    (if_not ($has_key? matched (payload_key image))
+      (if ($absent? reason) (set reason "Provider transformed or omitted an input image."))))
+  (if (&& ($absent? reason) (opaque_value? rewritten))
+    (set reason "Prepared input contains an unsupported image representation."))
+  (if_not ($absent? reason)
+    (return {^harness_prepared_omitted {^reason reason ^media (image_catalog inventory)}}))
+  (store_part runtime rewritten))
+
+(fn result_record [runtime, value, inventory]
+  (if ($absent? value) (return nil))
+  (let rewritten (replace_media value inventory {}))
+  (if (&& (! inventory/.empty?) (opaque_value? rewritten))
+    (return {^harness_output_omitted "Provider output contains an unsupported image representation."}))
+  (store_part runtime rewritten))
+
+(fn redact_image_text [message : Str, inventory]
+  (var text message)
+  (for image in inventory
+    (for form in (payload_forms image)
+      (if (!= form/1 "")
+        (set text ($str/join ($str/split text form/1) "[image data omitted]")))))
+  text)
+
+(fn safe_error [message : Str, inventory]
+  (let text (redact_image_text message inventory))
+  (if (|| (> ($str/byte_size text) 1024) ($str/contains? text "data:image/")
+          ($str/contains? text "#B16#"))
+    "Image-input provider call failed; its payload-bearing diagnostic was omitted."
+    text))

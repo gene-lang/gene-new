@@ -77,6 +77,8 @@
     ^activate (fn [host]
       (host .PluginHost:contribute "providers"
         {^name "anthropic" ^tags ["provider" "model" "anthropic"] ^docs ["harness/providers/anthropic"] ^doc "Use the Anthropic Messages API." ^auto 1
+         ^media_recording "inventory"
+         ^capabilities (fn [settings] {^image_input "unknown" ^image_output "no"})
          ^available (fn []
            (let key (api_key))
            (if ($absent? key)

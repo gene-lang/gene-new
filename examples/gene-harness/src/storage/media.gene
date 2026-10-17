@@ -24,15 +24,110 @@
 
 (fn read_index [store : MediaStore]
   (let path (index_path store))
-  (if_not ($fs/exists? path) (return {^format 1 ^assets {}}))
+  (if_not ($fs/exists? path) (return {^format 2 ^assets {} ^reservations {}}))
   (let value
     (try
       ($serde/read_data ($fs/read_text path))
     catch Any
       (media_error "unavailable" "The media index could not be read.")))
-  (if_not (&& (== value/format 1) (== ($head value/assets) Map))
+  (if_not (&& ([1 2] .contains? value/format) (== ($head value/assets) Map))
     (media_error "unavailable" "Unsupported or damaged media index."))
+  (if_yes (== value/format 1)
+    (value .put "format" 2)
+    (value .put "reservations" {}))
+  (if_not (== ($head value/reservations) Map)
+    (media_error "unavailable" "Damaged media reservations."))
   value)
+
+(fn write_index [store : MediaStore, index]
+  ($fs/write_text_atomic ^^owner_only (index_path store) ($serde/write_data index)))
+
+(fn index_usage [index, ^excluding excluding = nil]
+  (let digests {})
+  (var bytes 0)
+  (var records ($size index/assets))
+  (for [id asset] in index/assets
+    (if_not ($has_key? digests asset/digest)
+      (set bytes (+ bytes asset/size))
+      (digests .put asset/digest true)))
+  (for [id reservation] in index/reservations
+    (if (== ($to_str id) excluding) (continue))
+    (if (|| (!= ($head reservation/bytes) Int) (< reservation/bytes 1)
+            (!= reservation/records 1))
+      (media_error "unavailable" "Damaged media reservation accounting."))
+    (set bytes (+ bytes reservation/bytes))
+    (set records (+ records 1)))
+  {^bytes bytes ^records records ^digests digests})
+
+(fn media_usage [store : MediaStore]
+  (let index (read_index store))
+  (let usage (index_usage index))
+  {^bytes usage/bytes ^records usage/records
+   ^reservations ($size index/reservations)})
+
+# Reserving capacity is durable and idempotent for one run/attempt. All upload
+# paths account for reservations, even when they use a separately opened store.
+(fn reserve_media [store : MediaStore, run : Str, attempt : Int,
+                   session : Str, round : Str, ^bytes bytes = nil]
+  (let amount (?? bytes store/max_file_bytes))
+  (if (|| (== run "") (== session "") (== round "") (< attempt 1)
+          (!= ($head amount) Int) (< amount 1) (> amount store/max_file_bytes))
+    (media_error "invalid_request" "Invalid generated-media reservation."))
+  (media_gate (fn []
+    (let index (read_index store))
+    (for [id asset] in index/assets
+      (if_yes (&& (== asset/generation/run run) (== asset/generation/attempt attempt))
+        (if (|| (!= asset/generation/session session) (!= asset/generation/round round))
+          (media_error "invalid_request" "Committed media belongs to another conversation."))
+        (return {^id asset/id ^^committed ^media (media_descriptor store asset/id)})))
+    (for [id reservation] in index/reservations
+      (if_yes (&& (== reservation/run run) (== reservation/attempt attempt))
+        (if (|| (!= reservation/bytes amount) (!= reservation/session session)
+                (!= reservation/round round))
+          (media_error "invalid_request" "Reservation identity conflicts with this attempt."))
+        (return reservation)))
+    (let usage (index_usage index))
+    (if (|| (>= usage/records store/max_records)
+            (> (+ usage/bytes amount) store/max_total_bytes))
+      (media_error "too_large" "The workspace cannot reserve capacity for another generated image."))
+    (let id ($crypto/random_hex 16))
+    (let reservation {^id id ^run run ^attempt attempt ^session session
+      ^round round ^bytes amount ^records 1 ^created_at_ms ($os/wall_ms)})
+    (index/reservations .put id reservation)
+    (write_index store index)
+    reservation)))
+
+(fn release_media_reservation [store : MediaStore, id : Str]
+  (media_gate (fn []
+    (let index (read_index store))
+    (if_not ($has_key? index/reservations id) (return false))
+    (index/reservations .delete id)
+    (write_index store index)
+    true)))
+
+# Startup invokes this only while holding the exclusive workspace lock, before
+# accepting new work. Committed assets retain run/attempt identity for recovery.
+(fn recover_media_reservations [store : MediaStore]
+  (media_gate (fn []
+    (let index (read_index store))
+    (let interrupted [])
+    (for [id reservation] in index/reservations (interrupted .push reservation))
+    (if_not interrupted/.empty?
+      (index .put "reservations" {})
+      (write_index store index))
+    # A crash may leave an object written before the atomic index commit.
+    # Only unreferenced digest objects are disposable; committed attempts are
+    # retained regardless of whether their run checkpoint was written.
+    (let live {})
+    (for [id asset] in index/assets
+      (if ($absent? (#"^[0-9a-f]{64}$" .match asset/digest))
+        (media_error "unavailable" "Damaged media object identity."))
+      (live .put asset/digest true))
+    (for name in ($fs/list_dir ($path/join store/root "objects"))
+      (if (&& (! ($absent? (#"^[0-9a-f]{64}$" .match name)))
+              (! ($has_key? live name)))
+        ($fs/remove ($path/join store/root "objects" name))))
+    interrupted)))
 
 (fn validate_id [id : Str]
   (if ($absent? (#"^[0-9a-f]{32}$" .match id)) (media_error "not_found" "Attachment not found.")))
@@ -51,7 +146,7 @@
 
 (fn media_descriptor [store : MediaStore, id : Str]
   (let record (media_record store id))
-  {
+  (let descriptor {
     ^id record/id
     ^name record/name
     ^mime record/mime
@@ -59,6 +154,20 @@
     ^size record/size
     ^source record/source
     ^url $"/api/v8/media/${record/id}"})
+  (for key in ["width" "height" "bit_depth" "color_type" "has_alpha"
+              "has_transparent_pixels" "animated" "generation"]
+    (if ($has_key? record key) (descriptor .put key (record .get key))))
+  descriptor)
+
+(fn generated_media [store : MediaStore, ^session session = nil, ^run run = nil]
+  (let records [])
+  (let index (read_index store))
+  (for [id record] in index/assets
+    (if (&& (== record/source "generated")
+            (|| ($absent? session) (== record/generation/session session))
+            (|| ($absent? run) (== record/generation/run run)))
+      (records .push (media_descriptor store record/id))))
+  ($order/sort_by records (fn [record] record/generation/attempt)))
 
 (fn media_bytes [store : MediaStore, id : Str] : Bytes
   (let record (media_record store id))
@@ -83,38 +192,49 @@
   $"data:${record/mime};base64,${($base64/encode (media_bytes store id))}")
 
 (fn put_media [store : MediaStore, name : Str, data : Bytes,
-               ^source source : Str = "upload"]
+               ^source source : Str = "upload", ^reservation reservation_id = nil,
+               ^has_transparent_pixels transparent = nil]
   (if (> ($binary/size data) store/max_file_bytes)
     (media_error "too_large" $"Each attachment must be at most ${store/max_file_bytes} bytes."))
-  (if_not (["upload" "screenshot" "document_page"] .contains? source)
+  (if_not (["upload" "screenshot" "document_page" "generated"] .contains? source)
     (media_error "invalid_request" "Unknown media source."))
+  (if (&& (! ($absent? transparent)) (!= ($head transparent) Bool))
+    (media_error "invalid_request" "Transparent-pixel verification must be boolean or unknown."))
   (let metadata (try (inspect_bytes name data)
     catch DocumentError (media_error "invalid_request" $err/message)))
   (let digest ($crypto/sha256 data))
   (media_gate (fn []
     (let index (read_index store))
-    (if (>= ($size index/assets) store/max_records)
+    (let reservation (if ($absent? reservation_id) nil
+      (index/reservations .get reservation_id)))
+    (if (&& (== source "generated") ($absent? reservation))
+      (media_error "invalid_request" "Generated media requires a live capacity reservation."))
+    (if (&& (! ($absent? reservation_id)) ($absent? reservation))
+      (media_error "invalid_request" "Media reservation is missing or already consumed."))
+    (if (&& (! ($absent? reservation))
+            (|| (!= source "generated") (> metadata/size reservation/bytes)))
+      (media_error "too_large" "Generated media exceeds its reserved capacity."))
+    (let usage (index_usage index ^excluding reservation_id))
+    (if (>= usage/records store/max_records)
       (media_error "too_large" "The workspace attachment count limit has been reached."))
-    (let seen {})
-    (var used 0)
-    (for [id asset] in index/assets
-      (if ($absent? (seen .get asset/digest))
-        (then
-          (set used (+ used asset/size))
-          (seen .put asset/digest true))))
-    (let extra (if ($absent? (seen .get digest)) metadata/size 0))
-    (if (> (+ used extra) store/max_total_bytes)
+    (let extra (if ($has_key? usage/digests digest) 0 metadata/size))
+    (if (> (+ usage/bytes extra) store/max_total_bytes)
       (media_error "too_large" "The workspace attachment storage limit has been reached."))
-    (let id ($crypto/random_hex 16))
+    (let id (if ($absent? reservation) ($crypto/random_hex 16) reservation/id))
     (metadata .put "id" id)
     (metadata .put "digest" digest)
     (metadata .put "source" source)
     (metadata .put "created_at_ms" ($os/wall_ms))
+    (if_not ($absent? reservation)
+      (metadata .put "generation" {^run reservation/run ^attempt reservation/attempt
+        ^session reservation/session ^round reservation/round})
+      (metadata .put "has_transparent_pixels" transparent))
     (let path (object_path store digest))
     # Rewriting the immutable object also repairs an interrupted/corrupt write.
     ($fs/write_bytes_atomic path data)
     (index/assets .put id metadata)
-    ($fs/write_text_atomic ^^owner_only (index_path store) ($serde/write_data index))
+    (if_not ($absent? reservation) (index/reservations .delete reservation/id))
+    (write_index store index)
     (media_descriptor store id))))
 
 (fn put_media_base64 [store : MediaStore, name : Str, encoded : Str]

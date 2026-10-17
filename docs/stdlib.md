@@ -53,6 +53,11 @@ UTF-8, overlong encodings, surrogate code points and values above U+10FFFF. Use
 it when accepting uploaded text or other encoded input. The existing
 `$binary/to_str` remains a raw conversion and does not validate its bytes.
 
+`($binary/crc32 bytes)` computes the IEEE CRC-32 checksum used by PNG and ZIP
+and returns an unsigned value as an `Int` in 0..4294967295. It accepts `Bytes`;
+use `$binary/from_str` to checksum UTF-8 text. It does not require a native
+codec library. For example, the checksum of `"123456789"` is `3421780262`.
+
 ```gene runnable
 (import $str [split trim join])
 (let names ($map (split " Ada, Grace " ",") trim))
@@ -307,6 +312,14 @@ budget is exhausted, so a later input can use earlier declarations. An
 application supplying per-input budgets should open an Env
 without a policy and invoke each input through `$runtime/bind_call ^policy`.
 The application owns any task scope used to join work spawned by an input.
+
+`($runtime/execution_budget)` returns an immutable snapshot of the enforced
+budget chain: `now_ms`, `deadline_ms`, `remaining_ms`, `remaining_steps`,
+`memory_limit_bytes` and `memory_remaining_bytes`. Deadlines share the
+`$os/monotonic_ms` clock; a missing limit is `nil`. Nested policies report the
+earliest deadline and tightest remaining limits. The query reads VM state,
+so changing task context cannot extend a budget. It does not reserve time or
+change enforcement; callers must recheck before admitting external work.
 
 `($repl/bind session name value)` adds or replaces a base binding, underneath
 the session's declarations. This permits refreshing host functions while a

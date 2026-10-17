@@ -27,7 +27,7 @@
               nil)})
 
 (fn searchable_registries []
-  ["docs" "functions" "commands" "input_modes" "providers" "hooks" "web_components" "seams"])
+  ["docs" "functions" "commands" "input_modes" "providers" "image_generators" "hooks" "web_components" "seams"])
 
 (fn discovery_entry [kind : Str, record]
   (let payload record/payload)

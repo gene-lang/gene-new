@@ -1,4 +1,5 @@
 (mod documents)
+(import [inspect_png PngError] ^from "./png")
 
 (type DocumentError ^props {^message Str} ^impl [Error])
 (impl Error for DocumentError)
@@ -60,4 +61,8 @@
         (invalid "Text documents cannot contain NUL bytes."))
       (set mime "text/plain")
       (set kind "text")))
-  {^name leaf ^mime mime ^kind kind ^size size})
+  (let metadata {^name leaf ^mime mime ^kind kind ^size size})
+  (if_yes (== mime "image/png")
+    (let image (try (inspect_png data) catch PngError (invalid $err/message)))
+    (for [key value] in image (metadata .put key value)))
+  metadata)

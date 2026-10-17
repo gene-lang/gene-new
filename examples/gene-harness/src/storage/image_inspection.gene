@@ -1,0 +1,78 @@
+(mod image_inspection)
+(import [inspect_png PngError] ^from "./png" ^pkg "documents")
+(import [worker_profile decode_png RasterError] ^from "." ^pkg "raster")
+
+(type ImageInspectionError ^props {^code Str ^message Str} ^impl [Error])
+(impl Error for ImageInspectionError)
+
+(fn reject [code : Str, message : Str]
+  (fail (ImageInspectionError ^code code ^message message)))
+
+(fn with_image_scratch [root : Str, operation]
+  ($fs/make_dir root)
+  (let directory ($path/join root ($crypto/random_hex 16)))
+  ($fs/make_dir directory)
+  ($fs/set_mode directory 448)
+  (try (operation directory)
+    ensure
+      (for file in ($fs/list_dir directory) ($fs/remove ($path/join directory file)))
+      ($fs/remove_dir directory)))
+
+(fn has_transparent_pixels [pixels : Bytes]
+  (let size ($binary/size pixels))
+  (if (|| (== size 0) (!= (// size 4) 0))
+    (reject "invalid_image" "Decoder returned an invalid RGBA buffer."))
+  (var offset 3)
+  (while (< offset size)
+    (if (< ($binary/get pixels offset) 255) (return true))
+    (set offset (+ offset 4)))
+  false)
+
+(fn prepare_image_inspection [root : Str, background : Str, ^worker worker = nil]
+  (if_not (["auto" "opaque" "transparent"] .contains? background)
+    (reject "invalid_request" "Image background must be auto, opaque or transparent."))
+  (if (!= background "transparent") (return nil))
+  (try
+    (let profile (worker_profile ^version 2 ^worker worker))
+    (if_not ($str/starts_with? profile/version "raster-cairo-linear/v2 ")
+      (reject "missing_dependency" "PNG inspection requires the v2 raster worker."))
+    # Verify actual decoding before a billed generation. The probe is local,
+    # never attached or written into conversation/model records.
+    (let probe ($base64/decode "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAEElEQVR4AQEFAPr/AFBkeAADYQEt334QFAAAAABJRU5ErkJggg=="))
+    (with_image_scratch root (fn [directory]
+      (let decoded (decode_png profile probe directory ^timeout_ms 5000))
+      (if (|| (!= decoded/width 1) (!= decoded/height 1)
+              (! (has_transparent_pixels decoded/pixels)))
+        (reject "missing_dependency" "PNG decoder probe failed."))))
+    profile
+  catch Any
+    (reject "missing_dependency"
+      "Transparent PNG generation needs the working genex/raster v2 decoder. Build it with gene run src/genex/raster/tools/build.gene and configure GENE_RASTER_WORKER_V2.")))
+
+(fn inspect_generated_png [data : Bytes, root : Str, ^background background : Str = "auto",
+                           ^decoder decoder = nil, ^timeout_ms timeout_ms : Int = 30000]
+  (let metadata (try (inspect_png data)
+    catch PngError (reject "invalid_image" $err/message)))
+  (if (== background "transparent")
+    (then
+      (if ($absent? decoder) (reject "missing_dependency" "Transparent PNG inspection was not prepared."))
+      (if (|| (> metadata/width 2048) (> metadata/height 2048))
+        (reject "unsupported_dimensions" "Transparent PNG inspection supports at most 2048 pixels on each axis."))
+      (if_not metadata/has_alpha
+        (reject "opaque_image" "The generated PNG contains no transparency information."))
+      (let transparent
+        (try
+          (with_image_scratch root (fn [directory]
+            (let decoded (decode_png decoder data directory ^timeout_ms timeout_ms))
+            (if (|| (!= decoded/width metadata/width) (!= decoded/height metadata/height))
+              (reject "invalid_image" "PNG decoder dimensions disagree with the image header."))
+            (has_transparent_pixels decoded/pixels)))
+        catch RasterError
+          (if (== $err/timed_out true)
+            (reject "decode_timeout" "PNG decoding exceeded the remaining generation-phase time.")
+            (reject "decode_failed" "The generated PNG could not be decoded."))
+        catch Any (reject "decode_failed" "The generated PNG could not be inspected within the decoding limits.")))
+      (if_not transparent
+        (reject "opaque_image" "The generated PNG has no transparent pixels."))
+      (metadata .put "has_transparent_pixels" true)))
+  metadata)

@@ -18,7 +18,7 @@
         (let host (start_host workspace))
         (try
           (let client (connect workspace))
-          (let encoded "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aU1sAAAAASUVORK5CYII=")
+          (let encoded "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAEElEQVR4AQEFAPr/AFBkeP8EYAIs1SXmQwAAAABJRU5ErkJggg==")
           (let upload {^name "pixel.png" ^data encoded})
           ($assert (== (/status (wire client/connection "POST" "/media" upload)) 401))
           ($assert (== (/status (wire ^credentials {^cookie client/credentials/cookie ^csrf "wrong"}

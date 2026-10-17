@@ -1,0 +1,563 @@
+(mod image_service)
+(import [ImageHost ImageError ExecutionLimits append_prompt] ^from "../plugin_api")
+(import [execution_origin execution_owner execution_budget register_execution_finalizer] ^from "./execution_budget")
+(import [supervised_call] ^from "./call_supervision")
+(import [image_error normalize_image_request image_usage parse_image_review] ^from "./image_contract")
+(import [prepare_image_run plugin_identity] ^from "./image_preflight")
+(import [read_image_run save_image_run image_runs] ^from "../storage/image_runs")
+(import [open_media_store reserve_media release_media_reservation recover_media_reservations
+         generated_media media_descriptor media_record media_bytes put_media MediaError] ^from "../storage/media")
+(import [inspect_generated_png ImageInspectionError] ^from "../storage/image_inspection")
+(import [append_core_event flush_event_store events_for repair_interrupted_turns] ^from "../storage/state")
+(import [call_model record_request record_result load_part] ^from "../agents/model_call")
+(import [safe_error] ^from "../agents/model_recording")
+(import [attach_media] ^from "../builtin/media")
+(import [byte_prefix] ^from "../text")
+
+(var ^^private services ($cell []))
+
+(type HostedImages ^^private ^props {^token Any}
+  (impl ImageHost
+    (message begin [request] : Any (begin_image_run (service_record self) request))
+    (message generate [run : Str, instructions : Str] : Any
+      (generate_image (service_record self) run instructions))
+    (message review [run : Str, instructions : Str, ^repair repair : Bool = false] : Any
+      (review_image (service_record self) run instructions ^repair repair))
+    (message finish [run : Str, reason : Str] : Any
+      (finish_requested (service_record self) run reason))
+    (message image_input [run : Str, id : Str] : Any
+      (generator_image_input (service_record self) run id))))
+
+(fn service_record [handle] ^^private
+  (for service in services/.get
+    (if (same? service/token handle/token) (return service)))
+  (image_error "unavailable" "Image host service is closed."))
+
+(fn owned_origin [service] ^^private
+  (let origin (execution_origin))
+  (if ($absent? origin)
+    (image_error "response_required" "Image generation requires an active model response and user round."))
+  (if_not (same? origin/composition service/runtime/h/snapshots)
+    (image_error "response_required" "Image host belongs to a different workspace composition."))
+  (if (|| (!= ($head origin/session) Str) (!= ($head origin/round) Str) (== origin/round ""))
+    (image_error "response_required" "Image generation requires a named conversation and user round."))
+  origin)
+
+(fn latest_candidate [state] ^^private
+  (var found nil)
+  (for attempt in state/attempts
+    (if_not ($absent? attempt/image_id) (set found attempt)))
+  found)
+
+(fn image_result [service, state, ^reused reused : Bool = false]
+  (let candidate (latest_candidate state))
+  (let review candidate/review)
+  ($freeze {^run_id state/id ^state state/state ^reused reused
+    ^image_id (?? candidate/image_id nil)
+    ^image (if ($absent? candidate/image_id) nil (media_descriptor service/store candidate/image_id))
+    ^review_status (if ($absent? review) "unreviewed" "reviewed")
+    ^score (?? review/score nil) ^comments (?? review/comments nil) ^revision (?? review/revision nil)
+    ^attempts_used state/attempts/.size ^max_attempts state/request/max_attempts
+    ^review_calls state/review_calls ^repair_calls state/repair_calls
+    ^target_reached (&& (! ($absent? review)) (>= review/score 85))
+    ^stop_reason (?? state/stop_reason nil) ^error (?? state/error nil)
+    ^generator state/generator ^reviewer state/reviewer
+    ^output {^format "png" ^size state/request/size ^background state/request/background}
+    ^usage state/usage ^recall $"image.${state/id}"
+    ^further_attempts_require_new_request (== state/state "finished")
+    ^next_step (if (== state/state "finished")
+      "Further attempts need a new user request. The last image ID can be used as a reference."
+      "The admitted image run is still in progress.")}))
+
+(fn checkpoint [service, live] ^^private
+  (save_image_run service/runtime live/state))
+
+(fn progress [service, state, status : Str, ^score score = nil] ^^private
+  (let text ($to_str "Image " ($str/slice_bytes state/id 0 8) ": attempt "
+    state/attempts/.size "/" state/request/max_attempts ": " status
+    (if ($absent? score) "; score pending/unknown" $"; score ${score}/100") "\n"))
+  (let origin (execution_origin))
+  (let payload {^type "console" ^session state/session ^round state/round
+    ^turn state/turn ^at_ms ($os/wall_ms) ^text text
+    ^late ($absent? origin) ^^ignorable})
+  (let loaded (service/runtime/sessions/loaded/.get .get state/session))
+  (if_not ($absent? loaded) (loaded/console/.get .push payload))
+  (append_core_event service/runtime/events "session" state/session payload)
+  (flush_event_store service/runtime/events)
+  nil)
+
+(fn reconcile_images [service, state] ^^private
+  (for image in (generated_media service/store ^run state/id)
+    (var attempt nil)
+    (for entry in state/attempts
+      (if (== entry/number image/generation/attempt) (set attempt entry)))
+    (if ($absent? attempt)
+      (then
+        (set attempt {^number image/generation/attempt ^state "interrupted"
+          ^image_id nil ^review nil ^review_status "unreviewed" ^repair_used false})
+        (state/attempts .push attempt)))
+    (if (|| ($absent? attempt/image_id) (!= attempt/image_id image/id))
+      (then
+        (attempt .put "image_id" image/id)
+        (attempt .put "review" nil)
+        (attempt .put "review_status" "unreviewed"))))
+  state)
+
+(fn publish_result [service, live] ^^private
+  (if live/published (return nil))
+  (live .put "published" true)
+  (let origin (execution_origin))
+  (if (|| ($absent? origin) (!= origin/session live/state/session)
+          (!= origin/round live/state/round))
+    (return nil))
+  (let result (image_result service live/state))
+  (if (&& (!= live/state/stop_reason "cancelled") (! ($absent? result/image_id)))
+    (attach_media service/runtime result/image_id))
+  (append_prompt "image" result)
+  nil)
+
+(fn reconcile_calls [service, state] ^^private
+  # An outcome may have been flushed just before its run checkpoint was lost.
+  # Restore only calls whose IDs were admitted durably for this attempt.
+  (let calls {})
+  (for attempt in state/attempts
+    (for [field role] in {^generation_call "generation" ^review_call "review" ^repair_call "repair"}
+      (let id (attempt .get field))
+      (if_not ($absent? id) (calls .put id {^attempt attempt ^role role}))))
+  (for event in (events_for service/runtime/events "session" state/session)
+    (let payload event/payload)
+    (if (|| (!= event/type "model/result") (!= payload/final true)) (continue))
+    (let known (calls .get payload/call))
+    (if ($absent? known) (continue))
+    (record_usage {^state state} known/role payload/call
+      (load_part service/runtime payload/usage) ^attempt known/attempt/number)
+    (known/attempt .put $"${known/role}_outcome" payload/outcome)
+    (if_yes (&& (!= known/role "generation") (== payload/outcome "ok")
+            (! ($absent? known/attempt/image_id)) ($absent? known/attempt/review))
+      (let output (load_part service/runtime payload/output))
+      (if_yes (== ($head output) Str)
+        (let parsed (parse_image_review output))
+        (if parsed/valid
+          (then
+            (known/attempt .put "review" parsed/review)
+            (known/attempt .put "review_status" "reviewed")
+            (known/attempt .put "state" "reviewed"))))))
+  state)
+
+(fn settle_open_calls [service, live] ^^private
+  (let pending {})
+  (for event in (events_for service/runtime/events "session" live/state/session)
+    (let payload event/payload)
+    (if (&& (== event/type "model/request") (== payload/image/run live/state/id))
+      (pending .put payload/call payload))
+    (if (&& (== event/type "model/result") (== payload/final true))
+      (pending .delete payload/call)))
+  (for [id requested] in pending
+    (record_result service/runtime (requested .assoc "session" live/state/session)
+      ($to_str id) 1 "cancelled" true 0
+      ^usage (if (== requested/image/role "generation") (?? live/pending_usage nil) nil)
+      ^error "Image execution ended before the provider outcome was recorded."))
+  nil)
+
+(fn finish_run [service, live, reason : Str, ^detail detail = nil, ^publish publish : Bool = true] ^^private
+  (if (== live/state/state "finished")
+    (then
+      (if publish (publish_result service live))
+      (return (image_result service live/state))))
+  (reconcile_images service live/state)
+  (settle_open_calls service live)
+  (reconcile_calls service live/state)
+  (if_not ($absent? live/reservation)
+    (release_media_reservation service/store live/reservation)
+    (live .put "reservation" nil))
+  (live/state .put "state" "finished")
+  (live/state .put "stop_reason" reason)
+  (live/state .put "error" detail)
+  (live/state .put "finished_at_ms" ($os/wall_ms))
+  (for attempt in live/state/attempts
+    (if (["generating" "reviewing" "repairing"] .contains? attempt/state)
+      (attempt .put "state" (if (== reason "cancelled") "interrupted" "failed"))))
+  (checkpoint service live)
+  (let candidate (latest_candidate live/state))
+  (progress service live/state reason ^score (?? candidate/review/score nil))
+  (if publish (publish_result service live))
+  (image_result service live/state))
+
+(fn finalize_round [service, origin] ^^private
+  (let state (read_image_run service/runtime origin/session origin/round))
+  (if ($absent? state) (return nil))
+  (let existing (service/live .get state/id))
+  (let live (if ($absent? existing)
+    {^state state ^reservation nil ^published false} existing))
+  (if (== live/state/state "running")
+    (finish_run service live "cancelled" ^!publish
+      ^detail {^stage "execution" ^code (if (>= ($os/monotonic_ms)
+        (?? live/deadline_ms origin/deadline_ms 9223372036854775807)) "deadline" "evaluation_ended")
+       ^message "Image execution ended; saved attempts were retained."}))
+  (service/live .delete state/id)
+  nil)
+
+(fn begin_image_run [service, input] ^^private
+  (let origin (owned_origin service))
+  (let saved (service/gate (fn [] (read_image_run service/runtime origin/session origin/round))))
+  (if_not ($absent? saved)
+    (let request (normalize_image_request input saved/request))
+    (if (!= request saved/request)
+      (image_error "round_conflict" "This round already has an image run with different inputs. Start a new user request."))
+    (let previous (service/live .get saved/id))
+    (if (&& (== saved/state "running")
+            (|| ($absent? previous) (! previous/origin/active/.get)))
+      (finalize_round service origin))
+    (return (image_result service (read_image_run service/runtime origin/session origin/round) ^reused true)))
+  (register_execution_finalizer (fn [] (finalize_round service origin)))
+  (let config ($serde/read_data ($fs/read_text $"${service/runtime/state_root}/config.gene")))
+  (let configuration (?? config/image {}))
+  (let prepared (prepare_image_run service/runtime service/store origin input configuration))
+  (let budget (execution_budget))
+  (let started ($os/monotonic_ms))
+  (let deadline (- ($math/min (+ started prepared/limits/run_timeout_ms)
+    (?? budget/effective_deadline_ms (+ started prepared/limits/run_timeout_ms)))
+    prepared/limits/persistence_margin_ms))
+  (service/gate (fn []
+    (let concurrent (read_image_run service/runtime origin/session origin/round))
+    (if_not ($absent? concurrent)
+      (if (!= (normalize_image_request input concurrent/request) concurrent/request)
+        (image_error "round_conflict" "This round already admitted different image inputs."))
+      (return (image_result service concurrent ^reused true)))
+    (let state {^id ($crypto/random_hex 16) ^state "running"
+      ^session origin/session ^round origin/round ^turn origin/turn_number
+      ^request prepared/request ^limits prepared/limits ^created_at_ms ($os/wall_ms)
+      ^workflow (plugin_identity origin/snapshot (execution_owner))
+      ^composition origin/snapshot/id
+      ^generator {^name prepared/request/generator ^model prepared/request/generation_model
+        ^plugin (plugin_identity origin/snapshot prepared/generator/owner)
+        ^settings prepared/generator_settings ^capabilities prepared/generator_caps}
+      ^reviewer {^name prepared/reviewer/name ^settings prepared/reviewer/settings
+        ^plugin prepared/reviewer_plugin ^capabilities prepared/reviewer_caps}
+      ^attempts [] ^review_calls 0 ^repair_calls 0 ^usage []
+      ^stop_reason nil ^error nil})
+    (let live {^state state ^origin origin ^generator prepared/generator
+      ^reviewer prepared/reviewer ^decoder prepared/decoder
+      ^deadline_ms deadline ^started_ms started ^review_deadline_ms nil
+      ^busy false ^transport false ^reservation nil ^invalid_review nil ^published false})
+    (checkpoint service live)
+    (service/live .put state/id live)
+    (image_result service state))))
+
+(fn current_run [service, id : Str] ^^private
+  (let origin (owned_origin service))
+  (let stored (read_image_run service/runtime origin/session origin/round))
+  (if (|| ($absent? stored) (!= stored/id id))
+    (image_error "unknown_run" "Image run does not belong to this response's round."))
+  (let live (service/live .get id))
+  (if_not ($absent? live) (return live))
+  (if (== stored/state "running")
+    (image_error "interrupted" "This image run is no longer executing and cannot be resumed."))
+  {^state stored ^published true})
+
+(fn finish_requested [service, id : Str, reason : Str] ^^private
+  (let live (current_run service id))
+  (if (== live/state/state "finished") (return (image_result service live/state ^reused true)))
+  (if live/busy (image_error "run_busy" "An image model call is still in progress."))
+  (let latest (latest_candidate live/state))
+  (if (== reason "target_reached")
+    (if (|| ($absent? latest/review) (< latest/review/score 85))
+      (image_error "invalid_stop" "The latest image has not reached the target score.")))
+  (if (== reason "attempt_limit")
+    (then
+      (if (< live/state/attempts/.size live/state/request/max_attempts)
+        (image_error "invalid_stop" "Image attempts remain."))
+      (if ($absent? latest/review)
+        (image_error "review_required" "Review the last candidate before finishing at the attempt limit."))))
+  (if_not (["target_reached" "attempt_limit" "cancelled"] .contains? reason)
+    (image_error "invalid_stop" "The workflow can finish at its target, limit or cancellation."))
+  (finish_run service live reason))
+
+(fn generator_image_input [service, id : Str, media_id : Str] ^^private
+  (let live (current_run service id))
+  (if (|| (!= live/transport true) (!= (execution_owner) live/generator/owner))
+    (image_error "transport_only" "Image bytes are available only inside the selected generator's send callback."))
+  (let previous (latest_candidate live/state))
+  (if_not (|| (live/state/request/reference_images .contains? media_id)
+              (== previous/image_id media_id))
+    (image_error "invalid_reference" "Image is not an input of this generation call."))
+  (let metadata (media_record service/store media_id))
+  {^id media_id ^mime metadata/mime ^bytes (media_bytes service/store media_id)})
+
+(fn bounded_phase [live, deadline : Int, operation] ^^private
+  (let budget (execution_budget))
+  (let remaining (- ($math/min deadline (?? budget/effective_deadline_ms deadline)) ($os/monotonic_ms)))
+  (if (<= remaining 0) (return {^ok false ^code "timeout"}))
+  (let limits (ExecutionLimits ^timeout_ms remaining
+    ^max_steps ($math/max 1 (?? budget/remaining_steps 9223372036854775807))
+    ^max_memory_mb ($math/max 1 (/ (?? budget/memory_remaining_bytes 1073741824) 1048576))))
+  (let outcome (supervised_call operation [] limits ^deadline_ms deadline))
+  (match outcome ^!exhaustive
+    (when (TaskOutcome/ok value) {^ok true ^value value})
+    (when (TaskOutcome/error error)
+      (var code (?? error/code "provider_failed"))
+      (if (|| (!= ($head code) Str) ($absent? (#"^[a-z][a-z0-9_]{0,63}$" .match code)))
+        (set code "provider_failed"))
+      (if (|| (== error/deadline true) ($str/contains? ($str/lower ($to_str error/message)) "timeout"))
+        (set code "timeout"))
+      {^ok false ^code code
+       ^usage (image_usage error/usage)
+       ^message (if (["validation" "storage"] .contains? live/stage)
+         (safe_error ($to_str error/message) []) "Provider operation failed.")
+       ^status (if (&& (== ($head error/status) Int) (>= error/status 100) (<= error/status 599))
+         error/status nil)})
+    (when (TaskOutcome/panic message) {^ok false ^code "provider_panic"})
+    (when TaskOutcome/cancelled {^ok false ^code "timeout"})))
+
+(fn phase_failure [service, live, outcome, default_reason : Str] ^^private
+  (let cancelled (|| (>= ($os/monotonic_ms) live/deadline_ms) (! live/origin/active/.get)))
+  (finish_run service live (if cancelled "cancelled" default_reason)
+    ^detail {^stage live/stage ^code (if cancelled "deadline" outcome/code)
+      ^status (?? outcome/status nil)
+      ^message (if cancelled "The image run's execution deadline ended."
+        (?? outcome/message $"Image ${live/stage} failed (${outcome/code})."))}))
+
+(fn acquire_operation [service, live] ^^private
+  (service/gate (fn []
+    (if live/busy (image_error "run_busy" "An image operation is already in progress."))
+    (live .put "busy" true))))
+
+(fn record_usage [live, purpose : Str, call_id, usage, ^attempt attempt = nil] ^^private
+  (for item in live/state/usage
+    (if (== item/call_id call_id)
+      (then
+        (if_not ($absent? usage) (item .put "usage" (image_usage usage)))
+        (return nil))))
+  (live/state/usage .push {^purpose purpose ^call_id call_id
+    ^attempt (?? attempt live/state/attempts/.size) ^usage (image_usage usage)}))
+
+(fn generate_image [service, id : Str, instructions : Str] ^^private
+  (let live (current_run service id))
+  (if (== live/state/state "finished") (return (image_result service live/state ^reused true)))
+  (acquire_operation service live)
+  (try
+    (let previous (latest_candidate live/state))
+    (if_not live/state/attempts/.empty?
+      (if ($absent? previous/review)
+        (image_error "review_required" "Review the current candidate before refining it."))
+      (if (>= previous/review/score 85)
+        (return (finish_run service live "target_reached"))))
+    (if (>= live/state/attempts/.size live/state/request/max_attempts)
+      (return (finish_run service live "attempt_limit")))
+    (let limits live/state/limits)
+    (if (< (- live/deadline_ms ($os/monotonic_ms))
+           (+ limits/generation_timeout_ms limits/review_timeout_ms limits/persistence_margin_ms))
+      (return (finish_run service live "cancelled"
+        ^detail {^stage "admission" ^code "deadline"
+          ^message "Insufficient time remains for generation and review."})))
+    (let number (+ live/state/attempts/.size 1))
+    (var reservation nil)
+    (try
+      (set reservation (reserve_media service/store id number live/state/session live/state/round))
+    catch MediaError
+      (return (finish_run service live (if (== $err/code "too_large") "storage_limit" "storage_failed")
+        ^detail {^stage "reservation" ^code $err/code ^message "Capacity for another generated image could not be reserved."})))
+    (if reservation/committed
+      (return (finish_run service live "cancelled" ^detail {^stage "generation"
+        ^code "interrupted" ^message "A committed candidate was recovered; generation will not be replayed."})))
+    (live .put "reservation" reservation/id)
+    (let call_id ($crypto/random_hex 16))
+    (let attempt {^number number ^state "generating" ^image_id nil ^review nil
+      ^review_status "unreviewed" ^repair_used false ^generation_call call_id
+      ^started_at_ms ($os/wall_ms)})
+    (live/state/attempts .push attempt)
+    (live .put "invalid_review" nil)
+    (live .put "review_deadline_ms" nil)
+    (live .put "stage" "generation")
+    (live .put "pending_usage" nil)
+    (checkpoint service live)
+    (progress service live/state "generating")
+    (let deadline ($math/min live/deadline_ms (+ ($os/monotonic_ms) limits/generation_timeout_ms)))
+    (let request {^session live/state/session ^round live/state/round
+      ^turn live/state/turn ^purpose "image/generation"
+      ^image {^run id ^attempt number ^role "generation"}})
+    (let selected {^name live/state/request/generator ^row live/generator/payload
+      ^settings live/state/generator/settings})
+    (let dispatched ($cell false))
+    (let started ($os/monotonic_ms))
+    (let outcome (bounded_phase live deadline (fn []
+      (live .put "stage" "preparation")
+      (let settings ($thaw ($freeze selected/settings)))
+      (settings .put "timeout_ms" ($math/max 1 (- deadline ($os/monotonic_ms))))
+      (let prepared ($freeze (live/generator/payload/prepare
+        {^run id ^attempt number ^prompt live/state/request/prompt
+         ^reference_images live/state/request/reference_images
+         ^candidate (?? previous/image_id nil) ^revision (?? previous/review/revision "")
+         ^instructions instructions ^settings settings
+         ^timeout_ms settings/timeout_ms ^max_response_bytes 16777216
+         ^max_image_bytes service/store/max_file_bytes})))
+      (try ($json/stringify prepared)
+        catch Any (image_error "invalid_preparation" "Generator preparation must contain plain request data and media IDs."))
+      (record_request service/runtime request call_id selected prepared)
+      (dispatched .set true)
+      (live .put "stage" "generation")
+      (live .put "transport" true)
+      (let response (try (live/generator/payload/send prepared)
+        ensure (live .put "transport" false)))
+      (if (!= ($head response) Map)
+        (image_error "invalid_response" "Generator must return an image result map."))
+      (live .put "pending_usage" (image_usage response/usage))
+      (if (== response/timeout true) (image_error "timeout" "Image generation timed out."))
+      (live .put "stage" "validation")
+      (if (|| (!= ($head response/images) List) (!= response/images/.size 1))
+        (image_error "invalid_image_count" "Generator must return exactly one image."))
+      (let image response/images/0)
+      (if (!= image/mime "image/png")
+        (image_error "invalid_image" "Generator must return PNG bytes."))
+      (let data (match image/bytes
+        (when (bytes : Bytes) bytes)
+        (else (image_error "invalid_image" "Generator must return PNG bytes."))))
+      (if (> ($binary/size data) service/store/max_file_bytes)
+        (image_error "image_too_large" "Generated PNG exceeds its storage byte limit."))
+      (let facts (inspect_generated_png data $"${service/runtime/state_root}/media/inspection"
+        ^background live/state/request/background ^decoder live/decoder
+        ^timeout_ms ($math/max 1 (- deadline ($os/monotonic_ms)))))
+      (live .put "stage" "storage")
+      (let saved (put_media service/store $"image-${id}-${number}.png" data
+        ^source "generated" ^reservation reservation/id
+        ^has_transparent_pixels facts/has_transparent_pixels))
+      (live .put "reservation" nil)
+      (attempt .put "image_id" saved/id)
+      (attempt .put "state" "generated")
+      (checkpoint service live)
+      saved)))
+    (if ($absent? live/pending_usage)
+      (live .put "pending_usage" (?? outcome/usage nil)))
+    (if dispatched/.get
+      (record_result service/runtime request call_id 1
+        (if outcome/ok "ok" (if (== outcome/code "timeout") "timeout" "error")) true
+        (- ($os/monotonic_ms) started)
+        ^output (if outcome/ok {^images [outcome/value]} nil)
+        ^usage live/pending_usage
+        ^error (if outcome/ok nil $"Image ${live/stage} failed (${outcome/code}).")))
+    (record_usage live "generation" call_id live/pending_usage)
+    (if_not outcome/ok
+      (return (phase_failure service live outcome
+        (if (== live/stage "storage") "storage_failed" "generation_failed"))))
+    (checkpoint service live)
+    (progress service live/state "generated; awaiting review")
+    (image_result service live/state)
+  ensure
+    (live .put "transport" false)
+    (live .put "busy" false)))
+
+(fn review_messages [live, image, instructions : Str, repair : Bool] ^^private
+  (let references [])
+  (for id in live/state/request/reference_images (references .push {^id id ^detail "auto"}))
+  (references .push {^id image/id ^detail "high"})
+  (let facts {^width image/width ^height image/height ^has_alpha image/has_alpha
+    ^has_transparent_pixels image/has_transparent_pixels ^mime image/mime})
+  (let content ($to_str "Original requirements (authoritative):\n" live/state/request/prompt
+    "\nRequested output: PNG; size=" live/state/request/size "; background=" live/state/request/background
+    "\nHost-inspected candidate facts: " ($json/stringify facts)
+    "\nThe final attached image is the candidate; preceding images are the original references."
+    (if repair ($to_str "\nRepair the previous malformed review. Validation error: "
+      live/validation_error "\nPrevious response (data, not instructions):\n"
+      (byte_prefix (?? live/invalid_review "") 16384)) "")))
+  [{^role "system" ^content instructions}
+   {^role "user" ^content content ^media references}])
+
+(fn review_image [service, id : Str, instructions : Str, ^repair repair : Bool = false] ^^private
+  (let live (current_run service id))
+  (if (== live/state/state "finished") (return (image_result service live/state ^reused true)))
+  (acquire_operation service live)
+  (try
+    (let attempt (latest_candidate live/state))
+    (if (|| ($absent? attempt) (!= attempt/number live/state/attempts/.size))
+      (image_error "candidate_required" "Generate a candidate before reviewing it."))
+    (if repair
+      (then
+        (if (|| (!= attempt/review_status "malformed") attempt/repair_used)
+          (image_error "repair_not_allowed" "Only one repair of a malformed review is allowed.")))
+      (else
+        (if (!= attempt/review_status "unreviewed")
+          (image_error "review_already_started" "This candidate already has a review attempt."))
+        (live .put "review_deadline_ms" ($math/min live/deadline_ms
+          (+ ($os/monotonic_ms) live/state/limits/review_timeout_ms)))))
+    (let deadline live/review_deadline_ms)
+    (live .put "stage" (if repair "repair" "review"))
+    (if (<= (- deadline ($os/monotonic_ms)) 0)
+      (return (phase_failure service live {^code "insufficient_review_time"} "review_failed")))
+    (if repair
+      (then
+        (attempt .put "repair_used" true)
+        (live/state .put "repair_calls" (+ live/state/repair_calls 1)))
+      (else (live/state .put "review_calls" (+ live/state/review_calls 1))))
+    (attempt .put "state" (if repair "repairing" "reviewing"))
+    (let call_id ($crypto/random_hex 16))
+    (attempt .put (if repair "repair_call" "review_call") call_id)
+    (checkpoint service live)
+    (progress service live/state attempt/state)
+    (let image (media_descriptor service/store attempt/image_id))
+    (let settings ($thaw ($freeze live/reviewer/settings)))
+    (settings .put "timeout_ms" ($math/max 1 ($math/min
+      (?? settings/timeout_ms 600000) (- deadline ($os/monotonic_ms)))))
+    (let selected {^name live/reviewer/name ^row live/reviewer/row ^settings settings})
+    (let outcome (bounded_phase live deadline (fn []
+      (call_model service/runtime
+        {^session live/state/session ^round live/state/round ^turn live/state/turn
+         ^purpose (if repair "image/review_repair" "image/review")
+         ^image {^run id ^attempt attempt/number ^role (if repair "repair" "review")
+                 ^image_id attempt/image_id}
+         ^config {} ^max_tokens 4096
+         ^messages (review_messages live image instructions repair)}
+        ^selected selected ^call_id call_id ^!retry_timeouts))))
+    (if_not outcome/ok (return (phase_failure service live outcome "review_failed")))
+    (let response outcome/value)
+    (record_usage live (if repair "repair" "review") response/call_id response/usage)
+    (let parsed (parse_image_review response/safe_text))
+    (if_not parsed/valid
+      (live .put "invalid_review" response/safe_text)
+      (live .put "validation_error" parsed/error)
+      (attempt .put "review_status" "malformed")
+      (attempt .put "state" "review_invalid")
+      (attempt .put "validation_error" parsed/error)
+      (checkpoint service live)
+      (if repair
+        (return (finish_run service live "review_failed" ^detail
+          {^stage "repair" ^code "invalid_review" ^message parsed/error})))
+      (progress service live/state "review invalid; one format repair is available")
+      (let result ($thaw (image_result service live/state)))
+      (result .put "repair_allowed" true)
+      (result .put "validation_error" parsed/error)
+      (return ($freeze result)))
+    (attempt .put "review" parsed/review)
+    (attempt .put "review_status" "reviewed")
+    (attempt .put "state" "reviewed")
+    (checkpoint service live)
+    (progress service live/state "reviewed" ^score parsed/review/score)
+    (image_result service live/state)
+  ensure (live .put "busy" false)))
+
+(fn open_image_host [runtime, ^media_store media_store = nil]
+  (let service {^token ($cell nil) ^runtime runtime ^gate ($sync/gate) ^live {}
+    ^store (if ($absent? media_store) (open_media_store runtime/state_root) media_store)})
+  (services/.get .push service)
+  (HostedImages ^token service/token))
+
+(fn recover_image_host [handle]
+  (let service (service_record handle))
+  (recover_media_reservations service/store)
+  (for [session record] in service/runtime/sessions/index/.get
+    (repair_interrupted_turns service/runtime/events ^session ($to_str session))
+    (for state in (image_runs service/runtime ($to_str session))
+      (if (== state/state "running")
+        (finish_run service {^state state ^reservation nil ^published false}
+          "cancelled" ^!publish ^detail {^stage "execution" ^code "interrupted"
+            ^message "Host stopped before the image run completed; no calls were replayed."}))))
+  nil)
+
+(fn close_image_host [handle]
+  (let service (service_record handle))
+  (try
+    (for [id live] in service/live
+      (if (== live/state/state "running")
+        (finish_run service live "cancelled" ^!publish
+          ^detail {^stage "execution" ^code "shutdown" ^message "Image execution stopped with the host."})))
+    ensure (services .set ($filter services/.get (fn [item] (! (same? item/token service/token))))))
+  nil)

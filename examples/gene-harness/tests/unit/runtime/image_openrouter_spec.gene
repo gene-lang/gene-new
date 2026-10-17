@@ -1,0 +1,141 @@
+(import $test [describe it run])
+(import [configure_openrouter_images prepare_openrouter_image send_openrouter_image]
+  ^from "../../../src/builtin/image_openrouter")
+(import [ImageError] ^from "../../../src/plugin_api")
+(import [png] ^from "../../fixtures/png")
+
+(fn input [^options options = {}]
+  {^model "fixture/png" ^size "1024x1024" ^background "auto"
+   ^max_attempts 3 ^reference_count 1 ^timeout_ms 120000 ^options options})
+
+(fn endpoint [tag, ^parameters parameters = nil]
+  {^provider_tag tag ^provider_slug $"options-${tag}"
+   ^supported_parameters (?? parameters
+     {^resolution {^type "enum" ^values ["1K" "2K"]}
+      ^aspect_ratio {^type "enum" ^values ["1:1" "2:1"]}
+      ^output_format {^type "enum" ^values ["png" "jpeg"]}
+      ^input_references {^type "range" ^min 0 ^max 4}})})
+
+(fn discovery [endpoints, ^model_input model_input = ["text" "image"], ^missing missing : Bool = false]
+  (fn [request]
+    ($assert (== request/method "GET"))
+    ($assert ($absent? request/headers/authorization))
+    (if ($str/ends_with? request/url "/endpoints")
+      (if missing {^status 503 ^body "unavailable"}
+        {^status 200 ^body ($json/stringify {^id "fixture/png" ^endpoints endpoints})})
+      {^status 200 ^body ($json/stringify {^data [{^id "fixture/png"
+        ^architecture {^input_modalities model_input ^output_modalities ["image"]}}]})})))
+
+(fn rejected [code : Str, operation]
+  (let actual (try (operation) "accepted" catch ImageError $err/code))
+  ($assert (== actual code) $"Expected ${code}, got ${actual}."))
+
+(describe "OpenRouter PNG generator"
+  (it "supports one text-only generation and reports tier dimensions for decoder preflight" []
+    (let parameters {^resolution {^type "enum" ^values ["1K" "4K"]}
+      ^output_format {^type "enum" ^values ["png"]}
+      ^background {^type "enum" ^values ["auto" "transparent"]}})
+    (let single (((input) .assoc "max_attempts" 1) .assoc "reference_count" 0))
+    (let settings (configure_openrouter_images (single .assoc "size" "4K")
+      ^transport (discovery [(endpoint "text" ^parameters parameters)] ^model_input ["text"])))
+    ($assert (== settings/dimensions {^width 4096 ^height 4096}))
+    ($assert (== settings/capabilities/image_input "no"))
+    ($assert (== settings/capabilities/image_output "yes"))
+    ($assert settings/send_background))
+
+  (it "normalizes size for endpoint checks and pins only compatible routing tags" []
+    (let settings (configure_openrouter_images (input)
+      ^transport (discovery [(endpoint "good") (endpoint "jpeg" ^parameters
+        {^output_format {^type "enum" ^values ["jpeg"]}})])))
+    ($assert (== settings/routing {^only ["good"] ^allow_fallbacks false}))
+    ($assert (== settings/capabilities/image_edit "yes"))
+    ($assert (== settings/capabilities/max_images 4))
+    (let prepared (prepare_openrouter_image {^settings settings ^prompt "Original prompt"
+      ^instructions "Generate PNG" ^revision "Keep colors; fix lettering."
+      ^reference_images ["reference"] ^candidate "candidate" ^run "run" ^timeout_ms 900}))
+    ($assert (== [prepared/body/n prepared/body/output_format prepared/body/size] [1 "png" "1024x1024"]))
+    ($assert ($absent? prepared/body/resolution))
+    ($assert ($absent? prepared/body/aspect_ratio))
+    ($assert ($absent? prepared/body/background))
+    ($assert (== prepared/reference_images ["reference" "candidate"]))
+    ($assert ($str/contains? prepared/body/prompt "Keep colors; fix lettering.")))
+
+  (it "rejects known incompatible settings and routes before any generation" []
+    (for request in [((input) .assoc "size" "4096x4096")
+                    ((input) .assoc "background" "transparent")
+                    ((input) .assoc "reference_count" 5)]
+      (rejected "unsupported_endpoint" (fn []
+        (configure_openrouter_images request ^transport (discovery [(endpoint "good")])))))
+    (rejected "unsupported_input" (fn []
+      (configure_openrouter_images (input) ^transport (discovery [(endpoint "good")] ^model_input ["text"]))))
+    (rejected "unsupported_endpoint" (fn []
+      (configure_openrouter_images (input) ^transport (discovery [(endpoint "bad" ^parameters {})])))))
+
+  (it "refuses unrouteable mixed support and tags shared with incompatible endpoints" []
+    (for good in [nil "same"]
+      (rejected "unsupported_routing" (fn []
+        (configure_openrouter_images (input) ^transport
+          (discovery [(endpoint good) (endpoint good ^parameters {})]))))))
+
+  (it "limits fallbacks to an explicit compatible allowlist and preserves it on discovery failure" []
+    (let request (input ^options {^only ["good" "bad"] ^allow_fallbacks true}))
+    (let settings (configure_openrouter_images request ^transport
+      (discovery [(endpoint "good") (endpoint "bad" ^parameters {})])))
+    ($assert (== settings/routing {^only ["good"] ^allow_fallbacks true}))
+    (let unknown (configure_openrouter_images request ^transport (discovery [] ^^missing)))
+    ($assert (== unknown/routing {^only ["good" "bad"] ^allow_fallbacks false}))
+    ($assert (== unknown/capabilities/image_input "unknown"))
+    (rejected "unsupported_input" (fn []
+      (configure_openrouter_images request ^transport (discovery [] ^^missing ^model_input ["text"]))))
+    (rejected "invalid_configuration" (fn []
+      (configure_openrouter_images (input ^options {^allow_fallbacks true})
+        ^transport (discovery [(endpoint "good")])))))
+
+  (it "expands image IDs only for send and preserves PNG bytes and usage above the text cap" []
+    (var note "0123456789abcdef")
+    (repeat 17 (set note ($to_str note note)))
+    (let bytes (png ^note note))
+    (let sent ($cell nil))
+    (let settings (configure_openrouter_images (input) ^transport (discovery [(endpoint "good")])))
+    (let prepared (prepare_openrouter_image {^settings settings ^prompt "An illustration"
+      ^instructions "Generate" ^reference_images ["reference"] ^candidate nil ^run "run" ^timeout_ms 900}))
+    (let result (send_openrouter_image prepared
+      (fn [run id] ($assert (== [run id] ["run" "reference"])) {^mime "image/png" ^bytes (png)})
+      ^key_source (fn [] "fixture-key")
+      ^transport (fn [call]
+        (sent .set call)
+        {^status 200 ^body ($json/stringify {^data [{^b64_json ($base64/encode bytes)}]
+          ^usage {^cost 0.04 ^total_tokens 42}})})))
+    ($assert (== ($crypto/sha256 result/images/0/bytes) ($crypto/sha256 bytes)))
+    ($assert (== result/usage/cost 0.04))
+    ($assert (== sent/.get/max_bytes 16777216))
+    ($assert (== sent/.get/headers/authorization "Bearer fixture-key"))
+    (let body ($json/parse sent/.get/body))
+    ($assert ($str/starts_with? body/input_references/0/image_url/url "data:image/png;base64,"))
+    ($assert (! ($str/contains? ($json/stringify prepared) "base64"))))
+
+  (it "bounds responses and rejects invalid counts and encodings without exposing content" []
+    (let prepared {^body {} ^reference_images [] ^run "run" ^timeout_ms 100})
+    (let source (fn [run id] (fail "No images expected")))
+    (for payload in [{^data []} {^data [{} {}]} {^data [{^b64_json "!secret!"}]}]
+      (rejected (if (== payload/data/.size 1) "invalid_image" "invalid_image_count")
+        (fn [] (send_openrouter_image prepared source ^key_source (fn [] "fixture")
+          ^transport (fn [call] {^status 200 ^body ($json/stringify payload)})))))
+    (var huge "0123456789abcdef")
+    (repeat 21 (set huge ($to_str huge huge)))
+    (rejected "response_too_large" (fn []
+      (send_openrouter_image prepared source ^key_source (fn [] "fixture")
+        ^transport (fn [call] {^status 200 ^body huge}))))
+    (rejected "provider_rejected" (fn []
+      (send_openrouter_image prepared source ^key_source (fn [] "fixture")
+        ^transport (fn [call] {^status 400 ^body "private provider body"}))))
+    (let too_large ($str/slice_bytes huge 0 10485761))
+    (let error (try
+      (send_openrouter_image prepared source ^key_source (fn [] "fixture")
+        ^transport (fn [call] {^status 200 ^body ($json/stringify
+          {^data [{^b64_json ($base64/encode too_large)}] ^usage {^cost 0.05}})}))
+      nil catch ImageError $err))
+    ($assert (== error/code "image_too_large"))
+    ($assert (== error/usage/cost 0.05))))
+
+(fn main [args] (/exit_code (run ^name (?? args/0 ""))))

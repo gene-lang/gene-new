@@ -1,11 +1,33 @@
 (import $test [describe it])
 (import [isolated run_spec test_service] ^from "../../support")
 (import [create_session submit snapshot close_session_service] ^from "../../../src/web/session_service")
-(import [open_media_store put_media_base64 put_media] ^from "../../../src/storage/media")
+(import [open_media_store put_media_base64 put_media media_descriptor MediaError] ^from "../../../src/storage/media")
+(import [expand_media_messages] ^from "../../../src/agents/media_input")
+(import [png] ^from "../../fixtures/png")
 (import [RoundError] ^from "../../../src/runtime/round_controller")
 (import [update_session] ^from "../../../src/runtime/sessions")
 
 (describe "Harness attachment model input"
+  (it "keeps image detail per request and inventories durable payload identities" []
+    (isolated this_mod/.path
+      "keeps image detail per request and inventories durable payload identities"
+      (fn [workspace]
+        (let runtime {^state_root ($path/join workspace ".gene-harness")})
+        (let store (open_media_store runtime/state_root))
+        (let image (put_media store "candidate.png" (png)))
+        (let inventory [])
+        (let messages (expand_media_messages runtime
+          [{^role "user" ^content "Review lettering." ^media [{^id image/id ^detail "high"}]}]
+          ^inventory inventory))
+        ($assert (== messages/0/images/0/detail "high"))
+        ($assert (== inventory/0/id image/id))
+        ($assert (== inventory/0/base64 messages/0/images/0/data))
+        ($assert (== inventory/0/data_url $"data:image/png;base64,${inventory/0/base64}"))
+        ($assert ($absent? (/detail (media_descriptor store image/id))))
+        ($assert (try
+          (expand_media_messages runtime [{^role "user" ^content "" ^media [{^id image/id ^detail "invalid"}]}])
+          false catch MediaError true)))))
+
   (it "admits image-only input and preserves attachments through retries and restart" []
     (isolated ^timeout_ms 300000 this_mod/.path
       "admits image-only input and preserves attachments through retries and restart"
@@ -17,7 +39,7 @@
         (var service (test_service ^workspace workspace ^provider provider))
         (let session (create_session service))
         (var image nil)
-        (let encoded "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aU1sAAAAASUVORK5CYII=")
+        (let encoded "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAEElEQVR4AQEFAPr/AFBkeP8EYAIs1SXmQwAAAABJRU5ErkJggg==")
         (try
           (let store (open_media_store service/runtime/state_root))
           (set image (put_media_base64 store "pixel.png" encoded))

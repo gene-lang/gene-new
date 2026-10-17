@@ -1,0 +1,115 @@
+(mod image_preflight)
+(import [image_error normalize_image_request image_limits pixel_dimensions
+         capability require_capability] ^from "./image_contract")
+(import [validate_media_refs media_bytes] ^from "../storage/media")
+(import [prepare_image_inspection ImageInspectionError] ^from "../storage/image_inspection")
+
+(fn snapshot_row [snapshot, registry : Str, name : Str]
+  (for record in (?? (snapshot/registries .get registry) [])
+    (if (== record/key name) (return record)))
+  nil)
+
+(fn plugin_identity [snapshot, owner]
+  (for plugin in (?? snapshot/plugins [])
+    (if (== plugin/id owner)
+      (return {^id plugin/id ^source_digest (?? plugin/source_digest "builtin")
+        ^host_build_id (?? plugin/host_build_id nil)
+        ^activation_revision (?? plugin/activation_revision nil)})))
+  {^id owner ^source_digest "unknown"})
+
+(fn capabilities [row, settings]
+  (let value (if ($absent? row/capabilities) {} (row/capabilities settings)))
+  (if (!= ($head value) Map) (image_error "invalid_capabilities" "Capabilities must be a map."))
+  (let result {})
+  (for key in ["image_input" "image_output" "image_edit"]
+    (result .put key (capability value key)))
+  (for key in ["max_images" "max_input_bytes"]
+    (if_not ($absent? (value .get key))
+      (let bound (value .get key))
+      (if (|| (!= ($head bound) Int) (< bound 0))
+        (image_error "invalid_capabilities" $"${key} must be a nonnegative integer."))
+      (result .put key bound)))
+  (for key in ["image_formats" "output_formats" "routing" "source" "metadata_available"]
+    (if ($has_key? value key) (result .put key (value .get key))))
+  # Reject process handles/functions/Bytes in advertised, durable metadata.
+  (try ($json/stringify result)
+    catch Any (image_error "invalid_capabilities" "Capabilities must contain JSON data."))
+  ($freeze result))
+
+(fn check_available [row, role : Str]
+  (if_not ($absent? row/available)
+    (let reason (row/available))
+    (if_not ($absent? reason)
+      (image_error "unavailable" $"${role}: ${reason}"))))
+
+(fn check_image_limits [caps, references, count : Int, bytes : Int, role : Str]
+  (if (> count (?? caps/max_images 16))
+    (image_error "unsupported_input" $"${role} cannot accept all reference images and the candidate."))
+  (if (> bytes (?? caps/max_input_bytes 41943040))
+    (image_error "unsupported_input" $"${role} image input exceeds its byte limit."))
+  (if_not ($absent? caps/image_formats)
+    (if (!= ($head caps/image_formats) List)
+      (image_error "invalid_capabilities" "image_formats must be a list."))
+    (for image in references
+      (if_not (caps/image_formats .contains? image/mime)
+        (image_error "unsupported_input" $"${role} does not accept ${image/mime}.")))))
+
+(fn prepare_image_run [runtime, store, origin, input, configuration]
+  (let request (normalize_image_request input configuration))
+  (let limits (image_limits configuration))
+  (if ($absent? origin/reviewer)
+    (image_error "reviewer_required" "Image generation requires a main-model response with a pinned reviewer."))
+  (let reviewer origin/reviewer)
+  (let reviewer_row (snapshot_row origin/snapshot "providers" reviewer/name))
+  (let reviewer_caps (capabilities reviewer/row reviewer/settings))
+  (require_capability reviewer_caps "image_input" "The main reviewer")
+  (check_available reviewer/row "The main reviewer")
+  (let generator (snapshot_row origin/snapshot "image_generators" request/generator))
+  (if ($absent? generator)
+    (image_error "generator_unavailable" $"Image generator ${request/generator} is not active."))
+  (check_available generator/payload "The image generator")
+  (let references (validate_media_refs store request/reference_images))
+  (var bytes 0)
+  (for image in references
+    (if (!= image/kind "image") (image_error "invalid_reference" "Reference media must be images."))
+    (media_bytes store image/id)
+    (set bytes (+ bytes image/size)))
+  (let reviewer_images ($thaw ($freeze references)))
+  (reviewer_images .push {^mime "image/png" ^size store/max_file_bytes})
+  (if (|| (> reviewer_images/.size 16) (> (+ bytes store/max_file_bytes) 41943040))
+    (image_error "unsupported_input" "References must leave room for one candidate within 16 images and 40 MiB."))
+  (check_image_limits reviewer_caps reviewer_images reviewer_images/.size
+    (+ bytes store/max_file_bytes) "The main reviewer")
+  (let settings (generator/payload/configure
+    {^model request/generation_model ^size request/size ^background request/background
+     ^max_attempts request/max_attempts ^reference_count references/.size
+     ^timeout_ms limits/generation_timeout_ms ^max_response_bytes 16777216
+     ^max_image_bytes store/max_file_bytes ^options (?? configuration/generator_options {})}))
+  (if (!= ($head settings) Map) (image_error "invalid_generator" "Generator settings must be a map."))
+  (try ($json/stringify settings)
+    catch Any (image_error "invalid_generator" "Generator settings must be credential-free JSON data."))
+  (let generator_caps (capabilities generator/payload settings))
+  (require_capability generator_caps "image_output" "The image generator")
+  (if (|| (! references/.empty?) (> request/max_attempts 1))
+    (require_capability generator_caps "image_input" "The image generator"))
+  (if (> request/max_attempts 1)
+    (require_capability generator_caps "image_edit" "The image generator"))
+  (if_not ($absent? generator_caps/output_formats)
+    (if (|| (!= ($head generator_caps/output_formats) List)
+            (! (generator_caps/output_formats .contains? "png")))
+      (image_error "unsupported_output" "The image generator cannot select PNG output.")))
+  (let generation_images (if (> request/max_attempts 1) reviewer_images references))
+  (check_image_limits generator_caps generation_images generation_images/.size
+    (+ bytes (if (> request/max_attempts 1) store/max_file_bytes 0)) "The image generator")
+  (let dimensions (?? settings/dimensions (pixel_dimensions request/size)))
+  (if (&& (== request/background "transparent") (! ($absent? dimensions))
+          (|| (> dimensions/width 2048) (> dimensions/height 2048)))
+    (image_error "unsupported_dimensions" "Transparent PNG inspection supports at most 2048 pixels on each axis."))
+  (let decoder (try
+    (prepare_image_inspection $"${runtime/state_root}/media/inspection" request/background
+      ^worker (?? configuration/decoder_worker nil))
+    catch ImageInspectionError (image_error $err/code $err/message)))
+  {^request request ^limits limits ^generator generator
+   ^generator_settings ($freeze settings) ^generator_caps generator_caps
+   ^reviewer reviewer ^reviewer_caps reviewer_caps
+   ^reviewer_plugin (plugin_identity origin/snapshot reviewer_row/owner) ^decoder decoder})

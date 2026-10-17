@@ -1,0 +1,44 @@
+(import $test [describe it run])
+(import [normalize_image_request image_limits parse_image_review pixel_dimensions]
+  ^from "../../../src/runtime/image_contract")
+(import [ImageError] ^from "../../../src/plugin_api")
+
+(describe "Image workflow contracts"
+  (it "requires complete inputs and bounds attempts without coercion" []
+    (let defaults {^generator "mock" ^generation_model "png-model"})
+    (let request (normalize_image_request {^prompt "  Exact wording  "} defaults))
+    ($assert (== request/prompt "  Exact wording  "))
+    ($assert (== request/max_attempts 3))
+    ($assert (== request/reference_images []))
+    ($assert (== request/size "1024x1024"))
+    (for value in [0 11 3.0 "3" nil]
+      ($assert (try (normalize_image_request {^prompt "image" ^max_attempts value} defaults)
+        false catch ImageError true)))
+    ($assert (try (normalize_image_request {^prompt "image" ^output_format "jpeg"} defaults)
+      false catch ImageError true)))
+
+  (it "accepts only a bounded structured integer review with actionable revision" []
+    (let valid "{\"score\":85,\"comments\":[\"Matches the request.\"],\"revision\":\"\",\"extra\":true}")
+    ($assert (/valid (parse_image_review valid)))
+    ($assert (== (/review (parse_image_review valid))
+      {^score 85 ^comments ["Matches the request."] ^revision ""}))
+    (for text in [$"```json\n${valid}\n```" $"```\n${valid}\n```"]
+      ($assert (/valid (parse_image_review text))))
+    (for text in ["{}" "[]" $"Here it is: ${valid}"
+      "{\"score\":85.0,\"comments\":[\"ok\"],\"revision\":\"\"}"
+      "{\"score\":\"85\",\"comments\":[\"ok\"],\"revision\":\"\"}"
+      "{\"score\":true,\"comments\":[\"ok\"],\"revision\":\"\"}"
+      "{\"score\":101,\"comments\":[\"ok\"],\"revision\":\"\"}"
+      "{\"score\":70,\"comments\":[\"fix\"],\"revision\":\"\"}"
+      "{\"score\":85,\"comments\":[],\"revision\":\"\"}"
+      "{\"score\":85,\"comments\":[\" \"],\"revision\":\"\"}"]
+      ($assert (! (/valid (parse_image_review text))) $"Accepted malformed review: ${text}")))
+
+  (it "keeps explicit deadlines and known dimensions finite" []
+    ($assert (== (/run_timeout_ms (image_limits {})) 590000))
+    ($assert (== (pixel_dimensions "2048x1024") {^width 2048 ^height 1024}))
+    ($assert ($absent? (pixel_dimensions "2K")))
+    ($assert (try (image_limits {^run_timeout_ms 10 ^persistence_margin_ms 10})
+      false catch ImageError true))))
+
+(fn main [args] (/exit_code (run ^name (?? args/0 ""))))

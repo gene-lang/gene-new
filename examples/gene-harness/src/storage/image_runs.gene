@@ -1,0 +1,56 @@
+(mod image_runs)
+(import [core_state core_states record_core_state flush_event_store] ^from "./state")
+(import [open_media_store generated_media] ^from "./media")
+(import [write_body read_body with_body_use] ^from "../agents/history")
+
+(fn image_run_key [round : Str] $"image/run/${round}")
+
+(fn read_image_run [runtime, session : Str, round : Str]
+  (let stored (core_state runtime/events "session" session (image_run_key round)))
+  (if ($absent? stored) (return nil))
+  (if ($absent? stored/image_run_blob) (return stored))
+  (let value ($serde/read_data (read_body runtime stored/image_run_blob)))
+  (if (|| (!= value/id stored/id) (!= value/session session) (!= value/round round))
+    (fail "Saved image-run identity is damaged."))
+  value)
+
+(fn save_image_run [runtime, state]
+  (with_body_use runtime (fn []
+    (let digest (write_body runtime ($serde/write_data state)))
+    (record_core_state runtime/events "session" state/session "session/state"
+      (image_run_key state/round)
+      {^image_run_blob digest ^id state/id ^session state/session
+       ^round state/round ^state state/state})
+    (flush_event_store runtime/events)
+    state)))
+
+(fn image_runs [runtime, session : Str]
+  (let result [])
+  (for [key state] in (core_states runtime/events "session" session)
+    (if ($str/starts_with? ($to_str key) "image/run/")
+      (result .push (read_image_run runtime session state/round))))
+  result)
+
+(fn image_run_by_id [runtime, session : Str, id : Str]
+  (for state in (image_runs runtime session)
+    (if (== state/id id) (return state)))
+  nil)
+
+(fn recall_image_run [runtime, session : Str, id : Str]
+  (let state (image_run_by_id runtime session id))
+  (if ($absent? state) (fail "Unknown image run in this conversation."))
+  ($serde/write_data state))
+
+(fn image_catalog [runtime, session : Str]
+  (let runs {})
+  (for state in (image_runs runtime session) (runs .put state/id state))
+  (let items (generated_media (open_media_store runtime/state_root) ^session session))
+  (for item in items
+    (let state (runs .get item/generation/run))
+    (var review nil)
+    (for attempt in (?? state/attempts [])
+      (if (== attempt/image_id item/id) (set review attempt/review)))
+    (item .put "review_status" (if ($absent? review) "unreviewed" "reviewed"))
+    (item .put "score" (?? review/score nil))
+    (item .put "recall" $"image.${item/generation/run}"))
+  items)

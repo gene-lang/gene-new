@@ -1,0 +1,44 @@
+(mod png_fixtures)
+
+(fn big_u32 [value : Int]
+  (let bytes ($binary/put_u32 value))
+  ($binary/from_list [($binary/get bytes 3) ($binary/get bytes 2)
+    ($binary/get bytes 1) ($binary/get bytes 0)]))
+
+(fn signature [] ($binary/from_list [137 80 78 71 13 10 26 10]))
+
+(fn chunk [kind : Str, payload : Bytes]
+  (let body ($binary/concat [($binary/from_str kind) payload]))
+  ($binary/concat [(big_u32 ($binary/size payload)) body
+    (big_u32 ($binary/crc32 body))]))
+
+# A real zlib stream with one uncompressed DEFLATE block. Fixtures remain
+# decodable by libpng; no external image encoder is needed to produce them.
+(fn deflate_row [samples]
+  (var a 1) (var b 0)
+  (for value in samples
+    (set a (// (+ a value) 65521))
+    (set b (// (+ b a) 65521)))
+  ($binary/concat [($binary/from_list [120 1 1])
+    ($binary/put_u16 samples/.size)
+    ($binary/put_u16 (- 65535 samples/.size))
+    ($binary/from_list samples) (big_u32 (+ (* b 65536) a))]))
+
+(fn header [^width width : Int = 1, ^height height : Int = 1,
+            ^color color : Int = 6, ^depth depth : Int = 8]
+  (chunk "IHDR" ($binary/concat [(big_u32 width) (big_u32 height)
+    ($binary/from_list [depth color 0 0 0])])) )
+
+(fn png [^color color : Int = 6, ^depth depth : Int = 8,
+         ^samples samples = [0 80 100 120 255], ^palette palette = nil,
+         ^transparency transparency = nil,
+         ^width width : Int = 1, ^height height : Int = 1, ^note note : Str = ""]
+  (let parts [(signature) (header ^color color ^depth depth ^width width ^height height)])
+  (if_not ($absent? palette) (parts .push (chunk "PLTE" ($binary/from_list palette))))
+  (if_not ($absent? transparency) (parts .push (chunk "tRNS" ($binary/from_list transparency))))
+  (if (!= note "")
+    (parts .push (chunk "tEXt" ($binary/concat
+      [($binary/from_str "Comment") ($binary/from_list [0]) ($binary/from_str note)]))))
+  (parts .push (chunk "IDAT" (deflate_row samples)))
+  (parts .push (chunk "IEND" ($binary/from_list [])))
+  ($binary/concat parts))

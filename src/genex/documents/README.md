@@ -8,6 +8,12 @@ kind and byte size. It recognizes PNG, JPEG, WebP, PDF, DOCX and UTF-8 text/code
 documents. Binary signatures determine image/PDF types; text inputs require an
 allowed filename extension, strict UTF-8, and no NUL bytes. Inspection identifies
 formats; downstream extraction/decoding must still validate document structure.
+PNG inspection additionally validates chunk bounds, ordering and CRC-32, and
+returns `width`, `height`, `bit_depth`, `color_type`, `has_alpha`, `animated`
+and an initially unknown (`nil`) `has_transparent_pixels`. It accepts at most
+10 MiB and 65,536 chunks. The reusable `inspect_png` function is in `./png`.
+Header inspection does not decompress IDAT or prove that any pixel is
+transparent; use a bounded pixel decoder when those facts are required.
 
 `display_name name` removes directory components and rejects empty, dot and
 control-character filenames. Its output is metadata, never a storage path.

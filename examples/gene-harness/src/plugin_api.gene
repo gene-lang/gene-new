@@ -28,7 +28,21 @@
 (fn response_execution_limits [] : ExecutionLimits
   (ExecutionLimits ^max_steps 9223372036854775807 ^max_memory_mb 1024 ^timeout_ms 600000))
 
+(type ImageError ^props {^code Str ^message Str ^status Int? ^usage Any?} ^impl [Error])
+(impl Error for ImageError)
+
+# The workflow owns prompts and loop policy; these host operations own durable
+# admission, individual model calls and media. Image bytes are exposed only to
+# a selected generator while its send callback is active.
+(protocol ImageHost
+  (message begin [request] : Any)
+  (message generate [run : Str, instructions : Str] : Any)
+  (message review [run : Str, instructions : Str, ^repair repair : Bool = false] : Any)
+  (message finish [run : Str, reason : Str] : Any)
+  (message image_input [run : Str, id : Str] : Any))
+
 (protocol PluginHost
+  (message execution_budget [] : Any)
   (message registry_names [] : Any)
   (message row_keys [registry : Str] : Any)
   (message create_registry [spec] : Any)

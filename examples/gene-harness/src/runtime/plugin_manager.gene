@@ -67,8 +67,11 @@
     (stored .put entry/id entry)
     (if_not (ids .contains? entry/id) (ids .push entry/id)))
   (let states {})
+  (let execution {})
   (for plugin in (?? snapshot/plugins [])
     (states .put plugin/id plugin/status)
+    (execution .put plugin/id {^callback_limits plugin/callback_limits
+      ^descriptor_limits plugin/descriptor_limits})
     (if_not (ids .contains? plugin/id) (ids .push plugin/id)))
   (let revisions runtime/h/composition/.current_revisions)
   (let rows [])
@@ -84,6 +87,7 @@
     (diagnostics .push {^kind "state_provenance" ^message $err/message}))
   (for id in ids
     (let entry (stored .get id))
+    (let budgets (execution .get id))
     (let builtin (! ($absent? (defaults .get id))))
     (let digest (?? entry/module_digest "builtin"))
     (let enabled (!= entry/disabled true))
@@ -139,6 +143,8 @@
         ^closure (?? entry/closure [])
         ^interfaces (?? entry/interfaces workspace/interfaces)
         ^limits (?? entry/limits profile_metadata/limits nil)
+        ^callback_limits budgets/callback_limits
+        ^descriptor_limits (?? budgets/descriptor_limits entry/limits nil)
         ^changed_at (?? entry/at nil)
         ^development (development_sessions runtime entry)
         ^provides provides

@@ -7,6 +7,7 @@
     ^activate (fn [host]
       (host .PluginHost:contribute "providers"
         {^name "offline" ^tags ["provider" "model" "offline"] ^docs ["harness/providers/offline"] ^doc "Complete a round without a model call."
+         ^capabilities (fn [settings] {^image_input "no" ^image_output "no"})
          ^configure (fn [model, effort, timeout]
            {^model "offline" ^effort "none" ^timeout_ms timeout})
          ^prepare (fn [call] {})

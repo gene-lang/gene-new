@@ -1,0 +1,58 @@
+(import $test [describe it run assert_equal])
+(import [inspect_png PngError] ^from "./png" ^pkg "documents")
+(import [inspect_bytes DocumentError] ^from "." ^pkg "documents")
+(import [png signature header chunk big_u32 deflate_row] ^from "../../fixtures/png")
+
+(fn rejected [bytes]
+  ($assert (try (inspect_png bytes) false catch PngError true)
+    "Malformed PNG was accepted."))
+
+(describe "Shared PNG inspection"
+  (it "measures dimensions and distinguishes alpha information from transparent pixels" []
+    (let rgba (inspect_bytes "generated.png" (png)))
+    (assert_equal [rgba/width rgba/height rgba/bit_depth rgba/color_type] [1 1 8 6])
+    (assert_equal rgba/has_alpha true)
+    ($assert ($absent? rgba/has_transparent_pixels))
+    (assert_equal rgba/animated false)
+    (let rgb (inspect_png (png ^color 2 ^samples [0 80 100 120])))
+    (assert_equal rgb/has_alpha false)
+    (let keyed (inspect_png (png ^color 0 ^samples [0 0] ^transparency [0 0])))
+    (assert_equal keyed/has_alpha true)
+    (let indexed (inspect_png (png ^color 3 ^depth 1 ^samples [0 0]
+      ^palette [40 50 60] ^transparency [128])))
+    (assert_equal indexed/has_alpha true))
+
+  (it "rejects truncated structures, CRC failures and trailing bytes" []
+    (let valid (png))
+    (for size in [0 7 8 12 32 (- ($binary/size valid) 1)]
+      (rejected ($binary/slice valid 0 size)))
+    (rejected ($binary/concat [(signature) (big_u32 2147483647)
+      ($binary/from_str "IDAT") ($binary/from_list [0 0 0 0])]))
+    (rejected ($binary/concat [($binary/slice valid 0 (- ($binary/size valid) 1))
+      ($binary/from_list [0])]))
+    (rejected ($binary/concat [valid ($binary/from_list [0])]))
+    ($assert (try (inspect_png valid ^max_bytes 10) false catch PngError true)))
+
+  (it "validates palette, transparency and mandatory chunk ordering" []
+    (let data (chunk "IDAT" (deflate_row [0 80 100 120 255])))
+    (let end (chunk "IEND" ($binary/from_list [])))
+    (for parts in [
+      [(signature) data end]
+      [(signature) (header) (header) data end]
+      [(signature) (header) end]
+      [(signature) (header) data (chunk "tEXt" ($binary/from_list [])) data end]
+      [(signature) (header) (chunk "ABCD" ($binary/from_list [])) data end]
+      [(signature) (header) (chunk "abca" ($binary/from_list [])) data end]]
+      (rejected ($binary/concat parts)))
+    (rejected (png ^color 7))
+    (rejected (png ^color 6 ^depth 4))
+    (rejected (png ^width 0))
+    (rejected (png ^color 6 ^transparency [0 0]))
+    (rejected (png ^color 0 ^palette [1 2 3]))
+    (rejected (png ^color 3 ^samples [0 0]))
+    (rejected (png ^color 3 ^palette [1 2 3] ^transparency [0 1]))
+    (rejected (png ^color 0 ^depth 1 ^samples [0 0] ^transparency [0 2]))))
+
+(fn main [args] : Int
+  (let result (run ^name (?? args/0 "")))
+  result/exit_code)

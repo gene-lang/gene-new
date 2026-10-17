@@ -58,6 +58,7 @@
     ^activate (fn [host]
       (host .PluginHost:contribute "providers"
         {^name "claude" ^tags ["provider" "model" "claude"] ^docs ["harness/providers/claude"] ^doc "Use the local Claude Code CLI."
+         ^capabilities (fn [settings] {^image_input "no" ^image_output "no"})
          ^configure (fn [model, effort, timeout]
            (let configured
              (configure_model ^^minimal_is_low model effort timeout "sonnet"))

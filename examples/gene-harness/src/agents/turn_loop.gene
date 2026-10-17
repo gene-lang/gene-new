@@ -20,6 +20,12 @@
   [append_core_event append_turn_end_once core_state record_core_state flush_event_store copy_data])
 (import ^from "../runtime/questions" [ask_questions])
 (import ^from "../runtime/sessions" [require_record update_session])
+(import [recall_image_run] ^from "../storage/image_runs")
+
+(fn recall_model_context [runtime, session : Str, id : Str]
+  (if ($str/starts_with? id "image.")
+    (recall_image_run runtime session ($str/slice_bytes id 6 (- ($str/byte_size id) 6)))
+    (recall_body runtime session id)))
 
 (fn transcript [runtime, session : Str, payload]
   (let timed (copy_data payload))
@@ -224,7 +230,7 @@
         (response_recorded .set true)
         nil)
       (set result
-        (evaluate_harness_turn ^session session ^lease lease ^timeout_ms (?? config/response_budget/timeout_ms 600000) ^max_memory_mb (?? config/response_budget/max_memory_mb 1024) ^recall (fn [id] (recall_body runtime session id)) ^console_sink (fn [item] (console_output runtime session round/id number item)) ^record (fn [kind data] (if (== kind "turn/response") (record_response data/patch_files) (do (record_core_state runtime/events "session" session "session/state" $"patch/${number}" {^state "completed" ^result data/result ^round round/id ^turn number}) (transcript runtime session {^type "turn/patch" ^round round/id ^turn number ^result data/result ^text data/result/text}))))
+        (evaluate_harness_turn ^session session ^round round/id ^reviewer selected ^lease lease ^timeout_ms (?? config/response_budget/timeout_ms 600000) ^max_memory_mb (?? config/response_budget/max_memory_mb 1024) ^recall (fn [id] (recall_model_context runtime session id)) ^console_sink (fn [item] (console_output runtime session round/id number item)) ^record (fn [kind data] (if (== kind "turn/response") (record_response data/patch_files) (do (record_core_state runtime/events "session" session "session/state" $"patch/${number}" {^state "completed" ^result data/result ^round round/id ^turn number}) (transcript runtime session {^type "turn/patch" ^round round/id ^turn number ^result data/result ^text data/result/text}))))
           runtime/h
           number
           runtime/root

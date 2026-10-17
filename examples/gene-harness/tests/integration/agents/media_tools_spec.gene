@@ -17,7 +17,7 @@
             "(Outcome ^^done ^reply \"Image inspected.\")")))
         (let service (test_service ^workspace workspace ^provider provider))
         (try
-          (let encoded "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aU1sAAAAASUVORK5CYII=")
+          (let encoded "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAEElEQVR4AQEFAPr/AFBkeP8EYAIs1SXmQwAAAABJRU5ErkJggg==")
           (image .set (put_media_base64 (open_media_store service/runtime/state_root) "pixel.png" encoded))
           (let session (create_session service))
           (submit service session/id "media-tools" 1 "Inspect the stored image.")
@@ -49,7 +49,7 @@
         (let session (create_session service))
         (var round nil)
         (var batch nil)
-        (let encoded "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aU1sAAAAASUVORK5CYII=")
+        (let encoded "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAEElEQVR4AQEFAPr/AFBkeP8EYAIs1SXmQwAAAABJRU5ErkJggg==")
         (try
           (image .set (put_media_base64 (open_media_store service/runtime/state_root) "pixel.png" encoded))
           (set round (submit service session/id "media-question" 1 "Show the image and ask before inspecting it."))

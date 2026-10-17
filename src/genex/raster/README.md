@@ -16,3 +16,9 @@ for reference planning. `decode_png` returns canonical PNG and RGBA pixels
 from a private staging directory. No reference-image sampling takes place
 during repaint; callers save the planned strokes first. Protocol 1 remains
 in `native/worker_v1.cpp` and its separate executable.
+
+`decode_png profile bytes directory ^timeout_ms 30000` accepts an optional
+positive timeout in milliseconds (default 30 seconds). Callers with an enclosing
+deadline should pass its remaining time. A worker timeout raises `RasterError`
+with `timed_out = true`; cancellation of the surrounding task still terminates
+the worker. The caller owns cleanup of the staging directory and outputs.

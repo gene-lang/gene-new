@@ -1,0 +1,106 @@
+(import $test [describe it])
+(import [isolated run_spec source_path] ^from "../../support")
+(import [image_fixture evaluate_image review] ^from "../../fixtures/image")
+(import [close_runtime] ^from "../../../src/runtime/bootstrap")
+(import [read_image_run image_catalog recall_image_run] ^from "../../../src/storage/image_runs")
+(import [events_for] ^from "../../../src/storage/state")
+(import [open_media_store put_media media_bytes] ^from "../../../src/storage/media")
+(import [png] ^from "../../fixtures/png")
+
+(describe "Image generation with review"
+  (it "verifies transparent PNG pixels and rejects oversized inspection requests before billing" []
+    (isolated this_mod/.path
+      "verifies transparent PNG pixels and rejects oversized inspection requests before billing"
+      (fn [workspace]
+        (let fixture (image_fixture workspace [(review 90)]
+          ^config {^background "transparent"
+            ^decoder_worker (source_path "../../src/genex/raster/build/raster-worker-v2")}))
+        (try
+          (let too_large (evaluate_image fixture "A transparent logo."
+            ^options {^size "4096x4096"}))
+          ($assert (! ($absent? too_large/error)))
+          ($assert fixture/generated/.get/.empty?)
+          (let evaluated (evaluate_image fixture "A transparent logo."
+            ^options {^max_attempts 1 ^generation_model "main-image-model"}))
+          ($assert ($absent? evaluated/error))
+          (let result fixture/captured/.get)
+          ($assert (== result/stop_reason "target_reached"))
+          ($assert (== result/image/has_transparent_pixels true))
+          ($assert (== result/generator/model result/reviewer/settings/model))
+          ($assert ($str/contains? fixture/reviewed/.get/0/messages/1/content
+            "\"has_transparent_pixels\":true"))
+        ensure (close_runtime fixture/runtime)))))
+
+  (it "stops at exactly 85 and pins the actual main reviewer" []
+    (isolated this_mod/.path "stops at exactly 85 and pins the actual main reviewer"
+      (fn [workspace]
+        (let fixture (image_fixture workspace [(review 85)]))
+        (try
+          (let evaluated (evaluate_image fixture "A Gene logo." ^prefix "(change_model)"))
+          ($assert ($absent? evaluated/error) $"Image evaluation failed: ${evaluated/error}")
+          (let result fixture/captured/.get)
+          ($assert (== result/stop_reason "target_reached") $"Unexpected image result: ${result}")
+          ($assert (== [result/attempts_used result/review_calls result/repair_calls result/score] [1 1 0 85]))
+          ($assert (== fixture/generated/.get/.size 1))
+          ($assert (== fixture/reviewed/.get/0/settings/model "main-image-model"))
+          ($assert (== result/reviewer/settings/model "main-image-model"))
+          ($assert (== evaluated/media/.size 1))
+          ($assert (== evaluated/media/0/id result/image_id))
+          ($assert (== result/image/width 1))
+          ($assert ($str/contains? fixture/reviewed/.get/0/messages/1/content "Host-inspected candidate facts"))
+          ($assert (== fixture/reviewed/.get/0/messages/1/images/0/detail "high"))
+        ensure (close_runtime fixture/runtime)))))
+
+  (it "keeps original references and refines from the latest candidate and revision" []
+    (isolated this_mod/.path
+      "keeps original references and refines from the latest candidate and revision"
+      (fn [workspace]
+        (let fixture (image_fixture workspace [(review 72) (review 86)]))
+        (try
+          (let store (open_media_store fixture/runtime/state_root))
+          (let reference (put_media store "reference.png" (png ^note "original reference")))
+          (let evaluated (evaluate_image fixture "Keep this palette; label it Gene."
+            ^options {^reference_images [reference/id]}))
+          ($assert ($absent? evaluated/error) $"Image evaluation failed: ${evaluated/error}")
+          (let result fixture/captured/.get)
+          (let state (read_image_run fixture/runtime "default" "image-round"))
+          ($assert (== result/attempts_used 2))
+          ($assert (== result/score 86))
+          ($assert (== fixture/generated/.get/1/candidate state/attempts/0/image_id))
+          ($assert (== fixture/generated/.get/1/revision state/attempts/0/review/revision))
+          (for call in fixture/generated/.get
+            ($assert (== call/prompt "Keep this palette; label it Gene."))
+            ($assert (== call/reference_images [reference/id])))
+          (for call in fixture/reviewed/.get
+            ($assert (== call/messages/1/media/0/id reference/id))
+            ($assert (== call/messages/1/images/.size 2)))
+          ($assert (== evaluated/media/.size 1))
+          ($assert (== ($size (image_catalog fixture/runtime "default")) 2))
+          ($assert ($str/contains? (recall_image_run fixture/runtime "default" result/run_id)
+            "Correct the lettering"))
+        ensure (close_runtime fixture/runtime)))))
+
+  (it "returns the last candidate when the limit is exhausted despite an earlier higher score" []
+    (isolated this_mod/.path
+      "returns the last candidate when the limit is exhausted despite an earlier higher score"
+      (fn [workspace]
+        (let fixture (image_fixture workspace [(review 72) (review 81) (review 79)]))
+        (try
+          (let evaluated (evaluate_image fixture "A detailed Gene illustration."))
+          ($assert ($absent? evaluated/error) $"Image evaluation failed: ${evaluated/error}")
+          (let result fixture/captured/.get)
+          (let state (read_image_run fixture/runtime "default" "image-round"))
+          ($assert (== [result/attempts_used result/score result/target_reached] [3 79 false]))
+          ($assert (== result/stop_reason "attempt_limit"))
+          ($assert (== result/image_id state/attempts/2/image_id))
+          ($assert (!= result/image_id state/attempts/1/image_id))
+          ($assert (== state/attempts/1/review/score 81))
+          ($assert (== result/usage/.size 6))
+          (let progress ($filter (events_for fixture/runtime/events "session" "default")
+            (fn [event] (== event/type "console"))))
+          ($assert (> progress/.size 5))
+          (for call in fixture/reviewed/.get
+            ($assert (! ($str/contains? ($to_str call/messages) "Image "))))
+        ensure (close_runtime fixture/runtime))))))
+
+(fn main [args] (run_spec args))

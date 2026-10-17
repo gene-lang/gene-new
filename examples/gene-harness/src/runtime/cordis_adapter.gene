@@ -21,7 +21,8 @@
     default_plugin_invoker
     new_runtime])
 (import ^from "../plugin_api"
-  [Plugin PluginHost default_execution_limits response_execution_limits])
+  [Plugin PluginHost ExecutionLimits default_execution_limits response_execution_limits])
+(import [with_callback_budget] ^from "./execution_budget")
 
 # Activations contribute directly to the live registries. Each activation
 # revision owns its rows and callbacks and releases them in its own cleanup, so
@@ -31,7 +32,7 @@
   (message cleanup [thunk] : Any)
   (message enter_call [] : Nil)
   (message leave_call [] : Nil)
-  (message describe [module, id : Str, limits] : Plugin)
+  (message describe [module, id : Str, limits, callback_limits] : Plugin)
   (message context [plugin, effects, observer, policy] : PluginHost)
   (message selected [registry : Str, key : Str] : Any))
 
@@ -40,7 +41,8 @@
     (message invoke [call] : Any
       self/host/.RegistryHost:enter_call
       (try
-        (self/delegate .PluginInvoker:invoke call)
+        (with_callback_budget ^owner call/entry_id call/limits
+          (fn [] (self/delegate .PluginInvoker:invoke call)))
       ensure
         self/host/.RegistryHost:leave_call))))
 
@@ -104,7 +106,7 @@
 # `policies` holds the entry policies of the latest reconcile, read by
 # descriptor preflight and by every (re)activation. `specs` caches the Cordis
 # spec of each host plugin so an unchanged plugin keeps its live instance.
-(type CompositionRecord ^^private ^props {^token Any ^host RegistryHost ^runtime Any ^loader Any ^current Any ^pending Any ^busy Any ^policies Any ^specs Any ^bindings_spec Any ^keys Any ^projections Any ^base_owner Any ^updating Any ^dirty Any})
+(type CompositionRecord ^^private ^props {^token Any ^host RegistryHost ^runtime Any ^limits Any ^loader Any ^current Any ^pending Any ^busy Any ^policies Any ^specs Any ^bindings_spec Any ^keys Any ^projections Any ^base_owner Any ^updating Any ^dirty Any})
 
 (type EntrySelection ^^private ^props {^row_id Str ^payload Any})
 
@@ -189,6 +191,7 @@
   (fail (EffectDisposed ^message "Harness composition is closed or foreign")))
 
 (fn new_composition [host : RegistryHost, ^options options = nil, ^limits limits = nil]
+  (let ceiling (if ($absent? limits) (invocation_limits) limits))
   (let configured
     (if ($absent? options)
       (LoaderOptions ^plugin_root "." ^shared [] ^max_namespaces []
@@ -198,12 +201,11 @@
     (new_runtime
       (RuntimeOptions ^logger nil
         ^invoker (HarnessInvoker ^host host ^delegate (default_plugin_invoker))
-        ^default_limits (if ($absent? limits) (invocation_limits)
-          (invocation_limits ^max_steps limits/max_steps
-            ^max_memory_mb limits/max_memory_mb ^timeout_ms limits/timeout_ms)))))
+        ^default_limits (invocation_limits ^max_steps ceiling/max_steps
+          ^max_memory_mb ceiling/max_memory_mb ^timeout_ms ceiling/timeout_ms))))
   (let token ($cell nil))
   (let record
-    (CompositionRecord ^token token ^host host ^runtime runtime ^loader nil
+    (CompositionRecord ^token token ^host host ^runtime runtime ^limits ceiling ^loader nil
       ^current ($cell ($thaw #{})) ^pending ($cell nil) ^busy ($cell false)
       ^policies ($cell #{}) ^specs ($thaw #{}) ^bindings_spec nil
       ^keys ($cell ($thaw #{})) ^projections ($thaw #{}) ^base_owner ($cell nil)
@@ -243,7 +245,7 @@
           (CompositionError ^message $"source ${row/id} escaped its verified dependency closure")))
       (if (&& (== node/identity graph/root) (!= node/source_digest policy/digest))
         (fail (CompositionError ^message $"source ${row/id} changed after preflight")))))
-  (let plugin (record/host .RegistryHost:describe module row/id policy/init_limits))
+  (let plugin (record/host .RegistryHost:describe module row/id policy/init_limits policy/limits))
   (var expected nil)
   (for descriptor in record/pending/.get
     (if (== descriptor/id row/id) (set expected descriptor)))
@@ -365,7 +367,11 @@
       (if_not (["module" "limits" "init_limits" "host" "digest" "closure"] .contains? ($to_str name))
         (fail (CompositionError ^message $"unknown Harness entry option ${name}"))))
     (let source (supplied .get "module"))
-    (let limits (?? (supplied .get "limits") (response_execution_limits)))
+    (let requested (?? (supplied .get "limits") record/limits))
+    (let limits (ExecutionLimits
+      ^max_steps ($math/min requested/max_steps record/limits/max_steps)
+      ^max_memory_mb ($math/min requested/max_memory_mb record/limits/max_memory_mb)
+      ^timeout_ms ($math/min requested/timeout_ms record/limits/timeout_ms)))
     (let is_host (?? (supplied .get "host") ($absent? source)))
     (let policy
       {^host is_host ^limits limits ^init_limits (?? (supplied .get "init_limits") (default_execution_limits))
