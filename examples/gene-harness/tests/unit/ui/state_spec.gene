@@ -1,0 +1,28 @@
+# Tests src/ui/state.gene.
+(import $test [describe it run])
+(import ^from "../../../src/ui/state" [validate_ui_settings UiError])
+
+(fn rejected [settings] : Str
+  (try
+    (validate_ui_settings settings)
+    ""
+  catch UiError
+    $err/message))
+
+(describe "Workspace UI theme settings"
+  (it "accepts a legacy token map and per-mode maps" []
+    (let flat (validate_ui_settings {^theme {^accent "#335577"}}))
+    ($assert (== flat/theme/accent "#335577"))
+    (let modes (validate_ui_settings {^theme {^light {^accent "#335577"} ^dark {^accent "#9db4d6" ^ink "#f0f0f0"}}}))
+    ($assert (== modes/theme/dark/ink "#f0f0f0"))
+    (let light_only (validate_ui_settings {^theme {^light {^surface "#fafafa"}}}))
+    ($assert (== light_only/theme/light/surface "#fafafa")))
+
+  (it "rejects mixed, unknown and malformed overrides" []
+    ($assert ($str/contains? (rejected {^theme {^light {^accent "#335577"} ^ink "#111111"}}) "not both"))
+    ($assert ($str/contains? (rejected {^theme {^dark {^glow "#335577"}}}) "Unknown theme token"))
+    ($assert ($str/contains? (rejected {^theme {^dark {^accent "blue"}}}) "six-digit"))
+    ($assert ($str/contains? (rejected {^theme {^dark "#335577"}}) "map of tokens"))
+    ($assert ($str/contains? (rejected {^theme {^danger "#335577"}}) "Unknown theme token"))))
+
+(fn main [args] : Int (/exit_code (run ^name (?? args/0 ""))))

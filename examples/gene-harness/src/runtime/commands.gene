@@ -10,6 +10,8 @@
 (import ^from "../storage/state"
   [core_state record_core_state flush_event_store next_sequence stream_key])
 (import ^from "./sessions" [load_session])
+(import ^from "./appearance" [appearance_mode set_appearance])
+(import ^from "../web/theme" [theme_modes])
 (import ^from "./input_modes"
   [new_input_modes enter_mode close_mode_locked close_input_modes mode_command_finished])
 
@@ -198,7 +200,18 @@
         (fn [ctx]
           (ctx/manager/stop ctx/session 75 (== ($str/trim ctx/raw) "--confirm"))
           (let supervised (|| (== ctx/runtime/supervised true) (== ($os/env? "GENE_HARNESS_SUPERVISED") "1")))
-          (CommandResult ^display (if supervised "Restarting." "Stopped. Direct gene run cannot restart this process; start it again from the terminal.") ^stop (if supervised 75 0)))]])
+          (CommandResult ^display (if supervised "Restarting." "Stopped. Direct gene run cannot restart this process; start it again from the terminal.") ^stop (if supervised 75 0)))]
+      [
+        "theme"
+        "/theme [light|dark]"
+        "Show or switch the web UI theme for this workspace."
+        (fn [ctx]
+          (let requested ($str/trim ctx/raw))
+          (if (== requested "")
+            (return (CommandResult ^display $"Theme: ${(appearance_mode ctx/runtime/h)}." ^!attached)))
+          (if_not (theme_modes .contains? requested)
+            (return (CommandResult ^display "Use /theme light or /theme dark." ^!attached)))
+          (CommandResult ^display $"Theme set to ${(set_appearance ctx/runtime/h requested)}." ^!attached))]])
   (for entry in definitions
     (if ($absent? (row runtime/h "commands" entry/0))
       (contribute

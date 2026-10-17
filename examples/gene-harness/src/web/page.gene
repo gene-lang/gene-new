@@ -1,23 +1,28 @@
 # Host-owned page shell and compiled browser entry point.
 (mod harness_web_page)
 (import ^from "./style" [styles])
+(import ^from "./theme" [theme_mode])
 (import ^from "../kernel" [module_dir])
 (import $html [render])
 (import $web [script stylesheet])
 
 (var harness_ui ($web/load $"${(module_dir this_mod/.path)}/../../client/main.gene"))
 
-(fn page [] : Str
+(fn page [^appearance appearance : Str = "light"] : Str
+  (let mode (theme_mode appearance))
+  (let toggle_label (if (== mode "dark") "Light" "Dark"))
   ($to_str
     "<!doctype html>"
     (render
-      `(html ^lang "en"
+      `(html ^lang "en" ^id "harness_document" ^data-theme %mode
          (head
            (meta ^charset "utf-8")
            (meta ^name "viewport" ^content "width=device-width, initial-scale=1")
            (title "Gene Harness")
            %(stylesheet "gene-harness" styles))
          (body
+           # Plugin style contributions are mounted here as <style> elements.
+           (div ^id "plugin_styles" ^^hidden)
            (div ^id "harness_root" ^class "app"
              (header ^id "ui_host" ^class "ui_host" ^aria-label "Harness controls"
                ^title "Ctrl+Shift+0 to hide or show this bar"
@@ -33,6 +38,7 @@
                    (label "Width " (input ^id "ui_width" ^type "range" ^min "25" ^max "70" ^value "50" ^aria-label "Dock width")))
                  (span ^id "ui_connection" ^role "status" "Connecting…")
                  (button ^id "notifications_button" ^type "button" ^aria-expanded "false" ^aria-controls "notification_center" "Notifications")
+                 (button ^id "theme_toggle" ^type "button" ^title "Switch the color theme" %toggle_label)
                  (a ^id "ui_default_link" ^href "/ui/default" "Recovery UI")
                  (a ^id "plugin_manager_link" ^href "/plugins" "Plugins")
                  (a ^id "ui_workspace_link" ^href "/" ^^hidden "Return to workspace UI"))

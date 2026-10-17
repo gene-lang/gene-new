@@ -8,7 +8,8 @@ repository implementation imports are needed.
 
 | Need | Load |
 | --- | --- |
-| Enable a panel, choose layout or theme | `(doc "harness/ui/configuration")` |
+| Enable a panel, choose layout or panel colors, switch light/dark (`set_appearance`) | `(doc "harness/ui/configuration")` |
+| Default styles, shared classes and scoped CSS for a view | `(doc "harness/web_components")` |
 | Forms, named fields, labels and actions | `(doc "harness/ui/forms")` |
 | Browser filters, selection and drafts | `(doc "harness/ui/drafts")` |
 | Durable records and safe concurrent edits | `(doc "harness/ui/revisions")` |
@@ -37,7 +38,8 @@ Surrounding
 slots are sidebar, toolbar, composer, status, welcome and status_summary; the last
 two replace their built-in views. Ordinary slots support command/prompt buttons;
 stateful forms invoke declared functions with workspace receipts and no implicit
-conversation. Themes and layout are bounded. `ui_action_receipts` provides
+conversation. Layout and color overrides are bounded; a view that needs more
+can add a scoped `style` (`$css` data) to its component row. `ui_action_receipts` provides
 bounded diagnostics when asked; domain failures are not automatically model input.
 
 Browser selection is not automatically in the model's conversation context.

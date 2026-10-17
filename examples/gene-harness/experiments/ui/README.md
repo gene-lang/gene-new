@@ -36,7 +36,7 @@ plugin while retaining its durable task state. It does not require a model.
 In a running Harness, the following operator commands configure the experiment:
 
 ```gene
-/run (ui_configure {^^enabled ^layout "panel" ^panel "project_board" ^side "left" ^width 45 ^theme {^accent "#335577"}})
+/run (ui_configure {^^enabled ^layout "panel" ^panel "project_board" ^side "left" ^width 45 ^theme {^light {^accent "#335577"} ^dark {^accent "#9db4d6"}}})
 /run (ui_configure {^^enabled ^layout "chat" ^panel "project_board"})
 /run (ui_configure {^!enabled})
 ```

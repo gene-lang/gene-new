@@ -34,6 +34,7 @@
 (import ^from "./contract" [error_status])
 (import ^from "./push" [new_push_hub add_peer remove_peer expire_peers disconnect_peers broadcast])
 (import ^from "../website/page" [website_page])
+(import ^from "../runtime/appearance" [appearance_mode set_appearance AppearanceError])
 (import ^from "../runtime/sessions" [unload_idle_sessions SessionError])
 (import ^from "../runtime/commands" [CommandError])
 (import ^from "../runtime/round_controller" [request_stop submit_round])
@@ -56,8 +57,11 @@
 (import ^from "./connection" [bind_workspace publish_connection publish_link clear_connection])
 (import $os [get_env])
 
-# The informational page is static for the life of the server.
-(var about_page (website_page ^mode "embedded"))
+# The informational page is static for the life of the server: one copy per
+# theme, chosen per request.
+(var about_pages
+  {^light (website_page ^mode "embedded" ^appearance "light")
+   ^dark (website_page ^mode "embedded" ^appearance "dark")})
 
 (fn response [status : Int, value]
   (json status ($json/stringify value)))
@@ -192,15 +196,15 @@
       (let session (field request/params "session" ^default ""))
       (return (redirect ($to_str "/?ui=default&session=" ($url/encode_component session)))))
     (if_yes (&& (== request/method "GET") (== request/path "/"))
-      (return (html (page))))
+      (return (html (page ^appearance (appearance_mode host/runtime/h)))))
     (if (&& (== request/method "GET") (["/plugins" "/plugins/"] .contains? request/path))
-      (return (html (plugin_page))))
-    # The website needs no session: it reads no workspace records and makes no
-    # model call, so it is answered before authentication.
+      (return (html (plugin_page ^appearance (appearance_mode host/runtime/h)))))
+    # The website needs no session: it reads only the workspace theme and makes
+    # no model call, so it is answered before authentication.
     (if_yes (&& (== request/method "GET") (== request/path "/about"))
       (return (redirect "/about/")))
     (if_yes (&& (== request/method "GET") (== request/path "/about/"))
-      (return (html about_page)))
+      (return (html (about_pages .get (appearance_mode host/runtime/h)))))
     (if_yes (&& (== request/method "GET") (== request/path "/api/v8/connection"))
       (return (response 200 connection)))
     (if_yes (&& (== request/method "POST") (== request/path "/api/v8/auth/exchange"))
@@ -236,6 +240,9 @@
         (if (== action "restart") 75 0) (== data/confirm true))
       (return (response 200 {^^ok ^restart (== host/runtime/exit_code/.get 75)
         ^message (if (== host/runtime/exit_code/.get 75) "Restarting." "Stopped.")})))
+    (if_yes (&& (== request/method "POST") (== request/path "/api/v8/appearance"))
+      (let data (request_data request))
+      (return (response 200 {^mode (set_appearance host/runtime/h data/mode)})))
     # This route is deliberately below owner authentication.
     (if_yes (&& (== request/method "GET") (== request/path "/api/v8/ui/image"))
       (let image (workspace_image root (field request/params "path" ^default "")))
@@ -261,6 +268,7 @@
         ^state (field request/params "state" ^default "") host/runtime))
       (result .put "csrf" browser/csrf)
       (result .put "epoch" host/runtime/epoch)
+      (result .put "appearance" (appearance_mode host/runtime/h))
       (return (response 200 result)))
     (if_yes (&& (== request/method "POST") (== request/path "/api/v8/plugins/revert"))
       (let data (request_data request))
@@ -451,6 +459,7 @@
         catch AuthError (response 401 {^code $err/code ^message $err/message})
         catch MediaError (response (error_status $err/code) {^code $err/code ^message $err/message})
         catch UiError (response (error_status $err/code) {^code $err/code ^message $err/message})
+        catch AppearanceError (response (error_status $err/code) {^code $err/code ^message $err/message})
         catch NotificationError (response (error_status $err/code) {^code $err/code ^message $err/message})
         catch ModeError (response (error_status $err/code)
           {^code $err/code ^message $err/message ^mode $err/mode})

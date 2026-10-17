@@ -1,5 +1,6 @@
 (mod web_component_spec)
 (import ^from "./images" [image_source])
+(import $css [scoped class_name render : render_css])
 
 (type WebComponentError ^props {^message Str} ^impl [Error])
 (impl Error for WebComponentError)
@@ -199,6 +200,24 @@
     (component_error "web component view exceeds 64 KiB"))
   view)
 
+# A style contribution is `$css` node data. It is scoped to the component with
+# `$css/scoped` by default, which avoids accidental selector collisions; it is
+# not isolation. `^!style_scoped` renders the rules page-wide. Plugins are
+# trusted, so the rules themselves are not restricted (docs/theming.md).
+(fn component_style [candidate, checked]
+  (if ($absent? candidate/style) (return nil))
+  (let scoped_style
+    (if (== candidate/style_scoped false) nil (scoped $"plugin_${candidate/name}" candidate/style)))
+  (let css
+    (try
+      (render_css (?? scoped_style candidate/style))
+    catch Any
+      (component_error $"web component style could not be rendered: ${$err/message}")))
+  (if (> ($str/byte_size css) 65536) (component_error "web component style exceeds 64 KiB"))
+  (checked .put "style_css" css)
+  (checked .put "style_class" (if ($absent? scoped_style) "" (class_name scoped_style)))
+  nil)
+
 (fn validate_web_component [candidate]
   (if (|| (!= ($head candidate/name) Str) ($absent? (#"^[a-z][a-z0-9_]{0,79}$" .match candidate/name)))
     (component_error "web component requires a stable name"))
@@ -235,4 +254,5 @@
     (checked .put "slot" "view"))
   (if_not ($absent? candidate/view)
     (checked .put "view" (bounded_component_view ^sidebar (== candidate/slot "conversation_sidebar") candidate/view)))
+  (component_style candidate checked)
   checked)

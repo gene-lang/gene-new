@@ -48,6 +48,7 @@
 (import ^from "../runtime/composition" [acquire_snapshot release_snapshot current_snapshot])
 (import ^from "../runtime/input_modes" [mode_state])
 (import ^from "../kernel" [ModeChanged CompositionChanged])
+(import ^from "../runtime/appearance" [AppearanceChanged appearance_mode])
 (import ^from "../ui/state" [ui_status ui_data_revision])
 (import ^from "../ui/views" [render_component])
 (import ^from "../runtime/cordis_adapter" [spawn_composition_call])
@@ -157,6 +158,8 @@
       (publish_message ^reason changed/reason service "mode/state" changed/session changed/mode))
     (when (changed : CompositionChanged)
       (publish_message service "ui/state" "" (ui_status service/runtime/h)))
+    (when (changed : AppearanceChanged)
+      (publish_message service "appearance" "" {^mode changed/mode}))
     (when (record : DurableRecord)
       (if (&& (== record/scope "workspace")
               (|| (== record/name "plugin/state") (== record/envelope/origin "plugin")))
@@ -425,6 +428,9 @@
   (for candidate in (rows service/runtime/h "web_components")
     (if_not ($absent? candidate/view_state) (continue))
     (let item {^name candidate/name ^slot candidate/slot})
+    (if_not ($absent? candidate/style_css)
+      (item .put "style" candidate/style_css)
+      (item .put "style_class" candidate/style_class))
     (try
       (let view
         (if ($absent? candidate/render)
@@ -473,6 +479,7 @@
     ^status_sequence ($to_str status_sequence)
     ^model service/model_info
     ^profile service/runtime/profile/name
+    ^appearance (appearance_mode service/runtime/h)
     ^readiness (if ($absent? service/runtime/h/readiness)
       nil (service/runtime/h/readiness))
     ^plugins plugins

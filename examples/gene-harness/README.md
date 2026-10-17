@@ -270,8 +270,8 @@ state. Previewing checks the server representation; browser layout and
 interaction still need verification.
 
 `/ui/default` opens the host's recovery interface without plugin views or
-themes. It preserves the selected conversation and offers a link back to the
-workspace UI. See the [component contract](docs/web-components.md) for
+plugin color overrides; it keeps the workspace's light/dark theme. It preserves
+the selected conversation and offers a link back to the workspace UI. See the [component contract](docs/web-components.md) for
 authoring, limits and recovery behavior.
 
 ## Slash commands
@@ -288,6 +288,7 @@ Commands run without the model in their own tasks, with per-session ids.
 | /cancel | Cancel this session's current round or pending questions |
 | /stop | Stop admission, cancel running work, flush and exit |
 | /restart | Stop and restart under the launcher |
+| /theme [light\|dark] | Show or switch the web UI theme for this workspace (default light) |
 
 /run, one-shot /sh and /view can run during a round. Their results attach to the next
 user-initiated request after the current round; /view attaches a pointer.

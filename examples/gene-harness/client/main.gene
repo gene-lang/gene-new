@@ -42,11 +42,12 @@
 (import ^from "./producer_inbox.gene"
   [ProducerInbox create_producer_inbox producer_ready producer_event opened_inbox])
 (import ^from "./ui/controller.gene"
-  [create : create_ui update : update_ui controls : ui_controls event : ui_event open_reference])
+  [create : create_ui update : update_ui controls : ui_controls event : ui_event open_reference
+   set_appearance : ui_appearance])
 
 (type SessionTab ^props {^id Str ^title Str ^cache Any ^socket Any ^socket_epoch Int ^sequence Int ^connected Bool ^closed Bool ^expanded (List Str) ^server_epoch Str})
 
-(type Client ^props {^selected Str ^csrf Str ^cursor Str ^next_seq Str ^epoch Str ^ready Bool ^connected Bool ^server_busy Bool ^awaiting Str ^awaiting_session Str ^queued_prompt Str ^queued_submit Bool ^message_sequence Int ^sending Bool ^busy Bool ^autoscroll Bool ^has_older Bool ^loading_older Bool ^socket_epoch Int ^viewing_history Bool ^generation Int ^records (List Any) ^preview (List Any) ^sessions (List Any) ^needs_attention (List Any) ^filter_epoch Int ^trigger_selected Str ^tabs (List SessionTab) ^expanded (List Str) ^rounds (List Any) ^input_id Str ^answering Bool ^round Any ^mode Any ^mode_pending Any ^action_cooldown Bool ^was_executing Bool ^pending Any ^status Any ^status_epoch Str ^status_revision Str ^status_generation Int ^components (List Any) ^component_buttons PropMap ^socket Any ^session_revision Str ^ui Any ^media Any ^notices Notices ^confirmations Any ^questions Any ^center Any ^inbox Any ^safe_ui Bool ^root EventTarget ^list EventTarget ^transcript EventTarget ^prompt EventTarget ^notice EventTarget ^title EventTarget})
+(type Client ^props {^selected Str ^csrf Str ^cursor Str ^next_seq Str ^epoch Str ^ready Bool ^connected Bool ^server_busy Bool ^awaiting Str ^awaiting_session Str ^queued_prompt Str ^queued_submit Bool ^message_sequence Int ^sending Bool ^busy Bool ^autoscroll Bool ^has_older Bool ^loading_older Bool ^socket_epoch Int ^viewing_history Bool ^generation Int ^records (List Any) ^preview (List Any) ^sessions (List Any) ^needs_attention (List Any) ^filter_epoch Int ^trigger_selected Str ^tabs (List SessionTab) ^expanded (List Str) ^rounds (List Any) ^input_id Str ^answering Bool ^round Any ^mode Any ^mode_pending Any ^action_cooldown Bool ^was_executing Bool ^pending Any ^status Any ^status_epoch Str ^status_revision Str ^status_generation Int ^components (List Any) ^component_buttons PropMap ^socket Any ^session_revision Str ^ui Any ^media Any ^notices Notices ^confirmations Any ^questions Any ^center Any ^inbox Any ^safe_ui Bool ^root EventTarget ^list EventTarget ^transcript EventTarget ^prompt EventTarget ^notice EventTarget ^title EventTarget ^appearance Str ^style_signature Str})
 
 (fn render_plugin_slot [client : Client, target : EventTarget, slot : Str] : Bool
   (var components client/components)
@@ -744,6 +745,41 @@
   (set client/status_revision revision)
   (refresh_status client))
 
+(fn apply_appearance [client : Client, mode : Str] : Void
+  (if_yes (&& (!= mode "light") (!= mode "dark")) (return))
+  (set client/appearance mode)
+  ($dom/set_attribute ($dom/element "harness_document") "data-theme" mode)
+  ($dom/set_text ($dom/element "theme_toggle") (if (== mode "dark") "Light" "Dark"))
+  (if_not ($absent? client/ui)
+    (var ui : UiClient client/ui)
+    (ui_appearance ui mode)))
+
+# Plugin style contributions from slot components and views, one <style> each.
+# Recovery views mount none.
+(fn sync_plugin_styles [client : Client] : Void
+  (var entries : (List Any) [])
+  (if_not client/safe_ui
+    (for component in client/components
+      (if_not ($absent? component/style)
+        (entries .push {^name (string_or component/name "") ^css (string_or component/style "")})))
+    (if_not ($absent? client/ui)
+      (var ui : UiClient client/ui)
+      (for view in ui/navigation/views
+        (if_not ($absent? view/style)
+          (entries .push {^name (string_or view/name "") ^css (string_or view/style "")})))))
+  (var signature ($json/stringify entries))
+  (if_yes (== signature client/style_signature) (return))
+  (set client/style_signature signature)
+  (var target ($dom/element "plugin_styles"))
+  ($dom/clear target)
+  (for entry in entries
+    (var element ($dom/create_element "style"))
+    (var name : Str entry/name)
+    (var css : Str entry/css)
+    ($dom/set_attribute element "data-component" name)
+    ($dom/set_text element css)
+    ($dom/append target element)))
+
 (fn apply_status [client : Client, data : Any] : Void
   (if_not (status_is_current data client/status client/selected client/epoch client/status_epoch client/status_revision)
     (return))
@@ -753,6 +789,7 @@
   (set client/status_revision revision)
   (var unchanged (== ($json/stringify client/status) ($json/stringify data)))
   (set client/status data)
+  (if_not ($absent? data/appearance) (apply_appearance client (string_or data/appearance "light")))
   (if_not ($absent? client/ui)
     (var ui : UiClient client/ui)
     (update_ui ui data/ui))
@@ -760,6 +797,7 @@
   (if_not ($absent? data/web_components) (set components data/web_components))
   (var components_changed (!= ($json/stringify client/components) ($json/stringify components)))
   (set client/components components)
+  (sync_plugin_styles client)
   (update_controls client)
   (if_yes unchanged (return))
   (var drawer ($dom/element "status_content"))
@@ -1603,6 +1641,8 @@
       (var confirmations : Confirmations client/confirmations)
       (command_confirmation confirmations session data))
     (ui_event ui kind data)
+    (if_yes (== kind "ui/state") (sync_plugin_styles client))
+    (if_yes (== kind "appearance") (apply_appearance client (string_or data/mode "light")))
     (if_yes (&& (== tab/id client/selected) (== kind "ui/state"))
       (invalidate_status client server_epoch (string_or data/data_revision "")))
     (if_yes (== kind "ready") (set tab/connected true))
@@ -1700,8 +1740,12 @@
             (set_hidden "auth_notice" false)))))))
 
 (fn main [root : EventTarget] : Void
+  # The server renders the page in the workspace's current theme.
+  (var document ($dom/element "harness_document"))
+  (var initial_mode : Str "light")
+  (if_not ($absent? document/dataset/theme) (set initial_mode document/dataset/theme))
   (var client
-    (Client ^selected (query_value ($browser/search) "session") ^csrf "" ^cursor "" ^next_seq "1" ^epoch "" ^!ready ^!sending ^!connected ^!server_busy ^awaiting "" ^awaiting_session "" ^queued_prompt "" ^!queued_submit ^message_sequence 0 ^!busy ^^autoscroll ^generation 0 ^!has_older ^!loading_older ^socket_epoch 0 ^!viewing_history ^records [] ^preview [] ^sessions [] ^needs_attention [] ^filter_epoch 0 ^trigger_selected "" ^tabs [] ^expanded [] ^rounds [] ^input_id "" ^!answering ^round nil ^mode nil ^mode_pending nil ^!action_cooldown ^!was_executing ^pending nil ^status nil ^status_epoch "" ^status_revision "" ^status_generation 0 ^components [] ^component_buttons {} ^socket nil ^session_revision "1" ^ui nil ^media nil ^notices (create_notices) ^confirmations nil ^questions nil ^center nil ^inbox nil ^safe_ui (== (query_value ($browser/search) "ui") "default") ^root root ^list ($dom/element "sessions") ^transcript ($dom/element "transcript") ^prompt ($dom/element "prompt") ^notice ($dom/element "notice") ^title ($dom/element "conversation_title")))
+    (Client ^selected (query_value ($browser/search) "session") ^csrf "" ^cursor "" ^next_seq "1" ^epoch "" ^!ready ^!sending ^!connected ^!server_busy ^awaiting "" ^awaiting_session "" ^queued_prompt "" ^!queued_submit ^message_sequence 0 ^!busy ^^autoscroll ^generation 0 ^!has_older ^!loading_older ^socket_epoch 0 ^!viewing_history ^records [] ^preview [] ^sessions [] ^needs_attention [] ^filter_epoch 0 ^trigger_selected "" ^tabs [] ^expanded [] ^rounds [] ^input_id "" ^!answering ^round nil ^mode nil ^mode_pending nil ^!action_cooldown ^!was_executing ^pending nil ^status nil ^status_epoch "" ^status_revision "" ^status_generation 0 ^components [] ^component_buttons {} ^socket nil ^session_revision "1" ^ui nil ^media nil ^notices (create_notices) ^confirmations nil ^questions nil ^center nil ^inbox nil ^safe_ui (== (query_value ($browser/search) "ui") "default") ^root root ^list ($dom/element "sessions") ^transcript ($dom/element "transcript") ^prompt ($dom/element "prompt") ^notice ($dom/element "notice") ^title ($dom/element "conversation_title") ^appearance initial_mode ^style_signature ""))
   (set client/media
     (create_media client/selected
       (fn [name : Str, data : Str, done : (Fn [Int Any] Void)] : Void
@@ -1771,7 +1815,16 @@
       (fn [command : Str] : Void
         (component_command client command))
       (fn [text : Str] : Void
-        (stage_prompt client text))))
+        (stage_prompt client text))
+      client/appearance))
+  ($dom/add_event_listener ($dom/element "theme_toggle") "click"
+    (fn [event : Any] : Void
+      (var next (if (== client/appearance "dark") "light" "dark"))
+      (api client "POST" "/api/v8/appearance" {^mode next}
+        (fn [code : Int, data : Any] : Void
+          (if (== code 200)
+            (apply_appearance client (string_or data/mode next))
+            (show_error client data))))))
   ($dom/add_event_listener ($dom/window) "popstate"
     (fn [event : Any] : Void
       (var search ($browser/search))

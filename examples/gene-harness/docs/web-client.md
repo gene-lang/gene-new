@@ -159,7 +159,8 @@ session.
 
 | Message | Data |
 | --- | --- |
-| status | Workspace, provider/model, commands, ordinary components, session context and render freshness |
+| status | Workspace, provider/model, light/dark appearance, commands, ordinary components, session context and render freshness |
+| appearance | The workspace's new light/dark mode; sent to every peer, including `/ui/default` |
 | session/list | Default session records and attention records |
 | attention | Sessions requiring attention |
 | snapshot | Session metadata, records, current/history receipts, questions and next submission sequence |

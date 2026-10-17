@@ -1,0 +1,80 @@
+(import $test [describe it run])
+(import ^from "../../../src/kernel" [new_harness])
+(import ^from "../../../src/runtime/appearance"
+  [read_appearance open_appearance appearance_mode set_appearance AppearanceChanged AppearanceError])
+
+(fn fixture [body]
+  (let root ($path/join ($os/launch_dir) $"tmp/appearance-spec-${($crypto/random_hex 12)}"))
+  ($fs/make_dir root)
+  (try
+    (body root)
+  ensure
+    (let path $"${root}/appearance.gene")
+    (if ($fs/exists? path)
+      (if (== (/kind ($fs/info path)) "directory") ($fs/remove_dir path) ($fs/remove path)))
+    ($fs/remove_dir root)))
+
+(fn observed [h]
+  (let seen [])
+  (h/bus .subscribe AppearanceChanged (fn [event] (seen .push event/mode)))
+  seen)
+
+(describe "Workspace appearance"
+  (it "reads light unless the file holds a known mode" []
+    (fixture (fn [root]
+      ($assert (== (read_appearance root) "light"))
+      ($fs/write_text $"${root}/appearance.gene" "(not data")
+      ($assert (== (read_appearance root) "light"))
+      ($fs/write_text $"${root}/appearance.gene" ($serde/write_data "dark"))
+      ($assert (== (read_appearance root) "light"))
+      ($fs/write_text $"${root}/appearance.gene" ($serde/write_data {^mode "sepia"}))
+      ($assert (== (read_appearance root) "light"))
+      ($fs/write_text $"${root}/appearance.gene" ($serde/write_data {^mode "dark"}))
+      ($assert (== (read_appearance root) "dark")))))
+
+  (it "persists a change before publishing it" []
+    (fixture (fn [root]
+      (let h (new_harness))
+      (set h/appearance (open_appearance root))
+      (let seen (observed h))
+      ($assert (== (appearance_mode h) "light"))
+      ($assert (== (set_appearance h "dark") "dark"))
+      ($assert (== (appearance_mode h) "dark"))
+      ($assert (== (read_appearance root) "dark"))
+      ($assert (== seen ["dark"]))
+      (let reopened (open_appearance root))
+      ($assert (== reopened/mode/.get "dark")))))
+
+  (it "rejects unknown modes and leaves the choice unchanged" []
+    (fixture (fn [root]
+      (let h (new_harness))
+      (set h/appearance (open_appearance root))
+      (let seen (observed h))
+      (var code "")
+      (try (set_appearance h "sepia") catch AppearanceError (set code $err/code))
+      ($assert (== code "invalid_request"))
+      ($assert (== (appearance_mode h) "light"))
+      ($assert seen/.empty?)
+      ($assert (! ($fs/exists? $"${root}/appearance.gene"))))))
+
+  (it "keeps the active mode when the write fails" []
+    (fixture (fn [root]
+      (let h (new_harness))
+      (set h/appearance (open_appearance root))
+      (let seen (observed h))
+      # A directory where the file belongs makes the atomic write fail.
+      ($fs/make_dir $"${root}/appearance.gene")
+      (var failed false)
+      (try (set_appearance h "dark") catch Any (set failed true))
+      ($assert failed)
+      ($assert (== (appearance_mode h) "light"))
+      ($assert seen/.empty?))))
+
+  (it "reports light and refuses changes without a setting" []
+    (let h (new_harness))
+    ($assert (== (appearance_mode h) "light"))
+    (var code "")
+    (try (set_appearance h "dark") catch AppearanceError (set code $err/code))
+    ($assert (== code "unavailable"))))
+
+(fn main [args] : Int (/exit_code (run ^name (?? args/0 ""))))

@@ -1,0 +1,52 @@
+# The workspace's light/dark choice. It lives in its own small file so the
+# normal and recovery servers can read it without the event store, config.gene
+# or any plugin. A missing or damaged file means light.
+(mod appearance)
+(import ^from "../kernel" [publish contribute row])
+(import ^from "../plugin_api" [HarnessEvent])
+(import ^from "../web/theme" [theme_modes])
+
+(type AppearanceError ^props {^code Str ^message Str} ^impl [Error])
+(impl Error for AppearanceError)
+(type AppearanceChanged : HarnessEvent ^props {^mode Str})
+(type Appearance ^props {^path Str ^mode Any ^gate Any})
+
+(fn appearance_path [state_root : Str] : Str
+  $"${state_root}/appearance.gene")
+
+(fn read_appearance [state_root : Str] : Str
+  (try
+    (let data ($serde/read_data ($fs/read_text (appearance_path state_root))))
+    (if (&& (== ($head data) Map) (theme_modes .contains? data/mode)) data/mode "light")
+  catch Any
+    "light"))
+
+(fn open_appearance [state_root : Str] : Appearance
+  (Appearance ^path (appearance_path state_root) ^mode ($cell (read_appearance state_root))
+    ^gate ($sync/gate)))
+
+(fn appearance_mode [h] : Str
+  (if ($absent? h/appearance) "light" h/appearance/mode/.get))
+
+# Persist first, then update the live mode and announce it. A failed write
+# leaves both the file and the active mode as they were.
+(fn set_appearance [h, mode] : Str
+  (if (|| (!= ($head mode) Str) (! (theme_modes .contains? mode)))
+    (fail (AppearanceError ^code "invalid_request" ^message "Theme must be light or dark.")))
+  (if ($absent? h/appearance)
+    (fail (AppearanceError ^code "unavailable" ^message "This host has no appearance setting.")))
+  (let appearance h/appearance)
+  (appearance/gate (fn []
+    ($fs/write_text_atomic appearance/path ($serde/write_data {^mode mode}))
+    (appearance/mode .set mode)))
+  (publish h (AppearanceChanged ^mode mode))
+  mode)
+
+# Host-owned rows: removing or disabling plugins never strands the setting.
+(fn install_appearance_rows [h]
+  (if ($absent? (row h "functions" "set_appearance"))
+    (contribute h "core" "functions"
+      {^name "set_appearance" ^doc "Switch the Harness web UI theme to \"light\" or \"dark\" for this workspace."
+       ^tags ["ui" "theme" "appearance"] ^docs ["harness/ui/configuration"]
+       ^fn (fn [mode] (set_appearance h mode))}))
+  nil)

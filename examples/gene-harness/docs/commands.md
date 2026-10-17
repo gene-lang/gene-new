@@ -33,9 +33,12 @@ other running sessions require `--confirm`.
 - `/view <path>[:from-to]` reads a file or directory, up to 400 lines per page.
 - `/repl` opens persistent evaluation if the repl plugin is active; load
   `harness/repl` for its state/import behavior.
+- `/theme [light|dark]` reports or switches the web UI theme for this
+  workspace. Like `/cancel`, `/stop` and `/restart` it is host-owned, as is the
+  `set_appearance` function; see [theming](theming.md).
 
 `/run` is one evaluation; use the REPL for persistent local bindings. Commands
 retain the submitting session and normal receipts/cancellation. Prefer Gene
 APIs/tooling when available. Disabling `core_commands` removes `/help`, `/run`,
 `/view` and this chapter. Disabling `shell` independently removes `/sh` and
-Shell mode. Core cancellation controls remain available.
+Shell mode. Core cancellation controls and `/theme` remain available.

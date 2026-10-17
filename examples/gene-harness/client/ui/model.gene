@@ -5,7 +5,7 @@
 
 (type UiNode ^props {^key Str ^tag Str ^element EventTarget ^props PropMap ^form Str ^seen Int})
 (type UiNavigation ^props {^workspace Str ^active Str ^last_view Str ^presentation Str ^remembered PropMap ^versions PropMap ^snapshots PropMap ^views (List Any) ^side Str ^width Int ^bar_hidden Bool ^focus Str ^scroll F64 ^focus_pending Bool ^action_generation Int ^action_revision Str ^sidebar Sidebar ^restore (Fn [Any] Void) ^refresh (Fn [] Void)})
-(type UiClient ^props {^root EventTarget ^target EventTarget ^safe Bool ^ready Bool ^session Str ^workspace Str ^epoch Str ^metadata_revision Str ^rendered_revision Str ^descriptor Any ^settings Any ^instance Str ^version Str ^notices Notices ^state PropMap ^drafts PropMap ^forms PropMap ^nodes PropMap ^generation Int ^sequence Int ^debounce Int ^last_data Str ^loading Bool ^render_error Bool ^pending Any ^resolving Bool ^navigation UiNavigation ^navigate (Fn [Str Str] Void) ^api (Fn [Str Str Any (Fn [Int Any] Void)] Void) ^select (Fn [Str] Void) ^command (Fn [Str] Void) ^prompt (Fn [Str] Void)})
+(type UiClient ^props {^root EventTarget ^target EventTarget ^safe Bool ^ready Bool ^session Str ^workspace Str ^epoch Str ^metadata_revision Str ^rendered_revision Str ^descriptor Any ^settings Any ^instance Str ^version Str ^notices Notices ^state PropMap ^drafts PropMap ^forms PropMap ^nodes PropMap ^generation Int ^sequence Int ^debounce Int ^last_data Str ^loading Bool ^render_error Bool ^pending Any ^resolving Bool ^navigation UiNavigation ^navigate (Fn [Str Str] Void) ^api (Fn [Str Str Any (Fn [Int Any] Void)] Void) ^select (Fn [Str] Void) ^command (Fn [Str] Void) ^prompt (Fn [Str] Void) ^appearance Str})
 
 (fn text [value : Any, fallback : Str = ""] : Str
   (if_yes ($absent? value) (return fallback))

@@ -6,6 +6,7 @@
 (import ^from "./auth" [open_auth authenticate exchange reset_auth AuthError])
 (import ^from "./connection" [bind_workspace publish_connection publish_link clear_connection])
 (import ^from "./plugin_page" [plugin_page manager_client])
+(import ^from "../runtime/appearance" [appearance_mode set_appearance])
 (import ^from "./plugin_control" [new_plugin_control plugin_control_request close_plugin_control])
 (import ^from "./startup" [mark_ready])
 (import ^from "./contract" [protocol_version])
@@ -39,7 +40,7 @@
       (if (|| (&& (!= request_origin "") (!= request_origin origin)) (&& (!= request/method "GET") (!= request_origin origin)))
         (return (response 403 {^code "forbidden" ^message "A same-origin request is required."})))
       (if (&& (== request/method "GET") (["/" "/plugins" "/plugins/" "/ui/default"] .contains? request/path))
-        (return (html (plugin_page))))
+        (return (html (plugin_page ^appearance (appearance_mode runtime/h)))))
       (if (&& (== request/method "GET") (== request/path "/api/v8/connection"))
         (return (response 200 connection)))
       (if_yes (&& (== request/method "POST") (== request/path "/api/v8/auth/exchange"))
@@ -73,6 +74,7 @@
               ^running 0
               ^plugins []
               ^mode "recovery"
+              ^appearance (appearance_mode runtime/h)
               ^readiness "Recovery mode; normal execution is disabled."})))
       (if_yes (&& (== request/method "GET") (== request/path "/api/v8/plugins"))
         (let result
@@ -80,6 +82,7 @@
             runtime))
         (result .put "csrf" browser/csrf)
         (result .put "epoch" runtime/epoch)
+        (result .put "appearance" (appearance_mode runtime/h))
         (let failure_path $"${runtime/state_root}/startup_failure")
         (if ($fs/exists? failure_path) (result .put "startup_failure" ($fs/read_text failure_path)))
         (return (response 200 result)))
@@ -120,6 +123,9 @@
           (response
             200
             (revert_entry ^expected data/expected runtime/workspace (field data "id") data/revision))))
+      (if_yes (&& (== request/method "POST") (== request/path "/api/v8/appearance"))
+        (let data (request_data request))
+        (return (response 200 {^mode (set_appearance runtime/h data/mode)})))
       (if_yes (&& (== request/method "POST") (== request/path "/api/v8/auth/reset"))
         (reset_auth auth)
         (publish_link runtime/state_root origin auth/secret)

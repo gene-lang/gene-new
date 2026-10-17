@@ -13,6 +13,7 @@
 (import ^from "./sessions"
   [open_session_manager close_session_manager create_session load_session with_session_gate])
 (import ^from "./commands" [new_command_manager close_command_manager])
+(import ^from "./appearance" [open_appearance install_appearance_rows])
 (import ^from "./triggers" [close_trigger_manager])
 (import ^from "../agents/history" [collect_unreferenced_bodies])
 (import ^from "../agents/instructions" [install_core_prompt_rows])
@@ -127,6 +128,7 @@
          ^timeout_ms profile_limits/timeout_ms}})
     (set h
       (new_harness ^event_store events ^event_scope event_scope ^event_stream session ^workspace workspace ^limits profile_limits))
+    (set h/appearance (open_appearance state_root))
     (if_not recovery (set h/notifications (open_inbox $"${state_root}/notifications")))
     (install_core_prompt_rows h)
     (if_yes (&& activate (! recovery))
@@ -148,6 +150,7 @@
     (provide h "core" "ui/state_lock"
       (fn [key : Str, body] (with_session_gate runtime/sessions $"ui-state/${key}" body)))
     (set runtime/commands (new_command_manager runtime))
+    (install_appearance_rows h)
     (set runtime/actions (open_ui_actions runtime))
     (set h/ui_action_log runtime/actions/log)
     (if (&& activate (== event_scope "session"))

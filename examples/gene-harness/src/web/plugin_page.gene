@@ -2,6 +2,7 @@
 (import $html [render])
 (import $web [load script stylesheet])
 (import ^from "./style" [styles])
+(import ^from "./theme" [theme_mode])
 
 (let client_cache ($cell nil))
 
@@ -21,40 +22,43 @@
 .manager .muted, .plugin_meta { color: var(--muted); font-size: .85rem; }
 .manager_bar { margin: 20px 0; }
 .manager input[type=search] { flex: 1; min-width: 220px; }
-.manager input:not([type=checkbox]), .manager textarea, .manager select { border: 1px solid var(--line); border-radius: 7px; padding: 8px 10px; background: var(--surface); }
+.manager input:not([type=checkbox]), .manager textarea, .manager select { border: 1px solid var(--edge); padding: 8px 10px; background-color: var(--input-surface); }
+.manager select:not([multiple]) { padding-right: 1.75rem; }
 .manager_grid { display: grid; grid-template-columns: minmax(280px, 38%) minmax(0, 1fr); gap: 20px; align-items: start; }
-.plugin_list { max-height: 68vh; overflow: auto; border: 1px solid var(--line); border-radius: 10px; }
+.plugin_list { max-height: 68vh; overflow: auto; border: 1px solid var(--line); }
 .plugin_row { display: flex; align-items: center; gap: 12px; padding: 12px; border-bottom: 1px solid var(--line); }
 .plugin_row:last-child { border-bottom: 0; }
 .plugin_row.selected { background: var(--soft); }
-.plugin_row > button { flex: 1; border: 0; padding: 0; text-align: left; background: transparent; }
+.plugin_row > button { flex: 1; border: 0; border-radius: 0; padding: 0; text-align: left; background: transparent; }
 .plugin_name { font-weight: 650; display: block; overflow-wrap: anywhere; }
-.manager_card { border: 1px solid var(--line); border-radius: 10px; padding: 20px; min-width: 0; }
+.manager_card { border: 1px solid var(--line); padding: 20px; min-width: 0; }
 .manager_card + .manager_card { margin-top: 20px; }
-.plugin_badge { display: inline-block; padding: 1px 7px; border-radius: 5px; background: var(--soft); font-size: .75rem; }
-.plugin_badge.error, .manager_error { color: #982c25; }
-.plugin_badge.ready { color: #285b36; }
-.capability { font-family: ui-monospace, monospace; font-size: .8rem; overflow-wrap: anywhere; padding: 4px 0; }
+.plugin_badge { display: inline-block; padding: 1px 7px; background: var(--soft); font-size: .75rem; }
+.plugin_badge.error, .manager_error { color: var(--danger); }
+.plugin_badge.ready { color: var(--success); }
+.capability { font-family: var(--font-mono); font-size: .8rem; overflow-wrap: anywhere; padding: 4px 0; }
 .manager ul { padding-left: 20px; }
-.manager .primary { background: var(--accent); color: white; }
+.manager .primary { border-color: var(--ink); background: var(--ink); color: var(--action-ink); }
+.manager .primary:hover:not(:disabled) { border-color: var(--muted); background: var(--muted); }
 .manager_notice { min-height: 28px; margin-top: 12px; overflow-wrap: anywhere; }
-.manager_draft { margin-top: 20px; border-color: #a9b7a3; }
+.manager_draft { margin-top: 20px; border-color: var(--edge); }
 .manager_draft .manager_actions { margin-top: 16px; }
 .manager code { overflow-wrap: anywhere; font-size: .8rem; }
 .manager_editor label { display: block; margin: 12px 0; }
 .manager_editor input, .manager_editor textarea { display: block; width: 100%; }
-.manager_editor textarea { font-family: ui-monospace, monospace; font-size: .8rem; }
+.manager_editor textarea { font-family: var(--font-mono); font-size: .8rem; }
 .history_row { padding: 10px 0; border-bottom: 1px solid var(--line); }
 .history_row button { margin-top: 6px; }
 .manager details > summary { cursor: pointer; }
 @media (max-width: 760px) { .manager { padding: 16px; } .manager_grid { grid-template-columns: 1fr; } .plugin_list { max-height: 40vh; } }
 """)
 
-(fn plugin_page [] : Str
+(fn plugin_page [^appearance appearance : Str = "light"] : Str
+  (let mode (theme_mode appearance))
   ($to_str
     "<!doctype html>"
     (render
-      `(html ^lang "en"
+      `(html ^lang "en" ^id "harness_document" ^data-theme %mode
          (head
            (meta ^charset "utf-8")
            (meta ^name "viewport" ^content "width=device-width,initial-scale=1")
@@ -69,6 +73,7 @@
                (nav ^class "manager_actions" ^aria-label "Workspace navigation"
                  (a ^href "/" "Workspace")
                  (a ^href "/ui/default" "Recovery UI")
+                 (button ^id "theme_toggle" ^type "button" "Theme")
                  (button ^id "retry_startup" ^^hidden "Retry normal startup")))
              (div ^id "manager_notice" ^class "manager_notice" ^role "status")
              (div ^class "manager_bar"

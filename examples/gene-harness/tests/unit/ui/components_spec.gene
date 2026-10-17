@@ -146,6 +146,39 @@
       false
     catch Any ($str/contains? $err/message "name must equal")))))
 
+(import $css [css rule decl])
+
+(describe "Web component style contributions"
+  (fn board [style ^scoped scoped = nil]
+    (let candidate {^name "board" ^slot "view" ^title "Board" ^view_state {}
+      ^render (fn [ctx] (quote (div ^class_name "board_grid"))) ^style style})
+    (if_not ($absent? scoped) (candidate .put "style_scoped" scoped))
+    (validate_web_component candidate))
+
+  (it "scopes a contribution to its component by default" []
+    (let component (board (css (rule ".board_grid" (decl display "grid")))))
+    ($assert ($str/starts_with? component/style_class "plugin_board__"))
+    ($assert ($str/contains? component/style_css $".${component/style_class} .board_grid {"))
+    ($assert ($str/contains? component/style_css "display: grid;")))
+
+  (it "renders page-wide rules when scoping is turned off" []
+    (let component (board ^scoped false (css (rule ".board_grid" (decl display "grid")))))
+    ($assert (== component/style_class ""))
+    ($assert ($str/starts_with? component/style_css ".board_grid {")))
+
+  (it "leaves components without a contribution unstyled" []
+    (let component (validate_web_component {^name "plain" ^slot "toolbar" ^view (quote (p "x"))}))
+    ($assert ($absent? component/style_css))
+    ($assert ($absent? component/style_class)))
+
+  (it "reports malformed and oversized contributions" []
+    ($assert (try (board 42) false catch Any ($str/contains? $err/message "style could not be rendered")))
+    (let pieces [])
+    (while (< pieces/.size 7000) (pieces .push "0123456789"))
+    (let big ($str/join pieces ""))
+    ($assert (try (board (css (rule ".board_grid" (decl content big)))) false
+      catch Any ($str/contains? $err/message "exceeds 64 KiB")))))
+
 (fn main [args] : Int
   (let result (run ^name (?? args/0 "")))
   result/exit_code)

@@ -53,13 +53,76 @@ value, max, open, disabled, command, prompt, src, alt, width, height, columns, i
 there are no inline scripts or raw HTML. Links use local paths, fragments or
 HTTPS URLs. View text becomes DOM text, including user-supplied strings.
 
-Use the shared classes `web_card`, `web_grid`, `web_actions`, `web_badge`,
-`web_metric` and `web_muted` for cards, responsive grids, button groups, badges,
-large metrics and supporting text. Component views are bounded to 24 levels
-and 64 KiB. The underlying wire tree is `{tag, props, children}`; it can also
+Use the shared classes described under [Styling](#styling) for cards, rows,
+grids, badges, notices and button variants. Component views are bounded to 24
+levels and 64 KiB. The underlying wire tree is `{tag, props, children}`; it can also
 be supplied directly as maps/lists.
 The wire normalizes text and attribute values to strings; true creates an
 empty HTML attribute, while false/nil omit it.
+
+## Styling
+
+The host theme (see [theming](theming.md)) styles plugin content in light and
+dark mode. A component built from the supported elements and these classes
+needs no CSS of its own:
+
+| Class | Use |
+| --- | --- |
+| `web_card` | Bordered card; headings and paragraphs inside get card spacing |
+| `web_stack`, `web_row`, `web_spread` | Vertical stack, wrapping row, row with items pushed apart |
+| `web_grid` | Responsive grid of equal columns |
+| `web_tight`, `web_loose` | Smaller or larger gaps on a stack, row, spread or grid |
+| `web_actions` | Button group |
+| `web_badge`, `web_badge_danger`, `web_badge_success` | Square status chip |
+| `web_notice`, `web_notice_error`, `web_notice_success` | Notice with a status rule |
+| `web_metric`, `web_muted` | Large number; supporting text |
+| `web_danger_text`, `web_success_text` | Status-colored text |
+| `web_table_compact` | Denser table cells (views) |
+| `web_primary`, `web_secondary`, `web_danger` | Button variants: filled, quiet, destructive |
+
+Headings, paragraphs, lists, links (always underlined), code, preformatted
+text, rules, progress bars, forms and tables in views get theme defaults. Only
+buttons have rounded corners. For example, with no custom CSS:
+
+```gene
+(quote
+  (section ^class_name "web_card"
+    (div ^class_name "web_spread"
+      (h3 "Deploys")
+      (span ^class_name "web_badge web_badge_success" "Healthy"))
+    (p ^class_name "web_muted" "Last run 4 minutes ago.")
+    (div ^class_name "web_actions"
+      (button ^class_name "web_primary" ^command "/deploy" "Deploy")
+      (button ^class_name "web_secondary" ^prompt "Summarize the last deploy." "Explain"))))
+```
+
+When a view needs presentation the host does not provide (column widths,
+sticky headers, chart layout, domain colors), add a `style` to the component
+row. It is `$css` node data. By default the host scopes it to the component
+with `$css/scoped`, so its selectors only match inside that component;
+`^!style_scoped` makes the rules page-wide. Scoping prevents accidental
+collisions; it is not isolation, and plugins are trusted to use broader rules
+deliberately.
+
+```gene
+(import $css [css rule decl])
+
+(host .PluginHost:contribute "web_components"
+  {^name "sheet" ^slot "view" ^title "Sheet" ^view_state {} ^render render_sheet
+   ^style (css
+     (rule ".sheet_grid" (decl display "grid") (decl grid_template_columns "12rem repeat(6, 1fr)"))
+     (rule ".sheet_grid > .header" (decl position "sticky") (decl top 0) (decl background "var(--surface)"))
+     (rule ".cell.selected" (decl outline "2px solid var(--accent)")))})
+```
+
+Prefer the theme tokens (`--ink`, `--muted`, `--line`, `--surface`, `--soft`,
+`--accent`, `--edge`, `--danger`, `--success`, `--font-mono`) so the view
+follows light and dark mode; values without a shared token are the plugin's
+own, and keeping them readable in both modes is the author's job. A rendered
+style may be at most 64 KiB, and a style that cannot be rendered is a
+validation error. The browser mounts it as a `<style>` element while the
+component is present: replacing the row replaces it, disabling or removing the
+plugin removes it, and `/ui/default` omits it.
 
 ## Dynamic view and persistent state
 
@@ -157,17 +220,21 @@ Enable and configure it through `ui_configure`:
 
 ```gene
 (ui_configure {^^enabled ^layout "panel" ^panel "project_board"
-  ^side "left" ^width 45 ^theme {^accent "#335577"}})
+  ^side "left" ^width 45 ^theme {^light {^accent "#335577"} ^dark {^accent "#9db4d6"}}})
 ```
 
 `layout` is `chat` or `panel`; `side` is `left` or `right`; `width` is an integer
-percentage from 25 to 70. Theme keys are `ink`, `muted`, `line`, `surface`,
-`sidebar`, `soft` and `accent`, with six-digit hex colors. Passing
+percentage from 25 to 70. `theme` overrides the panel's colors per mode:
+`^light` and `^dark` each map the keys `ink`, `muted`, `line`, `surface`,
+`sidebar`, `soft` and `accent` to six-digit hex colors. A single flat key map
+is accepted and applies to light mode only; in dark mode such a panel uses the
+host's dark palette. Passing
 `{^!enabled}` restores the ordinary interface. Configuration is workspace state
 and supplies fresh-tab defaults; navigation and presentation choices are local
 to a tab. `default_view` selects a canonical initial view or `harness` and takes
-precedence over the legacy layout/panel fields. Theme tokens style plugin
-content, while Classic Harness and host controls retain their own palette.
+precedence over the legacy layout/panel fields. Theme overrides style plugin
+content only; Classic Harness and host controls follow the workspace's light
+or dark theme.
 The `/ui/default` recovery URL omits plugin views and theme overrides for that
 page and preserves the workspace selection.
 
@@ -295,7 +362,7 @@ event handlers, CSS, entities, foreign HTML, embedded images, animation or
 external references are accepted. Paint references use local `url(#id)` only.
 Images are served with explicit MIME type, no-store and nosniff; their response
 has a sandbox CSP with default/script/style sources disabled. Arbitrary HTML
-and custom CSS remain unsupported.
+remains unsupported; plugin CSS goes through a [style](#styling) contribution.
 
 Use host-owned classes to overlay ordinary accessible controls on an image:
 
@@ -317,8 +384,8 @@ Supply rows implicitly through the child count (use complete equal-length rows).
 Cell centers, not corners, are the clickable positions. `web_image_point`
 removes ordinary button chrome but preserves a visible keyboard focus ring,
 hover highlight and disabled-state semantics. Its image children fill 96% of
-the cell; disabled stones remain fully opaque. No plugin-provided style strings
-or arbitrary positioning are introduced. Existing keyed actions, validation,
+the cell; disabled stones remain fully opaque. The overlay itself takes no
+style strings or positioning attributes. Existing keyed actions, validation,
 tree bounds and revision checks are unchanged. Preview validates structure,
 but alignment and actual image loading must also be checked after host restart
 and browser reload.

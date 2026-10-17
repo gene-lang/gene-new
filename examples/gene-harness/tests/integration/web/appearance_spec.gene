@@ -1,0 +1,140 @@
+# Workspace light/dark appearance and plugin style contributions; see
+# docs/theming.md.
+(import $test [describe it])
+(import $css [css rule decl])
+(import $net/http_client [request])
+(import ^from "../../support" [isolated run_spec])
+(import ^from "../../web_support" [start_host stop_host cli])
+(import ^from "../../../src/cli/client" [connect api wire])
+(import ^from "../../../src/runtime/appearance" [read_appearance set_appearance])
+(import ^from "../../../src/web/session_service" [open_session_service close_session_service host_status])
+(import ^from "../../../src/ui/state" [ui_status])
+(import ^from "../../../src/kernel" [put_cordis_plugin uninstall row])
+(import ^from "../../../src/plugin_api" [Plugin PluginHost])
+
+(fn page_html [origin : Str, path : Str] : Str
+  (let task (request ^url $"${origin}${path}" ^timeout_ms 15000 ^max_bytes 4194304))
+  (let response (try (await task) ensure task/.cancel))
+  ($assert (== response/status 200) $"${path} returned ${response/status}")
+  response/body)
+
+(fn themed? [origin : Str, path : Str, mode : Str] : Bool
+  ($str/contains? (page_html origin path) $"data-theme=\"${mode}\""))
+
+(fn styled_plugin [color : Str]
+  (Plugin ^id "styled" ^provides [["web_components" "styled_board"] ["web_components" "styled_view"]]
+    ^activate (fn [host]
+      (host .PluginHost:contribute "web_components"
+        {^name "styled_board" ^slot "sidebar" ^view (quote (div ^class_name "board" "Board"))
+         ^style (css (rule ".board" (decl color color)))})
+      (host .PluginHost:contribute "web_components"
+        {^name "styled_view" ^slot "view" ^title "Styled" ^view_state {}
+         ^render (fn [ctx] (quote (div ^class_name "board" "View")))
+         ^style (css (rule ".board" (decl outline_color color)))}))))
+
+(fn named [components, name : Str]
+  ($first ($filter components (fn [item] (== item/name name)))))
+
+(describe "Workspace appearance"
+  (it "renders pages in the workspace theme and switches it from every host entry point" []
+    (isolated ^timeout_ms 240000 this_mod/.path
+      "renders pages in the workspace theme and switches it from every host entry point"
+      (fn [workspace]
+        (let host (start_host $"${workspace}/host"))
+        (try
+          (let client (connect host/root))
+          (let origin client/connection/origin)
+          (let state_root $"${host/root}/.gene-harness")
+          ($assert (themed? origin "/" "light"))
+          ($assert ($str/contains? (page_html origin "/") "id=\"theme_toggle\""))
+          ($assert (== (/appearance (api client "GET" "/status")) "light"))
+          ($assert (== (/mode (api client "POST" "/appearance" {^mode "dark"})) "dark"))
+          (for path in ["/" "/plugins" "/about/" "/?ui=default"]
+            ($assert (themed? origin path "dark") $"${path} ignored the dark theme"))
+          ($assert (== (/appearance (api client "GET" "/status?ui=default")) "dark"))
+          ($assert (== (/appearance (api client "GET" "/plugins")) "dark"))
+          ($assert (== (read_appearance state_root) "dark"))
+          (let bad (wire client/connection "POST" "/appearance" {^mode "sepia"} ^credentials client/credentials))
+          ($assert (== bad/status 400))
+          ($assert (== (read_appearance state_root) "dark"))
+          # The setting is host-owned: it works with the sidebar and the UI
+          # experiment disabled.
+          (let session (/id (cli host/root ["sessions" "create" "--title" "Theme"])))
+          (cli host/root ["--session" session "run" "(disable_plugin \"sidebar\")"])
+          (cli host/root ["--session" session "run" "(disable_plugin \"ui_experiment\")"])
+          ($assert ($str/contains? (page_html origin "/") "id=\"theme_toggle\""))
+          ($assert ($str/contains? (/display (cli host/root ["--session" session "command" "/theme"])) "Theme: dark."))
+          ($assert ($str/contains? (/display (cli host/root ["--session" session "command" "/theme light"])) "Theme set to light."))
+          ($assert ($str/contains? (/display (cli host/root ["--session" session "command" "/theme sepia"])) "/theme light or /theme dark"))
+          ($assert (themed? origin "/" "light"))
+          (let changed (cli host/root ["--session" session "run" "(set_appearance \"dark\")"]))
+          ($assert ($str/contains? changed/display "dark"))
+          ($assert (== (read_appearance state_root) "dark"))
+          ($assert (== (/mode (api client "POST" "/appearance" {^mode "light"})) "light"))
+        ensure
+          (stop_host host)))))
+
+  (it "serves the recovery host in the saved theme without configuration or events" []
+    (isolated ^timeout_ms 180000 this_mod/.path
+      "serves the recovery host in the saved theme without configuration or events"
+      (fn [workspace]
+        (let root $"${workspace}/recovery")
+        ($fs/make_dir root)
+        ($fs/make_dir $"${root}/.gene-harness")
+        ($fs/make_dir $"${root}/.gene-harness/events")
+        ($fs/write_text $"${root}/.gene-harness/events/CURRENT" "not-a-checkpoint")
+        ($fs/write_text $"${root}/.gene-harness/config.gene" "(not valid configuration")
+        ($fs/write_text $"${root}/.gene-harness/appearance.gene" ($serde/write_data {^mode "dark"}))
+        (let host (start_host ^^recovery root))
+        (try
+          (let origin host/connection/origin)
+          (for path in ["/" "/plugins" "/ui/default"]
+            ($assert (themed? origin path "dark") $"recovery ${path} ignored the dark theme"))
+          (let client (connect host/root))
+          ($assert (== (/appearance (api client "GET" "/plugins")) "dark"))
+          ($assert (== (/mode (api client "POST" "/appearance" {^mode "light"})) "light"))
+          ($assert (themed? origin "/" "light"))
+          ($assert (== (read_appearance $"${root}/.gene-harness") "light"))
+        ensure
+          (stop_host host)))))
+
+  (it "announces changes and carries plugin styles through their lifecycle" []
+    (isolated ^timeout_ms 120000 this_mod/.path
+      "announces changes and carries plugin styles through their lifecycle"
+      (fn [workspace]
+        (let service (open_session_service ^workspace workspace ^^offline))
+        (let messages [])
+        (service/publisher .set (fn [message] (messages .push message)))
+        (try
+          (let h service/runtime/h)
+          ($assert (== (/appearance (host_status service)) "light"))
+          (set_appearance h "dark")
+          (let announced ($filter messages (fn [message] (== message/type "appearance"))))
+          ($assert (== ($size announced) 1))
+          ($assert (== (/mode (/data (/0 announced))) "dark"))
+          ($assert (== (/appearance (host_status ^^safe service)) "dark"))
+
+          (put_cordis_plugin h (styled_plugin "#335577") {^^host ^limits service/runtime/profile/limits})
+          (let board (named (/web_components (host_status service)) "styled_board"))
+          ($assert ($str/starts_with? board/style_class "plugin_styled_board__"))
+          ($assert ($str/contains? board/style $".${board/style_class} .board {"))
+          ($assert ($str/contains? board/style "color: #335577;"))
+          (let safe_components (/web_components (host_status ^^safe service)))
+          ($assert safe_components/.empty?)
+          ((/fn (row h "functions" "ui_configure")) {^^enabled ^layout "panel" ^panel "styled_view"})
+          (let view (named (/components (ui_status h)) "styled_view"))
+          ($assert ($str/contains? view/style $".${view/style_class} .board {"))
+
+          (put_cordis_plugin ^^replace h (styled_plugin "#9db4d6") {^^host ^limits service/runtime/profile/limits})
+          (let replaced (named (/web_components (host_status service)) "styled_board"))
+          ($assert ($str/contains? replaced/style "color: #9db4d6;"))
+          ($assert (!= replaced/style_class board/style_class))
+
+          (uninstall h "styled")
+          ($assert ($absent? (named (/web_components (host_status service)) "styled_board")))
+          ($assert ($absent? (named (/components (ui_status h)) "styled_view")))
+        ensure
+          (close_session_service service))))))
+
+(fn main [args]
+  (run_spec args))

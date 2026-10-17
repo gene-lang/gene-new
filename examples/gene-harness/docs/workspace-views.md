@@ -53,9 +53,12 @@ It is invalid on `harness`. A switch button has no function/command/prompt/state
 action at the same time. Unavailable destinations show a notice and leave the
 current view intact.
 
-Plugin themes use the existing six-digit color tokens, scoped to plugin
-content. Classic Harness and host recovery controls keep their own palette.
-No arbitrary HTML, JavaScript, or plugin CSS is required or accepted.
+Plugin themes override the seven public color tokens per light/dark mode,
+scoped to plugin content. Classic Harness and host recovery controls follow the
+workspace theme ([theming](theming.md)). Ordinary views need no CSS: the host
+styles supported elements and shared classes. A view may add a scoped `style`
+contribution (`$css` data) for presentation the host does not provide. No
+arbitrary HTML or JavaScript is accepted.
 
 ## State and concurrent tabs
 

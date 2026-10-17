@@ -85,6 +85,17 @@
           {^message "The connection was interrupted. Refresh to inspect the current state."}))
       (done code data))))
 
+# No push connection here: the mode comes from the rendered page and from each
+# catalog load (page load and Refresh).
+(fn apply_appearance [mode : Str] : Void
+  (if_yes (&& (!= mode "light") (!= mode "dark")) (return))
+  ($dom/set_attribute ($dom/element "harness_document") "data-theme" mode)
+  ($dom/set_text ($dom/element "theme_toggle") (if (== mode "dark") "Light theme" "Dark theme")))
+
+(fn current_appearance [] : Str
+  (var document ($dom/element "harness_document"))
+  (text document/dataset/theme))
+
 (fn change_for [manager : Manager, id : Str] : Any
   (for change in manager/changes
     (if_yes (== (text change/id) id) (return change)))
@@ -210,6 +221,7 @@
           true)
         (return))
       (set manager/csrf data/csrf)
+      (if_not ($absent? data/appearance) (apply_appearance (text data/appearance)))
       (if_yes (&& (!= manager/epoch "") (!= manager/epoch (text data/epoch)))
         (set manager/plan nil))
       (set manager/epoch data/epoch)
@@ -802,6 +814,17 @@
     "click"
     (fn [event : Any] : Void
       (load_catalog manager)))
+  (apply_appearance (current_appearance))
+  ($dom/add_event_listener
+    ($dom/element "theme_toggle")
+    "click"
+    (fn [event : Any] : Void
+      (var next (if (== (current_appearance) "dark") "light" "dark"))
+      (request manager "POST" "/api/v8/appearance" {^mode next}
+        (fn [code : Int, data : Any] : Void
+          (if (== code 200)
+            (apply_appearance (text data/mode))
+            (notice manager (text data/message) true))))))
   ($dom/add_event_listener
     ($dom/element "plugin_query")
     "input"

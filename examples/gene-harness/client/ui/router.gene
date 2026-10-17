@@ -4,6 +4,7 @@
 (import [find_view initial_view presentation_for return_view view_url] ^from "./navigation.gene")
 (import [query_value] ^from "../state.gene")
 (import [sidebar_layout] ^from "../sidebar.gene")
+(import [theme_tokens theme_overrides] ^from "./theme.gene")
 
 (fn navigation_key [ui : UiClient] : Str
   $"gene-harness/ui-navigation/${ui/workspace}")
@@ -69,9 +70,14 @@
   ($dom/set_input_value ($dom/element "ui_side") nav/side)
   ($dom/set_input_value ($dom/element "ui_width") ($to_str nav/width))
   ($dom/set_text ($dom/element "ui_view_title") (text ui/descriptor/title nav/active))
-  (for key in ["ink" "muted" "line" "surface" "sidebar" "soft" "accent"]
+  # Reset every token, then apply the active mode's overrides, so a mode with
+  # no or partial overrides keeps no stale colors.
+  (var overrides : Any (theme_overrides ui/settings/theme ui/appearance))
+  (for key in theme_tokens
     ($dom/set_style ui/root $"--${key}" "")
-    ($dom/set_style panel $"--${key}" (if active (text ui/settings/theme/%key) "")))
+    ($dom/set_style panel $"--${key}" (if active (text overrides/%key) "")))
+  # A view's style contribution is scoped to this class.
+  ($dom/set_attribute ui/target "class" (if active (text ui/descriptor/style_class) ""))
   (var first (if (== nav/side "right") (- 100 nav/width) nav/width))
   ($dom/set_style ui/root "--ui-first" $"${first}fr")
   ($dom/set_style ui/root "--ui-second" $"${(- 100 first)}fr")

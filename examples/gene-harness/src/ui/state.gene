@@ -1,6 +1,7 @@
 # Workspace UI configuration and revision descriptors; no rendering or transport.
 (mod ui_state)
 (import [plugin_state next_sequence stream_key] ^from "../storage/state")
+(import [public_tokens theme_modes] ^from "../web/theme")
 
 (type UiError ^props {^code Str ^message Str} ^impl [Error])
 (impl Error for UiError)
@@ -11,6 +12,27 @@
   (let saved (if ($absent? h/event_store) nil
     (plugin_state h/event_store "workspace" "workspace" "ui_experiment")))
   (?? saved {^enabled false ^layout "chat" ^panel "" ^side "left" ^width 50 ^theme {}}))
+
+(fn validate_theme_colors [colors]
+  (if (!= ($head colors) Map) (ui_error "invalid_request" "Theme overrides must be a map of tokens."))
+  (for [key color] in colors
+    (if_not (public_tokens .contains? ($to_str key))
+      (ui_error "invalid_request" $"Unknown theme token ${key}."))
+    (if (|| (!= ($head color) Str) ($absent? (#"^#[0-9a-fA-F]{6}$" .match color)))
+      (ui_error "invalid_request" "Theme colors must be six-digit hex colors."))))
+
+# A theme is either per mode, {^light {...} ^dark {...}}, or a legacy flat token
+# map, which applies to light mode only.
+(fn validate_theme [theme]
+  (var per_mode false)
+  (var flat false)
+  (for [key value] in theme
+    (if (theme_modes .contains? ($to_str key)) (set per_mode true) (set flat true)))
+  (if (&& per_mode flat)
+    (ui_error "invalid_request" "Use either light/dark theme maps or one token map, not both."))
+  (if per_mode
+    (for [key colors] in theme (validate_theme_colors colors))
+    (validate_theme_colors theme)))
 
 (fn validate_ui_settings [value]
   (if (!= ($head value) Map) (ui_error "invalid_request" "UI settings must be a map."))
@@ -27,11 +49,7 @@
   (if (|| (!= ($head result/default_view) Str)
           (&& (!= result/default_view "") ($absent? (#"^[a-z][a-z0-9_]{0,79}$" .match result/default_view))))
     (ui_error "invalid_request" "Default view must be a registered view name or harness."))
-  (for [key color] in result/theme
-    (if_not (["ink" "muted" "line" "surface" "sidebar" "soft" "accent"] .contains? ($to_str key))
-      (ui_error "invalid_request" $"Unknown theme token ${key}."))
-    (if (|| (!= ($head color) Str) ($absent? (#"^#[0-9a-fA-F]{6}$" .match color)))
-      (ui_error "invalid_request" "Theme colors must be six-digit hex colors.")))
+  (validate_theme result/theme)
   result)
 
 (fn ui_record [snapshot, registry : Str, name : Str]
@@ -55,7 +73,8 @@
    ^default_presentation (?? candidate/default_presentation "docked")
    ^slot candidate/slot ^revision (ui_revision h record)
    ^data_revision (ui_data_revision h snapshot) ^view_state candidate/view_state
-   ^state_version ($to_str (?? candidate/state_version "1")) ^functions functions})
+   ^state_version ($to_str (?? candidate/state_version "1")) ^functions functions
+   ^style candidate/style_css ^style_class candidate/style_class})
 
 (fn ui_status [h]
   (let settings (ui_settings h))

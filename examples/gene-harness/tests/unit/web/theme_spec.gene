@@ -1,0 +1,90 @@
+# Guards for docs/theming.md: square corners except on buttons, shared colors
+# only in the theme, and host palettes that keep their measured contrast.
+(import $test [describe it run])
+(import ^from "../../../src/web/theme"
+  [theme_css light_palette dark_palette palettes contrast_ratio theme_mode])
+(import ^from "../../../src/web/style" [base_styles styles])
+(import ^from "../../../src/web/plugin_page" [manager_styles plugin_page])
+(import ^from "../../../src/web/page" [page])
+(import ^from "../../../src/website/style" [website_css])
+(import ^from "../../../src/website/page" [website_page])
+
+# [selector value] for every border-radius declaration in rendered CSS.
+(fn radius_rules [css : Str]
+  (let found [])
+  (for block in ($str/split css "}")
+    (let parts ($str/split block "{"))
+    (if_yes (>= parts/.size 2)
+      (let selector_at (- parts/.size 2))
+      (let body_at (- parts/.size 1))
+      (let selector ($str/trim parts/%selector_at))
+      (for declaration in ($str/split parts/%body_at ";")
+        (let trimmed ($str/trim declaration))
+        (if_yes ($str/starts_with? trimmed "border-radius")
+          (found .push [selector ($str/trim (/1 ($str/split trimmed ":")))])))))
+  found)
+
+(fn hex_literals [css : Str]
+  ($into ($regex/find_all #"#[0-9a-fA-F]{3,8}\b" css) []))
+
+(describe "Harness theme guards"
+  (it "keeps every corner square except the button rule" []
+    # The scan must see the reset and the button rule, or it proves nothing.
+    (var button_rules 0)
+    (for [selector value] in (radius_rules base_styles)
+      (if (== value "var(--radius-button)") (set button_rules (+ button_rules 1))))
+    ($assert (== button_rules 1))
+    (var site_button_rules 0)
+    (for [selector value] in (radius_rules website_css)
+      (if (== value "var(--radius-button)") (set site_button_rules (+ site_button_rules 1))))
+    ($assert (== site_button_rules 4))
+    (for css in [base_styles manager_styles]
+      (for [selector value] in (radius_rules css)
+        ($assert (|| (== value "0") (== value "var(--radius-button)"))
+          $"${selector} uses border-radius ${value}")
+        (if_yes (== value "var(--radius-button)")
+          ($assert (== selector "button") $"${selector} must not use the button radius"))))
+    (let site_buttons [".button" ".site_nav .nav_app" ".nav_toggle" ".copy_button"])
+    (for [selector value] in (radius_rules website_css)
+      (if_yes (!= value "0")
+        ($assert (== value "var(--radius-button)") $"${selector} uses border-radius ${value}")
+        (var allowed false)
+        (for name in site_buttons
+          (if ($str/ends_with? selector $" ${name}") (set allowed true)))
+        ($assert allowed $"${selector} must not use the button radius"))))
+
+  (it "keeps shared color literals in the theme" []
+    (for css in [base_styles manager_styles website_css]
+      (let literals (hex_literals css))
+      (if_not literals/.empty?
+        ($assert false $"hex color outside theme.gene: ${(/text (/0 literals))}"))))
+
+  (it "meets the measured contrast for both palettes" []
+    (for [mode palette] in palettes
+      (for text in ["ink" "muted" "danger" "success"]
+        (for background in ["surface" "sidebar" "soft" "user"]
+          (let ratio (contrast_ratio (palette .get text) (palette .get background)))
+          ($assert (>= ratio 4.5) $"${mode} ${text} on ${background} is ${ratio}")))
+      (for background in ["surface" "sidebar" "soft" "user"]
+        (let ratio (contrast_ratio palette/edge (palette .get background)))
+        ($assert (>= ratio 3.0) $"${mode} edge on ${background} is ${ratio}"))
+      # The Send button: action text on its ink fill and its muted hover fill,
+      # and a hover that is visibly different from the resting fill.
+      ($assert (>= (contrast_ratio palette/surface palette/ink) 4.5))
+      ($assert (>= (contrast_ratio palette/surface palette/muted) 4.5))
+      ($assert (>= (contrast_ratio palette/accent palette/muted) 2.0))))
+
+  (it "renders the selected mode and defaults to light" []
+    ($assert (== (theme_mode "dark") "dark"))
+    ($assert (== (theme_mode "sepia") "light"))
+    ($assert (== (theme_mode nil) "light"))
+    ($assert ($str/contains? theme_css ":root[data-theme=\"dark\"]"))
+    ($assert ($str/starts_with? styles ($str/trim theme_css)))
+    ($assert ($str/contains? (page) "data-theme=\"light\""))
+    ($assert ($str/contains? (page ^appearance "dark") "data-theme=\"dark\""))
+    ($assert ($str/contains? (page ^appearance "dark") "id=\"theme_toggle\""))
+    ($assert ($str/contains? (plugin_page ^appearance "dark") "data-theme=\"dark\""))
+    ($assert ($str/contains? (website_page ^appearance "dark") "data-theme=\"dark\""))
+    ($assert ($str/contains? (website_page ^mode "standalone") "data-theme=\"light\""))))
+
+(fn main [args] : Int (/exit_code (run ^name (?? args/0 ""))))

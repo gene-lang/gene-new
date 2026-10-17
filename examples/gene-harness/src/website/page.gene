@@ -11,6 +11,7 @@
 (import $html [render])
 (import $web [script stylesheet])
 (import [website_css website_class] ^from "./style")
+(import ^from "../web/theme" [theme_css theme_mode])
 (import [WebsiteError website_dir repository_url links hero capabilities steps faq
          example site_excerpts run_commands] ^from "./content")
 
@@ -392,7 +393,7 @@
 
 # --- The page ------------------------------------------------------------------------------
 
-(fn website_page [^mode mode : Str = "embedded", ^app_url app_url : Str = ""] : Str
+(fn website_page [^mode mode : Str = "embedded", ^app_url app_url : Str = "", ^appearance appearance : Str = "light"] : Str
   (if_not (["embedded" "standalone"] .contains? mode)
     (fail (WebsiteError ^message $"Unknown website mode ${mode}")))
   # Embedded, the app is this server's root. Standalone, a visitor may have no
@@ -400,15 +401,17 @@
   (var open_app (if (== mode "embedded") "/" app_url))
   (var code_ids ($str/join copyable_ids " "))
   (var highlight_ids ($str/join highlighted_ids " "))
+  (var theme (theme_mode appearance))
   ($to_str "<!doctype html>\n"
     (render
-      `(html ^lang "en"
+      `(html ^lang "en" ^data-theme %theme
          (head
            (meta ^charset "utf-8")
            (meta ^name "viewport" ^content "width=device-width, initial-scale=1")
            (title "Gene Harness · An agent that can extend itself")
            (meta ^name "description"
              ^content "Gene Harness turns new capabilities into durable Gene plugins you can inspect, use on real files, and keep across conversations.")
+           %(stylesheet "gene-harness-theme" theme_css)
            %(stylesheet "gene-harness-website" website_css))
          (body ^class %website_class
            (div ^id "site_root" ^class "site"
