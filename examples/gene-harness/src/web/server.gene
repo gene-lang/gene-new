@@ -105,12 +105,7 @@
   (if_not ($absent? result/headers)
     (result/headers .put "cache-control" "no-store")
     (result/headers .put "x-content-type-options" "nosniff")
-    (result/headers .put "referrer-policy" "no-referrer")
-    (result/headers .put
-      "content-security-policy"
-      (??
-        result/headers/content-security-policy
-        "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")))
+    (result/headers .put "referrer-policy" "no-referrer"))
   result)
 
 (fn main [argv]

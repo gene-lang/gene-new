@@ -44,6 +44,11 @@
           ($assert (== shown/headers/x-content-type-options "nosniff"))
           ($assert ($str/contains? shown/headers/content-security-policy "sandbox"))
           ($assert ($str/contains? shown/headers/content-security-policy "script-src 'none'"))
+          # Pages carry no default policy; only the image route sandboxes itself.
+          (let page
+            (await (request ^url $"${client/connection/origin}/" ^headers {^cookie client/credentials/cookie} ^timeout_ms 15000)))
+          ($assert (== page/status 200))
+          ($assert ($absent? page/headers/content-security-policy))
           (for path in ["../private.txt" "private.txt" ".gene-harness/auth.svg" "assets/bad.svg" "assets/fake.png" "assets/missing.svg" "/etc/x.svg" "https://example.com/x.svg"]
             ($assert (== ((Path "status") (download_image client path)) 404)))
           (let foreign
