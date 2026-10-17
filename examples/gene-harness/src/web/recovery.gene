@@ -8,7 +8,7 @@
 (import ^from "./plugin_page" [plugin_page manager_client])
 (import ^from "../runtime/appearance" [appearance_mode set_appearance])
 (import ^from "./plugin_control" [new_plugin_control plugin_control_request close_plugin_control])
-(import ^from "./startup" [mark_ready])
+(import ^from "./startup" [mark_ready browser_connection_message])
 (import ^from "./contract" [protocol_version])
 (import ^from "../runtime/bootstrap" [open_runtime close_runtime])
 (import ^from "../profiles/baseline" [baseline_profile])
@@ -171,6 +171,7 @@ Host: """
         origin
         """
 Workspace plugins are not running."""))
+    ($println (browser_connection_message ^supervised (== options/supervised true) runtime/root))
     ($io/flush_stdout)
     (serve ^handler safe_handle ^max_body_bytes 16777216 ^request_timeout_ms 10000 ^tick_ms 250 ^on_tick (fn [] (if runtime/stopping/.get (stop server)))
       server)

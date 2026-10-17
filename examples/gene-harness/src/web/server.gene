@@ -21,7 +21,7 @@
     RoundError])
 (import ^from "./page" [page])
 (import ^from "./plugin_page" [plugin_page manager_client])
-(import ^from "./startup" [mark_ready])
+(import ^from "./startup" [mark_ready browser_connection_message])
 (import ^from "../ui/images" [workspace_image WorkspaceImageError])
 (import ^from "../kernel" [row])
 (import ^from "../ui/state" [ui_status UiError])
@@ -480,12 +480,7 @@
   (mark_ready host/runtime/state_root startup_id host/epoch port false)
   ($println "Gene Harness is ready.")
   ($println $"Host: ${origin}")
-  (if ($os/stdout_tty?)
-    (then
-      (let browser_link ($fs/read_text ($path/join root ".gene-harness/link")))
-      ($println $"Browser: ${browser_link}"))
-    (else
-      ($println $"Use gene-harness --workspace ${root} link to connect a browser.")))
+  ($println (browser_connection_message ^supervised supervised root))
   ($io/flush_stdout)
   ($println (if offline
     "Command demo mode: no model connected. Restart without --offline or GENE_HARNESS_OFFLINE=1 to chat."

@@ -1,5 +1,14 @@
 (mod startup)
 
+(fn browser_connection_message [workspace : Str, ^supervised supervised : Bool = false] : Str
+  (if (|| ($os/stdout_tty?)
+          (&& supervised (== ($os/env? "GENE_HARNESS_STDOUT_TTY") "1")))
+    (then
+      (let link ($fs/read_text ($path/join workspace ".gene-harness/link")))
+      $"Browser: ${link}")
+    (else
+      $"Use gene-harness --workspace ${workspace} link to connect a browser.")))
+
 (fn mark_ready [state_root : Str, id : Str, epoch : Str, port : Int, recovery : Bool]
   (if (== id "") (return nil))
   (if ($absent? (#"^[0-9a-f]{32}$" .match id)) (fail "invalid startup handoff id"))

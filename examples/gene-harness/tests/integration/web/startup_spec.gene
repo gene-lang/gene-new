@@ -1,0 +1,102 @@
+# Startup diagnostics must reflect the launcher's terminal, even though the
+# supervisor captures its child's output for recovery diagnostics.
+(import $test [describe it])
+(import ^from "../../support" [isolated run_spec source_path])
+(import ^from "../../web_support" [ready_host stop_host])
+(import ^from "../../../src/cli/client" [connect api connection_link])
+
+(fn terminal_environment []
+  (let values {^GENE_BINARY ($os/executable_path) ^GENE_HARNESS_STDOUT_TTY "0"})
+  # The PTY's normal environment is deliberately small. Preserve test cache
+  # locations when supplied by the test runner.
+  (for name in ["GENE_USER_PACKAGES" "GENE_ARTIFACT_STORE"]
+    (let value ($os/env? name))
+    (if_not ($absent? value) (values .put name value)))
+  values)
+
+(fn browser_output [terminal, count : Int = 1] : Str
+  (let due (+ ($os/monotonic_ms) 45000))
+  (loop
+    (let state (/snapshot ($terminal/pump terminal)))
+    (let output (/text ($terminal/capture_text terminal)))
+    (if (> ($size ($str/split output "Browser: ")) count) (return output))
+    ($assert (! state/stopped) "terminal host exited before printing its browser link")
+    ($assert (< ($os/monotonic_ms) due) "terminal startup did not print a browser link")
+    ($sleep 20)))
+
+(fn stop_terminal_host [terminal, root : Str]
+  (try
+    (api (connect root) "POST" "/control" {^action "stop" ^^confirm})
+    (let due (+ ($os/monotonic_ms) 10000))
+    (loop
+      (let state (/snapshot ($terminal/pump terminal)))
+      (if (|| state/stopped (>= ($os/monotonic_ms) due)) (break))
+      ($sleep 20))
+  catch Any nil
+  ensure ($terminal/close terminal)))
+
+(describe "Harness startup browser links"
+  (it "prints the owner link on direct, supervised and recovery terminals" []
+    (isolated ^timeout_ms 240000 this_mod/.path
+      "prints the owner link on direct, supervised and recovery terminals"
+      (fn [workspace]
+        (for mode in ["direct" "supervised" "recovery" "fallback"]
+          (let root $"${workspace}/${mode}")
+          ($fs/make_dir root)
+          (if_yes (== mode "fallback")
+            ($fs/make_dir $"${root}/.gene-harness")
+            ($fs/write_text $"${root}/.gene-harness/config.gene" "(invalid configuration"))
+          (let arguments ["run" "--snapshot"
+            (source_path (if (== mode "direct") "src/main.gene" "src/runtime/supervisor.gene"))
+            "web" "--workspace" root "--offline"])
+          (if (== mode "recovery") (arguments .push "--recovery"))
+          (let terminal ($terminal/open ^cmd ($os/executable_path) ^args arguments
+            ^environment (terminal_environment) ^rows 30 ^cols 240))
+          (try
+            (let output (browser_output terminal))
+            (let link (connection_link root))
+            ($assert ($str/contains? output $"Browser: ${link}") "startup printed the wrong browser link")
+            ($assert (! ($str/contains? output "link to connect a browser.")))
+            (if_yes (== mode "fallback")
+              ($assert ($str/contains? output "Gene Harness recovery is ready.")))
+            (if_yes (== mode "supervised")
+              (api (connect root) "POST" "/control" {^action "restart" ^^confirm})
+              (let restarted (browser_output terminal 2))
+              ($assert (== (connection_link root) link))
+              ($assert (== ($size ($str/split restarted $"Browser: ${link}")) 3)))
+          ensure
+            (stop_terminal_host terminal root))))))
+
+  (it "omits startup tokens in redirected output while link still works" []
+    (isolated ^timeout_ms 180000 this_mod/.path
+      "omits startup tokens in redirected output while link still works"
+      (fn [workspace]
+        (for recovery in [false true]
+          (let mode (if recovery "recovery" "normal"))
+          (let root $"${workspace}/${mode}")
+          ($fs/make_dir root)
+          (let arguments ["run" "--snapshot" (source_path "src/runtime/supervisor.gene")
+            "web" "--workspace" root "--offline"])
+          (if recovery (arguments .push "--recovery"))
+          # An inherited marker must not make redirected supervisor output
+          # look interactive: the supervisor sets it from its own stdout.
+          (let process ($os/exec_async ^timeout_ms 120000
+            ^env {^GENE_HARNESS_STDOUT_TTY "1"}
+            ($os/executable_path) arguments...))
+          (let host {^root root ^process process})
+          (var stopped nil)
+          (try
+            (ready_host host)
+            (let link (connection_link root))
+            (let result (await ($os/exec_async ^timeout_ms 30000
+              ($os/executable_path) "run" "--snapshot" (source_path "src/runtime/supervisor.gene")
+              "--workspace" root "link")))
+            ($assert (== result/status 0) "link tried to start another host")
+            ($assert (== ($str/trim result/stdout) link) "link did not return the live owner's URL")
+          ensure
+            (set stopped (stop_host host)))
+          ($assert (== stopped/status 0))
+          ($assert (! ($str/contains? stopped/stdout "#token=")))
+          ($assert ($str/contains? stopped/stdout $"Use gene-harness --workspace ${root} link")))))))
+
+(fn main [args] : Int (run_spec args))

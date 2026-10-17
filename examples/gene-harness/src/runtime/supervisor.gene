@@ -7,6 +7,10 @@
   (let hosting (&& (== parsed/command "web") (!= parsed/options/help true)))
   (let application ($pkg/application))
   (let root ($path/join application/source_root "src"))
+  # Capturing the child's diagnostics hides our terminal from it. Forward the
+  # actual output destination, including false when our stdout is redirected.
+  (let child_environment
+    {^GENE_HARNESS_STDOUT_TTY (if ($os/stdout_tty?) "1" "0")})
   (var restart_port nil)
   (var recovery (== parsed/options/recovery true))
   (var workspace (?? parsed/options/workspace ($os/launch_dir)))
@@ -27,7 +31,8 @@
       (child_args .push ($to_str restart_port)))
     (let lines ($channel ^capacity 128))
     (let tail ($cell ""))
-    (let task ($os/exec_stream_async (?? ($os/env? "GENE_BINARY") ($os/executable_path))
+    (let task ($os/exec_stream_async ^env child_environment
+      (?? ($os/env? "GENE_BINARY") ($os/executable_path))
       child_args... ^^merge_stderr ^stdout_chan lines ^max_bytes 65536))
     (let printer (spawn ^lane root (try
       (loop (let line lines/.recv)
