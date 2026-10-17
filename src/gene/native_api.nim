@@ -1405,7 +1405,18 @@ proc geneReleaseCallback*(callback: GeneCallbackHandle) =
   geneRootRelease(callback.callee)
   callback.released = true
 
+template enterNativeAbiThread*() =
+  ## Make the calling thread able to allocate. A C extension may call the ABI
+  ## from a thread Nim did not create, and since Nim 2.2.12 such a thread has
+  ## no allocator region until it acquires one: an attachment record, an
+  ## exception or a copied error would fault. Acquisition is idempotent, so on
+  ## threads Nim started this only checks a thread-local. The region is not
+  ## released at detach because a Nim-created thread cannot be told apart here.
+  when compileOption("threads") and not compileOption("tlsEmulation"):
+    setupForeignThreadGc()
+
 proc geneAttachThread*(): GeneThreadAttachment =
+  enterNativeAbiThread()
   inc geneThreadAttachDepth
   GeneThreadAttachment(ownerThreadId: getThreadId())
 

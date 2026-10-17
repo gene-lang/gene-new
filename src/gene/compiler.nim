@@ -215,7 +215,16 @@ type
     expanded*: SourceUnit
     provenance*: Table[uint64, ExpansionProvenance]
     macroExports*: Table[string, MacroDef]
-    macroRuntimeLease*: RootRef # released after any expanded runtime Values
+    macroRuntimeLease*: RootRef # released last by `=destroy` below
+
+proc `=destroy`(unit: var ExpandedSourceUnit) =
+  ## As for Chunk: expanded runtime Values must be gone before the lease's
+  ## destructor tries to retire their definition phase, whatever field order
+  ## the Nim release uses.
+  for name, field in fieldPairs(unit):
+    when name != "macroRuntimeLease":
+      `=destroy`(field)
+  `=destroy`(unit.macroRuntimeLease)
 
 # The VM installs this immutable dispatch hook to avoid a compiler/VM import
 # cycle. Reentrant compilation during a macro invocation shares its session.

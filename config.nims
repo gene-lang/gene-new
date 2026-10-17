@@ -39,6 +39,15 @@ block:
     quit("gene needs an ARC-family memory manager (orc, arc, atomicArc), " &
          "not --mm:" & memoryManager)
 
+# Linux and wasm: keep std/osproc's fork launcher. Nim 2.2.12 switched Linux
+# to its posix_spawn path, which applies a working directory by changing the
+# parent's cwd around the spawn (racy across threads, and left changed when the
+# spawn fails), and references posix_spawnp, which Emscripten's libc lacks, so
+# the wasm module stopped linking. The fork path changes directory in the child,
+# as every earlier Nim did on Linux.
+when defined(linux) or defined(emscripten):
+  switch("define", "useFork")
+
 # macOS: link against an SDK the installed linker can read.
 #
 # The Command Line Tools' default SDK (`MacOSX.sdk`) can be newer than the

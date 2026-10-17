@@ -851,7 +851,8 @@ type
   # code objects. {.acyclic.} matters for VM speed: the runLoop releases a
   # Chunk and a FunctionProto ref on every call/return, and without the
   # pragma each release-not-to-zero registers an ORC cycle candidate.
-  Chunk* {.acyclic.} = ref object
+  Chunk* = ref ChunkObj
+  ChunkObj* {.acyclic.} = object
     sourceName*: string
     errorsMode*: ErrorCheckMode
     initializationErrors*: ErrorEffectSummary
@@ -921,7 +922,7 @@ type
                              # with a different parent copies the body instead
                              # of re-stamping it (`stampSuperType`), so a stamp
                              # never changes meaning under a running send.
-    macroRuntimeLease*: RootRef # runtime-only; destroyed after generated Values
+    macroRuntimeLease*: RootRef # runtime-only; destroyed last by `=destroy` below
 
   CompiledModule* = object
     ## One portable module identity plus everything another package's compiler
@@ -937,6 +938,17 @@ type
   ExecutableGir* = object
     entryIdentity*: string
     modules*: seq[CompiledModule]
+
+proc `=destroy`(chunk: var ChunkObj) =
+  ## Release the macro runtime lease after every other field. Its destructor
+  ## retires the definition phase only if no generated Value (for example a
+  ## spliced function in `constants`) still references it. Nim's own field order
+  ## is not stable across releases (2.2.12 destroys in reverse), so state it here.
+  ## `owner` is a cursor and owns no reference.
+  for name, field in fieldPairs(chunk):
+    when name notin ["owner", "macroRuntimeLease"]:
+      `=destroy`(field)
+  `=destroy`(chunk.macroRuntimeLease)
 
 type InstructionWithoutTail = object
   ## Target-relative layout baseline for the pre-TCO instruction shape.

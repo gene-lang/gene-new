@@ -1375,6 +1375,7 @@ proc apiDomain(context: pointer, rootOnly = true,
 
 proc apiAttachThread(context: pointer, output: ptr uint64,
                     diagnostic: ptr GeneOutBytes): uint32 {.cdecl.} =
+  enterNativeAbiThread()
   if output != nil: output[] = 0
   var ticket: GeneThreadAttachment
   var admitted = false
@@ -1432,6 +1433,7 @@ proc apiAttachThread(context: pointer, output: ptr uint64,
 
 proc apiDetachThread(context: pointer, token: uint64,
                     diagnostic: ptr GeneOutBytes): uint32 {.cdecl.} =
+  enterNativeAbiThread()
   try:
     if context == nil or token == 0:
       raise newException(GeneError, "native ABI detach input is invalid")
@@ -1469,6 +1471,7 @@ proc apiDetachThread(context: pointer, token: uint64,
 
 proc apiRetain(context: pointer, id: uint64, output: ptr uint64,
               diagnostic: ptr GeneOutBytes): uint32 {.cdecl.} =
+  enterNativeAbiThread()
   if output != nil: output[] = 0
   try:
     if output == nil:
@@ -1492,6 +1495,7 @@ proc apiRetain(context: pointer, id: uint64, output: ptr uint64,
 
 proc apiRelease(context: pointer, id: uint64,
                diagnostic: ptr GeneOutBytes): uint32 {.cdecl.} =
+  enterNativeAbiThread()
   try:
     let domain = apiDomain(context, rootOnly = false, allowClosed = true)
     let root = GeneManagedRoot(domain: domain, id: id)
@@ -1511,6 +1515,7 @@ proc apiRelease(context: pointer, id: uint64,
 
 proc apiKind(context: pointer, id: uint64, output: ptr uint32,
             diagnostic: ptr GeneOutBytes): uint32 {.cdecl.} =
+  enterNativeAbiThread()
   if output != nil: output[] = 255'u32
   try:
     if output == nil:
@@ -1547,6 +1552,7 @@ proc apiKind(context: pointer, id: uint64, output: ptr uint32,
 
 proc apiNewI64(context: pointer, value: int64, output: ptr uint64,
               diagnostic: ptr GeneOutBytes): uint32 {.cdecl.} =
+  enterNativeAbiThread()
   if output != nil: output[] = 0
   try:
     if output == nil:
@@ -1568,6 +1574,7 @@ proc apiNewI64(context: pointer, value: int64, output: ptr uint64,
 
 proc apiNewF64(context: pointer, value: float64, output: ptr uint64,
                diagnostic: ptr GeneOutBytes): uint32 {.cdecl.} =
+  enterNativeAbiThread()
   if output != nil: output[] = 0
   try:
     if output == nil:
@@ -1598,6 +1605,7 @@ proc apiCopiedInput(data: ptr uint8, length: csize_t): string =
 
 proc apiCopyText(context: pointer, id: uint64, output: ptr GeneOutBytes,
                 diagnostic: ptr GeneOutBytes): uint32 {.cdecl.} =
+  enterNativeAbiThread()
   try:
     if output == nil:
       raise newException(GeneError, "native ABI text output is nil")
@@ -1626,6 +1634,7 @@ proc apiCopyText(context: pointer, id: uint64, output: ptr GeneOutBytes,
 
 proc apiCopyBytes(context: pointer, id: uint64, output: ptr GeneOutBytes,
                  diagnostic: ptr GeneOutBytes): uint32 {.cdecl.} =
+  enterNativeAbiThread()
   try:
     if output == nil:
       raise newException(GeneError, "native ABI Bytes output is nil")
@@ -1652,6 +1661,7 @@ proc apiCopyBytes(context: pointer, id: uint64, output: ptr GeneOutBytes,
 
 proc apiCopyBool(context: pointer, id: uint64, output: ptr uint8,
                 diagnostic: ptr GeneOutBytes): uint32 {.cdecl.} =
+  enterNativeAbiThread()
   if output != nil: output[] = 0
   try:
     if output == nil:
@@ -1674,6 +1684,7 @@ proc apiCopyBool(context: pointer, id: uint64, output: ptr uint8,
 
 proc apiCopyI64(context: pointer, id: uint64, output: ptr int64,
                diagnostic: ptr GeneOutBytes): uint32 {.cdecl.} =
+  enterNativeAbiThread()
   if output != nil: output[] = 0
   try:
     if output == nil:
@@ -1696,6 +1707,7 @@ proc apiCopyI64(context: pointer, id: uint64, output: ptr int64,
 
 proc apiCopyF64(context: pointer, id: uint64, output: ptr float64,
                 diagnostic: ptr GeneOutBytes): uint32 {.cdecl.} =
+  enterNativeAbiThread()
   if output != nil: output[] = 0
   try:
     if output == nil:
@@ -1718,6 +1730,7 @@ proc apiCopyF64(context: pointer, id: uint64, output: ptr float64,
 
 proc apiNewBool(context: pointer, value: uint8, output: ptr uint64,
                diagnostic: ptr GeneOutBytes): uint32 {.cdecl.} =
+  enterNativeAbiThread()
   if output != nil: output[] = 0
   try:
     if output == nil or value > 1:
@@ -1740,6 +1753,7 @@ proc apiNewBool(context: pointer, value: uint8, output: ptr uint64,
 proc apiNewText(context: pointer, data: ptr uint8, length: csize_t,
                output: ptr uint64,
                diagnostic: ptr GeneOutBytes): uint32 {.cdecl.} =
+  enterNativeAbiThread()
   if output != nil: output[] = 0
   try:
     if output == nil:
@@ -1765,6 +1779,7 @@ proc apiNewText(context: pointer, data: ptr uint8, length: csize_t,
 proc apiNewBytes(context: pointer, data: ptr uint8, length: csize_t,
                 output: ptr uint64,
                 diagnostic: ptr GeneOutBytes): uint32 {.cdecl.} =
+  enterNativeAbiThread()
   if output != nil: output[] = 0
   try:
     if output == nil:
@@ -1805,6 +1820,7 @@ proc apiFrozenKey(borrow: GeneNativeBorrow, selector: uint32,
 proc apiLength(context: pointer, id: uint64, selector: uint32,
               output: ptr csize_t,
               diagnostic: ptr GeneOutBytes): uint32 {.cdecl.} =
+  enterNativeAbiThread()
   if output != nil: output[] = 0
   try:
     if output == nil:
@@ -1846,6 +1862,7 @@ proc apiLength(context: pointer, id: uint64, selector: uint32,
 proc apiCopyKey(context: pointer, id: uint64, selector: uint32,
                index: csize_t, output: ptr GeneOutBytes,
                diagnostic: ptr GeneOutBytes): uint32 {.cdecl.} =
+  enterNativeAbiThread()
   try:
     if output == nil:
       raise newException(GeneError, "native ABI key output is nil")
@@ -1875,6 +1892,7 @@ proc apiCopyKey(context: pointer, id: uint64, selector: uint32,
 proc apiTraverse(context: pointer, id: uint64, selector: uint32,
                 index: csize_t, output: ptr uint64,
                 diagnostic: ptr GeneOutBytes): uint32 {.cdecl.} =
+  enterNativeAbiThread()
   if output != nil: output[] = 0
   try:
     if output == nil:
@@ -1927,6 +1945,7 @@ proc apiLookup(context: pointer, environment: uint64,
               name: ptr uint8, nameLength: csize_t,
               output: ptr uint64,
               diagnostic: ptr GeneOutBytes): uint32 {.cdecl.} =
+  enterNativeAbiThread()
   if output != nil: output[] = 0
   try:
     if output == nil:
@@ -1950,6 +1969,7 @@ proc apiDefine(context: pointer, environment: uint64,
               name: ptr uint8, nameLength: csize_t, value: uint64,
               output: ptr uint64,
               diagnostic: ptr GeneOutBytes): uint32 {.cdecl.} =
+  enterNativeAbiThread()
   if output != nil: output[] = 0
   try:
     if output == nil:
@@ -1974,6 +1994,7 @@ proc apiCall(context: pointer, callable: uint64,
             arguments: ptr uint64, argumentCount: csize_t,
             environment: uint64, output, error: ptr uint64,
             diagnostic: ptr GeneOutBytes): uint32 {.cdecl.} =
+  enterNativeAbiThread()
   if output != nil: output[] = 0
   if error != nil: error[] = 0
   try:
@@ -2194,6 +2215,7 @@ proc apiRegisterCallback(context: pointer, environment: uint64,
     callback: GeneNativeCallbackProc, userContext: pointer,
     retire: GeneContextRetireProc, output, token: ptr uint64,
     diagnostic: ptr GeneOutBytes): uint32 {.cdecl.} =
+  enterNativeAbiThread()
   if output != nil: output[] = 0
   if token != nil: token[] = 0
   var library = NIL
@@ -2267,6 +2289,7 @@ proc apiRegisterCallback(context: pointer, environment: uint64,
 
 proc apiRequestClose(context: pointer, token: uint64,
                      diagnostic: ptr GeneOutBytes): uint32 {.cdecl.} =
+  enterNativeAbiThread()
   try:
     let domain = apiDomain(context, allowClosed = true)
     var registration: GeneManagedRegistration
@@ -2288,6 +2311,7 @@ proc apiRequestClose(context: pointer, token: uint64,
 
 proc apiWaitClosed(context: pointer, token: uint64, output: ptr uint64,
                    diagnostic: ptr GeneOutBytes): uint32 {.cdecl.} =
+  enterNativeAbiThread()
   if output != nil: output[] = 0
   try:
     if output == nil:
@@ -2371,6 +2395,7 @@ proc takeCProducer(domain: GeneManagedDomain,
 proc apiNewTask(context: pointer, environment: uint64,
                 output, producerToken: ptr uint64,
                 diagnostic: ptr GeneOutBytes): uint32 {.cdecl.} =
+  enterNativeAbiThread()
   if output != nil: output[] = 0
   if producerToken != nil: producerToken[] = 0
   var task: GeneManagedTask
@@ -2447,6 +2472,7 @@ proc apiNewTask(context: pointer, environment: uint64,
 proc apiTaskComplete(context: pointer, token, value: uint64,
                      accepted: ptr uint8,
                      diagnostic: ptr GeneOutBytes): uint32 {.cdecl.} =
+  enterNativeAbiThread()
   if accepted != nil: accepted[] = 0
   var producer: ManagedCProducer
   var domain: GeneManagedDomain
@@ -2492,6 +2518,7 @@ proc apiTaskFail(context: pointer, token: uint64,
                  message: ptr uint8, messageLength: csize_t, error: uint64,
                  accepted: ptr uint8,
                  diagnostic: ptr GeneOutBytes): uint32 {.cdecl.} =
+  enterNativeAbiThread()
   if accepted != nil: accepted[] = 0
   var producer: ManagedCProducer
   var domain: GeneManagedDomain
@@ -2533,6 +2560,7 @@ proc apiTaskFail(context: pointer, token: uint64,
 proc apiTaskCancel(context: pointer, token: uint64,
                    accepted: ptr uint8,
                    diagnostic: ptr GeneOutBytes): uint32 {.cdecl.} =
+  enterNativeAbiThread()
   if accepted != nil: accepted[] = 0
   try:
     let domain = apiDomain(context, rootOnly = false, allowClosed = true)
@@ -2566,6 +2594,7 @@ proc apiTaskCancel(context: pointer, token: uint64,
 proc apiTaskRetire(context: pointer, token: uint64,
                    accepted: ptr uint8,
                    diagnostic: ptr GeneOutBytes): uint32 {.cdecl.} =
+  enterNativeAbiThread()
   if accepted != nil: accepted[] = 0
   var producer: ManagedCProducer
   var domain: GeneManagedDomain
@@ -2596,6 +2625,7 @@ proc apiTaskRetire(context: pointer, token: uint64,
 proc apiTaskSubmitCopy(context: pointer, token: uint64,
                        source: ptr GeneCopiedResult,
                        diagnostic: ptr GeneOutBytes): uint32 {.cdecl.} =
+  enterNativeAbiThread()
   var copied: pointer
   var domain: GeneManagedDomain
   var reserved = false
@@ -2758,6 +2788,7 @@ proc geneManagedPoll*(domain: GeneManagedDomain): int =
 
 proc apiReserveForeignRoots(context: pointer, capacity: csize_t,
                             diagnostic: ptr GeneOutBytes): uint32 {.cdecl.} =
+  enterNativeAbiThread()
   try:
     if capacity > csize_t(GeneForeignRootLimit):
       raise newException(GeneError, "foreign managed root capacity is invalid")

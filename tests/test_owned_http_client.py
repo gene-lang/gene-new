@@ -815,7 +815,7 @@ class OwnedHttpClientTests(unittest.TestCase):
     ^method "POST" ^body idle_pair/0))
   ($sleep 50)
   (client .IoResource:close)
-  (let cancelled (match (waiting .join)
+  (let cancelled (match (waiting .join) ^!exhaustive
     (when TaskOutcome/cancelled true)))
   (await (client .IoResource:wait_closed))
   (idle_pair/0 .IoResource:close)
@@ -949,7 +949,7 @@ class OwnedHttpClientTests(unittest.TestCase):
   (let response (await (client .stream ^url "{self.base}/stallbody")))
   (let reading (response/body .AsyncReader:read 4))
   (client .IoResource:close)
-  (let cancelled (match (reading .join)
+  (let cancelled (match (reading .join) ^!exhaustive
     (when TaskOutcome/cancelled true)))
   (await (response/body .IoResource:wait_closed))
   (await (client .IoResource:wait_closed))
@@ -1096,7 +1096,7 @@ class OwnedHttpClientTests(unittest.TestCase):
   (let request (client .request ^url "{self.base}/slow"))
   ($sleep 50)
   (request .cancel)
-  (let cancelled (match (request .join)
+  (let cancelled (match (request .join) ^!exhaustive
     (when TaskOutcome/cancelled true)))
   (client .IoResource:close)
   (await (client .IoResource:wait_closed))
