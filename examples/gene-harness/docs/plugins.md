@@ -34,6 +34,13 @@ the plugin belongs to the workspace: another session can use it, and startup
 loads it from the stored source after restart. Plugin state written through
 `PluginHost:update_state` is durable; ordinary in-memory variables are not.
 
+The host records the calling session and optional model turn with saved plugin
+source. Creation is established when registration is committed, preserved across
+replacements, and shown with the current source session in the plugin manager.
+Authors do not need to embed session IDs in their modules. Direct scripts and
+manager edits without a conversation do not acquire a fabricated `default`
+session. See [development sessions](plugin-source.md).
+
 Use `PluginHost:notify` for operator-facing milestones. The host stamps the
 publisher, scopes keys by source, and stores messages outside ordinary plugin
 state so notifications do not invalidate unrelated panels. The protocol also

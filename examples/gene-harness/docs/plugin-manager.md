@@ -30,6 +30,7 @@ including disabled, pending, and failed entries.
 | --- | --- |
 | Identity | Plugin ID, description, documentation |
 | Source | Built-in, workspace plugin, or override of a built-in |
+| Development sessions | Original creation and current-source conversations, with ordinary navigation; unknown or unavailable associations remain explicit |
 | Desired state | Enabled or disabled |
 | Runtime state | Active, pending, failed, or not loaded |
 | Provides | Declared capabilities and observed registry contributions |

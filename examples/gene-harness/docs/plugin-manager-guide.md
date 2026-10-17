@@ -11,6 +11,29 @@ plugins retain their last observations. Observations from another host build
 are labeled historical; missing declarations are unknown rather than empty.
 Source details include the retained dependency closure and execution limits.
 
+## Development sessions
+
+Workspace plugins show **Created in** and **Current source from**. Select a
+conversation title to open that session in the Harness conversation view. When
+both refer to the same session, it appears once. Historical versions show their
+own associations. Trigger sessions can be opened too; navigation leaves their
+kind and schedule unchanged.
+
+Links open in the same browser tab, preserving that tab's per-session prompt
+drafts. They do not insert a prompt, submit a request, create a conversation or
+start editing. The user decides what to do next.
+
+Missing conversations show **Session unavailable** with their recorded ID.
+Unknown attribution stays unknown. Bundled plugins without an override show
+**Built-in; no workspace source**. Recovery shows the stored IDs; opening those
+sessions becomes available after normal startup resumes.
+
+Source replacements preserve the original creation session. A manager source
+edit records no source conversation, while source reversion restores the chosen
+version's association. Restoring a built-in default ends its workspace override;
+a later new override starts a new creation. See [session attribution](plugin-source.md)
+for storage and legacy behavior.
+
 ## Review and apply
 
 Checkboxes, source replacement, default restoration, and version reversion

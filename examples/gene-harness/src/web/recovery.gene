@@ -12,8 +12,8 @@
 (import ^from "./contract" [protocol_version])
 (import ^from "../runtime/bootstrap" [open_runtime close_runtime])
 (import ^from "../profiles/baseline" [baseline_profile])
-(import ^from "../runtime/plugin_manager" [plugin_catalog inspect_descriptor])
-(import ^from "../storage/workspace" [composition_revision plugin_history_page revert_entry])
+(import ^from "../runtime/plugin_manager" [plugin_catalog inspect_descriptor plugin_history_catalog])
+(import ^from "../storage/workspace" [composition_revision revert_entry])
 (import ^from "../storage/plugin_history" [pin_history])
 
 (fn main [options] : Int
@@ -90,8 +90,8 @@
         (return
           (response
             200
-            (plugin_history_page ^limit (if ($absent? request/params/limit) 50 (number request/params "limit")) ^before (if ($absent? request/params/before) nil (number request/params "before"))
-              runtime/workspace
+            (plugin_history_catalog ^limit (if ($absent? request/params/limit) 50 (number request/params "limit")) ^before (if ($absent? request/params/before) nil (number request/params "before"))
+              runtime
               (field ^default "" request/params "id")))))
       (if_yes (&& (== request/method "POST") (== request/path "/api/v8/plugins/inspect"))
         (let data (request_data request))

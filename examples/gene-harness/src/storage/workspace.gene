@@ -37,6 +37,8 @@
   [archive_host_build archive_baseline archive_candidate archived_record
    history_list history_revision history_entry append_history_result history_results])
 (import ^from "./plugin_metadata" [remember_descriptor remember_failure])
+(import ^from "./plugin_source"
+  [capture_source_origin assign_creation preserve_creation_on_revert])
 (import ^from "../runtime/composition"
   [queue_composition_change take_composition_changes run_composition_change])
 
@@ -546,7 +548,7 @@
   (let context ($runtime/context))
   (let turn context/turn)
   {^kind (if ($absent? turn) (if ($absent? context/command) "direct" "command") "model")
-   ^operation operation ^plugin id ^session (?? context/session h/event_stream)
+   ^operation operation ^plugin id ^session (?? context/session nil)
    ^turn (if ($absent? turn) nil turn/turn) ^command (?? context/command nil)})
 
 (fn stage_plugin_entry [workspace : Workspace, id : Str, source, ^dependencies dependencies = []]
@@ -630,7 +632,8 @@
      ^interfaces (data_copy workspace/interfaces)
      ^limits bounded ^!disabled
      ^by by ^model model ^at at
-     ^session (?? caller/session h/event_stream) ^turn authenticated_turn})
+     ^session (?? caller/session nil) ^turn authenticated_turn
+     ^source_origin (capture_source_origin caller)})
   (entry .put "origin" (change_origin h (if replace "replace" "register") id))
   (if_not ($absent? (workspace/profile_plugins/.get .get id))
     (entry .put "replaces_builtin" true))
@@ -665,6 +668,8 @@
   (let digest entry/module_digest)
   (var before (composition_entries workspace))
   (var previous_digest (previous_module_digest before id))
+  (let previous_index (find_entry_index before id))
+  (assign_creation workspace entry (if (== previous_index -1) nil before/%previous_index))
   (var next_entries (entries_with before entry replace))
   (var revision (commit_composition ^origin entry/origin workspace next_entries))
   (var status "error")
@@ -1062,6 +1067,7 @@
   (verify_stored_entry workspace saved)
   (let current (composition_entries workspace))
   (let index (find_entry_index current id))
+  (preserve_creation_on_revert workspace saved (if (== index -1) nil current/%index))
   (saved .put "disabled" (if (== index -1) false (== current/%index/disabled true)))
   (if_not ($absent? (workspace/profile_plugins/.get .get id))
     (saved .put "replaces_builtin" true))

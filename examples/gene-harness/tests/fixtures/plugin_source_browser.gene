@@ -1,0 +1,61 @@
+# Seed an offline workspace for browser verification of plugin session links.
+# Run with a new workspace path, then start that workspace's web host.
+(import ^from "../../src/web/session_service" [open_session_service close_session_service])
+(import ^from "../../src/runtime/sessions" [create_session delete_session])
+(import ^from "../../src/runtime/commands" [submit_command command_receipt])
+(import ^from "../../src/storage/workspace" [register_plugin composition_entries commit_composition])
+(import ^from "../../src/kernel" [row])
+
+(fn source [id : Str, version : Int]
+  (if (== id "source_demo")
+    `(mod plugin
+       (import ^from "src/plugin_api.gene" [Plugin PluginHost])
+       (fn version [] %version)
+       (fn init [descriptor]
+         (Plugin ^id "source_demo" ^provides [["web_components" "source_demo"]]
+           ^activate (fn [host]
+             (host .PluginHost:contribute "web_components"
+               {^name "source_demo" ^slot "view" ^title "Source demo view" ^view_state {}
+                ^render (fn [context] (quote (section (h2 "Source demo full-screen view"))))})))))
+    `(mod plugin
+       (import ^from "src/plugin_api.gene" [Plugin])
+       (fn init [descriptor] (Plugin ^id %id ^activate (fn [host] nil))))))
+
+(fn register_in [runtime, session : Str, id : Str, version : Int, replace : Bool = false]
+  (let code ($to_str "/run (register_plugin \"" id "\" (quote " (source id version)
+    ")" (if replace " ^^replace" "") ")"))
+  (let admitted (submit_command runtime/commands session code))
+  (let task (runtime/commands/watchers/.get .get $"${session}:${admitted/id}"))
+  task/.join
+  (let receipt (command_receipt runtime/commands session admitted/id))
+  ($assert (== receipt/status "done") ($to_str receipt)))
+
+(fn main [args] : Int
+  (let service (open_session_service ^workspace args/0 ^^offline))
+  (let runtime service/runtime)
+  (try
+    (create_session ^id "draft-a" ^title "Creation conversation" runtime/sessions)
+    (create_session ^id "draft-b" ^title "Latest source conversation" runtime/sessions)
+    (create_session ^id "trigger-build" ^title "Scheduled source conversation" ^kind "cron" runtime/sessions)
+    (create_session ^id "gone" runtime/sessions)
+    (create_session ^id "default" ^title "Real default conversation" runtime/sessions)
+    (register_in runtime "draft-a" "source_demo" 1)
+    (register_in runtime "draft-b" "source_demo" 2 true)
+    (register_in runtime "trigger-build" "trigger_source" 1)
+    (register_in runtime "gone" "missing_source" 1)
+    (delete_session runtime/sessions "gone")
+    (register_plugin runtime/workspace runtime/h "legacy_script" (source "legacy_script" 1))
+    # Simulate a pre-feature script's event_stream fallback. A real session
+    # with that ID must not turn the fallback into a claimed conversation.
+    (let entries (composition_entries runtime/workspace))
+    (for entry in entries
+      (if_yes (== entry/id "legacy_script")
+        (entry .delete "source_origin")
+        (entry .delete "created_in")
+        (entry .put "origin" {^kind "direct" ^operation "register" ^plugin "legacy_script" ^session "default"})))
+    (commit_composition runtime/workspace entries)
+    ((/fn (row runtime/h "functions" "ui_configure"))
+      {^^enabled ^layout "panel" ^panel "source_demo" ^default_view "source_demo"})
+    ($println "Plugin source browser fixture ready.")
+  ensure (close_session_service service))
+  0)

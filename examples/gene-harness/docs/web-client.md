@@ -64,6 +64,12 @@ records, round state and reconnect state. Switching tabs preserves the draft
 and cached transcript. Background streams continue updating their tabs.
 Closing a tab releases its viewer, allowing later idle unloading.
 
+The plugin manager's development-session links open `/?session=ID&view=harness`
+in the same browser tab. This overrides a remembered full-screen plugin view
+and restores the selected session's prompt draft. Drafts use browser
+`sessionStorage`: switching A → B → A or reloading that tab preserves each
+session's text; separate browser tabs do not synchronize their drafts.
+
 The hamburger button at the start of the conversation tab bar toggles the left
 conversation menu. On desktop, hiding it gives the space to the conversation
 and any docked plugin view; the choice is remembered in the current browser

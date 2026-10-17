@@ -39,9 +39,9 @@
 (import ^from "../runtime/commands" [CommandError])
 (import ^from "../runtime/round_controller" [request_stop submit_round])
 (import ^from "../runtime/bootstrap" [prepare_workspace_root])
-(import ^from "../runtime/plugin_manager" [plugin_catalog inspect_descriptor])
+(import ^from "../runtime/plugin_manager" [plugin_catalog inspect_descriptor plugin_history_catalog])
 (import ^from "./plugin_control" [new_plugin_control plugin_control_request close_plugin_control])
-(import ^from "../storage/workspace" [plugin_history_page composition_revision revert_plugin record_application_result CompositionConflict CompositionError])
+(import ^from "../storage/workspace" [composition_revision revert_plugin record_application_result CompositionConflict CompositionError])
 (import ^from "../storage/plugin_history" [PluginHistoryError pin_history])
 (import ^from "../runtime/workspace_lock" [acquire_workspace_lock close_workspace_lock])
 (import ^from "../runtime/input_modes" [submit_mode_input close_mode expire_modes ModeError])
@@ -258,10 +258,10 @@
       (return (response 200 result)))
     (if_yes (&& (== request/method "GET") (== request/path "/api/v8/plugins/history"))
       (return (response 200
-        (plugin_history_page
+        (plugin_history_catalog
            ^limit (if ($absent? request/params/limit) 50 (number request/params "limit"))
            ^before (if ($absent? request/params/before) nil (number request/params "before"))
-           host/runtime/workspace (field request/params "id" ^default "")))))
+           host/runtime (field request/params "id" ^default "")))))
     (if_yes (&& (== request/method "GET") (== request/path "/api/v8/plugins"))
       (let result (plugin_catalog
         ^query (field request/params "q" ^default "")

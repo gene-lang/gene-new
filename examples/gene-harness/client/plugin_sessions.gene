@@ -1,0 +1,46 @@
+# Ordinary same-tab navigation, shared by current plugin details and history.
+# Rendering is pure data so it can also be checked without a browser.
+(mod plugin_sessions ^profile web)
+
+(fn text [value : Any] : Str
+  (if_yes ($absent? value) (return ""))
+  (var result : Str value)
+  result)
+
+(fn flag [value : Any] : Bool
+  (if_yes ($absent? value) (return false))
+  (var result : Bool value)
+  result)
+
+(fn session_row [label : Str, reference : Any] : Any
+  (var id (text reference/session))
+  (if_yes (== id "")
+    (return `(p ^class_name "plugin_meta" %label ": Unknown")))
+  (var title (text reference/title))
+  (if_yes (== title "") (set title id))
+  (var name : Any `(span %title))
+  (var suffix "")
+  (if (flag reference/available)
+    (do
+      (var href $"/?session=${($url/encode_component id)}&view=harness")
+      (set name `(a ^href %href ^title %id %title))
+      (var kind (text reference/kind))
+      (if_yes (&& (!= kind "") (!= kind "interactive")) (set suffix $" · ${kind}")))
+    (set suffix (if (flag reference/recovery)
+      " · Open after normal startup" " · Session unavailable")))
+  `(p ^class_name "plugin_meta" %label ": " %name %suffix))
+
+(fn plugin_sessions_view [development : Any, builtin : Bool = false] : Any
+  (if_yes builtin
+    (return `(p ^class_name "plugin_meta" "Built-in; no workspace source")))
+  (var created : Any development/created_in)
+  (var source : Any development/source_from)
+  (var created_id (text created/session))
+  (var source_id (text source/session))
+  (if_yes (&& (== created_id "") (== source_id ""))
+    (return `(p ^class_name "plugin_meta" "Development sessions unknown.")))
+  (if (== created_id source_id)
+    (session_row "Created in · current source" created)
+    `(div ^class_name "plugin_sessions"
+       %(session_row "Created in" created)
+       %(session_row "Current source from" source))))

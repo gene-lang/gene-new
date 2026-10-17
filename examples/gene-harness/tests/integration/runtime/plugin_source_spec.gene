@@ -1,0 +1,240 @@
+(import $test [describe it])
+(import ^from "../../support" [isolated run_spec])
+(import ^from "../../../src/runtime/bootstrap" [open_runtime close_runtime])
+(import ^from "../../../src/profiles/profile" [Profile])
+(import ^from "../../../src/plugin_api" [Plugin])
+(import ^from "../../../src/builtin/plugin_admin" [plugin_admin])
+(import ^from "../../../src/builtin/core_commands" [core_commands])
+(import ^from "../../../src/builtin/provider_offline" [provider_offline])
+(import ^from "../../../src/agents/harness_turn" [evaluate_harness_turn])
+(import ^from "../../../src/runtime/commands" [submit_command command_receipt])
+(import ^from "../../../src/runtime/sessions" [create_session update_session delete_session])
+(import ^from "../../../src/runtime/plugin_manager" [plugin_catalog plugin_history_catalog])
+(import ^from "../../../src/runtime/plugin_plans" [validate_plan apply_plan])
+(import ^from "../../../src/storage/workspace"
+  [register_plugin composition_entries composition_revision set_plugin_enabled
+   restore_plugin revert_plugin revert_entry])
+
+(fn profile [^builtin builtin : Bool = false]
+  (let plugins [(plugin_admin) (core_commands) (provider_offline)])
+  (if builtin (plugins .push (Plugin ^id "probe" ^activate (fn [host] nil))))
+  (Profile ^name "source-test" ^plugins plugins ^provider "offline"))
+
+(fn source [id : Str, version : Int, ^bad_init bad_init : Bool = false, ^bad_activation bad_activation : Bool = false]
+  `(mod plugin
+     (import ^from "src/plugin_api.gene" [Plugin])
+     (fn version [] %version)
+     (fn init [descriptor]
+       (if %bad_init (fail "preflight failure"))
+       (Plugin ^id %id ^activate (fn [host]
+         (if %bad_activation (fail "activation failure")))))))
+
+(fn statement [id : Str, version : Int, ^replace replace : Bool = false]
+  ($to_str "(register_plugin \"" id "\" (quote " (source id version) ")"
+    (if replace " ^^replace" "") ")"))
+
+(fn stored [runtime, id : Str = "probe"]
+  (for entry in (composition_entries runtime/workspace)
+    (if (== entry/id id) (return entry)))
+  nil)
+
+(fn catalog_entry [runtime, id : Str = "probe"]
+  (for entry in (/plugins (plugin_catalog runtime))
+    (if (== entry/id id) (return entry)))
+  (fail $"missing catalog plugin ${id}"))
+
+(fn run_command [runtime, session : Str, text : Str]
+  (let admitted (submit_command runtime/commands session text))
+  (let watcher (runtime/commands/watchers/.get .get $"${session}:${admitted/id}"))
+  watcher/.join
+  (let result (command_receipt runtime/commands session admitted/id))
+  ($assert (== result/status "done") ($to_str result))
+  result)
+
+(fn apply_changes [runtime, changes]
+  (let plan (validate_plan runtime
+    {^base_revision (composition_revision runtime/workspace) ^changes changes}))
+  ($assert plan/valid ($to_str plan))
+  (let result (apply_plan runtime plan/id))
+  ($assert (== result/state "applied") ($to_str result))
+  result)
+
+(fn lifecycle [root]
+  (let runtime (open_runtime root "default" (profile)))
+  (var first_revision 0)
+  (var command_revision 0)
+  (try
+    (create_session ^id "a" ^title "Creation conversation" runtime/sessions)
+    (create_session ^id "b" ^title "Replacement conversation" runtime/sessions)
+    (create_session ^id "trigger" ^kind "cron" ^title "Scheduled work" runtime/sessions)
+    (create_session ^id "default" runtime/sessions)
+    (let turn (evaluate_harness_turn ^session "a" runtime/h 3 root (statement "probe" 1)))
+    ($assert (== turn/composition_changes/0/status "ready") ($to_str turn))
+    (set first_revision (composition_revision runtime/workspace))
+    (let first (stored runtime))
+    ($assert (== first/created_in {^session "a" ^turn "3"}))
+    ($assert (== first/source_origin {^kind "model" ^session "a" ^turn "3"}))
+    (run_command runtime "b" ($to_str "/run " (statement ^^replace "probe" 2)))
+    (set command_revision (composition_revision runtime/workspace))
+    (let second (stored runtime))
+    ($assert (== second/created_in first/created_in))
+    ($assert (== second/source_origin {^kind "command" ^session "b"}))
+    ($assert (== second/turn "direct"))
+    (update_session runtime/sessions "a" {^title "Renamed creation"})
+    (let current (catalog_entry runtime))
+    ($assert (== current/development/created_in/title "Renamed creation"))
+    ($assert current/development/source_from/available)
+    ($assert (== current/development/source_from/session "b"))
+    (let rejected_plan (validate_plan runtime
+      {^base_revision command_revision ^changes [{^id "probe" ^kind "replace"
+        ^source ($to_str (source ^^bad_activation "probe" 99))}]}))
+    ($assert rejected_plan/valid)
+    ($assert (== (/state (apply_plan runtime rejected_plan/id)) "failed"))
+    ($assert (== (stored runtime) second) "a rejected manager edit changed source attribution")
+    (apply_changes runtime [{^id "probe" ^kind "replace" ^source ($to_str (source "probe" 3))}])
+    (let manager (stored runtime))
+    ($assert (== manager/created_in first/created_in))
+    ($assert (== manager/source_origin {^kind "operator"}))
+    ($assert ($absent? (/source_from (/development (catalog_entry runtime)))))
+    (revert_plugin runtime/workspace runtime/h "probe" command_revision)
+    ($assert (== (/source_origin (stored runtime)) second/source_origin))
+    (apply_changes runtime [{^id "probe" ^kind "revert" ^revision first_revision}])
+    ($assert (== (/source_origin (stored runtime)) first/source_origin))
+    (for enabled in [false true]
+      (set_plugin_enabled runtime/workspace runtime/h "probe" enabled)
+      ($assert (== (/created_in (stored runtime)) first/created_in))
+      ($assert (== (/source_origin (stored runtime)) first/source_origin)))
+    (apply_changes runtime [{^id "probe" ^kind "set_enabled" ^^enabled ^^retry}])
+    ($assert (== (/created_in (stored runtime)) first/created_in))
+    ($assert (== (/source_origin (stored runtime)) first/source_origin))
+    (evaluate_harness_turn ^session "trigger" runtime/h 4 root (statement ^^replace "probe" 4))
+    (let triggered (catalog_entry runtime))
+    ($assert (== triggered/development/source_from/kind "cron"))
+    ($assert (== triggered/development/source_from/session "trigger"))
+    ($assert triggered/development/source_from/available)
+    (let history (plugin_history_catalog runtime "probe"))
+    (let earliest history/history/.last)
+    ($assert (== earliest/development/source_from/session "a"))
+    ($assert (== earliest/development/created_in/session "a"))
+    # A script has no conversation, even when a real "default" session exists.
+    (register_plugin runtime/workspace runtime/h "external" (source "external" 1))
+    (let external (stored runtime "external"))
+    ($assert ($absent? external/session))
+    ($assert ($absent? external/origin/session))
+    ($assert (== external/source_origin {^kind "direct"}))
+    ($assert ($absent? (/source_from (/development (catalog_entry runtime "external")))))
+    (let builtin (catalog_entry runtime "plugin_admin"))
+    ($assert (== builtin/source "built_in"))
+    ($assert ($absent? builtin/development/source_from))
+  ensure
+    (close_runtime runtime))
+  (let reopened (open_runtime root "default" (profile)))
+  (try
+    (let after_restart (catalog_entry reopened))
+    ($assert (== after_restart/development/created_in/session "a"))
+    ($assert (== after_restart/development/source_from/session "trigger"))
+    (delete_session reopened/sessions "a")
+    (let missing (catalog_entry reopened))
+    ($assert (== missing/development/created_in/session "a"))
+    ($assert (! missing/development/created_in/available))
+  ensure
+    (close_runtime reopened)))
+
+(fn failures_and_queue [root]
+  (let runtime (open_runtime root "default" (profile)))
+  (try
+    (create_session ^id "a" runtime/sessions)
+    (create_session ^id "b" runtime/sessions)
+    (create_session ^id "c" runtime/sessions)
+    (let entered ($cell false))
+    (let program ($to_str (statement "cancelled" 1)
+      " (entered .set true) (while true ($sleep 1))"))
+    (let task (spawn ^lane root
+      (evaluate_harness_turn ^session "a" ^bindings {^entered entered} runtime/h 1 root program)))
+    (let due (+ ($os/monotonic_ms) 5000))
+    (while (&& (! entered/.get) (< ($os/monotonic_ms) due)) ($sleep 1))
+    ($assert entered/.get)
+    task/.cancel
+    task/.join
+    ($assert ($absent? (stored runtime "cancelled")))
+    (let other (fn []
+      (let context ($runtime/context))
+      ($runtime/with_context
+        {^session "b" ^turn context/turn ^composition context/composition ^snapshot context/snapshot}
+        (fn [] (register_plugin ^^replace runtime/workspace runtime/h "probe" (source "probe" 2))))))
+    (let combined ($to_str (statement "probe" 1) " (other)"))
+    (let turn (evaluate_harness_turn ^session "a" ^bindings {^other other} runtime/h 2 root combined))
+    ($assert (== ($size turn/composition_changes) 2) ($to_str turn))
+    (let before (stored runtime))
+    ($assert (== before/created_in {^session "a" ^turn "2"}))
+    ($assert (== before/source_origin/session "b"))
+    ($assert (try
+      (register_plugin ^^replace runtime/workspace runtime/h "probe" (source ^^bad_init "probe" 3))
+      false catch Any true))
+    ($assert (== (stored runtime) before))
+    (runtime/workspace/busy .set true)
+    (try
+      ($assert (try
+        (register_plugin ^^replace runtime/workspace runtime/h "probe" (source "probe" 3))
+        false catch Any true))
+    ensure (runtime/workspace/busy .set false))
+    ($assert (== (stored runtime) before))
+    (let broken ($runtime/with_context {^session "c" ^command "activation-test"}
+      (fn [] (register_plugin ^^replace runtime/workspace runtime/h "probe"
+        (source ^^bad_activation "probe" 4)))))
+    ($assert (== broken/status "error"))
+    (let saved (stored runtime))
+    ($assert (== saved/created_in before/created_in))
+    ($assert (== saved/source_origin {^kind "command" ^session "c"}))
+    ($assert (!= saved/module_digest before/module_digest))
+    ($assert (== (/session (/source_from (/development (catalog_entry runtime)))) "c"))
+  ensure
+    (close_runtime runtime)))
+
+(fn override_and_recovery [root]
+  (let selected (profile ^^builtin))
+  (let runtime (open_runtime root "default" selected))
+  (var old_revision 0)
+  (try
+    (create_session ^id "a" runtime/sessions)
+    (create_session ^id "b" runtime/sessions)
+    (run_command runtime "a" ($to_str "/run " (statement ^^replace "probe" 1)))
+    (set old_revision (composition_revision runtime/workspace))
+    (restore_plugin runtime/workspace runtime/h "probe")
+    ($assert ($absent? (stored runtime)))
+    ($assert (== (/source (catalog_entry runtime)) "built_in"))
+    (run_command runtime "b" ($to_str "/run " (statement ^^replace "probe" 2)))
+    ($assert (== (/session (/created_in (stored runtime))) "b"))
+    (let history (plugin_history_catalog runtime "probe"))
+    ($assert (== (/session (/created_in (/development history/history/.last))) "a"))
+  ensure
+    (close_runtime runtime))
+  ($fs/write_text $"${root}/.gene-harness/config.gene" "(invalid configuration")
+  ($fs/write_text $"${root}/.gene-harness/events/CURRENT" "unreadable application history")
+  (let recovery (open_runtime ^^recovery root "default" selected))
+  (try
+    ($assert ($absent? recovery/events))
+    ($assert ($absent? recovery/sessions))
+    (let before (catalog_entry recovery))
+    ($assert (== before/development/created_in/session "b"))
+    ($assert before/development/created_in/recovery)
+    ($assert (! before/development/created_in/available))
+    (revert_entry recovery/workspace "probe" old_revision)
+    (let reverted (stored recovery))
+    ($assert (== reverted/created_in/session "b"))
+    ($assert (== reverted/source_origin/session "a"))
+    (let recovered_history (plugin_history_catalog recovery "probe"))
+    ($assert recovered_history/history/0/development/source_from/recovery)
+    ($assert (== ($fs/read_text $"${root}/.gene-harness/events/CURRENT") "unreadable application history"))
+  ensure
+    (close_runtime recovery)))
+
+(describe "Workspace plugin development sessions"
+  (it "retains source sessions across model and command edits, plans, reverts and restart" []
+    (isolated this_mod/.path "retains source sessions across model and command edits, plans, reverts and restart" lifecycle))
+  (it "attributes first publication and leaves cancelled or failed writes unchanged" []
+    (isolated this_mod/.path "attributes first publication and leaves cancelled or failed writes unchanged" failures_and_queue))
+  (it "starts a new override lifetime and reads attribution during offline recovery" []
+    (isolated this_mod/.path "starts a new override lifetime and reads attribution during offline recovery" override_and_recovery)))
+
+(fn main [args] : Int (run_spec args))

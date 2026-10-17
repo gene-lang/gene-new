@@ -7,6 +7,7 @@
 (import ^from "../agents/provider_selection" [readiness_report])
 (import ^from "../storage/plugin_metadata" [descriptor_data saved_metadata capabilities])
 (import ^from "../storage/plugin_history" [history_revision append_history_result])
+(import ^from "../storage/plugin_source" [assign_creation preserve_creation_on_revert])
 (import ^from "../storage/workspace"
   [
     CompositionError
@@ -79,7 +80,7 @@
     (if (!= entry/id id) (kept .push entry)))
   kept)
 
-(fn change_entries [runtime, current, changes]
+(fn change_entries [runtime, current, changes, ^revision revision = nil]
   (let workspace runtime/workspace)
   (var next (data_copy current))
   (let seen [])
@@ -121,13 +122,16 @@
         (let found (find_entry_index old/entries id))
         (if (|| (== found -1) ($absent? old/entries/%found/module_digest))
           (plan_error "no stored plugin version in that revision; restore defaults separately"))
-        (set updated (data_copy old/entries/%found)))
+        (set updated (data_copy old/entries/%found))
+        (preserve_creation_on_revert ^revision revision workspace updated existing))
       (do
         (let dependencies
           (if (&& (== ($head operation/dependency_source) Str) (!= ($str/trim operation/dependency_source) ""))
             ($into ($parse/read_all operation/dependency_source) [])
             (?? operation/dependencies [])))
-        (set updated (stage_plugin_entry ^dependencies dependencies workspace id operation/source))))
+        (set updated (stage_plugin_entry ^dependencies dependencies workspace id operation/source))
+        (updated .put "source_origin" {^kind "operator"})
+        (assign_creation ^revision revision workspace updated existing)))
     (if (&& (! ($absent? operation/enabled)) (!= ($head operation/enabled) Bool))
       (plan_error "enabled must be a boolean"))
     (updated .put "disabled" (! (?? operation/enabled enabled)))
@@ -177,7 +181,8 @@
       (set base historical/entries)
       (if (!= historical/host_build_id stamp/host_build_id)
         (warnings .push "This revision came from another or unknown host build. Current built-in defaults will be used.")))
-    (let desired (change_entries runtime base changes))
+    (let desired (change_entries ^revision (?? request/restore_revision (composition_revision workspace))
+      runtime base changes))
     (let diff (plan_diff workspace before desired))
     (var retry false)
     (for change in changes (if (== change/retry true) (set retry true)))

@@ -1,0 +1,42 @@
+(import $test [describe it run])
+(import $html [render])
+(import ^from "../../../client/plugin_sessions" [plugin_sessions_view])
+
+(fn available [id, title, kind = "interactive"]
+  {^session id ^title title ^kind kind ^^available ^!recovery})
+
+(describe "Plugin session navigation"
+  (it "renders one ordinary same-tab link when creation and current source share a session" []
+    (let reference (available "session a&b" "My conversation"))
+    (let html (render (plugin_sessions_view {^created_in reference ^source_from reference})))
+    ($assert (== ($size ($str/split html "<a ")) 2))
+    ($assert ($str/contains? html "session=session%20a%26b&amp;view=harness"))
+    ($assert ($str/contains? html "My conversation"))
+    ($assert (! ($str/contains? html "target=")))
+    ($assert (! ($str/contains? html "plugin="))))
+
+  (it "keeps both source conversations and permits trigger-session navigation" []
+    (let html (render (plugin_sessions_view
+      {^created_in (available "a" "Created here") ^source_from (available "b" "Latest change" "cron")})))
+    ($assert (== ($size ($str/split html "<a ")) 3))
+    ($assert ($str/contains? html "session=a&amp;view=harness"))
+    ($assert ($str/contains? html "session=b&amp;view=harness"))
+    ($assert ($str/contains? html "cron")))
+
+  (it "shows unavailable, recovery, unknown and bundled states without creating sessions" []
+    (let missing (render (plugin_sessions_view
+      {^created_in {^session "removed" ^!available} ^source_from nil})))
+    ($assert ($str/contains? missing "removed"))
+    ($assert ($str/contains? missing "Session unavailable"))
+    ($assert (! ($str/contains? missing "<a ")))
+    (let recovery (render (plugin_sessions_view
+      {^source_from {^session "stored-id" ^!available ^^recovery}})))
+    ($assert ($str/contains? recovery "stored-id"))
+    ($assert ($str/contains? recovery "Open after normal startup"))
+    ($assert (! ($str/contains? recovery "<a ")))
+    ($assert ($str/contains? (render (plugin_sessions_view nil)) "unknown"))
+    (let bundled (render (plugin_sessions_view nil true)))
+    ($assert ($str/contains? bundled "Built-in; no workspace source"))
+    ($assert (! ($str/contains? bundled "<a ")))))
+
+(fn main [args] : Int (/exit_code (run ^name (?? args/0 ""))))

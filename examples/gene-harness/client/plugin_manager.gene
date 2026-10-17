@@ -1,5 +1,6 @@
 (mod plugin_manager_client ^profile web)
 (import ^from "./state.gene" [query_value])
+(import ^from "./plugin_sessions.gene" [plugin_sessions_view])
 
 (type Manager ^props {^csrf Str ^epoch Str ^host Str ^workspace Str ^revision Int ^base Int ^base_plugins (List Any) ^plugins (List Any) ^selected Str ^changes (List Any) ^restore Any ^plan Any ^busy Bool ^ready Bool ^recovery Bool ^repair Bool ^pending Str ^fetch_seq Int ^notice EventTarget})
 
@@ -433,6 +434,9 @@
         (add_line row $"Host: ${(text record/host_build_id)}")
         (if_not ($absent? record/entry/module_digest)
           (add_line row $"Code: ${(text record/entry/module_digest)}"))
+        (if_not ($absent? record/entry)
+          ($dom/append row ($dom/render
+            (plugin_sessions_view record/development ($absent? record/entry/module_digest)))))
         (if_not ($absent? record/origin/reason) (add_line row (text record/origin/reason)))
         (var outcomes : (List Any) record/outcomes)
         (for outcome in outcomes
@@ -508,6 +512,8 @@
   ($dom/append target ($dom/render `(h2 %id)))
   ($dom/append target ($dom/render `(p %(text selected/description))))
   (add_line target $"Runtime: ${(state_label selected/state)} · ${(source_label selected/source)}")
+  ($dom/append target ($dom/render
+    (plugin_sessions_view selected/development (== (text selected/source) "built_in"))))
   (if_yes (&& (! ($absent? selected/active_digest)) (!= (text selected/active_digest) (if ($absent? selected/digest) "builtin" (text selected/digest))))
     (add_line target $"Still running the previous code: ${(text selected/active_digest)}"))
   (if_not ($absent? selected/changed_at)
