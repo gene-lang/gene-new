@@ -23,7 +23,7 @@ Select a generator and generation model explicitly, or set `generator` and
 `generation_model` in the `image` map of workspace `config.gene`. The same map
 can set `size`, `background`, `generator_options`, `decoder_worker`, and the
 run/generation/review timeouts and persistence margin in milliseconds. Their
-defaults are 590000/120000/60000/5000. Both models' declared input limits and the
+defaults are 590000/240000/60000/5000. Both models' declared input limits and the
 remaining response budget apply. The main reviewer is pinned to the provider
 and settings that produced the current response; Claude CLI cannot review
 images. Unknown model support is reported honestly and may fail at the provider.
@@ -32,13 +32,17 @@ The baseline includes the `openrouter` image generator, using
 `OPENROUTER_API_KEY` or `OPENROUTER_KEY`. It calls OpenRouter's dedicated
 [Image API](https://openrouter.ai/docs/guides/overview/multimodal/image-generation),
 discovers endpoint capabilities before generation, requests one PNG, and
-routes only to endpoints compatible with the requested settings. Configure
+routes only to endpoints compatible with the requested settings. When every
+eligible endpoint advertises compatible resolution and aspect-ratio controls,
+the adapter sends those explicitly instead of the size shorthand. Configure
 `generator_options` as `{^only ["PROVIDER_TAG"] ^allow_fallbacks false}` to
 restrict routing further. Fallbacks require an explicit compatible allowlist;
 discovery failure disables them and records unknown support. Missing keys in
 available endpoint metadata mean unsupported. There is no automatic generator
 or model selection, and a model's vision support does not establish image
-generation support.
+generation support. Rejected requests retain a bounded provider explanation
+after removing the API key and any echoed reference-image bytes; this appears
+in the run result, durable model diagnostics, and operator console.
 
 The function publishes final metadata and attaches the saved final image for
 the next model turn and the normal preview/download flow. Progress appears

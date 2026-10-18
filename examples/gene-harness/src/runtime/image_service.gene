@@ -179,7 +179,9 @@
       (attempt .put "state" (if (== reason "cancelled") "interrupted" "failed"))))
   (checkpoint service live)
   (let candidate (latest_candidate live/state))
-  (progress service live/state reason ^score (?? candidate/review/score nil))
+  (progress service live/state
+    (if ($absent? detail/message) reason ($to_str reason ": " detail/message))
+    ^score (?? candidate/review/score nil))
   (if publish (publish_result service live))
   (image_result service live/state))
 
@@ -302,8 +304,10 @@
         (set code "timeout"))
       {^ok false ^code code
        ^usage (image_usage error/usage)
-       ^message (if (["validation" "storage"] .contains? live/stage)
-         (safe_error ($to_str error/message) []) "Provider operation failed.")
+       ^message (if (== ($head error/diagnostic) Str)
+         (safe_error error/diagnostic [])
+         (if (["validation" "storage"] .contains? live/stage)
+           (safe_error ($to_str error/message) []) "Provider operation failed."))
        ^status (if (&& (== ($head error/status) Int) (>= error/status 100) (<= error/status 599))
          error/status nil)})
     (when (TaskOutcome/panic message) {^ok false ^code "provider_panic"})
@@ -434,7 +438,8 @@
         (- ($os/monotonic_ms) started)
         ^output (if outcome/ok {^images [outcome/value]} nil)
         ^usage live/pending_usage
-        ^error (if outcome/ok nil $"Image ${live/stage} failed (${outcome/code}).")))
+        ^error (if outcome/ok nil
+          (?? outcome/message $"Image ${live/stage} failed (${outcome/code})."))))
     (record_usage live "generation" call_id live/pending_usage)
     (if_not outcome/ok
       (return (phase_failure service live outcome

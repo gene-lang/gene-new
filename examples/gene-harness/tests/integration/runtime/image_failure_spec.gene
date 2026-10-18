@@ -9,6 +9,27 @@
 (fn run_state [fixture] (read_image_run fixture/runtime "default" "image-round"))
 
 (describe "Bounded image failures and recovery"
+  (it "preserves sanitized provider diagnostics in results, model records and the console" []
+    (isolated this_mod/.path
+      "preserves sanitized provider diagnostics in results, model records and the console"
+      (fn [workspace]
+        (let fixture (image_fixture workspace []))
+        (try
+          (fixture/mode .set "generation_diagnostic")
+          (evaluate_image fixture "Draw a Gene logo.")
+          (let result fixture/captured/.get)
+          ($assert (== result/error/message "Unsupported image aspect ratio."))
+          ($assert (== result/error/status 422))
+          (let events (events_for fixture/runtime/events "session" "default"))
+          (let records ($filter events (fn [event]
+            (&& (== event/type "model/result") (== event/payload/purpose "image/generation")))))
+          ($assert (== records/.size 1))
+          ($assert (== records/0/payload/error "Unsupported image aspect ratio."))
+          (let console ($filter events (fn [event] (== event/type "console"))))
+          ($assert ($str/contains? ($to_str console) "Unsupported image aspect ratio."))
+          ($assert (! ($str/contains? ($to_str console) "private provider body")))
+        ensure (close_runtime fixture/runtime)))))
+
   (it "retains the correct candidate on first and later generation or review failures" []
     (isolated this_mod/.path
       "retains the correct candidate on first and later generation or review failures"

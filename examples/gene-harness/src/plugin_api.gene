@@ -28,7 +28,7 @@
 (fn response_execution_limits [] : ExecutionLimits
   (ExecutionLimits ^max_steps 9223372036854775807 ^max_memory_mb 1024 ^timeout_ms 600000))
 
-(type ImageError ^props {^code Str ^message Str ^status Int? ^usage Any?} ^impl [Error])
+(type ImageError ^props {^code Str ^message Str ^status Int? ^usage Any? ^diagnostic Str?} ^impl [Error])
 (impl Error for ImageError)
 
 # The workflow owns prompts and loop policy; these host operations own durable

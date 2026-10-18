@@ -53,12 +53,28 @@
     (let prepared (prepare_openrouter_image {^settings settings ^prompt "Original prompt"
       ^instructions "Generate PNG" ^revision "Keep colors; fix lettering."
       ^reference_images ["reference"] ^candidate "candidate" ^run "run" ^timeout_ms 900}))
-    ($assert (== [prepared/body/n prepared/body/output_format prepared/body/size] [1 "png" "1024x1024"]))
-    ($assert ($absent? prepared/body/resolution))
-    ($assert ($absent? prepared/body/aspect_ratio))
+    ($assert (== [prepared/body/n prepared/body/output_format] [1 "png"]))
+    ($assert ($absent? prepared/body/size))
+    ($assert (== prepared/body/resolution "1K"))
+    ($assert (== prepared/body/aspect_ratio "1:1"))
     ($assert ($absent? prepared/body/background))
     ($assert (== prepared/reference_images ["reference" "candidate"]))
     ($assert ($str/contains? prepared/body/prompt "Keep colors; fix lettering.")))
+
+  (it "uses explicit supported size controls and retains direct-size endpoints" []
+    (for size in ["1024x1024" "1K" "2048x1024"]
+      (let settings (configure_openrouter_images ((input) .assoc "size" size)
+        ^transport (discovery [(endpoint "good")])))
+      ($assert (== settings/size_parameters
+        (if (== size "2048x1024") {^resolution "2K" ^aspect_ratio "2:1"}
+          {^resolution "1K" ^aspect_ratio "1:1"}))))
+    (let direct (endpoint "direct" ^parameters
+      {^size {^type "enum" ^values ["1024x1024"]}
+       ^output_format {^type "enum" ^values ["png"]}
+       ^input_references {^type "range" ^min 0 ^max 4}}))
+    (for endpoints in [[direct] [direct (endpoint "good")]]
+      (let settings (configure_openrouter_images (input) ^transport (discovery endpoints)))
+      ($assert (== settings/size_parameters {^size "1024x1024"}))))
 
   (it "rejects known incompatible settings and routes before any generation" []
     (for request in [((input) .assoc "size" "4096x4096")
@@ -136,6 +152,28 @@
           {^data [{^b64_json ($base64/encode too_large)}] ^usage {^cost 0.05}})}))
       nil catch ImageError $err))
     ($assert (== error/code "image_too_large"))
-    ($assert (== error/usage/cost 0.05))))
+    ($assert (== error/usage/cost 0.05)))
+
+  (it "retains structured rejection details without credentials or echoed image payloads" []
+    (let bytes (png))
+    (let encoded ($base64/encode bytes))
+    (let prepared {^body {} ^reference_images ["reference"] ^run "run" ^timeout_ms 100})
+    (let error (try
+      (send_openrouter_image prepared (fn [run id] {^mime "image/png" ^bytes bytes})
+        ^key_source (fn [] "fixture-secret")
+        ^transport (fn [call] {^status 422 ^body ($json/stringify
+          {^error {^message $"Invalid aspect ratio; Bearer fixture-secret; reference data:image/png;base64,${encoded}"}})}))
+      nil catch ImageError $err))
+    ($assert (== error/status 422))
+    ($assert ($str/contains? error/diagnostic "Invalid aspect ratio"))
+    ($assert (! ($str/contains? error/diagnostic "fixture-secret")))
+    ($assert (! ($str/contains? error/diagnostic encoded)))
+    ($assert (! ($str/contains? error/diagnostic "data:image/")))
+    (let opaque (try
+      (send_openrouter_image prepared (fn [run id] {^mime "image/png" ^bytes bytes})
+        ^key_source (fn [] "fixture-secret")
+        ^transport (fn [call] {^status 500 ^body "private provider body"}))
+      nil catch ImageError $err))
+    ($assert ($absent? opaque/diagnostic))))
 
 (fn main [args] (/exit_code (run ^name (?? args/0 ""))))

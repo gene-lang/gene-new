@@ -234,7 +234,11 @@ Store selected routing/capability details in settings or capabilities, never
 credentials, base64 data or response bodies. PNG output is mandatory and must
 not be transcoded silently. Provider errors should use `ImageError` with a
 short `code`, `message`, optional HTTP `status` and numeric `usage` when known,
-excluding transport bodies. Failed generation usage is retained with its call.
+excluding transport bodies. An optional `diagnostic` opts into retaining a
+provider explanation in the run result, model record and console. The adapter
+must remove credentials and echoed image bytes first; the host also bounds
+the diagnostic and rejects recognizable image payloads. Other provider error
+messages remain opaque. Failed generation usage is retained with its call.
 
 ### Contribute UI
 

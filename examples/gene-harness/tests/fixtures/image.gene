@@ -32,6 +32,9 @@
            (generated/.get .push prepared)
            (entered .set true)
            (if (== mode/.get "generation_failed") (fail "generation failed"))
+           (if (== mode/.get "generation_diagnostic")
+             (fail (ImageError ^code "provider_rejected" ^status 422
+               ^message "private provider body" ^diagnostic "Unsupported image aspect ratio.")))
            (if (== mode/.get "generation_usage_error")
              (fail (ImageError ^code "image_too_large" ^message "Fixture output exceeds the limit."
                ^usage {^cost 0.02})))

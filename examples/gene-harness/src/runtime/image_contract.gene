@@ -35,7 +35,7 @@
   ($freeze values))
 
 (fn image_limits [config]
-  (let result {^run_timeout_ms 590000 ^generation_timeout_ms 120000
+  (let result {^run_timeout_ms 590000 ^generation_timeout_ms 240000
     ^review_timeout_ms 60000 ^persistence_margin_ms 5000})
   (for [key fallback] in result
     (let value (?? (config .get key) fallback))
