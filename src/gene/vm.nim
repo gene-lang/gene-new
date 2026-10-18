@@ -17623,7 +17623,7 @@ proc applyProtocolDerive(scope: Scope, protocol, typ, request: Value) =
   else:
     raise newException(GeneError, "derive must return a declaration node or list")
 
-proc consumeEvalStep(budget: EvalBudget) =
+template checkEvalInterrupt() =
   when defined(posix) and not defined(emscripten) and not defined(geneWasm):
     # Repl Ctrl-C rides the budget path: it only runs for budgeted scopes
     # (interactive repl installs one), so plain program dispatch never pays
@@ -17631,7 +17631,14 @@ proc consumeEvalStep(budget: EvalBudget) =
     if volatileLoad(addr gVmInterrupt):
       volatileStore(addr gVmInterrupt, false)
       raise newException(GeneError, "interrupted")
-  var current = budget
+
+proc consumeEvalStep(budget: EvalBudget) =
+  checkEvalInterrupt()
+  # The caller owns the chain for the whole walk, and the walk only reads its
+  # links. An owning variable would retain and release every budget on every
+  # dispatch, and ORC treats each release of this parent-linked type as a
+  # possible cycle root.
+  var current {.cursor.} = budget
   while current != nil:
     if current.remaining <= 0:
       raise newException(GeneError, "eval max steps exceeded")
@@ -17651,6 +17658,21 @@ proc consumeEvalStep(budget: EvalBudget) =
         dec current.sampleCountdown
     dec current.remaining
     current = current.parent
+
+template chargeEvalStep(budget: EvalBudget) =
+  ## `consumeEvalStep` for the common dispatch: a single budget with steps
+  ## left and no deadline or memory sample due. It performs the same checks
+  ## and updates in the same order; every other case takes the full walk.
+  let charged {.cursor.} = budget
+  if charged.parent == nil and charged.remaining > 0 and
+      (charged.sampleCountdown > 0 or
+        not (charged.hasDeadline or charged.hasMemoryLimit)):
+    checkEvalInterrupt()
+    if charged.hasDeadline or charged.hasMemoryLimit:
+      dec charged.sampleCountdown
+    dec charged.remaining
+  else:
+    consumeEvalStep(charged)
 
 type WeakLiveFrames = object
   frames: ptr seq[Frame]
@@ -19080,7 +19102,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             return RunStop(kind: rskPause, value: NIL)
           dec remainingBudget
         if evalBudget != nil:
-          consumeEvalStep(evalBudget)
+          chargeEvalStep(evalBudget)
         let inst = addr chunk.instructions[ip]
         let op = inst[].op
         inc ip
@@ -19125,7 +19147,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 materializedModuleRefValue(scope, scope.lookup("gene"))
             for _ in 0 ..< 2:
               if instructionBudget > 0: dec remainingBudget
-              if evalBudget != nil: consumeEvalStep(evalBudget)
+              if evalBudget != nil: chargeEvalStep(evalBudget)
             when dispatchCacheEnabled:
               spush selectStdlibMember(chunk, chunk.instructions.len + inst[].depth,
                 target, selector, scope)
@@ -19364,7 +19386,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               if instructionBudget > 0:
                 dec remainingBudget
               if evalBudget != nil:
-                consumeEvalStep(evalBudget)
+                chargeEvalStep(evalBudget)
               inc ip
               let argsStart = sp - 2
               let value = materializedModuleRefValue(

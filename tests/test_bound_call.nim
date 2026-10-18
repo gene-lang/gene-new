@@ -84,6 +84,39 @@ suite "runtime bound calls":
       "(var outer ($runtime/bind_call nested [] ^policy {^max_steps 120})) " &
       "(try (outer) nil catch Any nil) (< (hits .get) 100)").print() == "true"
 
+  test "step limits stop at the same point on every accounting path":
+    # A lone step budget, one that also samples a deadline and memory every
+    # 64 steps, and one nested under a larger caller budget are charged
+    # through different paths. For each limit, all three must stop before
+    # the same instruction, in straight-line code and in a loop.
+    var straight = ""
+    for i in 1 .. 60:
+      straight.add "(hits .set " & $i & ") "
+    check evalBoundCall("(var hits ($cell 0)) " &
+      "(fn straight [] " & straight & ") " &
+      "(fn looping [] (repeat 100 (hits .set (+ (hits .get) 1)))) " &
+      "(fn stopped_at [target policy] (hits .set 0) " &
+      "  (try (($runtime/bind_call target [] ^policy policy)) catch Any nil) " &
+      "  (hits .get)) " &
+      "(fn nested_stopped_at [target n] (hits .set 0) " &
+      "  (fn inner [] (($runtime/bind_call target [] ^policy {^max_steps n}))) " &
+      "  (try (($runtime/bind_call inner [] ^policy {^max_steps 100000000})) " &
+      "   catch Any nil) " &
+      "  (hits .get)) " &
+      "(fn curves [target total] " &
+      "  (var lone []) (var sampled []) (var nested []) " &
+      "  (var n 1) " &
+      "  (while (<= n 200) " &
+      "    (lone .push (stopped_at target {^max_steps n})) " &
+      "    (sampled .push (stopped_at target " &
+      "      {^max_steps n ^timeout_ms 600000 ^max_memory_mb 1024})) " &
+      "    (nested .push (nested_stopped_at target n)) " &
+      "    (set n (+ n 1))) " &
+      "  [(== lone sampled) (== lone nested) " &
+      "   (< lone/0 lone/199) (< lone/199 total)]) " &
+      "[(curves straight 60) (curves looping 100)]").print() ==
+      "[[true true true true] [true true true true]]"
+
   test "deadline starts when the binding is invoked":
     check evalBoundCall("(fn value [] 7) " &
       "(var f ($runtime/bind_call value [] ^policy {^timeout_ms 50})) " &
