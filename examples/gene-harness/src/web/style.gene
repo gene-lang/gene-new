@@ -251,7 +251,7 @@ input::placeholder, textarea::placeholder { color: var(--muted); opacity: 1; }
 .composer_actions .hint { flex: 1; color: var(--muted); font-size: .68rem; }
 .send { min-width: 4rem; border-color: var(--ink); background: var(--ink); color: var(--action-ink); font-size: .8rem; padding: .4rem .9rem; }
 .send:hover:not(:disabled) { background: var(--muted); border-color: var(--muted); }
-.stop { color: var(--accent); border-color: var(--line); font-size: .8rem; }
+.stop { border-color: var(--line); font-size: .8rem; }
 .notice { color: var(--accent); padding: .5rem .1rem 0; font-size: .78rem; }
 .notice:empty { padding: 0; }
 .notice { max-height: 8rem; overflow: auto; }
