@@ -1,0 +1,36 @@
+(mod delegation)
+(import [Plugin PluginHost DelegationHost] ^from "../plugin_api")
+(import [contribute_doc] ^from "./documentation")
+
+(const child_prompt "You are working on one delegated task in a shared workspace. The brief is self-contained; do not assume parent history. Change only the files assigned by the brief and coordinate through your parent if work overlaps. Finish with (Outcome ^^done ^reply \"compact conclusion\" ^result data). The reply and inert result go to the parent agent. Ask a question when a necessary decision is missing. You cannot delegate further; return a proposed split instead.")
+
+(fn delegation [] : Plugin
+  (Plugin ^id "delegation" ^requires ["delegations/runtime"]
+    ^provides [["functions" "delegate"] ["functions" "delegation"]
+      ["functions" "cancel_delegation"] ["functions" "continue_delegation"]
+      ["functions" "answer_delegation"] ["prompt" "delegation"] ["docs" "harness/delegation"]]
+    ^activate (fn [host]
+      (let tasks (host .PluginHost:resolve "delegations/runtime"))
+      (for definition in
+        [{^name "delegate" ^doc "Stage one fresh child session with a self-contained brief. It starts after this turn commits. Use Outcome ^wait all/any/[ids] to collect results."
+          ^fn (fn [id : Str, ^title title : Str, ^brief brief : Str,
+                   ^turns turns = nil, ^timeout_ms timeout_ms = nil, ^model model = nil]
+            (tasks .DelegationHost:stage {^id id ^title title ^brief brief ^turns turns
+              ^timeout_ms timeout_ms ^model model ^child_prompt child_prompt}))}
+         {^name "delegation" ^doc "Inspect a child's state, session, effective limits, questions, usage and final reply/result."
+          ^fn (fn [id : Str] (tasks .DelegationHost:inspect id))}
+         {^name "cancel_delegation" ^doc "Cancel this round's queued, running or question-waiting child."
+          ^fn (fn [id : Str] (tasks .DelegationHost:cancel id))}
+         {^name "continue_delegation" ^doc "Stage a new follow-up round in a finished child's existing context; this round owns the admission."
+          ^fn (fn [id : Str, text : Str] (tasks .DelegationHost:continue id text))}
+         {^name "answer_delegation" ^doc "Answer a child's waiting question batch. The user and parent share first-answer-wins validation."
+          ^fn (fn [id : Str, answers] (tasks .DelegationHost:answer id answers))}]
+        (definition .put "tags" ["agent" "delegate" "parallel" "child"])
+        (definition .put "docs" ["harness/delegation"])
+        (host .PluginHost:contribute "functions" definition))
+      (host .PluginHost:contribute "prompt"
+        {^name "delegation" ^render (fn [runtime metadata]
+          (if (== metadata/kind "child") child_prompt
+            "For concrete independent tasks, discover delegation and read harness/delegation. Children have fresh context and share workspace files. Stage them with delegate, then use (Outcome ^wait all), ^wait any or a list of ids. Do not poll in response code. Parent cancellation owns all unfinished children."))})
+      (contribute_doc host "harness/delegation" "Delegate tasks to durable child sessions and collect their results."
+        "examples/gene-harness/docs/sub-agent.md" ^tags ["agent" "delegate" "parallel" "child"])) ))

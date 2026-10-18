@@ -1,0 +1,69 @@
+(import $test [describe it])
+(import [isolated run_spec test_service] ^from "../../support")
+(import [close_session_service submit receipt snapshot list_sessions cancel_child]
+  ^from "../../../src/web/session_service")
+(import [require_record create_session] ^from "../../../src/runtime/sessions")
+(import [DelegationError] ^from "../../../src/runtime/delegation_contract")
+
+(fn wait_for [predicate]
+  (let due (+ ($os/monotonic_ms) 15000))
+  (while (! (predicate))
+    ($assert (< ($os/monotonic_ms) due) "Delegation web state did not settle.")
+    ($sleep 10)))
+
+(describe "Delegation web state"
+  (it "publishes native blocks and nested children, and cancels only the displayed admission" []
+    (isolated this_mod/.path "publishes native blocks and nested children, and cancels only the displayed admission"
+      (fn [workspace]
+        (let holder ($cell nil))
+        (let calls ($cell 0))
+        (let messages ($cell []))
+        (let service (test_service ^workspace workspace ^provider (fn [call]
+          (let host holder/.get)
+          (let metadata (require_record host/sessions call/session))
+          (if (== metadata/kind "child")
+            (then ($sleep 10000) "(Outcome ^^done ^reply \"finished\")")
+            (else
+              (let n (calls .swap (+ calls/.get 1)))
+              (if (== n 0)
+                "(delegate \"audit\" ^title \"Audit\" ^brief \"Inspect the module.\") (Outcome ^wait \"all\")"
+                "(Outcome ^^done ^reply \"Cancellation collected\")"))))))
+        (holder .set service)
+        (create_session service/sessions ^id "default")
+        (service/publisher .set (fn [message] (messages/.get .push message)))
+        (try
+          (let round (submit service "default" "web-child" 1 "Audit the module."))
+          (wait_for (fn []
+            (let data (snapshot service "default"))
+            (let running ($filter data/records (fn [record]
+              (&& (== record/phase "delegation") (== record/delegation/state "running")))))
+            (! running/.empty?)))
+          (let data (snapshot service "default"))
+          (let block ($first ($filter data/records (fn [record] (== record/phase "delegation")))))
+          ($assert (> ($parse/parse_int block/seq) 0))
+          ($assert block/delegation/can_cancel)
+          ($assert block/delegation/session_exists)
+          (let child (snapshot service block/delegation/session))
+          ($assert (== child/session/parent/session "default"))
+          ($assert (== child/session/parent_title data/session/title))
+          ($assert (== child/status/model/model data/status/model/model))
+          (let listed (list_sessions service))
+          ($assert (== listed/sessions/.size 1))
+          ($assert (== listed/sessions/0/children/.size 1))
+          ($assert (== ($size (/sessions (list_sessions service ^kind "child"))) 1))
+          (let refusal (try
+            (cancel_child service "default" "audit" 2) false
+          catch DelegationError (== $err/code "conflict")))
+          ($assert refusal)
+          (cancel_child service "default" "audit" 1)
+          (wait_for (fn [] (== (/state (receipt service "default" round/id)) "done")))
+          (let final (snapshot service "default"))
+          (let latest ($first ($filter final/records (fn [record] (== record/phase "delegation")))))
+          ($assert (== latest/delegation/state "cancelled"))
+          ($assert (! latest/delegation/can_cancel))
+          ($assert (> latest/delegation/revision block/delegation/revision))
+          ($assert (> ($size ($filter final/records (fn [record] (== record/phase "delegation/update")))) 0))
+          ($assert (> ($size ($filter messages/.get (fn [message] (== message/type "delegation")))) 0))
+        ensure (close_session_service service))))))
+
+(fn main [args] : Int (run_spec args))

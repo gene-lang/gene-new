@@ -633,3 +633,8 @@ implementation modules from these directories. The browser controller consumes
 `src/web/contract.gene`, while `src/ui/` owns the component and action rules.
 See the [implementation map](docs/design.md#implementation-map) for individual
 modules and development constraints.
+
+The built-in [delegation plugin](docs/sub-agent.md) starts independent child
+sessions for concrete tasks, collects their results, and supports follow-ups
+and question handoff. Children appear under their parent in the sidebar, and
+their host-owned transcript blocks provide state, usage, navigation and Cancel.

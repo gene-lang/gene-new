@@ -5,6 +5,34 @@
 (import [new_harness shutdown_harness contribute doc] ^from "../../../src/kernel")
 
 (describe "Harness turn evaluation"
+  (it "preserves concurrent patches across a suspended durable response write" []
+    (isolated this_mod/.path "preserves concurrent patches across a suspended durable response write"
+      (fn [workspace]
+        ($fs/make_dir workspace)
+        (let root ($fs/real_path workspace))
+        ($fs/write_text $"${root}/shared.txt" "left0\nright0\n")
+        (let prepared ($channel))
+        (let first (spawn ^lane root
+          (evaluate_turn 1 root
+            "(Outcome ^^done ^reply \"left\")\n*** Begin Patch\n*** Update File: shared.txt\n@@\n-left0\n+left1\n*** End Patch\n"
+            ^record (fn [kind data]
+              (if_yes (== kind "turn/response")
+                (prepared .send true)
+                ($sleep 100))))))
+        prepared/.recv
+        (let second (spawn ^lane root
+          (evaluate_turn 2 root
+            "(Outcome ^^done ^reply \"right\")\n*** Begin Patch\n*** Update File: shared.txt\n@@\n-right0\n+right1\n*** End Patch\n")))
+        (try
+          (for task in [first second]
+            (let result (await task))
+            ($assert (== result/kind "done") $"${result/error}"))
+          ($assert (== ($fs/read_text $"${root}/shared.txt") "left1\nright1\n"))
+          ($assert (! ($fs/exists? $"${root}/.shared.txt.gene-harness-tmp")))
+        ensure
+          (if_not first/.done? first/.cancel first/.join)
+          (if_not second/.done? second/.cancel second/.join)))))
+
   (it "reports actionable response diagnostics without host source line numbers" []
     (isolated this_mod/.path "reports actionable response diagnostics without host source line numbers"
       (fn [workspace]

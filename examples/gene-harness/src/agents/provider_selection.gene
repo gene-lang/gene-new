@@ -32,7 +32,7 @@
       ($os/env? "GENE_HARNESS_PROVIDER")
       supplied/GENE_HARNESS_PROVIDER)))
   (let configured (nonempty settings/provider))
-  (let name (if (== runtime/managed true)
+  (let name (if (|| (== runtime/managed true) (== settings/session_override true))
     (?? pinned configured environment) (?? pinned environment configured)))
   (let candidate
     (if ($absent? name)
@@ -71,10 +71,19 @@
     ($os/env? "GENE_HARNESS_MODEL") supplied/GENE_HARNESS_MODEL)) nil))
   (let inherited_effort (if applicable (nonempty (if ($absent? supplied)
     ($os/env? "GENE_HARNESS_THINKING_EFFORT") supplied/GENE_HARNESS_THINKING_EFFORT)) nil))
-  (let model (if (== runtime/managed true) (?? (nonempty settings/model) inherited_model)
+  (let model (if (|| (== runtime/managed true) (== settings/session_override true)) (?? (nonempty settings/model) inherited_model)
     (?? inherited_model (nonempty settings/model))))
-  (let effort (if (== runtime/managed true) (?? (nonempty settings/effort) inherited_effort)
+  (let effort (if (|| (== runtime/managed true) (== settings/session_override true)) (?? (nonempty settings/effort) inherited_effort)
     (?? inherited_effort (nonempty settings/effort))))
   (let timeout (?? settings/provider_timeout_ms 600000))
   (let effective (choice/row/configure model effort timeout))
   {^name choice/name ^row choice/row ^settings effective})
+
+(fn session_settings [metadata, settings]
+  (if ($absent? metadata/model_settings) (return settings))
+  (let effective ($thaw ($freeze settings)))
+  (for key in ["provider" "model" "effort"]
+    (let value (metadata/model_settings .get key))
+    (if_not ($absent? value) (effective .put key value)))
+  (effective .put "session_override" true)
+  effective)

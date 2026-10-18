@@ -1,0 +1,59 @@
+(mod delegation_crash_fixture)
+(import [test_controller] ^from "../support")
+(import [open_runtime] ^from "../../src/runtime/bootstrap")
+(import [baseline_profile] ^from "../../src/profiles/baseline")
+(import [submit_round round_state] ^from "../../src/runtime/round_controller")
+(import [require_record] ^from "../../src/runtime/sessions")
+(import [delegation_blocks] ^from "../../src/runtime/delegations")
+(import [terminal_delegation?] ^from "../../src/runtime/delegation_contract")
+
+(fn model_counts [root : Str]
+  (let path $"${root}/model-counts.gene")
+  (if ($fs/exists? path) ($serde/read_data ($fs/read_text path))
+    {^parent 0 ^a 0 ^b 0}))
+
+(fn recovery_controller [runtime, ^slow_children slow_children : Bool = false]
+  (let counting ($sync/gate))
+  (test_controller runtime (fn [call]
+    (let metadata (require_record runtime/sessions call/session))
+    (let key (if (== metadata/kind "child") metadata/parent/delegation "parent"))
+    (let number (counting (fn []
+      (let counts (model_counts runtime/root))
+      (let n (+ (?? (counts .get key) 0) 1))
+      (counts .put key n)
+      ($fs/write_text_atomic $"${runtime/root}/model-counts.gene" ($serde/write_data counts))
+      n)))
+    (if (== metadata/kind "child")
+      (then
+        ($sleep (if slow_children 60000 30))
+        "(Outcome ^^done ^reply \"Child complete\" ^result {^verified true})")
+      (elif (== number 1)
+        "(delegate \"a\" ^title \"First\" ^brief \"Complete the first task.\") (delegate \"b\" ^title \"Second\" ^brief \"Complete the second task.\") (Outcome ^wait \"all\")")
+      (else
+        (let blocks (delegation_blocks runtime/delegations call/session))
+        (var unfinished false)
+        (for child in blocks/records
+          (if_not (terminal_delegation? child/state) (set unfinished true)))
+        (if unfinished "(Outcome ^wait \"all\")"
+          "(Outcome ^^done ^reply \"Recovered child results collected\")"))))))
+
+(fn main [args]
+  (let root args/0) (let point args/1)
+  (let runtime (open_runtime root "default" (baseline_profile)))
+  (let path $"${runtime/state_root}/config.gene")
+  (let config ($serde/read_data ($fs/read_text path)))
+  (config .put "delegation" {^max_running 1 ^max_per_parent 1})
+  ($fs/write_text_atomic path ($serde/write_data config))
+  (let controller (recovery_controller runtime ^slow_children (== point "child_admitted")))
+  (let crashed ($cell false))
+  (runtime/delegations .put "checkpoint" (fn [at parent]
+    (if (|| (!= at point) (!= parent "default") (crashed .swap true)) (return nil))
+    (let rounds (round_state controller "default"))
+    (let current ($last rounds/receipts))
+    ($fs/write_text_atomic $"${root}/crash-marker.gene"
+      ($serde/write_data {^point at ^pid ($os/process_id) ^parent_state current/state
+        ^parent_round current/id ^counts (model_counts root)}))
+    ($os/exec "/bin/kill" "-9" ($to_str ($os/process_id)))
+    ($sleep 60000)))
+  (submit_round controller "default" "crash-parent" 1 "Delegate two concrete tasks.")
+  (while true ($sleep 1000)))

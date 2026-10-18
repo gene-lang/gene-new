@@ -2,7 +2,8 @@
 (import [byte_prefix] ^from "../text")
 (import ^from "../kernel" [rows row contribute CommandChanged publish])
 (import ^from "../plugin_api" ^^export [CommandContext CommandResult])
-(import ^from "./composition" [acquire_snapshot release_snapshot])
+(import ^from "./composition" [acquire_snapshot release_snapshot take_composition_changes discard_composition_changes])
+(import [drain_workspace_changes] ^from "../storage/workspace")
 (import ^from "../agents/harness_turn" [workspace_bindings])
 (import ^from "../agents/eval_site" [evaluate_response])
 (import [close_execution_scope] ^from "./execution_budget")
@@ -128,11 +129,20 @@
   (let context (operator_context ctx turn))
   (let rewritten (operator_forms forms))
   (let scope (operator_scope ctx context))
+  (let completed ($cell false))
   (let value (try
-    ($runtime/with_context scope/context (fn []
-      (evaluate_response `(scope %rewritten...) environment)))
+    (let evaluated ($runtime/with_context scope/context (fn []
+      (evaluate_response `(scope %rewritten...) environment))))
+    (turn/state .set "closed")
+    (close_execution_scope scope)
+    (if ($absent? ctx/runtime/h/workspace)
+      (for change in (take_composition_changes ^origin turn ctx/runtime/h/snapshots) (change/apply))
+      (drain_workspace_changes ^origin turn ctx/runtime/workspace ctx/runtime/h))
+    (completed .set true)
+    evaluated
     ensure
       (turn/state .set "closed")
+      (if_not completed/.get (discard_composition_changes ctx/runtime/h/snapshots turn))
       (close_execution_scope scope)))
   (CommandResult ^display (operator_result turn value) ^^attached ^status "done"))
 

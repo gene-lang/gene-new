@@ -1,0 +1,63 @@
+(import $test [describe it run])
+(import [DelegationError delegation_limits normalize_delegation normalize_delegation_wait
+  delegation_wait_members delegation_wait_ready? delegation_result_data]
+  ^from "../../../src/runtime/delegation_contract")
+
+(fn rejected [code, body]
+  (let actual (try (body) "accepted" catch DelegationError $err/code))
+  ($assert (== actual code) $"Expected ${code}, got ${actual}."))
+
+(describe "Delegation contracts"
+  (it "bounds self-contained briefs, identities and effective child limits" []
+    (let limits (delegation_limits {}))
+    (let request {^id "auth_audit" ^title "Audit" ^brief "Inspect auth and return routes."})
+    (let normalized (normalize_delegation request limits))
+    ($assert (== normalized/turn_limit 12))
+    ($assert (== normalized/timeout_ms 600000))
+    (for id in ["" "Upper" "has-dash" "x/y"]
+      (rejected "invalid_request" (fn [] (normalize_delegation (request .assoc "id" id) limits))))
+    (for turns in [0 25 2.0 "2"]
+      (rejected "invalid_request" (fn [] (normalize_delegation (request .assoc "turns" turns) limits))))
+    (rejected "invalid_request" (fn [] (normalize_delegation (request .assoc "timeout_ms" 600001) limits)))
+    (rejected "invalid_configuration" (fn [] (delegation_limits {^delegation {^max_running 0}}))))
+
+  (it "separates all and any and never wakes again for a consumed result" []
+    (let a {^id "a" ^number 1 ^source "a@1" ^state "done" ^seen false})
+    (let b {^id "b" ^number 1 ^source "b@1" ^state "running" ^seen false})
+    (let admissions [a b])
+    (let by_source {^"a@1" a ^"b@1" b})
+    (let all (normalize_delegation_wait "all"))
+    (all .put "members" (delegation_wait_members all admissions))
+    ($assert (! (delegation_wait_ready? all by_source)))
+    (let any (normalize_delegation_wait "any"))
+    (any .put "members" (delegation_wait_members any admissions))
+    ($assert (delegation_wait_ready? any by_source))
+    (a .put "seen" true)
+    (any .put "members" (delegation_wait_members any admissions))
+    ($assert (== any/members ["b@1"]))
+    ($assert (! (delegation_wait_ready? any by_source)))
+    (b .put "state" "cancelled")
+    ($assert (delegation_wait_ready? all by_source))
+    ($assert (delegation_wait_ready? any by_source)))
+
+  (it "validates explicit waits and wakes for a new child question without consuming completion" []
+    (let child {^id "audit" ^number 1 ^source "audit@1" ^state "waiting" ^seen false
+      ^questions {^id "batch-1"} ^seen_questions []})
+    (let all (normalize_delegation_wait ["audit"]))
+    (all .put "members" (delegation_wait_members all [child]))
+    ($assert (! (delegation_wait_ready? all {^"audit@1" child})))
+    (all .put "wake_on_questions" true)
+    ($assert (delegation_wait_ready? all {^"audit@1" child}))
+    (child .put "seen_questions" ["batch-1"])
+    ($assert (! (delegation_wait_ready? all {^"audit@1" child})))
+    (rejected "invalid_wait" (fn [] (normalize_delegation_wait ["audit" "audit"])))
+    (rejected "invalid_wait" (fn []
+      (delegation_wait_members (normalize_delegation_wait ["missing"]) [child]))))
+
+  (it "accepts inert structured results and rejects live resources and executable closures" []
+    ($assert (== (delegation_result_data {^routes ["/a" "/b"] ^ok true})
+      {^routes ["/a" "/b"] ^ok true}))
+    (rejected "invalid_result" (fn [] (delegation_result_data (fn [] 1))))
+    (rejected "invalid_result" (fn [] (delegation_result_data ($cell 1))))))
+
+(fn main [args] (/exit_code (run ^name (?? args/0 ""))))

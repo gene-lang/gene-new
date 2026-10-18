@@ -11,9 +11,10 @@
     bounded_request
     compact_history
     history_state
-    write_body])
+    write_body
+    read_body])
 (import ^from "../text" [byte_prefix])
-(import ^from "./provider_selection" [readiness_report select_provider])
+(import ^from "./provider_selection" [readiness_report select_provider session_settings])
 (import ^from "./model_call" [call_model])
 (import ^from "./hooks" [history_policy request_prepare])
 (import ^from "../storage/state"
@@ -22,6 +23,10 @@
 (import ^from "../runtime/sessions" [require_record update_session])
 (import [recall_image_run] ^from "../storage/image_runs")
 (import [card_bindings flush_card_progress] ^from "../runtime/cards")
+(import [new_turn_items] ^from "./outcome")
+(import [delegation_context commit_delegation_turn delegation_request_items
+  begin_delegation_request mark_delegation_results_seen release_delegation_turn
+  has_owned_work?] ^from "../runtime/delegations")
 
 (fn recall_model_context [runtime, session : Str, id : Str]
   (if ($str/starts_with? id "image.")
@@ -65,13 +70,39 @@
   (if item/late (flush_event_store runtime/events))
   nil)
 
+(fn request_delegation_sources [items]
+  (let sources [])
+  (for item in items
+    (if (&& (! ($absent? item/delegation_source)) (! (sources .contains? item/delegation_source)))
+      (sources .push item/delegation_source)))
+  sources)
+
+(fn attach_delegation_inputs [runtime, session : Str, round, turn : Int, request : Str, initial : Bool]
+  (let known (?? round/request_sources []))
+  (let incoming (delegation_request_items runtime/delegations session round/id turn
+    ^carry (&& initial (== round/initiator "user"))))
+  (let added ($filter incoming (fn [item] (! (known .contains? item/delegation_source)))))
+  (if added/.empty? (return {^request request ^sources known}))
+  (let rendered (bounded_request runtime session added))
+  (let combined (if (== request "") rendered/full $"${request}\n${rendered/full}"))
+  (for source in (request_delegation_sources rendered/items) (known .push source))
+  (round .put "request_sources" known)
+  (round .put "request" combined)
+  (if_not initial
+    (append_message ^settled rendered/settled ^round round/id ^turn turn runtime session "user" rendered/full)
+    (transcript runtime session {^type "turn/request" ^turn turn ^round round/id
+      ^full rendered/full ^settled rendered/settled ^delegation true}))
+  {^request combined ^sources known})
+
 (fn run_round [runtime, session : Str, round, ^resume resume : Bool = false]
   (let metadata (require_record runtime/sessions session))
-  (let config ($serde/read_data ($fs/read_text $"${runtime/state_root}/config.gene")))
+  (let config (session_settings metadata
+    ($serde/read_data ($fs/read_text $"${runtime/state_root}/config.gene"))))
   (let limit
-    (if (== round/initiator "user")
-      (?? config/turn_limit 24)
-      (?? config/trigger_turn_limit 12)))
+    (?? round/effective_limits/turn_limit
+      (if (== round/initiator "user") (?? config/turn_limit 24) (?? config/trigger_turn_limit 12))))
+  (let collection (== round/delegation_collection true))
+  (let ceiling (+ limit (if collection 1 0)))
   (var count (?? round/turn_count 0))
   (var last_request (?? round/request round/prompt))
   (if_not resume
@@ -92,7 +123,7 @@
           last_request))
       (recovery .put "delivered" true)
       (record_core_state runtime/events "session" session "session/state" "recovery" recovery)))
-  (while (< count limit)
+  (while (< count ceiling)
     (let current (require_record runtime/sessions session))
     (let number (+ current/turns 1))
     (set count (+ count 1))
@@ -105,6 +136,10 @@
     (var stage "request/prepare")
     (var started false)
     (try
+      (if_not ($absent? runtime/delegations)
+        (let packet (attach_delegation_inputs runtime session round number last_request
+          (&& (! resume) (== count 1))))
+        (set last_request packet/request))
       (if (&& (! resume) (== count 1))
         (then
           (let source_request last_request)
@@ -183,6 +218,8 @@
       (set stage "context")
       (let messages (provider_context runtime session instructions))
       (let budget {^limit limit ^used count ^remaining (- limit count)})
+      (if_not ($absent? runtime/delegations)
+        (begin_delegation_request runtime/delegations session round/id number (?? round/request_sources [])))
       (set stage "model/call")
       (let completion
         (call_model ^selected selected runtime
@@ -228,18 +265,33 @@
             $"patch/${number}"
             {^files files ^state "started" ^round round/id ^turn number}))
         (flush_event_store runtime/events)
+        (if_not ($absent? runtime/delegations)
+          (let sources (?? round/request_sources []))
+          (if (&& (! ($absent? runtime/delegations/checkpoint))
+                  (! sources/.empty?))
+            (runtime/delegations/checkpoint "parent_response_recorded" session))
+          (mark_delegation_results_seen runtime/delegations session round/id number sources)
+          (if (&& (! ($absent? runtime/delegations/checkpoint))
+                  (! sources/.empty?))
+            (runtime/delegations/checkpoint "parent_response" session)))
         (response_recorded .set true)
         nil)
       (set result
         (evaluate_harness_turn ^session session ^round round/id ^reviewer selected ^lease lease
           ^bindings (do (let api (card_bindings runtime session round/id number))
                       (let bound ($thaw ($freeze_shallow api)))
-                      (bound .put "card_api" api) bound) ^timeout_ms (?? config/response_budget/timeout_ms 600000) ^max_memory_mb (?? config/response_budget/max_memory_mb 1024) ^recall (fn [id] (recall_model_context runtime session id)) ^console_sink (fn [item] (console_output runtime session round/id number item)) ^record (fn [kind data] (if (== kind "turn/response") (record_response data/patch_files) (do (record_core_state runtime/events "session" session "session/state" $"patch/${number}" {^state "completed" ^result data/result ^round round/id ^turn number}) (transcript runtime session {^type "turn/patch" ^round round/id ^turn number ^result data/result ^text data/result/text}))))
+                      (bound .put "card_api" api)
+                      (if_not ($absent? runtime/delegations)
+                        (bound .put "delegation_context" (delegation_context runtime/delegations session round/id count limit collection)))
+                      bound) ^timeout_ms (?? config/response_budget/timeout_ms 600000) ^max_memory_mb (?? config/response_budget/max_memory_mb 1024) ^recall (fn [id] (recall_model_context runtime session id)) ^console_sink (fn [item] (console_output runtime session round/id number item)) ^record (fn [kind data] (if (== kind "turn/response") (record_response data/patch_files) (do (record_core_state runtime/events "session" session "session/state" $"patch/${number}" {^state "completed" ^result data/result ^round round/id ^turn number}) (transcript runtime session {^type "turn/patch" ^round round/id ^turn number ^result data/result ^text data/result/text}))))
           runtime/h
           number
           runtime/root
           text))
       (record_response [])
+      (if_not ($absent? runtime/delegations)
+        (set result (commit_delegation_turn runtime/delegations session round/id number result
+          ^limit limit ^count count ^collection collection)))
       (let produced_media (?? result/media []))
       (if_not produced_media/.empty?
         (transcript runtime session {^type "reply" ^round round/id ^turn number
@@ -290,10 +342,13 @@
       runtime
       session
       {^type "turn/end" ^turn number ^round round/id ^reason result/kind ^!synthetic})
+    (if_not ($absent? runtime/delegations)
+      (flush_event_store runtime/events)
+      (release_delegation_turn runtime/delegations session round/id number))
     (if (== result/kind "done")
       (then
         (flush_event_store runtime/events)
-        (return {^state "done" ^reply outcome/reply ^turn_count count ^last_turn number})))
+        (return {^state "done" ^reply outcome/reply ^result (?? outcome/result nil) ^turn_count count ^last_turn number})))
     (if (== result/kind "cancelled")
       (then
         (flush_event_store runtime/events)
@@ -304,6 +359,7 @@
     (round .put "request_settled" requests/settled)
     (round .put "request_media" (?? result/media []))
     (round .put "request_items_ref" (write_body runtime ($serde/write_data requests/items)))
+    (round .put "request_sources" (request_delegation_sources requests/items))
     (transcript
       runtime
       session
@@ -313,6 +369,12 @@
         ^round round/id
         ^full last_request
         ^settled requests/settled})
+    (if_yes (== result/kind "delegation_wait")
+      (flush_event_store runtime/events)
+      (return {^state "waiting" ^questions nil ^delegation_wait result/delegation_wait
+        ^delegation_collection (== result/delegation_collection true)
+        ^request last_request ^request_sources (?? round/request_sources [])
+        ^request_items_ref round/request_items_ref ^turn_count count ^last_turn number}))
     (if (== result/kind "questions")
       (then
         (let id $"${round/id}-q-${number}")
@@ -330,7 +392,7 @@
         (return
           {
             ^state "waiting"
-            ^questions batch
+            ^questions batch ^delegation_wait nil
             ^request last_request
             ^turn_count count
             ^last_turn number})))
@@ -340,6 +402,16 @@
       "user"
       last_request)
     (flush_event_store runtime/events))
+  (if_yes (&& (! collection) (! ($absent? runtime/delegations))
+          (has_owned_work? runtime/delegations session round/id))
+    (let number (?? round/last_turn metadata/turns))
+    (let drained (commit_delegation_turn runtime/delegations session round/id number
+      {^kind "continue" ^turn (new_turn_items number) ^request_items [] ^validated nil}
+      ^limit limit ^count count))
+    (return {^state "waiting" ^questions nil ^delegation_wait drained/delegation_wait
+      ^delegation_collection true ^request (?? round/request last_request)
+      ^request_sources (?? round/request_sources []) ^request_items_ref (?? round/request_items_ref nil)
+      ^turn_count count ^last_turn number}))
   (transcript
     runtime
     session

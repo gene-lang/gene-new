@@ -3,6 +3,22 @@
 (type PatchError ^props {^message Str} ^impl [Error])
 (impl Error for PatchError)
 
+(var patch_gates ^^private ($cell {}))
+(var patch_gate_index ^^private ($sync/gate))
+
+# Hold this across preparation, the durable response record, and commit or
+# rollback. Locking only rename would allow a prepared plan to overwrite a
+# patch that committed after it read the original file.
+(fn with_patch_gate [root : Str, body]
+  (let canonical ($fs/real_path root))
+  (let gate (patch_gate_index (fn []
+    (let existing (patch_gates/.get .get canonical))
+    (if_not ($absent? existing) (return existing))
+    (let created ($sync/gate))
+    (patch_gates/.get .put canonical created)
+    created)))
+  (gate body))
+
 (fn patch_error [message : Str] (fail (PatchError ^message message)))
 (fn suffix [text : Str, prefix : Str]
   (let count ($str/byte_size prefix))
@@ -284,7 +300,8 @@
 
 (fn apply_patch [root : Str, text : Str, ^fail_after_renames fail_after_renames : Int = -1]
   (try
-    (commit_patch (prepare_patch root text) ^fail_after_renames fail_after_renames)
+    (with_patch_gate root (fn []
+      (commit_patch (prepare_patch root text) ^fail_after_renames fail_after_renames)))
     catch Any {^status "failed" ^text $"failed: ${$err/message}" ^files [] ^!attention}))
 
 (fn recover_patch_temporaries [root : Str, files]

@@ -107,6 +107,7 @@ Use --file FILE for send/run text, --no-wait for operator commands,
     (return nil))
   (if_not ($absent? result/records)
     (for record in result/records
+      (if (== record/kind "delegation") (continue))
       ($println $"[${record/seq} ${record/kind}] ${(record_text record)}"))
     (if result/has_older ($println "Earlier records are available with transcript --before SEQ."))
     (return nil))

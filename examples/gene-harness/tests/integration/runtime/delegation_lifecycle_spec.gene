@@ -1,0 +1,177 @@
+(import $test [describe it])
+(import [isolated run_spec test_controller] ^from "../../support")
+(import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
+(import [baseline_profile] ^from "../../../src/profiles/baseline")
+(import [submit_round round_receipt answer_round close_round_controller] ^from "../../../src/runtime/round_controller")
+(import [create_session require_record] ^from "../../../src/runtime/sessions")
+(import [delegation_blocks delegation_recovery] ^from "../../../src/runtime/delegations")
+(import [row] ^from "../../../src/kernel")
+
+(fn wait_for [predicate, message : Str]
+  (let due (+ ($os/monotonic_ms) 15000))
+  (while (! (predicate))
+    ($assert (< ($os/monotonic_ms) due) message)
+    ($sleep 10)))
+
+(fn set_caps [runtime]
+  (let path $"${runtime/state_root}/config.gene")
+  (let config ($serde/read_data ($fs/read_text path)))
+  (config .put "delegation" {^max_running 1 ^max_per_parent 1})
+  ($fs/write_text_atomic path ($serde/write_data config)))
+
+(describe "Delegation lifetime and budgets"
+  (it "finishes a recovered drain before spending its single collection turn" []
+    (isolated this_mod/.path "finishes a recovered drain before spending its single collection turn"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (set_caps runtime)
+        (let path $"${runtime/state_root}/config.gene")
+        (let config ($serde/read_data ($fs/read_text path)))
+        (config .put "turn_limit" 2)
+        ($fs/write_text_atomic path ($serde/write_data config))
+        (let calls ($cell 0))
+        (let controller (test_controller runtime (fn [call]
+          (let metadata (require_record runtime/sessions call/session))
+          (if (== metadata/kind "child")
+            (then ($sleep 60000) "(Outcome ^^done)")
+            (else
+              (let n (calls .swap (+ calls/.get 1)))
+              (if (== n 0)
+                "(delegate \"a\" ^title \"A\" ^brief \"Inspect A.\") (delegate \"b\" ^title \"B\" ^brief \"Inspect B.\") (Outcome ^prompt \"Work independently\")"
+                "(Outcome ^prompt \"Drain child work\")"))))))
+        (let round (submit_round controller "default" "drain-stop" 1 "Coordinate the tasks."))
+        (wait_for (fn []
+          (let receipt (round_receipt controller "default" round/id))
+          (let blocks (delegation_blocks runtime/delegations "default"))
+          (&& (== receipt/state "waiting") (== receipt/delegation_collection true)
+              (== blocks/records/.size 2) (== blocks/records/0/state "running"))) "Parent did not enter its final drain.")
+        (close_round_controller controller)
+        (close_runtime runtime)
+        (let restored (open_runtime workspace "default" (baseline_profile)))
+        (let collections ($cell 0))
+        (let resumed (test_controller restored (fn [call]
+          (let metadata (require_record restored/sessions call/session))
+          (if (== metadata/kind "child")
+            (then ($sleep 40) "(Outcome ^^done ^reply \"QUEUED_AFTER_RECOVERY\")")
+            (else
+              (collections .set (+ collections/.get 1))
+              ($assert ($str/contains? ($to_str call/messages) "QUEUED_AFTER_RECOVERY"))
+              "(Outcome ^^done ^reply \"Drain recovered and collected\")")))))
+        (try
+          (let held (delegation_blocks restored/delegations "default"))
+          ($assert (! ($absent? held/recovery)))
+          (delegation_recovery restored/delegations "default" round/id "continue")
+          (wait_for (fn [] (== (/state (round_receipt resumed "default" round/id)) "done")) "Recovered collection ran before the queued child settled.")
+          ($assert (== collections/.get 1))
+          ($assert (== (/turn_count (round_receipt resumed "default" round/id)) 3))
+        ensure (close_round_controller resumed) (close_runtime restored)))))
+
+  (it "keeps outstanding work host-owned after disabling the plugin and reports child budget failures" []
+    (isolated this_mod/.path "keeps outstanding work host-owned after disabling the plugin and reports child budget failures"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (let calls ($cell 0))
+        (let controller (test_controller runtime (fn [call]
+          (let metadata (require_record runtime/sessions call/session))
+          (if (== metadata/kind "child")
+            (then ($sleep 1000) "(Outcome ^^done ^reply \"too late\")")
+            (else
+              (let n (calls .swap (+ calls/.get 1)))
+              (if (== n 0)
+                (then "(delegate \"audit\" ^title \"Audit\" ^brief \"Inspect the module.\" ^timeout_ms 80) (disable_plugin \"delegation\") (Outcome ^wait \"all\")")
+                (else
+                  ($assert ($str/contains? ($to_str call/messages) "timed out"))
+                  "(Outcome ^^done ^reply \"Failure collected\")")))))))
+        (try
+          (let round (submit_round controller "default" "disabled" 1 "Run an audit."))
+          (wait_for (fn [] (== (/state (round_receipt controller "default" round/id)) "done")) "Disabled plugin orphaned work.")
+          ($assert ($absent? (row runtime/h "functions" "delegate")))
+          (let blocks (delegation_blocks runtime/delegations "default"))
+          ($assert (== blocks/records/0/state "failed"))
+          ($assert blocks/records/0/seen)
+          ($assert (/attention (require_record runtime/sessions "default")))
+        ensure (close_round_controller controller) (close_runtime runtime)))))
+
+  (it "holds cut-off children after Stop but dispatches a waiting parent's never-started queue" []
+    (isolated this_mod/.path "holds cut-off children after Stop but dispatches a waiting parent's never-started queue"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (set_caps runtime)
+        (let started ($cell false))
+        (let controller (test_controller runtime (fn [call]
+          (let metadata (require_record runtime/sessions call/session))
+          (if (== metadata/kind "child")
+            (then (started .set true) ($sleep 60000) "(Outcome ^^done ^reply \"late\")")
+            (else "(delegate \"audit\" ^title \"Audit\" ^brief \"Inspect the module.\") (Outcome ^wait \"all\")")))))
+        (let first (submit_round controller "default" "first" 1 "Hold a slot."))
+        (wait_for (fn [] started/.get) "First child did not start.")
+        (create_session runtime/sessions ^id "queued")
+        (let second (submit_round controller "queued" "second" 1 "Queue an audit."))
+        (wait_for (fn [] (== (/state (round_receipt controller "queued" second/id)) "waiting")) "Second parent did not wait.")
+        (close_round_controller controller)
+        (close_runtime runtime)
+        (let restored (open_runtime workspace "default" (baseline_profile)))
+        (let root_calls ($cell 0))
+        (let resumed (test_controller restored (fn [call]
+          (let metadata (require_record restored/sessions call/session))
+          (if_yes (== call/session "default") (root_calls .set (+ root_calls/.get 1)))
+          (if (== metadata/kind "child")
+            "(Outcome ^^done ^reply \"Queued child completed\")"
+            "(Outcome ^^done ^reply \"Result collected\")"))))
+        (try
+          (let held (delegation_blocks restored/delegations "default"))
+          ($assert (! ($absent? held/recovery)))
+          ($assert (== held/records/0/state "cancelled"))
+          (wait_for (fn [] (== (/state (round_receipt resumed "queued" second/id)) "done")) "Queued-only parent did not resume.")
+          ($assert (== root_calls/.get 0))
+          (delegation_recovery restored/delegations "default" first/id "continue")
+          (wait_for (fn [] (== (/state (round_receipt resumed "default" first/id)) "done")) "Continue did not release Stop recovery.")
+          ($assert (== root_calls/.get 1))
+        ensure (close_round_controller resumed) (close_runtime restored)))))
+
+  (it "cancels a running parent's unfinished set on Stop and preserves child questions across Stop" []
+    (isolated this_mod/.path "cancels a running parent's unfinished set on Stop and preserves child questions across Stop"
+      (fn [workspace]
+        (for mode in ["running" "question"]
+          (let root $"${workspace}/${mode}")
+          (let runtime (open_runtime root "default" (baseline_profile)))
+          (set_caps runtime)
+          (let calls ($cell 0))
+          (let controller (test_controller runtime (fn [call]
+            (let metadata (require_record runtime/sessions call/session))
+            (if (== metadata/kind "child")
+              (then
+                (if (== mode "running")
+                  (then ($sleep 60000) "(Outcome ^^done)")
+                  (else "(Outcome ^questions [{^id \"scope\" ^prompt \"Which scope?\"}])")))
+              (else
+                (let n (calls .swap (+ calls/.get 1)))
+                (if (== n 0)
+                  (then (if (== mode "running")
+                    "(delegate \"a\" ^title \"A\" ^brief \"Inspect A.\") (delegate \"b\" ^title \"B\" ^brief \"Inspect B.\") (Outcome ^prompt \"Keep working\")"
+                    "(delegate \"a\" ^title \"A\" ^brief \"Ask which scope.\") (Outcome ^wait \"all\")"))
+                  (else ($sleep 60000) "(Outcome ^^done)")))))))
+          (let round (submit_round controller "default" "stop" 1 "Coordinate tasks."))
+          (wait_for (fn []
+            (let blocks (delegation_blocks runtime/delegations "default"))
+            (if (== mode "running")
+              (&& (>= calls/.get 2) (== blocks/records/.size 2) (== blocks/records/0/state "running"))
+              (&& (== blocks/records/.size 1) (== blocks/records/0/state "waiting")))) "Stop case was not ready.")
+          (close_round_controller controller)
+          (close_runtime runtime)
+          (let restored (open_runtime root "default" (baseline_profile)))
+          (let resumed (test_controller restored (fn [call] "(Outcome ^^done ^reply \"Continued\")")))
+          (try
+            (let blocks (delegation_blocks restored/delegations "default"))
+            (if (== mode "running")
+              (then
+                ($assert (== (/state (round_receipt resumed "default" round/id)) "cancelled"))
+                (for child in blocks/records ($assert (== child/state "cancelled"))))
+              (else
+                ($assert ($absent? blocks/recovery))
+                ($assert (== blocks/records/0/state "waiting"))
+                (answer_round resumed blocks/records/0/session blocks/records/0/questions/id {^scope "web"})
+                (wait_for (fn [] (== (/state (round_receipt resumed "default" round/id)) "done")) "Child question did not resume after Stop.")))
+          ensure (close_round_controller resumed) (close_runtime restored)))))))
+
+(fn main [args] : Int (run_spec args))

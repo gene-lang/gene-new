@@ -280,8 +280,16 @@ target's content while retaining the link. Physical destination aliases are
 checked before staging.
 Restoration failure reports partial application and attention. Before staging,
 turn/response durably records the affected file list. Recovery reports possible
-partial application and removes leftover staging siblings. File edits in
-different sessions use anchor failure as their conflict signal.
+partial application and removes leftover staging siblings. A gate shared by
+sessions in the same canonical workspace covers preparation, durable response
+recording, commit and rollback. Each patch therefore prepares against the
+previous patch's committed content. Shell commands and direct `$fs` writes
+still require coordination between their authors.
+
+Ordinary child sessions add durable delegation, waiting and result delivery to
+the session machinery; see [Sub-agents](sub-agent.md). The host owns scheduling,
+ownership and recovery behind `DelegationHost`, while the built-in `delegation`
+plugin contributes the model-facing functions and prompt policy.
 
 Patch failure skips code. Otherwise the forms execute in an Env whose bindings
 are exactly:

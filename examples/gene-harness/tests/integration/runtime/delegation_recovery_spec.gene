@@ -1,0 +1,108 @@
+(import $test [describe it])
+(import [isolated run_spec fixture_path] ^from "../../support")
+(import [model_counts recovery_controller] ^from "../../fixtures/delegation_crash")
+(import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
+(import [baseline_profile] ^from "../../../src/profiles/baseline")
+(import [submit_round round_state round_receipt close_round_controller] ^from "../../../src/runtime/round_controller")
+(import [require_record] ^from "../../../src/runtime/sessions")
+(import [delegation_blocks delegation_recovery] ^from "../../../src/runtime/delegations")
+
+(fn wait_for [predicate, message : Str, ^timeout_ms timeout_ms : Int = 20000]
+  (let deadline (+ ($os/monotonic_ms) timeout_ms))
+  (while (! (predicate))
+    ($assert (< ($os/monotonic_ms) deadline) message)
+    ($sleep 10)))
+
+(fn crash_at [root, point]
+  (let child ($os/exec_async ($os/executable_path) "run" "--snapshot"
+    (fixture_path "delegation_crash") root point ^timeout_ms 40000 ^max_bytes 1048576))
+  (try
+    (let result (await child))
+    ($assert ([-9 137] .contains? result/status)
+      $"Crash fixture ${point} did not reach SIGKILL: ${result}")
+    (let marker $"${root}/crash-marker.gene")
+    ($assert ($fs/exists? marker) $"Crash point ${point} was never reached.")
+    ($serde/read_data ($fs/read_text marker))
+  ensure
+    (if_not child/.done? child/.cancel child/.join)))
+
+(fn owner_receipt [controller]
+  (let rounds (round_state controller "default"))
+  ($last rounds/receipts))
+
+(describe "Delegation crash recovery"
+  (it "reconciles each durable handoff without replaying admitted child work or losing results" []
+    (isolated this_mod/.path "reconciles each durable handoff without replaying admitted child work or losing results"
+      (fn [workspace]
+        (for point in ["admission_intent" "child_session" "child_admitted" "child_finished"
+                      "result_item" "result_queued" "parent_request"
+                      "parent_response_recorded" "parent_response"]
+          (let root $"${workspace}/${point}")
+          (let marker (crash_at root point))
+          (let before (model_counts root))
+          (let runtime (open_runtime root "default" (baseline_profile)))
+          (let controller (recovery_controller runtime))
+          (try
+            (let blocks (delegation_blocks runtime/delegations "default"))
+            ($assert (== blocks/records/.size 2))
+            ($assert (!= blocks/records/0/source blocks/records/1/source))
+            (for child in blocks/records
+              (let metadata (runtime/sessions/index/.get .get child/session))
+              (if_not ($absent? metadata)
+                ($assert (== metadata/kind "child"))
+                ($assert (== metadata/parent/session "default"))))
+            (if (== marker/parent_state "running")
+              (then
+                (let owner (owner_receipt controller))
+                ($assert (== owner/state "interrupted") $"${point}: ${owner}")
+                ($sleep 75)
+                ($assert (== (model_counts root) before) $"${point}: recovery replayed a model call.")
+                (if (["parent_response_recorded" "parent_response"] .contains? point)
+                  (for child in blocks/records ($assert child/seen $"${point}: durable response did not consume its result.")))
+                (let rounds (round_state controller "default"))
+                (submit_round controller "default" "explicit-after-crash" rounds/next_seq
+                  "Collect saved child results without starting tasks again."))
+              (else
+                (if (== point "child_admitted")
+                  (then
+                    ($assert (! ($absent? blocks/recovery)) "Interrupted work did not hold the parent.")
+                    ($sleep 75)
+                    ($assert (== (model_counts root) before) "A recovery hold admitted new model work.")
+                    (let owner (owner_receipt controller))
+                    (delegation_recovery runtime/delegations "default" owner/id "continue"))
+                  (else ($assert ($absent? blocks/recovery) $"${point}: a never-started queue was held.")))))
+            (wait_for (fn [] (let current (owner_receipt controller)) (== current/state "done"))
+              $"${point}: parent did not collect results; ${runtime/delegations/last_error}")
+            (let counts (model_counts root))
+            ($assert (<= counts/a 1) $"${point}: first child replayed.")
+            ($assert (<= counts/b 1) $"${point}: second child replayed.")
+            (let final (delegation_blocks runtime/delegations "default"))
+            (for child in final/records ($assert child/seen $"${point}: result was not delivered."))
+          ensure
+            (close_round_controller controller)
+            (close_runtime runtime))))
+      ^timeout_ms 180000))
+
+  (it "cancels a recovery hold and its never-started queue without another model call" []
+    (isolated this_mod/.path "cancels a recovery hold and its never-started queue without another model call"
+      (fn [workspace]
+        (crash_at workspace "child_admitted")
+        (let before (model_counts workspace))
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (let controller (recovery_controller runtime))
+        (try
+          (let owner (owner_receipt controller))
+          (delegation_recovery runtime/delegations "default" owner/id "cancel")
+          ($sleep 75)
+          (let cancelled (owner_receipt controller))
+          ($assert (== cancelled/state "cancelled"))
+          ($assert (== (model_counts workspace) before))
+          (let blocks (delegation_blocks runtime/delegations "default"))
+          ($assert ($absent? blocks/recovery))
+          (for child in blocks/records
+            ($assert (["interrupted" "cancelled"] .contains? child/state)))
+        ensure
+          (close_round_controller controller)
+          (close_runtime runtime))))))
+
+(fn main [args] : Int (run_spec args))

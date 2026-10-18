@@ -1,0 +1,786 @@
+(mod delegations)
+(import [DelegationHost DelegationError DurableRecord] ^from "../plugin_api")
+(import [delegation_error delegation_limits normalize_delegation terminal_delegation?
+  delegation_source normalize_delegation_wait delegation_wait_members
+  delegation_wait_ready? delegation_question_source delegation_result_data delegation_descriptor]
+  ^from "./delegation_contract")
+(import [load_delegation_parent delegation_parent_sessions save_delegation_parent
+  remove_delegation_parent] ^from "../storage/delegations")
+(import [copy_data core_state events_for append_core_event flush_event_store] ^from "../storage/state")
+(import [write_body read_body with_body_use] ^from "../agents/history")
+(import [require_record create_session update_session load_session with_session_gate] ^from "./sessions")
+(import [require_turn] ^from "../agents/outcome")
+
+(var hosts ^^private ($cell []))
+
+(type HostedDelegations ^^private ^props {^token Any}
+  (impl DelegationHost
+    (message stage [request] : Any (stage_delegation (delegation_host self) request))
+    (message inspect [id : Str] : Any (inspect_delegation (delegation_host self) id))
+    (message cancel [id : Str] : Any (cancel_from_turn (delegation_host self) id))
+    (message continue [id : Str, text : Str] : Any
+      (stage_delegation (delegation_host self) {^id id ^brief text ^continue true}))
+    (message answer [id : Str, answers] : Any
+      (answer_from_turn (delegation_host self) id answers))))
+
+(fn delegation_host [handle]
+  (for service in hosts/.get
+    (if (same? service/token handle/token) (return service)))
+  (delegation_error "unavailable" "The delegation host is closed."))
+
+(fn delegation_parent [service, session : Str]
+  (let previous (service/parents .get session))
+  (if_not ($absent? previous) (return previous))
+  (let parent (load_delegation_parent service/runtime session))
+  (service/parents .put session parent)
+  parent)
+
+(fn parent_round_record [parent, round : Str]
+  (let previous (parent/rounds .get round))
+  (if_not ($absent? previous) (return previous))
+  (let created {^id round ^closed false ^wait nil ^hold false ^collection false})
+  (parent/rounds .put round created)
+  created)
+
+(fn parent_admissions [parent, ^round round = nil]
+  (let result [])
+  (for [id record] in parent/records
+    (for admission in record/admissions
+      (if (|| ($absent? round) (== admission/owner_round round))
+        (result .push admission))))
+  ($order/sort_by result (fn [admission] admission/queued_at_ms)))
+
+(fn admissions_by_source [parent]
+  (let result {})
+  (for admission in (parent_admissions parent) (result .put admission/source admission))
+  result)
+
+(fn checkpoint_delegations [service, parent, ^changed changed = []]
+  (save_delegation_parent service/runtime parent ^changed changed)
+  (for [id record] in parent/records
+    (service/children .put record/session {^parent parent/session ^id id}))
+  (if_not ($absent? service/checkpoint) (service/checkpoint "saved" parent/session))
+  parent)
+
+(fn delegation_turn [service, ^stage stage : Bool = false]
+  (let context ($runtime/context))
+  (let turn (require_turn context/turn))
+  (if (|| ($absent? context/delegations)
+          (! (same? context/delegations/token service/token))
+          ($absent? context/round) (== context/round ""))
+    (delegation_error "round_required" "Delegation requires an active model response in an owned round."))
+  (if (|| service/closed/.get service/stopping/.get service/runtime/stopping/.get ($absent? service/callbacks))
+    (delegation_error "unavailable" "The delegation scheduler is not accepting work."))
+  (if_yes stage
+    (let metadata (require_record service/runtime/sessions context/session))
+    (if (== metadata/kind "child")
+      (delegation_error "depth_limit" "A child cannot delegate. Return a proposed task split to its parent instead."))
+    (if (|| context/delegations/collection
+            (>= context/delegations/round_turn context/delegations/turn_limit))
+      (delegation_error "turn_limit" "No new child work is admitted on the final or collection turn.")))
+  {^session context/session ^round context/round ^turn turn ^context context/delegations
+   ^reviewer context/reviewer})
+
+(fn current_delegation [parent, id : Str]
+  (let record (parent/records .get id))
+  (if ($absent? record) (delegation_error "not_found" $"Delegation ${id} does not exist."))
+  record)
+
+(fn public_delegation [service, record, admission]
+  (let terminal (terminal_delegation? admission/state))
+  (let result (delegation_descriptor record admission))
+  (result .put "session_exists" (! ($absent? (service/runtime/sessions/index/.get .get record/session))))
+  (let link (service/children .get record/session))
+  (let parent (if ($absent? link) nil (service/parents .get link/parent)))
+  (let owner (if ($absent? parent) nil (parent/rounds .get admission/owner_round)))
+  (result .put "can_cancel" (&& (! terminal) (! ($absent? owner)) (!= owner/closed true)))
+  (if_yes terminal
+    (result .put "reply" (if ($absent? admission/reply_ref) "" (read_body service/runtime admission/reply_ref)))
+    (result .put "result" (if ($absent? admission/result_ref) nil
+      ($serde/read_data (read_body service/runtime admission/result_ref))))
+    (if_not ($absent? admission/last_request_ref)
+      (result .put "last_request" (read_body service/runtime admission/last_request_ref))))
+  result)
+
+(fn inspect_delegation [service, id : Str]
+  (valid_inspection_id id)
+  (let origin (delegation_turn service))
+  (for staged in origin/turn/delegation_staged/.get
+    (if (== staged/id id) (return {^id id ^title staged/title ^state "staged"})))
+  (service/gate (fn []
+    (let record (current_delegation (delegation_parent service origin/session) id))
+    (public_delegation service record ($last record/admissions)))))
+
+(fn valid_inspection_id [id : Str]
+  (if ($absent? (#"^[a-z0-9][a-z0-9_]{0,39}$" .match id))
+    (delegation_error "invalid_request" "Invalid delegation id.")))
+
+(fn stage_delegation [service, request]
+  (let origin (delegation_turn service ^^stage))
+  (service/gate (fn []
+    (let parent (delegation_parent service origin/session))
+    (let owner (parent_round_record parent origin/round))
+    (if owner/closed (delegation_error "round_closed" "This round no longer admits children."))
+    (let limits (delegation_limits ($serde/read_data ($fs/read_text $"${service/runtime/state_root}/config.gene"))))
+    (let staged origin/turn/delegation_staged/.get)
+    (let admitted (parent_admissions parent ^round origin/round))
+    (if (>= (+ admitted/.size staged/.size) limits/max_per_round)
+      (delegation_error "admission_limit" $"A round admits at most ${limits/max_per_round} child rounds."))
+    (let input (copy_data request))
+    (let previous (parent/records .get input/id))
+    (if (== input/continue true)
+      (then
+        (if ($absent? previous) (delegation_error "not_found" "Continue requires an existing delegation."))
+        (let latest ($last previous/admissions))
+        (if_not (terminal_delegation? latest/state)
+          (delegation_error "busy" "The child is unfinished; wait or cancel it before continuing."))
+        (let child (load_session service/runtime/sessions previous/session))
+        (if (["running" "waiting"] .contains? child/round/.get/state)
+          (delegation_error "busy" "The child has another active conversation round."))
+        (input .put "title" previous/title)
+        (input .put "turns" latest/turn_limit)
+        (input .put "timeout_ms" latest/timeout_ms))
+      (else
+        (if_not ($absent? previous)
+          (delegation_error "conflict" "Delegation ids are unique in a session; use continue_delegation."))))
+    (for pending in staged
+      (if (== pending/id input/id) (delegation_error "conflict" "This turn already staged that delegation id.")))
+    (let normalized (normalize_delegation input limits))
+    (normalized .put "continue" (== input/continue true))
+    (normalized .put "child_prompt" (?? input/child_prompt (?? previous/child_prompt "")))
+    (let prefixed ($to_str "[delegated by " origin/session " round " origin/round
+      " turn " origin/turn/turn " · " normalized/id "]\n"
+      normalized/child_prompt "\n\n" normalized/brief))
+    (if (> ($str/byte_size prefixed) 65536)
+      (delegation_error "invalid_request" "The brief and delegated instruction prefix exceed the 64 KiB prompt limit."))
+    (normalized .put "provider_settings" (if ($absent? previous)
+      {^provider origin/reviewer/name ^model (?? normalized/model origin/reviewer/settings/model)
+       ^effort (?? origin/reviewer/settings/effort "medium")}
+      (?? previous/provider_settings {})))
+    (staged .push normalized)
+    {^id normalized/id ^title normalized/title ^state "staged"})))
+
+(fn has_owned_work? [service, session : Str, round : Str]
+  (service/gate (fn []
+    (let parent (service/parents .get session))
+    (if ($absent? parent) (return false))
+    (for admission in (parent_admissions parent ^round round)
+      (if (|| (! (terminal_delegation? admission/state)) (!= admission/seen true)) (return true)))
+    false)))
+
+(fn delegation_context [service, session : Str, round : Str, count : Int, limit : Int, collection : Bool]
+  {^token service/token ^round_turn count ^turn_limit limit ^collection collection
+   ^guard (fn [] (has_owned_work? service session round))})
+
+(fn admission_result_item [service, record, admission, turn : Int, ^question question : Bool = false]
+  (let source (if question (delegation_question_source admission) admission/source))
+  (let suffix (if question ".question" ""))
+  (let id $"${turn}.delegation.${admission/id}@${admission/number}${suffix}")
+  (let details (public_delegation service record admission))
+  (let link (service/children .get record/session))
+  (let parent (service/parents .get link/parent))
+  (let totals {^turns 0 ^calls 0 ^prompt_tokens 0 ^completion_tokens 0 ^total_tokens 0
+    ^cost 0.0 ^tokens_known true ^cost_known true})
+  (for sibling in (parent_admissions parent ^round admission/owner_round)
+    (let usage (?? sibling/usage (delegation_usage service sibling)))
+    (totals .put "turns" (+ totals/turns (?? sibling/turns_used 0)))
+    (for name in ["calls" "prompt_tokens" "completion_tokens" "total_tokens" "cost"]
+      (totals .put name (+ (totals .get name) (?? (usage .get name) 0))))
+    (if (!= usage/tokens_known true) (totals .put "tokens_known" false))
+    (if (!= usage/cost_known true) (totals .put "cost_known" false)))
+  (details .put "round_usage" totals)
+  {^id id ^header $"[${id}] ${record/title} · ${admission/state} · ${record/session}"
+   ^value ($serde/write_data details) ^delegation_source source})
+
+(fn delegation_request_items [service, session : Str, round : Str, turn : Int, ^carry carry : Bool = false]
+  (service/gate (fn []
+    (let parent (service/parents .get session))
+    (if ($absent? parent) (return []))
+    (let items [])
+    (for [id record] in parent/records
+      (for admission in record/admissions
+        (if (&& (!= admission/owner_round round) (! (&& carry (== admission/carry true)))) (continue))
+        (if (&& (terminal_delegation? admission/state) (!= admission/seen true))
+          (items .push (admission_result_item service record admission turn)))
+        (if (&& (== admission/state "waiting") (! ($absent? admission/questions))
+                (! ((?? admission/seen_questions []) .contains? admission/questions/id)))
+          (items .push (admission_result_item service record admission turn ^^question)))))
+    items)))
+
+(fn mark_delegation_results_seen [service, session : Str, round : Str, turn : Int, sources]
+  (if sources/.empty? (return nil))
+  (service/gate (fn []
+    (let parent (delegation_parent service session))
+    (var changed false)
+    (for admission in (parent_admissions parent)
+      (if_yes (sources .contains? admission/source)
+        (admission .put "seen" true)
+        (admission .put "seen_turn" turn)
+        (admission .put "carry" false)
+        (set changed true))
+      (if_yes (&& (! ($absent? admission/questions))
+              (sources .contains? (delegation_question_source admission)))
+        (let seen (?? admission/seen_questions []))
+        (if_not (seen .contains? admission/questions/id) (seen .push admission/questions/id))
+        (admission .put "seen_questions" seen)
+        (set changed true)))
+    (if changed (checkpoint_delegations service parent))))
+  nil)
+
+(fn commit_delegation_turn [service, session : Str, round : Str, turn : Int, result,
+                            ^limit limit : Int, ^count count : Int, ^collection collection : Bool = false]
+  (if (&& result/turn/delegation_staged/.get/.empty?
+          ($absent? (service/parents .get session)) (!= result/kind "wait")) (return result))
+  (service/gate (fn []
+    (with_session_gate service/runtime/sessions $"round/${session}" (fn []
+      (let parent (copy_data (delegation_parent service session)))
+      (let owner (parent_round_record parent round))
+      (var pending (?? result/turn/delegation_staged/.get []))
+      (if (["error" "cancelled"] .contains? result/kind) (set pending []))
+      (if (&& owner/closed (! pending/.empty?))
+        (delegation_error "round_closed" "The parent no longer admits children."))
+      (let changed [])
+      (for staged in pending
+        (let old (parent/records .get staged/id))
+        (let latest (if ($absent? old) nil ($last old/admissions)))
+        (let number (if ($absent? old) 1 (+ latest/number 1)))
+        (let identity $"${session}/${staged/id}/${number}")
+        (let identity_hash ($crypto/sha256 identity))
+        (let child_session (if ($absent? old)
+          $"s-d-${($str/slice_bytes identity_hash 0 24)}"
+          old/session))
+        (let record (if ($absent? old)
+          {^id staged/id ^title staged/title ^session child_session ^admissions []
+           ^provider_settings staged/provider_settings ^child_prompt staged/child_prompt}
+          old))
+        (let admission {^id staged/id ^number number ^source (delegation_source staged/id number)
+          ^session child_session ^owner_round round ^starting_turn turn ^title staged/title
+          ^brief_ref (write_body service/runtime staged/brief) ^state "queued"
+          ^request_id $"delegation-${identity_hash}"
+          ^turn_limit staged/turn_limit ^timeout_ms staged/timeout_ms
+          ^queued_at_ms ($os/wall_ms) ^seen false ^seen_questions [] ^outbox_queued false
+          ^provider_settings staged/provider_settings ^phase "start" ^ready false})
+        (admission .put "child_prompt" staged/child_prompt)
+        (record/admissions .push admission)
+        (parent/records .put staged/id record)
+        (changed .push staged/id))
+      (let admissions (parent_admissions parent ^round round))
+      (let work ($filter admissions (fn [admission]
+        (|| (! (terminal_delegation? admission/state)) (!= admission/seen true)))))
+      (var wait nil)
+      (if (== result/kind "wait")
+        (set wait (normalize_delegation_wait result/validated/outcome/wait
+          ^wake_on_questions (== result/validated/outcome/wake_on_questions true))))
+      (if_yes (&& (>= count limit) (! collection) (! work/.empty?) (!= result/kind "questions"))
+        (set wait {^mode "all" ^ids [] ^internal true ^wake_on_questions false})
+        (owner .put "collection" true))
+      (if_not ($absent? wait)
+        (wait .put "members" (delegation_wait_members wait admissions))
+        (if (&& wait/members/.empty? (!= wait/internal true))
+          (delegation_error "invalid_wait" "There is no unfinished or unseen child result to wait for."))
+        (wait .put "generation" (+ (?? owner/wait_generation 0) 1))
+        (wait .put "turn" turn)
+        (wait .put "ready" false)
+        (owner .put "wait_generation" wait/generation)
+        (owner .put "wait" wait))
+      (if_yes (&& (== result/kind "done") (! work/.empty?))
+        (result .put "kind" "continue")
+        (result .put "delegation_deferred" true))
+      (if_not ($absent? wait) (result .put "kind" "delegation_wait"))
+      (if_yes (|| (! changed/.empty?) (! ($absent? wait)))
+        (checkpoint_delegations service parent ^changed changed)
+        (service/parents .put session parent)
+        (if_not ($absent? service/checkpoint) (service/checkpoint "admission_intent" session)))
+      (result .put "delegation_wait" wait)
+      (result .put "delegation_collection" owner/collection)
+      (if_not changed/.empty?
+        (result/request_items .push {^id $"${turn}.delegations" ^header $"[${turn}.delegations]"
+          ^value ($to_str "Committed child admissions: " ($str/join changed ", ") ". They dispatch within workspace caps.")}))
+      (if (== result/delegation_deferred true)
+        (result/request_items .push {^id $"${turn}.delegation_notice" ^header $"[${turn}.delegation_notice]"
+          ^value "Done was deferred because this round has unfinished children or unseen results. Use Outcome ^wait all to collect them."}))
+      (let existing ($map result/request_items (fn [item] (?? item/delegation_source ""))))
+      (for item in (pending_items_unlocked service parent round (+ turn 1))
+        (if_not (existing .contains? item/delegation_source) (result/request_items .push item)))
+      (service/dirty .set true)
+      result)))))
+
+(fn note_delegation_round [service, session : Str, receipt]
+  (if (|| ($absent? service) service/closed/.get) (return nil))
+  # Called while a round gate may be held. Never acquire a parent/global gate
+  # here: cancellation takes those gates in the opposite direction.
+  (service/inbox/.get .push {^session session ^round receipt/id})
+  (service/dirty .set true)
+  nil)
+
+(fn release_delegation_turn [service, session : Str, round : Str, turn : Int]
+  (let parent (service/parents .get session))
+  (if ($absent? parent) (return nil))
+  (service/gate (fn []
+    (var changed false)
+    (for admission in (parent_admissions parent ^round round)
+      (if_yes (&& (== admission/starting_turn turn) (!= admission/ready true))
+        (admission .put "ready" true)
+        (set changed true)))
+    (if changed (checkpoint_delegations service parent))
+    (service/dirty .set true)))
+  nil)
+
+(fn queue_delegation_answer [service, session : Str, receipt, batch] : Bool
+  (if (|| ($absent? service) ($absent? receipt/delegation)
+          ($absent? (service/children .get session))) (return false))
+  (service/inbox/.get .push {^session session ^round receipt/id ^batch batch/id})
+  (service/dirty .set true)
+  true)
+
+(fn delegation_usage [service, admission]
+  (let usage {^calls 0 ^prompt_tokens 0 ^completion_tokens 0 ^total_tokens 0 ^tokens_known true ^cost 0.0 ^cost_known true})
+  (if ($absent? admission/round) (return usage))
+  (for event in (events_for service/runtime/events "session" admission/session)
+    (let payload event/payload)
+    (if (|| (!= event/type "model/result") (!= payload/round admission/round)) (continue))
+    (usage .put "calls" (+ usage/calls 1))
+    (let reported (?? payload/usage {}))
+    (if ($absent? reported/total_tokens) (usage .put "tokens_known" false))
+    (if ($absent? reported/cost) (usage .put "cost_known" false))
+    (for name in ["prompt_tokens" "completion_tokens" "total_tokens" "cost"]
+      (let value (reported .get name))
+      (if ([Int Float] .contains? ($head value))
+        (usage .put name (+ (usage .get name) value)))))
+  usage)
+
+(fn queue_terminal_result [service, parent, admission]
+  (if (== admission/outbox_queued true) (return nil))
+  (if ($absent? parent/outbox) (parent .put "outbox" {}))
+  (if_yes ($absent? (parent/outbox .get admission/source))
+    (parent/outbox .put admission/source
+      {^source admission/source ^id admission/id ^owner_round admission/owner_round
+       ^reply_ref (?? admission/reply_ref nil) ^result_ref (?? admission/result_ref nil)})
+    (checkpoint_delegations service parent)
+    (if_not ($absent? service/checkpoint) (service/checkpoint "result_item" parent/session)))
+  (admission .put "outbox_queued" true)
+  (checkpoint_delegations service parent ^changed [admission/id])
+  (if_not ($absent? service/checkpoint) (service/checkpoint "result_queued" parent/session))
+  nil)
+
+(fn settle_delegation [service, parent, admission, receipt]
+  (if_not (terminal_delegation? admission/state)
+    (let usage (delegation_usage service admission))
+    (let reply_ref (write_body service/runtime (?? receipt/reply (?? receipt/message ""))))
+    (let result_ref (if ($absent? receipt/result) nil
+      (write_body service/runtime ($serde/write_data (delegation_result_data receipt/result)))))
+    (admission .put "state" receipt/state)
+    (admission .put "finished_at_ms" ($os/wall_ms))
+    (admission .put "turns_used" (?? receipt/turn_count 0))
+    (admission .put "message" (?? receipt/message ""))
+    (admission .put "reply_ref" reply_ref)
+    (if (&& (!= receipt/state "done") (! ($absent? receipt/request)))
+      (admission .put "last_request_ref" (write_body service/runtime receipt/request)))
+    (if_not ($absent? result_ref) (admission .put "result_ref" result_ref))
+    (admission .put "usage" usage)
+    (if (["failed" "interrupted"] .contains? receipt/state)
+      (update_session service/runtime/sessions admission/session {^^attention}))
+    (checkpoint_delegations service parent ^changed [admission/id])
+    (if_not ($absent? service/checkpoint) (service/checkpoint "child_finished" parent/session)))
+  (queue_terminal_result service parent admission))
+
+(fn owner_is_live? [service, parent, owner]
+  (let receipt (service/callbacks/owner parent/session owner/id))
+  (&& (! ($absent? receipt)) (["running" "waiting"] .contains? receipt/state)))
+
+(fn close_owner_unlocked [service, parent, round : Str, reason : Str]
+  (let owner (parent_round_record parent round))
+  (owner .put "closed" true)
+  (owner .put "hold" false)
+  (owner .put "wait" nil)
+  # Admission closes durably before any active child receives cancellation.
+  (checkpoint_delegations service parent)
+  (let cancel [])
+  (for admission in (parent_admissions parent ^round round)
+    (if_not (terminal_delegation? admission/state) (reconcile_child service parent admission))
+    (if_not (terminal_delegation? admission/state)
+      (cancel .push {^session admission/session ^round (?? admission/round nil)})
+      (settle_delegation service parent admission
+        {^state "cancelled" ^message reason ^turn_count (?? admission/turns_used 0)}))
+    (if (!= admission/seen true) (admission .put "carry" true)))
+  (checkpoint_delegations service parent)
+  (for child in cancel
+    (if_not ($absent? child/round)
+      (try (service/callbacks/cancel child/session child/round) catch Any nil)))
+  nil)
+
+(fn close_delegation_owner [service, session : Str, round : Str, reason : Str]
+  (if ($absent? service) (return nil))
+  (service/gate (fn []
+    (with_session_gate service/runtime/sessions $"round/${session}" (fn []
+      (let parent (service/parents .get session))
+      (if (|| ($absent? parent) ($absent? (parent/rounds .get round))) (return nil))
+      (let owner (parent/rounds .get round))
+      (if_not owner/closed (close_owner_unlocked service parent round reason))))))
+  nil)
+
+(fn cancel_delegation_admission [service, session : Str, id : Str, number : Int, ^round round = nil]
+  (service/gate (fn []
+    (with_session_gate service/runtime/sessions $"round/${session}" (fn []
+      (let parent (delegation_parent service session))
+      (let record (current_delegation parent id))
+      (let admission ($last record/admissions))
+      (if (&& (> number 0) (!= admission/number number))
+        (delegation_error "conflict" "This delegation has a newer admission; refresh before cancelling it."))
+      (if (&& (! ($absent? round)) (!= admission/owner_round round))
+        (delegation_error "not_owned" "This round does not own that child admission."))
+      (let owner (parent_round_record parent admission/owner_round))
+      (if (|| owner/closed (! (owner_is_live? service parent owner)))
+        (delegation_error "round_closed" "The owning round has ended."))
+      (reconcile_child service parent admission)
+      (if_not (terminal_delegation? admission/state)
+        (settle_delegation service parent admission
+          {^state "cancelled" ^message "Cancelled by the parent." ^turn_count (?? admission/turns_used 0)})
+        (if_not ($absent? admission/round)
+          (try (service/callbacks/cancel admission/session admission/round) catch Any nil)))
+      (service/dirty .set true)
+      (public_delegation service record admission))))))
+
+(fn cancel_from_turn [service, id : Str]
+  (let origin (delegation_turn service))
+  (cancel_delegation_admission service origin/session id 0 ^round origin/round))
+
+(fn answer_from_turn [service, id : Str, answers]
+  (let origin (delegation_turn service))
+  (let target (service/gate (fn []
+    (let parent (delegation_parent service origin/session))
+    (let record (current_delegation parent id))
+    (let admission ($last record/admissions))
+    (if (|| (!= admission/owner_round origin/round) ($absent? admission/questions))
+      (delegation_error "not_waiting" "This round has no question batch for that child."))
+    {^session admission/session ^batch admission/questions/id})))
+  # answer_round takes the child's gate and only posts its resume to our inbox.
+  (service/callbacks/answer target/session target/batch answers)
+  (inspect_delegation service id))
+
+(fn reconcile_child [service, parent, admission]
+  (let receipt (service/callbacks/find admission/session admission/request_id))
+  (if ($absent? receipt) (return nil))
+  (admission .put "round" receipt/id)
+  (if (terminal_delegation? receipt/state)
+    (return (settle_delegation service parent admission receipt)))
+  (if (terminal_delegation? admission/state) (return nil))
+  (let before ($serde/write_data admission))
+  (let metadata (require_record service/runtime/sessions admission/session))
+  (let used ($math/max 0 (- metadata/turns (?? admission/base_turn 0))))
+  (admission .put "turns_used" used)
+  (admission .put "usage" (delegation_usage service admission))
+  (if_yes (== receipt/state "waiting")
+    (let batch (if ($absent? receipt/questions) nil
+      (core_state service/runtime/events "session" admission/session $"questions/${receipt/questions/id}")))
+    (if ($absent? batch)
+      (then (admission .put "state" "waiting"))
+      (else
+        (admission .put "questions" batch)
+        (admission .put "remaining_ms" (?? receipt/remaining_ms admission/timeout_ms))
+        (if (== batch/status "answered")
+          (then
+            (admission .put "state" "queued")
+            (admission .put "phase" "answer")
+            (admission .put "resume_batch" batch/id))
+          (else (admission .put "state" "waiting"))))))
+  (if (== receipt/state "running") (admission .put "state" "running"))
+  (if_yes (!= before ($serde/write_data admission))
+    (if (== admission/state "waiting")
+      (update_session service/runtime/sessions admission/session {^^attention}))
+    (checkpoint_delegations service parent ^changed [admission/id]))
+  nil)
+
+(fn pending_items_unlocked [service, parent, round : Str, turn : Int]
+  (let items [])
+  (for [id record] in parent/records
+    (for admission in record/admissions
+      (if (!= admission/owner_round round) (continue))
+      (if (&& (terminal_delegation? admission/state) (!= admission/seen true))
+        (items .push (admission_result_item service record admission turn)))
+      (if (&& (== admission/state "waiting") (! ($absent? admission/questions))
+              (! ((?? admission/seen_questions []) .contains? admission/questions/id)))
+        (items .push (admission_result_item service record admission turn ^^question)))))
+  items)
+
+(fn resume_waiting_owner [service, parent, owner]
+  (let wait owner/wait)
+  (if (|| owner/closed owner/hold ($absent? wait)) (return false))
+  (let receipt (service/callbacks/owner parent/session owner/id))
+  (if (|| ($absent? receipt) (!= receipt/state "waiting") ($absent? receipt/delegation_wait))
+    (return false))
+  (if (&& (!= wait/forced true) (!= wait/intent "continue")
+          (! (delegation_wait_ready? wait (admissions_by_source parent)))) (return false))
+  (wait .put "intent" "continue")
+  (checkpoint_delegations service parent)
+  (let metadata (require_record service/runtime/sessions parent/session))
+  (let items (pending_items_unlocked service parent owner/id (+ metadata/turns 1)))
+  (let resumed (service/callbacks/resume_parent parent/session owner/id (copy_data wait) items (== owner/collection true)))
+  (if_yes resumed
+    (owner .put "wait" nil)
+    (checkpoint_delegations service parent))
+  resumed)
+
+(fn restore_seen_results [service, parent]
+  (let responded {})
+  (for event in (events_for service/runtime/events "session" parent/session)
+    (if (== event/type "turn/response") (responded .put ($to_str event/payload/turn) true)))
+  (var changed false)
+  (let by_source (admissions_by_source parent))
+  (for [round owner] in parent/rounds
+    (for [turn sources] in (?? owner/requests {})
+      (if_not (== (responded .get ($to_str turn)) true) (continue))
+      (for source in sources
+        (let admission (by_source .get source))
+        (if_yes (&& (! ($absent? admission)) (!= admission/seen true))
+          (admission .put "seen" true)
+          (admission .put "carry" false)
+          (set changed true))
+        (for candidate in (parent_admissions parent)
+          (if_yes (&& (! ($absent? candidate/questions))
+                      (== source (delegation_question_source candidate)))
+            (let seen (?? candidate/seen_questions []))
+            (if_not (seen .contains? candidate/questions/id)
+              (seen .push candidate/questions/id)
+              (candidate .put "seen_questions" seen)
+              (set changed true)))))))
+  (if changed (checkpoint_delegations service parent)))
+
+(fn reconcile_delegation_parent [service, parent, recovering : Bool]
+  (for admission in (parent_admissions parent)
+    (if (|| (! (terminal_delegation? admission/state)) (!= admission/outbox_queued true))
+      (reconcile_child service parent admission)))
+  (if recovering (restore_seen_results service parent))
+  (for [round owner] in parent/rounds
+    (if owner/closed (continue))
+    (let receipt (service/callbacks/owner parent/session ($to_str round)))
+    (if_yes (|| ($absent? receipt) (terminal_delegation? receipt/state))
+      (close_owner_unlocked service parent ($to_str round) "The parent round ended before collecting its children.")
+      (continue))
+    (if_yes (&& recovering (== receipt/state "waiting"))
+      (let cutoff [])
+      (for admission in (parent_admissions parent ^round ($to_str round))
+        (if (|| (== admission/state "interrupted") (== admission/stop_cutoff true))
+          (cutoff .push admission/source)))
+      (if_not cutoff/.empty?
+        (owner .put "hold" true)
+        (owner .put "cutoff" cutoff)
+        (checkpoint_delegations service parent)
+        (update_session service/runtime/sessions parent/session {^^attention})))
+    (if_not owner/hold (resume_waiting_owner service parent owner)))
+  nil)
+
+(fn running_delegations [service, parent_session : Str, round : Str]
+  (var total 0) (var own 0)
+  (for [session parent] in service/parents
+    (for admission in (parent_admissions parent)
+      (if (&& (!= admission/state "running")
+              (! (service/callbacks/active admission/session admission/request_id))) (continue))
+      (set total (+ total 1))
+      (if (&& (== ($to_str session) parent_session) (== admission/owner_round round))
+        (set own (+ own 1)))))
+  {^total total ^own own})
+
+(fn dispatch_delegations [service]
+  (if (|| service/stopping/.get service/runtime/stopping/.get) (return nil))
+  (let limits (delegation_limits ($serde/read_data ($fs/read_text $"${service/runtime/state_root}/config.gene"))))
+  (let queue [])
+  (for [session parent] in service/parents
+    (for admission in (parent_admissions parent)
+      (if (== admission/state "queued")
+        (queue .push {^parent parent ^admission admission}))))
+  (let ordered ($order/sort_by queue (fn [entry] entry/admission/queued_at_ms)))
+  (for entry in ordered
+    (let parent entry/parent) (let admission entry/admission)
+    (if (!= admission/ready true) (continue))
+    (with_session_gate service/runtime/sessions $"round/${parent/session}" (fn []
+      (let owner (parent_round_record parent admission/owner_round))
+      (if_yes (|| owner/closed (! (owner_is_live? service parent owner)))
+        (close_owner_unlocked service parent owner/id "The parent no longer owns this queued work.")
+        (return nil))
+      (if owner/hold (return nil))
+      # A waiting outcome must be durably parked before its queued children
+      # start. Continuing parent turns can still run alongside their children.
+      (if_not ($absent? owner/wait)
+        (let parent_receipt (service/callbacks/owner parent/session owner/id))
+        (if (!= parent_receipt/state "waiting") (return nil)))
+      (let running (running_delegations service parent/session owner/id))
+      (if (|| (>= running/total limits/max_running) (>= running/own limits/max_per_parent))
+        (return nil))
+      (let record (parent/records .get admission/id))
+      (if_yes ($absent? (service/runtime/sessions/index/.get .get record/session))
+        (create_session service/runtime/sessions ^id record/session ^kind "child" ^title record/title
+          ^parent {^session parent/session ^round owner/id ^delegation record/id ^turn admission/starting_turn}
+          ^model_settings record/provider_settings)
+        (if_not ($absent? service/checkpoint) (service/checkpoint "child_session" parent/session)))
+      (let metadata (require_record service/runtime/sessions record/session))
+      (admission .put "base_turn" (?? admission/base_turn metadata/turns))
+      # Reserve the global/per-owner slot before another dispatcher iteration.
+      (admission .put "state" "running")
+      (admission .put "started_at_ms" (?? admission/started_at_ms ($os/wall_ms)))
+      (checkpoint_delegations service parent ^changed [admission/id])
+      (try
+        (let receipt
+          (if (== admission/phase "answer")
+            (then
+              (let old (service/callbacks/find admission/session admission/request_id))
+              (let batch (core_state service/runtime/events "session" admission/session $"questions/${admission/resume_batch}"))
+              (service/callbacks/resume admission/session old batch))
+            (else (service/callbacks/admit parent admission))))
+        (admission .put "round" receipt/id)
+        (checkpoint_delegations service parent ^changed [admission/id])
+        (if_not ($absent? service/checkpoint) (service/checkpoint "child_admitted" parent/session))
+      catch Any
+        (if (== $err/code "busy")
+          (then
+            (admission .put "state" "queued")
+            (checkpoint_delegations service parent ^changed [admission/id]))
+          (else
+            (settle_delegation service parent admission
+              {^state "failed" ^message ($to_str $err/message) ^turn_count 0})))))))
+  nil)
+
+(fn process_delegations [service, ^recovering recovering : Bool = false]
+  (service/gate (fn []
+    (service/inbox .set [])
+    (let removed [])
+    (for [session parent] in service/parents
+      (if ($absent? (service/runtime/sessions/index/.get .get ($to_str session)))
+        (then (removed .push ($to_str session)))
+        (else
+          (with_session_gate service/runtime/sessions $"round/${session}"
+            (fn [] (reconcile_delegation_parent service parent recovering))))))
+    (for session in removed
+      (remove_delegation_parent service/runtime session)
+      (let parent (service/parents .get session))
+      (for [id record] in parent/records (service/children .delete record/session))
+      (service/parents .delete session))
+    (dispatch_delegations service)))
+  nil)
+
+(fn begin_delegation_request [service, session : Str, round : Str, turn : Int, sources]
+  (if sources/.empty? (return nil))
+  (service/gate (fn []
+    (let parent (delegation_parent service session))
+    (let owner (parent_round_record parent round))
+    (let requests (?? owner/requests {}))
+    (requests .put ($to_str turn) sources)
+    (owner .put "requests" requests)
+    (checkpoint_delegations service parent)
+    (if_not ($absent? service/checkpoint) (service/checkpoint "parent_request" session))))
+  nil)
+
+(fn open_delegation_host [runtime]
+  (let coordinating ($sync/gate))
+  (let service {^runtime runtime ^token ($cell nil) ^parents {} ^children {}
+    ^gate (fn [body] (with_body_use runtime (fn [] (coordinating body))))
+    ^dirty ($cell true) ^inbox ($cell []) ^closed ($cell false) ^stopping ($cell false)
+    ^callbacks nil ^worker nil ^subscription nil ^checkpoint nil ^last_error nil})
+  (service .put "handle" (HostedDelegations ^token service/token))
+  (for session in (delegation_parent_sessions runtime)
+    (if_not ($absent? (runtime/sessions/index/.get .get session))
+      (let parent (delegation_parent service session))
+      (for [id record] in parent/records
+        (service/children .put record/session {^parent session ^id ($to_str id)}))))
+  (hosts/.get .push service)
+  service)
+
+(fn connect_delegation_host [service, callbacks]
+  (if_not ($absent? service/callbacks) (return service))
+  (service .put "callbacks" callbacks)
+  (service .put "subscription"
+    (service/runtime/h/bus .subscribe DurableRecord (fn [event]
+      (if (&& (== event/scope "session")
+              (! ($absent? (service/children .get event/stream)))
+              (["turn/start" "model/result" "question/answered"] .contains? event/name))
+        (service/dirty .set true)))))
+  (process_delegations service ^^recovering)
+  (let worker (spawn ^lane root
+    ($runtime/with_context nil (fn []
+      (while (! service/closed/.get)
+        (if (service/dirty .swap false)
+          (try (process_delegations service)
+            catch Any
+              (service .put "last_error" ($to_str $err/message " at " $err/file ":" $err/line))
+              (service/dirty .set true)))
+        ($sleep 25))))))
+  (service .put "worker" worker)
+  service)
+
+(fn close_delegation_host [service]
+  (if (service/closed .swap true) (return nil))
+  (if_not ($absent? service/subscription) service/subscription/.cancel)
+  (let worker service/worker)
+  (if_yes (&& (! ($absent? worker)) (! worker/.done?)) worker/.cancel worker/.join)
+  (hosts .set ($filter hosts/.get (fn [current] (! (same? current/token service/token)))))
+  nil)
+
+(fn prepare_delegations_stop [service, active_sessions]
+  (if ($absent? service) (return nil))
+  (service/stopping .set true)
+  (service/gate (fn []
+    (for [session parent] in service/parents
+      (with_session_gate service/runtime/sessions $"round/${session}" (fn []
+        (for [round owner] in parent/rounds
+          (if owner/closed (continue))
+          (let receipt (service/callbacks/owner parent/session ($to_str round)))
+          (if (|| ($absent? receipt) (== receipt/state "running"))
+            (then
+              (close_owner_unlocked service parent ($to_str round) "The parent was stopped."))
+            (else
+              (let cutoff [])
+              (for admission in (parent_admissions parent ^round ($to_str round))
+                (if (!= admission/state "running") (continue))
+                (let child (service/callbacks/find admission/session admission/request_id))
+                (if_yes (&& (! ($absent? child)) (== child/state "running"))
+                  (admission .put "stop_cutoff" true)
+                  (cutoff .push admission/source)))
+              (if_not cutoff/.empty?
+                (owner .put "hold" true)
+                (owner .put "cutoff" cutoff)
+                (checkpoint_delegations service parent))))))))))
+  nil)
+
+(fn delegation_recovery [service, session : Str, round : Str, action : Str]
+  (let cancelled ($cell false))
+  (service/gate (fn []
+    (with_session_gate service/runtime/sessions $"round/${session}" (fn []
+      (let parent (delegation_parent service session))
+      (let owner (parent_round_record parent round))
+      (if (!= owner/hold true) (delegation_error "not_held" "This round is not awaiting delegation recovery."))
+      (if (== action "cancel")
+        (then
+          (close_owner_unlocked service parent round "The parent recovery was cancelled.")
+          (cancelled .set true))
+        (elif (== action "continue")
+          (owner .put "hold" false)
+          (for admission in (parent_admissions parent ^round round) (admission .put "stop_cutoff" false))
+          (if (&& (! ($absent? owner/wait)) (!= owner/collection true))
+            (owner/wait .put "forced" true))
+          (checkpoint_delegations service parent)
+          (service/dirty .set true))
+        (else (delegation_error "invalid_request" "Use continue or cancel for delegation recovery.")))))))
+  (if cancelled/.get (service/callbacks/cancel session round))
+  {^^ok})
+
+(fn delegation_blocks [service, session : Str]
+  (if ($absent? service) (return {^records [] ^recovery nil}))
+  (service/gate (fn []
+    (let parent (service/parents .get session))
+    (if ($absent? parent) (return {^records [] ^recovery nil}))
+    (let records [])
+    (for [id record] in parent/records
+      (for admission in record/admissions
+        (let data (public_delegation service record admission))
+        (data .delete "result")
+        (data .delete "last_request")
+        (if_not ($absent? data/reply)
+          (let text data/reply)
+          (if (> ($str/byte_size text) 4096)
+            (data .put "reply" ($str/join ($take ($graphemes text) 2048) ""))))
+        (records .push data)))
+    (var recovery nil)
+    (for [round owner] in parent/rounds
+      (if (&& owner/hold (! owner/closed))
+        (set recovery {^round ($to_str round) ^children (?? owner/cutoff [])})))
+    {^records records ^recovery recovery})))

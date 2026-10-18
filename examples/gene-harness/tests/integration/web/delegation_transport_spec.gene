@@ -1,0 +1,42 @@
+(import $test [describe it])
+(import [isolated run_spec] ^from "../../support")
+(import [start_host stop_host] ^from "../../web_support")
+(import [connect api wire] ^from "../../../src/cli/client")
+
+(fn wait_snapshot [client, session, predicate]
+  (let due (+ ($os/monotonic_ms) 15000))
+  (loop
+    (let data (api client "GET" $"/sessions/${session}/snapshot"))
+    (if (predicate data) (return data))
+    ($assert (< ($os/monotonic_ms) due) "HTTP delegation state did not settle.")
+    ($sleep 20)))
+
+(describe "Delegation HTTP controls"
+  (it "accepts the browser's admission number and cancels that child without starting another round" []
+    (isolated ^timeout_ms 120000 this_mod/.path "accepts the browser's admission number and cancels that child without starting another round"
+      (fn [workspace]
+        (let host (start_host workspace ^script [
+          "(delegate \"audit\" ^title \"Audit\" ^brief \"Inspect the module.\") (Outcome ^wait \"all\")"
+          "($sleep 60000) (Outcome ^^done ^reply \"late\")"
+          "(Outcome ^^done ^reply \"Cancellation collected\")"]))
+        (try
+          (let client (connect workspace))
+          (let session (api client "POST" "/sessions" {}))
+          (let path $"/sessions/${session/id}")
+          (api client "POST" $"${path}/rounds" {^request_id "http" ^submission_seq "1" ^text "Audit the module."})
+          (let data (wait_snapshot client session/id (fn [snapshot]
+            (> ($size ($filter snapshot/records (fn [record]
+              (&& (== record/phase "delegation") (== record/delegation/state "running"))))) 0))))
+          (let target $"${path}/delegations/audit/cancel")
+          (let refused (wire client/connection "POST" target {^admission 0} ^credentials client/credentials))
+          ($assert (== refused/status 400))
+          ($assert (== ((Path "status") (wire client/connection "POST" target {^admission 1})) 401))
+          (let cancelled (api client "POST" target {^admission 1}))
+          ($assert (== cancelled/state "cancelled"))
+          (let final (wait_snapshot client session/id (fn [snapshot] (== snapshot/round/state "done"))))
+          (let block ($first ($filter final/records (fn [record] (== record/phase "delegation")))))
+          ($assert (== block/delegation/state "cancelled"))
+          ($assert (== final/next_submission_seq "2"))
+        ensure (stop_host host))))))
+
+(fn main [args] : Int (run_spec args))

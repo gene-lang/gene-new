@@ -795,6 +795,11 @@ child/.detach
           ($assert
             (== updated_counter/view/children/0/children/0 "1")
             "snapshot did not refresh plugin state")
+          (let failed_disable (command service session/id "/run (disable_plugin \"counter\") (missing_operator_function)"))
+          (service/runtime/commands/watchers/.get .get $"${session/id}:${failed_disable/id}"; .join)
+          (let unchanged (host_status service))
+          ($assert (== (fixture_component_count unchanged/web_components) 2)
+            "failed operator evaluation published its staged plugin change")
           (let disable (command service session/id "/run (disable_plugin \"counter\")"))
           (service/runtime/commands/watchers
             .get

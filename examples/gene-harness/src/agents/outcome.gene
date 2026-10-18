@@ -1,7 +1,9 @@
 (mod outcome)
 (import ^from "../runtime/questions" [validate_questions])
+(import [normalize_delegation_wait delegation_result_data] ^from "../runtime/delegation_contract")
 
-(type Outcome ^props {^done Bool? ^prompt Any? ^reply Str? ^questions Any? ^attention Bool?})
+(type Outcome ^props {^done Bool? ^prompt Any? ^reply Str? ^questions Any? ^attention Bool?
+  ^wait Any? ^result Any? ^wake_on_questions Bool?})
 (type OutcomeError ^props {^message Str ^response_line Int?} ^impl [Error])
 (impl Error for OutcomeError)
 (type TurnClosed ^props {^message Str ^turn Int?} ^impl [Error])
@@ -12,6 +14,9 @@
     ^turn turn
     ^queue_token ($crypto/random_hex 16)
     ^composition_queued ($cell false)
+    ^delegation_staged ($cell [])
+    ^delegation_guard nil
+    ^delegation_collection false
     ^state ($cell "open")
     ^items ($cell [])
     ^media ($cell [])
@@ -84,6 +89,16 @@
 
 (fn validate_outcome [turn, value, ^validators validators = {}, ^renderers renderers = {}]
   (let outcome (if (== ($head value) Outcome) value (Outcome ^prompt value)))
+  (if_not ($absent? outcome/result)
+    (if (!= outcome/done true) (fail (OutcomeError ^message "result requires a done Outcome.")))
+    (delegation_result_data outcome/result))
+  (if_not ($absent? outcome/wait)
+    (if (|| outcome/done (! ($absent? outcome/questions)))
+      (fail (OutcomeError ^message "wait cannot be combined with done or questions.")))
+    (if turn/delegation_collection
+      (fail (OutcomeError ^message "The collection turn cannot wait or start more work; finish with done.")))
+    (normalize_delegation_wait outcome/wait ^wake_on_questions (== outcome/wake_on_questions true))
+    (return {^kind "wait" ^outcome outcome ^questions nil}))
   (if (== outcome/done true)
     (then
       (if (|| ($absent? outcome/reply) (== ($str/trim outcome/reply) ""))
@@ -93,6 +108,10 @@
       (if turn/composition_queued/.get
         (return {^kind "continue" ^outcome (Outcome ^reply outcome/reply)
           ^questions nil ^^rejected_done}))
+      (if (|| (! turn/delegation_staged/.get/.empty?)
+              (&& (! ($absent? turn/delegation_guard)) (turn/delegation_guard)))
+        (return {^kind "continue" ^outcome (Outcome ^reply outcome/reply)
+          ^questions nil ^^rejected_delegation_done}))
       (if_not turn/media/.get/.empty?
         (return {^kind "continue" ^outcome (Outcome ^reply outcome/reply)
           ^questions nil ^^rejected_done}))
@@ -109,7 +128,8 @@
         ^kind "questions"
         ^outcome outcome
         ^questions (validate_questions ^validators validators ^renderers renderers outcome/questions)}))
-  (if (&& (! (nonempty_prompt? outcome/prompt)) (== ($size turn/items/.get) 0))
+  (if (&& (! (nonempty_prompt? outcome/prompt)) (== ($size turn/items/.get) 0)
+          turn/delegation_staged/.get/.empty?)
     (fail (OutcomeError ^message "continuing Outcome requires a prompt or append_prompt items")))
   {^kind "continue" ^outcome outcome ^questions nil})
 

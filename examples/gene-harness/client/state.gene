@@ -143,6 +143,26 @@
 (fn marker_block [block : Any] : Bool
   false)
 
+(fn merge_delegation [records : (List Any), block : Any] : (List Any)
+  (var id : Str block/id)
+  (var revision : Int block/delegation/revision)
+  (for old in records
+    (var old_id : Str old/id)
+    (if_yes (== old_id id)
+      (var previous : Int old/delegation/revision)
+      (if_yes (> previous revision) (return records))))
+  (merge_blocks records [block]))
+
+(fn delegation_snapshot [incoming : (List Any), current : (List Any)] : (List Any)
+  (var result incoming)
+  (for block in incoming
+    (if_not ($absent? block/delegation)
+      (var id : Str block/id)
+      (for previous in current
+        (var previous_id : Str previous/id)
+        (if_yes (== id previous_id) (set result (merge_delegation result previous))))))
+  result)
+
 # Status embeds session-dependent ordinary components. Workspace revisions
 # reject stale caches; render-start sequences reject late reads of one session.
 (fn status_text [value : Any, fallback : Str = ""] : Str
@@ -173,7 +193,8 @@
   (var status : Str run/state)
   (var value : Any (?? run/outcome ""))
   (var outcome : Str value)
-  (if (== status "waiting") (return "Waiting for your answer"))
+  (if (== status "waiting")
+    (return (if ($absent? run/delegation_wait) "Waiting for your answer" "Waiting for children")))
   (if (== outcome "code_error")
     "Code error"
     (if (== status "done")

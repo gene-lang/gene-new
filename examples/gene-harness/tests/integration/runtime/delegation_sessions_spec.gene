@@ -1,0 +1,79 @@
+(import $test [describe it])
+(import [isolated run_spec] ^from "../../support")
+(import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
+(import [baseline_profile] ^from "../../../src/profiles/baseline")
+(import [create_session require_record list_sessions update_session delete_session
+  view_session leave_session SessionError] ^from "../../../src/runtime/sessions")
+(import [write_body collect_unreferenced_bodies] ^from "../../../src/agents/history")
+(import [record_core_state core_state flush_event_store] ^from "../../../src/storage/state")
+
+(describe "Child session lifetime"
+  (it "inherits pin and attention, protects the whole tree and deletes children with their parent" []
+    (isolated this_mod/.path "inherits pin and attention, protects the whole tree and deletes children with their parent"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (try
+          (let manager runtime/sessions)
+          (update_session manager "default" {^^pinned})
+          (create_session manager ^id "child" ^kind "child" ^title "Audit"
+            ^parent {^session "default" ^round "round-parent" ^delegation "audit" ^turn 1})
+          ($assert (/pinned (require_record manager "child")))
+          ($assert (== ($size (list_sessions manager)) 1))
+          ($assert (== ($size (list_sessions manager ^kind "child")) 1))
+          ($assert (== ($size (list_sessions manager ^q "audit")) 1))
+          ($assert (! (delete_session manager "default")))
+          (update_session manager "default" {^!pinned})
+          ($assert (! (/pinned (require_record manager "child"))))
+          (update_session manager "child" {^^attention})
+          ($assert (/attention (require_record manager "default")))
+          ($assert (! (delete_session manager "default")))
+          (view_session manager "default")
+          (leave_session manager "default")
+          (update_session manager "child" {^status "running"})
+          (update_session manager "child" {^status "waiting"})
+          ($assert (/attention (require_record manager "default"))
+            "A new child wait did not restore parent attention after acknowledgement.")
+          (update_session manager "child" {^status "done"})
+          (view_session manager "default")
+          (leave_session manager "default")
+          (view_session manager "child")
+          ($assert (! (delete_session manager "default")))
+          (leave_session manager "child")
+          (let body (write_body runtime "Child history retained through its projection."))
+          (record_core_state runtime/events "session" "child" "session/state" "retention-test" {^digest body})
+          (flush_event_store runtime/events)
+          (collect_unreferenced_bodies runtime)
+          ($assert ($fs/exists? $"${runtime/state_root}/blobs/${body}"))
+          ($assert (delete_session manager "default"))
+          ($assert (== ($size (list_sessions manager ^^all)) 0))
+          (for generation in [1 2 3 4]
+            (record_core_state runtime/events "workspace" "workspace" "session/state" "gc-generation" {^value generation})
+            (flush_event_store runtime/events))
+          (collect_unreferenced_bodies runtime)
+          ($assert (! ($fs/exists? $"${runtime/state_root}/blobs/${body}")))
+        ensure (close_runtime runtime)))))
+
+  (it "enforces depth in session creation and completes a durable deletion intent on startup" []
+    (isolated this_mod/.path "enforces depth in session creation and completes a durable deletion intent on startup"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (create_session runtime/sessions ^id "child" ^kind "child"
+          ^parent {^session "default" ^round "round" ^delegation "a"})
+        (let refused (try
+          (create_session runtime/sessions ^id "grandchild" ^kind "child"
+            ^parent {^session "child" ^round "round" ^delegation "b"})
+          false
+        catch SessionError (== $err/code "depth_limit")))
+        ($assert refused)
+        (record_core_state runtime/events "workspace" "workspace" "session/state" "session_delete/default"
+          {^done false ^records [(require_record runtime/sessions "default") (require_record runtime/sessions "child")]})
+        (flush_event_store runtime/events)
+        (close_runtime runtime)
+        (let restored (open_runtime workspace "other" (baseline_profile)))
+        (try
+          ($assert ($absent? (restored/sessions/index/.get .get "default")))
+          ($assert ($absent? (restored/sessions/index/.get .get "child")))
+          ($assert (/done (core_state restored/events "workspace" "workspace" "session_delete/default")))
+        ensure (close_runtime restored))))))
+
+(fn main [args] : Int (run_spec args))

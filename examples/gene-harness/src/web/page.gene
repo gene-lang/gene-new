@@ -71,6 +71,7 @@
                    (select ^id "kind_filter" ^aria-label "Session kind"
                      (option ^value "" "Interactive + pinned")
                      (option ^value "interactive" "Interactive")
+                     (option ^value "child" "Child sessions")
                      (option ^value "heartbeat" "Heartbeat")
                      (option ^value "scheduled" "Scheduled")
                      (option ^value "cron" "Cron"))
@@ -111,6 +112,7 @@
                  (button ^id "leave_mode" ^class "quiet" ^type "button" ^^hidden "Leave mode")
                  (button ^id "rename_session" ^class "quiet" ^type "button" "Rename")
                  (button ^id "pin_session" ^class "quiet" ^type "button" "Pin"))
+               (div ^id "child_origin" ^class "mode" ^^hidden)
                (div ^id "web_toolbar" ^class "web_components web_toolbar")
                (form ^id "rename_form" ^class "rename_form" ^^hidden
                  (input ^id "rename_title" ^type "text" ^maxlength "256" ^aria-label "Conversation title")

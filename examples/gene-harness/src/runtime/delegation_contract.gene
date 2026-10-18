@@ -1,0 +1,134 @@
+(mod delegation_contract)
+(type DelegationError ^props {^code Str ^message Str} ^impl [Error])
+(impl Error for DelegationError)
+
+(fn delegation_error [code : Str, message : Str]
+  (fail (DelegationError ^code code ^message message)))
+
+(fn terminal_delegation? [state]
+  (["done" "failed" "cancelled" "interrupted"] .contains? state))
+
+(fn valid_delegation_id [id]
+  (if (|| (!= ($head id) Str) ($absent? (#"^[a-z0-9][a-z0-9_]{0,39}$" .match id)))
+    (delegation_error "invalid_request" "Delegation id must match [a-z0-9][a-z0-9_]{0,39}."))
+  id)
+
+(fn delegation_limits [config]
+  (let input (?? config/delegation {}))
+  (if (!= ($head input) Map) (delegation_error "invalid_configuration" "delegation settings must be a map."))
+  (let limits {^max_running 8 ^max_per_parent 4 ^max_per_round 16
+    ^turn_limit 12 ^max_turns 24 ^timeout_ms 600000 ^max_timeout_ms 600000})
+  (for [raw_key fallback] in limits
+    (let key ($to_str raw_key))
+    (let value (?? (input .get key) fallback))
+    (let maximum (if (["timeout_ms" "max_timeout_ms"] .contains? key) 86400000
+      (if (== key "max_per_round") 16 (if (["turn_limit" "max_turns"] .contains? key) 24 64))))
+    (if (|| (!= ($head value) Int) (< value 1) (> value maximum))
+      (delegation_error "invalid_configuration" $"delegation/${key} must be an integer from 1 through ${maximum}."))
+    (limits .put key value))
+  (if (|| (> limits/turn_limit limits/max_turns) (> limits/timeout_ms limits/max_timeout_ms))
+    (delegation_error "invalid_configuration" "Delegation defaults exceed the workspace caps."))
+  limits)
+
+(fn normalize_delegation [input, limits]
+  (let id (valid_delegation_id input/id))
+  (for key in ["title" "brief"]
+    (let value (input .get key))
+    (let maximum (if (== key "title") 256 60000))
+    (if (|| (!= ($head value) Str) (== ($str/trim value) "") (> ($str/byte_size value) maximum))
+      (delegation_error "invalid_request" $"Delegation ${key} must contain 1–${maximum} bytes.")))
+  (let turns (?? input/turns limits/turn_limit))
+  (let timeout (?? input/timeout_ms limits/timeout_ms))
+  (if (|| (!= ($head turns) Int) (< turns 1) (> turns limits/max_turns))
+    (delegation_error "invalid_request" $"Delegation turns must be from 1 through ${limits/max_turns}."))
+  (if (|| (!= ($head timeout) Int) (< timeout 1) (> timeout limits/max_timeout_ms))
+    (delegation_error "invalid_request" $"Delegation timeout_ms must be from 1 through ${limits/max_timeout_ms}."))
+  (let model (?? input/model nil))
+  (if (&& (! ($absent? model))
+          (|| (!= ($head model) Str) (== ($str/trim model) "") (> ($str/byte_size model) 256)))
+    (delegation_error "invalid_request" "Delegation model must be a nonempty model name."))
+  {^id id ^title ($str/trim input/title) ^brief input/brief ^turn_limit turns
+   ^timeout_ms timeout ^model model})
+
+(fn delegation_source [id : Str, number : Int] : Str $"${id}@${number}")
+
+(fn normalize_delegation_wait [value, ^wake_on_questions wake_on_questions : Bool = false]
+  (if (["all" "any"] .contains? value)
+    (return {^mode value ^ids [] ^wake_on_questions wake_on_questions}))
+  (if (|| (!= ($head value) List) value/.empty?)
+    (delegation_error "invalid_wait" "wait must be all, any, or a nonempty list of delegation ids."))
+  (let ids [])
+  (for id in value
+    (valid_delegation_id id)
+    (if (ids .contains? id) (delegation_error "invalid_wait" "wait contains a duplicate delegation id."))
+    (ids .push id))
+  {^mode "list" ^ids ids ^wake_on_questions wake_on_questions})
+
+(fn delegation_wait_members [wait, admissions]
+  (let eligible [])
+  (for admission in admissions
+    (if (|| (! (terminal_delegation? admission/state)) (!= admission/seen true))
+      (eligible .push admission)))
+  (if_yes (== wait/mode "list")
+    (let selected [])
+    (for id in wait/ids
+      (var chosen nil)
+      (for admission in eligible
+        (if (== admission/id id)
+          (if (|| ($absent? chosen) (> admission/number chosen/number)) (set chosen admission))))
+      (if ($absent? chosen)
+        (delegation_error "invalid_wait" $"Delegation ${id} is not unfinished or unseen in this round."))
+      (selected .push chosen))
+    (return ($map selected (fn [admission] admission/source))))
+  ($map eligible (fn [admission] admission/source)))
+
+(fn delegation_question_source [admission] : Str
+  $"question:${admission/source}:${admission/questions/id}")
+
+(fn delegation_descriptor [record, admission]
+  (let started (?? admission/started_at_ms nil))
+  (let elapsed (if ($absent? started) 0
+    ($math/max 0 (- (?? admission/finished_at_ms ($os/wall_ms)) started))))
+  {^id record/id ^title record/title ^session record/session
+   ^source admission/source ^admission admission/number ^round admission/owner_round
+   ^turn admission/starting_turn ^state admission/state
+   ^turns_used (?? admission/turns_used 0) ^turn_limit admission/turn_limit
+   ^timeout_ms admission/timeout_ms ^queued_at_ms admission/queued_at_ms
+   ^created_seq (?? admission/created_seq 0)
+   ^revision (?? admission/revision 0)
+   ^elapsed_ms elapsed
+   ^started_at_ms (?? admission/started_at_ms nil) ^finished_at_ms (?? admission/finished_at_ms nil)
+   ^usage (?? admission/usage {}) ^seen (== admission/seen true)
+   ^questions (?? admission/questions nil) ^message (?? admission/message "")})
+
+(fn delegation_wait_ready? [wait, by_source]
+  (if wait/members/.empty? (return true))
+  (var all_terminal true)
+  (var any_terminal false)
+  (var question false)
+  (for source in wait/members
+    (let admission (by_source .get source))
+    (if ($absent? admission) (return false))
+    (if (terminal_delegation? admission/state)
+      (then (if (!= admission/seen true) (set any_terminal true)))
+      (else (set all_terminal false)))
+    (if (&& (== admission/state "waiting") (! ($absent? admission/questions))
+            (! ((?? admission/seen_questions []) .contains? admission/questions/id)))
+      (set question true)))
+  (if (&& question (|| (== wait/mode "any") wait/wake_on_questions)) (return true))
+  (if (== wait/mode "any") any_terminal all_terminal))
+
+(fn delegation_result_data [value, ^depth depth : Int = 0]
+  (if (> depth 32) (delegation_error "invalid_result" "Delegation result exceeds 32 levels."))
+  (let kind ($head value))
+  (if ([Void Nil Bool Int Float Str Sym] .contains? kind) (return value))
+  (if (== kind List)
+    (return ($map value (fn [item] (delegation_result_data item ^depth (+ depth 1))))))
+  (if_yes (== kind Map)
+    (let result {})
+    (for [key item] in value
+      (if_not ([Str Sym] .contains? ($head key))
+        (delegation_error "invalid_result" "Delegation result map keys must be strings or symbols."))
+      (result .put key (delegation_result_data item ^depth (+ depth 1))))
+    (return result))
+  (delegation_error "invalid_result" "Delegation results must be inert scalars, lists or maps; save files for other values."))

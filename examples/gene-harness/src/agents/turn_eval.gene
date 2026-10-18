@@ -12,7 +12,7 @@
     attachment
     recall])
 (import ^from "./eval_site" [evaluate_response])
-(import ^from "../runtime/patch" [prepare_patch commit_patch])
+(import ^from "../runtime/patch" [prepare_patch commit_patch with_patch_gate])
 (import ^from "../text" [byte_prefix])
 (import [open_execution_scope close_execution_scope] ^from "../runtime/execution_budget")
 
@@ -33,6 +33,9 @@
   (let bytes ($cell 0))
   (let truncated ($cell false))
   (let turn (new_turn_items number ^recall recall_function))
+  (if_not ($absent? inherited/delegations)
+    (turn .put "delegation_guard" inherited/delegations/guard)
+    (turn .put "delegation_collection" (== inherited/delegations/collection true)))
   (if_not ($absent? turn_sink) (turn_sink .set turn))
   (var context ((?? inherited {}) .assoc "turn" turn))
   (set context (context .assoc "output" (fn [text]
@@ -60,20 +63,25 @@
     (set response (split_response text))
     (validate_execution_attachments response)
     (turn .put "attachments" response/attachments)
-    (var plan nil)
-    (if_not ($absent? response/patch)
-      (try
-        (set plan (prepare_patch workspace_root response/patch))
-        catch Any
-          (set patch_result {^status "failed" ^text $"failed: ${$err/message}" ^files [] ^!attention})))
-    # Durability precedes staging. The caller records body stubs/blob refs.
-    (if_not ($absent? record)
-      (record "turn/response" {^turn number ^response response
-        ^patch_files (if ($absent? plan) [] plan/files)}))
-    (if_not ($absent? plan)
-      (set patch_result (commit_patch plan ^fail_after_renames fail_after_renames ^after_rename after_patch_rename)))
-    (if (&& (! ($absent? patch_result)) (! ($absent? record)))
-      (record "turn/patch" {^turn number ^result patch_result}))
+    (let prepare_and_commit (fn []
+      (var plan nil)
+      (if_not ($absent? response/patch)
+        (try
+          (set plan (prepare_patch workspace_root response/patch))
+          catch Any
+            (set patch_result {^status "failed" ^text $"failed: ${$err/message}" ^files [] ^!attention})))
+      # Durability precedes staging, while the workspace patch gate prevents
+      # another response from preparing against this plan's original files.
+      (if_not ($absent? record)
+        (record "turn/response" {^turn number ^response response
+          ^patch_files (if ($absent? plan) [] plan/files)}))
+      (if_not ($absent? plan)
+        (set patch_result (commit_patch plan ^fail_after_renames fail_after_renames ^after_rename after_patch_rename)))
+      (if (&& (! ($absent? patch_result)) (! ($absent? record)))
+        (record "turn/patch" {^turn number ^result patch_result}))))
+    (if ($absent? response/patch)
+      (prepare_and_commit)
+      (with_patch_gate workspace_root prepare_and_commit))
     (if (|| ($absent? patch_result) (== patch_result/status "applied"))
       (then
         (let values ($thaw ($freeze_shallow bindings)))

@@ -22,3 +22,4 @@ trigger/occurrence 1 required core_state
 history/summary 1 required core_state
 card/state 1 required core_state
 card/action 1 required core_state
+delegation/state 1 required core_state

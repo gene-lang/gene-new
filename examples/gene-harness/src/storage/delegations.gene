@@ -1,0 +1,56 @@
+(mod delegation_storage)
+(import [core_state core_states record_core_state flush_event_store copy_data] ^from "./state")
+(import [write_body read_body] ^from "../agents/history")
+(import [delegation_descriptor terminal_delegation?] ^from "../runtime/delegation_contract")
+(import [byte_prefix] ^from "../text")
+
+(fn empty_delegation_parent [session : Str]
+  {^version 1 ^session session ^records {} ^rounds {} ^outbox {}})
+
+(fn load_delegation_parent [runtime, session : Str]
+  (let saved (core_state runtime/events "session" session "delegation/runtime"))
+  (if ($absent? saved) (return (empty_delegation_parent session)))
+  ($serde/read_data (read_body runtime saved/digest)))
+
+(fn delegation_parent_sessions [runtime]
+  (let result [])
+  (for [key value] in (core_states runtime/events "workspace" "workspace")
+    (if (&& ($str/starts_with? ($to_str key) "delegation_parent/") (!= value/deleted true))
+      (result .push value/session)))
+  result)
+
+(fn save_delegation_parent [runtime, parent, ^changed changed = []]
+  (record_core_state runtime/events "workspace" "workspace" "session/state"
+    $"delegation_parent/${parent/session}" {^session parent/session})
+  (for id in changed
+    (let record (parent/records .get id))
+    (if ($absent? record) (continue))
+    (let latest ($last record/admissions))
+    (latest .put "revision" (+ (?? latest/revision 0) 1))
+    (let descriptor (delegation_descriptor record latest))
+    (descriptor .put "session_exists" (! ($absent? (runtime/sessions/index/.get .get record/session))))
+    (let owner (parent/rounds .get latest/owner_round))
+    (descriptor .put "can_cancel" (&& (! (terminal_delegation? latest/state)) (!= owner/closed true)))
+    (if_not ($absent? latest/reply_ref)
+      (descriptor .put "reply" (byte_prefix (read_body runtime latest/reply_ref) 4096)))
+    (let projection {^id id ^admission latest/number ^round latest/owner_round ^turn latest/starting_turn
+       ^state latest/state ^title record/title ^session record/session
+       ^at_ms ($os/wall_ms)
+       ^record descriptor})
+    (if_yes (!= latest/reported_state latest/state)
+      (projection .put "summary" $"${id}: ${latest/state} · ${record/title} · ${record/session}")
+      (latest .put "reported_state" latest/state))
+    (projection .put "digest" (write_body runtime ($serde/write_data record)))
+    (let event (record_core_state runtime/events "session" parent/session "delegation/state"
+      $"delegation/${id}" projection))
+    (if ($absent? latest/created_seq) (latest .put "created_seq" event/seq)))
+  (let digest (write_body runtime ($serde/write_data parent)))
+  (record_core_state runtime/events "session" parent/session "delegation/state"
+    "delegation/runtime" {^digest digest})
+  (flush_event_store runtime/events)
+  parent)
+
+(fn remove_delegation_parent [runtime, session : Str]
+  (record_core_state runtime/events "workspace" "workspace" "session/state"
+    $"delegation_parent/${session}" {^session session ^deleted true})
+  (flush_event_store runtime/events))

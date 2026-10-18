@@ -10,6 +10,8 @@
     submit
     receipt
     cancel
+    cancel_child
+    recover_children
     answer
     command
     operator_receipt
@@ -50,6 +52,7 @@
 (import ^from "../runtime/workspace_settings" [read_workspace_settings update_workspace_settings])
 (import ^from "../runtime/input_modes" [submit_mode_input close_mode expire_modes ModeError])
 (import ^from "../runtime/questions" [QuestionError])
+(import [DelegationError] ^from "../runtime/delegation_contract")
 (import ^from "../runtime/triggers"
   [list_triggers create_trigger delete_trigger list_occurrences TriggerError])
 (import ^from "../profiles/scripted" [scripted_profile])
@@ -416,6 +419,13 @@
         (var data (request_data request))
         (return (response 200 (edit_session host id data
           (number data "revision")))))
+      (if_yes (&& (== parts/.size 7) (== parts/5 "delegations") (== parts/6 "recovery") (== request/method "POST"))
+        (let data (request_data request))
+        (return (response 200 (recover_children host id (field data "round_id") (field data "action")))))
+      (if_yes (&& (== parts/.size 8) (== parts/5 "delegations") (== parts/7 "cancel") (== request/method "POST"))
+        (let data (request_data request))
+        (let admission (if (== ($head data/admission) Int) data/admission (number data "admission")))
+        (return (response 200 (cancel_child host id parts/6 admission))))
       (if_yes (&& (== parts/.size 6) (== parts/5 "open") (== request/method "POST"))
         (return (response 200 (acknowledge_attention host id))))
       (if_yes (&& (== parts/.size 6) (== parts/5 "snapshot") (== request/method "GET"))
@@ -483,6 +493,7 @@
         catch ModeError (response (error_status $err/code)
           {^code $err/code ^message $err/message ^mode $err/mode})
         catch RoundError (response (error_status $err/code) {^code $err/code ^message $err/message})
+        catch DelegationError (response (error_status $err/code) {^code $err/code ^message $err/message})
         catch TriggerError (response (error_status $err/code) {^code $err/code ^message $err/message})
         catch CommandError (response (error_status $err/code) {^code $err/code ^message $err/message})
         catch SessionError (response (error_status $err/code) {^code $err/code ^message $err/message})

@@ -213,7 +213,7 @@
   (if_yes (&& (== origin "core")
               (["session/state" "round/state" "question/asked" "question/answered"
                 "command" "trigger/state" "trigger/occurrence" "history/summary"
-                "card/state" "card/action"] .contains? event/type))
+                "card/state" "card/action" "delegation/state"] .contains? event/type))
     (update_core_projection events key event/key event/state))
   envelope)
 
@@ -266,7 +266,7 @@
   [events : EventStore, scope : Str, stream : Str, kind : Str, key : Str, state]
   (if_not (["session/state" "round/state" "question/asked" "question/answered"
             "command" "trigger/state" "trigger/occurrence" "history/summary"
-            "card/state" "card/action"] .contains? kind)
+            "card/state" "card/action" "delegation/state"] .contains? kind)
     (fail (HarnessStateError ^message "unknown core state kind")))
   (append_core_event events scope stream
     {^type kind ^key key ^state (copy_data state)}))

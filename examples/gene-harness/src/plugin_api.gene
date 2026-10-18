@@ -31,6 +31,15 @@
 (type ImageError ^props {^code Str ^message Str ^status Int? ^usage Any? ^diagnostic Str?} ^impl [Error])
 (impl Error for ImageError)
 
+(import [DelegationError] ^from "./runtime/delegation_contract" ^^export)
+
+(protocol DelegationHost
+  (message stage [request] : Any)
+  (message inspect [id : Str] : Any)
+  (message cancel [id : Str] : Any)
+  (message continue [id : Str, text : Str] : Any)
+  (message answer [id : Str, answers] : Any))
+
 # The workflow owns prompts and loop policy; these host operations own durable
 # admission, individual model calls and media. Image bytes are exposed only to
 # a selected generator while its send callback is active.

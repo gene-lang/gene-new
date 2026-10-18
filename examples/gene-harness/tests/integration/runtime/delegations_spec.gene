@@ -1,0 +1,350 @@
+(import $test [describe it])
+(import [isolated run_spec test_controller set_test_provider] ^from "../../support")
+(import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
+(import [baseline_profile] ^from "../../../src/profiles/baseline")
+(import [submit_round round_receipt cancel_round answer_round close_round_controller] ^from "../../../src/runtime/round_controller")
+(import [require_record create_session] ^from "../../../src/runtime/sessions")
+(import [delegation_blocks] ^from "../../../src/runtime/delegations")
+(import [Plugin PluginHost] ^from "../../../src/plugin_api")
+(import [put_cordis_plugin] ^from "../../../src/kernel")
+(import [QuestionError] ^from "../../../src/runtime/questions")
+
+(fn await_round [controller, session, id, ^timeout_ms timeout_ms : Int = 15000]
+  (let deadline (+ ($os/monotonic_ms) timeout_ms))
+  (loop
+    (let receipt (round_receipt controller session id))
+    (if (! (["running" "waiting"] .contains? receipt/state)) (return receipt))
+    (if (>= ($os/monotonic_ms) deadline)
+      ($assert false $"Round did not finish: ${receipt}; scheduler: ${controller/runtime/delegations/last_error}"))
+    ($sleep 10)))
+
+(fn in_runtime [workspace, body]
+  (let runtime (open_runtime workspace "default" (baseline_profile)))
+  (let controller (test_controller runtime (fn [call] "(Outcome ^^done ^reply \"default\")")))
+  (try (body runtime controller)
+  ensure
+    (close_round_controller controller)
+    (close_runtime runtime)))
+
+(fn wait_for [predicate, message : Str, ^timeout_ms timeout_ms : Int = 15000]
+  (let deadline (+ ($os/monotonic_ms) timeout_ms))
+  (while (! (predicate))
+    ($assert (< ($os/monotonic_ms) deadline) message)
+    ($sleep 5)))
+
+(fn configure [runtime, changes]
+  (let path $"${runtime/state_root}/config.gene")
+  (let config ($serde/read_data ($fs/read_text path)))
+  (for [key value] in changes (config .put key value))
+  ($fs/write_text_atomic path ($serde/write_data config)))
+
+(fn model_provider [runtime, reply]
+  (put_cordis_plugin ^^replace runtime/h
+    (Plugin ^id "delegation_test_models" ^provides [["providers" "delegation_test_models"]]
+      ^activate (fn [host]
+        (host .PluginHost:contribute "providers"
+          {^name "delegation_test_models" ^doc "Model-setting and usage fixture."
+           ^configure (fn [model effort timeout]
+             {^model (?? model "parent-model") ^effort "none" ^timeout_ms timeout})
+           ^prepare (fn [call] call)
+           ^send (fn [call] {^text (reply call)
+             ^usage {^prompt_tokens 10 ^completion_tokens 4 ^total_tokens 14 ^cost 0.001}})})))
+    {^^host ^limits runtime/profile/limits})
+  (set runtime/profile/provider "delegation_test_models"))
+
+(describe "Durable child delegations"
+  (it "runs fresh children concurrently and resumes an all wait with structured results" []
+    (isolated this_mod/.path "runs fresh children concurrently and resumes an all wait with structured results"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (let parent_calls ($cell 0))
+        (let child_calls ($cell []))
+        (let controller (test_controller runtime (fn [call]
+          (let metadata (require_record runtime/sessions call/session))
+          (if (== metadata/kind "child")
+            (then
+              (child_calls/.get .push call/session)
+              ($sleep 40)
+              "(Outcome ^^done ^reply \"Audit complete\" ^result {^count 3})")
+            (else
+              (let n (parent_calls .swap (+ parent_calls/.get 1)))
+              (if (== n 0)
+                (then "(delegate \"auth\" ^title \"Audit auth\" ^brief \"Find auth routes.\") (delegate \"queries\" ^title \"Audit queries\" ^brief \"Find slow queries.\") (Outcome ^wait \"all\" ^reply \"Two audits running.\")")
+                (else
+                  ($assert ($str/contains? ($to_str call/messages) "Audit complete"))
+                  ($assert ($str/contains? ($to_str call/messages) "count"))
+                  "(Outcome ^^done ^reply \"Both audits collected.\")")))))))
+        (try
+          (let admitted (submit_round controller "default" "parent-1" 1 "Run two independent audits."))
+          (let result (await_round controller "default" admitted/id))
+          ($assert (== result/state "done") $"${result}")
+          ($assert (== result/reply "Both audits collected."))
+          ($assert (== parent_calls/.get 2))
+          ($assert (== child_calls/.get/.size 2))
+          (let blocks (delegation_blocks runtime/delegations "default"))
+          ($assert (== blocks/records/.size 2))
+          (for child in blocks/records
+            ($assert (== child/state "done"))
+            ($assert child/seen)
+            (let metadata (require_record runtime/sessions child/session))
+            ($assert (== metadata/parent/session "default")))
+        ensure
+          (close_round_controller controller)
+          (close_runtime runtime))))))
+
+(describe "Delegation coordination"
+  (it "discards staged admissions when response evaluation fails or is cancelled" []
+    (isolated this_mod/.path "discards staged admissions when response evaluation fails or is cancelled"
+      (fn [workspace]
+        (for mode in ["error" "cancel"]
+          (in_runtime $"${workspace}/${mode}" (fn [runtime controller]
+            (let calls ($cell 0)) (let children ($cell 0))
+            (set_test_provider runtime (fn [call]
+              (let metadata (require_record runtime/sessions call/session))
+              (if (== metadata/kind "child")
+                (then
+                  (children .set (+ children/.get 1))
+                  "(Outcome ^^done ^reply \"unexpected child\")")
+                (else
+                  (let n (calls .swap (+ calls/.get 1)))
+                  (if (> n 0) (return "(Outcome ^^done ^reply \"staging recovered\")"))
+                  ($to_str "(delegate \"pending\" ^title \"Pending\" ^brief \"Must not start.\") "
+                    "($fs/write_text \"staged.marker\" \"ready\") "
+                    (if (== mode "cancel") "($sleep 5000)" "(/ 1 0)"))))))
+            (let receipt (submit_round controller "default" "staged" 1 "Stage a child."))
+            (if_yes (== mode "cancel")
+              (wait_for (fn [] ($fs/exists? $"${runtime/root}/staged.marker")) "Response never staged the child.")
+              (cancel_round controller "default" receipt/id))
+            (let final (await_round controller "default" receipt/id))
+            ($assert (== final/state (if (== mode "cancel") "cancelled" "done")))
+            ($assert (== children/.get 0))
+            (let blocks (delegation_blocks runtime/delegations "default"))
+            ($assert (== blocks/records/.size 0))))))))
+
+  (it "consumes any results once while a slower child continues independently" []
+    (isolated this_mod/.path "consumes any results once while a slower child continues independently"
+      (fn [workspace]
+        (in_runtime workspace (fn [runtime controller]
+          (let calls ($cell 0))
+          (set_test_provider runtime (fn [call]
+            (let metadata (require_record runtime/sessions call/session))
+            (if (== metadata/kind "child")
+              (then
+                (if (== metadata/parent/delegation "a")
+                  (then ($sleep 20) "(Outcome ^^done ^reply \"Alpha result\")")
+                  (else ($sleep 700) "(Outcome ^^done ^reply \"Beta result\")")))
+              (else
+                (let n (calls .swap (+ calls/.get 1)))
+                (let last ($last call/messages))
+                (match n
+                  (when 0 "(delegate \"a\" ^title \"Alpha\" ^brief \"Return Alpha result.\") (delegate \"b\" ^title \"Beta\" ^brief \"Return Beta result.\") (Outcome ^wait \"any\")")
+                  (when 1
+                    ($assert ($str/contains? last/content "Alpha result"))
+                    "(Outcome ^wait \"any\")")
+                  (else
+                    ($assert ($str/contains? last/content "Beta result"))
+                    ($assert (! ($str/contains? last/content "Alpha result")))
+                    "(Outcome ^^done ^reply \"collected once\")"))))))
+          (let receipt (submit_round controller "default" "any" 1 "Run both tasks."))
+          (let final (await_round controller "default" receipt/id))
+          ($assert (== final/state "done") $"${final}")
+          ($assert (== calls/.get 3)))))))
+
+  (it "cancels queued and active children and releases the global slot to another parent" []
+    (isolated this_mod/.path "cancels queued and active children and releases the global slot to another parent"
+      (fn [workspace]
+        (in_runtime workspace (fn [runtime controller]
+          (configure runtime {^delegation {^max_running 1 ^max_per_parent 1}})
+          (let started ($cell []))
+          (set_test_provider runtime (fn [call]
+            (let metadata (require_record runtime/sessions call/session))
+            (if (== metadata/kind "child")
+              (then
+                (started/.get .push metadata/parent/session)
+                (if (== metadata/parent/session "default") ($sleep 5000))
+                "(Outcome ^^done ^reply \"child done\")")
+              (elif (== call/session "default")
+                "(delegate \"a\" ^title \"A\" ^brief \"Wait.\") (delegate \"b\" ^title \"B\" ^brief \"Wait.\") (delegate \"c\" ^title \"C\" ^brief \"Wait.\") (Outcome ^wait \"all\")")
+              (else
+                (let history ($to_str call/messages))
+                (if ($str/contains? history "child done") "(Outcome ^^done ^reply \"second parent finished\")"
+                  "(delegate \"other\" ^title \"Other\" ^brief \"Finish.\") (Outcome ^wait \"all\")")))))
+          (let first (submit_round controller "default" "cap-first" 1 "Start queued tasks."))
+          (wait_for (fn [] (== started/.get/.size 1)) "First child did not start.")
+          (create_session runtime/sessions ^id "second")
+          (let second (submit_round controller "second" "cap-second" 1 "Start another task."))
+          (wait_for (fn []
+            (let blocks (delegation_blocks runtime/delegations "second"))
+            (&& (== blocks/records/.size 1) (== blocks/records/0/state "queued"))) "Second parent did not queue.")
+          ($assert (== started/.get ["default"]))
+          (cancel_round controller "default" first/id)
+          (let cancelled (await_round controller "default" first/id))
+          ($assert (== cancelled/state "cancelled"))
+          (let final (await_round controller "second" second/id))
+          ($assert (== final/state "done") $"${final}")
+          ($assert (== started/.get ["default" "second"]))
+          (let cancelled_children (delegation_blocks runtime/delegations "default"))
+          (for child in cancelled_children/records
+            ($assert (== child/state "cancelled"))))))))
+
+  (it "drains unfinished or unseen work and grants exactly one final collection turn" []
+    (isolated this_mod/.path "drains unfinished or unseen work and grants exactly one final collection turn"
+      (fn [workspace]
+        (for mode in ["unfinished" "unseen"]
+          (in_runtime $"${workspace}/${mode}" (fn [runtime controller]
+            (configure runtime {^turn_limit 2})
+            (let calls ($cell 0))
+            (set_test_provider runtime (fn [call]
+              (let metadata (require_record runtime/sessions call/session))
+              (if (== metadata/kind "child")
+                (then
+                  ($sleep (if (== mode "unfinished") 400 20))
+                  "(Outcome ^^done ^reply \"Final child result\")")
+                (else
+                  (let n (calls .swap (+ calls/.get 1)))
+                  (match n
+                    (when 0 "(delegate \"audit\" ^title \"Audit\" ^brief \"Finish the audit.\") (Outcome ^prompt \"Continue coordinating.\")")
+                    (when 1
+                      (if (== mode "unseen") ($sleep 300))
+                      "(Outcome ^^done ^reply \"premature\")")
+                    (else
+                      ($assert ($str/contains? ($to_str call/messages) "Final child result"))
+                      ($assert ($str/contains? ($to_str call/messages) "final collection turn"))
+                      "(Outcome ^^done ^reply \"collected within budget\")"))))))
+            (let receipt (submit_round controller "default" "drain" 1 "Coordinate the audit."))
+            (let final (await_round controller "default" receipt/id))
+            ($assert (== final/state "done") $"${final}")
+            ($assert (== final/turn_count 3))
+            ($assert (== calls/.get 3)))))))))
+
+(describe "Conversations with delegated children"
+  (it "continues the same isolated child with its own model and a new admission identity" []
+    (isolated this_mod/.path "continues the same isolated child with its own model and a new admission identity"
+      (fn [workspace]
+        (in_runtime workspace (fn [runtime controller]
+          (let parent_calls ($cell 0)) (let child_calls ($cell 0))
+          (let child_sessions ($cell [])) (let parent_model ($cell nil))
+          (model_provider runtime (fn [call]
+            (let metadata (require_record runtime/sessions call/session))
+            (if (== metadata/kind "child")
+              (then
+                ($assert (== call/settings/model "cheap-test"))
+                ($assert (! ($str/contains? ($to_str call/messages) "private-parent-marker")))
+                (child_sessions/.get .push call/session)
+                (let n (child_calls .swap (+ child_calls/.get 1)))
+                (if (== n 0)
+                  (then "(Outcome ^^done ^reply \"First audit complete\" ^result {^version 1})")
+                  (else
+                    ($assert ($str/contains? ($to_str call/messages) "First audit complete"))
+                    "(Outcome ^^done ^reply \"Follow-up complete\" ^result {^version 2})")))
+              (else
+                (if ($absent? parent_model/.get) (parent_model .set call/settings/model))
+                ($assert (== call/settings/model parent_model/.get))
+                (let n (parent_calls .swap (+ parent_calls/.get 1)))
+                (match n
+                  (when 0 "(delegate \"audit\" ^title \"Audit\" ^brief \"Audit auth routes.\" ^model \"cheap-test\") (Outcome ^wait \"all\")")
+                  (when 1 "(continue_delegation \"audit\" \"Also inspect websocket routes.\") (Outcome ^wait \"all\")")
+                  (else
+                    ($assert ($str/contains? ($to_str call/messages) "Follow-up complete"))
+                    "(Outcome ^^done ^reply \"Both admissions collected\")"))))))
+          (let receipt (submit_round controller "default" "continue" 1 "private-parent-marker: coordinate the audit."))
+          (let final (await_round controller "default" receipt/id))
+          ($assert (== final/state "done") $"${final}")
+          ($assert (== parent_calls/.get 3))
+          ($assert (== child_calls/.get 2))
+          ($assert (== child_sessions/.get/0 child_sessions/.get/1))
+          (let blocks (delegation_blocks runtime/delegations "default"))
+          ($assert (== blocks/records/.size 2))
+          ($assert (== blocks/records/0/source "audit@1"))
+          ($assert (== blocks/records/1/source "audit@2"))
+          (for child in blocks/records
+            ($assert child/seen)
+            ($assert (== child/usage/total_tokens 14))
+            ($assert (== child/usage/cost 0.001))))))))
+
+  (it "wakes a parent for a child question and applies first-answer-wins semantics" []
+    (isolated this_mod/.path "wakes a parent for a child question and applies first-answer-wins semantics"
+      (fn [workspace]
+        (in_runtime workspace (fn [runtime controller]
+          (let parents ($cell 0)) (let children ($cell 0))
+          (set_test_provider runtime (fn [call]
+            (let metadata (require_record runtime/sessions call/session))
+            (if (== metadata/kind "child")
+              (then
+                (let n (children .swap (+ children/.get 1)))
+                (if (== n 0)
+                  (then "(Outcome ^questions [{^id \"scope\" ^prompt \"Choose scope\" ^choices [\"web\" \"all\"]}])")
+                  (else
+                    ($assert ($str/contains? ($to_str call/messages) "web"))
+                    "(Outcome ^^done ^reply \"Scope web complete\" ^result {^scope \"web\"})")))
+              (else
+                (let n (parents .swap (+ parents/.get 1)))
+                (match n
+                  (when 0 "(delegate \"audit\" ^title \"Audit\" ^brief \"Ask which scope to inspect.\") (Outcome ^wait \"any\")")
+                  (when 1
+                    ($assert ($str/contains? ($to_str call/messages) "Choose scope"))
+                    "(append_prompt \"answer\" (answer_delegation \"audit\" {^scope \"web\"})) (Outcome ^wait \"all\")")
+                  (else "(Outcome ^^done ^reply \"Question and result collected\")"))))))
+          (let receipt (submit_round controller "default" "question" 1 "Coordinate a scoped audit."))
+          (let final (await_round controller "default" receipt/id))
+          ($assert (== final/state "done") $"${final}")
+          ($assert (== parents/.get 3))
+          ($assert (== children/.get 2))
+          (let blocks (delegation_blocks runtime/delegations "default"))
+          (let child blocks/records/0)
+          (answer_round controller child/session child/questions/id {^scope "web"})
+          ($assert (try (answer_round controller child/session child/questions/id {^scope "all"})
+            false catch QuestionError true))
+          ($assert (== children/.get 2)))))))
+
+  (it "queues an answered child behind the global cap without spending its remaining budget" []
+    (isolated this_mod/.path "queues an answered child behind the global cap without spending its remaining budget"
+      (fn [workspace]
+        (in_runtime workspace (fn [runtime controller]
+          (configure runtime {^delegation {^max_running 1 ^max_per_parent 1
+            ^timeout_ms 1000 ^max_timeout_ms 10000}})
+          (let children ($cell 0)) (let parents ($cell 0)) (let blocker ($cell false))
+          (set_test_provider runtime (fn [call]
+            (let metadata (require_record runtime/sessions call/session))
+            (if (== metadata/kind "child")
+              (then
+                (if (== metadata/parent/session "blocker")
+                  (then
+                    (blocker .set true)
+                    ($sleep 5000)
+                    "(Outcome ^^done ^reply \"blocker ended\")")
+                  (else
+                    (let n (children .swap (+ children/.get 1)))
+                    (if (== n 0)
+                      "(Outcome ^questions [{^id \"scope\" ^prompt \"Choose scope\"}])"
+                      "(Outcome ^^done ^reply \"Answered child completed\")"))))
+              (elif (== call/session "blocker")
+                "(delegate \"block\" ^title \"Block\" ^brief \"Hold a slot.\" ^timeout_ms 5000) (Outcome ^wait \"all\")")
+              (else
+                (let n (parents .swap (+ parents/.get 1)))
+                (if (== n 0)
+                  "(delegate \"audit\" ^title \"Audit\" ^brief \"Ask which scope to inspect.\") (Outcome ^wait \"all\")"
+                  "(Outcome ^^done ^reply \"Child budget survived queueing\")")))))
+          (let receipt (submit_round controller "default" "queued-answer" 1 "Coordinate an audit."))
+          (wait_for (fn []
+            (let blocks (delegation_blocks runtime/delegations "default"))
+            (&& (== blocks/records/.size 1) (== blocks/records/0/state "waiting"))) "Child did not ask its question.")
+          (create_session runtime/sessions ^id "blocker")
+          (let blocking (submit_round controller "blocker" "block" 1 "Hold the shared slot."))
+          (wait_for (fn [] blocker/.get) "The other parent did not occupy the slot.")
+          (let blocks (delegation_blocks runtime/delegations "default"))
+          (let child blocks/records/0)
+          (answer_round controller child/session child/questions/id {^scope "web"})
+          (wait_for (fn []
+            (let current (delegation_blocks runtime/delegations "default"))
+            (== current/records/0/state "queued")) "Answered child did not queue.")
+          ($sleep 1200)
+          ($assert (== children/.get 1))
+          ($assert (== parents/.get 1))
+          (cancel_round controller "blocker" blocking/id)
+          (let final (await_round controller "default" receipt/id))
+          ($assert (== final/state "done") $"${final}")
+          ($assert (== children/.get 2))
+          ($assert (== parents/.get 2))))))))
+
+(fn main [args] : Int (run_spec args))

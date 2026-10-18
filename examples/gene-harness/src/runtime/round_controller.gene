@@ -2,7 +2,7 @@
 (import [open_media_store validate_media_refs] ^from "../storage/media")
 (import [prompt_limit] ^from "../web/contract")
 (import ^from "../agents/turn_loop" [run_round transcript finish_turn])
-(import ^from "../agents/provider_selection" [readiness_report])
+(import ^from "../agents/provider_selection" [readiness_report session_settings])
 (import ^from "../agents/harness_turn" [answer_validators])
 (import ^from "./composition" [acquire_snapshot release_snapshot])
 (import ^from "./input_modes" [require_chat])
@@ -24,6 +24,8 @@
 (import ^from "./commands" [take_command_attachments])
 (import ^from "./workspace_lock" [close_workspace_lock])
 (import ^from "../kernel" [RoundChanged publish])
+(import [connect_delegation_host note_delegation_round queue_delegation_answer
+  close_delegation_owner prepare_delegations_stop] ^from "./delegations")
 
 (type RoundError ^props {^code Str ^message Str} ^impl [Error])
 (impl Error for RoundError)
@@ -45,7 +47,52 @@
     (set runtime/commands/stop
       (fn [session code confirmed]
         (request_stop controller session code confirmed))))
+  (if_not ($absent? runtime/delegations)
+    (connect_delegation_host runtime/delegations (delegation_callbacks controller)))
   controller)
+
+(fn delegation_callbacks [controller]
+  {^owner (fn [session round] (round_receipt controller session round))
+   ^active (fn [session request_id]
+     (let task (controller/active/.get .get session))
+     (let loaded (controller/runtime/sessions/loaded/.get .get session))
+     (&& (! ($absent? task)) (! ($absent? loaded))
+       (== loaded/round/.get/request_id request_id)))
+   ^find (fn [session request_id]
+     (if ($absent? (controller/runtime/sessions/index/.get .get session)) (return nil))
+     (let state (round_state controller session))
+     (for receipt in state/receipts
+       (if (== receipt/request_id request_id) (return receipt)))
+     nil)
+   ^admit (fn [parent admission] (admit_child_round controller parent admission))
+   ^cancel (fn [session round] (cancel_round controller session round ^^from_delegation))
+   ^resume (fn [session receipt batch]
+     (with_session_gate controller/runtime/sessions $"round/${session}"
+       (fn [] (continue_answered_round controller session receipt batch ^^dispatched))))
+   ^resume_parent (fn [session round wait items collection]
+     (resume_delegation_parent controller session round wait items collection))
+   ^answer (fn [session batch values] (answer_round controller session batch values))})
+
+(fn admit_child_round [controller, parent, admission]
+  (with_body_use controller/runtime (fn []
+    (with_session_gate controller/runtime/sessions $"round/${admission/session}" (fn []
+      (let state (round_state controller admission/session))
+      (for old in state/receipts
+        (if (== old/request_id admission/request_id) (return old)))
+      (let metadata (require_record controller/runtime/sessions admission/session))
+      (let link {^session parent/session ^round admission/owner_round
+        ^delegation admission/id ^admission admission/number ^turn admission/starting_turn})
+      (update_session controller/runtime/sessions admission/session
+        {^parent link ^model_settings admission/provider_settings})
+      (let brief (read_body controller/runtime admission/brief_ref))
+      (let text ($to_str "[delegated by " parent/session " round " admission/owner_round
+        " turn " admission/starting_turn " · " admission/id "]\n"
+        (?? admission/child_prompt "") "\n\n" brief))
+      (submit_round_impl controller admission/session admission/request_id state/next_seq text
+        ^initiator $"parent:${parent/session}/${admission/id}"
+        ^limits {^turn_limit admission/turn_limit ^timeout_ms admission/timeout_ms}
+        ^delegation {^parent parent/session ^id admission/id ^admission admission/number
+          ^source admission/source}))))))
 
 (fn round_state [controller : RoundController, session : Str]
   (let saved (core_state controller/runtime/events "session" session "rounds"))
@@ -110,6 +157,11 @@
 (fn finish_round [controller : RoundController, session : Str, receipt, outcome, ^completion completion = nil]
   (let claim (?? completion (controller/completions/.get .get session)))
   (if (&& (! ($absent? claim)) (claim .swap true)) (return nil))
+  (let failure (match outcome
+    (when (TaskOutcome/ok result) (["failed" "cancelled" "interrupted"] .contains? result/state))
+    (else true)))
+  (if (&& failure (! ($absent? controller/runtime/delegations)))
+    (close_delegation_owner controller/runtime/delegations session receipt/id "The parent round failed or was cancelled."))
   (with_session_gate
     controller/runtime/sessions
     $"round/${session}"
@@ -156,6 +208,8 @@
   (controller/active
     .get
     ; .delete session)
+  (if_not ($absent? controller/runtime/delegations)
+    (note_delegation_round controller/runtime/delegations session saved))
   nil)
 
 (fn start_round_task [controller : RoundController, session : Str, receipt, ^resume resume : Bool = false]
@@ -178,7 +232,7 @@
       nil
       (spawn ^lane root (do ($sleep ($math/max 0 (- receipt/deadline_ms ($os/wall_ms)))) (expired .set true) task/.cancel))))
   (let watcher
-    (spawn ^lane root (do (try (let outcome (try task/.join ensure (if_not ($absent? deadline) deadline/.cancel deadline/.join))) (finish_round ^completion completion controller session receipt (if expired/.get (TaskOutcome/ok {^state "failed" ^message "trigger round budget timed out"}) outcome)) ensure (release_body_use controller/runtime)))))
+    (spawn ^lane root (do (try (let outcome (try task/.join ensure (if_not ($absent? deadline) deadline/.cancel deadline/.join))) (finish_round ^completion completion controller session receipt (if expired/.get (TaskOutcome/ok {^state "failed" ^message (if ($absent? receipt/delegation) "trigger round budget timed out" "child round budget timed out")}) outcome)) ensure (release_body_use controller/runtime)))))
   (controller/watchers
     .get
     ; .put session watcher)
@@ -199,7 +253,7 @@
             sequence
             text))))))
 
-(fn submit_round_impl [controller : RoundController, session : Str, request_id : Str, sequence : Int, text : Str, ^initiator initiator : Str = "user", ^on_admit on_admit = nil, ^media media = [], ^card card = nil]
+(fn submit_round_impl [controller : RoundController, session : Str, request_id : Str, sequence : Int, text : Str, ^initiator initiator : Str = "user", ^on_admit on_admit = nil, ^media media = [], ^card card = nil, ^limits limits = nil, ^delegation delegation = nil]
   (require_chat controller/runtime/modes session)
   (if (> ($str/byte_size text) prompt_limit)
     (fail (RoundError ^code "too_large" ^message "Message text exceeds 64 KiB; attach the document instead.")))
@@ -240,8 +294,8 @@
         {^composition controller/runtime/h/snapshots
          ^snapshot admission_lease/snapshot}
         (fn []
-          (let settings ($serde/read_data
-            ($fs/read_text $"${controller/runtime/state_root}/config.gene")))
+          (let settings (session_settings (require_record controller/runtime/sessions session)
+            ($serde/read_data ($fs/read_text $"${controller/runtime/state_root}/config.gene"))))
           (readiness_report controller/runtime settings)))
     ensure
       (release_snapshot controller/runtime/h/snapshots admission_lease)))
@@ -280,11 +334,13 @@
       ^turn_count 0
       ^accepted_at ($to_str ($now))})
   (if_not attachments/.empty? (receipt .put "media" attachments))
+  (if_not ($absent? limits) (receipt .put "effective_limits" (copy_data limits)))
+  (if_not ($absent? delegation) (receipt .put "delegation" (copy_data delegation)))
   (if (!= initiator "user")
     (then
       (let config
         ($serde/read_data ($fs/read_text $"${controller/runtime/state_root}/config.gene")))
-      (receipt .put "deadline_ms" (+ ($os/wall_ms) (?? config/trigger_timeout_ms 300000)))))
+      (receipt .put "deadline_ms" (+ ($os/wall_ms) (?? limits/timeout_ms (?? config/trigger_timeout_ms 300000))))))
   (if (== initiator "user")
     (then
       (let items (take_command_attachments controller/runtime session))
@@ -369,7 +425,13 @@
 
 # The recorded continuation of an answered batch: answering, and recovery
 # after a crash between the answer and this step, both run it exactly once.
-(fn continue_answered_round [controller : RoundController, session : Str, receipt, batch]
+(fn continue_answered_round [controller : RoundController, session : Str, receipt, batch, ^dispatched dispatched : Bool = false]
+  (if_yes (&& (! dispatched) (! ($absent? controller/runtime/delegations))
+          (queue_delegation_answer controller/runtime/delegations session receipt batch))
+    (receipt .put "questions" batch)
+    (receipt .put "resume_queued" true)
+    (save_round controller session receipt)
+    (return (copy_data receipt)))
   # Card clicks admitted before the answer finish before the model runs.
   (wait_for_card_actions controller/runtime session)
   (let items
@@ -392,6 +454,7 @@
   (let request requests/full)
   (receipt .put "request" request)
   (receipt .put "state" "running")
+  (receipt .put "resume_queued" false)
   (if (!= receipt/initiator "user")
     (receipt .put "deadline_ms" (+ ($os/wall_ms) (?? receipt/remaining_ms 300000))))
   (append_message ^media (?? receipt/request_media []) ^settled requests/settled ^round receipt/id ^turn receipt/last_turn
@@ -411,6 +474,44 @@
       ^^answers})
   (save_round controller session receipt)
   (start_round_task ^^resume controller session receipt))
+
+# The delegation coordinator already holds the parent's round gate and its
+# workspace admission gate. Do not reacquire either gate from this callback.
+(fn resume_delegation_parent [controller, session : Str, round : Str, wait, incoming, collection : Bool]
+  (let loaded (load_session controller/runtime/sessions session))
+  (let current loaded/round/.get)
+  (if (|| ($absent? current) (!= current/id round) (!= current/state "waiting")
+          ($absent? current/delegation_wait)
+          (!= current/delegation_wait/generation wait/generation)) (return false))
+  (let receipt (copy_data current))
+  (let items (if ($absent? receipt/request_items_ref) []
+    ($serde/read_data (read_body controller/runtime receipt/request_items_ref))))
+  (let sources ($map items (fn [item] (?? item/delegation_source ""))))
+  (for item in incoming
+    (if_not (sources .contains? item/delegation_source)
+      (items .push item)
+      (sources .push item/delegation_source)))
+  (if collection
+    (items .push {^id $"${receipt/last_turn}.collection" ^header "[harness_budget]"
+      ^value "This is the final collection turn after the normal round limit. All owned work settled. Do not delegate or wait; finish with Outcome ^^done and a nonempty reply." ^settled false}))
+  (let rendered (bounded_request controller/runtime session items))
+  (receipt .put "request" rendered/full)
+  (receipt .put "request_settled" rendered/settled)
+  (receipt .put "request_items_ref" (write_body controller/runtime ($serde/write_data rendered/items)))
+  (receipt .put "request_sources" ($filter sources (fn [source] (!= source ""))))
+  (receipt .put "delegation_collection" collection)
+  (receipt .put "delegation_wait" nil)
+  (receipt .put "questions" nil)
+  (receipt .put "state" "running")
+  (if (!= receipt/initiator "user")
+    (receipt .put "deadline_ms" (+ ($os/wall_ms) (?? receipt/remaining_ms 300000))))
+  (append_message ^settled rendered/settled ^round round ^turn receipt/last_turn
+    controller/runtime session "user" rendered/full)
+  (transcript controller/runtime session {^type "turn/request" ^turn receipt/last_turn
+    ^round round ^full rendered/full ^settled rendered/settled ^delegation true})
+  (save_round controller session receipt)
+  (start_round_task controller session receipt ^^resume)
+  true)
 
 # Recovery found waiting rounds whose batch was answered with a recorded
 # continuation but never resumed. Resume each once, now that rounds can run.
@@ -433,7 +534,13 @@
         {^type "trace" ^text $"answered round did not resume: ${$err/message}" ^^ignorable})))
   pending/.size)
 
-(fn cancel_round [controller : RoundController, session : Str, id : Str]
+(fn cancel_round [controller : RoundController, session : Str, id : Str, ^from_delegation from_delegation : Bool = false]
+  (if (&& (! from_delegation) (! ($absent? controller/runtime/delegations)))
+    (close_delegation_owner controller/runtime/delegations session id "The parent round was cancelled."))
+  (with_session_gate controller/runtime/sessions $"round/${session}"
+    (fn [] (cancel_round_locked controller session id))))
+
+(fn cancel_round_locked [controller, session : Str, id : Str]
   (let loaded (load_session controller/runtime/sessions session))
   (let receipt loaded/round/.get)
   (if (|| ($absent? receipt) (!= receipt/id id))
@@ -442,12 +549,17 @@
   (if_not ($absent? task) task/.cancel)
   (if (== receipt/state "waiting")
     (then
-      (answer_questions ^^dismiss ^intent "cancel" controller/runtime/events session receipt/questions/id {})
+      (if_not ($absent? receipt/questions)
+        (let batch (core_state controller/runtime/events "session" session $"questions/${receipt/questions/id}"))
+        (if (== batch/status "waiting")
+          (answer_questions ^^dismiss ^intent "cancel" controller/runtime/events session receipt/questions/id {})))
       (receipt .put "state" "cancelled")
       (save_round controller session receipt)))
   receipt)
 
 (fn close_round_controller [controller : RoundController]
+  (if_not ($absent? controller/runtime/delegations)
+    (prepare_delegations_stop controller/runtime/delegations []))
   (for [session task] in controller/active/.get
     task/.cancel)
   (for [session watcher] in controller/watchers/.get
@@ -471,6 +583,8 @@
     (fail
       (RoundError ^code "confirmation_required" ^message $"Other sessions are running: ${names}. Confirm /stop or /restart.")))
   (runtime/stopping .set true)
+  (if_not ($absent? runtime/delegations)
+    (prepare_delegations_stop runtime/delegations []))
   (runtime/commands/accepting .set false)
   (var exit_code code)
   (if (&& (== code 75) (!= runtime/supervised true) (!= ($os/env? "GENE_HARNESS_SUPERVISED") "1"))

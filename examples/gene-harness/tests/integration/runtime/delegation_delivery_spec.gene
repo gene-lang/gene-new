@@ -1,0 +1,152 @@
+(import $test [describe it])
+(import [isolated run_spec test_controller] ^from "../../support")
+(import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
+(import [baseline_profile] ^from "../../../src/profiles/baseline")
+(import [submit_round round_receipt cancel_round close_round_controller] ^from "../../../src/runtime/round_controller")
+(import [require_record list_sessions load_session] ^from "../../../src/runtime/sessions")
+(import [delegation_blocks] ^from "../../../src/runtime/delegations")
+
+(type DeliveryProbeError ^props {^message Str} ^impl [Error])
+(impl Error for DeliveryProbeError)
+
+(fn finish [controller, round]
+  (let due (+ ($os/monotonic_ms) 15000))
+  (loop
+    (let receipt (round_receipt controller "default" round/id))
+    (if (! (["running" "waiting"] .contains? receipt/state)) (return receipt))
+    ($assert (< ($os/monotonic_ms) due) $"Round did not settle: ${receipt}; ${controller/runtime/delegations/last_error}")
+    ($sleep 10)))
+
+(describe "Delegation delivery boundaries"
+  (it "preserves a settled child result when parent cancellation precedes coordinator reconciliation" []
+    (isolated this_mod/.path "preserves a settled child result when parent cancellation precedes coordinator reconciliation"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (let release ($cell false))
+        (let started ($cell false))
+        (let calls ($cell 0))
+        (let controller (test_controller runtime (fn [call]
+          (let metadata (require_record runtime/sessions call/session))
+          (if (== metadata/kind "child")
+            (then
+              (started .set true)
+              (while (! release/.get) ($sleep 5))
+              "(Outcome ^^done ^reply \"RACE_CONCLUSION\")")
+            (else
+              (let n (calls .swap (+ calls/.get 1)))
+              (if (== n 0)
+                (then "(delegate \"audit\" ^title \"Audit\" ^brief \"Inspect the module.\") (Outcome ^wait \"all\")")
+                (else
+                  ($assert ($str/contains? ($to_str call/messages) "RACE_CONCLUSION"))
+                  "(Outcome ^^done ^reply \"Settled result retained\")")))))))
+        (try
+          (let round (submit_round controller "default" "race" 1 "Run the audit."))
+          (let due (+ ($os/monotonic_ms) 15000))
+          (while (! started/.get)
+            ($assert (< ($os/monotonic_ms) due)) ($sleep 5))
+          (let worker runtime/delegations/worker)
+          worker/.cancel worker/.join
+          (let before (delegation_blocks runtime/delegations "default"))
+          (let child (load_session runtime/sessions before/records/0/session))
+          (release .set true)
+          (while (!= child/round/.get/state "done")
+            ($assert (< ($os/monotonic_ms) due)) ($sleep 5))
+          (cancel_round controller "default" round/id)
+          (let settled (delegation_blocks runtime/delegations "default"))
+          ($assert (== settled/records/0/state "done"))
+          ($assert (! settled/records/0/seen))
+          (let next (submit_round controller "default" "collect" 2 "Collect the conclusion."))
+          ($assert (== (/state (finish controller next)) "done"))
+          ($assert (== calls/.get 2))
+        ensure (release .set true) (close_round_controller controller) (close_runtime runtime)))))
+
+  (it "defers done when a child finishes during the parent's in-flight model call" []
+    (isolated this_mod/.path "defers done when a child finishes during the parent's in-flight model call"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (let parent_calls ($cell 0))
+        (let inflight ($cell false))
+        (let controller (test_controller runtime (fn [call]
+          (let metadata (require_record runtime/sessions call/session))
+          (if (== metadata/kind "child")
+            (then
+              (while (! inflight/.get) ($sleep 5))
+              "(Outcome ^^done ^reply \"CHILD_RESULT_AFTER_REQUEST\")")
+            (else
+              (let n (parent_calls .swap (+ parent_calls/.get 1)))
+              (match n
+                (when 0 "(delegate \"audit\" ^title \"Audit\" ^brief \"Inspect the module.\") (Outcome ^prompt \"Work independently\")")
+                (when 1
+                  (inflight .set true)
+                  ($sleep 150)
+                  "(Outcome ^^done ^reply \"Earlier call tried to finish\")")
+                (else
+                  ($assert ($str/contains? ($to_str call/messages) "CHILD_RESULT_AFTER_REQUEST"))
+                  "(Outcome ^^done ^reply \"Result collected\")")))))))
+        (try
+          (let round (submit_round controller "default" "inflight" 1 "Coordinate the audit."))
+          ($assert (== (/state (finish controller round)) "done"))
+          ($assert (== parent_calls/.get 3))
+          (let blocks (delegation_blocks runtime/delegations "default"))
+          ($assert blocks/records/0/seen)
+        ensure (close_round_controller controller) (close_runtime runtime)))))
+
+  (it "keeps a result unseen after a failed model call and carries it to the next user request" []
+    (isolated this_mod/.path "keeps a result unseen after a failed model call and carries it to the next user request"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (let parent_calls ($cell 0))
+        (let child_calls ($cell 0))
+        (let controller (test_controller runtime (fn [call]
+          (let metadata (require_record runtime/sessions call/session))
+          (if (== metadata/kind "child")
+            (then
+              (child_calls .set (+ child_calls/.get 1))
+              "(Outcome ^^done ^reply \"DURABLE_CHILD_CONCLUSION\")")
+            (else
+              (let n (parent_calls .swap (+ parent_calls/.get 1)))
+              (match n
+                (when 0 "(delegate \"audit\" ^title \"Audit\" ^brief \"Inspect the module.\") (Outcome ^wait \"all\")")
+                (when 1 (fail (DeliveryProbeError ^message "Provider failed before producing a response.")))
+                (else
+                  ($assert ($str/contains? ($to_str call/messages) "DURABLE_CHILD_CONCLUSION"))
+                  "(Outcome ^^done ^reply \"Recovered conclusion collected\")")))))))
+        (try
+          (let round (submit_round controller "default" "first" 1 "Coordinate the audit."))
+          ($assert (== (/state (finish controller round)) "failed"))
+          (let before (delegation_blocks runtime/delegations "default"))
+          ($assert (! before/records/0/seen))
+          (let next (submit_round controller "default" "second" 2 "Continue."))
+          ($assert (== (/state (finish controller next)) "done"))
+          (let after (delegation_blocks runtime/delegations "default"))
+          ($assert after/records/0/seen)
+          ($assert (== child_calls/.get 1))
+        ensure (close_round_controller controller) (close_runtime runtime)))))
+
+  (it "enforces depth through the host seam and retains the child's failure diagnostic" []
+    (isolated this_mod/.path "enforces depth through the host seam and retains the child's failure diagnostic"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (let parent_calls ($cell 0))
+        (let controller (test_controller runtime (fn [call]
+          (let metadata (require_record runtime/sessions call/session))
+          (if (== metadata/kind "child")
+            (then "(delegate \"nested\" ^title \"Nested\" ^brief \"Must be refused.\")")
+            (else
+              (let n (parent_calls .swap (+ parent_calls/.get 1)))
+              (if (== n 0)
+                (then "(delegate \"audit\" ^title \"Audit\" ^brief \"Inspect the module.\" ^turns 1) (Outcome ^wait \"all\")")
+                (else
+                  ($assert ($str/contains? ($to_str call/messages) "A child cannot delegate"))
+                  "(Outcome ^^done ^reply \"Depth refusal collected\")")))))))
+        (try
+          (let round (submit_round controller "default" "depth" 1 "Run the audit."))
+          ($assert (== (/state (finish controller round)) "done"))
+          (let blocks (delegation_blocks runtime/delegations "default"))
+          ($assert (== blocks/records/.size 1))
+          ($assert (== blocks/records/0/state "failed"))
+          ($assert (== blocks/records/0/turns_used 1))
+          ($assert (== ($size (list_sessions runtime/sessions ^^all)) 2))
+        ensure (close_round_controller controller) (close_runtime runtime))))))
+
+(fn main [args] : Int (run_spec args))

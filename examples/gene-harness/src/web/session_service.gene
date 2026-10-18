@@ -55,6 +55,8 @@
   [card_records shown_card card_action card_action_receipt check_card_command
    admit_card_command release_card_command CardError])
 (import ^from "../runtime/appearance" [AppearanceChanged appearance_mode])
+(import [delegation_blocks delegation_recovery cancel_delegation_admission]
+  ^from "../runtime/delegations")
 (import ^from "../ui/state" [ui_status ui_data_revision])
 (import ^from "../ui/views" [render_component])
 (import ^from "../runtime/cordis_adapter" [spawn_composition_call])
@@ -85,6 +87,9 @@
         (copy .put "first_request_media" (?? event/payload/media []))
         (break))))
   (copy .put "last_round" loaded/round/.get)
+  (if_not ($absent? record/parent)
+    (let owner (service/sessions/index/.get .get record/parent/session))
+    (copy .put "parent_title" (?? owner/title record/parent/session)))
   copy)
 
 (fn publish_message [service, kind : Str, session : Str, data, ^reason reason = nil]
@@ -127,6 +132,12 @@
 
 (fn publish_transcript [service, session : Str, event]
   (let kind event/type)
+  (if_yes (== kind "delegation/state")
+    (let data event/payload/state/record)
+    (if_not ($absent? data)
+      (if (== data/created_seq 0) (data .put "created_seq" event/seq))
+      (publish_message service "delegation" session (delegation_block session data)))
+    (queue_snapshot service session))
   (if (|| (["turn/response" "turn/request" "turn/patch"] .contains? kind) (&& (== kind "turn/end") (! ($absent? event/payload/text))))
     (publish_message service "turn" session (event_record session event)))
   (if (["reply" "console"] .contains? kind)
@@ -270,6 +281,12 @@
   (for record in (session_records ^kind kind ^status status ^attention attention ^trigger trigger ^q q ^since since ^until until service/sessions)
     (if (&& (!= after "") (<= ($order/compare record/id after) 0)) (continue))
     (if (>= results/.size limit) (break))
+    (if_yes (&& (== q "") ($absent? kind) ($absent? status) ($absent? attention)
+                ($absent? trigger) (== since "") (== until ""))
+      (let children [])
+      (for child in (session_records ^kind "child" service/sessions)
+        (if (== child/parent/session record/id) (children .push child)))
+      (record .put "children" children))
     (results .push record))
   {^sessions results ^needs_attention (session_records ^^attention service/sessions) ^next ""})
 
@@ -386,6 +403,23 @@
 (fn cancel [service, session : Str, id : Str]
   (cancel_round service/controller session id))
 
+(fn cancel_child [service, session : Str, id : Str, admission : Int]
+  (if (<= admission 0)
+    (fail (RoundError ^code "invalid_request" ^message "Admission must be positive.")))
+  (require_record service/sessions session)
+  (cancel_delegation_admission service/runtime/delegations session id admission))
+
+(fn recover_children [service, session : Str, round : Str, action : Str]
+  (require_record service/sessions session)
+  (let result (delegation_recovery service/runtime/delegations session round action))
+  (queue_snapshot service session)
+  result)
+
+(fn delegation_block [session : Str, data]
+  {^id $"${session}/delegation/${data/source}" ^seq ($to_str data/created_seq)
+   ^round_id data/round ^turn data/turn ^role "assistant" ^kind "delegation"
+   ^phase "delegation" ^order data/queued_at_ms ^text "" ^delegation data ^^durable})
+
 (fn snapshot [service, id : Str, ^after after : Int = -1, ^before before : Int = -1, ^safe safe : Bool = false]
   (let metadata (require_record service/sessions id))
   (let loaded (load_session service/sessions id))
@@ -395,6 +429,13 @@
     (set cursor event/seq)
     (if (&& (>= after 0) (<= event/seq after)) (continue))
     (if (&& (>= before 0) (>= event/seq before)) (continue))
+    (if_yes (&& (== event/type "delegation/state") (! ($absent? event/payload/state/summary)))
+      (let state event/payload/state)
+      (records .push
+        {^id $"${id}/delegation-update/${event/seq}" ^seq ($to_str event/seq)
+         ^round_id state/round ^turn state/turn ^role "assistant"
+         ^phase "delegation/update" ^kind "delegation/update" ^text state/summary
+         ^order state/at_ms ^^durable}))
     (if (|| (["turn/response" "turn/request" "turn/patch" "reply" "console"] .contains? event/type) (&& (== event/type "turn/end") (! ($absent? event/payload/text))))
       (records .push (event_record id event)))
     # A later definition of a card shows a short line where it happened.
@@ -423,6 +464,12 @@
     (if (&& (>= before 0) (>= seq before)) (continue))
     (records .push (card_block service/runtime id card)))
   (let commands (command_state service/runtime id))
+  (let delegations (delegation_blocks service/runtime/delegations id))
+  (for data in delegations/records
+    (let seq data/created_seq)
+    (if (&& (>= after 0) (<= seq after)) (continue))
+    (if (&& (>= before 0) (>= seq before)) (continue))
+    (records .push (delegation_block id data)))
   (for record in commands/records
     (if (== record/ui_action true) (continue))
     (let seq (?? record/start_seq 0))
@@ -488,6 +535,7 @@
     ^next_command_seq ($to_str commands/next_id)
     ^next_submission_seq ($to_str rounds/next_seq)
     ^round loaded/round/.get
+    ^delegation_recovery delegations/recovery
     ^mode (mode_state service/runtime/modes id)
     ^status (host_status ^session id ^safe safe service)
     ^questions (if (== metadata/status "waiting")
@@ -555,13 +603,16 @@
   (let plugins [])
   (for plugin in composition/plugins
     (plugins .push {^id plugin/id ^state plugin/status}))
+  (let metadata (if (== session "") nil (require_record service/sessions session)))
   {
     ^protocol protocol_version
     ^epoch service/epoch
     ^status_session session
     ^status_revision status_revision
     ^status_sequence ($to_str status_sequence)
-    ^model service/model_info
+    ^model (if ($absent? metadata/model_settings) service/model_info
+      {^provider metadata/model_settings/provider ^model metadata/model_settings/model
+       ^effort metadata/model_settings/effort})
     ^profile service/runtime/profile/name
     ^appearance (appearance_mode service/runtime/h)
     ^readiness (if ($absent? service/runtime/h/readiness)

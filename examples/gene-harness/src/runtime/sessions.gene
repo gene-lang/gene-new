@@ -76,6 +76,9 @@
   (if (< idle_timeout_ms 0)
     (fail (SessionError ^code "invalid_request" ^message "idle timeout must be non-negative")))
   ($fs/make_dir $"${state_root}/sessions")
+  (for [key intent] in (core_states events "workspace" "workspace")
+    (if (&& ($str/starts_with? ($to_str key) "session_delete/") (!= intent/done true))
+      (finish_session_deletion events ($to_str key) intent)))
   (let index {})
   # Workspace projections are authoritative if a crash preceded index publication.
   # This reads projection metadata, never session event segments or plugins.
@@ -186,11 +189,15 @@
   (manager/mutating (fn [] (update_session_unlocked manager id changes))))
 
 (fn update_session_unlocked [manager : SessionManager, id : Str, changes]
+  (let previous (require_record manager id))
   (let record (copy_data (require_record manager id)))
   (for [key value] in changes
     (if (== key "id")
       (fail (SessionError ^code "invalid_request" ^message "session identity cannot change")))
     (record .put key value))
+  (if_yes (== record/kind "child")
+    (let owner (require_record manager record/parent/session))
+    (record .put "pinned" owner/pinned))
   (record_core_state manager/events "workspace" "workspace" "session/state" $"session/${id}" record)
   (flush_event_store manager/events)
   (manager/index
@@ -198,26 +205,47 @@
     ; .put id record)
   (write_index manager)
   (notify_session manager record)
+  (if_yes (&& (== record/kind "child") record/attention
+              (|| (! previous/attention)
+                  (&& (!= previous/status record/status)
+                      (["waiting" "failed" "interrupted"] .contains? record/status))))
+    (let parent (manager/index/.get .get record/parent/session))
+    (if (&& (! ($absent? parent)) (! parent/attention))
+      (update_session_unlocked manager parent/id {^^attention})))
+  (if_yes (&& (!= record/kind "child") (! ($absent? changes/pinned)))
+    (let children [])
+    (for [child_id child] in manager/index/.get
+      (if (== child/parent/session id) (children .push ($to_str child_id))))
+    (for child in children (update_session_unlocked manager child {^pinned record/pinned})))
   (copy_data record))
 
-(fn create_session [manager : SessionManager, ^id id : Str = "", ^kind kind : Str = "interactive", ^title title : Str = "New conversation", ^trigger trigger = nil, ^occurrence occurrence = nil, ^first_request first_request : Str = "", ^pinned pinned : Bool = false]
+(fn create_session [manager : SessionManager, ^id id : Str = "", ^kind kind : Str = "interactive", ^title title : Str = "New conversation", ^trigger trigger = nil, ^occurrence occurrence = nil, ^first_request first_request : Str = "", ^pinned pinned : Bool = false, ^parent parent = nil, ^model_settings model_settings = nil]
   (require_open manager)
   (manager/mutating (fn []
-    (create_session_unlocked ^id id ^kind kind ^title title ^trigger trigger ^occurrence occurrence ^first_request first_request ^pinned pinned
+    (create_session_unlocked ^id id ^kind kind ^title title ^trigger trigger ^occurrence occurrence ^first_request first_request ^pinned pinned ^parent parent ^model_settings model_settings
       manager))))
 
-(fn create_session_unlocked [manager : SessionManager, ^id id : Str = "", ^kind kind : Str = "interactive", ^title title : Str = "New conversation", ^trigger trigger = nil, ^occurrence occurrence = nil, ^first_request first_request : Str = "", ^pinned pinned : Bool = false]
+(fn create_session_unlocked [manager : SessionManager, ^id id : Str = "", ^kind kind : Str = "interactive", ^title title : Str = "New conversation", ^trigger trigger = nil, ^occurrence occurrence = nil, ^first_request first_request : Str = "", ^pinned pinned : Bool = false, ^parent parent = nil, ^model_settings model_settings = nil]
   (require_open manager)
   (let chosen (if (== id "") $"s-${($crypto/random_hex 12)}" id))
   (if_not (safe_id? chosen)
     (fail (SessionError ^code "invalid_request" ^message "invalid session id")))
   (let previous (manager/index .get; .get chosen))
   (if_not ($absent? previous)
-    (if (&& (== previous/kind kind) (== previous/trigger trigger) (== previous/occurrence occurrence))
+    (if (&& (== previous/kind kind) (== previous/trigger trigger) (== previous/occurrence occurrence)
+            (|| (!= kind "child")
+                (&& (== previous/parent/session parent/session) (== previous/parent/delegation parent/delegation))))
       (return (copy_data previous)))
     (fail (SessionError ^code "conflict" ^message $"session ${chosen} already exists")))
-  (if_not (["interactive" "heartbeat" "scheduled" "cron"] .contains? kind)
+  (if_not (["interactive" "heartbeat" "scheduled" "cron" "child"] .contains? kind)
     (fail (SessionError ^code "invalid_request" ^message "invalid session kind")))
+  (if_yes (== kind "child")
+    (if (|| (!= ($head parent) Map) (!= ($head parent/session) Str)
+            (!= ($head parent/round) Str) (!= ($head parent/delegation) Str))
+      (fail (SessionError ^code "invalid_request" ^message "A child session requires its parent session, round and delegation.")))
+    (let owner (require_record manager parent/session))
+    (if (== owner/kind "child")
+      (fail (SessionError ^code "depth_limit" ^message "Nested child sessions are not supported."))))
   (let name ($str/trim title))
   (if (|| (== name "") (> ($str/byte_size name) 256))
     (fail (SessionError ^code "invalid_request" ^message "session title must have 1–256 bytes")))
@@ -238,6 +266,11 @@
       ^turns 0
       ^first_request first_request
       ^first_request_media []})
+  (if_not ($absent? parent) (record .put "parent" (copy_data parent)))
+  (if_yes (== kind "child")
+    (let parent_record (require_record manager parent/session))
+    (record .put "pinned" parent_record/pinned))
+  (if_not ($absent? model_settings) (record .put "model_settings" (copy_data model_settings)))
   (record_core_state
     manager/events
     "workspace"
@@ -268,6 +301,7 @@
   (let query ($str/lower q))
   (let results [])
   (for [id record] in manager/index/.get
+    (if (&& (! filtered) (== record/kind "child")) (continue))
     (if (&& (! filtered) (!= record/kind "interactive") (! record/pinned)) (continue))
     (if (&& (! ($absent? kind)) (!= record/kind kind)) (continue))
     (if (&& (! ($absent? status)) (!= record/status status)) (continue))
@@ -356,27 +390,59 @@
   count)
 
 (fn delete_session [manager : SessionManager, id : Str] : Bool
-  (with_session_gate manager $"round/${id}" (fn [] (delete_session_locked manager id))))
+  (let record (require_record manager id))
+  (let root (if (== record/kind "child") record/parent/session id))
+  (with_session_gate manager $"round/${root}" (fn []
+    (let ids [id])
+    (if_yes (== root id)
+      (for [child_id child] in manager/index/.get
+        (if (== child/parent/session id) (ids .push ($to_str child_id)))))
+    (with_delete_gates manager ids 0 root (fn [] (delete_session_locked manager id ids))))))
 
-(fn delete_session_locked [manager : SessionManager, id : Str] : Bool
-  (require_open manager)
-  (manager/mutating (fn []
-    (let record (require_record manager id))
-    (let loaded (manager/loaded/.get .get id))
-    (if (|| record/pinned record/attention (["running" "waiting"] .contains? record/status)
-            (&& (! ($absent? loaded)) (> loaded/viewers/.get 0)))
-      (return false))
-    (if_not ($absent? manager/before_remove) (manager/before_remove id "deleted"))
+(fn with_delete_gates [manager, ids, offset : Int, root : Str, body]
+  (if (>= offset ids/.size) (return (body)))
+  (let id ids/%offset)
+  (let next (fn []
+    (with_session_gate manager $"load/${id}" (fn []
+      (with_delete_gates manager ids (+ offset 1) root body)))))
+  (if (== id root) (next) (with_session_gate manager $"round/${id}" next)))
+
+(fn finish_session_deletion [events, key : Str, intent]
+  (for record in intent/records
     (let tombstone (copy_data record))
     (tombstone .put "deleted" true)
-    (record_core_state manager/events "workspace" "workspace" "session/state" $"session/${id}" tombstone)
-    (delete_event_stream manager/events "session" id)
+    (record_core_state events "workspace" "workspace" "session/state" $"session/${record/id}" tombstone)
+    (delete_event_stream events "session" record/id))
+  (record_core_state events "workspace" "workspace" "session/state" key {^^done})
+  (flush_event_store events))
+
+(fn delete_session_locked [manager : SessionManager, id : Str, ids] : Bool
+  (require_open manager)
+  (manager/mutating (fn []
+    (let records [])
+    (for candidate in ids
+      (let record (require_record manager candidate))
+      (let loaded (manager/loaded/.get .get candidate))
+      (if (|| record/pinned record/attention (["running" "waiting"] .contains? record/status)
+              (&& (! ($absent? loaded)) (> loaded/viewers/.get 0)))
+        (return false))
+      (records .push record))
+    (for candidate in ids
+      (if_not ($absent? manager/before_remove) (manager/before_remove candidate "deleted")))
+    (let key $"session_delete/${id}")
+    (let intent {^records records ^done false})
+    (record_core_state manager/events "workspace" "workspace" "session/state" key intent)
     (flush_event_store manager/events)
-    (manager/index/.get .delete id)
-    (manager/loaded/.get .delete id)
+    (finish_session_deletion manager/events key intent)
+    (for candidate in ids
+      (manager/index/.get .delete candidate)
+      (manager/loaded/.get .delete candidate))
     (write_index manager)
     (manager/runtime/body_gc_pending .set true)
-    (notify_session manager tombstone)
+    (for record in records
+      (let tombstone (copy_data record))
+      (tombstone .put "deleted" true)
+      (notify_session manager tombstone))
     true)))
 
 (fn close_session_manager [manager : SessionManager]
