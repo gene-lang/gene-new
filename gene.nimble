@@ -103,6 +103,7 @@ task spec, "Run executable language surface specs":
 task execTest, "Run native process launch, I/O, notification and exec regressions":
   when defined(posix):
     exec "nim c -r -d:geneExecTests --path:src --hints:off tests/test_process_launch.nim"
+    exec "nim c -r --path:src --hints:off tests/test_detached_process.nim"
     exec "nim c -r -d:geneExecTests --path:src --hints:off tests/test_process_io.nim"
     exec "nim c -r -d:geneExecTests --path:src --hints:off tests/test_native_wake.nim"
     exec "nim c -r -d:geneExecTests --path:src --hints:off tests/test_exec.nim"

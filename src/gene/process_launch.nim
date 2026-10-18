@@ -19,6 +19,9 @@ proc nativeSpawn(path: cstring, args, environment: cstringArray,
                  directory: cstring, inheritStdio, mergeStderr, ownGroup: cint,
                  pid: ptr cint, fds: ptr array[3, cint]): cint
   {.importc: "gene_process_spawn", header: processHeader.}
+proc nativeSpawnDetached(path: cstring, args, environment: cstringArray,
+                         directory, output: cstring, pid: ptr cint): cint
+  {.importc: "gene_process_spawn_detached", header: processHeader.}
 proc nativeObserve(pid: cint, status: ptr cint): cint
   {.importc: "gene_process_observe", header: processHeader.}
 proc nativeReap(pid: cint, status: ptr cint): cint
@@ -218,25 +221,23 @@ proc resolveProcessDirectory*(directory: string): string =
   if directory.len == 0 or directory.isAbsolute: directory
   else: getCurrentDir() & "/" & directory
 
-proc launchProcess*(program: string, arguments: openArray[string] = [],
-                    directory = "", environment = none(seq[string]),
-                    inheritStdio = false, mergeStderr = false,
-                    ownGroup = false): ProcessHandle =
+proc processCandidates(program: string, arguments: openArray[string],
+                       directory: string, environment: Option[seq[string]]):
+                       tuple[workdir: string, candidates: seq[string]] =
   if program.len == 0 or '\0' in program or '\0' in directory:
     raise newException(ValueError, "invalid process program or directory")
   for argument in arguments:
     if '\0' in argument: raise newException(ValueError, "NUL in process argument")
   # Keep dot components for the kernel: collapsing link/.. changes symlink
   # traversal and can turn an invalid missing/.. directory into a valid one.
-  let workdir = resolveProcessDirectory(directory)
+  result.workdir = resolveProcessDirectory(directory)
   var searchPath = getEnv("PATH", defaultProcessPath())
   if environment.isSome:
     searchPath = defaultProcessPath()
     for entry in environment.get:
       if '\0' in entry: raise newException(ValueError, "NUL in process environment")
       if entry.startsWith("PATH="): searchPath = entry[5 .. ^1]
-  var candidates: seq[string]
-  var baseDirectory = workdir
+  var baseDirectory = result.workdir
   template inChildDirectory(path: string): string =
     block:
       if path.isAbsolute: path
@@ -244,10 +245,40 @@ proc launchProcess*(program: string, arguments: openArray[string] = [],
         if baseDirectory.len == 0: baseDirectory = getCurrentDir()
         baseDirectory & "/" & path
   if program.contains(DirSep):
-    candidates.add inChildDirectory(program)
+    result.candidates.add inChildDirectory(program)
   else:
     for entry in searchPath.split(PathSep):
-      candidates.add inChildDirectory(if entry.len == 0: program else: entry & "/" & program)
+      result.candidates.add inChildDirectory(if entry.len == 0: program else: entry & "/" & program)
+
+proc launchDetached*(program: string, arguments: openArray[string] = [],
+                     directory = "", environment = none(seq[string]),
+                     output: string): int =
+  if output.len == 0 or '\0' in output:
+    raise newException(ValueError, "detached output must be a non-empty path")
+  let (workdir, candidates) = processCandidates(program, arguments, directory, environment)
+  let argv = allocCStringArray(@[program] & @arguments)
+  defer: deallocCStringArray(argv)
+  var envp: cstringArray
+  if environment.isSome: envp = allocCStringArray(environment.get)
+  defer:
+    if envp != nil: deallocCStringArray(envp)
+  var pid: cint
+  var denied = false
+  var code = cint(ENOENT)
+  for candidate in candidates:
+    code = nativeSpawnDetached(candidate.cstring, argv, envp, workdir.cstring,
+                                output.cstring, addr pid)
+    if code == 0: return int(pid)
+    if code == EACCES: denied = true
+    elif code notin [ENOENT, ENOTDIR]: break
+  if denied and code in [ENOENT, ENOTDIR, EACCES]: code = EACCES
+  raiseOSError(OSErrorCode(code), program)
+
+proc launchProcess*(program: string, arguments: openArray[string] = [],
+                    directory = "", environment = none(seq[string]),
+                    inheritStdio = false, mergeStderr = false,
+                    ownGroup = false): ProcessHandle =
+  let (workdir, candidates) = processCandidates(program, arguments, directory, environment)
   let argv = allocCStringArray(@[program] & @arguments)
   defer: deallocCStringArray(argv)
   var envp: cstringArray

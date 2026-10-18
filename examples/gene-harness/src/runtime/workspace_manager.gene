@@ -1,0 +1,499 @@
+# One service shared by model functions and browser actions. It owns no child
+# Task: detached launchers survive this service and its Harness process.
+(mod workspace_manager_service)
+(import ^from "./workspace_settings"
+  [read_workspace_settings write_workspace_settings update_workspace_settings validate_settings])
+(import ^from "./workspace_lock" [acquire_workspace_lock close_workspace_lock])
+(import ^from "../cli/client" [connect api connection_link])
+(import ^from "../text" [byte_suffix])
+(import ^from "../plugin_api" [HarnessEvent])
+(import ^from "../kernel" [publish])
+
+(type ManagerError ^props {^code Str ^message Str} ^impl [Error])
+(impl Error for ManagerError)
+(type WorkspaceManagerChanged : HarnessEvent)
+(type WorkspaceManager ^props {^runtime Any ^root Str ^registry Any ^gate Any ^statuses Any ^busy Any ^revision Any ^confirmations Any ^poller Any ^closed Any ^entry Str ^installation Str ^launch_dir Str})
+
+(fn manager_error [code : Str, message : Str]
+  (fail (ManagerError ^code code ^message message)))
+(fn data_copy [data]
+  ($serde/read_data ($serde/write_data data)))
+
+(fn manager_changed [manager]
+  (manager/revision .set (+ manager/revision/.get 1))
+  (publish manager/runtime/h (WorkspaceManagerChanged)))
+
+(fn lock_held? [path : Str]
+  (if_not ($fs/exists? path) (return false))
+  (let handle ($fs/try_lock path))
+  (if ($absent? handle)
+    true
+    (do
+      handle/.close
+      false)))
+
+(fn workspace_busy? [root : Str]
+  (||
+    (lock_held? $"${root}/.gene-harness/lock")
+    (lock_held? $"${root}/.gene-harness/launcher_lock")))
+
+(fn manager_entry [manager, id : Str]
+  (for entry in manager/registry/.get/entries
+    (if (== entry/id id) (return entry)))
+  (manager_error "not_found" "Workspace is not registered."))
+
+(fn manager_commit [manager, entries]
+  (let next {^version 1 ^revision (+ manager/registry/.get/revision 1) ^entries entries})
+  ($fs/write_text_atomic $"${manager/root}/registry.gene" ($serde/write_data next))
+  (manager/registry .set next)
+  (manager_changed manager)
+  next)
+
+(fn manager_directory [manager, directory : Str]
+  (if (== ($str/trim directory) "")
+    (manager_error "invalid_request" "Choose a workspace directory."))
+  (if ($str/starts_with? directory "/")
+    directory
+    ($path/join manager/launch_dir directory)))
+
+(fn manager_check_directory [manager, root : Str, ^except except : Str = ""]
+  (if (== root manager/root)
+    (manager_error "invalid_request" "The manager cannot register itself."))
+  (if (contains_directory? $"${manager/root}/.gene-harness" root)
+    (manager_error "invalid_request" "The manager's own state cannot be registered as a workspace."))
+  (for entry in manager/registry/.get/entries
+    (if (&& (!= entry/id except) (== entry/dir root))
+      (manager_error "already_registered" "This directory is already registered."))))
+
+(fn manager_check_alias [manager, alias : Str, ^except except : Str = ""]
+  (for entry in manager/registry/.get/entries
+    (if_yes (&& (!= entry/id except) ($fs/exists? entry/dir))
+      (let settings (try (read_workspace_settings entry/dir) catch Any nil))
+      (if (== settings/alias alias)
+        (manager_error "alias_conflict" $"Alias ${alias} is already registered.")))))
+
+(fn manager_redact [root : Str, text : Str]
+  (var result text)
+  (let secret (try ($str/trim ($fs/read_text $"${root}/.gene-harness/web_secret")) catch Any ""))
+  (if (!= secret "") (set result ($str/join ($str/split result secret) "[redacted]")))
+  (let credentials
+    (try
+      ($serde/read_data ($fs/read_text $"${root}/.gene-harness/cli_cookie"))
+    catch Any
+      nil))
+  (for value in [credentials/cookie credentials/csrf]
+    (if (&& (== ($head value) Str) (!= value ""))
+      (set result ($str/join ($str/split result value) "[redacted]"))))
+  (byte_suffix result 16384))
+
+(fn manager_diagnostics [root : Str]
+  (let parts [])
+  (for name in ["startup_failure" "bootstrap.log" "host.log.1" "host.log"]
+    (let path $"${root}/.gene-harness/${name}")
+    (if_yes ($fs/exists? path)
+      (let text
+        (try
+          ((Path "text") ($fs/read_text_page ^lines 100000 ^max_bytes 1048576 path))
+        catch Any
+          ""))
+      (if (!= text "")
+        (parts .push
+          ($to_str
+            name
+            """:
+"""
+            (byte_suffix text 4096))))))
+  (manager_redact
+    root
+    ($str/join
+      parts
+      """
+""")))
+
+(fn manager_probe [manager, entry, ^timeout_ms timeout_ms : Int = 700,
+  ^starting starting : Bool = false]
+  (let result
+    {
+      ^id entry/id
+      ^dir entry/dir
+      ^alias ($path/name entry/dir)
+      ^port 0
+      ^actual_port nil
+      ^status "stopped"
+      ^!pending_port
+      ^message ""})
+  (if_not ($fs/exists? entry/dir)
+    (result .put "status" "missing")
+    (return result))
+  (try
+    (let settings (read_workspace_settings entry/dir))
+    (result .put "alias" settings/alias)
+    (result .put "port" settings/port)
+    (result .put "metadata_revision" ($pkg/canonical_digest settings))
+  catch Any
+    (result .put "status" "error")
+    (result .put "message" ($to_str $err/message))
+    (return result))
+  # During launch, readiness comes from the authenticated endpoint. Repeated
+  # exclusive-lock probes could otherwise contend with the child acquiring it.
+  (let owned (|| starting (lock_held? $"${entry/dir}/.gene-harness/lock")))
+  (let launching (|| starting (lock_held? $"${entry/dir}/.gene-harness/launcher_lock")))
+  (if_not (|| owned launching) (return result))
+  (if_not ($fs/exists? $"${entry/dir}/.gene-harness/connection")
+    (result .put "status" (if launching "starting" "unavailable"))
+    (return result))
+  (try
+    (let due (+ ($os/monotonic_ms) timeout_ms))
+    (let client (connect ^deadline due entry/dir))
+    (let status (api ^deadline due client "GET" "/status?ui=default"))
+    (result .put "status" (if (== status/mode "recovery") "recovery" "running"))
+    (result .put "actual_port" client/connection/port)
+    (result .put "epoch" client/connection/epoch)
+    (result .put "pending_port" (&& (!= result/port 0) (!= result/port client/connection/port)))
+    (result .put "running" (?? status/running 0))
+  catch Any
+    (result .put "status" "unavailable")
+    (result .put
+      "message"
+      "Host control is unavailable. Stop it externally if needed, then refresh."))
+  result)
+
+(fn manager_refresh [manager]
+  (let version manager/revision/.get)
+  (var changed false)
+  (for entry in manager/registry/.get/entries
+    (if (|| manager/closed/.get manager/busy/.get) (return nil))
+    (let status (manager_probe manager entry))
+    (if (|| manager/busy/.get (!= version manager/revision/.get)) (return nil))
+    (if_yes (!= status (manager/statuses/.get .get entry/id))
+      (manager/statuses/.get .put entry/id status)
+      (set changed true)))
+  (if changed (manager_changed manager))
+  nil)
+
+(fn manager_snapshot [manager]
+  (let entries [])
+  (for entry in manager/registry/.get/entries
+    (entries .push
+      (data_copy
+        (??
+          (manager/statuses/.get .get entry/id)
+          {^id entry/id ^dir entry/dir ^alias ($path/name entry/dir) ^port 0 ^status "checking"}))))
+  (for entry in entries
+    (entry .put "confirmation" (manager/confirmations/.get .get entry/id))
+    (let conflicts [])
+    (if (&& (!= entry/port 0) (== entry/port manager/runtime/listen_port))
+      (conflicts .push "manager"))
+    (for other in entries
+      (if (&& (!= entry/id other/id) (!= entry/port 0) (|| (== entry/port other/port) (== entry/port other/actual_port)))
+        (conflicts .push other/alias)))
+    (entry .put "port_conflicts" conflicts))
+  {^revision manager/registry/.get/revision ^workspaces entries})
+
+(fn open_workspace_manager [runtime]
+  (if_not ($absent? runtime/workspace_manager) (return runtime/workspace_manager))
+  (let path $"${runtime/root}/registry.gene")
+  (let registry
+    (if ($fs/exists? path)
+      ($serde/read_data ($fs/read_text path))
+      {^version 1 ^revision 0 ^entries []}))
+  (if (|| (!= registry/version 1) (!= ($head registry/entries) List))
+    (manager_error "invalid_registry" "The workspace registry is invalid."))
+  (if_not ($fs/exists? path) ($fs/write_text_atomic path ($serde/write_data registry)))
+  (let application ($pkg/application))
+  (let manager
+    (WorkspaceManager ^runtime runtime ^root runtime/root ^registry ($cell registry) ^gate ($sync/gate) ^statuses ($cell {}) ^busy ($cell false) ^revision ($cell 0) ^confirmations ($cell {}) ^poller ($cell nil) ^closed ($cell false) ^entry ($path/join application/source_root "src/runtime/supervisor.gene") ^installation application/source_root ^launch_dir ($os/launch_dir)))
+  (set runtime/workspace_manager manager)
+  (set runtime/h/manager_revision manager/revision)
+  manager)
+
+(fn start_manager_polling [manager]
+  (if_not ($absent? manager/poller/.get) (return nil))
+  (manager/poller .set
+    (spawn ^lane root ($runtime/with_context nil (fn [] (while (! manager/closed/.get) (try (manager_refresh manager) catch Any nil) ($sleep 1500))))))
+  nil)
+
+(fn close_workspace_manager [manager]
+  (manager/closed .set true)
+  (let task manager/poller/.get)
+  (if_not ($absent? task)
+    task/.cancel
+    task/.join))
+
+(fn manager_save_settings [entry, changes, ^expected expected : Str = ""]
+  (if (lock_held? $"${entry/dir}/.gene-harness/lock")
+    (then
+      (let due (+ ($os/monotonic_ms) 10000))
+      (api ^deadline due
+        (connect ^deadline due entry/dir)
+        "POST"
+        "/workspace/settings"
+        {^changes changes ^expected expected}))
+    (else
+      (let lock (acquire_workspace_lock entry/dir "workspace manager settings"))
+      (try
+        (update_workspace_settings ^expected expected entry/dir changes)
+      ensure
+        (close_workspace_lock lock)))))
+
+(fn manager_register [manager, values, create : Bool]
+  (let chosen (manager_directory manager values/dir))
+  (if_yes create
+    (if_yes ($fs/exists? chosen)
+      (let children ($fs/walk ^max_depth 1 chosen))
+      (try
+        (for child in children
+          (manager_error "directory_not_empty" "Use Add existing for a non-empty directory."))
+      ensure
+        children/.close))
+    ($fs/make_dir chosen))
+  (if (|| (! ($fs/exists? chosen)) (!= ((Path "kind") ($fs/info chosen)) "directory"))
+    (manager_error "invalid_directory" "Choose an existing directory."))
+  (let root ($fs/real_path chosen))
+  (manager_check_directory manager root)
+  (let saved (read_workspace_settings root))
+  (let alias (if (== (?? values/alias "") "") saved/alias values/alias))
+  (let settings (validate_settings {^version 1 ^alias alias ^port (?? values/port saved/port)}))
+  (manager_check_alias manager settings/alias)
+  (let entry {^id ($crypto/random_hex 12) ^dir root})
+  (if (|| (! ($fs/exists? $"${root}/.gene-harness/workspace.gene")) (!= saved/alias settings/alias) (!= saved/port settings/port))
+    (manager_save_settings entry {^alias settings/alias ^port settings/port}))
+  (let entries (data_copy manager/registry/.get/entries))
+  (entries .push entry)
+  (manager_commit manager entries)
+  entry)
+
+(fn manager_start [manager, entry]
+  (let observed (manager_probe manager entry))
+  (if (["running" "recovery"] .contains? observed/status) (return observed))
+  (if_not ($fs/exists? entry/dir) (manager_error "missing" "Workspace directory is missing."))
+  (var launched_pid nil)
+  (manager/statuses/.get .put entry/id (data_copy observed))
+  (manager/statuses/.get
+    .get entry/id
+    ; .put "status" "starting")
+  (manager_changed manager)
+  (if_not (lock_held? $"${entry/dir}/.gene-harness/launcher_lock")
+    (if (lock_held? $"${entry/dir}/.gene-harness/lock")
+      (manager_error
+        "unavailable"
+        "Workspace is owned by an unavailable host; stop it externally first."))
+    (let ownership (acquire_workspace_lock entry/dir "prepare manager launch"))
+    (try
+      (for name in ["startup_failure"]
+        (let path $"${entry/dir}/.gene-harness/${name}")
+        (if ($fs/exists? path) ($fs/remove path)))
+    ensure
+      (close_workspace_lock ownership))
+    (let environment
+      {
+        ^GENE_HARNESS_WORKSPACE nil
+        ^GENE_HARNESS_PORT nil
+        ^GENE_HARNESS_OFFLINE nil
+        ^GENE_HARNESS_SUPERVISED nil
+        ^GENE_HARNESS_STDOUT_TTY nil})
+    (set launched_pid
+      ($os/spawn_detached ^dir entry/dir ^env environment ^output $"${entry/dir}/.gene-harness/bootstrap.log"
+        (?? ($os/env? "GENE_BINARY") ($os/executable_path))
+        "run"
+        "--snapshot"
+        manager/entry
+        "web"
+        "--workspace"
+        entry/dir
+        "--managed")))
+  (let due (+ ($os/monotonic_ms) 30000))
+  (loop
+    (let status (manager_probe ^^starting manager entry))
+    (manager/statuses/.get .put entry/id status)
+    (if (["running" "recovery"] .contains? status/status) (return status))
+    (if (&& (! ($absent? launched_pid)) (! ($os/process_alive? launched_pid)) (! (workspace_busy? entry/dir)))
+      (manager_error
+        "startup_failed"
+        ($to_str
+          """Workspace startup failed.
+"""
+          (manager_diagnostics entry/dir))))
+    (if (>= ($os/monotonic_ms) due)
+      (manager_error
+        "startup_timeout"
+        "Workspace did not become ready. Inspect its diagnostics before retrying."))
+    ($sleep 100)))
+
+(fn manager_stop [manager, entry, confirmed : Bool]
+  (if_not (workspace_busy? entry/dir) (return {^status "stopped"}))
+  (let due (+ ($os/monotonic_ms) 10000))
+  (try
+    (let client (connect ^deadline due entry/dir))
+    (api ^deadline due client "POST" "/control" {^action "stop" ^confirm confirmed})
+  catch Any
+    (if (== $err/code "confirmation_required")
+      (return
+        {
+          ^status "confirmation_required"
+          ^id entry/id
+          ^dir entry/dir
+          ^message "Active work will be interrupted. Confirm this action in the Workspaces view."}))
+    (manager_error
+      "unavailable"
+      "Workspace control is unavailable. Stop it externally and refresh; no replacement was started."))
+  (while (workspace_busy? entry/dir)
+    (if (>= ($os/monotonic_ms) due)
+      (manager_error
+        "control_timeout"
+        "Workspace did not stop within ten seconds. Stop it externally and refresh."))
+    ($sleep 25))
+  {^status "stopped"})
+
+(fn contains_directory? [parent : Str, child : Str]
+  (|| (== parent child) ($str/starts_with? child $"${parent}/")))
+
+(fn manager_delete [manager, entry, values]
+  (if ($absent? ((Path "ui_action") ($runtime/context)))
+    (manager_error "view_only" "Permanent deletion requires confirmation in the Workspaces view."))
+  (if (!= values/confirm_dir entry/dir)
+    (manager_error
+      "confirmation_required"
+      "Confirm the exact workspace directory before deleting it."))
+  (let root ($fs/real_path entry/dir))
+  (let protected
+    [
+      "/"
+      ($fs/real_path ($os/get_env "HOME" "/"))
+      manager/root
+      ($fs/real_path manager/installation)
+      ($fs/real_path manager/launch_dir)
+      ($fs/real_path ($path/parent ($os/executable_path)))])
+  (for path in protected
+    (if (|| (== root "/") (contains_directory? root path))
+      (manager_error
+        "protected_directory"
+        "This directory contains the home, manager, installation or launch directory.")))
+  (for other in manager/registry/.get/entries
+    (if (&& (!= other/id entry/id) (contains_directory? root other/dir))
+      (manager_error
+        "protected_directory"
+        "Remove nested workspace registrations before deleting their parent.")))
+  (let stopped (manager_stop manager entry (== values/confirm_busy true)))
+  (if (== stopped/status "confirmation_required") (return stopped))
+  (let launcher_lock ($fs/try_lock $"${root}/.gene-harness/launcher_lock"))
+  (if ($absent? launcher_lock) (manager_error "busy" "A workspace launcher is still running."))
+  (try
+    (let lock (acquire_workspace_lock root "delete workspace"))
+    (try
+      (let entries ($into ($fs/walk root) []))
+      (var at entries/.size)
+      (while (> at 0)
+        (set at (- at 1))
+        (let item entries/%at)
+        (if (== item/kind "directory")
+          ($fs/remove_dir item/path)
+          ($fs/remove item/path)))
+      ($fs/remove_dir root)
+    ensure
+      (close_workspace_lock lock))
+  ensure
+    launcher_lock/.close)
+  (manager_commit
+    manager
+    ($filter manager/registry/.get/entries (fn [other] (!= other/id entry/id))))
+  {^id entry/id ^status "deleted"})
+
+(fn manager_operation [manager, operation : Str, values = {}, ^confirmed confirmed : Bool = false]
+  (manager/gate
+    (fn []
+      (manager/busy .set true)
+      (manager_changed manager)
+      (var entry nil)
+      (try
+        (if_not (["create" "add"] .contains? operation)
+          (set entry (manager_entry manager values/id)))
+        (var result nil)
+        (match operation
+          (when "create"
+            (set entry (manager_register manager values true)))
+          (when "add"
+            (set entry (manager_register manager values false)))
+          (when "alias"
+            (let alias ($str/trim values/alias))
+            (manager_check_alias ^except entry/id manager alias)
+            (manager_save_settings entry {^alias alias}))
+          (when "port"
+            (manager_save_settings entry {^port values/port}))
+          (when "settings"
+            (let alias ($str/trim values/alias))
+            (manager_check_alias ^except entry/id manager alias)
+            (manager_save_settings ^expected (?? values/expected "")
+              entry
+              {^alias alias ^port values/port}))
+          (when "directory"
+            (if (&& ($fs/exists? entry/dir) (workspace_busy? entry/dir))
+              (manager_error "busy" "Stop the workspace before changing its directory."))
+            (let root ($fs/real_path (manager_directory manager values/dir)))
+            (if (!= ((Path "kind") ($fs/info root)) "directory")
+              (manager_error "invalid_directory" "Choose a workspace directory."))
+            (manager_check_directory ^except entry/id manager root)
+            (let settings (read_workspace_settings root))
+            (manager_check_alias ^except entry/id manager settings/alias)
+            (let next (data_copy manager/registry/.get/entries))
+            (for item in next
+              (if (== item/id entry/id) (item .put "dir" root)))
+            (manager_commit manager next)
+            (set entry (manager_entry manager values/id)))
+          (when "start"
+            (set result (manager_start manager entry)))
+          (when "stop"
+            (set result (manager_stop manager entry confirmed)))
+          (when "restart"
+            (set result (manager_stop manager entry confirmed))
+            (if (!= result/status "confirmation_required")
+              (set result (manager_start manager entry))))
+          (when "remove"
+            (manager_commit
+              manager
+              ($filter manager/registry/.get/entries (fn [other] (!= other/id entry/id))))
+            (return {^id entry/id ^status "removed"}))
+          (when "delete"
+            (set result (manager_delete manager entry values))
+            (if (== result/status "deleted") (return result)))
+          (else
+            (manager_error "invalid_request" "Unknown workspace operation.")))
+        (let observed (manager_probe manager entry))
+        (manager/statuses/.get .put entry/id observed)
+        (if (== result/status "confirmation_required")
+          (manager/confirmations/.get .put entry/id operation)
+          (manager/confirmations/.get .delete entry/id))
+        (if (== result/status "confirmation_required")
+          result
+          observed)
+      catch Any
+        (let error $err)
+        (if_yes (&& (! ($absent? entry)) (["unavailable" "control_timeout" "startup_timeout" "startup_failed"] .contains? error/code))
+          (let status
+            (data_copy
+              (??
+                (manager/statuses/.get .get entry/id)
+                {^id entry/id ^dir entry/dir ^alias ($path/name entry/dir) ^port 0})))
+          (status .put "status" (if (== error/code "startup_failed") "error" "unavailable"))
+          (status .put "message" error/message)
+          (manager/statuses/.get .put entry/id status))
+        (fail error)
+      ensure
+        (manager/busy .set false)
+        (manager_changed manager)))))
+
+(fn manager_list [manager]
+  (manager_refresh manager)
+  (manager_snapshot manager))
+
+(fn manager_inspect [manager, id : Str]
+  (let entry (manager_entry manager id))
+  (let result (manager_probe manager entry))
+  (result .put "diagnostics" (manager_diagnostics entry/dir))
+  result)
+
+# Return only to an authenticated HTTP redirect; never through a function or
+# workspace action receipt, both of which the model can inspect.
+(fn manager_open_link [manager, id : Str]
+  (let entry (manager_entry manager id))
+  (connection_link ^deadline (+ ($os/monotonic_ms) 3000) entry/dir))

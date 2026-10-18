@@ -64,7 +64,7 @@
 
 (type RegistryRow ^props {^row_id Str ^owner Str ^registry Str ^key Str ^payload Any ^priority Int ^config_order Int ^acquired Int ^effects Any? ^cleanup_state Any?})
 
-(type Harness ^props {^plugins Any ^plugin_errors Any ^log Any ^log_hydrated Any ^bus Any ^registries Any ^ledger Any ^row_index Any ^next_row_id Any ^event_store Any ^event_scope Str ^event_stream Str ^plugin_policies Any ^plugin_depth Any ^workspace Any ^ui_epoch Str? ^readiness Any? ^registry_observer Any? ^composition Any? ^composition_entries Any? ^snapshots Any? ^publishing Any? ^publication_gate Any? ^published_plugins Any? ^notifications Any? ^ui_action_log Any? ^appearance Any?})
+(type Harness ^props {^plugins Any ^plugin_errors Any ^log Any ^log_hydrated Any ^bus Any ^registries Any ^ledger Any ^row_index Any ^next_row_id Any ^event_store Any ^event_scope Str ^event_stream Str ^plugin_policies Any ^plugin_depth Any ^workspace Any ^ui_epoch Str? ^readiness Any? ^registry_observer Any? ^composition Any? ^composition_entries Any? ^snapshots Any? ^publishing Any? ^publication_gate Any? ^published_plugins Any? ^notifications Any? ^ui_action_log Any? ^appearance Any? ^ui_defaults Any? ^manager_revision Any?})
 
 (type Host ^props {^h Harness ^owner Str ^effects Any ^notification_revision Str ^state_writer Any})
 
@@ -443,7 +443,7 @@
     (guarded .put "run"
       (guard_callback h owner checked/run false))
     (set checked guarded))
-  (if_yes (== registry_name "functions")
+  (if_yes (["functions" "ui_actions" "ui_links"] .contains? registry_name)
     (let guarded {})
     (for [name value] in checked (guarded .put name value))
     (guarded .put "signature" ($runtime/signature checked/fn))
@@ -893,6 +893,8 @@
   (registry h "commands" ^^unique ^schema validate_command_row)
   (registry h "input_modes" ^^unique ^schema validate_input_mode_row)
   (registry h "functions" ^^unique ^schema validate_function_row)
+  (registry h "ui_actions" ^^unique ^schema validate_function_row)
+  (registry h "ui_links" ^^unique ^schema validate_function_row)
   (registry h "providers" ^^unique ^schema validate_provider_row)
   (registry h "image_generators" ^^unique ^schema validate_image_generator_row)
   (registry h "hooks" ^^unique ^^ordered ^schema validate_hook_row)

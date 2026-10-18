@@ -12,6 +12,8 @@
 (import ^from "./contract" [protocol_version])
 (import ^from "../runtime/bootstrap" [open_runtime close_runtime])
 (import ^from "../profiles/baseline" [baseline_profile])
+(import ^from "../profiles/registry" [workspace_profile])
+(import ^from "../runtime/workspace_settings" [read_workspace_settings update_workspace_settings])
 (import ^from "../runtime/plugin_manager" [plugin_catalog inspect_descriptor plugin_history_catalog])
 (import ^from "../storage/workspace" [composition_revision revert_entry])
 (import ^from "../storage/plugin_history" [pin_history])
@@ -19,7 +21,8 @@
 (fn main [options] : Int
   (manager_client)
   (let runtime
-    (open_runtime ^^recovery (?? options/workspace ($os/launch_dir)) "default" (baseline_profile)))
+    (open_runtime ^^recovery ^lock_wait_ms 250 (?? options/workspace ($os/launch_dir)) "default"
+      (workspace_profile (?? options/workspace ($os/launch_dir)))))
   (var server nil)
   (let control (new_plugin_control runtime))
   (try
@@ -61,6 +64,13 @@
         (return (response 503 {^code "stopped" ^message "Recovery host is stopping."})))
       (let managed (plugin_control_request control request))
       (if_not ($absent? managed) (return (response managed/status managed/body)))
+      (if_yes (== request/path "/api/v8/workspace/settings")
+        (if (== request/method "GET")
+          (return (response 200 (read_workspace_settings runtime/root))))
+        (if_yes (== request/method "POST")
+          (let data (request_data request))
+          (return (response 200 (update_workspace_settings ^expected (?? data/expected "")
+            runtime/root (?? data/changes data))))))
       (if_yes (&& (== request/method "GET") (== request/path "/api/v8/status"))
         (return
           (response

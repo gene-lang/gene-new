@@ -1,0 +1,33 @@
+(mod host_log)
+(import ^from "../text" [byte_prefix])
+(let IoResource $io/IoResource)
+(type HostLog ^props {^path Str ^limit Int ^size Int ^writer Any})
+
+(fn open_host_log [root : Str, ^limit limit : Int = 1048576]
+  (let path $"${root}/.gene-harness/host.log")
+  (HostLog ^path path ^limit limit ^size (if ($fs/exists? path) ((Path "size") ($fs/info path)) 0) ^writer nil))
+
+(fn close_host_log [log]
+  (if_not ($absent? log/writer)
+    log/writer/.IoResource:close
+    (await log/writer/.IoResource:wait_closed)
+    (set log/writer nil)))
+
+(fn write_host_log [log, text : Str]
+  (var pending text)
+  (while (!= pending "")
+    (if_yes (>= log/size log/limit)
+      (close_host_log log)
+      ($fs/rename log/path $"${log/path}.1")
+      (set log/size 0))
+    (let part (byte_prefix pending (- log/limit log/size)))
+    (if (== part "")
+      (then
+        (set log/size log/limit))
+      (else
+        (if ($absent? log/writer) (set log/writer (await ($io/open_write ^mode "append" log/path))))
+        (await ($io/write_all log/writer ($binary/from_str part)))
+        (let size ($str/byte_size part))
+        (set log/size (+ log/size size))
+        (set pending ($str/slice_bytes pending size (- ($str/byte_size pending) size))))))
+  nil)

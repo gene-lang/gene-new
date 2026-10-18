@@ -5182,6 +5182,41 @@ proc biOsProcessId(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
     raise newException(GeneError, "os/process_id takes no arguments")
   newInt(getCurrentProcessId())
 
+proc biOsSpawnDetached(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  let scope = if call == nil: nil else: call.dispatchScope
+  let command = parseOsExecCommand("os/spawn_detached", args, call)
+  var output = ""
+  if call != nil:
+    for i, key in call.namedNames:
+      case key
+      of "dir", "env": discard
+      of "output": output = osExecText("os/spawn_detached ^output", call.namedValues[i], scope)
+      else: raiseOsError("os/spawn_detached got unexpected named argument: " & key, scope)
+  if output.len == 0:
+    raiseOsError("os/spawn_detached requires a non-empty ^output path", scope)
+  when nativeProcessBackend:
+    try:
+      return newInt(launchDetached(command.cmd, command.args, command.directory,
+                                   command.environment, output))
+    except CatchableError as error:
+      raiseOsError("os/spawn_detached could not start '" & command.cmd & "': " & error.msg, scope)
+  else:
+    raiseOsError("os/spawn_detached requires a native POSIX host", scope)
+  NIL
+
+proc biOsProcessAlive(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  let scope = if call == nil: nil else: call.dispatchScope
+  requireOne("os/process_alive?", args)
+  let pid = requireInt64("os/process_alive?", args[0])
+  if pid <= 0 or pid > int64(high(cint)):
+    raiseOsError("os/process_alive? requires a positive process id", scope)
+  when nativeProcessBackend:
+    try: return if process_lock.processAlive(int(pid)): TRUE else: FALSE
+    except CatchableError as error: raiseOsError("os/process_alive?: " & error.msg, scope)
+  else:
+    raiseOsError("os/process_alive? requires a native POSIX host", scope)
+  NIL
+
 proc biOsExit(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   let scope = if call == nil: nil else: call[].dispatchScope
   requireOne("os/exit", args)
@@ -11648,6 +11683,11 @@ proc registerStdlibNamespaces(root: Scope) =
                                  acceptsNamed = false))
   osScope.define("process_id",
                  builtinNativeCallFn("os/process_id", biOsProcessId,
+                                 acceptsNamed = false))
+  osScope.define("spawn_detached",
+                 builtinNativeCallFn("os/spawn_detached", biOsSpawnDetached))
+  osScope.define("process_alive?",
+                 builtinNativeCallFn("os/process_alive?", biOsProcessAlive,
                                  acceptsNamed = false))
   osScope.define("exit", builtinNativeCallFn("os/exit", biOsExit,
                                             acceptsNamed = false))

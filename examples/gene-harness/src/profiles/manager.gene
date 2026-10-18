@@ -1,0 +1,10 @@
+(mod manager_profile)
+(import ^from "./profile" [Profile])
+(import ^from "../builtin/workspace_manager" [workspace_manager])
+
+(fn manager_profile [base]
+  (let plugins [])
+  (for plugin in base/plugins
+    (plugins .push plugin))
+  (plugins .push (workspace_manager))
+  (Profile ^name "manager" ^plugins plugins ^requires base/requires ^limits base/limits ^provider base/provider))

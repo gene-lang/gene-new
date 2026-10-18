@@ -1,0 +1,18 @@
+# Owns a workspace and accepts HTTP, but never answers within control deadlines.
+# The test owns this captured process and cancels it as external intervention.
+(import $net/http [listen serve json stop])
+(import ^from "../../src/runtime/workspace_lock" [acquire_workspace_lock close_workspace_lock])
+(import ^from "../../src/web/connection" [publish_connection clear_connection])
+
+(fn main [args]
+  (let root ($fs/real_path args/0))
+  (let ownership (acquire_workspace_lock root "unresponsive test host"))
+  (let server (listen ^host "127.0.0.1" ^port 0))
+  (let epoch ($crypto/random_hex 16))
+  (publish_connection root epoch server/port ($crypto/random_hex 32))
+  (try
+    (serve server (fn [request] ($sleep 60000) (json {^^ok})))
+  ensure
+    (stop server)
+    (clear_connection root epoch)
+    (close_workspace_lock ownership)))

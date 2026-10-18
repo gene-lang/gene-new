@@ -2,6 +2,8 @@
 (import ^from "../runtime/bootstrap" [open_runtime close_runtime prepare_workspace_root])
 (import ^from "../profiles/baseline" [baseline_profile])
 (import ^from "../profiles/offline" [offline_profile])
+(import ^from "../profiles/registry" [workspace_profile])
+(import ^from "../runtime/workspace_manager" [WorkspaceManagerChanged open_workspace_manager start_manager_polling])
 (import ^from "../runtime/round_controller" ^^export
   [
     new_round_controller
@@ -158,6 +160,8 @@
       (publish_message ^reason changed/reason service "mode/state" changed/session changed/mode))
     (when (changed : CompositionChanged)
       (publish_message service "ui/state" "" (ui_status service/runtime/h)))
+    (when (changed : WorkspaceManagerChanged)
+      (publish_message service "ui/state" "" (ui_status service/runtime/h)))
     (when (changed : AppearanceChanged)
       (publish_message service "appearance" "" {^mode changed/mode}))
     (when (record : DurableRecord)
@@ -205,11 +209,12 @@
       (if ($absent? record/text) (queue_snapshot service session))))
   nil)
 
-(fn open_session_service [^workspace workspace : Str = "", ^offline offline : Bool = false, ^profile supplied_profile = nil, ^ownership ownership = nil]
-  (let profile (?? supplied_profile (if offline (offline_profile) (baseline_profile))))
+(fn open_session_service [^workspace workspace : Str = "", ^offline offline : Bool = false, ^profile supplied_profile = nil, ^ownership ownership = nil, ^managed managed : Bool = false]
+  (let canonical (prepare_workspace_root ^root workspace))
+  (let profile (workspace_profile ^base supplied_profile ^offline offline canonical))
   (let runtime
-    (open_runtime ^ownership ownership ^event_scope "workspace" ^entry ($path/join ($path/parent this_mod/.path) "server.gene")
-      (prepare_workspace_root ^root workspace)
+    (open_runtime ^ownership ownership ^managed managed ^event_scope "workspace" ^entry ($path/join ($path/parent this_mod/.path) "server.gene")
+      canonical
       "default"
       profile))
   (contribute
@@ -240,6 +245,10 @@
   (set service/controller (new_round_controller runtime))
   (service/subscriptions .push
     (runtime/h/bus .subscribe HarnessEvent (fn [event] (handle_harness_event service event))))
+  # Runtime-owned observation must not inherit a plugin activation's callback
+  # budget or stop when the manager view is replaced.
+  (if (== profile/name "manager")
+    (start_manager_polling (open_workspace_manager runtime)))
   (provide
     runtime/h
     "core"

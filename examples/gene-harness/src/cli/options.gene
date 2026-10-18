@@ -15,6 +15,7 @@
   (let words [])
   (var i 0)
   (var literal false)
+  (var explicit_workspace false)
   (let valued
     [
       "workspace"
@@ -43,7 +44,7 @@
       "since"
       "until"
       "timeout-ms"])
-  (let flags ["json" "wait" "no-wait" "confirm" "offline" "help" "attention" "supervised" "all" "recovery"])
+  (let flags ["json" "wait" "no-wait" "confirm" "offline" "help" "attention" "supervised" "all" "recovery" "managed"])
   (while (< i argv/.size)
     (let arg ($to_str argv/%i))
     (if (&& (! literal) (== arg "--"))
@@ -55,6 +56,7 @@
           (then
             (set i (+ i 1))
             (if (>= i argv/.size) (problem $"${arg} needs a value"))
+            (if (== key "workspace") (set explicit_workspace true))
             (options .put key ($to_str argv/%i)))
           (elif (flags .contains? key)
             (options .put key true))
@@ -63,7 +65,11 @@
       (else
         (words .push arg)))
     (set i (+ i 1)))
-  {^options options ^words words ^command (if words/.empty? "web" words/0)})
+  (let command (if words/.empty? "web" words/0))
+  (if_yes (== command "manager")
+    (if explicit_workspace (problem "manager uses HOME/.gene-harness-manager; --workspace is not accepted."))
+    (options .delete "workspace"))
+  {^options options ^words words ^command command})
 
 (fn joined_words [words, start : Int] : Str
   (let rest [])

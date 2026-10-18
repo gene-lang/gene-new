@@ -1,0 +1,75 @@
+# Small, inert workspace metadata. Call writes only with workspace ownership.
+(mod workspace_settings)
+(import ^from "./workspace_lock" [acquire_workspace_lock close_workspace_lock])
+
+(type WorkspaceSettingsError ^props {^code Str ^message Str} ^impl [Error])
+(impl Error for WorkspaceSettingsError)
+(let edit_gate ($sync/gate))
+
+(fn settings_error [message : Str]
+  (fail (WorkspaceSettingsError ^code "invalid_workspace_settings" ^message message)))
+
+(fn validate_settings [value]
+  (if (!= ($head value) Map) (settings_error "Workspace settings must be an inert map."))
+  (if (!= (?? value/version 1) 1) (settings_error "Unsupported workspace settings version."))
+  (let alias (?? value/alias ""))
+  (let port (?? value/port 0))
+  (if (|| (!= ($head alias) Str) (== ($str/trim alias) ""))
+    (settings_error "Workspace alias must be non-empty."))
+  (if (|| (!= ($head port) Int) (&& (!= port 0) (|| (< port 1024) (> port 65535))))
+    (settings_error "Workspace port must be 0 or 1024–65535."))
+  (if (&& (! ($absent? value/role)) (!= value/role "manager"))
+    (settings_error "Unknown workspace role."))
+  (let result {^version 1 ^alias ($str/trim alias) ^port port})
+  (if_not ($absent? value/role) (result .put "role" value/role))
+  result)
+
+(fn read_workspace_settings [root : Str]
+  (let path $"${root}/.gene-harness/workspace.gene")
+  (if_not ($fs/exists? path) (return {^version 1 ^alias ($path/name root) ^port 0}))
+  (validate_settings ($serde/read_data ($fs/read_text path))))
+
+(fn write_workspace_settings [root : Str, value]
+  (let checked (validate_settings value))
+  ($fs/write_text_atomic $"${root}/.gene-harness/workspace.gene" ($serde/write_data checked))
+  checked)
+
+(fn update_workspace_settings [root : Str, changes, ^expected expected : Str = ""]
+  (edit_gate
+    (fn []
+      (let next (read_workspace_settings root))
+      (if (&& (!= expected "") (!= expected ($pkg/canonical_digest next)))
+        (fail
+          (WorkspaceSettingsError ^code "revision_conflict" ^message "Workspace settings changed. Refresh and review before saving.")))
+      (for [key value] in changes
+        (if_not (["alias" "port"] .contains? ($to_str key))
+          (settings_error "Only alias and port can be edited."))
+        (next .put ($to_str key) value))
+      (write_workspace_settings root next))))
+
+(fn manager_path []
+  (let home ($os/get_env "HOME" ""))
+  (if (== home "") (settings_error "HOME is required to locate the manager workspace."))
+  ($path/join home ".gene-harness-manager"))
+
+(fn initialize_manager_workspace []
+  (let selected (manager_path))
+  ($fs/make_dir selected)
+  (let root ($fs/real_path selected))
+  (let path $"${root}/.gene-harness/workspace.gene")
+  (if ($fs/exists? path)
+    (if (== ((Path "role") (read_workspace_settings root)) "manager") (return root)))
+  (let lock (acquire_workspace_lock root "initialize manager"))
+  (try
+    (let settings
+      (if ($fs/exists? path)
+        (read_workspace_settings root)
+        {^version 1 ^alias "Manager" ^port 8080}))
+    (settings .put "role" "manager")
+    (write_workspace_settings root settings)
+    root
+  ensure
+    (close_workspace_lock lock)))
+
+(fn manager_workspace? [root : Str]
+  (== ((Path "role") (read_workspace_settings root)) "manager"))

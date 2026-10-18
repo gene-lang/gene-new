@@ -217,6 +217,22 @@ channel. Live captured groups are cleaned up on process signals and exit;
 existing signal handlers are called after cleanup. `($os/stdout_tty?)` tests
 the output terminal independently of `stdin_tty?`.
 
+`($os/spawn_detached ^output "launcher.log" ^dir "/work/project"
+^env {^MODE "local" ^OLD_FLAG nil} "program" "argument")` starts an independent
+process on macOS/Linux and returns its PID after successful execution. Arguments
+are literal strings; use an explicit interpreter for shell commands. It shares
+exec's `^dir`, environment merge/removal and PATH-prefix rules. `^output` is
+required, is relative to the child's directory, and is truncated with owner-only
+permissions; both stdout and stderr go there. Stdin is `/dev/null`. The child
+starts a new session and survives caller exit and Task cancellation. It has no
+captured Task or shutdown-group ownership in the caller. Launch errors include
+missing executables, invalid directories and output-file failures; failures
+after exec appear in the output file.
+
+`($os/process_alive? pid)` is a diagnostic existence check for a positive PID.
+It does not prove identity, readiness or ownership and must not be used as
+authority to terminate an unrelated process.
+
 `($fs/remove_dir path)` removes an empty directory (a missing directory is a
 no-op). It refuses nonempty directories and does not follow directory symlinks.
 Use `$fs/remove` for files or symlinks. This supports explicit cleanup of private
@@ -320,6 +336,12 @@ budget chain: `now_ms`, `deadline_ms`, `remaining_ms`, `remaining_steps`,
 earliest deadline and tightest remaining limits. The query reads VM state,
 so changing task context cannot extend a budget. It does not reserve time or
 change enforcement; callers must recheck before admitting external work.
+
+Captured functions use the current invocation's budget when binding arguments,
+including computed positional/named defaults and type adaptation. A completed
+creation call does not impose its expired deadline on a later call. Defaults
+and the body share the same module/bound-call budget; starting the body does
+not reset the time or memory already consumed while binding.
 
 `($repl/bind session name value)` adds or replaces a base binding, underneath
 the session's declarations. This permits refreshing host functions while a

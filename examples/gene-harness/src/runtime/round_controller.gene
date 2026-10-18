@@ -400,11 +400,17 @@
   (let others [])
   (for [id task] in controller/active/.get
     (if (!= ($to_str id) session) (others .push ($to_str id))))
+  (let runtime controller/runtime)
+  (if_not ($absent? runtime/commands)
+    (for [id task] in runtime/commands/active/.get
+      (if (|| (== session "") (! ($str/starts_with? ($to_str id) $"${session}:")))
+        (others .push $"command ${id}"))))
+  (if_not ($absent? runtime/actions)
+    (for [id task] in runtime/actions/active/.get (others .push $"view action ${id}")))
   (let names ($str/join others ", "))
   (if (&& (! others/.empty?) (! confirmed))
     (fail
       (RoundError ^code "confirmation_required" ^message $"Other sessions are running: ${names}. Confirm /stop or /restart.")))
-  (let runtime controller/runtime)
   (runtime/stopping .set true)
   (runtime/commands/accepting .set false)
   (var exit_code code)

@@ -1,0 +1,52 @@
+(import $test [describe it])
+(import $net/http [listen stop])
+(import ^from "../../support" [isolated run_spec])
+(import ^from "../../../src/runtime/workspace_settings"
+  [read_workspace_settings write_workspace_settings])
+(import ^from "../../../src/web/connection" [bind_workspace publish_connection clear_connection])
+
+(describe
+  "Manager port selection"
+  (it
+    "enforces configured ports, preserves explicit and restart precedence, and falls back only for automatic selection"
+    []
+    (isolated
+      this_mod/.path
+      "enforces configured ports, preserves explicit and restart precedence, and falls back only for automatic selection"
+      (fn [root]
+        ($fs/make_dir $"${root}/.gene-harness")
+        (let state $"${root}/.gene-harness")
+        (let occupied (listen ^host "127.0.0.1" ^port 0))
+        (var selected nil)
+        (try
+          (write_workspace_settings root {^alias "Port test" ^port occupied/port})
+          (var failed false)
+          (try
+            (set selected (bind_workspace state))
+          catch Any
+            (set failed true))
+          ($assert failed "fixed configured port silently changed")
+          (set selected (bind_workspace ^port 0 state))
+          ($assert (!= selected/port occupied/port))
+          (publish_connection root "test" selected/port "test-secret")
+          ($assert (== ((Path "port") (read_workspace_settings root)) occupied/port))
+          (clear_connection root "test")
+          (stop selected)
+          (set selected nil)
+          (set failed false)
+          (try
+            (set selected (bind_workspace ^port 0 ^restart_port occupied/port state))
+          catch Any
+            (set failed true))
+          ($assert failed "restart ignored its original port")
+          (write_workspace_settings root {^alias "Port test" ^port 0})
+          ($fs/write_text $"${state}/web_port" ($serde/write_data occupied/port))
+          (set selected (bind_workspace state))
+          ($assert (!= selected/port occupied/port))
+          ($assert (== ((Path "port") (read_workspace_settings root)) 0))
+        ensure
+          (if_not ($absent? selected) (stop selected))
+          (stop occupied))))))
+
+(fn main [args] : Int
+  (run_spec args))

@@ -2,6 +2,7 @@
 # holding the workspace lock; the live descriptor is not an ownership lock.
 (mod connection)
 (import ^from "./contract" [protocol_version])
+(import ^from "../runtime/workspace_settings" [read_workspace_settings])
 (import $net/http [listen])
 
 (type ConnectionError ^props {^code Str ^message Str} ^impl [Error])
@@ -12,7 +13,8 @@
     (ConnectionError ^code "unavailable" ^message $"No running Harness host for ${root}. Start gene-harness web --workspace ${root}.")))
 
 (fn valid_port [port, ^zero zero : Bool = false]
-  (if (|| (!= ($head port) Int) (< port (if zero 0 1024)) (> port 65535))
+  (if (|| (!= ($head port) Int) (> port 65535)
+          (&& (< port 1024) (! (&& zero (== port 0)))))
     (fail
       (ConnectionError ^code "invalid_request" ^message "Port must be 1024–65535 (or 0 for automatic selection).")))
   port)
@@ -31,15 +33,21 @@
   record)
 
 (fn bind_workspace [state_root : Str, ^port explicit = nil, ^restart_port restart_port = nil]
+  (let settings (read_workspace_settings ($path/parent state_root)))
+  (var requested explicit)
+  (let environment ($os/get_env "GENE_HARNESS_PORT" ""))
+  (if (&& ($absent? requested) (!= settings/role "manager") (!= environment ""))
+    (set requested ($parse/parse_int environment)))
+  (if (&& ($absent? requested) (!= settings/port 0)) (set requested settings/port))
   (var selected 0)
   (var strict false)
   (if_not ($absent? restart_port)
     (set selected (valid_port restart_port))
     (set strict true))
-  (if_yes (&& (! strict) (! ($absent? explicit)))
-    (set selected (valid_port ^^zero explicit))
+  (if_yes (&& (! strict) (! ($absent? requested)))
+    (set selected (valid_port ^^zero requested))
     (set strict (!= selected 0)))
-  (if (&& ($absent? explicit) ($absent? restart_port) ($fs/exists? $"${state_root}/web_port"))
+  (if (&& ($absent? requested) ($absent? restart_port) ($fs/exists? $"${state_root}/web_port"))
     (set selected (valid_port ($serde/read_data ($fs/read_text $"${state_root}/web_port")))))
   (try
     (listen ^host "127.0.0.1" ^port selected)

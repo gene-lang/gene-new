@@ -1,6 +1,13 @@
 (mod profiles)
 (import [baseline_profile] ^from "./baseline")
-(fn profile_names [] ["web"])
+(import [offline_profile] ^from "./offline")
+(import [manager_profile] ^from "./manager")
+(import [manager_workspace?] ^from "../runtime/workspace_settings")
+(fn profile_names [] ["web" "manager"])
 (fn profile_named [name : Str]
   (if_not ((profile_names) .contains? name) (fail $"unknown profile ${name}"))
-  (baseline_profile))
+  (if (== name "manager") (manager_profile (baseline_profile)) (baseline_profile)))
+
+(fn workspace_profile [root : Str, ^base supplied = nil, ^offline offline : Bool = false]
+  (let base (?? supplied (if offline (offline_profile) (baseline_profile))))
+  (if (manager_workspace? root) (manager_profile base) base))

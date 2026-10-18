@@ -1,10 +1,13 @@
 (mod supervisor)
 (import ^from "../cli/options" [parse_options])
 (import ^from "../text" [byte_suffix])
+(import ^from "./workspace_settings" [initialize_manager_workspace])
+(import ^from "./workspace_lock" [try_lock_wait])
+(import ^from "./host_log" [open_host_log write_host_log close_host_log])
 
 (fn main [args]
   (let parsed (parse_options args))
-  (let hosting (&& (== parsed/command "web") (!= parsed/options/help true)))
+  (let hosting (&& (["web" "manager"] .contains? parsed/command) (!= parsed/options/help true)))
   (let application ($pkg/application))
   (let root ($path/join application/source_root "src"))
   # Capturing the child's diagnostics hides our terminal from it. Forward the
@@ -14,9 +17,22 @@
   (var restart_port nil)
   (var recovery (== parsed/options/recovery true))
   (var workspace (?? parsed/options/workspace ($os/launch_dir)))
+  (if (&& hosting (== parsed/command "manager")) (set workspace (initialize_manager_workspace)))
   (if_yes hosting
     ($fs/make_dir workspace)
     (set workspace ($fs/real_path workspace)))
+  (var launch_lock nil)
+  (var logger nil)
+  (if_yes hosting
+    ($fs/make_dir $"${workspace}/.gene-harness")
+    (set launch_lock (try_lock_wait $"${workspace}/.gene-harness/launcher_lock" 250))
+    (if ($absent? launch_lock) (fail "A launcher is already running for this workspace."))
+    (if (== parsed/options/managed true) (set logger (open_host_log workspace))))
+  (fn emit [line : Str]
+    (if ($absent? logger)
+      (do ($println line) ($io/flush_stdout))
+      (write_host_log logger ($to_str line "\n"))))
+  (try
   (loop
     (let startup_id ($crypto/random_hex 16))
     (let child_args ["run" "--snapshot" ($path/join root "main.gene")])
@@ -36,7 +52,7 @@
       child_args... ^^merge_stderr ^stdout_chan lines ^max_bytes 65536))
     (let printer (spawn ^lane root (try
       (loop (let line lines/.recv)
-        ($println line) ($io/flush_stdout)
+        (emit line)
         (tail .set (byte_suffix ($to_str tail/.get line "\n") 16384)))
       catch ChannelClosed nil)))
     (let result (try (await task) ensure (if_not task/.done? task/.cancel task/.join)))
@@ -58,6 +74,9 @@
     ($fs/make_dir $"${workspace}/.gene-harness")
     ($fs/write_text_atomic ^^owner_only $"${workspace}/.gene-harness/startup_failure"
       ($to_str "Normal startup exited before readiness (status " status ").\n" tail/.get))
-    ($println "Normal startup failed. Starting the plugin recovery interface.")
+    (emit "Normal startup failed. Starting the plugin recovery interface.")
     (set recovery true))
-  0)
+  0
+  ensure
+    (if_not ($absent? logger) (close_host_log logger))
+    (if_not ($absent? launch_lock) launch_lock/.close)))

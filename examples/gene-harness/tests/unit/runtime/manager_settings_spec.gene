@@ -1,0 +1,149 @@
+(import $test [describe it])
+(import ^from "../../support" [isolated run_spec])
+(import ^from "../../../src/runtime/workspace_settings"
+  [
+    read_workspace_settings
+    write_workspace_settings
+    update_workspace_settings
+    WorkspaceSettingsError])
+(import ^from "../../../src/runtime/host_log" [open_host_log write_host_log close_host_log])
+(import ^from "../../../src/kernel" [new_harness contribute HarnessError])
+(import ^from "../../../src/agents/provider_selection" [select_provider readiness_report])
+
+(describe
+  "Manager workspace settings"
+  (it
+    "keeps metadata inert and validates before replacing saved settings"
+    []
+    (isolated
+      this_mod/.path
+      "keeps metadata inert and validates before replacing saved settings"
+      (fn [root]
+        ($fs/make_dir $"${root}/.gene-harness")
+        ($assert (== ((Path "port") (read_workspace_settings root)) 0))
+        (write_workspace_settings
+          root
+          {^version 1 ^alias "  My project  " ^port 8091 ^role "manager"})
+        (let saved (read_workspace_settings root))
+        ($assert (== saved/alias "My project"))
+        (for bad in [{^port 12} {^port -1} {^port 65536} {^port "8092"} {^alias " "} {^role "other"}]
+          (var failed false)
+          (try
+            (update_workspace_settings root bad)
+          catch WorkspaceSettingsError
+            (set failed true))
+          ($assert failed ($to_str bad))
+          ($assert (== (read_workspace_settings root) saved)))
+        (update_workspace_settings root {^port 0})
+        ($assert (== ((Path "role") (read_workspace_settings root)) "manager"))
+        ($fs/write_text
+          $"${root}/.gene-harness/workspace.gene"
+          ($to_str `($fs/write_text %$"${root}/executed" "bad")))
+        (try
+          (read_workspace_settings root)
+        catch Any
+          nil)
+        ($assert (! ($fs/exists? $"${root}/executed"))))))
+  (it
+    "rotates bounded UTF-8 host logs independently of a manager process"
+    []
+    (isolated
+      this_mod/.path
+      "rotates bounded UTF-8 host logs independently of a manager process"
+      (fn [root]
+        ($fs/make_dir $"${root}/.gene-harness")
+        (let log (open_host_log ^limit 64 root))
+        (try
+          (repeat i in 35
+            (write_host_log
+              log
+              ($to_str
+                i
+                """: 雪雪雪 — host output
+""")))
+        ensure
+          (close_host_log log))
+        ($assert (<= ((Path "size") ($fs/info log/path)) 64))
+        ($assert (<= ((Path "size") ($fs/info $"${log/path}.1")) 64))
+        (let previous ($fs/read_text $"${log/path}.1"))
+        (let current ($fs/read_text log/path))
+        ($assert
+          ($str/ends_with?
+            current
+            """host output
+"""))
+        ($assert (! ($str/contains? ($to_str previous current) "�")))
+        (let reopened (open_host_log ^limit 64 root))
+        (try
+          (write_host_log
+            reopened
+            """after restart
+""")
+        ensure
+          (close_host_log reopened))
+        ($assert
+          ($str/ends_with?
+            ($fs/read_text log/path)
+            """after restart
+"""))))))
+
+(describe
+  "Managed provider selection"
+  (it
+    "uses saved values before compatible environment defaults without changing direct launches"
+    []
+    (let h (new_harness))
+    (var priority 0)
+    (for name in ["openrouter" "anthropic" "codex"]
+      (let fallback $"${name}-default")
+      (contribute
+        h
+        "test"
+        "providers"
+        {
+          ^name name
+          ^auto priority
+          ^doc name
+          ^available (fn []
+                       nil)
+          ^configure (fn [model, effort, timeout]
+                       {^model (?? model fallback) ^effort (?? effort "medium")})
+          ^prepare (fn [call]
+                     call)
+          ^send (fn [request]
+                  {^text "unused"})})
+      (set priority (+ priority 1)))
+    (let runtime {^h h ^profile {^name "test" ^provider nil ^requires []} ^^managed})
+    (let environment
+      {
+        ^GENE_HARNESS_PROVIDER "codex"
+        ^GENE_HARNESS_MODEL "codex-only"
+        ^GENE_HARNESS_THINKING_EFFORT "high"})
+    (let unset (select_provider ^environment environment runtime {}))
+    ($assert (== unset/name "codex"))
+    ($assert (== unset/settings/model "codex-only"))
+    (let saved (select_provider ^environment environment runtime {^provider "anthropic"}))
+    ($assert (== saved/name "anthropic"))
+    ($assert (== saved/settings/model "anthropic-default"))
+    ($assert (== saved/settings/effort "medium"))
+    (let explicit
+      (select_provider ^environment environment
+        runtime
+        {^provider "anthropic" ^model "saved-model" ^effort "low"}))
+    ($assert (== explicit/settings/model "saved-model"))
+    ($assert (== explicit/settings/effort "low"))
+    ($assert (== ((Path "name") (select_provider ^environment {} runtime {})) "openrouter"))
+    (var unavailable false)
+    (try
+      (select_provider ^environment environment runtime {^provider "missing"})
+    catch HarnessError
+      (set unavailable true))
+    ($assert unavailable)
+    (runtime .put "managed" false)
+    (let direct
+      (select_provider ^environment environment runtime {^provider "anthropic" ^model "saved"}))
+    ($assert (== direct/name "codex"))
+    ($assert (== direct/settings/model "codex-only"))))
+
+(fn main [args] : Int
+  (run_spec args))

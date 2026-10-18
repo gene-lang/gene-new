@@ -7,6 +7,7 @@
 
 (fn usage [] """Gene Harness: one web host per workspace.
   gene-harness web [--workspace DIR] [--port PORT] [--offline | --script FILE]
+  gene-harness manager [--port PORT]
   gene-harness --workspace DIR --recovery
   gene-harness [--workspace DIR] [--json] COMMAND
 
@@ -134,7 +135,7 @@ Profile: """
     (problem "Standalone terminal chat is retired. Start gene-harness web, then use sessions create and send --session ID."))
   (if_not (["doctor" "enable" "disable" "restore" "plugins" "history" "revert" "status" "link" "auth" "stop" "restart" "sessions" "triggers" "notifications" "transcript" "receipt" "wait" "answer" "dismiss" "cancel" "send" "run" "sh" "view" "command"] .contains? action)
     (problem $"Unknown command ${action}. Use --help for usage."))
-  (for key in ["port" "restart-port" "startup-id" "script" "supervised" "recovery"]
+  (for key in ["port" "restart-port" "startup-id" "script" "supervised" "recovery" "managed"]
     (if_not ($absent? (options .get key)) (problem $"--${key} is a web-host option.")))
   (if (&& (== options/offline true) (! (["plugins" "history" "revert"] .contains? action)))
     (problem "--offline is available for plugins, history and revert, or for the web host."))

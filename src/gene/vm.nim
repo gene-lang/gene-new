@@ -2432,6 +2432,9 @@ proc pathQualifiedMessageValue(text: string, scope: Scope): Value
 proc bindCallScope(callee: Value, proto: FunctionProto, args: openArray[Value],
                    named: NamedArgs):
                    tuple[scope: Scope, returnType: Value]
+proc bindBudgetedCallScope(callee: Value, proto: FunctionProto,
+                           args: openArray[Value], named: NamedArgs,
+                           callerScope: Scope): tuple[scope: Scope, returnType: Value]
 proc errorAllowed(allowed: openArray[Value], errVal: Value): bool
 proc normalizeErrorTypes(scope: Scope, expressions: openArray[Value]): seq[Value]
 proc admitErrorValue(value: Value, scope: Scope): Value
@@ -18954,9 +18957,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             let envelope = callEnvelope(scope, originalArgs, originalNamed,
                                         callSite)
             var implArgs = [calleeValue, envelope]
-            var bound = bindCallScope(implFn, implProto, implArgs,
-                                      NamedArgs())
-            applyCallBudget(implProto, bound.scope, implFn.fnScope, scope)
+            var bound = bindBudgetedCallScope(implFn, implProto, implArgs,
+                                              NamedArgs(), scope)
             let frameReturnType =
               implProto.checkedFrameReturnType(bound.returnType)
             var lbl = ""
@@ -18991,9 +18993,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         if targetCode != nil and targetCode of FunctionProto:
           let targetProto = FunctionProto(targetCode)
           if not targetProto.isGenerator:
-            var bound = bindCallScope(target, targetProto, originalArgs,
-                                      originalNamed)
-            applyCallBudget(targetProto, bound.scope, target.fnScope, scope)
+            var bound = bindBudgetedCallScope(target, targetProto, originalArgs,
+                                              originalNamed, scope)
             let frameReturnType =
               targetProto.checkedFrameReturnType(bound.returnType)
             var lbl = ""
@@ -20050,8 +20051,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               elif not proto.isGenerator:
                 if callee.isSyntaxFn:
                   rejectSyntaxCallWithoutSite(callee, scope)
-                var bound = bindCallScope(callee, proto, [], NamedArgs())
-                applyCallBudget(proto, bound.scope, calleeScope, scope)
+                var bound = bindBudgetedCallScope(callee, proto, [], NamedArgs(), scope)
                 let frameReturnType = proto.checkedFrameReturnType(bound.returnType)
                 var lbl = ""
                 if frameReturnType.kind != vkNil:
@@ -20252,22 +20252,23 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                                                      stack[argsStart])
                   boundReturnType = proto.returnType
                   usedUnaryIntFast = true
+                  applyCallBudget(proto, boundScope, calleeScope, scope)
                 elif proto.canFastBindPositionalInt and
                     argCount == proto.params.len:
                   boundScope = bindPositionalIntCallScope(callee, proto,
                     stack.toOpenArray(argsStart, (sp - 1)),
                     argsKnownBareInt = inst[].flag)
                   boundReturnType = proto.returnType
+                  applyCallBudget(proto, boundScope, calleeScope, scope)
                 else:
                   let bound =
                     if argCount == 0:
-                      bindCallScope(callee, proto, [], NamedArgs())
+                      bindBudgetedCallScope(callee, proto, [], NamedArgs(), scope)
                     else:
-                      bindCallScope(callee, proto,
-                        stack.toOpenArray(argsStart, (sp - 1)), NamedArgs())
+                      bindBudgetedCallScope(callee, proto,
+                        stack.toOpenArray(argsStart, (sp - 1)), NamedArgs(), scope)
                   boundScope = bound.scope
                   boundReturnType = bound.returnType
-                applyCallBudget(proto, boundScope, calleeScope, scope)
                 strunc(argsStart)
                 boundReturnType = proto.checkedFrameReturnType(boundReturnType)
                 var lbl = ""
@@ -20729,11 +20730,13 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                     callee.fnName, stack.toOpenArray(argsStart, (sp - 1)),
                     inst[].names, stack, calleeIndex + 1)
                   boundReturnType = proto.returnType
+                  applyCallBudget(proto, boundScope, calleeScope, scope)
                 elif namedCount == 0 and proto.canFastBindPositionalInt and
                     argCount == proto.params.len:
                   boundScope = bindPositionalIntCallScope(callee, proto,
                     stack.toOpenArray(argsStart, (sp - 1)))
                   boundReturnType = proto.returnType
+                  applyCallBudget(proto, boundScope, calleeScope, scope)
                 else:
                   var named: NamedArgs
                   if namedCount > 0:
@@ -20741,13 +20744,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                                                calleeIndex + 1)
                   let bound =
                     if argCount == 0:
-                      bindCallScope(callee, proto, [], named)
+                      bindBudgetedCallScope(callee, proto, [], named, scope)
                     else:
-                      bindCallScope(callee, proto,
-                                    stack.toOpenArray(argsStart, (sp - 1)), named)
+                      bindBudgetedCallScope(callee, proto,
+                        stack.toOpenArray(argsStart, (sp - 1)), named, scope)
                   boundScope = bound.scope
                   boundReturnType = bound.returnType
-                  applyCallBudget(proto, boundScope, calleeScope, scope)
                 let frameReturnType = proto.checkedFrameReturnType(boundReturnType)
                 strunc(calleeIndex)
                 var lbl = ""
@@ -20964,11 +20966,11 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                   boundScope = bindPositionalIntCallScope(callee, fnProto,
                                                           args)
                   boundReturnType = fnProto.returnType
+                  applyCallBudget(fnProto, boundScope, calleeScope, scope)
                 else:
-                  var bound = bindCallScope(callee, fnProto, args, named)
+                  var bound = bindBudgetedCallScope(callee, fnProto, args, named, scope)
                   boundScope = bound.scope
                   boundReturnType = bound.returnType
-                applyCallBudget(fnProto, boundScope, calleeScope, scope)
                 let frameReturnType = fnProto.checkedFrameReturnType(boundReturnType)
                 strunc(calleeIndex)
                 var lbl = ""
@@ -21951,8 +21953,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           let input = spop()
           let proto = chunk.functions[inst[].intArg]
           let callee = newFunction(proto.name, proto.params, proto, scope)
-          var bound = bindCallScope(callee, proto, [input], NamedArgs())
-          applyCallBudget(proto, bound.scope, callee.fnScope, scope)
+          var bound = bindBudgetedCallScope(callee, proto, [input], NamedArgs(), scope)
           enterBytecodeCall(proto.chunk, bound.scope, false, false, NIL, "",
             false, @[], proto.name, sp, false)
           continue
@@ -21976,8 +21977,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           let arguments = bindRuntimeMacroArguments(specification, callee.fnScope,
             scope.runtimeMacroBudget())
           let proto = FunctionProto(callee.fnCode)
-          var bound = bindCallScope(callee, proto, arguments, NamedArgs())
-          applyCallBudget(proto, bound.scope, callee.fnScope, scope)
+          var bound = bindBudgetedCallScope(callee, proto, arguments, NamedArgs(), scope)
           enterBytecodeCall(proto.chunk, bound.scope, false,
             proto.frameNeedsImplValidation, NIL, "", false, @[], callee.fnName,
             sp, false)
@@ -31384,7 +31384,8 @@ proc bindScalarCallScope(callee: Value, proto: FunctionProto,
       result.declareSlotType(slot, proto.paramTypes[i])
 
 proc bindCallScopeUnchecked(callee: Value, proto: FunctionProto, args: openArray[Value],
-                            named: NamedArgs): tuple[scope: Scope, returnType: Value] =
+                            named: NamedArgs, callerScope: Scope,
+                            budgeted: bool): tuple[scope: Scope, returnType: Value] =
   ## Build a fully-bound call scope for a non-simple function call: arity check,
   ## named-arg validation, generic inference, per-parameter type adaptation,
   ## defaults, and rest gathering. Returns the scope plus the instantiated return
@@ -31429,6 +31430,10 @@ proc bindCallScopeUnchecked(callee: Value, proto: FunctionProto, args: openArray
       let fresh = newScope(callee.fnScope)
       fresh.prepareSlots(proto.localNames)
       fresh
+  # Defaults and type adapters can execute Gene. Enter this invocation's
+  # dynamic budget before binding them, rather than using a captured creation
+  # budget and resetting the limit again before the function body.
+  if budgeted: applyCallBudget(proto, callScope, callee.fnScope, callerScope)
   callScope.seedFunctionProtocolEntry(callee)
   if proto.isSyntaxFn and args.len > 0 and args[0].kind == vkCallerEnv:
     # Any child/eval scope and closure created during this syntax call inherits
@@ -31554,18 +31559,30 @@ proc bindCallScopeUnchecked(callee: Value, proto: FunctionProto, args: openArray
     rt = instantiateTypeExpr(proto.returnType, typeBindings, proto.typeParams)
   (callScope, rt)
 
-proc bindCallScope(callee: Value, proto: FunctionProto, args: openArray[Value],
-                   named: NamedArgs): tuple[scope: Scope, returnType: Value] =
+proc bindCallScopeImpl(callee: Value, proto: FunctionProto, args: openArray[Value],
+                       named: NamedArgs, callerScope: Scope,
+                       budgeted: bool): tuple[scope: Scope, returnType: Value] =
   try:
     if proto.canBindScalarArguments(args, named):
-      (bindScalarCallScope(callee, proto, args), proto.returnType)
+      result = (bindScalarCallScope(callee, proto, args), proto.returnType)
+      if budgeted: applyCallBudget(proto, result.scope, callee.fnScope, callerScope)
     else:
-      bindCallScopeUnchecked(callee, proto, args, named)
+      result = bindCallScopeUnchecked(callee, proto, args, named, callerScope, budgeted)
   except GeneError as error:
     let translated = translateErrorBoundary(callee.fnChecksErrors, callee.fnErrorTypes,
                                              callee.fnName, callee.fnScope, error)
     if translated == error: raise
     raise translated
+
+proc bindCallScope(callee: Value, proto: FunctionProto, args: openArray[Value],
+                   named: NamedArgs): tuple[scope: Scope, returnType: Value] =
+  # Actor/HTTP dispatch establishes its independently scheduled context.
+  bindCallScopeImpl(callee, proto, args, named, nil, false)
+
+proc bindBudgetedCallScope(callee: Value, proto: FunctionProto,
+                           args: openArray[Value], named: NamedArgs,
+                           callerScope: Scope): tuple[scope: Scope, returnType: Value] =
+  bindCallScopeImpl(callee, proto, args, named, callerScope, true)
 
 proc statementCallResult(typ, value: Value): Value {.inline.} =
   if typ.isBareVoidType: VOID
@@ -31644,16 +31661,17 @@ proc applyFunctionCall(callee: Value, args: openArray[Value], named: NamedArgs,
     callScope = bindRequiredNamedCallScope(callee, proto, callee.fnName,
                                            args, named)
     returnType = proto.returnType
+    applyCallBudget(proto, callScope, callee.fnScope, callerScope)
   elif named.len == 0 and proto.canFastBindPositionalInt and
       args.len == proto.params.len:
     callScope = bindPositionalIntCallScope(callee, proto, args)
     returnType = proto.returnType
+    applyCallBudget(proto, callScope, callee.fnScope, callerScope)
   else:
-    var bound = bindCallScope(callee, proto, args, named)
+    var bound = bindBudgetedCallScope(callee, proto, args, named, callerScope)
     callScope = bound.scope
     returnType = bound.returnType
   let frameReturnType = proto.checkedFrameReturnType(returnType)
-  applyCallBudget(proto, callScope, callee.fnScope, callerScope)
   var checked = false
   if proto.isGenerator:
     let fiber = Fiber(chunk: proto.chunk, scope: callScope)

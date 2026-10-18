@@ -13,6 +13,7 @@ isolation.
 | Need | Guide |
 | --- | --- |
 | Architecture, lifetimes and module responsibilities | [Design](docs/design.md) |
+| Create, register and manage local workspaces | [Workspace manager](docs/manager.md) |
 | Author a workspace plugin | [Plugins](docs/plugins.md) |
 | Run and verify a function plugin without a model | [Project audit example](website/examples/project_audit/README.md) |
 | Browser workflow, transport and recovery | [Web client](docs/web-client.md) |
@@ -25,6 +26,23 @@ isolation.
 | Configure Claude transports | [Claude providers](docs/claude.md) |
 
 ## Start
+
+To manage several workspaces from one view or conversation:
+
+```text
+examples/gene-harness/bin/gene-harness manager
+```
+
+The manager is its own Harness workspace at `$HOME/.gene-harness-manager`,
+using port 8080 by default. Use `manager --port PORT` for a one-run override.
+Its Workspaces view works without a model provider. Configure a provider in
+the manager workspace to manage projects through conversations as well.
+
+Workspace aliases and port preferences stay in each workspace. Removing a
+registration keeps its files and any running host; permanent deletion is a
+separate confirmed view action. Managed hosts continue running when the
+manager stops or restarts. Unresponsive hosts require external process control
+in this MVP. See the [manager guide](docs/manager.md) for details.
 
 From the Gene repository:
 
@@ -50,7 +68,8 @@ examples/gene-harness/bin/gene-harness link
 The host changes its working directory to the workspace and stores state in `.gene-harness/`. That
 directory has its own `.gitignore`.
 
-Web is the only production profile. The host owns the workspace, holds its
+The `web` profile hosts ordinary workspaces; the `manager` profile adds the
+workspace manager plugin. Each host owns its workspace, holds its
 kernel lock, runs the scheduler and keeps sessions alive independently of
 connected clients. Multiple browsers and CLI processes can use that host.
 A second host fails with the owner's PID and entry point. The kernel releases
@@ -84,6 +103,7 @@ using Codex OAuth, including continuation, verification and recovery.
 | Command | Effect |
 | --- | --- |
 | `web` | Start the foreground workspace host and print the Browser URL in a terminal. This is the default. |
+| `manager [--port PORT]` | Open the manager workspace and its Workspaces view; defaults to port 8080 and ignores `GENE_HARNESS_WORKSPACE`/`GENE_HARNESS_PORT`. |
 | `status`, `link` | Inspect the running host or print its reusable owner connection URL. |
 | `sessions [create --title TITLE]` | List sessions or create one and return its id. |
 | `send [--wait] TEXT` | Submit a literal prompt to `--session ID`; optionally wait for its result. |

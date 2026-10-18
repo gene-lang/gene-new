@@ -11,7 +11,7 @@
 (fn ui_settings [h]
   (let saved (if ($absent? h/event_store) nil
     (plugin_state h/event_store "workspace" "workspace" "ui_experiment")))
-  (?? saved {^enabled false ^layout "chat" ^panel "" ^side "left" ^width 50 ^theme {}}))
+  (?? saved h/ui_defaults {^enabled false ^layout "chat" ^panel "" ^side "left" ^width 50 ^theme {}}))
 
 (fn validate_theme_colors [colors]
   (if (!= ($head colors) Map) (ui_error "invalid_request" "Theme overrides must be a map of tokens."))
@@ -61,13 +61,14 @@
 
 (fn ui_data_revision [h, snapshot]
   ($to_str snapshot/id ":" (if ($absent? h/event_store) 0
-    (next_sequence h/event_store (stream_key "workspace" "workspace")))))
+    (next_sequence h/event_store (stream_key "workspace" "workspace")))
+    (if ($absent? h/manager_revision) "" ($to_str ":manager:" h/manager_revision/.get))))
 
 (fn ui_descriptor [h, snapshot, record]
   (let candidate record/payload)
   (let functions {})
   (for name in (?? candidate/actions [])
-    (let action (ui_record snapshot "functions" name))
+    (let action (?? (ui_record snapshot "ui_actions" name) (ui_record snapshot "functions" name)))
     (if_not ($absent? action) (functions .put name (ui_revision h action))))
   {^name candidate/name ^title (?? candidate/title candidate/name) ^owner record/owner
    ^default_presentation (?? candidate/default_presentation "docked")

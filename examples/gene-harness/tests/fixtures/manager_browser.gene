@@ -1,0 +1,31 @@
+# An isolated, provider-free manager for browser verification. The caller owns
+# this foreground process; managed project hosts still need normal Stop cleanup.
+(fn main [args]
+  ($fs/make_dir args/0)
+  (let home ($fs/real_path args/0))
+  (let application ($pkg/application))
+  (let entry ($path/join application/source_root "src/runtime/supervisor.gene"))
+  (let environment
+    {
+      ^HOME home
+      ^CODEX_HOME $"${home}/.codex"
+      ^CODEX_AUTH_FILE nil
+      ^GENE_BINARY ($os/executable_path)
+      ^GENE_HARNESS_WORKSPACE nil
+      ^GENE_HARNESS_PORT nil
+      ^GENE_HARNESS_OFFLINE nil
+      ^GENE_HARNESS_PROVIDER nil
+      ^GENE_HARNESS_MODEL nil
+      ^GENE_HARNESS_THINKING_EFFORT nil
+      ^ANTHROPIC_API_KEY nil
+      ^OPENROUTER_API_KEY nil
+      ^OPENROUTER_KEY nil})
+  (await
+    ($os/exec_stdio_async ^env environment
+      ($os/executable_path)
+      "run"
+      "--snapshot"
+      entry
+      "manager"
+      "--port"
+      "0")))

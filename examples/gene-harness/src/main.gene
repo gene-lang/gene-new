@@ -2,6 +2,7 @@
 (import ^from "./cli/main" [run_client usage])
 (import ^from "./web/server" [main : serve_web])
 (import ^from "./web/recovery" [main : serve_recovery])
+(import ^from "./runtime/workspace_settings" [initialize_manager_workspace])
 
 (fn main [args] : Int
   (let application ($pkg/application))
@@ -16,10 +17,12 @@
     (if_yes (|| (== parsed/options/help true) (== parsed/command "help"))
       ($println (usage))
       (return 0))
-    (if_yes (== parsed/command "web")
+    (if (== parsed/command "manager")
+      (parsed/options .put "workspace" (initialize_manager_workspace)))
+    (if_yes (["web" "manager"] .contains? parsed/command)
       (if (> parsed/words/.size 1) (problem "web accepts host options, not additional commands."))
       (for [key value] in parsed/options
-        (if_not (["workspace" "port" "restart-port" "startup-id" "script" "offline" "supervised" "recovery"] .contains? ($to_str key))
+        (if_not (["workspace" "port" "restart-port" "startup-id" "script" "offline" "supervised" "recovery" "managed"] .contains? ($to_str key))
           (problem $"--${key} requires a client command.")))
       (if (== parsed/options/recovery true) (return (serve_recovery parsed/options)))
       (let arguments [])
@@ -30,6 +33,7 @@
           (arguments .push value)))
       (if (== parsed/options/offline true) (arguments .push "--offline"))
       (if (== parsed/options/supervised true) (arguments .push "--supervised"))
+      (if (== parsed/options/managed true) (arguments .push "--managed"))
       (return (serve_web arguments)))
     (run_client parsed)
   catch Any

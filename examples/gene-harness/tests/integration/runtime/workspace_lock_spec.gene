@@ -1,6 +1,6 @@
 # Tests src/runtime/workspace_lock.gene.
 (import $test [describe it])
-(import [isolated run_spec] ^from "../../support")
+(import [isolated run_spec source_path] ^from "../../support")
 (import [acquire_workspace_lock close_workspace_lock WorkspaceInUse]
   ^from "../../../src/runtime/workspace_lock")
 
@@ -19,5 +19,30 @@
             "workspace lock did not preserve its owner's identity")
           ($println "locked")
           ensure (close_workspace_lock lock))))))
+
+(describe "Workspace startup lock handoff"
+  (it "waits through a transient diagnostic probe without replacing a real owner" []
+    (isolated this_mod/.path "waits through a transient diagnostic probe without replacing a real owner"
+      (fn [root]
+        ($fs/make_dir $"${root}/.gene-harness")
+        (let probe ($fs/try_lock $"${root}/.gene-harness/lock"))
+        ($assert (! ($absent? probe)))
+        (let process ($os/exec_async ^timeout_ms 10000 ($os/executable_path)
+          "run" "--snapshot" (source_path "tests/fixtures/workspace_lock_wait.gene") root))
+        (try
+          (let due (+ ($os/monotonic_ms) 5000))
+          (while (! ($fs/exists? $"${root}/attempting"))
+            ($assert (< ($os/monotonic_ms) due))
+            ($sleep 10))
+          ($sleep 200)
+          ($assert (! process/.done?) "Transient contention was treated as a permanent startup failure.")
+          probe/.close
+          (let result (await process))
+          ($assert (== result/status 0) ($to_str result))
+          (let owner ($serde/read_data ($fs/read_text $"${root}/.gene-harness/owner")))
+          ($assert (== owner/entry "waiting host"))
+        ensure
+          probe/.close
+          (if_not process/.done? process/.cancel process/.join))))))
 
 (fn main [args] : Int (run_spec args))

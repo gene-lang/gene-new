@@ -4,6 +4,7 @@
 (import ^from "./bootstrap" [open_runtime close_runtime prepare_workspace_root])
 (import ^from "./plugin_manager" [plugin_catalog])
 (import ^from "../profiles/baseline" [baseline_profile])
+(import ^from "../profiles/registry" [workspace_profile])
 (import ^from "../storage/workspace"
   [doctor prepare_workspace disable_entry enable_entry restore_entry composition_revision
    revert_entry plugin_history_page])
@@ -18,7 +19,7 @@
     (open_runtime ^entry "offline maintenance" ^!activate ^recovery (!= action "doctor")
       (prepare_workspace_root ^root root)
       "default"
-      (baseline_profile)))
+      (workspace_profile root)))
   (try
     (if (== action "plugins") (return (plugin_catalog ^query query ^state state runtime)))
     (if_yes (== action "doctor")

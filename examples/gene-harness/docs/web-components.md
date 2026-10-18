@@ -239,7 +239,7 @@ The `/ui/default` recovery URL omits plugin views and theme overrides for that
 page and preserves the workspace selection.
 
 A view row declares a nonempty `title`, `view_state` defaults, a `state_version`, an `actions`
-list naming registered functions, and a `render` callback:
+list naming registered functions or browser-only `ui_actions`, and a `render` callback:
 
 ```gene
 (host .PluginHost:contribute "web_components"
@@ -260,6 +260,23 @@ list naming registered functions, and a `render` callback:
 Use the actual task revision in `args`; the literal above illustrates the
 wire data. Functions keep their usual signature, doc and callable. The action
 adapter runs them in a command task; no new command-row shape is required.
+
+For an action that should only be offered through a view, contribute the same
+`{^name ... ^doc ... ^fn ...}` row to **`ui_actions`**. These rows use the same
+receipts, composition leases and callback limits, but are absent from model
+function bindings and discovery. View action lookup checks `ui_actions` first,
+then `functions`. The workspace manager uses this for deletion and explicit
+interruption confirmation; its public model functions share the underlying
+service but never confirm active-work interruption.
+
+For browser-only navigation, **`ui_links`** rows use the same row shape with a
+callback accepting the request's parameter map and returning a destination
+URL. Link to `/api/v8/ui/open?name=ROW_NAME&...` from the view. The host checks
+owner authentication, invokes the current row and returns a redirect without
+putting its destination into a function result or action receipt. This lets the
+manager open a target's authenticated connection link while keeping its token
+out of rendered component state. Plugins remain full-grant; these registries
+separate ordinary interfaces rather than creating a sandbox.
 
 For an optimistic read/check/write, declare `^requires ["ui/state_lock"]`,
 resolve it through `PluginHost:resolve`, and call the returned function with a

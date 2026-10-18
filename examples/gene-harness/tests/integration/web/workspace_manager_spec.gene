@@ -1,0 +1,227 @@
+(import $test [describe it])
+(import $net/http_client [request])
+(import ^from "../../support" [isolated run_spec source_path])
+(import ^from "../../web_support" [ready_host stop_host cli])
+(import ^from "../../../src/cli/client" [connect api discover])
+(import ^from "../../../src/runtime/workspace_settings"
+  [read_workspace_settings write_workspace_settings])
+
+(fn manager_host [home : Str, ^responses responses = nil, ^direct direct : Bool = false, ^recovery recovery : Bool = false]
+  ($fs/make_dir home)
+  (let root $"${home}/.gene-harness-manager")
+  (let args ["run" "--snapshot" (source_path "src/runtime/supervisor.gene")])
+  (if direct
+    (do
+      (args .push "web")
+      (args .push "--workspace")
+      (args .push root))
+    (args .push "manager"))
+  (args .push "--port")
+  (args .push "0")
+  (if recovery (args .push "--recovery"))
+  (if_not ($absent? responses)
+    (let script $"${home}/responses.gene")
+    ($fs/write_text script ($to_str responses))
+    (args .push "--script")
+    (args .push script))
+  (let environment
+    {
+      ^HOME home
+      ^CODEX_HOME $"${home}/.codex"
+      ^CODEX_AUTH_FILE nil
+      ^GENE_HARNESS_WORKSPACE $"${home}/ignored"
+      ^GENE_HARNESS_PORT "not-a-port"
+      ^GENE_HARNESS_PROVIDER nil
+      ^GENE_HARNESS_MODEL nil
+      ^GENE_HARNESS_THINKING_EFFORT nil
+      ^GENE_HARNESS_OFFLINE nil
+      ^ANTHROPIC_API_KEY nil
+      ^OPENROUTER_API_KEY nil
+      ^OPENROUTER_KEY nil})
+  (let process
+    ($os/exec_async ^env environment ^max_bytes 1048576 ^timeout_ms 240000
+      ($os/executable_path)
+      args...))
+  (let host {^root root ^process process})
+  (try
+    (ready_host host)
+    host
+  catch Any
+    process/.cancel
+    process/.join
+    (fail $err)))
+
+(fn manager_registered [host]
+  ((Path "entries") ($serde/read_data ($fs/read_text $"${host/root}/registry.gene"))))
+
+(fn stop_managed [root]
+  (try
+    (api (connect root) "POST" "/control" {^action "stop" ^^confirm})
+  catch Any
+    nil))
+
+(describe
+  "Manager web host"
+  (it
+    "creates the manager at HOME and remains usable without a provider"
+    []
+    (isolated
+      this_mod/.path
+      "creates the manager at HOME and remains usable without a provider"
+      (fn [root]
+        (let home $"${root}/home")
+        (let host (manager_host home))
+        (try
+          (let settings (read_workspace_settings host/root))
+          ($assert (== settings/role "manager"))
+          ($assert (== settings/port 8080))
+          ($assert (! ($fs/exists? $"${home}/ignored")))
+          (let client (connect host/root))
+          (let status (api client "GET" "/status"))
+          ($assert (== status/profile "manager"))
+          ($assert (== status/ui/settings/default_view "workspaces"))
+          ($assert (! ($absent? status/readiness)))
+          (let view
+            ((Path 0) ($filter status/ui/components (fn [item] (== item/name "workspaces")))))
+          (let rendered
+            (api
+              client
+              "POST"
+              "/ui/render"
+              {
+                ^component "workspaces"
+                ^revision view/revision
+                ^instance "manager-test"
+                ^sequence "1"
+                ^state {}}))
+          ($assert ($absent? rendered/error) ($to_str rendered))
+          (let invalid
+            (await
+              ($os/exec_async ^env {^HOME home}
+                ($os/executable_path)
+                "run"
+                "--snapshot"
+                (source_path "src/main.gene")
+                "manager"
+                "--workspace"
+                $"${root}/forbidden")))
+          ($assert (!= invalid/status 0))
+          ($assert (! ($fs/exists? $"${root}/forbidden")))
+        ensure
+          (stop_host host))
+        (let reopened (manager_host ^^direct home))
+        (try
+          ($assert (== ((Path "profile") (api (connect reopened/root) "GET" "/status")) "manager"))
+        ensure
+          (stop_host reopened)))))
+  (it
+    "runs model functions and keeps managed hosts alive through manager restart and plugin recovery"
+    []
+    (isolated ^timeout_ms 240000
+      this_mod/.path
+      "runs model functions and keeps managed hosts alive through manager restart and plugin recovery"
+      (fn [root]
+        (let home $"${root}/home")
+        (let project $"${root}/project")
+        (let response
+          ($to_str
+            `(do
+               (let w (workspace_create ^alias "From conversation" %project))
+               (workspace_start w/id)
+               (workspace_set_alias w/id "Model workspace")
+               (workspace_stop w/id)
+               (workspace_start w/id)
+               (Outcome ^^done ^reply ($serde/write_data (workspace_list))))))
+        (var host (manager_host ^responses [response] home))
+        (try
+          (let session (cli host/root ["sessions" "create" "--title" "Manage projects"]))
+          (let sent
+            (cli
+              host/root
+              ["--session" session/id "send" "--wait" "Create, start and rename a project."]))
+          ($assert (== sent/state "done") ($to_str sent))
+          (let entries (manager_registered host))
+          ($assert (== entries/.size 1))
+          (let id entries/0/id)
+          (let child (discover project))
+          ($assert (== ((Path "alias") (read_workspace_settings project)) "Model workspace"))
+          (let client (connect host/root))
+          (let transcript
+            ($json/stringify (api client "GET" $"/sessions/${session/id}/snapshot?ui=default")))
+          (let token ($fs/read_text $"${project}/.gene-harness/web_secret"))
+          ($assert (! ($str/contains? transcript token)))
+          ($assert (! ($str/contains? transcript "#token=")))
+          (let redirect_task
+            (request ^url $"${client/connection/origin}/api/v8/ui/open?name=workspace_open&id=${id}" ^headers {^cookie client/credentials/cookie} ^timeout_ms 3000))
+          (let opened (try (await redirect_task) ensure redirect_task/.cancel))
+          ($assert (== opened/status 302) ($to_str opened/status))
+          ($assert (== opened/headers/location ($fs/read_text $"${project}/.gene-harness/link")))
+          (let old_epoch client/connection/epoch)
+          (api client "POST" "/control" {^action "restart" ^^confirm})
+          (ready_host ^previous old_epoch host)
+          ($assert (== ((Path "epoch") (discover project)) child/epoch))
+          ($assert (== (manager_registered host) entries))
+          # This test owns the captured manager process. Terminating its
+          # group simulates closing its terminal, not product Force stop.
+          (let terminated host/process)
+          (set host nil)
+          terminated/.cancel
+          terminated/.join
+          ($assert (== ((Path "epoch") (discover project)) child/epoch))
+          (set host (manager_host home))
+          ($assert (== (manager_registered host) entries))
+          (let code "(register_plugin \"workspace_manager\" (quote (mod plugin (import ^from \"src/plugin_api.gene\" [Plugin]) (fn init [descriptor] (Plugin ^id \"workspace_manager\" ^activate (fn [host] (fail \"test broken manager\")))))) ^^replace)")
+          (cli host/root ["--session" session/id "run" code])
+          ($assert (== ((Path "epoch") (discover project)) child/epoch))
+          ($assert (== (manager_registered host) entries))
+          (stop_host host)
+          ($assert (== ((Path "epoch") (discover project)) child/epoch))
+          (cli host/root ["restore" "workspace_manager"])
+          (set host (manager_host home))
+          ($assert (== (manager_registered host) entries))
+          (let restored (api (connect host/root) "GET" "/status"))
+          ($assert
+            (== ($size ($filter restored/ui/components (fn [item] (== item/name "workspaces")))) 1))
+        ensure
+          (stop_managed project)
+          (if_not ($absent? host) (stop_host host)))))))
+(describe
+  "Manager recovery metadata"
+  (it
+    "keeps the manager profile and editable metadata with unreadable provider configuration"
+    []
+    (isolated
+      this_mod/.path
+      "keeps the manager profile and editable metadata with unreadable provider configuration"
+      (fn [root]
+        (let home $"${root}/home")
+        (let workspace $"${home}/.gene-harness-manager")
+        ($fs/make_dir $"${workspace}/.gene-harness")
+        (write_workspace_settings workspace {^alias "Manager" ^port 8080 ^role "manager"})
+        ($fs/write_text $"${workspace}/.gene-harness/config.gene" "broken provider configuration")
+        (let host (manager_host ^^recovery home))
+        (try
+          (let client (connect host/root))
+          (let status (api client "GET" "/status"))
+          ($assert (== status/mode "recovery"))
+          ($assert (== status/profile "manager"))
+          (let plugins ((Path "plugins") (api client "GET" "/plugins")))
+          ($assert (== ($size ($filter plugins (fn [item] (== item/id "workspace_manager")))) 1))
+          (let updated
+            (api
+              client
+              "POST"
+              "/workspace/settings"
+              {^changes {^alias "Repaired metadata" ^port 0}}))
+          ($assert (== updated/role "manager"))
+          ($assert (== updated/alias "Repaired metadata"))
+          ($assert (== updated/port 0))
+          ($assert
+            (==
+              ($fs/read_text $"${workspace}/.gene-harness/config.gene")
+              "broken provider configuration"))
+        ensure
+          (stop_host host))))))
+
+(fn main [args] : Int
+  (run_spec args))

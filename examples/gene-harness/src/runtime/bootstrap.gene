@@ -10,6 +10,7 @@
 (import ^from "./host_identity" [host_build])
 (import ^from "./workspace_lock" ^^export
   [acquire_workspace_lock close_workspace_lock WorkspaceInUse])
+(import ^from "./workspace_manager" [close_workspace_manager])
 (import ^from "./sessions"
   [open_session_manager close_session_manager create_session load_session with_session_gate])
 (import ^from "./commands" [new_command_manager close_command_manager])
@@ -21,7 +22,7 @@
 (import ^from "../agents/provider_selection" [readiness_report])
 (import ^from "../plugin_api" [ExecutionLimits response_execution_limits])
 
-(type HarnessRuntime ^props {^root Str ^state_root Str ^epoch Str ^h Any ^workspace Any ^profile Any ^events Any ^sessions Any ^commands Any ^triggers Any ^body_users Any ^body_collecting Any ^body_gc_pending Any ^stopping Any ^exit_code Any ^ownership Any ^owns_ownership Bool ^owns_events Bool ^closed Any ^restarted Bool ^shutdown_watchdog Any ^modes Any? ^listen_port Any? ^supervised Bool? ^actions Any? ^images Any? ^recovery Bool?})
+(type HarnessRuntime ^props {^root Str ^state_root Str ^epoch Str ^h Any ^workspace Any ^profile Any ^events Any ^sessions Any ^commands Any ^triggers Any ^body_users Any ^body_collecting Any ^body_gc_pending Any ^stopping Any ^exit_code Any ^ownership Any ^owns_ownership Bool ^owns_events Bool ^closed Any ^restarted Bool ^shutdown_watchdog Any ^modes Any? ^listen_port Any? ^supervised Bool? ^actions Any? ^images Any? ^recovery Bool? ^managed Bool? ^workspace_manager Any?})
 (type RuntimeCleanupError ^props {^message Str} ^impl [Error])
 (impl Error for RuntimeCleanupError)
 
@@ -56,6 +57,7 @@
   (var outcome nil)
   (try
     (try
+      (if_not ($absent? runtime/workspace_manager) (close_workspace_manager runtime/workspace_manager))
       (if_not ($absent? runtime/triggers) (close_trigger_manager runtime/triggers))
       (if_not ($absent? runtime/actions) (close_ui_actions runtime/actions))
       (if_not ($absent? runtime/commands) (close_command_manager runtime/commands))
@@ -86,7 +88,7 @@
       (RuntimeCleanupError ^message $"Composition cleanup requires recovery: ${outcome/errors}")))
   nil)
 
-(fn open_runtime [root : Str, session : Str, profile, ^events supplied_events = nil, ^ownership supplied_ownership = nil, ^entry entry : Str = "", ^event_scope event_scope : Str = "session", ^activate activate : Bool = true, ^recovery recovery : Bool = false] : HarnessRuntime
+(fn open_runtime [root : Str, session : Str, profile, ^events supplied_events = nil, ^ownership supplied_ownership = nil, ^entry entry : Str = "", ^event_scope event_scope : Str = "session", ^activate activate : Bool = true, ^recovery recovery : Bool = false, ^managed managed : Bool = false, ^lock_wait_ms lock_wait_ms : Int = 0] : HarnessRuntime
   # Capture was performed by the launcher before loading any host modules.
   # Refuse an unidentifiable mutation host before acquiring or writing state.
   (let build (host_build))
@@ -94,7 +96,7 @@
   (let owns_ownership ($absent? supplied_ownership))
   (let ownership
     (if owns_ownership
-      (acquire_workspace_lock canonical (if (== entry "") this_mod/.path entry))
+      (acquire_workspace_lock ^wait_ms lock_wait_ms canonical (if (== entry "") this_mod/.path entry))
       supplied_ownership))
   (var events (if recovery nil supplied_events))
   (var workspace nil)
@@ -131,6 +133,9 @@
     (set h
       (new_harness ^event_store events ^event_scope event_scope ^event_stream session ^workspace workspace ^limits profile_limits))
     (set h/appearance (open_appearance state_root))
+    (if (== profile/name "manager")
+      (set h/ui_defaults {^^enabled ^layout "chat" ^default_view "workspaces"
+        ^panel "" ^side "left" ^width 50 ^theme {}}))
     (if_not recovery (set h/notifications (open_inbox $"${state_root}/notifications")))
     (install_core_prompt_rows h)
     (if_yes (&& activate (! recovery))
@@ -142,6 +147,7 @@
       (set h/readiness (fn [] "Recovery mode: repair composition, then retry normal startup."))
       (set ready true)
       (return runtime))
+    (set runtime/managed managed)
     (set h/readiness
       (fn []
         (let current ($serde/read_data ($fs/read_text $"${state_root}/config.gene")))

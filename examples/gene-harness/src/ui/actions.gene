@@ -61,7 +61,8 @@
     (let admitted (admit_action manager/log request (fn []
       (if_not (/enabled (ui_settings h)) (ui_error "unavailable" "Workspace views are disabled."))
       (let view (ui_record lease/snapshot "web_components" request/component))
-      (set action (ui_record lease/snapshot "functions" request/function))
+      (set action (?? (ui_record lease/snapshot "ui_actions" request/function)
+        (ui_record lease/snapshot "functions" request/function)))
       (if (|| ($absent? view) ($absent? view/payload/view_state) ($absent? action)
               (!= (ui_revision h view) request/revision)
               (!= (ui_revision h action) request/function_revision))

@@ -47,6 +47,25 @@ proc checkChildSettings(directory, parentPath: string) =
     (if parentPath.len > 0: $PathSep & parentPath else: "")
 
 suite "os/exec child settings":
+  test "detached launch exposes literal argv and the shared child environment contract":
+    let directory = createTempDir("gene-public-detached-", "")
+    defer: removeDir(directory)
+    let scope = execScope(directory)
+    scope.define("log", newStr(directory / "child.log"))
+    let child = run(compileSource("""
+      ($os/spawn_detached ^dir directory ^output log
+        ^env {^GENE_EXEC_VALUE "literal $HOME" ^GENE_EXEC_EMPTY ""
+              ^GENE_EXEC_REMOVE nil ^PATH directory}
+        fixture "--exec-fixture" "write" output)
+    """), scope)
+    check child.kind == vkInt
+    let deadline = getMonoTime() + initDuration(seconds = 5)
+    while not fileExists(directory / "result.json") and getMonoTime() < deadline: sleep(10)
+    check fileExists(directory / "result.json")
+    checkChildSettings(directory, getEnv("PATH"))
+    check fileExists(directory / "child.log")
+    check run(compileSource("($os/process_alive? ($os/process_id))"), scope).print() == "true"
+
   test "all six exec variants share dir and env semantics":
     let directory = createTempDir("gene-exec-settings-", "")
     let originalCwd = getCurrentDir()

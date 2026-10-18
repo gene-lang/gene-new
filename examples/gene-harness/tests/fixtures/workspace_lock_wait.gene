@@ -1,0 +1,6 @@
+(import ^from "../../src/runtime/workspace_lock" [acquire_workspace_lock close_workspace_lock])
+(fn main [args]
+  ($fs/write_text $"${args/0}/attempting" "ready")
+  (let lock (acquire_workspace_lock ^wait_ms 1000 args/0 "waiting host"))
+  (close_workspace_lock lock)
+  0)

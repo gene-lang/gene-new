@@ -61,6 +61,7 @@ an unset or empty environment variable preserves the launch-directory default.
   lock                    permanent flock target
   owner                   PID, entry and startup time
   config.gene             provider/model settings and budgets
+  workspace.gene          optional alias, configured port and manager role
   composition/            plugin generations and atomic CURRENT publication
   modules/                content-addressed plugin modules
   blobs/                  content-addressed recall, history and receipt bodies
@@ -90,9 +91,11 @@ CLI clients share its HTTP service; client disconnects leave admitted work
 running. Event publication is serialized within the host. CURRENT publication
 remains atomic for crash safety.
 
-The first host start binds an ephemeral loopback port. Fresh starts try the
-remembered port and announce a fallback if it is occupied. An explicit port or
-a supervised restart must bind its selected port. The actual listener port
+Ordinary workspaces without a configured port first bind an ephemeral loopback
+port. Automatic starts try the remembered port and announce a fallback if it
+is occupied. A configured fixed port, an explicit port or a supervised restart
+must bind its selected port. Normal and recovery startup share this selection.
+The actual listener port
 determines the Origin and cookie name. A ready descriptor and owner-only link
 are published after initialization, removed before shutdown releases ownership,
 and replaced after a crash. Startup failure closes the listener and runtime.
@@ -107,10 +110,20 @@ the lock. Ordinary CLI operations never open the runtime or event store.
 
 ## Owner authentication and clients
 
-`web` is the only production profile; the internal Profile type remains the
-unordered set of built-in defaults, limits and requirements. Scripted/offline
-provider configurations support model-free tests. Session state and plugin
-composition do not depend on the submitting client.
+`web` hosts ordinary workspaces. A workspace with `role: manager` uses the
+`manager` profile, which adds `workspace_manager` to the baseline plugins.
+Normal startup, recovery and offline maintenance use the same role selection.
+The internal Profile type remains an unordered set of built-in defaults,
+limits and requirements. Scripted/offline provider configurations support
+model-free tests. Session state and plugin composition do not depend on the
+submitting client.
+
+The [workspace manager](manager.md) lives at `$HOME/.gene-harness-manager`.
+It stores registrations in its plain `registry.gene`, while each target owns
+its alias/port metadata. Targets run in detached launchers with independent
+logs, so manager/plugin replacement never owns their process lifetime. The
+manager uses ordinary owner-authenticated HTTP control for live targets and
+workspace locks for offline metadata writes and deletion.
 
 One reusable owner token, persisted in `web_secret`, grants full workspace
 access to any number of browser and CLI clients. The existing auth exchange

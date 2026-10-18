@@ -3,13 +3,15 @@
 (import ^from "../web/connection" [read_connection unavailable])
 (import $net/http_client [request])
 
-(fn wire [connection, method : Str, path : Str, data = nil, ^credentials credentials = nil]
+(fn wire [connection, method : Str, path : Str, data = nil, ^credentials credentials = nil, ^deadline deadline : Int = 0]
+  (let timeout (if (== deadline 0) 30000 (- deadline ($os/monotonic_ms))))
+  (if (<= timeout 0) (problem ^code "control_timeout" "Workspace control timed out."))
   (let headers {^origin connection/origin ^content-type "application/json"})
   (if_not ($absent? credentials)
     (headers .put "cookie" credentials/cookie)
     (headers .put "x-csrf-token" credentials/csrf))
   (let pending
-    (request ^method method ^url $"${connection/origin}/api/v8${path}" ^headers headers ^body (if ($absent? data) "" ($json/stringify data)) ^timeout_ms 30000 ^max_bytes 16777216))
+    (request ^method method ^url $"${connection/origin}/api/v8${path}" ^headers headers ^body (if ($absent? data) "" ($json/stringify data)) ^timeout_ms timeout ^max_bytes 16777216))
   (let response (try (await pending) ensure pending/.cancel))
   (let body
     (try
@@ -24,11 +26,11 @@
       (?? response/body/message $"HTTP ${response/status}")))
   response/body)
 
-(fn discover [root : Str]
+(fn discover [root : Str, ^deadline deadline : Int = 0]
   (let connection (read_connection root))
   (let response
     (try
-      (wire connection "GET" "/connection")
+      (wire ^deadline deadline connection "GET" "/connection")
     catch HttpClientError
       (unavailable root)))
   (let live (checked response))
@@ -37,18 +39,18 @@
       (problem ^code "connection_mismatch" "The host changed or its protocol is incompatible. Retry discovery.")))
   connection)
 
-(fn connect [root : Str]
-  (let connection (discover root))
+(fn connect [root : Str, ^deadline deadline : Int = 0]
+  (let connection (discover ^deadline deadline root))
   (let cache $"${root}/.gene-harness/cli_cookie")
   (var credentials (try ($serde/read_data ($fs/read_text cache)) catch Any nil))
   (if_yes (&& (== ($head credentials) Map) (== credentials/origin connection/origin) (== ($head credentials/cookie) Str) (== ($head credentials/csrf) Str))
-    (let cached_response (wire ^credentials credentials connection "GET" "/status?ui=default"))
+    (let cached_response (wire ^deadline deadline ^credentials credentials connection "GET" "/status?ui=default"))
     (if_yes (== cached_response/status 200)
       (if (!= cached_response/body/epoch connection/epoch)
         (problem ^code "connection_mismatch" "The host restarted during connection. Retry discovery."))
       (return {^connection connection ^credentials credentials})))
   (let token ($fs/read_text $"${root}/.gene-harness/web_secret"))
-  (let response (wire connection "POST" "/auth/exchange" {^token token}))
+  (let response (wire ^deadline deadline connection "POST" "/auth/exchange" {^token token}))
   (let body (checked response))
   (let header (?? (response/headers .get "set-cookie") ""))
   (let cookie ($str/split header ";"))
@@ -58,19 +60,19 @@
   ($fs/write_text_atomic ^^owner_only cache ($serde/write_data credentials))
   {^connection connection ^credentials credentials})
 
-(fn api [client, method : Str, path : Str, data = nil]
+(fn api [client, method : Str, path : Str, data = nil, ^deadline deadline : Int = 0]
   # Mutations are never retried here. A lost response is resolved by its request
   # identity/receipt; resetting a cookie must not replay an admitted operation.
   (try
-    (let result (checked (wire client/connection method path data ^credentials client/credentials)))
+    (let result (checked (wire client/connection method path data ^deadline deadline ^credentials client/credentials)))
     (if (== ($head result) Map) (result .delete "csrf"))
     result
   catch HttpClientError
     (problem ^code "connection_lost"
       "Connection lost. Work already admitted remains on the host; look up its receipt before retrying.")))
 
-(fn connection_link [root : Str]
-  (let connection (discover root))
+(fn connection_link [root : Str, ^deadline deadline : Int = 0]
+  (let connection (discover ^deadline deadline root))
   (let link ($str/trim ($fs/read_text $"${root}/.gene-harness/link")))
   (let token ($fs/read_text $"${root}/.gene-harness/web_secret"))
   (if (!= link $"${connection/origin}/#token=${token}")

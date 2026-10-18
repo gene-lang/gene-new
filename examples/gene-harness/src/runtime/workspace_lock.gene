@@ -13,11 +13,20 @@
       (else nil))
     catch Any nil))
 
-(fn acquire_workspace_lock [root : Str, entry : Str] : WorkspaceLock
+(fn try_lock_wait [path : Str, wait_ms : Int]
+  (let due (+ ($os/monotonic_ms) ($math/max 0 wait_ms)))
+  (loop
+    (let handle ($fs/try_lock path))
+    (if_not ($absent? handle) (return handle))
+    (let remaining (- due ($os/monotonic_ms)))
+    (if (<= remaining 0) (return nil))
+    ($sleep ($math/min 10 remaining))))
+
+(fn acquire_workspace_lock [root : Str, entry : Str, ^wait_ms wait_ms : Int = 0] : WorkspaceLock
   (let canonical ($fs/real_path root))
   (let state_root $"${canonical}/.gene-harness")
   ($fs/make_dir state_root)
-  (let handle ($fs/try_lock $"${state_root}/lock"))
+  (let handle (try_lock_wait $"${state_root}/lock" wait_ms))
   (if_yes ($absent? handle)
     (let owner (read_owner state_root))
     (let pid (if ($absent? owner) "unknown" (?? owner/pid "unknown")))

@@ -17,6 +17,9 @@ int gene_process_test_spawn_waiting(void);
 int gene_process_spawn(const char *path, char *const argv[], char *const envp[],
                        const char *directory, int inherit_stdio, int merge_stderr,
                        int own_group, int *pid, int fds[3]);
+int gene_process_spawn_detached(const char *path, char *const argv[],
+                                char *const envp[], const char *directory,
+                                const char *output, int *pid);
 int gene_process_observe(int pid, int *status);
 int gene_process_reap(int pid, int *status);
 int gene_process_exit_fd(int pid, int force_poll);
