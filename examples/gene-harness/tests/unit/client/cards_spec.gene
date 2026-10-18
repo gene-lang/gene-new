@@ -1,0 +1,38 @@
+# Tests client/cards.gene.
+(import $test [describe it run])
+(import [create_card_host card_defined card_observed card_enabled settle_card] ^from "../../../client/cards")
+
+(describe "Browser card enablement"
+  (it "forgets a page's Enable when it sees the card go stale" []
+    (let host (create_card_host
+      (fn [method : Str, path : Str, payload : Any, done : (Fn [Int Any] Void)] : Void nil)
+      (fn [session : Str, text : Str, card : Any] : Void nil)
+      (fn [session : Str, text : Str, card : Any] : Void nil)
+      (fn [text : Str] : Void nil)
+      (fn [session : Str, card : Any] : Void nil)))
+    (let fresh {^id "c" ^kind "live" ^definition_revision 1 ^revision 1 ^!stale})
+    (card_defined host "s" fresh)
+    ($assert (card_enabled host "s" fresh) "a live definition did not enable the card")
+    (card_observed host "s" {^id "c" ^kind "live" ^definition_revision 1 ^revision 2 ^^stale})
+    # Another page clicked Enable: the redrawn card is no longer stale.
+    ($assert (! (card_enabled host "s" {^id "c" ^kind "live" ^definition_revision 1 ^revision 3 ^!stale}))
+      "another page's redraw re-enabled this page")
+    ($assert (card_enabled host "s" {^id "p" ^kind "static" ^!commands})
+      "a prompt-only static card needed Enable")))
+
+(describe "Browser card refusals"
+  (it "replaces the card with an expired refusal's current metadata" []
+    (let updated ($cell nil))
+    (let host (create_card_host
+      (fn [method : Str, path : Str, payload : Any, done : (Fn [Int Any] Void)] : Void nil)
+      (fn [session : Str, text : Str, card : Any] : Void nil)
+      (fn [session : Str, text : Str, card : Any] : Void nil)
+      (fn [text : Str] : Void nil)
+      (fn [session : Str, card : Any] : Void (updated .set card))))
+    (let old {^id "c" ^kind "live" ^definition_revision 1 ^revision 4 ^action_generation 1})
+    (settle_card host "s" old "s/c"
+      {^status "refused" ^code "receipt_expired" ^message "too old"
+       ^card {^id "c" ^kind "live" ^definition_revision 1 ^revision 4 ^action_generation 3}})
+    ($assert (== updated/.get/action_generation 3) "the page kept the expired generation")))
+
+(fn main [args] : Int (/exit_code (run ^name (?? args/0 ""))))

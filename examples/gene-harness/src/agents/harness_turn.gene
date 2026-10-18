@@ -5,7 +5,7 @@
 (import ^from "./discovery" [discovery_bindings])
 (import ^from "../storage/workspace" [drain_workspace_changes])
 (import ^from "../text" [byte_prefix])
-(import [ui_publication_preview] ^from "../ui/views")
+(import [ui_publication_preview bounded_render_call] ^from "../ui/views")
 
 (fn plugin_change_summary [changes]
   (let lines [])
@@ -60,11 +60,17 @@
     (validators .put handler/name handler/validate_request))
   validators)
 
-(fn question_renderers [snapshot]
+# A question kind's render is a view render: leased, bounded and read-only,
+# whatever budget the response that asked had left.
+(fn question_renderers [h : Harness, snapshot]
   (let renderers {})
   (for record in (?? (snapshot/registries .get "interactions") [])
     (let handler record/payload)
-    (if_not ($absent? handler/render) (renderers .put handler/name handler/render)))
+    (if_not ($absent? handler/render)
+      (let render handler/render)
+      (renderers .put handler/name (fn [question]
+        ($runtime/with_context {^composition h/snapshots ^snapshot snapshot ^^ui_render}
+          (fn [] (bounded_render_call h render [question])))))))
   renderers)
 
 (fn answer_validators [snapshot]
@@ -102,7 +108,7 @@
     (let bindings
       (workspace_bindings ^extra extra_bindings h lease/snapshot session workspace_root))
     (let result
-      (evaluate_turn ^validators (question_validators lease/snapshot) ^renderers (question_renderers lease/snapshot) ^bindings bindings ^timeout_ms timeout_ms ^max_memory_mb max_memory_mb ^console_sink console_sink ^recall recall_function ^record record ^after_patch_rename after_patch_rename ^turn_sink turn_ref ^context {^composition h/snapshots ^snapshot lease/snapshot ^session session ^round round ^reviewer pinned_reviewer ^cards (?? (extra_bindings .get "card_api") nil)}
+      (evaluate_turn ^validators (question_validators lease/snapshot) ^renderers (question_renderers h lease/snapshot) ^bindings bindings ^timeout_ms timeout_ms ^max_memory_mb max_memory_mb ^console_sink console_sink ^recall recall_function ^record record ^after_patch_rename after_patch_rename ^turn_sink turn_ref ^context {^composition h/snapshots ^snapshot lease/snapshot ^session session ^round round ^reviewer pinned_reviewer ^cards (?? (extra_bindings .get "card_api") nil)}
         number
         workspace_root
         text))

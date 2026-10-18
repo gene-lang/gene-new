@@ -52,7 +52,8 @@
 (import ^from "../runtime/input_modes" [mode_state])
 (import ^from "../kernel" [ModeChanged CompositionChanged CardChanged])
 (import ^from "../runtime/cards" ^^export
-  [card_records public_card card_action card_action_receipt check_card_command CardError])
+  [card_records shown_card card_action card_action_receipt check_card_command
+   admit_card_command release_card_command CardError])
 (import ^from "../runtime/appearance" [AppearanceChanged appearance_mode])
 (import ^from "../ui/state" [ui_status ui_data_revision])
 (import ^from "../ui/views" [render_component])
@@ -314,9 +315,26 @@
     (submit_command service/runtime/commands session text)
     (submit_round ^media media service/controller session request_id sequence parsed/text)))
 (fn command [service, session : Str, text : Str, ^request_id request_id : Str = "", ^sequence sequence = nil, ^card card = nil]
+  (if ($absent? card)
+    (return (submit_command ^request_id request_id ^sequence sequence service/runtime/commands session text)))
   # A card's command button names the card revisions behind the clicked tree.
-  (if_not ($absent? card) (check_card_command service/runtime session card text))
-  (submit_command ^request_id request_id ^sequence sequence service/runtime/commands session text))
+  # It registers with the round-resume barrier until the command ends, so
+  # answering the card's round never resumes the model while it runs.
+  (admit_card_command service/runtime session card text)
+  (let started ($cell false))
+  (let released ($cell false))
+  (let release (fn []
+    (if_not (released .swap true) (release_card_command service/runtime session))))
+  (try
+    (let record (submit_command ^request_id request_id ^sequence sequence
+      ^on_admit (fn [admitted] (started .set true)) ^on_finish release
+      service/runtime/commands session text))
+    # A retried request returns its earlier receipt and starts nothing.
+    (if_not started/.get (release))
+    record
+  catch Any
+    (if_not started/.get (release))
+    (fail $err)))
 
 (fn session_card_action [service, session : Str, card : Str, request]
   (require_record service/sessions session)
@@ -327,11 +345,11 @@
 (fn session_card_receipt [service, session : Str, input_id : Str]
   (card_action_receipt service/runtime session input_id))
 
-(fn card_block [session : Str, card]
+(fn card_block [runtime, session : Str, card]
   {^id $"${session}/card/${card/id}" ^seq ($to_str (?? card/created_seq 0))
    ^round_id (?? card/placement_round "") ^turn (?? card/turn 0)
    ^role "assistant" ^phase "card" ^kind "card" ^text ""
-   ^card (public_card card) ^order (?? card/created_ms 0) ^^durable})
+   ^card (shown_card runtime session card) ^order (?? card/created_ms 0) ^^durable})
 
 (fn question_view? [batch] : Bool
   (for question in (?? batch/questions [])
@@ -403,7 +421,7 @@
     (let seq (?? card/created_seq 0))
     (if (&& (>= after 0) (<= seq after)) (continue))
     (if (&& (>= before 0) (>= seq before)) (continue))
-    (records .push (card_block id card)))
+    (records .push (card_block service/runtime id card)))
   (let commands (command_state service/runtime id))
   (for record in commands/records
     (if (== record/ui_action true) (continue))

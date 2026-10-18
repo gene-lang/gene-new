@@ -39,6 +39,13 @@
   (var revision : Int card/definition_revision)
   (set host/enabled/%key revision))
 
+# A page that sees a card go stale forgets its Enable. Another page redrawing
+# the card must leave this page disabled until its own click.
+(fn card_observed [host : CardHost, session : Str, card : Any] : Void
+  (if_yes (cflag card/stale)
+    (var key (card_key session (ctext card/id)))
+    (set host/enabled/%key void)))
+
 (fn card_enabled [host : CardHost, session : Str, card : Any] : Bool
   (if_yes (! (needs_enable card)) (return true))
   (if_yes (cflag card/stale) (return false))
@@ -102,7 +109,8 @@
 (fn update_action [host : CardHost, session : Str, card : Any, name : Str, args : Any, fields : Any] : Void
   (post_action host session card
     {^input_id ($browser/request_id) ^action "update" ^name name ^args args ^fields fields
-     ^definition_revision card/definition_revision ^revision card/revision}))
+     ^definition_revision card/definition_revision ^revision card/revision
+     ^generation card/action_generation}))
 
 (fn enable_card [host : CardHost, session : Str, card : Any] : Void
   (if_yes (!= (ctext card/kind) "live")
@@ -112,7 +120,8 @@
     (return))
   (post_action host session card
     {^input_id ($browser/request_id) ^action "enable"
-     ^definition_revision card/definition_revision ^revision card/revision}))
+     ^definition_revision card/definition_revision ^revision card/revision
+     ^generation card/action_generation}))
 
 (fn plain_attribute [name : Str] : Bool
   (for special in ["key" "field" "args" "update" "send" "answer" "command" "prompt"]
@@ -141,12 +150,18 @@
   (if_not ($absent? props/field)
     (var field_name : Str props/field)
     (var draft_key $"${(card_key session id)}/${field_name}")
+    (var checkbox (== (ctext props/type) "checkbox"))
+    # A checkbox draft is its checked state, not its value.
     (if_not ($absent? host/drafts/%draft_key)
       (var draft_value : Str host/drafts/%draft_key)
-      ($dom/set_input_value element draft_value))
-    ($dom/add_event_listener element "input"
-      (fn [event : Any] : Void
-        (set host/drafts/%draft_key ($dom/input_value element))))
+      (if checkbox
+        (set element/checked (== draft_value "true"))
+        ($dom/set_input_value element draft_value)))
+    (var remember (fn [event : Any] : Void
+      (set host/drafts/%draft_key
+        (if checkbox (if element/checked "true" "false") ($dom/input_value element)))))
+    ($dom/add_event_listener element "input" remember)
+    ($dom/add_event_listener element "change" remember)
     (if_not enabled ($dom/set_attribute element "disabled" ""))
     (fields .push {^name field_name ^element element ^type (ctext props/type)}))
   (if_yes (&& (== tag "form") (! ($absent? props/update)))
@@ -200,6 +215,7 @@
   (var id (ctext card/id))
   (var key (card_key session id))
   (var pending (! ($absent? host/pending/%key)))
+  (card_observed host session card)
   (var enabled (&& (card_enabled host session card) (! owned) (! safe) (! pending)))
   (var section ($dom/render `(section ^class_name "card_block" ^id %$"card-${id}")))
   (var status

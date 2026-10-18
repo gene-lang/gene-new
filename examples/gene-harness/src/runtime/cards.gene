@@ -16,7 +16,7 @@
 
 (type CardError ^props {^code Str ^message Str} ^impl [Error])
 (impl Error for CardError)
-(type CardService ^props {^runtime Any ^inflight Any ^transient Any})
+(type CardService ^props {^runtime Any ^inflight Any ^transient Any ^resolved Any})
 
 (const card_limit 32)
 (const title_limit 60)
@@ -24,12 +24,13 @@
 (const state_limit 65536)
 (const action_retention 256)
 (const input_retention 32)
+(const generation_admissions 128)
 
 (fn card_fail [code : Str, message : Str]
   (fail (CardError ^code code ^message message)))
 
 (fn open_card_service [runtime] : CardService
-  (CardService ^runtime runtime ^inflight ($cell {}) ^transient ($cell {})))
+  (CardService ^runtime runtime ^inflight ($cell {}) ^transient ($cell {}) ^resolved ($cell {})))
 
 (fn update_policy [] {^timeout_ms 2000 ^max_memory_mb 64})
 (fn view_policy [] {^timeout_ms 1000 ^max_memory_mb 32})
@@ -226,7 +227,7 @@
 (fn store_card [runtime, session : Str, card, event : Str]
   (record_core_state runtime/events "session" session "card/state" (card_key card/id) card)
   (flush_event_store runtime/events)
-  (card_changed runtime session (public_card card) event)
+  (card_changed runtime session (shown_card runtime session card) event)
   card)
 
 (fn drop_transient [runtime, session : Str, id : Str]
@@ -312,7 +313,7 @@
         (shown .put "state" checked)
         (shown .put "tree" tree)
         (shown .put "revision" revision)
-        (card_changed runtime session (public_card ^^transient shown) "progress")
+        (card_changed runtime session (shown_card ^^transient runtime session shown) "progress")
         {^id id ^revision revision ^^live})
       (else
         (card .put "state" checked)
@@ -359,6 +360,22 @@
   (copy .delete "input_id")
   ($crypto/sha256 ($serde/write_data copy)))
 
+# Action identities expire by generation, as in the workspace action log. A
+# generation advances every 128 admissions; pruning a receipt raises the floor
+# past its generation, so a retry of a pruned request is refused, never run.
+(fn action_meta [runtime, session : Str]
+  (?? (core_state runtime/events "session" session "card_actions")
+    {^generation 1 ^floor 1 ^admissions 0}))
+
+(fn save_action_meta [runtime, session : Str, meta]
+  (record_core_state runtime/events "session" session "card/action" "card_actions" meta))
+
+# The public record plus the action generation a page sends with its clicks.
+(fn shown_card [runtime, session : Str, card, ^transient transient : Bool = false]
+  (let shown (public_card ^transient transient card))
+  (shown .put "action_generation" (/generation (action_meta runtime session)))
+  shown)
+
 (fn save_receipt [runtime, session : Str, receipt]
   (record_core_state runtime/events "session" session "card/action" (action_key receipt/input_id) receipt)
   (flush_event_store runtime/events)
@@ -371,12 +388,20 @@
       (receipts .push state)))
   (if (<= receipts/.size action_retention) (return nil))
   (let ordered ($order/sort_by receipts (fn [receipt] (?? receipt/admitted_ms 0))))
+  (let meta (action_meta runtime session))
   (var excess (- ordered/.size action_retention))
   (for receipt in ordered
     (if (<= excess 0) (break))
-    (if (!= receipt/status "admitted")
+    (if_yes (!= receipt/status "admitted")
       (record_core_state runtime/events "session" session "card/action" (action_key receipt/input_id) nil)
+      # The floor always passes a pruned receipt's generation. Pruning one of
+      # the current generation (a backlog of admitted clicks) advances the
+      # generation first, so its identity can never be admitted again.
+      (let pruned (?? receipt/generation 1))
+      (if (>= pruned meta/generation) (meta .put "generation" (+ pruned 1)))
+      (meta .put "floor" ($math/max meta/floor (+ pruned 1)))
       (set excess (- excess 1))))
+  (save_action_meta runtime session meta)
   (flush_event_store runtime/events)
   nil)
 
@@ -391,8 +416,19 @@
   (receipt .put "message"
     (if committed "Applied before the host restarted."
       "Interrupted by a host restart. The card is unchanged; effects of anything update called are unknown."))
-  (if_not ($absent? card) (receipt .put "card" (public_card card)))
+  (if_not ($absent? card) (receipt .put "card" (shown_card runtime session card)))
   (save_receipt runtime session receipt))
+
+# Every admission left by an earlier process is resolved before this process
+# commits a click in the session, while the card still names its input.
+(fn resolve_earlier_admissions [runtime, session : Str]
+  (if (== (runtime/cards/resolved/.get .get session) true) (return nil))
+  (for [key state] in (core_states runtime/events "session" session)
+    (if (&& ($str/starts_with? ($to_str key) "card_action/") (! ($absent? state))
+            (== state/status "admitted") (!= state/epoch runtime/epoch))
+      (resolved_receipt runtime session state)))
+  (runtime/cards/resolved/.get .put session true)
+  nil)
 
 (fn card_action_receipt [runtime, session : Str, input_id : Str]
   (require_record runtime/sessions session)
@@ -407,7 +443,7 @@
   (validate_card_id request/card)
   (if_not (["update" "enable"] .contains? request/action)
     (card_fail "invalid_request" "a card action is update or enable"))
-  (for key in ["definition_revision" "revision"]
+  (for key in ["definition_revision" "revision" "generation"]
     (if (!= ($head (request .get key)) Int) (card_fail "invalid_request" $"a card action needs ${key}")))
   (if (== request/action "update")
     (if (|| (!= ($head request/name) Str) (== request/name ""))
@@ -438,6 +474,7 @@
   (let admitted
     (with_session_gate runtime/sessions $"round/${session}" (fn []
       (require_record runtime/sessions session)
+      (resolve_earlier_admissions runtime session)
       # A retained receipt answers before any revision check, so a retry of a
       # click that went through is never refused as stale.
       (let existing (resolved_receipt runtime session
@@ -448,11 +485,28 @@
         (return {^existing existing}))
       (let card (card_record runtime session request/card))
       (if ($absent? card) (card_fail "not_found" $"no card ${request/card} in this session"))
+      # Without a receipt, an identity below the floor may have been pruned. It
+      # is refused, never run, and the refusal carries the card's current
+      # generation so the page's next click is admissible. Nothing is stored.
+      (let meta (action_meta runtime session))
+      (if (< request/generation meta/floor)
+        (return {^existing
+          {^input_id request/input_id ^card request/card ^action request/action
+           ^status "refused" ^code "receipt_expired"
+           ^message "This click is too old to run again. The card shows its current state; click again."
+           ^card (shown_card runtime session card)}}))
+      (if (> request/generation meta/generation)
+        (card_fail "invalid_request" "This card action names an unknown generation."))
       (if (owned? runtime session card)
         (card_fail "busy" "This card belongs to the running round; try again when it finishes."))
       (let receipt
         {^input_id request/input_id ^card request/card ^action request/action
-         ^digest digest ^status "admitted" ^epoch runtime/epoch ^admitted_ms ($os/wall_ms)})
+         ^digest digest ^status "admitted" ^epoch runtime/epoch ^admitted_ms ($os/wall_ms)
+         ^generation meta/generation})
+      (meta .put "admissions" (+ meta/admissions 1))
+      (if (== (// meta/admissions generation_admissions) 0)
+        (meta .put "generation" (+ meta/generation 1)))
+      (save_action_meta runtime session meta)
       (save_receipt runtime session receipt)
       (register_inflight runtime session 1)
       {^receipt receipt})))
@@ -476,15 +530,15 @@
     (return (finish_receipt runtime session receipt
       {^status "refused" ^code "revision_conflict"
        ^message "This card changed. It now shows its current state."
-       ^card (if ($absent? card) nil (public_card card))})))
+       ^card (if ($absent? card) nil (shown_card runtime session card))})))
   (if (!= card/kind "live")
     (return (finish_receipt runtime session receipt
       {^status "refused" ^code "invalid_request" ^message "Only live cards run code."
-       ^card (public_card card)})))
+       ^card (shown_card runtime session card)})))
   (if (&& (== request/action "update") ($absent? card/source/update))
     (return (finish_receipt runtime session receipt
       {^status "refused" ^code "invalid_request" ^message "This card has no update function."
-       ^card (public_card card)})))
+       ^card (shown_card runtime session card)})))
   (let lease (acquire_snapshot runtime/h/snapshots))
   (try
     (let next_state
@@ -510,10 +564,10 @@
     (card .put "inputs" inputs)
     (store_card runtime session card (if (== request/action "update") "updated" "enabled"))
     (finish_receipt runtime session receipt
-      {^status "done" ^revision card/revision ^card (public_card card)})
+      {^status "done" ^revision card/revision ^card (shown_card runtime session card)})
   catch CardError
     (finish_receipt runtime session receipt
-      {^status "failed" ^code $err/code ^message $err/message ^card (public_card card)})
+      {^status "failed" ^code $err/code ^message $err/message ^card (shown_card runtime session card)})
   ensure
     (release_snapshot runtime/h/snapshots lease)))
 
@@ -540,14 +594,28 @@
 
 # A command button on a static card checks the definition; on a live card,
 # whose view can build command text from state, both revisions.
+(fn checked_card_command [runtime, session : Str, ref, text : Str]
+  (let card (checked_card_ref runtime session ref))
+  (if (&& (== card/kind "live") (!= card/revision ref/revision))
+    (card_fail "revision_conflict" "This card changed. It now shows its current state."))
+  (if_not (tree_contains? card/tree "command" text)
+    (card_fail "revision_conflict" "This command is not on the card's current tree."))
+  (shown_card runtime session card))
+
 (fn check_card_command [runtime, session : Str, ref, text : Str]
   (with_session_gate runtime/sessions $"round/${session}" (fn []
-    (let card (checked_card_ref runtime session ref))
-    (if (&& (== card/kind "live") (!= card/revision ref/revision))
-      (card_fail "revision_conflict" "This card changed. It now shows its current state."))
-    (if_not (tree_contains? card/tree "command" text)
-      (card_fail "revision_conflict" "This command is not on the card's current tree."))
-    (public_card card))))
+    (checked_card_command runtime session ref text))))
+
+# A command from a card registers with the resume barrier under the same gate
+# as its ownership check; release_card_command runs when the command ends.
+(fn admit_card_command [runtime, session : Str, ref, text : Str]
+  (with_session_gate runtime/sessions $"round/${session}" (fn []
+    (let shown (checked_card_command runtime session ref text))
+    (register_inflight runtime session 1)
+    shown)))
+
+(fn release_card_command [runtime, session : Str]
+  (register_inflight runtime session -1))
 
 # The admitted request carries the state the user saw, never newer data.
 (fn card_send_item [runtime, session : Str, ref, text : Str]

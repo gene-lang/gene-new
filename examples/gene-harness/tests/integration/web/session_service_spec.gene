@@ -10,6 +10,7 @@
 (import [transcript] ^from "../../../src/agents/turn_loop")
 (import [events_for] ^from "../../../src/storage/state")
 (import [contribute put_cordis_plugin] ^from "../../../src/kernel")
+(import [card_record] ^from "../../../src/runtime/cards")
 (import [Plugin PluginHost] ^from "../../../src/plugin_api")
 (import [register_plugin set_plugin_enabled] ^from "../../../src/storage/workspace")
 
@@ -470,7 +471,8 @@
           (let card blocks/0/card)
           (let clicked (session_card_action service id "count"
             {^input_id "c1" ^action "update" ^name "inc" ^args {} ^fields {}
-             ^definition_revision card/definition_revision ^revision card/revision}))
+             ^definition_revision card/definition_revision ^revision card/revision
+             ^generation card/action_generation}))
           ($assert (== clicked/status "done"))
           ($assert (== (/status (session_card_receipt service id "c1")) "done"))
           (let current clicked/card)
@@ -494,6 +496,35 @@
           (answer service id waiting/questions/id {^pick "b"})
           (service/controller/watchers .get; .get id; .join)
           (let after (snapshot service id))
+          # A card command holds the resume barrier until it finishes.
+          (let finished ($cell false))
+          (let resumed_after_command ($cell nil))
+          (contribute service/runtime/h "core" "commands"
+            {^name "slow" ^usage "/slow" ^doc "Sleep briefly." ^^raw_input
+             ^run (fn [ctx] ($sleep 800) (finished .set true) "slow done")})
+          (set_test_provider service/runtime (fn [request]
+            (if (== request/turn 5)
+              "(card \"slowcard\" ^title \"Slow\" `(button ^command \"/slow\" \"Slow\"))\n(Outcome ^questions [{^id \"go\" ^prompt \"Go?\"}])"
+              (do (resumed_after_command .set finished/.get) "(Outcome ^^done ^reply \"resumed\")"))))
+          (let slow_round (submit service id "slow-1" 4 "slow"))
+          (service/controller/watchers .get; .get id; .join)
+          (let slow_card (card_record service/runtime id "slowcard"))
+          (command service id "/slow" ^card {^id "slowcard" ^definition_revision slow_card/definition_revision
+            ^revision slow_card/revision})
+          ($sleep 30)
+          (answer service id (/id (/questions (receipt service id slow_round/id))) {^go "yes"})
+          (service/controller/watchers .get; .get id; .join)
+          ($assert (== resumed_after_command/.get true) "the round resumed while the card command still ran")
+          # A command that fails to start after admission releases the barrier.
+          (let config_path $"${service/runtime/state_root}/config.gene")
+          (let saved_config ($fs/read_text config_path))
+          ($fs/write_text config_path "(")
+          ($assert (try (command service id "/slow" ^card {^id "slowcard"
+              ^definition_revision slow_card/definition_revision ^revision slow_card/revision}) false
+            catch Any true) "a command started with an unreadable configuration")
+          ($fs/write_text config_path saved_config)
+          ($assert (== (?? (service/runtime/cards/inflight/.get .get id) 0) 0)
+            "a failed command start left the resume barrier held")
           (let answered ($filter after/records (fn [block] (== block/kind "questions"))))
           ($assert (== ($size answered) 1) "the answered question view is not in the transcript")
           ($assert (== answered/0/batch/answers {^pick "b"}))

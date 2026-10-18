@@ -8,10 +8,11 @@
 (import [ui_settings ui_record ui_revision ui_data_revision ui_descriptor ui_error] ^from "./state")
 (import [view_outline outline_text] ^from "./outline")
 
-(fn render_component [h, callback, context, ^experimental experimental : Bool = false, ^sidebar sidebar : Bool = false]
+# One bounded plugin render call (1 s / 32 MiB) in the caller's context.
+(fn bounded_render_call [h, callback, args]
   (let outcome
     (scope
-      (let task (spawn_composition_call h/composition callback [context]
+      (let task (spawn_composition_call h/composition callback args
         {^timeout_ms 1000 ^max_memory_mb 32} ($runtime/context)))
       (let deadline (spawn ^lane root (do ($sleep 1000) task/.cancel)))
       (try task/.join
@@ -20,10 +21,14 @@
           deadline/.cancel
           deadline/.join)))
   (match outcome
-    (when (TaskOutcome/ok value) (bounded_component_view ^experimental experimental ^sidebar sidebar value))
+    (when (TaskOutcome/ok value) value)
     (when (TaskOutcome/error error) (fail (WebComponentError ^message error/message)))
     (when (TaskOutcome/panic message) (fail (WebComponentError ^message $"component render panicked: ${message}")))
     (else (fail (WebComponentError ^message "component render exceeded its budget or was cancelled")))))
+
+(fn render_component [h, callback, context, ^experimental experimental : Bool = false, ^sidebar sidebar : Bool = false]
+  (bounded_component_view ^experimental experimental ^sidebar sidebar
+    (bounded_render_call h callback [context])))
 
 (fn ui_context [h, session : Str, state]
   (let loop_factory (resolve h "loop"))

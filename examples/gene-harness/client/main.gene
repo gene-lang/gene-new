@@ -29,7 +29,7 @@
 (import ^from "./confirmations.gene" [Confirmations create_confirmations command_confirmation])
 (import ^from "./question_state.gene" [waiting_batch])
 (import ^from "./cards.gene"
-  [CardHost create_card_host card_defined card_view card_update_line answered_view])
+  [CardHost create_card_host card_defined card_observed card_view card_update_line answered_view])
 (import ^from "./question_editors.gene"
   [QuestionEditors create_question_editors mount_question question_ready resume_replies])
 (import ^from "./notification_center.gene"
@@ -1268,6 +1268,7 @@
   (var card : Any data/card)
   (var event (string_or data/event ""))
   (var host : CardHost client/cards)
+  (card_observed host session card)
   (if_yes (== event "defined") (card_defined host session card))
   (if_yes (!= session client/selected) (return))
   (var turn : Int card/turn)
@@ -1741,9 +1742,10 @@
     (if_yes (&& (== tab/id client/selected) (== kind "ui/state"))
       (invalidate_status client server_epoch (string_or data/data_revision "")))
     (if_yes (== kind "ready") (set tab/connected true))
-    (if_yes (&& (== kind "card") (!= tab/id client/selected) (== (string_or data/event "") "defined"))
+    (if_yes (&& (== kind "card") (!= tab/id client/selected))
       (var other_host : CardHost client/cards)
-      (card_defined other_host session data/card))
+      (card_observed other_host session data/card)
+      (if_yes (== (string_or data/event "") "defined") (card_defined other_host session data/card)))
     (if (== tab/id client/selected)
       (then
         (set client/message_sequence (- sequence 1))

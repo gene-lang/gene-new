@@ -11,7 +11,8 @@
 (import [core_state record_core_state flush_event_store] ^from "../../../src/storage/state")
 (import [contribute] ^from "../../../src/kernel")
 (import [show_card] ^from "../../../src/plugin_api")
-(import [define_card] ^from "../../../src/runtime/cards")
+(import [define_card action_meta] ^from "../../../src/runtime/cards")
+(import [CommandResult] ^from "../../../src/plugin_api")
 (import [record_text] ^from "../../../src/cli/main")
 
 # One response per call, in order; the last one repeats.
@@ -43,7 +44,8 @@
 (fn click [runtime, id : Str, card, ^name name : Str = "toggle"]
   (card_action runtime "default"
     {^input_id id ^card "renames" ^action "update" ^name name ^args {^from "a"}
-     ^definition_revision card/definition_revision ^revision card/revision}))
+     ^definition_revision card/definition_revision ^revision card/revision
+     ^generation (/generation (action_meta runtime "default"))}))
 
 (describe "Harness conversation cards"
   (it "creates a live card whose clicks commit once, refuse stale revisions and fail without changes" []
@@ -74,7 +76,7 @@
             "a retry ran update twice")
           ($assert (try (card_action runtime "default"
               {^input_id "i1" ^card "renames" ^action "update" ^name "other" ^args {}
-               ^definition_revision 1 ^revision card/revision}) false
+               ^definition_revision 1 ^revision card/revision ^generation 1}) false
             catch CardError (== $err/code "submission_conflict")) "a reused input id was accepted")
           ($assert (== (/status (click runtime "i2" card)) "refused") "a stale click was accepted")
           (let failed (click runtime "i3" toggled ^name "fail"))
@@ -86,7 +88,7 @@
           ($assert (== (/status (card_action_receipt runtime "default" "i3")) "failed"))
           (let enabled (card_action runtime "default"
             {^input_id "e1" ^card "renames" ^action "enable"
-             ^definition_revision 1 ^revision toggled/revision}))
+             ^definition_revision 1 ^revision toggled/revision ^generation 1}))
           ($assert (== enabled/status "done"))
           ($assert (== (/revision (card_record runtime "default" "renames")) (+ toggled/revision 1))
             "enable did not advance the card revision")
@@ -262,6 +264,108 @@
           (let text (record_text {^kind "card" ^card {^title "Board" ^tree {^tag "div" ^props {}
             ^children ["Count" {^tag "button" ^props {} ^children ["Add"]}]}}}))
           ($assert (== text "Board: Count [Add] (interactive in the browser)") $"unexpected card text: ${text}")
+        ensure
+          (close_round_controller controller)
+          (close_runtime runtime))))))
+
+(describe "Harness card review fixes"
+  (it "expires pruned action identities and keeps commit evidence until earlier admissions resolve" []
+    (isolated ^timeout_ms 240000 this_mod/.path "expires pruned action identities and keeps commit evidence until earlier admissions resolve"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (let bumps ($cell 0))
+        (contribute runtime/h "core" "functions"
+          {^name "bump" ^doc "Count calls." ^fn (fn [] (bumps .set (+ bumps/.get 1)))})
+        (try
+          (define_card runtime "default" "r0" 1 "counter"
+            {^title "Counter" ^state {^n 0} ^view (quote (fn [state] `(p %($to_str state/n))))
+             ^update (quote (fn [state action]
+               (if (== action/name "fail") (do (bump) (missing_helper)))
+               {^n (+ state/n 1)}))})
+          (let card (card_record runtime "default" "counter"))
+          (fn request [id, name, revision]
+            {^input_id id ^card "counter" ^action "update" ^name name ^args {}
+             ^definition_revision 1 ^revision revision ^generation (/generation (action_meta runtime "default"))})
+          (let original (request "orig" "fail" card/revision))
+          ($assert (== (/status (card_action runtime "default" original)) "failed"))
+          ($assert (== bumps/.get 1))
+          (repeat i in 256
+            (card_action runtime "default" (request $"stale-${i}" "inc" 999)))
+          (let expired (card_action runtime "default" original))
+          ($assert (&& (== expired/status "refused") (== expired/code "receipt_expired"))
+            "a pruned request was admitted again")
+          ($assert (> expired/card/action_generation 1) "the refusal did not carry the current generation")
+          ($assert (== bumps/.get 1) "a pruned request ran its effects again")
+          # A crash after a commit, before its receipt was stored: the next
+          # process must resolve it before new clicks evict its evidence.
+          (let current (card_record runtime "default" "counter"))
+          (current .put "inputs" ["early"])
+          (record_core_state runtime/events "session" "default" "card/state" "card/counter" current)
+          (record_core_state runtime/events "session" "default" "card/action" "card_action/early"
+            {^input_id "early" ^card "counter" ^digest "x" ^status "admitted" ^epoch runtime/epoch ^admitted_ms ($os/wall_ms) ^generation 3})
+          (flush_event_store runtime/events)
+          (close_runtime runtime)
+          (let reopened (open_runtime workspace "default" (baseline_profile)))
+          (try
+            (var revision (/revision (card_record reopened "default" "counter")))
+            (repeat j in 33
+              (let done (card_action reopened "default"
+                {^input_id $"next-${j}" ^card "counter" ^action "update" ^name "inc" ^args {}
+                 ^definition_revision 1 ^revision revision
+                 ^generation (/generation (action_meta reopened "default"))}))
+              (set revision done/revision))
+            ($assert (== (/status (card_action_receipt reopened "default" "early")) "done")
+              "a committed earlier admission resolved as interrupted")
+          ensure (close_runtime reopened))
+        catch Any
+          (try (close_runtime runtime) catch Any nil)
+          (fail $err)))))
+
+  (it "refuses a pruned current-generation identity behind a backlog of admitted clicks" []
+    (isolated this_mod/.path "refuses a pruned current-generation identity behind a backlog of admitted clicks"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (let bumps ($cell 0))
+        (contribute runtime/h "core" "functions"
+          {^name "bump" ^doc "Count calls." ^fn (fn [] (bumps .set (+ bumps/.get 1)))})
+        (try
+          (define_card runtime "default" "r0" 1 "counter"
+            {^title "Counter" ^state {} ^view (quote (fn [state] `(p "c")))
+             ^update (quote (fn [state action] (bump) (missing_helper)))})
+          # 256 clicks of this process still in flight: none can be pruned.
+          (repeat i in 256
+            (record_core_state runtime/events "session" "default" "card/action" $"card_action/busy-${i}"
+              {^input_id $"busy-${i}" ^card "counter" ^digest "x" ^status "admitted"
+               ^epoch runtime/epoch ^admitted_ms 1 ^generation 1}))
+          (flush_event_store runtime/events)
+          (let card (card_record runtime "default" "counter"))
+          (let original {^input_id "orig" ^card "counter" ^action "update" ^name "go" ^args {}
+                         ^definition_revision 1 ^revision card/revision
+                         ^generation (/generation (action_meta runtime "default"))})
+          ($assert (== (/status (card_action runtime "default" original)) "failed"))
+          (let retried (card_action runtime "default" original))
+          ($assert (== retried/code "receipt_expired") "a pruned current-generation identity was admitted again")
+          ($assert (== bumps/.get 1) "an exact retry ran twice")
+        ensure
+          (close_runtime runtime)))))
+
+  (it "runs question-kind renders under the bounded read-only render budget" []
+    (isolated this_mod/.path "runs question-kind renders under the bounded read-only render budget"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (contribute runtime/h "core" "interactions"
+          {^name "slow_kind" ^validate_request (fn [question] question) ^validate_reply (fn [value] value)
+           ^render (fn [question] ($sleep 1500) (quote (button ^key "a" ^answer "a" "A")))})
+        (let seen ($cell ""))
+        (let controller (test_controller runtime (fn [request]
+          (if (== request/turn 1)
+            "(Outcome ^questions [{^id \"q\" ^kind \"slow_kind\" ^prompt \"Pick\" ^choices [\"a\"]}])"
+            (do (seen .set ($to_str (/content ($last request/messages))))
+              "(Outcome ^^done ^reply \"done\")")))))
+        (try
+          (let admitted (submit_round controller "default" "r1" 1 "ask"))
+          (finish controller admitted/id)
+          ($assert ($str/contains? seen/.get "exceeded its budget") "a slow question render was not bounded")
         ensure
           (close_round_controller controller)
           (close_runtime runtime))))))

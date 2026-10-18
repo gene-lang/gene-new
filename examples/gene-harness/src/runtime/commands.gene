@@ -353,11 +353,14 @@ Stopped."""))))
   (command_changed manager session record)
   record)
 
-(fn submit_command [manager, session : Str, text : Str, ^request_id request_id : Str = "", ^sequence sequence = nil]
+(fn submit_command [manager, session : Str, text : Str, ^request_id request_id : Str = "", ^sequence sequence = nil,
+                     ^on_admit on_admit = nil, ^on_finish on_finish = nil]
   (with_body_use manager/runtime
-    (fn [] (submit_command_impl ^request_id request_id ^sequence sequence manager session text))))
+    (fn [] (submit_command_impl ^request_id request_id ^sequence sequence ^on_admit on_admit ^on_finish on_finish
+      manager session text))))
 
-(fn submit_command_impl [manager, session : Str, text : Str, ^request_id request_id : Str = "", ^sequence sequence = nil]
+(fn submit_command_impl [manager, session : Str, text : Str, ^request_id request_id : Str = "", ^sequence sequence = nil,
+                         ^on_admit on_admit = nil, ^on_finish on_finish = nil]
   (let digest ($crypto/sha256 text))
   (if_yes (!= request_id "")
     (if (|| (> ($str/byte_size request_id) 256) (!= ($head sequence) Int) (< sequence 1))
@@ -367,6 +370,9 @@ Stopped."""))))
       (if (&& (== old/request_digest digest) (== old/request_seq sequence)) (return old))
       (fail (CommandError ^code "submission_conflict" ^message "Command request identity has different content."))))
   (let parsed (parse_submission manager/runtime/h text))
+  # on_admit runs only for a new admission; on_finish runs when its task ends.
+  (if_not ($absent? on_admit) (parsed .put "on_admit" on_admit))
+  (if_not ($absent? on_finish) (parsed .put "on_finish" on_finish))
   (if_yes (!= request_id "")
     (parsed .put "request_id" request_id)
     (parsed .put "request_seq" sequence)
@@ -414,36 +420,51 @@ Stopped."""))))
       allocated)))
   (if duplicate (return record))
   (if_not ($absent? parsed/on_admit) (parsed/on_admit record))
-  (let lease (if ($absent? supplied_lease) (acquire_snapshot manager/runtime/h/snapshots) supplied_lease))
-  (let sink (fn [output] (append_command_output manager session record output)))
-  (let ctx
-    (CommandContext ^manager manager ^runtime manager/runtime ^session session ^raw parsed/raw ^id record/id ^output sink ^snapshot lease/snapshot))
-  (let config ($serde/read_data ($fs/read_text $"${manager/runtime/state_root}/config.gene")))
-  (let budget (?? config/response_budget {^timeout_ms 600000 ^max_memory_mb 1024}))
-  (let timeout (?? budget/timeout_ms 600000))
-  (let invoke
-    ($runtime/bind_call ^policy {^timeout_ms timeout ^max_memory_mb (?? budget/max_memory_mb 1024)}
-      parsed/handler
-      [ctx]))
-  (let task
-    (spawn ^lane root ($runtime/with_context {^session session ^composition manager/runtime/h/snapshots ^snapshot lease/snapshot ^output sink ^command record/id} (fn [] (scope (invoke))))))
-  (acquire_body_use manager/runtime)
-  (manager/active
-    .get
-    ; .put $"${session}:${record/id}" task)
-  (let deadline (spawn ^lane root (do ($sleep timeout) task/.cancel)))
-  (let watcher
-    (spawn ^lane root
-      (try
-        (let outcome (try task/.join ensure deadline/.cancel deadline/.join))
-        (try (finish_command manager session record lease outcome)
-          ensure (mode_command_finished manager/modes session record))
-      ensure (release_body_use manager/runtime))))
-  (manager/watchers
-    .get
-    ; .put $"${session}:${record/id}" watcher)
-  (command_changed manager session record)
-  record)
+  # A setup failure before the watcher exists still runs on_finish, so a
+  # caller's registration (such as a card command's) is always released.
+  (var watched false)
+  (var lease nil)
+  (try
+    (set lease (if ($absent? supplied_lease) (acquire_snapshot manager/runtime/h/snapshots) supplied_lease))
+    (let sink (fn [output] (append_command_output manager session record output)))
+    (let ctx
+      (CommandContext ^manager manager ^runtime manager/runtime ^session session ^raw parsed/raw ^id record/id ^output sink ^snapshot lease/snapshot))
+    (let config ($serde/read_data ($fs/read_text $"${manager/runtime/state_root}/config.gene")))
+    (let budget (?? config/response_budget {^timeout_ms 600000 ^max_memory_mb 1024}))
+    (let timeout (?? budget/timeout_ms 600000))
+    (let invoke
+      ($runtime/bind_call ^policy {^timeout_ms timeout ^max_memory_mb (?? budget/max_memory_mb 1024)}
+        parsed/handler
+        [ctx]))
+    (let task
+      (spawn ^lane root ($runtime/with_context {^session session ^composition manager/runtime/h/snapshots ^snapshot lease/snapshot ^output sink ^command record/id} (fn [] (scope (invoke))))))
+    (acquire_body_use manager/runtime)
+    (manager/active
+      .get
+      ; .put $"${session}:${record/id}" task)
+    (let deadline (spawn ^lane root (do ($sleep timeout) task/.cancel)))
+    (let watcher
+      (spawn ^lane root
+        (try
+          (let outcome (try task/.join ensure deadline/.cancel deadline/.join))
+          (try (finish_command manager session record lease outcome)
+            ensure
+              (mode_command_finished manager/modes session record)
+              (if_not ($absent? parsed/on_finish) (try (parsed/on_finish) catch Any nil)))
+        ensure (release_body_use manager/runtime))))
+    (set watched true)
+    (manager/watchers
+      .get
+      ; .put $"${session}:${record/id}" watcher)
+    (command_changed manager session record)
+    record
+  ensure
+    (if_yes (! watched)
+      # The watcher owns the lease once it exists; before that, release it here.
+      (if (&& ($absent? supplied_lease) (! ($absent? lease)))
+        (release_snapshot manager/runtime/h/snapshots lease))
+      (if_not ($absent? parsed/on_finish)
+        (try (parsed/on_finish) catch Any nil)))))
 
 (fn command_receipt [manager, session : Str, id : Str]
   (let state (command_state manager/runtime session))

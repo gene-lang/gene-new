@@ -81,7 +81,9 @@ validated question to a question view. A question of that kind without its own
      `(div ^class_name "web_grid" %tiles...))})
 ```
 
-The model then asks with data only:
+The render runs like any view render: leased, read-only and within 1 s /
+32 MiB, whatever budget the asking response had left. The model then asks with
+data only:
 `{^id "pick" ^kind "image_choice" ^prompt "Which one?" ^choices ["a.png" "b.png"] ^images ["a.png" "b.png"]}`.
 
 ## Live cards
@@ -200,9 +202,21 @@ ids. Each click is a `card/action` record keyed by its input id; the newest 256
 are kept.
 
 - `POST /api/v8/sessions/<session>/cards/<id>/actions` takes `input_id`, `action`
-  (`update` or `enable`), `name`, `args`, `fields`, `definition_revision` and
-  `revision`, and returns the receipt: `done`, `refused`, `failed` or
-  `interrupted`, with the card's current public record.
+  (`update` or `enable`), `name`, `args`, `fields`, `definition_revision`,
+  `revision` and `generation` (the card's `action_generation`), and returns the
+  receipt: `done`, `refused`, `failed` or `interrupted`, with the card's current
+  public record.
+- Action identities expire by generation. A generation advances every 128
+  admissions; pruning a receipt raises the floor past its generation, first
+  advancing the generation if the pruned receipt belongs to the current one. A
+  request below the floor without a retained receipt is refused with
+  `receipt_expired`, never run again; the refusal carries the card's current
+  `action_generation`, so the page's next click is admissible. Admissions left by an earlier process are
+  resolved before the next click in their session, while the card still names
+  their input.
+- A card's command button registers with the round-resume barrier until the
+  command ends, so answering the card's round waits for it, like a click. A
+  command that fails to start after admission releases its registration.
 - Admission is durable before any card code runs, and a retained receipt
   answers a retry before any revision check. The commit names its input id, so
   a click admitted before a crash resolves to `done` or `interrupted`, never to
