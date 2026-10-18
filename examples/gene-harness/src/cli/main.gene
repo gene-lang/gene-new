@@ -54,6 +54,27 @@ Use --file FILE for send/run text, --no-wait for operator commands,
   (if_not (["round" "command"] .contains? kind) (problem "Receipt kind must be round or command."))
   kind)
 
+# Cards (docs/cards.md) are interactive only in the browser; the terminal
+# prints their title and text, with buttons shown as [label].
+(fn tree_text [tree] : Str
+  (if (!= ($head tree) Map) (return (if ($absent? tree) "" ($to_str tree))))
+  (let parts [])
+  (for child in (?? tree/children []) (parts .push (tree_text child)))
+  (let text ($str/trim ($str/join parts " ")))
+  (if (== tree/tag "button") $"[${text}]" text))
+
+(fn record_text [record] : Str
+  (if (== record/kind "card")
+    (return $"${record/card/title}: ${(tree_text record/card/tree)} (interactive in the browser)"))
+  (if (== record/kind "card/update") (return $"Updated card: ${record/text}"))
+  (if_yes (== record/kind "questions")
+    (let lines [])
+    (for question in record/batch/questions
+      (let answer (record/batch/answers .get question/id))
+      (lines .push $"${question/prompt} -> ${($to_str answer)}"))
+    (return ($str/join lines "; ")))
+  (?? record/text ""))
+
 (fn print_result [result, json : Bool]
   (if ($absent? result) (return nil))
   (if json (return ($println ($json/stringify result))))
@@ -86,7 +107,7 @@ Use --file FILE for send/run text, --no-wait for operator commands,
     (return nil))
   (if_not ($absent? result/records)
     (for record in result/records
-      ($println $"[${record/seq} ${record/kind}] ${record/text}"))
+      ($println $"[${record/seq} ${record/kind}] ${(record_text record)}"))
     (if result/has_older ($println "Earlier records are available with transcript --before SEQ."))
     (return nil))
   (if_not ($absent? result/workspace)

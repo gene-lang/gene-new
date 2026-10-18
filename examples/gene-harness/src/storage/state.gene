@@ -212,7 +212,8 @@
     (events/state_writers/.get .put key writers))
   (if_yes (&& (== origin "core")
               (["session/state" "round/state" "question/asked" "question/answered"
-                "command" "trigger/state" "trigger/occurrence" "history/summary"] .contains? event/type))
+                "command" "trigger/state" "trigger/occurrence" "history/summary"
+                "card/state" "card/action"] .contains? event/type))
     (update_core_projection events key event/key event/state))
   envelope)
 
@@ -264,7 +265,8 @@
 (fn record_core_state
   [events : EventStore, scope : Str, stream : Str, kind : Str, key : Str, state]
   (if_not (["session/state" "round/state" "question/asked" "question/answered"
-            "command" "trigger/state" "trigger/occurrence" "history/summary"] .contains? kind)
+            "command" "trigger/state" "trigger/occurrence" "history/summary"
+            "card/state" "card/action"] .contains? kind)
     (fail (HarnessStateError ^message "unknown core state kind")))
   (append_core_event events scope stream
     {^type kind ^key key ^state (copy_data state)}))

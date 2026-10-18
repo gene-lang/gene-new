@@ -2,7 +2,7 @@
 (import $test [describe it])
 (import [isolated run_spec] ^from "../../support")
 (import [open_event_store close_event_store core_state] ^from "../../../src/storage/state")
-(import [validate_questions normalize_answers ask_questions answer_questions QuestionError]
+(import [validate_questions normalize_answers ask_questions answer_questions QuestionError submitted_digest]
   ^from "../../../src/runtime/questions")
 
 (describe "Harness questions"
@@ -42,6 +42,59 @@
           ($assert (try (answer_questions events "s" "q" {^db "sqlite"}) false catch QuestionError true)
             "conflicting answer retry was accepted")
           ($println "questions: partial answers, dismissal, validation, restart and idempotence passed")
+          ensure (close_event_store events))))))
+
+(describe "Harness question views and final answers"
+  (it "validates question views and answers identical retries from the submitted digest" []
+    (isolated this_mod/.path "validates question views and answers identical retries from the submitted digest"
+      (fn [workspace]
+        (let view (quote (div (button ^key "a" ^answer "a" "A") (button ^key "b" ^answer "b" "B"))))
+        (let batch (validate_questions [{^id "pick" ^prompt "Which?" ^choices ["a" "b"] ^view view}]))
+        ($assert (== batch/0/view/children/0/props/answer "a") "the view was not normalized")
+        ($assert (try (validate_questions [{^id "pick" ^prompt "Which?" ^choices ["a"]
+            ^view (quote (button ^key "z" ^answer "z" "Z"))}]) false
+          catch QuestionError ($str/contains? $err/message "not a choice")) "a view answer outside the choices was accepted")
+        ($assert (try (validate_questions [{^id "pick" ^prompt "Which?" ^choices ["a"]
+            ^view (quote (button ^key "c" ^command "/run 1" "Run"))}]) false
+          catch QuestionError true) "a question view with a command was accepted")
+        ($assert (== (submitted_digest {^x 1 ^y 2} false) (submitted_digest {^y 2 ^x 1} false))
+          "the submitted digest depends on key order")
+        ($fs/make_dir workspace)
+        (let events (open_event_store workspace))
+        (try
+          (ask_questions events "s" "q" 3 [{^id "pick" ^prompt "Which?" ^choices ["a" "b"] ^view view}] ^round "round-1")
+          (let answered (answer_questions events "s" "q" {^pick "b"}))
+          ($assert (== answered/intent "continue"))
+          ($assert (== answered/round "round-1"))
+          ($assert (! ($absent? answered/answered_ms)))
+          # A validator that now refuses everything cannot refuse an identical retry.
+          (let refusing {^select (fn [value] (fail (QuestionError ^message "changed validator")))})
+          ($assert (== (answer_questions ^validators refusing events "s" "q" {^pick "b"}) answered)
+            "an identical retry ran the current validators")
+          ($assert (try (answer_questions events "s" "q" {^pick "a"}) false catch QuestionError true)
+            "a different answer was accepted")
+          ($assert (try (answer_questions ^intent "cancel" events "s" "q" {^pick "b"}) false catch QuestionError true)
+            "the same reply with another intended action was accepted")
+          # A plugin question kind draws its view from the question's data.
+          (let drawn (validate_questions
+            [{^id "img" ^kind "image_choice" ^prompt "Which?" ^choices ["x" "y"] ^images ["x" "y"]}]
+            ^validators {^image_choice (fn [question] question)}
+            ^renderers {^image_choice (fn [question]
+              (let tiles [])
+              (for name in question/images (tiles .push `(button ^key %name ^answer %name %name)))
+              `(div %tiles...))}))
+          ($assert (== ($size drawn/0/view/children) 2) "the kind's render did not draw the view")
+          ($assert (try (validate_questions [{^id "img" ^kind "image_choice" ^prompt "Which?" ^choices ["x"]}]
+              ^validators {^image_choice (fn [question] question)}
+              ^renderers {^image_choice (fn [question] (quote (button ^key "z" ^answer "z" "Z")))}) false
+            catch QuestionError true) "a rendered view outside the choices was accepted")
+          (let single (validate_questions [{^id "one" ^prompt "Pick" ^choices ["a" "b"] ^view view ^^submit_on_answer}]))
+          ($assert (== single/0/submit_on_answer true))
+          ($assert (try (validate_questions [{^id "one" ^prompt "Pick" ^choices ["a" "b"] ^view view ^^submit_on_answer}
+              {^id "two" ^prompt "Other"}]) false catch QuestionError true)
+            "single-click answering was accepted for a batch of two")
+          ($assert (try (validate_questions [{^id "one" ^prompt "Pick" ^choices ["a" "b"] ^^submit_on_answer}]) false
+            catch QuestionError true) "single-click answering was accepted without a view")
           ensure (close_event_store events))))))
 
 (fn main [args] : Int (run_spec args))

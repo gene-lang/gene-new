@@ -2,7 +2,8 @@
 (import $test [describe it])
 (import [isolated run_spec test_service set_test_provider fixture_path] ^from "../../support")
 (import [open_session_service close_session_service create_session submit receipt answer snapshot
-         host_status edit_session acknowledge_attention list_sessions command]
+         host_status edit_session acknowledge_attention list_sessions command
+         session_card_action session_card_receipt]
   ^from "../../../src/web/session_service")
 (import [update_session load_session unload_session list_sessions : runtime_list_sessions]
   ^from "../../../src/runtime/sessions")
@@ -435,6 +436,73 @@
           ($println "live transcript: initial prompt, response, console and progress before completion; custom question validator")
         ensure
           (release .set true)
+          (close_session_service service)))))
+
+  (it "delivers cards, card updates and answered question views through snapshots and pushes" []
+    (isolated this_mod/.path "delivers cards, card updates and answered question views through snapshots and pushes"
+      (fn [workspace]
+        (let card_code """(card "count" ^title "Counter" ^state {^n 0}
+  ^view (fn [state] `(div (p %($to_str state/n)) (button ^key "inc" ^update "inc" "Add")
+    (button ^key "send" ^send "Count sent." "Send") (button ^command "/help" "Help")))
+  ^update (fn [state action] {^n (+ state/n 1)}))""")
+        (let responses ($cell [($to_str card_code "\n(Outcome ^^done ^reply \"made\")")]))
+        (let service (test_service ^workspace workspace ^provider (fn [request]
+          (let queue responses/.get)
+          (let next queue/0)
+          (if (> queue/.size 1) (responses .set ($drop queue 1)))
+          next)))
+        (let messages ($cell []))
+        (service/publisher .set (fn [message] (messages/.get .push message)))
+        (try
+          (let record (create_session service))
+          (let id record/id)
+          (let made (submit service id "card-1" 1 "make a card"))
+          (service/controller/watchers .get; .get id; .join)
+          (let cards ($filter messages/.get (fn [message] (== message/type "card"))))
+          ($assert (== ($size cards) 1) "the card definition was not pushed once")
+          ($assert (== cards/0/data/event "defined"))
+          ($assert (== cards/0/data/card/title "Counter"))
+          ($assert ($absent? cards/0/data/card/state) "card state reached the browser")
+          (let state (snapshot service id))
+          (let blocks ($filter state/records (fn [block] (== block/kind "card"))))
+          ($assert (== ($size blocks) 1) "the snapshot lacks the card")
+          ($assert (== blocks/0/round_id made/id) "the card is not placed in its round")
+          (let card blocks/0/card)
+          (let clicked (session_card_action service id "count"
+            {^input_id "c1" ^action "update" ^name "inc" ^args {} ^fields {}
+             ^definition_revision card/definition_revision ^revision card/revision}))
+          ($assert (== clicked/status "done"))
+          ($assert (== (/status (session_card_receipt service id "c1")) "done"))
+          (let current clicked/card)
+          (let ref {^id "count" ^definition_revision current/definition_revision ^revision current/revision})
+          ($assert (try (command service id "/help" ^card {^id "count" ^definition_revision 1 ^revision 1}) false
+            catch Any true) "a command from an old tree ran")
+          (command service id "/help" ^card ref)
+          (set_test_provider service/runtime (fn [request] "(Outcome ^^done ^reply \"got it\")"))
+          (let sent (submit ^card ref service id "send-1" 2 "Count sent."))
+          ($assert ($str/contains? sent/request "[card.count] Counter"))
+          (service/controller/watchers .get; .get id; .join)
+          (set_test_provider service/runtime (fn [request]
+            (if (== request/turn 3)
+              ($to_str card_code "\n(Outcome ^questions [{^id \"pick\" ^prompt \"Pick\" ^choices [\"a\" \"b\"] ^view `(div (button ^key \"a\" ^answer \"a\" \"A\") (button ^key \"b\" ^answer \"b\" \"B\"))}])")
+              "(Outcome ^^done ^reply \"picked\")")))
+          (let asked (submit service id "ask-1" 3 "ask"))
+          (service/controller/watchers .get; .get id; .join)
+          (let waiting (receipt service id asked/id))
+          ($assert (== waiting/state "waiting"))
+          ($assert (! ($absent? waiting/questions/questions/0/view)) "the question view was dropped")
+          (answer service id waiting/questions/id {^pick "b"})
+          (service/controller/watchers .get; .get id; .join)
+          (let after (snapshot service id))
+          (let answered ($filter after/records (fn [block] (== block/kind "questions"))))
+          ($assert (== ($size answered) 1) "the answered question view is not in the transcript")
+          ($assert (== answered/0/batch/answers {^pick "b"}))
+          (let updates ($filter after/records (fn [block] (== block/kind "card/update"))))
+          ($assert (== ($size updates) 1) "a later redefinition has no update line")
+          ($assert (== updates/0/card_id "count"))
+          ($assert (== ($size ($filter after/records (fn [block] (== block/kind "card")))) 1)
+            "a redefinition moved or duplicated the card")
+        ensure
           (close_session_service service)))))
 
   (it "routes detached console after turn closure and session unload" []

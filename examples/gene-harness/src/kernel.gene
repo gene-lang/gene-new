@@ -797,6 +797,9 @@
 (fn validate_interaction_row [candidate]
   (if (|| ($absent? candidate/name) (! ($runtime/callable? candidate/validate_request)) (! ($runtime/callable? candidate/validate_reply)))
     (fail (HarnessError ^message "an interaction needs a name and request/reply validators")))
+  # An optional render draws the kind's question view (docs/cards.md).
+  (if (&& (! ($absent? candidate/render)) (! ($runtime/callable? candidate/render)))
+    (fail (HarnessError ^message "an interaction render must be callable")))
   candidate)
 
 (fn validate_view_row [candidate]
@@ -865,6 +868,8 @@
 (type ModeChanged : HarnessEvent ^props {^session Str ^mode Any ^instance Any ^running Any ^reason Str})
 (type SessionChanged : HarnessEvent ^props {^record Any})
 (type CompositionChanged : HarnessEvent ^props {^revision Int})
+# A conversation card changed: a stored record, or live progress with ^transient.
+(type CardChanged : HarnessEvent ^props {^session Str ^card Any ^event Str})
 
 (type PluginInstalled : HarnessEvent ^props {^plugin Str})
 (type PluginActivated : HarnessEvent ^props {^plugin Str})

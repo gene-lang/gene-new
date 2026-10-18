@@ -69,6 +69,10 @@
 # never followed.
 (fn remove_tree [root : Str]
   (let entries (($fs/walk root) -> $into []))
+  # Snapshot artifacts in a spec's private HOME are read-only directories;
+  # make every directory writable so its entries can be removed.
+  (for entry in entries
+    (if (== entry/kind "directory") (try ($fs/set_mode entry/path 448) catch Any nil)))
   (var at entries/.size)
   (while (> at 0)
     (set at (- at 1))

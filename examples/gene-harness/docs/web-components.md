@@ -1,7 +1,8 @@
 # Web components contributed by plugins
 
 Plugins enhance the existing Harness browser UI through the `web_components`
-registry. No separate app server or core source edits are needed for a plugin.
+registry. Response code can also place inline [cards](cards.md) in its own
+conversation with the same vocabulary, without a plugin. No separate app server or core source edits are needed for a plugin.
 The registry uses the same activation ownership, queued publication, verified
 module loading, replacement and retirement as functions and commands.
 

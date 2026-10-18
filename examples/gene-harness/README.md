@@ -21,6 +21,7 @@ isolation.
 | Select windows, take screenshots and use computer actions | [Computer use](docs/computer.md) |
 | Notifications, background answers and producer messages | [Notifications](docs/notification.md) |
 | Add UI components or forms | [Web components](docs/web-components.md) |
+| Show cards, question views and interactive cards in a conversation | [Cards](docs/cards.md) |
 | Try the editable project board | [Workspace UI experiment](experiments/ui/README.md) |
 | Follow an end-to-end application build | [Todo replay](docs/todo-replay.md) |
 | Configure Claude transports | [Claude providers](docs/claude.md) |

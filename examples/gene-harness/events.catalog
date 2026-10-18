@@ -20,3 +20,5 @@ command 1 required core_state
 trigger/state 1 required core_state
 trigger/occurrence 1 required core_state
 history/summary 1 required core_state
+card/state 1 required core_state
+card/action 1 required core_state

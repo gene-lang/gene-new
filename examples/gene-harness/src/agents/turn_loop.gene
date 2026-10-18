@@ -21,6 +21,7 @@
 (import ^from "../runtime/questions" [ask_questions])
 (import ^from "../runtime/sessions" [require_record update_session])
 (import [recall_image_run] ^from "../storage/image_runs")
+(import [card_bindings flush_card_progress] ^from "../runtime/cards")
 
 (fn recall_model_context [runtime, session : Str, id : Str]
   (if ($str/starts_with? id "image.")
@@ -230,7 +231,10 @@
         (response_recorded .set true)
         nil)
       (set result
-        (evaluate_harness_turn ^session session ^round round/id ^reviewer selected ^lease lease ^timeout_ms (?? config/response_budget/timeout_ms 600000) ^max_memory_mb (?? config/response_budget/max_memory_mb 1024) ^recall (fn [id] (recall_model_context runtime session id)) ^console_sink (fn [item] (console_output runtime session round/id number item)) ^record (fn [kind data] (if (== kind "turn/response") (record_response data/patch_files) (do (record_core_state runtime/events "session" session "session/state" $"patch/${number}" {^state "completed" ^result data/result ^round round/id ^turn number}) (transcript runtime session {^type "turn/patch" ^round round/id ^turn number ^result data/result ^text data/result/text}))))
+        (evaluate_harness_turn ^session session ^round round/id ^reviewer selected ^lease lease
+          ^bindings (do (let api (card_bindings runtime session round/id number))
+                      (let bound ($thaw ($freeze_shallow api)))
+                      (bound .put "card_api" api) bound) ^timeout_ms (?? config/response_budget/timeout_ms 600000) ^max_memory_mb (?? config/response_budget/max_memory_mb 1024) ^recall (fn [id] (recall_model_context runtime session id)) ^console_sink (fn [item] (console_output runtime session round/id number item)) ^record (fn [kind data] (if (== kind "turn/response") (record_response data/patch_files) (do (record_core_state runtime/events "session" session "session/state" $"patch/${number}" {^state "completed" ^result data/result ^round round/id ^turn number}) (transcript runtime session {^type "turn/patch" ^round round/id ^turn number ^result data/result ^text data/result/text}))))
           runtime/h
           number
           runtime/root
@@ -260,6 +264,8 @@
       (return {^state "failed" ^message message ^stage stage
         ^turn_count count ^last_turn number})
     ensure
+      # Live card progress becomes durable when the turn ends, however it ends.
+      (try (flush_card_progress runtime session) catch Any nil)
       (release_snapshot runtime/h/snapshots lease))
     (let outcome (if ($absent? result/validated) nil result/validated/outcome))
     (if_not ($absent? result/patch)
@@ -315,7 +321,7 @@
             nil
             (+ ($os/wall_ms) (?? config/question_timeout_ms 86400000))))
         (let batch
-          (ask_questions ^deadline deadline ^^normalized
+          (ask_questions ^deadline deadline ^^normalized ^round round/id
             runtime/events
             session
             id

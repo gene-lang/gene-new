@@ -28,6 +28,8 @@
 (import ^from "./notices.gene" [Notices create_notices put_notice remove_notice])
 (import ^from "./confirmations.gene" [Confirmations create_confirmations command_confirmation])
 (import ^from "./question_state.gene" [waiting_batch])
+(import ^from "./cards.gene"
+  [CardHost create_card_host card_defined card_view card_update_line answered_view])
 (import ^from "./question_editors.gene"
   [QuestionEditors create_question_editors mount_question question_ready resume_replies])
 (import ^from "./notification_center.gene"
@@ -47,7 +49,7 @@
 
 (type SessionTab ^props {^id Str ^title Str ^cache Any ^socket Any ^socket_epoch Int ^sequence Int ^connected Bool ^closed Bool ^expanded (List Str) ^server_epoch Str})
 
-(type Client ^props {^selected Str ^csrf Str ^cursor Str ^next_seq Str ^epoch Str ^ready Bool ^connected Bool ^server_busy Bool ^awaiting Str ^awaiting_session Str ^queued_prompt Str ^queued_submit Bool ^message_sequence Int ^sending Bool ^busy Bool ^autoscroll Bool ^has_older Bool ^loading_older Bool ^socket_epoch Int ^viewing_history Bool ^generation Int ^records (List Any) ^preview (List Any) ^sessions (List Any) ^needs_attention (List Any) ^filter_epoch Int ^trigger_selected Str ^tabs (List SessionTab) ^expanded (List Str) ^rounds (List Any) ^input_id Str ^answering Bool ^round Any ^mode Any ^mode_pending Any ^action_cooldown Bool ^was_executing Bool ^pending Any ^status Any ^status_epoch Str ^status_revision Str ^status_generation Int ^components (List Any) ^component_buttons PropMap ^socket Any ^session_revision Str ^ui Any ^media Any ^notices Notices ^confirmations Any ^questions Any ^center Any ^inbox Any ^safe_ui Bool ^root EventTarget ^list EventTarget ^transcript EventTarget ^prompt EventTarget ^notice EventTarget ^title EventTarget ^appearance Str ^style_signature Str})
+(type Client ^props {^selected Str ^csrf Str ^cursor Str ^next_seq Str ^epoch Str ^ready Bool ^connected Bool ^server_busy Bool ^awaiting Str ^awaiting_session Str ^queued_prompt Str ^queued_submit Bool ^message_sequence Int ^sending Bool ^busy Bool ^autoscroll Bool ^has_older Bool ^loading_older Bool ^socket_epoch Int ^viewing_history Bool ^generation Int ^records (List Any) ^preview (List Any) ^sessions (List Any) ^needs_attention (List Any) ^filter_epoch Int ^trigger_selected Str ^tabs (List SessionTab) ^expanded (List Str) ^rounds (List Any) ^input_id Str ^answering Bool ^round Any ^mode Any ^mode_pending Any ^action_cooldown Bool ^was_executing Bool ^pending Any ^status Any ^status_epoch Str ^status_revision Str ^status_generation Int ^components (List Any) ^component_buttons PropMap ^socket Any ^session_revision Str ^ui Any ^media Any ^notices Notices ^confirmations Any ^questions Any ^center Any ^inbox Any ^safe_ui Bool ^root EventTarget ^list EventTarget ^transcript EventTarget ^prompt EventTarget ^notice EventTarget ^title EventTarget ^appearance Str ^style_signature Str ^cards Any})
 
 (fn render_plugin_slot [client : Client, target : EventTarget, slot : Str] : Bool
   (var components client/components)
@@ -517,7 +519,25 @@
       (button ^type "button" ^on_click %(fn [event : Any] : Void
         (set offer/hidden true) ($dom/focus client/prompt)) "Keep draft")))))
 
+(fn card_owned [client : Client, card : Any] : Bool
+  (if_yes ($absent? client/round) (return false))
+  (var round_id : Str client/round/id)
+  (var round_state : Str client/round/state)
+  (var card_round (string_or card/round ""))
+  (&& (== round_state "running") (== round_id card_round)))
+
 (fn render_block [client : Client, target : EventTarget, block : Any] : Void
+  (var block_phase : Str block/phase)
+  (if_yes (== block_phase "card")
+    (var host : CardHost client/cards)
+    ($dom/append target (card_view host client/selected block/card (card_owned client block/card) client/safe_ui))
+    (return))
+  (if_yes (== block_phase "card/update")
+    ($dom/append target (card_update_line block))
+    (return))
+  (if_yes (== block_phase "questions")
+    ($dom/append target (answered_view block (fn [text : Str] : Void (stage_prompt client text))))
+    (return))
   (var id : Str block/id)
   (var generation client/generation)
   ($dom/append
@@ -1190,14 +1210,87 @@
   (render_transcript client)
   (send_pending client))
 
-(fn send_command [client : Client, text : Str, ^clear clear : Bool = true] : Void
+# A card's Send submits a chat message with the card revisions the user saw;
+# the host attaches that exact state, or refuses a changed card.
+(fn stage_card_send [client : Client, text : Str, card : Any] : Void
+  (if_yes (|| (! ($absent? client/pending)) client/sending)
+    (notice client "Resolve the pending submission before sending a card.")
+    (return))
+  (var no_media : (List Any) [])
+  (set client/pending
+    {
+      ^session client/selected
+      ^request_id ($browser/request_id)
+      ^submission_seq client/next_seq
+      ^text text ^media no_media ^card card})
+  (if_not ($session_storage/set "gene-harness/pending" ($json/stringify client/pending))
+    (set client/pending nil)
+    (notice
+      client
+      "Browser storage is required to safely recover a submission. Enable it and try again.")
+    (return))
+  (render_transcript client)
+  (send_pending client))
+
+# A live card update replaces its block in place; a new card is appended.
+(fn apply_card [client : Client, session : Str, card : Any] : Void
+  (if_yes (!= session client/selected) (return))
+  (var id (string_or card/id ""))
+  (var created_seq : Int 0)
+  (if_not ($absent? card/created_seq) (set created_seq card/created_seq))
+  (var block
+    {^id $"${session}/card/${id}" ^seq ($to_str created_seq)
+     ^round_id (string_or card/placement_round "") ^turn card/turn
+     ^role "assistant" ^phase "card" ^kind "card" ^text ""
+     ^card card ^order card/created_ms ^^durable})
+  (var records : (List Any) [])
+  (var found false)
+  (for record in client/records
+    (var record_id : Str record/id)
+    (if (== record_id $"${session}/card/${id}")
+      (do
+        (set found true)
+        (var previous : Any record/card)
+        (var previous_definition : Int previous/definition_revision)
+        (var previous_revision : Int previous/revision)
+        (var next_definition : Int card/definition_revision)
+        (var next_revision : Int card/revision)
+        (if (|| (> next_definition previous_definition)
+                (&& (== next_definition previous_definition) (>= next_revision previous_revision)))
+          (records .push block)
+          (records .push record)))
+      (records .push record)))
+  (if_not found (records .push block))
+  (set client/records records)
+  (render_transcript client))
+
+(fn apply_card_message [client : Client, session : Str, data : Any] : Void
+  (var card : Any data/card)
+  (var event (string_or data/event ""))
+  (var host : CardHost client/cards)
+  (if_yes (== event "defined") (card_defined host session card))
+  (if_yes (!= session client/selected) (return))
+  (var turn : Int card/turn)
+  (var updated_turn : Int card/updated_turn)
+  (if_yes (&& (== event "defined") (!= turn updated_turn))
+    (var card_id (string_or card/id ""))
+    (var definition : Int card/definition_revision)
+    (set client/records
+      (merge_blocks client/records
+        [{^id $"${session}/card-update/${card_id}/${definition}" ^seq "0"
+          ^round_id (string_or card/round "") ^turn updated_turn ^role "assistant"
+          ^phase "card/update" ^kind "card/update" ^text (string_or card/title "")
+          ^card_id card_id ^order card/updated_ms ^^durable}])))
+  (apply_card client session card))
+
+(fn send_command [client : Client, text : Str, ^clear clear : Bool = true, ^card card : Any = nil] : Void
   (set client/sending true)
   (update_controls client)
   (api
     client
     "POST"
     $"/api/v8/sessions/${client/selected}/commands"
-    {^text text}
+    (if ($absent? card) {^text text} {^text text ^card card})
     (fn [code : Int, data : Any] : Void
       (set client/sending false)
       (if (== code 202)
@@ -1488,6 +1581,8 @@
           (apply_records client records cursor)))
       (elif (== kind "round/state")
         (apply_run client session data))
+      (elif (== kind "card")
+        (apply_card_message client session data))
       (elif (== kind "command")
         (apply_command client session data))
       (elif (== kind "stopped")
@@ -1646,6 +1741,9 @@
     (if_yes (&& (== tab/id client/selected) (== kind "ui/state"))
       (invalidate_status client server_epoch (string_or data/data_revision "")))
     (if_yes (== kind "ready") (set tab/connected true))
+    (if_yes (&& (== kind "card") (!= tab/id client/selected) (== (string_or data/event "") "defined"))
+      (var other_host : CardHost client/cards)
+      (card_defined other_host session data/card))
     (if (== tab/id client/selected)
       (then
         (set client/message_sequence (- sequence 1))
@@ -1745,7 +1843,7 @@
   (var initial_mode : Str "light")
   (if_not ($absent? document/dataset/theme) (set initial_mode document/dataset/theme))
   (var client
-    (Client ^selected (query_value ($browser/search) "session") ^csrf "" ^cursor "" ^next_seq "1" ^epoch "" ^!ready ^!sending ^!connected ^!server_busy ^awaiting "" ^awaiting_session "" ^queued_prompt "" ^!queued_submit ^message_sequence 0 ^!busy ^^autoscroll ^generation 0 ^!has_older ^!loading_older ^socket_epoch 0 ^!viewing_history ^records [] ^preview [] ^sessions [] ^needs_attention [] ^filter_epoch 0 ^trigger_selected "" ^tabs [] ^expanded [] ^rounds [] ^input_id "" ^!answering ^round nil ^mode nil ^mode_pending nil ^!action_cooldown ^!was_executing ^pending nil ^status nil ^status_epoch "" ^status_revision "" ^status_generation 0 ^components [] ^component_buttons {} ^socket nil ^session_revision "1" ^ui nil ^media nil ^notices (create_notices) ^confirmations nil ^questions nil ^center nil ^inbox nil ^safe_ui (== (query_value ($browser/search) "ui") "default") ^root root ^list ($dom/element "sessions") ^transcript ($dom/element "transcript") ^prompt ($dom/element "prompt") ^notice ($dom/element "notice") ^title ($dom/element "conversation_title") ^appearance initial_mode ^style_signature ""))
+    (Client ^selected (query_value ($browser/search) "session") ^csrf "" ^cursor "" ^next_seq "1" ^epoch "" ^!ready ^!sending ^!connected ^!server_busy ^awaiting "" ^awaiting_session "" ^queued_prompt "" ^!queued_submit ^message_sequence 0 ^!busy ^^autoscroll ^generation 0 ^!has_older ^!loading_older ^socket_epoch 0 ^!viewing_history ^records [] ^preview [] ^sessions [] ^needs_attention [] ^filter_epoch 0 ^trigger_selected "" ^tabs [] ^expanded [] ^rounds [] ^input_id "" ^!answering ^round nil ^mode nil ^mode_pending nil ^!action_cooldown ^!was_executing ^pending nil ^status nil ^status_epoch "" ^status_revision "" ^status_generation 0 ^components [] ^component_buttons {} ^socket nil ^session_revision "1" ^ui nil ^media nil ^notices (create_notices) ^confirmations nil ^questions nil ^center nil ^inbox nil ^safe_ui (== (query_value ($browser/search) "ui") "default") ^root root ^list ($dom/element "sessions") ^transcript ($dom/element "transcript") ^prompt ($dom/element "prompt") ^notice ($dom/element "notice") ^title ($dom/element "conversation_title") ^appearance initial_mode ^style_signature "" ^cards nil))
   (set client/media
     (create_media client/selected
       (fn [name : Str, data : Str, done : (Fn [Int Any] Void)] : Void
@@ -1758,8 +1856,19 @@
         (api client method path payload done))
       (fn [session : Str] : Void
         (var center : NotificationCenter client/center)
-        (invalidate_questions center session))))
+        (invalidate_questions center session))
+      ^stage (fn [text : Str] : Void (stage_prompt client text))))
   (var questions : QuestionEditors client/questions)
+  (set client/cards
+    (create_card_host
+      (fn [method : Str, path : Str, payload : Any, done : (Fn [Int Any] Void)] : Void
+        (api client method path payload done))
+      (fn [session : Str, text : Str, card : Any] : Void
+        (if_yes (== session client/selected) (send_command ^!clear ^card card client text)))
+      (fn [session : Str, text : Str, card : Any] : Void
+        (if_yes (== session client/selected) (stage_card_send client text card)))
+      (fn [text : Str] : Void (stage_prompt client text))
+      (fn [session : Str, card : Any] : Void (apply_card client session card))))
   (set client/center
     (create_center
       client/notices

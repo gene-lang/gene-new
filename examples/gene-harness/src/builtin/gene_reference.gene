@@ -31,6 +31,11 @@
         "examples/gene-harness/docs/web-components.md"
         ^tags ["ui" "web" "components" "reference"]
         ^docs ["harness/ui" "harness/ui/forms" "harness/ui/drafts" "harness/ui/revisions"])
+      (contribute_doc host "harness/cards"
+        "Inline conversation cards: static cards, question views and live cards with state."
+        "examples/gene-harness/docs/cards.md"
+        ^tags ["cards" "card" "ui" "questions" "interactive" "conversation"]
+        ^docs ["harness/web_components"])
       (contribute_doc host "harness/ui"
         "Start a customized workflow UI: layout, routes and relevant recipes."
         "examples/gene-harness/docs/recipes/ui.md" ^tags ["ui" "web" "workflow" "layout"]

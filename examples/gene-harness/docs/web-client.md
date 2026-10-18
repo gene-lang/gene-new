@@ -113,7 +113,16 @@ retain their final value or exit status.
 Question batches show recommended choices preselected. Nothing is submitted
 automatically. Free text, multiple selections, per-question skipping and
 dismiss-all are supported. A submission is final for the batch. Saved answers
-can be retried with the same identity; conflicting re-answers are rejected.
+can be retried with the same identity, even after the session has moved on;
+conflicting re-answers are rejected. A question with a `^view` shows that view
+instead of its default controls; its answer buttons select draft values and
+**Answer** still submits the batch. Once answered, the view stays in the
+transcript, read-only, with the saved answers marked.
+
+Conversation cards ([cards](cards.md)) appear inline at the turn that made
+them. A page enables a card only when it sees the card defined live; after a
+reload, cards with code or command buttons show **Enable**. While the round
+that owns a card runs, the card shows "Updating…" and refuses clicks.
 
 The Triggers view creates heartbeat, one-shot and cron definitions, with
 missed/overlap policies, continuation and retention. A trigger's occurrence
@@ -174,6 +183,7 @@ session.
 | turn | Response code, request items or patch result record |
 | reply | Progress or final reply record |
 | questions | Durable question batch |
+| card | A card's public record and the change: `defined`, `updated`, `enabled`, `stale` or live `progress` |
 | console | Session console record, including its late flag |
 | command | Streaming chunk or final command record |
 | mode/state | Current input mode or nil; the frame also carries a change reason |
@@ -213,11 +223,13 @@ All API paths use /api/v8.
 | PATCH /sessions/ID | Rename/pin with metadata revision |
 | POST /sessions/ID/open | Acknowledge attention when activating an open tab |
 | GET /sessions/ID/snapshot | Fetch transcript state |
-| POST /sessions/ID/rounds | Admit input with request id and submission sequence; `literal: true` submits prompt text without slash-command parsing |
+| POST /sessions/ID/rounds | Admit input with request id and submission sequence; `literal: true` submits prompt text without slash-command parsing; `card` sends a card's state with the text |
 | GET /sessions/ID/rounds/ROUND | Retrieve an idempotent receipt |
 | POST /sessions/ID/answers | Answer/dismiss a question batch |
+| POST /sessions/ID/cards/CARD/actions | Run a card `update` or `enable` with input id and the definition and card revisions shown |
+| GET /sessions/ID/card-actions/INPUT | Look up a card action receipt without running it |
 | POST /sessions/ID/cancel | Cancel a round |
-| POST /sessions/ID/commands | Submit a slash command; optional request id plus submission sequence enables deduplication |
+| POST /sessions/ID/commands | Submit a slash command; optional request id plus submission sequence enables deduplication; `card` names the card revisions behind a card's command button |
 | GET /sessions/ID/commands/COMMAND | Retrieve an operator-command receipt |
 | POST /sessions/ID/commands/COMMAND/cancel | Cancel an operator command |
 | GET /sessions/ID/requests/REQUEST?kind=round\|command | Look up a retained receipt by client request id |

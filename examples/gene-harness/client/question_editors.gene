@@ -2,8 +2,9 @@
 (mod harness_question_editors ^profile web)
 (import ^from "./question_state.gene" [question_key definitive_reply])
 (import ^from "./notices.gene" [Notices put_notice remove_notice])
+(import ^from "./cards.gene" [question_tree])
 
-(type QuestionEditors ^props {^editors PropMap ^mounts PropMap ^pending PropMap ^drafts PropMap ^ready Bool ^notices Notices ^api (Fn [Str Str Any (Fn [Int Any] Void)] Void) ^changed (Fn [Str] Void)})
+(type QuestionEditors ^props {^editors PropMap ^mounts PropMap ^pending PropMap ^drafts PropMap ^ready Bool ^notices Notices ^api (Fn [Str Str Any (Fn [Int Any] Void)] Void) ^changed (Fn [Str] Void) ^stage (Fn [Str] Void)})
 (type QuestionEditor ^props {^key Str ^session Str ^batch Any ^answers PropMap ^skips PropMap ^sending Bool ^error Str ^views (List Any)})
 
 (fn qtext [value : Any, fallback : Str = ""] : Str
@@ -31,11 +32,12 @@
     {}))
 
 (fn create_question_editors [notices : Notices,
-  api : (Fn [Str Str Any (Fn [Int Any] Void)] Void), changed : (Fn [Str] Void)] : QuestionEditors
+  api : (Fn [Str Str Any (Fn [Int Any] Void)] Void), changed : (Fn [Str] Void),
+  ^stage stage : (Fn [Str] Void) = (fn [text : Str] : Void nil)] : QuestionEditors
   (var controller (QuestionEditors ^editors {} ^mounts {}
     ^pending (restored_map "gene-harness/question-replies")
     ^drafts (restored_map "gene-harness/question-drafts") ^!ready
-    ^notices notices ^api api ^changed changed))
+    ^notices notices ^api api ^changed changed ^stage stage))
   # Upgrade the earlier selected-session slot without dropping an uncertain reply.
   (var old (?? ($session_storage/get "gene-harness/input-reply") ""))
   (if_yes (!= old "")
@@ -102,6 +104,9 @@
       (var element : EventTarget field/element)
       (var id (qtext field/id))
       (var kind (qtext field/kind))
+      (if_yes (== kind "view")
+        (render_question_view controller editor field (&& controller/ready (! editor/sending) (! pending)))
+        (continue))
       (set element/disabled (|| editor/sending pending))
       (if (== kind "skip")
         (set element/checked (== (qjson editor/skips/%id) "true"))
@@ -122,6 +127,46 @@
                 (if_yes (== (qjson choice) (qjson editor/answers/%id)) (set value ($to_str index)))
                 (set index (+ index 1))))
             (if_yes (!= ($dom/input_value element) value) ($dom/set_input_value element value))))))))
+
+# A question view's answer buttons select draft values; Answer still submits
+# the whole batch (docs/cards.md).
+(fn render_question_view [controller : QuestionEditors, editor : QuestionEditor, field : Any, enabled : Bool] : Void
+  (var container : EventTarget field/element)
+  (var question : Any field/question)
+  (var id (qtext field/id))
+  (var multi (== (qjson question/multi) "true"))
+  ($dom/clear container)
+  ($dom/append container
+    (question_tree question/view
+      (fn [value : Any] : Bool
+        (if_yes ($absent? editor/answers/%id) (return false))
+        (var current_json (qjson editor/answers/%id))
+        (var value_json (qjson value))
+        (if_yes (== current_json value_json) (return true))
+        (if_yes (&& multi (str/starts_with? current_json "["))
+          (var picked : (List Any) editor/answers/%id)
+          (for item in picked
+            (if_yes (== (qjson item) value_json) (return true))))
+        false)
+      (fn [value : Any] : Void
+        (if multi
+          (do
+            (var next : (List Any) [])
+            (var removed false)
+            (if_not ($absent? editor/answers/%id)
+              (var saved : (List Any) editor/answers/%id)
+              (for item in saved
+                (if (== (qjson item) (qjson value)) (set removed true) (next .push item))))
+            (if_not removed (next .push value))
+            (set editor/answers/%id next))
+          (set editor/answers/%id value))
+        (store_draft controller editor)
+        # An opt-in single-click question submits its one answer at once.
+        (var batch_questions : (List Any) editor/batch/questions)
+        (if_yes (&& (! multi) (== (qjson question/submit_on_answer) "true") (== ($size batch_questions) 1) enabled)
+          (send_reply controller editor false)))
+      controller/stage
+      enabled)))
 
 (fn store_draft [controller : QuestionEditors, editor : QuestionEditor] : Void
   (var key editor/key)
@@ -267,6 +312,12 @@
     (var id (qtext question/id))
     (var group ($dom/render `(fieldset (legend %(qtext question/prompt)))))
     (var choices : Any question/choices)
+    (if_yes (! ($absent? question/view))
+      (var view_container ($dom/render `(div ^class_name "question_view")))
+      (fields .push {^element view_container ^kind "view" ^id id ^question question})
+      ($dom/append group view_container))
+    (if (! ($absent? question/view))
+      nil
     (if ($absent? choices)
       (do
         (var input ($dom/render `(textarea ^rows "2" ^aria-label %(qtext question/prompt))))
@@ -318,7 +369,7 @@
               (var selected : Int ($json/parse ($dom/input_value select)))
               (set editor/answers/%id (if (< selected 0) void values/%selected))
               (store_draft controller editor)))
-          ($dom/append group select))))
+          ($dom/append group select)))))
     (var skip ($dom/render `(input ^type "checkbox")))
     (var label ($dom/render `(label ^class_name "question_skip")))
     ($dom/append label skip)

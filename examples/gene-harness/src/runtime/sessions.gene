@@ -21,7 +21,7 @@
 
 (type SessionState ^props {^id Str ^runtime Any ^history Any ^round Any ^outputs Any ^console Any ^last_access Any ^viewers Any})
 
-(type SessionManager ^props {^runtime Any ^events Any ^state_root Str ^index Any ^loaded Any ^idle_timeout_ms Int ^closed Any ^mutating Any ^index_writing Any ^gates Any ^gate_mutex Any ^before_remove Any?})
+(type SessionManager ^props {^runtime Any ^events Any ^state_root Str ^index Any ^loaded Any ^idle_timeout_ms Int ^closed Any ^mutating Any ^index_writing Any ^gates Any ^gate_mutex Any ^before_remove Any? ^resumes Any?})
 
 (fn with_session_gate [manager, key : Str, thunk]
   (let gate (manager/gate_mutex (fn []
@@ -84,22 +84,42 @@
   (let manager (SessionManager ^runtime runtime ^events events ^state_root state_root
     ^index ($cell index) ^loaded ($cell {}) ^idle_timeout_ms idle_timeout_ms ^closed ($cell false)
     ^mutating ($sync/gate) ^index_writing ($sync/gate)
-    ^gates ($cell {}) ^gate_mutex ($sync/gate)))
+    ^gates ($cell {}) ^gate_mutex ($sync/gate) ^resumes ($cell [])))
   (write_index manager)
   (recover_sessions manager)
   manager)
+
+# A crash between finalizing a question batch and updating its round leaves
+# an answered batch on a waiting round. The batch records the intended action.
+(fn answered_waiting_batch [manager : SessionManager, id : Str]
+  (let round (restore_round manager id))
+  (if (|| ($absent? round) (!= round/state "waiting") ($absent? round/questions)) (return nil))
+  (let batch (core_state manager/events "session" id $"questions/${round/questions/id}"))
+  (if (|| ($absent? batch) (!= batch/status "answered")) nil batch))
 
 (fn recover_sessions [manager : SessionManager]
   (let marker $"${manager/state_root}/shutdown.gene")
   (let cancelled (if ($fs/exists? marker) ($serde/read_data ($fs/read_text marker)) {}))
   (let interrupted [])
+  (let reasons {})
   (for [id record] in manager/index/.get
-    (if (["running" "cancelled"] .contains? record/status) (interrupted .push ($to_str id))))
+    (if (["running" "cancelled"] .contains? record/status) (interrupted .push ($to_str id)))
+    (if_yes (== record/status "waiting")
+      (let batch (answered_waiting_batch manager ($to_str id)))
+      (if_not ($absent? batch)
+        # Only a recorded continuation resumes, once rounds can run again. A
+        # recorded cancellation cancels; an older record without an intended
+        # action is interrupted, never resumed.
+        (if (== batch/intent "continue")
+          (then (manager/resumes/.get .push ($to_str id)))
+          (else
+            (interrupted .push ($to_str id))
+            (reasons .put ($to_str id) (if (== batch/intent "cancel") "cancelled" "interrupted")))))))
   (for id in interrupted
     (let previous (require_record manager id))
     (let round (restore_round manager id))
-    (let reason (if (|| (== previous/status "cancelled")
-      (&& (! ($absent? round)) (== (cancelled .get round/id) true))) "cancelled" "interrupted"))
+    (let reason (?? (reasons .get id) (if (|| (== previous/status "cancelled")
+      (&& (! ($absent? round)) (== (cancelled .get round/id) true))) "cancelled" "interrupted")))
     (let warnings [])
     (for [key patch] in (core_states manager/events "session" id)
       (if_yes (&& ($str/starts_with? ($to_str key) "patch/") (== patch/state "started"))

@@ -1,11 +1,12 @@
 (mod questions)
 (import [core_state record_core_state flush_event_store] ^from "../storage/state")
+(import [bounded_card_view WebComponentError] ^from "../ui/components")
 
 (type QuestionError ^props {^message Str} ^impl [Error])
 (impl Error for QuestionError)
 (var answer_gate ^^private ($sync/gate))
 
-(fn validate_questions [questions, ^validators validators = {}]
+(fn validate_questions [questions, ^validators validators = {}, ^renderers renderers = {}]
   (if (|| (!= ($head questions) List) (== ($size questions) 0) (> ($size questions) 8))
     (fail (QuestionError ^message "questions must be a batch of 1–8 items")))
   (let ids {})
@@ -35,8 +36,55 @@
     (if (&& (! (["text" "select" "confirm"] .contains? kind)) ($absent? validator))
       (fail (QuestionError ^message $"unknown question kind ${kind}")))
     (if_not ($absent? validator) (validator copy))
+    (if_not ($absent? (?? question/view nil))
+      (copy .put "view" (question_view question/id question/view (?? copy/choices nil) kind)))
+    # A plugin question kind may draw its own view from the question's data.
+    (let renderer (renderers .get kind))
+    (if_yes (&& ($absent? (?? question/view nil)) (! ($absent? renderer)))
+      (let drawn (try (renderer ($freeze copy))
+        catch Any (fail (QuestionError ^message $"question ${question/id} ${kind} render: ${$err/message}"))))
+      (copy .put "view" (question_view question/id drawn (?? copy/choices nil) kind)))
+    # Opt-in single-click answering; the default is select, then Answer.
+    (if_not (== question/submit_on_answer void)
+      (if (!= ($head question/submit_on_answer) Bool)
+        (fail (QuestionError ^message $"question ${question/id} submit_on_answer must be Bool")))
+      (if (&& (== question/submit_on_answer true)
+              (|| (> ($size questions) 1) (== question/multi true) ($absent? (?? copy/view nil))))
+        (fail (QuestionError ^message $"question ${question/id} submit_on_answer needs a single single-choice question with a view"))))
     (normalized .push ($freeze copy)))
   ($freeze normalized))
+
+(fn view_answers [tree, found]
+  (if (!= ($head tree) Map) (return found))
+  (if_not ($absent? (tree/props .get "answer")) (found .push (tree/props .get "answer")))
+  (for child in (?? tree/children []) (view_answers child found))
+  found)
+
+# A question view (docs/cards.md) replaces the default controls. Its answer
+# buttons select values in the editor's draft; the batch is still submitted
+# with Answer, and the host validates the reply as before.
+(fn question_view [id, view, choices, kind : Str]
+  (let tree
+    (try (bounded_card_view view "question")
+      catch WebComponentError
+        (fail (QuestionError ^message $"question ${id} view: ${$err/message}"))))
+  (for value in (view_answers tree [])
+    (if_not ($absent? choices)
+      (if_not (choices .contains? value)
+        (fail (QuestionError ^message $"question ${id} view answers ${($to_str value)}, which is not a choice"))))
+    (if (&& ($absent? choices) (== kind "text") (!= ($head value) Str))
+      (fail (QuestionError ^message $"question ${id} view answers must be text"))))
+  tree)
+
+# The digest of a reply as submitted, before validators run. A retry is
+# compared with it, so a changed validator cannot refuse an identical retry.
+(fn submitted_digest [values, dismiss : Bool] : Str
+  (let names [])
+  (if (== ($head values) Map)
+    (for [key value] in values (names .push ($to_str key))))
+  (let pairs [])
+  (for key in ($order/sort names) (pairs .push [key (values .get key)]))
+  ($crypto/sha256 ($serde/write_data {^answers pairs ^dismiss dismiss})))
 
 (fn normalize_answers [questions, values, ^dismiss dismiss : Bool = false, ^validators validators = {}]
   (if (!= ($head values) Map)
@@ -70,20 +118,31 @@
   ($freeze answers))
 
 (fn ask_questions [events, session : Str, id : Str, turn : Int, questions,
-                   ^deadline deadline = nil, ^validators validators = {}, ^normalized normalized : Bool = false]
+                   ^deadline deadline = nil, ^validators validators = {}, ^normalized normalized : Bool = false,
+                   ^round round = nil]
   # Response evaluation already normalized the batch under its snapshot lease.
   (let batch {^id id ^turn turn ^questions (if normalized questions (validate_questions questions ^validators validators))
-    ^deadline deadline ^status "waiting" ^answers nil ^digest nil})
+    ^deadline deadline ^status "waiting" ^answers nil ^digest nil ^round round
+    ^asked_ms ($os/wall_ms)})
   (record_core_state events "session" session "question/asked" $"questions/${id}" batch)
   (flush_event_store events)
   batch)
 
-(fn answer_questions [events, session : Str, id : Str, values, ^dismiss dismiss : Bool = false, ^validators validators = {}]
-  (answer_gate (fn [] (answer_questions_serial events session id values ^dismiss dismiss ^validators validators))))
+(fn answer_questions [events, session : Str, id : Str, values, ^dismiss dismiss : Bool = false, ^validators validators = {}, ^intent intent : Str = "continue"]
+  (answer_gate (fn [] (answer_questions_serial events session id values ^dismiss dismiss ^validators validators ^intent intent))))
 
-(fn answer_questions_serial [events, session : Str, id : Str, values, ^dismiss dismiss : Bool = false, ^validators validators = {}]
+# Finalizing a batch records the intended round action with it: answers and
+# Dismiss all continue the round, Cancel round cancels it. Recovery applies
+# exactly that recorded action after a crash.
+(fn answer_questions_serial [events, session : Str, id : Str, values, ^dismiss dismiss : Bool = false, ^validators validators = {}, ^intent intent : Str = "continue"]
   (let batch (core_state events "session" session $"questions/${id}"))
   (if ($absent? batch) (fail (QuestionError ^message $"unknown question batch ${id}")))
+  (let submitted (submitted_digest values dismiss))
+  (if (&& (== batch/status "answered") (! ($absent? batch/submitted_digest)))
+    (then
+      (if (&& (== batch/submitted_digest submitted) (== (?? batch/intent "continue") intent))
+        (return batch))
+      (fail (QuestionError ^message $"question batch ${id} already has different answers"))))
   (let answers (normalize_answers batch/questions values ^dismiss dismiss ^validators validators))
   (let digest ($crypto/sha256 ($serde/write_data answers)))
   (if (== batch/status "answered")
@@ -94,6 +153,9 @@
   (batch .put "status" "answered")
   (batch .put "answers" answers)
   (batch .put "digest" digest)
+  (batch .put "submitted_digest" submitted)
+  (batch .put "intent" intent)
+  (batch .put "answered_ms" ($os/wall_ms))
   (record_core_state events "session" session "question/answered" $"questions/${id}" batch)
   (flush_event_store events)
   batch)

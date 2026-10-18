@@ -60,6 +60,13 @@
     (validators .put handler/name handler/validate_request))
   validators)
 
+(fn question_renderers [snapshot]
+  (let renderers {})
+  (for record in (?? (snapshot/registries .get "interactions") [])
+    (let handler record/payload)
+    (if_not ($absent? handler/render) (renderers .put handler/name handler/render)))
+  renderers)
+
 (fn answer_validators [snapshot]
   (let validators {})
   (for record in (?? (snapshot/registries .get "interactions") [])
@@ -95,7 +102,7 @@
     (let bindings
       (workspace_bindings ^extra extra_bindings h lease/snapshot session workspace_root))
     (let result
-      (evaluate_turn ^validators (question_validators lease/snapshot) ^bindings bindings ^timeout_ms timeout_ms ^max_memory_mb max_memory_mb ^console_sink console_sink ^recall recall_function ^record record ^after_patch_rename after_patch_rename ^turn_sink turn_ref ^context {^composition h/snapshots ^snapshot lease/snapshot ^session session ^round round ^reviewer pinned_reviewer}
+      (evaluate_turn ^validators (question_validators lease/snapshot) ^renderers (question_renderers lease/snapshot) ^bindings bindings ^timeout_ms timeout_ms ^max_memory_mb max_memory_mb ^console_sink console_sink ^recall recall_function ^record record ^after_patch_rename after_patch_rename ^turn_sink turn_ref ^context {^composition h/snapshots ^snapshot lease/snapshot ^session session ^round round ^reviewer pinned_reviewer ^cards (?? (extra_bindings .get "card_api") nil)}
         number
         workspace_root
         text))

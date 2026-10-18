@@ -7,6 +7,7 @@
 (import ^from "../runtime/round_controller" ^^export
   [
     new_round_controller
+    resume_answered_rounds
     submit_round
     round_receipt
     round_state
@@ -49,7 +50,9 @@
     DurableRecord])
 (import ^from "../runtime/composition" [acquire_snapshot release_snapshot current_snapshot])
 (import ^from "../runtime/input_modes" [mode_state])
-(import ^from "../kernel" [ModeChanged CompositionChanged])
+(import ^from "../kernel" [ModeChanged CompositionChanged CardChanged])
+(import ^from "../runtime/cards" ^^export
+  [card_records public_card card_action card_action_receipt check_card_command CardError])
 (import ^from "../runtime/appearance" [AppearanceChanged appearance_mode])
 (import ^from "../ui/state" [ui_status ui_data_revision])
 (import ^from "../ui/views" [render_component])
@@ -160,6 +163,8 @@
       (publish_message ^reason changed/reason service "mode/state" changed/session changed/mode))
     (when (changed : CompositionChanged)
       (publish_message service "ui/state" "" (ui_status service/runtime/h)))
+    (when (changed : CardChanged)
+      (publish_message service "card" changed/session {^card changed/card ^event changed/event}))
     (when (changed : WorkspaceManagerChanged)
       (publish_message service "ui/state" "" (ui_status service/runtime/h)))
     (when (changed : AppearanceChanged)
@@ -243,6 +248,8 @@
     (fn [record, metadata]
       (publish_message service "ui/action" "" {^record record ^actions metadata})))
   (set service/controller (new_round_controller runtime))
+  # Recovery recorded answered batches whose continuation never started.
+  (resume_answered_rounds service/controller)
   (service/subscriptions .push
     (runtime/h/bus .subscribe HarnessEvent (fn [event] (handle_harness_event service event))))
   # Runtime-owned observation must not inherit a plugin activation's callback
@@ -294,17 +301,42 @@
   (if record/attention (update_session service/sessions id {^!attention}))
   {^^ok})
 
-(fn submit [service, session : Str, request_id : Str, sequence : Int, text : Str, ^media media = []]
+(fn submit [service, session : Str, request_id : Str, sequence : Int, text : Str, ^media media = [], ^card card = nil]
   (if_not (== ($head media) List)
     (fail (RoundError ^code "invalid_request" ^message "Attachments must be a list of media IDs.")))
+  # A card send is always a chat message, never a slash command.
+  (if_not ($absent? card)
+    (return (submit_round ^media media ^card card service/controller session request_id sequence text)))
   (let parsed (parse_submission service/runtime/h text))
   (if (&& (== parsed/kind "command") (! media/.empty?))
     (fail (RoundError ^code "invalid_request" ^message "Attachments accompany chat messages, not slash commands.")))
   (if (== parsed/kind "command")
     (submit_command service/runtime/commands session text)
     (submit_round ^media media service/controller session request_id sequence parsed/text)))
-(fn command [service, session : Str, text : Str, ^request_id request_id : Str = "", ^sequence sequence = nil]
+(fn command [service, session : Str, text : Str, ^request_id request_id : Str = "", ^sequence sequence = nil, ^card card = nil]
+  # A card's command button names the card revisions behind the clicked tree.
+  (if_not ($absent? card) (check_card_command service/runtime session card text))
   (submit_command ^request_id request_id ^sequence sequence service/runtime/commands session text))
+
+(fn session_card_action [service, session : Str, card : Str, request]
+  (require_record service/sessions session)
+  (let copy ($thaw ($freeze request)))
+  (copy .put "card" card)
+  (card_action service/runtime session copy))
+
+(fn session_card_receipt [service, session : Str, input_id : Str]
+  (card_action_receipt service/runtime session input_id))
+
+(fn card_block [session : Str, card]
+  {^id $"${session}/card/${card/id}" ^seq ($to_str (?? card/created_seq 0))
+   ^round_id (?? card/placement_round "") ^turn (?? card/turn 0)
+   ^role "assistant" ^phase "card" ^kind "card" ^text ""
+   ^card (public_card card) ^order (?? card/created_ms 0) ^^durable})
+
+(fn question_view? [batch] : Bool
+  (for question in (?? batch/questions [])
+    (if_not ($absent? (?? question/view nil)) (return true)))
+  false)
 
 (fn operator_receipt [service, session : Str, id : Str]
   (require_record service/sessions session)
@@ -346,7 +378,32 @@
     (if (&& (>= after 0) (<= event/seq after)) (continue))
     (if (&& (>= before 0) (>= event/seq before)) (continue))
     (if (|| (["turn/response" "turn/request" "turn/patch" "reply" "console"] .contains? event/type) (&& (== event/type "turn/end") (! ($absent? event/payload/text))))
-      (records .push (event_record id event))))
+      (records .push (event_record id event)))
+    # A later definition of a card shows a short line where it happened.
+    (if_yes (== event/type "card/state")
+      (let card event/payload/state)
+      (if (&& (! ($absent? card)) (== card/origin "model") (!= card/updated_turn card/turn))
+        (records .push
+          {^id $"${id}/card-update/${card/id}/${card/definition_revision}" ^seq ($to_str event/seq)
+           ^round_id (?? card/round "") ^turn card/updated_turn ^role "assistant"
+           ^phase "card/update" ^kind "card/update" ^text card/title ^card_id card/id
+           ^order (?? card/updated_ms event/seq) ^^durable})))
+    # Answered questions with views stay in the transcript, read-only.
+    (if_yes (== event/type "question/answered")
+      (let batch event/payload/state)
+      (if (&& (! ($absent? batch)) (question_view? batch))
+        (records .push
+          {^id $"${id}/questions/${batch/id}" ^seq ($to_str event/seq)
+           ^round_id (?? batch/round "") ^turn (?? batch/turn 0) ^role "assistant"
+           ^phase "questions" ^kind "questions" ^text ""
+           ^batch {^id batch/id ^questions batch/questions ^answers batch/answers
+                   ^intent (?? batch/intent "continue")}
+           ^order (?? batch/answered_ms event/seq) ^^durable}))))
+  (for card in (card_records service/runtime id)
+    (let seq (?? card/created_seq 0))
+    (if (&& (>= after 0) (<= seq after)) (continue))
+    (if (&& (>= before 0) (>= seq before)) (continue))
+    (records .push (card_block id card)))
   (let commands (command_state service/runtime id))
   (for record in commands/records
     (if (== record/ui_action true) (continue))

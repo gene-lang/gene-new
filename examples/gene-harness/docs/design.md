@@ -305,6 +305,12 @@ matching `[a-z0-9_]+`. `(attachment "name")` returns the attachment's exact
 text, and `(recall "57.smoke")` returns the full body of an elided item from
 this session. Unknown names and ids are errors.
 
+Each `(card "id" ...)` call site is rewritten to `card_at` with its line, and
+its `^view` and `^update` functions, which must be literal `fn` forms, are
+quoted. A card keeps their source and evaluates it in a fresh environment on
+every call, so it never depends on the turn that made it. `card_update` and
+`card_state` change and read a card. See [cards](cards.md).
+
 | Last value | Effect |
 | --- | --- |
 | Outcome done + non-empty reply | Finish the round and display the reply |
@@ -363,15 +369,26 @@ A batch holds one to eight questions. Each has a unique `^id` and a non-empty
 `^^multi` allows several choices, `^kind "confirm"` asks yes or no, and
 `^recommended` must be one of the choices. Plugins add question kinds as rows
 of the `interactions` registry, which validate both the question and its
-answer.
+answer; an optional `render` draws the kind's question view.
 
 The operator may answer any subset or dismiss the batch. Submission is final;
 the round resumes with a new turn whose request carries
 `[58.answers]` and the frozen answer map, such as
 `#{^db "postgres" ^wipe unanswered}`.
 Re-sending the same answers is accepted, and conflicting ones are rejected.
+A retry is compared with the digest of the reply as submitted before any
+validator or round admission runs, so it succeeds after a validator changes
+or after the session moves on, and it never resumes a round again.
 Batches are durable (`question/asked`, `question/answered`) and survive
 restart. Cancelling the round cancels its questions.
+
+Finalizing a batch records the intended round action with it: answers and
+dismissal continue the round, Cancel round cancels it. If the process stops
+between finalizing the batch and updating the round, recovery applies exactly
+that recorded action once: a recorded continuation resumes with the recorded
+request, a recorded cancellation cancels without a model call, and a batch with
+no recorded action is interrupted. A question may also carry a `^view`, a card
+tree whose answer buttons select draft values (see [cards](cards.md)).
 
 ## Execution lifetime and composition
 
@@ -892,6 +909,7 @@ The Harness relies on general runtime features, documented in
 | Commands, triggers and supervisor | runtime/commands, runtime/triggers, runtime/supervisor |
 | Operator modes and persistent REPL | runtime/input_modes, runtime/repl_sessions, builtin/repl |
 | Durable streams and catalog | storage/state, events.catalog |
+| Conversation cards: records, card code, clicks, sends and progress | runtime/cards |
 | Bounded UTF-8 output shared by history, commands and UI | text |
 | UI component contract and validation | ui/components |
 | UI settings, descriptors and revision identity | ui/state |
@@ -904,6 +922,7 @@ The Harness relies on general runtime features, documented in
 | HTTP lifecycle, connection metadata, authentication and wire contract | web/server, web/connection, web/auth, web/contract |
 | Browser page shell and styles | web/page, web/style |
 | Conversation client and display | client/main, client/state, client/view, client/components |
+| Inline cards, Enable and question views | client/cards |
 | Panel data/storage, keyed DOM and requests/actions | client/ui/model, client/ui/tree, client/ui/controller |
 | Informational site | website/page, website/content, website/style, client/website |
 

@@ -19,7 +19,8 @@
   [core_state record_core_state flush_event_store copy_data append_core_event])
 (import ^from "./sessions"
   [load_session require_record update_session session_busy? with_session_gate])
-(import ^from "./questions" [answer_questions])
+(import ^from "./questions" [answer_questions submitted_digest QuestionError])
+(import ^from "./cards" [wait_for_card_actions card_send_item])
 (import ^from "./commands" [take_command_attachments])
 (import ^from "./workspace_lock" [close_workspace_lock])
 (import ^from "../kernel" [RoundChanged publish])
@@ -183,7 +184,7 @@
     ; .put session watcher)
   receipt)
 
-(fn submit_round [controller : RoundController, session : Str, request_id : Str, sequence : Int, text : Str, ^initiator initiator : Str = "user", ^on_admit on_admit = nil, ^media media = []]
+(fn submit_round [controller : RoundController, session : Str, request_id : Str, sequence : Int, text : Str, ^initiator initiator : Str = "user", ^on_admit on_admit = nil, ^media media = [], ^card card = nil]
   (with_body_use
     controller/runtime
     (fn []
@@ -191,14 +192,14 @@
         controller/runtime/sessions
         $"round/${session}"
         (fn []
-          (submit_round_impl ^initiator initiator ^on_admit on_admit ^media media
+          (submit_round_impl ^initiator initiator ^on_admit on_admit ^media media ^card card
             controller
             session
             request_id
             sequence
             text))))))
 
-(fn submit_round_impl [controller : RoundController, session : Str, request_id : Str, sequence : Int, text : Str, ^initiator initiator : Str = "user", ^on_admit on_admit = nil, ^media media = []]
+(fn submit_round_impl [controller : RoundController, session : Str, request_id : Str, sequence : Int, text : Str, ^initiator initiator : Str = "user", ^on_admit on_admit = nil, ^media media = [], ^card card = nil]
   (require_chat controller/runtime/modes session)
   (if (> ($str/byte_size text) prompt_limit)
     (fail (RoundError ^code "too_large" ^message "Message text exceeds 64 KiB; attach the document instead.")))
@@ -207,8 +208,12 @@
   (let state (round_state controller session))
   (if_not (== ($head media) List)
     (fail (RoundError ^code "invalid_request" ^message "Attachments must be a list of media IDs.")))
-  (let digest ($crypto/sha256 (if media/.empty? text
-    ($serde/write_data {^text text ^media media}))))
+  # A card send's identity covers the card revisions the user saw, so a retry
+  # resolves to the payload admitted the first time.
+  (let card_ref (if ($absent? card) nil
+    {^id card/id ^definition_revision card/definition_revision ^revision card/revision}))
+  (let digest ($crypto/sha256 (if (&& media/.empty? ($absent? card_ref)) text
+    ($serde/write_data {^text text ^media media ^card card_ref}))))
   (for old in state/receipts
     (if (|| (== old/request_id request_id) (== old/submission_seq sequence))
       (then
@@ -223,6 +228,11 @@
     (fail (RoundError ^code "busy" ^message "this session already has a round")))
   (if (!= sequence state/next_seq)
     (fail (RoundError ^code "submission_conflict" ^message "unexpected submission sequence")))
+  (let card_item (if ($absent? card_ref) nil
+    (do
+      (if (!= initiator "user")
+        (fail (RoundError ^code "invalid_request" ^message "Only the user sends cards.")))
+      (card_send_item controller/runtime session card_ref text))))
   (let admission_lease (acquire_snapshot controller/runtime/h/snapshots))
   (let ready_message
     (try
@@ -287,6 +297,10 @@
             """
 """
             text)))))
+  (if_yes (! ($absent? card_item))
+    (let rendered (bounded_request controller/runtime session [card_item]))
+    (receipt .put "card" card_ref)
+    (receipt .put "request" ($to_str receipt/request "\n" rendered/full)))
   (if ($str/starts_with? initiator "trigger:")
     (then
       (receipt .put
@@ -314,9 +328,26 @@
         (fn []
           (answer_round_impl ^dismiss dismiss controller session batch_id values))))))
 
+(fn batch_round_id [batch, batch_id : Str] : Str
+  (if_not ($absent? batch/round) (return batch/round))
+  (let parts ($str/split batch_id "-q-"))
+  (if (< ($size parts) 2) "" parts/0))
+
 (fn answer_round_impl [controller : RoundController, session : Str, batch_id : Str, values, ^dismiss dismiss : Bool = false]
   (let loaded (load_session controller/runtime/sessions session))
   (let receipt loaded/round/.get)
+  # A finalized batch answers retries before round admission: an identical
+  # reply returns its stored result without resuming anything, even after the
+  # session moved on; any other reply is refused.
+  (let stored (core_state controller/runtime/events "session" session $"questions/${batch_id}"))
+  (if_yes (&& (! ($absent? stored)) (== stored/status "answered") (! ($absent? stored/submitted_digest)))
+    (if (|| (!= stored/submitted_digest (submitted_digest values dismiss))
+            (!= (?? stored/intent "continue") "continue"))
+      (fail (QuestionError ^message $"question batch ${batch_id} already has different answers")))
+    (let owner (round_receipt controller session (batch_round_id stored batch_id)))
+    (if_not ($absent? owner) (return (copy_data owner)))
+    (if_not ($absent? receipt) (return (copy_data receipt)))
+    (fail (RoundError ^code "not_found" ^message "The round for this answered batch is not retained.")))
   (if (|| ($absent? receipt) (!= receipt/questions/id batch_id))
     (fail (RoundError ^code "invalid_request" ^message "session is not waiting on this batch")))
   (let lease (acquire_snapshot controller/runtime/h/snapshots))
@@ -334,6 +365,13 @@
     ensure
       (release_snapshot controller/runtime/h/snapshots lease)))
   (if_not (== receipt/state "waiting") (return (copy_data receipt)))
+  (continue_answered_round controller session receipt batch))
+
+# The recorded continuation of an answered batch: answering, and recovery
+# after a crash between the answer and this step, both run it exactly once.
+(fn continue_answered_round [controller : RoundController, session : Str, receipt, batch]
+  # Card clicks admitted before the answer finish before the model runs.
+  (wait_for_card_actions controller/runtime session)
   (let items
     (if ($absent? receipt/request_items_ref)
       []
@@ -374,6 +412,27 @@
   (save_round controller session receipt)
   (start_round_task ^^resume controller session receipt))
 
+# Recovery found waiting rounds whose batch was answered with a recorded
+# continuation but never resumed. Resume each once, now that rounds can run.
+(fn resume_answered_rounds [controller : RoundController]
+  (let sessions controller/runtime/sessions)
+  (let pending sessions/resumes/.get)
+  (sessions/resumes .set [])
+  (for session in pending
+    (try
+      (with_body_use controller/runtime (fn []
+        (with_session_gate sessions $"round/${session}" (fn []
+          (let loaded (load_session sessions session))
+          (let receipt loaded/round/.get)
+          (if_yes (&& (! ($absent? receipt)) (== receipt/state "waiting") (! ($absent? receipt/questions)))
+            (let batch (core_state controller/runtime/events "session" session $"questions/${receipt/questions/id}"))
+            (if (&& (! ($absent? batch)) (== batch/status "answered") (== batch/intent "continue"))
+              (continue_answered_round controller session receipt batch)))))))
+    catch Any
+      (append_core_event controller/runtime/events "session" session
+        {^type "trace" ^text $"answered round did not resume: ${$err/message}" ^^ignorable})))
+  pending/.size)
+
 (fn cancel_round [controller : RoundController, session : Str, id : Str]
   (let loaded (load_session controller/runtime/sessions session))
   (let receipt loaded/round/.get)
@@ -383,7 +442,7 @@
   (if_not ($absent? task) task/.cancel)
   (if (== receipt/state "waiting")
     (then
-      (answer_questions ^^dismiss controller/runtime/events session receipt/questions/id {})
+      (answer_questions ^^dismiss ^intent "cancel" controller/runtime/events session receipt/questions/id {})
       (receipt .put "state" "cancelled")
       (save_round controller session receipt)))
   receipt)

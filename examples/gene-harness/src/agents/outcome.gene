@@ -82,7 +82,7 @@
     (!= value "")
     true))
 
-(fn validate_outcome [turn, value, ^validators validators = {}]
+(fn validate_outcome [turn, value, ^validators validators = {}, ^renderers renderers = {}]
   (let outcome (if (== ($head value) Outcome) value (Outcome ^prompt value)))
   (if (== outcome/done true)
     (then
@@ -108,7 +108,7 @@
       {
         ^kind "questions"
         ^outcome outcome
-        ^questions (validate_questions ^validators validators outcome/questions)}))
+        ^questions (validate_questions ^validators validators ^renderers renderers outcome/questions)}))
   (if (&& (! (nonempty_prompt? outcome/prompt)) (== ($size turn/items/.get) 0))
     (fail (OutcomeError ^message "continuing Outcome requires a prompt or append_prompt items")))
   {^kind "continue" ^outcome outcome ^questions nil})
@@ -147,6 +147,7 @@
       (let head ($head form))
       (if ([`quote `quasiquote] .contains? head) (return form))
       (let body ($node/body form))
+      (if (== head (quote card)) (return (rewrite_card_form form)))
       (if (== head (quote append_prompt))
         (then
           (let meta ($node/meta form))
@@ -166,6 +167,31 @@
         form))
     (else
       form)))
+
+(fn fn_form? [form] : Bool
+  (match form
+    (when (node : Node) (== ($head node) (quote fn)))
+    (else false)))
+
+# A card keeps its ^view and ^update functions as source (docs/cards.md), so
+# they are quoted here and never evaluated in the turn that made the card.
+(fn rewrite_card_form [form]
+  (let meta ($node/meta form))
+  (let line (?? meta/line 1))
+  (let props {})
+  (for [key value] in ($node/props form)
+    (let name ($to_str key))
+    (if (["view" "update"] .contains? name)
+      (then
+        (if_not (fn_form? value)
+          (fail
+            (OutcomeError ^response_line line ^message $"card ^${name} must be a literal (fn ...) form")))
+        (props .put key `(quote %value)))
+      (else
+        (props .put key (rewrite_prompt_form value)))))
+  (let body [line])
+  (for item in ($node/body form) (body .push (rewrite_prompt_form item)))
+  ($node/rebuild ^head (quote card_at) ^body body ^props props form))
 
 (fn abbreviated_form [form] : Str
   (let printed ($to_str (plain_form form)))

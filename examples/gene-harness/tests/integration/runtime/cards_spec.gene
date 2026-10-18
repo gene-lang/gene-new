@@ -1,0 +1,269 @@
+# Tests src/runtime/cards.gene.
+(import $test [describe it])
+(import [isolated run_spec test_controller] ^from "../../support")
+(import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
+(import [baseline_profile] ^from "../../../src/profiles/baseline")
+(import [submit_round round_receipt close_round_controller RoundError]
+  ^from "../../../src/runtime/round_controller")
+(import [card_records card_record card_action card_action_receipt check_card_command
+         card_send_item flush_card_progress CardError]
+  ^from "../../../src/runtime/cards")
+(import [core_state record_core_state flush_event_store] ^from "../../../src/storage/state")
+(import [contribute] ^from "../../../src/kernel")
+(import [show_card] ^from "../../../src/plugin_api")
+(import [define_card] ^from "../../../src/runtime/cards")
+(import [record_text] ^from "../../../src/cli/main")
+
+# One response per call, in order; the last one repeats.
+(fn scripted [responses]
+  (let calls ($cell 0))
+  (fn [request]
+    (let index ($math/min calls/.get (- ($size responses) 1)))
+    (calls .set (+ calls/.get 1))
+    responses/%index))
+
+(fn finish [controller, id : Str]
+  (controller/watchers/.get .get "default"; .join)
+  (round_receipt controller "default" id))
+
+(let renames_card """(card "renames" ^title "Proposed renames"
+  ^state {^items [{^from "a" ^to "b" ^keep true}]}
+  ^view (fn [state]
+    (let rows [])
+    (for item in state/items
+      (let label (if item/keep "Keep" "Skip"))
+      (rows .push `(li ^key %item/from (button ^key %$"t-${item/from}" ^update "toggle" ^args %{^from item/from} %label))))
+    `(section (ul %rows...) (button ^key "send" ^send "Apply." "Send") (button ^command "/help" "Help")))
+  ^update (fn [state action]
+    (if (== action/name "fail") (missing_card_helper))
+    (if (== action/name "bad_state") (return {^f (fn [] 1)}))
+    {^items (state/items .map (fn [item]
+      (if (== item/from action/args/from) {^from item/from ^to item/to ^keep (! item/keep)} item)))}))""")
+
+(fn click [runtime, id : Str, card, ^name name : Str = "toggle"]
+  (card_action runtime "default"
+    {^input_id id ^card "renames" ^action "update" ^name name ^args {^from "a"}
+     ^definition_revision card/definition_revision ^revision card/revision}))
+
+(describe "Harness conversation cards"
+  (it "creates a live card whose clicks commit once, refuse stale revisions and fail without changes" []
+    (isolated this_mod/.path "creates a live card whose clicks commit once, refuse stale revisions and fail without changes"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (let controller (test_controller runtime
+          (scripted [($to_str renames_card "\n(Outcome ^^done ^reply \"made\")")])))
+        (try
+          (let admitted (submit_round controller "default" "r1" 1 "make a card"))
+          ($assert (== (/state (finish controller admitted/id)) "done"))
+          (let card (card_record runtime "default" "renames"))
+          ($assert (== card/title "Proposed renames"))
+          ($assert (== card/kind "live"))
+          ($assert (== card/definition_revision 1))
+          ($assert (== card/commands true) "command buttons were not recorded")
+          ($assert (== card/round admitted/id) "the owning round was not recorded")
+          (let done (click runtime "i1" card))
+          (let reason (?? done/message ""))
+          ($assert (== done/status "done") $"click failed: ${reason}")
+          (let toggled (card_record runtime "default" "renames"))
+          ($assert (== toggled/revision (+ card/revision 1)))
+          ($assert (== toggled/state/items/0/keep false) "update did not change the state")
+          ($assert ((?? toggled/inputs []) .contains? "i1") "the commit did not name its input")
+          # A retry resolves its receipt before any revision check.
+          ($assert (== (/status (click runtime "i1" card)) "done") "a successful retry was refused")
+          ($assert (== (/revision (card_record runtime "default" "renames")) toggled/revision)
+            "a retry ran update twice")
+          ($assert (try (card_action runtime "default"
+              {^input_id "i1" ^card "renames" ^action "update" ^name "other" ^args {}
+               ^definition_revision 1 ^revision card/revision}) false
+            catch CardError (== $err/code "submission_conflict")) "a reused input id was accepted")
+          ($assert (== (/status (click runtime "i2" card)) "refused") "a stale click was accepted")
+          (let failed (click runtime "i3" toggled ^name "fail"))
+          ($assert (== failed/status "failed"))
+          ($assert ($str/contains? failed/message "undefined symbol: missing_card_helper"))
+          (let bad (click runtime "i4" toggled ^name "bad_state"))
+          ($assert (== bad/status "failed") "unserializable state was committed")
+          ($assert (== (card_record runtime "default" "renames") toggled) "a failed click changed the card")
+          ($assert (== (/status (card_action_receipt runtime "default" "i3")) "failed"))
+          (let enabled (card_action runtime "default"
+            {^input_id "e1" ^card "renames" ^action "enable"
+             ^definition_revision 1 ^revision toggled/revision}))
+          ($assert (== enabled/status "done"))
+          ($assert (== (/revision (card_record runtime "default" "renames")) (+ toggled/revision 1))
+            "enable did not advance the card revision")
+        ensure
+          (close_round_controller controller)
+          (close_runtime runtime)))))
+
+  (it "checks sends and command buttons against the revisions the user saw" []
+    (isolated this_mod/.path "checks sends and command buttons against the revisions the user saw"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (let requests ($cell []))
+        (let base (scripted [($to_str renames_card "\n(Outcome ^^done ^reply \"made\")")
+                             "(Outcome ^^done ^reply \"sent\")"]))
+        (let controller (test_controller runtime (fn [request]
+          (requests/.get .push request)
+          (base request))))
+        (try
+          (let admitted (submit_round controller "default" "r1" 1 "make a card"))
+          (finish controller admitted/id)
+          (let card (card_record runtime "default" "renames"))
+          (let ref {^id "renames" ^definition_revision 1 ^revision card/revision})
+          ($assert (== (/id (check_card_command runtime "default" ref "/help")) "renames"))
+          ($assert (try (check_card_command runtime "default" ref "/run 1") false
+            catch CardError (== $err/code "revision_conflict")) "a command not on the card was accepted")
+          ($assert (try (check_card_command runtime "default"
+              {^id "renames" ^definition_revision 1 ^revision (+ card/revision 5)} "/help") false
+            catch CardError (== $err/code "revision_conflict")) "a live card command skipped its card revision")
+          ($assert (try (card_send_item runtime "default" ref "Other.") false
+            catch CardError true) "a send not on the card was accepted")
+          (let sent (submit_round ^card ref controller "default" "send-1" 2 "Apply."))
+          ($assert ($str/contains? sent/request "[card.renames] Proposed renames") "the card item is missing")
+          ($assert ($str/contains? sent/request "^items") "the card state is missing")
+          (finish controller sent/id)
+          # A retry of the same send resolves to its admitted payload.
+          ($assert (== (/id (submit_round ^card ref controller "default" "send-1" 2 "Apply.")) sent/id))
+          ($assert (try (submit_round ^card {^id "renames" ^definition_revision 1 ^revision 99}
+              controller "default" "send-2" 3 "Apply.") false
+            catch CardError (== $err/code "revision_conflict")) "a stale send was accepted")
+        ensure
+          (close_round_controller controller)
+          (close_runtime runtime)))))
+
+  (it "shows progress live within its round and marks earlier cards stale" []
+    (isolated this_mod/.path "shows progress live within its round and marks earlier cards stale"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (let progress """(card "tests" ^title "Tests" ^state {^done 0}
+  ^view (fn [state] `(p %($to_str state/done " done"))))
+(card_update "tests" {^done 1})
+(card_update "tests" {^done 2})
+(append_prompt "state" (card_state "tests"))
+(Outcome ^prompt "continue")""")
+        (let controller (test_controller runtime
+          (scripted [progress "(Outcome ^^done ^reply \"done\")"
+                     "(card_update \"tests\" {^done 7})\n(Outcome ^^done ^reply \"later\")"])))
+        (try
+          (let first (submit_round controller "default" "r1" 1 "run"))
+          (finish controller first/id)
+          (let card (card_record runtime "default" "tests"))
+          ($assert (== card/state {^done 2}) "progress was not stored at the turn end")
+          ($assert (== card/stale false))
+          ($assert (== card/tree/children/0 "2 done") "the progress tree was not stored")
+          (let second (submit_round controller "default" "r2" 2 "update"))
+          (finish controller second/id)
+          (let later (card_record runtime "default" "tests"))
+          ($assert (== later/state {^done 7}) "an earlier card's state was not stored")
+          ($assert (== later/stale true) "an earlier card was not marked stale")
+          ($assert (== later/tree card/tree) "an earlier card ran its view without a click")
+        ensure
+          (close_round_controller controller)
+          (close_runtime runtime)))))
+
+  (it "refuses clicks while the owning round runs" []
+    (isolated this_mod/.path "refuses clicks while the owning round runs"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (let entered ($cell false))
+        (let release ($cell false))
+        (let base (scripted [($to_str renames_card "\n(Outcome ^prompt \"continue\")")
+                             "(Outcome ^^done ^reply \"done\")"]))
+        (let controller (test_controller runtime (fn [request]
+          (let response (base request))
+          (if_yes (== request/turn 2)
+            (entered .set true)
+            (while (! release/.get) ($sleep 10)))
+          response)))
+        (try
+          (let admitted (submit_round controller "default" "r1" 1 "make a card"))
+          (while (! entered/.get) ($sleep 10))
+          (let card (card_record runtime "default" "renames"))
+          ($assert (try (click runtime "busy-1" card) false
+            catch CardError (== $err/code "busy")) "a click ran during the owning round")
+          ($assert ($absent? (core_state runtime/events "session" "default" "card_action/busy-1"))
+            "a refused click left an admission")
+          (release .set true)
+          (finish controller admitted/id)
+          ($assert (== (/status (click runtime "after-1" card)) "done") "a click failed after the round")
+        ensure
+          (release .set true)
+          (close_round_controller controller)
+          (close_runtime runtime)))))
+
+  (it "rejects bad definitions without changing the previous card and resolves interrupted clicks" []
+    (isolated this_mod/.path "rejects bad definitions without changing the previous card and resolves interrupted clicks"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (let controller (test_controller runtime
+          (scripted [($to_str renames_card "\n(Outcome ^^done ^reply \"made\")")
+                     """(let local 5)
+(let failure (try (card "renames" ^title "Broken" ^state {} ^view (fn [state] `(p %local))) nil
+  catch Any $err/message))
+(Outcome ^^done ^reply (?? failure "no error"))"""
+                     """(let failure (try (card "other" ^title "Too long a title for a card that has to stay concise and short" `(p "x")) nil
+  catch Any $err/message))
+(Outcome ^^done ^reply (?? failure "no error"))"""])))
+        (try
+          (let first (submit_round controller "default" "r1" 1 "make"))
+          (finish controller first/id)
+          (let card (card_record runtime "default" "renames"))
+          (let second (submit_round controller "default" "r2" 2 "break"))
+          (finish controller second/id)
+          ($assert (== (card_record runtime "default" "renames") card)
+            "a failing redefinition changed the card")
+          (let third (submit_round controller "default" "r3" 3 "title"))
+          (finish controller third/id)
+          ($assert ($absent? (card_record runtime "default" "other")) "a card with a long title was stored")
+          # An admission from an earlier process: committed or not.
+          (record_core_state runtime/events "session" "default" "card/action" "card_action/old-1"
+            {^input_id "old-1" ^card "renames" ^digest "x" ^status "admitted" ^epoch "previous" ^admitted_ms 1})
+          (let committed (card_record runtime "default" "renames"))
+          (committed .put "inputs" ["old-2"])
+          (record_core_state runtime/events "session" "default" "card/state" "card/renames" committed)
+          (record_core_state runtime/events "session" "default" "card/action" "card_action/old-2"
+            {^input_id "old-2" ^card "renames" ^digest "y" ^status "admitted" ^epoch "previous" ^admitted_ms 2})
+          (flush_event_store runtime/events)
+          ($assert (== (/status (card_action_receipt runtime "default" "old-1")) "interrupted"))
+          ($assert (== (/status (card_action_receipt runtime "default" "old-2")) "done"))
+        ensure
+          (close_round_controller controller)
+          (close_runtime runtime))))))
+
+(describe "Harness card extensions"
+  (it "lets plugin functions show cards, warns about unresolved names and prints cards as text" []
+    (isolated this_mod/.path "lets plugin functions show cards, warns about unresolved names and prints cards as text"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (contribute runtime/h "core" "functions"
+          {^name "show_board" ^doc "Show a board card."
+           ^fn (fn [] (show_card "board" ^title "Board" ^state {^n 1}
+             ^view (quote (fn [state] `(p %($to_str state/n))))))})
+        (let controller (test_controller runtime
+          (scripted ["(append_prompt \"shown\" (show_board))\n(Outcome ^^done ^reply \"shown\")"])))
+        (try
+          (let admitted (submit_round controller "default" "r1" 1 "board"))
+          (finish controller admitted/id)
+          (let board (card_record runtime "default" "board"))
+          ($assert (== board/kind "live") "a plugin function could not show a card")
+          ($assert (== board/round admitted/id) "a plugin card did not belong to the calling round")
+          ($assert (try (show_card "outside" ^title "Outside" `(p "x")) false catch Any true)
+            "show_card worked outside a turn")
+          (let warned (define_card runtime "default" "r0" 1 "typo"
+            {^title "Typo" ^state {} ^view (quote (fn [state] `(p "ok")))
+             ^update (quote (fn [state action] (missing_helper state)))}))
+          ($assert (== ($size warned/warnings) 1) "an unresolved name was not reported")
+          ($assert ($str/contains? warned/warnings/0 "missing_helper"))
+          (let clean (define_card runtime "default" "r0" 1 "clean"
+            {^title "Clean" ^state {^items []}
+             ^view (quote (fn [state] (let rows []) (for item in state/items (rows .push item)) `(ul %rows...)))
+             ^update (quote (fn [state action] {^items (state/items .map (fn [x] x))}))}))
+          (let reported ($str/join clean/warnings "; "))
+          ($assert clean/warnings/.empty? $"a resolvable card reported warnings: ${reported}")
+          (let text (record_text {^kind "card" ^card {^title "Board" ^tree {^tag "div" ^props {}
+            ^children ["Count" {^tag "button" ^props {} ^children ["Add"]}]}}}))
+          ($assert (== text "Board: Count [Add] (interactive in the browser)") $"unexpected card text: ${text}")
+        ensure
+          (close_round_controller controller)
+          (close_runtime runtime))))))
+
+(fn main [args] : Int (run_spec args))

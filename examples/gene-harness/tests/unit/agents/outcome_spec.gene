@@ -107,6 +107,23 @@ next"""))
     []
     (assert_raises (fn [] (rewrite_prompt_calls [(quote (append_prompt label 1))])) OutcomeError)))
 
+(describe "Harness card call sites"
+  (it "quotes literal card functions and rejects computed ones" []
+    (let forms ($into ($parse/read_all ^source "response" ^^locs
+      "(card \"c\" ^title \"T\" ^state {^n 1} ^view (fn [state] (quote (p \"x\"))) ^update (fn [state action] state))") []))
+    (let calls (rewrite_prompt_calls forms))
+    (let rewritten calls/0)
+    ($assert (== ($head rewritten) (quote card_at)) "card was not rewritten to card_at")
+    (let body ($node/body rewritten))
+    ($assert (== body/0 1) "the call line was not recorded")
+    (let view (($node/props rewritten) .get "view"))
+    ($assert (== ($head view) (quote quote)) "the view function was not quoted")
+    (let computed ($into ($parse/read_all ^source "response" ^^locs
+      "(let v (fn [state] state))\n(card \"c\" ^title \"T\" ^view v)") []))
+    ($assert (try (rewrite_prompt_calls computed) false
+      catch OutcomeError (&& ($str/contains? $err/message "literal (fn ...)") (== $err/response_line 2)))
+      "a computed view function was accepted")))
+
 (fn main [args] : Int
   (let result (run ^name (?? args/0 "")))
   result/exit_code)

@@ -1,0 +1,318 @@
+# Conversation cards (docs/cards.md): inline rendering, Enable and card actions.
+# Enabled state belongs to this page: a card is enabled when this page saw it
+# defined live, or after the user clicks Enable. A reload disables every card
+# that has code or command buttons; nothing here survives a reload on purpose.
+(mod harness_cards ^profile web)
+
+(type CardHost ^props {^enabled PropMap ^pending PropMap ^errors PropMap ^drafts PropMap
+  ^api (Fn [Str Str Any (Fn [Int Any] Void)] Void)
+  ^command (Fn [Str Str Any] Void)
+  ^send (Fn [Str Str Any] Void)
+  ^prompt (Fn [Str] Void)
+  ^update (Fn [Str Any] Void)})
+
+(fn ctext [value : Any, fallback : Str = ""] : Str
+  (if_yes ($absent? value) (return fallback))
+  (var result : Str value)
+  result)
+
+(fn cflag [value : Any] : Bool
+  (if_yes ($absent? value) (return false))
+  (var result : Bool value)
+  result)
+
+(fn create_card_host [api : (Fn [Str Str Any (Fn [Int Any] Void)] Void),
+  command : (Fn [Str Str Any] Void), send : (Fn [Str Str Any] Void),
+  prompt : (Fn [Str] Void), update : (Fn [Str Any] Void)] : CardHost
+  (CardHost ^enabled {} ^pending {} ^errors {} ^drafts {}
+    ^api api ^command command ^send send ^prompt prompt ^update update))
+
+(fn card_key [session : Str, id : Str] : Str $"${session}/${id}")
+
+# A static card with only prompt buttons runs no code and needs no button.
+(fn needs_enable [card : Any] : Bool
+  (|| (== (ctext card/kind) "live") (cflag card/commands)))
+
+# Only a live definition event enables a card; snapshots never do.
+(fn card_defined [host : CardHost, session : Str, card : Any] : Void
+  (var key (card_key session (ctext card/id)))
+  (var revision : Int card/definition_revision)
+  (set host/enabled/%key revision))
+
+(fn card_enabled [host : CardHost, session : Str, card : Any] : Bool
+  (if_yes (! (needs_enable card)) (return true))
+  (if_yes (cflag card/stale) (return false))
+  (var key (card_key session (ctext card/id)))
+  (if_yes ($absent? host/enabled/%key) (return false))
+  (var enabled_revision : Int host/enabled/%key)
+  (var revision : Int card/definition_revision)
+  (== enabled_revision revision))
+
+(fn card_ref [card : Any] : Any
+  {^id card/id ^definition_revision card/definition_revision ^revision card/revision})
+
+(fn settle_card [host : CardHost, session : Str, card : Any, key : Str, data : Any] : Void
+  (set host/pending/%key void)
+  (var status (ctext data/status))
+  (if (== status "done")
+    (set host/errors/%key void)
+    (set host/errors/%key (ctext data/message "The card action did not complete.")))
+  (if_not ($absent? data/card)
+    (var current : Any data/card)
+    (if_yes (== status "done")
+      (if_yes (== (ctext data/action) "enable")
+        (var defined_revision : Int current/definition_revision)
+        (set host/enabled/%key defined_revision)))
+    (host/update session current))
+  (if_yes ($absent? data/card) (host/update session card)))
+
+(fn post_action [host : CardHost, session : Str, card : Any, request : Any] : Void
+  (var key (card_key session (ctext card/id)))
+  (set host/pending/%key request)
+  (set host/errors/%key void)
+  (host/update session card)
+  (var id (ctext card/id))
+  (host/api
+    "POST"
+    $"/api/v8/sessions/${session}/cards/${id}/actions"
+    request
+    (fn [code : Int, data : Any] : Void
+      (if (== code 200)
+        (do
+          (var receipt : Any data)
+          (var copy : Any receipt)
+          (set copy/action request/action)
+          (settle_card host session card key copy))
+        (if (|| (== code 0) (>= code 500) (== (ctext data/code) "disconnected"))
+          (do
+            # The outcome is unknown: keep the identity so Retry resolves it.
+            (set host/errors/%key "The outcome is unknown. Retry resolves this exact click.")
+            (host/update session card))
+          (do
+            (set host/pending/%key void)
+            (set host/errors/%key (ctext data/message "The card action was refused."))
+            (host/update session card)))))))
+
+(fn retry_action [host : CardHost, session : Str, card : Any] : Void
+  (var key (card_key session (ctext card/id)))
+  (if_yes ($absent? host/pending/%key) (return))
+  (var request : Any host/pending/%key)
+  (post_action host session card request))
+
+(fn update_action [host : CardHost, session : Str, card : Any, name : Str, args : Any, fields : Any] : Void
+  (post_action host session card
+    {^input_id ($browser/request_id) ^action "update" ^name name ^args args ^fields fields
+     ^definition_revision card/definition_revision ^revision card/revision}))
+
+(fn enable_card [host : CardHost, session : Str, card : Any] : Void
+  (if_yes (!= (ctext card/kind) "live")
+    # A static card's Enable runs nothing; it only turns its buttons back on.
+    (card_defined host session card)
+    (host/update session card)
+    (return))
+  (post_action host session card
+    {^input_id ($browser/request_id) ^action "enable"
+     ^definition_revision card/definition_revision ^revision card/revision}))
+
+(fn plain_attribute [name : Str] : Bool
+  (for special in ["key" "field" "args" "update" "send" "answer" "command" "prompt"]
+    (if_yes (== special name) (return false)))
+  true)
+
+(fn render_card_tree [host : CardHost, session : Str, card : Any, tree : Any, enabled : Bool,
+  fields : (List Any)] : EventTarget
+  (if_yes ($absent? tree) (return ($dom/create_text "")))
+  (if_yes ($absent? tree/tag)
+    (var text : Str tree)
+    (return ($dom/create_text text)))
+  (var tag : Str tree/tag)
+  (var element ($dom/create_element tag))
+  (var props : PropMap tree/props)
+  (for [raw_name value] in props
+    (var name : Str ($to_str raw_name))
+    (if_yes (|| (! (plain_attribute name)) ($absent? value)) (continue))
+    (var attribute_text : Str value)
+    ($dom/set_attribute element name attribute_text))
+  (var children : (List Any) tree/children)
+  (var form_fields : (List Any) (if (== tag "form") [] fields))
+  (for child in children
+    ($dom/append element (render_card_tree host session card child enabled form_fields)))
+  (var id (ctext card/id))
+  (if_not ($absent? props/field)
+    (var field_name : Str props/field)
+    (var draft_key $"${(card_key session id)}/${field_name}")
+    (if_not ($absent? host/drafts/%draft_key)
+      (var draft_value : Str host/drafts/%draft_key)
+      ($dom/set_input_value element draft_value))
+    ($dom/add_event_listener element "input"
+      (fn [event : Any] : Void
+        (set host/drafts/%draft_key ($dom/input_value element))))
+    (if_not enabled ($dom/set_attribute element "disabled" ""))
+    (fields .push {^name field_name ^element element ^type (ctext props/type)}))
+  (if_yes (&& (== tag "form") (! ($absent? props/update)))
+    (var form_action : Str props/update)
+    (var form_args : Any {})
+    (if_not ($absent? props/args) (set form_args props/args))
+    ($dom/add_event_listener element "submit"
+      (fn [event : Any] : Void
+        ($dom/prevent_default event)
+        (if_yes enabled
+          (var values : PropMap {})
+          (for field in form_fields
+            (var field_element : EventTarget field/element)
+            (var submitted_name : Str field/name)
+            (if (== (ctext field/type) "checkbox")
+              (set values/%submitted_name field_element/checked)
+              (set values/%submitted_name ($dom/input_value field_element))))
+          (update_action host session card form_action form_args values)))))
+  (if_yes (== tag "button")
+    (var has_action (|| (! ($absent? props/update)) (! ($absent? props/send))
+                        (! ($absent? props/command)) (! ($absent? props/prompt))))
+    (if_yes (&& has_action (! (== (ctext props/type) "submit")))
+      ($dom/set_attribute element "type" "button"))
+    (if_yes (&& (|| has_action (== (ctext props/type) "submit")) (! enabled) ($absent? props/prompt))
+      ($dom/set_attribute element "disabled" ""))
+    (if_yes (&& (! ($absent? props/update)) (!= (ctext props/type) "submit"))
+      (var button_action : Str props/update)
+      (var button_args : Any {})
+      (if_not ($absent? props/args) (set button_args props/args))
+      ($dom/add_event_listener element "click"
+        (fn [event : Any] : Void
+          (if_yes enabled (update_action host session card button_action button_args {})))))
+    (if_not ($absent? props/send)
+      (var send_text : Str props/send)
+      ($dom/add_event_listener element "click"
+        (fn [event : Any] : Void
+          (if_yes enabled (host/send session send_text (card_ref card))))))
+    (if_not ($absent? props/command)
+      (var command_text : Str props/command)
+      ($dom/add_event_listener element "click"
+        (fn [event : Any] : Void
+          (if_yes enabled (host/command session command_text (card_ref card))))))
+    (if_not ($absent? props/prompt)
+      (var prompt_text : Str props/prompt)
+      ($dom/add_event_listener element "click"
+        (fn [event : Any] : Void (host/prompt prompt_text)))))
+  element)
+
+# owned: the card's round is running. safe: the recovery page.
+(fn card_view [host : CardHost, session : Str, card : Any, owned : Bool, safe : Bool] : EventTarget
+  (var id (ctext card/id))
+  (var key (card_key session id))
+  (var pending (! ($absent? host/pending/%key)))
+  (var enabled (&& (card_enabled host session card) (! owned) (! safe) (! pending)))
+  (var section ($dom/render `(section ^class_name "card_block" ^id %$"card-${id}")))
+  (var status
+    (if owned "Updating…"
+      (if pending "Working…"
+        (if (cflag card/stale) "Out of date"
+          (if (&& (needs_enable card) (! (card_enabled host session card))) "Disabled" "")))))
+  ($dom/append section
+    ($dom/render `(div ^class_name "card_header"
+      (strong ^class_name "card_title" %(ctext card/title))
+      (span ^class_name "card_status" ^role "status" %status))))
+  (var body ($dom/render `(div ^class_name "card_body")))
+  (var fields : (List Any) [])
+  ($dom/append body (render_card_tree host session card card/tree enabled fields))
+  ($dom/append section body)
+  (var footer ($dom/render `(div ^class_name "card_controls")))
+  (var error (ctext host/errors/%key))
+  (if_yes (&& (needs_enable card) (! (card_enabled host session card)) (! owned) (! safe) (! pending))
+    ($dom/append footer
+      ($dom/render
+        `(button ^type "button" ^class_name "card_enable"
+           ^on_click %(fn [event : Any] : Void (enable_card host session card)) "Enable"))))
+  (if_yes (&& pending (!= error ""))
+    ($dom/append footer
+      ($dom/render
+        `(button ^type "button"
+           ^on_click %(fn [event : Any] : Void (retry_action host session card)) "Retry"))))
+  (if_yes (!= error "")
+    ($dom/append footer ($dom/render `(p ^class_name "card_error" ^role "alert" %error))))
+  ($dom/append section footer)
+  section)
+
+(fn card_update_line [block : Any] : EventTarget
+  (var title (ctext block/text))
+  (var id (ctext block/card_id))
+  ($dom/render
+    `(p ^class_name "card_update"
+       "Updated: " (a ^href %$"#card-${id}" %title))))
+
+# A question view in the editor (on_answer selects a draft value) or in the
+# transcript after answering (no callback; every control stays disabled).
+(fn question_tree [tree : Any, selected : (Fn [Any] Bool), on_answer : (Fn [Any] Void),
+  on_prompt : (Fn [Str] Void), enabled : Bool] : EventTarget
+  (if_yes ($absent? tree) (return ($dom/create_text "")))
+  (if_yes ($absent? tree/tag)
+    (var text : Str tree)
+    (return ($dom/create_text text)))
+  (var tag : Str tree/tag)
+  (var element ($dom/create_element tag))
+  (var props : PropMap tree/props)
+  (for [raw_name value] in props
+    (var name : Str ($to_str raw_name))
+    (if_yes (|| (! (plain_attribute name)) ($absent? value)) (continue))
+    (var attribute_text : Str value)
+    ($dom/set_attribute element name attribute_text))
+  (var children : (List Any) tree/children)
+  (for child in children
+    ($dom/append element (question_tree child selected on_answer on_prompt enabled)))
+  (if_yes (== tag "button")
+    ($dom/set_attribute element "type" "button")
+    (if_not ($absent? props/answer)
+      (var answer_value : Any props/answer)
+      (var chosen (selected answer_value))
+      ($dom/set_attribute element "aria-pressed" (if chosen "true" "false"))
+      (if_yes chosen ($dom/set_attribute element "class" ($to_str (ctext props/class) " card_selected")))
+      (if enabled
+        ($dom/add_event_listener element "click"
+          (fn [event : Any] : Void (on_answer answer_value)))
+        ($dom/set_attribute element "disabled" "")))
+    (if_not ($absent? props/prompt)
+      (var question_prompt : Str props/prompt)
+      ($dom/add_event_listener element "click"
+        (fn [event : Any] : Void (on_prompt question_prompt)))))
+  element)
+
+(fn answer_label [value : Any] : Str
+  (var encoded ($json/stringify (if ($absent? value) nil value)))
+  (if_yes (str/starts_with? encoded "\"") (return (ctext value)))
+  (if_yes (== encoded "true") (return "Yes"))
+  (if_yes (== encoded "false") (return "No"))
+  encoded)
+
+# An answered batch stays answered: its saved answers, read-only.
+(fn answered_view [block : Any, on_prompt : (Fn [Str] Void)] : EventTarget
+  (var batch : Any block/batch)
+  (var section ($dom/render `(section ^class_name "card_block card_answered")))
+  (var intent (ctext batch/intent "continue"))
+  ($dom/append section
+    ($dom/render `(div ^class_name "card_header"
+      (strong ^class_name "card_title" "Questions")
+      (span ^class_name "card_status" %(if (== intent "cancel") "Cancelled" "Answered")))))
+  (var questions : (List Any) batch/questions)
+  (var answers : PropMap {})
+  (if_not ($absent? batch/answers) (set answers batch/answers))
+  (for question in questions
+    (var id (ctext question/id))
+    (var answer : Any answers/%id)
+    (var answer_json ($json/stringify (if ($absent? answer) nil answer)))
+    (var group ($dom/render `(div ^class_name "card_question" (p %(ctext question/prompt)))))
+    (if ($absent? question/view)
+      ($dom/append group ($dom/render `(p ^class_name "card_answer" %(answer_label answer))))
+      ($dom/append group
+        (question_tree question/view
+          (fn [value : Any] : Bool
+            (var value_json ($json/stringify value))
+            (if (== answer_json value_json) true
+              (if (str/starts_with? answer_json "[")
+                (do
+                  (var picked : (List Any) answer)
+                  (var found false)
+                  (for item in picked (if_yes (== ($json/stringify item) value_json) (set found true)))
+                  found)
+                false)))
+          (fn [value : Any] : Void nil) on_prompt false)))
+    ($dom/append section group))
+  section)

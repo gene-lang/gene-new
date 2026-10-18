@@ -1,6 +1,6 @@
 # Tests src/ui/components.gene.
 (import $test [describe it run])
-(import ^from "../../../src/ui/components" [validate_web_component bounded_component_view])
+(import ^from "../../../src/ui/components" [validate_web_component bounded_component_view bounded_card_view tree_has_commands?])
 
 (describe
   "Harness web components"
@@ -178,6 +178,33 @@
     (let big ($str/join pieces ""))
     ($assert (try (board (css (rule ".board_grid" (decl content big)))) false
       catch Any ($str/contains? $err/message "exceeds 64 KiB")))))
+
+(describe "Harness card views"
+  (it "validates card actions per mode and keeps answer values typed" []
+    (let refused (fn [tree mode needle]
+      (try (bounded_card_view tree mode) false
+        catch Any ($str/contains? $err/message needle))))
+    (let live (bounded_card_view
+      (quote (section
+        (form ^key "f" ^update "save" (input ^key "n" ^field "name") (button ^type "submit" "Save"))
+        (button ^key "t" ^update "toggle" ^args {^id 1} "Toggle")
+        (button ^key "s" ^send "Apply." "Send")
+        (button ^command "/help" "Help")))
+      "live"))
+    ($assert (== live/children/1/props/args {^id 1}) "update args were not kept as data")
+    ($assert (tree_has_commands? live) "command buttons were not detected")
+    ($assert (! (tree_has_commands? (bounded_card_view (quote (button ^prompt "Go." "Go")) "static"))))
+    ($assert (refused (quote (button ^key "u" ^update "x" "U")) "static" "requires a live card"))
+    ($assert (refused (quote (button ^key "a" ^answer "x" "A")) "live" "belong to question views"))
+    ($assert (refused (quote (button ^update "x" "U")) "live" "require stable keys"))
+    ($assert (refused (quote (button ^key "b" ^update "x" ^send "y" "B")) "live" "exactly one action"))
+    ($assert (refused (quote (input ^key "i" ^field "x")) "live" "belong to a form"))
+    ($assert (refused (quote (form ^key "f" (input ^key "i" ^field "x"))) "live" "needs an update action"))
+    ($assert (refused (quote (button ^key "c" ^command "/run 1" "Run")) "question" "cannot run commands"))
+    ($assert (refused (quote (button ^key "v" ^switch_view "board" "Go")) "static" "unsupported card attribute"))
+    (let question (bounded_card_view (quote (div (button ^key "n" ^answer 3 "Three") (button ^key "y" ^answer true "Yes"))) "question"))
+    ($assert (== question/children/0/props/answer 3) "an Int answer became text")
+    ($assert (== question/children/1/props/answer true) "a Bool answer became text")))
 
 (fn main [args] : Int
   (let result (run ^name (?? args/0 "")))

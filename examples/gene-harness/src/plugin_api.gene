@@ -60,6 +60,14 @@
   (message notification_update [id : Str, changes] : Any)
   (message notification_clear [id : Str, revision : Int] : Any))
 
-(import ^from "./agents/outcome" [append_plugin_prompt])
+(import ^from "./agents/outcome" [append_plugin_prompt TurnClosed])
 (fn append_prompt [label : Str, value]
   (append_plugin_prompt label value))
+
+# A plugin function called from response code can place a card in the calling
+# conversation (docs/cards.md). It passes ^view and ^update as quoted fn forms.
+(fn show_card [id, tree = nil, ^title title = nil, ^state state = nil, ^view view = nil, ^update update = nil]
+  (let api (/cards ($runtime/context)))
+  (if ($absent? api)
+    (fail (TurnClosed ^message "show_card requires an open turn in a conversation")))
+  (api/card_from_plugin id tree ^title title ^state state ^view view ^update update))

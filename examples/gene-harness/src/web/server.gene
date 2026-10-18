@@ -18,6 +18,9 @@
     host_status
     edit_session
     acknowledge_attention
+    session_card_action
+    session_card_receipt
+    CardError
     RoundError])
 (import ^from "./page" [page])
 (import ^from "./plugin_page" [plugin_page manager_client])
@@ -424,8 +427,12 @@
         (if (== data/literal true)
           (return (response 202 (submit_round ^media (?? data/media []) host/controller id (field data "request_id")
             (number data "submission_seq") (field data "text")))))
-        (return (response 202 (submit ^media (?? data/media []) host id (field data "request_id")
+        (return (response 202 (submit ^media (?? data/media []) ^card (?? data/card nil) host id (field data "request_id")
           (number data "submission_seq") (field data "text")))))
+      (if_yes (&& (== parts/.size 8) (== parts/5 "cards") (== parts/7 "actions") (== request/method "POST"))
+        (return (response 200 (session_card_action host id parts/6 (request_data request)))))
+      (if_yes (&& (== parts/.size 7) (== parts/5 "card-actions") (== request/method "GET"))
+        (return (response 200 (session_card_receipt host id parts/6))))
       (if_yes (&& (== parts/.size 6) (["questions" "answers"] .contains? parts/5) (== request/method "POST"))
         (var data (request_data request))
         (return (response 202 (answer host id (field data "batch_id")
@@ -434,6 +441,7 @@
         (var data (request_data request))
         (let request_id (field data "request_id" ^default ""))
         (return (response 202 (command host id (field data "text") ^request_id request_id
+          ^card (?? data/card nil)
           ^sequence (if (== request_id "") nil (number data "submission_seq"))))))
       (if_yes (&& (== parts/.size 7) (== parts/5 "commands") (== request/method "GET"))
         (return (response 200 (operator_receipt host id parts/6))))
@@ -479,6 +487,7 @@
         catch CommandError (response (error_status $err/code) {^code $err/code ^message $err/message})
         catch SessionError (response (error_status $err/code) {^code $err/code ^message $err/message})
         catch QuestionError (response 400 {^code "invalid_request" ^message $err/message})
+        catch CardError (response (error_status $err/code) {^code $err/code ^message $err/message})
         catch CompositionConflict (response 409 {^code $err/code ^message $err/message})
         catch CompositionError (response 400 {^code "composition_error" ^message $err/message})
         catch PluginHistoryError (response 400 {^code "history_error" ^message $err/message})

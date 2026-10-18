@@ -153,6 +153,23 @@ input::placeholder, textarea::placeholder { color: var(--muted); opacity: 1; }
 .web_image_grid[data-inset="25"] { inset: 25%; }
 .web_image_grid[data-columns="25"] { grid-template-columns: repeat(25, minmax(0, 1fr)); }
 .web_card { border: 1px solid var(--line); padding: 1rem; background: var(--surface); }
+/* Conversation cards (docs/cards.md): the host draws the title and controls. */
+.card_block { margin: .75rem 0; border: 1px solid var(--line); background: var(--surface); }
+.card_header { display: flex; gap: .75rem; align-items: baseline; justify-content: space-between; padding: .55rem .85rem; border-bottom: 1px solid var(--line); background: var(--soft); }
+.card_title { letter-spacing: -.02em; }
+.card_status { color: var(--muted); font-size: .8rem; }
+.card_body { padding: .75rem .85rem; min-width: 0; overflow-x: auto; }
+.card_body img { max-width: 100%; }
+.card_body button, .question_view button { margin: .25rem .4rem .25rem 0; }
+.card_body input, .card_body textarea, .card_body select { max-width: 100%; padding: .4rem; border: 1px solid var(--edge); background-color: var(--input-surface); }
+.card_controls { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; padding: 0 .85rem; }
+.card_controls:not(:empty) { padding: .5rem .85rem .75rem; }
+.card_error { margin: 0; color: var(--danger, var(--ink)); }
+.card_update { margin: .4rem 0; color: var(--muted); font-size: .85rem; }
+.card_question { padding: .5rem .85rem; }
+.card_question p { margin: .2rem 0; }
+.card_selected, button[aria-pressed=true] { border-color: var(--accent); outline: 2px solid var(--accent); }
+.card_answered button[aria-pressed=true]:disabled { opacity: 1; }
 .web_card h2, .web_card h3, .web_card h4 { margin: 0 0 .5rem; letter-spacing: -.025em; }
 .web_card p { margin: .4rem 0; color: var(--muted); line-height: 1.5; }
 .web_grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: .65rem; }

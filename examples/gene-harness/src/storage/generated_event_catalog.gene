@@ -68,4 +68,6 @@
     #{^name "command" ^version 1 ^!ignorable ^origin "core" ^owner "core" ^schema validate_core_state_event}
     #{^name "trigger/state" ^version 1 ^!ignorable ^origin "core" ^owner "core" ^schema validate_core_state_event}
     #{^name "trigger/occurrence" ^version 1 ^!ignorable ^origin "core" ^owner "core" ^schema validate_core_state_event}
-    #{^name "history/summary" ^version 1 ^!ignorable ^origin "core" ^owner "core" ^schema validate_core_state_event}])
+    #{^name "history/summary" ^version 1 ^!ignorable ^origin "core" ^owner "core" ^schema validate_core_state_event}
+    #{^name "card/state" ^version 1 ^!ignorable ^origin "core" ^owner "core" ^schema validate_core_state_event}
+    #{^name "card/action" ^version 1 ^!ignorable ^origin "core" ^owner "core" ^schema validate_core_state_event}])

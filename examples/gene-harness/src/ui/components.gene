@@ -9,6 +9,10 @@
 (const sidebar_widgets ["brand" "new_conversation" "filters" "attention" "extensions" "conversations" "workspace_tools"])
 (const interactive_tags ["form" "label" "input" "textarea" "select" "option" "table" "thead" "tbody" "tr" "th" "td"])
 (const interactive_attributes ["key" "field" "state" "action" "args" "positional" "name" "placeholder" "checked" "selected" "for" "rows" "required"])
+# Conversation cards (docs/cards.md) use the keyed controls without view-state
+# or function actions, plus their own card actions.
+(const card_attributes ["key" "field" "args" "name" "placeholder" "checked" "selected" "for" "rows" "required" "update" "send" "answer"])
+(const card_actions ["command" "prompt" "update" "send" "answer"])
 (const component_tags
   [
     "div"
@@ -63,7 +67,34 @@
   (fail (WebComponentError ^message ($to_str message
     "; read (doc \"harness/ui/forms\") for keyed controls or (doc \"harness/web_components\") for the full contract"))))
 
-(fn component_view [value, ^depth depth : Int = 0, ^experimental experimental : Bool = false, ^keys keys = nil, ^form form = nil, ^widgets widgets = nil]
+(fn card_error [message : Str]
+  (fail (WebComponentError ^message ($to_str message "; read (doc \"harness/cards\") for the card contract"))))
+
+# Card modes: "static" (prompt and command buttons), "live" (update forms and
+# buttons, send, prompt, command) and "question" (answer and prompt buttons).
+(fn card_attribute [mode : Str, tag : Str, name : Str, item, attributes] : Bool
+  (if_not (["update" "send" "answer"] .contains? name) (return false))
+  (if (&& (== name "answer") (!= mode "question"))
+    (card_error "answer buttons belong to question views"))
+  (if (&& (["update" "send"] .contains? name) (!= mode "live"))
+    (card_error $"${name} requires a live card with view and update functions"))
+  (if_yes (== name "answer")
+    (if (!= tag "button") (card_error "answer requires a button"))
+    (if_not ([Str Int Float Bool] .contains? ($head item))
+      (card_error "an answer value must be text, a number or a boolean"))
+    (attributes .put "answer" item)
+    (return true))
+  (if (|| (!= ($head item) Str) (== ($str/trim item) ""))
+    (card_error $"${name} requires nonempty text"))
+  (if (> ($str/byte_size item) 4096) (card_error $"${name} text exceeds 4 KiB"))
+  (if (&& (== name "update") (! (["button" "form"] .contains? tag)))
+    (card_error "update requires a button or form"))
+  (if (&& (== name "send") (!= tag "button"))
+    (card_error "send requires a button"))
+  (attributes .put name item)
+  true)
+
+(fn component_view [value, ^depth depth : Int = 0, ^experimental experimental : Bool = false, ^keys keys = nil, ^form form = nil, ^widgets widgets = nil, ^card card = nil]
   (if (> depth 24) (component_error "web component view exceeds 24 levels"))
   (if ([Str Int Float Bool Nil] .contains? ($head value))
     (return (if ($absent? value) "" ($to_str value))))
@@ -92,13 +123,19 @@
       (component_error $"duplicate sidebar widget ${props/name}"))
     (widgets .put props/name true)
     (return {^tag "host_widget" ^props {^name props/name} ^children []}))
-  (if_not (|| (component_tags .contains? tag) (&& experimental (interactive_tags .contains? tag)))
+  (if_not (|| (component_tags .contains? tag) (&& (|| experimental (! ($absent? card))) (interactive_tags .contains? tag)))
     (component_error $"unsupported web component element ${tag}"))
   (let attributes {})
   (for [key item] in props
     (let name ($to_str key))
-    (if_not (|| (component_attributes .contains? name) (&& experimental (interactive_attributes .contains? name)))
-      (component_error $"unsupported web component attribute ${name}"))
+    (if_yes ($absent? card)
+      (if_not (|| (component_attributes .contains? name) (&& experimental (interactive_attributes .contains? name)))
+        (component_error $"unsupported web component attribute ${name}")))
+    (if_not ($absent? card)
+      (if (|| (["switch_view" "presentation"] .contains? name)
+              (! (|| (component_attributes .contains? name) (card_attributes .contains? name))))
+        (card_error $"unsupported card attribute ${name}"))
+      (if (card_attribute card tag name item attributes) (continue)))
     (if_yes (== name "args")
       (if (!= ($head item) Map) (component_error "action args must be a map"))
       ($serde/write_data item)
@@ -145,6 +182,35 @@
     (attributes .delete "class-name"))
   (if (&& (! ($absent? attributes/command)) (! ($absent? attributes/prompt)))
     (component_error "a component button needs one action"))
+  (if_not ($absent? card)
+    (var actions 0)
+    (for name in card_actions
+      (if_not ($absent? (attributes .get name)) (set actions (+ actions 1))))
+    (if (> actions 1) (card_error "a card control needs exactly one action"))
+    (if (&& (== card "question") (! ($absent? attributes/command)))
+      (card_error "question views cannot run commands; use a prompt button"))
+    (if (&& (! ($absent? attributes/field)) (!= card "live"))
+      (card_error "form fields belong to live cards"))
+    (if (&& (== tag "form") (!= card "live")) (card_error "forms belong to live cards"))
+    (if (&& (== tag "form") ($absent? attributes/update))
+      (card_error "a card form needs an update action"))
+    (if (&& (== tag "form") (! ($absent? form))) (card_error "nested forms are unsupported"))
+    (if_not ($absent? attributes/field)
+      (if ($absent? form) (card_error "card fields must belong to a form"))
+      (if_not ($absent? (form .get attributes/field)) (card_error "duplicate form field"))
+      (form .put attributes/field true)
+      (if_not (["input" "textarea" "select"] .contains? tag) (card_error "form fields require an input")))
+    (if (&& (|| (== tag "form") (! ($absent? attributes/field)) (! ($absent? attributes/update))
+                (! ($absent? attributes/send)) (! ($absent? (attributes .get "answer"))))
+            ($absent? attributes/key))
+      (card_error "card controls and forms require stable keys"))
+    (if (&& (== tag "input") (! ($absent? attributes/type))
+            (! (["text" "search" "checkbox" "number" "hidden"] .contains? attributes/type)))
+      (card_error "unsupported card input type"))
+    (if_not ($absent? attributes/key)
+      (if (|| (== attributes/key "") (! ($absent? (keys .get attributes/key))))
+        (card_error "card keys must be nonempty and unique"))
+      (keys .put attributes/key true)))
   (if_not ($absent? attributes/switch-view)
     (for name in ["command" "prompt" "action" "state"]
       (if_not ($absent? (attributes .get name))
@@ -185,7 +251,7 @@
     (if (!= (?? attributes/class "") "web_image_grid")
       (component_error "columns and inset require web_image_grid")))
   (let field_names (if (== tag "form") {} form))
-  (let body ($map children (fn [child] (component_view ^depth (+ depth 1) ^experimental experimental ^keys keys ^form field_names ^widgets widgets child))))
+  (let body ($map children (fn [child] (component_view ^depth (+ depth 1) ^experimental experimental ^keys keys ^form field_names ^widgets widgets ^card card child))))
   # A textarea's ordinary text content is its initial value. The keyed browser
   # adapter needs that value in props; explicit value still takes precedence.
   (if_yes (&& (== tag "textarea") ($absent? attributes/value) (! body/.empty?))
@@ -193,6 +259,22 @@
       (if (!= ($head child) Str) (component_error "textarea initial content must be text")))
     (attributes .put "value" ($str/join body "")))
   {^tag tag ^props attributes ^children body})
+
+(fn bounded_card_view [value, mode : Str]
+  (if_not (["static" "live" "question"] .contains? mode) (card_error "unknown card mode"))
+  (let view (component_view ^card mode ^keys {} value))
+  (if (> ($str/byte_size ($json/stringify view)) 65536)
+    (card_error "card view exceeds 64 KiB"))
+  view)
+
+# Whether a validated wire tree carries slash-command buttons. Those make a
+# static card follow the reload rule, like a live card.
+(fn tree_has_commands? [tree] : Bool
+  (if (!= ($head tree) Map) (return false))
+  (if_not ($absent? tree/props/command) (return true))
+  (for child in (?? tree/children [])
+    (if (tree_has_commands? child) (return true)))
+  false)
 
 (fn bounded_component_view [value, ^experimental experimental : Bool = false, ^sidebar sidebar : Bool = false]
   (let view (component_view ^experimental experimental ^keys {} ^widgets (if sidebar {} nil) value))

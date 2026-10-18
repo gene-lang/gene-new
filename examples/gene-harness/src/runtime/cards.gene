@@ -1,0 +1,578 @@
+# Conversation cards (docs/cards.md): values a response places in its session.
+# A card is data in the session stream, not an installed extension. A live
+# card keeps the source of its view and update functions and evaluates it in a
+# fresh environment on every call, so nothing depends on the turn that made it.
+(mod cards)
+(import ^from "../kernel" [CardChanged publish])
+(import ^from "../storage/state"
+  [core_state core_states record_core_state flush_event_store copy_data next_sequence stream_key])
+(import ^from "./composition" [acquire_snapshot release_snapshot])
+(import ^from "../agents/harness_turn" [workspace_bindings])
+(import ^from "../agents/outcome" [OutcomeError append_plugin_prompt])
+(import ^from "../agents/eval_site" [evaluate_response])
+(import ^from "../ui/components" [bounded_card_view tree_has_commands? WebComponentError])
+(import ^from "../ui/outline" [view_outline])
+(import ^from "./sessions" [load_session require_record with_session_gate])
+
+(type CardError ^props {^code Str ^message Str} ^impl [Error])
+(impl Error for CardError)
+(type CardService ^props {^runtime Any ^inflight Any ^transient Any})
+
+(const card_limit 32)
+(const title_limit 60)
+(const source_limit 16384)
+(const state_limit 65536)
+(const action_retention 256)
+(const input_retention 32)
+
+(fn card_fail [code : Str, message : Str]
+  (fail (CardError ^code code ^message message)))
+
+(fn open_card_service [runtime] : CardService
+  (CardService ^runtime runtime ^inflight ($cell {}) ^transient ($cell {})))
+
+(fn update_policy [] {^timeout_ms 2000 ^max_memory_mb 64})
+(fn view_policy [] {^timeout_ms 1000 ^max_memory_mb 32})
+
+(fn card_key [id : Str] : Str $"card/${id}")
+(fn action_key [input_id : Str] : Str $"card_action/${input_id}")
+(fn transient_key [session : Str, id : Str] : Str $"${session}/${id}")
+
+(fn card_record [runtime, session : Str, id : Str]
+  (core_state runtime/events "session" session (card_key id)))
+
+(fn card_records [runtime, session : Str]
+  (let found [])
+  (for [key state] in (core_states runtime/events "session" session)
+    (if (&& ($str/starts_with? ($to_str key) "card/") (! ($absent? state)))
+      (found .push state)))
+  ($order/sort_by found (fn [card] (?? card/created_ms 0))))
+
+(fn with_card_gate [runtime, session : Str, id : Str, thunk]
+  (with_session_gate runtime/sessions $"card/${session}/${id}" thunk))
+
+(fn validate_card_id [id]
+  (if (|| (!= ($head id) Str) ($absent? (#"^[a-z0-9][a-z0-9_]{0,39}$" .match id)))
+    (card_fail "invalid_request" "a card id must match [a-z0-9][a-z0-9_]{0,39}"))
+  id)
+
+(fn validate_title [title]
+  (if (|| (!= ($head title) Str) (== ($str/trim title) ""))
+    (card_fail "invalid_request" "a card needs a concise ^title"))
+  (if (|| ($str/contains? title "\n") ($str/contains? title "\r"))
+    (card_fail "invalid_request" "a card title must be a single line"))
+  (if (> ($size ($graphemes title)) title_limit)
+    (card_fail "invalid_request" $"a card title must have at most ${title_limit} characters"))
+  ($str/trim title))
+
+(fn checked_state [state]
+  (let encoded
+    (try ($serde/write_data state)
+      catch Any (card_fail "invalid_request" "card state must be serializable data")))
+  (if (> ($str/byte_size encoded) state_limit)
+    (card_fail "too_large" "card state exceeds 64 KiB"))
+  ($serde/read_data encoded))
+
+(fn fn_source [form, name : Str] : Str
+  (match form
+    (when (node : Node)
+      (if (!= ($head node) (quote fn))
+        (card_fail "invalid_request" $"card ^${name} must be a literal (fn ...) form")))
+    (else (card_fail "invalid_request" $"card ^${name} must be a literal (fn ...) form")))
+  (let text ($to_str form))
+  (if (> ($str/byte_size text) source_limit)
+    (card_fail "too_large" $"card ^${name} source exceeds 16 KiB"))
+  text)
+
+(fn owned? [runtime, session : Str, card] : Bool
+  (let loaded (load_session runtime/sessions session))
+  (let receipt loaded/round/.get)
+  (&& (! ($absent? receipt)) (== receipt/id card/round) (== receipt/state "running")))
+
+(fn card_context [runtime, session : Str]
+  (let loaded (load_session runtime/sessions session))
+  ($freeze {^session_id session ^session (require_record runtime/sessions session)
+            ^round loaded/round/.get}))
+
+# Card code sees the same bindings as /run plus `context`; never the turn that
+# created it. An unresolved name fails when the code that uses it runs.
+(fn card_function [runtime, snapshot, session : Str, source : Str, context]
+  (let forms ($into ($parse/read_all ^source "card" source) []))
+  (if (!= forms/.size 1) (card_fail "card_failed" "card source must be one fn form"))
+  (let bindings (workspace_bindings ^extra {^context context} runtime/h snapshot session runtime/root))
+  (eval forms/0 ^in (env ^bindings bindings)))
+
+# Unresolved names fail only when their code runs, so a card call also checks
+# its functions' free names and warns about any the environment cannot
+# resolve. This is a best-effort check: it never refuses a card.
+(const card_special_forms
+  ["fn" "let" "var" "set" "if" "if_yes" "if_not" "then" "else" "elif" "do" "for" "in"
+   "while" "loop" "repeat" "break" "continue" "return" "match" "when" "try" "catch" "ensure"
+   "scope" "quote" "quasiquote" "unquote" "spawn" "await" "path" "gene" "&&" "||" "!" ":"
+   "..." "_" "true" "false" "nil" "void" "$err"])
+
+(fn bound_names [form, found]
+  (match form
+    (when (node : Node)
+      (let head ($to_str ($head node)))
+      (let body ($node/body node))
+      (if_yes (&& (["fn" "let" "var" "for" "when"] .contains? head) (> ($size body) 0))
+        (collect_symbols body/0 found))
+      (for item in body (bound_names item found)))
+    (else
+      (if (== ($head form) List) (for item in form (bound_names item found)))
+      (if (== ($head form) Map) (for [key value] in form (bound_names value found)))))
+  found)
+
+(fn collect_symbols [form, found]
+  (if (== ($head form) Sym) (found .put ($to_str form) true))
+  (if (== ($head form) List) (for item in form (collect_symbols item found)))
+  (match form (when (node : Node) (for item in ($node/body node) (collect_symbols item found))) (else nil))
+  found)
+
+(fn free_names [form, quoted : Bool, found]
+  (if (&& (! quoted) (== ($head form) Sym)) (found .push ($to_str form)))
+  (if (== ($head form) List) (for item in form (free_names item quoted found)))
+  (if (== ($head form) Map) (for [key value] in form (free_names value quoted found)))
+  (match form
+    (when (node : Node)
+      (let head ($to_str ($head node)))
+      (if (== head "quote") (return found))
+      (if (== head "unquote")
+        (do (for item in ($node/body node) (free_names item false found)) (return found)))
+      (let inner (|| quoted (== head "quasiquote")))
+      (if (&& (== head "path") (! inner))
+        (do (let body ($node/body node))
+          (if (> ($size body) 0) (free_names body/0 false found))
+          (return found)))
+      (free_names ($head node) inner found)
+      (for [key value] in ($node/props node) (free_names value inner found))
+      # A method call reads as (receiver ~ method args...); the method name
+      # after ~ is a message, not a binding.
+      (var message false)
+      (for item in ($node/body node)
+        (if (&& (== ($head item) Sym) (== ($to_str item) "~"))
+          (then (set message true))
+          (else
+            (if message (set message false) (free_names item inner found))))))
+    (else nil))
+  found)
+
+(fn unresolved_names [form, bindings] : Any
+  (let bound (bound_names form {}))
+  (let missing [])
+  (let environment (env ^bindings bindings))
+  (for name in (free_names form false [])
+    (if (|| (card_special_forms .contains? name) (! ($absent? (bound .get name)))
+            (! ($absent? (bindings .get name))) (missing .contains? name)
+            ($str/starts_with? name ".") ($str/starts_with? name "$") ($str/starts_with? name "^"))
+      (continue))
+    (if_not (try (do (eval ($to_sym name) ^in environment) true) catch Any false)
+      (missing .push name)))
+  missing)
+
+(fn source_warnings [runtime, snapshot, session : Str, source]
+  (let bindings (workspace_bindings ^extra {^context {}} runtime/h snapshot session runtime/root))
+  (let warnings [])
+  (for [name text] in source
+    (if_not ($absent? text)
+      (let form ($first ($into ($parse/read_all ^source "card" text) [])))
+      (let missing (unresolved_names form bindings))
+      (let listed ($str/join missing ", "))
+      (if_not missing/.empty?
+        (warnings .push $"^${name} uses names that are not defined: ${listed}"))))
+  warnings)
+
+(fn bounded_call [runtime, lease, session : Str, policy, render : Bool, callable, args]
+  (let context {^composition runtime/h/snapshots ^snapshot lease/snapshot ^session session})
+  # A view is a render: it cannot write durable Harness state.
+  (if render (context .put "ui_render" true))
+  (let invoke ($runtime/bind_call ^policy policy callable args))
+  (let outcome
+    (scope
+      (let task (spawn ^lane root ($runtime/with_context context (fn [] (scope (invoke))))))
+      (let deadline (spawn ^lane root (do ($sleep policy/timeout_ms) task/.cancel)))
+      (try task/.join
+        ensure
+          (if_not task/.done? task/.cancel task/.join)
+          deadline/.cancel
+          deadline/.join)))
+  (match outcome
+    (when (TaskOutcome/ok value) value)
+    (when (TaskOutcome/error error) (card_fail "card_failed" ($to_str error/message)))
+    (when (TaskOutcome/panic message) (card_fail "card_failed" $"card code panicked: ${message}"))
+    (else (card_fail "card_failed" "card code exceeded its time budget or was cancelled"))))
+
+(fn render_live [runtime, lease, session : Str, source, state]
+  (let context (card_context runtime session))
+  (let view (card_function runtime lease/snapshot session source/view context))
+  (let tree (bounded_call runtime lease session (view_policy) true view [($freeze state)]))
+  (try (bounded_card_view tree "live")
+    catch WebComponentError (card_fail "card_failed" $"view: ${$err/message}")))
+
+(fn public_card [card, ^transient transient : Bool = false]
+  {^id card/id ^title card/title ^kind card/kind
+   ^definition_revision card/definition_revision ^revision card/revision
+   ^round card/round ^placement_round card/placement_round ^turn card/turn
+   ^updated_turn card/updated_turn ^created_ms card/created_ms ^updated_ms card/updated_ms
+   ^created_seq card/created_seq
+   ^tree card/tree ^stale (== card/stale true) ^commands (== card/commands true)
+   ^origin card/origin ^transient transient})
+
+(fn card_changed [runtime, session : Str, public, event : Str]
+  (publish runtime/h (CardChanged ^session session ^card public ^event event))
+  nil)
+
+(fn store_card [runtime, session : Str, card, event : Str]
+  (record_core_state runtime/events "session" session "card/state" (card_key card/id) card)
+  (flush_event_store runtime/events)
+  (card_changed runtime session (public_card card) event)
+  card)
+
+(fn drop_transient [runtime, session : Str, id : Str]
+  (runtime/cards/transient/.get .delete (transient_key session id)))
+
+# The model defines or redefines a card. Every check runs before anything is
+# stored: a failed call leaves a new card absent and an old one intact.
+(fn define_card [runtime, session : Str, round : Str, turn : Int, id, spec]
+  (validate_card_id id)
+  (let title (validate_title spec/title))
+  (let live (! ($absent? spec/view)))
+  (if (&& live (! ($absent? spec/tree)))
+    (card_fail "invalid_request" "a live card takes view and update functions, not a tree"))
+  (if (&& (! live) ($absent? spec/tree))
+    (card_fail "invalid_request" "a card needs a tree, or a ^view function with ^state"))
+  (if (&& (! live) (|| (! ($absent? spec/update)) (! ($absent? spec/state))))
+    (card_fail "invalid_request" "^state and ^update require a ^view function"))
+  (let source (if live
+    {^view (fn_source spec/view "view")
+     ^update (if ($absent? spec/update) nil (fn_source spec/update "update"))}
+    nil))
+  (let state (if live (checked_state (?? spec/state {})) nil))
+  (let warnings [])
+  (let tree
+    (if live
+      (do
+        (let lease (acquire_snapshot runtime/h/snapshots))
+        (try
+          (for warning in (try (source_warnings runtime lease/snapshot session source) catch Any [])
+            (warnings .push warning))
+          (render_live runtime lease session source state)
+          ensure (release_snapshot runtime/h/snapshots lease)))
+      (try (bounded_card_view spec/tree "static")
+        catch WebComponentError (card_fail "invalid_request" $err/message))))
+  (with_card_gate runtime session id (fn []
+    (let previous (card_record runtime session id))
+    (if (&& ($absent? previous) (>= ($size (card_records runtime session)) card_limit))
+      (card_fail "too_large" $"a session holds at most ${card_limit} cards"))
+    (let now ($os/wall_ms))
+    (let card
+      {^id id ^title title ^kind (if live "live" "static")
+       ^definition_revision (+ (?? previous/definition_revision 0) 1)
+       ^revision (+ (?? previous/revision 0) 1)
+       ^round round
+       ^placement_round (?? previous/placement_round round)
+       ^turn (?? previous/turn turn) ^updated_turn turn
+       ^created_ms (?? previous/created_ms now) ^updated_ms now
+       ^created_seq (?? previous/created_seq (next_sequence runtime/events (stream_key "session" session)))
+       ^source source ^state state ^tree tree ^!stale
+       ^commands (tree_has_commands? tree) ^origin "model"
+       ^inputs (?? previous/inputs [])})
+    (drop_transient runtime session id)
+    (store_card runtime session card "defined")
+    # The outline lets the model check what the card drew.
+    (let warned ($str/join warnings "; "))
+    (if_not warnings/.empty?
+      (try (append_plugin_prompt "card" $"card ${id}: ${warned}") catch Any nil))
+    {^id id ^title title ^kind card/kind ^definition_revision card/definition_revision
+     ^revision card/revision ^outline (view_outline tree) ^warnings warnings})))
+
+# The model changes a live card's state. A card owned by the running round
+# shows progress live and is stored at the turn's end. An earlier round's card
+# stores the state, runs no code, and waits for the user to redraw it.
+(fn update_card_state [runtime, session : Str, round : Str, id, state]
+  (validate_card_id id)
+  (let checked (checked_state state))
+  (with_card_gate runtime session id (fn []
+    (let card (card_record runtime session id))
+    (if ($absent? card) (card_fail "not_found" $"no card ${id} in this session"))
+    (if (!= card/kind "live") (card_fail "invalid_request" $"card ${id} is static; define it again to change it"))
+    (if (== card/round round)
+      (then
+        (let key (transient_key session id))
+        (let pending (runtime/cards/transient/.get .get key))
+        (let lease (acquire_snapshot runtime/h/snapshots))
+        (let tree (try (render_live runtime lease session card/source checked)
+          ensure (release_snapshot runtime/h/snapshots lease)))
+        (let revision (+ ($math/max card/revision (?? pending/revision 0)) 1))
+        (runtime/cards/transient/.get .put key
+          {^session session ^id id ^definition_revision card/definition_revision
+           ^state checked ^tree tree ^revision revision})
+        (let shown (copy_data card))
+        (shown .put "state" checked)
+        (shown .put "tree" tree)
+        (shown .put "revision" revision)
+        (card_changed runtime session (public_card ^^transient shown) "progress")
+        {^id id ^revision revision ^^live})
+      (else
+        (card .put "state" checked)
+        (card .put "revision" (+ card/revision 1))
+        (card .put "stale" true)
+        (card .put "origin" "model_update")
+        (card .put "updated_ms" ($os/wall_ms))
+        (store_card runtime session card "stale")
+        {^id id ^revision card/revision ^^stale})))))
+
+# Live progress becomes durable at each turn end, round end, wait or cancel.
+(fn flush_card_progress [runtime, session : Str]
+  (if ($absent? runtime/cards) (return 0))
+  (let pending [])
+  (for [key entry] in runtime/cards/transient/.get
+    (if (== entry/session session) (pending .push entry)))
+  (for entry in pending
+    (with_card_gate runtime session entry/id (fn []
+      (drop_transient runtime session entry/id)
+      (let card (card_record runtime session entry/id))
+      (if_yes (&& (! ($absent? card)) (== card/definition_revision entry/definition_revision))
+        (card .put "state" entry/state)
+        (card .put "tree" entry/tree)
+        (card .put "revision" ($math/max entry/revision (+ card/revision 1)))
+        (card .put "origin" "progress")
+        (card .put "updated_ms" ($os/wall_ms))
+        (store_card runtime session card "progress")))))
+  pending/.size)
+
+(fn model_card_state [runtime, session : Str, id]
+  (validate_card_id id)
+  (let card (card_record runtime session id))
+  (if ($absent? card) (card_fail "not_found" $"no card ${id} in this session"))
+  (let pending (runtime/cards/transient/.get .get (transient_key session id)))
+  {^id card/id ^title card/title ^kind card/kind
+   ^state (?? pending/state card/state)
+   ^definition_revision card/definition_revision
+   ^revision (?? pending/revision card/revision) ^stale (== card/stale true)})
+
+# --- Clicks -----------------------------------------------------------------
+
+(fn action_digest [request] : Str
+  (let copy (copy_data request))
+  (copy .delete "input_id")
+  ($crypto/sha256 ($serde/write_data copy)))
+
+(fn save_receipt [runtime, session : Str, receipt]
+  (record_core_state runtime/events "session" session "card/action" (action_key receipt/input_id) receipt)
+  (flush_event_store runtime/events)
+  receipt)
+
+(fn prune_receipts [runtime, session : Str]
+  (let receipts [])
+  (for [key state] in (core_states runtime/events "session" session)
+    (if (&& ($str/starts_with? ($to_str key) "card_action/") (! ($absent? state)))
+      (receipts .push state)))
+  (if (<= receipts/.size action_retention) (return nil))
+  (let ordered ($order/sort_by receipts (fn [receipt] (?? receipt/admitted_ms 0))))
+  (var excess (- ordered/.size action_retention))
+  (for receipt in ordered
+    (if (<= excess 0) (break))
+    (if (!= receipt/status "admitted")
+      (record_core_state runtime/events "session" session "card/action" (action_key receipt/input_id) nil)
+      (set excess (- excess 1))))
+  (flush_event_store runtime/events)
+  nil)
+
+# An admission from an earlier process never ran to a receipt. The commit
+# names its input, so the card record says whether the click went through.
+(fn resolved_receipt [runtime, session : Str, receipt]
+  (if (|| ($absent? receipt) (!= receipt/status "admitted") (== receipt/epoch runtime/epoch))
+    (return receipt))
+  (let card (card_record runtime session receipt/card))
+  (let committed (&& (! ($absent? card)) ((?? card/inputs []) .contains? receipt/input_id)))
+  (receipt .put "status" (if committed "done" "interrupted"))
+  (receipt .put "message"
+    (if committed "Applied before the host restarted."
+      "Interrupted by a host restart. The card is unchanged; effects of anything update called are unknown."))
+  (if_not ($absent? card) (receipt .put "card" (public_card card)))
+  (save_receipt runtime session receipt))
+
+(fn card_action_receipt [runtime, session : Str, input_id : Str]
+  (require_record runtime/sessions session)
+  (let receipt (resolved_receipt runtime session (core_state runtime/events "session" session (action_key input_id))))
+  (if ($absent? receipt) (card_fail "not_found" "This card action receipt is not retained."))
+  receipt)
+
+(fn validate_action_request [request]
+  (if (!= ($head request) Map) (card_fail "invalid_request" "a card action needs a data map"))
+  (if (|| (!= ($head request/input_id) Str) (== request/input_id "") (> ($str/byte_size request/input_id) 128))
+    (card_fail "invalid_request" "a card action needs an input_id"))
+  (validate_card_id request/card)
+  (if_not (["update" "enable"] .contains? request/action)
+    (card_fail "invalid_request" "a card action is update or enable"))
+  (for key in ["definition_revision" "revision"]
+    (if (!= ($head (request .get key)) Int) (card_fail "invalid_request" $"a card action needs ${key}")))
+  (if (== request/action "update")
+    (if (|| (!= ($head request/name) Str) (== request/name ""))
+      (card_fail "invalid_request" "an update action needs a name")))
+  (for key in ["args" "fields"]
+    (let value (request .get key))
+    (if (&& (! ($absent? value)) (!= ($head value) Map))
+      (card_fail "invalid_request" $"card action ${key} must be a map")))
+  (if (> ($str/byte_size ($serde/write_data request)) 65536)
+    (card_fail "too_large" "card action arguments are too large"))
+  request)
+
+(fn register_inflight [runtime, session : Str, delta : Int]
+  (let counts runtime/cards/inflight/.get)
+  (counts .put session ($math/max 0 (+ (?? (counts .get session) 0) delta))))
+
+# Resuming a round waits for card operations admitted before it, so the model
+# never runs while a click on a card it owns is still in flight.
+(fn wait_for_card_actions [runtime, session : Str]
+  (if ($absent? runtime/cards) (return nil))
+  (while (> (?? (runtime/cards/inflight/.get .get session) 0) 0)
+    ($sleep 5))
+  nil)
+
+(fn card_action [runtime, session : Str, supplied]
+  (let request (validate_action_request (copy_data supplied)))
+  (let digest (action_digest request))
+  (let admitted
+    (with_session_gate runtime/sessions $"round/${session}" (fn []
+      (require_record runtime/sessions session)
+      # A retained receipt answers before any revision check, so a retry of a
+      # click that went through is never refused as stale.
+      (let existing (resolved_receipt runtime session
+        (core_state runtime/events "session" session (action_key request/input_id))))
+      (if_not ($absent? existing)
+        (if (!= existing/digest digest)
+          (card_fail "submission_conflict" "This card action identity has different content."))
+        (return {^existing existing}))
+      (let card (card_record runtime session request/card))
+      (if ($absent? card) (card_fail "not_found" $"no card ${request/card} in this session"))
+      (if (owned? runtime session card)
+        (card_fail "busy" "This card belongs to the running round; try again when it finishes."))
+      (let receipt
+        {^input_id request/input_id ^card request/card ^action request/action
+         ^digest digest ^status "admitted" ^epoch runtime/epoch ^admitted_ms ($os/wall_ms)})
+      (save_receipt runtime session receipt)
+      (register_inflight runtime session 1)
+      {^receipt receipt})))
+  (if_not ($absent? admitted/existing) (return admitted/existing))
+  (try
+    (with_card_gate runtime session request/card (fn []
+      (execute_card_action runtime session request admitted/receipt)))
+    ensure
+      (register_inflight runtime session -1)
+      (prune_receipts runtime session)))
+
+(fn finish_receipt [runtime, session : Str, receipt, changes]
+  (for [key value] in changes (receipt .put key value))
+  (receipt .put "finished_ms" ($os/wall_ms))
+  (save_receipt runtime session receipt))
+
+(fn execute_card_action [runtime, session : Str, request, receipt]
+  (let card (card_record runtime session request/card))
+  (if (|| ($absent? card) (!= card/definition_revision request/definition_revision)
+          (!= card/revision request/revision))
+    (return (finish_receipt runtime session receipt
+      {^status "refused" ^code "revision_conflict"
+       ^message "This card changed. It now shows its current state."
+       ^card (if ($absent? card) nil (public_card card))})))
+  (if (!= card/kind "live")
+    (return (finish_receipt runtime session receipt
+      {^status "refused" ^code "invalid_request" ^message "Only live cards run code."
+       ^card (public_card card)})))
+  (if (&& (== request/action "update") ($absent? card/source/update))
+    (return (finish_receipt runtime session receipt
+      {^status "refused" ^code "invalid_request" ^message "This card has no update function."
+       ^card (public_card card)})))
+  (let lease (acquire_snapshot runtime/h/snapshots))
+  (try
+    (let next_state
+      (if (== request/action "update")
+        (do
+          (let context (card_context runtime session))
+          (let update (card_function runtime lease/snapshot session card/source/update context))
+          (let action ($freeze {^name request/name ^args (?? request/args {}) ^fields (?? request/fields {})}))
+          (checked_state (bounded_call runtime lease session (update_policy) false update
+            [($freeze card/state) action])))
+        card/state))
+    (let tree (render_live runtime lease session card/source next_state))
+    (let earlier (?? card/inputs []))
+    (let inputs [])
+    (for previous in ($drop earlier ($math/max 0 (- ($size earlier) (- input_retention 1)))) (inputs .push previous))
+    (inputs .push request/input_id)
+    (card .put "state" next_state)
+    (card .put "tree" tree)
+    (card .put "revision" (+ card/revision 1))
+    (card .put "stale" false)
+    (card .put "origin" (if (== request/action "update") "click" "enable"))
+    (card .put "updated_ms" ($os/wall_ms))
+    (card .put "inputs" inputs)
+    (store_card runtime session card (if (== request/action "update") "updated" "enabled"))
+    (finish_receipt runtime session receipt
+      {^status "done" ^revision card/revision ^card (public_card card)})
+  catch CardError
+    (finish_receipt runtime session receipt
+      {^status "failed" ^code $err/code ^message $err/message ^card (public_card card)})
+  ensure
+    (release_snapshot runtime/h/snapshots lease)))
+
+# --- Sends and command buttons ------------------------------------------------
+
+(fn tree_contains? [tree, attribute : Str, value] : Bool
+  (if (!= ($head tree) Map) (return false))
+  (if (== (tree/props .get attribute) value) (return true))
+  (for child in (?? tree/children [])
+    (if (tree_contains? child attribute value) (return true)))
+  false)
+
+(fn checked_card_ref [runtime, session : Str, ref]
+  (if (|| (!= ($head ref) Map) (!= ($head ref/definition_revision) Int) (!= ($head ref/revision) Int))
+    (card_fail "invalid_request" "a card reference needs an id and both revisions"))
+  (validate_card_id ref/id)
+  (let card (card_record runtime session ref/id))
+  (if ($absent? card) (card_fail "not_found" $"no card ${ref/id} in this session"))
+  (if (owned? runtime session card)
+    (card_fail "busy" "This card belongs to the running round; try again when it finishes."))
+  (if (!= card/definition_revision ref/definition_revision)
+    (card_fail "revision_conflict" "This card was replaced. It now shows its current definition."))
+  card)
+
+# A command button on a static card checks the definition; on a live card,
+# whose view can build command text from state, both revisions.
+(fn check_card_command [runtime, session : Str, ref, text : Str]
+  (with_session_gate runtime/sessions $"round/${session}" (fn []
+    (let card (checked_card_ref runtime session ref))
+    (if (&& (== card/kind "live") (!= card/revision ref/revision))
+      (card_fail "revision_conflict" "This card changed. It now shows its current state."))
+    (if_not (tree_contains? card/tree "command" text)
+      (card_fail "revision_conflict" "This command is not on the card's current tree."))
+    (public_card card))))
+
+# The admitted request carries the state the user saw, never newer data.
+(fn card_send_item [runtime, session : Str, ref, text : Str]
+  (let card (checked_card_ref runtime session ref))
+  (if (|| (!= card/kind "live") (!= card/revision ref/revision))
+    (card_fail "revision_conflict" "This card changed. Review its current state before sending."))
+  (if_not (tree_contains? card/tree "send" text)
+    (card_fail "revision_conflict" "This send button is not on the card's current tree."))
+  {^id $"card.${card/id}" ^header $"[card.${card/id}] ${card/title}" ^value ($to_str card/state)})
+
+# --- Response bindings ----------------------------------------------------------
+
+(fn card_bindings [runtime, session : Str, round : Str, turn : Int]
+  {^card_at (fn [line : Int, id, tree = nil, ^title title = nil, ^state state = nil, ^view view = nil, ^update update = nil]
+      (try
+        (define_card runtime session round turn id
+          {^title title ^tree tree ^state state ^view view ^update update})
+        catch CardError
+          (fail (OutcomeError ^response_line line ^message $"card ${id}: ${$err/message}"))))
+   ^card (fn [args...]
+      (fail (OutcomeError ^message "call card directly as (card \"id\" ^title \"...\" ...) so its functions are kept as source")))
+   # Plugin functions reach this through plugin_api show_card and the turn
+   # context; their ^view and ^update arrive already quoted.
+   ^card_from_plugin (fn [id, tree = nil, ^title title = nil, ^state state = nil, ^view view = nil, ^update update = nil]
+      (define_card runtime session round turn id
+        {^title title ^tree tree ^state state ^view view ^update update}))
+   ^card_update (fn [id, state] (update_card_state runtime session round id state))
+   ^card_state (fn [id] (model_card_state runtime session id))})

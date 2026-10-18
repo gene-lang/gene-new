@@ -26,6 +26,7 @@
                    ^record record = nil, ^context inherited = nil,
                    ^turn_sink turn_sink = nil,
                    ^validators validators = {},
+                   ^renderers renderers = {},
                    ^fail_after_renames fail_after_renames : Int = -1,
                    ^after_patch_rename after_patch_rename = nil]
   (let console ($cell []))
@@ -107,7 +108,7 @@
                 ensure deadline/.cancel deadline/.join))
               ensure (close_execution_scope execution)))
             (match outcome ^!exhaustive
-              (when (TaskOutcome/ok value) (set validated (validate_outcome turn value ^validators validators)))
+              (when (TaskOutcome/ok value) (set validated (validate_outcome turn value ^validators validators ^renderers renderers)))
               (when (TaskOutcome/error failure)
                 (set error ($to_str failure/message))
                 (set error_line (response_error_line failure)))
@@ -115,7 +116,7 @@
               (when TaskOutcome/cancelled
                 (if expired/.get (set error "response budget timed out") (set cancelled true)))))
           (else
-            (set validated (validate_outcome turn (if ($absent? patch_result) nil patch_result/text) ^validators validators))))))
+            (set validated (validate_outcome turn (if ($absent? patch_result) nil patch_result/text) ^validators validators ^renderers renderers))))))
     catch Any
       (set error ($to_str $err/message))
       (set error_line (response_error_line $err))

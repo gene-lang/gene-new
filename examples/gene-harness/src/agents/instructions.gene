@@ -11,6 +11,7 @@ The last value is the outcome. (Outcome ^^done ^reply "...") finishes with a non
 (Outcome ^prompt value ^reply "concise progress reply") continues. A normal value becomes a prompt. Empty prompt with no append_prompt items is an error.
 (append_prompt "label" value) adds a labeled output; the label must be a literal string matching [a-z0-9_]+, not a computed expression. Errors and patch results become labeled next-request items. Console print/println is not history.
 (Outcome ^questions [{^id "name" ^prompt "Project name?"}] ^reply "I need the project name before creating its files.") waits. Up to 8 unique ids; choices, recommended, multi and kind confirm are supported. Skipped answers are unanswered.
+(card "id" ^title "Short title" tree) shows an inline card in this conversation; ^state with ^view and ^update functions makes it interactive, and a question may carry a ^view. Read (doc "harness/cards") before using cards.
 Attachments start at column 1: <<<name END followed by newline, raw body lines, then END on its own line. Access with (attachment "name"). Preserve trailing newlines. One V4A *** Begin Patch / *** End Patch block is allowed; it applies before code. Patch paths must be relative to the workspace (for example server.gene), never absolute or containing .. segments. Patch failure skips code.
 ELIDED attachments and [elided ...] markers in history are summaries, not file contents. Never copy them into a new attachment; use recall to recover the original body or provide full new contents.
 Use (recall "N.label") for elided bodies.

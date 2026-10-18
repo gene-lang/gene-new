@@ -5,10 +5,10 @@
 (import [baseline_profile] ^from "../../../src/profiles/baseline")
 (import [create_session load_session] ^from "../../../src/runtime/sessions")
 (import [new_round_controller submit_round round_receipt cancel_round close_round_controller
-         save_round RoundError answer_round request_stop]
+         save_round RoundError answer_round request_stop resume_answered_rounds]
   ^from "../../../src/runtime/round_controller")
-(import [events_for append_core_event flush_event_store core_state] ^from "../../../src/storage/state")
-(import [QuestionError] ^from "../../../src/runtime/questions")
+(import [events_for append_core_event flush_event_store core_state record_core_state] ^from "../../../src/storage/state")
+(import [QuestionError answer_questions] ^from "../../../src/runtime/questions")
 (import [append_message] ^from "../../../src/agents/history")
 (import [RoundChanged] ^from "../../../src/kernel")
 (import [scripted_profile] ^from "../../../src/profiles/scripted")
@@ -184,6 +184,81 @@
           ($assert (== endings ["interrupted"]) "recovery did not close the open turn once")
           ($println "round recovery: current and historical blobbed receipts interrupt without replay")
           ensure (close_runtime reopened))))))
+
+(describe "Harness answered-question recovery"
+  (it "resumes a recorded continuation once, cancels a recorded cancellation and interrupts an unrecorded answer" []
+    (isolated this_mod/.path "resumes a recorded continuation once, cancels a recorded cancellation and interrupts an unrecorded answer"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (let root runtime/root)
+        (let controller (test_controller runtime (fn [request]
+          "(Outcome ^questions [{^id \"q\" ^prompt \"Continue?\"}])")))
+        (let batches {})
+        (for session in ["cont" "cancel" "legacy"]
+          (create_session runtime/sessions ^id session)
+          (let admitted (submit_round controller session $"r-${session}" 1 "ask"))
+          (controller/watchers/.get .get session; .join)
+          (let waiting (round_receipt controller session admitted/id))
+          ($assert (== waiting/state "waiting") $"${session} did not wait")
+          (batches .put session waiting/questions/id))
+        # A crash after the batch was finalized but before the round moved on.
+        (answer_questions runtime/events "cont" batches/cont {^q "yes"})
+        (answer_questions ^^dismiss ^intent "cancel" runtime/events "cancel" batches/cancel {})
+        (let legacy (core_state runtime/events "session" "legacy" $"questions/${batches/legacy}"))
+        (legacy .put "status" "answered")
+        (legacy .put "answers" {^q "yes"})
+        (record_core_state runtime/events "session" "legacy" "question/answered" $"questions/${batches/legacy}" legacy)
+        (flush_event_store runtime/events)
+        (close_round_controller controller)
+        (close_runtime runtime)
+        (let reopened (open_runtime root "default" (baseline_profile)))
+        (try
+          (let calls ($cell []))
+          (let fresh (test_controller reopened (fn [request]
+            (calls/.get .push request/session)
+            "(Outcome ^^done ^reply \"continued\")")))
+          ($assert (== (resume_answered_rounds fresh) 1) "the recorded continuation was not pending")
+          (fresh/watchers/.get .get "cont"; .join)
+          ($assert (== (resume_answered_rounds fresh) 0) "a continuation resumed twice")
+          (let done_session (load_session reopened/sessions "cont"))
+          (let done done_session/round/.get)
+          ($assert (== done/state "done") "the recorded continuation did not resume")
+          ($assert (== calls/.get ["cont"]) "a cancelled or unrecorded round called the model")
+          (let cancelled_session (load_session reopened/sessions "cancel"))
+          (let cancelled cancelled_session/round/.get)
+          ($assert (== cancelled/state "cancelled") "a recorded cancellation did not cancel")
+          (let interrupted_session (load_session reopened/sessions "legacy"))
+          (let interrupted interrupted_session/round/.get)
+          ($assert (== interrupted/state "interrupted") "an unrecorded answer was not interrupted")
+          ensure (close_runtime reopened)))))
+
+  (it "returns the stored result for an identical answer after the session moved on" []
+    (isolated this_mod/.path "returns the stored result for an identical answer after the session moved on"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (let calls ($cell 0))
+        (let controller (test_controller runtime (fn [request]
+          (calls .set (+ calls/.get 1))
+          (if (== calls/.get 1)
+            "(Outcome ^questions [{^id \"q\" ^prompt \"Continue?\"}])"
+            "(Outcome ^^done ^reply \"done\")"))))
+        (try
+          (let first (submit_round controller "default" "u1" 1 "ask"))
+          (controller/watchers/.get .get "default"; .join)
+          (let batch (/id (/questions (round_receipt controller "default" first/id))))
+          (answer_round controller "default" batch {^q "yes"})
+          (controller/watchers/.get .get "default"; .join)
+          (let second (submit_round controller "default" "u2" 2 "again"))
+          (controller/watchers/.get .get "default"; .join)
+          (let before calls/.get)
+          (let retried (answer_round controller "default" batch {^q "yes"}))
+          ($assert (== retried/id first/id) "an identical retry did not return its own round")
+          ($assert (== calls/.get before) "an identical retry resumed a round")
+          ($assert (try (answer_round controller "default" batch {^q "no"}) false
+            catch QuestionError true) "a different answer was accepted")
+        ensure
+          (close_round_controller controller)
+          (close_runtime runtime))))))
 
 (describe "Harness round receipts"
   (it "keeps only the newest 128 receipts of a session" []
