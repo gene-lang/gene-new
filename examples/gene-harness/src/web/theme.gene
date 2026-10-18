@@ -27,7 +27,7 @@
 
 # Mode-independent tokens.
 (var shared_tokens
-  [["radius-button" "3px"]
+  [["radius-button" "5px"]
    ["font-sans" "-apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif"]
    ["font-mono" "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"]])
 

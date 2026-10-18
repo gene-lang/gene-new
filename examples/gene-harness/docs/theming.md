@@ -17,7 +17,7 @@ Owner decisions, 2026-10-17:
 
 | Question | Decision |
 | --- | --- |
-| Button radius | `3px` |
+| Button radius | `5px` |
 | Accent | Fully neutral: pure grays, and the accent is the ink color |
 | User message | Square block whose color is a theme token (`user`) |
 | Where the mode is stored | Per workspace, for now |
@@ -81,7 +81,7 @@ Measured in `src/web/style.gene`, `src/web/plugin_page.gene` and
 
 ### The rule
 
-`--radius-button: 3px` is the only non-zero radius in the host theme. Everything
+`--radius-button: 5px` is the only non-zero radius in the host theme. Everything
 else has radius 0 by default. That includes inputs, textareas, selects, the composer,
 cards, drawers, code blocks, inline code, images, badges, tabs, the user
 message and the status dot.
@@ -197,7 +197,7 @@ These defaults are supplied by the host. Their absence from the seven-key
 | `success` | Ready/passed status | `#2d6a38` | `#8fc89b` |
 | `scrim` | Overlay behind the mobile sidebar | `rgb(0 0 0 / .2)` | `rgb(0 0 0 / .5)` |
 | `select-chevron` | Select arrow, a data-URI SVG drawn in `muted` | per palette | per palette |
-| `radius-button` | The only radius | `3px` | `3px` |
+| `radius-button` | The only radius | `5px` | `5px` |
 | `font-sans` | UI and prose text | `-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif` | same |
 | `font-mono` | Code, commands, REPL input | `ui-monospace, SFMono-Regular, Menlo, Consolas, monospace` | same |
 
@@ -693,7 +693,7 @@ styled demo plugin; the OS color preference was not consulted):
 - **Both modes at desktop width and at 390 px** (rendered in same-origin
   frames) for the conversation view, composer, sidebar, plugin manager and
   `/about/`.
-- **Computed values.** `button` radius 3px; composer, cards, rows, selects and
+- **Computed values.** `button` radius 5px; composer, cards, rows, selects and
   the drawer 0px. The drawer has an `edge` border and no shadow. The
   user-message block is `--user`, square. Selects use `appearance: none` with
   the chevron. A native radio still renders as a circle.
@@ -712,7 +712,7 @@ styled demo plugin; the OS color preference was not consulted):
 - **Reconnect.** A tab whose stream reconnected re-applied the host's mode from
   the handshake status, even after its `data-theme` had been changed by hand.
 - **`/about/`.** Inline links take `accent` and are underlined; the primary
-  button is `ink` with `action-ink` text and the 3px radius.
+  button is `ink` with `action-ink` text and the 5px radius.
 
 Not covered: Safari and Firefox were not exercised; forced-colors mode was not
 re-checked (its block is unchanged and uses system colors).

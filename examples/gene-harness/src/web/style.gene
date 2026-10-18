@@ -17,7 +17,7 @@ body { margin: 0; }
 button, input, textarea, select { font: inherit; }
 button, a, input, textarea, select, summary { outline-offset: 4px; }
 :focus-visible { outline: 2px solid var(--accent); }
-button { cursor: pointer; border: 1px solid var(--line); border-radius: var(--radius-button); background: transparent; color: inherit; padding: .45rem .8rem; }
+button { cursor: pointer; border: 1px solid var(--line); border-radius: var(--radius-button); background: transparent; color: inherit; padding: .45rem .8rem; margin-right: 2px; }
 /* Buttons that read as rows, tabs or links stay square. */
 .session, .session_tab button, .command, .notification_local, .occurrence,
 .sidebar_footer button, .suggestions button, .ui_panel td button,
