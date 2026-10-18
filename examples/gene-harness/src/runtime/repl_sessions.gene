@@ -1,7 +1,9 @@
 (mod repl_sessions)
 (import [CommandResult] ^from "../plugin_api")
+(import [close_execution_scope] ^from "./execution_budget")
 (import [doc] ^from "../kernel")
 (import [discovery_bindings] ^from "../agents/discovery")
+(import [operator_turn operator_bindings operator_source operator_result operator_context operator_scope] ^from "./operator_eval")
 
 (type LiveReplFunction ^^private ^props {^name Str}
   (impl Callable
@@ -40,8 +42,17 @@
       (let forwarder : Callable (LiveReplFunction ^name name))
       ($repl/bind state/handle name forwarder)
       (state/names .put name true)))
-  (let value ($repl/eval state/handle ctx/raw))
-  (CommandResult ^display ($repl/format value) ^!attached ^status "done"))
+  (let turn (operator_turn ctx))
+  (let helper_bindings (operator_bindings {} ctx/runtime/root turn))
+  (for [name value] in helper_bindings ($repl/bind state/handle ($to_str name) value))
+  (let context (operator_context ctx turn))
+  (let scope (operator_scope ctx context))
+  (let value (try ($runtime/with_context scope/context (fn []
+    ($repl/eval state/handle (operator_source ctx/raw))))
+    ensure
+      (turn/state .set "closed")
+      (close_execution_scope scope)))
+  (CommandResult ^display (operator_result turn ($repl/format value)) ^^attached ^status "done"))
 
 (fn close_repl [sessions, session : Str]
   (let state (sessions/.get .get session))

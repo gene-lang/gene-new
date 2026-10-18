@@ -16,14 +16,15 @@
       ^output_format {^type "enum" ^values ["png" "jpeg"]}
       ^input_references {^type "range" ^min 0 ^max 4}})})
 
-(fn discovery [endpoints, ^model_input model_input = ["text" "image"], ^missing missing : Bool = false]
+(fn discovery [endpoints, ^model_input model_input = ["text" "image"], ^missing missing : Bool = false,
+               ^model model : Str = "fixture/png"]
   (fn [request]
     ($assert (== request/method "GET"))
     ($assert ($absent? request/headers/authorization))
     (if ($str/ends_with? request/url "/endpoints")
       (if missing {^status 503 ^body "unavailable"}
-        {^status 200 ^body ($json/stringify {^id "fixture/png" ^endpoints endpoints})})
-      {^status 200 ^body ($json/stringify {^data [{^id "fixture/png"
+        {^status 200 ^body ($json/stringify {^id model ^endpoints endpoints})})
+      {^status 200 ^body ($json/stringify {^data [{^id model
         ^architecture {^input_modalities model_input ^output_modalities ["image"]}}]})})))
 
 (fn rejected [code : Str, operation]
@@ -31,6 +32,52 @@
   ($assert (== actual code) $"Expected ${code}, got ${actual}."))
 
 (describe "OpenRouter PNG generator"
+  (it "accepts GPT Image 1 metadata without inventing format or resolution controls" []
+    # Live OpenRouter endpoint metadata (2026-10-18) has these controls but
+    # omits output_format, size and resolution. max_attempts=2 needs one
+    # possible refinement reference even when the first call has no images.
+    (let parameters
+      {^aspect_ratio {^type "enum" ^values ["1:1" "3:2" "2:3" "auto"]}
+       ^quality {^type "enum" ^values ["auto" "low" "medium" "high"]}
+       ^background {^type "enum" ^values ["auto" "transparent" "opaque"]}
+       ^n {^type "range" ^min 1 ^max 10}
+       ^input_references {^type "range" ^min 0 ^max 16}})
+    (let transport (discovery [(endpoint "openai" ^parameters parameters)]
+      ^model "openai/gpt-image-1"))
+    (let request {^model "openai/gpt-image-1" ^size "1024x1024" ^background "auto"
+      ^max_attempts 2 ^reference_count 0 ^timeout_ms 240000})
+    (let settings (configure_openrouter_images request ^transport transport))
+    ($assert (== settings/capabilities/image_input "yes"))
+    ($assert (== settings/capabilities/max_images 16))
+    ($assert (== settings/size_support "unknown"))
+    ($assert ($absent? settings/capabilities/output_formats))
+    ($assert (== settings/routing {^only ["openai"] ^allow_fallbacks false}))
+    (let prepared (prepare_openrouter_image {^settings settings ^prompt "Exactly two playful cats."
+      ^instructions "Generate PNG" ^reference_images [] ^candidate nil ^run "run" ^timeout_ms 900}))
+    ($assert (== prepared/body/size "1024x1024"))
+    ($assert ($absent? prepared/body/resolution))
+    ($assert ($absent? prepared/body/output_format))
+    ($assert prepared/reference_images/.empty?)
+    (for size in ["2048x1024" "invalid-size"]
+      (rejected "unsupported_endpoint" (fn []
+        (configure_openrouter_images (request .assoc "size" size) ^transport transport))))
+    (rejected "unsupported_endpoint" (fn []
+      (configure_openrouter_images request ^transport (discovery
+        [(endpoint "jpeg" ^parameters (parameters .assoc "output_format"
+          {^type "enum" ^values ["jpeg"]}))] ^model "openai/gpt-image-1")))))
+
+  (it "uses provider defaults only when routed endpoints lack a PNG selector" []
+    (let fixed (endpoint "fixed" ^parameters
+      {^resolution {^type "enum" ^values ["1K"]}
+       ^aspect_ratio {^type "enum" ^values ["1:1"]}
+       ^input_references {^type "range" ^min 0 ^max 4}}))
+    (for endpoints in [[fixed] [fixed (endpoint "selectable")]]
+      (let settings (configure_openrouter_images (input) ^transport (discovery endpoints)))
+      ($assert (! settings/send_output_format))
+      ($assert ($absent? settings/capabilities/output_formats))
+      ($assert (== settings/size_parameters {^resolution "1K" ^aspect_ratio "1:1"}))
+      ($assert (== settings/size_support "yes"))))
+
   (it "supports one text-only generation and reports tier dimensions for decoder preflight" []
     (let parameters {^resolution {^type "enum" ^values ["1K" "4K"]}
       ^output_format {^type "enum" ^values ["png"]}

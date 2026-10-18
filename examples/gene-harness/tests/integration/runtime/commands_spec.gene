@@ -70,7 +70,11 @@
             ; .get $"default:${hidden/id}"
             ; .join)
           (let failure (command_receipt manager "default" hidden/id))
-          ($assert (== failure/status "failed") "run exposed Outcome")
+          ($assert (== failure/status "done") "run did not expose Outcome")
+          (let prompted (command runtime "/run (append_prompt \"generated_image\" (+ 1 2))"))
+          ($assert (== prompted/status "done") $"run append_prompt failed: ${prompted}")
+          ($assert ($str/contains? prompted/display "generated_image") prompted/display)
+          ($assert ($str/contains? prompted/display "3") prompted/display)
           (let shell (submit_command manager "default" "/sh printf 'hello\\n'"))
           (manager/watchers
             .get

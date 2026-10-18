@@ -31,14 +31,22 @@ images. Unknown model support is reported honestly and may fail at the provider.
 The baseline includes the `openrouter` image generator, using
 `OPENROUTER_API_KEY` or `OPENROUTER_KEY`. It calls OpenRouter's dedicated
 [Image API](https://openrouter.ai/docs/guides/overview/multimodal/image-generation),
-discovers endpoint capabilities before generation, requests one PNG, and
-routes only to endpoints compatible with the requested settings. When every
+discovers endpoint capabilities before generation and requests one image,
+excluding endpoints whose declared settings conflict with the request. When every
 eligible endpoint advertises compatible resolution and aspect-ratio controls,
-the adapter sends those explicitly instead of the size shorthand. Configure
+the adapter sends those explicitly instead of the size shorthand. An endpoint
+may expose aspect ratios without a resolution selector; the adapter then keeps
+the requested `size` for provider validation and records size support as
+unknown. Missing `output_format` means the adapter omits that selector and uses
+the provider's default format. It does not claim known PNG support from missing
+metadata: returned bytes must still pass the host's PNG validation. Explicit
+format lists that exclude PNG are rejected before generation. Configure
 `generator_options` as `{^only ["PROVIDER_TAG"] ^allow_fallbacks false}` to
 restrict routing further. Fallbacks require an explicit compatible allowlist;
-discovery failure disables them and records unknown support. Missing keys in
-available endpoint metadata mean unsupported. There is no automatic generator
+discovery failure disables them and records unknown support. Missing controls
+do not establish the provider's default output format or supported pixel sizes.
+Reference-image and explicit background requirements still need compatible
+endpoint metadata. There is no automatic generator
 or model selection, and a model's vision support does not establish image
 generation support. Rejected requests retain a bounded provider explanation
 after removing the API key and any echoed reference-image bytes; this appears

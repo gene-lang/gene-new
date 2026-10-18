@@ -33,25 +33,32 @@
       (>= value (?? descriptor/min 0)) (<= value (?? descriptor/max 9223372036854775807))))
     (else false)))
 
-(fn size_supported [parameters, size : Str]
-  (if_not ($absent? parameters/size) (return (allows parameters "size" size)))
+(fn size_support [parameters, size : Str]
+  (if_not ($absent? parameters/size)
+    (return (if (allows parameters "size" size) "yes" "no")))
   # The API normalizes size into endpoint resolution/aspect controls. It does
   # not require a literal `size` descriptor when those controls are present.
-  (let dimensions (pixel_dimensions size))
-  (if ($absent? dimensions) (return (allows parameters "resolution" size)))
+  (let dimensions (normalized_dimensions size))
+  (if ($absent? dimensions)
+    (return (if ($absent? parameters/resolution) "no"
+      (if (allows parameters "resolution" size) "yes" "no"))))
   (var a dimensions/width) (var b dimensions/height)
   (while (> b 0) (let rest (// a b)) (set a b) (set b rest))
   (let ratio $"${(/ dimensions/width a)}:${(/ dimensions/height a)}")
   (if (&& (! ($absent? parameters/aspect_ratio)) (! (allows parameters "aspect_ratio" ratio)))
-    (return false))
-  (if (&& (!= dimensions/width dimensions/height) ($absent? parameters/aspect_ratio))
-    (return false))
+    (return "no"))
+  # Some image endpoints advertise aspect ratios without a resolution knob.
+  # Preserve the API's pixel-size request and let the provider validate it;
+  # absent resolution metadata does not establish an incompatible pixel size.
+  (if ($absent? parameters/resolution) (return "unknown"))
   (let tiers {^"512" "512" ^"768" "768" ^"1024" "1K" ^"1536" "1.5K" ^"2048" "2K" ^"4096" "4K"})
   (let tier (tiers .get ($to_str ($math/max dimensions/width dimensions/height))))
   (if ($absent? tier)
     # Explicit pixels without a known tier cannot be proven from an enum.
-    (return false))
-  (allows parameters "resolution" tier))
+    (return "no"))
+  (if_not (allows parameters "resolution" tier) (return "no"))
+  (if (&& (!= dimensions/width dimensions/height) ($absent? parameters/aspect_ratio))
+    "unknown" "yes"))
 
 (fn normalized_dimensions [size : Str]
   (let pixels (pixel_dimensions size))
@@ -75,8 +82,12 @@
 (fn endpoint_supports [endpoint, input]
   (let parameters endpoint/supported_parameters)
   (if (!= ($head parameters) Map) (return false))
-  (if_not (allows parameters "output_format" "png") (return false))
-  (if_not (size_supported parameters input/size) (return false))
+  # A missing format selector says nothing about the provider's default bytes.
+  # Omit that control and validate the actual PNG, but reject an explicit
+  # format allowlist that excludes PNG.
+  (if (&& (! ($absent? parameters/output_format))
+          (! (allows parameters "output_format" "png"))) (return false))
+  (if (== (size_support parameters input/size) "no") (return false))
   (if (&& (!= input/background "auto") (! (allows parameters "background" input/background)))
     (return false))
   (if (&& (! ($absent? parameters/n)) (! (allows parameters "n" 1))) (return false))
@@ -151,6 +162,8 @@
   (var output_support "unknown")
   (var max_images nil)
   (var send_background (!= input/background "auto"))
+  (var send_output_format true)
+  (var requested_size_support "unknown")
   (var size_parameters {^size input/size})
   (let normalized_size (normalized_size_parameters input/size))
   (var normalized_supported (! ($absent? normalized_size)))
@@ -158,6 +171,7 @@
     (set output_support "yes")
     (set input_support "yes")
     (set send_background true)
+    (set requested_size_support "yes")
     (for endpoint in compatible
       (if (&& (! route/only/.empty?) (! (route/only .contains? endpoint/provider_tag))) (continue))
       (let descriptor endpoint/supported_parameters/input_references)
@@ -166,6 +180,10 @@
         (set max_images (if ($absent? max_images) descriptor/max ($math/min max_images descriptor/max))))
       (if_not (allows endpoint/supported_parameters "background" input/background)
         (set send_background false))
+      (if_not (allows endpoint/supported_parameters "output_format" "png")
+        (set send_output_format false))
+      (if (!= (size_support endpoint/supported_parameters input/size) "yes")
+        (set requested_size_support "unknown"))
       (if_not (&& (allows endpoint/supported_parameters "resolution" normalized_size/resolution)
                   (allows endpoint/supported_parameters "aspect_ratio" normalized_size/aspect_ratio))
         (set normalized_supported false)))
@@ -176,10 +194,12 @@
     (if (&& (== ($head model/architecture/input_modalities) List)
             (! (model/architecture/input_modalities .contains? "image"))) (set input_support "no")))
   (let caps {^image_input input_support ^image_edit input_support ^image_output output_support
-    ^output_formats ["png"] ^routing route ^metadata_available known
+    ^routing route ^metadata_available known
     ^source "OpenRouter Image API endpoint discovery"})
+  (if (&& known send_output_format) (caps .put "output_formats" ["png"]))
   (if_not ($absent? max_images) (caps .put "max_images" max_images))
   {^model input/model ^size input/size ^background input/background ^send_background send_background
+   ^send_output_format send_output_format ^size_support requested_size_support
    ^dimensions (normalized_dimensions input/size) ^size_parameters size_parameters
    ^routing route ^capabilities caps
    ^endpoint_capabilities (if known compatible [])
@@ -189,8 +209,8 @@
   (let settings call/settings)
   (let prompt ($to_str call/instructions "\nOriginal requirements:\n" call/prompt
     (if ($absent? call/candidate) "" ($to_str "\nRefine the final reference image. Revision:\n" call/revision))))
-  (let body {^model settings/model ^prompt prompt ^n 1
-    ^output_format "png" ^provider settings/routing})
+  (let body {^model settings/model ^prompt prompt ^n 1 ^provider settings/routing})
+  (if (!= settings/send_output_format false) (body .put "output_format" "png"))
   (for [key value] in (?? settings/size_parameters {^size settings/size})
     (body .put key value))
   (if settings/send_background (body .put "background" settings/background))

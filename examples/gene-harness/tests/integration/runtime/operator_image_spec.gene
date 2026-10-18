@@ -1,0 +1,54 @@
+# Tests image generation in a command-owned response context.
+(import $test [describe it])
+(import [isolated run_spec] ^from "../../support")
+(import [image_fixture review] ^from "../../fixtures/image")
+(import [core_commands] ^from "../../../src/builtin/core_commands")
+(import [repl] ^from "../../../src/builtin/repl")
+(import [submit_mode_input mode_state] ^from "../../../src/runtime/input_modes")
+(import [submit_command command_receipt] ^from "../../../src/runtime/commands")
+(import [read_image_run] ^from "../../../src/storage/image_runs")
+(import [close_runtime] ^from "../../../src/runtime/bootstrap")
+
+(describe "Operator image evaluation"
+  (it "generates and reviews an image from /run with a command-owned origin" []
+    (isolated this_mod/.path "generates and reviews an image from /run with a command-owned origin"
+      (fn [workspace]
+        (let fixture (image_fixture workspace [(review 95)] ^extra_plugins [(core_commands)]))
+        (let runtime fixture/runtime)
+        (try
+          (let submitted (submit_command runtime/commands "default"
+            "/run (append_prompt \"generated_image\" (image_generate \"Two playful cats.\" ^generator \"mock\" ^generation_model \"fixture-image\" ^max_attempts 2))"))
+          (runtime/commands/watchers/.get .get $"default:${submitted/id}"; .join)
+          (let receipt (command_receipt runtime/commands "default" submitted/id))
+          ($assert (== receipt/status "done") $"image command failed: ${receipt}")
+          ($assert ($str/contains? receipt/display "generated_image") receipt/display)
+          ($assert ($str/contains? receipt/display "attempts_used 1") receipt/display)
+          ($assert ($str/contains? receipt/display "score 95") receipt/display)
+          (let saved (read_image_run runtime "default" $"command:${submitted/id}"))
+          ($assert (== saved/attempts/.size 1) "image attempt was not saved")
+          ($assert (! ($absent? saved/attempts/0/image_id)) "image media was not saved")
+        ensure (close_runtime runtime))))))
+
+
+(describe "Operator REPL image evaluation"
+  (it "generates and reviews an image from /repl with a fresh input origin" []
+    (isolated this_mod/.path "generates and reviews an image from /repl with a fresh input origin"
+      (fn [workspace]
+        (let fixture (image_fixture workspace [(review 95)] ^extra_plugins [(repl)]))
+        (let runtime fixture/runtime)
+        (try
+          (let opened (submit_command runtime/commands "default" "/repl"))
+          (runtime/commands/watchers/.get .get $"default:${opened/id}"; .join)
+          (let mode (mode_state runtime/modes "default"))
+          (let submitted (submit_mode_input runtime/modes "default" mode/instance "image-repl"
+            "(append_prompt \"generated_image\" (image_generate \"Two playful cats.\" ^generator \"mock\" ^generation_model \"fixture-image\" ^max_attempts 2))"))
+          (runtime/commands/watchers/.get .get $"default:${submitted/id}"; .join)
+          (let receipt (command_receipt runtime/commands "default" submitted/id))
+          ($assert (== receipt/status "done") $"repl image failed: ${receipt}")
+          ($assert ($str/contains? receipt/display "generated_image") receipt/display)
+          (let saved (read_image_run runtime "default" $"command:${submitted/id}"))
+          ($assert (== saved/attempts/.size 1) "repl image attempt was not saved")
+          ($assert (! ($absent? saved/attempts/0/image_id)) "repl image media was not saved")
+        ensure (close_runtime runtime))))))
+
+(fn main [args] (run_spec args))

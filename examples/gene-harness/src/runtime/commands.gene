@@ -5,6 +5,8 @@
 (import ^from "./composition" [acquire_snapshot release_snapshot])
 (import ^from "../agents/harness_turn" [workspace_bindings])
 (import ^from "../agents/eval_site" [evaluate_response])
+(import [close_execution_scope] ^from "./execution_budget")
+(import [operator_turn operator_bindings operator_forms operator_result operator_context operator_scope] ^from "./operator_eval")
 (import ^from "../agents/history"
   [write_body read_body bounded_request acquire_body_use release_body_use with_body_use])
 (import ^from "../storage/state"
@@ -121,9 +123,18 @@
   (let forms ($into ($parse/read_all ^source ctx/id ^^locs ctx/raw) []))
   (let bindings
     (workspace_bindings ctx/runtime/h ctx/snapshot ctx/session ctx/runtime/root))
-  (let environment (env ^bindings bindings))
-  (let value (evaluate_response `(scope %forms...) environment))
-  (CommandResult ^display value ^^attached ^status "done"))
+  (let turn (operator_turn ctx))
+  (let environment (env ^bindings (operator_bindings bindings ctx/runtime/root turn)))
+  (let context (operator_context ctx turn))
+  (let rewritten (operator_forms forms))
+  (let scope (operator_scope ctx context))
+  (let value (try
+    ($runtime/with_context scope/context (fn []
+      (evaluate_response `(scope %rewritten...) environment)))
+    ensure
+      (turn/state .set "closed")
+      (close_execution_scope scope)))
+  (CommandResult ^display (operator_result turn value) ^^attached ^status "done"))
 
 (fn view_command [ctx]
   (let specification ($str/trim ctx/raw))

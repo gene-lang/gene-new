@@ -1,0 +1,49 @@
+(mod operator_eval)
+(import [Outcome new_turn_items append_prompt_at attachment recall rewrite_prompt_calls render_request] ^from "../agents/outcome")
+(import [open_execution_scope close_execution_scope] ^from "./execution_budget")
+(import [select_provider] ^from "../agents/provider_selection")
+
+(fn operator_turn [ctx]
+  (new_turn_items ($parse/parse_int ($str/slice_bytes ctx/id 1 (- ($str/byte_size ctx/id) 1)))))
+
+(fn operator_bindings [bindings, root : Str, turn]
+  (bindings .put "Outcome" Outcome)
+  (bindings .put "workspace_root" root)
+  (bindings .put "append_prompt_at" (fn [label line form value]
+    (append_prompt_at turn label line form value)))
+  (bindings .put "attachment" (fn [name] (attachment turn name)))
+  (bindings .put "recall" (fn [id] (recall turn id)))
+  bindings)
+
+(fn operator_context [ctx, turn]
+  (let config ($serde/read_data ($fs/read_text $"${ctx/runtime/state_root}/config.gene")))
+  (let reviewer (try (select_provider ctx/runtime config) catch Any nil))
+  (let pinned (if ($absent? reviewer) nil
+    ($freeze_shallow {^name reviewer/name ^settings ($freeze reviewer/settings)
+      ^row ($freeze_shallow reviewer/row)})))
+  (let source ($runtime/context))
+  (source .assoc "turn" turn
+    ; .assoc "round" $"command:${ctx/id}"
+    ; .assoc "reviewer" pinned))
+
+(fn operator_scope [ctx, context]
+  (let config ($serde/read_data ($fs/read_text $"${ctx/runtime/state_root}/config.gene")))
+  (let limits (?? config/response_budget {^timeout_ms 600000 ^max_memory_mb 1024}))
+  (open_execution_scope "response"
+    {^timeout_ms (?? limits/timeout_ms 600000)
+     ^max_memory_mb (?? limits/max_memory_mb 1024)
+     ^max_steps 9223372036854775807} context))
+
+(fn operator_forms [forms]
+  (rewrite_prompt_calls forms))
+
+(fn operator_source [text : Str]
+  (if_not ($str/contains? text "append_prompt") (return text))
+  (let forms (operator_forms ($into ($parse/read_all text) [])))
+  ($str/join ($map forms $to_str) "\n"))
+
+(fn operator_result [turn, value]
+  (turn/state .set "closed")
+  (let items (render_request turn nil))
+  (if (== items "") (return value))
+  ($to_str (render_request turn nil) "\n" value))

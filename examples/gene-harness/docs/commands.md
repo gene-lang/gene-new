@@ -24,7 +24,10 @@ a client never cancels the host's work. `stop` and `restart` act on the host;
 other running sessions require `--confirm`.
 
 - `/run <Gene code>` evaluates Gene with session_id, workspace_root, discover,
-  doc, plugin functions and the standard library. It records the result.
+  doc, plugin functions, `Outcome`, response-style `append_prompt`, and the
+  standard library. It records the result and labeled prompt items in the
+  command receipt. Each invocation has a fresh command-owned image round;
+  generated images are retained in the session media catalog.
 - `/sh <shell command>` runs one non-interactive process with streamed output
   and an exit status, then returns to chat.
 - `/sh` opens persistent Shell mode until `exit`, `quit`, or Leave Shell.

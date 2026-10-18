@@ -7,7 +7,10 @@ syntax waits for more input. Empty input is ignored.
 The workspace directory is cwd. Imports are supported, subject to normal package
 boundaries. The environment exposes session_id, workspace_root, discover, doc,
 the standard library and active plugin functions. Discover and doc read the
-composition leased for the current input.
+composition leased for the current input. `Outcome` and `append_prompt` are
+available as in assistant code; each input gets a fresh command-owned image
+round, and generated images are retained in the session media catalog. Prompt
+items appear in the operator receipt, not as a new model turn.
 
 Local definitions persist. Saved plugin-function forwarders resolve the current
 activation on each input; replacement can add new names while user shadowing is
