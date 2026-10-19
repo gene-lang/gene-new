@@ -5248,6 +5248,10 @@ proc isPropMap*(v: Value): bool {.inline.} =
   ## A `{...}` PropMap (not a general HashMap), by tag alone.
   v.tagOf == MAP_TAG
 
+proc isNodeValue*(v: Value): bool {.inline.} =
+  ## A Node, typed instances included, by tag alone.
+  v.tagOf == NODE_TAG
+
 proc plainPathKeyId*(selector: Value): int32 {.inline.} =
   ## For the selector of a plain one-key read (`row/amount`) — a Node with no
   ## props whose single segment is a Sym, or a Str other than a `.msg` /

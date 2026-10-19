@@ -1190,7 +1190,7 @@ suite "compiler — GIR emission":
     let tryChunk = compileSource("(try 1 catch Any $err/message)")
     let catchBody = tryChunk.tries[0].catches[0].body
     check catchBody.localNames == @["$err"]
-    check catchBody.instructions[0].op == opLoadLocal
+    check catchBody.instructions[0].op in {opLoadLocal, opLoadLocalField}
     check catchBody.instructions[0].name == "$err"
 
   test "normalizes checked error rows":
@@ -2958,6 +2958,7 @@ proc expandFusedLocals(chunk: Chunk) =
       of opSetLocalPop: inst.op = opSetLocal
       of opCompareLocalsJumpIfFalse: inst.op = opLoadLocal
       of opCompareConstJumpIfFalse: inst.op = opNativeFastConst
+      of opLoadLocalField: inst.op = opLoadLocal
       else: discard)
 
 suite "vm — fused local sequences":
@@ -2987,19 +2988,26 @@ suite "vm — fused local sequences":
       (var k : Int 0)
       (set k value)
       k)
+    (type Point ^props {^x Int ^y Int})
+    (fn fields [p row]
+      # One-key reads of an instance and a Map, and a missing key of each:
+      # the instance's takes the general path.
+      [(+ p/x p/y) row/amount ($absent? row/missing) ($absent? p/missing)])
     [(count_to 6) (floats 2.0) (wide 9223372036854775807)
      (try (store "text") "unreached" catch Any "store failed")
+     (fields (Point ^x 3 ^y 4) {^amount 5})
      trace]
   """
 
-  test "loops, branches and dropped stores compile to fused sequences":
+  test "loops, branches, field reads and dropped stores compile to fused sequences":
     let chunk = compileSource(fusedProgram)
     check chunk.countOps(opSetLocalPop) >= 4
     check chunk.countOps(opCompareLocalsJumpIfFalse) >= 3
     check chunk.countOps(opCompareConstJumpIfFalse) >= 3
+    check chunk.countOps(opLoadLocalField) >= 4
     check "opCompareLocalsJumpIfFalse slot=" in disassemble(chunk)
     check run(chunk, newGlobalScope()).print() ==
-      "[309 2.5 \"positive\" \"store failed\" [0 1 2 4 5]]"
+      "[309 2.5 \"positive\" \"store failed\" [7 5 true true] [0 1 2 4 5]]"
 
   test "fused and expanded sequences charge and stop identically":
     let fused = compileSource(fusedProgram)
@@ -3008,6 +3016,7 @@ suite "vm — fused local sequences":
     check expanded.countOps(opSetLocalPop) == 0
     check expanded.countOps(opCompareLocalsJumpIfFalse) == 0
     check expanded.countOps(opCompareConstJumpIfFalse) == 0
+    check expanded.countOps(opLoadLocalField) == 0
     let unlimited = high(int64) div 2
     let probe = newGlobalScope()
     probe.evalBudget = EvalBudget(remaining: unlimited)
@@ -3042,9 +3051,9 @@ suite "vm — fused local sequences":
     check decoded.modules[0].chunk.countOps(opCompareLocalsJumpIfFalse) ==
       chunk.countOps(opCompareLocalsJumpIfFalse)
     check run(decoded.modules[0].chunk, newGlobalScope()).print() ==
-      "[309 2.5 \"positive\" \"store failed\" [0 1 2 4 5]]"
+      "[309 2.5 \"positive\" \"store failed\" [7 5 true true] [0 1 2 4 5]]"
     for fused in [opSetLocalPop, opCompareLocalsJumpIfFalse,
-                  opCompareConstJumpIfFalse]:
+                  opCompareConstJumpIfFalse, opLoadLocalField]:
       let corrupt = cloneCompiledChunk(chunk)
       var broken = false
       visitChunkTree(corrupt, proc(body: Chunk) =

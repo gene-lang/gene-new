@@ -12545,7 +12545,7 @@ proc releaseCallScope(scope: Scope) =
 
 const plainLoopBodyOps = {
   opNoop, opPushConst, opPop, opNot, opLoadName, opLoadStdlibPath, opLoadNativeFast, opLoadLocal,
-  opLoadLocalFast, opLoadOuterLocal, opDefineLocal, opRedefineLocal,
+  opLoadLocalField, opLoadLocalFast, opLoadOuterLocal, opDefineLocal, opRedefineLocal,
   opSetLocal, opSetLocalPop, opSetOuterLocal, opMakeList, opMakeListSplice, opMakeMap,
   opMakeHashMap, opMakeNode, opMakeSelector, opApplySelector,
   opApplySelectorTop, opCall0, opCall1, opCall2, opCall, opCallSplice,
@@ -19207,6 +19207,40 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           else:
             spush materializedModuleRefValue(
               scope, scope.loadSlot(left, inst[].name))
+        of opLoadLocalField:
+          # The path's opPushConst and the opApplySelectorTop follow at ip. A
+          # one-key read of a Map, or of a prop an instance has, is made here
+          # from the slot, the two charged in order; anything else runs this as
+          # the opLoadLocal it replaced. With no module reference pending, the
+          # slot holds exactly what opLoadLocal would push.
+          let slot = inst[].intArg
+          if slot >= 0 and slot < scope.slots.len and scope.slotDefined(slot) and
+              (scope.moduleRefs == nil or scope.moduleRefs.pendingStructural == 0):
+            let keyId = plainPathKeyId(
+              chunk.constants[chunk.instructions[ip].intArg])
+            let target {.cursor.} = scope.slots[slot]
+            var found = false
+            var field: Value
+            if keyId != -2 and target.isPropMap:
+              found = true
+              if keyId >= 0:
+                field = target.mapEntries.getOrDefaultById(keyId, VOID)
+              else:
+                field = VOID
+            elif keyId >= 0 and target.isNodeValue:
+              field = target.props.getOrDefaultById(keyId, VOID)
+              found = field.kind != vkVoid
+            if found:
+              let next = ip
+              chargeInPlace(next, 2)
+              spush materializedModuleRefValue(scope, field)
+              ip = next + 2
+              continue
+          if slot >= 0 and slot < scope.slots.len and scope.slotDefined(slot):
+            spush materializedModuleRefValue(scope, scope.slots[slot])
+          else:
+            spush materializedModuleRefValue(
+              scope, scope.loadSlot(slot, inst[].name))
         of opLoadLocalFast:
           # A proven typed local cannot contain an unresolved structural ref;
           # keeping this hot opcode branch-free matters to typed call dispatch.
@@ -19482,6 +19516,18 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               strunc(argsStart)
               spush value
               continue
+          elif stack[argsStart].isNodeValue:
+            # `p/x` on an instance: the prop read staticLookup starts with. A
+            # missing prop takes the general path, since a node also answers
+            # error diagnostics and its head, props, body and meta.
+            let keyId = plainPathKeyId(stack[argsStart + 1])
+            if keyId >= 0:
+              let prop = stack[argsStart].props.getOrDefaultById(keyId, VOID)
+              if prop.kind != vkVoid:
+                let value = materializedModuleRefValue(scope, prop)
+                strunc(argsStart)
+                spush value
+                continue
           when dispatchCacheEnabled:
             if stack[argsStart].kind == vkNamespace:
               var member: Value

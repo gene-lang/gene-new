@@ -10446,24 +10446,27 @@ iterator nestedChunks(chunk: Chunk): tuple[body: Chunk, scoped: bool] =
         yield (param.defaultValue.defaultChunk, true)
 
 proc fuseSequences(chunk: Chunk, seen: var HashSet[pointer]) =
-  ## Run three common sequences as one dispatch each: a `set` whose value is
+  ## Run four common sequences as one dispatch each: a `set` whose value is
   ## dropped, a comparison of two locals that decides a branch, as every
-  ## `while` and `repeat` header does, and a comparison with a constant that
-  ## decides a branch. Only the first instruction changes. The rest of each
-  ## sequence stays in place for jumps that land inside it, and the VM runs it
-  ## one instruction at a time whenever the fused fast path does not apply.
-  ## This runs after every compile-time analysis of the chunk.
+  ## `while` and `repeat` header does, a comparison with a constant that
+  ## decides a branch, and a one-key read of a local such as `row/amount`.
+  ## Only the first instruction changes. The rest of each sequence stays in
+  ## place for jumps that land inside it, and the VM runs it one instruction at
+  ## a time whenever the fused fast path does not apply. This runs after every
+  ## compile-time analysis of the chunk.
   if chunk == nil or seen.containsOrIncl(cast[pointer](chunk)):
     return
   for i in 0 ..< chunk.instructions.len:
-    let fused =
+    let candidates: set[OpCode] =
       case chunk.instructions[i].op
-      of opSetLocal: opSetLocalPop
-      of opLoadLocal: opCompareLocalsJumpIfFalse
-      of opNativeFastConst: opCompareConstJumpIfFalse
+      of opSetLocal: {opSetLocalPop}
+      of opLoadLocal: {opCompareLocalsJumpIfFalse, opLoadLocalField}
+      of opNativeFastConst: {opCompareConstJumpIfFalse}
       else: continue
-    if chunk.instructions.fusedSequenceFollows(i, fused):
-      chunk.instructions[i].op = fused
+    for fused in candidates:
+      if chunk.instructions.fusedSequenceFollows(i, fused):
+        chunk.instructions[i].op = fused
+        break
   for body, _ in chunk.nestedChunks:
     fuseSequences(body, seen)
   template fuseMessages(messages: untyped) =

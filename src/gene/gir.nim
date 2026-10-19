@@ -23,6 +23,10 @@ type
     opLoadName
     opLoadNativeFast
     opLoadLocal
+    # opLoadLocal of a Map or instance, fused with the opPushConst of a one-key
+    # path and the opApplySelectorTop after it, which stay in place. It runs as
+    # opLoadLocal unless the read is the plain one both fast paths make.
+    opLoadLocalField
     opLoadLocalFast
     opLoadArg      # scopeless calls: push stack[curStackBase + intArg]
     opLoadOuterLocal
@@ -1232,6 +1236,9 @@ proc fusedSequenceFollows*(code: openArray[Instruction], index: int,
   of opCompareConstJumpIfFalse:
     index + 1 < code.len and code[index].comparison and
       code[index + 1].op == opJumpIfFalse
+  of opLoadLocalField:
+    index + 2 < code.len and code[index + 1].op == opPushConst and
+      code[index + 2].op == opApplySelectorTop
   else:
     false
 
@@ -1290,7 +1297,7 @@ proc formatInstruction(inst: Instruction): string =
      opRefBegin, opRefFinish, opRefAbort, opRefGet, opRefGetStructural:
     result.add " name=" & inst.name
   of opLoadLocal, opLoadLocalFast, opLoadArg, opDefineLocal, opRedefineLocal,
-     opSetLocal, opSetLocalPop, opCompareLocalsJumpIfFalse:
+     opSetLocal, opSetLocalPop, opCompareLocalsJumpIfFalse, opLoadLocalField:
     result.add " slot=" & $inst.intArg
     if inst.name.len > 0:
       result.add " name=" & inst.name
