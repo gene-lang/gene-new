@@ -10,7 +10,7 @@ import ./[gir, printer, reader, types]
 # The number changes when the chunk layout or opcode/value meaning changes, so
 # a stale artifact fails closed. Path values replaced Selector values while
 # reusing the same bytecode slots, so that migration also advances the format.
-const GirArtifactFormat* = 32
+const GirArtifactFormat* = 33
 
 proc validateModuleSourcePath(path: string) =
   # Empty remains available to host-created, explicitly path-bound chunks.
@@ -572,8 +572,12 @@ proc restoreChunkOwners(root: Chunk, allowRuntimeState = false) =
             not call.definition.runtime or call.syntax.kind != vkNode)):
         raise newException(ValueError, "encoded GIR contains invalid runtime macro call")
     var stdlibSlots = 0
-    for inst in chunk.instructions:
+    for index, inst in chunk.instructions:
       case inst.op
+      of opSetLocalPop, opCompareLocalsJumpIfFalse:
+        if not chunk.instructions.fusedSequenceFollows(index, inst.op):
+          raise newException(ValueError,
+            "encoded GIR contains a fused instruction without its sequence")
       of opLoadStdlibPath:
         if inst.intArg < 0 or inst.intArg >= chunk.constants.len or
             inst.name != "gene" or inst.depth != stdlibSlots:

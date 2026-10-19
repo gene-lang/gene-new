@@ -10445,6 +10445,45 @@ iterator nestedChunks(chunk: Chunk): tuple[body: Chunk, scoped: bool] =
       if param.defaultValue.optional and param.defaultValue.defaultChunk != nil:
         yield (param.defaultValue.defaultChunk, true)
 
+proc fuseLocalSequences(chunk: Chunk, seen: var HashSet[pointer]) =
+  ## Run two local-variable sequences as one dispatch each: a `set` whose
+  ## value is dropped, and a comparison of two locals that decides a branch,
+  ## as every `while` and `repeat` header does. Only the first instruction changes. The rest of each sequence
+  ## stays in place for jumps that land inside it, and the VM runs it one
+  ## instruction at a time whenever the fused fast path does not apply. This
+  ## runs after every compile-time analysis of the chunk.
+  if chunk == nil or seen.containsOrIncl(cast[pointer](chunk)):
+    return
+  for i in 0 ..< chunk.instructions.len:
+    let fused =
+      case chunk.instructions[i].op
+      of opSetLocal: opSetLocalPop
+      of opLoadLocal: opCompareLocalsJumpIfFalse
+      else: continue
+    if chunk.instructions.fusedSequenceFollows(i, fused):
+      chunk.instructions[i].op = fused
+  for body, _ in chunk.nestedChunks:
+    fuseLocalSequences(body, seen)
+  template fuseMessages(messages: untyped) =
+    for message in messages:
+      if message.fn != nil: fuseLocalSequences(message.fn.chunk, seen)
+  for typ in chunk.typeProtos:
+    fuseMessages(typ.messages)
+    for inline in typ.inlineImpls: fuseMessages(inline.messages)
+    if typ.ctorFn != nil: fuseLocalSequences(typ.ctorFn.chunk, seen)
+  for enumProto in chunk.enumProtos:
+    fuseMessages(enumProto.messages)
+    for inline in enumProto.inlineImpls: fuseMessages(inline.messages)
+  for protocol in chunk.protocolProtos:
+    fuseMessages(protocol.messages)
+    if protocol.deriveFn != nil: fuseLocalSequences(protocol.deriveFn.chunk, seen)
+  for impl in chunk.implProtos:
+    fuseMessages(impl.messages)
+
+proc fuseLocalSequences(root: Chunk) =
+  var seen = initHashSet[pointer]()
+  fuseLocalSequences(root, seen)
+
 proc collectSymbolNames(v: Value, names: var HashSet[string]) =
   case v.kind
   of vkSymbol: names.incl v.symVal
@@ -10764,6 +10803,7 @@ proc compileFormsInto(c: var Compiler, forms: openArray[Value],
       failure.loc = checked.diagnostics[0].loc
       raise failure
     c.chunk.errorChecksComplete = true
+  c.chunk.fuseLocalSequences()
   c.chunk
 
 proc compileForms*(forms: openArray[Value],
@@ -11062,6 +11102,7 @@ proc compileRuntimeMacroResult*(value: Value, call: RuntimeMacroCall,
     compileExpr(c, markMacroResult(value), tail = tail)
     discard c.emit(opReturn)
     planClosureCaptures(c.chunk, c.mutableBindingNames, @[])
+    c.chunk.fuseLocalSequences()
     result = c.chunk
   except GeneError as error:
     error.msg = call.runtimeMacroDiagnostic() & ": " & error.msg

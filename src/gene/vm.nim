@@ -12546,7 +12546,7 @@ proc releaseCallScope(scope: Scope) =
 const plainLoopBodyOps = {
   opNoop, opPushConst, opPop, opNot, opLoadName, opLoadStdlibPath, opLoadNativeFast, opLoadLocal,
   opLoadLocalFast, opLoadOuterLocal, opDefineLocal, opRedefineLocal,
-  opSetLocal, opSetOuterLocal, opMakeList, opMakeListSplice, opMakeMap,
+  opSetLocal, opSetLocalPop, opSetOuterLocal, opMakeList, opMakeListSplice, opMakeMap,
   opMakeHashMap, opMakeNode, opMakeSelector, opApplySelector,
   opApplySelectorTop, opCall0, opCall1, opCall2, opCall, opCallSplice,
   opCallName0, opCallName1, opCallNameN, opCallLocal0, opCallLocal1,
@@ -12559,6 +12559,7 @@ const plainLoopBodyOps = {
   opForEach, opMakeIterator, opIteratorHasNext, opIteratorNext,
   opIteratorClose, opLoopBreak, opLoopContinue, opLoopEnter, opLoopLeave,
   opFail, opPanic, opExplicitReturn, opJump, opJumpIfFalse,
+  opCompareLocalsJumpIfFalse,
   opJumpIfFalseOrPop, opJumpIfTrueOrPop, opJumpIfPresentOrPop,
   opJumpIfAbsent, opReturn, opCheckType, opCheckCallableArguments,
   opCheckCallableResult}
@@ -17832,6 +17833,18 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
   var cancelAtSafepoint = injectCancel
   var remainingBudget = instructionBudget
 
+  template chargeInPlace(first, count: int) =
+    ## Charges the `count` instructions from `first` that a fused handler runs
+    ## in place, as the dispatch header would charge each one before running
+    ## it. `ip` names each while it is charged, so a budget that runs out
+    ## reports from the same instruction. No fused sequence includes a point
+    ## where a scheduler slice may end, so only the counters move.
+    if instructionBudget > 0 or evalBudget != nil:
+      for charged in first ..< first + count:
+        ip = charged
+        if instructionBudget > 0: dec remainingBudget
+        if evalBudget != nil: chargeEvalStep(evalBudget)
+
   if fiber != nil and fiber.started:
     # Resuming a parked fiber: restore the full continuation captured at suspend.
     chunk = fiber.chunk
@@ -19162,6 +19175,38 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           else:
             spush materializedModuleRefValue(
               scope, scope.loadSlot(slot, inst[].name))
+        of opCompareLocalsJumpIfFalse:
+          # The right operand's opLoadLocal, the comparison and the jump
+          # follow at ip. Two defined small-Int locals are compared here, the
+          # three charged in order; anything else runs this as the opLoadLocal
+          # it replaced and the rest one instruction at a time.
+          let left = inst[].intArg
+          let right = chunk.instructions[ip].intArg
+          if left >= 0 and left < scope.slots.len and scope.slotDefined(left) and
+              right >= 0 and right < scope.slots.len and
+              scope.slotDefined(right) and scope.slots[left].isSmallInt and
+              scope.slots[right].isSmallInt:
+            let a = scope.slots[left].smallIntVal
+            let b = scope.slots[right].smallIntVal
+            let holds =
+              case NativeFastKind(chunk.instructions[ip + 1].intArg)
+              of nfkLt: a < b
+              of nfkGt: a > b
+              of nfkLe: a <= b
+              of nfkGe: a >= b
+              of nfkEq: a == b
+              of nfkNe: a != b
+              else:
+                raise newException(GeneError,
+                  "internal: fused comparison without a comparison")
+            let next = ip
+            chargeInPlace(next, 3)
+            ip = if holds: next + 3 else: chunk.instructions[next + 2].intArg
+          elif left >= 0 and left < scope.slots.len and scope.slotDefined(left):
+            spush materializedModuleRefValue(scope, scope.slots[left])
+          else:
+            spush materializedModuleRefValue(
+              scope, scope.loadSlot(left, inst[].name))
         of opLoadLocalFast:
           # A proven typed local cannot contain an unresolved structural ref;
           # keeping this hot opcode branch-free matters to typed call dispatch.
@@ -19218,6 +19263,14 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           if sp == 0:
             raise newException(GeneError, "VM stack underflow in set")
           scope.assignSlot(inst[].intArg, inst[].name, stack[sp - 1])
+        of opSetLocalPop:
+          if sp == 0:
+            raise newException(GeneError, "VM stack underflow in set")
+          scope.assignSlot(inst[].intArg, inst[].name, stack[sp - 1])
+          # The opPop at ip, run here.
+          chargeInPlace(ip, 1)
+          discard spop()
+          inc ip
         of opSetOuterLocal:
           if sp == 0:
             raise newException(GeneError, "VM stack underflow in set")

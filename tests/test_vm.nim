@@ -1087,7 +1087,8 @@ suite "compiler — GIR emission":
         sawLoadX = true
       if inst.op == opDefineLocal and inst.name == "y" and inst.intArg == 3:
         sawDefineY = true
-      if inst.op == opSetLocal and inst.name == "y" and inst.intArg == 3:
+      if inst.op in {opSetLocal, opSetLocalPop} and inst.name == "y" and
+          inst.intArg == 3:
         sawSetY = true
     check sawLoadX
     check sawDefineY
@@ -2920,6 +2921,158 @@ suite "vm — fused stdlib paths":
               (do (while (! started/.get) ($sleep 0)) (task .cancel)))
             (await task))
         """), scope)
+      except GeneCancel:
+        cancelled = true
+      check cancelled
+      check scope.lookup("started").cellValue.boolVal
+      check scope.lookup("cleaned").cellValue.intVal == 1
+
+proc visitChunkTree(chunk: Chunk, visit: proc(chunk: Chunk)) =
+  if chunk == nil:
+    return
+  visit(chunk)
+  for body in chunk.subchunks: visitChunkTree(body, visit)
+  for loop in chunk.forLoops: visitChunkTree(loop.body, visit)
+  for match in chunk.matches:
+    for clause in match.clauses: visitChunkTree(clause.body, visit)
+    visitChunkTree(match.elseBody, visit)
+  for attempt in chunk.tries:
+    visitChunkTree(attempt.body, visit)
+    for clause in attempt.catches: visitChunkTree(clause.body, visit)
+    visitChunkTree(attempt.ensureBody, visit)
+  for fn in chunk.functions: visitChunkTree(fn.chunk, visit)
+
+proc countOps(chunk: Chunk, op: OpCode): int =
+  var count = 0
+  visitChunkTree(chunk, proc(body: Chunk) =
+    for inst in body.instructions:
+      if inst.op == op: inc count)
+  count
+
+proc expandFusedLocals(chunk: Chunk) =
+  ## The rest of each fused sequence is still in place, so restoring the
+  ## first instruction gives the unfused program.
+  visitChunkTree(chunk, proc(body: Chunk) =
+    for inst in body.instructions.mitems:
+      case inst.op
+      of opSetLocalPop: inst.op = opSetLocal
+      of opCompareLocalsJumpIfFalse: inst.op = opLoadLocal
+      else: discard)
+
+suite "vm — fused local sequences":
+  const fusedProgram = """
+    (var trace [])
+    (fn count_to [n]
+      (var i 0)
+      (var total 0)
+      (var half (/ n 2))
+      (while (< i n)
+        # The then branch jumps to the opPop kept after the else branch's set.
+        (if (>= i half) (set total (+ total i)) (set total (- total 1)))
+        (if (!= i half) (trace .push i) nil)
+        (set i (+ i 1)))
+      total)
+    (fn floats [x]
+      # Float operands take the unfused path one instruction at a time.
+      (var y 0.5)
+      (while (< y x) (set y (+ y 1.0)))
+      y)
+    (fn store [value]
+      (var k : Int 0)
+      (set k value)
+      k)
+    [(count_to 6) (floats 2.0)
+     (try (store "text") "unreached" catch Any "store failed")
+     trace]
+  """
+
+  test "loops and dropped stores compile to fused sequences":
+    let chunk = compileSource(fusedProgram)
+    check chunk.countOps(opSetLocalPop) >= 4
+    check chunk.countOps(opCompareLocalsJumpIfFalse) >= 3
+    check "opCompareLocalsJumpIfFalse slot=" in disassemble(chunk)
+    check run(chunk, newGlobalScope()).print() ==
+      "[9 2.5 \"store failed\" [0 1 2 4 5]]"
+
+  test "fused and expanded sequences charge and stop identically":
+    let fused = compileSource(fusedProgram)
+    let expanded = cloneCompiledChunk(fused)
+    expanded.expandFusedLocals()
+    check expanded.countOps(opSetLocalPop) == 0
+    check expanded.countOps(opCompareLocalsJumpIfFalse) == 0
+    let unlimited = high(int64) div 2
+    let probe = newGlobalScope()
+    probe.evalBudget = EvalBudget(remaining: unlimited)
+    discard run(expanded, probe)
+    let steps = unlimited - probe.evalBudget.remaining
+    check steps > 100
+    for limit in 1'i64 .. steps + 1:
+      var outcomes: seq[string]
+      for code in [fused, expanded]:
+        let scope = newGlobalScope()
+        scope.evalBudget = EvalBudget(remaining: limit)
+        var outcome = ""
+        try:
+          outcome = run(code, scope).print()
+        except GeneError as error:
+          outcome = error.msg & " at " & $error.loc.line & ":" & $error.loc.col
+        var traced = "undefined"
+        try: traced = scope.lookup("trace").print()
+        except GeneError: discard
+        outcomes.add outcome & " remaining " & $scope.evalBudget.remaining &
+          " trace " & traced
+      check outcomes[0] == outcomes[1]
+
+  test "GIR keeps fused sequences and rejects one without its tail":
+    let chunk = compileSource(fusedProgram)
+    var artifact = ExecutableGir(entryIdentity: "test/fused",
+      modules: @[CompiledModule(identity: "test/fused", chunk: chunk,
+        macroExports: initTable[string, MacroDef](), syntaxFnExports: @[],
+        compileInterface: CompileNamespaceInterface(
+          entries: initTable[string, CompileInterfaceEntry]()))])
+    let decoded = decodeExecutableGir(encodeExecutableGir(artifact))
+    check decoded.modules[0].chunk.countOps(opCompareLocalsJumpIfFalse) ==
+      chunk.countOps(opCompareLocalsJumpIfFalse)
+    check run(decoded.modules[0].chunk, newGlobalScope()).print() ==
+      "[9 2.5 \"store failed\" [0 1 2 4 5]]"
+    for fused in [opSetLocalPop, opCompareLocalsJumpIfFalse]:
+      let corrupt = cloneCompiledChunk(chunk)
+      var broken = false
+      visitChunkTree(corrupt, proc(body: Chunk) =
+        for i, inst in body.instructions:
+          if not broken and inst.op == fused:
+            body.instructions[i + 1].op = opNoop
+            broken = true)
+      check broken
+      artifact.modules[0].chunk = corrupt
+      expect ValueError:
+        discard decodeExecutableGir(encodeExecutableGir(artifact))
+
+  test "a fused loop still yields for cancellation and cleanup":
+    withoutGeneWorkers:
+      let scope = newGlobalScope()
+      var cancelled = false
+      let chunk = compileSource("""
+        (var started ($cell false))
+        (var cleaned ($cell 0))
+        (fn spin [n]
+          (var i 0)
+          (while (< i n) (set i (+ i 1)))
+          i)
+        (scope
+          (let task (spawn ^lane root
+            (try
+              (started .set true)
+              (spin 1000000000)
+              ensure (cleaned .set (+ cleaned/.get 1)))))
+          (spawn ^lane root
+            (do (while (! started/.get) ($sleep 0)) (task .cancel)))
+          (await task))
+      """)
+      check chunk.countOps(opSetLocalPop) >= 1
+      check chunk.countOps(opCompareLocalsJumpIfFalse) >= 1
+      try:
+        discard run(chunk, scope)
       except GeneCancel:
         cancelled = true
       check cancelled

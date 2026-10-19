@@ -1598,7 +1598,10 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
         chunk.constants[inst.intArg], environment)
       absorb(selected)
       push selected.value
-    of opLoadName, opLoadNativeFast, opLoadLocal, opLoadLocalFast, opLoadOuterLocal, opLoadArg:
+    # A fused opcode is analyzed as the instruction it replaced; the rest of
+    # its sequence follows it in the chunk and is analyzed in turn.
+    of opLoadName, opLoadNativeFast, opLoadLocal, opLoadLocalFast, opLoadOuterLocal, opLoadArg,
+       opCompareLocalsJumpIfFalse:
       var name = inst.name
       if name.len == 0 and inst.intArg >= 0 and inst.intArg < chunk.localNames.len:
         name = chunk.localNames[inst.intArg]
@@ -1616,7 +1619,7 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
           value.kind in {avFunction, avMessage}:
         analysis.publicValues[environment.prefix & "/" & inst.name] = (value: value, loc: loc)
         if value.fn != nil: value.fn.public = true
-    of opSetName, opSetLocal, opSetOuterLocal:
+    of opSetName, opSetLocal, opSetLocalPop, opSetOuterLocal:
       var binding = state.at(environment, inst.name)
       binding.value = if state.stack.len > 0: state.stack[^1] else: unknownValue()
       if binding.declaredType.kind != vkNil:

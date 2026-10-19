@@ -37,6 +37,9 @@ type
     opRedefineLocal
     opSetName
     opSetLocal
+    # opSetLocal with the opPop after it, run as one dispatch. The opPop stays
+    # in place for any jump that lands on it.
+    opSetLocalPop
     opSetOuterLocal
     opRefBegin          # mark a predeclared module reference resolving
     opRefFinish         # pop target, resolve and patch structural fixups
@@ -133,6 +136,11 @@ type
     opYield           # suspend a generator and expose the stack top as item
     opExplicitReturn  # leave the nearest function, unwinding structured cleanup
     opJumpIfFalse
+    # The opLoadLocal of a comparison's left operand, fused with the opLoadLocal,
+    # opNativeFast2 comparison and opJumpIfFalse after it. Those three stay in
+    # place: jumps may land on them, and operands that are not two small Ints
+    # run the sequence one instruction at a time from here.
+    opCompareLocalsJumpIfFalse
     opJumpIfFalseOrPop # falsy top: jump keeping the value; truthy: pop it (&&)
     opJumpIfTrueOrPop  # truthy top: jump keeping the value; falsy: pop it (||)
     opJumpIfPresentOrPop # present top (not nil/void): jump keeping it; absent: pop (??)
@@ -1199,6 +1207,26 @@ proc emit*(chunk: Chunk, inst: Instruction,
 proc patchJump*(chunk: Chunk, at, target: int) =
   chunk.instructions[at].intArg = target
 
+const FusedComparisonKinds* = {nfkLt, nfkGt, nfkLe, nfkGe, nfkEq, nfkNe}
+
+proc fusedSequenceFollows*(code: openArray[Instruction], index: int,
+                           fused: OpCode): bool =
+  ## Whether the instructions after `index` are the rest of the sequence that
+  ## the fused opcode `fused` runs. The VM reads operands from them, so a
+  ## decoded chunk must pass this too.
+  case fused
+  of opSetLocalPop:
+    index + 1 < code.len and code[index + 1].op == opPop
+  of opCompareLocalsJumpIfFalse:
+    index + 3 < code.len and code[index + 1].op == opLoadLocal and
+      code[index + 2].op == opNativeFast2 and
+      code[index + 2].intArg >= ord(low(NativeFastKind)) and
+      code[index + 2].intArg <= ord(high(NativeFastKind)) and
+      NativeFastKind(code[index + 2].intArg) in FusedComparisonKinds and
+      code[index + 3].op == opJumpIfFalse
+  else:
+    false
+
 proc formatNames(names: openArray[string]): string =
   "[" & names.join(",") & "]"
 
@@ -1254,7 +1282,7 @@ proc formatInstruction(inst: Instruction): string =
      opRefBegin, opRefFinish, opRefAbort, opRefGet, opRefGetStructural:
     result.add " name=" & inst.name
   of opLoadLocal, opLoadLocalFast, opLoadArg, opDefineLocal, opRedefineLocal,
-     opSetLocal:
+     opSetLocal, opSetLocalPop, opCompareLocalsJumpIfFalse:
     result.add " slot=" & $inst.intArg
     if inst.name.len > 0:
       result.add " name=" & inst.name
