@@ -2194,8 +2194,10 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
         if inst.op == opReturnIntAdd2: finish(value, state); next = false
         else: push value
     of opIntAddConst, opIntSubConst, opIntMulConst, opIntLtConst, opIntGtConst,
-       opIntLeConst, opIntGeConst, opIntFastConst, opNativeFastConst:
-      if inst.op == opNativeFastConst and isCallModeledFastKind(inst.intArg):
+       opIntLeConst, opIntGeConst, opIntFastConst, opNativeFastConst,
+       opCompareConstJumpIfFalse:
+      if inst.op in {opNativeFastConst, opCompareConstJumpIfFalse} and
+          isCallModeledFastKind(inst.intArg):
         var args = newSeq[AbstractValue](2)
         args[0] = state.pop()
         args[1] = literalValue(chunk.constants[inst.depth])

@@ -2957,6 +2957,7 @@ proc expandFusedLocals(chunk: Chunk) =
       case inst.op
       of opSetLocalPop: inst.op = opSetLocal
       of opCompareLocalsJumpIfFalse: inst.op = opLoadLocal
+      of opCompareConstJumpIfFalse: inst.op = opNativeFastConst
       else: discard)
 
 suite "vm — fused local sequences":
@@ -2970,29 +2971,35 @@ suite "vm — fused local sequences":
         # The then branch jumps to the opPop kept after the else branch's set.
         (if (>= i half) (set total (+ total i)) (set total (- total 1)))
         (if (!= i half) (trace .push i) nil)
+        # A comparison with a constant, on a computed operand.
+        (if (== (// i 2) 0) (set total (+ total 100)) nil)
         (set i (+ i 1)))
       total)
     (fn floats [x]
       # Float operands take the unfused path one instruction at a time.
       (var y 0.5)
       (while (< y x) (set y (+ y 1.0)))
-      y)
+      (if (> y 1.0) y 0.0))
+    (fn wide [v]
+      # So does a big Int compared with a constant.
+      (if (> (* v v) 0) "positive" "other"))
     (fn store [value]
       (var k : Int 0)
       (set k value)
       k)
-    [(count_to 6) (floats 2.0)
+    [(count_to 6) (floats 2.0) (wide 9223372036854775807)
      (try (store "text") "unreached" catch Any "store failed")
      trace]
   """
 
-  test "loops and dropped stores compile to fused sequences":
+  test "loops, branches and dropped stores compile to fused sequences":
     let chunk = compileSource(fusedProgram)
     check chunk.countOps(opSetLocalPop) >= 4
     check chunk.countOps(opCompareLocalsJumpIfFalse) >= 3
+    check chunk.countOps(opCompareConstJumpIfFalse) >= 3
     check "opCompareLocalsJumpIfFalse slot=" in disassemble(chunk)
     check run(chunk, newGlobalScope()).print() ==
-      "[9 2.5 \"store failed\" [0 1 2 4 5]]"
+      "[309 2.5 \"positive\" \"store failed\" [0 1 2 4 5]]"
 
   test "fused and expanded sequences charge and stop identically":
     let fused = compileSource(fusedProgram)
@@ -3000,6 +3007,7 @@ suite "vm — fused local sequences":
     expanded.expandFusedLocals()
     check expanded.countOps(opSetLocalPop) == 0
     check expanded.countOps(opCompareLocalsJumpIfFalse) == 0
+    check expanded.countOps(opCompareConstJumpIfFalse) == 0
     let unlimited = high(int64) div 2
     let probe = newGlobalScope()
     probe.evalBudget = EvalBudget(remaining: unlimited)
@@ -3034,8 +3042,9 @@ suite "vm — fused local sequences":
     check decoded.modules[0].chunk.countOps(opCompareLocalsJumpIfFalse) ==
       chunk.countOps(opCompareLocalsJumpIfFalse)
     check run(decoded.modules[0].chunk, newGlobalScope()).print() ==
-      "[9 2.5 \"store failed\" [0 1 2 4 5]]"
-    for fused in [opSetLocalPop, opCompareLocalsJumpIfFalse]:
+      "[309 2.5 \"positive\" \"store failed\" [0 1 2 4 5]]"
+    for fused in [opSetLocalPop, opCompareLocalsJumpIfFalse,
+                  opCompareConstJumpIfFalse]:
       let corrupt = cloneCompiledChunk(chunk)
       var broken = false
       visitChunkTree(corrupt, proc(body: Chunk) =

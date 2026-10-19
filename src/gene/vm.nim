@@ -12559,7 +12559,7 @@ const plainLoopBodyOps = {
   opForEach, opMakeIterator, opIteratorHasNext, opIteratorNext,
   opIteratorClose, opLoopBreak, opLoopContinue, opLoopEnter, opLoopLeave,
   opFail, opPanic, opExplicitReturn, opJump, opJumpIfFalse,
-  opCompareLocalsJumpIfFalse,
+  opCompareLocalsJumpIfFalse, opCompareConstJumpIfFalse,
   opJumpIfFalseOrPop, opJumpIfTrueOrPop, opJumpIfPresentOrPop,
   opJumpIfAbsent, opReturn, opCheckType, opCheckCallableArguments,
   opCheckCallableResult}
@@ -21524,7 +21524,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             let callee = scope.loadNativeFast(kind, inst[].name)
             var args = [a, b]
             spush applyCall(callee, args, NamedArgs(), scope)
-        of opNativeFastConst:
+        of opNativeFastConst, opCompareConstJumpIfFalse:
           if sp < 1:
             raise newException(GeneError, "VM stack underflow in native fast const call")
           let top = sp
@@ -21532,6 +21532,26 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           let b = chunk.constants[inst[].depth]
           let kind = NativeFastKind(inst[].intArg)
           if a.isSmallInt and (inst[].flag or b.isSmallInt):
+            if op == opCompareConstJumpIfFalse:
+              # The opJumpIfFalse at ip, run here: the comparison decides the
+              # branch without pushing its Bool. A small Int needs no release.
+              let x = a.smallIntVal
+              let y = b.smallIntVal
+              let holds =
+                case kind
+                of nfkLt: x < y
+                of nfkGt: x > y
+                of nfkLe: x <= y
+                of nfkGe: x >= y
+                of nfkEq: x == y
+                of nfkNe: x != y
+                else:
+                  raise newException(GeneError,
+                    "internal: fused comparison without a comparison")
+              sp = top - 1
+              chargeInPlace(ip, 1)
+              ip = if holds: ip + 1 else: chunk.instructions[ip].intArg
+              continue
             case kind
             of nfkAdd:
               var value: Value

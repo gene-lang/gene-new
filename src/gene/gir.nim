@@ -141,6 +141,10 @@ type
     # place: jumps may land on them, and operands that are not two small Ints
     # run the sequence one instruction at a time from here.
     opCompareLocalsJumpIfFalse
+    # An opNativeFastConst comparison fused with the opJumpIfFalse after it,
+    # which stays in place. It keeps opNativeFastConst's operands and runs as
+    # opNativeFastConst unless the operand and constant are small Ints.
+    opCompareConstJumpIfFalse
     opJumpIfFalseOrPop # falsy top: jump keeping the value; truthy: pop it (&&)
     opJumpIfTrueOrPop  # truthy top: jump keeping the value; falsy: pop it (||)
     opJumpIfPresentOrPop # present top (not nil/void): jump keeping it; absent: pop (??)
@@ -1212,18 +1216,22 @@ const FusedComparisonKinds* = {nfkLt, nfkGt, nfkLe, nfkGe, nfkEq, nfkNe}
 proc fusedSequenceFollows*(code: openArray[Instruction], index: int,
                            fused: OpCode): bool =
   ## Whether the instructions after `index` are the rest of the sequence that
-  ## the fused opcode `fused` runs. The VM reads operands from them, so a
-  ## decoded chunk must pass this too.
+  ## the fused opcode `fused` runs, and the comparison is one it handles. The
+  ## VM reads operands from them, so a decoded chunk must pass this too.
+  template comparison(inst: Instruction): bool =
+    inst.intArg >= ord(low(NativeFastKind)) and
+      inst.intArg <= ord(high(NativeFastKind)) and
+      NativeFastKind(inst.intArg) in FusedComparisonKinds
   case fused
   of opSetLocalPop:
     index + 1 < code.len and code[index + 1].op == opPop
   of opCompareLocalsJumpIfFalse:
     index + 3 < code.len and code[index + 1].op == opLoadLocal and
-      code[index + 2].op == opNativeFast2 and
-      code[index + 2].intArg >= ord(low(NativeFastKind)) and
-      code[index + 2].intArg <= ord(high(NativeFastKind)) and
-      NativeFastKind(code[index + 2].intArg) in FusedComparisonKinds and
+      code[index + 2].op == opNativeFast2 and code[index + 2].comparison and
       code[index + 3].op == opJumpIfFalse
+  of opCompareConstJumpIfFalse:
+    index + 1 < code.len and code[index].comparison and
+      code[index + 1].op == opJumpIfFalse
   else:
     false
 
@@ -1432,7 +1440,7 @@ proc formatInstruction(inst: Instruction): string =
     result.add " name=" & inst.name & " const=" & $inst.depth
   of opNativeFast2:
     result.add " name=" & inst.name
-  of opNativeFastConst:
+  of opNativeFastConst, opCompareConstJumpIfFalse:
     result.add " name=" & inst.name & " const=" & $inst.depth
   of opMatch:
     result.add " match=" & $inst.intArg
