@@ -1,0 +1,120 @@
+# PGO training only: VM paths that the operation benchmark and the Harness
+# specs run rarely. Recursion, code under an evaluation budget, strings,
+# maps, generators and errors each get a share of the run comparable to the
+# rest of the training, so the optimizer does not treat them as cold. It is
+# not a benchmark and shares no code with one.
+# usage: gene run tools/pgo/workload.gene [SCALE]
+
+(type Node ^props {^value Int ^left Any ^right Any})
+
+(fn build_tree [depth : Int] : Any
+  (if (== depth 0)
+    nil
+    (Node ^value depth ^left (build_tree (- depth 1))
+          ^right (build_tree (- depth 1)))))
+
+(fn tree_sum [node]
+  (if ($absent? node)
+    0
+    (+ node/value (+ (tree_sum node/left) (tree_sum node/right)))))
+
+(fn ackermann [m n]
+  (if (== m 0)
+    (+ n 1)
+    (if (== n 0)
+      (ackermann (- m 1) 1)
+      (ackermann (- m 1) (ackermann m (- n 1))))))
+
+# The shape the compiler fuses into its recursion instructions.
+(fn stair_ways [n : Int] : Int
+  (if (< n 2) 1 (+ (stair_ways (- n 1)) (stair_ways (- n 2)))))
+
+(fn count_down [n : Int] : Int
+  (if (< n 1) 0 (+ 1 (count_down (- n 1)))))
+
+(fn collatz_steps [start : Int] : Int
+  (var n start)
+  (var steps 0)
+  (while (> n 1)
+    (if (== (// n 2) 0) (set n (/ n 2)) (set n (+ (* 3 n) 1)))
+    (set steps (+ steps 1)))
+  steps)
+
+(fn word_counts [words]
+  (let counts {})
+  (for word in words
+    (counts .put word (+ (?? (counts .get word) 0) 1)))
+  (var total 0)
+  (for [word count] in counts (set total (+ total (* count ($str/byte_size ($to_str word))))))
+  total)
+
+(fn render_rows [n]
+  (let rows [])
+  (repeat i in n
+    (let parity (if (== (// i 2) 0) "even" "odd"))
+    (rows .push $"row ${i}: $(* i i) ${parity}"))
+  ($str/byte_size ($str/join rows "\n")))
+
+(fn squares ^^generator [n]
+  (repeat i in n (yield (* i i))))
+
+(fn stream_total [n]
+  (var total 0)
+  (for value in (squares n) (set total (+ total value)))
+  total)
+
+(type Overdrawn ^props {^amount Int} ^impl [Error])
+(impl Error for Overdrawn
+  (message message [] : Str ^errors [] "overdrawn"))
+
+(fn withdraw [balance amount]
+  (if (> amount balance) (fail (Overdrawn ^amount amount)) (- balance amount)))
+
+(fn ledger [n]
+  (var balance 0)
+  (var refused 0)
+  (repeat i in n
+    (set balance (+ balance 3))
+    (try (set balance (withdraw balance (// i 7)))
+      catch Overdrawn (set refused (+ refused 1))))
+  [balance refused])
+
+(fn closures [n]
+  (let adders [])
+  (repeat i in 16 (adders .push (fn [x] (+ x i))))
+  (var total 0)
+  (repeat j in n
+    (let k (// j 16))
+    (let add adders/%k)
+    (set total (add total)))
+  total)
+
+(fn repeat_words [n]
+  (let words [])
+  (repeat i in n (words .push $"w$(// i 37)"))
+  words)
+
+(fn workload [scale]
+  [(tree_sum (build_tree (+ 10 scale)))
+   (ackermann 2 (* 40 scale))
+   (stair_ways (+ 18 scale))
+   (count_down (* 2000 scale))
+   (collatz_steps (+ 27 scale))
+   (word_counts ($str/split ($str/join (repeat_words (* 2000 scale)) " ") " "))
+   (render_rows (* 20000 scale))
+   (stream_total (* 50000 scale))
+   (ledger (* 20000 scale))
+   (closures (* 50000 scale))])
+
+(fn budgeted [thunk]
+  ($runtime/bind_call thunk []
+    ^policy {^max_steps 9223372036854775807 ^max_memory_mb 1024
+             ^timeout_ms 600000}))
+
+(fn main [args] : Nil
+  (let scale (if (> ($size args/body) 0) ($parse/parse_int args/body/0) 4))
+  (repeat round in 3
+    (let plain (workload scale))
+    (let limited ((budgeted (fn [] (workload scale)))))
+    ($assert (== plain limited) "budgeted and plain training runs disagree"))
+  nil)

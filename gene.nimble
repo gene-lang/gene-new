@@ -29,6 +29,26 @@ task speedy, "Optimized build for maximum performance":
   exec "mkdir -p bin"
   exec "nim c -d:release --mm:orc --opt:speed --passC:\"-march=native -O3\" -o:bin/gene src/gene.nim"
 
+task speedy_pgo, "speedy, profile-guided: instrument, train (tools/pgo), rebuild":
+  ## Needs clang and llvm-profdata (on macOS, the Xcode command line
+  ## tools). The instrumented binary, raw counters and merged profile stay in
+  ## build/pgo.
+  let pgo = thisDir() & "/build/pgo"
+  let profile = pgo & "/gene.profdata"
+  let flags = "-d:release --mm:orc --opt:speed"
+  let profdata = when defined(macosx): "xcrun llvm-profdata" else: "llvm-profdata"
+  exec "mkdir -p bin " & pgo
+  exec "nim c " & flags &
+       " --passC:\"-march=native -O3 -fprofile-instr-generate\"" &
+       " --passL:\"-fprofile-instr-generate\" --nimcache:" & pgo &
+       "/nimcache-instrumented -o:" & pgo & "/gene-instrumented src/gene.nim"
+  exec "rm -rf " & pgo & "/profile"
+  exec "sh tools/pgo/train.sh " & pgo & "/gene-instrumented " & pgo & "/profile"
+  exec profdata & " merge -o " & profile & " " & pgo & "/profile"
+  exec "nim c " & flags &
+       " --passC:\"-march=native -O3 -fprofile-instr-use=" & profile & "\"" &
+       " -o:bin/gene src/gene.nim"
+
 task wasm, "Build the wasm host-ABI module (docs/workflows.md §A.4) via Emscripten":
   ## Requires the Emscripten SDK (`emcc` on PATH). Produces web/gene.js +
   ## web/gene.wasm exporting the text-only eval ABI, ready for the browser
