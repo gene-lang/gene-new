@@ -32090,8 +32090,13 @@ proc constructTypedInstance(callee: Value, args: openArray[Value],
                              value: Value, fieldScope: Scope): Value =
     (if value.isPendingModuleRef: value
      else: adaptBodyFieldBoundary(owner, index, typeExpr, value, fieldScope))
-  let fields = callee.typeFields
-  let bodyFields = callee.typeBodyFields
+  # An untyped field, or a satisfied exact-kind scalar, is stored as given:
+  # the boundary would resolve the annotation by name twice to say the same.
+  template plainField(typeExpr, value: Value): bool =
+    typeExpr.kind == vkNil or bareScalarSatisfied(typeExpr, value)
+  # The schema is borrowed from `callee`, which the caller keeps alive.
+  template fields: untyped = callee.borrowedTypeFields
+  template bodyFields: untyped = callee.borrowedTypeBodyFields
   if args.len != 0 and bodyFields.len == 0:
     raise newException(GeneError,
       "constructing " & callee.typeName & " takes named fields only")
@@ -32107,9 +32112,12 @@ proc constructTypedInstance(callee: Value, args: openArray[Value],
         "constructing " & callee.typeName & " expects " &
         $bodyFields.len & " body item(s), got " & $args.len)
     for i, f in bodyFields:
-      let fieldScope = f.typeBodyFieldScope(callee.typeScope)
-      body.add adaptRefBodyField(callee.typeName, i,
-                             f.typeExpr, args[i], fieldScope)
+      if plainField(f.typeExpr, args[i]):
+        body.add args[i]
+      else:
+        let fieldScope = f.typeBodyFieldScope(callee.typeScope)
+        body.add adaptRefBodyField(callee.typeName, i,
+                               f.typeExpr, args[i], fieldScope)
   else:
     if args.len < restBody:
       raise newException(GeneError,
@@ -32126,14 +32134,19 @@ proc constructTypedInstance(callee: Value, args: openArray[Value],
       body.add adaptRefBodyField(callee.typeName, i,
                              restType.typeExpr, args[i], fieldScope)
   var props = initPropTable()
+  props.reserve(min(named.len, fields.len))
+  var matched = 0
   for f in fields:
     let argIdx = named.argIndex(f.name)
     if argIdx >= 0:
+      inc matched
       let value = named.valueAt(argIdx)
       if value.kind == vkVoid:
         if not f.optional:
           raise newException(GeneError,
             "missing required field '" & f.name & "' for " & callee.typeName)
+      elif plainField(f.typeExpr, value):
+        props.putById(f.nameId, value)
       else:
         let fieldScope = f.typeFieldScope(callee.typeScope)
         props.putById(f.nameId,
@@ -32142,15 +32155,18 @@ proc constructTypedInstance(callee: Value, args: openArray[Value],
     elif not f.optional:
       raise newException(GeneError,
         "missing required field '" & f.name & "' for " & callee.typeName)
-  for key in named.names:
-    var known = false
-    for f in fields:
-      if f.name == key:
-        known = true
-        break
-    if not known:
-      raise newException(GeneError,
-        callee.typeName & " has no field '" & key & "'")
+  # Field names are distinct, so when every argument was matched none is
+  # unknown.
+  if matched != named.len:
+    for key in named.names:
+      var known = false
+      for f in fields:
+        if f.name == key:
+          known = true
+          break
+      if not known:
+        raise newException(GeneError,
+          callee.typeName & " has no field '" & key & "'")
   newNode(callee, props = props, body = body, immutable = immutable)
 
 var nativeTypeRegistry: Table[string, Value]

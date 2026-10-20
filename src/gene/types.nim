@@ -7176,6 +7176,19 @@ proc typeBodyFields*(v: Value): seq[TypeBodyField] =
     return @[]
   TypeData(objData(v)).bodyFields
 
+proc borrowedTypeFields*(v: Value): lent seq[TypeField] =
+  ## `typeFields` without the copy, for a Type (not an Enum). The caller keeps
+  ## `v` alive; copying allocated the field list and every name in it.
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okType:
+    raise newException(FieldDefect, "value is not a Type")
+  TypeData(objData(v)).fields
+
+proc borrowedTypeBodyFields*(v: Value): lent seq[TypeBodyField] =
+  ## `typeBodyFields` without the copy, for a Type (not an Enum).
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okType:
+    raise newException(FieldDefect, "value is not a Type")
+  TypeData(objData(v)).bodyFields
+
 proc typeCtor*(v: Value): Value =
   ## The type's own (ctor ...) function value, or NIL.
   if v.tagOf != OBJECT_TAG or objData(v).objKind notin {okType, okEnum}:
@@ -8133,8 +8146,10 @@ proc functionForScopeStorage*(v: Value, owner: Scope, binding = false): Value =
       return cloneBoundMessageScope(v, owner, weak = true)
     if data.boundScope == nil and capture != owner:
       return cloneBoundMessageScope(v, capture, weak = false)
-  if v.kind == vkNode and v.head.kind == vkSymbol and
-      v.head.symVal == "Path":
+  # Borrowed: copying a typed instance's head retained and released its Type
+  # on every store of the instance.
+  if v.kind == vkNode and v.borrowedNodeHead.kind == vkSymbol and
+      v.borrowedNodeHead.symVal == "Path":
     return weakenScopeFunctions(v, owner)
   if v.kind == vkCallableView:
     let target = functionForScopeStorage(v.callableViewTarget, owner, binding)
