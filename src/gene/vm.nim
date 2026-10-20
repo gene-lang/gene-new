@@ -17849,21 +17849,24 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     (if terminalCleanups.len > 0 and terminalCleanups[^1].depth == frames.len:
        terminalCleanups[^1].signal else: nil)
 
-  proc restoreCleanupContext(): EvalCleanup =
-    for i in countdown(terminalCleanups.high, 0):
-      let signal = terminalCleanups[i].signal
+  # Keep unwind-only helpers from capturing dispatch state into the heap env.
+  proc restoreCleanupContext(cleanups: openArray[TerminalCleanup],
+                             inherited: EvalCleanup): EvalCleanup {.nimcall.} =
+    for i in countdown(cleanups.high, 0):
+      let signal = cleanups[i].signal
       if signal of GeneBudgetExpiry:
         return cast[ref GeneBudgetExpiry](signal).budget.cleanup
-    inheritedCleanup
+    inherited
 
-  proc discardExitedBudgetCleanups() =
-    var at = terminalCleanups.len
+  proc discardExitedBudgetCleanups(cleanups: var seq[TerminalCleanup],
+                                   budget: EvalBudget) {.nimcall.} =
+    var at = cleanups.len
     while at > 0:
       dec at
-      let signal = terminalCleanups[at].signal
+      let signal = cleanups[at].signal
       if signal of GeneBudgetExpiry and
-          not budgetContains(evalBudget, cast[ref GeneBudgetExpiry](signal).budget):
-        terminalCleanups.delete(at)
+          not budgetContains(budget, cast[ref GeneBudgetExpiry](signal).budget):
+        cleanups.delete(at)
 
   proc depletedSteps(budget: EvalBudget): bool =
     var current {.cursor.} = budget
@@ -22536,10 +22539,10 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               failure.budget.closeExpiredBudget()
             else:
               failure.budget.sampleCountdown = 0
-            discardExitedBudgetCleanups()
+            discardExitedBudgetCleanups(terminalCleanups, evalBudget)
             deferredError = failure.budget.expiryError
             failure.budget.attachCleanupDiagnostics()
-            cleanup = restoreCleanupContext()
+            cleanup = restoreCleanupContext(terminalCleanups, inheritedCleanup)
             break
 
         let pending = terminalAtCurrentFrame()
