@@ -240,6 +240,11 @@ proc rcRetainOther(bits: uint64) {.importc: "geneRcRetainFull", raises: [].}
 proc rcReleaseFull(bits: uint64) {.raises: [], exportc: "geneRcReleaseFull".}
 proc rcReleaseOther(bits: uint64) {.importc: "geneRcReleaseFull", raises: [].}
 
+# The generated `=wasMoved` would be an out-of-line call in every other C
+# file, made for every move out of a Value: each pop of the VM's stack.
+proc `=wasMoved`(v: var Value) {.inline.} =
+  v.bits = 0
+
 proc `=destroy`(v: var Value) {.inline.} =
   let old = v.bits
   v.bits = 0

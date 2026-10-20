@@ -13,6 +13,14 @@ if projectName() in ["gene", "gene_fmt", "gene_lsp", "gene_viewer", "gene_regist
   else:
     switch("define", "release")
     switch("opt", "speed")
+    # Each Nim module is its own C file, so without link-time optimization
+    # the Value hooks and other short procs in types.nim stay out-of-line
+    # calls from every VM instruction. ThinLTO also splits the large VM file's
+    # code generation across cores. `-export_dynamic` (nim.cfg) keeps the
+    # symbols that typed_native libraries resolve from the host.
+    when defined(macosx):
+      switch("passC", "-flto=thin")
+      switch("passL", "-flto=thin")
 
 # Memory model: ORC unless the command line names another ARC-family manager.
 #
