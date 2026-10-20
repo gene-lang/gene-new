@@ -1726,7 +1726,9 @@ proc rewriteBareIntReturnAdds(proto: FunctionProto) =
         sameScopeRecurs >= 2:
       proto.chunk.instructions[i] = Instruction(op: opReturnIntAdd2,
                                                 name: add.name)
-      proto.chunk.instructions[i + 1] = Instruction(op: opNoop)
+      # The opReturnBareInt stays. opReturnIntAdd2 never falls through to
+      # it, but a branch that jumps to the function's return does: the
+      # then-branch of `(if (< n 2) 1 ...)` lands there.
       inc i, 2
     else:
       inc i

@@ -1501,6 +1501,16 @@ suite "gir — disassembly":
     check dump.contains("opRecur1LocalIntSubImmSameScope slot=0 name=n imm=2")
     check dump.contains("opReturnIntAdd2 name=+")
 
+  test "a constant base case still returns past the fused add-return":
+    # Unlike fib's `n`, a constant base case leaves a jump to the function's
+    # return, which the fused add-return must not have replaced.
+    let src =
+      "(fn ways [n : Int] : Int " &
+      "  (if (< n 2) 1 (+ (ways (- n 1)) (ways (- n 2))))) " &
+      "[(ways 0) (ways 1) (ways 5) (ways 10)]"
+    check compileSource(src).disassemble().contains("opReturnIntAdd2 name=+")
+    ck src, "[1 1 8 89]"
+
   test "runs same-scope tail recursion through recur ops":
     let src =
       "(var countdown (fn [n] (if (< n 1) n (countdown (- n 1))))) " &
