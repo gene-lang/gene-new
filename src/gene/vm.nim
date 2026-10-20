@@ -2,7 +2,7 @@
 
 import std/[algorithm, atomics, base64, dynlib, hashes, json, locks, math, monotimes, net, os,
             options, osproc, sets, strtabs, strutils, tables, times, unicode]
-import ./[compiler, diagnostics, digest, equality, gir, package, printer, reader, types,
+import ./[compiler, diagnostics, digest, equality, execution_limits, gir, package, printer, reader, types,
           type_contracts]
 import ./[callable_reflection, error_analysis, gir_codec, native_errors]
 import ./io_lifecycle
@@ -144,6 +144,14 @@ type
     breakIp: int
     continueIp: int
 
+  TerminalCleanup = object
+    depth: int
+    signal: ref GeneCancel
+
+  GeneStreamClose = object of GeneCancel
+    ## Explicit stream close uses the unwind machinery, but still exposes
+    ## producer cleanup errors through the Stream's declared error row.
+
   FrameKind = enum
     fkNormal
     fkTailMatchBody
@@ -233,6 +241,9 @@ type
     mapEntry: bool
 
   Fiber = ref object of RootObj
+    cleanup: EvalCleanup
+    terminalCleanups: seq[TerminalCleanup]
+    streamCloseRequested: bool
     ownershipLeases: seq[NativeOwnershipLease]
     taskContext: Value
     nativeTask: Value
@@ -1030,7 +1041,6 @@ var activeScheduler {.threadvar.}: SchedulerState
 var activeFiberRunning {.threadvar.}: bool
 var activeWorkerThread {.threadvar.}: bool
 var activeConstructionDepth {.threadvar.}: int
-var activeVmBudget {.threadvar.}: ptr EvalBudget
 var macroContextRetirementHook: proc() {.nimcall, gcsafe.}
 type RuntimeMacroSlots = ref object of RootObj
   entries: seq[RuntimeMacroDefinition]
@@ -6142,23 +6152,9 @@ proc evalBudgetForPolicy(policy: Value, parent: EvalBudget): EvalBudget =
 
 proc evalBudgetForLimits(maxSteps, maxMemoryMb, timeoutMs: int64,
                          parent: EvalBudget): EvalBudget =
-  if maxSteps < 0 and maxMemoryMb < 0 and timeoutMs < 0:
-    return parent
-  else:
-    result = EvalBudget(
-      remaining: if maxSteps < 0: high(int64) else: maxSteps,
-      parent: parent)
-    if timeoutMs >= 0:
-      result.hasDeadline = true
-      result.deadline = getMonoTime() +
-        initDuration(milliseconds = timeoutMs)
-    if maxMemoryMb >= 0:
-      if maxMemoryMb > high(int64) div (1024 * 1024):
-        raise newException(GeneError,
-          "env ^policy ^max_memory_mb is too large")
-      result.hasMemoryLimit = true
-      result.memoryBaseline = getOccupiedMem().int64
-      result.memoryLimitBytes = maxMemoryMb * 1024 * 1024
+  if maxMemoryMb > high(int64) div (1024 * 1024):
+    raise newException(GeneError, "env ^policy ^max_memory_mb is too large")
+  newExecutionBudget(maxSteps, maxMemoryMb, timeoutMs, parent)
 
 proc biEnvExtend(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2:
@@ -17435,6 +17431,8 @@ proc enqueueAsyncTcpWriteText(host: string, port: int, text: string,
                                        timeoutMs: timeoutMs, task: task))
 
 proc inCancelCleanup(f: Fiber): bool =
+  if f.terminalCleanups.len > 0:
+    return true
   if f.frameKind == fkEnsureCancelBody:
     return true
   for frame in f.frames:
@@ -17649,12 +17647,7 @@ proc consumeEvalStep(budget: EvalBudget) =
         # decrement. Sample on entry and then every 64 dispatches: bounded eval
         # remains responsive without putting two host calls on every VM opcode.
         current.sampleCountdown = 64
-        if current.hasDeadline and getMonoTime() >= current.deadline:
-          raise newException(GeneError, "eval timeout exceeded")
-        if current.hasMemoryLimit and
-            getOccupiedMem().int64 - current.memoryBaseline >
-              current.memoryLimitBytes:
-          raise newException(GeneError, "eval memory limit exceeded")
+        checkExecutionBudgetSample(current, budget)
       else:
         dec current.sampleCountdown
     dec current.remaining
@@ -17707,6 +17700,22 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
   # generator pulls, without pinning it on a captured lexical environment.
   # An independently scheduled task uses its own scope/budget instead.
   let previousVmBudget = activeVmBudget
+  let previousCleanup = activeBudgetCleanup
+  let previousExecution = activeBudgetExecution
+  let inheritedCleanup =
+    if previousCleanup != nil and (fiber == nil or stopOnYield): previousCleanup[]
+    else: nil
+  var cleanup = if fiber != nil and fiber.cleanup != nil: fiber.cleanup
+                else: inheritedCleanup
+  # An independently scheduled fiber must not borrow the thread's other task.
+  if fiber != nil and not stopOnYield: cleanup = fiber.cleanup
+  activeBudgetCleanup = addr cleanup
+  defer: activeBudgetCleanup = previousCleanup
+  activeBudgetExecution =
+    if fiber != nil and not stopOnYield: uint64(cast[uint](cast[pointer](fiber)))
+    elif previousExecution != 0: previousExecution
+    else: uint64(cast[uint](addr cleanup))
+  defer: activeBudgetExecution = previousExecution
   let inheritedBudget =
     if previousVmBudget != nil and (fiber == nil or stopOnYield):
       previousVmBudget[]
@@ -17832,6 +17841,45 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
   var reportedTailFallbacksReady = false
   var cancelAtSafepoint = injectCancel
   var remainingBudget = instructionBudget
+  var terminalCleanups: seq[TerminalCleanup]
+  var deferredCancel: ref GeneCancel
+  var deferredError: ref GeneError
+
+  template terminalAtCurrentFrame(): ref GeneCancel =
+    (if terminalCleanups.len > 0 and terminalCleanups[^1].depth == frames.len:
+       terminalCleanups[^1].signal else: nil)
+
+  proc restoreCleanupContext(): EvalCleanup =
+    for i in countdown(terminalCleanups.high, 0):
+      let signal = terminalCleanups[i].signal
+      if signal of GeneBudgetExpiry:
+        return cast[ref GeneBudgetExpiry](signal).budget.cleanup
+    inheritedCleanup
+
+  proc discardExitedBudgetCleanups() =
+    var at = terminalCleanups.len
+    while at > 0:
+      dec at
+      let signal = terminalCleanups[at].signal
+      if signal of GeneBudgetExpiry and
+          not budgetContains(evalBudget, cast[ref GeneBudgetExpiry](signal).budget):
+        terminalCleanups.delete(at)
+
+  proc depletedSteps(budget: EvalBudget): bool =
+    var current {.cursor.} = budget
+    while current != nil:
+      if current.remaining <= 0: return true
+      current = current.parent
+
+  template prepareBudgetFailure(failure: ref GeneBudgetExpiry) =
+    if not failure.budget.expiryError.hasErrVal:
+      failure.budget.expiryError = normalizeFailure(failure.budget.expiryError, scope)
+      let loc = if failure.budget.expiryError.loc.hasSourceLoc:
+                  failure.budget.expiryError.loc
+                else: instructionLocBefore(chunk, ip)
+      attachSourceLoc(failure.budget.expiryError, loc)
+      appendVmTrace(failure.budget.expiryError, curFnName, loc, frames,
+                    tailTraceFrames, tailTraceSummaries)
 
   template chargeInPlace(first, count: int) =
     ## Charges the `count` instructions from `first` that a fused handler runs
@@ -17855,6 +17903,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     curStackBase = fiber.stackBase
     ip = fiber.ip
     frames = move fiber.frames
+    terminalCleanups = move fiber.terminalCleanups
     tailTraceFrames = move fiber.tailTraceFrames
     tailTraceSummaries = move fiber.tailTraceSummaries
     handlers = move fiber.handlers
@@ -17893,6 +17942,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     recycleScope = fiber.recycleScope
   else:
     frames = acquireFrameStack(gVmPools)
+  activateBudgetChain(evalBudget)
 
   template loadFrameRegs(f: var Frame) =
     ## Restore the per-frame registers (everything except the operand stack, which
@@ -18054,6 +18104,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     ## it later. `resumeIp` is the instruction to re-execute on resume (the parking
     ## op, whose operands are still on the stack). The caller sets the wait reason.
     fiber.ownershipLeases = move ownershipLeases
+    fiber.cleanup = cleanup
+    fiber.terminalCleanups = move terminalCleanups
     fiber.chunk = chunk
     fiber.scope = scope
     fiber.recycleScope = recycleScope
@@ -19098,8 +19150,16 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
 
   while true:
     try:
+      if deferredCancel != nil:
+        let signal = move deferredCancel
+        raise signal
+      if deferredError != nil:
+        let error = move deferredError
+        raise error
       if cancelAtSafepoint:
         cancelAtSafepoint = false
+        if stopOnYield or (fiber != nil and fiber.streamCloseRequested):
+          raise newException(GeneStreamClose, "stream was closed")
         raise newException(GeneCancel, "task was cancelled")
       while true:
         {.computedGoto.}
@@ -22290,6 +22350,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           scope.declareType(inst[].name, chunk.constants[inst[].intArg])
         # All exits are via frameReturn / opYield above; the loop never falls through.
     except GeneError as e:
+      # An ordinary failure can be caught inside cleanup, but cannot replace
+      # terminal control once it crosses that cleanup's boundary.
+      let terminal = terminalAtCurrentFrame()
+      if terminal != nil:
+        deferredCancel = terminal
+        continue
       # A recoverable error is unwinding the frame stack. Walk outward from the
       # current frame: give each enclosing `try` (a TryHandler, keyed by frame
       # depth) a chance to catch, run ensure blocks, and translate ^errors
@@ -22334,7 +22400,10 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         curPendingError = err
         continue
       while true:
-        if handlers.len > 0 and handlers[^1].framesLen == frames.len:
+        if terminalAtCurrentFrame() != nil:
+          deferredCancel = terminalAtCurrentFrame()
+          break
+        elif handlers.len > 0 and handlers[^1].framesLen == frames.len:
           # Unwound back to this try's level. The owner frame remains on `frames`
           # while catch/ensure bodies run as ordinary VM frames, so they can park
           # and resume like the original try body.
@@ -22442,51 +22511,118 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         releaseUnwoundFrameScope(frames[i], owned = i > 0, depth = i)
       releaseFrameStack(gVmPools, frames)
       raise
-    except GeneCancel as c:
-      # Cancellation is separate from recoverable Gene errors: catch clauses do
-      # not see it, but cleanup still runs as the task unwinds.
-      if curFrameKind == fkForBody and
-          not (handlers.len > 0 and handlers[^1].framesLen == frames.len):
-        closeCurrentForStream()
-      retireUnwoundScope()
-      releaseCurrentCallScope()
-      if curFrameKind == fkTaskScopeBody:
-        let owned = curOwnedScope
-        curFrameKind = fkNormal
-        try:
-          owned.cancelOwnedTasks()
-        finally:
+    except GeneCancel as initial:
+      var signal = initial
+      if signal of GeneBudgetExpiry:
+        let failure = cast[ref GeneBudgetExpiry](signal)
+        prepareBudgetFailure(failure)
+        cleanup = failure.budget.cleanup
+
+      while true:
+        # Restore an ordinary error only after leaving the owner, before any
+        # catch/ensure in the eligible caller is considered.
+        if signal of GeneBudgetExpiry:
+          var failure = cast[ref GeneBudgetExpiry](signal)
+          if not budgetContains(evalBudget, failure.budget):
+            if failure.budget.ownerExecution == activeBudgetExecution:
+              failure.budget.closeExpiredBudget()
+            else:
+              failure.budget.sampleCountdown = 0
+            failure = enclosingBudgetExpiry(failure)
+            prepareBudgetFailure(failure)
+            signal = failure
+          if not budgetContains(evalBudget, failure.budget):
+            if failure.budget.ownerExecution == activeBudgetExecution:
+              failure.budget.closeExpiredBudget()
+            else:
+              failure.budget.sampleCountdown = 0
+            discardExitedBudgetCleanups()
+            deferredError = failure.budget.expiryError
+            failure.budget.attachCleanupDiagnostics()
+            cleanup = restoreCleanupContext()
+            break
+
+        let pending = terminalAtCurrentFrame()
+        if pending != nil:
+          # An already observed cancellation remains terminal even if a
+          # deadline/memory sample expires during its cleanup.
+          if not (pending of GeneBudgetExpiry): signal = pending
+          terminalCleanups.setLen(terminalCleanups.len - 1)
+        let sampled = sampleCleanupBudgets(evalBudget)
+        if sampled != nil:
+          cleanup = sampled.budget.cleanup
+          if signal of GeneStreamClose:
+            signal = sampled
+            prepareBudgetFailure(sampled)
+        let skipCleanup = depletedSteps(evalBudget) or
+          (cleanup != nil and cleanup.truncated.len > 0) or
+          (signal of GeneBudgetExpiry and cast[ref GeneBudgetExpiry](signal).skipCleanup)
+        if curFrameKind == fkForBody and
+            not (handlers.len > 0 and handlers[^1].framesLen == frames.len):
+          if signal of GeneStreamClose:
+            closeCurrentForStream()
+          else:
+            # A producer's recoverable close failure must not replace an
+            # already observed cancellation/expiry in its consumer.
+            try: closeCurrentForStream()
+            except GeneError: curForStream = NIL
+            except GeneBudgetExpiry as nested:
+              curForStream = NIL
+              cleanup = nested.budget.cleanup
+        retireUnwoundScope()
+        releaseCurrentCallScope()
+        if curFrameKind == fkTaskScopeBody:
+          let owned = curOwnedScope
+          curFrameKind = fkNormal
+          try: owned.cancelOwnedTasks()
+          finally: owned.closeOwnedActors()
+        elif curFrameKind == fkSupervisorBody:
+          let owned = curOwnedScope
+          curFrameKind = fkNormal
           owned.closeOwnedActors()
-      elif curFrameKind == fkSupervisorBody:
-        let owned = curOwnedScope
-        curFrameKind = fkNormal
-        owned.closeOwnedActors()
-      if curFrameKind == fkCatchBody and curEnsureBody != nil:
-        let body = curEnsureBody
-        let cleanupScope = curEnsureScope
-        strunc(curStackBase)
-        enterFrame(body, cleanupScope, false, fkEnsureCancelBody)
-        curPendingCancel = c
-        continue
-      var cleanupStarted = false
-      while handlers.len > 0:
-        let h = handlers.pop()
-        if h.tp.ensureBody != nil:
-          unwindNativeOwnershipTo(h.framesLen)
+        if not skipCleanup and curFrameKind == fkCatchBody and curEnsureBody != nil:
+          let body = curEnsureBody
+          let cleanupScope = curEnsureScope
           strunc(curStackBase)
-          enterFrame(h.tp.ensureBody, h.scope, false, fkEnsureCancelBody)
-          curPendingCancel = c
-          cleanupStarted = true
+          enterFrame(body, cleanupScope, false, fkEnsureCancelBody)
+          curPendingCancel = signal
+          if not (signal of GeneStreamClose):
+            terminalCleanups.add TerminalCleanup(depth: frames.len, signal: signal)
           break
-      if cleanupStarted:
-        continue
-      for i in countdown(frames.high, 0):
-        settleUnwoundOwnership(frames[i], true)
-        releaseUnwoundFrameScope(frames[i], owned = i > 0, depth = i)
-      releaseFrameStack(gVmPools, frames)
-      if fiber != nil:
-        return RunStop(kind: rskCancel, value: NIL)
-      raise c
+        if handlers.len > 0 and handlers[^1].framesLen == frames.len:
+          let handler = handlers.pop()
+          if not skipCleanup and handler.tp.ensureBody != nil:
+            strunc(curStackBase)
+            enterFrame(handler.tp.ensureBody, handler.scope, false, fkEnsureCancelBody)
+            curPendingCancel = signal
+            if not (signal of GeneStreamClose):
+              terminalCleanups.add TerminalCleanup(depth: frames.len, signal: signal)
+            break
+        if frames.len == 0:
+          if signal of GeneBudgetExpiry:
+            var failure = enclosingBudgetExpiry(cast[ref GeneBudgetExpiry](signal))
+            prepareBudgetFailure(failure)
+            let outside = inheritedBudget
+            releaseFrameStack(gVmPools, frames)
+            if budgetContains(outside, failure.budget) or budgetOwnedExternally(failure.budget):
+              raise failure
+            if failure.budget.ownerExecution == activeBudgetExecution:
+              failure.budget.closeExpiredBudget()
+            else:
+              failure.budget.sampleCountdown = 0
+            let error = failure.budget.expiryError
+            failure.budget.attachCleanupDiagnostics()
+            raise error
+          releaseFrameStack(gVmPools, frames)
+          if fiber != nil: return RunStop(kind: rskCancel, value: NIL)
+          raise signal
+        strunc(curStackBase)
+        trimTailTraceFrames(frames.len)
+        var owner = frames.pop()
+        settleUnwoundOwnership(owner, true)
+        loadFrameRegs(owner)
+        while terminalCleanups.len > 0 and terminalCleanups[^1].depth > frames.len:
+          terminalCleanups.setLen(terminalCleanups.len - 1)
     except GeneReturn as r:
       # Explicit return is a structured exit: skip catches, but unwind every
       # active ensure and close loop-owned streams before leaving the nearest
@@ -22517,7 +22653,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         continue
       var cleanupStarted = false
       while true:
-        if r.loopExit and frames.len == r.targetDepth:
+        if terminalAtCurrentFrame() != nil and
+            (r.targetDepth < frames.len or not r.loopExit):
+          deferredCancel = terminalAtCurrentFrame()
+          cleanupStarted = true
+          break
+        elif r.loopExit and frames.len == r.targetDepth:
           strunc(r.loopStackBase)
           if r.loopIp >= 0:
             ip = r.loopIp
@@ -23204,6 +23345,15 @@ proc runFiber(f: Fiber) =
     let injectCancel =
       f.task.kind == vkTask and f.task.taskCancelRequested and
         not f.task.taskDone and not f.inCancelCleanup()
+    if injectCancel and f.cleanup == nil:
+      let parentCleanup = currentBudgetCleanup()
+      if parentCleanup != nil:
+        var budget {.cursor.} = f.scope.evalBudget
+        while budget != nil:
+          if budget.cleanup == parentCleanup:
+            f.cleanup = parentCleanup
+            break
+          budget = budget.parent
     if injectCancel and f.nativeTask.kind == vkTask:
       f.nativeTask.requestTaskCancellation()
       f.nativeTask = NIL
@@ -23728,6 +23878,7 @@ proc spawnFiber(chunk: Chunk, scope: Scope, workerSafe = false): Value =
   let task = newPendingTask()
   let f = Fiber(chunk: chunk, scope: scope, task: task, actorOwner: NIL,
                 taskContext: activeTaskContext,
+                cleanup: currentBudgetCleanup(),
                 started: false, workerSafe: workerSafe)
   enqueueRunnable(f)
   task
@@ -23915,9 +24066,11 @@ proc closeStreamCallback(stream: Value) {.nimcall.} =
   let pending = Fiber(continuation).task
   if pending.taskDone:
     return
+  if not pending.taskCancelRequested:
+    Fiber(continuation).streamCloseRequested = true
   pending.requestTaskCancellation()
   if activeTask.kind == vkTask and activeTask.taskSharesState(pending):
-    raise newException(GeneCancel, "pipeline stream was closed")
+    raise newException(GeneStreamClose, "pipeline stream was closed")
   pumpUntilDone(pending)
   if pending.taskHasError:
     var error: ref GeneError
@@ -23955,7 +24108,7 @@ proc invokeStreamCallback(stream, item: Value): Value =
   let parentTask = activeTask
   let pending = newPendingTask()
   let frame = Fiber(chunk: proto.chunk, scope: callScope, task: pending,
-    privateCall: true, taskContext: activeTaskContext)
+    privateCall: true, taskContext: activeTaskContext, cleanup: currentBudgetCleanup())
   stream.setStreamGeneratorContinuation(frame)
   try:
     runFiber(frame)
@@ -31815,7 +31968,7 @@ proc applyFunctionCall(callee: Value, args: openArray[Value], named: NamedArgs,
   let frameReturnType = proto.checkedFrameReturnType(returnType)
   var checked = false
   if proto.isGenerator:
-    let fiber = Fiber(chunk: proto.chunk, scope: callScope)
+    let fiber = Fiber(chunk: proto.chunk, scope: callScope, cleanup: currentBudgetCleanup())
     when defined(geneGeneratorStats):
       inc generatorContinuationAllocations
     var resultValue = newGeneratorStream(proto, callScope, pullGeneratorStream,

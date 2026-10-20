@@ -471,6 +471,11 @@ type
 
   ## Shared instruction budget for policy-limited eval scopes. Budgets can be
   ## chained so nested evals with their own policy still consume the outer budget.
+  EvalCleanup* = ref object
+    ## Shared only by the exceptional unwind, never renewed by nested cleanup.
+    deadline*: MonoTime
+    truncated*: string
+
   EvalBudget* = ref object
     remaining*: int64
     parent*: EvalBudget
@@ -480,6 +485,18 @@ type
     memoryBaseline*: int64
     memoryLimitBytes*: int64
     sampleCountdown*: int
+    hasTimeoutDuration*: bool
+    timeoutMs*: int64
+    cleanup*: EvalCleanup
+    expiryError*: ref GeneError
+    memoryExpired*: bool
+    closed*: bool
+    ownerExecution*: uint64
+
+  GeneBudgetExpiry* = object of GeneCancel
+    ## Internal terminal control. Converted only outside its owning policy.
+    budget*: EvalBudget
+    skipCleanup*: bool
 
   ModuleExecutionPolicy* = ref object
     maxSteps*: int64

@@ -336,6 +336,11 @@ proc initializeMacroInstance(state: MacroRuntimeState,
     instance.status = misReady
     if module.kind == vkModule:
       app.moduleCache[instance.context.moduleIdentity] = module
+  except GeneBudgetExpiry as error:
+    instance.status = misFailed
+    instance.failure = "initializing macro definition environment '" &
+      sourceName & "': " & error.msg
+    raise
   except GeneError as error:
     instance.status = misFailed
     instance.failure = "initializing macro definition environment '" &
@@ -406,6 +411,9 @@ proc evaluateMacroBody(definition: MacroDef, bindings: Table[string, Value],
           deadline: budget.deadline, hasMemoryLimit: budget.hasMemoryLimit,
           memoryBaseline: budget.memoryBaseline,
           memoryLimitBytes: budget.memoryLimitBytes)
+      if budget.ownsRuntimeBudget and budget.runtimeBudget.parent == nil and
+          parentBudget != budget.runtimeBudget:
+        budget.runtimeBudget.parent = parentBudget
       invocationBudget = budget.runtimeBudget
     else:
       invocationBudget = parentBudget

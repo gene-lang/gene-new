@@ -323,6 +323,30 @@ its sampled memory/time checks. This operation does not isolate native code.
 The policy accepts the three budget fields above; sandbox loading remains the
 boundary for feature-admission flags such as `allow_ffi`.
 
+Timeout and memory expiry unwind past the execution controlled by that policy.
+Its own `catch` clauses cannot intercept expiry. Outside the expired policy,
+the failure is an ordinary `RuntimeError` with the existing `eval timeout
+exceeded` or `eval memory limit exceeded` message. A still-valid enclosing
+execution may catch an inner expiry; an expired enclosing policy must unwind
+too. These rules also apply to policy-limited eval and module invocations.
+
+After time or memory expiry, Gene cleanup shares one elapsed-time allowance:
+the smaller of one second and the expired policy's configured timeout, or one
+second for a memory-only policy. Nested cleanup, calls, child work and
+suspension share that allowance. An exhausted memory guard temporarily permits
+twice its original allowance against the same allocator baseline; this fixed
+ceiling remains sampled, with a check before cleanup starts. Other applicable
+limits remain enforced. Exact step limits include cleanup and grant no extra
+steps after exhaustion.
+
+Exhausting the cleanup allowance skips further arbitrary Gene cleanup. The
+original failure carries `^cleanup_truncated true` and `^cleanup_reason
+"timeout"` or `"memory"`. Runtime-owned child settlement, pipe closure and
+process reaping still complete under their existing rules. Sampled checks and
+blocking native calls mean these limits are not hard wall-time or memory
+isolation guarantees. Cleanup permission never allows the expired execution
+to resume its normal body, including through a retained budget or scope.
+
 The `filename` reference is resolved while binding. No declaration is added
 to a source module. The runtime compiles its private trampoline once per
 application and gives each binding separate mutable dispatch caches.

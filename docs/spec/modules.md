@@ -47,6 +47,10 @@ budgets bound the second.
   supplied step, memory, and timeout policy. Prepared caches, compile artifacts,
   protocol impls, serde origins, and module scopes are invisible to the live
   application until the transaction commits.
+- Compilation and executable macro expansion share the preparation budget.
+  Time/memory expiry cannot be caught inside that controlled execution; it
+  becomes an ordinary error after leaving the owning policy. Preparation and
+  invocation use the same [expiry and cleanup rules](calls.md#binding-an-invocation).
 - Preparation pauses worker module readers and restricts scheduler pumping to
   candidate-owned tasks. FFI, native type, and embedded web-module
   declarations are rejected.

@@ -16,6 +16,19 @@ suites in `tests/test_vm.nim`.
 - `Task/done?` is a non-consuming readiness check. It stays true after the
   task's result has been consumed by `await`; it does not wait or inspect the
   outcome.
+- Once task cancellation or policy expiry is observed, `return`, `break` and
+  `continue` leaving its active cleanup cannot suppress the unwind or resume
+  normal work. Recoverable failures leaving cleanup cannot replace that
+  terminal reason either. Helpers may return normally, cleanup-local loops
+  may break or continue, and local error catches still work. Ordinary errors
+  retain their existing cleanup behavior, including suppression by an
+  `ensure` return. Explicit stream close still reports producer cleanup errors
+  through the Stream's error contract. A cancellation request arriving after
+  successful completion does not change the completed outcome.
+- Time/memory expiry uses the shared, bounded cleanup allowance described in
+  [calls](calls.md#binding-an-invocation). Ordinary task cancellation acquires
+  no new timeout by itself. Runtime-mandated owned-child settlement remains
+  required when arbitrary Gene cleanup is truncated.
 - Cancelling an `os/exec_async`, `exec_stream_async`, or `exec_stdio_async`
   Task requests subprocess termination. Its cancelled outcome is published
   after the direct child is reaped and its adapter-owned pipes/channel are

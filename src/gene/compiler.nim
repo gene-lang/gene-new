@@ -1,7 +1,7 @@
 ## AST-to-GIR compiler for the MVP execution surface.
 
-import std/[algorithm, monotimes, os, sets, strutils, tables, times]
-import ./[equality, gir, printer, reader, types]
+import std/[algorithm, monotimes, os, sets, strutils, tables]
+import ./[equality, execution_limits, gir, printer, reader, types]
 import ./error_analysis
 export gir.MacroDef, gir.MacroDefault, gir.MacroParam, gir.MacroNamedParam
 
@@ -9,6 +9,7 @@ type
   CompileBudget* = ref object
     remaining*: int64
     runtimeBudget*: EvalBudget # shared counter while executable macro bodies run
+    ownsRuntimeBudget*: bool
     hasDeadline*: bool
     deadline*: MonoTime
     hasMemoryLimit*: bool
@@ -244,54 +245,48 @@ proc macroCompilerState(session: MacroExecutionSession): MacroCompilerState =
 proc newCompileBudget*(maxSteps, maxMemoryMb, timeoutMs: int64): CompileBudget =
   if maxSteps < 0 and maxMemoryMb < 0 and timeoutMs < 0:
     return nil
+  if maxMemoryMb > high(int64) div (1024 * 1024):
+    raise newException(GeneError, "compile memory limit is too large")
   result = CompileBudget(
-    remaining: if maxSteps < 0: high(int64) else: maxSteps)
+    remaining: if maxSteps < 0: high(int64) else: maxSteps,
+    runtimeBudget: newExecutionBudget(maxSteps, maxMemoryMb, timeoutMs,
+      if activeVmBudget != nil: activeVmBudget[] else: nil),
+    ownsRuntimeBudget: true)
   if timeoutMs >= 0:
     result.hasDeadline = true
-    result.deadline = getMonoTime() + initDuration(milliseconds = timeoutMs)
+    result.deadline = result.runtimeBudget.deadline
   if maxMemoryMb >= 0:
-    if maxMemoryMb > high(int64) div (1024 * 1024):
-      raise newException(GeneError, "compile memory limit is too large")
     result.hasMemoryLimit = true
-    result.memoryBaseline = getOccupiedMem().int64
+    result.memoryBaseline = result.runtimeBudget.memoryBaseline
     result.memoryLimitBytes = maxMemoryMb * 1024 * 1024
 
+proc shareCompileBudget(budget: CompileBudget) =
+  # Preserve host-created CompileBudget values as well as newCompileBudget.
+  if budget != nil and budget.runtimeBudget == nil:
+    budget.runtimeBudget = EvalBudget(remaining: budget.remaining,
+      parent: if activeVmBudget != nil: activeVmBudget[] else: nil,
+      hasDeadline: budget.hasDeadline, deadline: budget.deadline,
+      hasMemoryLimit: budget.hasMemoryLimit, memoryBaseline: budget.memoryBaseline,
+      memoryLimitBytes: budget.memoryLimitBytes, sampleCountdown: budget.sampleCountdown,
+      ownerExecution: activeBudgetExecution)
+    budget.ownsRuntimeBudget = true
+
 proc consumeCompileStep(budget: CompileBudget) =
-  if budget == nil:
-    return
-  if budget.runtimeBudget != nil:
-    var current = budget.runtimeBudget
-    while current != nil:
-      if current.remaining <= 0:
-        raise newException(GeneError, "compile max steps exceeded")
-      if current.hasDeadline or current.hasMemoryLimit:
-        if current.sampleCountdown <= 0:
-          current.sampleCountdown = 64
-          if current.hasDeadline and getMonoTime() >= current.deadline:
-            raise newException(GeneError, "compile timeout exceeded")
-          if current.hasMemoryLimit and getOccupiedMem().int64 -
-              current.memoryBaseline > current.memoryLimitBytes:
-            raise newException(GeneError, "compile memory limit exceeded")
-        else:
-          dec current.sampleCountdown
-      dec current.remaining
-      current = current.parent
-    budget.remaining = budget.runtimeBudget.remaining
-    return
-  if budget.remaining <= 0:
-    raise newException(GeneError, "compile max steps exceeded")
-  if budget.hasDeadline or budget.hasMemoryLimit:
-    if budget.sampleCountdown <= 0:
-      budget.sampleCountdown = 64
-      if budget.hasDeadline and getMonoTime() >= budget.deadline:
-        raise newException(GeneError, "compile timeout exceeded")
-      if budget.hasMemoryLimit and
-          getOccupiedMem().int64 - budget.memoryBaseline >
-            budget.memoryLimitBytes:
-        raise newException(GeneError, "compile memory limit exceeded")
-    else:
-      dec budget.sampleCountdown
-  dec budget.remaining
+  if budget == nil: return
+  budget.shareCompileBudget()
+  var current {.cursor.} = budget.runtimeBudget
+  while current != nil:
+    if current.remaining <= 0:
+      raise newException(GeneError, "compile max steps exceeded")
+    if current.hasDeadline or current.hasMemoryLimit:
+      if current.sampleCountdown <= 0:
+        current.sampleCountdown = 64
+        checkExecutionBudgetSample(current, budget.runtimeBudget, "compile")
+      else:
+        dec current.sampleCountdown
+    dec current.remaining
+    current = current.parent
+  budget.remaining = budget.runtimeBudget.remaining
 
 proc parseImportSpec*(node: Value): ImportSpec
 
@@ -10744,8 +10739,8 @@ proc planClosureCaptures(root: Chunk, rebound: HashSet[string],
         walk(attempt.ensureBody, levels)
   visitScope(root, false, false, @[]) # a unit root is static
 
-proc compileFormsInto(c: var Compiler, forms: openArray[Value],
-                      useLocalSlots: bool): Chunk =
+proc compileFormsIntoUnchecked(c: var Compiler, forms: openArray[Value],
+                               useLocalSlots: bool): Chunk =
   c.prepareMacroContext(forms)
   if c.closurePoolCandidates == nil:
     new(c.closurePoolCandidates)
@@ -10812,6 +10807,28 @@ proc compileFormsInto(c: var Compiler, forms: openArray[Value],
     c.chunk.errorChecksComplete = true
   c.chunk.fuseSequences()
   c.chunk
+
+proc compileFormsInto(c: var Compiler, forms: openArray[Value],
+                      useLocalSlots: bool): Chunk =
+  c.budget.shareCompileBudget()
+  let owner = if c.budget != nil and c.budget.ownsRuntimeBudget:
+                c.budget.runtimeBudget else: nil
+  let nestedOwner = owner != nil and budgetOwnedExternally(owner)
+  if owner != nil: pushBudgetOwner(owner)
+  try:
+    compileFormsIntoUnchecked(c, forms, useLocalSlots)
+  except GeneBudgetExpiry as failure:
+    if not failure.budget.expiryError.loc.hasSourceLoc:
+      failure.budget.expiryError.loc = c.currentLoc
+    if owner != nil and failure.budget == owner and not nestedOwner:
+      let enclosing = enclosingBudgetExpiry(failure)
+      if enclosing.budget != owner: raise enclosing
+      owner.closeExpiredBudget()
+      owner.attachCleanupDiagnostics()
+      raise failure.budget.expiryError
+    raise
+  finally:
+    if owner != nil: popBudgetOwner()
 
 proc compileForms*(forms: openArray[Value],
                    allowAmbientImports = true,
