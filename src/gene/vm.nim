@@ -17658,7 +17658,7 @@ proc pollEvalBudgetChain(budget: EvalBudget) =
       if current.sampleCountdown <= 0:
         # Sample time and allocator state on entry and then periodically,
         # keeping host queries off ordinary dispatches.
-        current.sampleCountdown = 64
+        current.sampleCountdown = SampleInterval
         checkExecutionBudgetSample(current, budget)
       else:
         dec current.sampleCountdown
@@ -17675,6 +17675,42 @@ template pollEvalBudget(budget: EvalBudget) =
       dec polled.sampleCountdown
   else:
     pollEvalBudgetChain(polled)
+
+when defined(genePollWindowTests):
+  var pollTraceSite {.threadvar.}: string
+
+  proc pollSiteName(chunk: Chunk, ip: int): string =
+    if ip < chunk.instructionLocs.len:
+      let loc = chunk.instructionLocs[ip]
+      result = $loc.line & ":" & $loc.col & " "
+    result.add $chunk.instructions[ip].op
+
+proc reopenPollWindow(window: var BudgetPollWindow, budget: EvalBudget) {.noinline.} =
+  ## The poll that ends a window: written back, then made exactly, then a new
+  ## window up to the chain's next due sample, where the next exact poll is.
+  window.flushPollWindow()
+  if cast[pointer](window.budget) != cast[pointer](budget):
+    window.budget = budget
+  when defined(genePollWindowTests):
+    var depth = 0
+    var probe {.cursor.} = budget
+    while probe != nil:
+      if (probe.hasDeadline or probe.hasMemoryLimit) and probe.sampleCountdown <= 0:
+        pollSampleTrace.add pollTraceSite & " budget " & $depth
+      inc depth
+      probe = probe.parent
+  pollEvalBudget(budget)
+  var next = high(int)
+  var current {.cursor.} = budget
+  while current != nil:
+    if (current.hasDeadline or current.hasMemoryLimit) and
+        current.sampleCountdown < next:
+      next = max(current.sampleCountdown, 0)
+    current = current.parent
+  when defined(genePollWindowTests):
+    if pollWindowExact: next = 0
+  window.opened = next
+  window.left = next
 
 type WeakLiveFrames = object
   frames: ptr seq[Frame]
@@ -17736,9 +17772,21 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     ## (usually none), and assigning a reference is an out-of-line call.
     if s.evalBudget != nil:
       if cast[pointer](evalBudget) != cast[pointer](s.evalBudget):
+        pollWindow.closePollWindow()
         evalBudget = s.evalBudget
     elif cast[pointer](evalBudget) != cast[pointer](inheritedBudget):
+      pollWindow.closePollWindow()
       evalBudget = inheritedBudget
+  template pollDispatch() =
+    ## One instruction's poll of `evalBudget`, which is not nil. Inside a
+    ## window it only counts; the poll that ends one is exact.
+    if pollWindow.left > 0:
+      checkEvalInterrupt()
+      dec pollWindow.left
+    else:
+      when defined(genePollWindowTests):
+        pollTraceSite = pollSiteName(chunk, ip)
+      reopenPollWindow(pollWindow, evalBudget)
   # Stage 1 of structured concurrency: the "current frame" lives in registers
   # below, and simple Gene function calls push the caller onto `frames` and
   # switch registers to the callee instead of recursing through Nim. A call chain
@@ -17811,6 +17859,15 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
   var evalBudget = executionBudget(scope)
   activeVmBudget = addr evalBudget
   defer: activeVmBudget = previousVmBudget
+  # This loop reads and moves the countdowns, so an enclosing loop's window is
+  # written back first. Closed, it polls exactly when control returns to it.
+  syncActivePollWindow()
+  var pollWindow: BudgetPollWindow
+  let previousPollWindow = activePollWindow
+  activePollWindow = addr pollWindow
+  defer:
+    pollWindow.flushPollWindow()
+    activePollWindow = previousPollWindow
   var returnType = NIL          # current frame's return-type to adapt, or NIL
   var returnLabel = ""
   var returnDepth = 0
@@ -17891,10 +17948,15 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     ## No fused sequence contains a scheduler switch point; `ip` still names
     ## the original instruction if a sampled limit expires.
     if instructionBudget > 0 or evalBudget != nil:
-      for at in first ..< first + count:
-        ip = at
-        if instructionBudget > 0: dec remainingBudget
-        if evalBudget != nil: pollEvalBudget(evalBudget)
+      if instructionBudget > 0: remainingBudget -= count
+      if evalBudget != nil:
+        if pollWindow.left >= count:
+          checkEvalInterrupt()
+          pollWindow.left -= count
+        else:
+          for at in first ..< first + count:
+            ip = at
+            pollDispatch()
 
   if fiber != nil and fiber.started:
     # Resuming a parked fiber: restore the full continuation captured at suspend.
@@ -19191,7 +19253,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             return RunStop(kind: rskPause, value: NIL)
           dec remainingBudget
         if evalBudget != nil:
-          pollEvalBudget(evalBudget)
+          pollDispatch()
         let inst = addr chunk.instructions[ip]
         let op = inst[].op
         inc ip
@@ -19236,7 +19298,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 materializedModuleRefValue(scope, scope.lookup("gene"))
             for _ in 0 ..< 2:
               if instructionBudget > 0: dec remainingBudget
-              if evalBudget != nil: pollEvalBudget(evalBudget)
+              if evalBudget != nil: pollDispatch()
             when dispatchCacheEnabled:
               spush selectStdlibMember(chunk, chunk.instructions.len + inst[].depth,
                 target, selector, scope)
@@ -19549,7 +19611,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               if instructionBudget > 0:
                 dec remainingBudget
               if evalBudget != nil:
-                pollEvalBudget(evalBudget)
+                pollDispatch()
               inc ip
               let argsStart = sp - 2
               let value = materializedModuleRefValue(
@@ -22566,7 +22628,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             if failure.budget.ownerExecution == activeBudgetExecution:
               failure.budget.closeExpiredBudget()
             else:
-              failure.budget.sampleCountdown = 0
+              failure.budget.forceBudgetSample()
             failure = enclosingBudgetExpiry(failure)
             prepareBudgetFailure(failure)
             signal = failure
@@ -22574,7 +22636,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             if failure.budget.ownerExecution == activeBudgetExecution:
               failure.budget.closeExpiredBudget()
             else:
-              failure.budget.sampleCountdown = 0
+              failure.budget.forceBudgetSample()
             discardExitedBudgetCleanups(terminalCleanups, evalBudget)
             deferredError = failure.budget.expiryError
             failure.budget.attachCleanupDiagnostics()
@@ -22647,7 +22709,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             if failure.budget.ownerExecution == activeBudgetExecution:
               failure.budget.closeExpiredBudget()
             else:
-              failure.budget.sampleCountdown = 0
+              failure.budget.forceBudgetSample()
             let error = failure.budget.expiryError
             failure.budget.attachCleanupDiagnostics()
             raise error
@@ -33168,6 +33230,7 @@ proc loadModuleValue(app: Application, absPath: string): Value =
     if inSandbox and activeSandboxGenerationId != 0:
       rejectSandboxNativeDeclarations(artifact.chunk)
     if modScope.evalBudget != nil:
+      syncActivePollWindow()
       pollEvalBudgetChain(modScope.evalBudget)
     discard run(artifact.chunk, modScope)
     activateStagedImpls(modScope)

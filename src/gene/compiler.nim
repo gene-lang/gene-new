@@ -273,15 +273,22 @@ proc shareCompileBudget(budget: CompileBudget) =
 
 proc pollCompileBudget(budget: CompileBudget) =
   if budget == nil: return
+  syncActivePollWindow()
   budget.shareCompileBudget()
+  when defined(genePollWindowTests):
+    inc compilePollCount
+    var depth = 0
   var current {.cursor.} = budget.runtimeBudget
   while current != nil:
     if current.hasDeadline or current.hasMemoryLimit:
       if current.sampleCountdown <= 0:
-        current.sampleCountdown = 64
+        when defined(genePollWindowTests):
+          pollSampleTrace.add "compile poll " & $compilePollCount & " budget " & $depth
+        current.sampleCountdown = SampleInterval
         checkExecutionBudgetSample(current, budget.runtimeBudget, "compile")
       else:
         dec current.sampleCountdown
+    when defined(genePollWindowTests): inc depth
     current = current.parent
 
 proc parseImportSpec*(node: Value): ImportSpec

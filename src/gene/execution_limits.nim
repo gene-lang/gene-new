@@ -2,10 +2,58 @@
 import std/[monotimes, times]
 import ./types
 
+type
+  BudgetPollWindow* = object
+    ## The polls a dispatch loop makes before the next sample of `budget`'s
+    ## chain is due. Each poll would decrement every countdown of the chain;
+    ## the loop counts `left` down instead, and the polls it made since
+    ## `opened` are subtracted from the countdowns together. Code that reads
+    ## or changes a countdown while a window is open writes it back first.
+    budget*: EvalBudget
+    opened*: int
+    left*: int
+
+const SampleInterval* {.intdefine: "geneSampleInterval".} = 64
+  ## Polls between two samples of one budget's clock and allocator.
+
 var activeBudgetCleanup* {.threadvar.}: ptr EvalCleanup
 var activeBudgetExecution* {.threadvar.}: uint64
 var activeVmBudget* {.threadvar.}: ptr EvalBudget
+var activePollWindow* {.threadvar.}: ptr BudgetPollWindow
 var externalBudgetOwners {.threadvar.}: seq[EvalBudget]
+
+when defined(genePollWindowTests):
+  # A differential test runs each program with windows and with every poll
+  # exact, as dispatch polled before windows, and compares where samples land.
+  var pollWindowExact* {.threadvar.}: bool
+  var pollSampleTrace* {.threadvar.}: seq[string]
+  var compilePollCount* {.threadvar.}: int
+
+proc flushPollWindow*(window: var BudgetPollWindow) =
+  let used = window.opened - window.left
+  if used > 0:
+    var current {.cursor.} = window.budget
+    while current != nil:
+      if current.hasDeadline or current.hasMemoryLimit:
+        current.sampleCountdown -= used
+      current = current.parent
+  window.opened = window.left
+
+proc closePollWindow*(window: var BudgetPollWindow) =
+  ## Writes the window back; the loop's next poll is then an exact one.
+  window.flushPollWindow()
+  window.opened = 0
+  window.left = 0
+
+proc syncActivePollWindow*() =
+  ## Before reading or changing a sample countdown outside the dispatch loop
+  ## that has the window. Only the innermost loop's window is ever open.
+  if activePollWindow != nil: activePollWindow[].closePollWindow()
+
+proc forceBudgetSample*(budget: EvalBudget) =
+  ## The budget's next poll samples it.
+  syncActivePollWindow()
+  budget.sampleCountdown = 0
 
 proc pushBudgetOwner*(budget: EvalBudget) = externalBudgetOwners.add budget
 proc popBudgetOwner*() = externalBudgetOwners.setLen(externalBudgetOwners.len - 1)
@@ -45,6 +93,7 @@ proc budgetExpiry*(budget: EvalBudget, skipCleanup = false): ref GeneBudgetExpir
     (budget.cleanup != nil and budget.cleanup.truncated.len > 0)
 
 proc truncateCleanup(root: EvalBudget, cleanup: EvalCleanup, reason: string) =
+  syncActivePollWindow()
   cleanup.truncated = reason
   var current {.cursor.} = root
   while current != nil:
@@ -54,6 +103,7 @@ proc truncateCleanup(root: EvalBudget, cleanup: EvalCleanup, reason: string) =
 proc activateBudgetChain*(budget: EvalBudget) =
   ## At VM entry/resumption, another fiber may already have observed expiry.
   ## It must not lend its cleanup permission to this execution's normal body.
+  syncActivePollWindow()
   var current {.cursor.} = budget
   while current != nil:
     if current.ownerExecution == 0: current.ownerExecution = activeBudgetExecution
@@ -153,6 +203,7 @@ proc enclosingBudgetExpiry*(failure: ref GeneBudgetExpiry): ref GeneBudgetExpiry
     current = current.parent
 
 proc closeExpiredBudget*(budget: EvalBudget) =
+  syncActivePollWindow()
   budget.closed = true
   # Force the existing inline path to the cold check if this dynamic budget
   # is retained by a host or a captured scope and is used again.
