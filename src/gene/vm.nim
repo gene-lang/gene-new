@@ -2036,13 +2036,23 @@ proc clearManagedBindingPins(scope: Scope, name: string) {.inline.} =
   if scope.managedBindingPins.len > 0:
     retireManagedBindingPins(scope, name)
 
+proc sourceBindingName(name: string): string =
+  ## A block-local slot's name as the source wrote it: the storage name adds
+  ## the block's prefix and number.
+  if name.startsWith(BlockBindingPrefix):
+    let colon = name.find(':', BlockBindingPrefix.len)
+    if colon >= 0:
+      return name[colon + 1 .. ^1]
+  name
+
 proc storeSlot(scope: Scope, index: int, name: string, v: Value,
                requireExisting: bool, permitRedefine = false) =
   scope.checkSlot(index, name)
   if requireExisting and not scope.slotDefined(index):
-    raise newException(GeneError, "set of undefined symbol: " & name)
+    raise newException(GeneError,
+      "set of undefined symbol: " & sourceBindingName(name))
   if not requireExisting and not permitRedefine and scope.slotDefined(index):
-    raise newException(GeneError, "duplicate binding: " & name)
+    raise newException(GeneError, "duplicate binding: " & sourceBindingName(name))
   let value =
     if requireExisting and index < scope.slotTypes.len:
       scope.assignmentValue(name, v, scope.slotTypes[index])
@@ -12460,6 +12470,18 @@ proc clearDefinedCallSlots(scope: Scope) {.inline.} =
           scope.slots[slot] = NIL
         scope.slotDefinedOverflow[i] = false
 
+proc clearSlotRange(scope: Scope, first, count: int) {.noinline.} =
+  ## Undefines `count` slots from `first`, releasing what they hold: an inlined
+  ## for body's own bindings before each item, as a fresh iteration scope has
+  ## none of them.
+  for slot in first ..< min(first + count, scope.slots.len):
+    if scope.slotDefined(slot):
+      scope.slots[slot] = NIL
+      if slot < 64:
+        scope.slotDefinedBits = scope.slotDefinedBits and not (1'u64 shl slot)
+      else:
+        scope.slotDefinedOverflow[slot - 64] = false
+
 proc releaseCallScope(pools: var VmPools, scope: Scope) =
   # A closure holds a scope holdCallScope marked; it is never recycled.
   if scope == nil or scope.closureHeld:
@@ -21855,6 +21877,10 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           if index >= stack[sp - 2].listItems.len:
             ip = inst[].depth
             continue
+          # `names` are the body's own bindings, in the slots after the loop
+          # variable's. A frame loop starts each item in a scope without them.
+          if inst[].names.len != 0:
+            scope.clearSlotRange(inst[].intArg + 1, inst[].names.len)
           scope.redefineSlot(inst[].intArg, inst[].name,
                              stack[sp - 2].listItems[index])
           stack[sp - 1] = newInt(index + 1)

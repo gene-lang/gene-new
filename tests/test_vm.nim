@@ -1555,6 +1555,47 @@ suite "gir — disassembly":
     ck "(fn f [m] (var n 0) (for kv in m (set n (+ n 1))) n) (f {^a 1 ^b 2})", "2"
     ck "(fn f [s] (var n 0) (for c in s (set n (+ n 1))) n) (f \"abc\")", "3"
 
+  test "an inlined for starts each item without the body's bindings":
+    # A frame loop runs each item in a fresh scope, so a binding the body made
+    # for one item is undefined for the next, after a continue, and on the
+    # loop's next run; an outer binding of the same name stays hidden.
+    let dump = compileSource(
+      "(fn f [] (var t 0) (for x in [1 2] (if (== x 1) (let y 10)) " &
+      "  (set t (+ t y))) t)").disassemble()
+    check dump.contains("opForInlineBegin")
+    check dump.contains("clears=1")
+    ck "(fn f [] (var t 0) " &
+       "  (for x in [1 2] (if (== x 1) (let y 10)) (set t (+ t y))) t) " &
+       "(fn g [] (var t 0) " &
+       "  (for x in [1 2 3] (if (== x 1) (do (let y 10) (continue))) " &
+       "    (set t (+ t y))) t) " &
+       "(fn h [] (var y 1) (var t 0) " &
+       "  (for x in [1 2] (if (== x 1) (let y 10)) (set t (+ t y))) t) " &
+       "(fn k [] (var i 0) (var t 0) " &
+       "  (while (< i 2) (for x in [1] (if (== i 0) (let y 10)) " &
+       "    (set t (+ t y))) (set i (+ i 1))) t) " &
+       "(fn m [] (var t 0) " &
+       "  (for x in [1 2] (for z in [1 2] (if (== z 1) (let p (* x 10))) " &
+       "    (set t (+ t p)))) t) " &
+       "(fn n [] (var t 0) " &
+       "  (for x in [1 2] (var i 0) (while (< i 2) " &
+       "    (if (&& (== x 1) (== i 0)) (let w 5)) (set t (+ t w)) " &
+       "    (set i (+ i 1)))) t) " &
+       "(fn s [] (var t 0) " &
+       "  (for x in [1 2] (if (== x 1) (var y 0)) (set y 5) (set t (+ t y))) t) " &
+       "[(try (f) catch Any $err_msg) (try (g) catch Any $err_msg) " &
+       " (try (h) catch Any $err_msg) (try (k) catch Any $err_msg) " &
+       " (try (m) catch Any $err_msg) (try (n) catch Any $err_msg) " &
+       " (try (s) catch Any $err_msg)]",
+       "[\"undefined symbol: y\" \"undefined symbol: y\" " &
+       "\"undefined symbol: y\" \"undefined symbol: y\" " &
+       "\"undefined symbol: p\" \"undefined symbol: w\" " &
+       "\"set of undefined symbol: y\"]"
+    # A binding each item makes before using it still works on every item.
+    ck "(fn f [] (var t 0) " &
+       "  (for x in [1 2 3] (let p (* x 2)) (var q (+ p 1)) (set t (+ t q))) t) " &
+       "(f)", "15"
+
   test "an inlined for over a stream still closes it on break":
     ck "(var closed false) " &
        "(fn ^^generator items [] (try (yield 1) (yield 2) ensure (set closed true))) " &
@@ -1579,7 +1620,7 @@ suite "gir — disassembly":
 
   test "an inlined for round-trips through GIR":
     let chunk = compileSource(
-      "(fn total [xs] (var t 0) (for x in xs (set t (+ t x))) t)")
+      "(fn total [xs] (var t 0) (for x in xs (let d (* x 2)) (set t (+ t d))) t)")
     let iface = CompileNamespaceInterface(
       entries: initTable[string, CompileInterfaceEntry]())
     let artifact = ExecutableGir(entryIdentity: "test/module",
@@ -1587,8 +1628,15 @@ suite "gir — disassembly":
         macroExports: initTable[string, MacroDef](), syntaxFnExports: @[],
         compileInterface: iface)])
     let decoded = decodeExecutableGir(encodeExecutableGir(artifact))
-    check decoded.modules[0].chunk.functions[0].chunk.disassemble().contains(
-      "opForInlineNext")
+    let dump = decoded.modules[0].chunk.functions[0].chunk.disassemble()
+    check dump.contains("opForInlineNext")
+    check dump.contains("clears=1")
+    # The bindings it clears must be the slots after the loop variable's.
+    for inst in chunk.functions[0].chunk.instructions.mitems:
+      if inst.op == opForInlineNext:
+        inst.names = @["t"]
+    expect ValueError:
+      discard decodeExecutableGir(encodeExecutableGir(artifact))
 
   test "runs same-scope tail recursion through recur ops":
     let src =

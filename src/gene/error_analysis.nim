@@ -2118,6 +2118,8 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
       push unknownValue()                   # the snapshot
       push unknownValue()                   # the next index
     of opForInlineNext:
+      # The body's own bindings are undefined again on each item.
+      for name in inst.names: state.initialized.excl name
       state.bindings[inst.name] = ErrorBinding(value: unknownValue())
       state.initialized.incl inst.name
       environment.values[inst.name] = state.bindings[inst.name]

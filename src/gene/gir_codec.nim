@@ -586,9 +586,13 @@ proc restoreChunkOwners(root: Chunk, allowRuntimeState = false) =
             chunk.instructions[inst.depth].intArg != inst.intArg:
           raise newException(ValueError, "encoded GIR contains an invalid inlined for")
       of opForInlineNext:
-        if inst.intArg < 0 or inst.intArg >= chunk.localNames.len or
+        if inst.intArg < 0 or inst.intArg + inst.names.len >= chunk.localNames.len or
             inst.depth <= index or inst.depth > chunk.instructions.len:
           raise newException(ValueError, "encoded GIR contains an invalid inlined for")
+        # The body's bindings it clears are the slots after the loop variable's.
+        for offset, name in inst.names:
+          if chunk.localNames[inst.intArg + 1 + offset] != name:
+            raise newException(ValueError, "encoded GIR contains an invalid inlined for")
       of opLoadStdlibPath:
         if inst.intArg < 0 or inst.intArg >= chunk.constants.len or
             inst.name != "gene" or inst.depth != stdlibSlots:

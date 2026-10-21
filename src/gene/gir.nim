@@ -1462,6 +1462,8 @@ proc formatInstruction(inst: Instruction): string =
   of opForInlineNext:
     result.add " slot=" & $inst.intArg & " name=" & inst.name &
       " exit=" & $inst.depth
+    if inst.names.len != 0:
+      result.add " clears=" & $inst.names.len
   of opTry:
     result.add " try=" & $inst.intArg
   of opTaskScope, opBlockScope:

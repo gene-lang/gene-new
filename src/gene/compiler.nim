@@ -8498,12 +8498,13 @@ proc compileForProto(c: var Compiler, body: openArray[Value]): ForProto =
 
 proc compileInlineFor(c: var Compiler, body: openArray[Value],
                       loopIndex: int): bool =
-  ## Optimization 2 S7: a `for` whose body passes `inlineForForm` runs in the
-  ## enclosing frame. opForInlineBegin keeps the item snapshot and an index on
-  ## the operand stack, the loop variable is a block-local slot, and each
-  ## iteration ends in a backward jump instead of a frame. A stream or range
-  ## jumps to an opForEach of `loopIndex` after the inlined code instead, a
-  ## frame loop that closes it on every exit.
+  ## A `for` whose body passes `inlineForForm` runs in the enclosing frame.
+  ## opForInlineBegin keeps the item snapshot and an index on the operand
+  ## stack, the loop variable is a block-local slot, and each iteration ends in
+  ## a backward jump instead of a frame. opForInlineNext undefines the body's
+  ## own bindings before each item, as a fresh iteration scope would. A stream
+  ## or range jumps to an opForEach of `loopIndex` after the inlined code
+  ## instead, a frame loop that closes it on every exit.
   ## False, with nothing emitted, when the compiled body uses an instruction
   ## outside `inlineForOps`.
   let first = c.chunk.instructions.len
@@ -8524,6 +8525,9 @@ proc compileInlineFor(c: var Compiler, body: openArray[Value],
   inc inner.loopDepth
   compileBodyFrom(inner, body, 3)
   dec inner.loopDepth
+  # Every binding the body makes is new to the block, so its slots are the ones
+  # reserved after the loop variable's. They start each item undefined.
+  inner.chunk.instructions[next].names = inner.localNames[slot + 1 .. ^1]
   discard inner.emit(opPop)                 # discard each iteration's body value
   discard inner.emit(opJump, start)
   let leave = inner.chunk.instructions.len
