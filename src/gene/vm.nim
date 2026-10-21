@@ -18666,12 +18666,17 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       # body left behind. No trailing `nil`, and `(return)` needs no argument.
       retValue = if returnType.isBareNilType: NIL else: VOID
     else:
-      # Every frame still on the stack, and the VM this run returns into,
-      # outlives the value, so functions owned by their scopes need no copy.
-      var liveFrames = WeakLiveFrames(frames: addr frames, limit: frames.len,
-                                      outer: previousVmScope)
-      retValue = escapeStreamReturn(rawValue, WeakScopeGuard(
-        live: weakScopeLiveOnStack, ctx: addr liveFrames))
+      # `rawValue` is often an expression such as `spop()`: evaluate it once.
+      retValue = rawValue
+      if retValue.isManaged:
+        # A scalar holds no weakly stored function, so only a managed value
+        # needs the escape check. Every frame still on the stack, and the VM
+        # this run returns into, outlives the value, so functions owned by
+        # their scopes need no copy.
+        var liveFrames = WeakLiveFrames(frames: addr frames, limit: frames.len,
+                                        outer: previousVmScope)
+        retValue = escapeStreamReturn(retValue, WeakScopeGuard(
+          live: weakScopeLiveOnStack, ctx: addr liveFrames))
       if returnType.kind != vkNil:
         if not (bareScalarSatisfied(returnType, retValue)):
           try:
@@ -18744,13 +18749,15 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       enterRecur1Frame(arg, argKnownBareInt)
     let slot = proto.positionalSlots[0]
     let previous = scope.slots[slot]
+    # The callee shares chunk and scope, so those are copied; every other
+    # managed register is reset below, so it moves.
     frames.add Frame(chunk: chunk, scope: scope, recycleScope: recycleScope,
                      stackBase: curStackBase, ip: ip,
                      validateImpls: validateImplRequirements,
-                     returnType: returnType, returnLabel: returnLabel,
+                     returnType: move returnType, returnLabel: move returnLabel,
                      returnDepth: returnDepth,
                      checksErrors: curChecksErrors,
-                     errorTypes: curErrorTypes, fnName: curFnName,
+                     errorTypes: move curErrorTypes, fnName: curFnName,
                      kind: fkNormal, extra: nil,
                      restoreSlot: slot, restoreValue: previous)
     returnDepth = frames.len
@@ -18762,9 +18769,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       if proto.returnKnownBareInt: NIL
       elif proto.hasReturnType: proto.returnType
       else: NIL
-    returnLabel = ""
     curChecksErrors = false
-    curErrorTypes = @[]
     curFnName = proto.name
     curFrameKind = fkNormal
     recycleScope = false
@@ -18910,7 +18915,11 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     returnType = nextReturnType
     returnLabel = nextReturnLabel
     curChecksErrors = nextChecksErrors
-    curErrorTypes = nextErrorTypes
+    # Callers pass an empty list unless the callee checks errors, and a pushed
+    # caller's list has already moved into its frame: storing an empty list
+    # over an empty one would only call the seq's sink hook.
+    if curChecksErrors or curErrorTypes.len > 0:
+      curErrorTypes = nextErrorTypes
     # The register borrows: take the proto's name, which the chunk keeps
     # alive, not the function value's copy. A tail-called closure that no
     # longer holds its defining scope can be freed while it runs.
@@ -19027,7 +19036,11 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     returnType = nextReturnType
     returnLabel = nextReturnLabel
     curChecksErrors = nextChecksErrors
-    curErrorTypes = nextErrorTypes
+    # Callers pass an empty list unless the callee checks errors, and a pushed
+    # caller's list has already moved into its frame: storing an empty list
+    # over an empty one would only call the seq's sink hook.
+    if curChecksErrors or curErrorTypes.len > 0:
+      curErrorTypes = nextErrorTypes
     # The register borrows: take the proto's name, which the chunk keeps
     # alive, not the function value's copy. A tail-called closure that no
     # longer holds its defining scope can be freed while it runs.
