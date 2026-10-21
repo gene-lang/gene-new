@@ -11864,6 +11864,11 @@ proc forItems(coll: Value): seq[Value] =
   else:
     raise newException(GeneError, "for: cannot iterate " & $coll.kind)
 
+proc inlineForSnapshot(coll: Value): Value {.noinline.} =
+  ## opForInlineBegin's item snapshot. Kept out of the dispatch function so the
+  ## allocation and its failure paths do not change its code for other loops.
+  newList(forItems(coll))
+
 proc iteratorStream(coll: Value): Value =
   case coll.kind
   of vkList:
@@ -12552,7 +12557,8 @@ const plainLoopBodyOps = {
   opIntMul2, opIntLt2, opIntGt2, opIntLe2, opIntGe2, opIntAddConst,
   opIntSubConst, opIntMulConst, opIntLtConst, opIntGtConst, opIntLeConst,
   opIntGeConst, opIntFast2, opIntFastConst, opNativeFast2, opNativeFastConst,
-  opForEach, opMakeIterator, opIteratorHasNext, opIteratorNext,
+  opForEach, opForInlineBegin, opForInlineNext, opMakeIterator,
+  opIteratorHasNext, opIteratorNext,
   opIteratorClose, opLoopBreak, opLoopContinue, opLoopEnter, opLoopLeave,
   opFail, opPanic, opExplicitReturn, opJump, opJumpIfFalse,
   opCompareLocalsJumpIfFalse, opCompareConstJumpIfFalse,
@@ -21789,6 +21795,16 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             raiseMatchError(scope, "destructuring pattern did not match")
           scope.bindMatchedValues(binds, replaceExisting = true)
           spush target
+        of opForInlineBegin:
+          if stack[sp - 1].kind in {vkStream, vkRange}:
+            # A stream runs the frame loop over the same body, which closes it
+            # on every exit: the opForEach after the inlined loop.
+            ip = inst[].depth
+            continue
+          # The snapshot a frame loop takes replaces the collection, with the
+          # next index above it for opForInlineNext.
+          stack[sp - 1] = inlineForSnapshot(stack[sp - 1])
+          spush newInt(0)
         of opForEach:
           var coll = spop()
           let fp = chunk.forLoops[inst[].intArg]
@@ -21833,6 +21849,15 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             curForPattern = fp.pattern
             curForBody = fp.body
             continue
+        of opForInlineNext:
+          # [snapshot, index] from opForInlineBegin are the top of the stack.
+          let index = stack[sp - 1].intVal
+          if index >= stack[sp - 2].listItems.len:
+            ip = inst[].depth
+            continue
+          scope.redefineSlot(inst[].intArg, inst[].name,
+                             stack[sp - 2].listItems[index])
+          stack[sp - 1] = newInt(index + 1)
         of opMakeIterator:
           spush iteratorStream(spop())
         of opIteratorHasNext:

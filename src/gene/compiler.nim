@@ -8386,6 +8386,187 @@ proc compileRepeat(c: var Compiler, node: Value) =
   dec c.loopDepth
   c.emitConst NIL
 
+proc isMacroResult(node: Value): bool
+
+const inlineForOperators = ["+", "-", "*", "/", "//", "<", "<=", ">", ">=",
+                            "==", "!="]
+
+proc inlineForName(name: Value): bool =
+  ## A plain local or global name: no path, stdlib or send syntax.
+  name.kind == vkSymbol and name.symVal.len > 0 and '/' notin name.symVal and
+    name.symVal[0] notin {'$', '.', '~', '^', '@'} and name.symVal != "_"
+
+proc inlineForPath(path: Value): bool =
+  ## `(path name field...)`, as `row/amount` reads: a plain name, then field
+  ## names or indexes. Reading one is a static lookup; a send, computed key or
+  ## call segment could run code that is handed the current scope.
+  if path.props.len != 0 or path.body.len < 2 or
+      not inlineForName(path.body[0]):
+    return false
+  for i in 1 ..< path.body.len:
+    let segment = path.body[i]
+    case segment.kind
+    of vkInt:
+      if segment.intVal < 0: return false
+    of vkSymbol:
+      if segment.symVal.len == 0: return false
+      for ch in segment.symVal:
+        if ch notin {'a'..'z', 'A'..'Z', '0'..'9', '_'}:
+          return false
+    else:
+      return false
+  true
+
+proc inlineForForm(c: Compiler, form: Value): bool =
+  ## Whether `form` can run inside an inlined `for` body. It may read and
+  ## write names, compute with the language's operators, branch and loop, but
+  ## it makes no call, closure, declaration or macro expansion. Nothing in it
+  ## can then hold or observe the iteration's activation, so one slot of the
+  ## enclosing frame can carry every item.
+  case form.kind
+  of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkChar, vkString:
+    true
+  of vkSymbol:
+    inlineForName(form) or form.symVal in ["in", "else", "elif"]
+  of vkNode:
+    if form.props.len != 0 or form.isMacroResult or form.head.kind != vkSymbol:
+      return false
+    let head = form.head.symVal
+    if c.hasMacros and c.macros.hasKey(head):
+      return false
+    if head == "path":
+      return inlineForPath(form)
+    var first = 0
+    case head
+    of "set", "let", "var":
+      return form.body.len == 2 and inlineForName(form.body[0]) and
+        c.inlineForForm(form.body[1])
+    of "break", "continue":
+      return form.body.len == 0
+    of "do", "if", "then", "elif", "else", "if_yes", "if_not", "&&", "||",
+       "??", "!", "while", "loop", "repeat":
+      discard
+    of "for":
+      if form.body.len < 3 or not inlineForName(form.body[0]) or
+          not form.body[1].isSymbol("in"):
+        return false
+      first = 2
+    else:
+      if head notin inlineForOperators or c.hasLexicalBinding(head):
+        return false
+    for i in first ..< form.body.len:
+      if not c.inlineForForm(form.body[i]):
+        return false
+    true
+  else:
+    false
+
+const inlineForOps = {
+  opNoop, opPushConst, opPop, opNot, opLoadName, opLoadLocal, opLoadLocalFast,
+  opApplySelectorTop,
+  opLoadOuterLocal, opDefineLocal, opRedefineLocal, opSetLocal, opSetName,
+  opSetOuterLocal, opIntAdd2, opIntSub2, opIntMul2, opIntLt2, opIntGt2,
+  opIntLe2, opIntGe2, opIntAddConst, opIntSubConst, opIntMulConst,
+  opIntLtConst, opIntGtConst, opIntLeConst, opIntGeConst, opIntFast2,
+  opIntFastConst, opNativeFast2, opNativeFastConst, opLoopBreak,
+  opLoopContinue, opLoopEnter, opLoopLeave, opJump, opJumpIfFalse,
+  opJumpIfFalseOrPop, opJumpIfTrueOrPop, opJumpIfPresentOrPop,
+  opForInlineBegin, opForInlineNext}
+
+proc compileForProto(c: var Compiler, body: openArray[Value]): ForProto =
+  ## The loop body as its own chunk, run as one frame per item.
+  var bodyCompiler = c.childCompiler()
+  bodyCompiler.loopDepth = c.loopDepth + 1
+  bodyCompiler.enableLocalSlots()
+  bodyCompiler.parentSlots = c.parentFrames()
+  for name in patternBindingNames(body[0]):
+    discard bodyCompiler.reserveLocal(name)
+    if name == "self":
+      bodyCompiler.selfAvailable = true
+  if patternBindsSelf(body[0]):
+    bodyCompiler.selfAvailable = true
+  var forForms: seq[Value]
+  for i in 3 ..< body.len:
+    forForms.add body[i]
+  bodyCompiler.prepareStaticImports(forForms)
+  bodyCompiler.reserveProtocolBindingsFor(forForms)
+  compileBodyFrom(bodyCompiler, body, 3)
+  discard bodyCompiler.emit(opReturn)
+  bodyCompiler.chunk.localNames = bodyCompiler.localNames
+  ForProto(pattern: body[0], body: bodyCompiler.chunk,
+    reuseScope: chunkCanPoolCallScope(bodyCompiler.chunk, nestedLoops = true))
+
+proc compileInlineFor(c: var Compiler, body: openArray[Value],
+                      loopIndex: int): bool =
+  ## Optimization 2 S7: a `for` whose body passes `inlineForForm` runs in the
+  ## enclosing frame. opForInlineBegin keeps the item snapshot and an index on
+  ## the operand stack, the loop variable is a block-local slot, and each
+  ## iteration ends in a backward jump instead of a frame. A stream or range
+  ## jumps to an opForEach of `loopIndex` after the inlined code instead, a
+  ## frame loop that closes it on every exit.
+  ## False, with nothing emitted, when the compiled body uses an instruction
+  ## outside `inlineForOps`.
+  let first = c.chunk.instructions.len
+  let previousLocalCount = c.localNames.len
+  let previousPrivateSlots = c.chunk.privateLocalSlots.len
+  let previousStdlibSlots = c.chunk.stdlibCacheSlots
+  var inner = c
+  inner.inlineBlockPrefix = BlockBindingPrefix & $c.nextGensym() & ":"
+  inner.inlineBlockBindings = initHashSet[string]()
+  inner.ownMacroNames = initHashSet[string]()
+  inner.ownValueNames = initHashSet[string]()
+  let begin = inner.emit(opForInlineBegin, loopIndex)
+  let slot = inner.reserveLocal(body[0].symVal)
+  let enter = inner.emit(opLoopEnter)
+  let start = inner.chunk.instructions.len
+  inner.chunk.instructions[enter].depth = start      # continue
+  let next = inner.emit(opForInlineNext, slot, name = inner.localNames[slot])
+  inc inner.loopDepth
+  compileBodyFrom(inner, body, 3)
+  dec inner.loopDepth
+  discard inner.emit(opPop)                 # discard each iteration's body value
+  discard inner.emit(opJump, start)
+  let leave = inner.chunk.instructions.len
+  inner.chunk.instructions[next].depth = leave
+  inner.chunk.instructions[enter].intArg = leave   # break
+  discard inner.emit(opLoopLeave)
+  discard inner.emit(opPop)                 # the index
+  discard inner.emit(opPop)                 # the snapshot
+  inner.emitConst NIL
+  let done = inner.emitJump(opJump)
+  inner.chunk.instructions[begin].depth = inner.chunk.instructions.len
+  discard inner.emit(opForEach, loopIndex)  # a stream's frame loop
+  inner.patchJump(done)
+  # The only frame loops allowed are these fallbacks: another could expose
+  # the enclosing frame, which now holds the loop variable.
+  var fallbacks = initHashSet[int]()
+  for i in first ..< c.chunk.instructions.len:
+    if c.chunk.instructions[i].op == opForInlineBegin:
+      fallbacks.incl c.chunk.instructions[i].depth
+  for i in first ..< c.chunk.instructions.len:
+    let op = c.chunk.instructions[i].op
+    if op notin inlineForOps and not (op == opForEach and i in fallbacks):
+      # Undo everything keyed by the removed instructions: the indexes are
+      # about to be reused by the frame loop and the code after it.
+      c.chunk.instructions.setLen(first)
+      c.chunk.instructionLocs.setLen(first)
+      c.chunk.privateLocalSlots.setLen(previousPrivateSlots)
+      c.chunk.stdlibCacheSlots = previousStdlibSlots
+      var stale: seq[int]
+      for at in c.chunk.callSites.keys:
+        if at >= first: stale.add at
+      for at in stale: c.chunk.callSites.del(at)
+      return false
+  c.localNames = inner.localNames
+  c.sawNonVoidReturn = c.sawNonVoidReturn or inner.sawNonVoidReturn
+  for i in first ..< c.chunk.instructions.len:
+    let instruction = c.chunk.instructions[i]
+    if instruction.op == opSetLocal and instruction.intArg < previousLocalCount:
+      c.ordinaryFnNames.del(instruction.name)
+      c.generatorFnNames.del(instruction.name)
+      c.mutableBindingNames.incl instruction.name
+  true
+
 proc compileFor(c: var Compiler, node: Value) =
   let body = node.body
   if body.len < 3:
@@ -8423,27 +8604,26 @@ proc compileFor(c: var Compiler, node: Value) =
     return
 
   compileExpr(c, body[2])                   # iterable on the stack
-  var bodyCompiler = c.childCompiler()
-  bodyCompiler.loopDepth = c.loopDepth + 1
-  bodyCompiler.enableLocalSlots()
-  bodyCompiler.parentSlots = c.parentFrames()
-  for name in patternBindingNames(body[0]):
-    discard bodyCompiler.reserveLocal(name)
-    if name == "self":
-      bodyCompiler.selfAvailable = true
-  if patternBindsSelf(body[0]):
-    bodyCompiler.selfAvailable = true
-  var forForms: seq[Value]
-  for i in 3 ..< body.len:
-    forForms.add body[i]
-  bodyCompiler.prepareStaticImports(forForms)
-  bodyCompiler.reserveProtocolBindingsFor(forForms)
-  compileBodyFrom(bodyCompiler, body, 3)
-  discard bodyCompiler.emit(opReturn)
-  bodyCompiler.chunk.localNames = bodyCompiler.localNames
-  let fp = ForProto(pattern: body[0], body: bodyCompiler.chunk,
-    reuseScope: chunkCanPoolCallScope(bodyCompiler.chunk, nestedLoops = true))
-  discard c.emit(opForEach, c.chunk.addForLoop(fp))
+  let inlinable = c.useLocalSlots and c.inFunction and
+    inlineForName(body[0]) and body[0].symVal != "self"
+  var bodyOk = inlinable
+  if bodyOk:
+    for i in 3 ..< body.len:
+      if not c.inlineForForm(body[i]):
+        bodyOk = false
+        break
+  let fp = c.compileForProto(body)
+  if bodyOk:
+    # The frame body compiles the same forms. When it needs an instruction
+    # the inline form may not use, do not attempt the inline form at all.
+    for inst in fp.body.instructions:
+      if inst.op notin inlineForOps and inst.op != opReturn:
+        bodyOk = false
+        break
+  let loopIndex = c.chunk.addForLoop(fp)
+  if bodyOk and c.compileInlineFor(body, loopIndex):
+    return
+  discard c.emit(opForEach, loopIndex)
 
 proc compileYield(c: var Compiler, node: Value) =
   if not c.allowYield:
@@ -10685,7 +10865,7 @@ proc closuresCopyCaptures(proto: FunctionProto): bool =
     case inst.op
     of opDefineName, opRedefineName:
       return false
-    of opDefineLocal, opRedefineLocal:
+    of opDefineLocal, opRedefineLocal, opForInlineNext:
       bound.incl inst.intArg
     of opMakeFn:
       let plan = chunk.functions[inst.intArg].capturePlan

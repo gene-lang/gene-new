@@ -1377,7 +1377,7 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
   var declarations = initHashSet[string]()
   for inst in chunk.instructions:
     if inst.op in {opDefineName, opDefineLocal, opRedefineName, opRedefineLocal,
-                    opMakeNamespace}:
+                    opForInlineNext, opMakeNamespace}:
       declarations.incl inst.name
     elif inst.op == opImport:
       let spec = chunk.imports[inst.intArg]
@@ -1452,7 +1452,8 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
     var visible = source
     var locals = body.localNames.toHashSet()
     for instruction in body.instructions:
-      if instruction.op in {opDefineName, opDefineLocal, opRedefineName, opRedefineLocal, opMakeNamespace}:
+      if instruction.op in {opDefineName, opDefineLocal, opRedefineName, opRedefineLocal,
+                            opForInlineNext, opMakeNamespace}:
         locals.incl instruction.name
     for name in locals:
       if state.bindings.hasKey(name): visible.bindings[name] = state.bindings[name]
@@ -2106,6 +2107,21 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
         if iteration == 31: errors.open = true
       state.adoptFlow(loopState)
       push scalarValue("Nil")
+    of opForInlineBegin:
+      # An inlined for: the body follows in this chunk. A stream or range
+      # runs the frame loop at `depth` instead, an opForEach of the same loop.
+      let iterable = state.pop()
+      if iterable.kind notin {avList, avStream, avRange}: errors.open = true
+      var framed = state
+      framed.stack.add iterable
+      enqueue(inst.depth, framed)
+      push unknownValue()                   # the snapshot
+      push unknownValue()                   # the next index
+    of opForInlineNext:
+      state.bindings[inst.name] = ErrorBinding(value: unknownValue())
+      state.initialized.incl inst.name
+      environment.values[inst.name] = state.bindings[inst.name]
+      enqueue(inst.depth, state)
     of opLoopBreak, opLoopContinue:
       let owner = inlineLoopOwners[ip]
       if owner >= 0:

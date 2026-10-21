@@ -1511,6 +1511,85 @@ suite "gir — disassembly":
     check compileSource(src).disassemble().contains("opReturnIntAdd2 name=+")
     ck src, "[1 1 8 89]"
 
+  test "a for body without calls runs inline in its function":
+    let dump = compileSource(
+      "(fn total [xs] (var t 0) (for x in xs (set t (+ t x))) t)").disassemble()
+    check dump.contains("opForInlineBegin")
+    check dump.contains("opForInlineNext")
+    # A call keeps the frame loop: it could hold the iteration's activation.
+    let framed = compileSource(
+      "(fn total [xs] (var t []) (for x in xs (t .push x)) t)").disassemble()
+    check not framed.contains("opForInlineBegin")
+    check framed.contains("opForEach")
+    # A plain field read is a static lookup; a send segment is a call.
+    check compileSource(
+      "(fn total [rows] (var t 0) (for r in rows (set t (+ t r/amount))) t)"
+    ).disassemble().contains("opForInlineBegin")
+    check not compileSource(
+      "(fn total [rows] (var t 0) (for r in rows (set t (+ t r/.size))) t)"
+    ).disassemble().contains("opForInlineBegin")
+
+  test "an inlined for keeps for-loop semantics":
+    ck "(fn total [xs] (var t 0) (for x in xs (set t (+ t x))) t) " &
+       "[(total [1 2 3]) (total []) (total [5])]", "[6 0 5]"
+    # break, continue and return leave the right loop.
+    ck "(fn f [xs] (var t 0) " &
+       "  (for x in xs (if (== x 3) (break)) (if (== x 1) (continue)) " &
+       "    (set t (+ t x))) t) (f [1 2 3 4])", "2"
+    ck "(fn find [xs] (for x in xs (if (> x 2) (return x))) nil) " &
+       "[(find [1 5 3]) (find [1 2])]", "[5 nil]"
+    # Nested loops, a body-local binding, and the loop's value.
+    ck "(fn f [xs ys] (var t 0) " &
+       "  (for x in xs (for y in ys (let p (* x y)) (set t (+ t p)))) t) " &
+       "(f [1 2] [10 20])", "90"
+    ck "(fn f [] (for x in [1 2] (+ x 1))) (f)", "nil"
+    # The loop variable is block-local: an outer binding of the same name is
+    # untouched, and two loops in one function do not collide.
+    ck "(fn f [] (var x 100) (var t 0) (for x in [1 2] (set t (+ t x))) " &
+       "  (for x in [3] (set t (+ t x))) [x t]) (f)", "[100 6]"
+    ck "(fn total [rows] (var t 0) (for r in rows (set t (+ t r/amount))) t) " &
+       "(total [{^amount 2} {^amount 3}])", "5"
+    ck "(fn f [xs] (var t 0) (for x in xs (if (> x 1) (then (set t (+ t x))) " &
+       "  (else (set t (- t 1))))) t) (f [1 2 3])", "4"
+    # Maps iterate [key value] pairs, strings their characters.
+    ck "(fn f [m] (var n 0) (for kv in m (set n (+ n 1))) n) (f {^a 1 ^b 2})", "2"
+    ck "(fn f [s] (var n 0) (for c in s (set n (+ n 1))) n) (f \"abc\")", "3"
+
+  test "an inlined for over a stream still closes it on break":
+    ck "(var closed false) " &
+       "(fn ^^generator items [] (try (yield 1) (yield 2) ensure (set closed true))) " &
+       "(fn first [] (var seen 0) (for x in (items) (set seen x) (break)) seen) " &
+       "[(first) closed]", "[1 true]"
+    ck "(fn f [n] (var t 0) (for i in ($range 0 n) (set t (+ t i))) t) (f 4)", "6"
+
+  test "a for body that cannot run inline leaves no stale call sites":
+    # A rejected inline form must not leave call-site nodes behind at
+    # instruction indexes the frame loop and later code reuse.
+    let chunk = compileSource(
+      "(fn g [] 1) " &
+      "(fn f [xs] (var t 0) (for x in xs (set t (+ t x 1))) (g) (g)) " &
+      "(fn h [xs] (var t 0) (for x in xs (set t (+ t x))) [(g) (g)])")
+    for fn in chunk.functions:
+      for at, site in fn.chunk.callSites:
+        check at < fn.chunk.instructions.len
+        let op = fn.chunk.instructions[at].op
+        check ($op).startsWith("opCall") or op in {opSyntaxCall, opInvokeRuntimeMacro}
+    ck "(fn g [] 1) (fn f [xs] (var t 0) (for x in xs (set t (+ t x 1))) (+ t (g))) " &
+       "(f [1 2])", "6"
+
+  test "an inlined for round-trips through GIR":
+    let chunk = compileSource(
+      "(fn total [xs] (var t 0) (for x in xs (set t (+ t x))) t)")
+    let iface = CompileNamespaceInterface(
+      entries: initTable[string, CompileInterfaceEntry]())
+    let artifact = ExecutableGir(entryIdentity: "test/module",
+      modules: @[CompiledModule(identity: "test/module", chunk: chunk,
+        macroExports: initTable[string, MacroDef](), syntaxFnExports: @[],
+        compileInterface: iface)])
+    let decoded = decodeExecutableGir(encodeExecutableGir(artifact))
+    check decoded.modules[0].chunk.functions[0].chunk.disassemble().contains(
+      "opForInlineNext")
+
   test "runs same-scope tail recursion through recur ops":
     let src =
       "(var countdown (fn [n] (if (< n 1) n (countdown (- n 1))))) " &

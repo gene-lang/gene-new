@@ -124,6 +124,8 @@ type
     opMatchBind       # pop target, destructure against a pattern (or MatchError)
     opMatchBindReplace # pop target, destructure and replace existing loop binds
     opForEach         # pop a collection, run a for-loop body per item
+    opForInlineBegin  # pop a collection; push its snapshot and index for an inlined for
+    opForInlineNext   # bind the next snapshot item to a local, or jump past the loop
     opMakeIterator    # pop an iterable value, push a stream iterator
     opIteratorHasNext # pop a stream iterator, push Bool
     opIteratorNext    # pop a stream iterator, push next item
@@ -1455,6 +1457,11 @@ proc formatInstruction(inst: Instruction): string =
     result.add " pattern=" & $inst.intArg
   of opForEach:
     result.add " for=" & $inst.intArg
+  of opForInlineBegin:
+    result.add " for=" & $inst.intArg & " stream=" & $inst.depth
+  of opForInlineNext:
+    result.add " slot=" & $inst.intArg & " name=" & inst.name &
+      " exit=" & $inst.depth
   of opTry:
     result.add " try=" & $inst.intArg
   of opTaskScope, opBlockScope:
