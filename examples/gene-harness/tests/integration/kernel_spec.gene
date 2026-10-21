@@ -141,7 +141,25 @@
           ($println "mid-turn contribution: immutable visibility, origin-owned queue and next-turn publication")
         ensure
           (release .set true)
-          (close_runtime runtime))))))
+          (close_runtime runtime)))))
+
+  (it "keeps every row that concurrent activations add to an ordered registry" []
+    (isolated this_mod/.path "keeps every row that concurrent activations add to an ordered registry"
+      (fn [workspace]
+        (let h (new_harness))
+        # Every install reconciles the whole composition, and Cordis runs its
+        # activations as concurrent tasks that insert into the same rows.
+        (fn contributor [id : Str]
+          (Plugin ^id id ^provides [] ^requires [] ^activate (fn [host]
+            (for n in [1 2 3]
+              (host .PluginHost:contribute "web_components"
+                {^name $"${id}_${n}" ^slot "sidebar" ^view (quote (p "row"))})))))
+        (try
+          (for id in ["a" "b" "c" "d" "e" "f"] (install h (contributor id)))
+          (let names ($map (rows h "web_components") (fn [row] row/name)))
+          ($assert (== names/.size 18) $"concurrent activations lost rows: ${names}")
+        ensure
+          (shutdown_harness h))))))
 
 (describe "Durable event bus"
   (it "publishes every appended record and unwinds an observer with its plugin" []

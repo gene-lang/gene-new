@@ -221,21 +221,29 @@
         (string_before? a/owner b/owner)
         (string_before? a/row_id b/row_id)))))
 
+# Cordis runs the activations of one reconcile as concurrent tasks, and they
+# share the registry rows and the ledger. Rebuilding one of those tables calls
+# functions and loops, so the scheduler can switch tasks between reading it and
+# storing the rebuilt copy, and a row another task added in between is lost.
+# Every rebuild runs under this gate. Nothing under it calls plugin code.
+(var ^^private row_gate ($sync/gate))
+
 (fn insert_registry_row [r : Registry, record : RegistryRow]
   (if_not r/ordered
     (r/rows
       .get
       ; .push record)
     (return nil))
-  (var next (fresh_list))
-  (var inserted false)
-  (for current in r/rows/.get
-    (if_yes (&& (! inserted) (registry_row_before? record current))
-      (next .push record)
-      (set inserted true))
-    (next .push current))
-  (if_not inserted (next .push record))
-  (r/rows .set next))
+  (row_gate (fn []
+    (var next (fresh_list))
+    (var inserted false)
+    (for current in r/rows/.get
+      (if_yes (&& (! inserted) (registry_row_before? record current))
+        (next .push record)
+        (set inserted true))
+      (next .push current))
+    (if_not inserted (next .push record))
+    (r/rows .set next))))
 
 (fn registry_read_view [h : Harness]
   (let context ($runtime/context))
@@ -343,23 +351,25 @@
     found/payload))
 
 (fn ledger_record [h : Harness, owner : Str, row_id : Str]
-  (var ledger_cell h/ledger)
-  (var ledger ledger_cell/.get)
-  (var owned (?? (ledger .get owner) (fresh_list)))
-  (owned .push row_id)
-  (ledger .put owner owned)
-  (ledger_cell .set ledger))
+  (row_gate (fn []
+    (var ledger_cell h/ledger)
+    (var ledger ledger_cell/.get)
+    (var owned (?? (ledger .get owner) (fresh_list)))
+    (owned .push row_id)
+    (ledger .put owner owned)
+    (ledger_cell .set ledger))))
 
 (fn ledger_forget [h : Harness, owner : Str, row_id : Str]
-  (var ledger_cell h/ledger)
-  (var ledger ledger_cell/.get)
-  (var kept (fresh_list))
-  (for candidate in (?? (ledger .get owner) (fresh_list))
-    (if_not (== candidate row_id) (kept .push candidate)))
-  (if (== kept/.size 0)
-    (ledger .delete owner)
-    (ledger .put owner kept))
-  (ledger_cell .set ledger))
+  (row_gate (fn []
+    (var ledger_cell h/ledger)
+    (var ledger ledger_cell/.get)
+    (var kept (fresh_list))
+    (for candidate in (?? (ledger .get owner) (fresh_list))
+      (if_not (== candidate row_id) (kept .push candidate)))
+    (if (== kept/.size 0)
+      (ledger .delete owner)
+      (ledger .put owner kept))
+    (ledger_cell .set ledger))))
 
 (fn remove_registry_row [h : Harness, row_id : Str, ^cleanup cleanup = true]
   (var row_index_cell h/row_index)
@@ -379,10 +389,11 @@
   (if (serialize_registry_change? h)
     (return (registry_change h (fn [] (remove_registry_row ^cleanup cleanup h row_id)))))
   (var r (registry_named h record/registry))
-  (var kept (fresh_list))
-  (for candidate in r/rows/.get
-    (if_not (== candidate/row_id row_id) (kept .push candidate)))
-  (r/rows .set kept)
+  (row_gate (fn []
+    (var kept (fresh_list))
+    (for candidate in r/rows/.get
+      (if_not (== candidate/row_id row_id) (kept .push candidate)))
+    (r/rows .set kept)))
   (row_index .delete row_id)
   (row_index_cell .set row_index)
   (ledger_forget h record/owner row_id)
