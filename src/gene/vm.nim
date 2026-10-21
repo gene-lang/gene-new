@@ -2053,15 +2053,20 @@ proc storeSlot(scope: Scope, index: int, name: string, v: Value,
       "set of undefined symbol: " & sourceBindingName(name))
   if not requireExisting and not permitRedefine and scope.slotDefined(index):
     raise newException(GeneError, "duplicate binding: " & sourceBindingName(name))
-  let value =
+  # `v` is borrowed, and the storage form is the slot's own reference, so it
+  # moves into the slot. A copy of `v` and a copy of that form cost two more
+  # retains and releases on every store.
+  var stored =
     if requireExisting and index < scope.slotTypes.len:
-      scope.assignmentValue(name, v, scope.slotTypes[index])
+      functionForScopeStorage(scope.assignmentValue(name, v, scope.slotTypes[index]),
+                              scope, binding = true)
     else:
-      v
-  let stored = functionForScopeStorage(value, scope, binding = true)
+      functionForScopeStorage(v, scope, binding = true)
   checkStrictBindingUpdate(scope, name, stored)
-  scope.slots[index] = stored
-  if scope.slotMirror:
+  if not scope.slotMirror:
+    scope.slots[index] = move stored
+  else:
+    scope.slots[index] = stored
     if scope.vars.hasKey(name) and
         (scope.vars[name].fnErrorLease != nil or
          scope.managedBindingPins.hasKey(name)):
@@ -20881,9 +20886,11 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           if argsStart < 0 or argsStart < namedCount + 1:
             raise newException(GeneError, "VM stack underflow in call")
           let calleeIndex = argsStart - namedCount - 1
-          var callee = stack[calleeIndex]
           if namedCount == 0:
-            tryPlainNative(callee, argsStart, argCount, calleeIndex)
+            # Borrowed: the stack keeps the callee until a plain native returns.
+            let nativeCallee {.cursor.} = stack[calleeIndex]
+            tryPlainNative(nativeCallee, argsStart, argCount, calleeIndex)
+          var callee = stack[calleeIndex]
           var callValuesMayCapture = false
           for i in calleeIndex + 1 ..< sp:
             if valueMayRetainScope(stack[i]):
