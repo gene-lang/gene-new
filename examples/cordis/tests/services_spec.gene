@@ -83,7 +83,7 @@
     (runtime .admit_service_key greeting_key)
     (var root runtime/.root)
     (assert_raises
-      (fn [] (root .derive {^limits (invocation_limits ^max_steps 200000)}))
+      (fn [] (root .derive {^limits (invocation_limits ^timeout_ms 4000)}))
       ConfigValidationError
       "derived invocation limits must never exceed their parent")
     (var consumer (runtime .install root consumer_spec nil))

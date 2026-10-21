@@ -119,7 +119,7 @@ grants. A pure `init` could return an activation callback containing I/O;
 reading the descriptor did not require calling that callback.
 
 For the manager integration, bound loading, compilation, initialization, and
-`init` with step, memory, and wall-clock budgets. Use a disposable sandbox
+`init` with memory and wall-clock limits. Use a disposable sandbox
 generation, extract inert metadata, and discard it without publishing
 candidate declarations or retaining callbacks. The existing sandbox
 transaction API is a foundation for this lifecycle. Admit only the trusted

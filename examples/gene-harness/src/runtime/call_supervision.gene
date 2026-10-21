@@ -8,7 +8,7 @@
       (+ ($os/monotonic_ms) limits/timeout_ms)
       ($math/min deadline_ms (+ ($os/monotonic_ms) limits/timeout_ms))))
     (let invoke
-      ($runtime/bind_call ^policy {^max_steps limits/max_steps ^max_memory_mb limits/max_memory_mb
+      ($runtime/bind_call ^policy {^max_memory_mb limits/max_memory_mb
         ^timeout_ms ($math/max 1 (- deadline_at ($os/monotonic_ms)))}
         callable
         args))

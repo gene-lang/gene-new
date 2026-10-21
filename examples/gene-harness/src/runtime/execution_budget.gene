@@ -37,7 +37,7 @@
     ^callback_deadline_ms (if (== kind "callback")
       (earlier deadline parent/callback_deadline_ms) parent/callback_deadline_ms)
     ^deadline_ms (earlier deadline parent/deadline_ms)
-    ^limits {^max_steps limits/max_steps ^max_memory_mb limits/max_memory_mb
+    ^limits {^max_memory_mb limits/max_memory_mb
       ^timeout_ms limits/timeout_ms}})
   (scope_gate (fn [] (scopes/.get .push scope)))
   scope)
@@ -105,7 +105,6 @@
     ^callback_deadline_ms (?? scope/callback_deadline_ms nil)
     ^effective_deadline_ms effective
     ^remaining_ms (if ($absent? effective) nil ($math/max 0 (- effective native/now_ms)))
-    ^remaining_steps native/remaining_steps
     ^memory_limit_bytes native/memory_limit_bytes
     ^memory_remaining_bytes native/memory_remaining_bytes
     ^callback_limits (?? scope/limits nil)}))

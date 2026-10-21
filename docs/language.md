@@ -649,8 +649,7 @@ it caller return/loop targets or direct rebinding of caller variables. The
 
 An ordinary Env overlays the evaluation-site lexical scope; it does not hide
 those names, and it is not a sandbox: evaluated code can use any namespace the
-surrounding code can. Bound a run with `^policy` limits on steps, memory, and
-time.
+surrounding code can. Bound a run with `^policy` limits on memory and time.
 
 Evaluation uses the selected Env's macro context. An ordinary `(env)` includes
 visible macros, and `caller_env` supplies the caller's macros. A closed snapshot

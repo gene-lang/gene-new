@@ -114,7 +114,7 @@
                  ^run (fn [context, next] ($sleep 5000) (next context))}))))
           (let installed (put_cordis_plugin runtime/h slow
             {^^host
-             ^limits (ExecutionLimits ^max_steps 1000000
+             ^limits (ExecutionLimits
                ^max_memory_mb 64 ^timeout_ms 1000)}))
           (let activation_error (plugin_error runtime/h "aaa_slow_hook"))
           ($assert (== installed "ready")
@@ -204,7 +204,7 @@
                 {^point "request/prepare" ^name "panic"
                  ^run (fn [context, next] ($panic "hook panic probe"))}))))
           ($assert (== (put_cordis_plugin runtime/h panicking
-            {^^host ^limits (ExecutionLimits ^max_steps 1000000
+            {^^host ^limits (ExecutionLimits
               ^max_memory_mb 64 ^timeout_ms 1000)}) "ready")
             "panic probe plugin did not activate")
           (let lease (acquire_snapshot runtime/h/snapshots))

@@ -53,7 +53,7 @@ The Gene module should keep those two mechanisms behind one small interface:
       ^invoker (default_plugin_invoker)
       ^default_limits
         (InvocationLimits
-          ^max_steps 100000 ^max_memory_mb 64 ^timeout_ms 2000))))
+          ^max_memory_mb 64 ^timeout_ms 2000))))
 (var root runtime/.root)
 
 (var db_instance
@@ -150,7 +150,7 @@ comparison, and it constrains this design in four places:
 - **Plugin-supplied calls need one supervision seam.** Activation, availability
   predicates, schemas, binding adapters, hook handlers, and cleanup are all
   called directly by the runtime. A host whose plugin authors are untrusted has
-  to bound every one of them with step, wall-clock, and memory budgets plus
+  to bound every one of them with wall-clock and memory limits plus
   panic containment. That is a property of *where the runtime calls out*, so the
   runtime calls a host-supplied `PluginInvoker` through one identifiable path
   rather than growing six wrappers. The default adapter uses Gene's bounded
@@ -215,7 +215,7 @@ The implementation is correct only if all of these remain true:
 13. Every call from the runtime into plugin-supplied code — activation,
     availability predicates, schemas, config merge functions, binding adapters,
     hook handlers, and cleanup — passes through one supervision path. A host can
-    therefore bound all of them with step, wall-clock, and memory budgets and
+    therefore bound all of them with wall-clock and memory limits and
     contain a panic as that call's typed failure, without the runtime growing a
     second invocation route that escapes the policy.
 14. Replacing or withdrawing a provider prevents its old transitive consumer
@@ -293,7 +293,7 @@ changing their behavior.
   (message invoke [call] : Any))
 
 (type InvocationLimits
-  ^props {^max_steps Int ^max_memory_mb Int ^timeout_ms Int})
+  ^props {^max_memory_mb Int ^timeout_ms Int})
 
 (type RuntimeOptions
   ^props {^logger Logger
@@ -1110,7 +1110,7 @@ children        ordered nested entries
 isolate         service id -> true or named realm label
 intercept       service id -> config overlay
 namespaces      requested external stdlib namespaces
-limits          requested narrowing of step, memory, and timeout limits
+limits          requested narrowing of memory and timeout limits
 ```
 
 Unknown fields, duplicate sibling ids, invalid groups, unknown service ids,

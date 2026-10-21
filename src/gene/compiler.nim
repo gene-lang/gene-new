@@ -7,8 +7,7 @@ export gir.MacroDef, gir.MacroDefault, gir.MacroParam, gir.MacroNamedParam
 
 type
   CompileBudget* = ref object
-    remaining*: int64
-    runtimeBudget*: EvalBudget # shared counter while executable macro bodies run
+    runtimeBudget*: EvalBudget # shared guards while executable macro bodies run
     ownsRuntimeBudget*: bool
     hasDeadline*: bool
     deadline*: MonoTime
@@ -242,15 +241,16 @@ proc macroCompilerState(session: MacroExecutionSession): MacroCompilerState =
     session.compilerState = MacroCompilerState()
   MacroCompilerState(session.compilerState)
 
-proc newCompileBudget*(maxSteps, maxMemoryMb, timeoutMs: int64): CompileBudget =
-  if maxSteps < 0 and maxMemoryMb < 0 and timeoutMs < 0:
+proc newCompileBudget*(maxMemoryMb, timeoutMs: int64): CompileBudget =
+  let parent = if activeVmBudget != nil: activeVmBudget[] else: nil
+  if maxMemoryMb < 0 and timeoutMs < 0:
+    if parent != nil:
+      return CompileBudget(runtimeBudget: parent)
     return nil
   if maxMemoryMb > high(int64) div (1024 * 1024):
     raise newException(GeneError, "compile memory limit is too large")
   result = CompileBudget(
-    remaining: if maxSteps < 0: high(int64) else: maxSteps,
-    runtimeBudget: newExecutionBudget(maxSteps, maxMemoryMb, timeoutMs,
-      if activeVmBudget != nil: activeVmBudget[] else: nil),
+    runtimeBudget: newExecutionBudget(maxMemoryMb, timeoutMs, parent),
     ownsRuntimeBudget: true)
   if timeoutMs >= 0:
     result.hasDeadline = true
@@ -263,7 +263,7 @@ proc newCompileBudget*(maxSteps, maxMemoryMb, timeoutMs: int64): CompileBudget =
 proc shareCompileBudget(budget: CompileBudget) =
   # Preserve host-created CompileBudget values as well as newCompileBudget.
   if budget != nil and budget.runtimeBudget == nil:
-    budget.runtimeBudget = EvalBudget(remaining: budget.remaining,
+    budget.runtimeBudget = EvalBudget(
       parent: if activeVmBudget != nil: activeVmBudget[] else: nil,
       hasDeadline: budget.hasDeadline, deadline: budget.deadline,
       hasMemoryLimit: budget.hasMemoryLimit, memoryBaseline: budget.memoryBaseline,
@@ -271,22 +271,18 @@ proc shareCompileBudget(budget: CompileBudget) =
       ownerExecution: activeBudgetExecution)
     budget.ownsRuntimeBudget = true
 
-proc consumeCompileStep(budget: CompileBudget) =
+proc pollCompileBudget(budget: CompileBudget) =
   if budget == nil: return
   budget.shareCompileBudget()
   var current {.cursor.} = budget.runtimeBudget
   while current != nil:
-    if current.remaining <= 0:
-      raise newException(GeneError, "compile max steps exceeded")
     if current.hasDeadline or current.hasMemoryLimit:
       if current.sampleCountdown <= 0:
         current.sampleCountdown = 64
         checkExecutionBudgetSample(current, budget.runtimeBudget, "compile")
       else:
         dec current.sampleCountdown
-    dec current.remaining
     current = current.parent
-  budget.remaining = budget.runtimeBudget.remaining
 
 proc parseImportSpec*(node: Value): ImportSpec
 
@@ -2263,8 +2259,8 @@ proc evaluateMacroValue(c: var Compiler, def: MacroDef,
     # protocol. Carry the diagnostic, not a foreign runtime value, back into
     # the host compiler (including sandbox/eval compilation).
     let detail =
-      if c.budget != nil and error.msg in ["eval max steps exceeded",
-          "eval timeout exceeded", "eval memory limit exceeded"]:
+      if c.budget != nil and error.msg in
+          ["eval timeout exceeded", "eval memory limit exceeded"]:
         "compile" & error.msg[4 .. ^1]
       else: error.msg
     let failure = newException(GeneError, context & ": " & detail)
@@ -2944,7 +2940,7 @@ proc expandMacroTree(c: var Compiler, unit: SourceUnit, value: Value,
                      provenance: var Table[uint64,
                                            ExpansionProvenance],
                      allowSlot: bool): Value =
-  consumeCompileStep(c.budget)
+  pollCompileBudget(c.budget)
   let loc = unit.expansionLoc(value, fallback)
   defer:
     if result.kind in {vkNode, vkList, vkMap, vkSet, vkHashMap, vkPipeline}:
@@ -10429,7 +10425,7 @@ proc compilePipeline(c: var Compiler, pipeline: Value, tail: bool) =
 
 proc compileExpr(c: var Compiler, node: Value, allowModDecl = false,
                  tail = false) =
-  consumeCompileStep(c.budget)
+  pollCompileBudget(c.budget)
   let savedLoc = c.currentLoc
   let exprLoc = c.sourceLocFor(node)
   if exprLoc.hasSourceLoc:

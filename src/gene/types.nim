@@ -469,15 +469,14 @@ type
     privateCompilerContext*: bool
     compilerOwnerLane*: int
 
-  ## Shared instruction budget for policy-limited eval scopes. Budgets can be
-  ## chained so nested evals with their own policy still consume the outer budget.
+  ## Shared execution limits for policy-controlled scopes. Nested policies
+  ## retain every enclosing deadline and memory guard.
   EvalCleanup* = ref object
     ## Shared only by the exceptional unwind, never renewed by nested cleanup.
     deadline*: MonoTime
     truncated*: string
 
   EvalBudget* = ref object
-    remaining*: int64
     parent*: EvalBudget
     hasDeadline*: bool
     deadline*: MonoTime
@@ -499,7 +498,6 @@ type
     skipCleanup*: bool
 
   ModuleExecutionPolicy* = ref object
-    maxSteps*: int64
     maxMemoryMb*: int64
     timeoutMs*: int64
 

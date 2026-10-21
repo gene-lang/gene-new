@@ -29,7 +29,7 @@
     (let tx ($runtime/sandbox_transaction))
     (let generation (tx .prepare
       {^dir plugin_dir ^entry entry ^grants [] ^shared []
-       ^label "vm3" ^policy {^max_steps 1000 ^max_memory_mb 16
+       ^label "vm3" ^policy {^max_memory_mb 16
                              ^timeout_ms 1000}}))
     (let candidate generation/.module)
     (if (== entry "plugin.gene")

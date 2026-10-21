@@ -101,8 +101,7 @@
             (set last_line (?? meta/line nil))
             (let expired ($cell false))
             (let execution (open_execution_scope "response"
-              {^timeout_ms timeout_ms ^max_memory_mb max_memory_mb
-               ^max_steps 9223372036854775807} context))
+              {^timeout_ms timeout_ms ^max_memory_mb max_memory_mb} context))
             (let outcome (try (scope
               # The evaluation task itself is a child of the turn, as well as
               # owning the ordinary children created by response code.

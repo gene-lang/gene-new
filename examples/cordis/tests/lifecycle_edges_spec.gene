@@ -110,7 +110,7 @@
       (new_runtime
         (RuntimeOptions ^logger nil ^invoker (default_plugin_invoker)
           ^default_limits
-            (invocation_limits ^max_steps 40 ^max_memory_mb 16 ^timeout_ms 1000))))
+            (invocation_limits ^max_memory_mb 16 ^timeout_ms 1000))))
     (set t/bounded_runtime bounded_runtime)
     (var bounded
       (bounded_runtime .install bounded_runtime/.root bounded_plugin nil))

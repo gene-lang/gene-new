@@ -501,11 +501,11 @@
 
 (fn default_limits_data []
   (var limits (default_execution_limits))
-  {^max_steps limits/max_steps ^max_memory_mb limits/max_memory_mb ^timeout_ms limits/timeout_ms})
+  {^max_memory_mb limits/max_memory_mb ^timeout_ms limits/timeout_ms})
 
 (fn runtime_limits [entry] : ExecutionLimits
   (var limits (entry_limits entry))
-  (ExecutionLimits ^max_steps limits/max_steps ^max_memory_mb limits/max_memory_mb ^timeout_ms limits/timeout_ms))
+  (ExecutionLimits ^max_memory_mb limits/max_memory_mb ^timeout_ms limits/timeout_ms))
 
 (fn descriptor_entry_options [workspace : Workspace, entry]
   {

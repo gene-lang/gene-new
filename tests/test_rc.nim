@@ -725,7 +725,7 @@ when defined(geneRcStats):
 
     test "released bound calls reclaim captures arguments and policy metadata":
       check leakedManaged("(fn target [x] (+ x 1)) " &
-        "(var bound ($runtime/bind_call target [2] ^policy {^max_steps 100})) " &
+        "(var bound ($runtime/bind_call target [2] ^policy {^timeout_ms 1000})) " &
         "(bound) (set bound nil)") == 0
       check leakedManaged("(fn make [x] " &
         " ($runtime/bind_call (fn [y] (+ x y)) [2])) " &
@@ -843,7 +843,7 @@ when defined(geneRcStats):
         "tests/profiles/native-app/lifetime/plugin"
       "{^dir " & newStr(directory).print() & " ^entry \"" & entry & "\" " &
         "^grants [] ^shared [] ^label \"rc\" " &
-        "^policy {^max_steps 1000 ^max_memory_mb 16 ^timeout_ms 1000}}"
+        "^policy {^max_memory_mb 16 ^timeout_ms 1000}}"
 
     # Retirement is off where Gene worker lanes exist (AtomicArc).
     when not defined(gcAtomicArc):

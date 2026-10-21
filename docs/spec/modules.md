@@ -4,7 +4,7 @@
 entrypoint, serde, native API, and CLI suites.
 
 Namespace exposure and execution policy are separate controls: the sandbox
-transaction and loader below select the first, and step, memory, and timeout
+transaction and loader below select the first, and memory and timeout
 budgets bound the second.
 
 - Each run owns an Application, one selected application package, a load-once
@@ -44,7 +44,7 @@ budgets bound the second.
 - `$runtime/sandbox_transaction` creates a root-lane-owned prospective module
   transaction. `prepare` may add several isolated `SandboxGeneration` roots;
   compilation, macro expansion, initialization, and escaped calls obey the
-  supplied step, memory, and timeout policy. Prepared caches, compile artifacts,
+  supplied memory and timeout policy. Prepared caches, compile artifacts,
   protocol impls, serde origins, and module scopes are invisible to the live
   application until the transaction commits.
 - Compilation and executable macro expansion share the preparation budget.

@@ -5437,7 +5437,7 @@ when not defined(geneWasm):
     let wrapper = newScope(caller)
     # Only trusted bookkeeping runs in this wrapper. User code receives the
     # caller budget below; an exhausted input budget must not skip repl_finish.
-    wrapper.evalBudget = EvalBudget(remaining: high(int64))
+    wrapper.evalBudget = EvalBudget()
     let wrapperChunk = compileEvalSource(
       "(try (let value (repl_execute)) (repl_success) value ensure (repl_finish))",
       useLocalSlots = false)
@@ -5581,7 +5581,7 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
   # §C7 in-VM cancellation: while a pane REPL eval is in flight the TUI runs
   # in a no-ISIG terminal mode, so Ctrl-C arrives as a dead keystroke once the
   # cooperative scheduler is starved by a non-yielding eval. The guard enables
-  # ISIG and routes SIGINT to the VM interrupt flag, which consumeEvalStep
+  # ISIG and routes SIGINT to the VM interrupt flag, which pollEvalBudgetChain
   # polls on the budgeted-dispatch path; eval_guard_end restores both.
   import std/termios as pane_termios
   var paneEvalOldSigint: Sigaction

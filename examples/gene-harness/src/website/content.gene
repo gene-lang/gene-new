@@ -130,7 +130,7 @@
     ^note "inspect_plugin reports the installed source and provenance."}
    {^title "Activate and call functions"
     ^text "Activation contributes functions, commands and UI components. Later model turns, /run and the REPL call the functions directly."
-    ^note "Generated callbacks are bounded by steps, memory, and time — two seconds by default."}
+    ^note "Generated callbacks are bounded by memory and time — two seconds by default."}
    {^title "Restore in another conversation"
     ^text "Workspace plugins and their committed state load in new conversations and after a restart. A plugin that fails to activate stays inspectable instead of silently disappearing."
     ^note "Live processes and partial model replies are not resumed."}])

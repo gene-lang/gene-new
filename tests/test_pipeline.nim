@@ -429,6 +429,6 @@ suite "pipeline — prepared lazy invocation":
       (fn ^^generator naturals [] (var n 0) (while true (yield n) (set n (+ n 1))))
       (let pending ($filter_map (naturals) (fn [x] void)))
       (let consume ($runtime/bind_call (fn [] (pending .next)) []
-                    ^policy {^max_steps 100}))
+                    ^policy {^timeout_ms 20}))
       [(try (consume) false catch Any true) (pending .has_next)]
     """, "[true false]"

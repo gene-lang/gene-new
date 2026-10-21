@@ -201,7 +201,7 @@
     (new_runtime
       (RuntimeOptions ^logger nil
         ^invoker (HarnessInvoker ^host host ^delegate (default_plugin_invoker))
-        ^default_limits (invocation_limits ^max_steps ceiling/max_steps
+        ^default_limits (invocation_limits
           ^max_memory_mb ceiling/max_memory_mb ^timeout_ms ceiling/timeout_ms))))
   (let token ($cell nil))
   (let record
@@ -267,7 +267,7 @@
   # Cordis keeps an entry live while its admitted spec is the same value, so
   # the spec is reused until the plugin value or its entry policy changes.
   (let key {^host policy/host
-            ^limits [policy/limits/max_steps policy/limits/max_memory_mb
+            ^limits [policy/limits/max_memory_mb
                      policy/limits/timeout_ms]})
   (let cached (record/specs .get plugin/id))
   (if (&& (!= cached void) (same? cached/plugin plugin) (== cached/key key))
@@ -369,7 +369,6 @@
     (let source (supplied .get "module"))
     (let requested (?? (supplied .get "limits") record/limits))
     (let limits (ExecutionLimits
-      ^max_steps ($math/min requested/max_steps record/limits/max_steps)
       ^max_memory_mb ($math/min requested/max_memory_mb record/limits/max_memory_mb)
       ^timeout_ms ($math/min requested/timeout_ms record/limits/timeout_ms)))
     (let is_host (?? (supplied .get "host") ($absent? source)))
@@ -381,7 +380,7 @@
     (entries .push {^id plugin/id ^plugin_id plugin/id
       ^module (if ($absent? source) $"host/${plugin/id}" source)
       ^namespaces ($runtime/sandbox_namespaces)
-      ^limits {^max_steps limits/max_steps ^max_memory_mb limits/max_memory_mb ^timeout_ms limits/timeout_ms}})
+      ^limits {^max_memory_mb limits/max_memory_mb ^timeout_ms limits/timeout_ms}})
     (for requirement in (?? plugin/requires #[])
       (admit_requirement record requirement))
     (if ($absent? source)

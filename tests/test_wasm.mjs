@@ -48,8 +48,8 @@ const cases = [
   ["(if true 1 2)", 0, "1", ""],
   ["(fn f [n] (macro m [] (+ n 1)) (m)) [(f 2) (f 9)]", 0, "[3 10]", ""],
   ["(fn f [] (macro spin [] (while true nil)) " +
-   "(try (eval (quote (spin)) ^in (env ^policy {^max_steps 1000})) " +
-   "catch Any ($str/contains? $err/message \"max steps\"))) (f)", 0, "true", ""],
+   "(try (eval (quote (spin)) ^in (env ^policy {^timeout_ms 20})) " +
+   "catch Any ($str/contains? $err/message \"timeout\"))) (f)", 0, "true", ""],
   ["(macro computed [x] (let n (+ x 1)) `(+ %n %(* n 2))) (computed 2)",
    0, "9", ""],
   ["(macro add_one [value] `(do (let tmp 1) (+ tmp %value))) " +

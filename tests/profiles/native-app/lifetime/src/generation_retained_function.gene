@@ -2,7 +2,7 @@
   (let tx ($runtime/sandbox_transaction))
   (let generation (tx .prepare
     {^dir dir ^entry "self.gene" ^grants [] ^shared []
-     ^label "retained-function" ^policy {^max_steps 1000
+     ^label "retained-function" ^policy {
        ^max_memory_mb 16 ^timeout_ms 1000}}))
   (let module generation/.module)
   (let identity module/identity)

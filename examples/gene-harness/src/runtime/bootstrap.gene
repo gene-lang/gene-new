@@ -113,7 +113,7 @@
     (let response_budget (?? settings/response_budget {}))
     (let base_limits (?? profile/limits (response_execution_limits)))
     (let profile_limits
-      (ExecutionLimits ^max_steps base_limits/max_steps
+      (ExecutionLimits
         ^max_memory_mb (?? response_budget/max_memory_mb base_limits/max_memory_mb)
         ^timeout_ms (?? response_budget/timeout_ms base_limits/timeout_ms)))
     (let restarted ($fs/exists? $"${state_root}/restart_notice"))
@@ -131,7 +131,7 @@
     (attach_history workspace build
       {^name profile/name ^requires (?? profile/requires [])
        ^provider (?? profile/provider nil) ^builtins builtins
-       ^limits {^max_steps profile_limits/max_steps ^max_memory_mb profile_limits/max_memory_mb
+       ^limits {^max_memory_mb profile_limits/max_memory_mb
          ^timeout_ms profile_limits/timeout_ms}})
     (set h
       (new_harness ^event_store events ^event_scope event_scope ^event_stream session ^workspace workspace ^limits profile_limits))

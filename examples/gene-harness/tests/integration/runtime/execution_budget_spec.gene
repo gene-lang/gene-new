@@ -39,7 +39,7 @@
   ($fs/write_text_atomic $"${state_root}/config.gene" ($serde/write_data config))
   (let runtime (open_runtime workspace "default"
     (Profile ^name "budget-test" ^plugins [(plugin_admin)]
-      ^limits (ExecutionLimits ^max_steps 9223372036854775807
+      ^limits (ExecutionLimits
         ^max_memory_mb 96 ^timeout_ms timeout))))
   (try
     (let helper (helper_source))

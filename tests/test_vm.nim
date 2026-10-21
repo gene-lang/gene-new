@@ -1,4 +1,4 @@
-import gene/[compiler, equality, gir, gir_codec, printer,
+import gene/[compiler, equality, execution_limits, gir, gir_codec, printer,
              reader, types, vm]
 import std/[json, os, strutils, tables, unittest]
 
@@ -2255,14 +2255,14 @@ suite "vm — macros":
 
   test "eval policies bound executable macro bodies":
     ck "(macro spin [] (while true nil)) " &
-       "(try (eval (quote (spin)) ^in (env ^policy {^max_steps 1000})) " &
-       "catch Any ($str/contains? $err/message \"max steps\"))", "true"
+       "(try (eval (quote (spin)) ^in (env ^policy {^timeout_ms 20})) " &
+       "catch Any ($str/contains? $err/message \"timeout\"))", "true"
     ck "(fn f [] (macro spin [] (while true nil)) " &
-       "(try (eval (quote (spin)) ^in (env ^policy {^max_steps 1000})) " &
-       "catch Any ($str/contains? $err/message \"max steps\"))) (f)", "true"
+       "(try (eval (quote (spin)) ^in (env ^policy {^timeout_ms 20})) " &
+       "catch Any ($str/contains? $err/message \"timeout\"))) (f)", "true"
     ck "(fn f [] (macro spin [] (while true nil)) " &
-       "(try (eval (quote (1 -> + (spin))) ^in (env ^policy {^max_steps 1000})) " &
-       "catch Any ($str/contains? $err/message \"max steps\"))) (f)", "true"
+       "(try (eval (quote (1 -> + (spin))) ^in (env ^policy {^timeout_ms 20})) " &
+       "catch Any ($str/contains? $err/message \"timeout\"))) (f)", "true"
 
   test "macro body helpers use the definition environment":
     ck "(fn helper [x] (* x 100)) " &
@@ -2998,7 +2998,7 @@ suite "vm — fused stdlib paths":
         catch ParseError "argument failed first")
     """, "\"argument failed first\""
 
-  test "fused and expanded loads charge identical evaluation steps":
+  test "fused and expanded loads preserve results under a deadline":
     let fused = compileSource("$math/pi")
     let expanded = cloneCompiledChunk(fused)
     expanded.instructions.setLen(0)
@@ -3014,17 +3014,14 @@ suite "vm — fused stdlib paths":
       else:
         expanded.instructions.add inst
         expanded.instructionLocs.add fused.instructionLocs[i]
-    for limit in 1'i64 .. 8'i64:
+    for timeout in [0'i64, 1000'i64]:
       var outcomes: seq[string]
-      var remaining: seq[int64]
       for code in [fused, expanded]:
         let scope = newGlobalScope()
-        scope.evalBudget = EvalBudget(remaining: limit)
+        scope.evalBudget = newExecutionBudget(-1, timeout)
         try: outcomes.add run(code, scope).print()
         except GeneError as error: outcomes.add error.msg
-        remaining.add scope.evalBudget.remaining
       check outcomes[0] == outcomes[1]
-      check remaining[0] == remaining[1]
 
   test "GIR roundtrips extra cache layout and rejects corrupt offsets":
     let chunk = compileSource("[$math/pi $math/abs]")
@@ -3146,7 +3143,7 @@ suite "vm — fused local sequences":
     check run(chunk, newGlobalScope()).print() ==
       "[309 2.5 \"positive\" \"store failed\" [7 5 true true] [0 1 2 4 5]]"
 
-  test "fused and expanded sequences charge and stop identically":
+  test "fused and expanded sequences preserve results and traces under a deadline":
     let fused = compileSource(fusedProgram)
     let expanded = cloneCompiledChunk(fused)
     expanded.expandFusedLocals()
@@ -3154,17 +3151,11 @@ suite "vm — fused local sequences":
     check expanded.countOps(opCompareLocalsJumpIfFalse) == 0
     check expanded.countOps(opCompareConstJumpIfFalse) == 0
     check expanded.countOps(opLoadLocalField) == 0
-    let unlimited = high(int64) div 2
-    let probe = newGlobalScope()
-    probe.evalBudget = EvalBudget(remaining: unlimited)
-    discard run(expanded, probe)
-    let steps = unlimited - probe.evalBudget.remaining
-    check steps > 100
-    for limit in 1'i64 .. steps + 1:
+    for timeout in [0'i64, 1000'i64]:
       var outcomes: seq[string]
       for code in [fused, expanded]:
         let scope = newGlobalScope()
-        scope.evalBudget = EvalBudget(remaining: limit)
+        scope.evalBudget = newExecutionBudget(-1, timeout)
         var outcome = ""
         try:
           outcome = run(code, scope).print()
@@ -3173,8 +3164,7 @@ suite "vm — fused local sequences":
         var traced = "undefined"
         try: traced = scope.lookup("trace").print()
         except GeneError: discard
-        outcomes.add outcome & " remaining " & $scope.evalBudget.remaining &
-          " trace " & traced
+        outcomes.add outcome & " trace " & traced
       check outcomes[0] == outcomes[1]
 
   test "GIR keeps fused sequences and rejects one without its tail":
@@ -3785,36 +3775,33 @@ suite "vm — env and eval":
        "(eval (quote x) ^in child)",
        "20"
 
-  test "eval policy limits execution by steps, time, and memory":
-    ck "(eval (quote (+ 1 2)) ^in (env ^policy {^max_steps 20}))",
+  test "eval policy limits execution by time and memory":
+    ck "(eval (quote (+ 1 2)) ^in (env ^policy {^timeout_ms 20}))",
        "3"
-    ck "(type EvalPolicy ^props {^max_steps Int " &
+    ck "(type EvalPolicy ^props {^timeout_ms Int " &
        "                         ^allow_ffi Bool? " &
        "                         ^allow_native_compile Bool?}) " &
-       "(var p (EvalPolicy ^max_steps 20 " &
+       "(var p (EvalPolicy ^timeout_ms 20 " &
        "                   ^!allow_ffi " &
        "                   ^!allow_native_compile)) " &
        "(eval (quote (+ 1 2)) ^in (env ^policy p))",
        "3"
     ck "(try (eval (quote (while true nil)) " &
-       "           ^in (env ^policy {^max_steps 20})) " &
+       "           ^in (env ^policy {^timeout_ms 20})) " &
        "catch Any $err/message)",
-       "\"eval max steps exceeded\""
+       "\"eval timeout exceeded\""
     ck "(try (eval (quote (eval (quote (while true nil)) ^in (env))) " &
-       "           ^in (env ^policy {^max_steps 40})) " &
+       "           ^in (env ^policy {^timeout_ms 40})) " &
        "catch Any $err/message)",
-       "\"eval max steps exceeded\""
-    # A step budget is transitive across an ordinary call. The callee's bound
+       "\"eval timeout exceeded\""
+    # A deadline is transitive across an ordinary call. The callee's bound
     # scope descends from its own lexical scope, so without this the first call
     # out of the evaluated form silently left the limit behind.
     ck "(fn spin [n : Int] (while true (set n (+ n 1))) n) " &
-       "(try (eval (quote (spin 1)) ^in (env ^policy {^max_steps 200})) " &
+       "(try (eval (quote (spin 1)) ^in (env ^policy {^timeout_ms 200})) " &
        "catch Any $err/message)",
-       "\"eval max steps exceeded\""
-    # A wall clock and a process-memory ceiling are the two limits a step count
-    # cannot express: an allocating loop can exhaust memory in few steps, and a
-    # step is not a unit of time. Both are sampled on the budgeted dispatch
-    # path, so a runaway form is stopped rather than the process.
+       "\"eval timeout exceeded\""
+    # Time and allocator state are sampled during policy-controlled execution.
     ck "(try (eval (quote (while true nil)) " &
        "           ^in (env ^policy {^timeout_ms 50})) " &
        "catch Any $err/message)",
@@ -3825,15 +3812,11 @@ suite "vm — env and eval":
        "catch Any $err/message)",
        "\"eval memory limit exceeded\""
     ck "(eval (quote (+ 1 2)) " &
-       "      ^in (env ^policy {^max_steps 200 ^timeout_ms 5000 " &
+       "      ^in (env ^policy {^timeout_ms 5000 " &
        "                        ^max_memory_mb 128}))",
        "3"
     expect GeneError:
       discard runStr("(env ^policy [1])")
-    expect GeneError:
-      discard runStr("(env ^policy {^max_steps \"bad\"})")
-    expect GeneError:
-      discard runStr("(env ^policy {^max_steps -1})")
     expect GeneError:
       discard runStr("(env ^policy {^max_memory_mb \"bad\"})")
     expect GeneError:

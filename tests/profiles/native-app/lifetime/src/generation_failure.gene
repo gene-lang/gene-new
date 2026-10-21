@@ -23,7 +23,7 @@
 
 (fn options [plugin_dir entry]
   {^dir plugin_dir ^entry entry ^grants [] ^shared []
-   ^label "vm3-failure" ^policy {^max_steps 1000 ^max_memory_mb 16
+   ^label "vm3-failure" ^policy {^max_memory_mb 16
                                  ^timeout_ms 1000}})
 
 (fn main [args] : Int

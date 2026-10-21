@@ -8485,7 +8485,7 @@ suite "spec — Env and eval from design":
         (fn [] ($repl/eval s "(fn report [] ($println \"fresh\") 42)")) []))
       ($runtime/with_context {^output (fn [text] (first/.get .push text))} define)
       ($sleep 150)
-      (let invoke ($runtime/bind_call ^policy {^timeout_ms 100 ^max_steps 2000}
+      (let invoke ($runtime/bind_call ^policy {^timeout_ms 100 }
         (fn [] ($repl/eval s "(report) (repeat 30 (+ 1 2)) 42")) []))
       (repeat 20
         ($assert (== ($runtime/with_context
@@ -8558,19 +8558,19 @@ suite "spec — Env and eval from design":
                "[stats/live_managed stats/rc_stats?]",
                "[0 false]")
 
-  test "eval policy can limit execution steps":
-    check_eval("(type EvalPolicy ^props {^max_steps Int " &
+  test "eval policy enforces deadlines and memory guards":
+    check_eval("(type EvalPolicy ^props {^timeout_ms Int " &
                "                         ^allow_ffi Bool? " &
                "                         ^allow_native_compile Bool?}) " &
-               "(var p (EvalPolicy ^max_steps 20 " &
+               "(var p (EvalPolicy ^timeout_ms 20 " &
                "                   ^!allow_ffi " &
                "                   ^!allow_native_compile)) " &
                "(eval (quote (+ 1 2)) ^in (env ^policy p))",
                "3")
     check_eval("(try (eval (quote (while true nil)) " &
-               "           ^in (env ^policy {^max_steps 20})) " &
+               "           ^in (env ^policy {^timeout_ms 20})) " &
                "catch Any $err/message)",
-               "\"eval max steps exceeded\"")
+               "\"eval timeout exceeded\"")
     check_eval("(eval (quote 1) " &
                " ^in (env ^policy {^max_memory_mb 1}))", "1")
     check_eval("(try (eval (quote 1) " &
@@ -8585,13 +8585,13 @@ suite "spec — Env and eval from design":
       discard run(compileSource("(env ^policy {^^allow_ffi})"),
                   newGlobalScope())
 
-  test "eval step limits remain active across imported callable boundaries":
+  test "eval deadlines remain active across imported callable boundaries":
     check_eval("(fn spin [] (while true nil)) " &
                "(try (eval (quote (callable)) " &
                "           ^in (env ^bindings {^callable spin} " &
-               "                    ^policy {^max_steps 20})) " &
+               "                    ^policy {^timeout_ms 20})) " &
                "catch Any $err/message)",
-               "\"eval max steps exceeded\"")
+               "\"eval timeout exceeded\"")
 
   test "runtime guard_call contains panic only at an explicit boundary":
     check_eval("(var guarded " &

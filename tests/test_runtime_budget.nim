@@ -32,7 +32,7 @@ suite "read-only execution budget":
     let moduleScope = newGlobalScope(app)
     moduleScope.moduleRoot = true
     moduleScope.moduleExecutionPolicy = ModuleExecutionPolicy(
-      maxSteps: high(int64), maxMemoryMb: -1, timeoutMs: 20)
+      maxMemoryMb: -1, timeoutMs: 20)
     let callback = run(compileSource("""
       (let captured 42)
       (fn [^value value = (do ($sleep 40) (repeat 100 nil) captured)] value)
@@ -51,7 +51,7 @@ suite "read-only execution budget":
     let moduleScope = newGlobalScope(app)
     moduleScope.moduleRoot = true
     moduleScope.moduleExecutionPolicy = ModuleExecutionPolicy(
-      maxSteps: high(int64), maxMemoryMb: -1, timeoutMs: 500)
+      maxMemoryMb: -1, timeoutMs: 500)
     let callback = run(compileSource("""
       (let captured 42)
       (fn [^value value = (do ($sleep 150) captured)]
@@ -63,6 +63,7 @@ suite "read-only execution budget":
     check run(compileSource("(callback)"), caller).print() == "[42 true true]"
 
   test "unlimited evaluation has no fabricated deadline":
+    check evaluate("($runtime/execution_budget)").mapEntries.len == 5
     check evaluate("""
       (let budget ($runtime/execution_budget))
       [($absent? budget/deadline_ms) ($absent? budget/remaining_ms)]
@@ -70,16 +71,15 @@ suite "read-only execution budget":
 
   test "reports active limits independently of task context":
     check evaluate("""
-      (let environment (env ^policy {^timeout_ms 500 ^max_steps 100000 ^max_memory_mb 64}))
+      (let environment (env ^policy {^timeout_ms 500 ^max_memory_mb 64}))
       (eval ^in environment (quote
         ($runtime/with_context {^deadline_ms 9223372036854775807}
           (fn []
             (let budget ($runtime/execution_budget))
             [(&& (> budget/remaining_ms 0) (<= budget/remaining_ms 500))
-             (<= budget/remaining_steps 100000)
              (== budget/memory_limit_bytes 67108864)
              (>= budget/deadline_ms budget/now_ms)]))))
-    """).print() == "[true true true true]"
+    """).print() == "[true true true]"
 
   test "a nested larger policy cannot extend the parent deadline":
     check evaluate("""

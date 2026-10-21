@@ -190,7 +190,7 @@ adds to it:
 (eval form ^in (env))                                   # the scope it is written in
 (eval form ^in (env ^bindings {^x 1}))                  # plus extra names
 (eval form ^in (env ^bindings {^x 1}
-                    ^policy {^max_steps 10000}))        # bounded by a step budget
+                    ^policy {^timeout_ms 1000}))         # bounded by a deadline
 ```
 
 An `Env` is not a sandbox: evaluated code can still use every namespace the

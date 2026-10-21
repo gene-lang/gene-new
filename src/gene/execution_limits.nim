@@ -1,5 +1,4 @@
-## Cold execution-limit sampling and exceptional cleanup policy. The VM keeps
-## its inline instruction-charge path; none of this adds work to plain dispatch.
+## Cold execution-limit sampling and exceptional cleanup policy.
 import std/[monotimes, times]
 import ./types
 
@@ -23,11 +22,10 @@ proc budgetContains*(budget, owner: EvalBudget): bool =
     if current == owner: return true
     current = current.parent
 
-proc newExecutionBudget*(maxSteps, maxMemoryMb, timeoutMs: int64,
+proc newExecutionBudget*(maxMemoryMb, timeoutMs: int64,
                          parent: EvalBudget = nil): EvalBudget =
-  if maxSteps < 0 and maxMemoryMb < 0 and timeoutMs < 0: return parent
-  result = EvalBudget(remaining: if maxSteps < 0: high(int64) else: maxSteps,
-                      parent: parent, ownerExecution: activeBudgetExecution)
+  if maxMemoryMb < 0 and timeoutMs < 0: return parent
+  result = EvalBudget(parent: parent, ownerExecution: activeBudgetExecution)
   if timeoutMs >= 0:
     result.hasDeadline = true
     result.hasTimeoutDuration = true
@@ -120,8 +118,8 @@ proc checkExecutionBudgetSample*(budget, root: EvalBudget, prefix = "eval") =
 
 proc sampleCleanupBudgets*(root: EvalBudget): ref GeneBudgetExpiry =
   ## Cleanup entry is exceptional: sample all applicable guards without
-  ## charging steps or changing their normal sampling phases. An expired
-  ## guard joins the pending unwind; it cannot replace its primary reason.
+  ## changing their normal sampling phases. An expired guard joins the pending
+  ## unwind; it cannot replace its primary reason.
   var current {.cursor.} = root
   while current != nil:
     try:
@@ -141,7 +139,7 @@ proc attachCleanupDiagnostics*(budget: EvalBudget) =
 
 proc enclosingBudgetExpiry*(failure: ref GeneBudgetExpiry): ref GeneBudgetExpiry =
   ## Before converting at an inner boundary, observe already-expired ancestors.
-  ## This does not charge instructions or change normal sampling frequency.
+  ## This does not change normal sampling frequency.
   result = failure
   var current {.cursor.} = failure.budget.parent
   while current != nil:

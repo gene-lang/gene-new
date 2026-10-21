@@ -108,7 +108,7 @@
 
 (fn budgeted [thunk]
   ($runtime/bind_call thunk []
-    ^policy {^max_steps 9223372036854775807 ^max_memory_mb 1024
+    ^policy {^max_memory_mb 1024
              ^timeout_ms 600000}))
 
 (fn main [args] : Nil

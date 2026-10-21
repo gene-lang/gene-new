@@ -62,7 +62,7 @@
           ($assert (== first/origin/turn 7))
           ($assert (!= first/host_build_id "unknown"))
           ($assert (== first/validation/kind "bounded_descriptor"))
-          ($assert (> first/profile/limits/max_steps 0))
+          ($assert (> first/profile/limits/timeout_ms 0))
           (for enabled in [false true false true]
             (set_plugin_enabled runtime/workspace runtime/h "example" enabled))
           ($assert (== (composition_revision runtime/workspace) 5))

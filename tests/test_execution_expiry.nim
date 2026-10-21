@@ -137,14 +137,6 @@ suite "execution expiry":
          resumed/.get]
       """.replace("EXIT", exit)) == "[true false]"
 
-  test "strict steps still prevent additional Gene cleanup":
-    check watched(spin & """
-      (let trace [])
-      (let invoke ($runtime/bind_call (fn []
-        (try (spin) ensure (trace .push 1))) [] ^policy {^max_steps 500}))
-      [(try (invoke) false catch Any ($str/contains? $err/message "max steps")) trace]
-    """) == "[true []]"
-
   test "cleanup can suspend and resume without a fresh allowance":
     check watched(spin & """
       (let trace [])
@@ -298,7 +290,7 @@ suite "execution expiry":
     """) == "true"
 
   test "standalone compilation exposes a normal timeout error at its boundary":
-    let budget = newCompileBudget(-1, -1, 0)
+    let budget = newCompileBudget(-1, 0)
     var message = ""
     try:
       discard compileFormsWithMacros(readAll("(+ 1 2)"),
@@ -307,9 +299,49 @@ suite "execution expiry":
       message = error.msg
     check "compile timeout exceeded" in message
 
+  test "compilation without local limits retains its caller's deadline":
+    var outer = newExecutionBudget(-1, 0)
+    let previous = activeVmBudget
+    var expired = false
+    activeVmBudget = addr outer
+    try:
+      discard compileFormsWithMacros(readAll("(+ 1 2)"),
+        initTable[string, Table[string, MacroDef]](),
+        budget = newCompileBudget(-1, -1))
+    except GeneBudgetExpiry as error:
+      expired = error.budget == outer
+    finally:
+      activeVmBudget = previous
+    check expired
+    check not outer.closed # the caller, not this compiler, owns the unwind
+
+  test "sandbox initialization cannot extend or omit its caller's deadline":
+    let directory = getTempDir() / ("gene_expiry_module_" & $getCurrentProcessId())
+    createDir(directory)
+    let file = directory / "busy.gene"
+    writeFile(file, "(while true nil)")
+    defer:
+      removeFile(file)
+      removeDir(directory)
+    for policy in ["{}", "{^timeout_ms 2000 ^max_memory_mb 128}"]:
+      check watched("""
+        (let caught ($cell false))
+        (let transaction ($runtime/sandbox_transaction))
+        (let invoke ($runtime/bind_call (fn []
+          (try (transaction .prepare {^dir DIRECTORY ^entry "busy.gene"
+            ^grants [] ^shared [] ^policy POLICY})
+            catch Any (caught .set true))) [] ^policy {^timeout_ms 100}))
+        (let start ($os/monotonic_ms))
+        (let expired (try (invoke) false catch Any
+          ($str/contains? $err/message "timeout")))
+        transaction/.discard
+        [expired caught/.get (< (- ($os/monotonic_ms) start) 800)]
+      """.replace("DIRECTORY", directory.replace('\\', '/').escape())
+          .replace("POLICY", policy)) == "[true false true]"
+
   test "zero timeout and a retained expired budget never execute normal code":
     let scope = newGlobalScope()
-    let budget = newExecutionBudget(-1, -1, 0)
+    let budget = newExecutionBudget(-1, 0)
     scope.evalBudget = budget
     let code = compileSource("(panic \"body ran\")")
     for attempt in 0 .. 1:
@@ -322,7 +354,7 @@ suite "execution expiry":
       check budget.closed
 
   test "cleanup caps are fixed, shared, and saturate instead of overflowing":
-    let longTimeout = newExecutionBudget(-1, -1, 2000)
+    let longTimeout = newExecutionBudget(-1, 2000)
     let before = getMonoTime()
     discard markBudgetExpiry(longTimeout, longTimeout, false)
     check (longTimeout.cleanup.deadline - before).inMilliseconds in 990'i64 .. 1100'i64
@@ -332,7 +364,7 @@ suite "execution expiry":
     check longTimeout.cleanup == shared
     check shared.deadline == originalDeadline
 
-    let memory = newExecutionBudget(-1, 1, -1)
+    let memory = newExecutionBudget(1, -1)
     let baseline = memory.memoryBaseline
     discard markBudgetExpiry(memory, memory, true)
     check memory.memoryBaseline == baseline
@@ -340,12 +372,12 @@ suite "execution expiry":
     discard markBudgetExpiry(memory, memory, true)
     check memory.memoryLimitBytes == 2 * 1024 * 1024
 
-    let huge = EvalBudget(remaining: high(int64), hasMemoryLimit: true,
+    let huge = EvalBudget(hasMemoryLimit: true,
                          memoryLimitBytes: high(int64), memoryBaseline: 0)
     discard markBudgetExpiry(huge, huge, true)
     check huge.memoryLimitBytes == high(int64)
 
-    let overshot = EvalBudget(remaining: high(int64), hasMemoryLimit: true,
+    let overshot = EvalBudget(hasMemoryLimit: true,
                              memoryLimitBytes: 1, memoryBaseline: 0)
     let failure = markBudgetExpiry(overshot, overshot, true)
     check failure.skipCleanup

@@ -31,8 +31,7 @@
   (let limits (?? config/response_budget {^timeout_ms 600000 ^max_memory_mb 1024}))
   (open_execution_scope "response"
     {^timeout_ms (?? limits/timeout_ms 600000)
-     ^max_memory_mb (?? limits/max_memory_mb 1024)
-     ^max_steps 9223372036854775807} context))
+     ^max_memory_mb (?? limits/max_memory_mb 1024)} context))
 
 (fn operator_forms [forms]
   (rewrite_prompt_calls forms))

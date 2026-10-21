@@ -604,7 +604,7 @@ suite "AtomicArc generation retirement qualification":
       let directory = getCurrentDir() / "tests/profiles/native-app/lifetime/plugin"
       let options = "{^dir " & newStr(directory).print() &
         " ^entry \"simple.gene\" ^grants [] ^shared [] ^label \"atomic\" " &
-        "^policy {^max_steps 1000 ^max_memory_mb 16 ^timeout_ms 1000}}"
+        "^policy {^max_memory_mb 16 ^timeout_ms 1000}}"
       let source = "(let tx ($runtime/sandbox_transaction)) " &
         "(let generation (tx .prepare " & options & ")) " &
         "(let candidate (generation .module)) ($assert (== candidate/answer 42)) " &
@@ -627,7 +627,7 @@ suite "AtomicArc generation retirement qualification":
       proc options(entry: string): string =
         "{^dir " & newStr(directory).print() & " ^entry " & newStr(entry).print() &
         " ^grants [] ^shared [] ^label \"atomic-types\" " &
-        "^policy {^max_steps 1000 ^max_memory_mb 16 ^timeout_ms 1000}}"
+        "^policy {^max_memory_mb 16 ^timeout_ms 1000}}"
       let good = options("private_type.gene")
       let failed = options("failing_type.gene")
       let forms = [
@@ -660,7 +660,7 @@ suite "AtomicArc generation retirement qualification":
       let scope = newGlobalScope()
       let options = "{^dir " & newStr(directory).print() &
         " ^entry \"private_type.gene\" ^grants [] ^shared [] ^label \"kept\" " &
-        "^policy {^max_steps 1000 ^max_memory_mb 16 ^timeout_ms 1000}}"
+        "^policy {^max_memory_mb 16 ^timeout_ms 1000}}"
       discard run(compileSource("(var saved nil) (let tx ($runtime/sandbox_transaction)) " &
         "(let g (tx .prepare " & options & ")) " &
         "(var candidate (g .module)) (set saved candidate/item) (set candidate nil) " &
@@ -678,7 +678,7 @@ suite "AtomicArc generation retirement qualification":
       let directory = getCurrentDir() / "tests/profiles/native-app/lifetime/plugin"
       let options = "{^dir " & newStr(directory).print() &
         " ^entry \"plugin.gene\" ^grants [] ^shared [] ^label \"published\" " &
-        "^policy {^max_steps 1000 ^max_memory_mb 16 ^timeout_ms 1000}}"
+        "^policy {^max_memory_mb 16 ^timeout_ms 1000}}"
       let source = "(let tx ($runtime/sandbox_transaction)) " &
         "(let g (tx .prepare " & options & ")) (tx .commit) (g .release) nil"
       let before = liveManaged

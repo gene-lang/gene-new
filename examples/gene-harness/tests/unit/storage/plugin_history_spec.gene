@@ -34,7 +34,7 @@
     ^module_digest $"sha256:module-${n}"
     ^closure [$"sha256:module-${n}" "sha256:dependency"]
     ^interfaces {^plugin "test:1"}
-    ^limits {^max_steps 1000}
+    ^limits {^timeout_ms 1000}
     ^!disabled})
 
 (describe

@@ -137,25 +137,25 @@
     ($assert (== ($head outcome) TaskOutcome/panic))
     (assert_equal ($size entries) 0))
 
-  (it "cannot strand ownership at instruction-budget boundaries" []
+  (it "cannot strand ownership when a deadline expires before or inside a gate" []
     (let gate ($sync/gate))
     (let entries {})
-    (repeat steps in 160
-      (let limited ($runtime/bind_call ^policy {^max_steps (+ steps 1)}
+    (for timeout in [0 10 20]
+      (let limited ($runtime/bind_call ^policy {^timeout_ms timeout}
         (fn [] ($sync/track entries "call" (fn []
-          (gate (fn [] (repeat 10 nil) 42))))) []))
+          (gate (fn [] (while true nil)))))) []))
       (let task (spawn ^lane root (limited)))
       task/.join
       (assert_equal ($size entries) 0)
       (assert_equal (gate (fn [] 99)) 99)))
 
-  (it "releases a gate and registration when the instruction budget expires" []
+  (it "releases a gate and registration when the deadline expires" []
     (let gate ($sync/gate))
     (let entries {})
     (let entered ($cell false))
-    (let limited ($runtime/bind_call ^policy {^max_steps 1000}
+    (let limited ($runtime/bind_call ^policy {^timeout_ms 50}
       (fn [] ($sync/track entries "call" (fn []
-        (gate (fn [] (entered .set true) (repeat 10000 nil)))))) []))
+        (gate (fn [] (entered .set true) (while true nil)))))) []))
     (let owner (spawn ^lane root (limited)))
     (let outcome owner/.join)
     ($assert entered/.get)

@@ -406,7 +406,7 @@ proc evaluateMacroBody(definition: MacroDef, bindings: Table[string, Value],
     var invocationBudget: EvalBudget
     if budget != nil:
       if budget.runtimeBudget == nil:
-        budget.runtimeBudget = EvalBudget(remaining: budget.remaining,
+        budget.runtimeBudget = EvalBudget(
           parent: parentBudget, hasDeadline: budget.hasDeadline,
           deadline: budget.deadline, hasMemoryLimit: budget.hasMemoryLimit,
           memoryBaseline: budget.memoryBaseline,
@@ -448,8 +448,6 @@ proc evaluateMacroBody(definition: MacroDef, bindings: Table[string, Value],
       finally:
         lexical.evalBudget = savedLexicalBudget
     finally:
-      if budget != nil and invocationBudget != nil:
-        budget.remaining = invocationBudget.remaining
       instance.scope.evalBudget = savedBudget
       state.activeBudget = previousBudget
 

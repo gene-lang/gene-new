@@ -167,7 +167,7 @@ Stored descriptor evaluation has its own limits (normally two seconds and
 budget, just like built-ins; plugin inspection shows descriptor and effective
 callback limits separately. `host/.PluginHost:execution_budget` returns an
 immutable snapshot of response/callback deadlines, the effective deadline,
-remaining time/steps and memory budget. Deadlines use `$os/monotonic_ms` and
+remaining time and memory budget. Deadlines use `$os/monotonic_ms` and
 cannot be extended by editing task context. Callback timers also cancel
 waiting work when its deadline expires.
 

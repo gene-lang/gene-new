@@ -5187,16 +5187,12 @@ proc biRuntimeExecutionBudget(args: openArray[Value]): Value {.nimcall.} =
     raise newException(GeneError, "runtime/execution_budget expects no arguments")
   let now = getMonoTime()
   var budget = if activeVmBudget == nil: nil else: activeVmBudget[]
-  var seen = false
-  var remainingSteps = high(int64)
   var hasDeadline = false
   var deadline: MonoTime
   var hasMemory = false
   var remainingMemory = high(int64)
   var memoryLimit = high(int64)
   while budget != nil:
-    seen = true
-    remainingSteps = min(remainingSteps, budget.remaining)
     if budget.hasDeadline and (not hasDeadline or budget.deadline < deadline):
       hasDeadline = true
       deadline = budget.deadline
@@ -5212,7 +5208,6 @@ proc biRuntimeExecutionBudget(args: openArray[Value]): Value {.nimcall.} =
     newInt(deadline.ticks div 1_000_000) else: NIL
   entries["remaining_ms"] = if hasDeadline:
     newInt(max(0'i64, (deadline - now).inMilliseconds)) else: NIL
-  entries["remaining_steps"] = if seen: newInt(max(0'i64, remainingSteps)) else: NIL
   entries["memory_limit_bytes"] = if hasMemory: newInt(memoryLimit) else: NIL
   entries["memory_remaining_bytes"] = if hasMemory:
     newInt(max(0'i64, remainingMemory)) else: NIL
@@ -6098,7 +6093,7 @@ proc evalPolicyProp(policy: Value, name: string): Value =
 
 proc validateEvalPolicyPropName(name: string) =
   case name
-  of "max_steps", "max_memory_mb", "timeout_ms",
+  of "max_memory_mb", "timeout_ms",
      "allow_ffi", "allow_native_compile":
     discard
   else:
@@ -6136,35 +6131,29 @@ proc validateEvalPolicyFlag(policy: Value, name: string) =
     raise newException(GeneError,
       "env ^policy ^" & name & " true is not supported yet")
 
-proc validateEvalPolicy(policy: Value): tuple[maxSteps, maxMemoryMb,
-                                              timeoutMs: int64] =
+proc validateEvalPolicy(policy: Value): tuple[maxMemoryMb, timeoutMs: int64] =
   if policy.kind in {vkNil, vkVoid}:
-    return (-1'i64, -1'i64, -1'i64)
+    return (-1'i64, -1'i64)
   if policy.kind notin {vkMap, vkNode}:
     raise newException(GeneError, "env ^policy must be a map or node")
   validateEvalPolicyPropNames(policy)
   validateEvalPolicyFlag(policy, "allow_ffi")
   validateEvalPolicyFlag(policy, "allow_native_compile")
-  result.maxSteps = evalPolicyNonNegativeInt(policy, "max_steps")
   result.maxMemoryMb = evalPolicyNonNegativeInt(policy, "max_memory_mb")
   result.timeoutMs = evalPolicyNonNegativeInt(policy, "timeout_ms")
 
-proc evalPolicyMaxSteps(policy: Value): int64 =
-  validateEvalPolicy(policy).maxSteps
-
-proc evalBudgetForLimits(maxSteps, maxMemoryMb, timeoutMs: int64,
+proc evalBudgetForLimits(maxMemoryMb, timeoutMs: int64,
                          parent: EvalBudget): EvalBudget
 
 proc evalBudgetForPolicy(policy: Value, parent: EvalBudget): EvalBudget =
   let limits = validateEvalPolicy(policy)
-  evalBudgetForLimits(limits.maxSteps, limits.maxMemoryMb, limits.timeoutMs,
-                      parent)
+  evalBudgetForLimits(limits.maxMemoryMb, limits.timeoutMs, parent)
 
-proc evalBudgetForLimits(maxSteps, maxMemoryMb, timeoutMs: int64,
+proc evalBudgetForLimits(maxMemoryMb, timeoutMs: int64,
                          parent: EvalBudget): EvalBudget =
   if maxMemoryMb > high(int64) div (1024 * 1024):
     raise newException(GeneError, "env ^policy ^max_memory_mb is too large")
-  newExecutionBudget(maxSteps, maxMemoryMb, timeoutMs, parent)
+  newExecutionBudget(maxMemoryMb, timeoutMs, parent)
 
 proc biEnvExtend(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2:
@@ -10806,11 +10795,11 @@ proc applyCallBudget(proto: FunctionProto, boundScope: var Scope,
   if entersPolicy:
     let policy = calleeRoot.moduleExecutionPolicy
     boundScope.evalBudget = evalBudgetForLimits(
-      policy.maxSteps, policy.maxMemoryMb, policy.timeoutMs,
+      policy.maxMemoryMb, policy.timeoutMs,
       callerBudget)
   if boundPolicy != nil:
     boundScope.evalBudget = evalBudgetForLimits(
-      boundPolicy.maxSteps, boundPolicy.maxMemoryMb, boundPolicy.timeoutMs,
+      boundPolicy.maxMemoryMb, boundPolicy.timeoutMs,
       boundScope.evalBudget)
 
 proc canBypassCallBudget(proto: FunctionProto, calleeScope,
@@ -11150,7 +11139,7 @@ proc biRuntimeBindCall(args: openArray[Value],
   proto.scopelessChunk = nil
   proto.needsCallScope = true
   proto.boundExecutionPolicy = ModuleExecutionPolicy(
-    maxSteps: limits.maxSteps, maxMemoryMb: limits.maxMemoryMb,
+    maxMemoryMb: limits.maxMemoryMb,
     timeoutMs: limits.timeoutMs)
   result = newFunction("bound_call", @[], proto, bound)
   rejectCallerEnvEscape("runtime/bind_call result", result)
@@ -11164,14 +11153,13 @@ proc biRuntimeConfigureModule(args: openArray[Value],
   let root = args[0].moduleRootNamespace.nsScope
   if root.moduleExecutionPolicy != nil:
     let existing = root.moduleExecutionPolicy
-    if existing.maxSteps != limits.maxSteps or
-        existing.maxMemoryMb != limits.maxMemoryMb or
+    if existing.maxMemoryMb != limits.maxMemoryMb or
         existing.timeoutMs != limits.timeoutMs:
       raise newException(GeneError,
         "sandbox module execution policy is immutable")
     return args[0]
   root.moduleExecutionPolicy = ModuleExecutionPolicy(
-    maxSteps: limits.maxSteps, maxMemoryMb: limits.maxMemoryMb,
+    maxMemoryMb: limits.maxMemoryMb,
     timeoutMs: limits.timeoutMs)
   args[0]
 
@@ -16181,10 +16169,9 @@ proc incrementalReplScopeForEnv*(env: Value, app: Application = nil): Scope =
   result.implOverlayRoot = true
   result.evalBudget = evalBudgetForPolicy(env.envPolicy, nil)
   if result.evalBudget == nil:
-    # The VM interrupt flag is polled only on the budgeted-dispatch path, so
-    # an incremental REPL session must always carry a budget or its evals
-    # cannot be cancelled (§C7 liveness).
-    result.evalBudget = EvalBudget(remaining: high(int64))
+    # An interrupt-only control context enables polling without imposing a
+    # deadline or memory limit on an incremental REPL (§C7 liveness).
+    result.evalBudget = EvalBudget()
 
 proc materializeCallerEvalParent(callerEnv: Value): Scope =
   ## Materialize a read-only overlay for one eval from the live borrowed view.
@@ -17091,7 +17078,7 @@ proc installEnvMacros(target: Scope, env: Value) =
 proc runtimeMacroBudget(scope: Scope): CompileBudget =
   if scope.evalBudget != nil:
     let budget = scope.evalBudget
-    result = CompileBudget(remaining: budget.remaining, runtimeBudget: budget,
+    result = CompileBudget(runtimeBudget: budget,
       hasDeadline: budget.hasDeadline, deadline: budget.deadline,
       hasMemoryLimit: budget.hasMemoryLimit, memoryBaseline: budget.memoryBaseline,
       memoryLimitBytes: budget.memoryLimitBytes)
@@ -17659,7 +17646,7 @@ template checkEvalInterrupt() =
       volatileStore(addr gVmInterrupt, false)
       raise newException(GeneError, "interrupted")
 
-proc consumeEvalStep(budget: EvalBudget) =
+proc pollEvalBudgetChain(budget: EvalBudget) =
   checkEvalInterrupt()
   # The caller owns the chain for the whole walk, and the walk only reads its
   # links. An owning variable would retain and release every budget on every
@@ -17667,34 +17654,27 @@ proc consumeEvalStep(budget: EvalBudget) =
   # possible cycle root.
   var current {.cursor.} = budget
   while current != nil:
-    if current.remaining <= 0:
-      raise newException(GeneError, "eval max steps exceeded")
     if current.hasDeadline or current.hasMemoryLimit:
       if current.sampleCountdown <= 0:
-        # Time/allocator queries are much more expensive than the integer step
-        # decrement. Sample on entry and then every 64 dispatches: bounded eval
-        # remains responsive without putting two host calls on every VM opcode.
+        # Sample time and allocator state on entry and then periodically,
+        # keeping host queries off ordinary dispatches.
         current.sampleCountdown = 64
         checkExecutionBudgetSample(current, budget)
       else:
         dec current.sampleCountdown
-    dec current.remaining
     current = current.parent
 
-template chargeEvalStep(budget: EvalBudget) =
-  ## `consumeEvalStep` for the common dispatch: a single budget with steps
-  ## left and no deadline or memory sample due. It performs the same checks
-  ## and updates in the same order; every other case takes the full walk.
-  let charged {.cursor.} = budget
-  if charged.parent == nil and charged.remaining > 0 and
-      (charged.sampleCountdown > 0 or
-        not (charged.hasDeadline or charged.hasMemoryLimit)):
+template pollEvalBudget(budget: EvalBudget) =
+  ## A single policy usually only advances its sampling countdown. The full
+  ## walk handles due samples and intersecting enclosing policies.
+  let polled {.cursor.} = budget
+  if polled.parent == nil and (polled.sampleCountdown > 0 or
+      not (polled.hasDeadline or polled.hasMemoryLimit)):
     checkEvalInterrupt()
-    if charged.hasDeadline or charged.hasMemoryLimit:
-      dec charged.sampleCountdown
-    dec charged.remaining
+    if polled.hasDeadline or polled.hasMemoryLimit:
+      dec polled.sampleCountdown
   else:
-    consumeEvalStep(charged)
+    pollEvalBudgetChain(polled)
 
 type WeakLiveFrames = object
   frames: ptr seq[Frame]
@@ -17896,12 +17876,6 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           not budgetContains(budget, cast[ref GeneBudgetExpiry](signal).budget):
         cleanups.delete(at)
 
-  proc depletedSteps(budget: EvalBudget): bool =
-    var current {.cursor.} = budget
-    while current != nil:
-      if current.remaining <= 0: return true
-      current = current.parent
-
   template prepareBudgetFailure(failure: ref GeneBudgetExpiry) =
     if not failure.budget.expiryError.hasErrVal:
       failure.budget.expiryError = normalizeFailure(failure.budget.expiryError, scope)
@@ -17912,17 +17886,15 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       appendVmTrace(failure.budget.expiryError, curFnName, loc, frames,
                     tailTraceFrames, tailTraceSummaries)
 
-  template chargeInPlace(first, count: int) =
-    ## Charges the `count` instructions from `first` that a fused handler runs
-    ## in place, as the dispatch header would charge each one before running
-    ## it. `ip` names each while it is charged, so a budget that runs out
-    ## reports from the same instruction. No fused sequence includes a point
-    ## where a scheduler slice may end, so only the counters move.
+  template advanceInPlace(first, count: int) =
+    ## Preserve sampling and scheduler cadence through a fused sequence.
+    ## No fused sequence contains a scheduler switch point; `ip` still names
+    ## the original instruction if a sampled limit expires.
     if instructionBudget > 0 or evalBudget != nil:
-      for charged in first ..< first + count:
-        ip = charged
+      for at in first ..< first + count:
+        ip = at
         if instructionBudget > 0: dec remainingBudget
-        if evalBudget != nil: chargeEvalStep(evalBudget)
+        if evalBudget != nil: pollEvalBudget(evalBudget)
 
   if fiber != nil and fiber.started:
     # Resuming a parked fiber: restore the full continuation captured at suspend.
@@ -19219,7 +19191,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             return RunStop(kind: rskPause, value: NIL)
           dec remainingBudget
         if evalBudget != nil:
-          chargeEvalStep(evalBudget)
+          pollEvalBudget(evalBudget)
         let inst = addr chunk.instructions[ip]
         let op = inst[].op
         inc ip
@@ -19253,9 +19225,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               let target = materializedModuleRefValue(scope, scope.lookup("gene"))
               spush applySelector(selector, target, scope)
           else:
-            # opLoadName has already been charged. Resolve it before charging
-            # the original push-constant and selector instructions, retaining
-            # both failure order and the original scheduler/evaluation cost.
+            # opLoadName has already passed its dispatch polls. Resolve it
+            # before advancing the original push-constant and selector polls,
+            # retaining failure order and scheduler/sampling cadence.
             let target =
               when dispatchCacheEnabled:
                 materializedModuleRefValue(scope,
@@ -19264,7 +19236,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 materializedModuleRefValue(scope, scope.lookup("gene"))
             for _ in 0 ..< 2:
               if instructionBudget > 0: dec remainingBudget
-              if evalBudget != nil: chargeEvalStep(evalBudget)
+              if evalBudget != nil: pollEvalBudget(evalBudget)
             when dispatchCacheEnabled:
               spush selectStdlibMember(chunk, chunk.instructions.len + inst[].depth,
                 target, selector, scope)
@@ -19282,7 +19254,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         of opCompareLocalsJumpIfFalse:
           # The right operand's opLoadLocal, the comparison and the jump
           # follow at ip. Two defined small-Int locals are compared here, the
-          # three charged in order; anything else runs this as the opLoadLocal
+          # three polled in order; anything else runs this as the opLoadLocal
           # it replaced and the rest one instruction at a time.
           let left = inst[].intArg
           let right = chunk.instructions[ip].intArg
@@ -19304,7 +19276,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 raise newException(GeneError,
                   "internal: fused comparison without a comparison")
             let next = ip
-            chargeInPlace(next, 3)
+            advanceInPlace(next, 3)
             ip = if holds: next + 3 else: chunk.instructions[next + 2].intArg
           elif left >= 0 and left < scope.slots.len and scope.slotDefined(left):
             spush materializedModuleRefValue(scope, scope.slots[left])
@@ -19314,7 +19286,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         of opLoadLocalField:
           # The path's opPushConst and the opApplySelectorTop follow at ip. A
           # one-key read of a Map, or of a prop an instance has, is made here
-          # from the slot, the two charged in order; anything else runs this as
+          # from the slot, the two polled in order; anything else runs this as
           # the opLoadLocal it replaced. With no module reference pending, the
           # slot holds exactly what opLoadLocal would push.
           let slot = inst[].intArg
@@ -19336,7 +19308,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               found = field.kind != vkVoid
             if found:
               let next = ip
-              chargeInPlace(next, 2)
+              advanceInPlace(next, 2)
               spush materializedModuleRefValue(scope, field)
               ip = next + 2
               continue
@@ -19406,7 +19378,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             raise newException(GeneError, "VM stack underflow in set")
           scope.assignSlot(inst[].intArg, inst[].name, stack[sp - 1])
           # The opPop at ip, run here.
-          chargeInPlace(ip, 1)
+          advanceInPlace(ip, 1)
           discard spop()
           inc ip
         of opSetOuterLocal:
@@ -19562,10 +19534,10 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             # `xs/%i`: a one-segment selector built only for the next
             # instruction to apply. For a List or Map target and a plain key
             # that application is exactly staticLookup, so the Path node need
-            # never exist. The skipped instruction is still charged, and ip
-            # moves past it before anything can raise, so budgets and error
-            # positions match the two-instruction form. Other targets (a
-            # stream can suspend and retry the apply) take that form.
+            # never exist. Sampling and scheduler counters still advance for
+            # the skipped instruction, and ip moves past it before lookup can
+            # raise. Other targets, including streams that can suspend and
+            # retry the apply, take the two-instruction form.
             let segment = stack[sp - 1]
             let targetKind = stack[sp - 2].kind
             if (targetKind == vkList or targetKind == vkMap) and
@@ -19577,7 +19549,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               if instructionBudget > 0:
                 dec remainingBudget
               if evalBudget != nil:
-                chargeEvalStep(evalBudget)
+                pollEvalBudget(evalBudget)
               inc ip
               let argsStart = sp - 2
               let value = materializedModuleRefValue(
@@ -19754,7 +19726,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             raise newException(GeneError, "env ^imports must be a list")
           if module.kind != vkNil and module.kind notin {vkModule, vkNamespace}:
             raise newException(GeneError, "env ^module must be a Module or Namespace")
-          discard evalPolicyMaxSteps(policy)
+          discard validateEvalPolicy(policy)
           var imports: seq[Value]
           let app = scope.application()
           for item in importsValue.listItems:
@@ -21699,7 +21671,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                   raise newException(GeneError,
                     "internal: fused comparison without a comparison")
               sp = top - 1
-              chargeInPlace(ip, 1)
+              advanceInPlace(ip, 1)
               ip = if holds: ip + 1 else: chunk.instructions[ip].intArg
               continue
             case kind
@@ -22621,8 +22593,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           if signal of GeneStreamClose:
             signal = sampled
             prepareBudgetFailure(sampled)
-        let skipCleanup = depletedSteps(evalBudget) or
-          (cleanup != nil and cleanup.truncated.len > 0) or
+        let skipCleanup = (cleanup != nil and cleanup.truncated.len > 0) or
           (signal of GeneBudgetExpiry and cast[ref GeneBudgetExpiry](signal).skipCleanup)
         if curFrameKind == fkForBody and
             not (handlers.len > 0 and handlers[^1].framesLen == frames.len):
@@ -22891,9 +22862,8 @@ proc runReplSession*(scope: Scope,
       act.sa_flags = SA_RESTART
       sigintInstalled = sigaction(SIGINT, act, oldSigint) == 0
       if sigintInstalled and scope.evalBudget == nil:
-        # The interrupt flag is polled on the budgeted-dispatch path only, so
-        # give the session an effectively unlimited budget to activate it.
-        scope.evalBudget = EvalBudget(remaining: high(int64))
+        # Enable interrupt polling without imposing an execution limit.
+        scope.evalBudget = EvalBudget()
         installedBudget = true
 
   template readOneLine(dest: var string): bool =
@@ -33184,10 +33154,9 @@ proc loadModuleValue(app: Application, absPath: string): Value =
     if activeSandboxPolicy != nil:
       modScope.moduleExecutionPolicy = activeSandboxPolicy
       modScope.evalBudget = evalBudgetForLimits(
-        activeSandboxPolicy.maxSteps,
         activeSandboxPolicy.maxMemoryMb,
         activeSandboxPolicy.timeoutMs,
-        nil)
+        if activeVmBudget != nil: activeVmBudget[] else: nil)
   let savedDir = app.currentModuleDir
   let savedPkg = app.currentPackage
   app.currentModuleDir = app.moduleSourceDir(absPath)
@@ -33199,7 +33168,7 @@ proc loadModuleValue(app: Application, absPath: string): Value =
     if inSandbox and activeSandboxGenerationId != 0:
       rejectSandboxNativeDeclarations(artifact.chunk)
     if modScope.evalBudget != nil:
-      consumeEvalStep(modScope.evalBudget)
+      pollEvalBudgetChain(modScope.evalBudget)
     discard run(artifact.chunk, modScope)
     activateStagedImpls(modScope)
   finally:
@@ -34077,8 +34046,7 @@ proc biSandboxTransactionPrepare(args: openArray[Value],
     raise newException(GeneError,
       "SandboxTransaction/prepare requires ^policy")
   let limits = validateEvalPolicy(policyValue)
-  let policy = ModuleExecutionPolicy(maxSteps: limits.maxSteps,
-                                     maxMemoryMb: limits.maxMemoryMb,
+  let policy = ModuleExecutionPolicy(maxMemoryMb: limits.maxMemoryMb,
                                      timeoutMs: limits.timeoutMs)
   let app = transaction.application
   let sandboxDir =
@@ -34122,7 +34090,7 @@ proc biSandboxTransactionPrepare(args: openArray[Value],
     activeSandboxGenerationId = generationId
     activeSandboxPolicy = policy
     activeSandboxCompileBudget = newCompileBudget(
-      limits.maxSteps, limits.maxMemoryMb, limits.timeoutMs)
+      limits.maxMemoryMb, limits.timeoutMs)
     module = app.loadSandboxedModule(dir, entry, grants, shared, isolationKey)
     nextState = captureSandboxAppState(app)
     for key, value in nextState.moduleCache:

@@ -20,13 +20,13 @@
 # state or a contribution surface.
 (type DescriptorContext ^props {^module_id Str ^core_interface Str})
 
-(type ExecutionLimits ^props {^max_steps Int ^max_memory_mb Int ^timeout_ms Int})
+(type ExecutionLimits ^props {^max_memory_mb Int ^timeout_ms Int})
 
 (fn default_execution_limits [] : ExecutionLimits
-  (ExecutionLimits ^max_steps 100000 ^max_memory_mb 64 ^timeout_ms 2000))
+  (ExecutionLimits ^max_memory_mb 64 ^timeout_ms 2000))
 
 (fn response_execution_limits [] : ExecutionLimits
-  (ExecutionLimits ^max_steps 9223372036854775807 ^max_memory_mb 1024 ^timeout_ms 600000))
+  (ExecutionLimits ^max_memory_mb 1024 ^timeout_ms 600000))
 
 (type ImageError ^props {^code Str ^message Str ^status Int? ^usage Any? ^diagnostic Str?} ^impl [Error])
 (impl Error for ImageError)

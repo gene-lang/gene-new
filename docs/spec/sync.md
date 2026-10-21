@@ -61,5 +61,5 @@ scheduler safepoints or core language semantics are changed.
 
 Qualification is in `tests/fixtures/sync_gate.gene`, including reentry, errors,
 owner and waiter cancellation, release/cancellation races, distinct actor
-handler identities, panic, nested ownership, and exhausted instruction budgets.
+handler identities, panic, nested ownership, and expired deadlines.
 These fixtures run under the schedule-variation matrix.

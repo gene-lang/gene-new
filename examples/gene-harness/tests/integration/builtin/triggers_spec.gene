@@ -69,7 +69,7 @@
           "(Outcome ^^done ^reply \"trigger fired\")")))
         # A host may stay open far longer than any one plugin invocation.
         (let activated (put_cordis_plugin ^^replace service/runtime/h (trigger_plugin)
-          {^^host ^limits (ExecutionLimits ^max_steps 9223372036854775807
+          {^^host ^limits (ExecutionLimits
             ^max_memory_mb 1024 ^timeout_ms 5000)}))
         (let manager service/runtime/triggers)
         (try

@@ -330,7 +330,7 @@ without a policy and invoke each input through `$runtime/bind_call ^policy`.
 The application owns any task scope used to join work spawned by an input.
 
 `($runtime/execution_budget)` returns an immutable snapshot of the enforced
-budget chain: `now_ms`, `deadline_ms`, `remaining_ms`, `remaining_steps`,
+budget chain: `now_ms`, `deadline_ms`, `remaining_ms`,
 `memory_limit_bytes` and `memory_remaining_bytes`. Deadlines share the
 `$os/monotonic_ms` clock; a missing limit is `nil`. Nested policies report the
 earliest deadline and tightest remaining limits. The query reads VM state,

@@ -291,7 +291,6 @@
   (let remaining (- ($math/min deadline (?? budget/effective_deadline_ms deadline)) ($os/monotonic_ms)))
   (if (<= remaining 0) (return {^ok false ^code "timeout"}))
   (let limits (ExecutionLimits ^timeout_ms remaining
-    ^max_steps ($math/max 1 (?? budget/remaining_steps 9223372036854775807))
     ^max_memory_mb ($math/max 1 (/ (?? budget/memory_remaining_bytes 1073741824) 1048576))))
   (let outcome (supervised_call operation [] limits ^deadline_ms deadline))
   (match outcome ^!exhaustive

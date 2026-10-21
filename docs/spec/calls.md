@@ -298,7 +298,7 @@ existing callable with a bound argument shape:
 ```gene
 (var invoke
   ($runtime/bind_call handler [context payload]
-    ^policy {^max_steps 100000 ^max_memory_mb 64 ^timeout_ms 2000}))
+    ^policy {^max_memory_mb 64 ^timeout_ms 2000}))
 (invoke)
 ```
 
@@ -314,13 +314,13 @@ bytecode calls, preserving suspension, error types and fields, panic behavior,
 and cancellation cleanup. A caller can spawn the resulting function and inspect
 `TaskOutcome` through `join`, without compiling a Gene wrapper via `eval`.
 
-Each invocation receives fresh step, memory, and elapsed-time limits. Time
+Each invocation receives fresh memory and elapsed-time limits. Time
 starts when execution enters the binding. Nested calls consume the caller's
 budget as well as any narrower bound/module budget; scope-free and tail calls
 must not drop those limits or leave a depleted budget on a lexical scope.
 Enforcement uses the VM's existing dispatch and safe-point checks, including
 its sampled memory/time checks. This operation does not isolate native code.
-The policy accepts the three budget fields above; sandbox loading remains the
+The policy accepts the two limit fields above; sandbox loading remains the
 boundary for feature-admission flags such as `allow_ffi`.
 
 Timeout and memory expiry unwind past the execution controlled by that policy.
@@ -336,8 +336,7 @@ second for a memory-only policy. Nested cleanup, calls, child work and
 suspension share that allowance. An exhausted memory guard temporarily permits
 twice its original allowance against the same allocator baseline; this fixed
 ceiling remains sampled, with a check before cleanup starts. Other applicable
-limits remain enforced. Exact step limits include cleanup and grant no extra
-steps after exhaustion.
+limits remain enforced.
 
 Exhausting the cleanup allowance skips further arbitrary Gene cleanup. The
 original failure carries `^cleanup_truncated true` and `^cleanup_reason

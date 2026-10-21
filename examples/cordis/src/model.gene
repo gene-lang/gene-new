@@ -41,7 +41,7 @@
   (message install [plugin, config] : Any))
 
 (type InvocationLimits
-  ^props {^max_steps Int ^max_memory_mb Int ^timeout_ms Int})
+  ^props {^max_memory_mb Int ^timeout_ms Int})
 
 (type RuntimeOptions
   ^props {^logger Logger?
@@ -124,10 +124,8 @@
 (type RecoveryRequired : CordisError)
 
 (fn invocation_limits
-  [^max_steps max_steps : Int = 100000,
-   ^max_memory_mb max_memory_mb : Int = 64,
+  [^max_memory_mb max_memory_mb : Int = 64,
    ^timeout_ms timeout_ms : Int = 2000] : InvocationLimits
   (InvocationLimits
-    ^max_steps max_steps
     ^max_memory_mb max_memory_mb
     ^timeout_ms timeout_ms))

@@ -1553,7 +1553,7 @@ suite "errors — retained strict assumptions":
     let program = """
       (var tx ($runtime/sandbox_transaction))
       (var generation (tx .prepare {^dir DIR ^entry "plugin.gene" ^grants [] ^shared []
-        ^policy {^max_steps 10000 ^max_memory_mb 16 ^timeout_ms 1000}}))
+        ^policy {^max_memory_mb 16 ^timeout_ms 1000}}))
       (tx .commit)
       (var plugin (generation .module))
       (var held (try (plugin/raise_error) catch Error $err))
@@ -1653,7 +1653,7 @@ suite "errors — retained strict assumptions":
       (var tx ($runtime/sandbox_transaction))
       (var generation (tx .prepare {^dir DIR ^entry "main.gene" ^grants []
         ^shared [CONTRACT]
-        ^policy {^max_steps 10000 ^max_memory_mb 16 ^timeout_ms 1000}}))
+        ^policy {^max_memory_mb 16 ^timeout_ms 1000}}))
       (tx .commit)
       (var plugin (generation .module))
       (var instance (plugin/make))

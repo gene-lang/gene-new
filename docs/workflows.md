@@ -312,7 +312,7 @@ Admitting arbitrary native code does not create an in-process sandbox.
 `gene run` and `gene eval` run with the permissions of the invoking user; Gene
 has no ambient permission system. Namespace exposure and execution policy are
 separate controls: the sandbox loader (`$runtime/load_sandboxed`) exposes only
-the namespaces a module is granted, and `^policy` limits bound steps, memory,
-and time. If embedding untrusted code or plugins, read the
+the namespaces a module is granted, and `^policy` limits bound memory and time.
+If embedding untrusted code or plugins, read the
 [known limits](development.md#status) before treating an Env or a restricted
 namespace as a sandbox.

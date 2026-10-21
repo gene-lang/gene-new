@@ -324,13 +324,12 @@
 (fn require_positive_limits [limits] ^^private
   (if_not (== ($head limits) InvocationLimits)
     (cordis_failure ConfigValidationError "invocation limits must be InvocationLimits"))
-  (if (|| (<= limits/max_steps 0) (<= limits/max_memory_mb 0) (<= limits/timeout_ms 0))
+  (if (|| (<= limits/max_memory_mb 0) (<= limits/timeout_ms 0))
     (cordis_failure ConfigValidationError "invocation limits must be positive"))
   limits)
 
 (fn limits_narrower? [child, parent] : Bool ^^private
   (&&
-    (<= child/max_steps parent/max_steps)
     (<= child/max_memory_mb parent/max_memory_mb)
     (<= child/timeout_ms parent/timeout_ms)))
 
@@ -491,8 +490,7 @@
   # Binding snapshots the call shape and installs per-invocation limits. The
   # resulting ordinary function can suspend on the VM frame stack; Task/join
   # remains the explicit panic and cancellation supervision boundary.
-  (var policy {^max_steps call/limits/max_steps
-               ^max_memory_mb call/limits/max_memory_mb
+  (var policy {^max_memory_mb call/limits/max_memory_mb
                ^timeout_ms call/limits/timeout_ms})
   (var wrapper ($runtime/bind_call call/callable call/args ^policy policy))
   (var task nil)
@@ -2295,13 +2293,13 @@
   (if_not (== ($head value) Map) (cordis_failure CompositionError "entry limits must be a map"))
   (for [name item] in value
     (var key ($to_str name))
-    (if_not (["max_steps" "max_memory_mb" "timeout_ms"] .contains? key)
+    (if_not (["max_memory_mb" "timeout_ms"] .contains? key)
       (cordis_failure CompositionError $"unknown entry limit ^${key}"))
     (if_not (== ($head item) Int)
       (cordis_failure CompositionError $"entry limit ^${key} must be Int")))
   (var parent loader/options/default_limits)
   (var limits
-    (InvocationLimits ^max_steps (manifest_value value "max_steps" parent/max_steps) ^max_memory_mb (manifest_value value "max_memory_mb" parent/max_memory_mb) ^timeout_ms (manifest_value value "timeout_ms" parent/timeout_ms)))
+    (InvocationLimits ^max_memory_mb (manifest_value value "max_memory_mb" parent/max_memory_mb) ^timeout_ms (manifest_value value "timeout_ms" parent/timeout_ms)))
   (narrow_limits limits parent))
 
 (fn resolve_manifest_namespaces [loader, value] ^^private
@@ -2423,8 +2421,6 @@
     "|"
     row/intercept
     "|"
-    row/limits/max_steps
-    ":"
     row/limits/max_memory_mb
     ":"
     row/limits/timeout_ms))
@@ -2445,7 +2441,6 @@
         ^shared loader/options/shared
         ^label row/id
         ^policy {
-                  ^max_steps row/limits/max_steps
                   ^max_memory_mb row/limits/max_memory_mb
                   ^timeout_ms row/limits/timeout_ms}}))
   (var module generation/.module)

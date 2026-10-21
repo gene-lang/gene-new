@@ -90,13 +90,13 @@ suite "native synchronous callback boundary":
       (try (outer) false catch TypeError true)
     """) == "true"
 
-  test "callback execution consumes the enclosing invocation budget":
+  test "callback execution retains the enclosing deadline":
     check callbackEval("""
       (fn work [value]
         (var n 0)
-        (while (< n 10000) (set n (+ n 1)))
+        (while true (set n (+ n 1)))
         true)
-      (let bounded ($runtime/bind_call visit [work] ^policy {^max_steps 200}))
+      (let bounded ($runtime/bind_call visit [work] ^policy {^timeout_ms 20}))
       (try (bounded) false catch Error true)
     """) == "true"
 

@@ -1,4 +1,4 @@
-import gene/[compiler, types, vm, printer]
+import gene/[compiler, execution_limits, types, vm, printer]
 import std/[unittest, os, tempfiles, strutils]
 
 proc evalBoundCall(source: string): Value =
@@ -9,7 +9,7 @@ suite "runtime bound calls":
     let scope = newGlobalScope()
     discard run(compileSource("(let session ($repl/open (env))) " &
       "($repl/eval session \"(var retained 42)\")"), scope)
-    scope.evalBudget = EvalBudget(remaining: 500)
+    scope.evalBudget = newExecutionBudget(-1, 20)
     expect GeneError:
       discard run(compileSource("($repl/eval session \"(while true nil)\")"), scope)
     scope.evalBudget = nil
@@ -33,7 +33,7 @@ suite "runtime bound calls":
 
   test "a returned binding keeps its target's lexical capture alive":
     check evalBoundCall("(fn make [x] " &
-      " ($runtime/bind_call (fn [y] (+ x y)) [2] ^policy {^max_steps 100})) " &
+      " ($runtime/bind_call (fn [y] (+ x y)) [2] ^policy {^timeout_ms 1000})) " &
       "(var f (make 40)) (f)").print() == "42"
 
   test "named argument spills and constructor spreads preserve all fields":
@@ -53,20 +53,22 @@ suite "runtime bound calls":
       "  (impl Callable (message apply [call] : Any (+ self/n call/body/0)))) " &
       "(var f ($runtime/bind_call (Add ^n 5) [2])) (f)").print() == "7"
 
-  test "each invocation receives a fresh instruction budget":
-    check evalBoundCall("(fn value [] 7) " &
-      "(var f ($runtime/bind_call value [] ^policy {^max_steps 20})) " &
-      "[(f) (f) (f) (f) (f)]").print() == "[7 7 7 7 7]"
+  test "each invocation receives a fresh deadline after expiry":
+    check evalBoundCall("(let busy ($cell true)) " &
+      "(fn value [] (if busy/.get (while true nil) 7)) " &
+      "(let f ($runtime/bind_call value [] ^policy {^timeout_ms 20})) " &
+      "(let stopped (try (f) false catch Any true)) " &
+      "(busy .set false) ($sleep 30) [stopped (f) (f)]").print() == "[true 7 7]"
 
-  test "instruction limits stop the target and ordinary execution resumes":
-    check evalBoundCall("(fn spin [] (repeat 10000 nil)) " &
-      "(var f ($runtime/bind_call spin [] ^policy {^max_steps 40})) " &
+  test "deadlines stop the target and ordinary execution resumes":
+    check evalBoundCall("(fn spin [] (while true nil)) " &
+      "(var f ($runtime/bind_call spin [] ^policy {^timeout_ms 20})) " &
       "[(try (f) false catch Any true) (+ 2 3)]").print() == "[true 5]"
 
   test "message application retains the dynamic caller's budget":
-    check evalBoundCall("(type Worker (message work [] (repeat 10000 nil))) " &
+    check evalBoundCall("(type Worker (message work [] (while true nil))) " &
       "(var f ($runtime/bind_call Self:work [(Worker)] " &
-      " ^policy {^max_steps 40})) (try (f) false catch Any true)").print() == "true"
+      " ^policy {^timeout_ms 20})) (try (f) false catch Any true)").print() == "true"
 
   test "each binding retains its own scoped Callable implementation":
     check evalBoundCall("(type Item) " &
@@ -76,46 +78,12 @@ suite "runtime bound calls":
       "[(first) (second) (first)]").print() == "[1 2 1]"
 
   test "nested bindings cannot replace a stricter caller budget":
-    check evalBoundCall("(var hits ($cell 0)) " &
-      "(fn spin [] (repeat 10000 (hits .set (+ (hits .get) 1)))) " &
+    check evalBoundCall("(fn spin [] (while true nil)) " &
       "(fn nested [] " &
-      "  (var inner ($runtime/bind_call spin [] ^policy {^max_steps 10000})) " &
+      "  (var inner ($runtime/bind_call spin [] ^policy {^timeout_ms 5000})) " &
       "  (inner)) " &
-      "(var outer ($runtime/bind_call nested [] ^policy {^max_steps 120})) " &
-      "(try (outer) nil catch Any nil) (< (hits .get) 100)").print() == "true"
-
-  test "step limits stop at the same point on every accounting path":
-    # A lone step budget, one that also samples a deadline and memory every
-    # 64 steps, and one nested under a larger caller budget are charged
-    # through different paths. For each limit, all three must stop before
-    # the same instruction, in straight-line code and in a loop.
-    var straight = ""
-    for i in 1 .. 60:
-      straight.add "(hits .set " & $i & ") "
-    check evalBoundCall("(var hits ($cell 0)) " &
-      "(fn straight [] " & straight & ") " &
-      "(fn looping [] (repeat 100 (hits .set (+ (hits .get) 1)))) " &
-      "(fn stopped_at [target policy] (hits .set 0) " &
-      "  (try (($runtime/bind_call target [] ^policy policy)) catch Any nil) " &
-      "  (hits .get)) " &
-      "(fn nested_stopped_at [target n] (hits .set 0) " &
-      "  (fn inner [] (($runtime/bind_call target [] ^policy {^max_steps n}))) " &
-      "  (try (($runtime/bind_call inner [] ^policy {^max_steps 100000000})) " &
-      "   catch Any nil) " &
-      "  (hits .get)) " &
-      "(fn curves [target total] " &
-      "  (var lone []) (var sampled []) (var nested []) " &
-      "  (var n 1) " &
-      "  (while (<= n 200) " &
-      "    (lone .push (stopped_at target {^max_steps n})) " &
-      "    (sampled .push (stopped_at target " &
-      "      {^max_steps n ^timeout_ms 600000 ^max_memory_mb 1024})) " &
-      "    (nested .push (nested_stopped_at target n)) " &
-      "    (set n (+ n 1))) " &
-      "  [(== lone sampled) (== lone nested) " &
-      "   (< lone/0 lone/199) (< lone/199 total)]) " &
-      "[(curves straight 60) (curves looping 100)]").print() ==
-      "[[true true true true] [true true true true]]"
+      "(var outer ($runtime/bind_call nested [] ^policy {^timeout_ms 20})) " &
+      "(try (outer) false catch Any ($str/contains? $err/message \"timeout\"))").print() == "true"
 
   test "deadline starts when the binding is invoked":
     check evalBoundCall("(fn value [] 7) " &
@@ -136,7 +104,7 @@ suite "runtime bound calls":
     check evalBoundCall("(var events ($cell [])) " &
       "(fn work [] (try ($sleep 1) 7 " &
       " ensure ((events .get) .push \"cleanup\"))) " &
-      "(var f ($runtime/bind_call work [] ^policy {^max_steps 1000})) " &
+      "(var f ($runtime/bind_call work [] ^policy {^timeout_ms 1000})) " &
       "(scope (var task (spawn ^lane root (f))) " &
       "  [(await task) (events .get)])").print() == "[7 [\"cleanup\"]]"
 
@@ -144,7 +112,7 @@ suite "runtime bound calls":
     check evalBoundCall("(var hits ($cell 0)) " &
       "(fn work [] (try ($sleep 10000) " &
       " ensure (hits .set (+ (hits .get) 1)))) " &
-      "(var f ($runtime/bind_call work [] ^policy {^max_steps 1000})) " &
+      "(var f ($runtime/bind_call work [] ^policy {^timeout_ms 1000})) " &
       "(scope (var task (spawn ^lane root (f))) " &
       "  ($sleep 1) (task .cancel) " &
       "  [(match (task .join) (when TaskOutcome/cancelled true) (else false)) " &
@@ -173,7 +141,7 @@ suite "runtime bound calls":
 
   test "invalid policy fields fail at binding time":
     check evalBoundCall("(fn target [] 1) " &
-      "[(try ($runtime/bind_call target [] ^policy {^max_steps -1}) " &
+      "[(try ($runtime/bind_call target [] ^policy {^timeout_ms -1}) " &
       " false catch Any true) " &
       " (try ($runtime/bind_call target [] ^policy {^!allow_ffi}) " &
       " false catch Any true)]").print() == "[true true]"

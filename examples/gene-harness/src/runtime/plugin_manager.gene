@@ -252,7 +252,6 @@
             (let configured (entry_limits entry))
             (let policy
               {
-                ^max_steps ($math/min configured/max_steps 100000)
                 ^max_memory_mb ($math/min configured/max_memory_mb 64)
                 ^timeout_ms ($math/min configured/timeout_ms 2000)})
             (set transaction ($runtime/sandbox_transaction))
@@ -267,7 +266,7 @@
                   ^policy policy}))
             (let module generation/.module)
             (let limits
-              (ExecutionLimits ^max_steps policy/max_steps ^max_memory_mb policy/max_memory_mb ^timeout_ms policy/timeout_ms))
+              (ExecutionLimits ^max_memory_mb policy/max_memory_mb ^timeout_ms policy/timeout_ms))
             (configure_plugin_module module limits)
             (let plugin
               (invoke_bounded

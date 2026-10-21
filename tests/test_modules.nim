@@ -1545,7 +1545,7 @@ suite "modules — the sandbox loader (design §D5)":
       "(var generation " &
       "  (tx .prepare {^dir \"" & root.replace("\\", "/") & "\" " &
       "    ^entry \"plugin.gene\" ^grants [] ^shared [] ^label \"basic\" " &
-      "    ^policy {^max_steps 1000 ^max_memory_mb 16 ^timeout_ms 1000}})) " &
+      "    ^policy {^max_memory_mb 16 ^timeout_ms 1000}})) " &
       "(var candidate (generation .module)) " &
       "candidate/answer"), scope).print() == "42"
     check app.moduleCacheEntryCount() == beforeModules
@@ -1578,7 +1578,7 @@ suite "modules — the sandbox loader (design §D5)":
       "(var generation " &
       "  (tx .prepare {^dir \"" & root.replace("\\", "/") & "\" " &
       "    ^entry \"plugin.gene\" ^grants [] ^shared [] " &
-      "    ^policy {^max_steps 1000 ^max_memory_mb 16 ^timeout_ms 1000}}))"),
+      "    ^policy {^max_memory_mb 16 ^timeout_ms 1000}}))"),
       scope)
     discard run(compileSource("(tx .discard) (tx .discard)"), scope)
     check app.moduleCacheEntryCount() == beforeModules
@@ -1602,10 +1602,10 @@ suite "modules — the sandbox loader (design §D5)":
       "(var tx ($runtime/sandbox_transaction)) " &
       "(var left (tx .prepare {^dir \"" & root.replace("\\", "/") & "\" " &
       "  ^entry \"left.gene\" ^grants [] ^shared [] " &
-      "  ^policy {^max_steps 1000 ^max_memory_mb 16 ^timeout_ms 1000}})) " &
+      "  ^policy {^max_memory_mb 16 ^timeout_ms 1000}})) " &
       "(var right (tx .prepare {^dir \"" & root.replace("\\", "/") & "\" " &
       "  ^entry \"right.gene\" ^grants [] ^shared [] " &
-      "  ^policy {^max_steps 1000 ^max_memory_mb 16 ^timeout_ms 1000}}))"),
+      "  ^policy {^max_memory_mb 16 ^timeout_ms 1000}}))"),
       scope)
     check app.moduleCacheEntryCount() == beforeModules
     discard run(compileSource("(tx .commit) (tx .commit)",
@@ -1632,7 +1632,7 @@ suite "modules — the sandbox loader (design §D5)":
       "(var generation (tx .prepare {^dir \"" &
       root.replace("\\", "/") & "\" ^entry \"candidate.gene\" " &
       "^grants [] ^shared [] " &
-      "^policy {^max_steps 1000 ^max_memory_mb 16 ^timeout_ms 1000}}))"),
+      "^policy {^max_memory_mb 16 ^timeout_ms 1000}}))"),
       scope)
     discard app.loadFileModule(root / "live.gene")
     check run(compileSource(
@@ -1652,28 +1652,28 @@ suite "modules — the sandbox loader (design §D5)":
       "(var top_error (try " &
       "  (top_tx .prepare {^dir \"" & root.replace("\\", "/") & "\" " &
       "    ^entry \"bad_top.gene\" ^grants [] ^shared [] " &
-      "    ^policy {^max_steps 20 ^max_memory_mb 16 ^timeout_ms 1000}}) " &
+      "    ^policy {^max_memory_mb 16 ^timeout_ms 100}}) " &
       "  \"missing\" catch Any $err/message)) " &
       "(top_tx .discard) top_error"), scope).strVal
-    check "max steps" in topMessage
+    check "timeout" in topMessage
     let callMessage = run(compileSource(
       "(var call_tx ($runtime/sandbox_transaction)) " &
       "(var call_generation " &
       "  (call_tx .prepare {^dir \"" & root.replace("\\", "/") & "\" " &
       "    ^entry \"bad_call.gene\" ^grants [] ^shared [] " &
-      "    ^policy {^max_steps 20 ^max_memory_mb 16 ^timeout_ms 1000}})) " &
+      "    ^policy {^max_memory_mb 16 ^timeout_ms 100}})) " &
       "(var call_module (call_generation .module)) " &
       "(var call_error (try (call_module/spin) \"missing\" " &
       "  catch Any $err/message)) " &
       "(call_tx .discard) call_error",
       useLocalSlots = false), scope).strVal
-    check "max steps" in callMessage
+    check "timeout" in callMessage
 
   test "sandbox generation policy bounds macro expansion and compilation":
     let root = modDir / "generation_compile_policy"
     createDir(root)
     writeFile(root / "large_macro.gene",
-      "(macro many [] `[" & repeat(" 1", 200) & "]) " &
+      "(macro many [] (while true nil)) " &
       "(var expanded (many))")
     let app = newApplication(modDir)
     let scope = newGlobalScope(app)
@@ -1686,10 +1686,10 @@ suite "modules — the sandbox loader (design §D5)":
       "(var compile_error (try " &
       "  (tx .prepare {^dir \"" & root.replace("\\", "/") & "\" " &
       "    ^entry \"large_macro.gene\" ^grants [] ^shared [] " &
-      "    ^policy {^max_steps 40 ^max_memory_mb 16 ^timeout_ms 1000}}) " &
+      "    ^policy {^max_memory_mb 16 ^timeout_ms 100}}) " &
       "  \"missing\" catch Any $err/message)) " &
       "(tx .discard) compile_error"), scope).strVal
-    check "compile max steps" in message
+    check "timeout" in message
     check app.moduleCacheEntryCount() == beforeModules
     check app.moduleCompileHeaderCount() == beforeHeaders
     check app.moduleCompileArtifactCount() == beforeArtifacts
@@ -1713,13 +1713,13 @@ suite "modules — the sandbox loader (design §D5)":
       "(try " &
       "  (tx .prepare {^dir \"" & root.replace("\\", "/") & "\" " &
       "    ^entry \"bad.gene\" ^grants [] ^shared [] " &
-      "    ^policy {^max_steps 20 ^max_memory_mb 16 ^timeout_ms 1000}}) " &
+      "    ^policy {^max_memory_mb 16 ^timeout_ms 1000}}) " &
       "  false catch Any true)", useLocalSlots = false), scope).boolVal
     discard run(compileSource(
       "(var generation " &
       "  (tx .prepare {^dir \"" & root.replace("\\", "/") & "\" " &
       "    ^entry \"good.gene\" ^grants [] ^shared [] " &
-      "    ^policy {^max_steps 1000 ^max_memory_mb 16 ^timeout_ms 1000}})) " &
+      "    ^policy {^max_memory_mb 16 ^timeout_ms 1000}})) " &
       "(tx .commit)", useLocalSlots = false), scope)
     check app.moduleCacheEntryCount() == beforeModules + 1
     check app.moduleCompileHeaderCount() == beforeHeaders + 1
@@ -1755,10 +1755,10 @@ suite "modules — the sandbox loader (design §D5)":
 
     check "compile timeout" in prepareError(
       "simple.gene",
-      "{^max_steps 1000 ^max_memory_mb 16 ^timeout_ms 0}")
+      "{^max_memory_mb 16 ^timeout_ms 0}")
     check "compile memory" in prepareError(
       "large.gene",
-      "{^max_steps 1000000 ^max_memory_mb 0 ^timeout_ms 1000}")
+      "{^max_memory_mb 0 ^timeout_ms 1000}")
 
   test "sandbox generation policy rejects native declarations":
     let root = modDir / "generation_native_policy"
@@ -1772,7 +1772,7 @@ suite "modules — the sandbox loader (design §D5)":
       "(var message (try " &
       "  (tx .prepare {^dir \"" & root.replace("\\", "/") & "\" " &
       "    ^entry \"native.gene\" ^grants [\"ffi\"] ^shared [] " &
-      "    ^policy {^max_steps 1000 ^max_memory_mb 16 ^timeout_ms 1000}}) " &
+      "    ^policy {^max_memory_mb 16 ^timeout_ms 1000}}) " &
       "  \"missing\" catch Any $err/message)) " &
       "(tx .discard) message"), scope).strVal
     check "disables FFI" in message
@@ -1794,7 +1794,7 @@ suite "modules — the sandbox loader (design §D5)":
       "(var generation " &
       "  (tx .prepare {^dir \"" & root.replace("\\", "/") & "\" " &
       "    ^entry \"plugin.gene\" ^grants [] ^shared [] " &
-      "    ^policy {^max_steps 1000 ^max_memory_mb 16 ^timeout_ms 1000}})) " &
+      "    ^policy {^max_memory_mb 16 ^timeout_ms 1000}})) " &
       "(var during (observed .get)) " &
       "(tx .discard) (await unrelated) [during (observed .get)]"),
       scope).print() == "[0 1]"
@@ -1820,7 +1820,7 @@ suite "modules — the sandbox loader (design §D5)":
       "  (tx .prepare {^dir \"" & root.replace("\\", "/") & "\" " &
       "    ^entry \"plugin.gene\" ^grants [] " &
       "    ^shared [\"" & sharedPath & "\"] " &
-      "    ^policy {^max_steps 1000 ^max_memory_mb 16 ^timeout_ms 1000}})) " &
+      "    ^policy {^max_memory_mb 16 ^timeout_ms 1000}})) " &
       "(generation .graph)"), scope)
     check graph.kind == vkMap
     check graph.mapImmutable
@@ -1874,7 +1874,7 @@ suite "modules — the sandbox loader (design §D5)":
         "(var generation " &
         "  (tx .prepare {^dir \"" & root.replace("\\", "/") & "\" " &
         "    ^entry \"plugin.gene\" ^grants [] ^shared [] " &
-        "    ^policy {^max_steps 1000 ^max_memory_mb 16 ^timeout_ms 1000}})) " &
+        "    ^policy {^max_memory_mb 16 ^timeout_ms 1000}})) " &
         "(var graph (generation .graph)) (tx .discard) graph"), scope)
 
     proc rootNode(graph: Value): Value =
@@ -1932,7 +1932,7 @@ suite "modules — the sandbox loader (design §D5)":
       "  (tx .prepare {^dir \"" & root.replace("\\", "/") & "\" " &
       "    ^entry \"plugin.gene\" ^grants [] " &
       "    ^shared [\"" & contractPath & "\"] " &
-      "    ^policy {^max_steps 1000 ^max_memory_mb 16 ^timeout_ms 1000}})) " &
+      "    ^policy {^max_memory_mb 16 ^timeout_ms 1000}})) " &
       "(var candidate (generation .module)) " &
       "(var item (candidate/make)) " &
       "[(same? (check item) item) (item .Readable:read)]"), scope).print() ==
@@ -1960,7 +1960,7 @@ suite "modules — the sandbox loader (design §D5)":
         "(var generation " &
         "  (tx .prepare {^dir \"" & root.replace("\\", "/") & "\" " &
         "    ^entry \"plugin.gene\" ^grants [] ^shared [] ^label \"cycle-" &
-        $i & "\" ^policy {^max_steps 1000 ^max_memory_mb 16 " &
+        $i & "\" ^policy {^max_memory_mb 16 " &
         "    ^timeout_ms 1000}})) " &
         "(tx .commit) (generation .release)"), scope)
       check app.moduleCacheEntryCount() == beforeModules
@@ -1977,7 +1977,7 @@ suite "modules — the sandbox loader (design §D5)":
       "(var tx ($runtime/sandbox_transaction)) " &
       "(var generation (tx .prepare {^dir \"" & root.replace("\\", "/") &
       "\" ^entry \"self.gene\" ^grants [] ^shared [] ^label \"retained\" " &
-      "^policy {^max_steps 1000 ^max_memory_mb 16 ^timeout_ms 1000}})) " &
+      "^policy {^max_memory_mb 16 ^timeout_ms 1000}})) " &
       "(var saved (generation .module)) " &
       "(var identity saved/identity) " &
       "(tx .commit) (generation .release) " &
