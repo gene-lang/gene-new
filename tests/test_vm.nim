@@ -3469,6 +3469,68 @@ suite "vm — fused sends":
     check closure.markOuterReceivers() == 1
     check run(closure, newGlobalScope()).print() == "\"not Send\""
 
+proc callProtos(chunk: Chunk): seq[FunctionProto] =
+  ## Every function and type-direct message compiled in `chunk`'s tree.
+  let found = new seq[FunctionProto]
+  visitChunkTree(chunk, proc(body: Chunk) =
+    for fn in body.functions: found[].add fn
+    for typ in body.typeProtos:
+      for message in typ.messages: found[].add message.fn)
+  found[]
+
+suite "vm — scopeless field reads":
+  const fieldProgram = """
+    (type Point ^props {^x Int ^y Int})
+    (type Counter ^props {^value Int}
+      (message add [amount] (+ self/value amount))
+      (message left [] self/missing))
+    (fn sum [p] (+ p/x p/y))
+    (fn get_key [m] m/key)
+    (fn missing [p] p/z)
+    (fn member [ns] ns/inner)
+    (ns box (let inner 5))
+    (fn loop_calls [n]
+      (let p (Point ^x 3 ^y 4))
+      (let c (Counter ^value 10))
+      (var total 0)
+      (repeat i in n (set total (+ total (+ (sum p) (c .add i)))))
+      total)
+    [(loop_calls 5) (get_key {^key "k"}) (get_key {}) (missing (Point ^x 1 ^y 2))
+     ((Counter ^value 1) .left) (member box)
+     (try (sum {^x 1 ^y "a"}) catch Any $err/message)]
+  """
+  const fieldResult =
+    "[95 \"k\" void void void 5 \"+ expects numbers, got vkString\"]"
+
+  test "bodies that read one-key fields of their parameters run scopeless":
+    let chunk = compileSource(fieldProgram)
+    var admitted: seq[string]
+    for proto in chunk.callProtos:
+      if proto.scopelessChunk != nil and proto.scopelessReadsFields:
+        admitted.add proto.name
+    check admitted.len >= 5
+    for name in ["sum", "get_key", "missing", "member", "add"]:
+      check name in admitted
+    # A message segment, a longer path, or a send keeps the scope.
+    for source in ["(fn f [p] p/.size)", "(fn f [p] p/a/b)",
+                   "(fn f [p] (p .get \"a\"))"]:
+      for proto in compileSource(source).callProtos:
+        check proto.scopelessChunk == nil
+
+  test "scopeless and scoped field reads give the same results":
+    let scopeless = compileSource(fieldProgram)
+    let scoped = cloneCompiledChunk(scopeless)
+    for proto in scoped.callProtos:
+      proto.scopelessChunk = nil
+    var outcomes: seq[string]
+    for code in [scopeless, scoped]:
+      try:
+        outcomes.add run(code, newGlobalScope()).print()
+      except GeneError as error:
+        outcomes.add error.msg
+    check outcomes[0] == outcomes[1]
+    check outcomes[0] == fieldResult
+
 suite "vm — scalar call binding":
   test "compiler admits only the supported calling shapes":
     for source in [

@@ -2553,6 +2553,17 @@ proc scopelessIntArgsOk(stack: seq[Value], argsStart, argCount: int):
       return false
   true
 
+proc scopelessFieldReadsOk(proto: FunctionProto,
+                           calleeScope, callerScope: Scope): bool {.inline.} =
+  ## A scopeless body reads fields with the caller's scope register, where
+  ## the call scope would materialize module references against the callee's.
+  ## Both are no-ops, and so agree, while neither has a reference pending.
+  not proto.scopelessReadsFields or
+    ((calleeScope == nil or calleeScope.moduleRefs == nil or
+      calleeScope.moduleRefs.pendingStructural == 0) and
+     (callerScope.moduleRefs == nil or
+      callerScope.moduleRefs.pendingStructural == 0))
+
 proc isSymbol(v: Value, name: string): bool =
   v.kind == vkSymbol and v.symVal == name
 
@@ -20428,7 +20439,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                   spush native.value
                   continue
               if proto.scopelessChunk != nil and proto.params.len == 0 and
-                  proto.canBypassCallBudget(calleeScope, scope):
+                  proto.canBypassCallBudget(calleeScope, scope) and
+                  proto.scopelessFieldReadsOk(calleeScope, scope):
                 # Scopeless 0-arg call (see the direct-call site).
                 let callerScope = scope
                 enterBytecodeCall(proto.scopelessChunk, callerScope, false,
@@ -20582,6 +20594,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                   continue
               if proto.scopelessChunk != nil and argCount == proto.params.len and
                   proto.canBypassCallBudget(calleeScope, scope) and
+                  proto.scopelessFieldReadsOk(calleeScope, scope) and
                   (not proto.scopelessNeedsIntArgs or inst[].flag or
                    scopelessIntArgsOk(stack, argsStart, argCount)):
                 # Scopeless call: the args already on the shared stack become
@@ -21174,6 +21187,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               if namedCount == 0 and proto.scopelessChunk != nil and
                   argCount == proto.params.len and
                   proto.canBypassCallBudget(calleeScope, scope) and
+                  proto.scopelessFieldReadsOk(calleeScope, scope) and
                   (not proto.scopelessNeedsIntArgs or
                    scopelessIntArgsOk(stack, argsStart, argCount)):
                 # Scopeless call (see the direct-call site): shift the args

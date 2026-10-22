@@ -450,6 +450,9 @@ type
     scopelessNeedsIntArgs*: bool # typed admission: every arg must be vkInt;
                                  # VM sites verify (or trust inst.flag) before
                                  # entering scopelessChunk, else classic path
+    scopelessReadsFields*: bool  # scopelessChunk reads a one-key field; VM
+                                 # sites enter it only while no module
+                                 # reference is pending on either side
 
   ImportSelection* = object
     name*: string         # exported name in the source
@@ -3865,7 +3868,19 @@ proc deriveScopelessChunk*(proto: FunctionProto) =
   let chunk = proto.chunk
   if chunk == nil or chunk.functions.len != 0 or chunk.subchunks.len != 0:
     return
-  for inst in chunk.instructions:
+  var readsFields = false
+  for i, inst in chunk.instructions:
+    if inst.op == opApplySelectorTop:
+      # A one-key read of a constant path, such as `p/x` or `self/value`. Its
+      # only use of the scope is to materialize a module reference read from
+      # the field, which the VM sites rule out before entering (see
+      # `scopelessReadsFields`). A message segment or a longer path can
+      # dispatch through the scope, so it keeps the classic convention.
+      if i == 0 or chunk.instructions[i - 1].op != opPushConst or
+          chunk.constants[chunk.instructions[i - 1].intArg].plainPathKeyId == -2:
+        return
+      readsFields = true
+      continue
     if inst.op notin scopelessOps:
       return
     if inst.op in {opLoadLocal, opLoadLocalFast} and
@@ -3882,4 +3897,5 @@ proc deriveScopelessChunk*(proto: FunctionProto) =
   alt.localNames = chunk.localNames
   alt.owner = proto
   proto.scopelessNeedsIntArgs = proto.hasParamTypes
+  proto.scopelessReadsFields = readsFields
   proto.scopelessChunk = alt
