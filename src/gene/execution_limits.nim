@@ -13,8 +13,13 @@ type
     opened*: int
     left*: int
 
-const SampleInterval* {.intdefine: "geneSampleInterval".} = 64
-  ## Polls between two samples of one budget's clock and allocator.
+const SampleInterval* {.intdefine: "geneSampleInterval".} =
+  when defined(genePollWindowTests): 64 else: 1024
+  ## Polls between two samples of one budget's clock and allocator. At about
+  ## 8 ns an instruction that is some 8 µs between deadline and memory checks.
+  ## A sample costs about 30 ns, so at 64 they were 6–8% of the time of code
+  ## under a policy; at 1024 they are under 1%. The poll-window test samples
+  ## every 64 polls, so its short programs still reach many window ends.
 
 var activeBudgetCleanup* {.threadvar.}: ptr EvalCleanup
 var activeBudgetExecution* {.threadvar.}: uint64
