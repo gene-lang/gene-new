@@ -1248,7 +1248,8 @@ suite "compiler — GIR emission":
 
   test "protocol messages get no scope slots; sends resolve by name":
     # Message names are not bound in the enclosing scope (docs/spec/protocols.md);
-    # a send compiles to opResolveMessage with the message name.
+    # a send compiles to opResolveMessage, here fused as opSend, with the
+    # message name.
     let chunk = compileSource(
       "(protocol P (message ping [x])) (fn use [x] (x .ping))")
     check chunk.localNames == @["P", "use"]
@@ -1256,7 +1257,7 @@ suite "compiler — GIR emission":
     let useProto = chunk.functions[0]
     var sawPing = false
     for inst in useProto.chunk.instructions:
-      if inst.op == opResolveMessage and inst.name == "ping":
+      if inst.op in {opResolveMessage, opSend} and inst.name == "ping":
         sawPing = true
     check sawPing
 
@@ -3093,6 +3094,9 @@ proc expandFusedLocals(chunk: Chunk) =
       of opCompareLocalsJumpIfFalse: inst.op = opLoadLocal
       of opCompareConstJumpIfFalse: inst.op = opNativeFastConst
       of opLoadLocalField: inst.op = opLoadLocal
+      of opSend: inst.op = opResolveMessage
+      of opSendLocal: inst.op = opLoadLocal
+      of opSendOuterLocal: inst.op = opLoadOuterLocal
       else: discard)
 
 suite "vm — fused local sequences":
@@ -3223,6 +3227,247 @@ suite "vm — fused local sequences":
       check cancelled
       check scope.lookup("started").cellValue.boolVal
       check scope.lookup("cleaned").cellValue.intVal == 1
+
+suite "vm — fused sends":
+  const sendProgram = """
+    (type Point ^props {^x Int ^y Int})
+    (type Counter ^props {^value Int}
+      (message add [amount] (+ self/value amount)))
+    (fn plain_args [n]
+      # Local, constant, outer-local and one-key-read arguments, a zero-argument
+      # send in both spellings, and a send with three arguments.
+      (let xs [])
+      (let m {})
+      (let row {^key "k" ^amount 2})
+      (repeat i in n
+        (xs .push i)
+        (m .put "a" i)
+        (m .put row/key row/amount))
+      (var seen [])
+      (for x in xs (seen .push n))
+      (let ys [9 9 9 9])
+      (ys .set 1 n)
+      (let double (fn [v] (* v 2)))
+      [xs/.size (xs .size) (m .get "a") (m .get row/key) seen ys (xs .map double)])
+    (fn instance_args [p]
+      # An instance field argument, and a missing one, which is read by the
+      # general path.
+      (let out [])
+      (out .push p/x)
+      (out .push p/missing)
+      out)
+    (fn method_send [n]
+      # A Gene message body is not a native: the send runs unfused.
+      (let c (Counter ^value 10))
+      (var total 0)
+      (repeat i in n (set total (+ total (c .add i))))
+      total)
+    (fn callback [n]
+      # A native that calls back into Gene code, which rebinds the receiver's
+      # variable while the native runs.
+      (var box ($cell 0))
+      (let held box)
+      (let step (fn [v] (set box ($cell -1)) (+ v n)))
+      (repeat i in 3 (held .update step))
+      [(held .get) (box .get)])
+    (fn undefined_arg [flag]
+      # The resolution runs first, so an unknown message is reported before an
+      # argument whose slot was never defined.
+      (let xs [1])
+      (if flag (var y 1))
+      (try (xs .bogus y) catch MessageError "message" catch Any "argument"))
+    (fn native_error [xs]
+      # A native that fails reports the call's location.
+      (xs .set 7 0))
+    (fn optional_send [xs]
+      # The absence guard runs before the resolution and jumps past the whole
+      # fused sequence.
+      (let none nil)
+      [(none ?.push 1) (xs ?.push 2) xs])
+    [(plain_args 3) (instance_args (Point ^x 3 ^y 4)) (method_send 4)
+     (callback 5) (undefined_arg false) (undefined_arg true)
+     (try (native_error [1 2]) catch Any $err/message) (optional_send [1])]
+  """
+  const sendResult =
+    "[[3 3 2 2 [3 3 3] [9 3 9 9] [0 2 4]] [3 nil] 46 [15 -1] \"message\" " &
+    "\"message\" \"List/set index out of range: 7\" [nil 2 [1 2]]]"
+
+  test "sends with plain-read arguments compile to fused sends":
+    let chunk = compileSource(sendProgram)
+    check chunk.countOps(opSend) >= 12
+    check chunk.countOps(opSendLocal) >= 3
+    check chunk.countOps(opSendOuterLocal) >= 1
+    check "opSend name=push" in disassemble(chunk)
+    check run(chunk, newGlobalScope()).print() == sendResult
+
+  test "sends borrow only operands whose slots nothing nested can assign":
+    proc borrowed(source: string): int =
+      let chunk = compileSource(source)
+      chunk.countOps(opSendLocal) + chunk.countOps(opSendOuterLocal)
+    # A let, a var the function itself assigns, a parameter, a constant, and
+    # an outer local read from a loop body.
+    check borrowed("(fn f [n] (let xs []) (var k 1) (set k 2) " &
+                   "(xs .push k) (xs .push n) (xs .push \"a\") xs)") == 3
+    check borrowed("(fn f [xs] (for x in [1 2] (xs .push x)) xs)") == 1
+    # A closure, a task or a loop body that assigns the receiver or an
+    # argument, a by-name reach into the scope, and a module-level receiver.
+    check borrowed("(fn f [] (var xs []) (let g (fn [] (set xs []))) " &
+                   "(xs .push 1) g)") == 0
+    check borrowed("(fn f [] (var k 1) (let xs []) " &
+                   "(for x in [1 2] (set k ($to_str x))) (xs .push k))") == 0
+    check borrowed("(fn f [] (var xs []) (spawn (set xs [])) (xs .push 1))") == 0
+    check borrowed("(fn f [] (let xs []) (let e (env)) (xs .push 1))") == 0
+    check borrowed("(let xs []) (xs .push 1)") == 0
+    # A one-key read argument is not borrowed; the send stays fused.
+    let fieldArg = compileSource(
+      "(fn f [row] (let xs []) (xs .push row/key))")
+    check fieldArg.countOps(opSendLocal) == 0
+    check fieldArg.countOps(opSend) == 1
+
+  test "a send with a computed argument or named arguments stays unfused":
+    for source in ["(fn f [n] (let xs []) (xs .push (+ n 1)))",
+                   "(fn f [n] (let m {}) (m .put \"a\" ($to_str n)))",
+                   "(type T ^props {} (message m [^k] k)) ((T) .m ^k 1)"]:
+      check compileSource(source).countOps(opSend) == 0
+
+  test "fused and expanded sends preserve results, errors and deadlines":
+    let fused = compileSource(sendProgram)
+    let expanded = cloneCompiledChunk(fused)
+    expanded.expandFusedLocals()
+    check expanded.countOps(opSend) == 0
+    for timeout in [0'i64, 1000'i64]:
+      var outcomes: seq[string]
+      for code in [fused, expanded]:
+        let scope = newGlobalScope()
+        scope.evalBudget = newExecutionBudget(-1, timeout)
+        var outcome = ""
+        try:
+          outcome = run(code, scope).print()
+        except GeneError as error:
+          outcome = error.msg & " at " & $error.loc.line & ":" & $error.loc.col
+        outcomes.add outcome
+      check outcomes[0] == outcomes[1]
+    # An uncaught native failure is located at the send in both forms.
+    let failing = compileSource("(fn f [xs] (xs .set 7 0))\n(f [1 2])")
+    let failingExpanded = cloneCompiledChunk(failing)
+    failingExpanded.expandFusedLocals()
+    var locations: seq[string]
+    for code in [failing, failingExpanded]:
+      try:
+        discard run(code, newGlobalScope())
+        locations.add "no error"
+      except GeneError as error:
+        locations.add error.msg & " at " & $error.loc.line & ":" & $error.loc.col
+    check locations[0] == locations[1]
+    check locations[0] != "no error"
+
+  test "GIR keeps fused sends and rejects one without its tail":
+    let chunk = compileSource(sendProgram)
+    var artifact = ExecutableGir(entryIdentity: "test/sends",
+      modules: @[CompiledModule(identity: "test/sends", chunk: chunk,
+        macroExports: initTable[string, MacroDef](), syntaxFnExports: @[],
+        compileInterface: CompileNamespaceInterface(
+          entries: initTable[string, CompileInterfaceEntry]()))])
+    let decoded = decodeExecutableGir(encodeExecutableGir(artifact))
+    check decoded.modules[0].chunk.countOps(opSend) == chunk.countOps(opSend)
+    check run(decoded.modules[0].chunk, newGlobalScope()).print() == sendResult
+    let corrupt = cloneCompiledChunk(chunk)
+    var broken = false
+    visitChunkTree(corrupt, proc(body: Chunk) =
+      for i, inst in body.instructions:
+        if not broken and inst.op == opSend:
+          let call = body.instructions.fusedSendCall(i)
+          body.instructions[call].op = opNoop
+          broken = true)
+    check broken
+    artifact.modules[0].chunk = corrupt
+    expect ValueError:
+      discard decodeExecutableGir(encodeExecutableGir(artifact))
+
+  test "GIR re-derives borrowed sends instead of trusting them":
+    # `box` is reassigned by a closure, so its sends must not borrow it. A
+    # payload that marks one anyway is decoded with the mark removed.
+    let chunk = compileSource(sendProgram)
+    let borrowedCount = chunk.countOps(opSendLocal) + chunk.countOps(opSendOuterLocal)
+    check borrowedCount >= 3
+    let forged = cloneCompiledChunk(chunk)
+    var marked = 0
+    visitChunkTree(forged, proc(body: Chunk) =
+      for i, inst in body.instructions:
+        if inst.op == opLoadLocal and i + 1 < body.instructions.len and
+            body.instructions[i + 1].op == opSend and
+            body.instructions.fusedSequenceFollows(i, opSendLocal):
+          body.instructions[i].op = opSendLocal
+          inc marked)
+    check marked >= 1
+    var artifact = ExecutableGir(entryIdentity: "test/borrow",
+      modules: @[CompiledModule(identity: "test/borrow", chunk: forged,
+        macroExports: initTable[string, MacroDef](), syntaxFnExports: @[],
+        compileInterface: CompileNamespaceInterface(
+          entries: initTable[string, CompileInterfaceEntry]()))])
+    let decoded = decodeExecutableGir(encodeExecutableGir(artifact)).modules[0].chunk
+    check decoded.countOps(opSendLocal) + decoded.countOps(opSendOuterLocal) ==
+      borrowedCount
+    check run(decoded, newGlobalScope()).print() == sendResult
+
+  test "cloned chunks and modules keep their borrowed sends":
+    # Restoring a copy clears every borrow mark, then derives them again.
+    proc borrowedSends(chunk: Chunk): int =
+      chunk.countOps(opSendLocal) + chunk.countOps(opSendOuterLocal)
+    let chunk = compileSource(sendProgram)
+    let expected = chunk.borrowedSends()
+    check expected >= 3
+    let module = CompiledModule(identity: "test/clone", chunk: chunk,
+      macroExports: initTable[string, MacroDef](), syntaxFnExports: @[],
+      compileInterface: CompileNamespaceInterface(
+        entries: initTable[string, CompileInterfaceEntry]()))
+    let copies = [cloneCompiledChunk(chunk), cloneCompiledModule(module).chunk,
+                  cloneModuleExecutionTemplate(module).chunk]
+    for copy in copies:
+      check copy.borrowedSends() == expected
+    check run(copies[0], newGlobalScope()).print() == sendResult
+
+  test "closures and spawned tasks borrow only their own slots":
+    proc borrowed(source: string): int =
+      let chunk = compileSource(source)
+      chunk.countOps(opSendLocal) + chunk.countOps(opSendOuterLocal)
+    # Each can run while its maker is suspended, and resume it: a closure a
+    # generator yields, here, pulls that generator, which assigns `xs`.
+    check borrowed("(fn f [] (let xs [1 2 3]) (spawn xs/.size))") == 0
+    check borrowed("(fn f [] (let c ($cell 0)) (fn [] (c .get)))") == 0
+    check borrowed("(fn ^^generator g [] (var xs [1]) " &
+                   "(yield (fn [s] (s .into xs))) (set xs []) (yield 2))") == 0
+    # Their own slots, read from their own loop bodies, are borrowed.
+    check borrowed("(fn f [] (fn [] (let xs []) " &
+                   "(for x in [1 2] (xs .push x)) xs))") == 1
+    check borrowed("(fn f [] (spawn (do (let xs []) " &
+                   "(for x in [1 2] (xs .push x)) xs)))") == 1
+
+  test "the capture walkers read a fused outer-local receiver":
+    # opSendOuterLocal reads the slot its opLoadOuterLocal did. The compiler
+    # no longer marks one that reaches past a closure or a task, but the
+    # walkers do not depend on that: marked by hand, the receiver is still
+    # captured by the spawned task and still makes the closure not Send.
+    proc markOuterReceivers(chunk: Chunk): int =
+      var marked = 0
+      visitChunkTree(chunk, proc(body: Chunk) =
+        for i in 0 ..< body.instructions.len:
+          if body.instructions[i].op == opLoadOuterLocal and
+              body.instructions.fusedSequenceFollows(i, opSendOuterLocal):
+            body.instructions[i].op = opSendOuterLocal
+            inc marked)
+      marked
+    let spawned = compileSource(
+      "(fn f [] (let xs [1 2 3]) (await (spawn xs/.size))) (f)")
+    check spawned.markOuterReceivers() == 1
+    check run(spawned, newGlobalScope()).print() == "3"
+    let closure = compileSource("""
+      (fn make [] (let c ($cell 0)) (fn [] (c .get)))
+      (let channel ($channel))
+      (try (channel .try_send (make)) catch TypeError "not Send")
+    """)
+    check closure.markOuterReceivers() == 1
+    check run(closure, newGlobalScope()).print() == "\"not Send\""
 
 suite "vm — scalar call binding":
   test "compiler admits only the supported calling shapes":

@@ -10,7 +10,7 @@ import ./[gir, printer, reader, types]
 # The number changes when the chunk layout or opcode/value meaning changes, so
 # a stale artifact fails closed. Path values replaced Selector values while
 # reusing the same bytecode slots, so that migration also advances the format.
-const GirArtifactFormat* = 37
+const GirArtifactFormat* = 38
 
 proc validateModuleSourcePath(path: string) =
   # Empty remains available to host-created, explicitly path-bound chunks.
@@ -575,7 +575,7 @@ proc restoreChunkOwners(root: Chunk, allowRuntimeState = false) =
     for index, inst in chunk.instructions:
       case inst.op
       of opSetLocalPop, opCompareLocalsJumpIfFalse, opCompareConstJumpIfFalse,
-         opLoadLocalField:
+         opLoadLocalField, opSend, opSendLocal, opSendOuterLocal:
         if not chunk.instructions.fusedSequenceFollows(index, inst.op):
           raise newException(ValueError,
             "encoded GIR contains a fused instruction without its sequence")
@@ -622,6 +622,13 @@ proc restoreChunkOwners(root: Chunk, allowRuntimeState = false) =
       else: discard
     if chunk.stdlibCacheSlots != stdlibSlots:
       raise newException(ValueError, "encoded GIR contains an invalid stdlib cache layout")
+    # Which sends may borrow their operands is derived again below
+    # (`fuseBorrowedSends`), never taken from the payload.
+    for inst in chunk.instructions.mitems:
+      case inst.op
+      of opSendLocal: inst.op = opLoadLocal
+      of opSendOuterLocal: inst.op = opLoadOuterLocal
+      else: discard
     chunk.owner = owner
     chunk.dispatchCache = @[]
     chunk.spawnPublished = false
@@ -671,6 +678,9 @@ proc restoreChunkOwners(root: Chunk, allowRuntimeState = false) =
         restoreFunction(message.fn)
 
   restoreChunk(root, nil)
+  # restoreChunk cleared every borrow mark. Which sends may borrow is an
+  # analysis of the whole tree, so a decoded or cloned tree derives its own.
+  root.fuseBorrowedSends()
 
 proc copyExecutionTemplate[T](source: T, copies: var Table[pointer, pointer]): T =
   ## Copy mutable compiler structures, retaining constant Value identity and

@@ -1518,6 +1518,12 @@ proc getOrDefaultById*(t: PropTable, id: int32, default: Value): Value {.inline.
   let i = t.findId(id)
   if i >= 0: t.data[i].val else: default
 
+proc valueBitsById*(t: PropTable, id: int32, missing: uint64): uint64 {.inline.} =
+  ## The bits of the value stored under a key id, or `missing`, without taking
+  ## a reference: the table keeps the value alive while it holds it.
+  let i = t.findId(id)
+  if i >= 0: t.data[i].val.bits else: missing
+
 proc tryGetById*(t: PropTable, id: int32, val: var Value): bool {.inline.} =
   ## Presence-exact lookup (a stored nil Value is distinguishable from miss).
   let i = t.findId(id)

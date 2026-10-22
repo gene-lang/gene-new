@@ -893,6 +893,32 @@ suite "protocols — dispatch inline cache soundness (item D1)":
        "[(a) (try (b) catch Any -1) (a)]",
        "[2 -1 2]"
 
+  test "a bare send is cached while its module is still assembling declarations":
+    # Every send below runs during module initialization, while this module's
+    # declarations are still being assembled, and with an overlay impl in
+    # scope. Neither is reachable by a bare send, which resolves only
+    # type-direct messages, so its sites are cached; the qualified send still
+    # sees the overlay.
+    let chunk = compileSource("""
+      (protocol P (message m [] : Int))
+      (type Dog ^props {} (message name [] "dog"))
+      (fn names [d n]
+        (impl P for Dog (message m [] : Int 2))
+        (var out [])
+        (repeat i in n (out .push d/.name))
+        [out (d .P:m)])
+      (names (Dog) 3)
+    """)
+    check run(chunk, newGlobalScope()).print() == "[[\"dog\" \"dog\" \"dog\"] 2]"
+    when not (compileOption("threads") and defined(gcAtomicArc)):
+      var cached = 0
+      for fn in chunk.functions:
+        for entry in fn.chunk.dispatchCache:
+          if entry.recvTypeBits != 0 and entry.msgBits == 0:
+            inc cached
+      # `.push` and `.name`.
+      check cached == 2
+
   test "qualified sends of two messages at one call site stay distinct":
     # Two first-class protocol messages reused at one send site; the message
     # identity (msgBits) must join the dispatch-cache guard so B/m does not hit

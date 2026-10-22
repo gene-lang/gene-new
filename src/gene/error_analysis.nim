@@ -1602,7 +1602,7 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
     # A fused opcode is analyzed as the instruction it replaced; the rest of
     # its sequence follows it in the chunk and is analyzed in turn.
     of opLoadName, opLoadNativeFast, opLoadLocal, opLoadLocalFast, opLoadOuterLocal, opLoadArg,
-       opCompareLocalsJumpIfFalse, opLoadLocalField:
+       opCompareLocalsJumpIfFalse, opLoadLocalField, opSendLocal, opSendOuterLocal:
       var name = inst.name
       if name.len == 0 and inst.intArg >= 0 and inst.intArg < chunk.localNames.len:
         name = chunk.localNames[inst.intArg]
@@ -1824,7 +1824,9 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
         bound.target = newSym("Error")
         bound.dispatchContract = true
       push bound
-    of opResolveMessage:
+    # A fused send is analyzed as the opResolveMessage it replaced; its
+    # argument loads and call follow in the chunk.
+    of opResolveMessage, opSend:
       let receiver = state.pop()
       push analysis.messageValue(receiver, nil, inst.name, environment)
       push receiver

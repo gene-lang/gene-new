@@ -10598,42 +10598,12 @@ type
     names: HashSet[string]
     setNames: HashSet[string]
 
-const
-  captureUnsafeOps = {opDefineRuntimeMacro, opInvokeRuntimeMacro, opExecuteRuntimeMacro, opRuntimePipelineStage,
-                     opMakeEnv, opEval, opImport, opImportImpl, opMakeType,
-                      opMakeEnum, opMakeProtocol, opMakeImpl, opDeclareType,
-                      opTaskScope, opSupervisor}
-  captureDepthOps = {opLoadOuterLocal, opCallParentLocal0, opCallOuterLocal0,
-                     opCallParentLocal1, opCallOuterLocal1}
-  captureNameOps = {opLoadName, opLoadStdlibPath, opCallName0, opCallName1, opCallNameN,
-                    opSetName, opDefineName}
-
-iterator nestedChunks(chunk: Chunk): tuple[body: Chunk, scoped: bool] =
-  ## Every chunk nested directly in `chunk`, and whether it runs in a scope of
-  ## its own (a try or ensure body shares the enclosing one).
-  for body in chunk.subchunks: yield (body, true)
-  for loop in chunk.forLoops: yield (loop.body, true)
-  for match in chunk.matches:
-    for clause in match.clauses: yield (clause.body, true)
-    if match.elseBody != nil: yield (match.elseBody, true)
-  for attempt in chunk.tries:
-    yield (attempt.body, false)
-    for clause in attempt.catches: yield (clause.body, true)
-    if attempt.ensureBody != nil: yield (attempt.ensureBody, false)
-  for proto in chunk.functions:
-    yield (proto.chunk, true)
-    for param in proto.paramDefaults:
-      if param.optional and param.defaultChunk != nil:
-        yield (param.defaultChunk, true)
-    for param in proto.namedParams:
-      if param.defaultValue.optional and param.defaultValue.defaultChunk != nil:
-        yield (param.defaultValue.defaultChunk, true)
-
 proc fuseSequences(chunk: Chunk, seen: var HashSet[pointer]) =
-  ## Run four common sequences as one dispatch each: a `set` whose value is
+  ## Run five common sequences as one dispatch each: a `set` whose value is
   ## dropped, a comparison of two locals that decides a branch, as every
   ## `while` and `repeat` header does, a comparison with a constant that
-  ## decides a branch, and a one-key read of a local such as `row/amount`.
+  ## decides a branch, a one-key read of a local such as `row/amount`, and a
+  ## send whose arguments are plain reads, such as `(xs .push x)`.
   ## Only the first instruction changes. The rest of each sequence stays in
   ## place for jumps that land inside it, and the VM runs it one instruction at
   ## a time whenever the fused fast path does not apply. This runs after every
@@ -10651,6 +10621,11 @@ proc fuseSequences(chunk: Chunk, seen: var HashSet[pointer]) =
       if chunk.instructions.fusedSequenceFollows(i, fused):
         chunk.instructions[i].op = fused
         break
+  # A send's arguments may be one-key reads, fused above.
+  for i in 0 ..< chunk.instructions.len:
+    if chunk.instructions[i].op == opResolveMessage and
+        chunk.instructions.fusedSequenceFollows(i, opSend):
+      chunk.instructions[i].op = opSend
   for body, _ in chunk.nestedChunks:
     fuseSequences(body, seen)
   template fuseMessages(messages: untyped) =
@@ -10672,6 +10647,7 @@ proc fuseSequences(chunk: Chunk, seen: var HashSet[pointer]) =
 proc fuseSequences(root: Chunk) =
   var seen = initHashSet[pointer]()
   fuseSequences(root, seen)
+  root.fuseBorrowedSends()
 
 proc collectSymbolNames(v: Value, names: var HashSet[string]) =
   case v.kind
@@ -10717,31 +10693,6 @@ proc collectCaptureRefs(chunk: Chunk, localDepth: int, refs: var CaptureRefs) =
     collectAnnotationNames(proto, refs.names)
   for (body, scoped) in nestedChunks(chunk):
     collectCaptureRefs(body, localDepth + (if scoped: 1 else: 0), refs)
-
-proc chunkReachesScopesByName(chunk: Chunk,
-                              memo: var Table[pointer, bool]): bool =
-  ## Whether a chunk tree may reify, eval in, declare types or impls in, or
-  ## own tasks through the scopes above it. Copied captures cannot follow that.
-  if chunk == nil:
-    return false
-  let key = cast[pointer](chunk)
-  if memo.hasKey(key):
-    return memo[key]
-  memo[key] = false
-  var found = false
-  for inst in chunk.instructions:
-    if inst.op in captureUnsafeOps or
-        (inst.op in captureNameOps and
-         inst.name in ["eval", "env", "caller_env"]):
-      found = true
-      break
-  if not found:
-    for (body, scoped) in nestedChunks(chunk):
-      if chunkReachesScopesByName(body, memo):
-        found = true
-        break
-  memo[key] = found
-  found
 
 proc collectByNameBindings(chunk: Chunk, names: var HashSet[string]) =
   ## Names a scope binds by name: its own chunk and the try and ensure bodies

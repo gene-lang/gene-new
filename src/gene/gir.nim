@@ -97,6 +97,19 @@ type
     opCallSplice
     opNew            # constructor keyword: type + named args + body args
     opResolveMessage  # pop receiver, resolve message name receiver-first, push callee below named args + receiver (docs/spec/protocols.md)
+    # opResolveMessage fused with the argument loads and the plain call after
+    # it, which stay in place (`fusedSendCall`). A plain native found in the
+    # dispatch cache is called with the receiver and the arguments, and no
+    # callee is pushed; anything else runs as opResolveMessage.
+    opSend
+    # The opLoadLocal or opLoadOuterLocal of a receiver, fused with the opSend
+    # sequence after it when every argument is a constant or a local, and no
+    # code can assign the receiver's slot or an argument's while a call made
+    # from this code runs (`fuseBorrowedSends`). The native gets them borrowed
+    # from their slots, so nothing is pushed or counted. Anything else runs as
+    # the load it replaced.
+    opSendLocal
+    opSendOuterLocal
     opSuperSend       # pop enclosing type + self; resolve msg from the type's parent, push callee + self (super delegation, design §10)
     opSuperQualifiedSend # like opSuperSend, but pops a qualifier too: (super .Q:m) selects against the parent, not the receiver
     opSetPath         # [base, seg..., value] -> checked in-place write through setMutableChild; pushes the stored value (set, design §12.1)
@@ -1219,6 +1232,45 @@ proc patchJump*(chunk: Chunk, at, target: int) =
 
 const FusedComparisonKinds* = {nfkLt, nfkGt, nfkLe, nfkGe, nfkEq, nfkNe}
 
+const MaxFusedSendArgs* = 3
+  ## Arguments after the receiver that a fused send reads itself.
+
+proc fusedSequenceFollows*(code: openArray[Instruction], index: int,
+                           fused: OpCode): bool
+
+proc fusedSendCall*(code: openArray[Instruction], index: int): int =
+  ## The index of the plain call that completes the send resolved at `index`
+  ## when every instruction between them loads one argument and can run
+  ## nothing else: a constant, a local, an outer local, or a fused one-key
+  ## read of a local. -1 otherwise. A send's resolution runs before its
+  ## arguments, so only arguments like these let the VM resolve and call in
+  ## one step without changing what a failed resolution leaves unevaluated.
+  var at = index + 1
+  var args = 0
+  while at < code.len:
+    case code[at].op
+    of opPushConst, opLoadLocal, opLoadLocalFast, opLoadOuterLocal:
+      inc at
+    of opLoadLocalField:
+      if not code.fusedSequenceFollows(at, opLoadLocalField):
+        return -1
+      at += 3
+    of opCall1, opCall2, opCall:
+      let argCount =
+        case code[at].op
+        of opCall1: 1
+        of opCall2: 2
+        else: code[at].intArg
+      if code[at].names.len != 0 or argCount != args + 1:
+        return -1
+      return at
+    else:
+      return -1
+    inc args
+    if args > MaxFusedSendArgs:
+      return -1
+  -1
+
 proc fusedSequenceFollows*(code: openArray[Instruction], index: int,
                            fused: OpCode): bool =
   ## Whether the instructions after `index` are the rest of the sequence that
@@ -1241,8 +1293,212 @@ proc fusedSequenceFollows*(code: openArray[Instruction], index: int,
   of opLoadLocalField:
     index + 2 < code.len and code[index + 1].op == opPushConst and
       code[index + 2].op == opApplySelectorTop
+  of opSend:
+    code[index].intArg == 0 and code.fusedSendCall(index) >= 0
+  of opSendLocal, opSendOuterLocal:
+    # The receiver's load, then a fused send whose arguments are constants
+    # and locals only: a one-key read is not borrowed.
+    if (fused == opSendLocal) != (code[index].depth == 0) or
+        index + 1 >= code.len or code[index + 1].op notin {opResolveMessage, opSend} or
+        not code.fusedSequenceFollows(index + 1, opSend):
+      return false
+    let call = code.fusedSendCall(index + 1)
+    for at in index + 2 ..< call:
+      if code[at].op notin {opPushConst, opLoadLocal, opLoadLocalFast,
+                            opLoadOuterLocal}:
+        return false
+    true
   else:
     false
+
+const
+  captureUnsafeOps* = {opDefineRuntimeMacro, opInvokeRuntimeMacro, opExecuteRuntimeMacro, opRuntimePipelineStage,
+                     opMakeEnv, opEval, opImport, opImportImpl, opMakeType,
+                      opMakeEnum, opMakeProtocol, opMakeImpl, opDeclareType,
+                      opTaskScope, opSupervisor}
+  # Instructions that read a slot `depth` scopes up. opSendOuterLocal is the
+  # fused form of an opLoadOuterLocal receiver and reads the same slot.
+  captureDepthOps* = {opLoadOuterLocal, opSendOuterLocal, opCallParentLocal0,
+                     opCallOuterLocal0, opCallParentLocal1, opCallOuterLocal1}
+  captureNameOps* = {opLoadName, opLoadStdlibPath, opCallName0, opCallName1, opCallNameN,
+                    opSetName, opDefineName}
+
+iterator nestedChunks*(chunk: Chunk): tuple[body: Chunk, scoped: bool] =
+  ## Every chunk nested directly in `chunk`, and whether it runs in a scope of
+  ## its own (a try or ensure body shares the enclosing one).
+  for body in chunk.subchunks: yield (body, true)
+  for loop in chunk.forLoops: yield (loop.body, true)
+  for match in chunk.matches:
+    for clause in match.clauses: yield (clause.body, true)
+    if match.elseBody != nil: yield (match.elseBody, true)
+  for attempt in chunk.tries:
+    yield (attempt.body, false)
+    for clause in attempt.catches: yield (clause.body, true)
+    if attempt.ensureBody != nil: yield (attempt.ensureBody, false)
+  for proto in chunk.functions:
+    yield (proto.chunk, true)
+    for param in proto.paramDefaults:
+      if param.optional and param.defaultChunk != nil:
+        yield (param.defaultChunk, true)
+    for param in proto.namedParams:
+      if param.defaultValue.optional and param.defaultValue.defaultChunk != nil:
+        yield (param.defaultValue.defaultChunk, true)
+
+proc chunkReachesScopesByName*(chunk: Chunk,
+                              memo: var Table[pointer, bool]): bool =
+  ## Whether a chunk tree may reify, eval in, declare types or impls in, or
+  ## own tasks through the scopes above it. Copied captures cannot follow that.
+  if chunk == nil:
+    return false
+  let key = cast[pointer](chunk)
+  if memo.hasKey(key):
+    return memo[key]
+  memo[key] = false
+  var found = false
+  for inst in chunk.instructions:
+    if inst.op in captureUnsafeOps or
+        (inst.op in captureNameOps and
+         inst.name in ["eval", "env", "caller_env"]):
+      found = true
+      break
+  if not found:
+    for (body, scoped) in nestedChunks(chunk):
+      if chunkReachesScopesByName(body, memo):
+        found = true
+        break
+  memo[key] = found
+  found
+
+proc assignsSlotFrom(chunk: Chunk, level, slot: int, name: string): bool =
+  ## Whether `chunk`, running `level` scopes below the scope that holds
+  ## `slot`, or a chunk nested in it assigns that slot.
+  if chunk == nil:
+    return false
+  for inst in chunk.instructions:
+    if (inst.op == opSetOuterLocal and inst.depth == level and
+        inst.intArg == slot) or (inst.op == opSetName and inst.name == name):
+      return true
+  for (body, scoped) in chunk.nestedChunks:
+    if body.assignsSlotFrom(level + ord(scoped), slot, name):
+      return true
+  false
+
+proc slotHeldDuringCalls*(owner: Chunk, slot: int,
+                          memo: var Table[pointer, bool]): bool =
+  ## Whether a slot of the scope `owner` runs in is assigned only by `owner`'s
+  ## own instructions: nothing nested in it (a closure, a task, a loop or
+  ## match body) assigns the slot, and nothing reaches the scope by name.
+  ## Those instructions are suspended while a call made by one of them, or by
+  ## a body `owner`'s activation runs inline, is running, so the slot keeps
+  ## holding its value for the whole call.
+  if owner == nil or slot < 0 or owner.chunkReachesScopesByName(memo):
+    return false
+  let name = if slot < owner.localNames.len: owner.localNames[slot] else: ""
+  for (body, scoped) in owner.nestedChunks:
+    if body.assignsSlotFrom(ord(scoped), slot, name):
+      return false
+  true
+
+proc fuseBorrowedSends(chunk: Chunk, owners: var seq[Chunk],
+                       seen: var HashSet[pointer],
+                       memo: var Table[pointer, bool]) =
+  ## `owners[^1]` is the chunk whose activation owns `chunk`'s scope, and each
+  ## earlier entry the one a scope further out, for as long as each of those
+  ## runs `chunk` inline; nil where the slots are not analyzable (a module or
+  ## macro-result root, a default-argument chunk).
+  if chunk == nil or seen.containsOrIncl(cast[pointer](chunk)):
+    return
+  template held(depth, slot: int): bool =
+    depth < owners.len and
+      owners[owners.len - 1 - depth].slotHeldDuringCalls(slot, memo)
+  for inst in chunk.instructions.mitems:
+    case inst.op
+    of opSendLocal: inst.op = opLoadLocal
+    of opSendOuterLocal: inst.op = opLoadOuterLocal
+    else: discard
+  for i in 0 ..< chunk.instructions.len:
+    let load = chunk.instructions[i]
+    let fused =
+      case load.op
+      of opLoadLocal: opSendLocal
+      of opLoadOuterLocal: opSendOuterLocal
+      else: continue
+    if not chunk.instructions.fusedSequenceFollows(i, fused) or
+        not held(load.depth, load.intArg):
+      continue
+    var borrowable = true
+    for at in i + 2 ..< chunk.instructions.fusedSendCall(i + 1):
+      let arg = chunk.instructions[at]
+      let depth = if arg.op == opLoadOuterLocal: arg.depth else: 0
+      if arg.op != opPushConst and not held(depth, arg.intArg):
+        borrowable = false
+        break
+    if borrowable:
+      chunk.instructions[i].op = fused
+  template visit(body: Chunk, owner: Chunk) =
+    owners.add owner
+    fuseBorrowedSends(body, owners, seen, memo)
+    owners.setLen(owners.len - 1)
+  # A closure or a spawned task can run while the activation that made it is
+  # suspended at a yield or an await, and a call it makes can resume that
+  # activation, which may then assign its own slots: by pulling its
+  # generator, say. So its sends borrow only its own slots and those of the
+  # bodies it runs inline.
+  template visitDetached(body: Chunk, owner: Chunk) =
+    let detachedOwner: Chunk = owner
+    var own = @[detachedOwner]
+    fuseBorrowedSends(body, own, seen, memo)
+  template visitFunction(fn: FunctionProto) =
+    if fn != nil:
+      visitDetached(fn.chunk, fn.chunk)
+      for param in fn.paramDefaults:
+        if param.optional: visitDetached(param.defaultChunk, nil)
+      for param in fn.namedParams:
+        if param.defaultValue.optional:
+          visitDetached(param.defaultValue.defaultChunk, nil)
+  var spawned: seq[bool] = newSeq[bool](chunk.subchunks.len)
+  for inst in chunk.instructions:
+    if inst.op == opSpawn and inst.intArg >= 0 and inst.intArg < spawned.len:
+      spawned[inst.intArg] = true
+  for index, body in chunk.subchunks:
+    if spawned[index]: visitDetached(body, body)
+    else: visit(body, body)
+  for loop in chunk.forLoops: visit(loop.body, loop.body)
+  for match in chunk.matches:
+    for clause in match.clauses: visit(clause.body, clause.body)
+    if match.elseBody != nil: visit(match.elseBody, match.elseBody)
+  for attempt in chunk.tries:
+    fuseBorrowedSends(attempt.body, owners, seen, memo)
+    for clause in attempt.catches: visit(clause.body, clause.body)
+    fuseBorrowedSends(attempt.ensureBody, owners, seen, memo)
+  for proto in chunk.functions: visitFunction(proto)
+  for typ in chunk.typeProtos:
+    for message in typ.messages: visitFunction(message.fn)
+    for inline in typ.inlineImpls:
+      for message in inline.messages: visitFunction(message.fn)
+    visitFunction(typ.ctorFn)
+  for enumProto in chunk.enumProtos:
+    for message in enumProto.messages: visitFunction(message.fn)
+    for inline in enumProto.inlineImpls:
+      for message in inline.messages: visitFunction(message.fn)
+  for protocol in chunk.protocolProtos:
+    for message in protocol.messages: visitFunction(message.fn)
+    visitFunction(protocol.deriveFn)
+  for impl in chunk.implProtos:
+    for message in impl.messages: visitFunction(message.fn)
+
+proc fuseBorrowedSends*(root: Chunk) =
+  ## Mark the sends whose receiver and arguments can be passed borrowed
+  ## (opSendLocal, opSendOuterLocal) in a finished chunk tree, after
+  ## clearing the marks of each chunk it visits. A decoded or cloned tree
+  ## gets this after `restoreChunkOwners` has cleared every chunk's marks,
+  ## including those it does not visit. The root's own slots are
+  ## never borrowed: a module, a program input or a macro result runs in a
+  ## scope that code outside this tree can bind.
+  var owners: seq[Chunk] = @[nil]
+  var seen = initHashSet[pointer]()
+  var memo = initTable[pointer, bool]()
+  fuseBorrowedSends(root, owners, seen, memo)
 
 proc formatNames(names: openArray[string]): string =
   "[" & names.join(",") & "]"
@@ -1299,11 +1555,12 @@ proc formatInstruction(inst: Instruction): string =
      opRefBegin, opRefFinish, opRefAbort, opRefGet, opRefGetStructural:
     result.add " name=" & inst.name
   of opLoadLocal, opLoadLocalFast, opLoadArg, opDefineLocal, opRedefineLocal,
-     opSetLocal, opSetLocalPop, opCompareLocalsJumpIfFalse, opLoadLocalField:
+     opSetLocal, opSetLocalPop, opCompareLocalsJumpIfFalse, opLoadLocalField,
+     opSendLocal:
     result.add " slot=" & $inst.intArg
     if inst.name.len > 0:
       result.add " name=" & inst.name
-  of opLoadOuterLocal, opSetOuterLocal:
+  of opLoadOuterLocal, opSetOuterLocal, opSendOuterLocal:
     result.add " depth=" & $inst.depth & " slot=" & $inst.intArg
     if inst.name.len > 0:
       result.add " name=" & inst.name
@@ -1433,7 +1690,7 @@ proc formatInstruction(inst: Instruction): string =
       result.add " argc=" & $inst.intArg
     if inst.names.len > 0:
       result.add " names=" & formatNames(inst.names)
-  of opResolveMessage:
+  of opResolveMessage, opSend:
     result.add " name=" & inst.name & " candidates=" & $inst.depth
   of opSuperSend, opSuperQualifiedSend:
     result.add " name=" & inst.name

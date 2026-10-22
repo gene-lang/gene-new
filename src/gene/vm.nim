@@ -12567,7 +12567,8 @@ const plainLoopBodyOps = {
   opApplySelectorTop, opCall0, opCall1, opCall2, opCall, opCallSplice,
   opCallName0, opCallName1, opCallNameN, opCallLocal0, opCallLocal1,
   opCallLocalN, opCallParentLocal0, opCallParentLocal1, opCallOuterLocal0,
-  opCallOuterLocal1, opNew, opResolveMessage, opResolveQualifiedMessage,
+  opCallOuterLocal1, opNew, opResolveMessage, opSend, opSendLocal,
+  opSendOuterLocal, opResolveQualifiedMessage,
   opQualifiedSend, opSetPath, opPlaceSendReceiver, opIntAdd2, opIntSub2,
   opIntMul2, opIntLt2, opIntGt2, opIntLe2, opIntGe2, opIntAddConst,
   opIntSubConst, opIntMulConst, opIntLtConst, opIntGtConst, opIntLeConst,
@@ -14636,8 +14637,7 @@ proc chunkCapturesSendable(chunk: Chunk, fnScope, visibleScope: Scope,
     return true
   for inst in chunk.instructions:
     case inst.op
-    of opLoadOuterLocal, opCallParentLocal0, opCallOuterLocal0,
-        opCallParentLocal1, opCallOuterLocal1:
+    of captureDepthOps:
       if inst.depth > localDepth:
         let captureDepth = inst.depth - localDepth
         if not capturedSlotSendable(fnScope, visibleScope, captureDepth,
@@ -14840,8 +14840,7 @@ proc collectSpawnCaptures(chunk: Chunk, localDepth: int,
     return
   for inst in chunk.instructions:
     case inst.op
-    of opLoadOuterLocal, opCallParentLocal0, opCallOuterLocal0,
-        opCallParentLocal1, opCallOuterLocal1:
+    of captureDepthOps:
       if inst.depth > localDepth:
         captures.addCaptureSlot(inst.depth - localDepth, inst.intArg, inst.name)
     of opLoadName, opLoadStdlibPath, opLoadNativeFast, opCallName0, opCallName1, opCallNameN:
@@ -19179,10 +19178,26 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               targetProto.checksErrors, nextErrorTypes, target.fnName,
               operandBase, tailMarked)
 
-  template tryPlainNative(calleeValue: Value, argsBegin, count, resultBase: int) =
+  template insertStackValue(at: int, value: Value) =
+    ## Put `value` at stack index `at`, shifting the entries above it up one
+    ## slot in place (growth goes through spGrow, as opResolveMessage does).
+    if sp >= stack.len:
+      spGrow(stack)
+    var shiftIndex = sp
+    while shiftIndex > at:
+      stack[shiftIndex] = move stack[shiftIndex - 1]
+      dec shiftIndex
+    stack[at] = value
+    inc sp
+
+  template tryPlainNative(calleeValue: Value, argsBegin, count, resultBase: int,
+                          restoreCallee = false) =
     ## A plain native has no Call envelope. Keep its operand owners until it
     ## returns, and use exactly the normal call's frame/suspension handling.
     ## The template continues the dispatch loop only when it handled the call.
+    ## `restoreCallee` is for a fused send, which did not push the callee: a
+    ## suspension that re-runs the call instruction finds it below the
+    ## arguments again.
     if calleeValue.kind == vkNativeFn:
       let implementation = calleeValue.nativeImpl
       if implementation != nil:
@@ -19205,6 +19220,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             NIL, "", false, @[], request.label, base, false)
         except SuspendError as se:
           if not se.timer or se.retry:
+            if restoreCallee:
+              insertStackValue(argsBegin, calleeValue)
             raise
           if fiber == nil:
             raise newException(GeneError, "internal: suspended outside a fiber")
@@ -19215,6 +19232,110 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           fiber.waitDeadline = se.deadline
           return RunStop(kind: rskSuspend, value: NIL)
         strunc(base)
+        spush resultValue
+        continue
+
+  template tryBorrowedSend(receiverBits: uint64) =
+    ## The fused opSend at ip, its argument loads and its plain call, for a
+    ## receiver read from a slot by the opSendLocal or opSendOuterLocal before
+    ## it. The compiler proved that no code can assign that slot, or an
+    ## argument's, while this call runs (`slotHeldDuringCalls`), so a plain
+    ## native from the dispatch cache gets the receiver and the arguments
+    ## borrowed from their slots and constants: nothing is pushed, counted or
+    ## released. A function value, held weakly by its scope, is not borrowed.
+    ## Continues the dispatch loop when it made the call; anything it does not
+    ## handle is left to the instruction's own load and the opSend after it.
+    when dispatchCacheEnabled:
+      # The native comes from the dispatch cache; without it, nothing is
+      # borrowed.
+      block borrowedSend:
+        let receiverWord: uint64 = receiverBits
+        let receiver {.cursor.} = cast[ptr Value](unsafeAddr receiverWord)[]
+        let receiverKind = receiver.kind
+        var typeBits = 0'u64
+        if receiverKind == vkNode:
+          # opResolveMessage decides about an instance under construction.
+          if receiver.nodeConstructing or
+              receiver.borrowedNodeHead.kind != vkType or
+              receiver.borrowedNodeHead.typeContractPending:
+            break borrowedSend
+          typeBits = receiver.borrowedNodeHead.bits
+        elif receiverKind in {vkEnumVariant, vkFunction, vkCallableView}:
+          break borrowedSend
+        else:
+          if gScalarTypes[receiverKind].typeContractPending:
+            break borrowedSend
+          typeBits = gScalarTypes[receiverKind].bits
+        let site = ip
+        if typeBits == 0 or site >= chunk.dispatchCache.len:
+          break borrowedSend
+        let entry = addr chunk.dispatchCache[site]
+        if entry.recvTypeBits != typeBits or entry.msgBits != 0'u64 or
+            entry.epoch != scope.scopeDispatchEpoch():
+          break borrowedSend
+        let calleeBits = entry.calleeBits
+        let native {.cursor.} = cast[ptr Value](unsafeAddr calleeBits)[]
+        if native.kind != vkNativeFn or native.nativeImpl == nil or
+            (scope.moduleRefs != nil and scope.moduleRefs.pendingStructural != 0):
+          break borrowedSend
+        var operands: array[MaxFusedSendArgs + 1, uint64]
+        operands[0] = receiverWord
+        var count = 1
+        var tailAt = ip + 1
+        while true:
+          let load = addr chunk.instructions[tailAt]
+          var holder {.cursor.} = scope
+          case load[].op
+          of opPushConst:
+            operands[count] = chunk.constants[load[].intArg].bits
+          of opLoadLocal, opLoadLocalFast, opLoadOuterLocal:
+            if load[].op == opLoadOuterLocal:
+              for _ in 0 ..< load[].depth:
+                if holder == nil:
+                  break borrowedSend
+                holder = holder.parent
+            let slot = load[].intArg
+            if holder == nil or slot < 0 or slot >= holder.slots.len or
+                not holder.slotDefined(slot) or
+                holder.slots[slot].kind in {vkFunction, vkCallableView}:
+              break borrowedSend
+            operands[count] = holder.slots[slot].bits
+          else:
+            break                     # the call
+          inc count
+          inc tailAt
+        let first = ip
+        advanceInPlace(first, tailAt + 1 - first)
+        ip = tailAt + 1
+        let borrowed = cast[ptr UncheckedArray[Value]](addr operands[0])
+        let implementation = native.nativeImpl
+        var resultValue: Value
+        try:
+          if count == 2:
+            let fast = tryFastNative2(native, borrowed[0], borrowed[1])
+            resultValue =
+              if fast.handled: fast.value
+              else: implementation(borrowed.toOpenArray(0, 1))
+          else:
+            resultValue = implementation(borrowed.toOpenArray(0, count - 1))
+        except NativeFrameRequest as request:
+          enterBytecodeCall(request.chunk, request.scope, false, request.validateImpls,
+            NIL, "", false, @[], request.label, sp, false)
+        except SuspendError as se:
+          if not se.timer or se.retry:
+            # The suspension re-runs the call instruction, which expects the
+            # callee, the receiver and the arguments on the stack.
+            spush ownedValueFromBits(calleeBits)
+            for i in 0 ..< count:
+              spush ownedValueFromBits(operands[i])
+            raise
+          if fiber == nil:
+            raise newException(GeneError, "internal: suspended outside a fiber")
+          spush NIL
+          captureContinuation(ip)
+          fiber.waitTimer = true
+          fiber.waitDeadline = se.deadline
+          return RunStop(kind: rskSuspend, value: NIL)
         spush resultValue
         continue
 
@@ -19392,6 +19513,32 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           # Scopeless calls: arguments live on the shared operand stack at the
           # frame's base (they were never popped into a scope).
           spush stack[curStackBase + inst[].intArg]
+        of opSendLocal:
+          # A receiver's opLoadLocal, fused with the send after it
+          # (`tryBorrowedSend`); anything that does not take the borrowed
+          # path runs as that load.
+          let slot = inst[].intArg
+          if slot >= 0 and slot < scope.slots.len and scope.slotDefined(slot):
+            tryBorrowedSend(scope.slots[slot].bits)
+            spush materializedModuleRefValue(scope, scope.slots[slot])
+          else:
+            spush materializedModuleRefValue(
+              scope, scope.loadSlot(slot, inst[].name))
+        of opSendOuterLocal:
+          # The same for a receiver's opLoadOuterLocal.
+          var holder {.cursor.} = scope
+          for _ in 0 ..< inst[].depth:
+            if holder == nil:
+              break
+            holder = holder.parent
+          let slot = inst[].intArg
+          if holder != nil and slot >= 0 and slot < holder.slots.len and
+              holder.slotDefined(slot):
+            tryBorrowedSend(holder.slots[slot].bits)
+            spush materializedModuleRefValue(scope, holder.slots[slot])
+          else:
+            spush materializedModuleRefValue(
+              scope, scope.loadSlotAt(inst[].depth, slot, inst[].name))
         of opLoadOuterLocal:
           let slot = inst[].intArg
           # Walked as a borrow at every depth; scopeAtDepth returns an owned
@@ -20667,7 +20814,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             frameReturnBareInt(a)
             continue
           ip += 4
-        of opResolveMessage:
+        of opResolveMessage, opSend:
           # Receiver-first message send (docs/spec/protocols.md): an unqualified send
           # reaches only the receiver's type-direct messages (walking parents),
           # then the built-in type-direct surface. There is no protocol tier and
@@ -20675,7 +20822,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           # (`x .P:m`). The resolved callee is inserted below any named argument
           # values already on the stack, then the receiver goes back on top as
           # the first positional argument.
-          let receiver = spop()
+          var receiver = spop()
           if receiver.nodeConstructing and inst[].name notin
               ["set_prop", "set_body", "push_body"]:
             raise newException(GeneError,
@@ -20690,7 +20837,10 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               # owned Type costs a GC_ref/GC_unref pair each time it is
               # produced or passed. Every condition the general path below
               # would test is tested here: same type, same epoch, no pending
-              # contract, no transient impls.
+              # contract. Impls, including activation-local overlays and the
+              # declarations a module is still assembling, are protocol impls
+              # that only a qualified send reaches, so they do not affect
+              # this resolution.
               let receiverKind = receiver.kind
               var typeBits = 0'u64
               var contractPending = false
@@ -20712,8 +20862,93 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               let entry = addr chunk.dispatchCache[site]
               if entry.recvTypeBits != typeBits or entry.msgBits != 0'u64 or
                   entry.epoch != scope.scopeDispatchEpoch() or
-                  contractPending or scope.chainHasTransientImpls():
+                  contractPending:
                 break cachedBuiltinSend
+              if op == opSend:
+                block fusedSend:
+                  # The argument loads and the plain call this send was fused
+                  # with follow at ip (`fusedSendCall`). A plain native from
+                  # the cache is called here without being pushed: the
+                  # unchanged epoch keeps it registered, and nothing runs
+                  # before the call reads its procedure. Every argument is
+                  # read before anything is pushed; one that is not a plain
+                  # read (an undefined slot, a pending module reference, a
+                  # field the fast read does not make) runs the sequence one
+                  # instruction at a time from here, as opResolveMessage.
+                  let calleeBits = entry.calleeBits
+                  let native {.cursor.} = cast[ptr Value](unsafeAddr calleeBits)[]
+                  if native.kind != vkNativeFn or native.nativeImpl == nil:
+                    break fusedSend
+                  let plainSlots = scope.moduleRefs == nil or
+                    scope.moduleRefs.pendingStructural == 0
+                  if not plainSlots:
+                    break fusedSend
+                  # Borrowed: each value stays held by its slot, constant
+                  # table or field until it is pushed below.
+                  var args: array[MaxFusedSendArgs, uint64]
+                  var count = 0
+                  var tailAt = ip
+                  while true:
+                    let load = addr chunk.instructions[tailAt]
+                    case load[].op
+                    of opPushConst:
+                      args[count] = chunk.constants[load[].intArg].bits
+                      inc tailAt
+                    of opLoadLocal, opLoadLocalFast:
+                      let slot = load[].intArg
+                      if slot < 0 or slot >= scope.slots.len or
+                          not scope.slotDefined(slot):
+                        break fusedSend
+                      args[count] = scope.slots[slot].bits
+                      inc tailAt
+                    of opLoadOuterLocal:
+                      var outer {.cursor.} = scope
+                      for _ in 0 ..< load[].depth:
+                        if outer == nil:
+                          break fusedSend
+                        outer = outer.parent
+                      let slot = load[].intArg
+                      if outer == nil or slot < 0 or slot >= outer.slots.len or
+                          not outer.slotDefined(slot):
+                        break fusedSend
+                      args[count] = outer.slots[slot].bits
+                      inc tailAt
+                    of opLoadLocalField:
+                      # opLoadLocalField's fast read, from the same slot.
+                      let slot = load[].intArg
+                      if slot < 0 or slot >= scope.slots.len or
+                          not scope.slotDefined(slot):
+                        break fusedSend
+                      let keyId = plainPathKeyId(
+                        chunk.constants[chunk.instructions[tailAt + 1].intArg])
+                      let target {.cursor.} = scope.slots[slot]
+                      if keyId != -2 and target.isPropMap:
+                        args[count] =
+                          if keyId >= 0:
+                            target.mapEntries.valueBitsById(keyId, VOID.bits)
+                          else:
+                            VOID.bits
+                      elif keyId >= 0 and target.isNodeValue:
+                        args[count] = target.props.valueBitsById(keyId, VOID.bits)
+                        if args[count] == VOID.bits:
+                          break fusedSend
+                      else:
+                        break fusedSend
+                      tailAt += 3
+                    else:
+                      break                 # the call
+                    inc count
+                  let first = ip
+                  advanceInPlace(first, tailAt + 1 - first)
+                  ip = tailAt + 1
+                  let base = sp
+                  spush move(receiver)
+                  for i in 0 ..< count:
+                    spush ownedValueFromBits(args[i])
+                  # Always handled and continued: the callee is a native with
+                  # a procedure.
+                  tryPlainNative(native, base, count + 1, base,
+                                 restoreCallee = true)
               callee = ownedValueFromBits(entry.calleeBits)
           if callee.kind == vkNil:
             let recvType = receiver.receiverType
@@ -20721,18 +20956,20 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             # An unqualified send reaches only type-direct messages, walking the
             # parent chain (design §3/§9). Protocol messages are always qualified —
             # `(x .P:m)` — so a protocol impl is never reached by a bare name.
+            # A type's direct messages are fixed before its binding is
+            # published, so the result depends only on the type, the epoch and
+            # the contract made ready above: it is cached even while impls are
+            # in scope or a module is still assembling its declarations.
             if recvType.kind == vkType:
               when dispatchCacheEnabled:
                 # site = this instruction's index (ip was advanced at loop top).
                 let site = ip - 1
                 let epoch = scope.scopeDispatchEpoch()
-                let cacheable = not scope.chainHasTransientImpls()
-                if cacheable:
-                  callee = chunk.dispatchCacheLookup(site, recvType, 0'u64, epoch)
+                callee = chunk.dispatchCacheLookup(site, recvType, 0'u64, epoch)
               if callee.kind == vkNil:
                 callee = readyTypeDirectMessage(recvType, inst[].name)
                 when dispatchCacheEnabled:
-                  if cacheable and callee.kind != vkNil:
+                  if callee.kind != vkNil:
                     chunk.dispatchCacheFill(site, recvType, 0'u64, epoch, callee)
             if callee.kind == vkNil:
               callee = builtinReceiverMessage(scope, receiver, inst[].name)
