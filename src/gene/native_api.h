@@ -21,6 +21,12 @@
 #define GENE_API_TASK_COPY_FEATURE UINT64_C(256)
 #define GENE_API_FLOAT_FEATURE UINT64_C(512)
 #define GENE_API_FOREIGN_ROOTS_FEATURE UINT64_C(1024)
+#define GENE_API_TASK_FAIL_COPY_FEATURE UINT64_C(2048)
+#define GENE_API_UNATTACHED_SUBMIT_FEATURE UINT64_C(4096)
+#define GENE_API_TASK_CANCEL_FLAG_FEATURE UINT64_C(8192)
+#define GENE_API_TASK_CANCEL_CALLBACK_FEATURE UINT64_C(16384)
+#define GENE_API_TWO_PHASE_CLOSE_FEATURE UINT64_C(32768)
+#define GENE_API_PIN_IMAGE_FEATURE UINT64_C(65536)
 #define GENE_API_MAX_COPY_BYTES (64u * 1024u * 1024u)
 #define GENE_FOREIGN_ROOT_MAX_CAPACITY UINT32_C(65536)
 #define GENE_LIST_ITEM UINT32_C(0)
@@ -77,6 +83,29 @@ typedef uint32_t (*GeneNativeCallback)(
     GeneHandle environment, GeneHandle *out_value,
     GeneHandle *out_error, GeneOutBytes *diagnostic);
 typedef void (*GeneContextRetire)(void *user_context);
+typedef void (*GeneTaskCancelCallback)(void *user_context);
+
+/* Entries after reserve_foreign_roots are appended; check struct_size and
+ * the feature bit before calling one.
+ * task_fail_copy queues a failure like task_submit_copy queues a result. The
+ * root lane calls error_factory (an owning ID retained on the root lane) with
+ * the message and the copied detail (NULL means nil) and fails the Task with
+ * the Error it returns; factory 0 fails it with a RuntimeError.
+ * task_retire_queued queues retirement outside the queue budgets; call it only
+ * after the job has physically ended. With the unattached-submit bit, both
+ * entries and task_submit_copy are also admitted from threads that never
+ * attached; synchronous settlement entries still need the root lane or an
+ * attached thread.
+ * task_cancel_requested reads a flag the root lane sets when the user Task is
+ * cancelled. task_on_cancel registers a root-lane callback that runs at most
+ * once; retire(user_context) runs exactly once after the producer retires and
+ * the library stays loaded until it returns.
+ * enable_two_phase_close is admitted during gene_module_init. Module close
+ * then rejects new_task but keeps callbacks, late attachment and queued
+ * submissions working until every producer has settled or retired, and only
+ * then closes registrations. module_closing reports that close has begun.
+ * pin_module_image keeps the image containing symbol mapped for the process
+ * lifetime. */
 
 /* Callback arguments and environment are valid only during the C call;
  * retain an ID before storing it. On OK, out_value 0 means Gene nil,
@@ -143,6 +172,17 @@ typedef struct GeneApi {
   uint32_t (*copy_f64)(void *, GeneHandle, double *, GeneOutBytes *);
   uint32_t (*new_f64)(void *, double, GeneHandle *, GeneOutBytes *);
   uint32_t (*reserve_foreign_roots)(void *, size_t, GeneOutBytes *);
+  uint32_t (*task_fail_copy)(void *, GeneProducer, GeneHandle,
+                             const uint8_t *, size_t,
+                             const GeneCopiedResult *, GeneOutBytes *);
+  uint32_t (*task_retire_queued)(void *, GeneProducer, GeneOutBytes *);
+  uint32_t (*task_cancel_requested)(void *, GeneProducer, uint8_t *,
+                                    GeneOutBytes *);
+  uint32_t (*task_on_cancel)(void *, GeneProducer, GeneTaskCancelCallback,
+                             void *, GeneContextRetire, GeneOutBytes *);
+  uint32_t (*enable_two_phase_close)(void *, GeneOutBytes *);
+  uint32_t (*module_closing)(void *, uint8_t *, GeneOutBytes *);
+  uint32_t (*pin_module_image)(void *, const void *, GeneOutBytes *);
 } GeneApi;
 
 #define GENE_INGRESS_ACCEPTED 0

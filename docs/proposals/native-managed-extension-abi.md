@@ -123,6 +123,26 @@ Feature bit 9 (`GENE_API_FLOAT_FEATURE = 512`) advertises `copy_f64` and
 Feature bit 10 (`GENE_API_FOREIGN_ROOTS_FEATURE = 1024`) advertises root-lane
 `reserve_foreign_roots` after the Float entries in threaded AtomicArc builds.
 
+The following entries are appended after `reserve_foreign_roots`, in this
+order. Every build advertises bits 11 to 15; bit 16 needs a POSIX loader.
+- Bit 11 (`GENE_API_TASK_FAIL_COPY_FEATURE = 2048`): `task_fail_copy` queues a
+  failure with a copied message and an optional copied detail. The root lane
+  calls the module's retained error factory and fails the Task with the Error
+  it returns. Factory 0 fails it with a `RuntimeError`.
+- Bit 12 (`GENE_API_UNATTACHED_SUBMIT_FEATURE = 4096`): `task_retire_queued`
+  queues retirement outside the queue budgets. It also admits
+  `task_submit_copy`, `task_fail_copy` and `task_retire_queued` from threads
+  that never attached, in ORC builds too. Those three entries raise no Nim
+  exception, change no reference count and report static diagnostics.
+- Bit 13 (`GENE_API_TASK_CANCEL_FLAG_FEATURE = 8192`): `task_cancel_requested`.
+- Bit 14 (`GENE_API_TASK_CANCEL_CALLBACK_FEATURE = 16384`): `task_on_cancel`.
+- Bit 15 (`GENE_API_TWO_PHASE_CLOSE_FEATURE = 32768`): `enable_two_phase_close`
+  and `module_closing`.
+- Bit 16 (`GENE_API_PIN_IMAGE_FEATURE = 65536`): `pin_module_image`.
+
+The contracts are in [Copied results](native-task-result-handoff.md) and
+[Packaged managed native modules](../spec/native-module.md).
+
 `length`, `copy_key` and `traverse` use selectors `0=List item`, `1=Map
 entry`, `2=Node body`, `3=Node prop`, `4=Node head`. `copy_key` applies only to
 Map entry and Node prop. The index selects an element after a copied length
@@ -149,8 +169,11 @@ Gene memory survives a call.
 | `call` | Callable ID, owning argument IDs, environment ID; returns owned value or typed error ID. | Root lane; callback runs under owner-dependent admission. |
 | `define` | Environment ID, copied name bytes, value ID; returns an owned binding ID. | Root lane; the Scope owns the binding independently. |
 | `lookup` | Environment ID and copied name; returns an owning ID. | Root lane; resolves lexical parents under the same managed provenance walk. |
-| `new_task`, `task_complete`, `task_fail`, `task_cancel`, `task_retire` | Owning Task ID, distinct opaque producer token, and payload/error IDs. | New Task on the root lane during a registered callback; settlement on root or attached lane. The physical owner survives user cancellation until completion, failure or retirement. Typed foreign errors require a root-lane dispatch adapter before enabled. |
+| `new_task`, `task_complete`, `task_fail`, `task_cancel`, `task_retire` | Owning Task ID, distinct opaque producer token, and payload/error IDs. | New Task on the root lane during a registered callback; settlement on root or attached lane. The physical owner survives user cancellation until completion, failure or retirement. A typed error ID is accepted only on the root lane; other threads use `task_fail_copy`. |
 | `task_submit_copy` | Producer token and copied Nil/Bool/Int/Float/Text/Bytes source; status means queue admission. | Root or attached lane; the root poll constructs the Gene value and consumes the producer. Float additionally requires its feature bit. Bounds and cancellation behavior are in [copied Task results](native-task-result-handoff.md). |
+| `task_fail_copy`, `task_retire_queued` | Producer token plus copied message, optional copied detail and error factory ID; or the token alone. | Any thread; OK means queued. Retirement bypasses the queue budgets and is called only after the job has physically ended. |
+| `task_cancel_requested`, `task_on_cancel` | Producer token; a flag output, or a root-lane callback, context and retirement. | The flag is readable from any submitting thread. The callback runs at most once on the root lane; `retire(context)` runs once after the producer retires, under the registration's own library borrow. |
+| `enable_two_phase_close`, `module_closing`, `pin_module_image` | Runtime context; a flag output; an address inside the module image. | Two-phase close is enabled during `gene_module_init`. The closing flag is readable from any thread that holds a live token. A pin keeps the image mapped for the process. |
 | `copy_f64`, `new_f64` | Double precision Float read or new owning ID. | Read on an attached lane; construction on the root lane. `task_submit_copy` accepts a Float source when this feature is advertised. |
 | `reserve_foreign_roots` | Absolute slot capacity and copied diagnostic. | Root lane only; provisions stable entries and index buckets before attached-lane `retain` or traversal returns new owning IDs. |
 | `register_callback`, `request_close`, `wait_closed` | C callback/context, initializer environment ID, registration token. | Root lane; context and library borrow retire after close and zero in-flight calls. `wait_closed` consumes the token and returns an owning Task ID. |

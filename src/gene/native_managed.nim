@@ -62,6 +62,7 @@ type
     closeTasks: seq[GeneManagedRoot]
     waiters: seq[ManagedModuleWaiter]
     closeRequested, rootsReleased, closed: bool
+    prepared: bool # two-phase close: every producer settled or retired
     handleGone: bool
     terminalStatus: GeneStatus
     terminalMessage: string
@@ -71,22 +72,47 @@ type
     environment: uint64
     registrations: seq[uint64]
 
-  ManagedCProducer = ref object
+  ManagedQueuedKind = enum
+    mqResult, mqFailure, mqRetire
+
+  # `cProducers` owns every producer until the root lane retires it, including
+  # one already queued. Queue links are raw so a thread the runtime never
+  # attached can enqueue without touching a reference count.
+  ManagedCProducerObj = object
+    token: uint64
+    selfPtr: pointer
     task: GeneManagedTask
     environment: GeneManagedEnvironment
     library: Value
     releaseNode: ManagedProducerRelease
+    queued: bool # a queued submission consumed the token
+    queuedKind: ManagedQueuedKind
+    queuedBytes: int # copy bytes counted against the queue budget
     copyKind: uint32
     copyScalar: int64
     copyReal: float64
     copyData: pointer
     copyLength: int
-    copyNext: ManagedCProducer
+    failFactory: uint64
+    failMessage: pointer
+    failMessageLength: int
+    cancelRequested: int32 # atomic; only the root lane sets it
+    copyNext: ptr ManagedCProducerObj
+  ManagedCProducer = ref ManagedCProducerObj
 
   ManagedProducerRelease = ref object
     environment: GeneManagedEnvironment
     library: Value
     next: ManagedProducerRelease
+    # A task_on_cancel registration. It retires with the producer and keeps
+    # its own library borrow until `cancelRetire` returns.
+    cancelCallback: GeneTaskCancelCallbackProc
+    cancelContext: pointer
+    cancelRetire: GeneContextRetireProc
+    cancelLibrary: Value
+    cancelDone: bool # fired, or can no longer fire
+    cancelFiring: bool # the callback is on the stack
+    retireDeferred: bool # retirement arrived while the callback ran
 
   GeneManagedDomain* = ref object
     application: RuntimeContext
@@ -107,10 +133,17 @@ type
     producerEntries: Table[uint64, ManagedEntry]
     nextProducerId: uint64
     cProducers: Table[uint64, ManagedCProducer]
+    liveCProducers: int # tokens no queued submission has consumed
     pendingProducerReleases: ManagedProducerRelease
-    copyHead, copyTail: ManagedCProducer
+    copyHead, copyTail: ptr ManagedCProducerObj
     copyCount, copyBytes: int
     copyReservations, copyReservedBytes: int
+    retireQueued: int # queued retirements, outside the copy budgets
+    draining: bool # an error factory call may re-enter the scheduler
+    cancelEpoch: int
+    cancelRescan: int32 # atomic
+    twoPhaseClose: bool
+    closing: int32 # atomic; module close has begun
     nextRegistrationId: uint64
     liveRegistrations: int
     registrations: Table[uint64, GeneManagedRegistration]
@@ -182,6 +215,17 @@ when defined(geneNativeCopyAllocationProbe):
   var failNextNativeCopyAllocation: bool
   proc geneFailNextNativeCopyAllocation*() =
     failNextNativeCopyAllocation = true
+
+const nativeImagePinning = defined(posix) and not defined(emscripten) and
+  not defined(geneWasm)
+when nativeImagePinning:
+  {.compile: "native_pin.c".}
+  proc nativePinImage(symbol: pointer, refuse: cint): cint
+    {.importc: "gene_native_pin_image", cdecl, raises: [].}
+when defined(geneNativePinFailureProbe):
+  var failNextNativePin: bool
+  proc geneFailNextNativePin*() =
+    failNextNativePin = true
 
 proc copiedMalloc(size: csize_t): pointer
     {.importc: "malloc", header: "<stdlib.h>".}
@@ -1177,7 +1221,10 @@ proc geneManagedTaskComplete*(task: GeneManagedTask,
 proc geneManagedTaskFail*(task: GeneManagedTask,
                           environment: GeneManagedEnvironment,
                           message: string,
-                          error: GeneManagedRoot = nil): GeneManagedAck =
+                          error: GeneManagedRoot = nil,
+                          typedFallback = false): GeneManagedAck =
+  ## With `typedFallback`, a typed error that fails Error admission fails the
+  ## Task with that generated TypeError instead of a message-only error.
   if task == nil or task.domain == nil:
     raise newException(GeneError, "managed Task is nil")
   let domain = task.domain
@@ -1198,7 +1245,17 @@ proc geneManagedTaskFail*(task: GeneManagedTask,
     except GeneError as e:
       result.status = gsError
       result.message = e.msg
-      discard vm.nativeTaskFail(producer.value, e.msg, NIL, false, scope)
+      var reported = false
+      if typedFallback and e.hasErrVal:
+        try:
+          result.accepted = vm.nativeTaskFail(producer.value, e.msg, e.errVal,
+                                               true, scope)
+          result.status = gsOk
+          reported = true
+        except GeneError:
+          discard
+      if not reported:
+        discard vm.nativeTaskFail(producer.value, e.msg, NIL, false, scope)
     finally:
       task.releaseProducer()
 
@@ -1343,7 +1400,16 @@ const
   GeneApiTaskCopyFeature* = 256'u64
   GeneApiFloatFeature* = 512'u64
   GeneApiForeignRootsFeature* = 1024'u64
+  GeneApiTaskFailCopyFeature* = 2048'u64
+  GeneApiUnattachedSubmitFeature* = 4096'u64
+  GeneApiTaskCancelFlagFeature* = 8192'u64
+  GeneApiTaskCancelCallbackFeature* = 16384'u64
+  GeneApiTwoPhaseCloseFeature* = 32768'u64
+  GeneApiPinImageFeature* = 65536'u64
   GeneApiMaxCopyBytes* = 64 * 1024 * 1024
+  # A copied failure's error factory runs on the root lane during a poll.
+  GeneErrorFactoryMemoryMb = 32'i64
+  GeneErrorFactoryTimeoutMs = 1000'i64
 
 proc apiDiagnostic(output: ptr GeneOutBytes, message: string) =
   if output == nil: return
@@ -1353,6 +1419,16 @@ proc apiDiagnostic(output: ptr GeneOutBytes, message: string) =
               else: int(output.capacity)
   if count > 0:
     copyMem(output.data, unsafeAddr message[0], count)
+
+proc apiStaticDiagnostic(output: ptr GeneOutBytes,
+                         message: cstring) {.raises: [].} =
+  ## For entries a never-attached thread may call: copies static text only.
+  if output == nil: return
+  let length = if message == nil: 0 else: message.len
+  output.required = csize_t(length)
+  if output.data == nil or output.capacity == 0 or length == 0: return
+  let count = min(length, int(output.capacity))
+  copyMem(output.data, cast[pointer](message), count)
 
 proc apiDomain(context: pointer, rootOnly = true,
               allowClosed = false): GeneManagedDomain =
@@ -1373,6 +1449,14 @@ proc apiDomain(context: pointer, rootOnly = true,
   if not allowClosed:
     result.requireOpen()
 
+proc attachmentClosed(domain: GeneManagedDomain): bool =
+  ## Call with the domain lock held. A closed or closing (two-phase) domain
+  ## still admits a late attachment while a producer from before close is
+  ## live, so that producer keeps its completion path.
+  let closing = domain.closed or (domain.twoPhaseClose and
+    atomicLoadN(addr domain.closing, ATOMIC_ACQUIRE) != 0)
+  closing and domain.liveCProducers == 0
+
 proc apiAttachThread(context: pointer, output: ptr uint64,
                     diagnostic: ptr GeneOutBytes): uint32 {.cdecl.} =
   enterNativeAbiThread()
@@ -1389,14 +1473,14 @@ proc apiAttachThread(context: pointer, output: ptr uint64,
     domain.requireDomain()
     acquire(domain.lock)
     try:
-      if domain.closed and domain.cProducers.len == 0:
+      if domain.attachmentClosed():
         raise newException(GeneError, "managed native domain is closed")
     finally:
       release(domain.lock)
     ticket = geneAttachThread()
     acquire(domain.lock)
     try:
-      if domain.closed and domain.cProducers.len == 0:
+      if domain.attachmentClosed():
         raise newException(GeneError, "managed native domain is closed")
       if domain.nextAttachmentId == high(uint64):
         raise newException(GeneError, "native ABI attachment IDs are exhausted")
@@ -2347,6 +2431,28 @@ proc apiWaitClosed(context: pointer, token: uint64, output: ptr uint64,
     apiDiagnostic(diagnostic, e.msg)
     result = 1
 
+proc retireCancelRegistration(node: ManagedProducerRelease) =
+  ## Root lane, outside every lock. The producer has retired, so its cancel
+  ## callback can no longer run; `retire` runs once, before the registration's
+  ## own library borrow ends.
+  node.cancelDone = true
+  let retire = node.cancelRetire
+  if retire == nil: return
+  if node.cancelFiring:
+    # The callback retired its own producer; `retire` follows its return.
+    node.retireDeferred = true
+    return
+  let context = node.cancelContext
+  node.cancelRetire = nil
+  node.cancelCallback = nil
+  node.cancelContext = nil
+  try:
+    retire(context)
+  finally:
+    let library = node.cancelLibrary
+    node.cancelLibrary = NIL
+    library.releaseFfiLibraryBorrow()
+
 proc drainCProducerReleases(domain: GeneManagedDomain) =
   domain.requireRootLane()
   var pending: ManagedProducerRelease
@@ -2359,15 +2465,18 @@ proc drainCProducerReleases(domain: GeneManagedDomain) =
     let release = move(pending)
     pending = move(release.next)
     try:
-      geneManagedEnvironmentRelease(release.environment)
+      retireCancelRegistration(release)
     finally:
       try:
-        release.library.releaseFfiLibraryBorrow()
+        geneManagedEnvironmentRelease(release.environment)
       finally:
         try:
-          geneReleaseNativeWake()
+          release.library.releaseFfiLibraryBorrow()
         finally:
-          GC_unref(domain)
+          try:
+            geneReleaseNativeWake()
+          finally:
+            GC_unref(domain)
 
 proc finishCProducer(domain: GeneManagedDomain,
                      producer: ManagedCProducer) =
@@ -2386,9 +2495,11 @@ proc takeCProducer(domain: GeneManagedDomain,
   acquire(domain.lock)
   try:
     result = domain.cProducers.getOrDefault(token)
-    if result == nil:
+    if result == nil or result.queued:
+      result = nil
       raise newException(GeneError, "native Task producer token is unavailable")
     domain.cProducers.del(token)
+    dec domain.liveCProducers
   finally:
     release(domain.lock)
 
@@ -2414,6 +2525,10 @@ proc apiNewTask(context: pointer, environment: uint64,
     if domain.loadFrames.len != 0:
       raise newException(GeneError,
         "native Task creation requires completed module initialization")
+    if domain.twoPhaseClose and
+        atomicLoadN(addr domain.closing, ATOMIC_ACQUIRE) != 0:
+      raise newException(GeneError,
+        "native module is closing and admits no new Tasks")
     let registration = domain.activeCallbacks[^1]
     let supplied = GeneManagedEnvironment(
       root: GeneManagedRoot(domain: domain, id: environment))
@@ -2439,9 +2554,12 @@ proc apiNewTask(context: pointer, environment: uint64,
       let token = domain.nextProducerId
       let releaseNode = ManagedProducerRelease(
         environment: ownedEnvironment, library: library)
-      domain.cProducers[token] = ManagedCProducer(
-        task: task, environment: ownedEnvironment, library: library,
-        releaseNode: releaseNode)
+      let producer = ManagedCProducer(
+        token: token, task: task, environment: ownedEnvironment,
+        library: library, releaseNode: releaseNode)
+      producer.selfPtr = cast[pointer](producer)
+      domain.cProducers[token] = producer
+      inc domain.liveCProducers
       GC_ref(domain) # C token keeps the runtime alive until physical retirement
       producerToken[] = token
       output[] = task.root.id
@@ -2572,12 +2690,15 @@ proc apiTaskCancel(context: pointer, token: uint64,
       producer = domain.cProducers.getOrDefault(token)
     finally:
       release(domain.lock)
-    if producer == nil:
+    if producer == nil or producer.queued:
       raise newException(GeneError, "native Task producer token is unavailable")
     let ack = geneManagedTaskCancel(producer.task, producer.environment)
     if ack.status != gsOk:
       raise newException(GeneError, ack.message)
     accepted[] = uint8(ord(ack.accepted))
+    if ack.accepted:
+      atomicStoreN(addr producer.cancelRequested, 1'i32, ATOMIC_RELEASE)
+      atomicStoreN(addr domain.cancelRescan, 1'i32, ATOMIC_RELEASE)
     geneSignalNativeWake() # cancellation does not consume the producer
     apiDiagnostic(diagnostic, "")
     result = 0
@@ -2622,80 +2743,476 @@ proc apiTaskRetire(context: pointer, token: uint64,
     if producer != nil:
       finishCProducer(domain, producer)
 
+proc validateCopiedSource(item: GeneCopiedResult,
+                          length: var int): cstring {.raises: [].} =
+  ## nil when `item` is a well-formed copied value; `length` is its span.
+  length = 0
+  if item.kind > GeneCopiedF64:
+    return "native copied Task kind is invalid"
+  if item.kind == GeneCopiedText or item.kind == GeneCopiedBytes:
+    if item.scalar != 0 or item.real != 0 or
+        item.length > csize_t(GeneApiMaxCopyBytes) or
+        (item.length > 0 and item.data == nil):
+      return "native copied Task span is invalid"
+    length = int(item.length)
+  elif item.length != 0 or item.data != nil or
+      (item.kind == GeneCopiedNil and item.scalar != 0) or
+      (item.kind == GeneCopiedBool and item.scalar != 0 and
+        item.scalar != 1) or
+      (item.kind == GeneCopiedF64 and item.scalar != 0) or
+      (item.kind != GeneCopiedF64 and item.real != 0):
+    return "native copied Task scalar is invalid"
+  nil
+
+proc queueProducerEntry(context: pointer, token: uint64,
+                        kind: ManagedQueuedKind,
+                        source: ptr GeneCopiedResult, factory: uint64,
+                        message: ptr uint8, messageLength: csize_t,
+                        diagnostic: ptr GeneOutBytes): uint32 {.raises: [].} =
+  ## task_submit_copy, task_fail_copy and task_retire_queued. A thread the
+  ## runtime never attached may call these, so this raises nothing, changes no
+  ## reference count and reports only static text. OK means queued: the root
+  ## lane later settles or retires the producer. A rejected entry leaves the
+  ## token usable.
+  if context == nil:
+    apiStaticDiagnostic(diagnostic, "native ABI runtime context is nil")
+    return 1
+  let domain {.cursor.} = cast[GeneManagedDomain](context)
+  var item = GeneCopiedResult(kind: GeneCopiedNil)
+  var length = 0
+  var messageBytes = 0
+  if kind == mqResult and source == nil:
+    apiStaticDiagnostic(diagnostic, "native copied Task result is nil")
+    return 1
+  if kind != mqRetire:
+    if source != nil: item = source[]
+    let invalid = validateCopiedSource(item, length)
+    if invalid != nil:
+      apiStaticDiagnostic(diagnostic, invalid)
+      return 1
+  if kind == mqFailure:
+    if messageLength > csize_t(GeneApiMaxCopyBytes) or
+        (messageLength > 0 and message == nil):
+      apiStaticDiagnostic(diagnostic,
+        "native copied Task failure message is invalid")
+      return 1
+    messageBytes = int(messageLength)
+    if length > GeneApiMaxCopyBytes - messageBytes:
+      apiStaticDiagnostic(diagnostic,
+        "native copied Task failure exceeds the copy limit")
+      return 1
+  let total = length + messageBytes
+  var problem: cstring = "native Task producer token is unavailable"
+  var reserved = false
+  acquire(domain.lock)
+  withValue(domain.cProducers, token, entry):
+    let producer = cast[ptr ManagedCProducerObj](entry[].selfPtr)
+    if not producer.queued:
+      if kind != mqRetire and
+          (domain.copyCount + domain.copyReservations >= GeneCopiedQueueCount or
+           domain.copyBytes + domain.copyReservedBytes >
+             GeneCopiedQueueBytes - total):
+        problem = "native copied Task queue is full"
+      else:
+        problem = nil
+        if kind != mqRetire:
+          inc domain.copyReservations
+          domain.copyReservedBytes += total
+          reserved = true
+  release(domain.lock)
+  if problem != nil:
+    apiStaticDiagnostic(diagnostic, problem)
+    return 1
+  var copied, copiedMessage: pointer
+  var allocationFailed = false
+  when defined(geneNativeCopyAllocationProbe):
+    if total > 0 and failNextNativeCopyAllocation:
+      failNextNativeCopyAllocation = false
+      allocationFailed = true
+  if not allocationFailed and length > 0:
+    copied = copiedMalloc(csize_t(length))
+    if copied == nil: allocationFailed = true
+    else: copyMem(copied, item.data, length)
+  if not allocationFailed and messageBytes > 0:
+    copiedMessage = copiedMalloc(csize_t(messageBytes))
+    if copiedMessage == nil: allocationFailed = true
+    else: copyMem(copiedMessage, message, messageBytes)
+  problem = if allocationFailed: cstring"native copied Task allocation failed"
+            else: cstring"native Task producer token is unavailable"
+  acquire(domain.lock)
+  if not allocationFailed:
+    withValue(domain.cProducers, token, entry):
+      let producer = cast[ptr ManagedCProducerObj](entry[].selfPtr)
+      if not producer.queued:
+        producer.queued = true
+        producer.queuedKind = kind
+        producer.queuedBytes = if kind == mqRetire: 0 else: total
+        producer.copyKind = item.kind
+        producer.copyScalar = item.scalar
+        producer.copyReal = item.real
+        producer.copyData = copied
+        producer.copyLength = length
+        producer.failFactory = factory
+        producer.failMessage = copiedMessage
+        producer.failMessageLength = messageBytes
+        producer.copyNext = nil
+        if domain.copyTail == nil: domain.copyHead = producer
+        else: domain.copyTail.copyNext = producer
+        domain.copyTail = producer
+        dec domain.liveCProducers
+        if kind == mqRetire:
+          inc domain.retireQueued
+        else:
+          inc domain.copyCount
+          domain.copyBytes += total
+        copied = nil # the queued producer owns both C allocations
+        copiedMessage = nil
+        problem = nil
+        geneSignalNativeWake() # the root cannot drain before this entry signals
+  if reserved:
+    dec domain.copyReservations
+    domain.copyReservedBytes -= total
+  release(domain.lock)
+  if copied != nil: copiedFree(copied)
+  if copiedMessage != nil: copiedFree(copiedMessage)
+  if problem != nil:
+    apiStaticDiagnostic(diagnostic, problem)
+    return 1
+  apiStaticDiagnostic(diagnostic, "")
+  0
+
 proc apiTaskSubmitCopy(context: pointer, token: uint64,
                        source: ptr GeneCopiedResult,
                        diagnostic: ptr GeneOutBytes): uint32 {.cdecl.} =
   enterNativeAbiThread()
-  var copied: pointer
-  var domain: GeneManagedDomain
-  var reserved = false
-  var length = 0
+  queueProducerEntry(context, token, mqResult, source, 0, nil, 0, diagnostic)
+
+proc apiTaskFailCopy(context: pointer, token, factory: uint64,
+                     message: ptr uint8, messageLength: csize_t,
+                     detail: ptr GeneCopiedResult,
+                     diagnostic: ptr GeneOutBytes): uint32 {.cdecl.} =
+  enterNativeAbiThread()
+  queueProducerEntry(context, token, mqFailure, detail, factory,
+                     message, messageLength, diagnostic)
+
+proc apiTaskRetireQueued(context: pointer, token: uint64,
+                         diagnostic: ptr GeneOutBytes): uint32 {.cdecl.} =
+  enterNativeAbiThread()
+  queueProducerEntry(context, token, mqRetire, nil, 0, nil, 0, diagnostic)
+
+proc copiedValue(producer: ManagedCProducer, what: string): Value =
+  case producer.copyKind
+  of GeneCopiedNil: NIL
+  of GeneCopiedBool: newBool(producer.copyScalar == 1)
+  of GeneCopiedI64: newInt(producer.copyScalar)
+  of GeneCopiedF64: newFloat(producer.copyReal)
+  of GeneCopiedText, GeneCopiedBytes:
+    var bytes = newString(producer.copyLength)
+    if bytes.len > 0:
+      copyMem(addr bytes[0], producer.copyData, bytes.len)
+    if producer.copyKind == GeneCopiedText:
+      if validateUtf8(bytes) != -1:
+        raise newException(GeneError,
+          "native copied Task " & what & " is not valid UTF-8")
+      newStr(bytes)
+    else: newBytes(bytes)
+  else:
+    raise newException(GeneError, "native copied Task kind is invalid")
+
+proc freeProducerCopies(producer: ManagedCProducer) =
+  if producer.copyData != nil:
+    copiedFree(producer.copyData)
+    producer.copyData = nil
+  if producer.failMessage != nil:
+    copiedFree(producer.failMessage)
+    producer.failMessage = nil
+
+proc retireDrainedProducer(domain: GeneManagedDomain,
+                           producer: ManagedCProducer) =
   try:
-    domain = apiDomain(context, rootOnly = false, allowClosed = true)
-    if source == nil:
-      raise newException(GeneError, "native copied Task result is nil")
-    let item = source[]
-    if item.kind > GeneCopiedF64:
-      raise newException(GeneError, "native copied Task kind is invalid")
-    if item.kind == GeneCopiedText or item.kind == GeneCopiedBytes:
-      if item.scalar != 0 or item.real != 0 or
-          item.length > csize_t(GeneApiMaxCopyBytes) or
-          (item.length > 0 and item.data == nil):
-        raise newException(GeneError, "native copied Task span is invalid")
-      length = int(item.length)
-    elif item.length != 0 or item.data != nil or
-        (item.kind == GeneCopiedNil and item.scalar != 0) or
-        (item.kind == GeneCopiedBool and item.scalar notin [0'i64, 1'i64]) or
-        (item.kind == GeneCopiedF64 and item.scalar != 0) or
-        (item.kind != GeneCopiedF64 and item.real != 0):
-      raise newException(GeneError, "native copied Task scalar is invalid")
-    acquire(domain.lock)
+    producer.freeProducerCopies()
+  finally:
     try:
-      if domain.cProducers.getOrDefault(token) == nil:
-        raise newException(GeneError, "native Task producer token is unavailable")
-      if domain.copyCount + domain.copyReservations >= GeneCopiedQueueCount or
-          domain.copyBytes + domain.copyReservedBytes >
-            GeneCopiedQueueBytes - length:
-        raise newException(GeneError, "native copied Task queue is full")
-      inc domain.copyReservations
-      domain.copyReservedBytes += length
-      reserved = true
+      if not producer.task.settled:
+        discard geneManagedTaskRetire(producer.task, producer.environment)
     finally:
-      release(domain.lock)
-    if length > 0:
-      when defined(geneNativeCopyAllocationProbe):
-        if failNextNativeCopyAllocation:
-          failNextNativeCopyAllocation = false
-          raise newException(GeneError, "native copied Task allocation failed")
-      copied = copiedMalloc(csize_t(length))
-      if copied == nil:
-        raise newException(GeneError, "native copied Task allocation failed")
-      copyMem(copied, item.data, length)
-    acquire(domain.lock)
+      finishCProducer(domain, producer)
+
+proc settleCopiedResult(domain: GeneManagedDomain,
+                        producer: ManagedCProducer) =
+  var payloadRoot: GeneManagedRoot
+  try:
+    let payload = producer.copiedValue("text")
+    payloadRoot = domain.addRoot(payload, allowClosed = true)
+    let ack = geneManagedTaskComplete(producer.task, payloadRoot,
+                                      producer.environment)
+    if ack.status != gsOk:
+      raise newException(GeneError, ack.message)
+  except CatchableError as e:
+    if not producer.task.settled:
+      discard geneManagedTaskFail(producer.task, producer.environment, e.msg)
+  finally:
     try:
-      let producer = domain.cProducers.getOrDefault(token)
-      if producer == nil:
-        raise newException(GeneError, "native Task producer token is unavailable")
-      producer.copyKind = item.kind
-      producer.copyScalar = item.scalar
-      producer.copyReal = item.real
-      producer.copyData = copied
-      producer.copyLength = length
-      if domain.copyTail == nil:
-        domain.copyHead = producer
+      if payloadRoot != nil: geneManagedRelease(payloadRoot)
+    finally:
+      domain.retireDrainedProducer(producer)
+
+proc errorFactoryFailure(scope: Scope, raised: Value,
+                         message: string): ref GeneError =
+  ## A factory that raises yields a generated TypeError, which passes deferred
+  ## error contracts unchanged.
+  try:
+    vm.raiseTypeError("native error factory", "a returned Error value",
+                      raised, scope, hint = "the factory raised: " & message)
+  except GeneError as e:
+    result = e
+
+proc settleCopiedFailure(domain: GeneManagedDomain,
+                         producer: ManagedCProducer) =
+  var errorRoot: GeneManagedRoot
+  try:
+    var message = newString(producer.failMessageLength)
+    if message.len > 0:
+      copyMem(addr message[0], producer.failMessage, message.len)
+    if validateUtf8(message) != -1:
+      raise newException(GeneError,
+        "native copied Task failure message is not valid UTF-8")
+    if producer.task.entry.value.taskDone:
+      discard # cancelled before the drain: skip the factory, retire below
+    elif producer.failFactory == 0:
+      discard geneManagedTaskFail(producer.task, producer.environment, message)
+    else:
+      let detail = producer.copiedValue("failure detail")
+      var factory = NIL
+      try:
+        factory = domain.liveRootValue(
+          GeneManagedRoot(domain: domain, id: producer.failFactory))
+      except GeneError:
+        discard
+      if factory.kind == vkNil:
+        discard geneManagedTaskFail(producer.task, producer.environment,
+          "native error factory is unavailable: " & message)
       else:
-        domain.copyTail.copyNext = producer
-      domain.copyTail = producer
-      inc domain.copyCount
-      domain.copyBytes += length
-      dec domain.copyReservations
-      domain.copyReservedBytes -= length
-      reserved = false
-      domain.cProducers.del(token)
-      copied = nil # the queued producer now owns the C allocation
-      geneSignalNativeWake() # root cannot drain before this C entry signals
+        let scope = domain.environmentScope(producer.environment)
+        var produced = NIL
+        var failure: ref GeneError
+        try:
+          produced = vm.nativeCallWithBudget(factory,
+            @[newStr(message), detail], scope,
+            GeneErrorFactoryMemoryMb, GeneErrorFactoryTimeoutMs)
+        except GeneError as e:
+          failure = errorFactoryFailure(scope,
+            if e.hasErrVal: e.errVal else: NIL, e.msg)
+        except GenePanic as e:
+          failure = errorFactoryFailure(scope,
+            if e.hasErrVal: e.errVal else: NIL, e.msg)
+        except GeneCancel as e:
+          failure = errorFactoryFailure(scope, NIL, e.msg)
+        let scopes = domain.liveRootEntry(producer.environment.root).knownScopes()
+        let reported = if failure == nil: produced else: failure.errVal
+        errorRoot = domain.addRoot(reported, scopes, allowClosed = true)
+        discard geneManagedTaskFail(producer.task, producer.environment,
+          if failure == nil: message else: failure.msg, errorRoot,
+          typedFallback = true)
+  except CatchableError as e:
+    if not producer.task.settled:
+      discard geneManagedTaskFail(producer.task, producer.environment, e.msg)
+  finally:
+    try:
+      if errorRoot != nil: geneManagedRelease(errorRoot)
+    finally:
+      domain.retireDrainedProducer(producer)
+
+proc settleQueuedRetire(domain: GeneManagedDomain,
+                        producer: ManagedCProducer) =
+  domain.retireDrainedProducer(producer)
+
+proc fireCancelCallbacks(fire: seq[ManagedProducerRelease]) =
+  ## Root lane, outside every lock. Each node keeps its library borrow, and a
+  ## retirement reached from inside the callback waits for it to return.
+  for node in fire:
+    let callback = node.cancelCallback
+    if callback == nil: continue
+    node.cancelFiring = true
+    try:
+      callback(node.cancelContext)
+    finally:
+      node.cancelFiring = false
+      if node.retireDeferred:
+        node.retireDeferred = false
+        retireCancelRegistration(node)
+
+proc refreshProducerCancellation(domain: GeneManagedDomain,
+                                 force = false) =
+  ## Root lane. Rescans live producers only after an external Task was
+  ## cancelled, a native task_cancel, or a new cancel registration.
+  let epoch = externalTaskCancelEpochValue()
+  let rescan = atomicExchangeN(addr domain.cancelRescan, 0'i32,
+                               ATOMIC_ACQ_REL) != 0
+  if not force and not rescan and epoch == domain.cancelEpoch: return
+  domain.cancelEpoch = epoch
+  var candidates: seq[(ManagedCProducer, ManagedEntry)]
+  acquire(domain.lock)
+  try:
+    for _, producer in domain.cProducers:
+      let node = producer.releaseNode
+      if atomicLoadN(addr producer.cancelRequested, ATOMIC_ACQUIRE) == 0 or
+          (node.cancelCallback != nil and not node.cancelDone):
+        candidates.add (producer, producer.task.entry)
+  finally:
+    release(domain.lock)
+  var fire: seq[ManagedProducerRelease]
+  for (producer, entry) in candidates:
+    if atomicLoadN(addr producer.cancelRequested, ATOMIC_ACQUIRE) == 0 and
+        (entry == nil or not entry.value.taskCancelled):
+      continue
+    atomicStoreN(addr producer.cancelRequested, 1'i32, ATOMIC_RELEASE)
+    acquire(domain.lock)
+    try:
+      let node = producer.releaseNode
+      if node.cancelCallback != nil and not node.cancelDone:
+        node.cancelDone = true
+        fire.add node
     finally:
       release(domain.lock)
+  fireCancelCallbacks(fire)
+
+proc geneManagedPoll*(domain: GeneManagedDomain): int =
+  ## A direct Nim embedder may call this from its root event loop. The normal
+  ## NativeModule owner calls it through the installed scheduler poll hook.
+  domain.requireRootLane()
+  domain.drainForeignRoots()
+  domain.refreshProducerCancellation()
+  if domain.draining:
+    # An error factory re-entered the scheduler; the outer drain continues.
+    drainCProducerReleases(domain)
+    return
+  domain.draining = true
+  try:
+    var copiedBytes = 0
+    while result < 32:
+      var producer: ManagedCProducer
+      acquire(domain.lock)
+      try:
+        let next = domain.copyHead
+        if next == nil or (result > 0 and
+            copiedBytes + next.queuedBytes > 1024 * 1024):
+          break
+        domain.copyHead = next.copyNext
+        if domain.copyHead == nil: domain.copyTail = nil
+        next.copyNext = nil
+        discard domain.cProducers.pop(next.token, producer)
+        if next.queuedKind == mqRetire:
+          dec domain.retireQueued
+        else:
+          dec domain.copyCount
+          domain.copyBytes -= next.queuedBytes
+      finally:
+        release(domain.lock)
+      inc result
+      copiedBytes += producer.queuedBytes
+      case producer.queuedKind
+      of mqResult: domain.settleCopiedResult(producer)
+      of mqFailure: domain.settleCopiedFailure(producer)
+      of mqRetire: domain.settleQueuedRetire(producer)
+  finally:
+    domain.draining = false
+  drainCProducerReleases(domain)
+  domain.drainForeignRoots()
+
+proc apiTaskCancelRequested(context: pointer, token: uint64,
+                            requested: ptr uint8,
+                            diagnostic: ptr GeneOutBytes): uint32 {.cdecl.} =
+  ## Any thread that may submit for this live token. Off the root lane this
+  ## reads only the flag the root lane maintains, without reference counting.
+  enterNativeAbiThread()
+  if requested != nil: requested[] = 0
+  if context == nil or requested == nil:
+    apiStaticDiagnostic(diagnostic, "native Task cancel query input is nil")
+    return 1
+  let domain {.cursor.} = cast[GeneManagedDomain](context)
+  if currentEventLane() == domain.rootLane:
+    # The root lane can read the Task itself; a registered callback still
+    # waits for the next poll rather than running inside this query.
+    try:
+      var entry: ManagedEntry
+      var producer: ManagedCProducer
+      acquire(domain.lock)
+      try:
+        producer = domain.cProducers.getOrDefault(token)
+        if producer != nil and not producer.queued:
+          entry = producer.task.entry
+      finally:
+        release(domain.lock)
+      if entry != nil and entry.value.taskCancelled:
+        atomicStoreN(addr producer.cancelRequested, 1'i32, ATOMIC_RELEASE)
+        atomicStoreN(addr domain.cancelRescan, 1'i32, ATOMIC_RELEASE)
+    except CatchableError:
+      discard
+  var problem: cstring = "native Task producer token is unavailable"
+  var flag = 0'i32
+  acquire(domain.lock)
+  withValue(domain.cProducers, token, entry):
+    let producer = cast[ptr ManagedCProducerObj](entry[].selfPtr)
+    if not producer.queued:
+      flag = atomicLoadN(addr producer.cancelRequested, ATOMIC_ACQUIRE)
+      problem = nil
+  release(domain.lock)
+  if problem != nil:
+    apiStaticDiagnostic(diagnostic, problem)
+    return 1
+  requested[] = uint8(ord(flag != 0))
+  apiStaticDiagnostic(diagnostic, "")
+  0
+
+proc apiTaskOnCancel(context: pointer, token: uint64,
+                     callback: GeneTaskCancelCallbackProc,
+                     userContext: pointer, retire: GeneContextRetireProc,
+                     diagnostic: ptr GeneOutBytes): uint32 {.cdecl.} =
+  ## Root lane. On success `userContext` belongs to the runtime until
+  ## `retire(userContext)`; on failure it stays with the caller.
+  enterNativeAbiThread()
+  var library = NIL
+  var borrowed = false
+  try:
+    let domain = apiDomain(context, allowClosed = true)
+    if callback == nil or retire == nil:
+      raise newException(GeneError,
+        "native Task cancel registration needs a callback and a retirement")
+    var producer: ManagedCProducer
+    acquire(domain.lock)
+    try:
+      producer = domain.cProducers.getOrDefault(token)
+      if producer == nil or producer.queued:
+        raise newException(GeneError,
+          "native Task producer token is unavailable")
+      if producer.releaseNode.cancelRetire != nil:
+        raise newException(GeneError,
+          "native Task already has a cancel callback")
+      library = producer.library
+    finally:
+      release(domain.lock)
+    library.borrowFfiLibrary()
+    borrowed = true
+    acquire(domain.lock)
+    try:
+      if producer.queued or not domain.cProducers.hasKey(token):
+        raise newException(GeneError,
+          "native Task producer token is unavailable")
+      let node = producer.releaseNode
+      if node.cancelRetire != nil:
+        raise newException(GeneError,
+          "native Task already has a cancel callback")
+      node.cancelCallback = callback
+      node.cancelContext = userContext
+      node.cancelRetire = retire
+      node.cancelLibrary = library
+      borrowed = false # the registration owns this borrow until retire returns
+    finally:
+      release(domain.lock)
+    # A Task cancelled before registration still reports at the next poll.
+    atomicStoreN(addr domain.cancelRescan, 1'i32, ATOMIC_RELEASE)
+    geneSignalNativeWake()
     apiDiagnostic(diagnostic, "")
     result = 0
   except GeneError as e:
@@ -2708,83 +3225,78 @@ proc apiTaskSubmitCopy(context: pointer, token: uint64,
     apiDiagnostic(diagnostic, e.msg)
     result = 1
   finally:
-    if copied != nil: copiedFree(copied)
-    if reserved:
-      acquire(domain.lock)
-      try:
-        dec domain.copyReservations
-        domain.copyReservedBytes -= length
-      finally:
-        release(domain.lock)
+    if borrowed: library.releaseFfiLibraryBorrow()
 
-proc geneManagedPoll*(domain: GeneManagedDomain): int =
-  ## A direct Nim embedder may call this from its root event loop. The normal
-  ## NativeModule owner calls it through the installed scheduler poll hook.
-  domain.requireRootLane()
-  domain.drainForeignRoots()
-  var copiedBytes = 0
-  while result < 32:
-    var producer: ManagedCProducer
-    acquire(domain.lock)
-    try:
-      let next = domain.copyHead
-      if next == nil or (result > 0 and
-          copiedBytes + next.copyLength > 1024 * 1024):
-        break
-      producer = ownedCopy(next)
-      domain.copyHead = move(producer.copyNext)
-      if domain.copyHead == nil: domain.copyTail = nil
-      dec domain.copyCount
-      domain.copyBytes -= producer.copyLength
-    finally:
-      release(domain.lock)
-    inc result
-    copiedBytes += producer.copyLength
-    var payloadRoot: GeneManagedRoot
-    try:
-      let payload = case producer.copyKind
-        of GeneCopiedNil: NIL
-        of GeneCopiedBool: newBool(producer.copyScalar == 1)
-        of GeneCopiedI64: newInt(producer.copyScalar)
-        of GeneCopiedF64: newFloat(producer.copyReal)
-        of GeneCopiedText, GeneCopiedBytes:
-          var bytes = newString(producer.copyLength)
-          if bytes.len > 0:
-            copyMem(addr bytes[0], producer.copyData, bytes.len)
-          if producer.copyKind == GeneCopiedText:
-            if validateUtf8(bytes) != -1:
-              raise newException(GeneError,
-                "native copied Task text is not valid UTF-8")
-            newStr(bytes)
-          else: newBytes(bytes)
-        else:
-          raise newException(GeneError, "native copied Task kind is invalid")
-      payloadRoot = domain.addRoot(payload, allowClosed = true)
-      let ack = geneManagedTaskComplete(producer.task, payloadRoot,
-                                        producer.environment)
-      if ack.status != gsOk:
-        raise newException(GeneError, ack.message)
-    except CatchableError as e:
-      if not producer.task.settled:
-        discard geneManagedTaskFail(producer.task, producer.environment,
-                                     e.msg)
-    finally:
-      try:
-        if payloadRoot != nil: geneManagedRelease(payloadRoot)
-      finally:
-        try:
-          if producer.copyData != nil:
-            copiedFree(producer.copyData)
-            producer.copyData = nil
-        finally:
-          try:
-            if not producer.task.settled:
-              discard geneManagedTaskRetire(producer.task,
-                                            producer.environment)
-          finally:
-            finishCProducer(domain, producer)
-  drainCProducerReleases(domain)
-  domain.drainForeignRoots()
+proc apiEnableTwoPhaseClose(context: pointer,
+                            diagnostic: ptr GeneOutBytes): uint32 {.cdecl.} =
+  enterNativeAbiThread()
+  try:
+    let domain = apiDomain(context)
+    if domain.loadFrames.len == 0:
+      raise newException(GeneError,
+        "two-phase close is enabled during gene_module_init")
+    domain.twoPhaseClose = true
+    apiDiagnostic(diagnostic, "")
+    result = 0
+  except GeneError as e:
+    apiDiagnostic(diagnostic, e.msg)
+    result = 1
+  except GenePanic as e:
+    apiDiagnostic(diagnostic, e.msg)
+    result = 2
+  except CatchableError as e:
+    apiDiagnostic(diagnostic, e.msg)
+    result = 1
+
+proc apiModuleClosing(context: pointer, closing: ptr uint8,
+                      diagnostic: ptr GeneOutBytes): uint32 {.cdecl.} =
+  ## The root lane, an attached thread, or a thread holding a live producer
+  ## token, which keeps the runtime alive.
+  enterNativeAbiThread()
+  if closing != nil: closing[] = 0
+  if context == nil or closing == nil:
+    apiStaticDiagnostic(diagnostic, "native module closing query input is nil")
+    return 1
+  let domain {.cursor.} = cast[GeneManagedDomain](context)
+  closing[] = uint8(ord(atomicLoadN(addr domain.closing, ATOMIC_ACQUIRE) != 0))
+  apiStaticDiagnostic(diagnostic, "")
+  0
+
+proc apiPinModuleImage(context: pointer, symbol: pointer,
+                       diagnostic: ptr GeneOutBytes): uint32 {.cdecl.} =
+  ## Keeps the image containing `symbol` mapped for the process lifetime, for
+  ## code a thread the library cannot join may still be running.
+  enterNativeAbiThread()
+  try:
+    discard apiDomain(context, allowClosed = true)
+    when nativeImagePinning:
+      var refuse = 0.cint
+      when defined(geneNativePinFailureProbe):
+        if failNextNativePin:
+          failNextNativePin = false
+          refuse = 1
+      case nativePinImage(symbol, refuse)
+      of 0: discard
+      of 1:
+        raise newException(GeneError,
+          "no loaded native image contains the pinned symbol")
+      else:
+        raise newException(GeneError,
+          "the native loader refused to pin the image")
+    else:
+      raise newException(GeneError,
+        "native image pinning is unavailable on this platform")
+    apiDiagnostic(diagnostic, "")
+    result = 0
+  except GeneError as e:
+    apiDiagnostic(diagnostic, e.msg)
+    result = 1
+  except GenePanic as e:
+    apiDiagnostic(diagnostic, e.msg)
+    result = 2
+  except CatchableError as e:
+    apiDiagnostic(diagnostic, e.msg)
+    result = 1
 
 proc apiReserveForeignRoots(context: pointer, capacity: csize_t,
                             diagnostic: ptr GeneOutBytes): uint32 {.cdecl.} =
@@ -2817,7 +3329,12 @@ proc configureApiTable(domain: GeneManagedDomain) =
                                         GeneApiCallbackFeature or
                                         GeneApiTaskProducerFeature or
                                         GeneApiTaskCopyFeature or
-                                        GeneApiFloatFeature,
+                                        GeneApiFloatFeature or
+                                        GeneApiTaskFailCopyFeature or
+                                        GeneApiUnattachedSubmitFeature or
+                                        GeneApiTaskCancelFlagFeature or
+                                        GeneApiTaskCancelCallbackFeature or
+                                        GeneApiTwoPhaseCloseFeature,
                            runtimeContext: cast[pointer](domain),
                            retain: cast[pointer](apiRetain),
                            release: cast[pointer](apiRelease),
@@ -2850,6 +3367,16 @@ proc configureApiTable(domain: GeneManagedDomain) =
   domain.apiTable.newText = cast[pointer](apiNewText)
   domain.apiTable.newBytes = cast[pointer](apiNewBytes)
   domain.apiTable.lookup = cast[pointer](apiLookup)
+  domain.apiTable.taskFailCopy = cast[pointer](apiTaskFailCopy)
+  domain.apiTable.taskRetireQueued = cast[pointer](apiTaskRetireQueued)
+  domain.apiTable.taskCancelRequested = cast[pointer](apiTaskCancelRequested)
+  domain.apiTable.taskOnCancel = cast[pointer](apiTaskOnCancel)
+  domain.apiTable.enableTwoPhaseClose = cast[pointer](apiEnableTwoPhaseClose)
+  domain.apiTable.moduleClosing = cast[pointer](apiModuleClosing)
+  when nativeImagePinning:
+    domain.apiTable.featureBits = domain.apiTable.featureBits or
+                                  GeneApiPinImageFeature
+    domain.apiTable.pinModuleImage = cast[pointer](apiPinModuleImage)
   when defined(gcAtomicArc) and compileOption("threads"):
     domain.apiTable.featureBits = domain.apiTable.featureBits or
                                GeneApiAttachedFeature or
@@ -2989,6 +3516,7 @@ proc geneManagedClose*(domain: GeneManagedDomain): bool =
   acquire(domain.lock)
   try:
     domain.closed = true
+    atomicStoreN(addr domain.closing, 1'i32, ATOMIC_RELEASE)
     for _, registration in domain.registrations:
       registrations.add registration
   finally:
@@ -3006,7 +3534,8 @@ proc geneManagedClose*(domain: GeneManagedDomain): bool =
              domain.registrations.len == 0 and domain.liveRegistrations == 0 and
              domain.cProducers.len == 0 and
              domain.pendingProducerReleases == nil and
-             domain.copyCount == 0 and domain.copyReservations == 0
+             domain.copyCount == 0 and domain.copyReservations == 0 and
+             domain.retireQueued == 0
     if result and domain.foreignWakeHeld:
       retiredSlots = move(domain.foreignSlots)
       retiredIndex = move(domain.foreignIndex)
@@ -3022,8 +3551,8 @@ proc geneManagedStats*(domain: GeneManagedDomain):
     tuple[roots, borrows, producers, attachments, registrations,
           liveRegistrations, copiedQueued, copiedBytes,
           copiedReserved, copiedReservedBytes, foreignLive,
-          foreignPending, foreignCapacity: int,
-          closed: bool, nextId: uint64] =
+          foreignPending, foreignCapacity, retireQueued, liveTokens: int,
+          closed, closing: bool, nextId: uint64] =
   domain.requireDomain()
   acquire(domain.lock)
   try:
@@ -3033,8 +3562,10 @@ proc geneManagedStats*(domain: GeneManagedDomain):
               domain.liveRegistrations, domain.copyCount, domain.copyBytes,
               domain.copyReservations, domain.copyReservedBytes,
               domain.foreignLive, domain.foreignPending,
-              domain.foreignSlots.len,
-              domain.closed, domain.nextId)
+              domain.foreignSlots.len, domain.retireQueued,
+              domain.liveCProducers, domain.closed,
+              atomicLoadN(addr domain.closing, ATOMIC_ACQUIRE) != 0,
+              domain.nextId)
   finally:
     release(domain.lock)
 
@@ -3198,10 +3729,24 @@ proc settleManagedPackageWaiter(record: GeneManagedPackageModule,
   if waiter.lease.kind == vkTask:
     discard vm.nativeRetireIoCleanupLease(waiter.lease, waiter.scope)
 
+proc producersDrained(domain: GeneManagedDomain): bool =
+  ## Phase one of two-phase close ends once nothing can still settle a Task.
+  acquire(domain.lock)
+  try:
+    result = domain.cProducers.len == 0 and domain.producers == 0 and
+             domain.copyCount == 0 and domain.retireQueued == 0 and
+             domain.copyReservations == 0 and domain.attachmentCount == 0 and
+             domain.pendingProducerReleases == nil
+  finally:
+    release(domain.lock)
+
 proc requestCloseManagedPackageModule(record: GeneManagedPackageModule) =
   if record == nil or record.closed: return
   record.closeRequested = true
   if record.domain == nil: return
+  atomicStoreN(addr record.domain.closing, 1'i32, ATOMIC_RELEASE)
+  if record.domain.twoPhaseClose and not record.prepared:
+    return # phase one keeps registrations open until producers drain
   var registrations: seq[uint64]
   acquire(record.domain.lock)
   try:
@@ -3240,6 +3785,11 @@ proc pollManagedPackageModule(record: GeneManagedPackageModule) =
     record.requestCloseManagedPackageModule()
   let domain = record.domain
   if domain != nil:
+    if domain.twoPhaseClose and not record.prepared:
+      discard geneManagedPoll(domain)
+      if not domain.producersDrained(): return
+      record.prepared = true
+      record.requestCloseManagedPackageModule()
     if geneManagedStats(domain).registrations > 0:
       record.requestCloseManagedPackageModule()
     let before = geneManagedStats(domain)
@@ -3406,6 +3956,12 @@ proc biManagedPackageModuleStatus(args: openArray[Value],
     if record.closed: "closed"
     elif record.closeRequested: "closing"
     else: "active")
+  # "prepare": two-phase close is waiting for producers to settle or retire.
+  fields["close_phase"] = newStr(
+    if not record.closeRequested or record.closed: "none"
+    elif record.domain != nil and record.domain.twoPhaseClose and
+        not record.prepared: "prepare"
+    else: "retire")
   fields["roots"] = newInt(stats.roots)
   fields["producers"] = newInt(stats.producers)
   fields["registrations"] = newInt(stats.registrations)
@@ -3476,6 +4032,7 @@ proc hasManagedPackageModulesClosing(scheduler: SchedulerState): bool
       acquire(record.domain.lock)
       try:
         if record.domain.cProducers.len > 0 or record.domain.copyCount > 0 or
+            record.domain.retireQueued > 0 or
             record.domain.pendingProducerReleases != nil or
             record.domain.foreignPending > 0:
           return true
@@ -3493,3 +4050,29 @@ installNativeModuleAdapter(NativeModuleAdapter(
 installNativeModuleHandleReleaseHook(releaseManagedPackageModuleHandle)
 installNativeModulePollHook(pollManagedPackageModules)
 installNativeModuleActiveHook(hasManagedPackageModulesClosing)
+
+when defined(geneNativeModuleHarness):
+  proc geneManagedOpenNativeModule*(path, name: string, scope: Scope): Value =
+    ## Test entry: a NativeModule handle opened without package selection.
+    managedPackageModuleOpen(NIL, path, name, scope)
+
+  proc geneManagedPollNativeModules*() =
+    ## Test entry: the scheduler poll for every module owned by this lane.
+    var records: seq[GeneManagedPackageModule]
+    acquire(managedPackageModuleLock)
+    try:
+      for _, record in managedPackageModules: records.add record
+    finally:
+      release(managedPackageModuleLock)
+    for record in records:
+      if record.ownerLane != currentEventLane(): continue
+      if record.domain != nil: discard geneManagedPoll(record.domain)
+      record.pollManagedPackageModule()
+
+  proc geneManagedNativeModuleCount*(): int =
+    ## Test entry: records not yet closed or still referenced by a handle.
+    acquire(managedPackageModuleLock)
+    try:
+      result = managedPackageModules.len
+    finally:
+      release(managedPackageModuleLock)

@@ -32925,6 +32925,14 @@ proc call*(callee: Value, args: seq[Value], namedNames: seq[string],
   applyCall(callee, args, NamedArgs(names: namedNames, values: namedValues),
             dispatchScope, site)
 
+proc nativeCallWithBudget*(callee: Value, args: seq[Value], scope: Scope,
+                           maxMemoryMb, timeoutMs: int64): Value =
+  ## A runtime-initiated call under its own fresh budget, independent of
+  ## whatever happened to be running when the native owner polled.
+  let bounded = newScope(scope)
+  bounded.evalBudget = evalBudgetForLimits(maxMemoryMb, timeoutMs, nil)
+  call(callee, args, @[], @[], bounded)
+
 proc requireNativeCallbackOwner(callback: NativeSyncCallback) =
   if callback == nil:
     raise newException(GeneError, "native callback context is nil")

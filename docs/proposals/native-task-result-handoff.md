@@ -137,3 +137,31 @@ byte-identical with the canonical header. The existing C ABI fixture and
 installed native-module fixture cover the new entry; there is no second
 loader or test-only runtime path. Test-only allocation and byte-budget probes
 are compiled only for their qualification runs.
+
+## Copied failures, queued retirement and unattached threads
+
+`task_fail_copy` uses the same queue and producer node as a copied result.
+The message and detail bytes count against the byte budget. On the root
+lane, a Task that was cancelled before the drain skips the factory.
+Otherwise the factory runs under a 1 s, 32 MiB budget with the message and
+detail, and the Task fails with the Error it returns. These cases fail the
+Task with a generated `TypeError`, which passes deferred error contracts:
+- the factory raises;
+- it exceeds its budget;
+- it returns a non-Error.
+
+A released factory ID fails the Task with a `RuntimeError` naming the native
+message. Factory 0 is the queued form of a message-only failure.
+
+`task_retire_queued` links the preallocated producer node without a payload
+and bypasses both budgets. Live producers bound the number of such entries.
+It is the last call for a job, after its work has physically ended.
+
+The queue links producers by raw pointer while the token table owns them. A
+queued submission marks its token consumed, so the three queued entries
+change no reference count. With feature bit 12 they are admitted from threads
+that never attached, including in ORC builds. The synchronous entries
+(`task_complete`, `task_fail`, `task_cancel`, `task_retire`) still need the
+root lane or an attached thread. Coverage is in
+`tests/test_native_async_abi.nim`.
+

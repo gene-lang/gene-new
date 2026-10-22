@@ -4,6 +4,7 @@ temp/
 
 tests/*
 !tests/*.nim
+!tests/test_native_async_abi.nims
 !tests/*.mjs
 !tests/build_wasm_qualification.gene
 !tests/test_wasm_browser.gene

@@ -2574,6 +2574,8 @@ template releaseManual(p: untyped, body: untyped) =
 
 template markManualShared(p: untyped) =
   markSharedFlag(p.shared)
+  when defined(geneAtomicGenerationRetirementProbe):
+    if managedPublicationDepth == 0: markSharedFlag(p.rawPublished)
 
 var scopeStampCounter: uint64
 
@@ -2593,8 +2595,6 @@ proc touchNames*(scope: Scope) {.inline.} =
 
 proc touchSlots*(scope: Scope) {.inline.} =
   scope.slotsGen = nextScopeStamp()
-  when defined(geneAtomicGenerationRetirementProbe):
-    if managedPublicationDepth == 0: markSharedFlag(p.rawPublished)
 
 var managedPublicationDepth {.threadvar.}: int
 proc enterManagedValuePublication*() = inc managedPublicationDepth
@@ -6128,11 +6128,20 @@ proc cancelTask*(v: Value) =
     if not data.done:
       data.cancelRequested = true
 
+# Advanced whenever an external (native-settled) Task is cancelled, on any
+# path, so a native producer owner rescans only when a cancel may concern it.
+var externalTaskCancelEpoch: int
+
+proc externalTaskCancelEpochValue*(): int =
+  atomicLoadN(addr externalTaskCancelEpoch, ATOMIC_ACQUIRE)
+
 proc tryCancelTask*(v: Value): bool =
   let data {.cursor.} = taskState(v)
+  var external = false
   withTaskStateLock(data):
     if data.done:
       return
+    external = data.external
     data.done = true
     data.cancelRequested = false
     data.cancelled = true
@@ -6140,6 +6149,8 @@ proc tryCancelTask*(v: Value): bool =
     result = true
     when compileOption("threads") and defined(gcAtomicArc):
       broadcast(data.cond)
+  if external:
+    discard atomicFetchAdd(addr externalTaskCancelEpoch, 1, ATOMIC_RELEASE)
 
 proc finishTaskCancel*(v: Value) =
   discard tryCancelTask(v)

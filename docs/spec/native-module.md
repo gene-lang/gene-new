@@ -24,7 +24,9 @@ bytes, and a terminal category. The queue fields are `copied_queued`, `copied_by
 `copied_reserved`, and `copied_reserved_bytes`; the reservation fields count
 concurrent submissions that have not yet reached the queue. Status also has
 `foreign_roots`, `foreign_pending`, and `foreign_capacity` when an AtomicArc
-module reserves attached-lane owning ID slots. Package Gene code retains the
+module reserves attached-lane owning ID slots. `close_phase` is `none`,
+`prepare` (two-phase close waiting for producers) or `retire`. Package Gene
+code retains the
 owner for as long as it exposes native functions:
 
 ```gene
@@ -51,6 +53,16 @@ releases managed IDs, closes the library, closes the artifact lease, and
 settles user waiters. Cancelling a waiter does not cancel physical retirement.
 A dropped `NativeModule` handle requests the same cleanup on the root
 completion pass.
+
+A module that calls `enable_two_phase_close` during `gene_module_init` closes
+in two phases on every path, explicit or dropped handle. In the prepare
+phase `new_task` is refused, while registered callbacks, late attachment for
+a producer admitted before close, copied submissions and ingress keep
+working, and `module_closing` reports true. The runtime keeps polling until
+every producer has settled or retired and every attachment has detached.
+Only then does the retire phase close registrations as above, so a
+retirement callback may join the library's own threads. Other modules keep
+the single-phase order.
 
 After close, an already escaped Module value may still be held by Gene code.
 Its former C callables refuse invocation before reaching unloaded library

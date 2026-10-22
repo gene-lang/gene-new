@@ -61,6 +61,7 @@ type
       environment: uint64, output, error: ptr uint64,
       diagnostic: ptr GeneOutBytes): uint32 {.cdecl.}
   GeneContextRetireProc* = proc(userContext: pointer) {.cdecl.}
+  GeneTaskCancelCallbackProc* = proc(userContext: pointer) {.cdecl.}
   GeneApi* {.bycopy.} = object
     version*: uint32
     structSize*: uint32
@@ -78,6 +79,11 @@ type
     taskSubmitCopy*: pointer
     copyF64*, newF64*: pointer
     reserveForeignRoots*: pointer
+    # Appended after reserve_foreign_roots; each is gated by a feature bit.
+    taskFailCopy*, taskRetireQueued*: pointer
+    taskCancelRequested*, taskOnCancel*: pointer
+    enableTwoPhaseClose*, moduleClosing*: pointer
+    pinModuleImage*: pointer
   GeneModuleInitCProc* = proc(api: ptr GeneApi, environment: uint64,
                                diagnostic: ptr GeneOutBytes): uint32 {.cdecl.}
   GeneIngressRegisterProc* = proc(api: ptr GeneApi, context: pointer,

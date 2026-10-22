@@ -81,7 +81,7 @@ suite "managed native extension ABI":
         let setMode = cast[SetMode](symAddr(handle, "gene_test_api_set_mode"))
         check calls != nil and setMode != nil
         when defined(gcAtomicArc) and compileOption("threads"):
-          const unavailableFeature = 2048'u64
+          const unavailableFeature = 1'u64 shl 17 # first unassigned bit
           const availableFeatures = 2047'u64
         else:
           const unavailableFeature = 1024'u64
