@@ -294,6 +294,109 @@ uint32_t gene_async_burst(uint32_t first, uint32_t count, uint32_t threads) {
   return atomic_load(&burst.failures) == 0 ? GENE_API_OK : GENE_API_ERROR;
 }
 
+/* A synchronous cancellation races a queued submission for the same token.
+ * The root does not drain until both callers return. In particular, neither
+ * worker clears producers[]: that would introduce a fixture-side race. */
+typedef struct CancelSubmitRace {
+  uint32_t first, count, mode;
+  atomic_uint ready, abort, failures;
+  uint8_t submitted[256];
+} CancelSubmitRace;
+
+static CancelSubmitRace cancel_submit_race;
+
+static int enter_cancel_submit_race(void) {
+  atomic_fetch_add(&cancel_submit_race.ready, 1);
+  while (atomic_load(&cancel_submit_race.ready) < 2 &&
+         !atomic_load(&cancel_submit_race.abort))
+    sched_yield();
+  return !atomic_load(&cancel_submit_race.abort);
+}
+
+static void *cancel_race_worker(void *unused) {
+  (void)unused;
+  GeneOutBytes diagnostic = no_diagnostic();
+  uint64_t attachment = 0;
+  if (cancel_submit_race.mode == 1 &&
+      api->attach_thread(api->runtime_context, &attachment, &diagnostic)
+          != GENE_API_OK) {
+    atomic_fetch_add(&cancel_submit_race.failures, 1);
+    atomic_store(&cancel_submit_race.abort, 1);
+    return NULL;
+  }
+  if (enter_cancel_submit_race()) {
+    for (uint32_t i = 0; i < cancel_submit_race.count; ++i) {
+      uint8_t accepted = 9;
+      uint32_t status = api->task_cancel(api->runtime_context,
+          producers[cancel_submit_race.first + i], &accepted, &diagnostic);
+      /* A consumed token is a valid loser of the race. */
+      if ((status != GENE_API_OK && status != GENE_API_ERROR) || accepted > 1)
+        atomic_fetch_add(&cancel_submit_race.failures, 1);
+    }
+  }
+  if (attachment &&
+      api->detach_thread(api->runtime_context, attachment, &diagnostic)
+          != GENE_API_OK)
+    atomic_fetch_add(&cancel_submit_race.failures, 1);
+  return NULL;
+}
+
+static void *submit_race_worker(void *unused) {
+  (void)unused;
+  GeneOutBytes diagnostic = no_diagnostic();
+  if (enter_cancel_submit_race()) {
+    for (uint32_t i = 0; i < cancel_submit_race.count; ++i) {
+      uint32_t index = cancel_submit_race.first + i;
+      GeneCopiedResult value = {.kind = GENE_COPY_I64, .scalar = index};
+      uint32_t status = api->task_submit_copy(api->runtime_context,
+          producers[index], &value, &diagnostic);
+      cancel_submit_race.submitted[i] = status == GENE_API_OK;
+      if (status != GENE_API_OK)
+        atomic_fetch_add(&cancel_submit_race.failures, 1);
+    }
+  }
+  return NULL;
+}
+
+uint32_t gene_async_cancel_submit_race(uint32_t first, uint32_t count,
+                                      uint32_t mode) {
+  if (!count || count > 256 || first > MAX_JOBS - count || mode > 1 ||
+      (mode == 1 && (!api->attach_thread || !api->detach_thread)))
+    return GENE_API_ERROR;
+  cancel_submit_race.first = first;
+  cancel_submit_race.count = count;
+  cancel_submit_race.mode = mode;
+  memset(cancel_submit_race.submitted, 0, sizeof(cancel_submit_race.submitted));
+  atomic_store(&cancel_submit_race.ready, 0);
+  atomic_store(&cancel_submit_race.abort, 0);
+  atomic_store(&cancel_submit_race.failures, 0);
+  pthread_t submit, cancel;
+  if (pthread_create(&submit, NULL, submit_race_worker, NULL) != 0)
+    return GENE_API_ERROR;
+  if (mode == 0) {
+    cancel_race_worker(NULL); /* root-lane synchronous cancellation */
+  } else if (pthread_create(&cancel, NULL, cancel_race_worker, NULL) == 0) {
+    pthread_join(cancel, NULL);
+  } else {
+    atomic_fetch_add(&cancel_submit_race.failures, 1);
+    atomic_store(&cancel_submit_race.abort, 1);
+  }
+  pthread_join(submit, NULL);
+  /* Also clean up a failed fixture setup, so it cannot strand the host. */
+  GeneOutBytes diagnostic = no_diagnostic();
+  for (uint32_t i = 0; i < count; ++i) {
+    uint32_t index = first + i;
+    if (!cancel_submit_race.submitted[i]) {
+      uint8_t accepted = 0;
+      api->task_retire(api->runtime_context, producers[index],
+                       &accepted, &diagnostic);
+    }
+    producers[index] = 0;
+  }
+  return atomic_load(&cancel_submit_race.failures) == 0
+      ? GENE_API_OK : GENE_API_ERROR;
+}
+
 /* Background producers whose completion needs root-lane draining: the root
  * must keep polling while they retry a full queue. */
 static atomic_uint background_done;

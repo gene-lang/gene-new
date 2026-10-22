@@ -144,10 +144,16 @@ are compiled only for their qualification runs.
 The message and detail bytes count against the byte budget. On the root
 lane, a Task that was cancelled before the drain skips the factory.
 Otherwise the factory runs under a 1 s, 32 MiB budget with the message and
-detail, and the Task fails with the Error it returns. These cases fail the
-Task with a generated `TypeError`, which passes deferred error contracts:
+detail, and the Task fails with the Error it returns. The factory must finish
+synchronously without driving the scheduler: waiting for a pending Task,
+sleeping, blocking on a channel, or spawning work would prevent the current
+completion drain from progressing. Reading an already completed Task is
+allowed. These cases fail the Task with a generated `TypeError`, which passes
+deferred error contracts:
+
 - the factory raises;
 - it exceeds its budget;
+- it attempts to suspend or run the scheduler;
 - it returns a non-Error.
 
 A released factory ID fails the Task with a `RuntimeError` naming the native
@@ -164,4 +170,3 @@ that never attached, including in ORC builds. The synchronous entries
 (`task_complete`, `task_fail`, `task_cancel`, `task_retire`) still need the
 root lane or an attached thread. Coverage is in
 `tests/test_native_async_abi.nim`.
-

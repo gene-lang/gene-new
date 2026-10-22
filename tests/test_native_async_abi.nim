@@ -178,7 +178,93 @@ proc text(value: string): (ptr uint8, csize_t) =
 
 let asyncSource = "tests/fixtures/native_async_fixture.c"
 
+proc checkFactoryScheduling() =
+  # Use the installed NativeModule poll hook. A bare managed domain would
+  # need manual polling and could report a deadlock instead of reproducing
+  # the scheduler's wait for a result behind the current factory.
+  let path = buildFixture(asyncSource,
+    "async-factory-scheduling-" & $getCurrentProcessId())
+  let handle = loadLib(path)
+  fn[SetOptions](handle, "gene_async_set_options")(OptTwoPhase)
+  let host = newGlobalScope()
+  discard run(compileSource(prelude), host)
+  let scope = newScope(host)
+  let module = geneManagedOpenNativeModule(path, "factory-scheduling", scope)
+  scope.define("module", module)
+  scope.define("native", run(compileSource("(module .module)"), scope))
+  scope.define("dependency", NIL)
+  let fail = fn[Fail](handle, "gene_async_fail")
+  let submit = fn[Submit](handle, "gene_async_submit")
+  let operations = ["(await dependency)", "dependency/.join", "($sleep 0)",
+                    "(let ch ($channel)) ch/.recv", "(spawn 1)"]
+  for index, operation in operations:
+    let dependencyIndex = uint32(index * 2)
+    let failureIndex = dependencyIndex + 1
+    let dependency = run(compileSource(
+      "(native/start " & $dependencyIndex & ")"), scope)
+    scope.assign("dependency", dependency)
+    discard run(compileSource(
+      "(native/register_factory (fn [message detail] " & operation &
+      " (GpuError ^message message ^detail detail)))"), scope)
+    let failed = run(compileSource(
+      "(native/start " & $failureIndex & ")"), scope)
+    doAssert fail(failureIndex, 1, nil, 0, NoDetail, 0, nil, 0, Inline) == 0
+    doAssert submit(dependencyIndex, CopyI64, int64(index), nil, 0, Inline) == 0
+    geneManagedPollNativeModules()
+    doAssert failed.taskDone and failed.taskHasError
+    doAssert dependency.taskDone and dependency.taskResult.intVal == index
+    let probe = newScope(scope)
+    probe.define("subject", failed)
+    let outcome = run(compileSource("(outcome (checked subject))"), probe)
+    doAssert outcome.listItems[0].strVal == "type"
+
+  # Reading a completed Task is synchronous and remains valid.
+  discard run(compileSource("""
+    (native/register_factory (fn [message detail]
+      (await dependency)
+      (GpuError ^message message ^detail detail)))
+  """), scope)
+  let ready = run(compileSource("(native/start 100)"), scope)
+  doAssert fail(100, 1, nil, 0, NoDetail, 0, nil, 0, Inline) == 0
+  geneManagedPollNativeModules()
+  let readyProbe = newScope(scope)
+  readyProbe.define("subject", ready)
+  doAssert run(compileSource("(outcome (checked subject))"),
+    readyProbe).listItems[0].strVal == "gpu"
+
+  # The guard must be restored after every factory, including one that raises.
+  let normal = run(compileSource("(native/start 101)"), scope)
+  doAssert submit(101, CopyI64, 42, nil, 0, Inline) == 0
+  let normalProbe = newScope(scope)
+  normalProbe.define("subject", normal)
+  doAssert run(compileSource("(do ($sleep 0) (await subject))"),
+    normalProbe).intVal == 42
+  discard run(compileSource(
+    "(import $io [IoResource]) module/.IoResource:close"), scope)
+  geneManagedPollNativeModules()
+
+# A broken guard used to block inside a native completion poll indefinitely,
+# outside the factory's sampled budget. Bound the regression with a child
+# process so a future failure reports a test failure rather than hanging CI.
+if getEnv("GENE_NATIVE_ASYNC_FACTORY_PROBE") == "1":
+  checkFactoryScheduling()
+  quit(0)
+
 suite "native Task producers off the root lane":
+  test "copied error factories cannot block the completion drain":
+    if findExe("cc").len == 0: skip()
+    else:
+      let environment = newStringTable(modeCaseSensitive)
+      for key, value in envPairs(): environment[key] = value
+      environment["GENE_NATIVE_ASYNC_FACTORY_PROBE"] = "1"
+      let process = startProcess(getAppFilename(), getCurrentDir(),
+        env = environment, options = {poStdErrToStdOut})
+      let code = process.waitForExit(15000)
+      let diagnostics = process.outputStream.readAll()
+      process.close()
+      checkpoint diagnostics
+      check code == 0
+
   test "copied failures build typed errors on the root lane":
     let path = buildFixture(asyncSource, "async-failures")
     if path.len == 0: skip()
@@ -498,6 +584,29 @@ suite "native Task producers off the root lane":
       geneManagedEnvironmentRelease(h.environment)
       h.library.closeFfiLibrary()
       check geneManagedClose(h.domain)
+
+  test "native cancellation races with queued submission":
+    let path = buildFixture(asyncSource, "async-cancel-submit")
+    if path.len == 0: skip()
+    else:
+      var h = openHarness(path, "cancel-submit")
+      let race = fn[Burst](h.handle, "gene_async_cancel_submit_race")
+      let rounds = parseInt(getEnv("GENE_NATIVE_CANCEL_RACE_ROUNDS", "16"))
+      let modes = when threaded: @[Inline, Attached] else: @[Inline]
+      for mode in modes:
+        for round in 0 ..< rounds:
+          var tasks: seq[Value]
+          for i in 0 ..< 256: tasks.add h.start(i)
+          check race(0, 256, mode) == 0
+          h.drain()
+          for i, task in tasks:
+            check task.taskDone
+            if not task.taskCancelled:
+              check task.taskResult.intVal == i
+          let stats = geneManagedStats(h.domain)
+          check stats.producers == 0 and stats.liveTokens == 0 and
+                stats.copiedQueued == 0 and stats.attachments == 0
+      h.closeHarness()
 
   test "job memory outlives a cancelled Task":
     let path = buildFixture(asyncSource, "async-memory")

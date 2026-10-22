@@ -2688,10 +2688,10 @@ proc apiTaskCancel(context: pointer, token: uint64,
     acquire(domain.lock)
     try:
       producer = domain.cProducers.getOrDefault(token)
+      if producer == nil or producer.queued:
+        raise newException(GeneError, "native Task producer token is unavailable")
     finally:
       release(domain.lock)
-    if producer == nil or producer.queued:
-      raise newException(GeneError, "native Task producer token is unavailable")
     let ack = geneManagedTaskCancel(producer.task, producer.environment)
     if ack.status != gsOk:
       raise newException(GeneError, ack.message)

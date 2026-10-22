@@ -1053,6 +1053,7 @@ var activeFiberTasks {.threadvar.}: seq[Value]
 var activeTaskContext {.threadvar.}: Value
 var activeVmFiber {.threadvar.}: Fiber
 var nativeSyncCallbackDepth {.threadvar.}: int
+var nativeCompletionDepth {.threadvar.}: int
 
 type
   NativeSyncCallbackState = enum
@@ -1104,6 +1105,9 @@ template withNativeSyncCallback*(callback: NativeSyncCallback, body: untyped) =
 var semanticWitnessDepth {.threadvar.}: int
 
 proc rejectNativeCallbackWait(operation: string) =
+  if nativeCompletionDepth > 0:
+    raise newException(GeneError,
+      operation & " cannot suspend or run the scheduler inside a native completion callback")
   if nativeSyncCallbackDepth > 0:
     raise newException(GeneError,
       operation & " cannot suspend or run the scheduler inside a synchronous native callback")
@@ -32928,9 +32932,13 @@ proc call*(callee: Value, args: seq[Value], namedNames: seq[string],
 proc nativeCallWithBudget*(callee: Value, args: seq[Value], scope: Scope,
                            maxMemoryMb, timeoutMs: int64): Value =
   ## A runtime-initiated call under its own fresh budget, independent of
-  ## whatever happened to be running when the native owner polled.
+  ## whatever happened to be running when the native owner polled. Completion
+  ## callbacks must not suspend or drive the scheduler: their native owner
+  ## cannot drain another result until this call returns.
   let bounded = newScope(scope)
   bounded.evalBudget = evalBudgetForLimits(maxMemoryMb, timeoutMs, nil)
+  inc nativeCompletionDepth
+  defer: dec nativeCompletionDepth
   call(callee, args, @[], @[], bounded)
 
 proc requireNativeCallbackOwner(callback: NativeSyncCallback) =
