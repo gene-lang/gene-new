@@ -1187,12 +1187,21 @@
     (render_transcript client))
   (update_controls client))
 
+# Existing caches may contain frames delivered after a navigation snapshot was
+# taken, even when their stream has since disconnected or the tab was closed.
+(fn has_tab? [client : Client, id : Str] : Bool
+  (for tab in client/tabs
+    (if_yes (== tab/id id) (return true)))
+  false)
+
 (fn select_session [client : Client, id : Str, ^snapshot snapshot : Any = nil] : Void
   (if_yes client/sending
     (notice client "Resolving your submission…")
     (return))
   (remember_draft client)
-  (var refresh (&& ($absent? snapshot) (== id client/selected) client/viewing_history))
+  # Supplied snapshots seed new tabs; connection state cannot prove freshness.
+  (var initial : Any (if (has_tab? client id) nil snapshot))
+  (var refresh (&& ($absent? initial) (== id client/selected) client/viewing_history))
   (save_tab client)
   (set client/selected id)
   (var attachments : MediaComposer client/media)
@@ -1228,7 +1237,7 @@
   (set client/socket tab/socket)
   (set client/socket_epoch tab/socket_epoch)
   (set client/message_sequence tab/sequence)
-  (apply_snapshot client (if ($absent? snapshot) tab/cache snapshot))
+  (apply_snapshot client (if ($absent? initial) tab/cache initial))
   (refresh_status client)
   (set client/expanded tab/expanded)
   (render_transcript client)

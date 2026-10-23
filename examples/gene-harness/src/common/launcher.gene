@@ -104,6 +104,9 @@
 
 # Keep up to nine matching local destinations reachable even when many
 # conversations match more strongly. Matching quality still orders the merge.
+# The reservation is a floor, not a cap: later local entries compete for the
+# remaining room. Local entries are already ranked, so a later one never
+# displaces a reserved one.
 (fn merge_results [local : (List Any), conversations : (List Any), maximum : Int = 50] : (List Any)
   (var reserved 9)
   (if_yes (< local/.size reserved) (set reserved local/.size))
@@ -117,6 +120,10 @@
   (for item in conversations
     (if_yes (>= at (- maximum reserved)) (break))
     (set result (insert_ranked result item maximum)) (set at (+ at 1)))
+  (set at 0)
+  (for item in local
+    (if_yes (>= at reserved) (set result (insert_ranked result item maximum)))
+    (set at (+ at 1)))
   result)
 
 (fn moved [active : Int, delta : Int, count : Int] : Int

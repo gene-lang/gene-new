@@ -275,4 +275,49 @@ assert.equal(c.selected,"target");
 assert.equal(c.title.textContent,"Fresh target");
 assert.equal(c.tabs.find(tab=>tab.id==="target").cache.session.revision,"4");
 assert.equal(requests.filter(request=>request.path==="/api/v8/sessions/target/snapshot").length,1);
+
+// An already-open, connected tab keeps its live cache: frames delivered while
+// the navigation GET was in flight must not be replaced by the older snapshot.
+c=client();
+c.ui=create_ui(element("ui_root"),true,c.notices,noop,noop,noop,noop,"light");
+const live=harness.session_tab(c,"target");
+live.connected=true;
+const liveRecord={id:"target/9",seq:"9",round_id:"round-target-1",turn:1n,
+  role:"assistant",phase:"reply",kind:"reply",text:"Arrived during navigation",durable:true,final:false,media:[]};
+live.cache={...snapshot(null,[liveRecord]),session:{id:"target",title:"Live target",revision:"7",first_request:""}};
+harness.launcher_navigate(c,{kind:"conversation",session:"target"},(code,data)=>{navigationResult=code;});
+requests[0].reply(200,{...snapshot(),session:{id:"target",title:"Stale target",revision:"6",first_request:""}});
+await settled();
+assert.equal(navigationResult,200n);
+assert.equal(c.selected,"target");
+assert.equal(c.title.textContent,"Live target");
+assert.ok(c.records.some(record=>record.id==="target/9"),"a live tab must keep records its stream delivered");
+
+// A reply and console frame arrive after the GET begins, then the real socket
+// close handler runs before its response. Reconnecting must keep that cache.
+c=client();
+c.ui=create_ui(element("ui_root"),true,c.notices,noop,noop,noop,noop,"light");
+const interrupted=harness.session_tab(c,"target");
+harness.connect_stream(c,interrupted);
+interrupted.connected=true;
+interrupted.cache={...snapshot(),session:{id:"target",title:"Target",revision:"6",first_request:""}};
+const earlier={...snapshot(),session:{id:"target",title:"Target",revision:"6",first_request:""}};
+harness.launcher_navigate(c,{kind:"conversation",session:"target"},(code,data)=>{navigationResult=code;});
+const arriving=["reply","console"].map((kind,index)=>({
+  id:`target/late-${kind}`,seq:String(9+index),round_id:"round-target-1",turn:1n,
+  role:"assistant",phase:kind,kind,text:`${kind} arrived after GET began`,durable:false,final:false,media:[],
+}));
+// Inactive streams append these frames to their tab's preview.
+interrupted.cache.preview.push(...arriving);
+const closedSocket=interrupted.socket;
+closedSocket.dispatchEvent(new Event("close"));
+assert.equal(interrupted.connected,false);
+requests[0].reply(200,earlier); await settled();
+assert.equal(navigationResult,200n);
+assert.equal(c.selected,"target");
+for(const record of arriving) {
+  assert.ok(c.preview.some(saved=>saved.id===record.id),"disconnect during GET must preserve cached frames");
+  assert.ok(interrupted.cache.preview.some(saved=>saved.id===record.id));
+}
+assert.notEqual(interrupted.socket,closedSocket,"selecting a disconnected tab must still reconnect it");
 console.log("first submission: immediate prompt, delayed snapshots/admission, durable replacement, late completion, rejection/uncertainty, session creation, equal prompts, attachments, and saved prompt passed");

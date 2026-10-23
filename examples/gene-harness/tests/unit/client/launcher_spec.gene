@@ -37,6 +37,30 @@
     (let weaker {^id "command:help" ^kind "command" ^rank 4})
     (let reserved (merge_results [weaker] conversations))
     ($assert (== reserved/.size 50))
-    ($assert (== reserved/49/id "command:help"))))
+    ($assert (== reserved/49/id "command:help")))
+  (it "fills spare room with local entries beyond the reservation" []
+    (var local [])
+    (var at 0)
+    (while (< at 12)
+      (set local (insert_ranked local {^id $"view:${at}" ^kind "view" ^rank 5} 50))
+      (set at (+ at 1)))
+    ($assert (== (/.size (merge_results local [])) 12))
+    (let few [{^id "conversation:a" ^kind "conversation" ^rank 6 ^activity "2026-10-23"}])
+    (let mixed (merge_results local few))
+    ($assert (== mixed/.size 13))
+    ($assert (== mixed/12/id "conversation:a"))
+    # Strong conversations fill everything but the reservation; weaker local
+    # entries past it are the ones left out.
+    (var strong [])
+    (set at 0)
+    (while (< at 50)
+      (set strong (insert_ranked strong
+        {^id $"conversation:${at}" ^kind "conversation" ^rank 0 ^activity "2026-10-23"} 50))
+      (set at (+ at 1)))
+    (let crowded (merge_results local strong))
+    ($assert (== crowded/.size 50))
+    (var kept 0)
+    (for item in crowded (if (== item/kind "view") (set kept (+ kept 1))))
+    ($assert (== kept 9))))
 
 (fn main [args] : Int (/exit_code (run ^name (?? args/0 ""))))
