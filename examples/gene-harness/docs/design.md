@@ -5,6 +5,10 @@ opt-in experiment; its authoring API may change. The
 [README](../README.md) covers operation, [plugins](plugins.md) covers the
 extension contract, and [web components](web-components.md) covers UI authoring.
 
+The [memory proposal](memory.md) describes planned durable notes, retrieval,
+and final-response memory. It includes open design questions and is not yet
+implemented.
+
 ## Principles
 
 - The model acts only by writing Gene code. The only non-code action is a file
