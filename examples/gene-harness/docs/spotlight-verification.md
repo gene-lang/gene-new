@@ -4,6 +4,42 @@ The three-stage first slice in `tmp/harness-spotlight.md`, including review
 decisions S1–S7, is implemented. Operator and contribution author guidance is
 in [Spotlight](spotlight.md).
 
+## Review corrections
+
+The follow-up review of `c98c9b1c` identified gaps beyond the initial checks.
+The changes below address all 15 findings; the original checks remain recorded
+below as historical evidence, not as coverage of those gaps.
+
+| Review | Correction and regression coverage |
+| --- | --- |
+| 1 | Host-owned, explicit inspected-request discard handles missing/expired receipts and corrupt data. It persists the discard, rejects it during submission/lookup, and never replays. Compiled recovery tests cover reload and unlock. |
+| 2 | Pre-POST refusals carry `not_sent`; confirmation buttons can retry those refusals while unknown POST outcomes remain protected. Compiled confirmation tests exercise both outcomes. |
+| 3 | All browser creation paths use a shared uncertainty guard with an explicit inspection acknowledgement. Full-client tests cover a 502, blocked creation, acknowledgement, and subsequent success. |
+| 4 | The merged list reserves up to nine matching local entries. Local entries win equal-quality ties, and empty-query actions precede recent conversations. Native and compiled tests cover crowded lists and identical New conversation titles. |
+| 5–6 | Conversation ranking no longer fuzzily matches generic type aliases. Bounded title/first-request prefixes define the search scope; long fields alone do not mark a completed scan partial. Native tests cover real snippet matches and a long unmatched request. |
+| 7, 10 | Module-load rejection uses a hygienic error name and the rejection argument of `then`. Web-runtime tests name the callback `error` and distinguish import rejection from a ready callback throwing. |
+| 8 | Shared settlement is the only composer-clearing path for commands and requires matching session/text. Full-client tests cover pagination, changed drafts, matching command text, and retained attachments. |
+| 9 | Action feedback persists through status, availability, and query updates while an outcome is unresolved. Unrelated status pushes retain existing DOM rows. Compiled tests check message and node identity. |
+| 11 | Failed revision markers retain no disposed root/controller. A fixture publishes cleanup before throwing, and compiled tests assert one cleanup across failure and disable. |
+| 12 | A small command-state GET replaces full transcript/status preflight. Navigation consumes its fetched snapshot. HTTP tests verify the minimal response, sequence advancement, explicit conflicting admission, and receipt recovery without replay. |
+| 13 | Asset preparation stays before composition staging; preparation errors become quarantined activation failures. `$web/load` now converts native IO/profile errors into catchable Gene errors while preserving panics and cancellation. Tests cover missing/invalid sources, a macro panic, and host startup with the optional plugin failed. |
+| 14 | A full ranked list returns unchanged for a candidate below its tail. Native tests check retained identity and bounded merging. |
+| 15 | Command parsing uses the leased composition context for lookup and suggestions. Existing admission/lease tests exercise replacement, recovery, and execution under the admitted snapshot. |
+
+Follow-up validation: **22 Harness tests passed** against the rebuilt runtime,
+covering commands, admission identity, browser contributions, compiled clients,
+HTTP transport, ranking/search, baseline profiles, and UI actions. The compiled
+client case also runs the full conversation-client and media fixtures. The
+conversation fixture additionally verifies that navigation consumes its fetched
+snapshot. The final suite log is `tmp/spotlight-fixes-final-tests.log` at the
+repository root.
+
+The follow-up web-runtime suite passed **12 tests**, including catchable source
+and compilation errors, preserved macro panics, hygienic module-load failure
+callbacks, and distinct ready-callback failures. **125 DOM host bindings** also
+passed validation. `git diff --check` is clean. Web-runtime output is recorded
+in `tmp/spotlight-fixes-web-tests.log`.
+
 ## Requirement audit
 
 | Requirement | Implementation and evidence |

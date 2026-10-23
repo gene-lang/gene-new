@@ -3,6 +3,10 @@
 (import [host_status close_session_service] ^from "../../../src/web/session_service")
 (import [set_plugin_enabled] ^from "../../../src/storage/workspace")
 (import [validate_browser_client] ^from "../../../src/ui/browser_clients")
+(import [spotlight_from] ^from "../../../src/builtin/spotlight")
+(import [baseline_profile] ^from "../../../src/profiles/baseline")
+(import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
+(import [plugin_error row] ^from "../../../src/kernel")
 
 (describe "Harness browser contributions"
   (it "publishes compiled Spotlight assets and withdraws them in recovery or when disabled" []
@@ -27,6 +31,21 @@
           (let restored (host_status service))
           ($assert (== restored/browser_clients/.size 1))
           ($assert (!= restored/browser_clients/0/revision client/revision))
-        ensure (close_session_service service))))))
+        ensure (close_session_service service)))))
+  (it "quarantines a missing optional browser source without preventing startup" []
+    (isolated this_mod/.path "quarantines a missing optional browser source without preventing startup"
+      (fn [workspace]
+        (let base (baseline_profile))
+        (let broken (spotlight_from $"${workspace}/missing-client.gene"))
+        (let plugins [])
+        (for plugin in base/plugins
+          (plugins .push (if (== plugin/id "spotlight") broken plugin)))
+        (set base/plugins plugins)
+        (let runtime (open_runtime workspace "default" base))
+        (try
+          ($assert (! ($absent? (plugin_error runtime/h "spotlight"))))
+          ($assert ($absent? (row runtime/h "browser_clients" "spotlight")))
+          ($assert (! ($absent? (row runtime/h "commands" "help"))))
+        ensure (close_runtime runtime))))))
 
 (fn main [args] : Int (run_spec args))

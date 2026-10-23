@@ -2,6 +2,11 @@
 (type MountFailure ^props {^message Str})
 (impl Error for MountFailure)
 (fn main [root : EventTarget] : Void
+  (set root/harness_cleanups 0)
+  (set root/harness_controller
+    {^dispose (fn [] : Void
+      (var count : Int root/harness_cleanups)
+      (set root/harness_cleanups (+ count 1)))})
   (var toolbar : EventTarget root/harness_bridge/toolbar)
   ($dom/append toolbar ($dom/render `(button "Partial mount")))
   (fail (MountFailure ^message "Deliberate mount failure")))

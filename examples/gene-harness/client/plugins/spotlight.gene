@@ -1,11 +1,11 @@
 (mod harness_spotlight ^profile web)
-(import [text flag items match_rank insert_ranked moved] ^from "../../src/common/launcher.gene")
+(import [text flag items match_rank insert_ranked merge_results moved] ^from "../../src/common/launcher.gene")
 
 (type Spotlight ^props {^root EventTarget ^bridge Any ^owner Str ^button EventTarget
   ^panel EventTarget ^input EventTarget ^list EventTarget ^message EventTarget ^crumb EventTarget
   ^open Bool ^disposed Bool ^opening Int ^query_generation Int ^step_generation Int ^published Int ^step Str
   ^items (List Any) ^active Int ^busy Bool ^awaiting_receipt Bool ^partial Bool ^parent Any ^command Any
-  ^target Str ^query Str ^status Any ^steps PropMap ^step_key Str})
+  ^target Str ^query Str ^status Any ^steps PropMap ^step_key Str ^feedback Str ^availability Str})
 
 (fn close [spot : Spotlight, restore : Bool = true] : Void
   (if_yes (! spot/open) (return))
@@ -16,6 +16,7 @@
   (set spot/items []) (set spot/active -1)
   (set spot/steps {}) (set spot/parent nil) (set spot/command nil)
   (set spot/target "") (set spot/query "") (set spot/step "")
+  (set spot/feedback "") (set spot/availability "")
   ($dom/remove_attribute spot/input "aria-activedescendant")
   (var release : (Fn [Str Bool] Void) spot/bridge/release)
   (release spot/owner restore))
@@ -67,7 +68,8 @@
   (if_yes (|| (! spot/open) spot/disposed spot/busy (< index 0) (>= index spot/items/.size)) (return))
   (var item : Any spot/items/%index)
   (var reason (unavailable spot item))
-  (if_yes (!= reason "") ($dom/set_text spot/message reason) (return))
+  (if_yes (!= reason "")
+    (set spot/feedback reason) ($dom/set_text spot/message reason) (return))
   (if_yes (&& (== (text item/kind) "command") (== (text item/command/name) "theme"))
     (set spot/parent {^query spot/query ^items spot/items ^active index ^partial spot/partial})
     (set spot/step "theme")
@@ -99,7 +101,8 @@
         (set spot/awaiting_receipt (&& (|| (== code 0) (>= code 500))
           (! ($absent? (/pending_command (state spot))))))
         (set spot/busy spot/awaiting_receipt)
-        ($dom/set_text spot/message (text result/message "The action could not be verified. Inspect its conversation."))))))
+        (set spot/feedback (text result/message "The action could not be verified. Inspect its conversation."))
+        ($dom/set_text spot/message spot/feedback)))))
   (if (|| (== (text item/kind) "command") (== (text item/kind) "theme_choice"))
     (do
       (var expected : Any (if (== (text item/kind) "theme_choice") spot/command item/command))
@@ -111,7 +114,13 @@
       (var navigate : (Fn [Any (Fn [Int Any] Void)] Void) spot/bridge/navigate)
       (navigate item done))))
 
+(fn availability [spot : Spotlight] : Str
+  (var reasons : (List Any) [])
+  (for item in spot/items (reasons .push (unavailable spot item)))
+  ($json/stringify reasons))
+
 (fn render_results [spot : Spotlight] : Void
+  (set spot/availability (availability spot))
   ($dom/clear spot/list)
   ($dom/remove_attribute spot/input "aria-activedescendant")
   (var generation spot/query_generation)
@@ -131,9 +140,9 @@
          (kbd %badge))))
     (set at (+ at 1)))
   (var count (if (== spot/items/.size 1) "1 result" $"${spot/items/.size} results"))
-  ($dom/set_text spot/message (if spot/partial
+  ($dom/set_text spot/message (if (!= spot/feedback "") spot/feedback (if spot/partial
     $"${count} · Search is incomplete. Refresh to try again."
-    (if (== spot/items/.size 0) "No matches." count)))
+    (if (== spot/items/.size 0) "No matches." count))))
   ($dom/set_attribute spot/input "aria-expanded" (if (> spot/items/.size 0) "true" "false"))
   (paint_selection spot))
 
@@ -162,7 +171,7 @@
   (for item in entries
     (var rank (match_rank (text item/title) (text item/aliases) query))
     (if_yes (>= rank 0)
-      (set item/rank rank)
+      (set item/rank (if (== ($str/trim query) "") 5 rank))
       (set result (insert_ranked result item 50))))
   result)
 
@@ -177,6 +186,7 @@
   (render_results spot))
 
 (fn search [spot : Spotlight, query : Str] : Void
+  (if_yes (! spot/awaiting_receipt) (set spot/feedback ""))
   (set spot/query query)
   (set spot/query_generation (+ spot/query_generation 1))
   (set spot/published -1)
@@ -199,14 +209,11 @@
           ^title (if (== value "light") "Light" "Dark") ^subtitle "Change theme" ^value value ^rank rank} 50))))
     (publish_results spot opening generation step_generation options false) (return))
   (var local (local_results spot query))
-  ($dom/set_text spot/message "Searching…")
+  ($dom/set_text spot/message (if (== spot/feedback "") "Searching…" spot/feedback))
   (var api : (Fn [Str Str Any (Fn [Int Any] Void)] Void) spot/bridge/api)
   (api "GET" $"/api/v8/search/sessions?q=${($url/encode_component query)}&limit=50" nil
     (fn [code : Int, data : Any] : Void
-      (var merged local)
-      (if_yes (== code 200)
-        (var conversations : (List Any) data/results)
-        (for item in conversations (set merged (insert_ranked merged item 50))))
+      (var merged (if (== code 200) (merge_results local (items data/results)) local))
       (publish_results spot opening generation step_generation merged (|| (!= code 200) (flag data/partial)))))
   ($time/after 3000.0 (fn [] : Void (publish_results spot opening generation step_generation local true))))
 
@@ -278,7 +285,7 @@
   (var spot (Spotlight ^root root ^bridge bridge ^owner owner ^button button ^panel panel
     ^input input ^list list ^message message ^crumb crumb ^!open ^!disposed ^opening 0
     ^query_generation 0 ^step_generation 0 ^published -1 ^step "" ^items [] ^active -1 ^!busy ^!awaiting_receipt ^!partial
-    ^parent nil ^command nil ^target "" ^query "" ^status nil ^steps {} ^step_key ""))
+    ^parent nil ^command nil ^target "" ^query "" ^status nil ^steps {} ^step_key "" ^feedback "" ^availability ""))
   # Publish cleanup before mounting anything that can fail.
   (set root/harness_controller
     {^dispose (fn [] : Void (set spot/disposed true) ($dom/remove button) (close spot true))
@@ -286,7 +293,7 @@
        (set spot/status status)
        (if_yes (&& spot/open spot/awaiting_receipt ($absent? (/pending_command (state spot))))
          (close spot true) (return))
-       (if_yes (&& spot/open (> spot/items/.size 0))
+       (if_yes (&& spot/open (> spot/items/.size 0) (!= spot/availability (availability spot)))
          (var active spot/active)
          (render_results spot) (set spot/active active) (paint_selection spot)))
      ^key (fn [event : Any] : Bool (key spot event))})

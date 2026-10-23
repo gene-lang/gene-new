@@ -12,6 +12,21 @@
   ($session_storage/remove (storage_key client))
   (set client/pending nil))
 
+(fn forget_command [client : CommandClient] : Bool
+  (if_yes (|| client/resolving ($absent? client/pending)) (return false))
+  # This is an explicit acknowledgement after inspection, not a retry or a
+  # claim that the old command did not run. Persist the discard before unlock.
+  (if_yes (! ($session_storage/set (storage_key client) ""))
+    (client/changed "The saved request could not be forgotten. Restore browser storage and try again.")
+    (return false))
+  (clear_pending client)
+  (client/changed "Request forgotten after inspection. Its outcome is still unknown; it was not replayed.")
+  true)
+
+(fn not_sent [data : Any] : Any
+  {^code (text data/code "unavailable") ^message (text data/message "The command could not be prepared. Try again.")
+   ^^not_sent})
+
 (fn admitted [client : CommandClient, receipt : Any] : Void
   (var envelope : Any client/pending)
   (clear_pending client)
@@ -22,11 +37,12 @@
 (fn recover_command [client : CommandClient] : Void
   (if_yes (|| client/resolving ($absent? client/pending)) (return))
   (if_yes (flag client/pending/invalid)
-    (client/changed "Saved command recovery data is unreadable. Inspect the host before starting another command.")
+    (client/changed "Saved command recovery data is unreadable. Inspect the host, then explicitly forget the request to allow new commands.")
     (return))
   (var envelope : Any client/pending)
   (var workspace client/workspace)
   (set client/resolving true)
+  (client/changed "Looking up the saved command receipt…")
   (client/api "GET"
     $"/api/v8/sessions/${(text envelope/session)}/requests/${(text envelope/request_id)}?kind=command"
     nil
@@ -35,7 +51,7 @@
       (set client/resolving false)
       (if (== code 200)
         (do (admitted client data) (client/changed "Command receipt recovered."))
-        (client/changed "Command acceptance is unknown. Inspect its conversation and resolve the retained request; it has not been replayed.")))))
+        (client/changed "Command acceptance is unknown. Inspect its conversation, then resolve or explicitly forget the retained request. It has not been replayed.")))))
 
 (fn configure_commands [client : CommandClient, workspace : Str] : Void
   (if_yes (== client/workspace workspace) (return))
@@ -58,21 +74,21 @@
                       expected : Any, done : (Fn [Int Any] Void), ^card card : Any = nil,
                       ^clear_composer clear_composer : Bool = false] : Void
   (if_yes (! ($absent? client/pending))
-    (done 409 {^code "pending_command" ^message "Resolve the pending command receipt before submitting another command."})
+    (done 409 (not_sent {^code "pending_command" ^message "Resolve or explicitly forget the pending command after inspection before submitting another command."}))
     (recover_command client)
     (return))
   (if_yes client/resolving
-    (done 409 {^code "busy" ^message "A command is being prepared."}) (return))
+    (done 409 (not_sent {^code "busy" ^message "A command is being prepared. Try again when it finishes."})) (return))
   (set client/resolving true)
-  (client/api "GET" $"/api/v8/sessions/${session}/snapshot" nil
-    (fn [code : Int, snapshot : Any] : Void
-      (if_yes (!= code 200) (set client/resolving false) (done code snapshot) (return))
+  (client/api "GET" $"/api/v8/sessions/${session}/commands" nil
+    (fn [code : Int, state : Any] : Void
+      (if_yes (!= code 200) (set client/resolving false) (done code (not_sent state)) (return))
       (var envelope : Any {^session session ^text value ^request_id ($browser/request_id)
-        ^submission_seq (text snapshot/next_command_seq) ^expected_command expected ^card card
+        ^submission_seq (text state/next_command_seq) ^expected_command expected ^card card
         ^clear_composer clear_composer})
       (if_yes (! ($session_storage/set (storage_key client) ($json/stringify envelope)))
         (set client/resolving false)
-        (done 409 {^code "storage_unavailable" ^message "Command recovery could not be saved. Restore browser storage before submitting."})
+        (done 409 (not_sent {^code "storage_unavailable" ^message "Command recovery could not be saved. Restore browser storage before submitting."}))
         (return))
       (set client/pending envelope)
       (client/api "POST" $"/api/v8/sessions/${session}/commands" envelope

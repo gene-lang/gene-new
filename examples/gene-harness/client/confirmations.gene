@@ -1,6 +1,7 @@
 # Decisions are independent of feedback, captured under their original command.
 (mod harness_confirmations ^profile web)
 (import [handoff_modal] ^from "./overlays.gene")
+(import [flag] ^from "../src/common/launcher.gene")
 (import ^from "./notices.gene" [Notices put_notice remove_notice])
 (type Confirmations ^props {^target EventTarget ^items PropMap ^saved PropMap ^notices Notices ^api (Fn [Str Str Any (Fn [Int Any] Void)] Void)})
 
@@ -81,7 +82,9 @@
           (if (== code 202)
             (finish_confirmation controller key target)
             (do
-              ($dom/set_text
-                status
-                "Confirmation could not be verified. Check the host before trying again.")
+              (if (flag data/not_sent)
+                (do
+                  ($dom/set_text status "Confirmation was not sent. Resolve the current request, then try again.")
+                  (set confirm/disabled false))
+                ($dom/set_text status "Confirmation could not be verified. Check the host before trying again."))
               (set keep/disabled false))))))))

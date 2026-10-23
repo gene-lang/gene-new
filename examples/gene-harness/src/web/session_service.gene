@@ -382,6 +382,10 @@
     (fail (RoundError ^code "not_found" ^message "Command receipt is not retained.")))
   result)
 
+(fn command_sequence [service, session : Str]
+  (require_record service/sessions session)
+  {^next_command_seq ($to_str (/next_id (command_state service/runtime session)))})
+
 (fn request_receipt [service, session : Str, request_id : Str, kind : Str]
   (require_record service/sessions session)
   (if_yes (== kind "command")

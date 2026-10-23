@@ -159,11 +159,33 @@ assert.equal(f.actions[0].expected.revision,"T");
 assert.equal(f.actions[0].text,"/theme dark");
 f.state.pendingCommand={request_id:"unknown"};
 f.actions[0].done(0n,{message:"Unknown acceptance"});
+f.control.update({}); // Pending receipt changes availability once.
+const unchangedOption=options()[0];
+f.control.update({revision:"status-only"});
+assert.match(document.body.textContent,/Unknown acceptance/);
+assert.equal(options()[0],unchangedOption,"unrelated status pushes must not rebuild results");
+f.state.commands=[];
+f.control.update({});
+assert.match(document.body.textContent,/Unknown acceptance/,"availability updates must preserve action feedback");
+input().value="d"; input().dispatchEvent(new Event("input"));
+assert.match(document.body.textContent,/Unknown acceptance/,"query edits must not hide a latched unknown outcome");
 f.control.key(keyEvent("Enter"));
 assert.equal(f.actions.length,1,"uncertain activation must remain latched");
 f.state.pendingCommand=null;
 f.control.update({});
 assert.equal(f.releases.at(-1).restore,true,"recovered admission must dismiss the pending launcher");
+f.control.dispose();
+
+// Empty-query actions stay in the top nine, and exact-title actions beat
+// same-title conversations even when the workspace has many matches.
+f=fixture(); f.control.key(keyEvent("KeyK",{metaKey:true}));
+f.requests.at(-1).done(200n,{results:Array.from({length:50},(_,i)=>({...result(i),rank:6n,activity:"2026-10-23"})),partial:false});
+assert.equal(options().length,50);
+assert.ok(options().slice(0,9).some(x=>x.textContent.startsWith("New conversationAction")));
+input().value="New conversation"; input().dispatchEvent(new Event("input"));
+f.requests.at(-1).done(200n,{results:Array.from({length:50},(_,i)=>({...result(i),title:"New conversation",rank:0n,activity:"2026-10-23"})),partial:false});
+assert.equal(options().length,50);
+assert.match(options()[0].textContent,/^New conversationAction/);
 f.control.dispose();
 
 // Command identity survives reload and receipt recovery after replacement.
@@ -182,6 +204,11 @@ commands.configure_commands(client,"workspace");
 const expected={name:"help",owner:"core_commands",revision:"A"};
 let outcome;
 commands.dispatch_command(client,"original","/help",expected,(code,data)=>{outcome=code;},null,true);
+assert.match(requests[0].path,/sessions\/original\/commands$/,"command preflight must not fetch a transcript snapshot");
+let localRefusal;
+commands.dispatch_command(client,"other","/help",expected,(code,data)=>{localRefusal={code,data};});
+assert.equal(localRefusal.code,409n);
+assert.equal(localRefusal.data.not_sent,true);
 requests.shift().done(200n,{nextCommandSeq:"1"});
 const post=requests.shift();
 assert.equal(post.method,"POST");
@@ -212,6 +239,50 @@ assert.equal(corrupt.pending.invalid,true);
 commands.dispatch_command(corrupt,"original","/help",expected,code=>{outcome=code;});
 assert.equal(outcome,409n);
 assert.equal(requests.length,0,"corrupt recovery data must not allow another command");
+assert.equal(commands.forget_command(corrupt),true,"explicit inspection acknowledgement must unlock corrupt recovery data");
+assert.equal(corrupt.pending,null);
+let forgottenReload=commands.create_commands(api,()=>{});
+commands.configure_commands(forgottenReload,"corrupt");
+assert.equal(forgottenReload.pending,null);
+commands.dispatch_command(corrupt,"original","/help",expected,(code,data)=>{localRefusal={code,data};});
+assert.equal(commands.forget_command(corrupt),false,"an in-flight dispatch cannot be forgotten");
+requests.shift().done(0n,{message:"Preflight lost"});
+assert.equal(localRefusal.data.not_sent,true);
+assert.equal(corrupt.pending,null,"a failed preparation must not retain a submission");
+commands.dispatch_command(corrupt,"original","/help",expected,()=>{});
+requests.shift().done(200n,{nextCommandSeq:"1"});
+requests.shift().done(0n,{});
+assert.equal(commands.forget_command(corrupt),false,"an in-flight receipt lookup cannot be forgotten");
+requests.shift().done(404n,{});
+assert.ok(corrupt.pending,"a missing receipt must remain unknown until explicit acknowledgement");
+assert.equal(commands.forget_command(corrupt),true);
+assert.equal(requests.length,0,"forgetting must never replay a POST");
+storage.clear();
+
+// Locally refused confirmations can be retried; an uncertain POST remains
+// disabled until the operator inspects the host.
+document.body.replaceChildren();
+const confirmationRoot=new Element(); confirmationRoot.setAttribute("id","harness_root");
+const noticeTarget=new Element(); noticeTarget.setAttribute("id","notice");
+const confirmationTarget=new Element(); document.body.append(confirmationRoot,noticeTarget,confirmationTarget);
+const {create_confirmations,command_confirmation}=await import(new URL("./confirmations.mjs",pathToFileURL(process.argv[4])));
+const {create_notices}=await import(new URL("./notices.mjs",pathToFileURL(process.argv[4])));
+let confirmationCalls=0;
+const confirmClient=commands.create_commands((method,path,body,done)=>{done(0n,{message:"State lookup failed"});},()=>{});
+const confirmations=create_confirmations(confirmationTarget,create_notices(),(method,path,body,done)=>{
+  confirmationCalls++;
+  if(confirmationCalls===1) commands.dispatch_command(confirmClient,"original",body.text,null,done);
+  else done(0n,{message:"POST outcome unknown"});
+});
+command_confirmation(confirmations,"original",{id:"stop-1",name:"stop",error_code:"confirmation_required",display:"Stop?"});
+const confirmButton=all(confirmationTarget).find(x=>x.textContent==="Confirm");
+const keepButton=all(confirmationTarget).find(x=>x.textContent==="Keep running");
+confirmButton.dispatchEvent(new Event("click"));
+assert.equal(confirmButton.disabled,false);
+assert.equal(keepButton.disabled,false);
+confirmButton.dispatchEvent(new Event("click"));
+assert.equal(confirmButton.disabled,true);
+assert.equal(keepButton.disabled,false);
 storage.clear();
 
 // Lifecycle-managed loading invokes the Gene entry once per mount, including
@@ -249,14 +320,17 @@ assert.equal(toolbar.children.length,0);
 const errors=[]; const originalError=console.error;
 console.error=message=>{errors.push(message);};
 browserClients.update_clients(host,[{...descriptor,revision:"broken",url:pathToFileURL(process.argv[5]).href}],{});
+const brokenRoot=host.mounts.spotlight.root;
 await settledMount(()=>host.mounts.spotlight?.failed);
 assert.equal(toolbar.children.length,0,"failed mount leaked toolbar UI");
+assert.equal(brokenRoot.harnessCleanups,1n);
 assert.equal(errors.length,1);
 browserClients.update_clients(host,[{...descriptor,revision:"broken",url:pathToFileURL(process.argv[5]).href}],{});
 await new Promise(setImmediate);
 assert.equal(errors.length,1,"failed revision retried itself on a status update");
 console.error=originalError;
 browserClients.update_clients(host,[],{});
+assert.equal(brokenRoot.harnessCleanups,1n,"failed mount must not be disposed a second time");
 const safe=browserClients.create_clients(hostRoot,true,bridge);
 browserClients.update_clients(safe,[descriptor],{});
 assert.deepEqual(Object.keys(safe.mounts),[]);

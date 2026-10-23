@@ -214,7 +214,7 @@ c.command_client = create_commands((method,path,payload,done) => harness.api(c,m
 let commandOutcome;
 harness.launcher_command(c,"s","/help",{name:"help",owner:"core_commands",revision:"displayed"},
   (code,data)=>{commandOutcome=code;});
-assert.match(requests[0].path,/sessions\/s\/snapshot$/);
+assert.match(requests[0].path,/sessions\/s\/commands$/);
 requests[0].reply(200,{next_command_seq:"1"});
 await settled();
 assert.match(requests[1].path,/sessions\/s\/commands$/);
@@ -225,4 +225,54 @@ assert.equal(commandOutcome,202n);
 assert.equal(c.prompt.value,"Keep this draft");
 assert.deepEqual(media_ids(c.media),[asset.id]);
 assert.equal(c.sending,false);
+
+// Command admission clears only the matching submitted command. Transcript
+// pagination and changed drafts retain both text and attachment IDs.
+for(const draft of ["Keep an unrelated draft","/help","/help changed while preparing"]) {
+  c=client(); c.prompt.value=draft;
+  c.media.drafts.s=[{key:"attachment-draft",state:"ready",name:"pixel.png",asset}];
+  c.command_client=create_commands((method,path,payload,done)=>harness.api(c,method,path,payload,done),noop,
+    (envelope,receipt)=>harness.command_settled(c,envelope,receipt));
+  const text=draft==="Keep an unrelated draft"?"/view README.md:401":"/help";
+  harness.send_command(c,text);
+  requests[0].reply(200,{next_command_seq:"1"}); await settled();
+  requests[1].reply(202,{id:"c1",status:"running"}); await settled();
+  assert.equal(c.prompt.value,draft==="/help"?"":draft);
+  assert.deepEqual(media_ids(c.media),[asset.id]);
+}
+
+// Uncertain creation requires explicit inspection acknowledgement, and the
+// same policy applies to launcher, sidebar, and first-message creation.
+c=client(); c.selected="";
+let creationResult;
+harness.request_session(c,"Plugin tools",(code,data)=>{creationResult={code,data};});
+requests[0].reply(502,{message:"Gateway failure"}); await settled();
+assert.equal(c.creation_unknown,true);
+assert.equal(element("session_creation_recovery").hidden,false);
+const beforeBlocked=requests.length;
+harness.request_session(c,"New conversation",(code,data)=>{creationResult={code,data};});
+assert.equal(creationResult.code,409n);
+assert.equal(creationResult.data.not_sent,true);
+assert.equal(requests.length,beforeBlocked);
+harness.acknowledge_creation(c);
+assert.equal(c.creation_unknown,false);
+assert.equal(element("session_creation_recovery").hidden,true);
+harness.request_session(c,"New conversation",(code,data)=>{creationResult={code,data};});
+requests.at(-1).reply(201,{id:"created"}); await settled();
+assert.equal(creationResult.code,201n);
+assert.equal(c.creation_unknown,false);
+
+// Conversation navigation consumes the snapshot it already fetched instead
+// of discarding it and briefly rendering an empty/default target cache.
+c=client();
+c.ui=create_ui(element("ui_root"),true,c.notices,noop,noop,noop,noop,"light");
+let navigationResult;
+harness.launcher_navigate(c,{kind:"conversation",session:"target"},(code,data)=>{navigationResult=code;});
+const fetched={...snapshot(),session:{id:"target",title:"Fresh target",revision:"4",first_request:""}};
+requests[0].reply(200,fetched); await settled();
+assert.equal(navigationResult,200n);
+assert.equal(c.selected,"target");
+assert.equal(c.title.textContent,"Fresh target");
+assert.equal(c.tabs.find(tab=>tab.id==="target").cache.session.revision,"4");
+assert.equal(requests.filter(request=>request.path==="/api/v8/sessions/target/snapshot").length,1);
 console.log("first submission: immediate prompt, delayed snapshots/admission, durable replacement, late completion, rejection/uncertainty, session creation, equal prompts, attachments, and saved prompt passed");

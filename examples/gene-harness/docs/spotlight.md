@@ -36,14 +36,23 @@ invalidates requests, and restores normal navigation. Recovery UI omits it.
 
 `GET /api/v8/search/sessions?q=...&limit=50` searches indexed workspace metadata
 independently of sidebar filters and the sidebar's 100-row list. Interactive,
-automated, and child sessions are included. Matching uses exact/prefix/word
-and bounded typo matches in titles, aliases, and first-request matches. Results
+automated, and child sessions are included. Conversation matching uses
+exact/prefix/word and bounded typo matches in titles, then substring matches in
+first-request prefixes. Local entries also match aliases. Results
 include IDs, kind/parent, bounded snippets, rank/activity, and an index revision.
 No transcripts, attachments, or plugin state are loaded.
 
+Up to nine matching actions, views, and commands retain space in the merged
+50-row list. On an empty query they precede recent conversations. Equal-quality
+local matches precede conversation activity, so New conversation remains
+reachable among conversations with that title. Generic type words such as
+"conversation" are not fuzzy aliases attached to every session.
+
 Queries are limited to 256 UTF-8 bytes. Responses contain at most 50 results;
 work is bounded by 20,000 records and 150 ms. Titles and first-request text are
-bounded during matching. A work/text limit, changed index during the search,
+searched only within their first 512 and 4096 UTF-8 bytes respectively. This is
+the searchable metadata scope; a longer field does not request a retry.
+A work limit, changed index during the search,
 or failed source produces an explicit incomplete-search notice. A result limit
 alone means the best results were selected, not that only 50 sessions were
 searched. Refresh starts another query generation.
@@ -60,6 +69,19 @@ expected command identity in per-workspace `sessionStorage`. Lost responses
 retain that envelope. **Resolve command** looks up its receipt; reload also
 attempts recovery. An unknown/expired receipt is never automatically replayed.
 Unreadable recovery data blocks another command until its outcome is inspected.
+The host's **Forget unresolved command…** disclosure lets the operator explicitly
+acknowledge inspection and forget the saved request, including corrupt data.
+This permits new commands; it does not establish that the earlier command did
+not run, cancel it, or replay it. An in-flight submission/lookup cannot be
+forgotten. A receipt 404 alone never unlocks submission automatically.
+
+Before submission, `GET /api/v8/sessions/<id>/commands` returns only the next
+command sequence. It does not load transcript pages or render status components.
+Another tab can still win admission first: the host rejects the sequence
+conflict, and the browser reports it without silently changing identity or
+replaying. A browser refusal before POST is marked as not sent, allowing command
+confirmation buttons to be retried. Unknown POST outcomes keep their recovery
+policy. Composer text clears only when it equals the admitted command text.
 
 Status command descriptors include name, owner, and an opaque contribution
 revision. Spotlight sends that expected identity to command admission. The host
@@ -69,8 +91,11 @@ silently redirect the displayed command. A stale selection offers Refresh;
 already-admitted receipts remain recoverable after replacement/disable.
 
 Session creation has no request receipt contract. An unknown creation outcome
-is reported for inspection; the launcher does not automatically create another
-conversation.
+is reported for inspection; all browser creation paths share this guard. After
+inspection, **Unresolved conversation creation → I checked; allow new
+conversations** explicitly acknowledges it. Ordinary session-list or snapshot
+updates do not silently settle an unknown creation. Nothing is automatically
+created or replayed by acknowledgement.
 
 ## Compiled Gene browser contributions
 
@@ -88,6 +113,9 @@ the registry validates their published identities without compiling inside
 activation. The
 bundled implementation in [spotlight.gene](../src/builtin/spotlight.gene) is an
 example; a client entry must declare `main [root : EventTarget] : Void`.
+Preparation errors are retained and raised during activation, so the optional
+plugin is quarantined while the host starts. `$web/load` source and compilation
+failures are catchable Gene errors.
 
 The host mounts a fresh root and toolbar outlet for each enabled contribution
 revision, then loads the module with `$browser/load_module` and calls `main`.
@@ -122,8 +150,12 @@ The bridge supplies:
 Mount/unmount invalidates old loading callbacks. Replacement revokes the old
 revision before mounting its successor. A failed revision does not repeatedly
 retry on status updates; replacement or disable/re-enable permits a new mount.
+Its resources are disposed once; the retained failed marker has no controller.
 Normal host navigation remains available. Shared pending command recovery
 survives contribution teardown. No public search-provider framework is needed.
+Action refusals and unknown-outcome messages remain visible through status and
+availability updates. Results rebuild only when displayed availability changes,
+or when a query/step publishes a new result snapshot.
 
 ## Verification
 

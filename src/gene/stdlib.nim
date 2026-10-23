@@ -1087,7 +1087,14 @@ when not defined(geneWasm):
     let scope = if call == nil: nil else: call[].dispatchScope
     let readSource = proc(path: string): string =
       fsReadBytes(path)
-    let asset = compileWebFileAsset(args[0].strVal, readSource)
+    let asset = try:
+      compileWebFileAsset(args[0].strVal, readSource)
+    except GeneError, GenePanic, GeneCancel:
+      raise
+    except CatchableError as error:
+      # Source IO and web-profile validation failures must cross the native
+      # boundary as catchable Gene errors, like other filesystem operations.
+      raise newException(GeneError, "web/load: " & error.msg)
     let app = scope.application()
     app.webAssets[webAssetIdentity(asset)] = asset
     for route in webAssetRoutes(asset):

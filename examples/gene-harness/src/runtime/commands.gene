@@ -82,15 +82,14 @@
   (let last right/.size)
   previous/%last)
 
-(fn parse_submission [h, text : Str, ^snapshot snapshot = nil]
+(fn parse_submission [h, text : Str]
   (if ($str/starts_with? text "//")
     (return {^kind "prompt" ^text ($str/slice_bytes text 1 (- ($str/byte_size text) 1))}))
   (if_not ($str/starts_with? text "/") (return {^kind "prompt" ^text text}))
   (let parts ($str/split text " "))
   (let token parts/0)
   (let name ($str/slice_bytes token 1 (- ($str/byte_size token) 1)))
-  (let selected (if ($absent? snapshot) (row h "commands" name)
-    (/payload (ui_record snapshot "commands" name))))
+  (let selected (row h "commands" name))
   (if ($absent? selected)
     (then
       (var closest "help")
@@ -446,7 +445,9 @@ Stopped."""))))
         (if (|| ($absent? contribution)
                 (! (same_command_identity? expected (command_identity manager/runtime/h contribution))))
           (fail (CommandError ^code "revision_conflict" ^message "This command was replaced or disabled. Refresh and select it again.")))
-        (let resolved (parse_submission ^snapshot supplied_lease/snapshot manager/runtime/h parsed/input_text))
+        (let resolved ($runtime/with_context
+          {^composition manager/runtime/h/snapshots ^snapshot supplied_lease/snapshot}
+          (fn [] (parse_submission manager/runtime/h parsed/input_text))))
         (if (!= resolved/name expected/name)
           (fail (CommandError ^code "invalid_request" ^message "Command text does not match its expected identity.")))
         (for key in ["raw" "handler"] (parsed .put key (resolved .get key)))

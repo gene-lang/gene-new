@@ -26,6 +26,24 @@
     ($assert (== scheduled/results/0/session "scheduled"))
     (let archived (search_sessions manager "archive"))
     ($assert (== archived/results/.size 50))
-    ($assert (== ($size index) 162))))
+    ($assert (== ($size index) 162)))
+  (it "matches conversation content without generic type aliases or permanent partial notices" []
+    (var long "")
+    (var at 0)
+    (while (< at 4100) (set long ($to_str long "x")) (set at (+ at 1)))
+    (let index {})
+    (index .put "noise" {^title "Unrelated" ^first_request long ^kind "interactive"
+      ^!pinned ^last_active "2026-10-23"})
+    (index .put "real" {^title "Budget" ^first_request "Chart the revenue" ^kind "interactive"
+      ^!pinned ^last_active "2026-10-22"})
+    (let manager {^index ($cell index) ^metadata_revision 1 ^runtime {^epoch "search-test"}})
+    (let found (search_sessions manager "chart"))
+    ($assert (== found/results/.size 1) ($to_str found))
+    ($assert (== found/results/0/session "real"))
+    ($assert (== found/results/0/rank 5))
+    ($assert (! found/partial))
+    (let unmatched (search_sessions manager "nothing-matches"))
+    ($assert (! unmatched/partial))
+    ($assert (== unmatched/inspected 2))))
 
 (fn main [args] : Int (/exit_code (run ^name (?? args/0 ""))))

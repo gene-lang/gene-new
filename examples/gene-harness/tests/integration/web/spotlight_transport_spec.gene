@@ -34,9 +34,18 @@
             (if (== descriptor/name "help") (set expected descriptor)))
           ($assert (! ($absent? expected/revision)))
           (let path $"/sessions/${target/id}/commands")
+          (let sequence (api client "GET" path))
+          ($assert (== sequence/next_command_seq "1"))
+          ($assert ($absent? sequence/records))
+          ($assert ($absent? sequence/status))
           (let envelope {^text "/help" ^request_id "spotlight-http" ^submission_seq "1"
             ^expected_command expected})
           (let accepted (api client "POST" path envelope))
+          ($assert (== (/next_command_seq (api client "GET" path)) "2"))
+          ($assert (try
+            (api client "POST" path {^text "/help" ^request_id "concurrent" ^submission_seq "1"
+              ^expected_command expected}) false
+            catch Any (== $err/code "submission_conflict")))
           (let recovered (api client "GET" $"/sessions/${target/id}/requests/spotlight-http?kind=command"))
           ($assert (== accepted/id recovered/id))
           (let duplicate (api client "POST" path envelope))

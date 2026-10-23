@@ -5981,7 +5981,8 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
     of "browser/request_id": "crypto.randomUUID()"
     of "browser/load_module":
       "(import(" & arguments[0] & ").then(" & arguments[1] &
-        ").catch(error => " & arguments[2] & "(String(error?.message ?? error))), undefined)"
+        ", $gene_load_error => " & arguments[2] &
+        "(String($gene_load_error?.message ?? $gene_load_error))), undefined)"
     of "browser/replace_url":
       "(history.replaceState(null, \"\", " & arguments[0] & "), undefined)"
     of "browser/push_url":

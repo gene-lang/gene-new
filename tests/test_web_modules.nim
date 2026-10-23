@@ -1,7 +1,34 @@
-import gene/web
+import gene/[web, vm, types]
 import std/[os, osproc, strutils, tempfiles, unittest]
 
 suite "web navigation host bindings":
+  test "web/load source and compilation failures can be caught by Gene":
+    let root = createTempDir("gene-web-load-error-", "")
+    defer: removeDir(root)
+    writeFile(root / "invalid.gene", """
+      (mod invalid ^profile web)
+      (fn main [root : EventTarget] : Void (undefined_function root))
+    """)
+    for entry in ["missing", "invalid"]:
+      writeFile(root / (entry & "_host.gene"),
+        "(var caught (try ($web/load \"" & root / (entry & ".gene") &
+        "\") false catch Any true))")
+      let app = newApplication(root)
+      let module = app.loadFileModule(root / (entry & "_host.gene"))
+      check module.moduleRootNamespace.nsScope.lookup("caught").boolVal
+
+    writeFile(root / "panic.gene", """
+      (mod panic_client ^profile web)
+      (macro abort [] ($panic "web macro stopped"))
+      (fn main [root : EventTarget] : Void (abort))
+    """)
+    writeFile(root / "panic_host.gene",
+      "(var caught (try ($web/load \"" & root / "panic.gene" &
+      "\") false catch Any true))")
+    let panicApp = newApplication(root)
+    expect GenePanic:
+      discard panicApp.loadFileModule(root / "panic_host.gene")
+
   test "modal focus helpers and asynchronous module loading use browser primitives":
     let root = createTempDir("gene-web-modal-", "")
     defer: removeDir(root)
@@ -13,8 +40,8 @@ suite "web navigation host bindings":
         (if_yes (&& ($dom/connected? previous) ($dom/contains? target previous))
           ($dom/focus previous))
         ($size ($dom/focusables target)))
-      (fn load [url : Str, ready : (Fn [Any] Void), failed : (Fn [Str] Void)] : Void
-        ($browser/load_module url ready failed))
+      (fn load [url : Str, ready : (Fn [Any] Void), error : (Fn [Str] Void)] : Void
+        ($browser/load_module url ready error))
     """)
     discard buildWebModule(root / "modal.gene", root / "out")
     writeFile(root / "entry.gene", """
@@ -46,6 +73,15 @@ suite "web navigation host bindings":
       const error = await new Promise(resolve => load(new URL('./missing.mjs', import.meta.url).href,
         () => assert.fail('missing module loaded'), resolve));
       assert.match(error, /missing/);
+      let loadFailure = false;
+      const readyError = await new Promise(resolve => {
+        process.once('unhandledRejection', resolve);
+        load(new URL('./entry.mjs', import.meta.url).href,
+          () => { throw new Error('ready callback failed'); },
+          () => { loadFailure = true; resolve(new Error('misclassified as load failure')); });
+      });
+      assert.equal(readyError.message, 'ready callback failed');
+      assert.equal(loadFailure, false);
     """)
     let ran = execCmdEx("node " & quoteShell(root / "out" / "check.mjs"))
     checkpoint ran.output

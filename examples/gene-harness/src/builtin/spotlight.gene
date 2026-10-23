@@ -3,6 +3,7 @@
 (import [module_dir] ^from "../kernel")
 
 (var asset ($cell nil))
+(var asset_path ($cell ""))
 (var stylesheet ($cell nil))
 (let style """
 .spotlight-launcher { white-space: nowrap; }
@@ -28,13 +29,25 @@
 @media (max-width: 480px) { .spotlight-backdrop { padding: 24px 8px; } .spotlight-footer span { max-width: 220px; } .spotlight-heading input { font-size: 17px; } }
 """)
 
-(fn spotlight [] : Plugin
+(fn spotlight_from [path : Str] : Plugin
   # Prepare assets before composition staging captures its Application state.
-  (if ($absent? asset/.get)
-    (asset .set ($web/load $"${(module_dir this_mod/.path)}/../../client/plugins/spotlight.gene")))
-  (if ($absent? stylesheet/.get)
-    (stylesheet .set ($web/stylesheet "spotlight" style)))
+  # Defer a preparation error to activation so this optional plugin can be
+  # quarantined without preventing the profile or host from starting.
+  (let preparation_error (try
+    (if_yes (|| ($absent? asset/.get) (!= asset_path/.get path))
+      (asset .set ($web/load path))
+      (asset_path .set path))
+    (if ($absent? stylesheet/.get)
+      (stylesheet .set ($web/stylesheet "spotlight" style)))
+    nil
+    catch Any $err/.Error:message))
+  (let prepared_asset asset/.get)
+  (let prepared_style stylesheet/.get)
   (Plugin ^id "spotlight" ^provides [["browser_clients" "spotlight"]]
     ^activate (fn [host]
+      (if_not ($absent? preparation_error) (fail preparation_error))
       (host .PluginHost:contribute "browser_clients"
-        {^name "spotlight" ^title "Search Harness" ^asset asset/.get ^style stylesheet/.get}))))
+        {^name "spotlight" ^title "Search Harness" ^asset prepared_asset ^style prepared_style}))))
+
+(fn spotlight [] : Plugin
+  (spotlight_from $"${(module_dir this_mod/.path)}/../../client/plugins/spotlight.gene"))

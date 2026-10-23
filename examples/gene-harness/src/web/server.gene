@@ -14,6 +14,7 @@
     recover_children
     answer
     command
+    command_sequence
     operator_receipt
     request_receipt
     cancel_operator_command
@@ -459,6 +460,8 @@
           ^expected (?? data/expected_command nil)
           ^card (?? data/card nil)
           ^sequence (if (== request_id "") nil (number data "submission_seq"))))))
+      (if_yes (&& (== parts/.size 6) (== parts/5 "commands") (== request/method "GET"))
+        (return (response 200 (command_sequence host id))))
       (if_yes (&& (== parts/.size 7) (== parts/5 "commands") (== request/method "GET"))
         (return (response 200 (operator_receipt host id parts/6))))
       (if_yes (&& (== parts/.size 7) (== parts/5 "requests") (== request/method "GET"))

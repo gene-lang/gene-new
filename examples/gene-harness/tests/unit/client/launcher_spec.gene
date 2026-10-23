@@ -1,5 +1,5 @@
 (import $test [describe it run])
-(import [match_rank insert_ranked moved] ^from "../../../src/common/launcher")
+(import [match_rank insert_ranked merge_results moved] ^from "../../../src/common/launcher")
 
 (describe "Launcher matching and selection"
   (it "ranks exact/prefix/word/typo matches and stops arrows at list ends" []
@@ -21,6 +21,22 @@
     (let capped (insert_ranked next c 2))
     ($assert (== capped/.size 2))
     ($assert (== capped/0/id "c"))
-    ($assert (== capped/1/id "a"))))
+    ($assert (== capped/1/id "a"))
+    ($assert (same? (insert_ranked capped {^id "z" ^rank 6} 2) capped)))
+  (it "reserves matching actions and breaks equal ranks before conversation recency" []
+    (var conversations [])
+    (var at 0)
+    (while (< at 50)
+      (set conversations (insert_ranked conversations
+        {^id $"conversation:${at}" ^kind "conversation" ^rank 0 ^activity "2026-10-23"} 50))
+      (set at (+ at 1)))
+    (let action {^id "action:new" ^kind "action" ^rank 0})
+    (let merged (merge_results [action] conversations))
+    ($assert (== merged/.size 50))
+    ($assert (== merged/0/id "action:new"))
+    (let weaker {^id "command:help" ^kind "command" ^rank 4})
+    (let reserved (merge_results [weaker] conversations))
+    ($assert (== reserved/.size 50))
+    ($assert (== reserved/49/id "command:help"))))
 
 (fn main [args] : Int (/exit_code (run ^name (?? args/0 ""))))

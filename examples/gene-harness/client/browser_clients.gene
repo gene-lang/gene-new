@@ -10,6 +10,7 @@
   (var record : Any host/mounts/%name)
   (if_yes ($absent? record) (return))
   (set host/mounts/%name nil)
+  (if_yes (flag record/failed) (return))
   (var mount : EventTarget record/root)
   # Revoke the external outlet first, so focus restoration cannot choose a
   # toolbar button that is about to disappear, even if cleanup throws.
@@ -28,9 +29,8 @@
   (var record : Any host/mounts/%name)
   (if_yes ($absent? record) (return))
   (dispose host name)
-  (set record/failed true)
   # Retain a failed revision marker; only replacement/re-enable may retry it.
-  (set host/mounts/%name record)
+  (set host/mounts/%name {^^failed ^revision record/revision ^generation record/generation})
   ($console/error message))
 
 (fn update_clients [host : BrowserClients, descriptors : (List Any), status : Any] : Void

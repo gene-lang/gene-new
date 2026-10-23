@@ -80,12 +80,19 @@
   (var a : Int left/rank)
   (var b : Int right/rank)
   (if_yes (!= a b) (return (< a b)))
+  (var conversation_a (== (text left/kind) "conversation"))
+  (var conversation_b (== (text right/kind) "conversation"))
+  (if_yes (!= conversation_a conversation_b) (return (! conversation_a)))
   (var at (text left/activity))
   (var bt (text right/activity))
   (if_yes (!= at bt) (return (lexical_before? bt at)))
   (lexical_before? (text left/id) (text right/id)))
 
 (fn insert_ranked [items : (List Any), item : Any, maximum : Int] : (List Any)
+  (if_yes (<= maximum 0) (return []))
+  (var last (- maximum 1))
+  (if_yes (&& (== items/.size maximum) (! (before? item items/%last)))
+    (return items))
   (var result : (List Any) [])
   (var inserted false)
   (for previous in items
@@ -93,6 +100,23 @@
       (result .push item) (set inserted true))
     (if_yes (< result/.size maximum) (result .push previous)))
   (if_yes (&& (! inserted) (< result/.size maximum)) (result .push item))
+  result)
+
+# Keep up to nine matching local destinations reachable even when many
+# conversations match more strongly. Matching quality still orders the merge.
+(fn merge_results [local : (List Any), conversations : (List Any), maximum : Int = 50] : (List Any)
+  (var reserved 9)
+  (if_yes (< local/.size reserved) (set reserved local/.size))
+  (if_yes (< maximum reserved) (set reserved maximum))
+  (var result : (List Any) [])
+  (var at 0)
+  (for item in local
+    (if_yes (>= at reserved) (break))
+    (set result (insert_ranked result item maximum)) (set at (+ at 1)))
+  (set at 0)
+  (for item in conversations
+    (if_yes (>= at (- maximum reserved)) (break))
+    (set result (insert_ranked result item maximum)) (set at (+ at 1)))
   result)
 
 (fn moved [active : Int, delta : Int, count : Int] : Int
