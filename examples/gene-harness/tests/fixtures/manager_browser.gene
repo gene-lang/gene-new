@@ -12,6 +12,7 @@
       ^CODEX_AUTH_FILE nil
       ^GENE_BINARY ($os/executable_path)
       ^GENE_HARNESS_WORKSPACE nil
+      ^GENE_HARNESS_ROOT nil
       ^GENE_HARNESS_PORT nil
       ^GENE_HARNESS_OFFLINE nil
       ^GENE_HARNESS_PROVIDER nil

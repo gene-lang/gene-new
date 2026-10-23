@@ -12,7 +12,7 @@
     manager_error])
 (import ^from "./documentation" [contribute_text_doc])
 
-(fn workspace_action [manager, operation : Str, id : Str = "", dir : Str = "", alias : Str = "", port = nil, confirm_dir : Str = "", confirm_busy : Bool = false, expected : Str = ""]
+(fn workspace_action [manager, operation : Str, id : Str = "", name : Str = "", port = nil, confirm_dir : Str = "", confirm_busy : Bool = false, expected : Str = ""]
   (if ($absent? ((Path "ui_action") ($runtime/context)))
     (manager_error "view_only" "This action requires the Workspaces view."))
   (if (== operation "refresh") (return (manager_list manager)))
@@ -28,13 +28,15 @@
     operation
     {
       ^id id
-      ^dir dir
-      ^alias alias
+      ^name name
       ^port selected_port
       ^confirm_dir confirm_dir
       ^confirm_busy confirm_busy
       ^expected expected}))
 
+# Per-workspace keys and selection tokens are KIND/NAME. A name never contains
+# "/", so it cannot collide with a static key such as "create" or with another
+# workspace's keys; hand-placed names may contain "-" or ":".
 (fn manager_view [manager, context]
   (let snapshot (manager_snapshot manager))
   (let selected (?? context/view_state/selected ""))
@@ -43,115 +45,120 @@
   (for item in snapshot/workspaces
     (let controls [])
     (if (["running" "recovery"] .contains? item/status)
-      (controls .push `(a ^href %$"/api/v8/ui/open?name=workspace_open&id=${item/id}" "Open"))
+      (controls .push `(a ^href %$"/api/v8/ui/open?name=workspace_open&id=${($url/encode_component item/id)}" "Open"))
       (controls .push
-        `(button ^key %$"start-${item/id}" ^action "manager_workspace_action" ^args %{^operation "start" ^id item/id} "Start")))
+        `(button ^key %$"start/${item/id}" ^action "manager_workspace_action" ^args %{^operation "start" ^id item/id} "Start")))
     (if (["running" "recovery" "starting" "unavailable"] .contains? item/status)
       (controls .push
-        `(button ^key %$"stop-${item/id}" ^action "manager_workspace_action" ^args %{^operation "stop" ^id item/id} "Stop")))
+        `(button ^key %$"stop/${item/id}" ^action "manager_workspace_action" ^args %{^operation "stop" ^id item/id} "Stop")))
     (controls .push
-      `(button ^key %$"restart-${item/id}" ^action "manager_workspace_action" ^args %{^operation "restart" ^id item/id} "Restart"))
+      `(button ^key %$"restart/${item/id}" ^action "manager_workspace_action" ^args %{^operation "restart" ^id item/id} "Restart"))
     (controls .push
-      `(button ^key %$"edit-select-${item/id}" ^state "selected" ^value %item/id "Edit"))
+      `(button ^key %$"edit-select/${item/id}" ^state "selected" ^value %$"edit/${item/id}" "Edit"))
     (controls .push
       `(details
          (summary "More")
-         (button ^key %$"inspect-${item/id}" ^action "manager_workspace_action" ^args %{^operation "inspect" ^id item/id} "Diagnostics")
-         (button ^key %$"directory-select-${item/id}" ^state "selected" ^value %$"directory:${item/id}" "Update directory")
-         (button ^key %$"remove-select-${item/id}" ^state "selected" ^value %$"remove:${item/id}" "Remove from manager")
-         (button ^key %$"delete-select-${item/id}" ^state "selected" ^value %$"delete:${item/id}" "Delete permanently")))
+         (button ^key %$"inspect/${item/id}" ^action "manager_workspace_action" ^args %{^operation "inspect" ^id item/id} "Diagnostics")
+         (button ^key %$"rename-select/${item/id}" ^state "selected" ^value %$"rename/${item/id}" "Rename")
+         (button ^key %$"archive-select/${item/id}" ^state "selected" ^value %$"archive/${item/id}" "Archive")
+         (button ^key %$"delete-select/${item/id}" ^state "selected" ^value %$"delete/${item/id}" "Delete permanently")))
     (let port (if (== item/port 0) "Automatic" ($to_str item/port)))
     (let actual (if ($absent? item/actual_port) "" $" · listening on ${item/actual_port}"))
     (let pending (if (== item/pending_port true) " · restart to apply" ""))
     (rows .push
-      `(tr ^key %item/id
-         (td (strong %item/alias))
-         (td (code %item/dir))
+      `(tr ^key %$"row/${item/id}"
+         (td (strong %item/name))
          (td %($to_str port actual pending))
          (td %item/status (small %(?? item/message "")))
          (td %controls...)))
     (if_not ($absent? item/confirmation)
       (panels .push
         `(section ^role "alert"
-           (h3 %$"Confirm ${item/confirmation}: ${item/alias}")
+           (h3 %$"Confirm ${item/confirmation}: ${item/name}")
            (p (code %item/dir))
            (p "Active work will be interrupted.")
-           (button ^key %$"busy-confirm-${item/id}" ^action "manager_workspace_action" ^args %{^operation item/confirmation ^id item/id ^confirm_dir item/dir ^^confirm_busy}
+           (button ^key %$"busy-confirm/${item/id}" ^action "manager_workspace_action" ^args %{^operation item/confirmation ^id item/id ^confirm_dir item/dir ^^confirm_busy}
              %$"Confirm ${item/confirmation}"))))
-    (if (== selected item/id)
+    (if (== selected $"edit/${item/id}")
       (panels .push
-        `(form ^key %$"edit-${item/id}" ^action "manager_workspace_action" ^args %{^operation "settings" ^id item/id ^expected item/metadata_revision}
-           (h3 %$"Edit ${item/alias}")
+        `(form ^key %$"edit/${item/id}" ^action "manager_workspace_action" ^args %{^operation "settings" ^id item/id ^expected item/metadata_revision}
+           (h3 %$"Edit ${item/name}")
            (p (code %item/dir))
-           (label
-             "Alias"
-             (input ^key %$"alias-${item/id}" ^field "alias" ^value %item/alias ^^required))
            (label
              "Port (0 for automatic)"
-             (input ^key %$"port-${item/id}" ^field "port" ^type "number" ^value %($to_str item/port) ^^required))
-           (button ^key %$"save-${item/id}" ^type "submit" "Save settings"))))
-    (if (== selected $"directory:${item/id}")
+             (input ^key %$"port/${item/id}" ^field "port" ^type "number" ^value %($to_str item/port) ^^required))
+           (button ^key %$"save/${item/id}" ^type "submit" "Save settings"))))
+    (if (== selected $"rename/${item/id}")
       (panels .push
-        `(form ^key %$"directory-${item/id}" ^action "manager_workspace_action" ^args %{^operation "directory" ^id item/id}
-           (h3 %$"Reconnect ${item/alias}")
-           (p "Select the directory after moving this workspace on disk.")
+        `(form ^key %$"rename/${item/id}" ^action "manager_workspace_action" ^args %{^operation "rename" ^id item/id}
+           (h3 %$"Rename ${item/name}")
+           (p "Renaming moves the workspace directory. Stop the workspace first.")
            (label
-             "Directory"
-             (input ^key %$"dir-${item/id}" ^field "dir" ^value %item/dir ^^required))
-           (button ^key %$"save-directory-${item/id}" ^type "submit" "Update directory"))))
-    (if (== selected $"remove:${item/id}")
+             "Name"
+             (input ^key %$"name/${item/id}" ^field "name" ^value %item/name ^^required))
+           (button ^key %$"save-name/${item/id}" ^type "submit" "Rename"))))
+    (if (== selected $"archive/${item/id}")
       (panels .push
         `(section
-           (h3 %$"Remove ${item/alias} from manager?")
-           (p "All files, settings and running work will remain.")
-           (p (code %item/dir))
-           (button ^key %$"remove-confirm-${item/id}" ^action "manager_workspace_action" ^args %{^operation "remove" ^id item/id} "Remove from manager")
-           (button ^key %$"remove-cancel-${item/id}" ^state "selected" ^value "" "Cancel"))))
-    (if (== selected $"delete:${item/id}")
+           (h3 %$"Archive ${item/name}?")
+           (p %$"The workspace moves to ${snapshot/archive_dir} with all files, sessions and settings. Stop it first; Restore brings it back.")
+           (button ^key %$"archive-confirm/${item/id}" ^action "manager_workspace_action" ^args %{^operation "archive" ^id item/id} "Archive")
+           (button ^key %$"archive-cancel/${item/id}" ^state "selected" ^value "" "Cancel"))))
+    (if (== selected $"delete/${item/id}")
       (panels .push
         `(section ^role "alert"
-           (h3 %$"Delete ${item/alias} permanently?")
+           (h3 %$"Delete ${item/name} permanently?")
            (p (code %item/dir))
            (p "This deletes the entire directory, including project files, sessions, plugins and Harness state. There is no undo.")
-           (button ^key %$"delete-confirm-${item/id}" ^action "manager_workspace_action" ^args %{^operation "delete" ^id item/id ^confirm_dir item/dir} "Delete permanently")
-           (button ^key %$"delete-cancel-${item/id}" ^state "selected" ^value "" "Cancel"))))
+           (button ^key %$"delete-confirm/${item/id}" ^action "manager_workspace_action" ^args %{^operation "delete" ^id item/id ^confirm_dir item/dir} "Delete permanently")
+           (button ^key %$"delete-cancel/${item/id}" ^state "selected" ^value "" "Cancel"))))
     (if_not (|| ($absent? item/port_conflicts) item/port_conflicts/.empty?)
       (let message
         ($to_str
-          item/alias
+          item/name
           ": configured port conflicts with "
           ($str/join item/port_conflicts ", ")
           "."))
       (panels .push `(p ^role "status" %message))))
-  (if (["create" "add"] .contains? selected)
+  (if (== selected "create")
     (panels .push
-      `(form ^key %$"register-${selected}" ^action "manager_workspace_action" ^args %{^operation selected}
-         (h3 %(if (== selected "create") "Create workspace" "Add existing workspace"))
+      `(form ^key "register-create" ^action "manager_workspace_action" ^args %{^operation "create"}
+         (h3 "Create workspace")
+         (p %$"New workspaces are created in ${snapshot/workspaces_dir}.")
          (label
-           "Directory"
-           (input ^key "directory" ^field "dir" ^placeholder "/path/to/project" ^^required))
-         (label "Alias (optional)" (input ^key "alias" ^field "alias"))
+           "Name"
+           (input ^key "name" ^field "name" ^placeholder "todo-app" ^^required))
          (label
-           %(if (== selected "create")
-              "Port (0 or blank for automatic)"
-              "Port (blank keeps existing setting)")
+           "Port (0 or blank for automatic)"
            (input ^key "port" ^field "port" ^type "number"))
-         (button ^key "register-submit" ^type "submit"
-           %(if (== selected "create") "Create" "Add existing"))
+         (button ^key "register-submit" ^type "submit" "Create")
          (button ^key "register-cancel" ^type "button" ^state "selected" ^value "" "Cancel"))))
+  (let archived [])
+  (for name in snapshot/archived
+    (archived .push
+      `(li ^key %$"archived/${name}"
+         (code %name)
+         (button ^key %$"restore/${name}" ^action "manager_workspace_action" ^args %{^operation "restore" ^name name} "Restore"))))
+  (let archived_block
+    (if archived/.empty?
+      `(span "")
+      `(details ^key "archived"
+         (summary %$"Archived (${archived/.size})")
+         (ul %archived...))))
   `(section ^key "workspace-manager"
      (div ^class "actions"
        (button ^key "create" ^state "selected" ^value "create" "Create workspace")
-       (button ^key "add" ^state "selected" ^value "add" "Add existing workspace")
        (button ^key "refresh" ^action "manager_workspace_action" ^args %{^operation "refresh"} "Refresh")
        (button ^key "discuss" ^switch_view "workspaces" ^presentation "docked" "Discuss in Harness"))
+     (p "Workspaces live in " (code %snapshot/workspaces_dir) ".")
      (table
-       (thead (tr (th "Alias") (th "Directory") (th "Port") (th "Status") (th "Actions")))
+       (thead (tr (th "Name") (th "Port") (th "Status") (th "Actions")))
        (tbody %rows...))
      %(if rows/.empty?
-        (quote (p "Create a workspace or add an existing project to get started."))
+        (quote (p "Create a workspace to get started, or place a project directory in the workspaces directory."))
         (quote (span "")))
-     %panels...))
+     %panels...
+     %archived_block))
 
 (fn workspace_manager [] : Plugin
-  (Plugin ^id "workspace_manager" ^requires ["loop"] ^provides [["web_components" "workspaces"] ["ui_actions" "manager_workspace_action"] ["ui_links" "workspace_open"] ["functions" "workspace_list"] ["functions" "workspace_inspect"] ["functions" "workspace_create"] ["functions" "workspace_add"] ["functions" "workspace_start"] ["functions" "workspace_stop"] ["functions" "workspace_restart"] ["functions" "workspace_set_alias"] ["functions" "workspace_set_port"] ["functions" "workspace_update_directory"] ["functions" "workspace_remove"]] ^activate (fn [host] (let runtime ((Path "runtime") ((host .PluginHost:resolve "loop")))) (let manager (open_workspace_manager runtime)) (start_manager_polling manager) (let functions [{^name "workspace_list" ^doc "List registered workspaces and their current status." ^fn (fn [] (manager_list manager))} {^name "workspace_inspect" ^doc "Inspect one workspace and bounded startup diagnostics." ^fn (fn [id : Str] (manager_inspect manager id))} {^name "workspace_create" ^doc "Create and register a new or empty workspace directory. Does not start it." ^fn (fn [dir : Str, ^alias alias : Str = "", ^port port = nil] (manager_operation manager "create" {^dir dir ^alias alias ^port port}))} {^name "workspace_add" ^doc "Register an existing project, preserving its files and settings. Does not start it." ^fn (fn [dir : Str, ^alias alias : Str = "", ^port port = nil] (manager_operation manager "add" {^dir dir ^alias alias ^port port}))} {^name "workspace_start" ^doc "Start a workspace, or use its already running host." ^fn (fn [id : Str] (manager_operation manager "start" {^id id}))} {^name "workspace_stop" ^doc "Gracefully stop a workspace. Active-work interruption requires confirmation in the view." ^fn (fn [id : Str] (manager_operation manager "stop" {^id id}))} {^name "workspace_restart" ^doc "Stop then launch a workspace with its saved settings. Active work requires user confirmation." ^fn (fn [id : Str] (manager_operation manager "restart" {^id id}))} {^name "workspace_set_alias" ^doc "Save a unique alias inside a workspace." ^fn (fn [id : Str, alias : Str] (manager_operation manager "alias" {^id id ^alias alias}))} {^name "workspace_set_port" ^doc "Save a workspace port (0 for automatic). A running host needs restart to apply it." ^fn (fn [id : Str, port : Int] (manager_operation manager "port" {^id id ^port port}))} {^name "workspace_update_directory" ^doc "Reconnect a stopped workspace after it was moved on disk. Does not move files." ^fn (fn [id : Str, dir : Str] (manager_operation manager "directory" {^id id ^dir dir}))} {^name "workspace_remove" ^doc "Remove a registration only; keep files, settings and any running host." ^fn (fn [id : Str] (manager_operation manager "remove" {^id id}))}]) (for function in functions (function .put "tags" ["workspace" "manager"]) (function .put "docs" ["harness/workspace-manager"]) (host .PluginHost:contribute "functions" function)) (host .PluginHost:contribute "ui_actions" {^name "manager_workspace_action" ^doc "Confirmed browser operations for the Workspaces view." ^fn (fn [^operation operation : Str, ^id id : Str = "", ^dir dir : Str = "", ^alias alias : Str = "", ^port port = nil, ^confirm_dir confirm_dir : Str = "", ^confirm_busy confirm_busy : Bool = false, ^expected expected : Str = ""] (workspace_action manager operation id dir alias port confirm_dir confirm_busy expected))}) (host .PluginHost:contribute "ui_links" {^name "workspace_open" ^doc "Authenticated browser-only redirect to a workspace." ^fn (fn [params] (manager_open_link manager params/id))}) (host .PluginHost:contribute "web_components" {^name "workspaces" ^title "Workspaces" ^slot "view" ^default_presentation "full" ^view_state {^selected ""} ^state_version "1" ^actions ["manager_workspace_action"] ^render (fn [context] (manager_view manager context))}) (contribute_text_doc ^tags ["workspace" "manager"] host "harness/workspace-manager" "Create, register and control local workspaces from this manager." "Use workspace_list and workspace_inspect to discover IDs, then workspace_create/add/start/stop/restart/set_alias/set_port/update_directory/remove. Settings live in each workspace. Remove only unregisters, leaving files and running work untouched. Stop/restart never confirm interruption of active work; direct the user to the Workspaces view when confirmation is required. Permanent deletion and authenticated Open are browser-only actions. No manager function returns credentials. Unresponsive hosts require external process control; no forced termination is available."))))
+  (Plugin ^id "workspace_manager" ^requires ["loop"] ^provides [["web_components" "workspaces"] ["ui_actions" "manager_workspace_action"] ["ui_links" "workspace_open"] ["functions" "workspace_list"] ["functions" "workspace_inspect"] ["functions" "workspace_create"] ["functions" "workspace_start"] ["functions" "workspace_stop"] ["functions" "workspace_restart"] ["functions" "workspace_set_port"] ["functions" "workspace_rename"] ["functions" "workspace_archive"] ["functions" "workspace_restore"]] ^activate (fn [host] (let runtime ((Path "runtime") ((host .PluginHost:resolve "loop")))) (let manager (open_workspace_manager runtime)) (start_manager_polling manager) (let functions [{^name "workspace_list" ^doc "List the workspaces under the manager's workspaces directory, their status, and archived names." ^fn (fn [] (manager_list manager))} {^name "workspace_inspect" ^doc "Inspect one workspace by name, with bounded startup diagnostics." ^fn (fn [id : Str] (manager_inspect manager id))} {^name "workspace_create" ^doc "Create an empty workspace named NAME under the workspaces directory. Does not start it." ^fn (fn [name : Str, ^port port = nil] (manager_operation manager "create" {^name name ^port port}))} {^name "workspace_start" ^doc "Start a workspace by name, or use its already running host." ^fn (fn [id : Str] (manager_operation manager "start" {^id id}))} {^name "workspace_stop" ^doc "Gracefully stop a workspace. Active-work interruption requires confirmation in the view." ^fn (fn [id : Str] (manager_operation manager "stop" {^id id}))} {^name "workspace_restart" ^doc "Stop then launch a workspace with its saved settings. Active work requires user confirmation." ^fn (fn [id : Str] (manager_operation manager "restart" {^id id}))} {^name "workspace_set_port" ^doc "Save a workspace port (0 for automatic). A running host needs restart to apply it." ^fn (fn [id : Str, port : Int] (manager_operation manager "port" {^id id ^port port}))} {^name "workspace_rename" ^doc "Rename a stopped workspace by renaming its directory." ^fn (fn [id : Str, name : Str] (manager_operation manager "rename" {^id id ^name name}))} {^name "workspace_archive" ^doc "Move a stopped workspace to the archive directory, keeping all files." ^fn (fn [id : Str] (manager_operation manager "archive" {^id id}))} {^name "workspace_restore" ^doc "Move an archived workspace back to the workspaces directory." ^fn (fn [name : Str] (manager_operation manager "restore" {^name name}))}]) (for function in functions (function .put "tags" ["workspace" "manager"]) (function .put "docs" ["harness/workspace-manager"]) (host .PluginHost:contribute "functions" function)) (host .PluginHost:contribute "ui_actions" {^name "manager_workspace_action" ^doc "Confirmed browser operations for the Workspaces view." ^fn (fn [^operation operation : Str, ^id id : Str = "", ^name name : Str = "", ^port port = nil, ^confirm_dir confirm_dir : Str = "", ^confirm_busy confirm_busy : Bool = false, ^expected expected : Str = ""] (workspace_action manager operation id name port confirm_dir confirm_busy expected))}) (host .PluginHost:contribute "ui_links" {^name "workspace_open" ^doc "Authenticated browser-only redirect to a workspace." ^fn (fn [params] (manager_open_link manager params/id))}) (host .PluginHost:contribute "web_components" {^name "workspaces" ^title "Workspaces" ^slot "view" ^default_presentation "full" ^view_state {^selected ""} ^state_version "2" ^actions ["manager_workspace_action"] ^render (fn [context] (manager_view manager context))}) (contribute_text_doc ^tags ["workspace" "manager"] host "harness/workspace-manager" "Create and control the workspaces under this manager's root." "Every managed workspace is a directory ROOT/workspaces/NAME, and NAME is its ID; a directory placed there appears automatically. Use workspace_list and workspace_inspect, then workspace_create/start/stop/restart/set_port/rename/archive/restore. Rename and archive require a stopped workspace; archive moves it to ROOT/archive and restore moves it back. The port setting lives in each workspace. Stop/restart never confirm interruption of active work; direct the user to the Workspaces view when confirmation is required. Permanent deletion and authenticated Open are browser-only actions. No manager function returns credentials. Unresponsive hosts require external process control; no forced termination is available."))))

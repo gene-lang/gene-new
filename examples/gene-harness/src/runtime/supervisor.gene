@@ -17,7 +17,8 @@
   (var restart_port nil)
   (var recovery (== parsed/options/recovery true))
   (var workspace (?? parsed/options/workspace ($os/launch_dir)))
-  (if (&& hosting (== parsed/command "manager")) (set workspace (initialize_manager_workspace)))
+  (if (&& hosting (== parsed/command "manager"))
+    (set workspace (initialize_manager_workspace ^root parsed/options/root)))
   (if_yes hosting
     ($fs/make_dir workspace)
     (set workspace ($fs/real_path workspace)))

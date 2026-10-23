@@ -5,6 +5,8 @@
     read_workspace_settings
     write_workspace_settings
     update_workspace_settings
+    manager_root_path
+    initialize_manager_workspace
     WorkspaceSettingsError])
 (import ^from "../../../src/runtime/host_log" [open_host_log write_host_log close_host_log])
 (import ^from "../../../src/kernel" [new_harness contribute HarnessError])
@@ -25,8 +27,9 @@
           root
           {^version 1 ^alias "  My project  " ^port 8091 ^role "manager"})
         (let saved (read_workspace_settings root))
-        ($assert (== saved/alias "My project"))
-        (for bad in [{^port 12} {^port -1} {^port 65536} {^port "8092"} {^alias " "} {^role "other"}]
+        ($assert ($absent? saved/alias) "A legacy alias was kept.")
+        ($assert (== saved/port 8091))
+        (for bad in [{^port 12} {^port -1} {^port 65536} {^port "8092"} {^alias "renamed"} {^role "other"}]
           (var failed false)
           (try
             (update_workspace_settings root bad)
@@ -44,6 +47,41 @@
         catch Any
           nil)
         ($assert (! ($fs/exists? $"${root}/executed"))))))
+  (it
+    "resolves the manager root and initializes only an empty or manager directory"
+    []
+    (isolated
+      this_mod/.path
+      "resolves the manager root and initializes only an empty or manager directory"
+      (fn [root]
+        ($assert (== (manager_root_path ^explicit "/chosen" ^environment "/configured") "/chosen"))
+        ($assert (== (manager_root_path ^environment "/configured") "/configured"))
+        ($assert
+          (== (manager_root_path ^explicit "relative" ^environment "")
+              ($path/join ($os/launch_dir) "relative")))
+        ($assert
+          (== (manager_root_path ^environment "")
+              ($path/join ($os/get_env "HOME" "") ".gene-harness-root")))
+        (let chosen $"${root}/manager")
+        (let created (initialize_manager_workspace ^root chosen))
+        ($assert (== created ($fs/real_path chosen)))
+        ($assert (== (read_workspace_settings created) {^version 1 ^port 8080 ^role "manager"}))
+        ($assert ($fs/exists? $"${created}/workspaces"))
+        ($assert (== (initialize_manager_workspace ^root chosen) created))
+        # A started workspace has config.gene; a configured one has settings
+        # without the manager role. Neither may become a manager root.
+        (for [name file text] in [["configured" "config.gene" "{}"]
+                                  ["settled" "workspace.gene" "(serde_v1 {^version 1 ^port 0})"]]
+          (let ordinary $"${root}/${name}")
+          ($fs/make_dir $"${ordinary}/.gene-harness")
+          ($fs/write_text $"${ordinary}/.gene-harness/${file}" text)
+          (var refused false)
+          (try
+            (initialize_manager_workspace ^root ordinary)
+          catch WorkspaceSettingsError
+            (set refused true))
+          ($assert refused name)
+          ($assert (! ($fs/exists? $"${ordinary}/workspaces")) name)))))
   (it
     "rotates bounded UTF-8 host logs independently of a manager process"
     []

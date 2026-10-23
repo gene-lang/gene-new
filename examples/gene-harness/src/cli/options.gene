@@ -19,6 +19,7 @@
   (let valued
     [
       "workspace"
+      "root"
       "session"
       "port"
       "restart-port"
@@ -67,8 +68,10 @@
     (set i (+ i 1)))
   (let command (if words/.empty? "web" words/0))
   (if_yes (== command "manager")
-    (if explicit_workspace (problem "manager uses HOME/.gene-harness-manager; --workspace is not accepted."))
+    (if explicit_workspace (problem "manager hosts its root directory; use --root DIR instead of --workspace."))
     (options .delete "workspace"))
+  (if (&& (!= command "manager") (! ($absent? options/root)))
+    (problem "--root applies only to the manager command."))
   {^options options ^words words ^command command})
 
 (fn joined_words [words, start : Int] : Str

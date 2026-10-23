@@ -19,7 +19,7 @@
         (let occupied (listen ^host "127.0.0.1" ^port 0))
         (var selected nil)
         (try
-          (write_workspace_settings root {^alias "Port test" ^port occupied/port})
+          (write_workspace_settings root {^port occupied/port})
           (var failed false)
           (try
             (set selected (bind_workspace state))
@@ -39,7 +39,7 @@
           catch Any
             (set failed true))
           ($assert failed "restart ignored its original port")
-          (write_workspace_settings root {^alias "Port test" ^port 0})
+          (write_workspace_settings root {^port 0})
           ($fs/write_text $"${state}/web_port" ($serde/write_data occupied/port))
           (set selected (bind_workspace state))
           ($assert (!= selected/port occupied/port))

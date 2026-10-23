@@ -6,6 +6,7 @@
 (import ^from "../../../src/runtime/workspace_manager"
   [manager_operation manager_list manager_inspect ManagerError])
 (import ^from "../../../src/kernel" [row])
+(import ^from "../../../src/runtime/workspace_lock" [acquire_workspace_lock close_workspace_lock])
 (import ^from "../../../src/runtime/bootstrap" [prepare_layout])
 (import ^from "../../../src/ui/state" [ui_status])
 (import ^from "../../../src/ui/views" [ui_preview])
@@ -43,60 +44,152 @@
 
 (fn manager_service [root]
   ($fs/make_dir $"${root}/.gene-harness")
-  (write_workspace_settings root {^version 1 ^alias "Manager" ^port 0 ^role "manager"})
+  (write_workspace_settings root {^version 1 ^port 0 ^role "manager"})
   (test_service ^workspace root ^provider (fn [request] "(Outcome ^^done)")))
 
 (describe
   "Workspace manager"
   (it
-    "loads its profile and view, and persists workspace CRUD without exposing destructive functions"
+    "lists the workspaces directory and creates, renames, archives and restores by name"
     []
     (isolated
       this_mod/.path
-      "loads its profile and view, and persists workspace CRUD without exposing destructive functions"
+      "lists the workspaces directory and creates, renames, archives and restores by name"
       (fn [root]
         (let service (manager_service root))
         (try
           (let h service/runtime/h)
+          (let manager service/runtime/workspace_manager)
+          (let base $"${service/runtime/root}/workspaces")
+          (fn manager_fn [name : Str] (/fn (row h "functions" name)))
           ($assert (== service/runtime/profile/name "manager"))
-          (let list ((Path "fn") (row h "functions" "workspace_list")))
-          (let create ((Path "fn") (row h "functions" "workspace_create")))
-          ($assert (== ((Path "workspaces") (list)) []))
+          ($assert ($fs/exists? base))
+          ($assert (== (/workspaces ((manager_fn "workspace_list"))) []))
           ($assert ($absent? (row h "functions" "manager_workspace_action")))
-          ($assert ($absent? (row h "functions" "workspace_delete")))
-          ($assert ($absent? (row h "functions" "workspace_open")))
+          (for name in ["workspace_delete" "workspace_open" "workspace_add" "workspace_remove"
+                        "workspace_set_alias" "workspace_update_directory"]
+            ($assert ($absent? (row h "functions" name)) name))
           ($assert (== ((Path "settings" "default_view") (ui_status h)) "workspaces"))
           (let preview (ui_preview h "workspaces"))
           ($assert ($absent? preview/error) ($to_str preview))
-          (let project (create ^alias "One" ^port 8123 $"${root}/projects/one"))
+          (let project ((manager_fn "workspace_create") ^port 8123 "todo-app"))
           ($assert (== project/status "stopped") ($to_str project))
-          ($assert (== project/alias "One"))
+          ($assert (== project/id "todo-app"))
+          ($assert (== project/name "todo-app"))
+          ($assert (== project/dir $"${base}/todo-app"))
           ($assert (== ((Path "port") (read_workspace_settings project/dir)) 8123))
-          (((Path "fn") (row h "functions" "workspace_set_alias")) project/id "Renamed")
-          (((Path "fn") (row h "functions" "workspace_set_port")) project/id 0)
-          ($assert (== ((Path "alias") (read_workspace_settings project/dir)) "Renamed"))
+          ((manager_fn "workspace_set_port") project/id 0)
           ($assert (== ((Path "port") (read_workspace_settings project/dir)) 0))
-          (let populated (ui_preview h "workspaces" {^selected project/id}))
-          ($assert ($absent? populated/error) ($to_str populated))
-          (for selection in ["create" "add" $"delete:${project/id}" $"remove:${project/id}" $"directory:${project/id}"]
-            (let rendered (ui_preview h "workspaces" {^selected selection}))
-            ($assert ($absent? rendered/error) ($to_str rendered)))
-          (((Path "fn") (row h "functions" "workspace_remove")) project/id)
-          ($assert ($fs/exists? project/dir))
-          (let added (((Path "fn") (row h "functions" "workspace_add")) project/dir))
-          ($assert (== added/alias "Renamed"))
-          (let moved $"${root}/projects/moved")
-          ($fs/rename project/dir moved)
-          (((Path "fn") (row h "functions" "workspace_update_directory")) added/id moved)
-          ($assert
-            (==
-              ((Path "dir") (((Path "fn") (row h "functions" "workspace_inspect")) added/id))
-              moved))
-          ($assert
-            (==
-              ((Path "workspaces") (list))
-              ((Path "workspaces") (manager_list service/runtime/workspace_manager))))
-          ($assert ($fs/exists? $"${root}/registry.gene"))
+          (for bad in ["todo-app" "../outside" ".hidden" "a/b" "" "has space"]
+            (var refused false)
+            (try
+              ((manager_fn "workspace_create") bad)
+            catch ManagerError
+              (set refused true))
+            ($assert refused bad))
+          # Names that equal a static key, or that would join with another
+          # row's key prefix, still render every selection with unique keys.
+          (for name in ["create" "x" "select-x" "name-y" "y"]
+            ((manager_fn "workspace_create") name))
+          (for id in [project/id "create" "x" "select-x" "name-y" "y"]
+            (for selection in ["" "create" $"edit/${id}" $"rename/${id}" $"archive/${id}" $"delete/${id}"]
+              (let rendered (ui_preview h "workspaces" {^selected selection}))
+              ($assert ($absent? rendered/error) ($to_str selection " " rendered))))
+          (let edit_create (ui_preview h "workspaces" {^selected "edit/create"}))
+          ($assert ($str/contains? ($to_str edit_create) "Edit create") "Edit opened another panel.")
+          (for name in ["create" "x" "select-x" "name-y" "y"]
+            ($fs/remove $"${base}/${name}/.gene-harness/workspace.gene")
+            ($fs/remove_dir $"${base}/${name}/.gene-harness")
+            ($fs/remove_dir $"${base}/${name}"))
+          (let renamed ((manager_fn "workspace_rename") project/id "todo"))
+          ($assert (== renamed/id "todo"))
+          ($assert (! ($fs/exists? project/dir)))
+          ($assert ($fs/exists? $"${base}/todo/.gene-harness/workspace.gene"))
+          # The directory is the registry: anything placed there is listed,
+          # but files, hidden directories and symbolic links are not.
+          ($fs/make_dir $"${base}/manual")
+          ($fs/make_dir $"${base}/.hidden")
+          ($fs/write_text $"${base}/notes.txt" "not a workspace")
+          ($fs/make_dir $"${root}/outside")
+          ($fs/create_symlink $"${root}/outside" $"${base}/linked")
+          ($assert (== ($map (/workspaces ((manager_fn "workspace_list"))) /id) ["manual" "todo"]))
+          (let archived ((manager_fn "workspace_archive") "todo"))
+          ($assert (== archived/archived "todo"))
+          ($assert ($fs/exists? $"${service/runtime/root}/archive/todo/.gene-harness/workspace.gene"))
+          ((manager_fn "workspace_create") "todo")
+          ($assert (== ((Path "archived") ((manager_fn "workspace_archive") "todo")) "todo-2"))
+          (let listed ((manager_fn "workspace_list")))
+          ($assert (== ($map listed/workspaces /id) ["manual"]))
+          ($assert (== listed/archived ["todo" "todo-2"]))
+          (let with_archive (ui_preview h "workspaces"))
+          ($assert ($absent? with_archive/error) ($to_str with_archive))
+          ((manager_fn "workspace_create") "todo")
+          (var conflicted false)
+          (try
+            ((manager_fn "workspace_restore") "todo")
+          catch ManagerError
+            (set conflicted true))
+          ($assert conflicted)
+          (let restored ((manager_fn "workspace_restore") "todo-2"))
+          ($assert (== restored/id "todo-2"))
+          ($assert (== ($map (/workspaces (manager_list manager)) /id) ["manual" "todo" "todo-2"]))
+          ($assert (! ($fs/exists? $"${service/runtime/root}/registry.gene")))
+        ensure
+          (close_session_service service)))))
+  (it
+    "addresses workspaces by exact name, moves only unlocked directories and keeps archive names restorable"
+    []
+    (isolated
+      this_mod/.path
+      "addresses workspaces by exact name, moves only unlocked directories and keeps archive names restorable"
+      (fn [root]
+        (let service (manager_service root))
+        (try
+          (let manager service/runtime/workspace_manager)
+          (let base $"${service/runtime/root}/workspaces")
+          (let archive $"${service/runtime/root}/archive")
+          (fn refused? [operation, values]
+            (try
+              (manager_operation manager operation values)
+              false
+            catch ManagerError
+              true))
+          # A hand-placed "project " is its own workspace, never "project".
+          (manager_operation manager "create" {^name "project"})
+          ($fs/make_dir $"${base}/project ")
+          ($assert (== ($map (/workspaces (manager_list manager)) /id) ["project" "project "]))
+          (manager_operation manager "archive" {^id "project "})
+          ($assert ($fs/exists? $"${archive}/project "))
+          ($assert ($fs/exists? $"${base}/project"))
+          # Each lock blocks every move for as long as it is held.
+          (let held (acquire_workspace_lock $"${base}/project" "test owner"))
+          (try
+            ($assert (refused? "archive" {^id "project"}))
+            ($assert (refused? "rename" {^id "project" ^name "moved"}))
+          ensure
+            (close_workspace_lock held))
+          (let launcher ($fs/try_lock $"${base}/project/.gene-harness/launcher_lock"))
+          (try
+            ($assert (refused? "archive" {^id "project"}))
+          ensure
+            launcher/.close)
+          ($assert ($fs/exists? $"${base}/project"))
+          (let archived_owner (acquire_workspace_lock $"${archive}/project " "test owner"))
+          (try
+            ($assert (refused? "restore" {^name "project "}))
+          ensure
+            (close_workspace_lock archived_owner))
+          ($assert ($fs/exists? $"${archive}/project "))
+          ($assert (== ((Path "id") (manager_operation manager "restore" {^name "project "})) "project "))
+          # A repeated 64-byte name is shortened, not lengthened, by its suffix.
+          (let long "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+          (manager_operation manager "create" {^name long})
+          (manager_operation manager "archive" {^id long})
+          (manager_operation manager "create" {^name long})
+          (let second (manager_operation manager "archive" {^id long}))
+          ($assert (== ($str/byte_size second/archived) 64) second/archived)
+          ($assert ($str/ends_with? second/archived "-2"))
+          ($assert (== ((Path "id") (manager_operation manager "restore" {^name second/archived})) second/archived))
         ensure
           (close_session_service service)))))
   (it
@@ -111,8 +204,8 @@
         (var first nil)
         (var second nil)
         (try
-          (set first (manager_operation manager "create" {^dir $"${root}/first" ^alias "First"}))
-          (set second (manager_operation manager "create" {^dir $"${root}/second" ^alias "Second"}))
+          (set first (manager_operation manager "create" {^name "first"}))
+          (set second (manager_operation manager "create" {^name "second"}))
           (let one (manager_operation manager "start" {^id first/id}))
           ($assert (== one/status "running") ($to_str (manager_inspect manager first/id)))
           (let two (manager_operation manager "start" {^id second/id}))
@@ -126,7 +219,7 @@
                 (fn [item]
                   (== item/id second/id)))))
           ($assert
-            (conflict/port_conflicts .contains? "First")
+            (conflict/port_conflicts .contains? "first")
             "A fixed port conflict with an automatically assigned live port was hidden.")
           (manager_operation manager "port" {^id second/id ^port 0})
           ($assert
@@ -147,10 +240,14 @@
           ($assert (== restarted/status "running"))
           ($assert (== restarted/actual_port one/actual_port))
           ($assert (!= restarted/epoch two/epoch))
-          (manager_operation manager "remove" {^id second/id})
+          (for operation in ["archive" "rename"]
+            (var refused false)
+            (try
+              (manager_operation manager operation {^id second/id ^name "moved"})
+            catch ManagerError
+              (set refused true))
+            ($assert refused operation))
           ($assert (== ((Path "epoch") (discover second/dir)) restarted/epoch))
-          (set second (manager_operation manager "add" {^dir second/dir}))
-          ($assert (== second/status "running"))
           (let removed
             (browser_action service {^operation "delete" ^id first/id ^confirm_dir first/dir}))
           ($assert (== removed/status "done") removed/display)
@@ -160,53 +257,55 @@
           (if_not ($absent? second) (stop_project second/dir))
           (close_session_service service)))))
   (it
-    "rejects stale edits and protects nested workspaces while deleting added directories without following links"
+    "rejects stale edits and unsafe names, and deletes workspaces without following links"
     []
     (isolated
       this_mod/.path
-      "rejects stale edits and protects nested workspaces while deleting added directories without following links"
+      "rejects stale edits and unsafe names, and deletes workspaces without following links"
       (fn [root]
         (let service (manager_service root))
         (try
           (let manager service/runtime/workspace_manager)
-          (let project
-            (manager_operation manager "create" {^dir $"${root}/project" ^alias "Original"}))
-          (manager_operation manager "alias" {^id project/id ^alias "Changed elsewhere"})
+          (let project (manager_operation manager "create" {^name "project"}))
+          (manager_operation manager "port" {^id project/id ^port 9123})
           (let stale
             (browser_action
               service
               {
                 ^operation "settings"
                 ^id project/id
-                ^alias "Stale edit"
-                ^port 0
+                ^port 9124
                 ^expected project/metadata_revision}))
           ($assert (== stale/status "failed") ($to_str stale))
-          ($assert (== ((Path "alias") (read_workspace_settings project/dir)) "Changed elsewhere"))
-          (let nested
-            (manager_operation manager "create" {^dir $"${project/dir}/nested" ^alias "Nested"}))
-          (let blocked
-            (browser_action service {^operation "delete" ^id project/id ^confirm_dir project/dir}))
-          ($assert (== blocked/status "failed"))
-          ($assert ($fs/exists? nested/dir))
-          (var refused false)
-          (try
-            (manager_operation manager "add" {^dir root})
-          catch ManagerError
-            (set refused true))
-          ($assert refused)
-          (let added_dir $"${root}/existing")
+          ($assert (== ((Path "port") (read_workspace_settings project/dir)) 9123))
+          (for id in ["../project" "." "" "project/.gene-harness"]
+            (var refused false)
+            (try
+              (manager_operation manager "start" {^id id})
+            catch ManagerError
+              (set refused true))
+            ($assert refused id))
+          (let mismatched
+            (browser_action service {^operation "delete" ^id project/id ^confirm_dir root}))
+          ($assert (== mismatched/status "failed"))
+          ($assert ($fs/exists? project/dir))
+          # A hand-placed project without Harness state is deletable too.
+          (let plain $"${service/runtime/root}/workspaces/plain")
+          ($fs/make_dir plain)
+          ($fs/write_text $"${plain}/notes.txt" "notes")
+          (let removed_plain
+            (browser_action service {^operation "delete" ^id "plain" ^confirm_dir plain}))
+          ($assert (== removed_plain/status "done") removed_plain/display)
+          ($assert (! ($fs/exists? plain)))
           (let outside $"${root}/outside")
-          ($fs/make_dir added_dir)
           ($fs/make_dir outside)
           ($fs/write_text $"${outside}/keep" "keep")
-          ($fs/write_text $"${added_dir}/project.txt" "project")
-          ($fs/create_symlink outside $"${added_dir}/external")
-          (let added (manager_operation manager "add" {^dir added_dir ^alias "Existing"}))
+          ($fs/write_text $"${project/dir}/project.txt" "project")
+          ($fs/create_symlink outside $"${project/dir}/external")
           (let deleted
-            (browser_action service {^operation "delete" ^id added/id ^confirm_dir added/dir}))
+            (browser_action service {^operation "delete" ^id project/id ^confirm_dir project/dir}))
           ($assert (== deleted/status "done") deleted/display)
-          ($assert (! ($fs/exists? added_dir)))
+          ($assert (! ($fs/exists? project/dir)))
           ($assert (== ($fs/read_text $"${outside}/keep") "keep"))
         ensure
           (close_session_service service)))))
@@ -219,7 +318,7 @@
       (fn [root]
         (let service (manager_service root))
         (let manager service/runtime/workspace_manager)
-        (let project (manager_operation manager "create" {^dir $"${root}/unavailable"}))
+        (let project (manager_operation manager "create" {^name "unavailable"}))
         (let process
           ($os/exec_async ^timeout_ms 120000
             ($os/executable_path)
@@ -265,12 +364,12 @@
           (stop_project project/dir)
           (close_session_service service))))))
 (describe "Manager filesystem failures"
-  (it "retains registration after a partial deletion error and permits a later retry" []
-    (isolated this_mod/.path "retains registration after a partial deletion error and permits a later retry"
+  (it "keeps a workspace listed after a partial deletion error and permits a later retry" []
+    (isolated this_mod/.path "keeps a workspace listed after a partial deletion error and permits a later retry"
       (fn [root]
         (let service (manager_service root))
         (let manager service/runtime/workspace_manager)
-        (let project (manager_operation manager "create" {^dir $"${root}/partial"}))
+        (let project (manager_operation manager "create" {^name "partial"}))
         (let directories [])
         (var path project/dir)
         (try
@@ -325,25 +424,30 @@
         ensure (close_session_service service))))))
 
 (describe "Independently started workspaces"
-  (it "adopts a direct host without restarting it and replaces it on explicit Restart" []
-    (isolated this_mod/.path "adopts a direct host without restarting it and replaces it on explicit Restart"
+  (it "adopts a host started directly in its workspaces directory and replaces it on explicit Restart" []
+    (isolated this_mod/.path "adopts a host started directly in its workspaces directory and replaces it on explicit Restart"
       (fn [root]
         (let service (manager_service root))
         (let manager service/runtime/workspace_manager)
-        (let project $"${root}/external")
+        (let project $"${service/runtime/root}/workspaces/external&co")
         (var original nil)
         (try
           (set original (start_host project))
           ($fs/write_text $"${project}/keep.txt" "project data")
           (let session (cli project ["sessions" "create" "--title" "Existing conversation"]))
           (let secret ($fs/read_text $"${project}/.gene-harness/web_secret"))
-          (let added (manager_operation manager "add" {^dir project ^alias "External"}))
-          ($assert (== added/status "running"))
-          ($assert (== added/epoch original/connection/epoch))
-          (let reused (manager_operation manager "start" {^id added/id}))
+          (let listed (/workspaces/0 (manager_list manager)))
+          ($assert (== listed/id "external&co"))
+          ($assert (== listed/status "running") ($to_str listed))
+          ($assert (== listed/epoch original/connection/epoch))
+          # Open carries the name as an encoded query component.
+          (let rendered ($to_str (ui_preview service/runtime/h "workspaces")))
+          ($assert ($str/contains? rendered "id=external%26co") rendered)
+          ($assert (! ($str/contains? rendered "id=external&co")) rendered)
+          (let reused (manager_operation manager "start" {^id "external&co"}))
           ($assert (== reused/epoch original/connection/epoch))
           ($assert (! ($fs/exists? $"${project}/.gene-harness/launcher_lock")))
-          (let restarted (manager_operation manager "restart" {^id added/id}))
+          (let restarted (manager_operation manager "restart" {^id "external&co"}))
           ($assert (== restarted/status "running") ($to_str restarted))
           ($assert (!= restarted/epoch original/connection/epoch))
           (let original_exit (await original/process))

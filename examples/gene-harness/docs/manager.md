@@ -1,29 +1,38 @@
 # Workspace manager
 
-Status: MVP implemented and verified (2026-10-17). Forced termination
-of unresponsive hosts is deferred; see the end of the first milestone checks.
+Status: MVP implemented and verified (2026-10-17). Single-root layout
+implemented 2026-10-23. Forced termination of unresponsive hosts is deferred;
+see the end of the first milestone checks.
 
-The manager is a Harness workspace for creating, registering, opening and
-managing other Gene Harness workspaces. It lives at `$HOME/.gene-harness-manager`.
-A manager plugin supplies its UI and functions, so the user can manage
-workspaces from a plugin view or by asking the model in a conversation. Each
-managed workspace keeps its own directory, alias, port, sessions and plugins.
-The manager gives one place to find and control them, including workspaces
-whose normal host cannot start.
+The manager is a Harness workspace for creating, opening and managing other
+Gene Harness workspaces. Its directory is the **manager root**,
+`$HOME/.gene-harness-root` by default, and every managed workspace is a child
+directory of `ROOT/workspaces`. A manager plugin supplies its UI and functions,
+so the user can manage workspaces from a plugin view or by asking the model in
+a conversation. Each managed workspace keeps its own port, sessions and
+plugins. The manager gives one place to find and control them, including
+workspaces whose normal host cannot start.
 
 ## Launch
 
 ```text
 gene-harness manager
 gene-harness manager --port 8081
+gene-harness manager --root ~/work/harness
 ```
 
-`manager` starts the Harness host for the manager workspace, creating
-`$HOME/.gene-harness-manager` on first run. It runs under the existing
-per-workspace launcher, as `web` does, so host-requested restarts and the
-recovery fallback work as they do for any workspace. The workspace path does
-not depend on the launch directory or `GENE_HARNESS_WORKSPACE`. This command
-rejects `--workspace`.
+`manager` starts the Harness host for the manager root, creating it on first
+run. The root is `--root DIR`, then a non-empty `GENE_HARNESS_ROOT`, then
+`$HOME/.gene-harness-root`; a relative path uses the launch directory. The
+command runs under the existing per-workspace launcher, as `web` does, so
+host-requested restarts and the recovery fallback work as they do for any
+workspace. The root does not depend on `GENE_HARNESS_WORKSPACE`. This command
+rejects `--workspace`, and other commands reject `--root`.
+
+A chosen root can be a new or existing directory, but not an ordinary Harness
+workspace. The manager refuses a directory with a `.gene-harness/config.gene`,
+or with a `workspace.gene` that lacks the manager role, rather than converting
+it.
 
 On first run the manager workspace's configured port is **8080**, bound to
 `127.0.0.1`. `--port` overrides it for one invocation. The manager command
@@ -31,9 +40,9 @@ ignores `GENE_HARNESS_PORT`. A fixed configured port must bind: if 8080 is
 occupied, report the conflict and let the user choose another port. Do not
 silently move the manager to a random port.
 
-The manager workspace's `workspace.gene` records `^role "manager"`. Any launch
-of that directory uses the manager profile, so `web --workspace
-$HOME/.gene-harness-manager` behaves like `manager`. The existing `web` command
+The manager root's `workspace.gene` records `^role "manager"`. Any launch of
+that directory uses the manager profile, so `web --workspace
+$HOME/.gene-harness-root` behaves like `manager`. The existing `web` command
 and its default behavior remain available for starting other workspaces
 directly. Startup prints a ready-to-open browser link using the existing
 terminal-output convention.
@@ -54,17 +63,16 @@ manager and recovery interface apply to it.
   conversation, stays available through the View picker, docked beside it or
   alone. See [workspace views](workspace-views.md).
 - **Functions for the model.** `workspace_list`, `workspace_inspect`,
-  `workspace_create`, `workspace_add`, `workspace_start`, `workspace_stop`,
-  `workspace_restart`, `workspace_set_alias`, `workspace_set_port`,
-  `workspace_update_directory` and `workspace_remove`. The last one removes
-  only the registry entry.
+  `workspace_create`, `workspace_start`, `workspace_stop`,
+  `workspace_restart`, `workspace_set_port`, `workspace_rename`,
+  `workspace_archive` and `workspace_restore`. A workspace's name is its ID.
 - **A docs row** describing the operations and the rules below.
 
 The view and the functions share one implementation, so the two paths cannot
 drift apart. Which operations go where:
 
 - **Delete permanently is a view action only.** Its confirmation names the
-  alias and the canonical directory. No function deletes a workspace
+  workspace and its directory. No function deletes a workspace
   directory. Model code can still reach `$fs`, as in every workspace, so this
   rule is about confirming the user's intent, not a security boundary.
 - **Stopping active work needs the user.** Functions never confirm
@@ -83,10 +91,11 @@ is reported as status and does not block the host
 (`src/runtime/bootstrap.gene:143`). Only conversations need a provider, which
 the manager workspace configures in its own settings like any workspace.
 
-The registry is plain workspace data, independent of plugin activation. It
-survives replacement of `workspace_manager` and use of the recovery interface.
-The manager workspace does not appear in its own registry. Create and Add
-refuse it, and Delete refuses any target that contains it. Managed workspaces
+The list of workspaces is the `ROOT/workspaces` directory itself, so it is
+independent of plugin activation and survives replacement of
+`workspace_manager` and use of the recovery interface. The manager's own state
+lives in `ROOT/.gene-harness` and can never be addressed as a workspace.
+Managed workspaces
 run in detached launchers, so stopping, restarting or breaking the manager
 leaves them running. If `workspace_manager` is replaced badly or fails to
 activate, the manager workspace uses its normal recovery interface, where
@@ -97,93 +106,89 @@ back the built-in profile plugin.
 
 | Information | Source of truth |
 | --- | --- |
-| Directory | Canonical absolute path in the manager's registry. |
-| Alias | Saved inside the workspace; used as its display name. |
+| Name | The workspace's directory name under `ROOT/workspaces`; also its ID. |
 | Configured port | Saved inside the workspace; a fixed port or automatic selection. |
 | Actual port and endpoint | The running host's existing connection descriptor. |
 | Status | Observed from the host and process state; never trusted from a saved running flag. |
 
-Store the manager's registration separately from each workspace's settings:
+The directory layout is the registry:
 
 ```text
-$HOME/.gene-harness-manager/      the manager workspace
-  registry.gene             registered workspace directories
-  .gene-harness/            the manager's own Harness state; its
-                            workspace.gene has ^role "manager" and port 8080
-
-<workspace>/.gene-harness/
-  workspace.gene            alias and configured port
-  web_port                  existing last successfully selected port
-  connection                existing live host descriptor
-  link                      existing authenticated browser URL
-  bootstrap.log             early launcher output; replaced on each launch
-  host.log                  bounded host and launcher diagnostics
-  host.log.1                previous log segment
+$HOME/.gene-harness-root/       the manager root (--root or GENE_HARNESS_ROOT)
+  .gene-harness/                the manager's own Harness state; its
+                                workspace.gene has ^role "manager" and port 8080
+  workspaces/
+    todo-app/                   a managed workspace named todo-app
+      .gene-harness/
+        workspace.gene          configured port
+        web_port                existing last successfully selected port
+        connection              existing live host descriptor
+        link                    existing authenticated browser URL
+        bootstrap.log           early launcher output; replaced on each launch
+        host.log                bounded host and launcher diagnostics
+        host.log.1              previous log segment
+  archive/
+    old-demo/                   an archived workspace, restorable by name
 ```
 
 Example workspace metadata, stored as inert Gene data:
 
 ```gene
-{^version 1 ^alias "harness1011" ^port 8091}
+{^version 1 ^port 8091}
 ```
 
 Use `port: 0` for automatic selection. A fixed port must be in the existing
-supported range, 1024–65535. The manager reads alias and configured port from
-the workspace instead of maintaining another authoritative copy.
+supported range, 1024–65535. The manager reads the configured port from the
+workspace instead of maintaining another authoritative copy. Settings written
+before this layout may contain an `alias`; it is accepted and dropped on the
+next write.
 
-Aliases are non-empty and unique among registered workspaces. An alias is a
-label, not a directory name or filesystem identity. Changing it does not rename
-the directory. Canonical paths prevent registering the same directory twice
-through relative paths or symlinks.
-
-Existing workspaces without this metadata remain valid. When adding one,
-suggest its directory name as the alias and automatic port selection. Automatic
-selection retains the existing remembered-port behavior. Show any alias
-conflict and let the user choose a different alias before registration.
-
-Moving a workspace together with `.gene-harness/`, or removing and later adding
-it again, retains its alias and configured port. The registry records where to
-find it; it does not own its contents. Ordinary listing never initializes a
-missing directory or loads workspace plugins.
+A new name (Create, Rename) is 1–64 letters, digits, dots, hyphens or
+underscores, starting with a letter or digit. Names are unique because they are
+directory names. Every real directory directly under `ROOT/workspaces` is
+listed, including one copied or cloned there by hand; files, hidden directories
+and symbolic links are not. Operations address a listed workspace by its exact
+directory name, never a trimmed or normalized one, so a hand-placed
+`project ` (with a trailing space) is distinct from `project`.
+To manage an existing project, clone or move it into `ROOT/workspaces`. Ordinary
+listing never initializes a directory or loads workspace plugins.
 
 ## Workspace operations
 
 | Operation | Behavior |
 | --- | --- |
-| Create | Choose a directory, alias and port; initialize workspace metadata and register it. Accept a new or empty directory. Offer Add existing for a non-empty directory. |
-| Add existing | Select an existing project directory. Reuse its Harness state and saved settings. If it has no Harness state, initialize it without replacing project files. Registration does not start the host. |
-| List / inspect | Show alias, directory, configured port, actual address, status and any startup error. Keep missing directories visible so the user can repair or remove their entries. |
-| Edit alias | Save the new alias in the workspace; update the list immediately. |
+| Create | Choose a name and port; create `ROOT/workspaces/NAME` and save its port. Refuse an existing name. |
+| List / inspect | Show name, configured port, actual address, status and any startup error, plus the names in `ROOT/archive`. |
 | Edit port | Save the configured port in the workspace. A running host keeps its current listener until restarted; show the pending change and offer Restart. |
-| Update directory | Reconnect an entry to a workspace that the user moved on disk. Validate the destination and read its saved alias and port before saving. This operation does not move files. |
+| Rename | Rename the workspace directory. The workspace must be stopped, and the new name must be free. |
 | Start | Launch the workspace host, or discover and use its existing running host. |
 | Open | Open the current authenticated workspace link (view action). Offer Start when stopped. |
 | Stop / restart | Stop through the existing host control flow. Manager Restart stops the host and launches it again using saved workspace settings. Both respect active-work confirmation. |
-| Remove from manager | Remove only the registry entry. Keep the directory, all Harness state and saved settings. A running host continues running. |
-| Delete permanently | View action only. Stop the workspace, then delete the entire workspace directory and remove its registry entry. |
+| Archive | Move a stopped workspace to `ROOT/archive/NAME`, keeping every file. A name already in the archive gets a numeric suffix (`NAME-2`), shortening the name so the result stays within 64 bytes. |
+| Restore | Move an archived workspace back to `ROOT/workspaces`. Refuse when a workspace with that name exists; rename it first. |
+| Delete permanently | View action only. Stop the workspace, then delete its entire directory. |
 
 Creating a workspace does not invoke a model or create a conversation in the
-new workspace. Adding one does not reset its configuration, sessions,
-composition or credentials.
+new workspace. Rename, Archive and Restore hold the moved directory's workspace
+lock and launcher lock for the whole move, as Delete does, so a host cannot
+start in a directory while it is being moved; a held lock refuses the move.
 
-**Remove from manager** and **Delete permanently** are separate actions. The
-deletion confirmation names the alias and full canonical directory and states
-that project files, sessions, plugins and Harness state will be deleted.
-Deletion is not limited to `.gene-harness/` and does not imply a backup or undo.
-It is available for both created and added workspaces after this confirmation.
-Whether the manager originally created the directory does not change the
-meaning of the action. Removing only Harness state would be a separate feature.
+**Archive** and **Delete permanently** are separate actions. Archive is
+reversible and available to the model. The deletion confirmation names the
+workspace and its full directory and states that project files, sessions,
+plugins and Harness state will be deleted. Deletion is not limited to
+`.gene-harness/` and does not imply a backup or undo. Removing only Harness
+state would be a separate feature.
 
 Permanent deletion requires the workspace to be stopped and exclusive
 ownership to be acquired. If stopping is cancelled, times out or the workspace
-remains busy, leave the files and registration alone. Do not follow symlinks
-inside the workspace into other directories. Refuse deletion of the filesystem
-root, the user's home directory or a directory containing another registered
-workspace. Also refuse a target that contains the manager workspace, the active
-Harness/Gene installation or the directory the manager was launched from.
-Resolve these paths before checking containment. If filesystem deletion fails
-partway through, retain the entry and report the failure so the remaining
-contents can be inspected.
+remains busy, leave the files alone. Do not follow symlinks inside the
+workspace into other directories. Only a real directory directly under
+`ROOT/workspaces` can be deleted; also refuse one that contains the user's home
+directory, the manager root or the active Harness/Gene installation. Resolve
+these paths before checking containment. If filesystem deletion fails partway
+through, the workspace stays listed and the failure is reported so the
+remaining contents can be inspected.
 
 ## Port selection
 
@@ -221,7 +226,7 @@ launch, so the old handoff cannot override a changed configured port. If the
 new port is unavailable, show a stopped workspace with the bind error and keep
 the requested setting for correction or retry.
 
-Detect obvious conflicts with the manager's own port or another registered
+Detect obvious conflicts with the manager's own port or another managed
 workspace and show them in the UI. The listener bind remains authoritative;
 an unused port cannot be reserved just by saving its number.
 
@@ -235,13 +240,14 @@ Harness runtimes into its own process.
 
 Managed workspaces' launchers must live independently of browser requests and
 of the manager host's lifetime. Closing the browser, stopping or restarting the
-manager (including a restart after publishing a manager plugin) or removing a
-registry entry leaves running workspaces alone. On its next start, the manager
-rediscovers registered hosts through their existing connection metadata and
-status API. It does not start all stopped workspaces automatically.
+manager (including a restart after publishing a manager plugin) leaves running
+workspaces alone. On its next start, the manager rediscovers their hosts
+through their existing connection metadata and status API. It does not start
+all stopped workspaces automatically.
 
-A workspace started outside the manager can be added, inspected and opened.
-Starting an already running workspace reuses it. Preserve the existing
+A host started directly in a directory under `ROOT/workspaces` is listed,
+inspected and opened like any other. Starting an already running workspace
+reuses it. Preserve the existing
 exclusive workspace lock; a live lock with an unreachable host is shown as
 unavailable or busy, not treated as permission to start a second owner.
 
@@ -259,15 +265,15 @@ the child environment below; it does not reconstruct the old process's CLI
 overrides. Host-requested `/restart` keeps its existing behavior.
 
 The manager is an ordinary Harness host, so its UI uses the existing loopback,
-cookie and CSRF authentication. Its registry and UI remain usable when another
+cookie and CSRF authentication. Its list and UI remain usable when another
 workspace's configuration or plugins are broken. Opening a workspace uses that
 workspace's own authenticated link. Opening recovery goes to that workspace's
 existing recovery interface.
 
-Registry updates are serialized and written atomically. Save workspace
-metadata through the live owner when running, or under the existing workspace
-lock when stopped. Neither path needs to activate plugins. Report metadata or
-registration write failures rather than showing unsaved settings as applied.
+Manager operations are serialized. Save workspace metadata through the live
+owner when running, or under the existing workspace lock when stopped. Neither
+path needs to activate plugins. Report metadata write failures rather than
+showing unsaved settings as applied.
 
 ### Unresponsive workspaces
 
@@ -382,7 +388,7 @@ Direct `web` launches keep their existing environment-first selection.
 Keep ordinary environment values, credentials and executable/auth-location
 settings, including `PATH`, `HOME`, `GENE_BINARY`,
 `GENE_HARNESS_CLAUDE_COMMAND`, provider API keys, `CODEX_HOME` and
-`CODEX_AUTH_FILE`. Do not copy them into the registry or workspace metadata.
+`CODEX_AUTH_FILE`. Do not copy them into workspace metadata.
 
 The environment comes from the shell that ran `gene-harness manager`. Later
 shell changes do not update the manager or existing launchers; to pick them up,
@@ -391,16 +397,17 @@ affected workspace through it. Workspace settings are reread on fresh launch.
 
 ## First UI
 
-The `workspaces` view shows a table with **Alias**, **Directory**, **Port**,
-**Status** and **Actions** columns, with **Create workspace** and **Add
-existing workspace** above it. Each row offers Open, Start/Stop, Restart and
-Edit; its menu contains Remove from manager and Delete permanently. After a
-graceful-control timeout, show the workspace as unavailable, with its
-diagnostics and the instruction to stop it externally. Show the actual port
-separately when a saved change is awaiting restart. Docking the conversation
-beside the view lets the user ask the model to do the same operations.
+The `workspaces` view shows the workspaces directory and a table with **Name**,
+**Port**, **Status** and **Actions** columns, with **Create workspace** above
+it. Each row offers Open, Start/Stop, Restart and Edit (port); its menu
+contains Diagnostics, Rename, Archive and Delete permanently. Archived names
+appear in a collapsed **Archived** list with Restore. After a graceful-control
+timeout, show the workspace as unavailable, with its diagnostics and the
+instruction to stop it externally. Show the actual port separately when a
+saved change is awaiting restart. Docking the conversation beside the view lets
+the user ask the model to do the same operations.
 
-Useful states are stopped, starting, running, recovery, stopping, missing and
+Useful states are stopped, starting, running, recovery, stopping and
 unavailable/error. Startup failures expose the last useful diagnostic and an
 action to open recovery when available. One failed workspace does not block
 the rest of the list.
@@ -408,31 +415,32 @@ the rest of the list.
 ## First milestone checks
 
 - On a fresh home directory, `gene-harness manager` creates
-  `$HOME/.gene-harness-manager` with `^role "manager"` and port 8080, and opens
-  the `workspaces` view by default. The view works with no model provider
-  configured. `web --workspace $HOME/.gene-harness-manager` loads the same
-  manager profile.
+  `$HOME/.gene-harness-root` with `^role "manager"`, port 8080 and an empty
+  `workspaces` directory, and opens the `workspaces` view by default. The view
+  works with no model provider configured. `web --workspace
+  $HOME/.gene-harness-root` loads the same manager profile. `--root` and
+  `GENE_HARNESS_ROOT` select another root; an ordinary workspace is refused.
 - Create two workspaces, run both and open their correct authenticated links.
 - In a conversation, ask the model to list, create, start, stop and rename
   workspaces. Verify that function results and conversation history contain no
   links, tokens or cookies, that no function deletes a directory, and that
   stopping a busy workspace asks for confirmation in the view.
 - Restart the manager, both host-requested and after publishing a plugin, and
-  retain registrations, alias/port settings and running workspace discovery.
+  retain the workspace list, port settings and running workspace discovery.
   Managed workspaces keep running throughout.
 - Replace `workspace_manager` with a broken plugin. Verify that managed
-  workspaces keep running, the registry is unchanged, and `restore
+  workspaces keep running, the workspaces directory is unchanged, and `restore
   workspace_manager` brings the manager back.
 - Exit or terminate the manager and its terminal, then verify that detached
   launchers keep running, accept requests and retain bounded logs. Check launch
   failures and log rotation with no manager present. Verify early module-load
   failures appear in `bootstrap.log`, execution failures are returned to the
   manager, and continued output reaches the new `host.log` after rotation.
-- Remove and re-add a workspace without losing files, sessions or settings;
-  verify removal leaves a running host alive.
-- Add an older workspace and one started independently, without creating a
-  second owner or changing existing state. Adding the manager workspace itself
-  is refused.
+- Archive and restore a workspace without losing files, sessions or settings;
+  archiving and renaming a running workspace are refused.
+- List a directory placed in `ROOT/workspaces` by hand and a host started there
+  independently, without creating a second owner or changing existing state.
+  Names that would leave `ROOT/workspaces` are refused.
 - Restart a directly started host through the manager and verify a replacement
   becomes ready. Cancel a busy-work confirmation and verify no replacement is
   started.
@@ -449,16 +457,14 @@ the rest of the list.
   verify manager launch still selects Codex. With a different saved provider,
   verify that provider wins and does not inherit the Codex model/effort defaults.
   Check readiness, plugin validation and model requests agree after restart.
-- Change an alias immediately; change a port, show the pending change and apply
-  it through stop/start. Verify fixed-port conflicts and automatic fallback.
-- Move a stopped workspace, update its registered directory and retain its
-  workspace-local settings.
+- Change a port, show the pending change and apply it through stop/start.
+  Verify fixed-port conflicts and automatic fallback.
+- Rename a stopped workspace and retain its workspace-local settings.
 - Exercise delete cancellation, busy-work handling, deletion failure and
-  successful removal of both the directory and registry entry for created and
-  added workspaces. Verify that protected paths, including the manager
-  workspace and the installation, are refused.
-- Keep the manager usable while a managed workspace enters recovery or its
-  directory is missing.
+  successful removal. Verify that symbolic links inside a workspace are not
+  followed and that protected paths, including the manager root and the
+  installation, are refused.
+- Keep the manager usable while a managed workspace enters recovery.
 
 Keep this milestone focused on local workspace management. Automatic startup
 at login, remote machines, reverse proxying workspaces through one port,
@@ -475,7 +481,7 @@ launcher, and automatic verification of subprocess cleanup, come after that.
 
 The shared service is in `src/runtime/workspace_manager.gene`; the profile and
 plugin are `src/profiles/manager.gene` and `src/builtin/workspace_manager.gene`.
-The plugin contributes the eleven model functions listed above, a browser-only
+The plugin contributes the ten model functions listed above, a browser-only
 action in `ui_actions`, and an authenticated redirect in `ui_links`. Its view
 uses the existing theme without custom CSS. The runtime owns its observation
 task and operation gate across plugin replacement.
@@ -483,10 +489,10 @@ task and operation gate across plugin replacement.
 `src/runtime/workspace_settings.gene` owns validation and atomic writes.
 Normal and recovery hosts expose owner-authenticated
 `GET /api/v8/workspace/settings` and `POST /api/v8/workspace/settings`. Updates
-accept alias/port changes; they preserve the role. A supplied settings digest
+accept only port changes; they preserve the role. A supplied settings digest
 is checked under the same write gate, so a stale browser editor cannot replace
-newer settings. The manager's registry keeps IDs and canonical directories,
-never authoritative copies of alias/port settings or credentials.
+newer settings. The manager keeps no copy of workspace settings or
+credentials.
 
 The launcher holds a separate `launcher_lock` while starting, running and
 restarting its child. This prevents overlapping launchers and lets Stop wait
@@ -503,28 +509,34 @@ startup. Offline maintenance keeps its immediate ownership check.
 Verification sources:
 
 - `tests/unit/runtime/manager_settings_spec.gene`: metadata validation,
-  provider precedence and UTF-8 log rotation.
-- `tests/integration/runtime/workspace_manager_spec.gene`: real detached
-  hosts, CRUD, live port changes, duplicate Start, busy-work confirmation,
-  stale editors, removal/re-add, deletion guards and failures, and bounded
-  control of an unresponsive host. It also adopts a directly started host and
-  replaces it on explicit Restart without losing files, sessions or credentials.
+  legacy alias handling, manager root resolution and refusal of ordinary
+  workspaces, provider precedence and UTF-8 log rotation.
+- `tests/integration/runtime/workspace_manager_spec.gene`: directory listing,
+  create/rename/archive/restore by name, exact-name identity, moves refused
+  under either lock, bounded archive suffixes, unsafe names, view keys that
+  cannot collide with workspace names, encoded Open links, deletion of a
+  hand-placed directory without Harness state, real detached hosts,
+  live port changes, duplicate Start, busy-work confirmation, stale editors,
+  deletion guards and failures, and bounded control of an unresponsive host.
+  It also adopts a host started directly under `ROOT/workspaces` and replaces
+  it on explicit Restart without losing files, sessions or credentials.
 - `tests/integration/web/manager_ports_spec.gene`: fixed, automatic, explicit
   and supervised-restart port behavior.
 - `tests/integration/web/workspace_manager_spec.gene`: fresh HOME, provider-free
-  UI, actual model-code execution, credential-free results, authenticated Open,
-  manager restart and abrupt termination, profile-aware plugin repair and
-  recovery metadata.
+  UI, `--workspace`/`--root` validation, actual model-code execution,
+  credential-free results, authenticated Open, manager restart and abrupt
+  termination, profile-aware plugin repair and recovery metadata.
 - `tests/fixtures/manager_browser.gene`: an isolated, provider-free manager for
   browser verification. Stop its managed hosts and manager when finished.
 - Repository `tests/test_detached_process.nim`, `tests/test_process_launch.nim`
   and `tests/test_exec.nim`: process lifetime, launch failures and the public
   `$os` contract. `nimble execTest` includes the detached suite.
 
-Live Chrome checks covered creation, Start/Open, alias edits, pending ports and
-conflict feedback, docked conversations, removal/re-addition without stopping
-the target, deletion cancellation, and manager restart with a surviving host.
-No browser JavaScript errors were reported.
+Live Chrome checks (2026-10-17, before the single-root layout) covered
+creation, Start/Open, alias edits, pending ports and conflict feedback, docked
+conversations, removal/re-addition without stopping the target, deletion
+cancellation, and manager restart with a surviving host. No browser JavaScript
+errors were reported.
 
 Long-lived browser testing exposed a Gene VM bug: default arguments on captured
 closures were evaluated under an expired creation budget. Invocation setup now
@@ -541,9 +553,9 @@ manager/locking/recovery run passed 18 tests. The callback fix also passed the
 checks. Process qualification passed 39 process/exec checks on macOS and 18
 process checks in a native Linux ARM64 container.
 
-The review discussion below is historical. The owner decisions at the end and
-the MVP behavior above govern implementation; the proposed Force stop work is
-deferred.
+The review discussion below is historical and predates the single-root layout.
+The owner decisions at the end and the behavior above govern implementation;
+the proposed Force stop work is deferred.
 
 ## Review comments (Claude, 2026-10-17)
 
@@ -832,3 +844,17 @@ conversation. This replaces the separate small manager host and the
 `~/.gene/harness-supervisor/` registry location. Delete permanently stays a
 confirmed view action, and no model-visible result carries workspace
 credentials.
+
+## Single-root layout decision (owner, 2026-10-23)
+
+The manager root replaces `$HOME/.gene-harness-manager` and its
+`registry.gene`. The root is `$HOME/.gene-harness-root` by default, or
+`--root DIR` / `GENE_HARNESS_ROOT`; the manager's state is in
+`ROOT/.gene-harness`, and every managed workspace is `ROOT/workspaces/NAME`.
+The directory is the registry. Add existing, Update directory and the separate
+alias are removed: a workspace's name is its directory name, and an existing
+project is cloned or moved into `ROOT/workspaces`. Remove from manager is
+replaced by Archive (`ROOT/archive/NAME`) and Restore. Delete permanently stays
+a confirmed view-only action, and the earlier decisions on Force stop and
+credential-free results still apply. The old `~/.gene-harness-manager` is not
+migrated automatically.

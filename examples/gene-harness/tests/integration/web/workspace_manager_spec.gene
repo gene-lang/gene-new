@@ -8,7 +8,7 @@
 
 (fn manager_host [home : Str, ^responses responses = nil, ^direct direct : Bool = false, ^recovery recovery : Bool = false]
   ($fs/make_dir home)
-  (let root $"${home}/.gene-harness-manager")
+  (let root $"${home}/.gene-harness-root")
   (let args ["run" "--snapshot" (source_path "src/runtime/supervisor.gene")])
   (if direct
     (do
@@ -30,6 +30,7 @@
       ^CODEX_HOME $"${home}/.codex"
       ^CODEX_AUTH_FILE nil
       ^GENE_HARNESS_WORKSPACE $"${home}/ignored"
+      ^GENE_HARNESS_ROOT nil
       ^GENE_HARNESS_PORT "not-a-port"
       ^GENE_HARNESS_PROVIDER nil
       ^GENE_HARNESS_MODEL nil
@@ -51,8 +52,19 @@
     process/.join
     (fail $err)))
 
-(fn manager_registered [host]
-  ((Path "entries") ($serde/read_data ($fs/read_text $"${host/root}/registry.gene"))))
+(fn managed_names [host]
+  ($fs/list_dir $"${host/root}/workspaces"))
+
+(fn exits_with_error [home : Str, args...]
+  (let result
+    (await
+      ($os/exec_async ^env {^HOME home ^GENE_HARNESS_ROOT nil}
+        ($os/executable_path)
+        "run"
+        "--snapshot"
+        (source_path "src/main.gene")
+        args...)))
+  (!= result/status 0))
 
 (fn stop_managed [root]
   (try
@@ -63,11 +75,11 @@
 (describe
   "Manager web host"
   (it
-    "creates the manager at HOME and remains usable without a provider"
+    "creates the manager root at HOME and remains usable without a provider"
     []
     (isolated
       this_mod/.path
-      "creates the manager at HOME and remains usable without a provider"
+      "creates the manager root at HOME and remains usable without a provider"
       (fn [root]
         (let home $"${root}/home")
         (let host (manager_host home))
@@ -75,6 +87,8 @@
           (let settings (read_workspace_settings host/root))
           ($assert (== settings/role "manager"))
           ($assert (== settings/port 8080))
+          ($assert ($absent? settings/alias))
+          ($assert ($fs/exists? $"${host/root}/workspaces"))
           ($assert (! ($fs/exists? $"${home}/ignored")))
           (let client (connect host/root))
           (let status (api client "GET" "/status"))
@@ -95,18 +109,16 @@
                 ^sequence "1"
                 ^state {}}))
           ($assert ($absent? rendered/error) ($to_str rendered))
-          (let invalid
-            (await
-              ($os/exec_async ^env {^HOME home}
-                ($os/executable_path)
-                "run"
-                "--snapshot"
-                (source_path "src/main.gene")
-                "manager"
-                "--workspace"
-                $"${root}/forbidden")))
-          ($assert (!= invalid/status 0))
+          ($assert (exits_with_error home "manager" "--workspace" $"${root}/forbidden"))
           ($assert (! ($fs/exists? $"${root}/forbidden")))
+          ($assert (exits_with_error home "web" "--root" $"${root}/forbidden"))
+          ($assert (! ($fs/exists? $"${root}/forbidden")))
+          # A chosen root must never convert someone's workspace into a manager.
+          (let ordinary $"${root}/ordinary")
+          ($fs/make_dir $"${ordinary}/.gene-harness")
+          ($fs/write_text $"${ordinary}/.gene-harness/config.gene" "{}")
+          ($assert (exits_with_error home "manager" "--root" ordinary))
+          ($assert (! ($fs/exists? $"${ordinary}/.gene-harness/workspace.gene")))
         ensure
           (stop_host host))
         (let reopened (manager_host ^^direct home))
@@ -122,15 +134,15 @@
       "runs model functions and keeps managed hosts alive through manager restart and plugin recovery"
       (fn [root]
         (let home $"${root}/home")
-        (let project $"${root}/project")
+        (let project $"${home}/.gene-harness-root/workspaces/todo")
         (let response
           ($to_str
             `(do
-               (let w (workspace_create ^alias "From conversation" %project))
+               (let w (workspace_create "todo-app"))
                (workspace_start w/id)
-               (workspace_set_alias w/id "Model workspace")
                (workspace_stop w/id)
-               (workspace_start w/id)
+               (let renamed (workspace_rename w/id "todo"))
+               (workspace_start renamed/id)
                (Outcome ^^done ^reply ($serde/write_data (workspace_list))))))
         (var host (manager_host ^responses [response] home))
         (try
@@ -140,11 +152,10 @@
               host/root
               ["--session" session/id "send" "--wait" "Create, start and rename a project."]))
           ($assert (== sent/state "done") ($to_str sent))
-          (let entries (manager_registered host))
-          ($assert (== entries/.size 1))
-          (let id entries/0/id)
+          (let entries (managed_names host))
+          ($assert (== entries ["todo"]) ($to_str entries))
+          (let id "todo")
           (let child (discover project))
-          ($assert (== ((Path "alias") (read_workspace_settings project)) "Model workspace"))
           (let client (connect host/root))
           (let transcript
             ($json/stringify (api client "GET" $"/sessions/${session/id}/snapshot?ui=default")))
@@ -160,7 +171,7 @@
           (api client "POST" "/control" {^action "restart" ^^confirm})
           (ready_host ^previous old_epoch host)
           ($assert (== ((Path "epoch") (discover project)) child/epoch))
-          ($assert (== (manager_registered host) entries))
+          ($assert (== (managed_names host) entries))
           # This test owns the captured manager process. Terminating its
           # group simulates closing its terminal, not product Force stop.
           (let terminated host/process)
@@ -169,16 +180,16 @@
           terminated/.join
           ($assert (== ((Path "epoch") (discover project)) child/epoch))
           (set host (manager_host home))
-          ($assert (== (manager_registered host) entries))
+          ($assert (== (managed_names host) entries))
           (let code "(register_plugin \"workspace_manager\" (quote (mod plugin (import ^from \"src/plugin_api.gene\" [Plugin]) (fn init [descriptor] (Plugin ^id \"workspace_manager\" ^activate (fn [host] (fail \"test broken manager\")))))) ^^replace)")
           (cli host/root ["--session" session/id "run" code])
           ($assert (== ((Path "epoch") (discover project)) child/epoch))
-          ($assert (== (manager_registered host) entries))
+          ($assert (== (managed_names host) entries))
           (stop_host host)
           ($assert (== ((Path "epoch") (discover project)) child/epoch))
           (cli host/root ["restore" "workspace_manager"])
           (set host (manager_host home))
-          ($assert (== (manager_registered host) entries))
+          ($assert (== (managed_names host) entries))
           (let restored (api (connect host/root) "GET" "/status"))
           ($assert
             (== ($size ($filter restored/ui/components (fn [item] (== item/name "workspaces")))) 1))
@@ -195,9 +206,9 @@
       "keeps the manager profile and editable metadata with unreadable provider configuration"
       (fn [root]
         (let home $"${root}/home")
-        (let workspace $"${home}/.gene-harness-manager")
+        (let workspace $"${home}/.gene-harness-root")
         ($fs/make_dir $"${workspace}/.gene-harness")
-        (write_workspace_settings workspace {^alias "Manager" ^port 8080 ^role "manager"})
+        (write_workspace_settings workspace {^port 8080 ^role "manager"})
         ($fs/write_text $"${workspace}/.gene-harness/config.gene" "broken provider configuration")
         (let host (manager_host ^^recovery home))
         (try
@@ -212,10 +223,15 @@
               client
               "POST"
               "/workspace/settings"
-              {^changes {^alias "Repaired metadata" ^port 0}}))
+              {^changes {^port 0}}))
           ($assert (== updated/role "manager"))
-          ($assert (== updated/alias "Repaired metadata"))
           ($assert (== updated/port 0))
+          (var refused false)
+          (try
+            (api client "POST" "/workspace/settings" {^changes {^alias "Renamed"}})
+          catch Any
+            (set refused true))
+          ($assert refused "A legacy alias edit was accepted.")
           ($assert
             (==
               ($fs/read_text $"${workspace}/.gene-harness/config.gene")

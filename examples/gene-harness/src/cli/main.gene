@@ -7,12 +7,14 @@
 
 (fn usage [] """Gene Harness: one web host per workspace.
   gene-harness web [--workspace DIR] [--port PORT] [--offline | --script FILE]
-  gene-harness manager [--port PORT]
+  gene-harness manager [--root DIR] [--port PORT]
   gene-harness --workspace DIR --recovery
   gene-harness [--workspace DIR] [--json] COMMAND
 
 Workspace: --workspace DIR, then non-empty GENE_HARNESS_WORKSPACE,
 then the launch directory. Relative paths use the launch directory.
+Manager root: --root DIR, then non-empty GENE_HARNESS_ROOT, then
+HOME/.gene-harness-root. Managed workspaces live in ROOT/workspaces.
 
 Workspace commands:
   status | link | auth reset | stop [--confirm] | restart [--confirm]

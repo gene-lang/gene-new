@@ -9,24 +9,26 @@
 (fn settings_error [message : Str]
   (fail (WorkspaceSettingsError ^code "invalid_workspace_settings" ^message message)))
 
+# Versions before the single-root manager layout also saved an alias. A
+# workspace is now named by its directory, so a legacy alias is accepted and
+# dropped on the next write.
 (fn validate_settings [value]
   (if (!= ($head value) Map) (settings_error "Workspace settings must be an inert map."))
   (if (!= (?? value/version 1) 1) (settings_error "Unsupported workspace settings version."))
-  (let alias (?? value/alias ""))
   (let port (?? value/port 0))
-  (if (|| (!= ($head alias) Str) (== ($str/trim alias) ""))
-    (settings_error "Workspace alias must be non-empty."))
+  (if (&& (! ($absent? value/alias)) (!= ($head value/alias) Str))
+    (settings_error "A legacy workspace alias must be a string."))
   (if (|| (!= ($head port) Int) (&& (!= port 0) (|| (< port 1024) (> port 65535))))
     (settings_error "Workspace port must be 0 or 1024–65535."))
   (if (&& (! ($absent? value/role)) (!= value/role "manager"))
     (settings_error "Unknown workspace role."))
-  (let result {^version 1 ^alias ($str/trim alias) ^port port})
+  (let result {^version 1 ^port port})
   (if_not ($absent? value/role) (result .put "role" value/role))
   result)
 
 (fn read_workspace_settings [root : Str]
   (let path $"${root}/.gene-harness/workspace.gene")
-  (if_not ($fs/exists? path) (return {^version 1 ^alias ($path/name root) ^port 0}))
+  (if_not ($fs/exists? path) (return {^version 1 ^port 0}))
   (validate_settings ($serde/read_data ($fs/read_text path))))
 
 (fn write_workspace_settings [root : Str, value]
@@ -42,31 +44,41 @@
         (fail
           (WorkspaceSettingsError ^code "revision_conflict" ^message "Workspace settings changed. Refresh and review before saving.")))
       (for [key value] in changes
-        (if_not (["alias" "port"] .contains? ($to_str key))
-          (settings_error "Only alias and port can be edited."))
+        (if (!= ($to_str key) "port")
+          (settings_error "Only the port can be edited."))
         (next .put ($to_str key) value))
       (write_workspace_settings root next))))
 
-(fn manager_path []
-  (let home ($os/get_env "HOME" ""))
-  (if (== home "") (settings_error "HOME is required to locate the manager workspace."))
-  ($path/join home ".gene-harness-manager"))
+# The manager root holds the manager's own state in .gene-harness and every
+# managed workspace under workspaces/<name>. Relative paths use the launch
+# directory, like --workspace.
+(fn manager_root_path [^explicit explicit = nil, ^environment environment = nil] : Str
+  (let configured (?? environment ($os/get_env "GENE_HARNESS_ROOT" "")))
+  (var selected (if (&& (! ($absent? explicit)) (!= explicit "")) explicit configured))
+  (if_yes (== selected "")
+    (let home ($os/get_env "HOME" ""))
+    (if (== home "") (settings_error "HOME is required to locate the manager root; use --root DIR."))
+    (set selected ($path/join home ".gene-harness-root")))
+  (if ($str/starts_with? selected "/") selected ($path/join ($os/launch_dir) selected)))
 
-(fn initialize_manager_workspace []
-  (let selected (manager_path))
+(fn initialize_manager_workspace [^root explicit = nil]
+  (let selected (manager_root_path ^explicit explicit))
   ($fs/make_dir selected)
   (let root ($fs/real_path selected))
+  (if (== root "/") (settings_error "The manager root cannot be the filesystem root."))
   (let path $"${root}/.gene-harness/workspace.gene")
-  (if ($fs/exists? path)
-    (if (== ((Path "role") (read_workspace_settings root)) "manager") (return root)))
+  (if_yes ($fs/exists? path)
+    (if (== ((Path "role") (read_workspace_settings root)) "manager")
+      (do ($fs/make_dir $"${root}/workspaces") (return root)))
+    (settings_error $"${root} is an ordinary Harness workspace; choose another manager root."))
+  # Started workspaces always have a config. Without workspace.gene this is
+  # still someone's workspace, not an interrupted manager initialization.
+  (if ($fs/exists? $"${root}/.gene-harness/config.gene")
+    (settings_error $"${root} is an ordinary Harness workspace; choose another manager root."))
   (let lock (acquire_workspace_lock root "initialize manager"))
   (try
-    (let settings
-      (if ($fs/exists? path)
-        (read_workspace_settings root)
-        {^version 1 ^alias "Manager" ^port 8080}))
-    (settings .put "role" "manager")
-    (write_workspace_settings root settings)
+    (write_workspace_settings root {^version 1 ^port 8080 ^role "manager"})
+    ($fs/make_dir $"${root}/workspaces")
     root
   ensure
     (close_workspace_lock lock)))

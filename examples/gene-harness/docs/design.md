@@ -65,7 +65,7 @@ an unset or empty environment variable preserves the launch-directory default.
   lock                    permanent flock target
   owner                   PID, entry and startup time
   config.gene             provider/model settings and budgets
-  workspace.gene          optional alias, configured port and manager role
+  workspace.gene          optional configured port and manager role
   composition/            plugin generations and atomic CURRENT publication
   modules/                content-addressed plugin modules
   blobs/                  content-addressed recall, history and receipt bodies
@@ -122,9 +122,10 @@ limits and requirements. Scripted/offline provider configurations support
 model-free tests. Session state and plugin composition do not depend on the
 submitting client.
 
-The [workspace manager](manager.md) lives at `$HOME/.gene-harness-manager`.
-It stores registrations in its plain `registry.gene`, while each target owns
-its alias/port metadata. Targets run in detached launchers with independent
+The [workspace manager](manager.md) hosts its root directory,
+`$HOME/.gene-harness-root` by default. Its managed workspaces are the
+directories under `ROOT/workspaces`, with no separate registry, and each owns
+its port metadata. Targets run in detached launchers with independent
 logs, so manager/plugin replacement never owns their process lifetime. The
 manager uses ordinary owner-authenticated HTTP control for live targets and
 workspace locks for offline metadata writes and deletion.

@@ -13,7 +13,7 @@ isolation.
 | Need | Guide |
 | --- | --- |
 | Architecture, lifetimes and module responsibilities | [Design](docs/design.md) |
-| Create, register and manage local workspaces | [Workspace manager](docs/manager.md) |
+| Create and manage local workspaces | [Workspace manager](docs/manager.md) |
 | Author a workspace plugin | [Plugins](docs/plugins.md) |
 | Run and verify a function plugin without a model | [Project audit example](website/examples/project_audit/README.md) |
 | Browser workflow, transport and recovery | [Web client](docs/web-client.md) |
@@ -34,16 +34,20 @@ To manage several workspaces from one view or conversation:
 examples/gene-harness/bin/gene-harness manager
 ```
 
-The manager is its own Harness workspace at `$HOME/.gene-harness-manager`,
-using port 8080 by default. Use `manager --port PORT` for a one-run override.
-Its Workspaces view works without a model provider. Configure a provider in
-the manager workspace to manage projects through conversations as well.
+The manager is its own Harness workspace at its root directory,
+`$HOME/.gene-harness-root` by default (`manager --root DIR` or
+`GENE_HARNESS_ROOT` selects another). It uses port 8080 by default; use
+`manager --port PORT` for a one-run override. Its Workspaces view works without
+a model provider. Configure a provider in the manager workspace to manage
+projects through conversations as well.
 
-Workspace aliases and port preferences stay in each workspace. Removing a
-registration keeps its files and any running host; permanent deletion is a
-separate confirmed view action. Managed hosts continue running when the
-manager stops or restarts. Unresponsive hosts require external process control
-in this MVP. See the [manager guide](docs/manager.md) for details.
+Every managed workspace is a directory under `ROOT/workspaces`, named by that
+directory; clone or move a project there to manage it. Port preferences stay
+in each workspace. Archive moves a stopped workspace to `ROOT/archive` and
+Restore brings it back; permanent deletion is a separate confirmed view action.
+Managed hosts continue running when the manager stops or restarts.
+Unresponsive hosts require external process control in this MVP. See the
+[manager guide](docs/manager.md) for details.
 
 From the Gene repository:
 
@@ -104,7 +108,7 @@ using Codex OAuth, including continuation, verification and recovery.
 | Command | Effect |
 | --- | --- |
 | `web` | Start the foreground workspace host and print the Browser URL in a terminal. This is the default. |
-| `manager [--port PORT]` | Open the manager workspace and its Workspaces view; defaults to port 8080 and ignores `GENE_HARNESS_WORKSPACE`/`GENE_HARNESS_PORT`. |
+| `manager [--root DIR] [--port PORT]` | Open the manager root and its Workspaces view; the root defaults to `GENE_HARNESS_ROOT`, then `$HOME/.gene-harness-root`. Defaults to port 8080 and ignores `GENE_HARNESS_WORKSPACE`/`GENE_HARNESS_PORT`. |
 | `status`, `link` | Inspect the running host or print its reusable owner connection URL. |
 | `sessions [create --title TITLE]` | List sessions or create one and return its id. |
 | `send [--wait] TEXT` | Submit a literal prompt to `--session ID`; optionally wait for its result. |

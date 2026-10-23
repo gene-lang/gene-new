@@ -1,18 +1,22 @@
 # One service shared by model functions and browser actions. It owns no child
 # Task: detached launchers survive this service and its Harness process.
+#
+# The manager root is itself a workspace. Every managed workspace is a direct
+# child directory of ROOT/workspaces, named by that directory; there is no
+# separate registry. Archive moves a workspace to ROOT/archive.
 (mod workspace_manager_service)
 (import ^from "./workspace_settings"
   [read_workspace_settings write_workspace_settings update_workspace_settings validate_settings])
-(import ^from "./workspace_lock" [acquire_workspace_lock close_workspace_lock])
+(import ^from "./workspace_lock" [acquire_workspace_lock close_workspace_lock WorkspaceInUse])
 (import ^from "../cli/client" [connect api connection_link])
-(import ^from "../text" [byte_suffix])
+(import ^from "../text" [byte_prefix byte_suffix])
 (import ^from "../plugin_api" [HarnessEvent])
 (import ^from "../kernel" [publish])
 
 (type ManagerError ^props {^code Str ^message Str} ^impl [Error])
 (impl Error for ManagerError)
 (type WorkspaceManagerChanged : HarnessEvent)
-(type WorkspaceManager ^props {^runtime Any ^root Str ^registry Any ^gate Any ^statuses Any ^busy Any ^revision Any ^confirmations Any ^poller Any ^closed Any ^entry Str ^installation Str ^launch_dir Str})
+(type WorkspaceManager ^props {^runtime Any ^root Str ^workspaces Str ^archive Str ^gate Any ^statuses Any ^busy Any ^revision Any ^confirmations Any ^poller Any ^closed Any ^entry Str ^installation Str})
 
 (fn manager_error [code : Str, message : Str]
   (fail (ManagerError ^code code ^message message)))
@@ -37,40 +41,51 @@
     (lock_held? $"${root}/.gene-harness/lock")
     (lock_held? $"${root}/.gene-harness/launcher_lock")))
 
+# A new name (Create, Rename) is one portable path segment: no separators and
+# no leading dot, so it can never address the manager's own state or a parent.
+(fn valid_name [name]
+  (if (|| (!= ($head name) Str) ($absent? (#"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$" .match name)))
+    (manager_error
+      "invalid_name"
+      "Use 1–64 letters, digits, dots, hyphens or underscores, starting with a letter or digit."))
+  name)
+
+# An existing workspace is addressed by its exact directory name, never a
+# normalized one: a hand-placed "project " is not "project". Any listed name
+# qualifies, so it is one segment that is not hidden.
+(fn existing_name [name]
+  (if (|| (!= ($head name) Str) (== name "") ($str/contains? name "/") ($str/starts_with? name "."))
+    (manager_error "not_found" "No workspace has that name."))
+  name)
+
+(fn child_directories [parent : Str]
+  (if_not ($fs/exists? parent) (return []))
+  (let names [])
+  # The walk yields one directory sorted by name and never follows links.
+  (let children ($fs/walk ^max_depth 1 parent))
+  (try
+    # Symbolic links and files are not workspaces; hidden names are reserved.
+    (for child in children
+      (if (&& (== child/kind "directory") (! ($str/starts_with? child/relative_path ".")))
+        (names .push child/relative_path)))
+  ensure
+    children/.close)
+  names)
+
+(fn manager_entries [manager]
+  ($map (child_directories manager/workspaces)
+    (fn [name] {^id name ^name name ^dir ($path/join manager/workspaces name)})))
+
 (fn manager_entry [manager, id : Str]
-  (for entry in manager/registry/.get/entries
-    (if (== entry/id id) (return entry)))
-  (manager_error "not_found" "Workspace is not registered."))
+  (let name (existing_name id))
+  (let dir ($path/join manager/workspaces name))
+  (if (|| (! ($fs/exists? dir)) (!= ((Path "kind") ($fs/info dir)) "directory") ((Path "symlink") ($fs/info dir)))
+    (manager_error "not_found" $"No workspace named ${name}."))
+  {^id name ^name name ^dir dir})
 
-(fn manager_commit [manager, entries]
-  (let next {^version 1 ^revision (+ manager/registry/.get/revision 1) ^entries entries})
-  ($fs/write_text_atomic $"${manager/root}/registry.gene" ($serde/write_data next))
-  (manager/registry .set next)
-  (manager_changed manager)
-  next)
-
-(fn manager_directory [manager, directory : Str]
-  (if (== ($str/trim directory) "")
-    (manager_error "invalid_request" "Choose a workspace directory."))
-  (if ($str/starts_with? directory "/")
-    directory
-    ($path/join manager/launch_dir directory)))
-
-(fn manager_check_directory [manager, root : Str, ^except except : Str = ""]
-  (if (== root manager/root)
-    (manager_error "invalid_request" "The manager cannot register itself."))
-  (if (contains_directory? $"${manager/root}/.gene-harness" root)
-    (manager_error "invalid_request" "The manager's own state cannot be registered as a workspace."))
-  (for entry in manager/registry/.get/entries
-    (if (&& (!= entry/id except) (== entry/dir root))
-      (manager_error "already_registered" "This directory is already registered."))))
-
-(fn manager_check_alias [manager, alias : Str, ^except except : Str = ""]
-  (for entry in manager/registry/.get/entries
-    (if_yes (&& (!= entry/id except) ($fs/exists? entry/dir))
-      (let settings (try (read_workspace_settings entry/dir) catch Any nil))
-      (if (== settings/alias alias)
-        (manager_error "alias_conflict" $"Alias ${alias} is already registered.")))))
+(fn manager_forget_status [manager, id : Str]
+  (manager/statuses/.get .delete id)
+  (manager/confirmations/.get .delete id))
 
 (fn manager_redact [root : Str, text : Str]
   (var result text)
@@ -115,8 +130,8 @@
   (let result
     {
       ^id entry/id
+      ^name entry/name
       ^dir entry/dir
-      ^alias ($path/name entry/dir)
       ^port 0
       ^actual_port nil
       ^status "stopped"
@@ -127,7 +142,6 @@
     (return result))
   (try
     (let settings (read_workspace_settings entry/dir))
-    (result .put "alias" settings/alias)
     (result .put "port" settings/port)
     (result .put "metadata_revision" ($pkg/canonical_digest settings))
   catch Any
@@ -161,24 +175,32 @@
 (fn manager_refresh [manager]
   (let version manager/revision/.get)
   (var changed false)
-  (for entry in manager/registry/.get/entries
+  (let entries (manager_entries manager))
+  (let present {})
+  (for entry in entries
+    (present .put entry/id true)
     (if (|| manager/closed/.get manager/busy/.get) (return nil))
     (let status (manager_probe manager entry))
     (if (|| manager/busy/.get (!= version manager/revision/.get)) (return nil))
     (if_yes (!= status (manager/statuses/.get .get entry/id))
       (manager/statuses/.get .put entry/id status)
       (set changed true)))
+  # A directory removed or renamed outside the manager disappears from the list.
+  (for [id status] in (data_copy manager/statuses/.get)
+    (if_yes ($absent? (present .get ($to_str id)))
+      (manager_forget_status manager ($to_str id))
+      (set changed true)))
   (if changed (manager_changed manager))
   nil)
 
 (fn manager_snapshot [manager]
   (let entries [])
-  (for entry in manager/registry/.get/entries
+  (for entry in (manager_entries manager)
     (entries .push
       (data_copy
         (??
           (manager/statuses/.get .get entry/id)
-          {^id entry/id ^dir entry/dir ^alias ($path/name entry/dir) ^port 0 ^status "checking"}))))
+          {^id entry/id ^name entry/name ^dir entry/dir ^port 0 ^status "checking"}))))
   (for entry in entries
     (entry .put "confirmation" (manager/confirmations/.get .get entry/id))
     (let conflicts [])
@@ -186,23 +208,22 @@
       (conflicts .push "manager"))
     (for other in entries
       (if (&& (!= entry/id other/id) (!= entry/port 0) (|| (== entry/port other/port) (== entry/port other/actual_port)))
-        (conflicts .push other/alias)))
+        (conflicts .push other/name)))
     (entry .put "port_conflicts" conflicts))
-  {^revision manager/registry/.get/revision ^workspaces entries})
+  {^revision manager/revision/.get
+   ^root manager/root
+   ^workspaces_dir manager/workspaces
+   ^archive_dir manager/archive
+   ^workspaces entries
+   ^archived (child_directories manager/archive)})
 
 (fn open_workspace_manager [runtime]
   (if_not ($absent? runtime/workspace_manager) (return runtime/workspace_manager))
-  (let path $"${runtime/root}/registry.gene")
-  (let registry
-    (if ($fs/exists? path)
-      ($serde/read_data ($fs/read_text path))
-      {^version 1 ^revision 0 ^entries []}))
-  (if (|| (!= registry/version 1) (!= ($head registry/entries) List))
-    (manager_error "invalid_registry" "The workspace registry is invalid."))
-  (if_not ($fs/exists? path) ($fs/write_text_atomic path ($serde/write_data registry)))
+  (let workspaces $"${runtime/root}/workspaces")
+  ($fs/make_dir workspaces)
   (let application ($pkg/application))
   (let manager
-    (WorkspaceManager ^runtime runtime ^root runtime/root ^registry ($cell registry) ^gate ($sync/gate) ^statuses ($cell {}) ^busy ($cell false) ^revision ($cell 0) ^confirmations ($cell {}) ^poller ($cell nil) ^closed ($cell false) ^entry ($path/join application/source_root "src/runtime/supervisor.gene") ^installation application/source_root ^launch_dir ($os/launch_dir)))
+    (WorkspaceManager ^runtime runtime ^root runtime/root ^workspaces workspaces ^archive $"${runtime/root}/archive" ^gate ($sync/gate) ^statuses ($cell {}) ^busy ($cell false) ^revision ($cell 0) ^confirmations ($cell {}) ^poller ($cell nil) ^closed ($cell false) ^entry ($path/join application/source_root "src/runtime/supervisor.gene") ^installation application/source_root))
   (set runtime/workspace_manager manager)
   (set runtime/h/manager_revision manager/revision)
   manager)
@@ -236,32 +257,85 @@
       ensure
         (close_workspace_lock lock)))))
 
-(fn manager_register [manager, values, create : Bool]
-  (let chosen (manager_directory manager values/dir))
-  (if_yes create
-    (if_yes ($fs/exists? chosen)
-      (let children ($fs/walk ^max_depth 1 chosen))
+(fn manager_create [manager, values]
+  (let name (valid_name values/name))
+  (let dir ($path/join manager/workspaces name))
+  (if ($fs/exists? dir)
+    (manager_error "already_exists" $"A workspace named ${name} already exists."))
+  (let settings (validate_settings {^version 1 ^port (?? values/port 0)}))
+  ($fs/make_dir dir)
+  ($fs/make_dir $"${dir}/.gene-harness")
+  (write_workspace_settings dir settings)
+  {^id name ^name name ^dir dir})
+
+# Moving a directory needs both of its locks for the whole move, the way
+# Delete does: a lock check followed by a rename could race a starting host,
+# which would keep running at the old path.
+(fn with_stopped_workspace [dir : Str, action : Str, thunk]
+  (let refusal $"Stop the workspace before ${action} it.")
+  ($fs/make_dir $"${dir}/.gene-harness")
+  (let launcher_lock ($fs/try_lock $"${dir}/.gene-harness/launcher_lock"))
+  (if ($absent? launcher_lock) (manager_error "busy" refusal))
+  (try
+    (let lock
       (try
-        (for child in children
-          (manager_error "directory_not_empty" "Use Add existing for a non-empty directory."))
-      ensure
-        children/.close))
-    ($fs/make_dir chosen))
-  (if (|| (! ($fs/exists? chosen)) (!= ((Path "kind") ($fs/info chosen)) "directory"))
-    (manager_error "invalid_directory" "Choose an existing directory."))
-  (let root ($fs/real_path chosen))
-  (manager_check_directory manager root)
-  (let saved (read_workspace_settings root))
-  (let alias (if (== (?? values/alias "") "") saved/alias values/alias))
-  (let settings (validate_settings {^version 1 ^alias alias ^port (?? values/port saved/port)}))
-  (manager_check_alias manager settings/alias)
-  (let entry {^id ($crypto/random_hex 12) ^dir root})
-  (if (|| (! ($fs/exists? $"${root}/.gene-harness/workspace.gene")) (!= saved/alias settings/alias) (!= saved/port settings/port))
-    (manager_save_settings entry {^alias settings/alias ^port settings/port}))
-  (let entries (data_copy manager/registry/.get/entries))
-  (entries .push entry)
-  (manager_commit manager entries)
-  entry)
+        (acquire_workspace_lock dir $"workspace manager ${action}")
+      catch WorkspaceInUse
+        (manager_error "busy" refusal)))
+    (try
+      (thunk)
+    ensure
+      (close_workspace_lock lock))
+  ensure
+    launcher_lock/.close))
+
+(fn manager_rename [manager, entry, values]
+  (let name (valid_name values/name))
+  (if (== name entry/name) (return entry))
+  (let target ($path/join manager/workspaces name))
+  (with_stopped_workspace entry/dir "renaming"
+    (fn []
+      (if ($fs/exists? target)
+        (manager_error "already_exists" $"A workspace named ${name} already exists."))
+      ($fs/rename entry/dir target)))
+  (manager_forget_status manager entry/id)
+  {^id name ^name name ^dir target})
+
+# Archived names stay unique: a repeated name gets a numeric suffix, shortening
+# the name so the result still fits in 64 bytes and can be restored.
+(fn archive_target [manager, name : Str] : Str
+  (var target ($path/join manager/archive name))
+  (var suffix 2)
+  (while ($fs/exists? target)
+    (let ending $"-${suffix}")
+    (let base (byte_prefix name (- 64 ($str/byte_size ending))))
+    (set target ($path/join manager/archive $"${base}${ending}"))
+    (set suffix (+ suffix 1)))
+  target)
+
+(fn manager_archive [manager, entry]
+  ($fs/make_dir manager/archive)
+  (let target
+    (with_stopped_workspace entry/dir "archiving"
+      (fn []
+        (let chosen (archive_target manager entry/name))
+        ($fs/rename entry/dir chosen)
+        chosen)))
+  (manager_forget_status manager entry/id)
+  {^id entry/id ^status "archived" ^archived ($path/name target)})
+
+(fn manager_restore [manager, values]
+  (let name (existing_name values/name))
+  (let source ($path/join manager/archive name))
+  (if (|| (! ($fs/exists? source)) (!= ((Path "kind") ($fs/info source)) "directory") ((Path "symlink") ($fs/info source)))
+    (manager_error "not_found" $"No archived workspace named ${name}."))
+  (let target ($path/join manager/workspaces name))
+  (with_stopped_workspace source "restoring"
+    (fn []
+      (if ($fs/exists? target)
+        (manager_error "already_exists" $"A workspace named ${name} already exists; rename it first."))
+      ($fs/rename source target)))
+  {^id name ^name name ^dir target})
 
 (fn manager_start [manager, entry]
   (let observed (manager_probe manager entry))
@@ -356,31 +430,27 @@
       "confirmation_required"
       "Confirm the exact workspace directory before deleting it."))
   (let root ($fs/real_path entry/dir))
+  # Only a direct child of ROOT/workspaces is deletable, and never one that
+  # contains the home directory or the running installation.
+  (if (!= ($path/parent root) ($fs/real_path manager/workspaces))
+    (manager_error "protected_directory" "Only a workspace directly under the manager's workspaces directory can be deleted."))
   (let protected
     [
-      "/"
       ($fs/real_path ($os/get_env "HOME" "/"))
       manager/root
       ($fs/real_path manager/installation)
-      ($fs/real_path manager/launch_dir)
       ($fs/real_path ($path/parent ($os/executable_path)))])
   (for path in protected
-    (if (|| (== root "/") (contains_directory? root path))
+    (if (contains_directory? root path)
       (manager_error
         "protected_directory"
-        "This directory contains the home, manager, installation or launch directory.")))
-  (for other in manager/registry/.get/entries
-    (if (&& (!= other/id entry/id) (contains_directory? root other/dir))
-      (manager_error
-        "protected_directory"
-        "Remove nested workspace registrations before deleting their parent.")))
+        "This directory contains the home, manager or installation directory.")))
   (let stopped (manager_stop manager entry (== values/confirm_busy true)))
   (if (== stopped/status "confirmation_required") (return stopped))
-  (let launcher_lock ($fs/try_lock $"${root}/.gene-harness/launcher_lock"))
-  (if ($absent? launcher_lock) (manager_error "busy" "A workspace launcher is still running."))
-  (try
-    (let lock (acquire_workspace_lock root "delete workspace"))
-    (try
+  # A hand-placed project may have no .gene-harness yet; taking the locks
+  # creates it, and the walk below removes it with everything else.
+  (with_stopped_workspace root "deleting"
+    (fn []
       (let entries ($into ($fs/walk root) []))
       (var at entries/.size)
       (while (> at 0)
@@ -389,14 +459,8 @@
         (if (== item/kind "directory")
           ($fs/remove_dir item/path)
           ($fs/remove item/path)))
-      ($fs/remove_dir root)
-    ensure
-      (close_workspace_lock lock))
-  ensure
-    launcher_lock/.close)
-  (manager_commit
-    manager
-    ($filter manager/registry/.get/entries (fn [other] (!= other/id entry/id))))
+      ($fs/remove_dir root)))
+  (manager_forget_status manager entry/id)
   {^id entry/id ^status "deleted"})
 
 (fn manager_operation [manager, operation : Str, values = {}, ^confirmed confirmed : Bool = false]
@@ -406,40 +470,20 @@
       (manager_changed manager)
       (var entry nil)
       (try
-        (if_not (["create" "add"] .contains? operation)
+        (if_not (["create" "restore"] .contains? operation)
           (set entry (manager_entry manager values/id)))
         (var result nil)
         (match operation
           (when "create"
-            (set entry (manager_register manager values true)))
-          (when "add"
-            (set entry (manager_register manager values false)))
-          (when "alias"
-            (let alias ($str/trim values/alias))
-            (manager_check_alias ^except entry/id manager alias)
-            (manager_save_settings entry {^alias alias}))
+            (set entry (manager_create manager values)))
+          (when "restore"
+            (set entry (manager_restore manager values)))
           (when "port"
             (manager_save_settings entry {^port values/port}))
           (when "settings"
-            (let alias ($str/trim values/alias))
-            (manager_check_alias ^except entry/id manager alias)
-            (manager_save_settings ^expected (?? values/expected "")
-              entry
-              {^alias alias ^port values/port}))
-          (when "directory"
-            (if (&& ($fs/exists? entry/dir) (workspace_busy? entry/dir))
-              (manager_error "busy" "Stop the workspace before changing its directory."))
-            (let root ($fs/real_path (manager_directory manager values/dir)))
-            (if (!= ((Path "kind") ($fs/info root)) "directory")
-              (manager_error "invalid_directory" "Choose a workspace directory."))
-            (manager_check_directory ^except entry/id manager root)
-            (let settings (read_workspace_settings root))
-            (manager_check_alias ^except entry/id manager settings/alias)
-            (let next (data_copy manager/registry/.get/entries))
-            (for item in next
-              (if (== item/id entry/id) (item .put "dir" root)))
-            (manager_commit manager next)
-            (set entry (manager_entry manager values/id)))
+            (manager_save_settings ^expected (?? values/expected "") entry {^port values/port}))
+          (when "rename"
+            (set entry (manager_rename manager entry values)))
           (when "start"
             (set result (manager_start manager entry)))
           (when "stop"
@@ -448,11 +492,8 @@
             (set result (manager_stop manager entry confirmed))
             (if (!= result/status "confirmation_required")
               (set result (manager_start manager entry))))
-          (when "remove"
-            (manager_commit
-              manager
-              ($filter manager/registry/.get/entries (fn [other] (!= other/id entry/id))))
-            (return {^id entry/id ^status "removed"}))
+          (when "archive"
+            (return (manager_archive manager entry)))
           (when "delete"
             (set result (manager_delete manager entry values))
             (if (== result/status "deleted") (return result)))
@@ -473,7 +514,7 @@
             (data_copy
               (??
                 (manager/statuses/.get .get entry/id)
-                {^id entry/id ^dir entry/dir ^alias ($path/name entry/dir) ^port 0})))
+                {^id entry/id ^name entry/name ^dir entry/dir ^port 0})))
           (status .put "status" (if (== error/code "startup_failed") "error" "unavailable"))
           (status .put "message" error/message)
           (manager/statuses/.get .put entry/id status))
