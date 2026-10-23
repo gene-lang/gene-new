@@ -1,0 +1,31 @@
+(import $test [describe it run])
+(import [search_sessions] ^from "../../../src/runtime/launcher_search")
+
+(describe "Launcher workspace metadata search"
+  (it "searches beyond 100 records and includes automated and child metadata" []
+    (let index {})
+    (var at 0)
+    (while (< at 160)
+      (let id $"archive-${at}")
+      (index .put id {^id id ^title $"Archive ${at}" ^kind "interactive" ^!pinned
+        ^first_request "Ordinary request" ^last_active "2026-10-23"})
+      (set at (+ at 1)))
+    (index .put "needle" {^id "needle" ^title "Needle" ^kind "child" ^!pinned
+      ^parent {^session "archive-0"} ^first_request "Hidden request" ^last_active "2026-10-22"})
+    (index .put "scheduled" {^id "scheduled" ^title "Nightly cleanup" ^kind "cron" ^!pinned
+      ^first_request "Check overnight jobs" ^last_active "2026-10-21"})
+    (let manager {^index ($cell index) ^metadata_revision 7 ^runtime {^epoch "search-test"}})
+    ($assert (== ($size index) 162) ($to_str index))
+    (let found (search_sessions manager "neelde"))
+    ($assert (! found/partial) ($to_str found))
+    ($assert (== found/results/0/session "needle") ($to_str found))
+    ($assert (== found/results/0/session_kind "child"))
+    ($assert (== found/inspected 162))
+    ($assert (== found/index_revision "search-test:7"))
+    (let scheduled (search_sessions manager "overnight"))
+    ($assert (== scheduled/results/0/session "scheduled"))
+    (let archived (search_sessions manager "archive"))
+    ($assert (== archived/results/.size 50))
+    ($assert (== ($size index) 162))))
+
+(fn main [args] : Int (/exit_code (run ^name (?? args/0 ""))))

@@ -1094,6 +1094,13 @@ when not defined(geneWasm):
       app.publishWebRoute(route)
     webAssetValue(asset)
 
+  proc biWebModuleUrl(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+    ## A published, compiled Gene entry, for lifecycle-managed client mounts.
+    requireOne("web/module_url", args)
+    let scope = if call == nil: nil else: call[].dispatchScope
+    let asset = webAssetArgument("web/module_url", args[0], scope)
+    newStr(scope.application().webAssetUrl(webAssetEntryFile(asset)))
+
   proc biWebScript(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
     ## (web/script asset ^mount "id") -> the complete script node.
     ##
@@ -10771,6 +10778,8 @@ proc registerStdlibNamespaces(root: Scope) =
     webScope.define("script", builtinNativeCallFn("web/script", biWebScript))
     webScope.define("load", builtinNativeCallFn("web/load", biWebLoad,
                                             acceptsNamed = false))
+    webScope.define("module_url", builtinNativeCallFn("web/module_url", biWebModuleUrl,
+                                                  acceptsNamed = false))
     webScope.define("stylesheet", builtinNativeCallFn("web/stylesheet",
                                                   biWebStylesheet,
                                                   acceptsNamed = false))

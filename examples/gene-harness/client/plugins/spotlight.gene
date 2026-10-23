@@ -1,0 +1,310 @@
+(mod harness_spotlight ^profile web)
+(import [text flag items match_rank insert_ranked moved] ^from "../../src/common/launcher.gene")
+
+(type Spotlight ^props {^root EventTarget ^bridge Any ^owner Str ^button EventTarget
+  ^panel EventTarget ^input EventTarget ^list EventTarget ^message EventTarget ^crumb EventTarget
+  ^open Bool ^disposed Bool ^opening Int ^query_generation Int ^step_generation Int ^published Int ^step Str
+  ^items (List Any) ^active Int ^busy Bool ^awaiting_receipt Bool ^partial Bool ^parent Any ^command Any
+  ^target Str ^query Str ^status Any ^steps PropMap ^step_key Str})
+
+(fn close [spot : Spotlight, restore : Bool = true] : Void
+  (if_yes (! spot/open) (return))
+  (set spot/open false)
+  (set spot/opening (+ spot/opening 1))
+  (set spot/query_generation (+ spot/query_generation 1))
+  (set spot/panel/hidden true)
+  (set spot/items []) (set spot/active -1)
+  (set spot/steps {}) (set spot/parent nil) (set spot/command nil)
+  (set spot/target "") (set spot/query "") (set spot/step "")
+  ($dom/remove_attribute spot/input "aria-activedescendant")
+  (var release : (Fn [Str Bool] Void) spot/bridge/release)
+  (release spot/owner restore))
+
+(fn state [spot : Spotlight] : Any
+  (var read : (Fn [] Any) spot/bridge/state)
+  (read))
+
+(fn paint_selection [spot : Spotlight] : Void
+  (var at 0)
+  (for row in spot/items
+    (var option ($dom/element $"${spot/owner}-option-${at}"))
+    ($dom/set_attribute option "aria-selected" (if (== at spot/active) "true" "false"))
+    ($dom/set_class option "active" (== at spot/active))
+    (if_yes (== at spot/active)
+      ($dom/set_attribute spot/input "aria-activedescendant" $"${spot/owner}-option-${at}")
+      (var top ($dom/rect_top option))
+      (var bottom (+ top ($dom/rect_height option)))
+      (var list_top ($dom/rect_top spot/list))
+      (var list_bottom (+ list_top ($dom/rect_height spot/list)))
+      (if_yes (< top list_top)
+        ($dom/set_scroll_top spot/list (+ ($dom/scroll_top spot/list) (- top list_top))))
+      (if_yes (> bottom list_bottom)
+        ($dom/set_scroll_top spot/list (+ ($dom/scroll_top spot/list) (- bottom list_bottom)))))
+    (set at (+ at 1)))
+  (if_yes (< spot/active 0) ($dom/remove_attribute spot/input "aria-activedescendant")))
+
+(fn unavailable [spot : Spotlight, item : Any] : Str
+  (if_yes (&& (! ($absent? item/available)) (! (flag item/available))) (return (text item/reason "This destination is unavailable.")))
+  (var current (state spot))
+  (var kind (text item/kind))
+  (if_yes (|| (== kind "command") (== kind "theme_choice"))
+    (var expected : Any (if (== kind "theme_choice") spot/command item/command))
+    (var commands (items current/commands))
+    (for candidate in commands
+      (if_yes (&& (== (text candidate/name) (text expected/name)) (== (text candidate/owner) (text expected/owner))
+                  (== (text candidate/revision) (text expected/revision)))
+        (if_yes (! ($absent? current/pending_command)) (return "Resolve the pending command receipt first."))
+        (return "")))
+    (return "This command was replaced or disabled. Refresh and select it again."))
+  (if_yes (&& (== kind "view") (!= (text item/view) "harness"))
+    (var views (items current/views))
+    (for candidate in views
+      (if_yes (&& (== (text candidate/name) (text item/view)) (== (text candidate/revision) (text item/revision))) (return "")))
+    (return "This view is unavailable. Refresh the results."))
+  "")
+
+(fn activate [spot : Spotlight, index : Int] : Void
+  (if_yes (|| (! spot/open) spot/disposed spot/busy (< index 0) (>= index spot/items/.size)) (return))
+  (var item : Any spot/items/%index)
+  (var reason (unavailable spot item))
+  (if_yes (!= reason "") ($dom/set_text spot/message reason) (return))
+  (if_yes (&& (== (text item/kind) "command") (== (text item/command/name) "theme"))
+    (set spot/parent {^query spot/query ^items spot/items ^active index ^partial spot/partial})
+    (set spot/step "theme")
+    (set spot/step_generation (+ spot/step_generation 1))
+    (var step_key (text item/id))
+    (set spot/step_key step_key)
+    (var saved : Any spot/steps/%step_key)
+    (if_yes (|| ($absent? saved) (!= (text saved/command/revision) (text item/command/revision)))
+      (var context (state spot))
+      (var captured_target (text context/session))
+      (set saved {^command item/command ^session captured_target ^query ""
+        ^title (if (== captured_target "") "New tools conversation on submit" (text context/title))})
+      (set spot/steps/%step_key saved))
+    (set spot/command saved/command)
+    (set spot/target (text saved/session))
+    (var target_title (text saved/title))
+    ($dom/set_text spot/crumb $"Change theme · ${target_title}")
+    (set spot/input/placeholder "Choose light or dark…")
+    ($dom/set_input_value spot/input (text saved/query))
+    (search spot (text saved/query))
+    (return))
+  (set spot/busy true)
+  (var opening spot/opening)
+  (var done (fn [code : Int, result : Any] : Void
+    (if_yes (|| spot/disposed (! spot/open) (!= opening spot/opening)) (return))
+    (if (|| (== code 200) (== code 201) (== code 202))
+      (close spot false)
+      (do
+        (set spot/awaiting_receipt (&& (|| (== code 0) (>= code 500))
+          (! ($absent? (/pending_command (state spot))))))
+        (set spot/busy spot/awaiting_receipt)
+        ($dom/set_text spot/message (text result/message "The action could not be verified. Inspect its conversation."))))))
+  (if (|| (== (text item/kind) "command") (== (text item/kind) "theme_choice"))
+    (do
+      (var expected : Any (if (== (text item/kind) "theme_choice") spot/command item/command))
+      (var target (if (== (text item/kind) "theme_choice") spot/target (text (/session (state spot)))))
+      (var command_text (if (== (text item/kind) "theme_choice") $"/theme ${(text item/value)}" "/help"))
+      (var send : (Fn [Str Str Any (Fn [Int Any] Void)] Void) spot/bridge/command)
+      (send target command_text expected done))
+    (do
+      (var navigate : (Fn [Any (Fn [Int Any] Void)] Void) spot/bridge/navigate)
+      (navigate item done))))
+
+(fn render_results [spot : Spotlight] : Void
+  ($dom/clear spot/list)
+  ($dom/remove_attribute spot/input "aria-activedescendant")
+  (var generation spot/query_generation)
+  (var at 0)
+  (for item in spot/items
+    (var index at)
+    (var reason (unavailable spot item))
+    (var badge (if (< at 9) $"⌘⌥${(+ at 1)}" ""))
+    ($dom/append spot/list ($dom/render
+      `(div ^id %$"${spot/owner}-option-${at}" ^class_name "spotlight-option" ^role "option"
+         ^aria-selected "false" ^aria-disabled %(if (== reason "") "false" "true")
+         ^on_click %(fn [event : Any] : Void
+           (if_yes (== generation spot/query_generation) (activate spot index)))
+         (div ^class_name "spotlight-copy"
+           (strong %(text item/title))
+           (small %(if (== reason "") (text item/subtitle) reason)))
+         (kbd %badge))))
+    (set at (+ at 1)))
+  (var count (if (== spot/items/.size 1) "1 result" $"${spot/items/.size} results"))
+  ($dom/set_text spot/message (if spot/partial
+    $"${count} · Search is incomplete. Refresh to try again."
+    (if (== spot/items/.size 0) "No matches." count)))
+  ($dom/set_attribute spot/input "aria-expanded" (if (> spot/items/.size 0) "true" "false"))
+  (paint_selection spot))
+
+(fn local_results [spot : Spotlight, query : Str] : (List Any)
+  (var result : (List Any) [])
+  (var current (state spot))
+  (var entries : (List Any)
+    [{^id "action:new" ^kind "action" ^action "new" ^title "New conversation"
+      ^subtitle "Action" ^aliases "new chat"}
+     {^id "action:attention" ^kind "action" ^action "attention" ^title "Needs attention"
+      ^subtitle "Navigation" ^aliases "notifications questions"}
+     {^id "action:triggers" ^kind "action" ^action "triggers" ^title "Triggers"
+      ^subtitle "Workspace tool" ^aliases "schedule heartbeat cron"}
+     {^id "view:harness" ^kind "view" ^view "harness" ^title "Classic Harness"
+      ^subtitle "View" ^aliases "chat"}])
+  (var views (items current/views))
+  (for view in views
+    (entries .push {^id $"view:${(text view/owner)}:${(text view/name)}" ^kind "view"
+      ^view view/name ^revision view/revision ^title view/title ^subtitle "View" ^aliases "view"}))
+  (var commands (items current/commands))
+  (for command in commands
+    (if_yes (|| (== (text command/name) "help") (== (text command/name) "theme"))
+      (entries .push {^id $"command:${(text command/owner)}:${(text command/name)}" ^kind "command"
+        ^command command ^title (if (== (text command/name) "theme") "Change theme…" "Help")
+        ^subtitle command/usage ^aliases $"/${(text command/name)} ${(text command/name)}"})))
+  (for item in entries
+    (var rank (match_rank (text item/title) (text item/aliases) query))
+    (if_yes (>= rank 0)
+      (set item/rank rank)
+      (set result (insert_ranked result item 50))))
+  result)
+
+(fn publish_results [spot : Spotlight, opening : Int, generation : Int, step_generation : Int,
+                     items : (List Any), partial : Bool] : Void
+  (if_yes (|| spot/disposed (! spot/open) (!= spot/opening opening)
+              (!= spot/query_generation generation) (!= spot/step_generation step_generation)
+              (== spot/published generation)) (return))
+  (set spot/published generation)
+  (set spot/items items) (set spot/partial partial)
+  (set spot/active (if (== items/.size 0) -1 0))
+  (render_results spot))
+
+(fn search [spot : Spotlight, query : Str] : Void
+  (set spot/query query)
+  (set spot/query_generation (+ spot/query_generation 1))
+  (set spot/published -1)
+  (set spot/items []) (set spot/active -1)
+  ($dom/clear spot/list)
+  ($dom/remove_attribute spot/input "aria-activedescendant")
+  ($dom/set_attribute spot/input "aria-expanded" "false")
+  (var opening spot/opening)
+  (var generation spot/query_generation)
+  (var step_generation spot/step_generation)
+  (if_yes (== spot/step "theme")
+    (var step_key spot/step_key)
+    (var saved : Any spot/steps/%step_key)
+    (if_yes (! ($absent? saved)) (set saved/query query))
+    (var options : (List Any) [])
+    (for value in ["light" "dark"]
+      (var rank (match_rank value "theme" query))
+      (if_yes (>= rank 0)
+        (set options (insert_ranked options {^id $"theme:${value}" ^kind "theme_choice"
+          ^title (if (== value "light") "Light" "Dark") ^subtitle "Change theme" ^value value ^rank rank} 50))))
+    (publish_results spot opening generation step_generation options false) (return))
+  (var local (local_results spot query))
+  ($dom/set_text spot/message "Searching…")
+  (var api : (Fn [Str Str Any (Fn [Int Any] Void)] Void) spot/bridge/api)
+  (api "GET" $"/api/v8/search/sessions?q=${($url/encode_component query)}&limit=50" nil
+    (fn [code : Int, data : Any] : Void
+      (var merged local)
+      (if_yes (== code 200)
+        (var conversations : (List Any) data/results)
+        (for item in conversations (set merged (insert_ranked merged item 50))))
+      (publish_results spot opening generation step_generation merged (|| (!= code 200) (flag data/partial)))))
+  ($time/after 3000.0 (fn [] : Void (publish_results spot opening generation step_generation local true))))
+
+(fn open [spot : Spotlight] : Void
+  (if_yes spot/disposed (return))
+  (if_yes spot/open ($dom/focus spot/input) (return))
+  (var claim : (Fn [Str EventTarget (Fn [Bool] Void) EventTarget] Bool) spot/bridge/claim)
+  (if_yes (! (claim spot/owner spot/panel (fn [restore : Bool] : Void (close spot restore)) spot/button)) (return))
+  (set spot/open true) (set spot/busy false) (set spot/awaiting_receipt false) (set spot/step "")
+  (set spot/steps {})
+  (set spot/opening (+ spot/opening 1))
+  (set spot/step_generation (+ spot/step_generation 1))
+  (set spot/panel/hidden false)
+  ($dom/set_text spot/crumb "")
+  (set spot/input/placeholder "Search Harness…")
+  ($dom/set_input_value spot/input "")
+  ($dom/focus spot/input)
+  (search spot ""))
+
+(fn key [spot : Spotlight, event : Any] : Bool
+  (if_yes (|| spot/disposed ($event/is_composing event)) (return false))
+  (var code ($event/code event))
+  (if_yes (&& ($event/meta_key event) (! ($event/alt_key event))
+              (! ($event/ctrl_key event)) (! ($event/shift_key event)) (== code "KeyK"))
+    (if_yes (! ($event/repeat event)) (open spot)) (return true))
+  (if_yes (! spot/open) (return false))
+  (if_yes (|| (== code "ArrowDown") (== code "ArrowUp"))
+    (if_yes (! ($dom/focused? spot/input)) (return false))
+    (set spot/active (moved spot/active (if (== code "ArrowDown") 1 -1) spot/items/.size))
+    (paint_selection spot) (return true))
+  (if_yes (== code "Escape")
+    (if_yes ($event/repeat event) (return true))
+    (if (== spot/step "theme")
+      (do
+        (set spot/step "") (set spot/step_generation (+ spot/step_generation 1))
+        (set spot/query_generation (+ spot/query_generation 1))
+        (set spot/query (text spot/parent/query)) (set spot/items spot/parent/items)
+        (set spot/active spot/parent/active) (set spot/partial spot/parent/partial)
+        ($dom/set_input_value spot/input spot/query)
+        (set spot/input/placeholder "Search Harness…") ($dom/set_text spot/crumb "")
+        (render_results spot))
+      (close spot))
+    (return true))
+  (if_yes (== code "Enter")
+    (if_yes (! ($dom/focused? spot/input)) (return false))
+    (if_yes (! ($event/repeat event)) (activate spot spot/active)) (return true))
+  (if_yes (&& ($event/meta_key event) ($event/alt_key event)
+              (! ($event/ctrl_key event)) (! ($event/shift_key event)))
+    (var index 1)
+    (while (<= index 9)
+      (if_yes (== code $"Digit${index}")
+        (if_yes (! ($event/repeat event)) (activate spot (- index 1))) (return true))
+      (set index (+ index 1))))
+  false)
+
+(fn main [root : EventTarget] : Void
+  (var bridge : Any root/harness_bridge)
+  (var owner (text root/harness_owner))
+  (var button ($dom/render `(button ^type "button" ^class_name "spotlight-launcher" ^title "Search Harness (Cmd+K)" "Search ⌘K")))
+  (var panel ($dom/render `(div ^class_name "spotlight-backdrop" ^^hidden)))
+  (var dialog ($dom/render `(section ^class_name "spotlight-dialog" ^role "dialog" ^aria-modal "true" ^aria-label "Search Harness")))
+  (var input ($dom/render `(input ^type "text" ^role "combobox" ^aria-label "Search Harness" ^aria-autocomplete "list"
+    ^aria-expanded "false" ^aria-controls %$"${owner}-results" ^maxlength "256" ^autocomplete "off")))
+  (var list ($dom/render `(div ^id %$"${owner}-results" ^class_name "spotlight-results" ^role "listbox" ^aria-label "Search results")))
+  (var message ($dom/render `(div ^class_name "spotlight-message" ^role "status" ^aria-live "polite")))
+  (var crumb ($dom/render `(div ^class_name "spotlight-crumb")))
+  (var close_button ($dom/render `(button ^type "button" ^aria-label "Close launcher" "Esc")))
+  (var refresh ($dom/render `(button ^type "button" "Refresh")))
+  (var spot (Spotlight ^root root ^bridge bridge ^owner owner ^button button ^panel panel
+    ^input input ^list list ^message message ^crumb crumb ^!open ^!disposed ^opening 0
+    ^query_generation 0 ^step_generation 0 ^published -1 ^step "" ^items [] ^active -1 ^!busy ^!awaiting_receipt ^!partial
+    ^parent nil ^command nil ^target "" ^query "" ^status nil ^steps {} ^step_key ""))
+  # Publish cleanup before mounting anything that can fail.
+  (set root/harness_controller
+    {^dispose (fn [] : Void (set spot/disposed true) ($dom/remove button) (close spot true))
+     ^update (fn [status : Any] : Void
+       (set spot/status status)
+       (if_yes (&& spot/open spot/awaiting_receipt ($absent? (/pending_command (state spot))))
+         (close spot true) (return))
+       (if_yes (&& spot/open (> spot/items/.size 0))
+         (var active spot/active)
+         (render_results spot) (set spot/active active) (paint_selection spot)))
+     ^key (fn [event : Any] : Bool (key spot event))})
+  ($dom/append root panel) ($dom/append panel dialog)
+  ($dom/append dialog crumb)
+  (var heading ($dom/render `(div ^class_name "spotlight-heading")))
+  ($dom/append heading input) ($dom/append heading close_button)
+  ($dom/append dialog heading) ($dom/append dialog list)
+  ($dom/append dialog message)
+  (var footer ($dom/render `(div ^class_name "spotlight-footer" (span "↑↓ Navigate · ↵ Open · ⌘⌥1–9 Select"))))
+  ($dom/append footer refresh) ($dom/append dialog footer)
+  (var toolbar : EventTarget bridge/toolbar)
+  ($dom/append toolbar button)
+  ($dom/add_event_listener button "click" (fn [event : Any] : Void (open spot)))
+  ($dom/add_event_listener close_button "click" (fn [event : Any] : Void (close spot)))
+  ($dom/add_event_listener refresh "click" (fn [event : Any] : Void (search spot spot/query)))
+  ($dom/add_event_listener input "input" (fn [event : Any] : Void
+    (if_yes (! ($event/is_composing event)) (search spot ($dom/input_value input)))))
+  ($dom/add_event_listener panel "click" (fn [event : Any] : Void
+    (var target : EventTarget event/target)
+    (if_yes (== target panel) (close spot)))))

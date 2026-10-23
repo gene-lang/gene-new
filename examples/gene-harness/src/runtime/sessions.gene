@@ -21,7 +21,7 @@
 
 (type SessionState ^props {^id Str ^runtime Any ^history Any ^round Any ^outputs Any ^console Any ^last_access Any ^viewers Any})
 
-(type SessionManager ^props {^runtime Any ^events Any ^state_root Str ^index Any ^loaded Any ^idle_timeout_ms Int ^closed Any ^mutating Any ^index_writing Any ^gates Any ^gate_mutex Any ^before_remove Any? ^resumes Any?})
+(type SessionManager ^props {^runtime Any ^events Any ^state_root Str ^index Any ^loaded Any ^idle_timeout_ms Int ^closed Any ^mutating Any ^index_writing Any ^gates Any ^gate_mutex Any ^before_remove Any? ^resumes Any? ^metadata_revision Int?})
 
 (fn with_session_gate [manager, key : Str, thunk]
   (let gate (manager/gate_mutex (fn []
@@ -35,6 +35,7 @@
   (gate thunk))
 
 (fn notify_session [manager, record]
+  (set manager/metadata_revision (+ (?? manager/metadata_revision 0) 1))
   (if_not ($absent? manager/runtime/h)
     (publish manager/runtime/h (SessionChanged ^record record)))
   nil)

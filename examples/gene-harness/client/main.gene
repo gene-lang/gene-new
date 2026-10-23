@@ -1,4 +1,8 @@
 (mod harness_client ^profile web)
+(import [BrowserClients create_clients update_clients] ^from "./browser_clients.gene")
+(import [CommandClient create_commands configure_commands dispatch_command recover_command] ^from "./command_client.gene")
+(import [claim_modal release_modal] ^from "./overlays.gene")
+(import [items : launcher_items flag : launcher_flag] ^from "../src/common/launcher.gene")
 
 (import ^from "./state.gene"
   [
@@ -42,6 +46,7 @@
     center_ready
     center_sessions
     center_snapshot
+    toggle_center
     invalidate_questions
     update_center_count])
 (import ^from "./producer_inbox.gene"
@@ -65,7 +70,106 @@
   ^media Any ^notices Notices ^confirmations Any ^questions Any ^center Any ^inbox Any ^safe_ui Bool
   ^root EventTarget ^list EventTarget ^transcript EventTarget ^prompt EventTarget ^notice EventTarget
   ^title EventTarget ^appearance Str ^style_signature Str ^cards Any
-  ^delegation_epoch Int? ^delegation_recovery Any? ^child_open Any?})
+  ^delegation_epoch Int? ^delegation_recovery Any? ^child_open Any?
+  ^browser_clients Any ^command_client Any ^creation_unknown Bool?})
+
+(fn launcher_command [client : Client, session : Str, text : Str, expected : Any,
+                      done : (Fn [Int Any] Void)] : Void
+  (if_yes (|| (! client/ready) client/sending)
+    (done 409 {^message "Wait for the current submission to resolve."}) (return))
+  (if_yes (== session "")
+    (if_yes (launcher_flag client/creation_unknown)
+      (done 409 {^message "Conversation creation is unknown. Inspect the conversation list before creating another."}) (return))
+    (var draft ($dom/input_value client/prompt))
+    (set client/sending true) (update_controls client)
+    (api client "POST" "/api/v8/sessions" {^title "Plugin tools"}
+      (fn [code : Int, data : Any] : Void
+        (set client/sending false) (update_controls client)
+        (if (== code 201)
+          (do
+            (var target : Str data/id)
+            (select_session client target)
+            ($dom/set_input_value client/prompt draft) (remember_draft client)
+            (launcher_command client target text expected done))
+          (do
+            (if_yes (|| (== code 0) (>= code 500)) (set client/creation_unknown true))
+            (done code data)))))
+    (return))
+  (set client/sending true) (update_controls client)
+  (var commands : CommandClient client/command_client)
+  (dispatch_command commands session text expected
+    (fn [code : Int, data : Any] : Void
+      (set client/sending false) (update_controls client)
+      (done code data)
+      (if_yes (== code 202) ($dom/focus client/prompt)))))
+
+(fn launcher_navigate [client : Client, item : Any, done : (Fn [Int Any] Void)] : Void
+  (if_yes client/sending (done 409 {^message "Resolving your submission…"}) (return))
+  (var kind (string_or item/kind ""))
+  (var ui : UiClient client/ui)
+  (if_yes (== kind "view")
+    (if (navigate ui (string_or item/view ""))
+      (do (done 200 {}) ($dom/focus ($dom/element "ui_view_picker")))
+      (done 409 {^message "This view is unavailable."}))
+    (return))
+  (if_yes (== kind "conversation")
+    (var target (string_or item/session ""))
+    (api client "GET" $"/api/v8/sessions/${target}/snapshot" nil
+      (fn [code : Int, data : Any] : Void
+        (if_yes (|| (!= code 200) client/sending)
+          (done 409 {^message "This conversation is unavailable or a submission is resolving."}) (return))
+        (select_session client target) (navigate ui "harness")
+        (done 200 data) ($dom/focus client/prompt)))
+    (return))
+  (if_yes (== (string_or item/action "") "attention")
+    (done 200 {})
+    (var center : NotificationCenter client/center)
+    (toggle_center center true)
+    (return))
+  (if_yes (== (string_or item/action "") "triggers")
+    (done 200 {})
+    (set_hidden "trigger_drawer" false)
+    (load_triggers client)
+    ($dom/focus ($dom/element "close_triggers"))
+    (return))
+  (if_yes (launcher_flag client/creation_unknown)
+    (done 409 {^message "Conversation creation is unknown. Inspect the conversation list before creating another."}) (return))
+  (var draft (if (== client/selected "") ($dom/input_value client/prompt)
+    (?? ($session_storage/get (draft_key "new")) "")))
+  (set client/sending true) (update_controls client)
+  (api client "POST" "/api/v8/sessions" {^title "New conversation"}
+    (fn [code : Int, data : Any] : Void
+      (set client/sending false) (update_controls client)
+      (if (== code 201)
+        (do
+          (var target : Str data/id)
+          (var attachments : MediaComposer client/media)
+          (media_move attachments "" target)
+          (select_session client target) (navigate ui "harness")
+          (if_yes (!= draft "") ($dom/set_input_value client/prompt draft) (remember_draft client))
+          ($session_storage/remove (draft_key "new"))
+          (done code data) ($dom/focus client/prompt))
+        (do
+          (if_yes (|| (== code 0) (>= code 500)) (set client/creation_unknown true))
+          (done code data))))))
+
+(fn browser_bridge [client : Client] : Any
+  {^toolbar ($dom/element "browser_client_toolbar")
+   ^state (fn [] : Any
+     (var ui : UiClient client/ui)
+     (var commands : CommandClient client/command_client)
+     {^session client/selected ^title ($dom/text client/title)
+      ^ready client/ready ^connected client/connected ^sending client/sending
+      ^commands (launcher_items client/status/commands) ^views (launcher_items ui/navigation/views)
+      ^pending_command commands/pending})
+   ^api (fn [method : Str, path : Str, payload : Any, done : (Fn [Int Any] Void)] : Void
+     (api client method path payload done))
+   ^command (fn [session : Str, text : Str, expected : Any, done : (Fn [Int Any] Void)] : Void
+     (launcher_command client session text expected done))
+   ^navigate (fn [item : Any, done : (Fn [Int Any] Void)] : Void (launcher_navigate client item done))
+   ^claim (fn [owner : Str, panel : EventTarget, close : (Fn [Bool] Void), fallback : EventTarget] : Bool
+     (claim_modal owner client/root panel close fallback))
+   ^release (fn [owner : Str, restore : Bool] : Void (release_modal owner restore))})
 
 (fn render_plugin_slot [client : Client, target : EventTarget, slot : Str] : Bool
   (var components client/components)
@@ -871,10 +975,16 @@
   (set client/status_revision revision)
   (var unchanged (== ($json/stringify client/status) ($json/stringify data)))
   (set client/status data)
+  (if_not ($absent? client/command_client)
+    (var commands : CommandClient client/command_client)
+    (configure_commands commands (string_or data/workspace "")))
   (if_not ($absent? data/appearance) (apply_appearance client (string_or data/appearance "light")))
   (if_not ($absent? client/ui)
     (var ui : UiClient client/ui)
     (update_ui ui data/ui))
+  (if_not ($absent? client/browser_clients)
+    (var browsers : BrowserClients client/browser_clients)
+    (update_clients browsers (launcher_items data/browser_clients) data))
   (var components : (List Any) [])
   (if_not ($absent? data/web_components) (set components data/web_components))
   (var components_changed (!= ($json/stringify client/components) ($json/stringify components)))
@@ -1358,18 +1468,17 @@
   (apply_card client session card))
 
 (fn send_command [client : Client, text : Str, ^clear clear : Bool = true, ^card card : Any = nil] : Void
+  (var session client/selected)
+  (var original ($dom/input_value client/prompt))
   (set client/sending true)
   (update_controls client)
-  (api
-    client
-    "POST"
-    $"/api/v8/sessions/${client/selected}/commands"
-    (if ($absent? card) {^text text} {^text text ^card card})
+  (var commands : CommandClient client/command_client)
+  (dispatch_command ^card card ^clear_composer clear commands session text nil
     (fn [code : Int, data : Any] : Void
       (set client/sending false)
       (if (== code 202)
         (then
-          (if_yes clear
+          (if_yes (&& clear (== session client/selected) (== original ($dom/input_value client/prompt)))
             ($dom/set_input_value client/prompt "")
             (render_commands client))
           (remember_draft client))
@@ -1928,7 +2037,28 @@
   (var initial_mode : Str "light")
   (if_not ($absent? document/dataset/theme) (set initial_mode document/dataset/theme))
   (var client
-    (Client ^selected (query_value ($browser/search) "session") ^csrf "" ^cursor "" ^next_seq "1" ^epoch "" ^!ready ^!sending ^!connected ^!server_busy ^awaiting "" ^awaiting_session "" ^queued_prompt "" ^!queued_submit ^message_sequence 0 ^!busy ^^autoscroll ^generation 0 ^!has_older ^!loading_older ^socket_epoch 0 ^!viewing_history ^records [] ^preview [] ^sessions [] ^needs_attention [] ^filter_epoch 0 ^trigger_selected "" ^tabs [] ^expanded [] ^rounds [] ^input_id "" ^!answering ^round nil ^mode nil ^mode_pending nil ^!action_cooldown ^!was_executing ^pending nil ^status nil ^status_epoch "" ^status_revision "" ^status_generation 0 ^components [] ^component_buttons {} ^socket nil ^session_revision "1" ^ui nil ^media nil ^notices (create_notices) ^confirmations nil ^questions nil ^center nil ^inbox nil ^safe_ui (== (query_value ($browser/search) "ui") "default") ^root root ^list ($dom/element "sessions") ^transcript ($dom/element "transcript") ^prompt ($dom/element "prompt") ^notice ($dom/element "notice") ^title ($dom/element "conversation_title") ^appearance initial_mode ^style_signature "" ^cards nil))
+    (Client ^browser_clients nil ^command_client nil ^selected (query_value ($browser/search) "session") ^csrf "" ^cursor "" ^next_seq "1" ^epoch "" ^!ready ^!sending ^!connected ^!server_busy ^awaiting "" ^awaiting_session "" ^queued_prompt "" ^!queued_submit ^message_sequence 0 ^!busy ^^autoscroll ^generation 0 ^!has_older ^!loading_older ^socket_epoch 0 ^!viewing_history ^records [] ^preview [] ^sessions [] ^needs_attention [] ^filter_epoch 0 ^trigger_selected "" ^tabs [] ^expanded [] ^rounds [] ^input_id "" ^!answering ^round nil ^mode nil ^mode_pending nil ^!action_cooldown ^!was_executing ^pending nil ^status nil ^status_epoch "" ^status_revision "" ^status_generation 0 ^components [] ^component_buttons {} ^socket nil ^session_revision "1" ^ui nil ^media nil ^notices (create_notices) ^confirmations nil ^questions nil ^center nil ^inbox nil ^safe_ui (== (query_value ($browser/search) "ui") "default") ^root root ^list ($dom/element "sessions") ^transcript ($dom/element "transcript") ^prompt ($dom/element "prompt") ^notice ($dom/element "notice") ^title ($dom/element "conversation_title") ^appearance initial_mode ^style_signature "" ^cards nil))
+  (set client/command_client
+    (create_commands
+      ^settled (fn [envelope : Any, receipt : Any] : Void
+        (if_yes (&& (launcher_flag envelope/clear_composer)
+                    (== (string_or envelope/session "") client/selected)
+                    (== (string_or envelope/text "") ($dom/input_value client/prompt)))
+          ($dom/set_input_value client/prompt "") (remember_draft client) (render_commands client)))
+      (fn [method : Str, path : Str, payload : Any, done : (Fn [Int Any] Void)] : Void
+        (api client method path payload done))
+      (fn [message : Str] : Void
+        (var commands : CommandClient client/command_client)
+        (set_hidden "command_receipt_recover" ($absent? commands/pending))
+        (notice ^key "command-recovery" ^sticky (! ($absent? commands/pending)) client message)
+        (if_yes (&& (! ($absent? client/browser_clients)) (! ($absent? client/status)))
+          (var browsers : BrowserClients client/browser_clients)
+          (update_clients browsers (launcher_items client/status/browser_clients) client/status)))))
+  (set client/browser_clients (create_clients root client/safe_ui (browser_bridge client)))
+  ($dom/add_event_listener ($dom/element "command_receipt_recover") "click"
+    (fn [event : Any] : Void
+      (var commands : CommandClient client/command_client)
+      (recover_command commands)))
   (set client/media
     (create_media client/selected
       (fn [name : Str, data : Str, done : (Fn [Int Any] Void)] : Void
@@ -1996,6 +2126,11 @@
       ($dom/element "confirmations")
       client/notices
       (fn [method : Str, path : Str, payload : Any, done : (Fn [Int Any] Void)] : Void
+        (var parts ($str/split path "/"))
+        (if_yes (&& (== method "POST") (== parts/.size 6) (== parts/5 "commands"))
+          (var commands : CommandClient client/command_client)
+          (dispatch_command commands parts/4 (string_or payload/text "") payload/expected_command done)
+          (return))
         (api client method path payload done))))
   (set client/ui
     (create_ui

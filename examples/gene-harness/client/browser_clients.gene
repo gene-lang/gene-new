@@ -1,0 +1,109 @@
+# Host-owned executable-contribution lifecycle. Feature state stays in plugins.
+(mod harness_browser_clients ^profile web)
+(import [trap_modal_tab release_modal] ^from "./overlays.gene")
+(import [text flag integer] ^from "../src/common/launcher.gene")
+
+(type BrowserClients ^props {^root EventTarget ^safe Bool ^bridge Any
+  ^mounts PropMap ^generation Int})
+
+(fn dispose [host : BrowserClients, name : Str] : Void
+  (var record : Any host/mounts/%name)
+  (if_yes ($absent? record) (return))
+  (set host/mounts/%name nil)
+  (var mount : EventTarget record/root)
+  # Revoke the external outlet first, so focus restoration cannot choose a
+  # toolbar button that is about to disappear, even if cleanup throws.
+  (if_yes (! ($absent? record/toolbar))
+    (var toolbar : EventTarget record/toolbar)
+    ($dom/remove toolbar))
+  (try
+    (if_yes (! ($absent? mount/harness_controller/dispose))
+      (var cleanup : (Fn [] Void) mount/harness_controller/dispose)
+      (cleanup))
+  catch Any ($console/error "Browser contribution cleanup failed."))
+  (release_modal (text record/owner) true)
+  ($dom/remove mount))
+
+(fn fail_client [host : BrowserClients, name : Str, message : Str] : Void
+  (var record : Any host/mounts/%name)
+  (if_yes ($absent? record) (return))
+  (dispose host name)
+  (set record/failed true)
+  # Retain a failed revision marker; only replacement/re-enable may retry it.
+  (set host/mounts/%name record)
+  ($console/error message))
+
+(fn update_clients [host : BrowserClients, descriptors : (List Any), status : Any] : Void
+  (var wanted : PropMap {})
+  (if_yes (! host/safe)
+    (for descriptor in descriptors
+      (var name (text descriptor/name))
+      (set wanted/%name descriptor)))
+  (for [name record] in host/mounts
+    (var next : Any wanted/%name)
+    (if_yes (&& (! ($absent? record))
+      (|| ($absent? next) (!= next/revision record/revision))) (dispose host ($to_str name))))
+  (for [name descriptor] in wanted
+    (var record : Any host/mounts/%name)
+    (if ($absent? record)
+      (do
+        (set host/generation (+ host/generation 1))
+        (var generation host/generation)
+        (var mount ($dom/create_element "div"))
+        (var toolbar ($dom/create_element "span"))
+        (var source_bridge : PropMap host/bridge)
+        (var bridge : PropMap {})
+        (for [key value] in source_bridge (set bridge/%key value))
+        (var host_toolbar : EventTarget host/bridge/toolbar)
+        ($dom/append host_toolbar toolbar)
+        (set bridge/toolbar toolbar)
+        (var owner $"${name}:${generation}")
+        (set mount/harness_bridge bridge)
+        (set mount/harness_owner owner)
+        (set record {^root mount ^toolbar toolbar ^revision descriptor/revision ^owner owner ^generation generation ^status status})
+        (set host/mounts/%name record)
+        ($dom/append ($dom/body) mount)
+        (if_yes (!= (text descriptor/stylesheet) "")
+          ($dom/append mount ($dom/render
+            `(link ^rel "stylesheet" ^href %(text descriptor/stylesheet)))))
+        ($browser/load_module (text descriptor/url)
+          (fn [module : Any] : Void
+            (var current : Any host/mounts/%name)
+            (if_yes (|| ($absent? current) (!= (integer current/generation) generation)) (return))
+            (try
+              (var start : (Fn [EventTarget] Void) module/main)
+              (start mount)
+              (var update : (Fn [Any] Void) mount/harness_controller/update)
+              (update current/status)
+            catch Any
+              (fail_client host ($to_str name) "Browser contribution failed to mount.")))
+          (fn [message : Str] : Void
+            (var current : Any host/mounts/%name)
+            (if_yes (|| ($absent? current) (!= (integer current/generation) generation)) (return))
+            (fail_client host ($to_str name) message))))
+      (do
+        (set record/status status)
+        (if_yes (&& (! ($absent? record/root/harness_controller/update)) (! (flag record/failed)))
+          (try
+            (var update : (Fn [Any] Void) record/root/harness_controller/update)
+            (update status)
+          catch Any
+            (fail_client host ($to_str name) "Browser contribution failed to update.")))))))
+
+(fn create_clients [root : EventTarget, safe : Bool, bridge : Any] : BrowserClients
+  (var host (BrowserClients ^root root ^safe safe ^bridge bridge ^mounts {} ^generation 0))
+  ($dom/add_event_listener ^^capture ($dom/window) "keydown"
+    (fn [event : Any] : Void
+      (if_yes ($event/is_composing event) (return))
+      (var handled (trap_modal_tab event))
+      (for [name record] in host/mounts
+        (if_yes (&& (! handled) (! ($absent? record)) (! (flag record/failed))
+                    (! ($absent? record/root/harness_controller/key)))
+          (try
+            (var key : (Fn [Any] Bool) record/root/harness_controller/key)
+            (set handled (key event))
+          catch Any
+            (fail_client host ($to_str name) "Browser contribution keyboard handler failed.")
+            (set handled true))))
+      (if_yes handled ($dom/prevent_default event) ($dom/stop_propagation event))))
+  host)

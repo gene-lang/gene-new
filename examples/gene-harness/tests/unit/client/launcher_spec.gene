@@ -1,0 +1,26 @@
+(import $test [describe it run])
+(import [match_rank insert_ranked moved] ^from "../../../src/common/launcher")
+
+(describe "Launcher matching and selection"
+  (it "ranks exact/prefix/word/typo matches and stops arrows at list ends" []
+    ($assert (== (match_rank "Project board" "view" "project board") 0))
+    ($assert (== (match_rank "Project board" "view" "proj") 1))
+    ($assert (== (match_rank "Project board" "view" "board") 2))
+    ($assert (== (match_rank "Project board" "view" "baord") 4))
+    ($assert (== (match_rank "Project board" "view" "unrelated") -1))
+    ($assert (== (moved 0 -1 12) 0))
+    ($assert (== (moved 11 1 12) 11))
+    ($assert (== (moved -1 1 0) -1)))
+  (it "uses stable IDs after matching and recency and caps the merged list" []
+    (let a {^id "a" ^rank 1 ^activity "2026-10-23"})
+    (let b {^id "b" ^rank 1 ^activity "2026-10-23"})
+    (let c {^id "c" ^rank 0 ^activity "2026-10-22"})
+    (let first (insert_ranked [] b 2))
+    (let next (insert_ranked first a 2))
+    ($assert (== next/0/id "a"))
+    (let capped (insert_ranked next c 2))
+    ($assert (== capped/.size 2))
+    ($assert (== capped/0/id "c"))
+    ($assert (== capped/1/id "a"))))
+
+(fn main [args] : Int (/exit_code (run ^name (?? args/0 ""))))

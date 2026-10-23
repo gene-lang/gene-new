@@ -55,6 +55,8 @@ globalThis.history = window.history;
 const mainURL = pathToFileURL(process.argv[2]);
 const harness = await import(mainURL.href);
 const {create_media} = await import(new URL("media.mjs", mainURL));
+const {media_ids} = await import(new URL("media.mjs", mainURL));
+const {create_commands} = await import(new URL("command_client.mjs", mainURL));
 const {create_notices} = await import(new URL("notices.mjs", mainURL));
 const {create: create_ui} = await import(new URL("controller.mjs", mainURL));
 const noop = () => {};
@@ -75,6 +77,7 @@ function client() {
     questions: null, center: null, inbox: null, safe_ui: false, root: element("root"),
     list: element("sessions"), transcript: element("transcript"), prompt: element("prompt"),
     notice: element("notice"), title: element("conversation_title"),
+    appearance: "light", style_signature: "", cards: null, browser_clients: null, command_client: null,
   });
 }
 const descendants = node => [node, ...node.children.flatMap(descendants)];
@@ -153,7 +156,7 @@ promptVisible(c, "Uncertain request");
 // Entering a prompt before any session exists stages it immediately after
 // creation, even while the new session's socket is still connecting.
 c = client(); c.selected = "";
-c.ui = create_ui(element("ui_root"), true, c.notices, noop, noop, noop, noop);
+c.ui = create_ui(element("ui_root"), true, c.notices, noop, noop, noop, noop, "light");
 c.prompt.value = "Start a new project";
 harness.send(c);
 assert.equal(requests[0].path, "/api/v8/sessions");
@@ -201,4 +204,25 @@ harness.apply_snapshot(c, {...snapshot(), session: {
   id: "s", title: "Renamed", revision: "1", first_request: prompt, first_request_round: "round-s-1",
 }});
 promptVisible(c, prompt);
+
+// Spotlight commands use the shared dispatcher without consuming text or
+// attachment drafts, unlike sending a model round.
+c = client();
+c.prompt.value = "Keep this draft";
+c.media.drafts.s = [{key:"attachment-draft",state:"ready",name:"pixel.png",asset}];
+c.command_client = create_commands((method,path,payload,done) => harness.api(c,method,path,payload,done),noop);
+let commandOutcome;
+harness.launcher_command(c,"s","/help",{name:"help",owner:"core_commands",revision:"displayed"},
+  (code,data)=>{commandOutcome=code;});
+assert.match(requests[0].path,/sessions\/s\/snapshot$/);
+requests[0].reply(200,{next_command_seq:"1"});
+await settled();
+assert.match(requests[1].path,/sessions\/s\/commands$/);
+assert.equal(JSON.parse(requests[1].options.body).expected_command.revision,"displayed");
+requests[1].reply(202,{id:"c1",status:"running"});
+await settled();
+assert.equal(commandOutcome,202n);
+assert.equal(c.prompt.value,"Keep this draft");
+assert.deepEqual(media_ids(c.media),[asset.id]);
+assert.equal(c.sending,false);
 console.log("first submission: immediate prompt, delayed snapshots/admission, durable replacement, late completion, rejection/uncertainty, session creation, equal prompts, attachments, and saved prompt passed");

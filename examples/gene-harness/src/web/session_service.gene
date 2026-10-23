@@ -1,4 +1,6 @@
 (mod session_service)
+(import [command_descriptors] ^from "../runtime/command_identity")
+(import [browser_client_descriptors] ^from "../ui/browser_clients")
 (import ^from "../runtime/bootstrap" [open_runtime close_runtime prepare_workspace_root])
 (import ^from "../profiles/baseline" [baseline_profile])
 (import ^from "../profiles/offline" [offline_profile])
@@ -331,9 +333,9 @@
   (if (== parsed/kind "command")
     (submit_command service/runtime/commands session text)
     (submit_round ^media media service/controller session request_id sequence parsed/text)))
-(fn command [service, session : Str, text : Str, ^request_id request_id : Str = "", ^sequence sequence = nil, ^card card = nil]
+(fn command [service, session : Str, text : Str, ^request_id request_id : Str = "", ^sequence sequence = nil, ^expected expected = nil, ^card card = nil]
   (if ($absent? card)
-    (return (submit_command ^request_id request_id ^sequence sequence service/runtime/commands session text)))
+    (return (submit_command ^request_id request_id ^sequence sequence ^expected expected service/runtime/commands session text)))
   # A card's command button names the card revisions behind the clicked tree.
   # It registers with the round-resume barrier until the command ends, so
   # answering the card's round never resumes the model while it runs.
@@ -343,7 +345,7 @@
   (let release (fn []
     (if_not (released .swap true) (release_card_command service/runtime session))))
   (try
-    (let record (submit_command ^request_id request_id ^sequence sequence
+    (let record (submit_command ^request_id request_id ^sequence sequence ^expected expected
       ^on_admit (fn [admitted] (started .set true)) ^on_finish release
       service/runtime/commands session text))
     # A retried request returns its earlier receipt and starts nothing.
@@ -597,9 +599,7 @@
   (let status_revision (ui_data_revision service/runtime/h composition))
   (let status_sequence (next_status_sequence service))
   (let active service/controller/active/.get)
-  (let commands [])
-  (for row in (rows service/runtime/h "commands")
-    (commands .push {^name row/name ^usage row/usage ^doc row/doc}))
+  (let commands (command_descriptors service/runtime/h composition))
   (let plugins [])
   (for plugin in composition/plugins
     (plugins .push {^id plugin/id ^state plugin/status}))
@@ -619,6 +619,7 @@
       nil (service/runtime/h/readiness))
     ^plugins plugins
     ^web_components (if safe [] (web_components service session))
+    ^browser_clients (if safe [] (browser_client_descriptors service/runtime/h composition))
     ^ui (if safe nil (ui_status service/runtime/h))
     ^commands commands
     ^offline service/offline

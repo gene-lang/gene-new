@@ -1,0 +1,21 @@
+# Command descriptors and admission identity share the UI contribution epoch.
+(mod command_identity)
+(import [ui_record ui_revision] ^from "../ui/state")
+
+(fn command_identity [h, record]
+  {^name record/key ^owner record/owner ^revision (ui_revision h record)})
+
+(fn command_descriptors [h, snapshot]
+  (let result [])
+  (for record in (?? (snapshot/registries .get "commands") [])
+    (let descriptor (command_identity h record))
+    (descriptor .put "usage" record/payload/usage)
+    (descriptor .put "doc" record/payload/doc)
+    (result .push descriptor))
+  result)
+
+(fn same_command_identity? [left, right] : Bool
+  (if (&& ($absent? left) ($absent? right)) (return true))
+  (if (|| ($absent? left) ($absent? right)) (return false))
+  (&& (== left/name right/name) (== left/owner right/owner)
+      (== left/revision right/revision)))

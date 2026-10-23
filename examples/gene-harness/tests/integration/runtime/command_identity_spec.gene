@@ -1,0 +1,81 @@
+(import $test [describe it])
+(import [isolated run_spec] ^from "../../support")
+(import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
+(import [baseline_profile] ^from "../../../src/profiles/baseline")
+(import [contribute remove_owner] ^from "../../../src/kernel")
+(import [command_descriptors command_identity] ^from "../../../src/runtime/command_identity")
+(import [ui_record] ^from "../../../src/ui/state")
+(import [submit_command command_receipt command_state] ^from "../../../src/runtime/commands")
+
+(fn descriptor [runtime]
+  (for item in (command_descriptors runtime/h runtime/h/snapshots/current/.get)
+    (if (== item/name "launch_probe") (return item))))
+
+(describe "Spotlight command identity"
+  (it "rejects stale admissions and recovers the original receipt after replacement" []
+    (isolated this_mod/.path "rejects stale admissions and recovers the original receipt after replacement"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (let calls ($cell 0))
+        (try
+          (contribute runtime/h "probe" "commands"
+            {^name "launch_probe" ^usage "/launch_probe" ^doc "Probe"
+             ^run (fn [ctx] (calls .set (+ calls/.get 1)) "original")})
+          (let original (descriptor runtime))
+          (let admitted (submit_command ^expected original ^request_id "first" ^sequence 1
+            runtime/commands "default" "/launch_probe"))
+          (runtime/commands/watchers/.get .get $"default:${admitted/id}"; .join)
+          ($assert (== calls/.get 1))
+          ($assert (== admitted/admitted_command/revision original/revision))
+          (contribute ^^replace runtime/h "probe" "commands"
+            {^name "launch_probe" ^usage "/launch_probe" ^doc "Replacement"
+             ^run (fn [ctx] (calls .set (+ calls/.get 100)) "replacement")})
+          (let replacement (descriptor runtime))
+          ($assert (!= replacement/revision original/revision))
+          (let recovered (submit_command ^expected original ^request_id "first" ^sequence 1
+            runtime/commands "default" "/launch_probe"))
+          ($assert (== recovered/id admitted/id))
+          ($assert (== calls/.get 1))
+          ($assert (try
+            (submit_command ^expected original ^request_id "stale" ^sequence 2
+              runtime/commands "default" "/launch_probe") false
+            catch Any (== $err/code "revision_conflict")))
+          ($assert (try
+            (submit_command ^expected replacement ^request_id "first" ^sequence 1
+              runtime/commands "default" "/launch_probe") false
+            catch Any (== $err/code "submission_conflict")))
+          ($assert (== (/next_id (command_state runtime "default")) 2))
+          ($assert (== calls/.get 1))
+          (remove_owner runtime/h "probe")
+          (let disabled_receipt (submit_command ^expected original ^request_id "first" ^sequence 1
+            runtime/commands "default" "/launch_probe"))
+          ($assert (== disabled_receipt/id admitted/id))
+          ($assert (== calls/.get 1))
+        ensure (close_runtime runtime)))))
+  (it "keeps handler selection and execution on one lease across publication" []
+    (isolated this_mod/.path "keeps handler selection and execution on one lease across publication"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (let seen ($cell nil))
+        (try
+          (contribute runtime/h "probe" "commands"
+            {^name "launch_probe" ^usage "/launch_probe" ^doc "Original"
+             ^run (fn [ctx]
+               (seen .set (command_identity runtime/h (ui_record ctx/snapshot "commands" "launch_probe")))
+               "original")})
+          (let original (descriptor runtime))
+          (let admitted (submit_command ^expected original ^request_id "leased" ^sequence 1
+            ^on_admit (fn [record]
+              (contribute ^^replace runtime/h "probe" "commands"
+                {^name "launch_probe" ^usage "/launch_probe" ^doc "Replacement"
+                 ^run (fn [ctx] (seen .set "wrong handler") "replacement")}))
+            runtime/commands "default" "/launch_probe"))
+          (runtime/commands/watchers/.get .get $"default:${admitted/id}"; .join)
+          ($assert (!= (/revision (descriptor runtime)) original/revision))
+          ($assert (== (/revision seen/.get) original/revision))
+          (let finished (command_receipt runtime/commands "default" admitted/id))
+          ($assert (== finished/status "done") ($to_str finished))
+          ($assert ($str/contains? finished/display "original"))
+        ensure (close_runtime runtime))))))
+
+(fn main [args] : Int (run_spec args))

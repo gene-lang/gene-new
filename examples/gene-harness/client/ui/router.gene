@@ -1,5 +1,6 @@
 # Local navigation never writes shared workspace settings or admits work.
 (mod harness_ui_router ^profile web)
+(import [keyboard_owned?] ^from "../overlays.gene")
 (import [UiClient UiNode UiNavigation text flag copy_map notice persist_view sync_controls] ^from "./model.gene")
 (import [find_view initial_view presentation_for return_view view_url] ^from "./navigation.gene")
 (import [query_value] ^from "../state.gene")
@@ -211,7 +212,7 @@
       (persist_navigation ui) (layout ui)))
   ($dom/add_event_listener ^^capture ($dom/window) "keydown"
     (fn [event : Any] : Void
-      (if_yes (|| ui/safe ($event/is_composing event) ($event/repeat event)
+      (if_yes (|| ui/safe (keyboard_owned?) ($event/is_composing event) ($event/repeat event)
                   (! ($event/ctrl_key event)) (! ($event/shift_key event))
                   ($event/alt_key event) ($event/meta_key event)) (return))
       (var code ($event/code event))

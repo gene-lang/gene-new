@@ -1,5 +1,7 @@
 (mod commands)
 (import [byte_prefix] ^from "../text")
+(import [command_identity same_command_identity?] ^from "./command_identity")
+(import [ui_record] ^from "../ui/state")
 (import ^from "../kernel" [rows row contribute CommandChanged publish])
 (import ^from "../plugin_api" ^^export [CommandContext CommandResult])
 (import ^from "./composition" [acquire_snapshot release_snapshot take_composition_changes discard_composition_changes])
@@ -80,14 +82,15 @@
   (let last right/.size)
   previous/%last)
 
-(fn parse_submission [h, text : Str]
+(fn parse_submission [h, text : Str, ^snapshot snapshot = nil]
   (if ($str/starts_with? text "//")
     (return {^kind "prompt" ^text ($str/slice_bytes text 1 (- ($str/byte_size text) 1))}))
   (if_not ($str/starts_with? text "/") (return {^kind "prompt" ^text text}))
   (let parts ($str/split text " "))
   (let token parts/0)
   (let name ($str/slice_bytes token 1 (- ($str/byte_size token) 1)))
-  (let selected (row h "commands" name))
+  (let selected (if ($absent? snapshot) (row h "commands" name)
+    (/payload (ui_record snapshot "commands" name))))
   (if ($absent? selected)
     (then
       (var closest "help")
@@ -375,22 +378,34 @@ Stopped."""))))
   record)
 
 (fn submit_command [manager, session : Str, text : Str, ^request_id request_id : Str = "", ^sequence sequence = nil,
-                     ^on_admit on_admit = nil, ^on_finish on_finish = nil]
+                     ^expected expected = nil, ^on_admit on_admit = nil, ^on_finish on_finish = nil]
   (with_body_use manager/runtime
-    (fn [] (submit_command_impl ^request_id request_id ^sequence sequence ^on_admit on_admit ^on_finish on_finish
+    (fn [] (submit_command_impl ^request_id request_id ^sequence sequence ^expected expected ^on_admit on_admit ^on_finish on_finish
       manager session text))))
 
 (fn submit_command_impl [manager, session : Str, text : Str, ^request_id request_id : Str = "", ^sequence sequence = nil,
-                         ^on_admit on_admit = nil, ^on_finish on_finish = nil]
+                         ^expected expected = nil, ^on_admit on_admit = nil, ^on_finish on_finish = nil]
   (let digest ($crypto/sha256 text))
+  (if_not ($absent? expected)
+    (if (|| (!= ($head expected) Map) (== request_id ""))
+      (fail (CommandError ^code "invalid_request" ^message "A revision-bound command needs an identity and request id.")))
+    (for key in ["name" "owner" "revision"]
+      (let value (expected .get key))
+      (if (|| (!= ($head value) Str) (== value "") (> ($str/byte_size value) 256))
+        (fail (CommandError ^code "invalid_request" ^message "Invalid expected command identity.")))))
   (if_yes (!= request_id "")
     (if (|| (> ($str/byte_size request_id) 256) (!= ($head sequence) Int) (< sequence 1))
       (fail (CommandError ^code "invalid_request" ^message "A command request id requires a positive submission sequence.")))
     (let old (command_request_receipt manager session request_id))
     (if_not ($absent? old)
-      (if (&& (== old/request_digest digest) (== old/request_seq sequence)) (return old))
+      (if (&& (== old/request_digest digest) (== old/request_seq sequence)
+              (same_command_identity? old/expected_command expected)) (return old))
       (fail (CommandError ^code "submission_conflict" ^message "Command request identity has different content."))))
-  (let parsed (parse_submission manager/runtime/h text))
+  # Defer revision-bound resolution until after duplicate detection under the
+  # admission gate. The same lease selects the handler and owns its execution.
+  (let lease (if ($absent? expected) nil (acquire_snapshot manager/runtime/h/snapshots)))
+  (let parsed (if ($absent? expected) (parse_submission manager/runtime/h text)
+    {^kind "command" ^name expected/name ^input_text text ^expected_command expected}))
   # on_admit runs only for a new admission; on_finish runs when its task ends.
   (if_not ($absent? on_admit) (parsed .put "on_admit" on_admit))
   (if_not ($absent? on_finish) (parsed .put "on_finish" on_finish))
@@ -398,7 +413,11 @@ Stopped."""))))
     (parsed .put "request_id" request_id)
     (parsed .put "request_seq" sequence)
     (parsed .put "request_digest" digest))
-  (submit_routed_command manager session parsed))
+  (try
+    (submit_routed_command ^lease lease manager session parsed)
+  ensure
+    (if (&& (! ($absent? lease)) (!= parsed/lease_transferred true))
+      (release_snapshot manager/runtime/h/snapshots lease))))
 
 (fn submit_routed_command [manager, session : Str, parsed, ^lease supplied_lease = nil]
   (if (! manager/accepting/.get)
@@ -414,12 +433,24 @@ Stopped."""))))
         (for previous in state/records
           (if_yes (== previous/request_id parsed/request_id)
             (if_yes (&& (== previous/request_digest parsed/request_digest)
-                    (== previous/request_seq parsed/request_seq))
+                    (== previous/request_seq parsed/request_seq)
+                    (same_command_identity? previous/expected_command parsed/expected_command))
               (set duplicate true)
               (return previous))
             (fail (CommandError ^code "submission_conflict" ^message "Command request identity has different content."))))
         (if (!= parsed/request_seq state/next_id)
           (fail (CommandError ^code "submission_conflict" ^message "Unexpected command sequence; refresh or look up the previous receipt."))))
+      (if_not ($absent? parsed/expected_command)
+        (let expected parsed/expected_command)
+        (let contribution (ui_record supplied_lease/snapshot "commands" expected/name))
+        (if (|| ($absent? contribution)
+                (! (same_command_identity? expected (command_identity manager/runtime/h contribution))))
+          (fail (CommandError ^code "revision_conflict" ^message "This command was replaced or disabled. Refresh and select it again.")))
+        (let resolved (parse_submission ^snapshot supplied_lease/snapshot manager/runtime/h parsed/input_text))
+        (if (!= resolved/name expected/name)
+          (fail (CommandError ^code "invalid_request" ^message "Command text does not match its expected identity.")))
+        (for key in ["raw" "handler"] (parsed .put key (resolved .get key)))
+        (parsed .put "admitted_command" (command_identity manager/runtime/h contribution)))
       (let id $"c${state/next_id}")
       (state .put "next_id" (+ state/next_id 1))
       (let allocated
@@ -433,7 +464,7 @@ Stopped."""))))
           ^output ""
           ^started_ms ($os/wall_ms)
           ^start_seq (next_sequence manager/runtime/events (stream_key "session" session))})
-      (for key in ["input_text" "mode_instance" "input_id" "ui_action" "ui_request" "ui_action_id" "request_id" "request_seq" "request_digest"]
+      (for key in ["input_text" "mode_instance" "input_id" "ui_action" "ui_request" "ui_action_id" "request_id" "request_seq" "request_digest" "expected_command" "admitted_command"]
         (let value (parsed .get key))
         (if_not ($absent? value) (allocated .put key value)))
       (state/records .push allocated)
@@ -474,6 +505,7 @@ Stopped."""))))
               (if_not ($absent? parsed/on_finish) (try (parsed/on_finish) catch Any nil)))
         ensure (release_body_use manager/runtime))))
     (set watched true)
+    (parsed .put "lease_transferred" true)
     (manager/watchers
       .get
       ; .put $"${session}:${record/id}" watcher)

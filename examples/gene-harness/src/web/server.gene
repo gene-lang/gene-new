@@ -29,6 +29,7 @@
 (import ^from "./startup" [mark_ready browser_connection_message])
 (import ^from "../ui/images" [workspace_image WorkspaceImageError])
 (import ^from "../kernel" [row])
+(import [search_sessions] ^from "../runtime/launcher_search")
 (import ^from "../ui/state" [ui_status UiError])
 (import ^from "../ui/views" [ui_render])
 (import ^from "../ui/actions" [ui_action ui_action_receipt cancel_ui_action])
@@ -273,6 +274,10 @@
       (var result (host_status ^safe safe ^session (field request/params "session" ^default "") host))
       (result .put "csrf" browser/csrf)
       (return (response 200 result)))
+    (if_yes (&& (== request/method "GET") (== request/path "/api/v8/search/sessions"))
+      (let q (field request/params "q" ^default ""))
+      (if (> ($str/byte_size q) 256) (fail_request "invalid_request" "Search query exceeds 256 bytes."))
+      (return (response 200 (search_sessions ^limit (number request/params "limit" ^default "50") host/sessions q))))
     (if_yes (&& (== request/method "GET") (== request/path "/api/v8/plugins/history"))
       (return (response 200
         (plugin_history_catalog
@@ -451,6 +456,7 @@
         (var data (request_data request))
         (let request_id (field data "request_id" ^default ""))
         (return (response 202 (command host id (field data "text") ^request_id request_id
+          ^expected (?? data/expected_command nil)
           ^card (?? data/card nil)
           ^sequence (if (== request_id "") nil (number data "submission_seq"))))))
       (if_yes (&& (== parts/.size 7) (== parts/5 "commands") (== request/method "GET"))

@@ -3006,6 +3006,21 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       of "dom/focused?":
         paramTypes = @[webType(wtkDomTarget)]
         returnType = webType(wtkBool)
+      of "dom/active_element", "dom/body":
+        paramTypes = @[]
+        returnType = webType(wtkDomTarget)
+      of "dom/connected?":
+        paramTypes = @[webType(wtkDomTarget)]
+        returnType = webType(wtkBool)
+      of "dom/contains?":
+        paramTypes = @[webType(wtkDomTarget), webType(wtkDomTarget)]
+        returnType = webType(wtkBool)
+      of "dom/focusables":
+        paramTypes = @[webType(wtkDomTarget)]
+        returnType = webType(wtkList, webType(wtkDomTarget))
+      of "dom/set_inert":
+        paramTypes = @[webType(wtkDomTarget), webType(wtkBool)]
+        returnType = webType(wtkVoid)
       of "dom/input_value":
         paramTypes = @[webType(wtkDomTarget)]
         returnType = webType(wtkStr)
@@ -3100,6 +3115,15 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
         onDone.params = @[webType(wtkBool)]
         onDone.returnType = webType(wtkVoid)
         paramTypes = @[webType(wtkStr), onDone]
+        returnType = webType(wtkVoid)
+      of "browser/load_module":
+        let onLoad = webType(wtkCallback)
+        onLoad.params = @[webType(wtkAny)]
+        onLoad.returnType = webType(wtkVoid)
+        let onError = webType(wtkCallback)
+        onError.params = @[webType(wtkStr)]
+        onError.returnType = webType(wtkVoid)
+        paramTypes = @[webType(wtkStr), onLoad, onError]
         returnType = webType(wtkVoid)
       of "storage/get", "session_storage/get":
         paramTypes = @[webType(wtkStr)]
@@ -5936,10 +5960,28 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
       "(" & node & ".classList.toggle(" & arguments[1] & ", " &
         arguments[2] & "), undefined)"
     of "dom/window": "window"
+    of "dom/active_element": "(document.activeElement ?? document.body)"
+    of "dom/body": "document.body"
+    of "dom/connected?":
+      let node = if emitter.typescript: "(" & arguments[0] & " as Node)" else: arguments[0]
+      node & ".isConnected"
+    of "dom/contains?":
+      let node = if emitter.typescript: "(" & arguments[0] & " as Node)" else: arguments[0]
+      let child = if emitter.typescript: "(" & arguments[1] & " as Node)" else: arguments[1]
+      node & ".contains(" & child & ")"
+    of "dom/set_inert":
+      let node = if emitter.typescript: "(" & arguments[0] & " as HTMLElement)" else: arguments[0]
+      "(" & node & ".inert = " & arguments[1] & ", undefined)"
+    of "dom/focusables":
+      let node = if emitter.typescript: "(" & arguments[0] & " as Element)" else: arguments[0]
+      "Array.from(" & node & ".querySelectorAll('button, input, select, textarea, a[href], [tabindex]')).filter(el => !el.hasAttribute('disabled') && el.getAttribute('tabindex') !== '-1' && el.getClientRects().length > 0)"
     of "browser/origin": "window.location.origin"
     of "browser/hash": "window.location.hash"
     of "browser/search": "window.location.search"
     of "browser/request_id": "crypto.randomUUID()"
+    of "browser/load_module":
+      "(import(" & arguments[0] & ").then(" & arguments[1] &
+        ").catch(error => " & arguments[2] & "(String(error?.message ?? error))), undefined)"
     of "browser/replace_url":
       "(history.replaceState(null, \"\", " & arguments[0] & "), undefined)"
     of "browser/push_url":

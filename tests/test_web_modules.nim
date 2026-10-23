@@ -2,6 +2,55 @@ import gene/web
 import std/[os, osproc, strutils, tempfiles, unittest]
 
 suite "web navigation host bindings":
+  test "modal focus helpers and asynchronous module loading use browser primitives":
+    let root = createTempDir("gene-web-modal-", "")
+    defer: removeDir(root)
+    writeFile(root / "modal.gene", """
+      (mod modal ^profile web)
+      (fn modal [target : EventTarget] : Int
+        (var previous ($dom/active_element))
+        ($dom/set_inert ($dom/body) true)
+        (if_yes (&& ($dom/connected? previous) ($dom/contains? target previous))
+          ($dom/focus previous))
+        ($size ($dom/focusables target)))
+      (fn load [url : Str, ready : (Fn [Any] Void), failed : (Fn [Str] Void)] : Void
+        ($browser/load_module url ready failed))
+    """)
+    discard buildWebModule(root / "modal.gene", root / "out")
+    writeFile(root / "entry.gene", """
+      (mod entry ^profile web)
+      (fn main [target : EventTarget] : Void ($dom/set_attribute target "loaded" "yes"))
+    """)
+    discard buildWebModule(root / "entry.gene", root / "out")
+    writeFile(root / "out" / "check.mjs", """
+      import assert from 'node:assert/strict';
+      import { modal, load } from './modal.mjs';
+      class Target extends EventTarget {
+        isConnected = true;
+        contains(node) { return node === this; }
+        focus() { this.focused = true; }
+        querySelectorAll() { return [this]; }
+        hasAttribute() { return false; }
+        getAttribute() { return null; }
+        getClientRects() { return [{}]; }
+        setAttribute(name, value) { this[name] = value; }
+      }
+      const target = new Target();
+      globalThis.document = {activeElement: target, body: target};
+      assert.equal(modal(target), 1n);
+      assert.equal(target.inert, true);
+      assert.equal(target.focused, true);
+      await new Promise((resolve, reject) => load(new URL('./entry.mjs', import.meta.url).href,
+        module => { module.main(target); resolve(); }, reject));
+      assert.equal(target.loaded, 'yes');
+      const error = await new Promise(resolve => load(new URL('./missing.mjs', import.meta.url).href,
+        () => assert.fail('missing module loaded'), resolve));
+      assert.match(error, /missing/);
+    """)
+    let ran = execCmdEx("node " & quoteShell(root / "out" / "check.mjs"))
+    checkpoint ran.output
+    check ran.exitCode == 0
+
   test "capture listeners preserve removal identity and shortcut fields use native events":
     let root = createTempDir("gene-web-navigation-", "")
     defer: removeDir(root)

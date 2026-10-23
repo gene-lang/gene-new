@@ -232,6 +232,14 @@ mounts, dependencies, and source maps are content-addressed together. The
 [Harness browser client](../examples/gene-harness/README.md#browser-client)
 uses this path without an authored JavaScript bootstrap or a separate bundler.
 
+For lifecycle-managed mounts, `($web/module_url asset)` returns the compiled
+entry's published URL. In the browser, `($browser/load_module url ready failed)`
+loads an ESM namespace and reports it to `ready [module : Any]`; `failed
+[message : Str]` receives a load/initialization error. The host can invoke the
+entry again on a fresh mount even when the browser has cached its module. The
+[Harness browser contribution contract](../examples/gene-harness/docs/spotlight.md#compiled-gene-browser-contributions)
+uses this to mount, replace, and dispose plugin client code written in Gene.
+
 A server-rendered page can also be exported to a static host. Choose its public
 asset location with `($web/set_asset_base "/docs/assets")`, render the page,
 then write each entry of `($web/published_routes)` under that location. Entries
@@ -254,6 +262,9 @@ keyboard shortcuts; `$event/repeat` and `$event/is_composing` allow handlers to
 ignore repeated/composing input. `$dom/focused? element` checks focus before
 replacing a view. `$browser/push_url` adds a history entry; register a `popstate`
 listener on `$dom/window` to restore local navigation without reloading.
+`$dom/active_element` and `$dom/body` return current DOM targets.
+`$dom/connected?`, `$dom/contains?`, `$dom/focusables`, and `$dom/set_inert` support
+modal focus containment and restoration using browser primitives.
 `$dom/add_event_listener` and `$dom/remove_event_listener` accept `^capture true`
 for host-level controls that must run before a focused widget handles an event;
 use the same capture flag and callback identity when removing a listener.

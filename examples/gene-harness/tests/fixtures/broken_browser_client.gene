@@ -1,0 +1,7 @@
+(mod broken_browser_client ^profile web)
+(type MountFailure ^props {^message Str})
+(impl Error for MountFailure)
+(fn main [root : EventTarget] : Void
+  (var toolbar : EventTarget root/harness_bridge/toolbar)
+  ($dom/append toolbar ($dom/render `(button "Partial mount")))
+  (fail (MountFailure ^message "Deliberate mount failure")))

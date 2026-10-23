@@ -1,0 +1,32 @@
+(import $test [describe it])
+(import [isolated run_spec test_service] ^from "../../support")
+(import [host_status close_session_service] ^from "../../../src/web/session_service")
+(import [set_plugin_enabled] ^from "../../../src/storage/workspace")
+(import [validate_browser_client] ^from "../../../src/ui/browser_clients")
+
+(describe "Harness browser contributions"
+  (it "publishes compiled Spotlight assets and withdraws them in recovery or when disabled" []
+    (isolated this_mod/.path "publishes compiled Spotlight assets and withdraws them in recovery or when disabled"
+      (fn [workspace]
+        (let service (test_service ^workspace workspace ^provider (fn [request] "")))
+        (try
+          (let status (host_status service))
+          ($assert (== status/browser_clients/.size 1) ($to_str service/runtime/h/plugin_errors/.get))
+          (let client status/browser_clients/0)
+          ($assert (== client/name "spotlight"))
+          ($assert ($str/starts_with? client/url "/"))
+          ($assert ($str/ends_with? client/url ".mjs"))
+          ($assert (!= client/stylesheet ""))
+          (let recovery (host_status ^safe true service))
+          ($assert (== recovery/browser_clients/.size 0))
+          ($assert (try (validate_browser_client {^name "unsafe" ^url "https://example.com/code.js"}) false catch Any true))
+          (set_plugin_enabled service/runtime/workspace service/runtime/h "spotlight" false)
+          (let disabled (host_status service))
+          ($assert (== disabled/browser_clients/.size 0))
+          (set_plugin_enabled service/runtime/workspace service/runtime/h "spotlight" true)
+          (let restored (host_status service))
+          ($assert (== restored/browser_clients/.size 1))
+          ($assert (!= restored/browser_clients/0/revision client/revision))
+        ensure (close_session_service service))))))
+
+(fn main [args] : Int (run_spec args))

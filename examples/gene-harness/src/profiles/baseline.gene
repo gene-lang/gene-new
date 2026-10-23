@@ -17,10 +17,12 @@
 (import ^from "../builtin/history_basic" [history_basic])
 (import ^from "../builtin/working_instructions" [working_instructions])
 (import ^from "../builtin/sidebar" [sidebar])
+(import [spotlight] ^from "../builtin/spotlight")
 (import ^from "../builtin/media" [media])
 (import ^from "../builtin/computer" [computer])
 (import [image] ^from "../builtin/image")
 (import [image_openrouter] ^from "../builtin/image_openrouter")
 (import [delegation] ^from "../builtin/delegation")
 (fn baseline_profile []
-  (Profile ^name "web" ^plugins [(gene_reference) (plugin_admin) (core_commands) (shell) (repl) (triggers) (ui_experiment) (notifications) (provider_codex) (provider_anthropic) (provider_claude) (provider_openrouter) (budget_advisory) (history_basic) (working_instructions) (sidebar) (media) (computer) (image) (image_openrouter) (delegation)] ^requires [["prompt" "gene_reference"] ["hooks" "history/compact/history_basic"]] ^limits (ExecutionLimits ^max_memory_mb 1024 ^timeout_ms 600000)))
+  (let launcher (spotlight))
+  (Profile ^name "web" ^plugins [launcher (gene_reference) (plugin_admin) (core_commands) (shell) (repl) (triggers) (ui_experiment) (notifications) (provider_codex) (provider_anthropic) (provider_claude) (provider_openrouter) (budget_advisory) (history_basic) (working_instructions) (sidebar) (media) (computer) (image) (image_openrouter) (delegation)] ^requires [["prompt" "gene_reference"] ["hooks" "history/compact/history_basic"]] ^limits (ExecutionLimits ^max_memory_mb 1024 ^timeout_ms 600000)))

@@ -1,0 +1,52 @@
+(import $test [describe it])
+(import [isolated run_spec] ^from "../../support")
+(import [start_host stop_host] ^from "../../web_support")
+(import [connect api] ^from "../../../src/cli/client")
+(import $net/http_client [request])
+
+(describe "Spotlight HTTP contracts"
+  (it "searches indexed metadata beyond sidebar bounds and binds command admission" []
+    (isolated this_mod/.path "searches indexed metadata beyond sidebar bounds and binds command admission"
+      (fn [workspace]
+        (let host (start_host workspace))
+        (try
+          (let client (connect workspace))
+          (let target (api client "POST" "/sessions" {^title "Needle"}))
+          (var at 0)
+          (while (< at 104)
+            (api client "POST" "/sessions" {^title $"Archive ${at}"})
+            (set at (+ at 1)))
+          (let sidebar (api client "GET" "/sessions"))
+          ($assert (== sidebar/sessions/.size 100))
+          (let found (api client "GET" "/search/sessions?q=neelde&limit=50"))
+          ($assert (== found/results/0/session target/id) ($to_str found))
+          ($assert (> found/inspected 100))
+          (let status (api client "GET" "/status"))
+          ($assert (== status/browser_clients/0/name "spotlight"))
+          (for path in [status/browser_clients/0/url status/browser_clients/0/stylesheet]
+            (let response (await (request ^url $"${client/connection/origin}${path}" ^timeout_ms 10000)))
+            ($assert (== response/status 200) $"Asset ${path} returned ${response/status}")
+            ($assert (> ($str/byte_size response/body) 0)))
+          (let safe (api client "GET" "/status?ui=default"))
+          ($assert (== safe/browser_clients/.size 0))
+          (var expected nil)
+          (for descriptor in status/commands
+            (if (== descriptor/name "help") (set expected descriptor)))
+          ($assert (! ($absent? expected/revision)))
+          (let path $"/sessions/${target/id}/commands")
+          (let envelope {^text "/help" ^request_id "spotlight-http" ^submission_seq "1"
+            ^expected_command expected})
+          (let accepted (api client "POST" path envelope))
+          (let recovered (api client "GET" $"/sessions/${target/id}/requests/spotlight-http?kind=command"))
+          ($assert (== accepted/id recovered/id))
+          (let duplicate (api client "POST" path envelope))
+          ($assert (== duplicate/id accepted/id))
+          (let stale ($thaw ($freeze expected)))
+          (stale .put "revision" "replaced")
+          ($assert (try
+            (api client "POST" path {^text "/help" ^request_id "stale-http" ^submission_seq "2"
+              ^expected_command stale}) false
+            catch Any (== $err/code "revision_conflict")))
+        ensure (stop_host host))))))
+
+(fn main [args] : Int (run_spec args))

@@ -1,0 +1,37 @@
+(mod launcher_search)
+(import [match_rank insert_ranked] ^from "../common/launcher")
+(import [byte_prefix] ^from "../text")
+
+(fn search_sessions [manager, query : Str, ^limit limit : Int = 50]
+  (if (> ($str/byte_size query) 256) (fail "Search query exceeds 256 bytes."))
+  (let maximum ($math/max 1 ($math/min 50 limit)))
+  (let revision (?? manager/metadata_revision 0))
+  (let deadline (+ ($os/monotonic_ms) 150))
+  (var found [])
+  (var inspected 0)
+  (var partial false)
+  (let q ($str/lower ($str/trim query)))
+  (for [id record] in manager/index/.get
+    (if_yes (|| (>= inspected 20000) (> ($os/monotonic_ms) deadline))
+      (set partial true) (break))
+    (set inspected (+ inspected 1))
+    (let session ($to_str id))
+    (let title (byte_prefix record/title 512))
+    (let snippet (byte_prefix record/first_request 4096))
+    (var rank (match_rank title "chat conversation" q))
+    (if_yes (&& (< rank 0) ($str/contains? ($str/lower snippet) q)) (set rank 5))
+    (if_yes (&& (< rank 0) (|| (> ($str/byte_size record/first_request) 4096)
+                             (> ($str/byte_size record/title) 512)))
+      (set partial true))
+    (if_yes (== q "")
+      (set rank (if record/pinned 5 (if (== record/kind "interactive") 6 7))))
+    (if (< rank 0) (continue))
+    (let origin (if ($absent? record/parent/session) "" $" · from ${record/parent/session}"))
+    (set found (insert_ranked found
+      {^id $"conversation:${session}" ^session session ^title title ^kind "conversation"
+       ^session_kind record/kind ^parent record/parent
+       ^subtitle $"${record/kind}${origin} · ${session} · ${(byte_prefix snippet 160)}"
+       ^activity record/last_active ^rank rank ^^available} maximum)))
+  (if (!= revision (?? manager/metadata_revision 0)) (set partial true))
+  {^results found ^partial partial ^inspected inspected
+   ^index_revision $"${manager/runtime/epoch}:${revision}"})

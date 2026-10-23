@@ -26,6 +26,7 @@
     (set data ($thaw ($freeze_shallow data)))
     (let status ($thaw ($freeze_shallow data/status)))
     (status .put "web_components" [])
+    (status .put "browser_clients" [])
     (status .put "ui" nil)
     (data .put "status" status))
   (var frame {^protocol protocol_version ^epoch hub/host/epoch

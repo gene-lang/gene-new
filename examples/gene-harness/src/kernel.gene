@@ -35,6 +35,7 @@
 (import ^from "./storage/generated_event_catalog" [core_event_types])
 (import ^from "./views/view_api" [HarnessView view_provider])
 (import ^from "./ui/components" [validate_web_component])
+(import [validate_browser_client] ^from "./ui/browser_clients")
 (import ^from "./notifications/publisher"
   [safe_publish update_notification list_source_messages clear_source_message])
 (import ^from "./runtime/call_supervision" [supervised_call])
@@ -920,6 +921,7 @@
   (registry h "docs" ^^unique ^schema validate_docs_row)
   (registry h "views" ^^unique ^schema validate_view_row)
   (registry h "web_components" ^^unique ^^ordered ^schema validate_web_component)
+  (registry h "browser_clients" ^^unique ^^ordered ^schema validate_browser_client)
   (registry h "event_types" ^^unique ^schema validate_event_type_row)
   (registry h "subscriptions" ^!unique
     ^on_remove cancel_subscription_row)

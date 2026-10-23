@@ -37,6 +37,8 @@
                      (option ^value "left" "Dock left") (option ^value "right" "Dock right"))
                    (label "Width " (input ^id "ui_width" ^type "range" ^min "25" ^max "70" ^value "50" ^aria-label "Dock width")))
                  (span ^id "ui_connection" ^role "status" "Connecting…")
+                 (span ^id "browser_client_toolbar")
+                 (button ^id "command_receipt_recover" ^type "button" ^^hidden "Resolve command")
                  (button ^id "notifications_button" ^type "button" ^aria-expanded "false" ^aria-controls "notification_center" "Notifications")
                  (button ^id "theme_toggle" ^type "button" ^title "Switch the color theme" %toggle_label)
                  (a ^id "ui_default_link" ^href "/ui/default" "Recovery UI")

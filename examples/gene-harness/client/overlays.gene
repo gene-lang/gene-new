@@ -1,0 +1,71 @@
+# Shared host ownership; plugin graphs use the bridge instead of importing it.
+(mod harness_overlays ^profile web)
+(import [text] ^from "../src/common/launcher.gene")
+
+(fn keyboard_owned? [] : Bool
+  (var root ($dom/element "harness_root"))
+  (! ($absent? root/harness_modal)))
+
+(fn claim_modal [owner : Str, root : EventTarget, panel : EventTarget,
+                 close : (Fn [Bool] Void), fallback : EventTarget] : Bool
+  (if_yes (! ($absent? root/harness_modal)) (return false))
+  (var confirmations ($dom/focusables ($dom/element "confirmations")))
+  (if_yes (> confirmations/.size 0) ($dom/focus confirmations/0) (return false))
+  (for names in [["notification_center" "close_notifications"]
+                 ["trigger_drawer" "close_triggers"] ["status_drawer" "close_status"]]
+    (var drawer ($dom/element names/0))
+    (if_yes (! drawer/hidden)
+      ($dom/focus ($dom/element names/1)) (return false)))
+  (set root/harness_modal {^owner owner ^root root ^panel panel ^close close
+    ^previous ($dom/active_element) ^fallback fallback})
+  ($dom/set_inert root true)
+  true)
+
+(fn focus_available [choices : (List EventTarget), target : EventTarget] : Bool
+  (for control in choices
+    (if_yes (== control target) ($dom/focus target) (return true)))
+  false)
+
+(fn release_modal [owner : Str, restore : Bool] : Void
+  (var host ($dom/element "harness_root"))
+  (var active : Any host/harness_modal)
+  (if_yes (|| ($absent? active) (!= (text active/owner) owner)) (return))
+  (var saved : Any active)
+  (set host/harness_modal nil)
+  (var root : EventTarget saved/root)
+  ($dom/set_inert root false)
+  (if_yes restore
+    (var previous : EventTarget saved/previous)
+    (var fallback : EventTarget saved/fallback)
+    (var choices ($dom/focusables root))
+    (if_yes (focus_available choices previous) (return))
+    (if_yes (focus_available choices fallback) (return))
+    (if_yes (focus_available choices ($dom/element "ui_view_picker")) (return))
+    (if_yes (> choices/.size 0) ($dom/focus choices/0))))
+
+(fn handoff_modal [] : Bool
+  (var root ($dom/element "harness_root"))
+  (var active : Any root/harness_modal)
+  (if_yes ($absent? active) (return false))
+  (var close : (Fn [Bool] Void) active/close)
+  (close false)
+  true)
+
+(fn trap_modal_tab [event : Any] : Bool
+  (var root ($dom/element "harness_root"))
+  (var active : Any root/harness_modal)
+  (if_yes (|| ($absent? active) (!= ($event/key event) "Tab")) (return false))
+  (var panel : EventTarget active/panel)
+  (var choices ($dom/focusables panel))
+  (if_yes (== choices/.size 0) (return true))
+  (var current ($dom/active_element))
+  (var index -1)
+  (var at 0)
+  (for target in choices
+    (if_yes (== target current) (set index at))
+    (set at (+ at 1)))
+  (var next (+ index (if ($event/shift_key event) -1 1)))
+  (if_yes (< next 0) (set next (- choices/.size 1)))
+  (if_yes (>= next choices/.size) (set next 0))
+  ($dom/focus choices/%next)
+  true)

@@ -268,6 +268,11 @@ conversation in every connected browser.
 
 ## Workspace UI
 
+The default [Spotlight plugin](docs/spotlight.md) opens with **Cmd+K** or
+**Search ⌘K**. Type to search conversations, views, and common actions. Use
+Up/Down and Enter, or **Cmd+Alt+1–9** for the first nine results. Dismissing
+preserves drafts; disabling `spotlight` removes the launcher.
+
 The host-owned [plugin manager](docs/plugin-manager-guide.md) is available through
 **Plugins** or `/plugins`. It shows capabilities and dependencies, stages and
 validates changes, applies complete batches, and retains version history.

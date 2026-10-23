@@ -1,0 +1,24 @@
+(import $test [describe it])
+(import [isolated run_spec package_path] ^from "../../support")
+
+(describe "Compiled Spotlight client"
+  (it "checks generations, numbered navigation, activation and persisted recovery" []
+    (isolated this_mod/.path "checks generations, numbered navigation, activation and persisted recovery"
+      (fn [workspace]
+        (let output $"${workspace}/compiled")
+        (for entry in ["client/plugins/spotlight.gene" "client/main.gene"
+                      "tests/fixtures/broken_browser_client.gene"]
+          (let built (await ($os/exec_async ^timeout_ms 30000 ^max_bytes 1048576
+            ($os/executable_path) "build" "--target" "web" "--out-dir" output (package_path entry))))
+          ($assert (== built/status 0) $"${built/stdout}${built/stderr}"))
+        (let checked (await ($os/exec_async ^timeout_ms 10000 ^max_bytes 1048576
+          "node" (package_path "tests/spotlight_client.mjs")
+          $"${output}/spotlight.mjs" $"${output}/command_client.mjs" $"${output}/browser_clients.mjs"
+          $"${output}/broken_browser_client.mjs")))
+        ($assert (== checked/status 0) $"${checked/stdout}${checked/stderr}")
+        (for pair in [["tests/first_submission.mjs" "main.mjs"] ["tests/media_composer.mjs" "media.mjs"]]
+          (let result (await ($os/exec_async ^timeout_ms 10000 ^max_bytes 1048576
+            "node" (package_path pair/0) $"${output}/${pair/1}")))
+          ($assert (== result/status 0) $"${result/stdout}${result/stderr}"))))))
+
+(fn main [args] : Int (run_spec args))

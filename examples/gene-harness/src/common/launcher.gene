@@ -1,0 +1,103 @@
+# Pure matching/ordering used by native metadata search and the Gene client.
+(mod launcher_matching ^profile web)
+
+(fn text [value : Any, fallback : Str = ""] : Str
+  (if_yes ($absent? value) (return fallback))
+  (var result : Str value)
+  result)
+
+(fn flag [value : Any] : Bool
+  (if_yes ($absent? value) (return false))
+  (var result : Bool value)
+  result)
+
+(fn integer [value : Any] : Int
+  (var result : Int value)
+  result)
+
+(fn items [value : Any] : (List Any)
+  (var result : (List Any) [])
+  (if_yes (! ($absent? value)) (set result value))
+  result)
+
+(fn distance [left : Str, right : Str] : Int
+  (var a ($str/to_utf8 left))
+  (var b ($str/to_utf8 right))
+  (var n a/.len)
+  (var m b/.len)
+  (if_yes (|| (> n 64) (> m 64)) (return 100))
+  (var previous : (List Int) [])
+  (var j 0)
+  (while (<= j m) (previous .push j) (set j (+ j 1)))
+  (var i 0)
+  (while (< i n)
+    (var current : (List Int) [(+ i 1)])
+    (set j 0)
+    (while (< j m)
+      (var next (+ j 1))
+      (var cost (if (== (a .get i) (b .get j)) 0 1))
+      (var best (+ previous/%j cost))
+      (if_yes (< (+ previous/%next 1) best) (set best (+ previous/%next 1)))
+      (if_yes (< (+ current/%j 1) best) (set best (+ current/%j 1)))
+      (current .push best)
+      (set j (+ j 1)))
+    (set previous current)
+    (set i (+ i 1)))
+  previous/%m)
+
+(fn match_rank [title : Str, aliases : Str, query : Str] : Int
+  (var q ($str/lower ($str/trim query)))
+  (var label ($str/lower title))
+  (if_yes (== q "") (return 6))
+  (if_yes (== label q) (return 0))
+  (if_yes ($str/starts_with? label q) (return 1))
+  (if_yes ($str/contains? label q) (return 2))
+  (var words ($str/split $"${label} ${($str/lower aliases)}" " "))
+  (for word in words
+    (if_yes ($str/starts_with? word q) (return 3)))
+  (if_yes ($str/contains? ($str/lower aliases) q) (return 3))
+  (var bytes ($str/to_utf8 q))
+  (var size bytes/.len)
+  (if_yes (&& (>= size 3) (<= size 64))
+    (var tolerance (if (< size 5) 1 2))
+    (if_yes (<= (distance q label) tolerance) (return 4))
+    (for word in words
+      (if_yes (&& (!= word "") (<= (distance q word) tolerance)) (return 4))))
+  -1)
+
+(fn lexical_before? [left : Str, right : Str] : Bool
+  (var a ($str/to_utf8 left))
+  (var b ($str/to_utf8 right))
+  (var at 0)
+  (while (&& (< at a/.len) (< at b/.len))
+    (var x : Int (a .get at))
+    (var y : Int (b .get at))
+    (if_yes (!= x y) (return (< x y)))
+    (set at (+ at 1)))
+  (< a/.len b/.len))
+
+(fn before? [left : Any, right : Any] : Bool
+  (var a : Int left/rank)
+  (var b : Int right/rank)
+  (if_yes (!= a b) (return (< a b)))
+  (var at (text left/activity))
+  (var bt (text right/activity))
+  (if_yes (!= at bt) (return (lexical_before? bt at)))
+  (lexical_before? (text left/id) (text right/id)))
+
+(fn insert_ranked [items : (List Any), item : Any, maximum : Int] : (List Any)
+  (var result : (List Any) [])
+  (var inserted false)
+  (for previous in items
+    (if_yes (&& (! inserted) (before? item previous))
+      (result .push item) (set inserted true))
+    (if_yes (< result/.size maximum) (result .push previous)))
+  (if_yes (&& (! inserted) (< result/.size maximum)) (result .push item))
+  result)
+
+(fn moved [active : Int, delta : Int, count : Int] : Int
+  (if_yes (== count 0) (return -1))
+  (var next (+ active delta))
+  (if_yes (< next 0) (set next 0))
+  (if_yes (>= next count) (set next (- count 1)))
+  next)

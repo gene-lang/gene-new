@@ -1,5 +1,6 @@
 # Decisions are independent of feedback, captured under their original command.
 (mod harness_confirmations ^profile web)
+(import [handoff_modal] ^from "./overlays.gene")
 (import ^from "./notices.gene" [Notices put_notice remove_notice])
 (type Confirmations ^props {^target EventTarget ^items PropMap ^saved PropMap ^notices Notices ^api (Fn [Str Str Any (Fn [Int Any] Void)] Void)})
 
@@ -33,6 +34,7 @@
   (var id : Str command/id)
   (var key ($json/stringify [session id]))
   (if_not ($absent? controller/items/%key) (return))
+  (var handoff (handoff_modal))
   (var text : Str command/display)
   (var name : Str command/name)
   (var target
@@ -49,6 +51,7 @@
   ($dom/append target keep)
   ($dom/append target status)
   ($dom/append controller/target target)
+  (if_yes handoff ($dom/focus confirm))
   (put_notice ^action (fn [] : Void ($dom/focus confirm))
     controller/notices
     ($dom/element "notice")
@@ -73,7 +76,7 @@
       (controller/api
         "POST"
         $"/api/v8/sessions/${session}/commands"
-        {^text $"/${name} --confirm"}
+        {^text $"/${name} --confirm" ^expected_command command/expected_command}
         (fn [code : Int, data : Any] : Void
           (if (== code 202)
             (finish_confirmation controller key target)

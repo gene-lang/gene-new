@@ -1,0 +1,20 @@
+# Seed an existing disposable offline host for real-browser scrolling checks.
+(import [connect api] ^from "../../src/cli/client")
+
+(fn main [args] : Int
+  (let client (connect args/0))
+  (let existing (api client "GET" "/search/sessions?q=Spotlight%20fixture&limit=50"))
+  (if existing/partial (fail "The fixture search is incomplete; inspect the host before seeding."))
+  (var index 0)
+  (var created 0)
+  (while (< index 12)
+    (let title $"Spotlight fixture ${index}")
+    (var found false)
+    (for record in existing/results
+      (if (== record/title title) (set found true)))
+    (if_not found
+      (api client "POST" "/sessions" {^title title})
+      (set created (+ created 1)))
+    (set index (+ index 1)))
+  ($println $"Spotlight browser fixture ready; created ${created} conversations.")
+  0)
