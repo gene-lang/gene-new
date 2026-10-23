@@ -49,10 +49,12 @@ authentication, submission recovery or cancellation controls.
 
 Supported elements: div, section, p, h2, h3, h4, span, strong, small, em, ul,
 ol, li, button, a, details, summary, pre, code, progress, hr, br, img. Supported
-attributes: class/class_name, title, role, aria-label/aria_label, type, href,
+attributes: class/class_name, title, role, aria-label/aria_label, type, href, target,
 value, max, open, disabled, command, prompt, src, alt, width, height, columns, inset (the image properties are detailed below). Attributes contain scalar data;
 there are no inline scripts or raw HTML. Links use local paths, fragments or
 HTTPS URLs. View text becomes DOM text, including user-supplied strings.
+An anchor's `target` can be `_self` (the default) or `_blank` to open a new tab.
+The host adds `rel="noopener"` to `_blank` links.
 
 Use the shared classes described under [Styling](#styling) for cards, rows,
 grids, badges, notices and button variants. Component views are bounded to 24

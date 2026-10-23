@@ -162,7 +162,7 @@ listing never initializes a directory or loads workspace plugins.
 | Edit port | Save the configured port in the workspace. A running host keeps its current listener until restarted; show the pending change and offer Restart. |
 | Rename | Rename the workspace directory. The workspace must be stopped, and the new name must be free. |
 | Start | Launch the workspace host, or discover and use its existing running host. |
-| Open | Open the current authenticated workspace link (view action). Offer Start when stopped. |
+| Open | Open the current authenticated workspace link in a new browser tab, keeping the manager open (view action). Offer Start when stopped. |
 | Stop / restart | Stop through the existing host control flow. Manager Restart stops the host and launches it again using saved workspace settings. Both respect active-work confirmation. |
 | Archive | Move a stopped workspace to `ROOT/archive/NAME`, keeping every file. A name already in the archive gets a numeric suffix (`NAME-2`), shortening the name so the result stays within 64 bytes. |
 | Restore | Move an archived workspace back to `ROOT/workspaces`. Refuse when a workspace with that name exists; rename it first. |

@@ -37,6 +37,19 @@
     (for source in [(quote (button ^switch_view "" "Missing")) (quote (button ^switch_view "harness" ^presentation "full" "Wrong")) (quote (button ^switch_view "desk" ^presentation "overlay" "Wrong")) (quote (button ^presentation "docked" "Missing view")) (quote (a ^switch_view "desk" "Wrong element")) (quote (button ^switch_view "desk" ^prompt "hello" "Ambiguous")) (quote (button ^key "bad" ^switch_view "desk" ^action "save" "Ambiguous"))]
       ($assert (try (bounded_component_view ^^experimental source) false catch Any true))))
   (it
+    "admits new-tab links without an opener and rejects other target contexts"
+    []
+    (let link
+      (bounded_component_view (quote (a ^href "/api/v8/ui/open?name=workspace_open&id=project" ^target "_blank" "Open"))))
+    ($assert (== link/props/target "_blank"))
+    ($assert (== link/props/rel "noopener"))
+    (let ordinary (bounded_component_view (quote (a ^href "/" "Home"))))
+    ($assert ($absent? ordinary/props/target))
+    ($assert ($absent? ordinary/props/rel))
+    (for source in [(quote (a ^href "/" ^target "named-frame" "Wrong target"))
+                   (quote (button ^target "_blank" "Wrong element"))]
+      ($assert (try (bounded_component_view source) false catch Any true))))
+  (it
     "preserves textarea text defaults for keyed fields and honors explicit values"
     []
     (let view

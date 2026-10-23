@@ -48,6 +48,7 @@
     "aria_label"
     "type"
     "href"
+    "target"
     "value"
     "max"
     "open"
@@ -176,7 +177,12 @@
     (if_yes (== name "href")
       (if (|| (!= ($head item) Str) (! (|| ($str/starts_with? item "#") (&& ($str/starts_with? item "/") (! ($str/starts_with? item "//"))) ($str/starts_with? item "https://"))))
         (component_error "component links require a local path, fragment or HTTPS URL")))
+    (if_yes (== name "target")
+      (if (|| (!= tag "a") (! (["_self" "_blank"] .contains? item)))
+        (component_error "link targets require an anchor and must be _self or _blank")))
     (attributes .put ($regex/replace_all #"_" name "-") (if (== item true) "" ($to_str item))))
+  (if (== attributes/target "_blank")
+    (attributes .put "rel" "noopener"))
   (if_not ($absent? attributes/class-name)
     (attributes .put "class" attributes/class-name)
     (attributes .delete "class-name"))
