@@ -380,6 +380,8 @@ input::placeholder, textarea::placeholder { color: var(--muted); opacity: 1; }
 #ui_connection { margin-left: auto; color: var(--muted); }
 #ui_pending_owner:empty { display: none; }
 #ui_view_title { margin: 0 0 .5rem; font-size: 1rem; }
+/* View navigation focuses this heading for orientation, not text entry. */
+#ui_view_title:focus-visible { outline: none; }
 .app > .sidebar { grid-area: sidebar; }
 .app > .workspace { grid-area: main; }
 .app.has_ui_panel { grid-template-areas: "host host host" "sidebar panel main"; grid-template-columns: 232px minmax(280px, var(--ui-first, 1fr)) minmax(340px, var(--ui-second, 1fr)); }
