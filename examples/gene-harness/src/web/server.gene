@@ -458,6 +458,7 @@
         (return (response 200 (acknowledge_attention host id))))
       (if_yes (&& (== parts/.size 6) (== parts/5 "snapshot") (== request/method "GET"))
         (return (response 200 (snapshot ^safe safe host id
+          ^console (== (field request/params "console") "1")
           ^after (number request/params "after" ^default "-1")
           ^before (number request/params "before" ^default "-1")))))
       (if_yes (&& (== parts/.size 6) (== parts/5 "rounds") (== request/method "POST"))

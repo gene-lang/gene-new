@@ -7,7 +7,7 @@ import { webcrypto } from "node:crypto";
 class Element extends EventTarget {
   constructor(tag = "div", text = "") {
     super(); this.tag = tag; this.text = text; this.children = []; this.attributes = {};
-    this.value = ""; this.scrollTop = 0; this.scrollHeight = 100; this.clientHeight = 100;
+    this.value = ""; this.open = false; this.scrollTop = 0; this.scrollHeight = 100; this.clientHeight = 100;
     this.classList = {toggle() {}};
     this.style = {setProperty() {}};
   }
@@ -19,12 +19,13 @@ class Element extends EventTarget {
   replaceChildren(...children) { this.children = []; this.text = ""; this.append(...children); }
   appendChild(child) { this.children.push(child); child.parentNode = this; return child; }
   removeChild(child) { this.children.splice(this.children.indexOf(child), 1); child.parentNode = null; }
-  setAttribute(name, value) { this.attributes[name] = value; }
+  setAttribute(name, value) { this.attributes[name] = value; if(name==='open') this.open=true; if(name==='hidden') this.hidden=true; }
   focus() {}
 }
 const elements = new Map();
 const stored = new Map();
 const requests = [];
+const timers=[];
 const element = id => {
   if (!elements.has(id)) elements.set(id, new Element());
   return elements.get(id);
@@ -48,7 +49,7 @@ Object.assign(globalThis, {
   window: Object.assign(new EventTarget(), {location: {origin: "http://fixture", search: "", hash: ""}, history: {replaceState() {}}}),
   WebSocket: class extends EventTarget { constructor(url) { super(); this.url = url; } close() {} },
   // The fixture advances responses explicitly; browser reconnect timers stay idle.
-  setTimeout: () => 0,
+  setTimeout: (callback,ms) => {timers.push({callback,ms}); return timers.length;},
 });
 if (!globalThis.crypto) globalThis.crypto = webcrypto;
 globalThis.history = window.history;
@@ -333,8 +334,82 @@ requests[0].reply(200,earlier); await settled();
 assert.equal(navigationResult,200n);
 assert.equal(c.selected,"target");
 for(const record of arriving) {
-  assert.ok(c.preview.some(saved=>saved.id===record.id),"disconnect during GET must preserve cached frames");
-  assert.ok(interrupted.cache.preview.some(saved=>saved.id===record.id));
+  if(record.kind==='console') {
+    assert.equal(c.preview.some(saved=>saved.id===record.id),false,'historical console previews cannot hydrate live output');
+  } else {
+    assert.ok(c.preview.some(saved=>saved.id===record.id),"disconnect during GET must preserve cached frames");
+    assert.ok(interrupted.cache.preview.some(saved=>saved.id===record.id));
+  }
 }
 assert.notEqual(interrupted.socket,closedSocket,"selecting a disconnected tab must still reconnect it");
+
+// Live stdout is a separate overlay, including before ready and during snapshots.
+c=client();
+const outputModel=await import(new URL('live_output.mjs',mainURL));
+const codeBlock={id:'s/code',round_id:'r',turn:1n,role:'assistant',phase:'code',kind:'turn/response',
+  text:'($println "printed")',durable:true,media:[]};
+c.records=[codeBlock];
+harness.render_transcript(c);
+let panel=descendants(c.transcript).find(x=>x.attributes.class==='execution live_output');
+assert.equal(panel.hidden,true);
+const tab=harness.session_tab(c,'s');
+const frame=(sequence,id,text,extra={})=>JSON.stringify({protocol:8,epoch:'live-host',sequence:String(sequence),
+  type:'console',session:'s',data:{id,round_id:'r',turn:1,text,phase:'console',...extra}});
+const beforeTimers=timers.filter(t=>t.ms===40).length;
+harness.stream_message(c,tab,frame(1,'s/log1','<script>literal</script>\n'));
+harness.stream_message(c,tab,frame(2,'s/log2','continued\n'));
+assert.equal(tab.connected,false,'before-ready output must not require a ready snapshot');
+assert.equal(timers.filter(t=>t.ms===40).length-beforeTimers,1,'burst updates are coalesced');
+timers.filter(t=>t.ms===40).at(-1).callback();
+assert.equal(panel.hidden,false); assert.equal(panel.open,false);
+assert.match(panel.textContent,/<script>literal<\/script>/);
+assert.equal(descendants(panel).some(x=>x.tag==='script'),false);
+panel.open=true; panel.dispatchEvent(new Event('toggle'));
+const oldConsole={...codeBlock,id:'s/old',phase:'console',text:'historical secret'};
+harness.apply_snapshot(c,{...snapshot(),records:[codeBlock,oldConsole],preview:[oldConsole]});
+panel=descendants(c.transcript).find(x=>x.attributes.class==='execution live_output');
+assert.equal(panel.open,true,'snapshot re-render must preserve an explicitly opened Output');
+assert.match(panel.textContent,/continued/); assert.doesNotMatch(panel.textContent,/historical secret/);
+assert.ok(!c.records.some(x=>x.phase==='console')); assert.equal(c.preview.length,0);
+harness.stream_message(c,tab,frame(3,'s/log1','duplicate'));
+harness.stream_message(c,tab,frame(4,'s/late','late\n',{late:true}));
+timers.filter(t=>t.ms===40).at(-1).callback();
+assert.equal(panel.textContent.split('<script>').length-1,1);
+assert.match(panel.textContent,/Late output/);
+assert.equal(descendants(c.transcript).filter(x=>x.attributes.class==='step').length,1);
+const liveKey=outputModel.turn_output_key('s','r',1n);
+assert.ok(outputModel.output_entry(harness.live_store(c),liveKey));
+const bg=harness.session_tab(c,'background');
+const bgFrame={protocol:8,epoch:'live-host',sequence:'1',type:'console',session:'background',
+  data:{id:'bg/log',round_id:'r',turn:1,text:'background output',phase:'console'}};
+harness.stream_message(c,bg,JSON.stringify(bgFrame));
+assert.equal(outputModel.output_entry(harness.live_store(c),outputModel.turn_output_key('background','r',1n)).text,'background output');
+assert.doesNotMatch(panel.textContent,/background output/);
+assert.equal(bg.cache.preview.length,0,'background stdout is not a history preview');
+c.selected='background'; c.records=[{...codeBlock,id:'background/code'}]; c.preview=[];
+harness.render_transcript(c);
+assert.match(c.transcript.textContent,/background output/,'navigation attaches its own retained output');
+c.selected='s'; harness.apply_snapshot(c,{...snapshot(),records:[codeBlock]});
+assert.equal(descendants(c.transcript).find(x=>x.attributes.class==='execution live_output').open,true,
+  'same-page navigation retains the user-chosen disclosure state');
+harness.close_tab(c,'background');
+assert.equal(outputModel.output_entry(harness.live_store(c),outputModel.turn_output_key('background','r',1n)),null);
+assert.ok(outputModel.output_entry(harness.live_store(c),liveKey));
+const newEpoch={...JSON.parse(frame(5,'s/new-epoch','fresh epoch output')),epoch:'next-host'};
+harness.stream_message(c,tab,JSON.stringify(newEpoch));
+timers.filter(t=>t.ms===40).at(-1).callback();
+panel=descendants(c.transcript).find(x=>x.attributes.class==='execution live_output');
+assert.equal(panel.open,false,'a new host epoch starts new Output disclosures collapsed');
+assert.match(panel.textContent,/fresh epoch output/); assert.doesNotMatch(panel.textContent,/continued/);
+harness.stream_message(c,tab,frame(6,'s/stale','stale old epoch'));
+assert.doesNotMatch(outputModel.output_entry(harness.live_store(c),liveKey).text,/stale old epoch/);
+harness.live_console(c,'s',{id:'pending-log',round_id:'future',turn:9n,text:'arrived before its code'});
+assert.doesNotMatch(c.transcript.textContent,/arrived before its code/);
+harness.apply_record(c,{...codeBlock,id:'future-code',round_id:'future',turn:9n,durable:false});
+const futureStep=descendants(c.transcript).find(x=>x.attributes.class==='step'&&x.textContent.startsWith('Turn 9'));
+assert.match(futureStep.textContent,/arrived before its code/,'pending output attaches when its own turn arrives');
+const fresh=client();
+harness.apply_snapshot(fresh,{...snapshot(),records:[codeBlock,oldConsole]});
+const freshPanel=descendants(fresh.transcript).find(x=>x.attributes.class==='execution live_output');
+assert.equal(freshPanel.hidden,true,'a reload cannot reconstruct printed output');
 console.log("first submission: immediate prompt, delayed snapshots/admission, durable replacement, late completion, rejection/uncertainty, session creation, equal prompts, attachments, and saved prompt passed");

@@ -61,7 +61,7 @@
           (if (== phase "code")
             (execution_view text "Response code" true expanded on_copy on_toggle)
             (if (== phase "turn/request")
-              (execution_view text "Next request" false true on_copy on_toggle)
+              (execution_view text "Next request" false expanded on_copy on_toggle)
               (if (== phase "reply")
               (markdown_view text)
               ($dom/render `(div ^class_name "message_text" %text))))))))))
@@ -100,7 +100,8 @@
 
 (fn step_view [blocks : (List Any), opened : Bool, active : Bool,
                on_copy : (Fn [Str] Void), is_open : (Fn [Str] Bool),
-               on_toggle : (Fn [Str Bool] Void), ^on_speak on_speak : Any = nil] : EventTarget
+               on_toggle : (Fn [Str Bool] Void), ^on_speak on_speak : Any = nil,
+               ^output_view output_view : Any = nil] : EventTarget
   (var first : Any blocks/0)
   (var round_id : Str first/round_id)
   (var round : Int first/turn)
@@ -129,6 +130,7 @@
          (var open : Bool event/current_target/open) (on_toggle key open))
        (summary %title))))
   (var content ($dom/render `(div ^class_name "step_content")))
+  (var output_added false)
   (for block in blocks
     (var id : Str block/id)
     (var phase : Str block/phase)
@@ -139,7 +141,12 @@
     ($dom/append content
       (block_view block (not_durable block) on_copy (is_open id)
         (fn [open : Bool] : Void (on_toggle id open))
-        ^source_text nil)))
+        ^source_text nil))
+    (if_yes (&& (== phase "code") (! output_added) (! ($absent? output_view)))
+      (var output : EventTarget output_view)
+      ($dom/append content output) (set output_added true)))
+  (if_yes (&& (! output_added) (! ($absent? output_view)))
+    (var output : EventTarget output_view) ($dom/append content output))
   ($dom/append details content)
   details)
 

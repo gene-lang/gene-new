@@ -269,7 +269,7 @@ Profile: """
         client
         "GET"
         ($to_str
-          (session_path session "/snapshot?ui=default")
+          (session_path session "/snapshot?ui=default&console=1")
           (option_query options ["before" "after"])))))
   (if_yes (["receipt" "wait"] .contains? action)
     (let kind (receipt_kind options))

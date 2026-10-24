@@ -71,9 +71,9 @@ input::placeholder, textarea::placeholder { color: var(--muted); opacity: 1; }
 .session_tab.selected { background: var(--soft); border-color: var(--accent); }
 .session_tab button { border: 0; padding: .3rem .5rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .session_tab small { display: block; color: var(--muted); font-size: .65rem; }
-.console_pane { flex-shrink: 0; padding: .3rem 2rem; border-top: 1px solid var(--line); font-size: .75rem; }
-.console_pane summary { cursor: pointer; color: var(--muted); }
-.console_pane pre { max-height: 160px; margin: .5rem 0; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.live_output[hidden] { display: none; }
+.live_output summary { color: var(--muted); }
+.live_output pre { max-height: 24rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
 .trigger_row { display: flex; justify-content: space-between; margin: .5rem 0; gap: .4rem; }
 .trigger_row small { display: block; color: var(--muted); }
 .trigger_create { margin-top: 1.5rem; }

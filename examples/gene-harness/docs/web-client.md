@@ -106,9 +106,15 @@ Outcome's concise `^reply` appears only in the disclosure heading as
 `Turn N: <reply>`, not again inside the expanded turn. A final reply appears
 once at the conversation level, outside its turn disclosure. Completed status
 shows the status label without repeating reply text. Response code is
-highlighted when expanded. The console is a separate collapsible pane;
-late output is labeled. Command blocks stream while the command runs and
-retain their final value or exit status.
+highlighted when expanded. Printed text appears in an **Output · live** disclosure
+inside its owning turn, collapsed by default. Late output stays with its original
+turn and is labeled. Output is held only in page memory: snapshots, pagination,
+reloads and new browser tabs never restore it. Same-page conversation switching
+and temporary reconnects retain received chunks; a host restart clears them.
+Command printing has a separate live disclosure under its command. Returned
+command results, help text, interactive shell output and exit status keep their
+normal presentation. Diagnostic console events and CLI transcript access remain
+available independently of the browser's temporary display.
 
 Question batches show recommended choices preselected. Nothing is submitted
 automatically. Free text, multiple selections, per-question skipping and
@@ -184,7 +190,7 @@ session.
 | reply | Progress or final reply record |
 | questions | Durable question batch |
 | card | A card's public record and the change: `defined`, `updated`, `enabled`, `stale` or live `progress` |
-| console | Session console record, including its late flag |
+| console | Live printed output with its turn or command owner and late flag; not replayed into the browser from snapshots |
 | command | Streaming chunk or final command record |
 | mode/state | Current input mode or nil; the frame also carries a change reason |
 | ui/state | Layout, theme and stateful-view descriptors; also invalidates ordinary component status across the workspace |
@@ -198,7 +204,7 @@ session.
 
 Session records contain durable ids, round_id and session-wide turn numbers.
 Live records merge by id with the next snapshot. A final snapshot supersedes
-provisional command output without dropping the command's console.
+provisional command output without dropping the command's live output.
 
 ### HTTP endpoints
 

@@ -827,4 +827,28 @@ child/.detach
         ensure
           (close_session_service reopened))))))
 
+(describe "Browser live output projection"
+  (it "keeps diagnostic console records out of browser history and preserves command results" []
+    (isolated this_mod/.path "keeps diagnostic console records out of browser history and preserves command results"
+      (fn [workspace]
+        (let service (test_service ^workspace workspace ^provider (fn [request]
+          "($println \"live print\") (Outcome ^^done ^reply \"Durable reply.\")")))
+        (try
+          (let session (create_session service))
+          (let round (submit service session/id "live-test" 1 "check"))
+          (service/controller/watchers/.get .get session/id ; .join)
+          (repeat line in 200
+            (transcript service/runtime session/id {^type "console" ^round round/id ^turn 1 ^text "noise\n" ^!late ^^ignorable}))
+          (let browser (snapshot ^!console service session/id))
+          ($assert (== ($size ($filter browser/records (fn [record] (== record/phase "console")))) 0))
+          ($assert (> ($size ($filter browser/records (fn [record] (== record/phase "code")))) 0) "Console displaced response history.")
+          ($assert (> ($size ($filter browser/records (fn [record] (== record/phase "reply")))) 0))
+          ($assert (> ($size ($filter (/records (snapshot service session/id)) (fn [record] (== record/phase "console")))) 0)
+            "Diagnostic transcript access was lost.")
+          (let help (command service session/id "/help"))
+          (service/runtime/commands/watchers/.get .get $"${session/id}:${help/id}" ; .join)
+          ($assert (> ($size ($filter (/records (snapshot ^!console service session/id))
+            (fn [record] (&& (== record/phase "command") (!= record/text ""))))) 0))
+        ensure (close_session_service service))))))
+
 (fn main [args] : Int (run_spec args))

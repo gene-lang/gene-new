@@ -2,7 +2,7 @@
 
 Gene Harness runs durable conversations in a project workspace. The model
 responds with Gene code. The operator sees the code, labeled results, progress
-and final replies, questions, and a separate console.
+and final replies, questions, and expandable live output inside each turn.
 
 Code uses the standard library and workspace plugin functions directly. File
 edits use an apply-patch block. Run the process in an OS sandbox when you want

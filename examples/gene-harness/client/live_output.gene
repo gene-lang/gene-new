@@ -1,0 +1,129 @@
+# Page-owned output. Only live socket deliveries may enter this store.
+(mod live_output ^profile web)
+(import [text flag integer] ^from "../src/common/launcher.gene")
+
+(type LiveOutput ^props {^entries (List Any) ^index PropMap ^bytes Int ^chunks Int ^epoch Str
+  ^retired (List Str) ^mounts (List Any) ^scheduled Bool ^notify_session Str})
+
+(fn create_output [] : LiveOutput
+  (LiveOutput ^entries [] ^index {} ^bytes 0 ^chunks 0 ^epoch "" ^retired [] ^mounts [] ^!scheduled ^notify_session ""))
+
+(fn turn_output_key [session : Str, round : Str, turn : Int] : Str
+  ($json/stringify {^session session ^kind "turn" ^round round ^turn turn}))
+(fn command_output_key [session : Str, id : Str] : Str
+  ($json/stringify {^session session ^kind "command" ^command id}))
+
+(fn byte_size [value : Str] : Int
+  (var bytes : (Buffer U8) ($str/to_utf8 value)) bytes/.len)
+
+(fn byte_prefix [value : Str, limit : Int] : Str
+  (if_yes (<= limit 0) (return ""))
+  (var bytes : (Buffer U8) ($str/to_utf8 value))
+  (if_yes (<= bytes/.len limit) (return value))
+  (var count limit)
+  (while (&& (> count 0) (>= (bytes .get count) 128) (< (bytes .get count) 192))
+    (set count (- count 1)))
+  (var prefix ($buffer U8 count)) (prefix .copy_from bytes 0 count 0)
+  ($str/from_utf8 prefix))
+
+(fn output_entry [store : LiveOutput, key : Str] : Any
+  (?? store/index/%key nil))
+
+(fn index_output [store : LiveOutput] : Void
+  (set store/index {})
+  (for entry in store/entries
+    (var key (text entry/key)) (set store/index/%key entry)))
+
+(fn clear_session_output [store : LiveOutput, session : Str] : Void
+  (if_yes (== store/notify_session session) (set store/notify_session ""))
+  (var kept : (List Any) [])
+  (for entry in store/entries
+    (if (== (text entry/session) session)
+      (do (set store/bytes (- store/bytes (integer entry/bytes)))
+          (set store/chunks (- store/chunks (integer entry/chunks))))
+      (kept .push entry)))
+  (set store/entries kept) (index_output store))
+
+(fn output_epoch [store : LiveOutput, epoch : Str] : Bool
+  (if_yes (|| (== epoch "") (== epoch store/epoch)) (return true))
+  (for previous in store/retired (if_yes (== previous epoch) (return false)))
+  (if_yes (!= store/epoch "") (store/retired .push store/epoch))
+  (if_yes (> store/retired/.size 32)
+    (var kept : (List Str) []) (var index 0)
+    (for previous in store/retired (if_yes (> index 0) (kept .push previous)) (set index (+ index 1)))
+    (set store/retired kept))
+  (set store/epoch epoch) (set store/entries []) (set store/index {}) (set store/bytes 0) (set store/chunks 0) (set store/notify_session "")
+  true)
+
+(fn interrupt_output [store : LiveOutput, session : Str] : Void
+  (for entry in store/entries
+    (if_yes (== (text entry/session) session) (set entry/incomplete true))))
+
+(fn evict_output [store : LiveOutput] : Void
+  (for entry in store/entries
+    (if_yes (&& (<= store/bytes 4194304) (<= store/chunks 32768)) (break))
+    (set store/bytes (- store/bytes (integer entry/bytes)))
+    (set store/chunks (- store/chunks (integer entry/chunks)))
+    (set entry/text "") (set entry/bytes 0) (set entry/chunks 0) (set entry/seen {})
+    (set entry/evicted true))
+  # Markers and pending producer identities are bounded as well as their text.
+  (var removed false)
+  (while (> store/entries/.size 1024)
+    (var oldest : Any store/entries/0)
+    (set store/bytes (- store/bytes (integer oldest/bytes)))
+    (set store/chunks (- store/chunks (integer oldest/chunks)))
+    (var kept : (List Any) []) (var index 0)
+    (for entry in store/entries (if_yes (> index 0) (kept .push entry)) (set index (+ index 1)))
+    (set store/entries kept) (set removed true))
+  (if_yes removed (index_output store)))
+
+(fn receive_output [store : LiveOutput, session : Str, data : Any] : Bool
+  (var command (text data/command_id))
+  (var round (text data/round_id)) (var turn (integer data/turn))
+  (var id (text data/id)) (var value (text data/text))
+  (if_yes (|| (== session "") (== id "") (> (byte_size id) 512)
+              (> (byte_size session) 256) (> (byte_size round) 256) (> (byte_size command) 256)
+              (== value "") (&& (== command "") (|| (== round "") (<= turn 0)))) (return false))
+  (var key (if (== command "") (turn_output_key session round turn) (command_output_key session command)))
+  (var entry : Any (output_entry store key))
+  (if_yes ($absent? entry)
+    (set entry {^key key ^session session ^text "" ^bytes 0 ^chunks 0 ^seen {}
+      ^!late ^!truncated ^!evicted ^!incomplete ^!open})
+    (store/entries .push entry) (set store/index/%key entry))
+  (if_yes (flag entry/evicted) (return false))
+  (var seen : PropMap entry/seen)
+  (var replace (&& (!= command "") (flag data/cumulative)))
+  (if_yes (&& (! replace) (flag seen/%id)) (return false))
+  (if_yes (&& replace (== value (text entry/text))) (return false))
+  (if_yes (flag entry/truncated) (return false))
+  (set store/bytes (- store/bytes (integer entry/bytes)))
+  (set store/chunks (- store/chunks (integer entry/chunks)))
+  (if_yes replace (set entry/text "") (set entry/bytes 0) (set entry/chunks 0) (set entry/seen {}) (set seen entry/seen))
+  (var room (- (- 262144 (integer entry/bytes)) (byte_size id)))
+  (var addition (if (&& (flag data/late) (! (flag entry/late))) ($to_str "\n[Late output]\n" value) value))
+  (var kept (byte_prefix addition room))
+  (if (|| (<= room 0) (>= (integer entry/chunks) 8192))
+    (set entry/truncated true)
+    (do
+      (set entry/text ($to_str (text entry/text) kept))
+      (set entry/bytes (+ (+ (integer entry/bytes) (byte_size kept)) (byte_size id)))
+      (set entry/chunks (+ (integer entry/chunks) 1))
+      (set seen/%id true)
+      (if_yes (!= kept addition) (set entry/truncated true))
+      (if_yes (flag data/late) (set entry/late true))))
+  (set store/bytes (+ store/bytes (integer entry/bytes)))
+  (set store/chunks (+ store/chunks (integer entry/chunks)))
+  (evict_output store)
+  true)
+
+(fn output_text [entry : Any] : Str
+  (if_yes ($absent? entry) (return ""))
+  ($to_str (text entry/text)
+    (if (flag entry/evicted) "\n[Live output evicted from this page.]"
+      (if (flag entry/truncated) "\n[Output truncated for display.]" ""))
+    (if (flag entry/incomplete) "\n[Live output interrupted; some text may be missing.]" "")))
+
+(fn historical_records [records : (List Any)] : (List Any)
+  (var kept : (List Any) [])
+  (for record in records (if_yes (!= (text record/phase) "console") (kept .push record)))
+  kept)

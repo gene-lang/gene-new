@@ -136,9 +136,6 @@
                  (strong "Command demo mode — no model connected")
                  "Restart without --offline or GENE_HARNESS_OFFLINE=1 to chat with the configured model. Use /help to explore commands.")
                (section ^id "transcript" ^class "transcript" ^aria-label "Conversation")
-               (details ^id "console_pane" ^class "console_pane"
-                 (summary ^id "console_summary" "Console")
-                 (pre ^id "console_output" ^aria-label "Session console"))
                (button ^id "new_output" ^class "new_output" ^type "button" ^^hidden "New output ↓")
                (div ^class "composer_wrap"
                  (div ^id "web_composer" ^class "web_components")

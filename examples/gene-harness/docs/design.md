@@ -339,7 +339,9 @@ do not finish a round.
 Console printing is never a model request item. `$print` and `$println` in
 response code, in the plugin functions it calls, and in tasks they spawn write
 to the session's console sink through the task context. The browser receives
-`console` messages, and the CLI can read the same transcript records. Ignorable
+`console` messages. The browser overlays them as collapsed, turn-owned live Output
+disclosures; it does not hydrate output from snapshots or history. Page reload
+clears this display. The CLI can still read diagnostic transcript records. Ignorable
 `console` events are capped at 256 KiB per turn with a truncation marker.
 
 ```gene

@@ -87,7 +87,7 @@
           (leave_session hub/host/sessions session)
           (peer .put "viewing" false)
           (return nil))
-        (send_frame hub peer {^type "snapshot" ^session session ^data (snapshot ^safe safe hub/host session)})
+        (send_frame hub peer {^type "snapshot" ^session session ^data (snapshot ^!console ^safe safe hub/host session)})
       catch RoundError
         (send_frame hub peer {^type "error" ^session session
           ^data {^code $err/code ^message $err/message}})))

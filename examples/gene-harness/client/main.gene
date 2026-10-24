@@ -1,4 +1,7 @@
 (mod harness_client ^profile web)
+(import [LiveOutput create_output output_entry receive_output output_text historical_records
+  turn_output_key command_output_key clear_session_output output_epoch interrupt_output]
+  ^from "./live_output.gene")
 (import [BrowserClients create_clients update_clients] ^from "./browser_clients.gene")
 (import [CommandClient create_commands configure_commands dispatch_command recover_command forget_command] ^from "./command_client.gene")
 (import [RoundClient create_rounds configure_rounds dispatch_round recover_round forget_round] ^from "./round_client.gene")
@@ -73,7 +76,73 @@
   ^title EventTarget ^appearance Str ^style_signature Str ^cards Any
   ^delegation_epoch Int? ^delegation_recovery Any? ^child_open Any?
   ^browser_clients Any ^command_client Any ^creation_unknown Bool?
-  ^voice_client Any? ^voice_listeners Any? ^page_id Str?})
+  ^voice_client Any? ^voice_listeners Any? ^page_id Str? ^live_output Any?})
+
+(fn live_store [client : Client] : LiveOutput
+  (if_yes ($absent? client/live_output) (set client/live_output (create_output)))
+  (var raw : Any client/live_output)
+  (var store : LiveOutput raw) store)
+
+(fn refresh_live_output [client : Client] : Void
+  (var store (live_store client))
+  (for mount in store/mounts
+    (var entry : Any (output_entry store (string_or mount/key "")))
+    (var panel : EventTarget mount/panel) (var pre : EventTarget mount/pre)
+    (var summary : EventTarget mount/summary)
+    (if_yes (! (same? entry mount/entry))
+      (set panel/open (launcher_flag entry/open)) (set mount/entry entry))
+    (set panel/hidden ($absent? entry))
+    (var value (output_text entry))
+    (if_yes (!= value (string_or mount/text ""))
+      ($dom/set_text pre value) (set mount/text value))
+    (var label (if (launcher_flag entry/late) "Output · live · Late output" "Output · live"))
+    (if_yes (!= label (string_or mount/label ""))
+      ($dom/set_text summary label) (set mount/label label))))
+
+(fn schedule_live_output [client : Client] : Void
+  (var store (live_store client))
+  (if_yes store/scheduled (return))
+  (set store/scheduled true)
+  ($time/after 40.0 (fn [] : Void
+    (set store/scheduled false)
+    (refresh_live_output client)
+    (var notify (&& (!= store/notify_session "") (== store/notify_session client/selected)))
+    (set store/notify_session "")
+    (if_yes notify
+      (if (&& (! client/viewing_history) client/autoscroll)
+        ($dom/scroll_end client/transcript)
+        (do ($dom/set_text ($dom/element "new_output") "New output ↓") (set_hidden "new_output" false)))))))
+
+(fn live_console [client : Client, session : Str, data : Any] : Void
+  (var store (live_store client))
+  (if_yes (receive_output store session data)
+    (if_yes (== session client/selected) (set store/notify_session session))
+    (schedule_live_output client)))
+
+(fn begin_output_render [client : Client] : Void
+  (var store (live_store client))
+  (for mount in store/mounts
+    (var entry : Any (output_entry store (string_or mount/key "")))
+    (if_yes (&& (! ($absent? entry)) (same? entry mount/entry))
+      (var panel : EventTarget mount/panel) (set entry/open panel/open)))
+  (set store/mounts []))
+
+(fn live_output_view [client : Client, key : Str] : EventTarget
+  (var store (live_store client))
+  (var entry : Any (output_entry store key))
+  (var pre ($dom/render `(pre)))
+  (var summary ($dom/render `(summary "Output · live")))
+  (var panel ($dom/render `(details ^class_name "execution live_output"
+    ^open %(launcher_flag entry/open) ^hidden %($absent? entry)
+    ^on_toggle %(fn [event : Any] : Void
+      (var current : Any (output_entry store key))
+      (if_not ($absent? current) (set current/open event/current_target/open))))))
+  ($dom/append panel summary)
+  ($dom/append panel ($dom/render `(button ^type "button" ^class_name "copy"
+    ^on_click %(fn [event : Any] : Void (copy_text client (output_text (output_entry store key)))) "Copy")))
+  ($dom/append panel pre)
+  (store/mounts .push {^key key ^panel panel ^pre pre ^summary summary ^text "" ^label "Output · live" ^entry entry})
+  panel)
 
 (fn client_page_id [client : Client] : Str
   (if_yes ($absent? client/page_id) (set client/page_id ($browser/request_id)))
@@ -423,6 +492,7 @@
              (button ^type "button" ^aria-label %$"Close ${title}" ^on_click %(fn [event : Any] : Void (close_tab client id)) "×")))))))
 
 (fn close_tab [client : Client, id : Str] : Void
+  (clear_session_output (live_store client) id)
   (voice_event client "session/close" id nil)
   (var tab (session_tab client id))
   (set tab/closed true)
@@ -810,6 +880,9 @@
       (fn [opened : Bool] : Void
         (if_yes (== generation client/generation) (toggle_block client id opened)))))
   (var phase : Str block/phase)
+  (if_yes (&& (== phase "command") ($absent? block/mode_instance))
+    (var output_parts : (List Str) (str/split id "/"))
+    ($dom/append target (live_output_view client (command_output_key client/selected (string_or block/command_id output_parts/1)))))
   (var status (string_or block/status ""))
   (if_yes (&& (== phase "command") (== status "running") ($absent? block/mode_instance))
     (var parts : (List Str) (str/split id "/"))
@@ -862,6 +935,7 @@
           target
           (step_view
             ^on_speak (voice_replay_handler client)
+            ^output_view (live_output_view client (turn_output_key client/selected (string_or block/round_id "") (dint block/turn)))
             step
             (expanded_block client key)
             active
@@ -881,6 +955,7 @@
   ($dom/append client/transcript target))
 
 (fn render_transcript [client : Client, ^prepend prepend : Bool = false] : Void
+  (begin_output_render client)
   (set client/delegation_epoch (+ (?? client/delegation_epoch 0) 1))
   (var old_top ($dom/scroll_top client/transcript))
   (var old_height ($dom/scroll_height client/transcript))
@@ -936,21 +1011,7 @@
                  ($dom/set_input_value client/prompt "/help")
                  ($dom/focus client/prompt)) "Browse commands"
                (span ^class_name "suggestion_symbol" ^aria-hidden "true" "/"))))))))
-  (var visible : (List Any) [])
-  (var console "")
-  (var count 0)
-  (for block in all_visible
-    (var phase : Str block/phase)
-    (if (== phase "console")
-      (then
-        (var text : Str block/text)
-        (var late : Bool false)
-        (if_not ($absent? block/late) (set late block/late))
-        (set console ($to_str console (if late "[late] " "") text))
-        (set count (+ count 1)))
-      (else (visible .push block))))
-  ($dom/set_text ($dom/element "console_output") console)
-  ($dom/set_text ($dom/element "console_summary") $"Console · ${count} entries")
+  (var visible : (List Any) (historical_records all_visible))
   (var i 0)
   (var current_shown false)
   (while (< i ($size visible))
@@ -982,6 +1043,7 @@
           {^round_id recovery/round ^action action}
           (fn [code : Int, result : Any] : Void
             (if_yes (!= code 200) (show_error ^session session client result))))))))
+  (refresh_live_output client)
   (if follow
     (then
       (if (&& (== client/records/.size 0) (== client/preview/.size 0))
@@ -1226,11 +1288,14 @@
           (show_error client data))))))
 
 (fn apply_snapshot [client : Client, data : Any] : Void
+  (output_epoch (live_store client) (string_or data/status/epoch ""))
+  (set data/records (historical_records data/records))
+  (set data/preview (historical_records data/preview))
   (if_not ($absent? data/status) (apply_status client data/status))
   (if_not client/viewing_history
-    (var records : (List Any) data/records)
+    (var records : (List Any) (historical_records data/records))
     (set client/records (bounded_blocks (delegation_snapshot records client/records) true))
-    (set client/preview data/preview)
+    (set client/preview (historical_records data/preview))
     (set client/has_older data/has_older))
   (set client/round data/round)
   (set client/delegation_recovery (?? data/delegation_recovery nil))
@@ -1268,7 +1333,7 @@
 
 (fn apply_records [client : Client, incoming : (List Any), cursor : Str] : Void
   (if_not client/viewing_history
-    (var merged (merge_blocks client/records incoming))
+    (var merged (merge_blocks client/records (historical_records incoming)))
     (if_yes (> ($size merged) 600) (set client/has_older true))
     (set client/records (bounded_blocks merged true))
     (var preview : (List Any) [])
@@ -1282,6 +1347,7 @@
   (render_transcript client))
 
 (fn apply_record [client : Client, record : Any] : Void
+  (if_yes (== (string_or record/phase "") "console") (return))
   (if_not client/viewing_history
     (var found false)
     (for saved in client/records
@@ -1876,7 +1942,7 @@
           (set client/mode data)
           (render_tabs client)
           (update_controls client)))
-      (elif (|| (== kind "turn") (== kind "reply") (== kind "console"))
+      (elif (|| (== kind "turn") (== kind "reply"))
         (if_yes (== session client/selected) (apply_record client data)))
       (elif (== kind "delegation")
         (if_yes (== session client/selected)
@@ -1983,6 +2049,7 @@
     socket
     (fn [] : Void
       (if_yes (|| (!= epoch tab/socket_epoch) tab/closed) (return))
+      (interrupt_output (live_store client) tab/id) (schedule_live_output client)
       (set tab/connected false)
       (if_yes (== tab/id client/selected)
         (set client/connected false)
@@ -2021,16 +2088,25 @@
     (var sequence_text : Str message/sequence)
     (var sequence : Int ($json/parse sequence_text))
     (if_yes (|| (!= version protocol_version) (!= sequence (+ tab/sequence 1)))
+      (interrupt_output (live_store client) tab/id) (schedule_live_output client)
       (connect_stream client tab)
       (return))
     (set tab/sequence sequence)
     (var server_epoch : Str message/epoch)
+    (var output_store (live_store client))
+    (var previous_output_epoch output_store/epoch)
+    (if_yes (! (output_epoch output_store server_epoch)) (return))
+    (if_yes (!= previous_output_epoch server_epoch) (schedule_live_output client))
     (if_yes (&& (!= tab/server_epoch "") (!= tab/server_epoch server_epoch) (== tab/id client/selected))
       (notice client "Harness restarted."))
     (set tab/server_epoch server_epoch)
     (var kind : Str message/type)
     (var session : Str message/session)
     (var data : Any message/data)
+    (if_yes (== kind "console")
+      (if_yes (== session tab/id) (live_console client session data))
+      (if_yes (== tab/id client/selected) (set client/message_sequence sequence))
+      (return))
     (var ui : UiClient client/ui)
     (if_yes (|| (== kind "reply") (== kind "round/state") (== kind "voice/state") (== kind "ready"))
       (voice_event client kind session data))
@@ -2066,10 +2142,11 @@
           (then
             (var incoming : (List Any) data/records)
             (var previous : (List Any) cache/records)
-            (set data/records (delegation_snapshot incoming previous))
+            (set data/records (historical_records (delegation_snapshot incoming previous)))
+            (set data/preview (historical_records data/preview))
             (set tab/cache data)
             (set tab/title data/session/title)))
-        (if_yes (&& (== session tab/id) (|| (== kind "turn") (== kind "reply") (== kind "console")))
+        (if_yes (&& (== session tab/id) (|| (== kind "turn") (== kind "reply")))
           (var preview : (List Any) cache/preview)
           (set cache/preview (bounded_blocks (merge_blocks preview [data]) true)))
         (if_yes (&& (== session tab/id) (== kind "delegation"))
