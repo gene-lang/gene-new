@@ -86,7 +86,7 @@
         (try
           (let settings (read_workspace_settings host/root))
           ($assert (== settings/role "manager"))
-          ($assert (== settings/port 8080))
+          ($assert (== settings/port 8580))
           ($assert ($absent? settings/alias))
           ($assert ($fs/exists? $"${host/root}/workspaces"))
           ($assert (! ($fs/exists? $"${home}/ignored")))

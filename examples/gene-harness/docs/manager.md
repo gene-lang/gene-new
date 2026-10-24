@@ -34,11 +34,16 @@ workspace. The manager refuses a directory with a `.gene-harness/config.gene`,
 or with a `workspace.gene` that lacks the manager role, rather than converting
 it.
 
-On first run the manager workspace's configured port is **8080**, bound to
+On first run the manager workspace's configured port is **8580**, bound to
 `127.0.0.1`. `--port` overrides it for one invocation. The manager command
-ignores `GENE_HARNESS_PORT`. A fixed configured port must bind: if 8080 is
+ignores `GENE_HARNESS_PORT`. A fixed configured port must bind: if 8580 is
 occupied, report the conflict and let the user choose another port. Do not
 silently move the manager to a random port.
+
+Existing manager roots keep their saved configured port. To change it, edit
+the manager workspace's port setting and stop/start the launcher; a supervised
+restart preserves the current listening port. `manager --port 8580` also
+overrides the saved port for one launch.
 
 The manager root's `workspace.gene` records `^role "manager"`. Any launch of
 that directory uses the manager profile, so `web --workspace
@@ -116,7 +121,7 @@ The directory layout is the registry:
 ```text
 $HOME/.gene-harness-root/       the manager root (--root or GENE_HARNESS_ROOT)
   .gene-harness/                the manager's own Harness state; its
-                                workspace.gene has ^role "manager" and port 8080
+                                workspace.gene has ^role "manager" and port 8580
   workspaces/
     todo-app/                   a managed workspace named todo-app
       .gene-harness/
@@ -415,7 +420,7 @@ the rest of the list.
 ## First milestone checks
 
 - On a fresh home directory, `gene-harness manager` creates
-  `$HOME/.gene-harness-root` with `^role "manager"`, port 8080 and an empty
+  `$HOME/.gene-harness-root` with `^role "manager"`, port 8580 and an empty
   `workspaces` directory, and opens the `workspaces` view by default. The view
   works with no model provider configured. `web --workspace
   $HOME/.gene-harness-root` loads the same manager profile. `--root` and

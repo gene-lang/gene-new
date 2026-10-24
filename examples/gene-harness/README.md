@@ -37,7 +37,7 @@ examples/gene-harness/bin/gene-harness manager
 
 The manager is its own Harness workspace at its root directory,
 `$HOME/.gene-harness-root` by default (`manager --root DIR` or
-`GENE_HARNESS_ROOT` selects another). It uses port 8080 by default; use
+`GENE_HARNESS_ROOT` selects another). It uses port 8580 by default; use
 `manager --port PORT` for a one-run override. Its Workspaces view works without
 a model provider. Configure a provider in the manager workspace to manage
 projects through conversations as well.
@@ -109,7 +109,7 @@ using Codex OAuth, including continuation, verification and recovery.
 | Command | Effect |
 | --- | --- |
 | `web` | Start the foreground workspace host and print the Browser URL in a terminal. This is the default. |
-| `manager [--root DIR] [--port PORT]` | Open the manager root and its Workspaces view; the root defaults to `GENE_HARNESS_ROOT`, then `$HOME/.gene-harness-root`. Defaults to port 8080 and ignores `GENE_HARNESS_WORKSPACE`/`GENE_HARNESS_PORT`. |
+| `manager [--root DIR] [--port PORT]` | Open the manager root and its Workspaces view; the root defaults to `GENE_HARNESS_ROOT`, then `$HOME/.gene-harness-root`. Defaults to port 8580 and ignores `GENE_HARNESS_WORKSPACE`/`GENE_HARNESS_PORT`. |
 | `status`, `link` | Inspect the running host or print its reusable owner connection URL. |
 | `sessions [create --title TITLE]` | List sessions or create one and return its id. |
 | `send [--wait] TEXT` | Submit a literal prompt to `--session ID`; optionally wait for its result. |

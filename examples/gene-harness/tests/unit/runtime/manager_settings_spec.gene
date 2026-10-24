@@ -65,9 +65,12 @@
         (let chosen $"${root}/manager")
         (let created (initialize_manager_workspace ^root chosen))
         ($assert (== created ($fs/real_path chosen)))
-        ($assert (== (read_workspace_settings created) {^version 1 ^port 8080 ^role "manager"}))
+        ($assert (== (read_workspace_settings created) {^version 1 ^port 8580 ^role "manager"}))
         ($assert ($fs/exists? $"${created}/workspaces"))
         ($assert (== (initialize_manager_workspace ^root chosen) created))
+        (update_workspace_settings created {^port 8091})
+        ($assert (== (initialize_manager_workspace ^root chosen) created))
+        ($assert (== ((Path "port") (read_workspace_settings created)) 8091))
         # A started workspace has config.gene; a configured one has settings
         # without the manager role. Neither may become a manager root.
         (for [name file text] in [["configured" "config.gene" "{}"]
