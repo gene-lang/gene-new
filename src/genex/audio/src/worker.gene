@@ -1,0 +1,66 @@
+# Length-framed subprocess I/O shared by platform and SDK audio helpers.
+(mod audio_worker)
+(import [AudioError] ^from "./audio")
+(import $io [AsyncReader AsyncWriter IoResource])
+
+(fn read_exact [reader, count : Int] : Bytes
+  (let parts [])
+  (var remaining count)
+  (while (> remaining 0)
+    (let bytes (await (reader .AsyncReader:read remaining)))
+    (if (|| ($absent? bytes) (== ($binary/size bytes) 0))
+      (fail (AudioError ^message "Audio helper closed inside a frame.")))
+    (parts .push bytes)
+    (set remaining (- remaining ($binary/size bytes))))
+  ($binary/concat parts))
+
+(fn write_all [writer, bytes : Bytes]
+  (var cursor 0)
+  (let count ($binary/size bytes))
+  (while (< cursor count)
+    (let written (await (writer .AsyncWriter:write ($binary/slice bytes cursor (- count cursor)))))
+    (if (<= written 0) (fail (AudioError ^message "Audio helper stopped reading.")))
+    (set cursor (+ cursor written)))
+  nil)
+
+(fn read_packet [reader, ^max_bytes max_bytes : Int = 65536] : Bytes
+  (let count ($binary/get_u32 (read_exact reader 4) 0))
+  (if (> count max_bytes) (fail (AudioError ^message "Audio helper frame exceeds its byte limit.")))
+  (read_exact reader count))
+
+(fn write_packet [writer, bytes : Bytes]
+  (write_all writer ($binary/concat [($binary/put_u32 ($binary/size bytes)) bytes])))
+
+(fn read_json [reader]
+  ($json/parse ($binary/decode_utf8 (read_packet reader))))
+
+(fn write_json [writer, value]
+  (write_packet writer ($binary/from_str ($json/stringify value))))
+
+(fn open_worker [command : Str, args]
+  (let [input writer] ($io/pipe))
+  (let [reader output] ($io/pipe))
+  (let task ($os/exec_stream_async command args... ^stdin_pipe input ^stdout_pipe output ^max_bytes 8192))
+  {^reader reader ^writer writer ^task task ^gate ($sync/gate) ^closed ($cell false)})
+
+(fn close_worker [worker]
+  (if (worker/closed .swap true) (return nil))
+  worker/writer/.IoResource:close
+  worker/reader/.IoResource:close
+  worker/task/.cancel
+  (if_not ($absent? worker/dispatch_task) worker/dispatch_task/.cancel)
+  worker/task/.join
+  (if_not ($absent? worker/dispatch_task) worker/dispatch_task/.join)
+  (await worker/writer/.IoResource:wait_closed)
+  (await worker/reader/.IoResource:wait_closed)
+  nil)
+
+(fn dispatch_json [worker, message, error]
+  (if_not ($absent? worker/dispatch_task) (fail (AudioError ^message "Audio helper already has a reader.")))
+  (let task (spawn ^lane root ($runtime/with_context nil (fn []
+    (try
+      (while (! worker/closed/.get) (message (read_json worker/reader)))
+    catch Any
+      (if_not worker/closed/.get (error)))))))
+  (worker .put "dispatch_task" task)
+  nil)

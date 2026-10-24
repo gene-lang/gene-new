@@ -1,0 +1,13 @@
+(mod audio_call)
+(import [audio_error] ^from "./audio" ^pkg "audio")
+(import [supervised_call] ^from "../runtime/call_supervision")
+
+# join returns TaskOutcome, not the callback's value. Optional audio failures
+# terminate their operation with an actionable error; they never fail a round.
+(fn bounded_audio_call [callable, args, timeout_ms : Int]
+  (match (supervised_call callable args {^timeout_ms timeout_ms ^max_memory_mb 512})
+    (when (TaskOutcome/ok value) value)
+    (when (TaskOutcome/error error) (fail error))
+    (when (TaskOutcome/panic message) (audio_error $"Speech engine panicked: ${message}"))
+    (when TaskOutcome/cancelled (audio_error "The speech engine operation timed out or was cancelled."))
+    (else (audio_error "Unexpected speech engine task outcome."))))

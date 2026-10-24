@@ -1,0 +1,36 @@
+(import $test [describe it run])
+(import [wav_encode wav_decode pcm_duration_ms AudioError] ^from "./audio" ^pkg "audio")
+(import [encode_audio_frame decode_audio_frame new_capture capture_frame
+  new_credit playback_ack playback_credit charge_playback] ^from "../../../src/runtime/voice_protocol")
+
+(describe "PCM and voice framing"
+  (it "round-trips PCM including NUL and high bytes through WAV and audio frames" []
+    (let pcm ($binary/from_list [0 0 255 127 0 128 255 255]))
+    (let wav (wav_encode pcm 16000))
+    ($assert (== (/pcm (wav_decode wav)) pcm))
+    ($assert (== (/format/rate (wav_decode wav)) 16000))
+    (let frame (decode_audio_frame (encode_audio_frame 1 4294967295 7 pcm)))
+    ($assert (== frame/stream 4294967295)) ($assert (== frame/sequence 7))
+    ($assert (== frame/pcm pcm))
+    ($assert (try (wav_decode ($binary/slice wav 0 43)) false catch AudioError true)))
+  (it "rejects broken sequences, odd samples and captures over 120 seconds" []
+    (let pcm ($binary/from_list [0 0]))
+    ($assert (try (encode_audio_frame 1 1 0 ($binary/from_list [0])) false catch AudioError true))
+    (let capture (new_capture "utterance" 3))
+    (capture_frame capture (decode_audio_frame (encode_audio_frame 1 3 0 pcm)))
+    ($assert (try (capture_frame capture (decode_audio_frame (encode_audio_frame 1 3 0 pcm))) false catch AudioError true))
+    (set capture/bytes 3840000)
+    ($assert (try (capture_frame capture (decode_audio_frame (encode_audio_frame 1 3 1 pcm))) false catch AudioError true)))
+  (it "bounds unplayed data even when the network has drained and fences stale acknowledgements" []
+    (let credit (new_credit 24000))
+    ($assert (== (playback_credit credit) 96000))
+    (var i 0)
+    (while (< i 300) (charge_playback credit 320) (set i (+ i 1)))
+    ($assert (== (playback_credit credit) 0))
+    ($assert (try (charge_playback credit 2) false catch AudioError true))
+    (playback_ack credit 4800)
+    ($assert (== (playback_credit credit) 4800))
+    ($assert (try (playback_ack credit 0) false catch AudioError true))
+    ($assert (try (playback_ack credit 96002) false catch AudioError true))))
+
+(fn main [args] : Int (/exit_code (run)))

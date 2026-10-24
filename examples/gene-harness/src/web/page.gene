@@ -39,6 +39,7 @@
                  (span ^id "ui_connection" ^role "status" "Connecting…")
                  (span ^id "browser_client_toolbar")
                  (button ^id "command_receipt_recover" ^type "button" ^^hidden "Resolve command")
+                 (button ^id "voice_receipt_recover" ^type "button" ^^hidden "Resolve voice submission")
                  (button ^id "notifications_button" ^type "button" ^aria-expanded "false" ^aria-controls "notification_center" "Notifications")
                  (button ^id "theme_toggle" ^type "button" ^title "Switch the color theme" %toggle_label)
                  (a ^id "ui_default_link" ^href "/ui/default" "Recovery UI")
@@ -54,6 +55,10 @@
                  (summary "Forget unresolved command…")
                  (p "Inspect the conversation and host first. This command may already have run. Forgetting only removes this tab's saved request; it does not cancel or replay it.")
                  (button ^id "command_receipt_forget" ^type "button" "I checked; forget this request"))
+               (details ^id "voice_receipt_discard" ^^hidden
+                 (summary "Forget unresolved voice submission…")
+                 (p "Inspect its conversation first. Forgetting only clears this tab's saved request; it does not cancel or repeat work.")
+                 (button ^id "voice_receipt_forget" ^type "button" "I checked; forget this voice request"))
                (details ^id "session_creation_recovery" ^^hidden
                  (summary "Unresolved conversation creation")
                  (p "Inspect your conversations first; a conversation may already have been created. Acknowledging allows a new creation without replaying the earlier request.")

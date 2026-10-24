@@ -1,0 +1,27 @@
+(mod web_speech_fixture ^profile web)
+(fn recognition_available [] : Bool ($speech/recognizer_available?))
+(fn synthesis_available [] : Bool ($speech/synth_available?))
+(fn voices [] : (List Any) ($speech/voices))
+(fn recognize [partial : (Fn [Str] Void), final : (Fn [Str] Void), ended : (Fn [Str] Void)] : EventTarget
+  ($speech/recognize_start "en-US" partial final ended))
+(fn finish [capture : EventTarget] : Void ($speech/recognize_stop capture))
+(fn abort [capture : EventTarget] : Void ($speech/recognize_abort capture))
+(fn speak [value : Str, started : (Fn [] Void), ended : (Fn [Str] Void)] : Void
+  ($speech/speak value "test" 1.0 started ended))
+(fn cancel [] : Void ($speech/cancel))
+(fn context [] : EventTarget ($audio/context))
+(fn resume [context : EventTarget] : Void ($audio/resume context))
+(fn close [context : EventTarget] : Void ($audio/close context))
+(fn pcm_capture [context : EventTarget, frame : (Fn [(Buffer U8)] Void), level : (Fn [F64] Void), error : (Fn [Str] Void)] : EventTarget
+  ($audio/capture_open context 16000.0 20.0 frame level error))
+(fn pcm_capture_raw [context : EventTarget, frame : (Fn [(Buffer U8)] Void), level : (Fn [F64] Void), error : (Fn [Str] Void)] : EventTarget
+  ($audio/capture_open_raw context 16000.0 20.0 frame level error))
+(fn pcm_finish [capture : EventTarget, done : (Fn [] Void)] : Void ($audio/capture_finish capture done))
+(fn pcm_abort [capture : EventTarget] : Void ($audio/capture_close capture))
+(fn pcm_player [context : EventTarget, error : (Fn [Str] Void)] : EventTarget ($audio/player_open context 24000.0 error))
+(fn pcm_push [player : EventTarget, bytes : (Buffer U8)] : Void ($audio/player_push player bytes))
+(fn pcm_stop [player : EventTarget] : Void ($audio/player_fade_stop player))
+(fn pcm_started [player : EventTarget, callback : (Fn [] Void)] : Void ($audio/player_on_start player callback))
+(fn pcm_drained [player : EventTarget, callback : (Fn [] Void)] : Void ($audio/player_on_drain player callback))
+(fn pcm_queued [player : EventTarget] : F64 ($audio/player_queued_ms player))
+(fn pcm_played [player : EventTarget] : F64 ($audio/player_played_bytes player))

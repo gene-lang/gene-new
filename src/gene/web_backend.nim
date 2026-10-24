@@ -6,6 +6,9 @@
 import std/[json, os, sequtils, sets, strutils, tables]
 import ./[compiler, gir, printer, reader, types, type_contracts]
 
+const webAudioWorklet = staticRead("web_audio_worklet.js")
+proc audioWorkletFile(): string
+
 type
   WebProfileError* = object of CatchableError
 
@@ -3427,6 +3430,69 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
         # of its own — the same reasoning `canvas/context` uses for its cast.
         paramTypes = @[]
         returnType = webType(wtkDomTarget)
+      of "audio/resume", "audio/close":
+        paramTypes = @[webType(wtkDomTarget)]
+        returnType = webType(wtkVoid)
+      of "audio/capture_open", "audio/capture_open_raw":
+        let frame = webType(wtkCallback)
+        frame.params = @[WebType(kind: wtkBuffer, name: "U8")]
+        frame.returnType = webType(wtkVoid)
+        let level = webType(wtkCallback)
+        level.params = @[webType(wtkF64)]
+        level.returnType = webType(wtkVoid)
+        let error = webType(wtkCallback)
+        error.params = @[webType(wtkStr)]
+        error.returnType = webType(wtkVoid)
+        paramTypes = @[webType(wtkDomTarget), webType(wtkF64), webType(wtkF64), frame, level, error]
+        returnType = webType(wtkDomTarget)
+      of "audio/capture_finish", "audio/player_on_start", "audio/player_on_drain":
+        let callback = webType(wtkCallback)
+        callback.params = @[]
+        callback.returnType = webType(wtkVoid)
+        paramTypes = @[webType(wtkDomTarget), callback]
+        returnType = webType(wtkVoid)
+      of "audio/capture_close", "audio/player_fade_stop":
+        paramTypes = @[webType(wtkDomTarget)]
+        returnType = webType(wtkVoid)
+      of "audio/player_open":
+        let error = webType(wtkCallback)
+        error.params = @[webType(wtkStr)]
+        error.returnType = webType(wtkVoid)
+        paramTypes = @[webType(wtkDomTarget), webType(wtkF64), error]
+        returnType = webType(wtkDomTarget)
+      of "audio/player_push":
+        paramTypes = @[webType(wtkDomTarget), WebType(kind: wtkBuffer, name: "U8")]
+        returnType = webType(wtkVoid)
+      of "audio/player_queued_ms", "audio/player_played_bytes":
+        paramTypes = @[webType(wtkDomTarget)]
+        returnType = webType(wtkF64)
+      of "speech/recognizer_available?", "speech/synth_available?":
+        paramTypes = @[]
+        returnType = webType(wtkBool)
+      of "speech/voices":
+        paramTypes = @[]
+        returnType = webType(wtkList, webType(wtkAny))
+      of "speech/recognize_start":
+        let textCallback = webType(wtkCallback)
+        textCallback.params = @[webType(wtkStr)]
+        textCallback.returnType = webType(wtkVoid)
+        paramTypes = @[webType(wtkStr), textCallback, textCallback, textCallback]
+        returnType = webType(wtkDomTarget)
+      of "speech/recognize_stop", "speech/recognize_abort":
+        paramTypes = @[webType(wtkDomTarget)]
+        returnType = webType(wtkVoid)
+      of "speech/speak":
+        let started = webType(wtkCallback)
+        started.params = @[]
+        started.returnType = webType(wtkVoid)
+        let ended = webType(wtkCallback)
+        ended.params = @[webType(wtkStr)]
+        ended.returnType = webType(wtkVoid)
+        paramTypes = @[webType(wtkStr), webType(wtkStr), webType(wtkF64), started, ended]
+        returnType = webType(wtkVoid)
+      of "speech/cancel":
+        paramTypes = @[]
+        returnType = webType(wtkVoid)
       of "audio/tone":
         # context, frequency (Hz), duration (s), gain (0..1)
         paramTypes = @[webType(wtkDomTarget), webType(wtkF64), webType(wtkF64),
@@ -6165,6 +6231,23 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
         ", " & arguments[2] & ", " & arguments[0] & "." & expr.keys[1] &
         ", " & arguments[4] & ")"
     of "audio/context": "$gene_audio_context()"
+    of "audio/resume": "$gene_audio_resume(" & arguments[0] & ")"
+    of "audio/capture_open_raw":
+      "$gene_audio_capture_open(" & arguments.join(", ") & ", false)"
+    of "audio/capture_open", "audio/capture_finish", "audio/capture_close",
+       "audio/player_open", "audio/player_push", "audio/player_fade_stop",
+       "audio/player_on_start", "audio/player_on_drain", "audio/player_queued_ms",
+       "audio/player_played_bytes":
+      "$gene_" & expr.text.replace("/", "_") & "(" & arguments.join(", ") & ")"
+    of "audio/close": "$gene_audio_close(" & arguments[0] & ")"
+    of "speech/recognizer_available?": "$gene_speech_recognizer_available()"
+    of "speech/synth_available?": "$gene_speech_synth_available()"
+    of "speech/voices": "$gene_speech_voices()"
+    of "speech/recognize_start": "$gene_speech_recognize_start(" & arguments.join(", ") & ")"
+    of "speech/recognize_stop": "$gene_speech_recognize_stop(" & arguments[0] & ")"
+    of "speech/recognize_abort": "$gene_speech_recognize_abort(" & arguments[0] & ")"
+    of "speech/speak": "$gene_speech_speak(" & arguments.join(", ") & ")"
+    of "speech/cancel": "$gene_speech_cancel()"
     of "audio/tone":
       "$gene_audio_tone(" & arguments[0] & ", " & arguments[1] & ", " &
         arguments[2] & ", " & arguments[3] & ")"
@@ -8731,6 +8814,88 @@ proc emitModule(module: WebModule, typescript: bool,
     let ctxReturn = if typescript: ": EventTarget" else: ""
     emitter.line("function $gene_audio_context()" & ctxReturn &
       " { return new AudioContext(); }")
+  if moduleUsesBuiltin(module, ["audio/resume"]):
+    let param = if typescript: "target: EventTarget" else: "target"
+    let audioCast = if typescript: " as AudioContext" else: ""
+    emitter.line("function $gene_audio_resume(" & param & ")" &
+      (if typescript: ": void" else: "") &
+      " { void (target" & audioCast & ").resume().catch(() => {}); }")
+  if moduleUsesBuiltin(module, ["audio/close"]):
+    let param = if typescript: "target: EventTarget" else: "target"
+    let audioCast = if typescript: " as AudioContext" else: ""
+    emitter.line("function $gene_audio_close(" & param & ")" &
+      (if typescript: ": void" else: "") &
+      " { void (target" & audioCast & ").close().catch(() => {}); }")
+  if moduleUsesBuiltin(module, ["audio/capture_open", "audio/capture_open_raw", "audio/capture_finish", "audio/capture_close",
+      "audio/player_open", "audio/player_push", "audio/player_fade_stop",
+      "audio/player_on_start", "audio/player_on_drain", "audio/player_queued_ms", "audio/player_played_bytes"]):
+    include web_audio_emit
+  if moduleUsesBuiltin(module, ["speech/recognizer_available?", "speech/recognize_start",
+      "speech/recognize_stop", "speech/recognize_abort"]):
+    # SpeechRecognition is not in the pinned lib.dom.d.ts. Its experimental
+    # standard/vendor constructors share this small boundary, tested with a
+    # deterministic recognizer fixture; speech synthesis uses DOM types below.
+    if typescript:
+      emitter.line("type $GeneRecognitionResult = ArrayLike<{transcript: string}> & {isFinal: boolean};")
+      emitter.line("type $GeneRecognizer = {lang: string; continuous: boolean; interimResults: boolean; onresult: null | ((event: {resultIndex: number; results: ArrayLike<$GeneRecognitionResult>}) => void); onerror: null | ((event: {error: string}) => void); onend: null | (() => void); start(): void; stop(): void; abort(): void};")
+      emitter.line("type $GeneSpeechCapture = EventTarget & {stopCapture(): void; abortCapture(): void};")
+    let ctorReturn = if typescript: ": (new () => $GeneRecognizer) | undefined" else: ""
+    let globalCast = if typescript:
+        " as unknown as {SpeechRecognition?: new () => $GeneRecognizer; webkitSpeechRecognition?: new () => $GeneRecognizer}"
+      else: ""
+    emitter.line("function $gene_speech_constructor()" & ctorReturn &
+      " { const root = globalThis" & globalCast &
+      "; return root.SpeechRecognition || root.webkitSpeechRecognition; }")
+    emitter.line("function $gene_speech_recognizer_available()" &
+      (if typescript: ": boolean" else: "") &
+      " { return typeof $gene_speech_constructor() === 'function'; }")
+    let startParams = if typescript:
+        "language: string, partial: (text: string) => void, final: (text: string) => void, ended: (error: string) => void"
+      else: "language, partial, final, ended"
+    emitter.line("function $gene_speech_recognize_start(" & startParams & ")" &
+      (if typescript: ": EventTarget" else: "") & " {")
+    emitter.line("  const Constructor = $gene_speech_constructor(); if (!Constructor) throw new TypeError('Speech recognition is unavailable in this browser.');")
+    emitter.line("  const recognizer = new Constructor(); recognizer.lang = language; recognizer.continuous = true; recognizer.interimResults = true;")
+    emitter.line("  const handle = new EventTarget()" & (if typescript: " as $GeneSpeechCapture" else: "") & ";")
+    emitter.line("  let finished = false; let failure = ''; const finals" &
+      (if typescript: ": string[]" else: "") & " = [];")
+    emitter.line("  recognizer.onresult = event => { if (finished) return; const display" &
+      (if typescript: ": string[]" else: "") & " = []; for (let i = 0; i < event.results.length; i++) { const result = event.results[i]; const text = result[0]?.transcript || ''; display.push(text); if (result.isFinal) finals[i] = text; } partial(display.join(' ').trim()); };")
+    emitter.line("  recognizer.onerror = event => { if (!finished) failure = event.error || 'recognition-failed'; };")
+    emitter.line("  recognizer.onend = () => { if (finished) return; finished = true; try { if (!failure) final(finals.filter(Boolean).join(' ').trim()); } finally { ended(failure); } };")
+    emitter.line("  handle.stopCapture = () => { if (!finished) recognizer.stop(); };")
+    emitter.line("  handle.abortCapture = () => { if (finished) return; finished = true; recognizer.onresult = null; recognizer.onerror = null; recognizer.onend = null; recognizer.abort(); };")
+    emitter.line("  recognizer.start(); return handle;")
+    emitter.line("}")
+    let handleParam = if typescript: "handle: EventTarget" else: "handle"
+    let handleCast = if typescript: " as $GeneSpeechCapture" else: ""
+    let voidReturn = if typescript: ": void" else: ""
+    emitter.line("function $gene_speech_recognize_stop(" & handleParam & ")" & voidReturn &
+      " { (handle" & handleCast & ").stopCapture(); }")
+    emitter.line("function $gene_speech_recognize_abort(" & handleParam & ")" & voidReturn &
+      " { (handle" & handleCast & ").abortCapture(); }")
+  if moduleUsesBuiltin(module, ["speech/synth_available?", "speech/voices",
+      "speech/speak", "speech/cancel"]):
+    let voidReturn = if typescript: ": void" else: ""
+    emitter.line("function $gene_speech_synth_available()" &
+      (if typescript: ": boolean" else: "") &
+      " { return typeof speechSynthesis !== 'undefined' && typeof SpeechSynthesisUtterance !== 'undefined'; }")
+    emitter.line("function $gene_speech_voices()" &
+      (if typescript: ": ReadonlyArray<{name: string; uri: string; language: string; local: boolean}>" else: "") &
+      " { return $gene_speech_synth_available() ? speechSynthesis.getVoices().map(voice => ({name: voice.name, uri: voice.voiceURI, language: voice.lang, local: voice.localService})) : []; }")
+    let speakParams = if typescript:
+        "text: string, voice: string, rate: number, started: () => void, ended: (error: string) => void"
+      else: "text, voice, rate, started, ended"
+    emitter.line("function $gene_speech_speak(" & speakParams & ")" & voidReturn & " {")
+    emitter.line("  if (!$gene_speech_synth_available()) { ended('speech-unavailable'); return; }")
+    emitter.line("  const utterance = new SpeechSynthesisUtterance(text); const selected = speechSynthesis.getVoices().find(item => item.voiceURI === voice || item.name === voice); if (selected) utterance.voice = selected; utterance.rate = Math.max(0.5, Math.min(2, rate));")
+    emitter.line("  let finished = false; const finish = " &
+      (if typescript: "(error: string)" else: "error") &
+      " => { if (!finished) { finished = true; ended(error); } };")
+    emitter.line("  utterance.onstart = () => started(); utterance.onend = () => finish(''); utterance.onerror = event => finish(event.error || 'speech-failed'); speechSynthesis.speak(utterance);")
+    emitter.line("}")
+    emitter.line("function $gene_speech_cancel()" & voidReturn &
+      " { if ($gene_speech_synth_available()) speechSynthesis.cancel(); }")
   if moduleUsesBuiltin(module, ["audio/tone"]):
     let toneParams = if typescript:
         "target: EventTarget, freq: number, duration: number, gain: number"
@@ -9447,6 +9612,9 @@ proc webContentHash*(bytes: string): string =
   ## enough that a URL stays readable in devtools.
   sha256Hex(bytes)[0 ..< 32]
 
+proc audioWorkletFile(): string =
+  "gene-audio-" & webContentHash(webAudioWorklet) & ".js"
+
 proc jsIdentifierIsSafe(name: string): bool =
   if name.len == 0: return false
   for i, c in name:
@@ -9465,12 +9633,17 @@ proc webAssetRoutes*(asset: WebAsset): seq[WebAssetRoute] =
   ## Everything this asset publishes. The map is listed even when a deployment
   ## chooses not to answer for it, so the decision stays with the server rather
   ## than being baked into bytes that are already hashed.
-  @[WebAssetRoute(fileName: asset.entryFile,
+  result = @[WebAssetRoute(fileName: asset.entryFile,
                   contentType: "text/javascript; charset=utf-8",
                   body: asset.js),
     WebAssetRoute(fileName: asset.mapFile,
                   contentType: "application/json; charset=utf-8",
                   body: asset.sourceMap, isSourceMap: true)] & asset.dependencies
+  # Every generated reference is a relative same-origin module URL. Publishing
+  # the immutable helper with the graph also covers embedded web_module assets.
+  if result.anyIt(it.body.contains(audioWorkletFile())):
+    result.add WebAssetRoute(fileName: audioWorkletFile(),
+      contentType: "text/javascript; charset=utf-8", body: webAudioWorklet)
 
 proc webAssetMountModule*(asset: WebAsset, mountId: string): WebAssetRoute =
   ## The placement bootstrap: the only code that knows a mount id. It is a
@@ -9585,6 +9758,11 @@ proc writeWebModule(module: WebModule, outDir: string,
   for (path, content) in outputs:
     writeFile(path, content)
     resultPaths.add path
+  if artifacts.js.contains(audioWorkletFile()):
+    let path = outDir / audioWorkletFile()
+    if not fileExists(path):
+      writeFile(path, webAudioWorklet)
+      resultPaths.add path
 
 proc loadWebGraph(sourcePath: string,
                   readSource: proc(path: string): string {.closure.} = nil): seq[WebModule] =

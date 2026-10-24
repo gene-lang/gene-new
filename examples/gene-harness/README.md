@@ -17,6 +17,7 @@ isolation.
 | Author a workspace plugin | [Plugins](docs/plugins.md) |
 | Run and verify a function plugin without a model | [Project audit example](website/examples/project_audit/README.md) |
 | Browser workflow, transport and recovery | [Web client](docs/web-client.md) |
+| Talk to a conversation, choose speech engines and inspect spoken replies | [Voice](docs/audio.md) |
 | Upload documents, inspect images and render PDF pages | [Media](docs/media.md) |
 | Select windows, take screenshots and use computer actions | [Computer use](docs/computer.md) |
 | Notifications, background answers and producer messages | [Notifications](docs/notification.md) |

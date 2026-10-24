@@ -1,0 +1,80 @@
+(import $test [describe it run])
+(import [new_harness contribute shutdown_harness install uninstall row Plugin PluginHost] ^from "../../../src/kernel")
+(import [new_speech_service choose_speech_engine warm_engine synthesize_speech cool_speech]
+  ^from "../../../src/runtime/speech_service")
+(import [bounded_audio_call] ^from "../../../src/audio/call")
+(import [AudioError audio_error] ^from "./audio" ^pkg "audio")
+
+(describe "Host speech engine lifecycle"
+  (it "uses profile then environment then config then available auto rank" []
+    (let h (new_harness))
+    (let engine (fn [name, auto, reason]
+      {^name name ^auto auto ^streaming true ^format {^rate 24000 ^channels 1 ^encoding "s16le"}
+       ^available (fn [] reason) ^open (fn [settings] {}) ^close (fn [resource] nil)
+       ^synthesize (fn [resource text settings emit] nil)}))
+    (contribute h "core" "speech_synthesizers" (engine "a" 20 nil))
+    (contribute h "core" "speech_synthesizers" (engine "b" 10 true))
+    (contribute h "core" "speech_synthesizers" (engine "bad" 1 "missing model"))
+    (let runtime {^h h ^profile {}})
+    ($assert (== (/name (choose_speech_engine ^environment {} runtime {} "synthesizer")) "b"))
+    ($assert (== (/name (choose_speech_engine ^environment {} runtime {^synthesizer "a"} "synthesizer")) "a"))
+    ($assert (== (/name (choose_speech_engine ^environment {^synthesizer "b"} runtime {^synthesizer "a"} "synthesizer")) "b"))
+    (set runtime/profile {^voice {^synthesizer "a"}})
+    ($assert (== (/name (choose_speech_engine ^environment {^synthesizer "b"} runtime {} "synthesizer")) "a"))
+    (shutdown_harness h))
+  (it "opens one warm engine, replays a bounded PCM cache and closes resources" []
+    (let h (new_harness))
+    (let opens ($cell 0)) (let closes ($cell 0)) (let calls ($cell 0))
+    (contribute h "core" "speech_synthesizers"
+      {^name "fixed" ^auto 1 ^streaming false ^format {^rate 24000 ^channels 1 ^encoding "s16le"}
+       ^available (fn [] nil)
+       ^open (fn [settings] (opens .set (+ opens/.get 1)) {^marker "warm"})
+       ^close (fn [resource] (closes .set (+ closes/.get 1)))
+       ^synthesize (fn [resource text settings emit]
+         ($assert (== resource/marker "warm"))
+         (calls .set (+ calls/.get 1))
+         (emit ($binary/from_list [0 0 255 127])))})
+    (let service (new_speech_service {^h h ^profile {}}))
+    (let opened (warm_engine service "synthesizer" {}))
+    ($assert (== opened/resource/marker "warm"))
+    (warm_engine service "synthesizer" {})
+    ($assert (== opens/.get 1))
+    (let chunks [])
+    (synthesize_speech service opened "A sentence." (fn [bytes] (chunks .push bytes)))
+    (synthesize_speech service opened "A sentence." (fn [bytes] (chunks .push bytes)))
+    ($assert (== calls/.get 1)) ($assert (== chunks/.size 2))
+    (cool_speech service)
+    ($assert (== closes/.get 1)) ($assert (== service/cache_bytes/.get 0))
+    (shutdown_harness h))
+  (it "owns third-party engine resources through retirement without plugin cleanup" []
+    (let h (new_harness))
+    (let closed ($cell 0))
+    (install h (Plugin ^id "test_speech" ^provides [["speech_synthesizers" "owned"]]
+      ^activate (fn [host]
+        (host .PluginHost:contribute "speech_synthesizers"
+          {^name "owned" ^auto 1 ^streaming true ^format {^rate 24000 ^channels 1 ^encoding "s16le"}
+           ^available (fn [] nil) ^open (fn [settings] {^marker "owned"})
+           ^close (fn [resource] (closed .set (+ closed/.get 1)))
+           ^synthesize (fn [resource text settings emit] nil)}))))
+    (let service (new_speech_service {^h h ^profile {}}))
+    (let opened (warm_engine service "synthesizer" {}))
+    (let old (row h "speech_synthesizers" "owned"))
+    # Even an open result abandoned by its caller is owned by the activation.
+    (old/open {})
+    (uninstall h "test_speech")
+    ($assert (== closed/.get 2))
+    (cool_speech service)
+    (old/close opened/resource)
+    ($assert (== closed/.get 2) "retired cleanup ran twice")
+    (shutdown_harness h))
+  (it "unwraps supervised results, propagates typed failures and drains cancelled work" []
+    ($assert (== (/ok (bounded_audio_call (fn [] {^ok true}) [] 1000)) true))
+    ($assert (try (bounded_audio_call (fn [] (audio_error "fixture failure")) [] 1000) false catch AudioError true))
+    (let cleaned ($cell false))
+    ($assert (try
+      (bounded_audio_call (fn [] (try ($sleep 1000) ensure (cleaned .set true))) [] 20)
+      false
+      catch AudioError true))
+    ($assert cleaned/.get)))
+
+(fn main [args] : Int (/exit_code (run)))

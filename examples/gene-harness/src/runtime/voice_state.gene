@@ -1,0 +1,124 @@
+# Transient, host-wide speaker ownership. No microphone or synthesized audio is durable.
+(mod voice_state)
+(import [HarnessEvent publish] ^from "../kernel")
+
+(type VoiceError ^props {^code Str ^message Str} ^impl [Error])
+(impl Error for VoiceError)
+(type VoiceChanged : HarnessEvent ^props {^state Any})
+(type VoiceState ^props {^runtime Any ^claim Any ^connections Any ^gate Any ^closed Any ^timings Any})
+
+(fn voice_error [code : Str, message : Str]
+  (fail (VoiceError ^code code ^message message)))
+
+(fn normalize_voice_input [value]
+  (if ($absent? value) (return nil))
+  (if (|| (!= ($head value) Map) (!= value/kind "voice")
+          (!= ($head value/recognizer) Str) (== ($str/trim value/recognizer) "")
+          (> ($str/byte_size value/recognizer) 128)
+          (!= ($head value/audio_ms) Int) (< value/audio_ms 0) (> value/audio_ms 86400000))
+    # The capture transport caps each utterance at 120 seconds. A queued draft
+    # may contain several utterances, so its aggregate duration can exceed that.
+    (voice_error "invalid_request" "Voice input needs a recognizer and an aggregate duration from 0 to 86400000 ms."))
+  {^kind "voice" ^recognizer value/recognizer ^audio_ms value/audio_ms})
+
+(fn new_voice_state [runtime]
+  (VoiceState ^runtime runtime ^claim ($cell nil) ^connections ($cell {})
+    ^gate ($sync/gate) ^closed ($cell false) ^timings ($cell [])))
+
+(fn record_voice_timing [voice : VoiceState, session : Str, kind : Str, elapsed : Int,
+                        ^identity identity : Str = "", ^input_kind input_kind : Str = ""]
+  (voice/gate (fn []
+    (let timing {^session session ^kind kind ^elapsed_ms elapsed ^at_ms ($os/wall_ms)
+      ^identity identity ^input_kind input_kind})
+    (voice/timings/.get .push timing)
+    (if (> voice/timings/.get/.size 256)
+      (voice/timings .set ($drop voice/timings/.get (- voice/timings/.get/.size 256))))
+    timing)))
+
+(fn voice_timings [voice : VoiceState, session : Str]
+  ($filter voice/timings/.get (fn [timing] (== timing/session session))))
+
+(fn voice_snapshot [voice]
+  (if ($absent? voice) (return {^enabled false}))
+  (let claim voice/claim/.get)
+  (if (|| voice/closed/.get ($absent? claim)
+          (&& (> claim/expires_ms 0) (>= ($os/monotonic_ms) claim/expires_ms)))
+    (return {^enabled false}))
+  claim)
+
+(fn voice_output? [voice, session : Str] : Bool
+  (if ($absent? voice) (return false))
+  (let claim (voice_snapshot voice))
+  (&& (== claim/enabled true) (== claim/output true) (== claim/session session)))
+
+(fn voice_changed [voice : VoiceState]
+  (let state (voice_snapshot voice))
+  (if_not ($absent? voice/runtime/h) (publish voice/runtime/h (VoiceChanged ^state state)))
+  state)
+
+(fn claim_voice [voice : VoiceState, session : Str, owner : Str, output : Bool,
+                 ^token token : Str = ""]
+  (if (|| voice/closed/.get (== owner "") (> ($str/byte_size owner) 128))
+    (voice_error "invalid_request" "A voice claim needs a browser client identity."))
+  (voice/gate (fn []
+    (let previous (voice_snapshot voice))
+    (if_yes (!= token "")
+      (if (|| (!= previous/owner owner) (!= previous/token token) (!= previous/session session))
+        (voice_error "voice_claim_lost" "Another page owns voice. Enable voice explicitly to take it back.")))
+    (let claim {^enabled true ^owner owner ^session session ^output output
+      ^token (if (== token "") ($crypto/random_hex 16) token)
+      ^transport (if (== token "") "events" (?? previous/transport "events"))
+      ^expires_ms (if (> (?? (voice/connections/.get .get
+        ($to_str (if (== token "") "events" (?? previous/transport "events")) "/" owner)) 0) 0)
+        0 (+ ($os/monotonic_ms) 10000))})
+    (voice/claim .set claim)))
+  (voice_changed voice))
+
+(fn release_voice [voice : VoiceState, owner : Str, token : Str]
+  (voice/gate (fn []
+    (let current voice/claim/.get)
+    (if (&& (== current/owner owner) (== current/token token)) (voice/claim .set nil))))
+  (voice_changed voice))
+
+(fn reset_voice [voice]
+  (if ($absent? voice) (return nil))
+  (voice/gate (fn [] (voice/claim .set nil)))
+  (voice_changed voice))
+
+(fn voice_use_transport [voice : VoiceState, owner : Str, token : Str]
+  (voice/gate (fn []
+    (let claim (voice_snapshot voice))
+    (if (|| (!= claim/owner owner) (!= claim/token token))
+      (voice_error "voice_claim_lost" "The voice claim belongs to another page."))
+    (let connected (> (?? (voice/connections/.get .get ($to_str "voice/" owner)) 0) 0))
+    (voice/claim .set ((claim .assoc "transport" "voice") .assoc "expires_ms"
+      (if connected 0 (+ ($os/monotonic_ms) 10000))))))
+  (voice_changed voice))
+
+(fn voice_connected [voice, owner : Str, ^transport transport : Str = "events"]
+  (if (|| ($absent? voice) (== owner "")) (return nil))
+  (voice/gate (fn []
+    (let key ($to_str transport "/" owner))
+    (voice/connections/.get .put key (+ (?? (voice/connections/.get .get key) 0) 1))
+    (let claim (voice_snapshot voice))
+    (if_yes (&& (== claim/owner owner) (== (?? claim/transport "events") transport))
+      (voice/claim .set (claim .assoc "expires_ms" 0)))))
+  nil)
+
+(fn voice_disconnected [voice, owner : Str, ^transport transport : Str = "events"]
+  (if (|| ($absent? voice) (== owner "")) (return nil))
+  (voice/gate (fn []
+    (let key ($to_str transport "/" owner))
+    (let count ($math/max 0 (- (?? (voice/connections/.get .get key) 0) 1)))
+    (if (== count 0) (voice/connections/.get .delete key) (voice/connections/.get .put key count))
+    (let claim (voice_snapshot voice))
+    (if_yes (&& (== count 0) (== claim/owner owner) (== (?? claim/transport "events") transport))
+      (voice/claim .set (claim .assoc "expires_ms" (+ ($os/monotonic_ms) 10000))))))
+  nil)
+
+(fn close_voice_state [voice]
+  (if ($absent? voice) (return nil))
+  (voice/closed .set true)
+  (voice/claim .set nil)
+  (voice/connections .set {})
+  nil)

@@ -1,0 +1,18 @@
+(import $test [describe it run])
+(import [speech_text] ^from "../../../src/runtime/speech_text")
+
+(describe "Spoken reply normalization"
+  (it "keeps prose and replaces code and tables without reading their contents" []
+    ($assert (== (speech_text "Finished.\n```gene\n(secret code)\n```\nNext.") "Finished. Code on screen. Next."))
+    ($assert (== (speech_text "| file | rows |\n| --- | --- |\n| a | 12 |") "Table on screen.")))
+  (it "speaks labels and identifiers while shortening paths, URLs and hashes" []
+    ($assert (== (speech_text "Read [the guide](https://example.com/docs).") "Read the guide."))
+    ($assert (== (speech_text "Visit https://example.com/docs") "Visit example.com"))
+    ($assert (== (speech_text "Changed src/report.gene at abcdef0123456789") "Changed report.gene at a hash"))
+    ($assert (== (speech_text "Use `parse_csv` and `some call with arguments`.") "Use parse_csv and code.")))
+  (it "turns headings and lists into sentences and removes visual markup" []
+    ($assert (== (speech_text "# Done\n- **One**\n- <b>Two</b> 😀") "Done. One. Two."))
+    ($assert (== (speech_text "") ""))))
+
+(fn main [args] : Int
+  (/exit_code (run)))

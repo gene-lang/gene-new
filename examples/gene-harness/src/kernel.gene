@@ -406,6 +406,32 @@
   (publish_direct_registry_change h)
   true)
 
+# Warm speech resources belong to the exact activation that opened them.
+# A cleanup lease remains usable after operation callbacks expire, and Cordis
+# also disposes it on retirement even when the caller lost the open result.
+(fn own_speech_engine [h : Harness, owner : Str, engine]
+  (let effects (/effects (policy_for_owner h owner)))
+  (if ($absent? effects) (return engine))
+  (let owned ($cell []))
+  (let result ($thaw ($freeze_shallow engine)))
+  (result .put "open" (fn [settings]
+    (let resource (engine/open settings))
+    (let lease (try
+      (effects .defer (fn []
+        (try (engine/close resource)
+        ensure
+          (owned .set ($filter owned/.get (fn [item] (! (same? item/resource resource))))))))
+      catch Any (engine/close resource) (fail $err)))
+    (owned/.get .push {^resource resource ^lease lease})
+    resource))
+  (result .put "close" (fn [resource]
+    (for item in owned/.get
+      (if (same? item/resource resource) (item/lease .dispose)))))
+  (result .put "close_all" (fn []
+    (let resources owned/.get)
+    (for item in resources (try (item/lease .dispose) catch Any nil))))
+  result)
+
 (fn contribute
   [h : Harness, owner : Str, registry_name : Str, payload,
    ^key key = void,
@@ -442,6 +468,8 @@
   (validate_discovery_metadata checked)
   (if_yes (== registry_name "event_types")
     (set checked (validate_event_type_owner owner checked)))
+  (if_yes (["speech_recognizers" "speech_synthesizers"] .contains? registry_name)
+    (set checked (own_speech_engine h owner checked)))
   # `Fn` is a type-level constructor for signatures, not a runtime value, and
   # `$head` of a function is the function itself — so a `(== ($head run) Fn)`
   # test both fails to resolve and could not answer the question. A row that
@@ -461,9 +489,12 @@
     (guarded .put "signature" ($runtime/signature checked/fn))
     (guarded .put "fn" (guard_callback h owner checked/fn false))
     (set checked guarded))
-  (if_yes (["providers" "image_generators"] .contains? registry_name)
+  (if_yes (["providers" "image_generators" "speech_recognizers" "speech_synthesizers"] .contains? registry_name)
     (let guarded ($thaw ($freeze_shallow checked)))
-    (for field in ["available" "configure" "capabilities" "prepare" "send"]
+    (let fields (if (["speech_recognizers" "speech_synthesizers"] .contains? registry_name)
+      ["available" "open" "transcribe" "synthesize" "stream"]
+      ["available" "configure" "capabilities" "prepare" "send"]))
+    (for field in fields
       (let callback (checked .get field))
       (if_not ($absent? callback)
         (guarded .put field (guard_callback h owner callback false))))
@@ -789,6 +820,20 @@
     (fail (HarnessError ^message "provider media_recording must be inventory or omit")))
   candidate)
 
+(fn validate_speech_row [candidate, kind : Str]
+  (if (|| (!= ($head candidate/name) Str) (== candidate/name "")
+          (&& (! ($absent? candidate/auto)) (!= ($head candidate/auto) Int)))
+    (fail (HarnessError ^message "A speech engine needs a name and optional integer auto rank.")))
+  (for field in ["available" "open" "close"
+    (if (== kind "recognizer") (if (== candidate/mode "stream") "stream" "transcribe") "synthesize")]
+    (if_not ($runtime/callable? (candidate .get field))
+      (fail (HarnessError ^message $"A speech ${kind} needs callable ${field}."))))
+  (if (&& (== kind "recognizer") (! (["segments" "stream"] .contains? candidate/mode)))
+    (fail (HarnessError ^message "Recognizers declare mode segments or stream.")))
+  (if (&& (== kind "synthesizer") (!= ($head candidate/streaming) Bool))
+    (fail (HarnessError ^message "Synthesizers declare streaming Bool.")))
+  candidate)
+
 (fn validate_image_generator_row [candidate]
   (validate_provider_row candidate)
   (for field in ["available" "capabilities"]
@@ -914,6 +959,8 @@
   (registry h "ui_links" ^^unique ^schema validate_function_row)
   (registry h "providers" ^^unique ^schema validate_provider_row)
   (registry h "image_generators" ^^unique ^schema validate_image_generator_row)
+  (registry h "speech_recognizers" ^^unique ^schema (fn [candidate] (validate_speech_row candidate "recognizer")))
+  (registry h "speech_synthesizers" ^^unique ^schema (fn [candidate] (validate_speech_row candidate "synthesizer")))
   (registry h "hooks" ^^unique ^^ordered ^schema validate_hook_row)
   (registry h "triggers" ^^unique ^schema validate_trigger_row)
   (registry h "interactions" ^^unique ^schema validate_interaction_row)

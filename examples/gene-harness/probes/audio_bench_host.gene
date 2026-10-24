@@ -1,0 +1,11 @@
+# A separate Application keeps server-owned schedulers and cwd out of the probe.
+(import [main : serve_web] ^from "../src/web/server")
+(import [bench_profile] ^from "./audio_bench")
+(fn main [argv] : Int
+  (let args []) (var position 0) (var mode "full") (var recognizer "whisper_local")
+  (for value in argv
+    (if (== position 0) (then (set mode ($to_str value)))
+      (elif (== position 1) (set recognizer ($to_str value)))
+      (else (args .push ($to_str value))))
+    (set position (+ position 1)))
+  (serve_web ^profile (bench_profile ^recognizer recognizer mode) args))

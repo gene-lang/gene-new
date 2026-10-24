@@ -337,6 +337,7 @@
           ^turn number
           ^round round/id
           ^text outcome/reply
+          ^audio_reply outcome/audio_reply
           ^final (== result/kind "done")}))
     (finish_turn
       runtime

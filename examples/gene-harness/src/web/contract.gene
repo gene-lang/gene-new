@@ -17,5 +17,5 @@
           (if (== code "too_large") 413
             (if (|| (== code "busy") (== code "session_busy")
                     (== code "revision_conflict") (== code "submission_conflict")
-                    (== code "mode_open") (== code "mode_closed")) 409
+                    (== code "mode_open") (== code "mode_closed") (== code "voice_claim_lost")) 409
               (if (|| (== code "unavailable") (== code "recovery_required")) 503 400))))))))

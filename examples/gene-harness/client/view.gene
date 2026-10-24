@@ -27,9 +27,20 @@
   ($dom/append details pre)
   details)
 
+(fn reply_audio_controls [block : Any, on_speak : Any] : EventTarget
+  (var controls ($dom/render `(div ^class_name "reply_audio")))
+  (if_not ($absent? block/audio_reply)
+    (var spoken : Str block/audio_reply)
+    ($dom/append controls ($dom/render `(details (summary "Spoken") (p %spoken)))))
+  (if_yes (&& (! ($absent? on_speak)) (!= (str/trim block/text) ""))
+    (var replay : (Fn [Any] Void) on_speak)
+    ($dom/append controls ($dom/render `(button ^type "button" ^class_name "quiet"
+      ^on_click %(fn [event : Any] : Void (replay block)) "Replay speech"))))
+  controls)
+
 (fn block_view [block : Any, provisional : Bool, on_copy : (Fn [Str] Void),
                 expanded : Bool, on_toggle : (Fn [Bool] Void),
-                ^source_text source_text : Any = nil] : EventTarget
+                ^source_text source_text : Any = nil, ^on_speak on_speak : Any = nil] : EventTarget
   (var role : Str block/role)
   (var phase : Str block/phase)
   (var text : Str (if ($absent? source_text) block/text source_text))
@@ -60,6 +71,7 @@
          (div ^class_name "speaker" %label
            %(if (&& provisional (!= role "user")) " · in progress" "")))))
   ($dom/append article content)
+  (if_yes (== phase "reply") ($dom/append article (reply_audio_controls block on_speak)))
   (if_not ($absent? block/media)
     (var attachments : (List Any) block/media)
     (var gallery ($dom/render `(div ^class_name "message_attachments")))
@@ -88,7 +100,7 @@
 
 (fn step_view [blocks : (List Any), opened : Bool, active : Bool,
                on_copy : (Fn [Str] Void), is_open : (Fn [Str] Bool),
-               on_toggle : (Fn [Str Bool] Void)] : EventTarget
+               on_toggle : (Fn [Str Bool] Void), ^on_speak on_speak : Any = nil] : EventTarget
   (var first : Any blocks/0)
   (var round_id : Str first/round_id)
   (var round : Int first/turn)
@@ -120,7 +132,10 @@
   (for block in blocks
     (var id : Str block/id)
     (var phase : Str block/phase)
-    (if (== phase "reply") (continue))
+    (if_yes (== phase "reply")
+      (if_not ($absent? on_speak)
+        ($dom/append content (reply_audio_controls block on_speak)))
+      (continue))
     ($dom/append content
       (block_view block (not_durable block) on_copy (is_open id)
         (fn [open : Bool] : Void (on_toggle id open))

@@ -1,0 +1,153 @@
+(mod speech_engines)
+(import [pcm_format wav_encode audio_error] ^from "./audio" ^pkg "audio")
+(import [open_worker close_worker write_json read_json read_packet] ^from "./worker" ^pkg "audio")
+(import $io [AsyncReader IoResource])
+(import [module_dir] ^from "../kernel")
+
+(fn nonempty [value]
+  (if ($absent? value) (return nil))
+  (let text ($str/trim ($to_str value)))
+  (if (== text "") nil text))
+
+(fn close_http [resource]
+  (if (resource/closed .swap true) (return nil))
+  resource/client/.IoResource:close
+  (await resource/client/.IoResource:wait_closed)
+  nil)
+
+(fn whisper_url [] (nonempty ($os/env? "GENE_WHISPER_URL")))
+(fn local_whisper_url []
+  (let url (whisper_url))
+  (if ($absent? url) (audio_error "Set GENE_WHISPER_URL to a warm whisper.cpp /inference endpoint."))
+  (if_not (|| ($str/starts_with? url "http://127.0.0.1:") ($str/starts_with? url "http://localhost:"))
+    (audio_error "whisper_local requires an HTTP loopback endpoint."))
+  url)
+
+(fn whisper_transcribe [resource, pcm : Bytes, settings] : Str
+  (let boundary ($to_str "gene-audio-" ($crypto/random_hex 16)))
+  (let language (?? settings/language "en"))
+  (let prompt (?? settings/context ""))
+  (let parts [])
+  (for [name value] in {^language language ^prompt prompt ^response_format "json"}
+    (parts .push ($binary/from_str
+      $"--${boundary}\r\nContent-Disposition: form-data; name=\"${name}\"\r\n\r\n${value}\r\n")))
+  (parts .push ($binary/from_str
+    $"--${boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"speech.wav\"\r\nContent-Type: audio/wav\r\n\r\n"))
+  (parts .push (wav_encode pcm 16000))
+  (parts .push ($binary/from_str $"\r\n--${boundary}--\r\n"))
+  (let response (await (resource/client .request ^method "POST" ^url resource/url
+    ^headers {^content-type $"multipart/form-data; boundary=${boundary}"}
+    ^body ($binary/concat parts) ^timeout_ms 30000 ^max_bytes 1048576)))
+  (if (!= response/status 200) (audio_error $"whisper.cpp returned HTTP ${response/status}. Check the model, language and /inference endpoint."))
+  (let result ($json/parse ($binary/decode_utf8 response/body)))
+  (if (!= ($head result/text) Str) (audio_error "whisper.cpp returned no transcript text."))
+  ($str/trim result/text))
+
+(fn whisper_row []
+  {^name "whisper_local" ^auto 20 ^summary "Local, warm whisper.cpp server" ^mode "segments"
+   ^available (fn [] (if ($absent? (whisper_url)) "Set GENE_WHISPER_URL to a warm whisper.cpp /inference endpoint." nil))
+   ^open (fn [settings]
+     {^url (local_whisper_url) ^closed ($cell false)
+      ^client (await ($net/http_client/open ^max_connections 2 ^max_connections_per_origin 2))})
+   ^close close_http ^transcribe whisper_transcribe})
+
+(fn piper_model [] (nonempty ($os/env? "GENE_PIPER_MODEL")))
+(fn piper_open [settings]
+  (let worker (open_worker (?? (nonempty ($os/env? "GENE_PIPER_PYTHON")) "python3")
+    [$"${(module_dir this_mod/.path)}/piper_worker.py" (piper_model)]))
+  (var ready false)
+  (try
+    (let hello (read_json worker/reader))
+    (if (!= hello/ok true) (audio_error "Piper did not initialize its voice."))
+    (worker .put "format" (pcm_format hello/rate))
+    (set ready true)
+    worker
+  ensure (if_not ready (close_worker worker))))
+
+(fn framed_synthesize [worker, text : Str, settings, emit]
+  (worker/gate (fn []
+    (var complete false)
+    (try
+      (if worker/closed/.get (audio_error "Speech helper is closed. Enable voice again to restart it."))
+      (write_json worker/writer {^text text ^rate (?? settings/rate 1.0) ^speaker_id (?? settings/speaker_id nil)
+        ^voice (?? settings/voice "") ^language (?? settings/language "en-US")})
+      (let response (read_json worker/reader))
+      (if (!= response/ok true) (audio_error (?? response/message "Speech synthesis failed.")))
+      (while true
+        (let bytes (read_packet worker/reader))
+        (if (== ($binary/size bytes) 0) (break))
+        (emit bytes))
+      (set complete true)
+      nil
+    ensure
+      # Cancellation can interrupt a length frame. Retire this resource instead
+      # of reusing a protocol stream whose response boundary is now unknown.
+      (if_not complete (close_worker worker))))))
+
+(fn piper_row []
+  {^name "piper" ^auto 20 ^summary "Local Piper SDK in one warm helper" ^streaming false
+   ^available (fn []
+     (if (|| ($absent? (piper_model)) (! ($fs/exists? (piper_model))))
+       "Set GENE_PIPER_MODEL to an installed .onnx voice; install piper-tts in GENE_PIPER_PYTHON." nil))
+   ^open piper_open ^close close_worker ^synthesize framed_synthesize})
+
+(fn elevenlabs_synthesize [resource, text : Str, settings, emit]
+  (let voice (?? (nonempty settings/voice) (nonempty ($os/env? "ELEVENLABS_VOICE_ID"))))
+  (if ($absent? voice) (audio_error "Set voice/voice in config.gene or ELEVENLABS_VOICE_ID."))
+  (let response (await (resource/client .stream ^method "POST"
+    ^url $"https://api.elevenlabs.io/v1/text-to-speech/${($url/encode_component voice)}/stream?output_format=pcm_24000"
+    ^headers {^xi-api-key resource/key ^content-type "application/json"}
+    ^body ($json/stringify {^text text ^model_id (?? settings/model "eleven_multilingual_v2")})
+    ^timeout_ms 60000 ^max_bytes 16777216)))
+  (try
+    (if (!= response/status 200) (audio_error $"ElevenLabs returned HTTP ${response/status}. Check the API key, voice and plan."))
+    (while true
+      (let bytes (await (response/body .AsyncReader:read 32768)))
+      (if ($absent? bytes) (break))
+      (emit bytes))
+    nil
+  ensure
+    response/body/.IoResource:close
+    (await response/body/.IoResource:wait_closed)))
+
+(fn elevenlabs_row []
+  {^name "elevenlabs" ^summary "Opt-in cloud streaming PCM synthesis" ^^streaming
+   ^format {^rate 24000 ^channels 1 ^encoding "s16le"}
+   ^available (fn [] (if ($absent? (nonempty ($os/env? "ELEVENLABS_API_KEY"))) "ELEVENLABS_API_KEY is unavailable." nil))
+   ^open (fn [settings] {^key ($os/get_env "ELEVENLABS_API_KEY")
+     ^closed ($cell false)
+     ^client (await ($net/http_client/open ^max_stream_body_bytes 16777216))})
+   ^close close_http ^synthesize elevenlabs_synthesize})
+
+(fn mac_helper [] (nonempty ($os/env? "GENE_MAC_SPEECH_HELPER")))
+(fn mac_reason []
+  (if (|| ($absent? (mac_helper)) (! ($fs/exists? (mac_helper))))
+    "Build src/audio/build_mac.gene on macOS 26+, then set GENE_MAC_SPEECH_HELPER to its executable." nil))
+
+(fn mac_synthesizer_row []
+  {^name "macos" ^auto 30 ^summary "Local macOS system speech voices" ^^streaming
+   ^available mac_reason ^close close_worker ^synthesize framed_synthesize
+   ^open (fn [settings]
+     (let worker (open_worker (mac_helper) ["--tts"]))
+     (var ready false)
+     (try
+       (let hello (read_json worker/reader))
+       (if (!= hello/ok true) (audio_error (?? hello/message "macOS speech could not initialize.")))
+       (worker .put "format" (pcm_format hello/rate))
+       (set ready true)
+       worker
+     ensure (if_not ready (close_worker worker))))})
+
+(fn speech_segments [value : Str]
+  (let result [])
+  (var current "")
+  (var limit 60)
+  (for word in ($str/split value " ")
+    (if (== word "") (continue))
+    (if_yes (&& (!= current "") (> (+ ($str/byte_size current) ($str/byte_size word) 1) limit))
+      (result .push current) (set current "") (set limit 300))
+    (set current ($to_str current (if (== current "") "" " ") word))
+    (if_yes (|| ($str/ends_with? word ".") ($str/ends_with? word "!") ($str/ends_with? word "?"))
+      (result .push current) (set current "") (set limit 300)))
+  (if (!= current "") (result .push current))
+  result)

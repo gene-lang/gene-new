@@ -1,0 +1,22 @@
+(import $test [describe it run])
+(import [new_vad vad_step] ^from "../../../src/common/vad.gene")
+
+(describe "Hands-free energy VAD"
+  (it "ignores brief noise, starts on sustained speech and ends after 600 ms of silence" []
+    (let vad (new_vad))
+    ($assert (== (vad_step vad 0.5 20 false) ""))
+    ($assert (== (vad_step vad 0.001 20 false) ""))
+    (repeat i in 3 ($assert (== (vad_step vad 0.1 20 false) "")))
+    ($assert (== (vad_step vad 0.1 20 false) "start"))
+    (repeat quiet_frame in 29 ($assert (== (vad_step vad 0.001 20 false) "")))
+    ($assert (== (vad_step vad 0.001 20 false) "end")))
+  (it "never voice-barges through a half-duplex playback gate and caps an utterance below 120 seconds" []
+    (let vad (new_vad))
+    (repeat i in 100 ($assert (== (vad_step vad 0.8 20 true) "")))
+    ($assert (! vad/active))
+    (repeat speech_frame in 4 (vad_step vad 0.1 20 false))
+    ($assert vad/active)
+    ($assert (== (vad_step vad 0.1 119600 false) "end"))
+    ($assert (! vad/active))))
+
+(fn main [args] : Int (/exit_code (run)))

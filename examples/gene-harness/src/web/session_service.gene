@@ -1,6 +1,10 @@
 (mod session_service)
 (import [command_descriptors] ^from "../runtime/command_identity")
 (import [browser_client_descriptors] ^from "../ui/browser_clients")
+(import [speech_text speech_needs_audio_reply?] ^from "../runtime/speech_text")
+(import [VoiceChanged voice_snapshot claim_voice release_voice] ^from "../runtime/voice_state")
+(import [voice_output?] ^from "../runtime/voice_state")
+(import [append_core_event] ^from "../storage/state")
 (import ^from "../runtime/bootstrap" [open_runtime close_runtime prepare_workspace_root])
 (import ^from "../profiles/baseline" [baseline_profile])
 (import ^from "../profiles/offline" [offline_profile])
@@ -125,6 +129,8 @@
                event/type))
     ^order (?? payload/at_ms event/seq)
     ^text (if (== payload/initial true) (?? payload/settled text) text)
+    ^audio_reply (?? payload/audio_reply nil)
+    ^speech (if (== event/type "reply") (?? payload/audio_reply (speech_text text)) "")
     ^media (?? payload/media [])
     ^late (== payload/late true)
     ^final (== payload/final true)
@@ -144,6 +150,15 @@
     (publish_message service "turn" session (event_record session event)))
   (if (["reply" "console"] .contains? kind)
     (publish_message service kind session (event_record session event)))
+  (if_yes (&& (== kind "reply") (== event/payload/final true)
+              ($absent? event/payload/audio_reply)
+              (voice_output? service/runtime/voice session)
+              (speech_needs_audio_reply? (?? event/payload/text "")))
+    (try
+      (append_core_event service/events "session" session
+        {^type "trace" ^kind "voice/audio_reply_missing"
+         ^text "voice/audio_reply_missing" ^round event/payload/round ^^ignorable})
+    catch Any nil))
   nil)
 
 (fn command_input_record [session : Str, record]
@@ -173,6 +188,8 @@
 
 (fn handle_harness_event [service, event]
   (match ^!exhaustive event
+    (when (changed : VoiceChanged)
+      (publish_message service "voice/state" "" changed/state))
     (when (changed : ModeChanged)
       (publish_message ^reason changed/reason service "mode/state" changed/session changed/mode))
     (when (changed : CompositionChanged)
@@ -277,6 +294,37 @@
     (fn []
       {^runtime runtime ^controller service/controller ^^start ^^boot}))
   service)
+
+(fn row_voice [service]
+  (let snapshot (current_snapshot service/runtime/h/snapshots))
+  (for record in (?? (snapshot/registries .get "browser_clients") [])
+    (if (== record/key "voice") (return record)))
+  nil)
+
+(fn session_voice_state [service, session : Str]
+  (let metadata (require_record service/sessions session))
+  (let rounds (round_state service/controller session))
+  (let loaded (load_session service/sessions session))
+  (let round loaded/round/.get)
+  {^voice (voice_snapshot service/runtime/voice) ^title metadata/title
+   ^next_submission_seq ($to_str rounds/next_seq)
+   ^state (?? round/state "done") ^round_id (?? round/id "")})
+
+(fn session_voice_claim [service, session : Str, request]
+  (require_record service/sessions session)
+  (if (!= ($head request/client_id) Str)
+    (fail (RoundError ^code "invalid_request" ^message "Voice needs a browser client identity.")))
+  (if (|| (&& (! ($absent? request/token))
+              (|| (!= ($head request/token) Str) (> ($str/byte_size request/token) 128)))
+          (&& (! ($absent? request/output)) (!= ($head request/output) Bool))
+          (&& (! ($absent? request/enabled)) (!= ($head request/enabled) Bool)))
+    (fail (RoundError ^code "invalid_request" ^message "Voice expects a text token and boolean enabled/output values.")))
+  (if (== request/enabled false)
+    (return (release_voice service/runtime/voice request/client_id (?? request/token ""))))
+  (if ($absent? (row_voice service))
+    (fail (RoundError ^code "unavailable" ^message "The voice plugin is disabled or unavailable.")))
+  (claim_voice ^token (?? request/token "") service/runtime/voice session
+    request/client_id (!= request/output false)))
 
 (fn list_sessions [service, ^after after : Str = "", ^limit limit : Int = 100, ^kind kind = nil, ^status status = nil, ^attention attention = nil, ^trigger trigger = nil, ^q q : Str = "", ^since since : Str = "", ^until until : Str = ""]
   (let results [])

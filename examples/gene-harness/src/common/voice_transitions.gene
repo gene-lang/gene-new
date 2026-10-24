@@ -1,0 +1,68 @@
+# Shared native/web utterance transitions; callbacks cannot reorder or revive input.
+(mod voice_transitions ^profile web)
+(import [text] ^from "./launcher.gene")
+
+(fn voice_draft_key [workspace : Str, session : Str] : Str
+  $"gene-harness/voice-draft/${workspace}/${session}")
+
+(type Utterance ^props {^id Str ^order Int ^session Str ^state Str ^text Str ^audio_ms Int})
+(type VoiceDrafts ^props {^next Int ^commit Int ^utterances (List Utterance) ^drafts PropMap ^disposed Bool})
+
+(fn new_voice_drafts [] : VoiceDrafts
+  (VoiceDrafts ^next 0 ^commit 0 ^utterances [] ^drafts {} ^!disposed))
+
+(fn start_utterance [state : VoiceDrafts, id : Str, session : Str] : Utterance
+  (var utterance (Utterance ^id id ^order state/next ^session session
+    ^state (if state/disposed "cancelled" "capturing") ^text "" ^audio_ms 0))
+  (set state/next (+ state/next 1))
+  (state/utterances .push utterance)
+  utterance)
+
+(fn find_utterance [state : VoiceDrafts, id : Str] : Any
+  (if_yes state/disposed (return nil))
+  (for item in state/utterances
+    (if_yes (&& (== item/id id) (>= item/order state/commit)) (return item)))
+  nil)
+
+(fn release_utterance [state : VoiceDrafts, id : Str, duration : Int] : Void
+  (var raw : Any (find_utterance state id))
+  (if_yes ($absent? raw) (return))
+  (var item : Utterance raw)
+  (if_yes (== item/state "capturing")
+    (set item/state "finalizing")
+    (set item/audio_ms duration)))
+
+(fn drain_utterances [state : VoiceDrafts] : Void
+  (if_yes state/disposed (return))
+  (for item in state/utterances
+    (if_yes (< item/order state/commit) (continue))
+    (if_yes (|| (== item/state "capturing") (== item/state "finalizing")) (break))
+    (if_yes (&& (== item/state "done") (!= ($str/trim item/text) ""))
+      (var session item/session)
+      (var previous : Any state/drafts/%session)
+      (var before (text previous/text))
+      (var previous_ms : Int 0)
+      (if_not ($absent? previous/audio_ms)
+        (var duration : Int previous/audio_ms)
+        (set previous_ms duration))
+      (set state/drafts/%session
+        {^text ($to_str before (if (== before "") "" " ") ($str/trim item/text))
+         ^audio_ms (+ previous_ms item/audio_ms)}))
+    (set state/commit (+ item/order 1)))
+  (var remaining : (List Utterance) [])
+  (for item in state/utterances
+    (if_yes (>= item/order state/commit) (remaining .push item)))
+  (set state/utterances remaining))
+
+(fn finish_utterance [state : VoiceDrafts, id : Str, value : Str, result : Str] : Void
+  (var raw : Any (find_utterance state id))
+  (if_yes ($absent? raw) (return))
+  (var item : Utterance raw)
+  (if_yes (! (|| (== item/state "capturing") (== item/state "finalizing"))) (return))
+  (set item/state result) (set item/text value)
+  (drain_utterances state))
+
+(fn dispose_drafts [state : VoiceDrafts] : Void
+  (set state/disposed true)
+  (for item in state/utterances (set item/state "cancelled"))
+  (set state/utterances []))

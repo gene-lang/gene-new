@@ -9,43 +9,59 @@
   payload)
 
 (fn validate_composition_changed_event [payload]
-  (require_event_fields payload ["type" "entry" "operation" "previous_digest" "new_digest" "revision" "session" "turn"] "composition_changed"))
+  (require_event_fields payload ["type" "entry" "operation" "previous_digest" "new_digest" "revision" "session" "turn"] "composition_changed")
+  payload)
 
 (fn validate_console_event [payload]
-  (require_event_fields payload ["type" "text" "late" "turn"] "console"))
+  (require_event_fields payload ["type" "text" "late" "turn"] "console")
+  payload)
 
 (fn validate_core_state_event [payload]
-  (require_event_fields payload ["type" "key" "state"] "core_state"))
+  (require_event_fields payload ["type" "key" "state"] "core_state")
+  payload)
 
 (fn validate_model_request_event [payload]
-  (require_event_fields payload ["type" "call" "turn" "round" "purpose" "provider" "prepared"] "model_request"))
+  (require_event_fields payload ["type" "call" "turn" "round" "purpose" "provider" "prepared"] "model_request")
+  payload)
 
 (fn validate_model_result_event [payload]
-  (require_event_fields payload ["type" "call" "attempt" "outcome" "final" "timing_ms"] "model_result"))
+  (require_event_fields payload ["type" "call" "attempt" "outcome" "final" "timing_ms"] "model_result")
+  payload)
 
 (fn validate_plugin_state_event [payload]
-  (require_event_fields payload ["type" "plugin" "state_version" "state"] "plugin_state"))
+  (require_event_fields payload ["type" "plugin" "state_version" "state"] "plugin_state")
+  payload)
 
 (fn validate_reply_event [payload]
-  (require_event_fields payload ["type" "text" "final" "round" "turn"] "reply"))
+  (require_event_fields payload ["type" "text" "final" "round" "turn"] "reply")
+  (if_not ($absent? payload/audio_reply)
+    (if (|| (!= ($head payload/audio_reply) Str) (> ($str/byte_size payload/audio_reply) 2048))
+      ($panic "reply audio_reply must be a string of at most 2 KiB")))
+  payload)
 
 (fn validate_text_event [payload]
-  (require_event_fields payload ["type" "text"] "text"))
+  (require_event_fields payload ["type" "text"] "text")
+  payload)
 
 (fn validate_turn_end_event [payload]
-  (require_event_fields payload ["type" "turn" "reason" "synthetic"] "turn_end"))
+  (require_event_fields payload ["type" "turn" "reason" "synthetic"] "turn_end")
+  payload)
 
 (fn validate_turn_patch_event [payload]
-  (require_event_fields payload ["type" "turn" "round" "text" "result"] "turn_patch"))
+  (require_event_fields payload ["type" "turn" "round" "text" "result"] "turn_patch")
+  payload)
 
 (fn validate_turn_request_event [payload]
-  (require_event_fields payload ["type" "turn" "round" "full" "settled"] "turn_request"))
+  (require_event_fields payload ["type" "turn" "round" "full" "settled"] "turn_request")
+  payload)
 
 (fn validate_turn_response_event [payload]
-  (require_event_fields payload ["type" "turn" "round" "text" "blobs"] "turn_response"))
+  (require_event_fields payload ["type" "turn" "round" "text" "blobs"] "turn_response")
+  payload)
 
 (fn validate_turn_start_event [payload]
-  (require_event_fields payload ["type" "turn"] "turn_start"))
+  (require_event_fields payload ["type" "turn"] "turn_start")
+  payload)
 
 (var core_event_types
   #[#{^name "lifecycle" ^version 1 ^!ignorable ^origin "core" ^owner "core" ^schema validate_text_event}

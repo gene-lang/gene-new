@@ -1,0 +1,16 @@
+# The audio specification calls for Chrome's fake-device/WAV flags. This only
+# bootstraps an isolated browser; UI interactions remain through Computer Use.
+(import [connection_link] ^from "../src/cli/client")
+(fn main [argv] : Int
+  (let args []) (for arg in argv (args .push ($to_str arg)))
+  ($assert (== args/.size 3) "Expected WORKSPACE FIXTURE_WAV BROWSER_PROFILE.")
+  (let chrome (?? ($os/env? "GENE_AUDIO_CHROME")
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"))
+  (let process ($os/exec_async chrome
+    $"--user-data-dir=${args/2}" "--no-first-run" "--no-default-browser-check"
+    "--disable-background-networking" "--use-fake-device-for-media-stream"
+    "--force-renderer-accessibility"
+    $"--use-file-for-fake-audio-capture=${args/1}"
+    (connection_link args/0) ^max_bytes 8192))
+  (let result (await process))
+  result/status)

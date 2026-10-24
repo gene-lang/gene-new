@@ -1,0 +1,36 @@
+(import $test [describe it run])
+(import [new_voice_drafts start_utterance release_utterance finish_utterance dispose_drafts]
+  ^from "../../../src/common/voice_transitions.gene")
+
+(describe "Voice utterance ordering"
+  (it "keeps two accepted captures and commits reverse-arriving finals in capture order" []
+    (let state (new_voice_drafts))
+    (start_utterance state "a" "session")
+    (release_utterance state "a" 100)
+    (start_utterance state "b" "session")
+    (release_utterance state "b" 200)
+    (finish_utterance state "b" "second" "done")
+    ($assert ($absent? state/drafts/session))
+    (finish_utterance state "a" "first" "done")
+    ($assert (== state/drafts/session/text "first second"))
+    ($assert (== state/drafts/session/audio_ms 300))
+    (finish_utterance state "a" "duplicate" "done")
+    ($assert (== state/drafts/session/text "first second")))
+  (it "isolates cancellation, timeout, sessions and disposed callbacks" []
+    (let state (new_voice_drafts))
+    (start_utterance state "a" "old")
+    (start_utterance state "b" "new")
+    (finish_utterance state "b" "new session" "done")
+    (finish_utterance state "a" "" "failed")
+    ($assert ($absent? state/drafts/old))
+    ($assert (== state/drafts/new/text "new session"))
+    (start_utterance state "c" "new")
+    (finish_utterance state "c" "" "cancelled")
+    (finish_utterance state "c" "late" "done")
+    ($assert (== state/drafts/new/text "new session"))
+    (start_utterance state "d" "new")
+    (dispose_drafts state)
+    (finish_utterance state "d" "disposed" "done")
+    ($assert (== state/drafts/new/text "new session"))))
+
+(fn main [args] : Int (/exit_code (run)))

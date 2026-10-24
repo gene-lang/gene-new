@@ -1,0 +1,3 @@
+(mod audio_bench_full ^profile web)
+(import [run_benchmark] ^from "./audio_bench_client.gene")
+(fn main [root : EventTarget] : Void (run_benchmark ^raw_input false root 20))

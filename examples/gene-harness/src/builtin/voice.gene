@@ -1,0 +1,68 @@
+# Optional voice policy and browser contribution. Host admission owns durable work.
+(mod voice_plugin)
+(import [Plugin PluginHost] ^from "../plugin_api")
+(import [module_dir row] ^from "../kernel")
+(import [voice_output? reset_voice] ^from "../runtime/voice_state")
+(import [contribute_text_doc] ^from "./documentation")
+(import [whisper_row piper_row elevenlabs_row mac_synthesizer_row] ^from "../audio/engines")
+(import [mac_recognizer_row] ^from "../audio/mac_recognition")
+
+(var asset ($cell nil))
+(var stylesheet ($cell nil))
+
+(fn voice_advisory [voice, context]
+  (let loaded (voice/runtime/sessions/loaded/.get .get context/session))
+  (let round (if ($absent? loaded) nil loaded/round/.get))
+  (let spoken (&& (== round/id context/round) (== round/input/kind "voice")))
+  (let output (voice_output? voice context/session))
+  (if (! (|| spoken output)) (return context))
+  (let items [])
+  (for item in context/items (items .push item))
+  (let guidance ($to_str
+    (if spoken "The prompt came from speech recognition and may contain recognition errors; read it charitably. " "")
+    (if output "Replies are read aloud. If the final reply contains code, tables, lists, links, paths or other formatting, add ^audio_reply: one to three plain spoken sentences. " "")
+    "Detailed guidance is in harness/voice."))
+  (items .push {^id $"${context/turn}.voice" ^header "[harness_voice]" ^value guidance ^!settled})
+  (context .assoc "items" items))
+
+(fn voice [] : Plugin
+  (let error (try
+    (if ($absent? asset/.get)
+      (asset .set ($web/load $"${(module_dir this_mod/.path)}/../../client/plugins/voice.gene")))
+    (if ($absent? stylesheet/.get)
+      (stylesheet .set ($web/stylesheet "voice" """
+.voice-panel { position: fixed; right: 1rem; top: 4rem; max-height: max(12rem, calc(100dvh - 16rem)); overflow: auto; z-index: 800; width: min(26rem, calc(100vw - 2rem)); padding: 1rem; border: 1px solid var(--line); background: var(--surface); color: var(--ink); box-shadow: 0 8px 32px #0002; }
+.voice-panel[hidden] { display: none; }
+.voice-panel textarea { display: block; width: 100%; min-height: 5rem; margin: .6rem 0; }
+.voice-panel button { margin: .2rem .35rem .2rem 0; }
+.voice-panel label { display: block; margin: .5rem 0; }
+.voice-panel p { margin: .5rem 0; font-size: .8rem; line-height: 1.5; }
+""")))
+    nil
+    catch Any $err/.Error:message))
+  (let active ($cell nil))
+  (Plugin ^id "voice" ^requires ["voice/runtime"]
+    ^provides [["browser_clients" "voice"] ["hooks" "request/prepare/voice"]
+      ["speech_recognizers" "whisper_local"] ["speech_recognizers" "macos"] ["speech_synthesizers" "piper"]
+      ["speech_synthesizers" "elevenlabs"] ["speech_synthesizers" "macos"]]
+    ^activate (fn [host]
+      (if_not ($absent? error) (fail error))
+      (let service (host .PluginHost:resolve "voice/runtime"))
+      (active .set service)
+      (host .PluginHost:contribute "speech_recognizers" (whisper_row))
+      (host .PluginHost:contribute "speech_recognizers" (mac_recognizer_row))
+      (host .PluginHost:contribute "speech_synthesizers" (piper_row))
+      (host .PluginHost:contribute "speech_synthesizers" (elevenlabs_row))
+      (host .PluginHost:contribute "speech_synthesizers" (mac_synthesizer_row))
+      (host .PluginHost:contribute "browser_clients"
+        {^name "voice" ^title "Voice" ^asset asset/.get ^style stylesheet/.get})
+      (host .PluginHost:contribute "hooks"
+        {^point "request/prepare" ^name "voice" ^summary "Temporary spoken-input and spoken-reply guidance."
+         ^run (fn [context, next] (next (voice_advisory service context)))})
+      (contribute_text_doc ^tags ["voice" "speech" "audio"] host "harness/voice"
+        "Spoken prompts, reply playback, privacy and recovery."
+        "Voice prompts are literal user requests, not slash commands. Speech recognition can mishear names: interpret it charitably. When replies are being spoken, keep progress replies short and add optional ^audio_reply to a final Outcome if code, tables, lists, URLs or paths do not read well aloud. Use one to three plain sentences, refer to details on screen, and omit symbols and long identifiers. Without audio_reply, the host normalizes reply text. Invalid optional audio data is discarded without rejecting a valid text reply. Voice does not answer waiting question batches. Browser recognition may use the browser vendor's remote service. Raw audio is not retained. Voice drafts are separate from typed and attachment drafts; uncertain submissions stay with host receipt recovery after this plugin is disabled."))
+    ^deactivate (fn [host]
+      (let service active/.get)
+      (if_yes (! ($absent? service))
+        (if ($absent? (row service/runtime/h "browser_clients" "voice")) (reset_voice service))))))

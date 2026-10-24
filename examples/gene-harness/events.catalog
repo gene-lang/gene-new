@@ -1,4 +1,5 @@
 # name version required|ignorable schema
+# reply v1 may additionally carry validated audio_reply text; old records remain valid.
 lifecycle 1 required text
 trace 1 ignorable text
 turn/start 1 required turn_start

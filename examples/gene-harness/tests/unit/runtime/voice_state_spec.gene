@@ -1,0 +1,41 @@
+(import $test [describe it run])
+(import [new_voice_state voice_snapshot voice_output? claim_voice release_voice
+  voice_connected voice_disconnected voice_use_transport normalize_voice_input VoiceError] ^from "../../../src/runtime/voice_state")
+
+(describe "Voice ownership"
+  (it "fences old owners and keeps a current speaker through reconnect" []
+    (let voice (new_voice_state {}))
+    (voice_connected voice "a")
+    (let first (claim_voice voice "session-a" "a" true))
+    ($assert (voice_output? voice "session-a"))
+    ($assert (== first/expires_ms 0))
+    (voice_disconnected voice "a")
+    ($assert (> (/expires_ms (voice_snapshot voice)) 0))
+    (voice_connected voice "a")
+    ($assert (== (/expires_ms (voice_snapshot voice)) 0))
+    (let second (claim_voice voice "session-b" "b" true))
+    (release_voice voice "a" first/token)
+    ($assert (== (/token (voice_snapshot voice)) second/token))
+    ($assert (try (claim_voice ^token first/token voice "session-a" "a" true) false catch VoiceError true))
+    (release_voice voice "b" second/token)
+    ($assert (! (voice_output? voice "session-b"))))
+  (it "uses the audio socket's reconnect grace even while the event socket stays connected" []
+    (let voice (new_voice_state {}))
+    (voice_connected voice "page")
+    (let claim (claim_voice voice "session" "page" true))
+    (voice_connected ^transport "voice" voice "page")
+    (voice_use_transport voice "page" claim/token)
+    (voice_disconnected ^transport "voice" voice "page")
+    ($assert (> (/expires_ms (voice_snapshot voice)) 0))
+    (voice_connected voice "page")
+    ($assert (> (/expires_ms (voice_snapshot voice)) 0))
+    (voice_connected ^transport "voice" voice "page")
+    ($assert (== (/expires_ms (voice_snapshot voice)) 0)))
+  (it "validates durable input metadata without accepting arbitrary payloads" []
+    ($assert (== (normalize_voice_input {^kind "voice" ^recognizer "browser" ^audio_ms 200}) {^kind "voice" ^recognizer "browser" ^audio_ms 200}))
+    ($assert (== (/audio_ms (normalize_voice_input {^kind "voice" ^recognizer "browser" ^audio_ms 240000})) 240000))
+    (for bad in [true {^kind "voice"} {^kind "voice" ^recognizer "browser" ^audio_ms -1}
+                 {^kind "voice" ^recognizer "browser" ^audio_ms 86400001}]
+      ($assert (try (normalize_voice_input bad) false catch VoiceError true)))))
+
+(fn main [args] : Int (/exit_code (run)))

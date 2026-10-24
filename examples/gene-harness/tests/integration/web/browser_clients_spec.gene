@@ -15,8 +15,8 @@
         (let service (test_service ^workspace workspace ^provider (fn [request] "")))
         (try
           (let status (host_status service))
-          ($assert (== status/browser_clients/.size 1) ($to_str service/runtime/h/plugin_errors/.get))
-          (let client status/browser_clients/0)
+          ($assert (== status/browser_clients/.size 2) ($to_str service/runtime/h/plugin_errors/.get))
+          (let client ($first ($filter status/browser_clients (fn [client] (== client/name "spotlight")))))
           ($assert (== client/name "spotlight"))
           ($assert ($str/starts_with? client/url "/"))
           ($assert ($str/ends_with? client/url ".mjs"))
@@ -26,11 +26,12 @@
           ($assert (try (validate_browser_client {^name "unsafe" ^url "https://example.com/code.js"}) false catch Any true))
           (set_plugin_enabled service/runtime/workspace service/runtime/h "spotlight" false)
           (let disabled (host_status service))
-          ($assert (== disabled/browser_clients/.size 0))
+          ($assert (== disabled/browser_clients/.size 1))
+          ($assert (== disabled/browser_clients/0/name "voice"))
           (set_plugin_enabled service/runtime/workspace service/runtime/h "spotlight" true)
           (let restored (host_status service))
-          ($assert (== restored/browser_clients/.size 1))
-          ($assert (!= restored/browser_clients/0/revision client/revision))
+          ($assert (== restored/browser_clients/.size 2))
+          ($assert (!= (/revision ($first ($filter restored/browser_clients (fn [row] (== row/name "spotlight"))))) client/revision))
         ensure (close_session_service service)))))
   (it "quarantines a missing optional browser source without preventing startup" []
     (isolated this_mod/.path "quarantines a missing optional browser source without preventing startup"

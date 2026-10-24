@@ -1,0 +1,31 @@
+# Energy VAD shared by the native fixtures and compiled browser controller.
+# Thresholds are conservative defaults, not a claim of acoustic qualification.
+(mod voice_vad ^profile web)
+(type Vad ^props {^noise F64 ^above Int ^quiet Int ^elapsed Int ^active Bool})
+
+(fn new_vad [] : Vad
+  (Vad ^noise 0.003 ^above 0 ^quiet 0 ^elapsed 0 ^!active))
+
+(fn reset_vad [vad : Vad] : Void
+  (set vad/above 0) (set vad/quiet 0) (set vad/elapsed 0) (set vad/active false))
+
+(fn vad_step [vad : Vad, level : F64, duration_ms : Int, blocked : Bool] : Str
+  (if_yes blocked (reset_vad vad) (return ""))
+  (var high (* vad/noise 4.0))
+  (if_yes (< high 0.015) (set high 0.015))
+  (if_yes (! vad/active)
+    (if (>= level high)
+      (set vad/above (+ vad/above duration_ms))
+      (do
+        (set vad/above 0)
+        (set vad/noise (+ (* vad/noise 0.98) (* level 0.02)))))
+    (if_yes (>= vad/above 80)
+      (set vad/active true) (set vad/quiet 0) (set vad/elapsed 0) (return "start"))
+    (return ""))
+  (set vad/elapsed (+ vad/elapsed duration_ms))
+  (var low (* high 0.6))
+  (if_yes (< low 0.009) (set low 0.009))
+  (set vad/quiet (if (< level low) (+ vad/quiet duration_ms) 0))
+  (if_yes (|| (>= vad/quiet 600) (>= vad/elapsed 119600))
+    (reset_vad vad) (return "end"))
+  "")

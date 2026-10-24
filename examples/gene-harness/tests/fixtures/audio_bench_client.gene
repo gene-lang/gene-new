@@ -1,0 +1,187 @@
+# Real browser media/API integration fixture, mounted only by the probe profile.
+# It drives library APIs, not desktop UI: the visible UI check stays in Cua.
+(mod audio_bench_client ^profile web)
+(import [text flag integer] ^from "../../src/common/launcher.gene")
+(import [HostAudio open_host_audio close_host_audio start_host_capture finish_host_capture speak_host_reply start_handsfree stop_handsfree]
+  ^from "../../client/plugins/host_audio.gene")
+
+(type AudioBench ^props {^root EventTarget ^bridge Any ^host Any ^context Any ^unsubscribe Any
+  ^pairs Int ^pair Int ^started Bool ^failed Bool ^done Bool ^session Str ^owner Str ^token Str
+  ^phase Str ^prompt Str ^capture_id Str ^released F64 ^current Any ^capture_ready Bool ^peak F64
+  ^raw_input Bool ^handsfree Bool})
+
+(fn api [bench : AudioBench, method : Str, path : Str, body : Any, done : (Fn [Int Any] Void)] : Void
+  (var request : (Fn [Str Str Any (Fn [Int Any] Void)] Void) bench/bridge/api)
+  (request method path body done))
+
+(fn host [bench : AudioBench] : HostAudio
+  (var result : HostAudio bench/host)
+  result)
+
+(fn state [bench : AudioBench] : Any
+  (var read : (Fn [] Any) bench/bridge/state)
+  (read))
+
+(fn number [value : Any] : F64
+  (var result : F64 value)
+  result)
+
+(fn bench_error [bench : AudioBench, stage : Str] : Void
+  (if_yes (|| bench/failed bench/done) (return))
+  (set bench/failed true)
+  ($dom/set_text bench/root ($to_str "Audio benchmark failed: " stage))
+  (if_not ($absent? bench/host) (close_host_audio (host bench)))
+  (if_yes (!= bench/session "")
+    (api bench "POST" $"/api/v8/sessions/${bench/session}/voice/latency"
+      {^kind "error" ^elapsed_ms 0 ^identity stage}
+      (fn [code : Int, data : Any] : Void nil))))
+
+(fn report [bench : AudioBench, kind : Str, elapsed : Int, identity : Str] : Void
+  (api bench "POST" $"/api/v8/sessions/${bench/session}/voice/latency"
+    {^kind kind ^elapsed_ms elapsed ^identity ($to_str (+ bench/pair 1) "/" bench/phase "/" identity)
+     ^input_kind bench/phase}
+    (fn [code : Int, data : Any] : Void
+      (if_yes (!= code 200) (bench_error bench "timing-report")))))
+
+(fn finish [bench : AudioBench] : Void
+  (set bench/done true)
+  (if_not ($absent? bench/host) (close_host_audio (host bench)))
+  (if_not ($absent? bench/context)
+    (var context : EventTarget bench/context) ($audio/close context))
+  ($dom/set_text bench/root "Audio benchmark complete."))
+
+(fn maybe_speak [bench : AudioBench] : Void
+  (if_yes (|| bench/failed bench/done ($absent? bench/current/receipt) ($absent? bench/current/reply)
+              (flag bench/current/speaking)) (return))
+  (if_yes (!= (text bench/current/receipt/id) (text bench/current/reply/round_id)) (return))
+  (set bench/current/speaking true)
+  (report bench "loop" ($to_int (- (number bench/current/reply_at) (number bench/current/sent_at))) (text bench/current/receipt/id))
+  (if_yes (! (speak_host_reply (host bench) (text bench/current/reply/id)))
+    (bench_error bench "speak-request")))
+
+(fn submit [bench : AudioBench, content : Str, input : Any] : Void
+  (set bench/current {^sent_at ($time/now) ^reply_at 0.0 ^receipt nil ^reply nil ^!speaking ^total_ms 0})
+  (var send : (Fn [Str Str Any (Fn [Int Any] Void)] Void) bench/bridge/voice_submit)
+  (send bench/session content input (fn [code : Int, receipt : Any] : Void
+    (if_yes (|| bench/failed bench/done) (return))
+    (if_yes (!= code 202) (bench_error bench ($to_str "admission-" code)) (return))
+    (set bench/current/receipt receipt)
+    (if_yes (== bench/phase "voice")
+      (report bench "input" ($to_int (- ($time/now) bench/released)) (text receipt/id)))
+    (maybe_speak bench))))
+
+(fn claim_output [bench : AudioBench, output : Bool, next : (Fn [] Void)] : Void
+  (var engine (host bench)) (set engine/output output)
+  (api bench "POST" $"/api/v8/sessions/${bench/session}/voice"
+    {^client_id bench/owner ^token bench/token ^output output}
+    (fn [code : Int, data : Any] : Void
+      (if_yes (!= code 200) (bench_error bench "claim-output") (return))
+      (next))))
+
+(fn voice_round [bench : AudioBench] : Void
+  (if_yes (|| bench/failed bench/done) (return))
+  (set bench/phase "voice") (set bench/current nil)
+  (set bench/released 0.0)
+  (claim_output bench true (fn [] : Void
+    (var id ($browser/request_id)) (set bench/capture_id id)
+    (var pair bench/pair)
+    (set bench/capture_ready false) (set bench/peak 0.0)
+    (var level (fn [value : F64] : Void (if_yes (> value bench/peak) (set bench/peak value))))
+    (var captured (if bench/handsfree (start_handsfree (host bench) "half" level)
+      (start_host_capture (host bench) id level)))
+    (if_yes (! captured)
+      (bench_error bench "capture-start") (return))
+    ($time/after 10000.0 (fn [] : Void
+      (if_yes (&& (== pair bench/pair) (! bench/capture_ready) (! bench/failed) (! bench/done))
+        (bench_error bench "capture-no-frames"))))
+    ($time/after 20000.0 (fn [] : Void
+      (if_yes (&& (== pair bench/pair) (== bench/phase "voice") (== bench/released 0.0) (! bench/failed) (! bench/done))
+        (bench_error bench "capture-no-end")))))))
+
+(fn speech_event [bench : AudioBench, kind : Str, data : Any] : Void
+  (if_yes (|| bench/failed bench/done) (return))
+  (if_yes (== kind "host/ready")
+    (var audio (host bench)) (set audio/raw_input bench/raw_input)
+    (voice_round bench) (return))
+  (if_yes (== kind "vad/start") (set bench/capture_id (text data/id)) (return))
+  (if_yes (== kind "vad/end")
+    (set bench/released ($time/now)) (stop_handsfree (host bench)) (return))
+  (if_yes (== kind "capture/started")
+    (var id (text data/id))
+    (if_yes (|| bench/capture_ready (!= id bench/capture_id)) (return))
+    (set bench/capture_ready true)
+    (if_yes bench/handsfree (return))
+    ($time/after 2600.0 (fn [] : Void
+      (if_yes (|| bench/failed bench/done (!= id bench/capture_id)) (return))
+      (set bench/released ($time/now)) (finish_host_capture (host bench))))
+    (return))
+  (if_yes (|| (== kind "error") (== kind "engine/error") (== kind "host/reconnecting")
+              (== kind "engines/changed") (== kind "capture/error") (== kind "speak/error"))
+    (bench_error bench ($to_str kind "/" (text data/code))) (return))
+  (if_yes (== kind "transcript/final")
+    (if_yes (!= (text data/id) bench/capture_id) (return))
+    (var content (str/trim (text data/text)))
+    (if_yes (== content "")
+      (bench_error bench ($to_str "empty-transcript/" (integer data/audio_ms) "/peak-" ($to_int (* bench/peak 1000.0)))) (return))
+    (set bench/prompt content)
+    (submit bench content {^kind "voice" ^recognizer (text data/recognizer) ^audio_ms (integer data/audio_ms)})
+    (return))
+  (if_yes (== kind "speak/started")
+    (report bench "output" ($to_int (- ($time/now) (number bench/current/reply_at))) (text bench/current/reply/id))
+    (var begin : F64 bench/current/sent_at)
+    (if_yes (== bench/phase "voice") (set begin bench/released))
+    (set bench/current/total_ms ($to_int (- ($time/now) begin)))
+    (return))
+  (if_yes (== kind "speak/end")
+    (report bench "round" (integer bench/current/total_ms) (text bench/current/receipt/id))
+    (if (== bench/phase "voice")
+      (do
+        (set bench/phase "typed")
+        (claim_output bench false (fn [] : Void (submit bench bench/prompt nil))))
+      (do
+        (set bench/pair (+ bench/pair 1))
+        ($dom/set_text bench/root ($to_str "Completed " bench/pair " paired audio checks."))
+        (if (>= bench/pair bench/pairs) (finish bench)
+          ($time/after 100.0 (fn [] : Void (voice_round bench))))))))
+
+(fn wait_for_session [bench : AudioBench] : Void
+  (if_yes (|| bench/failed bench/done) (return))
+  (var current (state bench))
+  (if_yes (! (flag current/connected))
+    ($time/after 20.0 (fn [] : Void (wait_for_session bench))) (return))
+  (set bench/owner (text current/client_id))
+  (api bench "POST" $"/api/v8/sessions/${bench/session}/voice" {^client_id bench/owner ^output true}
+    (fn [code : Int, claim : Any] : Void
+      (if_yes (!= code 200) (bench_error bench "initial-claim") (return))
+      (set bench/token (text claim/token))
+      (var context ($audio/context)) (set bench/context context) ($audio/resume context)
+      (set bench/host (open_host_audio context bench/session bench/owner (text current/csrf) bench/token true true true
+        (fn [kind : Str, data : Any] : Void (speech_event bench kind data)))))))
+
+(fn start [bench : AudioBench] : Void
+  (if_yes (|| bench/started bench/failed bench/done) (return))
+  (var current (state bench))
+  (if_yes (! (flag current/ready)) (return))
+  (set bench/started true)
+  (var ensure : (Fn [(Fn [Int Any] Void)] Void) bench/bridge/ensure_session)
+  (ensure (fn [code : Int, data : Any] : Void
+    (if_yes (&& (!= code 200) (!= code 201)) (bench_error bench "create-session") (return))
+    (set bench/session (text data/id)) (wait_for_session bench))))
+
+(fn run_benchmark [root : EventTarget, pairs : Int, ^raw_input raw_input : Bool = true, ^handsfree handsfree : Bool = false] : Void
+  (var bench (AudioBench ^root root ^bridge root/harness_bridge ^host nil ^context nil ^unsubscribe nil
+    ^pairs pairs ^pair 0 ^!started ^!failed ^!done ^session "" ^owner "" ^token "" ^phase "voice"
+    ^prompt "" ^capture_id "" ^released 0.0 ^current nil ^!capture_ready ^peak 0.0
+    ^raw_input raw_input ^handsfree handsfree))
+  ($dom/set_text root "Preparing the real browser audio benchmark…")
+  (var subscribe : (Fn [(Fn [Str Str Any] Void)] (Fn [] Void)) bench/bridge/subscribe)
+  (set bench/unsubscribe (subscribe (fn [kind : Str, session : Str, data : Any] : Void
+    (if_yes (|| bench/failed bench/done (!= session bench/session)) (return))
+    (if_yes (&& (== kind "reply") (flag data/final))
+      (set bench/current/reply data) (set bench/current/reply_at ($time/now)) (maybe_speak bench))
+    (if_yes (&& (== kind "round/state") (== (text data/state) "failed")) (bench_error bench "round-failed")))))
+  (set root/harness_controller {^update (fn [status : Any] : Void (start bench))
+    ^dispose (fn [] : Void
+      (finish bench)
+      (var unsubscribe : (Fn [] Void) bench/unsubscribe) (unsubscribe))})
+  (start bench))

@@ -29,6 +29,7 @@ include test_system_dependency
 include test_build
 include test_execution_provenance
 include test_web_modules
+include test_web_speech
 include test_match
 include test_errors
 include test_error_handling

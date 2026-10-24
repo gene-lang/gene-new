@@ -7,6 +7,9 @@ reader; it does not need the native-library build task below.
 [archive](archive/README.md) is a separate experimental PKG-2 zlib codec
 package with gzip I/O adapters and ZIP extraction.
 
+[audio](audio/README.md) provides in-memory PCM/WAV codecs and bounded,
+length-framed subprocess I/O for platform speech and audio adapters.
+
 [tls](tls/README.md) is an experimental PKG-2 OpenSSL adapter for direct
 native-service TLS; its HTTP listener integration is pending.
 

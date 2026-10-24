@@ -1511,6 +1511,39 @@ proc biHttpWsSend(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
   rt.wsOutbound[fd] = queue
   newInt(dropped)
 
+proc biHttpWsTrySend(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  ## Atomically enqueue without discarding any earlier frame. 1 = accepted,
+  ## 0 = full (caller may yield and retry the same payload), -1 = closed.
+  ## Both the frame count and all unsent wire bytes are bounded. In particular,
+  ## draining the frame queue into the socket buffer cannot evade the byte cap.
+  if args.len != 2 or args[1].kind notin {vkString, vkBytes}:
+    raise newException(GeneError, "ws_try_send expects (conn, text or bytes)")
+  var maxBytes = 1048576'i64
+  if call != nil:
+    for name in call[].namedNames:
+      if name != "max_bytes":
+        raise newException(GeneError, "ws_try_send got unexpected named argument: " & name)
+    let index = nativeNamedIndex(call, "max_bytes")
+    if index >= 0:
+      let value = call[].namedValues[index]
+      if value.kind != vkInt or value.intVal < 1 or value.intVal > 16777216:
+        raise newException(GeneError, "ws_try_send ^max_bytes must be from 1 to 16777216")
+      maxBytes = value.intVal
+  let (rt, fd) = wsRuntimeForConnValue(args[0])
+  if rt == nil or not rt.wsOpen.getOrDefault(fd, false):
+    return newInt(-1)
+  var queue = rt.wsOutbound.getOrDefault(fd, @[])
+  let payload = args[1]
+  let encoded = if payload.kind == vkBytes: wsEncodeFrame(0x2, payload.bytesVal)
+                else: wsEncodeFrame(0x1, payload.strVal)
+  var queuedBytes = int64(rt.wsPending.getOrDefault(fd, 0))
+  for frame in queue: queuedBytes += int64(frame.len)
+  if queue.len >= wsOutboundQueueFrames or queuedBytes + int64(encoded.len) > maxBytes:
+    return newInt(0)
+  queue.add encoded
+  rt.wsOutbound[fd] = queue
+  newInt(1)
+
 proc biHttpWsQueued(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   ## (ws_queued conn) -> Int: bytes handed to ws_send that the peer has not
   ## yet accepted — frames still queued plus frames on the socket's write

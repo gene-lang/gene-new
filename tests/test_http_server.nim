@@ -1320,6 +1320,32 @@ suite "net/http server e2e":
     let answer = readAllHttp(refused, 5000)
     check "101" notin statusLine(answer)
 
+  test "ws_try_send paces more than 256 frames without dropping data":
+    let p = startHttpServer("ws-no-drop.gene", """
+(import $net/http [listen serve ws_accept ws_try_send])
+(serve (listen ^host "127.0.0.1" ^port 8215)
+  (fn [req]
+    (ws_accept req
+      ^on_open (fn [conn]
+        # A rejected oversized frame must leave the queue untouched.
+        ($assert (== (ws_try_send ^max_bytes 2 conn "too large") 0))
+        (var i 0)
+        (while (< i 300)
+          (while (== (ws_try_send conn ($to_str i)) 0) ($sleep 1))
+          (set i (+ i 1))))
+      ^on_message (fn [conn payload]
+        ($assert (== (ws_try_send conn payload) 1))))))
+""")
+    defer: (p.terminate(); p.close())
+    let s = wsHandshake(8215)
+    defer: s.close()
+    for i in 0 ..< 300:
+      check wsReadFrame(s).payload == $i
+    s.send(wsClientFrame(2, "\x00\xFFafter-drain"))
+    let echoed = wsReadFrame(s)
+    check echoed.opcode == 2
+    check echoed.payload == "\x00\xFFafter-drain"
+
   test "a failing ws handler is reported rather than swallowed":
     # WebSocket callbacks run as fibers and nothing waits on the result, so an
     # exception inside one used to vanish completely: no delivery, no error,

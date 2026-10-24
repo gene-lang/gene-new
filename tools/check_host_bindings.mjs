@@ -31,6 +31,20 @@ if (!fs.existsSync(domPath)) {
 // names the Gene operation, the DOM interface it lands on, the member, whether
 // it is called or assigned, and the argument count we emit.
 const contract = [
+  ["audio/capture_open", "MediaDevices", "getUserMedia", "call", 1],
+  ["audio/capture_open_raw", "MediaDevices", "getUserMedia", "call", 1],
+  ["audio/capture_open (source)", "AudioContext", "createMediaStreamSource", "call", 1],
+  ["audio/capture_close", "MediaStreamTrack", "stop", "call", 0],
+  ["audio/capture_open (worklet)", "AudioWorklet", "addModule", "call", 1],
+  ["audio/player_push", "MessagePort", "postMessage", "call", 2],
+  ["audio/player_fade_stop", "AudioNode", "disconnect", "call", 0],
+  ["audio/resume", "AudioContext", "resume", "call", 0],
+  ["audio/close", "AudioContext", "close", "call", 0],
+  ["speech/voices", "SpeechSynthesis", "getVoices", "call", 0],
+  ["speech/speak", "SpeechSynthesis", "speak", "call", 1],
+  ["speech/cancel", "SpeechSynthesis", "cancel", "call", 0],
+  ["speech/speak (rate)", "SpeechSynthesisUtterance", "rate", "assign"],
+  ["speech/speak (voice)", "SpeechSynthesisUtterance", "voice", "assign"],
   // canvas — the 2D drawing surface
   ["canvas/context", "HTMLCanvasElement", "getContext", "call", 1],
   ["canvas/set_size (width)", "HTMLCanvasElement", "width", "assign"],

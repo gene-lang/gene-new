@@ -25,7 +25,7 @@
 
 (import [Harness new_harness put_cordis_plugins] ^from "../kernel")
 
-(type Profile ^props {^name Str ^plugins Any ^limits Any? ^requires Any? ^provider Str?})
+(type Profile ^props {^name Str ^plugins Any ^limits Any? ^requires Any? ^provider Str? ^voice Any?})
 
 (fn profile_admissions [p : Profile, ^limits supplied = nil]
   # The whole of it: stage every plugin, then reconcile once. There is no merge

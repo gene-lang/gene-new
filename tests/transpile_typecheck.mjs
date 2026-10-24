@@ -17,7 +17,10 @@ if (!existsSync(tsc)) {
 }
 
 const work = mkdtempSync(join(tmpdir(), "gene-transpile-typecheck-"));
+// Generated browser modules are ESM, including helpers using import.meta.url.
+writeFileSync(join(work, "package.json"), JSON.stringify({type: "module"}));
 const sources = [
+  join(root, "tests", "fixtures", "web_speech.gene"),
   join(root, "tests", "transpile", "web_slice.gene"),
   join(root, "benchmarks", "data", "transpile_web_equality.gene"),
   join(root, "tests", "transpile", "web_interop.gene"),
@@ -38,6 +41,7 @@ copyFileSync(join(root, "tests", "transpile", "web_host.mjs"),
              join(work, "web_host.mjs"));
 
 const generated = [
+  join(work, "web_speech.ts"),
   join(work, "web_slice.ts"),
   join(work, "transpile_web_equality.ts"),
   join(work, "web_interop.ts"),

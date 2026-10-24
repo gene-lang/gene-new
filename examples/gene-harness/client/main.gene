@@ -1,7 +1,8 @@
 (mod harness_client ^profile web)
 (import [BrowserClients create_clients update_clients] ^from "./browser_clients.gene")
 (import [CommandClient create_commands configure_commands dispatch_command recover_command forget_command] ^from "./command_client.gene")
-(import [claim_modal release_modal] ^from "./overlays.gene")
+(import [RoundClient create_rounds configure_rounds dispatch_round recover_round forget_round] ^from "./round_client.gene")
+(import [claim_modal release_modal keyboard_owned?] ^from "./overlays.gene")
 (import [items : launcher_items flag : launcher_flag] ^from "../src/common/launcher.gene")
 
 (import ^from "./state.gene"
@@ -71,7 +72,68 @@
   ^root EventTarget ^list EventTarget ^transcript EventTarget ^prompt EventTarget ^notice EventTarget
   ^title EventTarget ^appearance Str ^style_signature Str ^cards Any
   ^delegation_epoch Int? ^delegation_recovery Any? ^child_open Any?
-  ^browser_clients Any ^command_client Any ^creation_unknown Bool?})
+  ^browser_clients Any ^command_client Any ^creation_unknown Bool?
+  ^voice_client Any? ^voice_listeners Any? ^page_id Str?})
+
+(fn client_page_id [client : Client] : Str
+  (if_yes ($absent? client/page_id) (set client/page_id ($browser/request_id)))
+  (string_or client/page_id ""))
+
+(fn voice_event [client : Client, kind : Str, session : Str, data : Any] : Void
+  (if_yes ($absent? client/voice_listeners) (return))
+  (var listeners (launcher_items client/voice_listeners))
+  (for listener in listeners
+    (try
+      (var callback : (Fn [Str Str Any] Void) listener/callback)
+      (callback kind session data)
+    catch Any ($console/error "A voice browser listener failed."))))
+
+(fn voice_pending? [client : Client] : Bool
+  (if_yes ($absent? client/voice_client) (return false))
+  (var voice (voice_rounds client))
+  (! ($absent? voice/pending)))
+
+(fn voice_replay_handler [client : Client] : Any
+  (var listeners (launcher_items client/voice_listeners))
+  (var available false)
+  (for contribution in (launcher_items client/status/browser_clients)
+    (if_yes (== (string_or contribution/name "") "voice") (set available true)))
+  (if_yes (|| (! available) (== listeners/.size 0)) (return nil))
+  (var session client/selected)
+  (fn [record : Any] : Void (voice_event client "voice/replay" session record)))
+
+(fn voice_rounds [client : Client] : RoundClient
+  (var raw : Any client/voice_client)
+  (var result : RoundClient raw)
+  result)
+
+(fn voice_submit [client : Client, session : Str, value : Str, input : Any,
+                  done : (Fn [Int Any] Void)] : Void
+  (if_yes (|| (! client/ready) client/sending (! ($absent? client/pending)))
+    (done 409 {^^not_sent ^message "Resolve the current submission before sending voice."}) (return))
+  (set client/sending true) (update_controls client)
+  (var voice (voice_rounds client))
+  (dispatch_round voice session value input
+    (fn [code : Int, data : Any] : Void
+      (set client/sending false) (update_controls client)
+      (done code data))))
+
+(fn voice_review_key [client : Client, session : Str] : Str
+  (var workspace (string_or client/status/workspace ""))
+  $"gene-harness/voice-review/${workspace}/${session}")
+
+(fn voice_review [client : Client, session : Str, value : Str, input : Any] : Bool
+  (if_yes (|| (== session "") client/sending (! ($absent? client/pending))) (return false))
+  (var previous (if (== session client/selected) ($dom/input_value client/prompt)
+    (?? ($session_storage/get (draft_key session)) "")))
+  (var combined ($to_str previous (if (== previous "") "" "\n\n") value))
+  (if_yes (! ($session_storage/set (voice_review_key client session) ($json/stringify input))) (return false))
+  (if_yes (! ($session_storage/set (draft_key session) combined)) (return false))
+  (if_yes (== session client/selected)
+    ($dom/set_input_value client/prompt combined)
+    (notice client "Voice text appended for review. Enter sends text only; attachments stay in your draft.")
+    ($dom/focus client/prompt))
+  true)
 
 (fn creation_outcome [client : Client, code : Int] : Void
   (if_yes (|| (== code 0) (>= code 500)) (set client/creation_unknown true))
@@ -179,12 +241,40 @@
      {^session client/selected ^title ($dom/text client/title)
       ^ready client/ready ^connected client/connected ^sending client/sending
       ^commands (launcher_items client/status/commands) ^views (launcher_items ui/navigation/views)
-      ^pending_command commands/pending})
+      ^pending_command commands/pending ^client_id (client_page_id client) ^csrf client/csrf
+      ^voice_pending (voice_pending? client) ^busy client/busy ^round client/round
+      ^workspace (string_or client/status/workspace "")})
    ^api (fn [method : Str, path : Str, payload : Any, done : (Fn [Int Any] Void)] : Void
      (api client method path payload done))
    ^command (fn [session : Str, text : Str, expected : Any, done : (Fn [Int Any] Void)] : Void
      (launcher_command client session text expected done))
    ^navigate (fn [item : Any, done : (Fn [Int Any] Void)] : Void (launcher_navigate client item done))
+   ^keyboard_owned (fn [] : Bool (keyboard_owned?))
+   ^ensure_session (fn [done : (Fn [Int Any] Void)] : Void
+     (if (!= client/selected "")
+       (done 200 {^id client/selected})
+       (request_session client "Voice conversation"
+         (fn [code : Int, data : Any] : Void
+           (if_yes (== code 201) (select_session client (string_or data/id "")))
+           (done code data)))))
+   ^voice_submit (fn [session : Str, value : Str, input : Any, done : (Fn [Int Any] Void)] : Void
+     (voice_submit client session value input done))
+   ^voice_review (fn [session : Str, value : Str, input : Any] : Bool
+     (voice_review client session value input))
+   ^subscribe (fn [callback : (Fn [Str Str Any] Void)] : (Fn [] Void)
+     (if_yes ($absent? client/voice_listeners)
+       (var empty : (List Any) [])
+       (set client/voice_listeners empty))
+     (var listeners (launcher_items client/voice_listeners))
+     (var id ($browser/request_id))
+     (listeners .push {^id id ^callback callback})
+     (if_yes client/ready (render_transcript client))
+     (fn [] : Void
+       (var kept : (List Any) [])
+       (var current (launcher_items client/voice_listeners))
+       (for listener in current (if_yes (!= (string_or listener/id "") id) (kept .push listener)))
+       (set client/voice_listeners kept)
+       (if_yes client/ready (render_transcript client))))
    ^claim (fn [owner : Str, panel : EventTarget, close : (Fn [Bool] Void), fallback : EventTarget] : Bool
      (claim_modal owner client/root panel close fallback))
    ^release (fn [owner : Str, restore : Bool] : Void (release_modal owner restore))})
@@ -320,6 +410,7 @@
              (button ^type "button" ^aria-label %$"Close ${title}" ^on_click %(fn [event : Any] : Void (close_tab client id)) "×")))))))
 
 (fn close_tab [client : Client, id : Str] : Void
+  (voice_event client "session/close" id nil)
   (var tab (session_tab client id))
   (set tab/closed true)
   (set tab/socket_epoch (+ tab/socket_epoch 1))
@@ -696,6 +787,7 @@
   ($dom/append
     target
     (block_view
+      ^on_speak (voice_replay_handler client)
       block
       (not_durable block)
       (fn [text : Str] : Void
@@ -755,6 +847,7 @@
         ($dom/append
           target
           (step_view
+            ^on_speak (voice_replay_handler client)
             step
             (expanded_block client key)
             active
@@ -973,6 +1066,9 @@
   (set client/status_revision revision)
   (var unchanged (== ($json/stringify client/status) ($json/stringify data)))
   (set client/status data)
+  (if_not ($absent? client/voice_client)
+    (var voice (voice_rounds client))
+    (configure_rounds voice (string_or data/workspace "")))
   (if_not ($absent? client/command_client)
     (var commands : CommandClient client/command_client)
     (configure_commands commands (string_or data/workspace "")))
@@ -1204,6 +1300,7 @@
   (var refresh (&& ($absent? initial) (== id client/selected) client/viewing_history))
   (save_tab client)
   (set client/selected id)
+  (voice_event client "session/change" id nil)
   (var attachments : MediaComposer client/media)
   (media_select attachments id)
   (set client/queued_prompt "")
@@ -1380,6 +1477,8 @@
       (update_controls client))))
 
 (fn stage_submission [client : Client, text : Str] : Void
+  (if_yes (voice_pending? client)
+    (notice client "Resolve the pending voice submission before sending another prompt.") (return))
   (var attachments : MediaComposer client/media)
   (set client/pending
     {
@@ -1632,10 +1731,27 @@
 
 (fn send [client : Client] : Void
   (if_yes (|| (! client/ready) (! client/connected) client/sending) (return))
+  (if_yes (voice_pending? client)
+    (notice client "Resolve the pending voice submission before sending another prompt.") (return))
   (if_yes (! ($absent? client/mode))
     (send_mode_input client)
     (return))
   (var raw ($dom/input_value client/prompt))
+  (var review (?? ($session_storage/get (voice_review_key client client/selected)) ""))
+  (if_yes (&& (!= review "") (!= (str/trim raw) ""))
+    (var input : Any (try ($json/parse review) catch Any nil))
+    (if_yes ($absent? input)
+      (notice client "Voice review metadata is unreadable; keep this draft and record again.") (return))
+    (var session client/selected)
+    (voice_submit client session raw input
+      (fn [code : Int, data : Any] : Void
+        (if (== code 202)
+          (do
+            ($session_storage/remove (voice_review_key client session))
+            (if_yes (&& (== session client/selected) (== raw ($dom/input_value client/prompt)))
+              ($dom/set_input_value client/prompt "") (remember_draft client)))
+          (show_error client data))))
+    (return))
   (var attachments : MediaComposer client/media)
   (if_yes (&& (!= client/selected "") (str/starts_with? raw "/") (! (str/starts_with? raw "//")))
     (if_yes (media_has attachments)
@@ -1836,7 +1952,7 @@
   (var socket
     ($ws/connect
       ($to_str
-        $"${scheme}://${parts/1}/api/v8/events?session=${($url/encode_component tab/id)}"
+        $"${scheme}://${parts/1}/api/v8/events?session=${($url/encode_component tab/id)}&client_id=${(client_page_id client)}"
         (if client/safe_ui
           "&ui=default"
           ""))))
@@ -1905,6 +2021,8 @@
     (var session : Str message/session)
     (var data : Any message/data)
     (var ui : UiClient client/ui)
+    (if_yes (|| (== kind "reply") (== kind "round/state") (== kind "voice/state") (== kind "ready"))
+      (voice_event client kind session data))
     (var center : NotificationCenter client/center)
     (if_yes (!= center/epoch server_epoch)
       (set center/epoch server_epoch)
@@ -2049,7 +2167,40 @@
         (if_yes (&& (! ($absent? client/browser_clients)) (! ($absent? client/status)))
           (var browsers : BrowserClients client/browser_clients)
           (update_clients browsers (launcher_items client/status/browser_clients) client/status)))))
+  (set client/voice_client
+    (create_rounds
+      (fn [method : Str, path : Str, payload : Any, done : (Fn [Int Any] Void)] : Void
+        (api client method path payload done))
+      (fn [message : Str] : Void
+        (var voice (voice_rounds client))
+        (var pending (! ($absent? voice/pending)))
+        (set_hidden "voice_receipt_recover" (! pending))
+        (set_hidden "voice_receipt_discard" (! pending))
+        (var forget ($dom/element "voice_receipt_forget"))
+        (set forget/disabled voice/resolving)
+        (notice ^key "voice-recovery" ^sticky pending client message)
+        (voice_event client "submission/state" "" {^pending pending}))
+      (fn [envelope : Any, receipt : Any] : Void
+        (var session (string_or envelope/session ""))
+        (apply_run client session receipt)
+        (var key (voice_review_key client session))
+        (if_yes (!= (?? ($session_storage/get key) "") "")
+          ($session_storage/remove key)
+          (if (== session client/selected)
+            (if_yes (== (string_or envelope/text "") ($dom/input_value client/prompt))
+              ($dom/set_input_value client/prompt "") (remember_draft client))
+            (if_yes (== (?? ($session_storage/get (draft_key session)) "") (string_or envelope/text ""))
+              ($session_storage/remove (draft_key session)))))
+        (voice_event client "voice/admitted" session receipt))))
   (set client/browser_clients (create_clients root client/safe_ui (browser_bridge client)))
+  ($dom/add_event_listener ($dom/element "voice_receipt_recover") "click"
+    (fn [event : Any] : Void
+      (var voice (voice_rounds client))
+      (recover_round voice)))
+  ($dom/add_event_listener ($dom/element "voice_receipt_forget") "click"
+    (fn [event : Any] : Void
+      (var voice (voice_rounds client))
+      (forget_round voice)))
   ($dom/add_event_listener ($dom/element "command_receipt_recover") "click"
     (fn [event : Any] : Void
       (var commands : CommandClient client/command_client)

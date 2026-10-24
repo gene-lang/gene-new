@@ -1,0 +1,153 @@
+(mod speech_service)
+(import [rows row_record] ^from "../kernel")
+(import [voice_error] ^from "./voice_state")
+(import [speech_segments nonempty] ^from "../audio/engines")
+(import [pcm_format] ^from "./audio" ^pkg "audio")
+(import [bounded_audio_call] ^from "../audio/call")
+(import [dispatch_json] ^from "./worker" ^pkg "audio")
+(import [retain_callback] ^from "./cordis_adapter")
+
+(type SpeechService ^props {^runtime Any ^resources Any ^gate Any ^cache Any ^cache_bytes Any ^closed Any})
+
+(fn new_speech_service [runtime]
+  (SpeechService ^runtime runtime ^resources ($cell {}) ^gate ($sync/gate)
+    ^cache ($cell []) ^cache_bytes ($cell 0) ^closed ($cell false)))
+
+(fn speech_settings [service : SpeechService]
+  (?? (/voice ($serde/read_data ($fs/read_text $"${service/runtime/state_root}/config.gene"))) {}))
+
+(fn speech_reason [candidate]
+  (let result (try (candidate/available) catch Any $err/.Error:message))
+  (if (|| ($absent? result) (== result true)) (return nil))
+  (if (== result false) (return "This speech engine is unavailable."))
+  (if (== ($head result) Str) result "The engine returned an invalid availability result."))
+
+(fn choose_speech_engine [runtime, settings, kind : Str, ^environment supplied = nil]
+  (let registry (if (== kind "recognizer") "speech_recognizers" "speech_synthesizers"))
+  (let environment (if ($absent? supplied)
+    ($os/env? (if (== kind "recognizer") "GENE_HARNESS_RECOGNIZER" "GENE_HARNESS_SYNTHESIZER"))
+    (supplied .get kind)))
+  (let pinned (?? runtime/profile/voice {}))
+  (let name (?? (nonempty (pinned .get kind)) (nonempty environment) (nonempty (settings .get kind))))
+  (var selected nil)
+  (let diagnostics [])
+  (for candidate in (rows runtime/h registry)
+    (if (&& (! ($absent? name)) (!= candidate/name name)) (continue))
+    (let reason (speech_reason candidate))
+    (if_not ($absent? reason)
+      (diagnostics .push {^name candidate/name ^reason ($to_str reason)})
+      (continue))
+    (if_yes (|| (! ($absent? name)) (! ($absent? candidate/auto)))
+      (if (|| ($absent? selected) (< candidate/auto selected/auto)
+              (&& (== candidate/auto selected/auto) (< ($order/compare candidate/name selected/name) 0)))
+        (set selected candidate))))
+  {^name (?? name (?? selected/name "")) ^row selected ^diagnostics diagnostics
+   ^reason (if ($absent? selected)
+     (if ($absent? name) $"No host ${kind} is configured. Browser speech remains available."
+       $"Speech ${kind} ${name} is unavailable; check its installation and host configuration.") nil)})
+
+(fn speech_catalog [service : SpeechService]
+  (let result {})
+  (let settings (speech_settings service))
+  (for [kind registry] in {^recognizer "speech_recognizers" ^synthesizer "speech_synthesizers"}
+    (let list [])
+    (for engine in (rows service/runtime/h registry)
+      (list .push {^name engine/name ^summary (?? engine/summary engine/name)
+        ^reason (speech_reason engine)}))
+    (let selected (choose_speech_engine service/runtime settings ($to_str kind)))
+    (result .put kind {^selected selected/name ^reason selected/reason ^engines list}))
+  result)
+
+(fn warm_engine [service : SpeechService, kind : Str, settings]
+  (service/gate (fn []
+    (if service/closed/.get (voice_error "unavailable" "The speech service is closed."))
+    (let choice (choose_speech_engine service/runtime settings kind))
+    (if_not ($absent? choice/reason) (voice_error "unavailable" choice/reason))
+    (let registry (if (== kind "recognizer") "speech_recognizers" "speech_synthesizers"))
+    (let record (row_record service/runtime/h registry choice/name))
+    (let key ($crypto/sha256 ($serde/write_data [record/row_id settings])))
+    (let existing (service/resources/.get .get kind))
+    (if_yes (&& (! ($absent? existing)) (== existing/key key)
+      (!= (if ($absent? existing/resource/closed) false existing/resource/closed/.get) true)) (return existing))
+    (if_not ($absent? existing)
+      (service/resources/.get .delete kind)
+      (if_not (if ($absent? existing/resource/closed) false existing/resource/closed/.get)
+        (existing/row/close existing/resource)))
+    (let resource (bounded_audio_call choice/row/open [settings] 15000))
+    (let opened {^key key ^row_id record/row_id ^registry registry ^row choice/row ^resource resource ^settings settings})
+    (if_yes (== kind "synthesizer")
+      (let format (?? resource/format choice/row/format))
+      (if_yes (|| (!= format/encoding "s16le") (!= format/channels 1))
+        (choice/row/close resource) (voice_error "unavailable" "Speech engines must emit mono s16le PCM."))
+      (pcm_format format/rate)
+      (opened .put "format" format))
+    (service/resources/.get .put kind opened)
+    # Start the persistent reader in the host job, after the bounded open call
+    # has settled. Starting it inside that invocation would keep its scope and
+    # composition call alive for the entire lifetime of the speech engine.
+    (if_not ($absent? resource/dispatch_message)
+      (var message resource/dispatch_message) (var error resource/dispatch_error)
+      (if_not ($absent? record/effects)
+        (set message (retain_callback record/effects "speech/message" message))
+        (set error (retain_callback record/effects "speech/error" error)))
+      (dispatch_json resource message error))
+    opened)))
+
+(fn speech_resources_current? [service : SpeechService] : Bool
+  (for [kind opened] in service/resources/.get
+    (let current (row_record service/runtime/h opened/registry opened/row/name))
+    (if (!= current/row_id opened/row_id) (return false)))
+  true)
+
+(fn cool_speech [service : SpeechService]
+  (service/gate (fn []
+    (let resources (service/resources .swap {}))
+    (for [kind opened] in resources
+      (try (opened/row/close opened/resource) catch Any nil))
+    # Also collect an open result abandoned by a cancelled host job.
+    (for registry in ["speech_recognizers" "speech_synthesizers"]
+      (for engine in (rows service/runtime/h registry)
+        (if_not ($absent? engine/close_all)
+          (engine/close_all))))))
+  (service/cache .set []) (service/cache_bytes .set 0)
+  nil)
+
+(fn close_speech_service [service : SpeechService]
+  (service/closed .set true)
+  (cool_speech service))
+
+(fn cached_speech [service : SpeechService, key : Str]
+  (var found nil)
+  (let kept [])
+  (for item in service/cache/.get
+    (if (== item/key key) (set found item) (kept .push item)))
+  (if_not ($absent? found) (kept .push found) (service/cache .set kept))
+  found)
+
+(fn cache_speech [service : SpeechService, key : Str, chunks, count : Int]
+  (if (> count 8388608) (return nil))
+  (service/cache/.get .push {^key key ^chunks chunks ^bytes count})
+  (service/cache_bytes .set (+ service/cache_bytes/.get count))
+  (while (|| (> service/cache_bytes/.get 8388608) (> service/cache/.get/.size 16))
+    (let oldest service/cache/.get/0)
+    (service/cache_bytes .set (- service/cache_bytes/.get oldest/bytes))
+    (service/cache .set ($drop service/cache/.get 1)))
+  nil)
+
+(fn synthesize_speech [service : SpeechService, opened, text : Str, emit]
+  (let key ($crypto/sha256 ($serde/write_data [opened/key text])))
+  (let cached (cached_speech service key))
+  (if_not ($absent? cached)
+    (for bytes in cached/chunks (emit bytes))
+    (return nil))
+  (let chunks []) (var count 0)
+  (let output (fn [bytes : Bytes]
+    (set count (+ count ($binary/size bytes)))
+    (if (> count 16777216) (voice_error "invalid_request" "A speech response exceeds 16 MiB."))
+    (if (<= count 8388608) (chunks .push bytes))
+    (emit bytes)))
+  (if opened/row/streaming
+    (opened/row/synthesize opened/resource text opened/settings output)
+    (for part in (speech_segments text)
+      (opened/row/synthesize opened/resource part opened/settings output)))
+  (cache_speech service key chunks count))

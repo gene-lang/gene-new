@@ -1,0 +1,376 @@
+(mod host_audio ^profile web)
+(import [text integer] ^from "../../src/common/launcher.gene")
+(import [pack_pcm read_u32 frame_pcm] ^from "../pcm_frames.gene")
+(import [Vad new_vad reset_vad vad_step] ^from "../../src/common/vad.gene")
+
+(type HostAudio ^props {^socket EventTarget ^context EventTarget ^closed Bool ^ready Bool
+  ^session Str ^client_id Str ^token Str ^csrf Str ^output Bool ^next Int
+  ^input_host Bool ^output_host Bool
+  ^epoch Int ^retries Int
+  ^monitor Any ^vad Vad ^level F64 ^duplex Str ^manual Bool ^input_paused Bool ^captured Int ^preroll (List (Buffer U8))
+  ^external_playback Bool ^suppress_until F64
+  ^raw_input Bool
+  ^capture_started_ms Int ^capture_first_ms Int ^capture_released_ms Int ^capture_speech_end_ms Int
+  ^speak_requested_ms Int ^speak_first_ms Int
+  ^ahead Any
+  ^speed F64
+  ^capture Any ^capture_id Str ^capture_stream Int ^capture_sequence Int ^capturing Bool
+  ^player Any ^speak_id Str ^speak_stream Int ^speak_sequence Int ^speak_ended Bool
+  ^received Int ^callback (Fn [Str Any] Void)})
+
+(fn send [host : HostAudio, value : Any] : Void
+  (if_yes (&& (! host/closed) ($ws/open? host/socket)) ($ws/send host/socket ($json/stringify value))))
+
+(fn player_credit [host : HostAudio] : Void
+  (if_yes (|| host/closed ($absent? host/player) (== host/speak_id "")) (return))
+  (var player : EventTarget host/player)
+  (send host {^type "player" ^id host/speak_id ^played_bytes ($to_int ($audio/player_played_bytes player))
+    ^queued_ms ($audio/player_queued_ms player)})
+  (if_yes (&& host/speak_ended (<= ($audio/player_queued_ms player) 0.0))
+    (set host/suppress_until (+ ($time/now) 300.0))
+    ($audio/player_fade_stop player) (set host/player nil) (set host/speak_id "")
+    (host/callback "speak/end" {})))
+
+(fn cancel_output [host : HostAudio] : Void
+  (var had_output (|| (! ($absent? host/player)) (!= host/speak_id "") host/external_playback))
+  (send host {^type "speak/cancel"})
+  (if_not ($absent? host/player)
+    (var player : EventTarget host/player) ($audio/player_fade_stop player))
+  (set host/player nil) (set host/speak_id "") (set host/ahead nil)
+  (if_yes had_output (set host/suppress_until (+ ($time/now) 300.0))))
+
+(fn cancel_input [host : HostAudio] : Void
+  (if_yes (!= host/capture_id "") (send host {^type "capture/cancel" ^id host/capture_id}))
+  (if_not ($absent? host/capture)
+    (var capture : EventTarget host/capture) ($audio/capture_close capture))
+  (set host/capture nil) (set host/capture_id "") (set host/capturing false)
+  (set host/manual false) (set host/preroll []) (reset_vad host/vad))
+
+(fn stop_handsfree [host : HostAudio] : Void
+  (cancel_input host)
+  (if_not ($absent? host/monitor)
+    (var monitor : EventTarget host/monitor) ($audio/capture_close monitor))
+  (set host/monitor nil))
+
+(fn close_host_audio [host : HostAudio] : Void
+  (if_yes host/closed (return))
+  (stop_handsfree host) (cancel_output host)
+  (set host/closed true) (set host/ready false) ($ws/close host/socket))
+
+(fn host_error [host : HostAudio, message : Str] : Void
+  (if_yes host/closed (return))
+  (close_host_audio host)
+  (host/callback "error" {^message message}))
+
+(fn control [host : HostAudio, data : Any] : Void
+  (if_yes host/closed (return))
+  (var kind (text data/type))
+  (if_yes (== kind "ready")
+    (send host {^type "claim" ^session host/session ^token host/token ^output host/output
+      ^input_host host/input_host ^output_host host/output_host}) (return))
+  (if_yes (== kind "claimed")
+    (set host/ready true) (set host/retries 0) (host/callback "host/ready" data) (return))
+  (if_yes (|| (== kind "engine/ready") (== kind "engine/error"))
+    (host/callback kind data) (return))
+  (if_yes (== kind "engines/changed")
+    (close_host_audio host) (host/callback kind data) (return))
+  (if_yes (|| (== kind "error") (== kind "released"))
+    (host_error host (text data/message "Voice connection was released.")) (return))
+  (if_yes (&& (! ($absent? host/ahead)) (== (text data/id) (text host/ahead/id)))
+    (var ahead : PropMap host/ahead)
+    (if_yes (== kind "speak/start")
+      (if_yes (|| (!= (text data/format/encoding) "s16le") (!= (integer data/format/channels) 1)
+                  (!= (integer data/stream) (integer ahead/stream)))
+        (host_error host "The prefetched speech format or stream is invalid.") (return))
+      (set ahead/format data/format) (return))
+    (if_yes (== kind "speak/end")
+      (if_yes (!= (integer data/bytes) (integer ahead/received))
+        (host_error host "Prefetched speech ended with missing audio.") (return))
+      (set ahead/ended true) (set ahead/bytes data/bytes) (return))
+    (if_yes (== kind "speak/error")
+      (set ahead/error (text data/message "Prefetched speech failed."))
+      (var empty_chunks : (List (Buffer U8)) []) (set ahead/chunks empty_chunks) (return)))
+  (if_yes (== kind "speak/start")
+    (if_yes (!= (text data/id) host/speak_id) (return))
+    (if_yes (!= (integer data/stream) host/speak_stream)
+      (host_error host "Speech started on an unexpected stream.") (return))
+    (if_yes (|| (!= (text data/format/encoding) "s16le") (!= (integer data/format/channels) 1))
+      (host_error host "The host sent an unsupported PCM format.") (return))
+    (var player ($audio/player_open host/context ($to_float ($to_int (* ($to_float (integer data/format/rate)) host/speed)))
+      (fn [message : Str] : Void (host_error host message))))
+    (set host/player player) (set host/speak_sequence 0) (set host/received 0) (set host/speak_ended false)
+    ($audio/player_on_start player (fn [] : Void
+      (if_yes (! host/closed)
+        (var now ($to_int ($time/now)))
+        (send host {^type "latency" ^kind "output" ^id host/speak_id ^elapsed_ms (- now host/speak_requested_ms)
+          ^client_started_ms host/speak_requested_ms ^client_first_frame_ms host/speak_first_ms ^finished_ms now})
+        (host/callback "speak/started" {^id host/speak_id}))))
+    ($audio/player_on_drain player (fn [] : Void (player_credit host)))
+    (return))
+  (if_yes (== kind "speak/end")
+    (if_yes (== (text data/id) host/speak_id)
+      (if_yes (!= (integer data/bytes) host/received) (host_error host "Speech ended with missing audio.") (return))
+      (set host/speak_ended true) (player_credit host))
+    (return))
+  (if_yes (== kind "speak/error")
+    (if_yes (== (text data/id) host/speak_id)
+      (cancel_output host) (host/callback kind data))
+    (return))
+  (if_yes (|| (== kind "transcript/partial") (== kind "transcript/final") (== kind "capture/error"))
+    (if_yes (&& (== kind "capture/error") (== (text data/id) host/capture_id))
+      (stop_handsfree host))
+    (if_yes (&& (== kind "transcript/final") (! ($absent? data/timing/client/released_ms)))
+      (var released (integer data/timing/client/released_ms))
+      (var received ($to_int ($time/now)))
+      (if_yes (&& (> released 0) (>= received released))
+        (send host {^type "latency" ^kind "capture_final" ^id (text data/id)
+          ^elapsed_ms (- received released) ^finished_ms received})))
+    # The plugin's ordered utterance state owns all finalizing ids. Closing one
+    # capture must not prevent an earlier utterance from finishing later.
+    (host/callback kind data)))
+
+(fn bytes [host : HostAudio, frame : (Buffer U8)] : Void
+  (if_yes host/closed (return))
+  (if_yes (|| (< frame/.len 11) (> frame/.len 65545) (!= (// (- frame/.len 9) 2) 0)
+              (!= (frame .get 0) 2))
+    (host_error host "The voice socket sent an invalid PCM frame.") (return))
+  (if_yes (&& (! ($absent? host/ahead)) (== (read_u32 frame 1) (integer host/ahead/stream)))
+    (var ahead : PropMap host/ahead)
+    (if_yes (|| ($absent? ahead/format) (!= (read_u32 frame 5) (integer ahead/sequence))
+                (> (+ (integer ahead/received) (- frame/.len 9)) (* (integer ahead/format/rate) 4)))
+      (host_error host "Prefetched PCM is out of sequence or exceeds two seconds.") (return))
+    (var chunks : (List (Buffer U8)) ahead/chunks)
+    (if_yes (== (integer ahead/sequence) 0) (set ahead/first_frame_ms ($to_int ($time/now))))
+    (chunks .push (frame_pcm frame))
+    (set ahead/sequence (+ (integer ahead/sequence) 1))
+    (set ahead/received (+ (integer ahead/received) (- frame/.len 9)))
+    (return))
+  (if_yes (!= (read_u32 frame 1) host/speak_stream) (return))
+  (if_yes (|| ($absent? host/player) (!= (read_u32 frame 5) host/speak_sequence))
+    (host_error host "Speech audio arrived out of sequence.") (return))
+  (set host/speak_sequence (+ host/speak_sequence 1))
+  (if_yes (== host/received 0) (set host/speak_first_ms ($to_int ($time/now))))
+  (set host/received (+ host/received (- frame/.len 9)))
+  (var player : EventTarget host/player)
+  ($audio/player_push player (frame_pcm frame)))
+
+(fn credit_timer [host : HostAudio] : Void
+  ($time/after 20.0 (fn [] : Void
+    (if_yes host/closed (return))
+    (player_credit host) (credit_timer host))))
+
+(fn voice_socket [] : EventTarget
+  (var parts : (List Str) (str/split ($browser/origin) "://"))
+  (var url ($to_str (if (== parts/0 "https") "wss" "ws") "://" parts/1 "/api/v8/voice"))
+  ($ws/connect_protocol url "gene-harness-voice.1"))
+
+(fn attach_socket [host : HostAudio] : Void
+  (var socket host/socket)
+  (set host/epoch (+ host/epoch 1))
+  (var epoch host/epoch)
+  ($ws/on_open socket (fn [] : Void
+    (if_yes (|| host/closed (!= epoch host/epoch)) (return))
+    (send host {^type "hello" ^csrf host/csrf ^client_id host/client_id ^formats ["s16le"]})))
+  ($ws/on_text socket (fn [value : Str] : Void
+    (if_yes (|| host/closed (!= epoch host/epoch)) (return))
+    (try (control host ($json/parse value)) catch Any (host_error host "The host sent an invalid voice control frame."))))
+  ($ws/on_bytes socket (fn [frame : (Buffer U8)] : Void
+    (if_yes (== epoch host/epoch) (bytes host frame))))
+  ($ws/on_close socket (fn [] : Void
+    (if_yes (|| host/closed (!= epoch host/epoch)) (return))
+    (set host/ready false) (stop_handsfree host) (cancel_output host)
+    (set host/retries (+ host/retries 1))
+    (if_yes (>= host/retries 4)
+      (host_error host "Voice could not reconnect. Enable it again; typed input stays available.") (return))
+    (host/callback "host/reconnecting" {})
+    ($time/after 2000.0 (fn [] : Void
+      (if_yes (|| host/closed (!= epoch host/epoch)) (return))
+      (set host/socket (voice_socket)) (attach_socket host)))))
+  ($time/after 5000.0 (fn [] : Void
+    (if_yes (&& (! host/closed) (== epoch host/epoch) (! host/ready)) ($ws/close socket)))))
+
+(fn open_host_audio [context : EventTarget, session : Str, client_id : Str, csrf : Str,
+                     token : Str, output : Bool, input_host : Bool, output_host : Bool,
+                     callback : (Fn [Str Any] Void)] : HostAudio
+  (var socket (voice_socket))
+  (var host (HostAudio ^socket socket ^context context ^!closed ^!ready ^session session
+    ^client_id client_id ^csrf csrf ^token token ^output output ^next 1
+    ^input_host input_host ^output_host output_host ^epoch 0 ^retries 0
+    ^monitor nil ^vad (new_vad) ^level 0.0 ^duplex "half" ^!manual ^!input_paused ^captured 0 ^preroll []
+    ^!external_playback ^suppress_until 0.0
+    ^!raw_input
+    ^capture_started_ms 0 ^capture_first_ms 0 ^capture_released_ms 0 ^capture_speech_end_ms 0 ^speak_requested_ms 0 ^speak_first_ms 0
+    ^ahead nil
+    ^speed 1.0
+    ^capture nil ^capture_id "" ^capture_stream 0 ^capture_sequence 0 ^!capturing
+    ^player nil ^speak_id "" ^speak_stream 0 ^speak_sequence 0 ^!speak_ended ^received 0 ^callback callback))
+  (attach_socket host)
+  (credit_timer host)
+  host)
+
+(fn begin_capture [host : HostAudio, id : Str] : Void
+  (var stream host/next) (set host/next (+ host/next 1))
+  (set host/capture_id id) (set host/capture_stream stream) (set host/capture_sequence 0) (set host/capturing true)
+  (set host/captured 0)
+  (set host/capture_started_ms ($to_int ($time/now))) (set host/capture_first_ms 0) (set host/capture_released_ms 0)
+  (set host/capture_speech_end_ms 0)
+  (send host {^type "capture/start" ^id id ^stream stream ^rate 16000 ^channels 1 ^encoding "s16le"}))
+
+(fn send_mic [host : HostAudio, pcm : (Buffer U8)] : Void
+  (if_yes (|| host/closed (! host/capturing)) (return))
+  (if_yes (|| (! ($ws/open? host/socket)) (> ($ws/buffered host/socket) 65536.0))
+    (host_error host "Audio capture stopped because the connection could not keep up.") (return))
+  (if_yes (> (+ host/captured pcm/.len) 3840000)
+    (var id host/capture_id) (cancel_input host)
+    (host/callback "capture/error" {^id id ^message "The recording reached its 120-second limit."}) (return))
+  ($ws/send_bytes host/socket (pack_pcm 1 host/capture_stream host/capture_sequence pcm))
+  (var first (== host/captured 0))
+  (set host/captured (+ host/captured pcm/.len))
+  (if_yes (>= host/level 0.015) (set host/capture_speech_end_ms ($to_int ($time/now))))
+  (set host/capture_sequence (+ host/capture_sequence 1))
+  (if_yes first
+    (set host/capture_first_ms ($to_int ($time/now)))
+    (host/callback "capture/started" {^id host/capture_id})))
+
+(fn open_capture [host : HostAudio, frame : (Fn [(Buffer U8)] Void), level : (Fn [F64] Void), error : (Fn [Str] Void)] : EventTarget
+  (if host/raw_input
+    ($audio/capture_open_raw host/context 16000.0 20.0 frame level error)
+    ($audio/capture_open host/context 16000.0 20.0 frame level error)))
+
+(fn start_host_capture [host : HostAudio, id : Str, level : (Fn [F64] Void)] : Bool
+  (if_yes (|| host/closed (! host/ready) host/capturing) (return false))
+  (begin_capture host id)
+  (set host/manual true)
+  (if_not ($absent? host/monitor) (return true))
+  (var frame (fn [pcm : (Buffer U8)] : Void
+      (if_yes (|| host/closed (!= id host/capture_id)) (return))
+      (send_mic host pcm)))
+  (var error (fn [message : Str] : Void
+      (if_yes (|| host/closed (!= id host/capture_id)) (return))
+      (cancel_input host) (host/callback "capture/error" {^id id ^message message})))
+  (set host/capture (open_capture host frame
+    (fn [value : F64] : Void (set host/level value) (level value)) error))
+  true)
+
+(fn send_capture_end [host : HostAudio, id : Str] : Void
+  (send host {^type "capture/end" ^id id ^client_started_ms host/capture_started_ms
+    ^client_first_frame_ms host/capture_first_ms ^client_released_ms host/capture_released_ms
+    ^client_speech_end_ms host/capture_speech_end_ms}))
+
+(fn finish_host_capture [host : HostAudio] : Void
+  (if_yes (! host/capturing) (return))
+  (var id host/capture_id)
+  (set host/capture_released_ms ($to_int ($time/now)))
+  (if_not ($absent? host/monitor)
+    (send_capture_end host id)
+    (set host/capturing false) (set host/capture_id "") (set host/manual false)
+    (set host/preroll []) (reset_vad host/vad)
+    (host/callback "capture/released" {^id id}) (return))
+  (if_yes ($absent? host/capture) (return))
+  (var capture : EventTarget host/capture)
+  ($audio/capture_finish capture (fn [] : Void
+    (if_yes (|| host/closed (!= id host/capture_id)) (return))
+    (send_capture_end host id)
+    (set host/capturing false) (set host/capture_id "") (set host/capture nil)
+    (host/callback "capture/released" {^id id}))))
+
+(fn cancel_host_utterance [host : HostAudio, id : Str] : Void
+  (send host {^type "capture/cancel" ^id id})
+  (if_yes (== host/capture_id id) (cancel_input host)))
+
+(fn handsfree_frame [host : HostAudio, pcm : (Buffer U8)] : Void
+  (if_yes (|| host/closed (! host/ready)) (return))
+  (if_yes host/input_paused (set host/preroll []) (reset_vad host/vad) (return))
+  (if_yes host/manual (send_mic host pcm) (return))
+  (var blocked (&& (== host/duplex "half")
+    (|| (!= host/speak_id "") host/external_playback (< ($time/now) host/suppress_until))))
+  (if_yes blocked
+    (set host/preroll []) (reset_vad host/vad) (return))
+  (if_yes (! host/capturing)
+    (host/preroll .push pcm)
+    (if_yes (> host/preroll/.size 10)
+      (var keep : (List (Buffer U8)) []) (var index 0)
+      (for frame in host/preroll
+        (if_yes (> index 0) (keep .push frame)) (set index (+ index 1)))
+      (set host/preroll keep)))
+  (var signal (vad_step host/vad host/level 20 false))
+  (if_yes (== signal "start")
+    (var started_id ($browser/request_id))
+    (begin_capture host started_id)
+    (host/callback "vad/start" {^id started_id})
+    (if_yes (! host/capturing) (return))
+    (for frame in host/preroll (send_mic host frame))
+    (set host/preroll []) (return))
+  (if_yes host/capturing (send_mic host pcm))
+  (if_yes (&& (== signal "end") host/capturing)
+    (var ended_id host/capture_id)
+    (var duration (/ (* host/captured 1000) 32000))
+    (finish_host_capture host)
+    (host/callback "vad/end" {^id ended_id ^audio_ms duration})))
+
+(fn start_handsfree [host : HostAudio, duplex : Str, level : (Fn [F64] Void)] : Bool
+  (if_yes (|| host/closed (! host/ready) host/capturing) (return false))
+  (set host/duplex duplex)
+  (if_not ($absent? host/monitor) (return true))
+  (reset_vad host/vad) (set host/level 0.0)
+  (set host/monitor (open_capture host
+    (fn [pcm : (Buffer U8)] : Void (handsfree_frame host pcm))
+    (fn [value : F64] : Void (set host/level value) (level value))
+    (fn [message : Str] : Void
+      (if_yes host/closed (return))
+      (var id host/capture_id)
+      (stop_handsfree host)
+      (host/callback "microphone/error" {^id id ^message message}))))
+  true)
+
+(fn prefetch_host_reply [host : HostAudio, reply : Str] : Bool
+  (if_yes (|| host/closed (! host/ready) (== host/speak_id "")) (return false))
+  (if_not ($absent? host/ahead) (return (== (text host/ahead/reply) reply)))
+  (var id ($browser/request_id)) (var stream host/next) (set host/next (+ stream 1))
+  (var chunks : (List (Buffer U8)) [])
+  (set host/ahead {^id id ^stream stream ^reply reply ^chunks chunks ^sequence 0 ^received 0
+    ^!ended ^bytes 0 ^format nil ^error "" ^requested_ms ($to_int ($time/now)) ^first_frame_ms 0})
+  (send host {^type "speak" ^id id ^reply reply ^stream stream})
+  true)
+
+(fn activate_prefetch [host : HostAudio, reply : Str] : Bool
+  (if_yes (|| ($absent? host/ahead) (!= (text host/ahead/reply) reply)) (return false))
+  (var ahead : Any host/ahead)
+  (set host/ahead nil)
+  (set host/speak_id (text ahead/id)) (set host/speak_stream (integer ahead/stream))
+  (set host/speak_requested_ms (integer ahead/requested_ms))
+  (set host/speak_sequence 0) (set host/received 0) (set host/speak_ended false)
+  (if_yes (!= (text ahead/error) "")
+    (control host {^type "speak/error" ^id host/speak_id ^message ahead/error}) (return true))
+  (if_yes ($absent? ahead/format) (return true))
+  (control host {^type "speak/start" ^id host/speak_id ^stream host/speak_stream ^format ahead/format})
+  (if_yes (|| host/closed ($absent? host/player)) (return true))
+  (var player : EventTarget host/player)
+  (var chunks : (List (Buffer U8)) ahead/chunks)
+  (for pcm in chunks ($audio/player_push player pcm))
+  (set host/speak_sequence (integer ahead/sequence)) (set host/received (integer ahead/received))
+  (set host/speak_first_ms (integer ahead/first_frame_ms))
+  (set host/speak_ended (if ($absent? ahead/ended) false ahead/ended))
+  (player_credit host)
+  true)
+
+(fn speak_host_reply [host : HostAudio, reply : Str, speed : F64 = 1.0] : Bool
+  (if_yes (|| host/closed (! host/ready) (!= host/speak_id "")) (return false))
+  (set host/speed speed)
+  (set host/speak_requested_ms ($to_int ($time/now))) (set host/speak_first_ms 0)
+  (if_yes (activate_prefetch host reply) (return true))
+  (if_not ($absent? host/ahead) (cancel_output host))
+  (set host/speak_id ($browser/request_id))
+  (set host/speak_stream host/next) (set host/next (+ host/next 1))
+  (send host {^type "speak" ^id host/speak_id ^reply reply ^stream host/speak_stream})
+  true)
+
+(fn speak_host_announcement [host : HostAudio, kind : Str, count : Int, speed : F64 = 1.0] : Bool
+  (if_yes (|| host/closed (! host/ready) (!= host/speak_id "")) (return false))
+  (if_not ($absent? host/ahead) (cancel_output host))
+  (set host/speed speed)
+  (set host/speak_requested_ms ($to_int ($time/now))) (set host/speak_first_ms 0)
+  (set host/speak_id ($browser/request_id))
+  (set host/speak_stream host/next) (set host/next (+ host/next 1))
+  (send host {^type "speak" ^id host/speak_id ^announcement kind ^count count ^stream host/speak_stream})
+  true)

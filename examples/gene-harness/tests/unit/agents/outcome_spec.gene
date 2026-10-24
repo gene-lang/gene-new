@@ -78,6 +78,32 @@ next"""))
     []
     (assert_raises (fn [] (validate_outcome (new_turn_items 3) (Outcome))) OutcomeError))
 
+  (it "keeps valid final replies when optional audio data is invalid" [t]
+    (let parts [])
+    (repeat i in 2049 (parts .push "x"))
+    (for raw in [5 "" "   " {^wrong true} ($str/join parts "") ($binary/to_str ($binary/from_list [255]))]
+      (let environment (env ^bindings {^Outcome Outcome ^raw raw}))
+      (let value (evaluate_response (quote (Outcome ^^done ^reply "Finished." ^audio_reply raw)) environment))
+      (let validated (validate_outcome t/turn value))
+      ($assert (== validated/kind "done"))
+      ($assert (== validated/outcome/reply "Finished."))
+      ($assert ($absent? validated/outcome/audio_reply)))
+    ($assert (== t/console/.get/.size 6))
+    (for reply in [nil ""]
+      (let value (validate_outcome t/turn (Outcome ^prompt "Continue." ^reply reply ^audio_reply "No textual reply.")))
+      ($assert ($absent? value/outcome/audio_reply)))
+    ($assert (== t/console/.get/.size 8)))
+
+  (it "preserves validated spoken text through every deferred completion" []
+    (for reason in ["composition" "delegation" "media"]
+      (let turn (new_turn_items 1))
+      (if (== reason "composition") (turn/composition_queued .set true))
+      (if (== reason "delegation") (turn/delegation_staged/.get .push {}))
+      (if (== reason "media") (turn/media/.get .push {}))
+      (let value (validate_outcome turn (Outcome ^^done ^reply "Details." ^audio_reply "  Spoken details.  ")))
+      ($assert (== value/kind "continue"))
+      ($assert (== value/outcome/audio_reply "Spoken details."))))
+
   (it
     "finishes and reports discarded appended items"
     [t]

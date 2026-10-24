@@ -5,6 +5,7 @@
 (import ^from "./contract" [protocol_version])
 (import ^from "../notifications/inbox" [inbox_snapshot])
 (import ^from "../runtime/sessions" [view_session leave_session])
+(import [voice_connected voice_disconnected voice_snapshot] ^from "../runtime/voice_state")
 (import $net/http [ws_send ws_close])
 (import $os [monotonic_ms])
 
@@ -61,12 +62,15 @@
       false))
   hub)
 
-(fn add_peer [hub : PushHub, connection, session : Str, expires : Int, ^safe safe : Bool = false]
+(fn add_peer [hub : PushHub, connection, session : Str, expires : Int, ^safe safe : Bool = false, ^client_id client_id : Str = ""]
   (var peer {^connection connection ^session session ^expires expires
-    ^sequence 0 ^!closed ^!viewing ^safe safe})
+    ^sequence 0 ^!closed ^!viewing ^safe safe ^client_id client_id})
   (hub/peers/.get .push peer)
+  (voice_connected hub/host/runtime/voice client_id)
   (try
     (send_frame hub peer {^type "status" ^session "" ^data (host_status ^safe safe hub/host)})
+    (if_not safe
+      (send_frame hub peer {^type "voice/state" ^session "" ^data (voice_snapshot hub/host/runtime/voice)}))
     (if hub/host/runtime/restarted
       (send_frame hub peer {^type "restarted" ^session "" ^data {^message "Harness restarted."}}))
     (send_frame hub peer {^type "session/list" ^session "" ^data (list_sessions hub/host)})
@@ -98,6 +102,7 @@
   (for peer in hub/peers/.get
     (if (same? peer/connection connection)
       (then
+        (voice_disconnected hub/host/runtime/voice (?? peer/client_id ""))
         (peer .put "closed" true)
         (if_yes peer/viewing
           (leave_session hub/host/sessions peer/session)

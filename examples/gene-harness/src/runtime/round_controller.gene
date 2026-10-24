@@ -1,4 +1,5 @@
 (mod round_controller)
+(import [normalize_voice_input] ^from "./voice_state")
 (import [open_media_store validate_media_refs] ^from "../storage/media")
 (import [prompt_limit] ^from "../web/contract")
 (import ^from "../agents/turn_loop" [run_round transcript finish_turn])
@@ -238,7 +239,7 @@
     ; .put session watcher)
   receipt)
 
-(fn submit_round [controller : RoundController, session : Str, request_id : Str, sequence : Int, text : Str, ^initiator initiator : Str = "user", ^on_admit on_admit = nil, ^media media = [], ^card card = nil]
+(fn submit_round [controller : RoundController, session : Str, request_id : Str, sequence : Int, text : Str, ^initiator initiator : Str = "user", ^on_admit on_admit = nil, ^media media = [], ^card card = nil, ^input input = nil]
   (with_body_use
     controller/runtime
     (fn []
@@ -246,14 +247,15 @@
         controller/runtime/sessions
         $"round/${session}"
         (fn []
-          (submit_round_impl ^initiator initiator ^on_admit on_admit ^media media ^card card
+          (submit_round_impl ^initiator initiator ^on_admit on_admit ^media media ^card card ^input input
             controller
             session
             request_id
             sequence
             text))))))
 
-(fn submit_round_impl [controller : RoundController, session : Str, request_id : Str, sequence : Int, text : Str, ^initiator initiator : Str = "user", ^on_admit on_admit = nil, ^media media = [], ^card card = nil, ^limits limits = nil, ^delegation delegation = nil]
+(fn submit_round_impl [controller : RoundController, session : Str, request_id : Str, sequence : Int, text : Str, ^initiator initiator : Str = "user", ^on_admit on_admit = nil, ^media media = [], ^card card = nil, ^limits limits = nil, ^delegation delegation = nil, ^input input = nil]
+  (let checked_input (normalize_voice_input input))
   (require_chat controller/runtime/modes session)
   (if (> ($str/byte_size text) prompt_limit)
     (fail (RoundError ^code "too_large" ^message "Message text exceeds 64 KiB; attach the document instead.")))
@@ -266,8 +268,12 @@
   # resolves to the payload admitted the first time.
   (let card_ref (if ($absent? card) nil
     {^id card/id ^definition_revision card/definition_revision ^revision card/revision}))
-  (let digest ($crypto/sha256 (if (&& media/.empty? ($absent? card_ref)) text
-    ($serde/write_data {^text text ^media media ^card card_ref}))))
+  (if (&& (! ($absent? checked_input)) (|| (! media/.empty?) (! ($absent? card_ref))))
+    (fail (RoundError ^code "invalid_request" ^message "Voice input does not attach composer media or cards.")))
+  (let digest ($crypto/sha256 (if ($absent? checked_input)
+    (if (&& media/.empty? ($absent? card_ref)) text
+      ($serde/write_data {^text text ^media media ^card card_ref}))
+    ($serde/write_data {^text text ^media media ^card card_ref ^input checked_input}))))
   (for old in state/receipts
     (if (|| (== old/request_id request_id) (== old/submission_seq sequence))
       (then
@@ -334,6 +340,7 @@
       ^turn_count 0
       ^accepted_at ($to_str ($now))})
   (if_not attachments/.empty? (receipt .put "media" attachments))
+  (if_not ($absent? checked_input) (receipt .put "input" checked_input))
   (if_not ($absent? limits) (receipt .put "effective_limits" (copy_data limits)))
   (if_not ($absent? delegation) (receipt .put "delegation" (copy_data delegation)))
   (if (!= initiator "user")

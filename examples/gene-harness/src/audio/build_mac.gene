@@ -1,0 +1,14 @@
+# Native SDK compilation is the platform bootstrap; the driver remains Gene.
+(fn main [args] : Int
+  (let directory ($path/parent this_mod/.path))
+  (let output $"${($os/launch_dir)}/tmp/harness-speech-mac")
+  (let sdk (?? ($os/env? "GENE_MAC_SPEECH_SDK")
+    ($str/trim (/stdout ($os/exec "xcrun" "--sdk" "macosx" "--show-sdk-path")))))
+  (let arch ($str/trim (/stdout ($os/exec "uname" "-m"))))
+  ($fs/make_dir $"${($os/launch_dir)}/tmp")
+  (let result ($os/exec "xcrun" "swiftc" "-parse-as-library" "-swift-version" "5"
+    "-target" $"${arch}-apple-macos26.0" "-sdk" sdk
+    "-module-cache-path" $"${($os/launch_dir)}/tmp/swift-audio-cache"
+    "-O" "-o" output $"${directory}/speech_mac.swift" ^timeout_ms 120000 ^max_bytes 65536))
+  (if (!= result/status 0) ($println result/stderr) ($println output))
+  result/status)

@@ -1,0 +1,56 @@
+(import $test [describe it run])
+(import $io [AsyncReader IoResource])
+(import [AudioError wav_encode] ^from "./audio" ^pkg "audio")
+(import [elevenlabs_synthesize whisper_transcribe] ^from "../../../src/audio/engines")
+
+(type FixtureBody ^props {^chunks Any ^cursor Any ^closed Any})
+(impl AsyncReader for FixtureBody
+  (message read [max_bytes : Int] : (Task Bytes? Error)
+    (spawn
+      (if (>= self/cursor/.get self/chunks/.size) nil
+        (do (let cursor self/cursor/.get) (self/cursor .set (+ cursor 1)) self/chunks/%cursor)))))
+(impl IoResource for FixtureBody
+  (message close [] : Nil (self/closed .set true) nil)
+  (message wait_closed [] : (Task Nil Error) (spawn nil)))
+
+(type FixtureHttp ^props {^requests Any ^body Any ^status Int}
+  (message stream [^method method : Str, ^url url : Str, ^headers headers,
+                   ^body body : Str, ^timeout_ms timeout_ms : Int, ^max_bytes max_bytes : Int]
+    (self/requests/.get .push {^method method ^url url ^headers headers ^body body})
+    (spawn {^status self/status ^body self/body}))
+  (message request [^method method : Str, ^url url : Str, ^headers headers,
+                    ^body body : Bytes, ^timeout_ms timeout_ms : Int, ^max_bytes max_bytes : Int]
+    (self/requests/.get .push {^method method ^url url ^headers headers ^body body})
+    (spawn {^status self/status ^body ($binary/from_str "{\"text\":\"fixture transcript\"}")})))
+
+(describe "Speech HTTP boundaries"
+  (it "preserves streamed PCM bytes and closes the response body on success and HTTP failure" []
+    (for status in [200 503]
+      (let reader (FixtureBody ^chunks [($binary/from_list [0]) ($binary/from_list [128 255 127])]
+        ^cursor ($cell 0) ^closed ($cell false)))
+      (let requests ($cell []))
+      (let client (FixtureHttp ^requests requests ^body reader ^status status))
+      (let chunks [])
+      (let failed (try
+        (elevenlabs_synthesize {^client client ^key "fixture-key"} "Hello." {^voice "fixture voice"}
+          (fn [bytes : Bytes] (chunks .push bytes)))
+        false
+        catch AudioError true))
+      ($assert (== failed (!= status 200)))
+      ($assert reader/closed/.get)
+      ($assert (== requests/.get/0/headers/xi-api-key "fixture-key"))
+      ($assert ($str/ends_with? requests/.get/0/url "/fixture%20voice/stream?output_format=pcm_24000"))
+      (if (== status 200)
+        ($assert (== ($binary/concat chunks) ($binary/from_list [0 128 255 127])))
+        ($assert (== chunks/.size 0)))))
+  (it "uploads an in-memory WAV to a reused whisper client without text encoding PCM" []
+    (let requests ($cell []))
+    (let client (FixtureHttp ^requests requests ^body nil ^status 200))
+    (let pcm ($binary/from_list [0 128 255 127]))
+    ($assert (== (whisper_transcribe {^client client ^url "http://127.0.0.1:1/inference"}
+      pcm {^language "en" ^context "fixture context"}) "fixture transcript"))
+    (let sent requests/.get/0)
+    ($assert ($str/starts_with? sent/headers/content-type "multipart/form-data; boundary=gene-audio-"))
+    ($assert ($str/contains? ($binary/to_str sent/body) ($binary/to_str (wav_encode pcm 16000))))))
+
+(fn main [args] : Int (/exit_code (run)))

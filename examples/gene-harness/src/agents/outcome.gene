@@ -2,7 +2,7 @@
 (import ^from "../runtime/questions" [validate_questions])
 (import [normalize_delegation_wait delegation_result_data] ^from "../runtime/delegation_contract")
 
-(type Outcome ^props {^done Bool? ^prompt Any? ^reply Str? ^questions Any? ^attention Bool?
+(type Outcome ^props {^done Bool? ^prompt Any? ^reply Str? ^audio_reply Any? ^questions Any? ^attention Bool?
   ^wait Any? ^result Any? ^wake_on_questions Bool?})
 (type OutcomeError ^props {^message Str ^response_line Int?} ^impl [Error])
 (impl Error for OutcomeError)
@@ -87,8 +87,23 @@
     (!= value "")
     true))
 
+(fn normalize_audio_reply [turn, value]
+  (let raw value/audio_reply)
+  (if ($absent? raw) (return value))
+  (var audio nil)
+  (if (&& (== ($head raw) Str) (<= ($str/byte_size raw) 2048)
+          (try ($binary/decode_utf8 ($binary/from_str raw)) true catch Any false)
+          (! ($absent? value/reply)) (!= ($str/trim value/reply) "") (!= ($str/trim raw) ""))
+    (set audio ($str/trim raw))
+    (if_not ($absent? turn/console)
+      (turn/console "Ignored audio_reply: use at most 2 KiB of nonempty text alongside reply.\n")))
+  # Copy rather than mutate: a model may return a frozen Outcome.
+  (Outcome ^done value/done ^prompt value/prompt ^reply value/reply ^audio_reply audio
+    ^questions value/questions ^attention value/attention ^wait value/wait
+    ^result value/result ^wake_on_questions value/wake_on_questions))
+
 (fn validate_outcome [turn, value, ^validators validators = {}, ^renderers renderers = {}]
-  (let outcome (if (== ($head value) Outcome) value (Outcome ^prompt value)))
+  (let outcome (normalize_audio_reply turn (if (== ($head value) Outcome) value (Outcome ^prompt value))))
   (if_not ($absent? outcome/result)
     (if (!= outcome/done true) (fail (OutcomeError ^message "result requires a done Outcome.")))
     (delegation_result_data outcome/result))
@@ -106,14 +121,14 @@
       (if (|| (!= outcome/prompt void) (!= outcome/questions void))
         (fail (OutcomeError ^message "done Outcome rejects prompt and questions")))
       (if turn/composition_queued/.get
-        (return {^kind "continue" ^outcome (Outcome ^reply outcome/reply)
+        (return {^kind "continue" ^outcome (Outcome ^reply outcome/reply ^audio_reply outcome/audio_reply)
           ^questions nil ^^rejected_done}))
       (if (|| (! turn/delegation_staged/.get/.empty?)
               (&& (! ($absent? turn/delegation_guard)) (turn/delegation_guard)))
-        (return {^kind "continue" ^outcome (Outcome ^reply outcome/reply)
+        (return {^kind "continue" ^outcome (Outcome ^reply outcome/reply ^audio_reply outcome/audio_reply)
           ^questions nil ^^rejected_delegation_done}))
       (if_not turn/media/.get/.empty?
-        (return {^kind "continue" ^outcome (Outcome ^reply outcome/reply)
+        (return {^kind "continue" ^outcome (Outcome ^reply outcome/reply ^audio_reply outcome/audio_reply)
           ^questions nil ^^rejected_done}))
       (if (> ($size turn/items/.get) 0)
         (then

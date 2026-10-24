@@ -49,7 +49,11 @@
     (let fields ($map (schemas .get name) quoted))
     (let joined ($str/join fields " "))
     (let label (quoted name))
-    (lines .push $"(fn validate_${name}_event [payload]\n  (require_event_fields payload [${joined}] ${label}))")
+    (let optional_reply
+      (if (== name "reply")
+        "\n  (if_not ($absent? payload/audio_reply)\n    (if (|| (!= ($head payload/audio_reply) Str) (> ($str/byte_size payload/audio_reply) 2048))\n      ($panic \"reply audio_reply must be a string of at most 2 KiB\")))"
+        ""))
+    (lines .push $"(fn validate_${name}_event [payload]\n  (require_event_fields payload [${joined}] ${label})${optional_reply}\n  payload)")
     (lines .push ""))
   (lines .push "(var core_event_types")
   (var index 0)

@@ -11324,6 +11324,8 @@ proc registerStdlibNamespaces(root: Scope) =
                                                 biHttpWsAccept))
   httpScope.define("ws_send", builtinNativeCallFn("http/ws_send", biHttpWsSend,
                                               acceptsNamed = false))
+  httpScope.define("ws_try_send", builtinNativeCallFn("http/ws_try_send",
+                                                  biHttpWsTrySend))
   httpScope.define("ws_close", builtinNativeCallFn("http/ws_close", biHttpWsClose,
                                                acceptsNamed = false))
   httpScope.define("ws_queued", builtinNativeCallFn("http/ws_queued",

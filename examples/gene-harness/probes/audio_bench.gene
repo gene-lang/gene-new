@@ -1,0 +1,131 @@
+# Browser media/API integration, with a scripted model and no desktop UI actions.
+# Usage (with --snapshot): WORKSPACE CHROME_EXECUTABLE FIXTURE_WAV [smoke|processed|handsfree|full] [whisper_local|macos]
+(import [main : serve_web] ^from "../src/web/server")
+(import [Plugin PluginHost] ^from "../src/plugin_api")
+(import [Profile] ^from "../src/profiles/profile")
+(import [baseline_profile] ^from "../src/profiles/baseline")
+(import [provider_scripted] ^from "../src/builtin/provider_scripted")
+(import [module_dir] ^from "../src/kernel")
+(import [connect api connection_link] ^from "../src/cli/client")
+(import [audio_error] ^from "./audio" ^pkg "audio")
+
+(fn bench_profile [mode : Str, ^recognizer recognizer : Str = "whisper_local"]
+  (let root (module_dir this_mod/.path))
+  (let entry (if (== mode "full") "audio_bench_full.gene"
+    (if (== mode "handsfree") "audio_bench_handsfree.gene"
+      (if (== mode "processed") "audio_bench_processed.gene" "audio_bench_smoke.gene"))))
+  (let asset ($web/load $"${root}/../tests/fixtures/${entry}"))
+  (let probe (Plugin ^id "audio_bench" ^provides [["browser_clients" "audio_bench"]]
+    ^activate (fn [host]
+      (host .PluginHost:contribute "browser_clients"
+        {^name "audio_bench" ^title "Real browser audio benchmark" ^asset asset}))))
+  (let base (baseline_profile))
+  (let plugins []) (for plugin in base/plugins (plugins .push plugin))
+  (let responses [])
+  (repeat response_index in 64 (responses .push "(Outcome ^^done ^reply \"The audio check is ready.\")"))
+  (plugins .push (provider_scripted responses)) (plugins .push probe)
+  (Profile ^name "audio_bench" ^plugins plugins ^provider "scripted" ^limits base/limits ^requires base/requires
+    ^voice {^recognizer recognizer ^synthesizer "piper"}))
+
+(fn summary [values]
+  (if (== values/.size 0) (return {^count 0}))
+  (let ordered ($order/sort_by values (fn [value] value)))
+  (let middle (- (/ (+ (* ordered/.size 50) 99) 100) 1))
+  (let upper (- (/ (+ (* ordered/.size 95) 99) 100) 1))
+  {^count ordered/.size ^p50_ms ordered/%middle ^p95_ms ordered/%upper ^samples_ms values})
+
+(fn summarize [timings, pairs : Int]
+  (let input []) (let output []) (let voice_loop []) (let typed_loop [])
+  (let by_pair {})
+  (for timing in timings
+    (if (== timing/kind "error") (audio_error $"Browser fixture failed at ${timing/identity}."))
+    (if (== timing/kind "input") (input .push timing/elapsed_ms))
+    (if (== timing/kind "output") (output .push timing/elapsed_ms))
+    (if (== timing/kind "loop")
+      (if (== timing/input_kind "voice") (voice_loop .push timing/elapsed_ms) (typed_loop .push timing/elapsed_ms)))
+    (if_yes (== timing/kind "round")
+      (let key (($str/split timing/identity "/") .first))
+      (let pair (?? (by_pair .get key) {}))
+      (pair .put timing/input_kind timing/elapsed_ms)
+      (by_pair .put key pair)))
+  (let added [])
+  (repeat pair_index in pairs
+    (let pair (by_pair .get ($to_str (+ pair_index 1))))
+    (if (|| ($absent? pair/voice) ($absent? pair/typed)) (audio_error "A benchmark pair is incomplete."))
+    (added .push (- pair/voice pair/typed)))
+  {^pairs pairs ^input (summary input) ^output (summary output)
+   ^loop_voice (summary voice_loop) ^loop_typed (summary typed_loop)
+   ^paired_added (summary added) ^timings timings
+   ^note "First-rendered-sample callback timings; no claim of audible hardware or acoustic echo qualification."})
+
+(fn main [argv] : Int
+  (let args []) (for arg in argv (args .push ($to_str arg)))
+  (if (< args/.size 3) (audio_error "Expected WORKSPACE CHROME_EXECUTABLE FIXTURE_WAV [smoke|full]."))
+  (let workspace args/0) (let browser_path args/1) (let fixture_path args/2)
+  (if ($fs/exists? workspace) (audio_error "Use a new workspace for each benchmark run."))
+  ($fs/make_dir workspace)
+  (let root ($fs/real_path workspace))
+  (let mode (if (> args/.size 3) args/3 "full"))
+  (if_not (["smoke" "processed" "handsfree" "full"] .contains? mode) (audio_error "Unknown benchmark mode."))
+  (let recognizer (if (> args/.size 4) args/4 "whisper_local"))
+  (if_not (["whisper_local" "macos"] .contains? recognizer) (audio_error "Expected whisper_local or macos recognizer."))
+  (let pairs (if (== mode "full") 20 2))
+  (var browser nil) (var client nil)
+  (let application ($pkg/application))
+  (let entry ($path/join application/source_root "probes" "audio_bench_host.gene"))
+  (let server ($os/exec_async ($os/executable_path) "run" "--snapshot" entry mode recognizer
+    "--workspace" root "--port" "0" "--offline" ^timeout_ms 240000 ^max_bytes 16384))
+  (try
+    (let ready_by (+ ($os/monotonic_ms) 90000))
+    (while ($absent? client)
+      (if_yes server/.done?
+        (let result (await server))
+        (audio_error $"Benchmark host exited: ${result/stderr}${result/stdout}"))
+      (if (> ($os/monotonic_ms) ready_by) (audio_error "Benchmark host did not become ready."))
+      (set client (try (connect root) catch Any nil))
+      (if ($absent? client) ($sleep 20)))
+    (let browser_args ["--headless=new" "--mute-audio" "--no-first-run" "--no-default-browser-check"
+      "--disable-background-networking" "--enable-logging" $"--log-file=${root}/chrome.log"
+      "--use-fake-device-for-media-stream" "--use-fake-ui-for-media-stream"
+      "--autoplay-policy=no-user-gesture-required" $"--user-data-dir=${root}/chrome-profile"
+      $"--use-file-for-fake-audio-capture=${fixture_path}%noloop"])
+    # macOS otherwise denies the audio utility process access to a fake WAV.
+    # This opt-in is confined to the disposable, local fixture browser. The
+    # renderer/browser sandboxes and ordinary browser profiles stay enabled.
+    (if (== ($os/get_env "GENE_AUDIO_BENCH_FILE_ACCESS" "") "1")
+      (browser_args .push "--disable-features=AudioServiceSandbox"))
+    (browser_args .push (connection_link root))
+    (set browser ($os/exec_async browser_path browser_args... ^max_bytes 16384))
+    (let due (+ ($os/monotonic_ms) 180000))
+    (var session "") (var completed 0) (var timings [])
+    (loop
+      (if browser/.done? (audio_error "Chrome exited before the audio fixture completed."))
+      (if (> ($os/monotonic_ms) due) (audio_error "Browser audio benchmark timed out."))
+      (if (== session "")
+        (then
+          (let sessions (/sessions (api client "GET" "/sessions")))
+          (if (> sessions/.size 0) (set session sessions/0/id)))
+        (else
+          (set timings (/timings (api client "GET" $"/sessions/${session}/voice/latency")))
+          (for timing in timings
+            (if (== timing/kind "error") (audio_error $"Browser fixture failed at ${timing/identity}.")))
+          (let rounds ($size ($filter timings (fn [timing] (== timing/kind "round")))))
+          (if_yes (> rounds completed)
+            (set completed rounds) ($println $"Audio benchmark: ${completed}/${(* pairs 2)} rounds."))
+          (if (>= timings/.size (* pairs 7)) (break))))
+      ($sleep 200))
+    (let result (summarize timings pairs))
+    (result .put "recognizer" recognizer)
+    (result .put "capture_mode" (if (== mode "handsfree") "handsfree" "push_to_talk"))
+    (result .put "raw_input" (== mode "smoke"))
+    (result .put "fake_input" true) (result .put "muted_output" true)
+    ($fs/write_text $"${root}/audio-bench-results.json" ($json/stringify result))
+    ($println ($json/stringify (result .assoc "timings" nil)))
+    0
+  ensure
+    (if_not ($absent? browser) browser/.cancel browser/.join)
+    (if_not ($absent? client) (try (api client "POST" "/control" {^action "stop" ^^confirm}) catch Any nil))
+    (let stopped_by (+ ($os/monotonic_ms) 10000))
+    (while (&& (! server/.done?) (< ($os/monotonic_ms) stopped_by)) ($sleep 20))
+    (if_not server/.done? server/.cancel)
+    server/.join))

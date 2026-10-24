@@ -1,0 +1,4 @@
+{^format 1 ^name "genex/audio" ^version "0.1.0"
+ ^description "Bounded PCM and WAV codecs for speech and audio transports"
+ ^library {^entry "src/audio.gene"}
+ ^files {^include ["package.gene" "README.md" "src/**"]}}

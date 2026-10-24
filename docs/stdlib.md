@@ -682,7 +682,12 @@ access/error hooks, actor-pool dispatch, and WebSockets. `ws_accept` takes
 `^subprotocol` to select one the client offered (browsers fail a handshake
 that offered one and got none), and `ws_queued` reports how many bytes a peer
 has not yet accepted, so a sender can stop producing replaceable data before
-the bounded outbound queue drops anything. In the web profile,
+the bounded outbound queue drops anything. For ordered, non-replaceable data,
+`(ws_try_send conn text_or_bytes ^max_bytes 1048576)` atomically enqueues without
+dropping earlier frames: it returns `1` when accepted, `0` when the 256-frame
+queue or unsent-byte budget is full, and `-1` when closed. A caller retries the
+same payload after yielding; a payload larger than its byte budget cannot fit.
+The budget includes frames already moved into the socket's write buffer. In the web profile,
 `$ws/connect_protocol url protocol` offers that subprotocol. A sleeping request
 handler can suspend without blocking the other requests. TLS and broader
 production hardening remain future work.

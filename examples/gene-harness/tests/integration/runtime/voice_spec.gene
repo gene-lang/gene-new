@@ -1,0 +1,65 @@
+(import $test [describe it])
+(import [isolated run_spec test_service] ^from "../../support")
+(import [close_session_service create_session event_record] ^from "../../../src/web/session_service")
+(import [submit_round round_receipt RoundError] ^from "../../../src/runtime/round_controller")
+(import [claim_voice release_voice] ^from "../../../src/runtime/voice_state")
+(import [events_for] ^from "../../../src/storage/state")
+
+(describe "Voice round integration"
+  (it "retains input metadata, spoken replies and request-only guidance without changing instructions" []
+    (isolated this_mod/.path "retains input metadata, spoken replies and request-only guidance without changing instructions"
+      (fn [workspace]
+        (let calls ($cell []))
+        (let service (test_service ^workspace workspace ^provider (fn [request]
+          (calls/.get .push request)
+          (if (== calls/.get/.size 1)
+            "(Outcome ^reply \"Checking the files.\" ^prompt \"finish\")"
+            (if (== calls/.get/.size 2)
+              "(Outcome ^^done ^reply \"Details are on screen.\" ^audio_reply \"The change is ready.\")"
+              "(Outcome ^^done ^reply \"A valid typed reply.\" ^audio_reply 5)")))))
+        (try
+          (let session (create_session service))
+          (let claim (claim_voice service/runtime/voice session/id "page" true))
+          (let input {^kind "voice" ^recognizer "fixture" ^audio_ms 300})
+          (let first (submit_round ^input input service/controller session/id "voice-request" 1 "/help"))
+          (service/controller/watchers/.get .get session/id ; .join)
+          (let finished (round_receipt service/controller session/id first/id))
+          ($assert (== finished/state "done") ($to_str finished))
+          ($assert (== finished/input input))
+          ($assert (== finished/prompt "/help") "Voice was parsed as a slash command.")
+          (let replies ($filter (events_for service/events "session" session/id) (fn [event] (== event/type "reply"))))
+          ($assert (== replies/.size 2))
+          ($assert (== replies/1/payload/audio_reply "The change is ready."))
+          ($assert (== (/speech (event_record session/id replies/1)) "The change is ready."))
+          ($assert ($str/contains? (/content ($last calls/.get/0/messages)) "[harness_voice]"))
+          (for event in (events_for service/events "session" session/id)
+            (if (== event/type "turn/request")
+              ($assert (! ($str/contains? event/payload/settled "[harness_voice]")))))
+          (release_voice service/runtime/voice "page" claim/token)
+          (let second (submit_round service/controller session/id "typed-request" 2 "Next"))
+          (service/controller/watchers/.get .get session/id ; .join)
+          ($assert (== (/state (round_receipt service/controller session/id second/id)) "done"))
+          (let last_call ($last calls/.get))
+          ($assert (== calls/.get/0/messages/0/content last_call/messages/0/content))
+          ($assert (! ($str/contains? (/content ($last last_call/messages)) "[harness_voice]")))
+          (let last_reply ($last ($filter (events_for service/events "session" session/id) (fn [event] (== event/type "reply")))))
+          ($assert (== last_reply/payload/text "A valid typed reply."))
+          ($assert ($absent? last_reply/payload/audio_reply))
+        ensure (close_session_service service)))))
+  (it "includes voice input in idempotency identity and keeps ordinary receipts compatible" []
+    (isolated this_mod/.path "includes voice input in idempotency identity and keeps ordinary receipts compatible"
+      (fn [workspace]
+        (let service (test_service ^workspace workspace ^provider (fn [request] "(Outcome ^^done ^reply \"Done.\")")))
+        (try
+          (let session (create_session service))
+          (let input {^kind "voice" ^recognizer "fixture" ^audio_ms 100})
+          (let first (submit_round ^input input service/controller session/id "id" 1 "Text"))
+          (service/controller/watchers/.get .get session/id ; .join)
+          ($assert (== (/id (submit_round ^input input service/controller session/id "id" 1 "Text")) first/id))
+          ($assert (try
+            (submit_round ^input {^kind "voice" ^recognizer "fixture" ^audio_ms 101} service/controller session/id "id" 1 "Text")
+            false
+          catch RoundError (== $err/code "submission_conflict")))
+        ensure (close_session_service service))))))
+
+(fn main [args] : Int (run_spec args))
