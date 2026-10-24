@@ -19,8 +19,8 @@ Object.assign(globalThis, {
     bytes(value) { this.dispatchEvent(new MessageEvent('message', {data: value.buffer})); }
   },
   AudioWorkletNode: class extends EventTarget {
-    constructor(context, name) {
-      super(); this.name = name; nodes.push(this);
+    constructor(context, name, options) {
+      super(); this.name = name; this.options = options; nodes.push(this);
       this.port = {messages: [], postMessage(value) { this.messages.push(value); }, close() {}};
     }
     connect() {} disconnect() { this.disconnected = true; }
@@ -78,6 +78,7 @@ socket.text({type: 'speak/start', id: speak.id, stream: speak.stream,
   format: {rate: 24000, channels: 1, encoding: 's16le'}});
 await new Promise(resolve => setImmediate(resolve));
 const player = nodes.at(-1);
+assert.equal(player.options.processorOptions.rate, 24000, 'backlog playback must preserve the native PCM rate and pitch');
 const frame = new Uint8Array(4809), view = new DataView(frame.buffer);
 frame[0] = 2; view.setUint32(1, speak.stream, true); view.setUint32(5, 0, true);
 socket.bytes(frame);
@@ -91,6 +92,9 @@ const nodeCountBeforePrefetch = nodes.length;
 const aheadFrame = new Uint8Array(frame);
 new DataView(aheadFrame.buffer).setUint32(1, prefetched.stream, true);
 socket.bytes(aheadFrame);
+module.player_credit(host);
+assert.deepEqual(JSON.parse(socket.sent.at(-1)),{type:'player',id:prefetched.id,played_bytes:0,waiting:true},
+  'queued speech needs a heartbeat that preserves its zero playback credit');
 socket.text({type:'speak/end', id:prefetched.id, bytes:4800});
 assert.equal(nodes.length, nodeCountBeforePrefetch, 'prefetched PCM must not play before the earlier reply');
 socket.text({type: 'speak/end', id: speak.id, bytes: 4800});
@@ -106,6 +110,8 @@ await new Promise(resolve => setImmediate(resolve));
 assert.equal(socket.sent.filter(x => typeof x === 'string' && JSON.parse(x).type === 'speak').length,
   requestsBeforeActivation, 'the next FIFO reply consumes its prefetched stream without requesting it again');
 const prefetchedPlayer = nodes.at(-1);
+const activationAck=socket.sent.filter(x=>typeof x==='string').map(x=>JSON.parse(x)).filter(x=>x.type==='player'&&x.id===prefetched.id).at(-1);
+assert.notEqual(activationAck.waiting,true,'activation must restore normal playback-progress deadlines');
 prefetchedPlayer.event({type:'started', played:0});
 prefetchedPlayer.event({type:'drained', played:4800});
 assert.equal(host.speak_id, '');

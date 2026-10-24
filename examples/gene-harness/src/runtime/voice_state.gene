@@ -46,6 +46,12 @@
     (return {^enabled false}))
   claim)
 
+(fn public_voice_state [claim]
+  (let result {})
+  (for key in ["enabled" "owner" "session" "output" "revision" "expires_ms"]
+    (if_not ($absent? (claim .get key)) (result .put key (claim .get key))))
+  result)
+
 (fn voice_output? [voice, session : Str] : Bool
   (if ($absent? voice) (return false))
   (let claim (voice_snapshot voice))
@@ -67,6 +73,7 @@
         (voice_error "voice_claim_lost" "Another page owns voice. Enable voice explicitly to take it back.")))
     (let claim {^enabled true ^owner owner ^session session ^output output
       ^token (if (== token "") ($crypto/random_hex 16) token)
+      ^revision (if (== token "") ($crypto/random_hex 12) previous/revision)
       ^transport (if (== token "") "events" (?? previous/transport "events"))
       ^expires_ms (if (> (?? (voice/connections/.get .get
         ($to_str (if (== token "") "events" (?? previous/transport "events")) "/" owner)) 0) 0)

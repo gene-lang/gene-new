@@ -63,6 +63,18 @@ for (let i = 0; i < 4; i++) {
 assert.ok(first > last, 'barge-in fades the waveform rather than cutting it');
 assert.equal(player.closed, true);
 
+for (const bytes of [0, 2, 100]) {
+  const stopped = new Player({processorOptions: {rate: 24000}});
+  if (bytes) stopped.port.send({type: 'push', bytes: new ArrayBuffer(bytes)});
+  stopped.port.send({type: 'stop'});
+  let active = true;
+  for (let i=0; i<8 && active; i++) active = stopped.process([], [[new Float32Array(128)]]);
+  assert.equal(active, false, `stop must retire an empty or short (${bytes} byte) processor`);
+  assert.equal(stopped.closed, true);
+  assert.equal(stopped.port.messages.filter(x => x.type === 'stopped').length, 1);
+  assert.equal(stopped.process([], [[new Float32Array(128)]]), false);
+}
+
 // The emitted browser boundary handles permission arriving after disposal and
 // counts bytes posted to the worklet as queued until actual playback reports.
 const module = await import(pathToFileURL(modulePath).href);

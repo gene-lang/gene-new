@@ -1,6 +1,10 @@
 # Shared native/web utterance transitions; callbacks cannot reorder or revive input.
 (mod voice_transitions ^profile web)
-(import [text] ^from "./launcher.gene")
+(import [text flag] ^from "./launcher.gene")
+
+# Allow slower local models to finish a backlog, while keeping a finite bound.
+(fn recognition_timeout_ms [audio_ms : Int] : Int
+  (+ 5000 (if (> audio_ms 57500) 115000 (* audio_ms 2))))
 
 (fn voice_draft_key [workspace : Str, session : Str] : Str
   $"gene-harness/voice-draft/${workspace}/${session}")
@@ -32,12 +36,18 @@
     (set item/state "finalizing")
     (set item/audio_ms duration)))
 
+(fn partial_utterance [state : VoiceDrafts, id : Str, value : Str] : Void
+  (var raw : Any (find_utterance state id))
+  (if_yes ($absent? raw) (return))
+  (var item : Utterance raw)
+  (if_yes (|| (== item/state "capturing") (== item/state "finalizing")) (set item/text value)))
+
 (fn drain_utterances [state : VoiceDrafts] : Void
   (if_yes state/disposed (return))
   (for item in state/utterances
     (if_yes (< item/order state/commit) (continue))
     (if_yes (|| (== item/state "capturing") (== item/state "finalizing")) (break))
-    (if_yes (&& (== item/state "done") (!= ($str/trim item/text) ""))
+    (if_yes (&& (|| (== item/state "done") (== item/state "review")) (!= ($str/trim item/text) ""))
       (var session item/session)
       (var previous : Any state/drafts/%session)
       (var before (text previous/text))
@@ -47,7 +57,9 @@
         (set previous_ms duration))
       (set state/drafts/%session
         {^text ($to_str before (if (== before "") "" " ") ($str/trim item/text))
-         ^audio_ms (+ previous_ms item/audio_ms)}))
+         ^audio_ms (+ previous_ms item/audio_ms) ^recognizer (text previous/recognizer)
+         ^review_required (|| (flag previous/review_required) (== item/state "review"))
+         ^held (|| (flag previous/held) (== item/state "review"))}))
     (set state/commit (+ item/order 1)))
   (var remaining : (List Utterance) [])
   (for item in state/utterances
@@ -59,7 +71,9 @@
   (if_yes ($absent? raw) (return))
   (var item : Utterance raw)
   (if_yes (! (|| (== item/state "capturing") (== item/state "finalizing"))) (return))
-  (set item/state result) (set item/text value)
+  (if (&& (== result "failed") (!= ($str/trim ($to_str item/text value)) ""))
+    (do (set item/state "review") (if_yes (!= value "") (set item/text value)))
+    (do (set item/state result) (set item/text value)))
   (drain_utterances state))
 
 (fn dispose_drafts [state : VoiceDrafts] : Void

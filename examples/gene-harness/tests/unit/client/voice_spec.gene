@@ -1,5 +1,5 @@
 (import $test [describe it run])
-(import [new_voice_drafts start_utterance release_utterance finish_utterance dispose_drafts]
+(import [new_voice_drafts start_utterance release_utterance finish_utterance dispose_drafts partial_utterance recognition_timeout_ms]
   ^from "../../../src/common/voice_transitions.gene")
 
 (describe "Voice utterance ordering"
@@ -16,6 +16,23 @@
     ($assert (== state/drafts/session/audio_ms 300))
     (finish_utterance state "a" "duplicate" "done")
     ($assert (== state/drafts/session/text "first second")))
+  (it "keeps partial text by utterance in held capture order after a timeout" []
+    (let state (new_voice_drafts))
+    (start_utterance state "a" "session") (release_utterance state "a" 10000)
+    (start_utterance state "b" "session") (release_utterance state "b" 2000)
+    (partial_utterance state "a" "first partial")
+    (partial_utterance state "b" "second partial")
+    (finish_utterance state "b" "" "failed")
+    ($assert ($absent? state/drafts/session))
+    (finish_utterance state "a" "" "failed")
+    ($assert (== state/drafts/session/text "first partial second partial"))
+    ($assert state/drafts/session/held)
+    ($assert state/drafts/session/review_required)
+    ($assert (== state/drafts/session/audio_ms 12000))
+    (finish_utterance state "a" "late duplicate" "done")
+    ($assert (== state/drafts/session/text "first partial second partial"))
+    ($assert (> (recognition_timeout_ms 10000) 5000))
+    ($assert (<= (recognition_timeout_ms 120000) 120000)))
   (it "isolates cancellation, timeout, sessions and disposed callbacks" []
     (let state (new_voice_drafts))
     (start_utterance state "a" "old")

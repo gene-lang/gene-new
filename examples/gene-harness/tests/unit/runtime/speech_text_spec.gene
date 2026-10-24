@@ -12,7 +12,17 @@
     ($assert (== (speech_text "Use `parse_csv` and `some call with arguments`.") "Use parse_csv and code.")))
   (it "turns headings and lists into sentences and removes visual markup" []
     ($assert (== (speech_text "# Done\n- **One**\n- <b>Two</b> 😀") "Done. One. Two."))
-    ($assert (== (speech_text "") ""))))
+    ($assert (== (speech_text "") "")))
+  (it "preserves slash alternatives while shortening actual paths" []
+    ($assert (== (speech_text "Answer yes/no. Tests pass/fail. Use read/write mode.")
+      "Answer yes/no. Tests pass/fail. Use read/write mode."))
+    ($assert (== (speech_text "Open ./notes ../guide /tmp/data src/report.gene a/b/c.")
+      "Open notes guide data report.gene a/b/c.")))
+  (it "preserves three-way choices, decimal ratings and version alternatives" []
+    ($assert (== (speech_text "Pick red/green/blue or GET/POST/PUT; true/false/nil.")
+      "Pick red/green/blue or GET/POST/PUT; true/false/nil."))
+    ($assert (== (speech_text "Rated 4.5/5, scored 0.98/1.00, upgrade v1.2/v1.3.")
+      "Rated 4.5/5, scored 0.98/1.00, upgrade v1.2/v1.3."))))
 
 (fn main [args] : Int
   (/exit_code (run)))

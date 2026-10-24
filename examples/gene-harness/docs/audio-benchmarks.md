@@ -1,6 +1,7 @@
 # Audio benchmarks
 
-Measured on the development Mac, 2026-10-24. These are local fixture results,
+Measured on the development Mac, 2026-10-24, at implementation `6d86c973`.
+These are local fixture results,
 not claims about remote services, other machines or physical speaker latency.
 
 ## Browser path
@@ -72,3 +73,13 @@ for the fake-file and `%noloop` behavior.
 
 These adapter samples are separate from the paired browser measurements.
 Live ElevenLabs credentials and physical acoustic echo tests were not used.
+The paired fixture uses short replies. Prefetch contention, cancellation and
+player retirement are covered by the subsequent deterministic regression suite;
+the table above is not a measurement of those cases.
+
+After the review fixes, a separate normal-processing Chrome smoke run completed
+two pairs/four rounds with real whisper/Piper engines. Input samples were
+37/50 ms and output samples ranged from 50 to 147 ms. Its report is in
+`tmp/harness-audio-cr-fixes/audio-bench-results.json`; this small run does not
+establish percentiles. Direct framed-helper probes also passed: Piper first PCM
+67 ms then 27 ms warm, macOS 657 ms then 56 ms warm.

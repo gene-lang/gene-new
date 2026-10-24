@@ -1532,16 +1532,16 @@ proc biHttpWsTrySend(args: openArray[Value], call: ptr NativeCall): Value {.nimc
   let (rt, fd) = wsRuntimeForConnValue(args[0])
   if rt == nil or not rt.wsOpen.getOrDefault(fd, false):
     return newInt(-1)
-  var queue = rt.wsOutbound.getOrDefault(fd, @[])
   let payload = args[1]
   let encoded = if payload.kind == vkBytes: wsEncodeFrame(0x2, payload.bytesVal)
                 else: wsEncodeFrame(0x1, payload.strVal)
+  if int64(encoded.len) > maxBytes:
+    raise newException(GeneError, "ws_try_send frame exceeds ^max_bytes and cannot fit")
   var queuedBytes = int64(rt.wsPending.getOrDefault(fd, 0))
-  for frame in queue: queuedBytes += int64(frame.len)
-  if queue.len >= wsOutboundQueueFrames or queuedBytes + int64(encoded.len) > maxBytes:
+  for frame in rt.wsOutbound.getOrDefault(fd, @[]): queuedBytes += int64(frame.len)
+  if rt.wsOutbound.getOrDefault(fd, @[]).len >= wsOutboundQueueFrames or queuedBytes + int64(encoded.len) > maxBytes:
     return newInt(0)
-  queue.add encoded
-  rt.wsOutbound[fd] = queue
+  rt.wsOutbound.mgetOrPut(fd, @[]).add encoded
   newInt(1)
 
 proc biHttpWsQueued(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =

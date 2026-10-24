@@ -54,6 +54,7 @@ if (!globalThis.crypto) globalThis.crypto = webcrypto;
 globalThis.history = window.history;
 const mainURL = pathToFileURL(process.argv[2]);
 const harness = await import(mainURL.href);
+
 const {create_media} = await import(new URL("media.mjs", mainURL));
 const {media_ids} = await import(new URL("media.mjs", mainURL));
 const {create_commands} = await import(new URL("command_client.mjs", mainURL));
@@ -81,6 +82,22 @@ function client() {
   });
 }
 const descendants = node => [node, ...node.children.flatMap(descendants)];
+// Replacing reviewed speech must restore ordinary typing, commands and media.
+const reviewClient = client();
+reviewClient.status={workspace:'review-workspace'};
+stored.set('gene-harness/voice-review/review-workspace/s', JSON.stringify({
+  text:'review these spoken words', input:{kind:'voice',recognizer:'fixture',audio_ms:500},
+}));
+assert.equal(harness.reviewed_voice_input(reviewClient,'s','prefix review these spoken words suffix').kind,'voice');
+reviewClient.prompt.value='/corrected misrecognized words';
+harness.remember_draft(reviewClient);
+assert.equal(harness.reviewed_voice_input(reviewClient,'s',reviewClient.prompt.value).kind,'voice',
+  'correcting reviewed speech must preserve literal voice input and leave attachments in the draft');
+reviewClient.prompt.value='';
+harness.remember_draft(reviewClient);
+assert.equal(stored.has('gene-harness/voice-review/review-workspace/s'),false);
+assert.equal(harness.reviewed_voice_input(reviewClient,'s','/help'),null);
+assert.equal(harness.reviewed_voice_input(reviewClient,'s','ordinary text with attachments'),null);
 const bubbles = c => descendants(c.transcript).filter(node => node.tag === "article" && node.attributes.class?.includes("user"));
 function promptVisible(c, prompt) {
   assert.equal(bubbles(c).length, 1, "prompt must be displayed exactly once");

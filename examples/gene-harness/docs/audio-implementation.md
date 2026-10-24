@@ -49,7 +49,7 @@ explicit limitations, described below.
 
 Completed on the development Mac, 2026-10-23/24:
 
-- **38 native Gene tests** cover Outcome validation, normalization, claims and
+- **47 native Gene tests** cover Outcome validation, normalization, claims and
   input metadata, WAV/PCM framing and credit, selection/cache/retirement cleanup,
   streaming HTTP ownership, overlapping recognition, VAD, literal admission,
   request-only guidance and browser plugin publication/recovery.
@@ -58,6 +58,18 @@ Completed on the development Mac, 2026-10-23/24:
   first-frame/finish races, late permission results, disposal, reconnect,
   session switching, out-of-order finals, durable refusal/recovery, immutable
   input, FIFO prefetch, barge-in and half-duplex playback tails.
+- Post-review regressions cover a gated, multi-segment reply with a prefetched
+  successor stalled at full credit; cancellation while a helper is reading;
+  warm reuse after consumer failure; tick scheduling while sends and engine
+  gates block; partial-transcript recovery and scaled deadlines; a rejected
+  fifth capture and missing reply leaving other streams intact; stale review
+  metadata; empty/short player retirement; and public claim revisions.
+- The scheduling suite passed **40 consecutive runs** after charging frames
+  before transport delivery. An injected playback clock covers a queued reply
+  waiting behind 40 seconds of speech, heartbeat credit conservation, active
+  player stall detection and new playback while cancelled requests drain.
+  Claim-response coverage also verifies that a stale release cannot reveal
+  another page's token.
 - **3 native WebSocket regressions** pass, including 300 ordered frames through
   `ws_try_send`, byte-budget refusal and binary delivery after draining.
 - **139 host bindings** pass the TypeScript 5.9.2 DOM oracle. Experimental

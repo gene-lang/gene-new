@@ -65,27 +65,37 @@
   ensure (if_not ready (close_worker worker))))
 
 (fn framed_synthesize [worker, text : Str, settings, emit]
-  (worker/gate (fn []
+  # Read one bounded segment to its terminator without calling downstream code.
+  # Playback credit must never hold this protocol lock, and a cancelled consumer
+  # must leave the next response at a known frame boundary.
+  (let chunks (worker/gate (fn []
     (var complete false)
+    (let packets []) (var count 0)
     (try
       (if worker/closed/.get (audio_error "Speech helper is closed. Enable voice again to restart it."))
       (write_json worker/writer {^text text ^rate (?? settings/rate 1.0) ^speaker_id (?? settings/speaker_id nil)
         ^voice (?? settings/voice "") ^language (?? settings/language "en-US")})
       (let response (read_json worker/reader))
-      (if (!= response/ok true) (audio_error (?? response/message "Speech synthesis failed.")))
+      (if_yes (!= response/ok true)
+        # A rejected request has no PCM body and leaves the protocol aligned.
+        (set complete (== response/ok false)) (audio_error (?? response/message "Speech synthesis failed.")))
       (while true
         (let bytes (read_packet worker/reader))
         (if (== ($binary/size bytes) 0) (break))
-        (emit bytes))
+        (set count (+ count ($binary/size bytes)))
+        (if (> count 16777216) (audio_error "Speech helper response exceeds 16 MiB."))
+        (packets .push bytes))
       (set complete true)
-      nil
+      packets
     ensure
       # Cancellation can interrupt a length frame. Retire this resource instead
       # of reusing a protocol stream whose response boundary is now unknown.
       (if_not complete (close_worker worker))))))
+  (for bytes in chunks (emit bytes))
+  nil)
 
 (fn piper_row []
-  {^name "piper" ^auto 20 ^summary "Local Piper SDK in one warm helper" ^streaming false
+  {^name "piper" ^auto 20 ^summary "Local Piper SDK in one warm helper" ^streaming false ^^drain_on_cancel
    ^available (fn []
      (if (|| ($absent? (piper_model)) (! ($fs/exists? (piper_model))))
        "Set GENE_PIPER_MODEL to an installed .onnx voice; install piper-tts in GENE_PIPER_PYTHON." nil))
@@ -125,7 +135,7 @@
     "Build src/audio/build_mac.gene on macOS 26+, then set GENE_MAC_SPEECH_HELPER to its executable." nil))
 
 (fn mac_synthesizer_row []
-  {^name "macos" ^auto 30 ^summary "Local macOS system speech voices" ^^streaming
+  {^name "macos" ^auto 30 ^summary "Local macOS system speech voices" ^streaming false ^^drain_on_cancel
    ^available mac_reason ^close close_worker ^synthesize framed_synthesize
    ^open (fn [settings]
      (let worker (open_worker (mac_helper) ["--tts"]))

@@ -2,7 +2,7 @@
 (import [command_descriptors] ^from "../runtime/command_identity")
 (import [browser_client_descriptors] ^from "../ui/browser_clients")
 (import [speech_text speech_needs_audio_reply?] ^from "../runtime/speech_text")
-(import [VoiceChanged voice_snapshot claim_voice release_voice] ^from "../runtime/voice_state")
+(import [VoiceChanged voice_snapshot public_voice_state claim_voice release_voice] ^from "../runtime/voice_state")
 (import [voice_output?] ^from "../runtime/voice_state")
 (import [append_core_event] ^from "../storage/state")
 (import ^from "../runtime/bootstrap" [open_runtime close_runtime prepare_workspace_root])
@@ -189,7 +189,7 @@
 (fn handle_harness_event [service, event]
   (match ^!exhaustive event
     (when (changed : VoiceChanged)
-      (publish_message service "voice/state" "" changed/state))
+      (publish_message service "voice/state" "" (public_voice_state changed/state)))
     (when (changed : ModeChanged)
       (publish_message ^reason changed/reason service "mode/state" changed/session changed/mode))
     (when (changed : CompositionChanged)
@@ -306,7 +306,7 @@
   (let rounds (round_state service/controller session))
   (let loaded (load_session service/sessions session))
   (let round loaded/round/.get)
-  {^voice (voice_snapshot service/runtime/voice) ^title metadata/title
+  {^voice (public_voice_state (voice_snapshot service/runtime/voice)) ^title metadata/title
    ^next_submission_seq ($to_str rounds/next_seq)
    ^state (?? round/state "done") ^round_id (?? round/id "")})
 
@@ -320,11 +320,13 @@
           (&& (! ($absent? request/enabled)) (!= ($head request/enabled) Bool)))
     (fail (RoundError ^code "invalid_request" ^message "Voice expects a text token and boolean enabled/output values.")))
   (if (== request/enabled false)
-    (return (release_voice service/runtime/voice request/client_id (?? request/token ""))))
+    (return (public_voice_state (release_voice service/runtime/voice request/client_id (?? request/token "")))))
   (if ($absent? (row_voice service))
     (fail (RoundError ^code "unavailable" ^message "The voice plugin is disabled or unavailable.")))
-  (claim_voice ^token (?? request/token "") service/runtime/voice session
+  (let claim (claim_voice ^token (?? request/token "") service/runtime/voice session
     request/client_id (!= request/output false)))
+  (if (&& (== claim/owner request/client_id) (== claim/session session))
+    claim (public_voice_state claim)))
 
 (fn list_sessions [service, ^after after : Str = "", ^limit limit : Int = 100, ^kind kind = nil, ^status status = nil, ^attention attention = nil, ^trigger trigger = nil, ^q q : Str = "", ^since since : Str = "", ^until until : Str = ""]
   (let results [])

@@ -5,7 +5,7 @@
 (import ^from "./contract" [protocol_version])
 (import ^from "../notifications/inbox" [inbox_snapshot])
 (import ^from "../runtime/sessions" [view_session leave_session])
-(import [voice_connected voice_disconnected voice_snapshot] ^from "../runtime/voice_state")
+(import [voice_connected voice_disconnected voice_snapshot public_voice_state] ^from "../runtime/voice_state")
 (import $net/http [ws_send ws_close])
 (import $os [monotonic_ms])
 
@@ -70,7 +70,7 @@
   (try
     (send_frame hub peer {^type "status" ^session "" ^data (host_status ^safe safe hub/host)})
     (if_not safe
-      (send_frame hub peer {^type "voice/state" ^session "" ^data (voice_snapshot hub/host/runtime/voice)}))
+      (send_frame hub peer {^type "voice/state" ^session "" ^data (public_voice_state (voice_snapshot hub/host/runtime/voice))}))
     (if hub/host/runtime/restarted
       (send_frame hub peer {^type "restarted" ^session "" ^data {^message "Harness restarted."}}))
     (send_frame hub peer {^type "session/list" ^session "" ^data (list_sessions hub/host)})

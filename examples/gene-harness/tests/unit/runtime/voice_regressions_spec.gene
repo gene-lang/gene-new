@@ -1,0 +1,170 @@
+(import $test [describe it run])
+(import [new_harness contribute install shutdown_harness Plugin PluginHost] ^from "../../../src/kernel")
+(import [new_voice_state claim_voice release_voice] ^from "../../../src/runtime/voice_state")
+(import [open_event_store close_event_store append_core_event] ^from "../../../src/storage/state")
+(import [new_voice_hub add_voice_peer voice_message tick_voice close_voice_hub] ^from "../../../src/web/voice")
+(import [decode_audio_frame] ^from "../../../src/runtime/voice_protocol")
+
+(fn until [predicate]
+  (let deadline (+ ($os/monotonic_ms) 3000))
+  (while (! (predicate))
+    ($assert (< ($os/monotonic_ms) deadline) "voice regression timed out")
+    ($sleep 2)))
+
+(fn fixture [engine, ^full full = nil, ^clock clock = nil]
+  (let root $"/private/tmp/gene-voice-regression-${($crypto/random_hex 8)}")
+  ($fs/make_dir root) ($fs/write_text $"${root}/config.gene" ($serde/write_data {}))
+  (let events (open_event_store $"${root}/events"))
+  (let h (new_harness ^event_store events))
+  (install h (Plugin ^id "speech_fixture" ^provides [["speech_synthesizers" "fixed"]]
+    ^activate (fn [host] (host .PluginHost:contribute "speech_synthesizers" engine))))
+  (let runtime {^h h ^state_root root ^profile {^voice {^synthesizer "fixed"}}})
+  (set runtime/voice (new_voice_state runtime))
+  (let messages []) (let sent {})
+  (let peer_cell ($cell nil))
+  (let hub (new_voice_hub ^clock clock {^runtime runtime ^events events} ^send (fn [connection value]
+    (if (&& (! ($absent? full)) full/.get) (return 0))
+    (match value
+      (when (text : Str) (messages .push ($json/parse text)))
+      (when (bytes : Bytes)
+        (let frame (decode_audio_frame bytes)) (let key ($to_str frame/stream))
+        (sent .put key (+ (?? (sent .get key) 0) ($binary/size frame/pcm)))
+        (for [id speak] in peer_cell/.get/speaks
+          (if (== speak/stream frame/stream)
+            ($assert (<= (sent .get key) speak/credit/sent) "Transport observed uncharged PCM."))))
+      (else ($assert false "Unexpected socket payload")))
+    1)))
+  (let connection {^server_id -10 ^fd 1})
+  (add_voice_peer hub connection "csrf" (fn [] true))
+  (voice_message hub connection ($json/stringify {^type "hello" ^csrf "csrf" ^client_id "page" ^formats ["s16le"]}))
+  (let claim (claim_voice runtime/voice "session" "page" true))
+  (let peer (hub/peers/.get .get "-10/1"))
+  (peer_cell .set peer)
+  (peer .put "session" "session") (peer .put "token" claim/token)
+  {^runtime runtime ^events events ^h h ^hub hub ^connection connection ^peer peer ^messages messages ^sent sent ^claim claim})
+
+(fn request [f, data] (voice_message f/hub f/connection ($json/stringify data)))
+(fn reply [f, text : Str] : Str
+  (let event (append_core_event f/events "session" "session" {^type "reply" ^text text ^^final ^round "r" ^turn 1}))
+  $"session/${event/seq}")
+(fn ended? [f, id : Str] : Bool
+  (for event in f/messages (if (&& (== event/type "speak/end") (== event/id id)) (return true)))
+  false)
+(fn failed? [f, id : Str] : Bool
+  (for event in f/messages (if (&& (== event/type "speak/error") (== event/id id)) (return true)))
+  false)
+(fn close_fixture [f] (close_voice_hub f/hub) (shutdown_harness f/h) (close_event_store f/events))
+
+(describe "Voice scheduling regressions"
+  (it "finishes segmented speech while a gated prefetch has no credit and keeps cancellation warm" []
+    (let opens ($cell 0)) (let closes ($cell 0)) (let draining ($cell false)) (let drained ($cell false))
+    (let parts []) (repeat pcm_part in 32000 (parts .push ($binary/put_u32 0)))
+    (let pcm ($binary/concat parts))
+    (let f (fixture
+      {^name "fixed" ^auto 1 ^streaming false ^^drain_on_cancel ^format {^rate 24000 ^channels 1 ^encoding "s16le"}
+       ^available (fn [] nil) ^open (fn [settings] (opens .set (+ opens/.get 1)) {^gate ($sync/gate)})
+       ^close (fn [resource] (closes .set (+ closes/.get 1)))
+       ^synthesize (fn [resource text settings emit]
+         (resource/gate (fn []
+           (if_yes (== text "Draining response.")
+             (draining .set true) ($sleep 40) (drained .set true))
+           ($sleep 1) (emit pcm))))}))
+    (try
+      (request f {^type "speak" ^id "a" ^stream 1 ^reply (reply f "First sentence. Second sentence.")})
+      (until (fn [] (== (f/sent .get "1") 96000)))
+      (request f {^type "speak" ^id "b" ^stream 2 ^reply (reply f "Prefetched sentence.")})
+      (until (fn []
+        (request f {^type "player" ^id "a" ^played_bytes (?? (f/sent .get "1") 0)})
+        (ended? f "a")))
+      ($assert (== (f/sent .get "1") 256000))
+      (until (fn [] (== (f/sent .get "2") 96000)))
+      ($assert (! (ended? f "b")))
+      (request f {^type "speak/cancel" ^id "b"})
+      (until (fn [] (== ($size f/peer/speaks) 0)))
+      (request f {^type "speak" ^id "c" ^stream 3 ^reply (reply f "Draining response.")})
+      (until (fn [] draining/.get))
+      (request f {^type "speak/cancel" ^id "c"})
+      (until (fn [] (== ($size f/peer/speaks) 0)))
+      ($assert drained/.get "barge-in interrupted the protocol reader")
+      ($assert (== opens/.get 1)) ($assert (== closes/.get 0))
+    ensure (close_fixture f)))
+  (it "keeps queued speech alive behind forty seconds of playback without hiding an active-player stall" []
+    (let now ($cell 100000))
+    (let parts []) (repeat pcm_part in 12000 (parts .push ($binary/put_u32 0)))
+    (let pcm ($binary/concat parts))
+    (let f (fixture ^clock (fn [] now/.get)
+      {^name "fixed" ^auto 1 ^streaming false ^^drain_on_cancel ^format {^rate 24000 ^channels 1 ^encoding "s16le"}
+       ^available (fn [] nil) ^open (fn [settings] {}) ^close (fn [resource] nil)
+       ^synthesize (fn [resource text settings emit]
+         (repeat second in (if (== text "Long reply.") 40 4) (emit pcm)))}))
+    (try
+      (request f {^type "speak" ^id "a" ^stream 1 ^reply (reply f "Long reply.")})
+      (until (fn [] (== (f/sent .get "1") 96000)))
+      (request f {^type "speak" ^id "b" ^stream 2 ^reply (reply f "Queued reply.")})
+      (until (fn [] (== (f/sent .get "2") 96000)))
+      (repeat tick in 40
+        (request f {^type "player" ^id "a" ^played_bytes (?? (f/sent .get "1") 0)})
+        (request f {^type "player" ^id "b" ^played_bytes 0 ^^waiting})
+        (now .set (+ now/.get 1000)) ($sleep 5))
+      ($assert (! (failed? f "b")) "A queued final reply expired before playback.")
+      ($assert (== (f/sent .get "2") 96000) "Heartbeats must not restore byte credit.")
+      (until (fn []
+        (request f {^type "player" ^id "a" ^played_bytes (?? (f/sent .get "1") 0)})
+        (ended? f "a")))
+      (request f {^type "player" ^id "b" ^played_bytes 0})
+      (until (fn []
+        (request f {^type "player" ^id "b" ^played_bytes (?? (f/sent .get "2") 0)})
+        (ended? f "b")))
+      ($assert (== (f/sent .get "2") 192000))
+      (request f {^type "speak" ^id "stalled" ^stream 3 ^reply (reply f "Stalled reply.")})
+      (until (fn [] (== (f/sent .get "3") 96000)))
+      (now .set (+ now/.get 31000))
+      (request f {^type "player" ^id "stalled" ^played_bytes 0})
+      (until (fn [] (failed? f "stalled")))
+      ($assert (! f/peer/closed))
+    ensure (close_fixture f)))
+  (it "accepts a new reply while two cancelled helpers are still draining" []
+    (let release ($cell false)) (let started ($cell 0))
+    (let pcm ($binary/from_list [0 0]))
+    (let f (fixture
+      {^name "fixed" ^auto 1 ^streaming false ^^drain_on_cancel ^format {^rate 24000 ^channels 1 ^encoding "s16le"}
+       ^available (fn [] nil) ^open (fn [settings] {}) ^close (fn [resource] nil)
+       ^synthesize (fn [resource text settings emit]
+         (if_yes (!= text "New reply.")
+           (started .set (+ started/.get 1))
+           (while (! release/.get) ($sleep 2)))
+         (emit pcm))}))
+    (try
+      (for [id stream] in [["a" 1] ["b" 2]]
+        (request f {^type "speak" ^id id ^stream stream ^reply (reply f ($to_str "Drain " id "."))}))
+      (until (fn [] (== started/.get 2)))
+      (request f {^type "speak/cancel"})
+      ($assert (== ($size f/peer/speaks) 2))
+      (request f {^type "speak" ^id "new" ^stream 3 ^reply (reply f "New reply.")})
+      (until (fn [] (ended? f "new")))
+      ($assert (! (failed? f "new")))
+      (release .set true)
+      (until (fn [] (== ($size f/peer/speaks) 0)))
+    ensure (release .set true) (close_fixture f)))
+  (it "schedules one maintenance job without blocking ticks on sends or the engine gate" []
+    (let full ($cell false))
+    (let f (fixture ^full full
+      {^name "fixed" ^auto 1 ^^streaming ^format {^rate 24000 ^channels 1 ^encoding "s16le"}
+       ^available (fn [] nil) ^open (fn [settings] {}) ^close (fn [resource] nil)
+       ^synthesize (fn [resource text settings emit] nil)}))
+    (let entered ($cell false))
+    (let holder (spawn ^lane root (f/hub/speech/gate (fn [] (entered .set true) ($sleep 150)))))
+    (try
+      (until (fn [] entered/.get))
+      (f/hub/speech/dirty .set true) (full .set true)
+      (release_voice f/runtime/voice "page" f/claim/token)
+      (let started ($os/monotonic_ms))
+      (tick_voice f/hub) (tick_voice f/hub)
+      ($assert (< (- ($os/monotonic_ms) started) 80) "tick blocked the HTTP serve loop")
+      ($assert (== ($size f/hub/jobs/.get) 1))
+      ($sleep 10) (full .set false)
+      (until (fn [] (! f/hub/maintenance/.get)))
+      ($assert (! f/hub/speech/dirty/.get))
+    ensure holder/.join (close_fixture f))))
+
+(fn main [args] : Int (/exit_code (run)))

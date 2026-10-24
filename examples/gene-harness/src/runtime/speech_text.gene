@@ -14,7 +14,9 @@
   (if_not ($absent? (#"^[0-9]{8,}[.,;:!?]?$" .match token)) (return "a long number"))
   (if_not ($absent? (#"^(?=[0-9a-fA-F]*[a-fA-F])[0-9a-fA-F]{10,}[.,;:!?]?$" .match token))
     (return "a hash"))
-  (if_not ($absent? (#"^(?:\.{0,2}/|/|[A-Za-z_][A-Za-z0-9_.-]*/)\S+$" .match token))
+  # Bare slash choices and decimal/version ratios are ambiguous prose. Only
+  # shorten rooted paths or a path ending in an alphabetic file extension.
+  (if_not ($absent? (#"^(?:\.{1,2}/\S+|/\S+|(?:[^\s/]+/)+[^\s/]+\.[A-Za-z][A-Za-z0-9_-]*[.,;:!?]?)$" .match token))
     (return ($last ($str/split token "/"))))
   token)
 

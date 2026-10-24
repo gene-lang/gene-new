@@ -1328,7 +1328,7 @@ suite "net/http server e2e":
     (ws_accept req
       ^on_open (fn [conn]
         # A rejected oversized frame must leave the queue untouched.
-        ($assert (== (ws_try_send ^max_bytes 2 conn "too large") 0))
+        ($assert (try (ws_try_send ^max_bytes 2 conn "too large") false catch Any true))
         (var i 0)
         (while (< i 300)
           (while (== (ws_try_send conn ($to_str i)) 0) ($sleep 1))

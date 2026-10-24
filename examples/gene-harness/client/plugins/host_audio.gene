@@ -13,7 +13,6 @@
   ^capture_started_ms Int ^capture_first_ms Int ^capture_released_ms Int ^capture_speech_end_ms Int
   ^speak_requested_ms Int ^speak_first_ms Int
   ^ahead Any
-  ^speed F64
   ^capture Any ^capture_id Str ^capture_stream Int ^capture_sequence Int ^capturing Bool
   ^player Any ^speak_id Str ^speak_stream Int ^speak_sequence Int ^speak_ended Bool
   ^received Int ^callback (Fn [Str Any] Void)})
@@ -26,6 +25,8 @@
   (var player : EventTarget host/player)
   (send host {^type "player" ^id host/speak_id ^played_bytes ($to_int ($audio/player_played_bytes player))
     ^queued_ms ($audio/player_queued_ms player)})
+  (if_not ($absent? host/ahead)
+    (send host {^type "player" ^id (text host/ahead/id) ^played_bytes 0 ^^waiting}))
   (if_yes (&& host/speak_ended (<= ($audio/player_queued_ms player) 0.0))
     (set host/suppress_until (+ ($time/now) 300.0))
     ($audio/player_fade_stop player) (set host/player nil) (set host/speak_id "")
@@ -96,7 +97,9 @@
       (host_error host "Speech started on an unexpected stream.") (return))
     (if_yes (|| (!= (text data/format/encoding) "s16le") (!= (integer data/format/channels) 1))
       (host_error host "The host sent an unsupported PCM format.") (return))
-    (var player ($audio/player_open host/context ($to_float ($to_int (* ($to_float (integer data/format/rate)) host/speed)))
+    # PCM rates describe samples, not speaking speed. Resampling for backlog
+    # catch-up changes pitch; keep host output at its declared native rate.
+    (var player ($audio/player_open host/context ($to_float (integer data/format/rate))
       (fn [message : Str] : Void (host_error host message))))
     (set host/player player) (set host/speak_sequence 0) (set host/received 0) (set host/speak_ended false)
     ($audio/player_on_start player (fn [] : Void
@@ -201,7 +204,6 @@
     ^!raw_input
     ^capture_started_ms 0 ^capture_first_ms 0 ^capture_released_ms 0 ^capture_speech_end_ms 0 ^speak_requested_ms 0 ^speak_first_ms 0
     ^ahead nil
-    ^speed 1.0
     ^capture nil ^capture_id "" ^capture_stream 0 ^capture_sequence 0 ^!capturing
     ^player nil ^speak_id "" ^speak_stream 0 ^speak_sequence 0 ^!speak_ended ^received 0 ^callback callback))
   (attach_socket host)
@@ -354,9 +356,8 @@
   (player_credit host)
   true)
 
-(fn speak_host_reply [host : HostAudio, reply : Str, speed : F64 = 1.0] : Bool
+(fn speak_host_reply [host : HostAudio, reply : Str] : Bool
   (if_yes (|| host/closed (! host/ready) (!= host/speak_id "")) (return false))
-  (set host/speed speed)
   (set host/speak_requested_ms ($to_int ($time/now))) (set host/speak_first_ms 0)
   (if_yes (activate_prefetch host reply) (return true))
   (if_not ($absent? host/ahead) (cancel_output host))
@@ -365,10 +366,9 @@
   (send host {^type "speak" ^id host/speak_id ^reply reply ^stream host/speak_stream})
   true)
 
-(fn speak_host_announcement [host : HostAudio, kind : Str, count : Int, speed : F64 = 1.0] : Bool
+(fn speak_host_announcement [host : HostAudio, kind : Str, count : Int] : Bool
   (if_yes (|| host/closed (! host/ready) (!= host/speak_id "")) (return false))
   (if_not ($absent? host/ahead) (cancel_output host))
-  (set host/speed speed)
   (set host/speak_requested_ms ($to_int ($time/now))) (set host/speak_first_ms 0)
   (set host/speak_id ($browser/request_id))
   (set host/speak_stream host/next) (set host/next (+ host/next 1))

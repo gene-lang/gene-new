@@ -88,7 +88,9 @@ class GenePlayer extends AudioWorkletProcessor {
     this.closed = false;
     this.port.onmessage = ({data}) => {
       if (data.type === 'stop') {
+        if (!this.queue.length) { this.closed = true; this.status('stopped'); return; }
         this.fade = Math.max(1, Math.round(sampleRate * 0.01));
+        this.wait = 0;
       } else if (data.type === 'push' && !this.fade && !this.closed) {
         const view = new DataView(data.bytes);
         const count = view.byteLength / 2;
@@ -109,7 +111,10 @@ class GenePlayer extends AudioWorkletProcessor {
     if (this.closed) return false;
     const output = outputs[0][0];
     for (let i = 0; i < output.length; i++) {
-      if (!this.queue.length) continue;
+      if (!this.queue.length) {
+        if (this.fade) { this.closed = true; this.status('stopped'); return false; }
+        continue;
+      }
       if (this.wait > 0) { this.wait--; continue; }
       if (!this.started) { this.started = true; this.status('started'); }
       const chunk = this.queue[0];

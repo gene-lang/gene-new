@@ -1,0 +1,40 @@
+(import $test [describe it run])
+(import $io [IoResource])
+(import [framed_synthesize] ^from "../../../src/audio/engines")
+(import [bounded_audio_call] ^from "../../../src/audio/call")
+(import [read_json write_json write_packet close_worker] ^from "./worker" ^pkg "audio")
+(import [AudioError audio_error] ^from "./audio" ^pkg "audio")
+
+(describe "Framed speech helper ownership"
+  (it "releases the protocol gate before delivery and keeps a failed consumer's helper warm" []
+    (let [input writer] ($io/pipe)) (let [reader output] ($io/pipe))
+    (let requests ($cell []))
+    (let pcm ($binary/from_list [0 255 128 127]))
+    (let task (spawn ^lane root
+      (repeat request_index in 4
+        (let request (read_json input))
+        (requests/.get .push request)
+        (if (== request/text "reject")
+          (write_json output {^ok false ^message "invalid request"})
+          (do (write_json output {^ok true})
+            (write_packet output pcm) (write_packet output ($binary/from_list [])))))))
+    (let worker {^reader reader ^writer writer ^task task ^gate ($sync/gate) ^closed ($cell false)})
+    (let delivered [])
+    (try
+      ($assert (try (framed_synthesize worker "reject" {} (fn [bytes] nil)) false catch AudioError true))
+      ($assert (! worker/closed/.get))
+      ($assert (try
+        (bounded_audio_call framed_synthesize [worker "first" {} (fn [bytes : Bytes]
+          # Reentry would deadlock if delivery still held the helper gate.
+          (framed_synthesize worker "second" {} (fn [nested : Bytes] (delivered .push nested)))
+          (audio_error "consumer cancelled"))] 1000)
+        false catch AudioError true))
+      ($assert (! worker/closed/.get))
+      (framed_synthesize worker "third" {} (fn [bytes : Bytes] (delivered .push bytes)))
+      ($assert (== delivered [pcm pcm]))
+      ($assert (== requests/.get/.size 4))
+      ($assert (! worker/closed/.get))
+    ensure
+      (close_worker worker) input/.IoResource:close output/.IoResource:close)))
+
+(fn main [args] : Int (/exit_code (run)))

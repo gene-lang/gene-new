@@ -83,9 +83,9 @@ root.harness_bridge = {
     if (path.endsWith("/latency")) { done(200n, {}); return; }
     if (method === "POST") {
       if (payload.enabled === false) { claim = {enabled: false}; }
-      else claim = {enabled: true, owner: "page", token: "token", session: "a"};
+      else claim = {enabled: true, owner: "page", token: "token", revision:"revision-a", session: "a"};
       done(200n, claim);
-    } else done(200n, {voice: claim, state: "done"});
+    } else done(200n, {voice: {...claim,token:undefined}, state: "done"});
   },
   voice_submit: (session, text, input, done) => {
     submissions.push({session, text, input});
@@ -99,6 +99,8 @@ plugin.main(root);
 assert.equal(root.textContent.includes('[object EventTarget]'), false, 'native controls must be appended as DOM nodes, never rendered as text');
 const voiceButton = textButton(toolbar, "Voice");
 click(voiceButton);
+listener('voice/state','',{enabled:true,owner:'page',revision:'revision-a',session:'a'});
+assert.equal(voiceButton.textContent,'Voice on','public ownership broadcasts must not require a private claim token');
 assert.equal(recognizers.length, 0, "enabling voice must not request the microphone");
 const mic = textButton(root, "Hold to talk");
 const transcript = descendants(root).find(x => x.tag === "textarea");
@@ -154,6 +156,50 @@ assert.equal(submissions.length, 1, "disposed capture must never submit");
 spoken[2].onend();
 assert.equal(spoken.length, 3, "disposed speech callback cannot resume the queue");
 
+// A released browser utterance that times out keeps its own partial as held text.
+const timeoutRoot = new Element();
+currentSession='a';
+stored.delete('gene-harness/voice-draft/fixture/a');
+timeoutRoot.harness_bridge = root.harness_bridge;
+plugin.main(timeoutRoot);
+click(descendants(toolbar).filter(x => x.tag === 'button' && x.textContent.startsWith('Voice')).at(-1));
+textButton(timeoutRoot,'Hold to talk').dispatchEvent(new Event('pointerdown'));
+const timedRecognition = recognizers.at(-1);
+timedRecognition.onresult({resultIndex:0, results:[Object.assign([{transcript:'recover this partial'}],{isFinal:false})]});
+windowTarget.dispatchEvent(new Event('pointerup'));
+timers.filter(item => item.ms === 5000).at(-1).callback();
+assert.equal(JSON.parse(stored.get('gene-harness/voice-draft/fixture/a')).text,'recover this partial');
+assert.equal(JSON.parse(stored.get('gene-harness/voice-draft/fixture/a')).held,true);
+assert.equal(JSON.parse(stored.get('gene-harness/voice-draft/fixture/a')).review_required,true);
+assert.equal(submissions.length,1, 'a timed-out partial must never auto-submit');
+// Pause as soon as the fourth host utterance is pending, before the next VAD frame.
+timeoutRoot.harnessController.dispose();
+const sharedVoice = await import(new URL('./voice_transitions.mjs',pathToFileURL(process.argv[2])));
+const hostVoice = await import(new URL('./host_audio.mjs',pathToFileURL(process.argv[2])));
+globalThis.WebSocket=class extends EventTarget {readyState=0; close() {this.readyState=3;}};
+const pauseHost=hostVoice.open_host_audio(new AudioContext(),'a','page','csrf','token',false,true,false,()=>{});
+const voiceProps={host:pauseHost,pending:{},drafts:sharedVoice.new_voice_drafts(),bridge:{},
+  queue:[],seen:{},final_rounds:{}};
+for (const field of ['root','button','panel','mic','message','transcript','send_button','discard_button',
+  'meter','mode_select','voice_select']) voiceProps[field]=new Element();
+for (const field of ['context','capture','unsubscribe','pointer_up','key_down','key_up','page_hide']) voiceProps[field]=null;
+for (const field of ['enabled','disposed','claiming','recording','finalizing','submitting','held','output',
+  'autosend','progress','manual_capture','speaking']) voiceProps[field]=false;
+for (const field of ['mode','voice','language','recognizer','synthesizer','speaking_record','duplex','session',
+  'title','workspace','client_id','token','claim_revision','capture_id','round_state','partial','feedback']) voiceProps[field]='';
+for (const field of ['release_at','speech_began','capture_started']) voiceProps[field]=0;
+for (const field of ['generation','speech_generation']) voiceProps[field]=0n;
+const timeoutVoice = new plugin.Voice(voiceProps);
+for (let i=0;i<4;i++) {
+  const id='held-'+i;
+  sharedVoice.start_utterance(timeoutVoice.drafts,id,'a');
+  plugin.await_host_final(timeoutVoice,id,1000n);
+}
+assert.equal(timeoutVoice.host.input_paused,true);
+plugin.drop_pending(timeoutVoice,'held-0');
+assert.equal(timeoutVoice.host.input_paused,false);
+hostVoice.close_host_audio(pauseHost);
+
 const wire = [], notices = [], settled = [];
 const api = (method, path, payload, done) => { wire.push({method, path, payload, done}); };
 const client = round.create_rounds(api, text => { notices.push(text); }, (envelope, receipt) => { settled.push({envelope, receipt}); });
@@ -195,4 +241,12 @@ assert.equal(client.pending, null);
 assert.equal(JSON.parse(stored.get("gene-harness/voice-draft/durable/refused")).held, true,
   "a definite refusal remains held after the optional plugin is replaced or the page reloads");
 assert.equal(wire.length, 0, 'a held refusal must not allocate another request identity automatically');
+stored.set('gene-harness/voice-draft/durable/partial-review',JSON.stringify({
+  text:'accepted recovered partial',audio_ms:500,held:true,review_required:true,
+}));
+client.pending={session:'partial-review',text:'accepted',input:{audio_ms:100n}};
+round.admitted(client,{id:'admitted'});
+const heldSuffix=JSON.parse(stored.get('gene-harness/voice-draft/durable/partial-review'));
+assert.equal(heldSuffix.text,'recovered partial');
+assert.equal(heldSuffix.held,true,'receipt recovery must not auto-release a later partial transcript');
 console.log("voice client: pinned input, delayed finals, non-overlap, ordered/deduplicated speech, barge-in, disposal and durable unknown-outcome recovery passed");

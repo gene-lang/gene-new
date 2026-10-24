@@ -1,7 +1,7 @@
 (mod harness_voice ^profile web)
 (import [text flag integer items] ^from "../../src/common/launcher.gene")
 (import [VoiceDrafts new_voice_drafts start_utterance release_utterance finish_utterance
-  dispose_drafts voice_draft_key find_utterance] ^from "../../src/common/voice_transitions.gene")
+  dispose_drafts voice_draft_key find_utterance partial_utterance recognition_timeout_ms] ^from "../../src/common/voice_transitions.gene")
 (import [HostAudio open_host_audio close_host_audio start_host_capture finish_host_capture
   cancel_input cancel_output cancel_host_utterance speak_host_reply speak_host_announcement prefetch_host_reply start_handsfree stop_handsfree] ^from "./host_audio.gene")
 
@@ -13,7 +13,7 @@
   ^output Bool ^autosend Bool ^progress Bool ^mode Str ^voice Str ^language Str ^recognizer Str ^synthesizer Str
   ^release_at F64 ^speech_began F64 ^speaking_record Str
   ^duplex Str ^manual_capture Bool ^mode_select EventTarget ^voice_select EventTarget
-  ^session Str ^title Str ^workspace Str ^client_id Str ^token Str ^capture_id Str ^capture_started F64
+  ^session Str ^title Str ^workspace Str ^client_id Str ^token Str ^claim_revision Str ^capture_id Str ^capture_started F64
   ^generation Int ^speech_generation Int ^speaking Bool ^queue (List Any) ^seen PropMap ^final_rounds PropMap
   ^round_state Str ^partial Str ^feedback Str})
 
@@ -79,6 +79,8 @@
   (var key (voice_draft_key voice/workspace voice/session))
   (var value : Any (draft voice))
   (if_yes (== (text value/text) "") ($session_storage/remove key) (return true))
+  (if_yes (flag value/held) (set voice/held true))
+  (if_yes (== (text value/recognizer) "") (set value/recognizer voice/recognizer))
   (set value/held voice/held)
   ($session_storage/set key ($json/stringify value)))
 
@@ -94,7 +96,7 @@
       (if_yes voice/held
         (set voice/feedback "The saved voice draft needs review. Use Send queued voice when ready."))
       (set voice/drafts/drafts/%session {^text content ^audio_ms (integer value/audio_ms)
-        ^recognizer (text value/recognizer voice/recognizer) ^held voice/held})
+        ^recognizer (text value/recognizer voice/recognizer) ^held voice/held ^review_required (flag value/review_required)})
     catch Any
       (set voice/held true)
       (set voice/feedback "Saved voice draft is unreadable. Inspect it before discarding it."))))
@@ -173,10 +175,9 @@
   (set voice/speech_began (if ($absent? next/received) ($time/now) next/received))
   (set voice/speaking_record (text next/id))
   (if_yes (== voice/synthesizer "host")
-    (var rate (if (> voice/queue/.size 1) 1.15 1.0))
     (var accepted (if (== (text next/announcement) "")
-      (speak_host_reply (host_audio voice) (text next/id) rate)
-      (speak_host_announcement (host_audio voice) (text next/announcement) (integer next/count) rate)))
+      (speak_host_reply (host_audio voice) (text next/id))
+      (speak_host_announcement (host_audio voice) (text next/announcement) (integer next/count))))
     (if_yes (! accepted)
       (set voice/speaking false) (set voice/feedback "The host speaker is still preparing. Replay the reply after it is ready.") (paint voice))
     (prefetch_next voice)
@@ -209,6 +210,7 @@
   (pump voice))
 
 (fn try_send [voice : Voice, explicit : Bool = false] : Void
+  (if_yes (flag (/held (draft voice))) (set voice/held true))
   (if_yes (|| voice/disposed (! voice/enabled) voice/submitting voice/recording voice/finalizing
               (&& voice/held (! explicit))) (return))
   (var value : Any (draft voice))
@@ -269,11 +271,13 @@
 (fn await_host_final [voice : Voice, id : Str, duration : Int] : Void
   (release_utterance voice/drafts id duration)
   (set voice/pending/%id {^released ($time/now)})
-  ($time/after 5000.0 (fn [] : Void
+  (var host (host_audio voice)) (set host/input_paused (>= (pending_count voice) 4))
+  ($time/after ($to_float (recognition_timeout_ms duration)) (fn [] : Void
     (if_yes (|| voice/disposed ($absent? voice/pending/%id)) (return))
     (cancel_host_utterance (host_audio voice) id) (drop_pending voice id)
     (finish_utterance voice/drafts id "" "failed")
-    (set voice/feedback "Recognition timed out. Later recordings can proceed.")
+    (store_draft voice)
+    (set voice/feedback "Recognition timed out. Any recognized text is kept for review.")
     (earcon voice 220.0) (paint voice) (try_send voice))))
 
 (fn finish_capture [voice : Voice, cancel : Bool = false] : Void
@@ -308,8 +312,9 @@
         (if_yes (|| voice/disposed (!= id voice/capture_id) (! voice/finalizing)) (return))
         ($speech/recognize_abort handle)
         (finish_utterance voice/drafts id "" "failed")
+        (store_draft voice)
         (set voice/finalizing false) (set voice/capture_id "")
-        (set voice/feedback "Recognition did not finish. The next recording can proceed.")
+        (set voice/feedback "Recognition did not finish. Any recognized text is kept for review.")
         (earcon voice 220.0) (paint voice) (try_send voice) (pump voice))))))
 
 (fn start_capture [voice : Voice] : Void
@@ -345,6 +350,7 @@
       ($speech/recognize_start voice/language
         (fn [value : Str] : Void
           (if_yes (|| voice/disposed (!= id voice/capture_id)) (return))
+          (partial_utterance voice/drafts id value)
           (set voice/partial value) (paint voice))
         (fn [value : Str] : Void
           (if_yes voice/disposed (return))
@@ -367,6 +373,8 @@
             (store_draft voice) (earcon voice 330.0))
           (if_yes (!= error "")
             (finish_utterance voice/drafts id "" "failed")
+            (set voice/held true)
+            (store_draft voice)
             (set voice/feedback ($to_str "Recognition unavailable: " error ". You can type instead."))
             (earcon voice 220.0))
           (paint voice) (try_send voice) (pump voice))))
@@ -408,12 +416,14 @@
   (if_yes (== kind "host/reconnecting")
     (if_yes (!= voice/capture_id "") (finish_utterance voice/drafts voice/capture_id "" "cancelled"))
     (for [id pending] in voice/pending (finish_utterance voice/drafts ($to_str id) "" "failed"))
+    (store_draft voice)
     (set voice/pending {}) (set voice/capture_id "") (set voice/recording false)
     (set voice/finalizing false) (set voice/speaking false) (set voice/queue [])
     (set voice/feedback "Reconnecting voice. Interrupted recordings and speech are not resumed.") (paint voice) (return))
   (if_yes (== kind "engines/changed")
     (if_yes (!= voice/capture_id "") (finish_utterance voice/drafts voice/capture_id "" "cancelled"))
     (for [id pending] in voice/pending (finish_utterance voice/drafts ($to_str id) "" "failed"))
+    (store_draft voice)
     (set voice/pending {}) (set voice/capture_id "") (set voice/recording false)
     (set voice/finalizing false) (set voice/speaking false) (set voice/queue [])
     (set voice/feedback "Speech engines changed. Reconnecting voice.")
@@ -425,6 +435,7 @@
   (if_yes (== kind "microphone/error")
     (var failed_id (text data/id))
     (if_yes (!= failed_id "") (finish_utterance voice/drafts failed_id "" "failed") (drop_pending voice failed_id))
+    (store_draft voice)
     (set voice/recording false) (set voice/capture_id "")
     (set voice/feedback (text data/message "The hands-free microphone is unavailable. You can type instead."))
     (paint voice) (try_send voice) (pump voice) (return))
@@ -458,12 +469,16 @@
     (paint voice) (pump voice) (return))
   (var id (text data/id))
   (if_yes (== kind "transcript/partial")
+    (partial_utterance voice/drafts id (text data/text))
     (if_yes (|| (== id voice/capture_id) (! voice/recording)) (set voice/partial (text data/text)) (paint voice))
     (return))
   (if_yes (|| (== kind "transcript/final") (== kind "capture/error"))
+    (if_yes (&& (== kind "capture/error") (!= (text data/text) ""))
+      (partial_utterance voice/drafts id (text data/text)))
     (if_yes (&& (== kind "capture/error") (== id voice/capture_id))
       (set voice/recording false) (set voice/capture_id "")
       (finish_utterance voice/drafts id "" "failed")
+      (store_draft voice)
       (set voice/feedback (text data/message "Recognition failed. You can type instead."))
       (paint voice) (try_send voice) (pump voice) (return))
     (if_yes ($absent? voice/pending/%id) (return))
@@ -542,12 +557,13 @@
         (if (== code 200)
           (do
             (set voice/token (text data/token))
+            (set voice/claim_revision (text data/revision))
             (load_draft voice)
             (api voice "GET" $"/api/v8/sessions/${id}/voice" nil
               (fn [status : Int, current : Any] : Void
                 (if_yes (|| voice/disposed (!= generation voice/generation)) (return))
                 (set voice/claiming false)
-                (if_yes (|| (!= status 200) (!= (text current/voice/token) voice/token)
+                (if_yes (|| (!= status 200) (!= (text current/voice/revision) voice/claim_revision)
                             (!= (text current/voice/owner) voice/client_id))
                   (set voice/feedback "Another page owns voice. Enable it again to take it back.")
                   (disable_voice voice false) (return))
@@ -573,7 +589,7 @@
   (if_yes voice/disposed (return))
   (if_yes (== kind "voice/state")
     (if_yes (&& voice/enabled
-      (|| (! (flag data/enabled)) (!= (text data/owner) voice/client_id) (!= (text data/token) voice/token)))
+      (|| (! (flag data/enabled)) (!= (text data/owner) voice/client_id) (!= (text data/revision) voice/claim_revision)))
       (disable_voice voice false))
     (return))
   (if_yes (== kind "voice/replay")
@@ -586,7 +602,7 @@
   (if_yes (!= session voice/session) (return))
   (if_yes (== kind "session/close") (disable_voice voice) (return))
   (if_yes (== kind "voice/admitted")
-    (load_draft voice) (set voice/held false) (set voice/round_state (text data/state "running")) (paint voice) (return))
+    (load_draft voice) (set voice/round_state (text data/state "running")) (paint voice) (return))
   (if_yes (! voice/enabled) (return))
   (if_yes (== kind "reply")
     (var round (text data/round_id))
@@ -650,7 +666,7 @@
     ^pointer_up nil ^key_down nil ^key_up nil ^page_hide nil
     ^!enabled ^!disposed ^!claiming ^!recording ^!finalizing ^!submitting ^!held
     ^^output ^^autosend ^^progress ^mode "hold" ^voice "" ^language "en-US"
-    ^session "" ^title "" ^workspace "" ^client_id "" ^token "" ^capture_id "" ^capture_started 0.0
+    ^session "" ^title "" ^workspace "" ^client_id "" ^token "" ^claim_revision "" ^capture_id "" ^capture_started 0.0
     ^generation 0 ^speech_generation 0 ^!speaking ^queue [] ^seen {} ^final_rounds {}
     ^round_state "done" ^partial "" ^feedback "Hold the microphone button, or focus it and hold Space."))
   (var current (state voice))

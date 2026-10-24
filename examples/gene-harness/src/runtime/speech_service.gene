@@ -7,11 +7,11 @@
 (import [dispatch_json] ^from "./worker" ^pkg "audio")
 (import [retain_callback] ^from "./cordis_adapter")
 
-(type SpeechService ^props {^runtime Any ^resources Any ^gate Any ^cache Any ^cache_bytes Any ^closed Any})
+(type SpeechService ^props {^runtime Any ^resources Any ^gate Any ^cache Any ^cache_bytes Any ^closed Any ^dirty Any})
 
 (fn new_speech_service [runtime]
   (SpeechService ^runtime runtime ^resources ($cell {}) ^gate ($sync/gate)
-    ^cache ($cell []) ^cache_bytes ($cell 0) ^closed ($cell false)))
+    ^cache ($cell []) ^cache_bytes ($cell 0) ^closed ($cell false) ^dirty ($cell false)))
 
 (fn speech_settings [service : SpeechService]
   (?? (/voice ($serde/read_data ($fs/read_text $"${service/runtime/state_root}/config.gene"))) {}))
@@ -73,6 +73,7 @@
       (service/resources/.get .delete kind)
       (if_not (if ($absent? existing/resource/closed) false existing/resource/closed/.get)
         (existing/row/close existing/resource)))
+    (service/dirty .set true)
     (let resource (bounded_audio_call choice/row/open [settings] 15000))
     (let opened {^key key ^row_id record/row_id ^registry registry ^row choice/row ^resource resource ^settings settings})
     (if_yes (== kind "synthesizer")
@@ -101,6 +102,7 @@
 
 (fn cool_speech [service : SpeechService]
   (service/gate (fn []
+    (if_not service/dirty/.get (return nil))
     (let resources (service/resources .swap {}))
     (for [kind opened] in resources
       (try (opened/row/close opened/resource) catch Any nil))
@@ -108,7 +110,8 @@
     (for registry in ["speech_recognizers" "speech_synthesizers"]
       (for engine in (rows service/runtime/h registry)
         (if_not ($absent? engine/close_all)
-          (engine/close_all))))))
+          (engine/close_all))))
+    (service/dirty .set false)))
   (service/cache .set []) (service/cache_bytes .set 0)
   nil)
 
@@ -149,5 +152,12 @@
   (if opened/row/streaming
     (opened/row/synthesize opened/resource text opened/settings output)
     (for part in (speech_segments text)
-      (opened/row/synthesize opened/resource part opened/settings output)))
+      # Non-streaming engines may hold an internal protocol lock. Complete the
+      # segment before applying consumer backpressure, including for plugins.
+      (let packets []) (var segment_bytes 0)
+      (opened/row/synthesize opened/resource part opened/settings (fn [bytes : Bytes]
+        (set segment_bytes (+ segment_bytes ($binary/size bytes)))
+        (if (> (+ count segment_bytes) 16777216) (voice_error "invalid_request" "A speech response exceeds 16 MiB."))
+        (packets .push bytes)))
+      (for bytes in packets (output bytes))))
   (cache_speech service key chunks count))

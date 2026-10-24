@@ -29,10 +29,21 @@ plugin does not remove those recovery controls. Refused drafts stay held for
 review after reloading. If the browser service ends before you release the
 button, its recognized text also stays for review.
 
+Recognition deadlines allow extra time for longer recordings. If recognition
+fails or times out, partial text is retained in capture order as a held draft;
+it requires explicit review and sending. Correcting words in the typed composer
+preserves literal voice input and leaves attachments in their draft. Clearing
+the composer ends that review and restores ordinary typed input.
+
 Live progress and final replies enter a speech queue. **Spoken** reveals the
 plain text; **Replay speech** explicitly plays a historical reply. Starting a
 capture interrupts speech. The host-wide claim lets the most recently enabled
 page own the speaker. The event stream and the audio stream are separate.
+Host playback keeps the engine's native sample rate and pitch, including when
+replies queue up. Browser voices may use their native speaking-rate control.
+Queued host speech sends a zero-playback heartbeat while an earlier reply is
+speaking, so a long reply cannot expire its prefetched successor. Active players
+still time out after 30 seconds without playback progress.
 
 ## Privacy
 
@@ -53,6 +64,9 @@ Engine selection is profile `voice`, then `GENE_HARNESS_RECOGNIZER` /
 `voice` map, then the available row with the lowest `auto` rank. Cloud synthesis
 has no automatic rank and requires an explicit selection. Credentials stay in
 the host environment.
+
+Claim tokens are returned to the claiming page; status and event broadcasts
+carry a separate public revision so other pages can observe ownership changes.
 
 Add a voice map to the existing configuration using its normal Gene data
 encoding (do not replace the serialized configuration with a bare map):
@@ -118,3 +132,12 @@ whose operation failed partway through. Engines should return actionable
 availability reasons and keep persistent readers outside bounded `open` calls;
 the service starts a returned `dispatch_message`/`dispatch_error` pair for a
 framed worker. Generic PCM/WAV and framed worker I/O live in `genex/audio`.
+
+Non-streaming synthesis callbacks complete a bounded segment before the service
+applies playback backpressure. Piper and macOS use short segments and release
+their framed-worker lock before delivering PCM. Their `drain_on_cancel` flag
+lets an in-flight segment finish reading to its terminator when playback is
+cancelled; later segments are skipped and the helper remains warm. Shutdown,
+protocol failures and execution deadlines can still retire a broken helper.
+For streaming engines, `emit` can suspend on playback credit; never hold a
+shared engine lock or shared protocol stream across that call.

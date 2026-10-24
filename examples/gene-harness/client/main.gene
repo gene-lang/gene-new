@@ -122,16 +122,29 @@
   (var workspace (string_or client/status/workspace ""))
   $"gene-harness/voice-review/${workspace}/${session}")
 
+(fn reviewed_voice_input [client : Client, session : Str, value : Str] : Any
+  (var key (voice_review_key client session))
+  (var saved (?? ($session_storage/get key) ""))
+  (if_yes (== saved "") (return nil))
+  (try
+    (var review : Any ($json/parse saved))
+    (if_yes (&& (!= (string_or review/text "") "") (!= (str/trim value) ""))
+      (return review/input))
+    catch Any nil)
+  ($session_storage/remove key)
+  nil)
+
 (fn voice_review [client : Client, session : Str, value : Str, input : Any] : Bool
   (if_yes (|| (== session "") client/sending (! ($absent? client/pending))) (return false))
   (var previous (if (== session client/selected) ($dom/input_value client/prompt)
     (?? ($session_storage/get (draft_key session)) "")))
   (var combined ($to_str previous (if (== previous "") "" "\n\n") value))
-  (if_yes (! ($session_storage/set (voice_review_key client session) ($json/stringify input))) (return false))
+  (if_yes (! ($session_storage/set (voice_review_key client session)
+    ($json/stringify {^text value ^input input}))) (return false))
   (if_yes (! ($session_storage/set (draft_key session) combined)) (return false))
   (if_yes (== session client/selected)
     ($dom/set_input_value client/prompt combined)
-    (notice client "Voice text appended for review. Enter sends text only; attachments stay in your draft.")
+    (notice client "Voice text appended for review. Edit freely; Enter sends text only. Clear the composer to return to typed input. Attachments stay in your draft.")
     ($dom/focus client/prompt))
   true)
 
@@ -429,6 +442,7 @@
 (fn remember_draft [client : Client] : Void
   (if_yes (! client/ready) (return))
   (if_yes (&& (!= client/selected "") (== client/generation 0)) (return))
+  (reviewed_voice_input client client/selected ($dom/input_value client/prompt))
   (var key (draft_key (if (== client/selected "") "new" client/selected)))
   (if ($session_storage/set key ($dom/input_value client/prompt))
     (notice ^key "draft-storage" ^scope client/selected client "")
@@ -1737,11 +1751,8 @@
     (send_mode_input client)
     (return))
   (var raw ($dom/input_value client/prompt))
-  (var review (?? ($session_storage/get (voice_review_key client client/selected)) ""))
-  (if_yes (&& (!= review "") (!= (str/trim raw) ""))
-    (var input : Any (try ($json/parse review) catch Any nil))
-    (if_yes ($absent? input)
-      (notice client "Voice review metadata is unreadable; keep this draft and record again.") (return))
+  (var input : Any (reviewed_voice_input client client/selected raw))
+  (if_yes (&& (! ($absent? input)) (!= (str/trim raw) ""))
     (var session client/selected)
     (voice_submit client session raw input
       (fn [code : Int, data : Any] : Void

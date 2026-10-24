@@ -1,8 +1,8 @@
 (import $test [describe it])
 (import [isolated run_spec test_service] ^from "../../support")
-(import [close_session_service create_session event_record] ^from "../../../src/web/session_service")
+(import [close_session_service create_session event_record session_voice_claim] ^from "../../../src/web/session_service")
 (import [submit_round round_receipt RoundError] ^from "../../../src/runtime/round_controller")
-(import [claim_voice release_voice] ^from "../../../src/runtime/voice_state")
+(import [claim_voice release_voice voice_snapshot] ^from "../../../src/runtime/voice_state")
 (import [events_for] ^from "../../../src/storage/state")
 
 (describe "Voice round integration"
@@ -45,6 +45,24 @@
           (let last_reply ($last ($filter (events_for service/events "session" session/id) (fn [event] (== event/type "reply")))))
           ($assert (== last_reply/payload/text "A valid typed reply."))
           ($assert ($absent? last_reply/payload/audio_reply))
+        ensure (close_session_service service)))))
+  (it "never returns another owner's token to a stale releasing page" []
+    (isolated this_mod/.path "never returns another owner's token to a stale releasing page"
+      (fn [workspace]
+        (let service (test_service ^workspace workspace ^provider (fn [request] "(Outcome ^^done ^reply \"Done.\")")))
+        (try
+          (let session (create_session service))
+          (let first (session_voice_claim service session/id {^client_id "a" ^^output}))
+          (let second (session_voice_claim service session/id {^client_id "b" ^^output}))
+          ($assert (! ($absent? second/token)))
+          (let released (session_voice_claim service session/id {^client_id "a" ^token first/token ^enabled false}))
+          ($assert (== released/owner "b"))
+          ($assert ($absent? released/token))
+          ($assert (== released/revision second/revision))
+          ($assert (== (/token (voice_snapshot service/runtime/voice)) second/token))
+          (let renewed (session_voice_claim service session/id {^client_id "b" ^token second/token ^output false}))
+          ($assert (== renewed/token second/token))
+          ($assert (== renewed/revision second/revision))
         ensure (close_session_service service)))))
   (it "includes voice input in idempotency identity and keeps ordinary receipts compatible" []
     (isolated this_mod/.path "includes voice input in idempotency identity and keeps ordinary receipts compatible"
