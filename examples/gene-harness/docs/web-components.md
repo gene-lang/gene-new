@@ -323,6 +323,11 @@ drafts, preserves newer edits, and applies the patch only where the correspondin
 view-state value still matches the value captured at submission. Receipt recovery
 also updates a saved view when the user has navigated elsewhere.
 
+Action successes do not produce automatic `Saved.` banners. Controls reflect
+pending work immediately, and actions taking over 500 ms show `Working…` until
+settled. Failures and uncertain outcomes keep their error/recovery feedback;
+a successful action only clears its own progress notice.
+
 Normal status snapshots carry a stateful view's descriptor and invalidation
 revision, not a default-state tree. Workspace plugin-state updates and plugin
 publication invalidate it. The browser requests a new tree with its current

@@ -162,10 +162,16 @@ confirmation cards follow their owning workflow's lifecycle.
 
 ### Feedback near the action
 
-Saving/Saved, validation and unknown outcomes remain near the originating form
-or composer. Independent keyed slots prevent Copied/Saved from replacing an
-unresolved error. Routine successes can time out; errors and decisions cannot
-vanish on a short timer.
+Successful workspace UI actions are quiet: the updated view confirms the
+result, and their progress notice is removed instead of becoming a `Saved.`
+banner. The pending indicator appears immediately; actions still pending
+after 500 ms show one keyed `Working…` notice. A late progress timer cannot
+revive a completed action or replace an uncertain-outcome warning.
+
+Validation errors and unknown outcomes retain their messages and recovery
+controls. Independent action keys prevent a later success from removing an
+earlier failure. Other feedback, such as Copied, can time out; errors and
+decisions cannot vanish on a short timer.
 
 Inline notices and the center show the same item/projection, with synchronized
 dismiss controls. Limit compact overlays so they do not

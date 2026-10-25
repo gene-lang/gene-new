@@ -29,22 +29,36 @@
     ui
     message))
 
+(fn action_progress [ui : UiClient, pending : Any] : Void
+  (var id (text pending/request/input_id))
+  ($time/after 500.0
+    (fn [] : Void
+      # A receipt, refusal, or newer input may have settled this action while
+      # the timer waited. Uncertain outcomes keep their recovery message.
+      (if_yes (|| ($absent? ui/pending) (!= id (text ui/pending/request/input_id))) (return))
+      (var current : Any ui/pending)
+      (if_yes (|| (flag current/settled) (flag current/uncertain) (flag current/unknown)) (return))
+      (action_notice ui current "Working…"))))
+
 (fn accept_receipt [ui : UiClient, record : Any] : Void
   (if_yes ($absent? ui/pending) (return))
   (var pending : Any ui/pending)
   (if_yes (!= (text pending/format) "2") (return))
   (if_yes (!= (text record/input_id) (text pending/request/input_id)) (return))
   (set pending/command_id (text record/id))
-  (persist_pending ui)
   (var status (text record/status))
+  (if_yes (|| (== status "accepted") (== status "running"))
+    (set pending/uncertain false)
+    (set pending/unknown false))
+  (persist_pending ui)
   (if (|| (== status "accepted") (== status "running"))
-    (action_notice ui pending "Saving…")
+    (action_progress ui pending)
     (do
       (set pending/settled true)
       (if (== status "done")
         (do
           (clear_saved_drafts ui pending)
-          (action_notice ui pending "Saved." "info" false))
+          (action_notice ui pending ""))
         (action_notice ui pending (text record/display status) "error"))
       ($session_storage/remove (pending_key ui))
       (set ui/pending nil)
@@ -66,7 +80,7 @@
     (sync_controls ui)
     (return))
   (notice ^key "action-storage" ^origin {^workspace ui/workspace ^component pending/request/component} ui "")
-  (action_notice ui pending "Saving…")
+  (action_progress ui pending)
   (sync_controls ui)
   (ui/api
     "POST"
