@@ -1,6 +1,6 @@
 (mod harness_client ^profile web)
 (import [LiveOutput create_output output_entry receive_output output_text historical_records
-  turn_output_key command_output_key clear_session_output output_epoch interrupt_output observe_output]
+  turn_output_key command_output_key clear_session_output output_epoch interrupt_output observe_output output_open]
   ^from "./live_output.gene")
 (import [BrowserClients create_clients update_clients] ^from "./browser_clients.gene")
 (import [CommandClient create_commands configure_commands dispatch_command recover_command forget_command] ^from "./command_client.gene")
@@ -90,7 +90,7 @@
     (var panel : EventTarget mount/panel) (var pre : EventTarget mount/pre)
     (var summary : EventTarget mount/summary)
     (if_yes (! (same? entry mount/entry))
-      (set panel/open (launcher_flag entry/open)) (set mount/entry entry))
+      (set panel/open (output_open entry (launcher_flag mount/default_open))) (set mount/entry entry))
     (set panel/hidden ($absent? entry))
     (var value (output_text entry))
     (if_yes (!= value (string_or mount/text ""))
@@ -127,13 +127,13 @@
       (var panel : EventTarget mount/panel) (set entry/open panel/open)))
   (set store/mounts []))
 
-(fn live_output_view [client : Client, key : Str] : EventTarget
+(fn live_output_view [client : Client, key : Str, ^default_open default_open : Bool = false] : EventTarget
   (var store (live_store client))
   (var entry : Any (output_entry store key))
   (var pre ($dom/render `(pre)))
   (var summary ($dom/render `(summary "Output · live")))
   (var panel ($dom/render `(details ^class_name "execution live_output"
-    ^open %(launcher_flag entry/open) ^hidden %($absent? entry)
+    ^open %(output_open entry default_open) ^hidden %($absent? entry)
     ^on_toggle %(fn [event : Any] : Void
       (var current : Any (output_entry store key))
       (if_not ($absent? current) (set current/open event/current_target/open))))))
@@ -141,7 +141,7 @@
   ($dom/append panel ($dom/render `(button ^type "button" ^class_name "copy"
     ^on_click %(fn [event : Any] : Void (copy_text client (output_text (output_entry store key)))) "Copy")))
   ($dom/append panel pre)
-  (store/mounts .push {^key key ^panel panel ^pre pre ^summary summary ^text "" ^label "Output · live" ^entry entry})
+  (store/mounts .push {^key key ^panel panel ^pre pre ^summary summary ^text "" ^label "Output · live" ^entry entry ^default_open default_open})
   panel)
 
 (fn client_page_id [client : Client] : Str
@@ -868,6 +868,12 @@
     (return))
   (var id : Str block/id)
   (var generation client/generation)
+  (var repl (&& (== block_phase "command") (== (string_or block/name "") "repl")
+    (! ($absent? block/mode_instance))))
+  (if_yes repl
+    ($dom/append target (live_output_view ^default_open true client
+      (command_output_key client/selected (string_or block/command_id "")))))
+  (if_yes (&& repl (== (string_or block/status "") "running")) (return))
   ($dom/append
     target
     (block_view
@@ -1729,6 +1735,7 @@
       ^phase "command"
       ^input_id data/input_id
       ^mode_instance data/mode_instance
+      ^name data/name ^raw data/raw ^command_id id
       ^text text
       ^status status
       ^view data/view
@@ -2211,6 +2218,8 @@
                     ^turn 0
                     ^role "assistant"
                     ^phase "command"
+                    ^name data/name ^raw data/raw ^command_id id
+                    ^mode_instance data/mode_instance ^input_id data/input_id
                     ^text output
                     ^status data/status
                     ^view data/view

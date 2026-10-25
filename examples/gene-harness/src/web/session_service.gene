@@ -226,11 +226,13 @@
 
 (fn command_input_record [session : Str, record]
   # Older receipts retain the parsed command, but not its original spelling.
-  (let text (?? record/input_text
-    ($to_str "/" record/name (if (== record/raw "") "" ($to_str " " record/raw)))))
+  (let repl (&& (== record/name "repl") (! ($absent? record/mode_instance))))
+  (let text (if repl record/raw (?? record/input_text
+    ($to_str "/" record/name (if (== record/raw "") "" ($to_str " " record/raw))))))
   {^id $"${session}/${record/id}/input"
    ^seq ($to_str (?? record/start_seq 0)) ^round_id "" ^turn 0
    ^role "user" ^phase "prompt" ^kind "command/input"
+   ^speaker (if repl "REPL input" "User")
    ^text text ^order (?? record/started_ms 0) ^^durable})
 
 (fn queue_snapshot [service, session : Str]
@@ -288,7 +290,8 @@
       (if_yes (== record/ui_action true)
         (publish_message service "ui/action" "" {^session session ^record record})
         (return nil))
-      (if (&& (! ($absent? record/raw)) ($absent? record/mode_instance))
+      (let repl (&& (== record/name "repl") (! ($absent? record/mode_instance))))
+      (if (&& (! ($absent? record/raw)) (|| ($absent? record/mode_instance) repl))
         (publish_message service "turn" session (command_input_record session record)))
       (if (&& (!= record/name "sh") (! ($absent? record/text)))
         (publish_message
@@ -617,7 +620,7 @@
     (let seq (?? record/start_seq 0))
     (if (&& (>= after 0) (<= seq after)) (continue))
     (if (&& (>= before 0) (>= seq before)) (continue))
-    (if ($absent? record/mode_instance)
+    (if (|| ($absent? record/mode_instance) (&& (== record/name "repl") (! ($absent? record/raw))))
       (records .push (command_input_record id record)))
     (if_yes (&& console (!= record/name "sh") (!= (?? record/output "") ""))
       (records .push

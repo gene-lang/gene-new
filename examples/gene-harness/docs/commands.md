@@ -40,8 +40,10 @@ other running sessions require `--confirm`.
   workspace. Like `/cancel`, `/stop` and `/restart` it is host-owned, as is the
   `set_appearance` function; see [theming](theming.md).
 
-`/run` is one evaluation; use the REPL for persistent local bindings. Commands
-retain the submitting session and normal receipts/cancellation. Prefer Gene
+`/run` is one evaluation; use the REPL for persistent local bindings.
+`/run`, `/sh` and `/repl` keep their output and results in the operator transcript.
+`/view` adds a file pointer to the next user prompt.
+Commands retain the submitting session and normal receipts/cancellation. Prefer Gene
 APIs/tooling when available. Disabling `core_commands` removes `/help`, `/run`,
 `/view` and this chapter. Disabling `shell` independently removes `/sh` and
 Shell mode. Core cancellation controls and `/theme` remain available.

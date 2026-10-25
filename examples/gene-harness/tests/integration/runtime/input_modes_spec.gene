@@ -32,6 +32,81 @@
     (command_receipt service/runtime/commands session record/id))))
 
 (describe "Harness input modes"
+  (it "keeps run, shell and REPL activity out of the next model prompt" []
+    (isolated this_mod/.path "keeps run, shell and REPL activity out of the next model prompt"
+      (fn [workspace]
+        (let seen ($cell nil))
+        (let service (test_service ^workspace workspace ^provider (fn [request]
+          (seen .set request/messages) "(Outcome ^^done ^reply \"done\")")))
+        (try
+          (let session (create_session service))
+          (let run (command service session/id "/run ($println \"PRIVATE_RUN_PRINT\") \"PRIVATE_RUN_RESULT\""))
+          ($assert (! run/attached))
+          ($assert ($str/contains? run/output "PRIVATE_RUN_PRINT"))
+          ($assert ($str/contains? run/display "PRIVATE_RUN_RESULT"))
+          (let shell (command service session/id "/sh printf 'PRIVATE_SHELL_OUTPUT\\n'"))
+          ($assert (! shell/attached))
+          ($assert ($str/contains? shell/display "PRIVATE_SHELL_OUTPUT"))
+          (command service session/id "/sh")
+          (let persistent (input service session/id "shell" "echo PRIVATE_SHELL_MODE"))
+          ($assert (! persistent/attached))
+          (input service session/id "leave-shell" "exit")
+          (command service session/id "/repl")
+          (let repl (input service session/id "repl" "($println \"PRIVATE_REPL_PRINT\") \"PRIVATE_REPL_RESULT\""))
+          ($assert (! repl/attached))
+          ($assert ($str/contains? repl/output "PRIVATE_REPL_PRINT"))
+          ($assert ($str/contains? repl/display "PRIVATE_REPL_RESULT"))
+          (input service session/id "leave-repl" "exit")
+          ($assert (== (/attached (command_state service/runtime session/id)) []))
+          (submit service session/id "fresh-prompt" 1 "A fresh model request.")
+          (service/controller/watchers/.get .get session/id; .join)
+          ($assert (! ($absent? seen/.get)))
+          (let latest ($last seen/.get))
+          ($assert ($str/contains? latest/content "A fresh model request."))
+          (for marker in ["PRIVATE_RUN_PRINT" "PRIVATE_RUN_RESULT" "PRIVATE_SHELL_OUTPUT"
+            "PRIVATE_SHELL_MODE" "PRIVATE_REPL_PRINT" "PRIVATE_REPL_RESULT"]
+            ($assert (! ($str/contains? latest/content marker)) $"Operator activity leaked: ${marker}"))
+        ensure (close_session_service service)))))
+  (it "streams REPL prints separately between input and result" []
+    (isolated this_mod/.path "streams REPL prints separately between input and result"
+      (fn [workspace]
+        (let service (test_service ^workspace workspace ^provider
+          (fn [request] "(Outcome ^^done ^reply \"unused\")")))
+        (let entered ($cell false)) (let released ($cell false)) (let messages [])
+        (service/publisher .set (fn [message] (messages .push message)))
+        (try
+          (contribute service/runtime/h "core" "functions"
+            {^name "pause_after_print" ^doc "Wait after printing." ^fn (fn []
+              (entered .set true) (while (! released/.get) ($sleep 1)))})
+          (let session (create_session service))
+          (command service session/id "/repl")
+          (let mode (mode_state service/runtime/modes session/id))
+          (let code "($println \"before result\") (pause_after_print) (+ 40 2)")
+          (let running (submit_mode_input service/runtime/modes session/id mode/instance "print" code))
+          (wait_entered entered service session/id running)
+          (let prints ($filter messages (fn [message]
+            (&& (== message/type "console") (== message/data/command_id running/id)))))
+          ($assert (> prints/.size 0) "REPL print was not streamed while evaluation was running.")
+          (let printed ($last prints))
+          ($assert (== printed/data/text "before result\n"))
+          (let current (snapshot ^!console service session/id))
+          (let request ($first ($filter current/records (fn [record] (== record/id $"${session/id}/${running/id}/input")))))
+          ($assert (== request/text code))
+          ($assert (== request/speaker "REPL input"))
+          (released .set true)
+          (service/runtime/commands/watchers/.get .get $"${session/id}:${running/id}"; .join)
+          (let done (command_receipt service/runtime/commands session/id running/id))
+          ($assert (== done/output "before result\n"))
+          ($assert (== done/display "42"))
+          (let view (snapshot ^!console service session/id))
+          ($assert (== ($size ($filter view/records (fn [record] (== record/phase "console")))) 0))
+          (let failed (input service session/id "error" "($println \"before error\") ($assert false \"boom\")"))
+          ($assert (== failed/status "failed"))
+          ($assert (== failed/output "before error\n"))
+          ($assert ($str/contains? failed/display "boom"))
+        ensure
+          (released .set true)
+          (close_session_service service)))))
   (it "cancels busy inputs while other sessions and heartbeats progress and closes on replacement" []
     (isolated this_mod/.path "cancels busy inputs while other sessions and heartbeats progress and closes on replacement"
       (fn [workspace]

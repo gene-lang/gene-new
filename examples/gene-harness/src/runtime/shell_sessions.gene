@@ -14,7 +14,7 @@
     (spawn ^lane root (try (loop (let line channel/.recv) (ctx/output ($to_str line "\n"))) catch ChannelClosed nil)))
   (let result (try (await process) ensure process/.cancel (if_not process/.done? process/.join)))
   output/.join
-  (CommandResult ^display ($str/join [result/stdout result/stderr] "") ^status (if (== result/status 0) "done" "failed") ^exit result/status ^^attached))
+  (CommandResult ^display ($str/join [result/stdout result/stderr] "") ^status (if (== result/status 0) "done" "failed") ^exit result/status ^!attached))
 
 (fn classify_shell [text : Str]
   (let trimmed ($str/trim text))

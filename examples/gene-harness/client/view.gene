@@ -27,17 +27,6 @@
   ($dom/append details pre)
   details)
 
-(fn reply_audio_controls [block : Any, on_speak : Any] : EventTarget
-  (var controls ($dom/render `(div ^class_name "reply_audio")))
-  (if_not ($absent? block/audio_reply)
-    (var spoken : Str block/audio_reply)
-    ($dom/append controls ($dom/render `(details (summary "Spoken") (p %spoken)))))
-  (if_yes (&& (! ($absent? on_speak)) (!= (str/trim block/text) ""))
-    (var replay : (Fn [Any] Void) on_speak)
-    ($dom/append controls ($dom/render `(button ^type "button" ^class_name "quiet"
-      ^on_click %(fn [event : Any] : Void (replay block)) "Replay speech"))))
-  controls)
-
 (fn block_view [block : Any, provisional : Bool, on_copy : (Fn [Str] Void),
                 expanded : Bool, on_toggle : (Fn [Bool] Void),
                 ^source_text source_text : Any = nil, ^on_speak on_speak : Any = nil] : EventTarget
@@ -45,7 +34,7 @@
   (var phase : Str block/phase)
   (var text : Str (if ($absent? source_text) block/text source_text))
   (var label (if (== role "user") (status_text block/speaker "User")
-    (if (&& (== phase "reply") (status_flag block/final)) "Agent final response"
+    (if (&& (== phase "reply") (status_flag block/final)) "Agent"
       (if (== role "log") "History" "Gene"))))
   (var cls (if (== role "user") "message user" "message agent"))
   (if_yes provisional (set cls $"${cls} provisional"))
@@ -59,7 +48,8 @@
       (if (== view_kind "markdown")
         (markdown_view text)
         (if (== phase "command")
-          (execution_view text "Command output" false true on_copy on_toggle)
+          (execution_view text (if (&& (== (status_text block/name) "repl")
+            (! ($absent? block/mode_instance))) "Result" "Command output") false true on_copy on_toggle)
           (if (== phase "code")
             (execution_view text "Response" true expanded on_copy on_toggle)
             (if (== phase "turn/request")
@@ -73,7 +63,6 @@
          (div ^class_name "speaker" %label
            %(if (&& provisional (!= role "user")) " · in progress" "")))))
   ($dom/append article content)
-  (if_yes (== phase "reply") ($dom/append article (reply_audio_controls block on_speak)))
   (if_not ($absent? block/media)
     (var attachments : (List Any) block/media)
     (var gallery ($dom/render `(div ^class_name "message_attachments")))
@@ -157,8 +146,6 @@
       (if_not ($absent? block/media) (set media block/media))
       (if_yes (&& (> media/.size 0) (! ($absent? render_extra)))
         (var media_render : (Fn [EventTarget Any] Void) render_extra) (media_render content block))
-      (if_yes (&& (! ($absent? on_speak)) (!= (status_text block/text) ""))
-        ($dom/append content (reply_audio_controls block on_speak)))
       (continue))
     (if ($absent? render_extra)
       ($dom/append content (block_view block (not_durable block) on_copy (is_open id)

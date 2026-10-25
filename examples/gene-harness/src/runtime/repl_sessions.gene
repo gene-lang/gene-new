@@ -52,7 +52,7 @@
     ensure
       (turn/state .set "closed")
       (close_execution_scope scope)))
-  (CommandResult ^display (operator_result turn ($repl/format value)) ^^attached ^status "done"))
+  (CommandResult ^display (operator_result turn ($repl/format value)) ^!attached ^status "done"))
 
 (fn close_repl [sessions, session : Str]
   (let state (sessions/.get .get session))

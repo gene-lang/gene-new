@@ -184,7 +184,7 @@ existing structured observation registry:
 | `N.user` | Visible header for a user round's original prompt, where N is that round's first session-wide turn number; also usable for earlier retained requests in this session. |
 | `N.answers` (including collision suffixes) | Exact operator-submitted question answers, traced to the question/answer record. Parent-generated child answers do not acquire user origin. |
 | `N.label` | Earlier rendered response output; record its actual origin. A label such as `tests` alone does not prove a tool ran or a test passed. |
-| `cN.name` | Operator `/run` or `/sh` attachment; classify as tool output, not a user statement. |
+| `cN.name` | Explicit plugin-command attachment or legacy operator output; classify as tool output, not a user statement. |
 
 Never use the evolving receipt `request` to classify user statements: command
 attachments, hook items, trigger headers, and continuation output can occur
@@ -623,11 +623,11 @@ the saved history snapshot. A read error must not be reported as a successful
 untracked exposure. Operator-only view reads do not impersonate model-session
 reads.
 
-In particular, `/run` in a session can call `memory_get` and attach its result to
-the model's next request as `[cN.name]`. It enters that session's received set at
-call time, even though an operator initiated it and the attachment is delivered
-later. Classify by exposure destination: exclude only reads whose output stays
-in an operator-only view/UI, not all operator-initiated reads.
+Operator `/run` and `/repl` calls to `memory_get` keep their results in the
+operator transcript. Sharing a session id does not make those reads model
+exposure. Reads called by response code are recorded at call time; an explicit
+plugin-command attachment is tracked when delivered to model history. Classify
+by exposure destination, including for operator-initiated reads.
 
 For duplicate suppression, skip an exact revision still present in retained
 messages, using recorded injection locations/digests. The ever-received set is
@@ -957,7 +957,7 @@ gate. The milestone labels below identify when each scenario becomes required.
 | 2 | Session-list and round-receipt payloads accept the new recovery fields as optional additive metadata, including nested `last_round` data. Existing client behavior and index-only listings are preserved; no record-projection refactor is required. |
 | 2 | Later receipt checkpoints publish earlier dirty batches; A's unflushed note and B's dependent correction receipt are published together. No memory-gate holder acquires a round gate. |
 | 3 | Settled injection survives ordinary continuation with a stable prefix; notes still present are not repeated; ever-received metadata survives compaction but does not suppress needed exact retrieval. |
-| 3–4 | Response code calls a memory function without rendering it, or operator `/run` returns it as a later `[cN.name]` attachment; returned revisions are recorded at call time and withdrawals reach that session. Operator-only view reads are excluded. Notice cursors require persisted notice text. |
+| 3–4 | Response code calls a memory function without rendering it; returned revisions are recorded at call time and withdrawals reach that session. Explicit plugin-command attachments are tracked at delivery. Operator-only `/run`, `/repl` and view reads are excluded. Notice cursors require persisted notice text. |
 | 1–4 | User, child, and trigger rounds receive relevant memory and withdrawal notices; only actual user initiators receive the submission prompt and can admit notes, regardless of session-kind labels. |
 | 3 | No-match works; conditional lessons expose their conditions; explicit pull is bounded; total request/context byte limits still hold. |
 | 4 | Correct/forget appends one settled notice per delivered effective change, preserving older messages. Unloaded sessions receive it when resumed; active rounds see changes arriving after earlier request preparation at their next input boundary. |

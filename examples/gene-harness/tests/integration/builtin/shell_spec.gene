@@ -44,7 +44,7 @@
           ($assert (&& (== once/status "done") (== once/exit 0)) once/display)
           ($assert ($str/contains? once/display "one shot\n"))
           ($assert ($absent? (mode_state service/runtime/modes session/id)))
-          ($assert (== ($size (take_command_attachments service/runtime session/id)) 1))
+          ($assert (== (take_command_attachments service/runtime session/id) []))
           ($assert (== (/status (command service session/id "/sh")) "done"))
           ($assert (== (/name (mode_state service/runtime/modes session/id)) "sh"))
           (let setup (input service session/id "setup"

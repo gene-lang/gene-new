@@ -57,7 +57,7 @@ assert.equal(groups.filter(group=>group.kind==='turn').length,2);
 view=step_view(groups[1].blocks,false,false,()=>{},()=>false,()=>{});
 assert.equal(view.children[0].textContent,'Turn 2: Ready.');
 const final=block_view(groups[2].block,false,()=>{},false,()=>{});
-assert.equal(final.textContent,'Agent final responseReady.');
+assert.equal(final.textContent,'AgentReady.');
 const failed=step_view([block('code',3,'invalid',{reply_hint:'Unverified success'}),block('turn/end',3,'',{reason:'error'})],false,false,()=>{},()=>false,()=>{});
 assert.equal(failed.children[0].textContent,'Turn 3 · Code error');
 for (const source of ['![a](', 'x ![a](b']) assert.equal(reply_summary(source),source);

@@ -4,6 +4,10 @@ Enter in the browser with `/repl`. Input remains in a session-specific Gene envi
 exit/quit (also :exit/:quit) or the host Leave control. Multiline incomplete
 syntax waits for more input. Empty input is ignored.
 
+Each entry shows its input, printed output, then the result. Printed output is
+expanded by default and streams while the input runs. It is kept only for the
+current page; reloading restores the input and result without printed output.
+
 The workspace directory is cwd. Imports are supported, subject to normal package
 boundaries. The environment exposes session_id, workspace_root, discover, doc,
 the standard library and active plugin functions. Discover and doc read the

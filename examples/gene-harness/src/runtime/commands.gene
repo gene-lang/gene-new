@@ -146,7 +146,7 @@
       (turn/state .set "closed")
       (if_not completed/.get (discard_composition_changes ctx/runtime/h/snapshots turn))
       (close_execution_scope scope)))
-  (CommandResult ^display (operator_result turn value) ^^attached ^status "done"))
+  (CommandResult ^display (operator_result turn value) ^!attached ^status "done"))
 
 (fn view_command [ctx]
   (let specification ($str/trim ctx/raw))
@@ -291,6 +291,7 @@
     manager
     session
     {^id record/id ^name record/name ^status "running" ^text text ^output record/output
+     ^mode_instance (?? record/mode_instance nil)
      ^ui_action (== record/ui_action true)})
   nil)
 
@@ -318,7 +319,9 @@
         (let bounded
           (bounded_request manager/runtime session [{^id id ^header header ^value pointer}]))
         (record .put "status" (?? result/status "done"))
-        (record .put "display" (if (== record/name "view") text bounded/full))
+        (record .put "display" (if (== record/name "view") text
+          (if (&& (== record/name "repl") (! ($absent? record/mode_instance)))
+            bounded/items/0/value bounded/full)))
         (record .put "attached" (== result/attached true))
         (record .put "item" bounded/items/0)
         (let properties ($props result))
@@ -543,7 +546,12 @@ Stopped."""))))
   (let manager runtime/commands)
   (manager/gate (fn []
     (let state (read_command_state runtime session))
-    (let items state/attached)
+    # Older hosts queued these operator results automatically. Discard any
+    # still pending after an upgrade, including items whose receipts expired.
+    (let items ($filter state/attached (fn [item]
+      (let id (?? item/id ""))
+      (! (|| ($str/ends_with? id ".run") ($str/ends_with? id ".sh")
+             ($str/ends_with? id ".repl"))))))
     (state .put "attached" [])
     (save_command_state runtime session state)
     items)))

@@ -326,9 +326,9 @@ Commands run without the model in their own tasks, with per-session ids.
 | /restart | Stop and restart under the launcher |
 | /theme [light\|dark] | Show or switch the web UI theme for this workspace (default light) |
 
-/run, one-shot /sh and /view can run during a round. Their results attach to the next
-user-initiated request after the current round; /view attaches a pointer.
-Other commands remain operator-only. Unknown commands report a closest match.
+`/run`, `/sh` and `/repl` keep their output and results in the operator transcript.
+`/run`, one-shot `/sh` and `/view` can run during a round. `/view` attaches a
+file pointer to the next user-initiated request. Unknown commands report a closest match.
 `//text` sends the literal `/text` to the model.
 
 Pass complete code to CLI `run`, or use `run --file FILE` for multiline code.

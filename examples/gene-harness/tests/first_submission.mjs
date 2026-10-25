@@ -412,6 +412,50 @@ const fresh=client();
 harness.apply_snapshot(fresh,{...snapshot(),records:[codeBlock,oldConsole]});
 const freshPanel=descendants(fresh.transcript).find(x=>x.attributes.class==='execution live_output');
 assert.equal(freshPanel.hidden,true,'a reload cannot reconstruct printed output');
+// REPL mode inputs use the same page-owned buffer, between input and result.
+c=client();
+const replSource='($println "printed value") (+ 40 2)';
+const replInput={id:'s/c2/input',seq:'2',round_id:'',turn:0n,role:'user',phase:'prompt',
+  speaker:'REPL input',text:replSource,durable:true};
+const replResult={id:'s/c2',seq:'2',round_id:'',turn:0n,role:'assistant',phase:'command',
+  command_id:'c2',name:'repl',raw:replSource,mode_instance:'repl-instance',input_id:'repl-input',
+  status:'running',text:'',durable:true};
+harness.apply_snapshot(c,{...snapshot(null,[replInput,replResult]),cursor:'2'});
+assert.equal(descendants(c.transcript).some(node=>node.tag==='summary'&&node.textContent==='Result'),false,
+  'an evaluation has no result until it finishes');
+harness.live_console(c,'s',{id:'s/c2/console',command_id:'c2',round_id:'',turn:0n,cumulative:true,text:'printed value\n'});
+timers.filter(t=>t.ms===40).at(-1).callback();
+panel=descendants(c.transcript).find(node=>node.attributes.class==='execution live_output');
+assert.equal(panel.open,true,'REPL output is visible by default');
+assert.equal(panel.hidden,false);
+assert.match(panel.textContent,/printed value/);
+const replDone={...replResult,status:'done',text:'42'};
+harness.apply_snapshot(c,{...snapshot(null,[replInput,replDone]),cursor:'2'});
+let replRun=descendants(c.transcript).find(node=>node.attributes.class==='run');
+assert.deepEqual(replRun.children.map(node=>node.tag),['article','details','article']);
+assert.equal(replRun.children[0].textContent,'REPL input'+replSource);
+assert.match(replRun.children[1].textContent,/printed value/);
+assert.match(replRun.children[2].textContent,/ResultCopy42$/);
+panel=replRun.children[1]; panel.open=false; panel.dispatchEvent(new Event('toggle'));
+harness.apply_snapshot(c,{...snapshot(null,[replInput,replDone]),cursor:'2'});
+assert.equal(descendants(c.transcript).find(node=>node.attributes.class==='execution live_output').open,false,
+  'an explicitly collapsed REPL output stays collapsed');
+const replReload=client();
+harness.apply_snapshot(replReload,snapshot(null,[replInput,replDone]));
+assert.equal(descendants(replReload.transcript).find(node=>node.attributes.class==='execution live_output').hidden,true);
+assert.match(replReload.transcript.textContent,/ResultCopy42/);
+const liveRepl=client();
+harness.apply_record(liveRepl,replInput);
+harness.apply_command(liveRepl,'s',{id:'c2',name:'repl',raw:replSource,mode_instance:'repl-instance',
+  input_id:'repl-input',status:'running'});
+harness.live_console(liveRepl,'s',{id:'s/c2/console',command_id:'c2',round_id:'',turn:0n,cumulative:true,text:'live print\n'});
+timers.filter(t=>t.ms===40).at(-1).callback();
+harness.apply_command(liveRepl,'s',{id:'c2',name:'repl',raw:replSource,mode_instance:'repl-instance',
+  input_id:'repl-input',status:'done',display:'42'});
+replRun=descendants(liveRepl.transcript).find(node=>node.attributes.class==='run');
+assert.deepEqual(replRun.children.map(node=>node.tag),['article','details','article']);
+assert.match(replRun.children[1].textContent,/live print/);
+assert.match(replRun.children[2].textContent,/ResultCopy42$/);
 // A receiving Request has a stable identity but a later source sequence. Live
 // replacement and an older in-flight snapshot must retain the newest input.
 c=client();

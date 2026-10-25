@@ -6,8 +6,8 @@ profile loads it alongside `core_commands` and `repl`. Use
 
 `/sh <command>` runs once in the workspace, streams stdout and stderr, and
 reports the exit status. It uses the configured `SHELL` environment value,
-falling back to `/bin/sh`. Its result attaches to the next user-initiated model
-request, matching `/run` and `/view`.
+falling back to `/bin/sh`. Output and results stay in the operator transcript,
+as with `/run` and `/repl`.
 
 ## Shell mode
 

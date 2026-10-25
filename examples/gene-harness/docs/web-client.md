@@ -109,7 +109,7 @@ collapsed. Cards, media, questions, and errors stay inside their producing turn.
 Pending turns have a blank summary; a host-extracted literal reply hint may fill
 it when code arrives, and the evaluated reply is authoritative. A concise reply
 appears only in its own heading as `Turn N: <reply>`. The full final reply appears
-once under **Agent final response**, outside the last turn. Completed status
+once under **Agent**, outside the last turn. Completed status
 shows the status label without repeating reply text. Response code is
 highlighted when expanded. Printed text appears in an **Output · live** disclosure
 inside its owning turn, collapsed by default. Late output stays with its original
@@ -325,9 +325,10 @@ A registered initial /name is a command; its raw argument string is preserved.
 Unknown names report a closest match. Initial // escapes a literal slash.
 The web command picker uses server-provided usage/documentation.
 
-Run, shell and view commands remain available while a round runs. Their
-attachments wait for the next user prompt; they never appear in a running
-round's intermediate context. Both clients create and list sessions through
+Run, shell and view commands remain available while a round runs. Run, shell
+and REPL output stays in the operator transcript. View pointers wait for the
+next user prompt and never appear in a running round's intermediate context.
+Both clients create and list sessions through
 the session service; CLI uses `sessions`, and `/new` and `/sessions` are retired.
 
 A pending prompt retains its request id and submission sequence in browser

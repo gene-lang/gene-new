@@ -3,7 +3,7 @@
 (import [isolated run_spec test_controller] ^from "../../support")
 (import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
 (import [baseline_profile] ^from "../../../src/profiles/baseline")
-(import [submit_command command_receipt parse_submission take_command_attachments cancel_command]
+(import [submit_command command_receipt parse_submission take_command_attachments cancel_command read_command_state save_command_state]
   ^from "../../../src/runtime/commands")
 (import [submit_round round_receipt close_round_controller] ^from "../../../src/runtime/round_controller")
 (import [Plugin PluginHost contribute] ^from "../../../src/kernel")
@@ -63,6 +63,7 @@
           ($assert (== ($head joined) TaskOutcome/ok) "command watcher failed")
           (let ran (command_receipt manager "default" run/id))
           ($assert (== ran/status "done") $"run failed: ${ran}")
+          ($assert (! ran/attached))
           ($assert ($str/contains? ran/display "3") "run did not display its value")
           (let hidden (submit_command manager "default" "/run Outcome"))
           (manager/watchers
@@ -81,6 +82,7 @@
             ; .get $"default:${shell/id}"
             ; .join)
           (let exited (command_receipt manager "default" shell/id))
+          ($assert (! exited/attached))
           ($assert (== exited/exit 0) $"shell failed: ${exited}")
           ($assert ($str/contains? exited/display "hello") "shell output was lost")
           ($fs/write_text
@@ -112,8 +114,10 @@ three""")
             $"provider callback was not called: ${round_status}")
           (let last (- messages/.size 1))
           ($assert
-            ($str/contains? messages/%last/content "[c1.run]")
-            "run did not attach to the next user request")
+            (! ($str/contains? messages/%last/content "[c1.run]"))
+            "run output leaked into the next user request")
+          ($assert (! ($str/contains? messages/%last/content $"[${shell/id}.sh]")))
+          ($assert (! ($str/contains? messages/%last/content $"[${prompted/id}.run]")))
           ($assert
             ($str/contains? messages/%last/content "user viewed sample.txt:2-3")
             "view did not attach as a pointer")
@@ -129,7 +133,7 @@ three""")
           ($assert
             ($str/ends_with? cancelled/display "No round is running.")
             "idle cancel claimed to stop a round")
-          ($println "commands: raw parsing, slash escape, run isolation, streamed shell, view and next-user attachments")
+          ($println "commands: raw parsing, slash escape, operator output isolation, streamed shell and view pointers")
         ensure
           (close_round_controller controller)
           (close_runtime runtime)))))
@@ -198,6 +202,25 @@ three""")
           ($assert (== lines ["out" "err"]) "merged stderr did not stream in order")
           ($assert (== result/stderr "") "merged stderr was duplicated")
           ($println "command I/O: empty stdin, shell-neutral execution, colon paths and merged stderr")
+        ensure (close_runtime runtime))))))
+
+(describe "Legacy operator attachments"
+  (it "drops pending run, shell and REPL output while retaining explicit attachments" []
+    (isolated this_mod/.path "drops pending run, shell and REPL output while retaining explicit attachments"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (try
+          (let state (read_command_state runtime "default"))
+          # No retained receipts: attachment policy must also cover old queues.
+          (state .put "records" [])
+          (let viewed {^id "c4.view" ^value "user viewed sample.txt"})
+          (let explicit {^id "c5.echo" ^value "Explicit plugin attachment."})
+          (state .put "attached" [{^id "c1.run" ^value "old run result"}
+            {^id "c2.sh" ^value "old shell result"} {^id "c3.repl" ^value "old REPL result"}
+            viewed explicit])
+          (save_command_state runtime "default" state)
+          ($assert (== (take_command_attachments runtime "default") [viewed explicit]))
+          ($assert (== (take_command_attachments runtime "default") []))
         ensure (close_runtime runtime))))))
 
 (describe "Harness plugin commands"

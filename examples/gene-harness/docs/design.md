@@ -379,8 +379,9 @@ report written; smoke output above
 - A Str value is sent verbatim; any other value is printed as Gene data.
 
 A round's first request is the user's prompt, preceded by the items of slash
-commands attached since the previous user request, such as
-`[c3.sh] /sh git status (exit 0)`. A trigger round's first request is the
+commands that explicitly attach since the previous user request, such as
+a `/view` file pointer. `/run`, `/sh` and `/repl` remain in the operator transcript.
+A trigger round's first request is the
 trigger's request text prefixed with `[trigger <id> occurrence <occurrence>]`.
 
 ### Questions
@@ -682,7 +683,8 @@ CommandContext carries session, raw arguments, command id and output sink.
 CommandResult carries display value, status and attachment behavior. Command
 tasks use the workspace directory, console routing and execution budgets.
 Results marked for attachment wait for the next user request, never an
-intermediate turn or a trigger request. File views attach a pointer.
+intermediate turn or a trigger request. File views attach a pointer; `/run`,
+`/sh` and `/repl` output does not attach to model requests.
 
 CLI operator submissions carry a request id, command sequence and text digest.
 Matching retained retries return the same receipt; changed content and stale
