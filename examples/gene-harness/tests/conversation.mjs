@@ -13,8 +13,8 @@ Object.assign(globalThis,{HTMLElement:Element,document:{createElement:tag=>new E
   createTextNode:text=>new Element('#text',text),createDocumentFragment:()=>new Element('#fragment')}});
 const main=pathToFileURL(process.argv[2]);
 const {markdown_view,reply_summary}=await import(new URL('markdown.mjs',main));
-const {conversation_groups,bounded_blocks}=await import(new URL('state.mjs',main));
-const {step_view,block_view}=await import(new URL('view.mjs',main));
+const {conversation_groups,bounded_blocks,merge_blocks}=await import(new URL('state.mjs',main));
+const {step_view,block_view,run_status_view}=await import(new URL('view.mjs',main));
 const descendants=node=>[node,...node.children.flatMap(descendants)];
 for(const version of ['1','7','8','999']){
   const source=`![Generated logo](/api/v${version}/media/asset_123)`;
@@ -60,6 +60,20 @@ const final=block_view(groups[2].block,false,()=>{},false,()=>{});
 assert.equal(final.textContent,'Agent final responseReady.');
 const failed=step_view([block('code',3,'invalid',{reply_hint:'Unverified success'}),block('turn/end',3,'',{reason:'error'})],false,false,()=>{},()=>false,()=>{});
 assert.equal(failed.children[0].textContent,'Turn 3 · Code error');
+for (const source of ['![a](', 'x ![a](b']) assert.equal(reply_summary(source),source);
+let status=run_status_view({state:'paused',resumable:false,continuation_stop:'failed',
+  continued_by:'reserved',continuation_error:'History is unavailable.'},'',()=>{}, ()=>{});
+assert.match(status.textContent,/History is unavailable/);
+assert.match(status.textContent,/Send a new message/);
+assert.equal(descendants(status).filter(node=>node.tag==='button').length,0);
+status=run_status_view({state:'paused',resumable:false,continuation_stop:'superseded'},'',()=>{});
+assert.doesNotMatch(status.textContent,/Send a new message/);
+const other=block('code',1,'other',{id:'other',round_id:'another'});
+groups=conversation_groups([records[0],other,records[1]]);
+assert.deepEqual(groups.filter(group=>group.kind==='turn').map(group=>group.key),['r/turn-1','another/turn-1']);
+assert.deepEqual(groups[0].blocks,[records[0],records[1]]);
+const replacement={...records[1],text:'updated'};
+assert.deepEqual(merge_blocks([records[0],records[1]],[replacement,other]),[records[0],replacement,other]);
 const history=[];
 for(let turn=1;turn<=605;turn++) history.push(block('turn/start',turn),block('code',turn,'(+ 1 2)'),block('turn/end',turn,'',{reason:'continue'}));
 for(const latest of [true,false]){

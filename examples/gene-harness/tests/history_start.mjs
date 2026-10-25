@@ -92,14 +92,16 @@ for (const durable of [true, false]) {
   assert.equal(text(step).split(progress.text).length - 1, 1);
 }
 
-// Final replies remain outside step grouping and render once as ordinary replies.
+// Final replies have a separate block group; their turn still owns the summary.
 const final = {...progress, id: "final-1", text: "Finished successfully.", final: true};
-assert.equal(state.step_block(progress), true);
-assert.equal(state.step_block(final), false);
+const groups = state.conversation_groups([code, progress, final]);
+assert.deepEqual(groups.map(group => group.kind), ["turn", "block"]);
+assert.ok(groups[0].blocks.includes(progress));
+assert.equal(groups[1].block, final);
 target = new Element("section");
-target.appendChild(view.step_view([code], true, false, () => {}, () => false, () => {}));
-target.appendChild(view.block_view(final, false, () => {}, false, () => {}));
+target.appendChild(view.step_view(groups[0].blocks, true, false, () => {}, () => false, () => {}));
+target.appendChild(view.block_view(groups[1].block, false, () => {}, false, () => {}));
 assert.equal(target.children[1].tag, "article");
-assert.equal(text(target).split(final.text).length - 1, 1);
-assert.equal(text(target.children[0]).includes(final.text), false);
+assert.equal(text(target.children[1]).split(final.text).length - 1, 1);
+assert.equal(text(target.children[0].children[1]).includes(final.text), false);
 console.log("turn replies: durable and preview progress only in headings; code, next requests and final replies preserved");

@@ -207,6 +207,13 @@
           ($assert (!= stopped/continuation_error ""))
           (resume_continuations service/controller)
           ($assert (== (/continuation_stop (round_receipt service/controller session/id first/id)) "failed"))
+          (set_plugin_enabled service/runtime/workspace service/runtime/h "history_basic" true)
+          (let fresh (submit service session/id "fresh-after-failure" 2 "Resume the remaining work."))
+          (wait_task service session/id)
+          (let superseded (round_receipt service/controller session/id first/id))
+          ($assert (== superseded/continuation_stop "superseded"))
+          ($assert ($absent? superseded/continuation_error))
+          ($assert (!= fresh/id first/id))
         ensure (close_session_service service)))))
   (it "projects a resumable legacy limit without rewriting its failure receipt or host artifacts" []
     (isolated this_mod/.path "projects a resumable legacy limit without rewriting its failure receipt or host artifacts"

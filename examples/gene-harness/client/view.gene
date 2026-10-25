@@ -191,9 +191,11 @@
       ($dom/append root ($dom/render `(button ^type "button"
         ^on_click %(fn [event : Any] : Void (set event/current_target/disabled true) (resume mode))
         %(if (== mode "manual") "Continue" "Continue until finished"))))))
-  (if_yes (&& limited (!= status "paused"))
+  (if_yes (&& limited (|| (!= status "paused")
+    (== (status_text run/continuation_stop) "failed")
+    (&& (! resumable) ($absent? run/continued_by) ($absent? run/continuation_stop))))
     ($dom/append root ($dom/render `(span ^class_name "outcome_message"
-      "Send a continuation message in this conversation to finish the remaining work."))))
+      "Send a new message in this conversation to resume the remaining work."))))
   (if_yes (&& (! limited) (!= prompt "") (terminal status) (!= status "done"))
     ($dom/append root ($dom/render
       `(button ^type "button" ^class_name "edit_retry"

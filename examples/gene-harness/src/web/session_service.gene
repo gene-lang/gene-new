@@ -2,7 +2,7 @@
 (import [command_descriptors] ^from "../runtime/command_identity")
 (import [browser_client_descriptors] ^from "../ui/browser_clients")
 (import [speech_text speech_needs_audio_reply?] ^from "../runtime/speech_text")
-(import [project_conversation conversation_page initiating_label] ^from "./conversation")
+(import [project_conversation project_request conversation_page initiating_label] ^from "./conversation")
 (import [VoiceChanged voice_snapshot public_voice_state claim_voice release_voice] ^from "../runtime/voice_state")
 (import [voice_output?] ^from "../runtime/voice_state")
 (import [append_core_event] ^from "../storage/state")
@@ -81,7 +81,7 @@
     delete_trigger
     list_occurrences])
 
-(type WorkspaceService ^props {^runtime Any ^events Any ^sessions Any ^controller Any ^epoch Str ^publisher Any ^revision Any ^closed Any ^model_info Any ^offline Bool ^subscriptions Any ^snapshot_jobs Any ^snapshot_versions Any ^ui_audience Any? ^snapshot_audience Any?})
+(type WorkspaceService ^props {^runtime Any ^events Any ^sessions Any ^controller Any ^epoch Str ^publisher Any ^revision Any ^closed Any ^model_info Any ^offline Bool ^subscriptions Any ^snapshot_jobs Any ^snapshot_versions Any ^browser_requests Any ^ui_audience Any? ^snapshot_audience Any?})
 
 (fn public_session [service, record]
   (let copy ($thaw ($freeze record)))
@@ -160,6 +160,29 @@
     ^^durable})
 
 (fn browser_request [service, session : Str, event]
+  (let record (event_record session event))
+  (let cache service/browser_requests/.get)
+  (let prior (cache .get session))
+  (if_yes (&& (== record/role "user")
+    (> (?? record/for_turn 0) 0) (! ($absent? record/initiator))
+    (! ($str/starts_with? (?? record/initiator "") "continue:")))
+    (record .put "speaker" (initiating_label nil record))
+    (cache .put session record)
+    (return record))
+  (let receiver (?? record/for_turn 0))
+  (if_yes (> receiver 0)
+    (if (== record/at_limit true) (return nil))
+    (let same_owner (&& (== prior/round_id record/round_id) (== prior/turn receiver)
+      (== prior/role "assistant")))
+    # Current writers declare their receiving turn and combination. Keep only
+    # the latest live request per active session; cold/legacy appends rebuild
+    # provenance once from the durable stream.
+    (if_yes (&& (! ($absent? prior)) (== prior/round_id record/round_id)
+      (> event/seq ($parse/parse_int prior/seq))
+      (|| (== record/combine "replace") (&& (== record/combine "append") same_owner)))
+      (let projected (project_request record receiver (if same_owner prior nil)))
+      (cache .put session projected)
+      (return projected)))
   (let records [])
   (for source in (events_for service/events "session" session)
     (if (["turn/request" "turn/start" "turn/end"] .contains? source/type)
@@ -168,8 +191,9 @@
   (let projected (project_conversation records rounds/receipts))
   (let id $"${session}/${event/seq}")
   (for record in projected
-    (if (== record/id id) (return record))
-    (if (&& (! ($absent? record/source_ids)) (record/source_ids .contains? id)) (return record)))
+    (if_yes (|| (== record/id id)
+      (&& (! ($absent? record/source_ids)) (record/source_ids .contains? id)))
+      (cache .put session record) (return record)))
   nil)
 
 (fn publish_transcript [service, session : Str, event]
@@ -245,6 +269,8 @@
         (publish_message service "ui/state" "" (ui_status service/runtime/h)))
       (if (== record/scope "session") (publish_transcript service record/stream record/envelope)))
     (when (changed : RoundChanged)
+      (if (["done" "failed" "paused" "cancelled" "interrupted" "recovery_required"] .contains? changed/receipt/state)
+        (service/browser_requests/.get .delete changed/session))
       (publish_message service "round/state" changed/session (public_round service changed/session changed/receipt))
       (if (== changed/receipt/state "waiting")
         (publish_message service "questions" changed/session changed/receipt/questions))
@@ -309,7 +335,7 @@
       (let choice (provider_choice runtime settings))
       {^provider choice/name ^model "Unavailable" ^effort ""}))
   (let service
-    (WorkspaceService ^runtime runtime ^events runtime/events ^sessions runtime/sessions ^controller nil ^epoch ($crypto/random_hex 16) ^publisher ($cell nil) ^revision ($atomic_cell 0) ^closed ($cell false) ^model_info model_info ^offline offline ^subscriptions [] ^snapshot_jobs ($cell {}) ^snapshot_versions ($cell {})))
+    (WorkspaceService ^runtime runtime ^events runtime/events ^sessions runtime/sessions ^controller nil ^epoch ($crypto/random_hex 16) ^publisher ($cell nil) ^revision ($atomic_cell 0) ^closed ($cell false) ^model_info model_info ^offline offline ^subscriptions [] ^snapshot_jobs ($cell {}) ^snapshot_versions ($cell {}) ^browser_requests ($cell {})))
   (runtime/h/notifications/observer .set
     (fn [kind, data]
       (let copy ($thaw ($freeze data)))

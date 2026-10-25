@@ -1,6 +1,6 @@
 (mod harness_client ^profile web)
 (import [LiveOutput create_output output_entry receive_output output_text historical_records
-  turn_output_key command_output_key clear_session_output output_epoch interrupt_output]
+  turn_output_key command_output_key clear_session_output output_epoch interrupt_output observe_output]
   ^from "./live_output.gene")
 (import [BrowserClients create_clients update_clients] ^from "./browser_clients.gene")
 (import [CommandClient create_commands configure_commands dispatch_command recover_command forget_command] ^from "./command_client.gene")
@@ -1301,6 +1301,7 @@
     (var current_tab (session_tab client client/selected))
     (set data/before_cursor current_tab/cache/before_cursor))
   (output_epoch (live_store client) (string_or data/status/epoch ""))
+  (observe_output (live_store client) client/selected "snapshot" data)
   (set data/records (historical_records data/records))
   (set data/preview (historical_records data/preview))
   (if_not client/viewing_history
@@ -2143,6 +2144,7 @@
       (if_yes (== session tab/id) (live_console client session data))
       (if_yes (== tab/id client/selected) (set client/message_sequence sequence))
       (return))
+    (if_yes (== session tab/id) (observe_output output_store session kind data))
     (var ui : UiClient client/ui)
     (if_yes (|| (== kind "reply") (== kind "round/state") (== kind "voice/state") (== kind "ready"))
       (voice_event client kind session data))

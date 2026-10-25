@@ -73,7 +73,7 @@ Record issues as encountered in ../harness-todo-replay-issues.md, preserving ear
 ```
 
 Expand **Turn** disclosures for code, patches, errors and next requests.
-Console output has its own pane. Wait for **Completed** and the final reply
+Live output appears in a collapsed Output section inside its turn. Wait for **Completed** and the final reply
 before starting the generated server, so it does not compete with a smoke test.
 
 ## Continue and recover

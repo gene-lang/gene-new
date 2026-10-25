@@ -57,7 +57,25 @@
 
 (fn interrupt_output [store : LiveOutput, session : Str] : Void
   (for entry in store/entries
-    (if_yes (== (text entry/session) session) (set entry/incomplete true))))
+    (if_yes (&& (== (text entry/session) session) (! (flag entry/terminal)))
+      (set entry/incomplete true))))
+
+# Completion prevents a later disconnect from marking already finished output.
+# It cannot repair an earlier gap in a stream of deltas.
+(fn observe_output [store : LiveOutput, session : Str, kind : Str, data : Any] : Void
+  (if_yes (== kind "snapshot")
+    (var records : (List Any) data/records)
+    (for record in records
+      (observe_output store session (if (== (text record/phase) "command") "command" "turn") record))
+    (return))
+  (var key "")
+  (if_yes (&& (== kind "turn")
+    (|| (== (text data/phase) "turn/end") (== (text data/phase) "turn/error")))
+    (set key (turn_output_key session (text data/round_id) (integer data/turn))))
+  (if_yes (&& (== kind "command") (!= (text data/status) "") (!= (text data/status) "running"))
+    (set key (command_output_key session (text data/command_id (text data/id)))))
+  (var entry : Any (output_entry store key))
+  (if_not ($absent? entry) (set entry/terminal true)))
 
 (fn evict_output [store : LiveOutput] : Void
   (for entry in store/entries
@@ -88,17 +106,22 @@
   (var entry : Any (output_entry store key))
   (if_yes ($absent? entry)
     (set entry {^key key ^session session ^text "" ^bytes 0 ^chunks 0 ^seen {}
-      ^!late ^!truncated ^!evicted ^!incomplete ^!open})
+      ^!late ^!truncated ^!evicted ^!incomplete ^!open ^terminal (flag data/late)})
     (store/entries .push entry) (set store/index/%key entry))
   (if_yes (flag entry/evicted) (return false))
   (var seen : PropMap entry/seen)
   (var replace (&& (!= command "") (flag data/cumulative)))
   (if_yes (&& (! replace) (flag seen/%id)) (return false))
-  (if_yes (&& replace (== value (text entry/text))) (return false))
+  (if_yes (&& replace (== value (text entry/text)))
+    (if_yes (&& (flag entry/incomplete) (! (flag entry/truncated)))
+      (set entry/incomplete false) (return true))
+    (return false))
   (if_yes (flag entry/truncated) (return false))
   (set store/bytes (- store/bytes (integer entry/bytes)))
   (set store/chunks (- store/chunks (integer entry/chunks)))
-  (if_yes replace (set entry/text "") (set entry/bytes 0) (set entry/chunks 0) (set entry/seen {}) (set seen entry/seen))
+  (if_yes replace
+    (set entry/text "") (set entry/bytes 0) (set entry/chunks 0)
+    (set entry/seen {}) (set seen entry/seen) (set entry/incomplete false))
   (var room (- (- 262144 (integer entry/bytes)) (byte_size id)))
   (var addition (if (&& (flag data/late) (! (flag entry/late))) ($to_str "\n[Late output]\n" value) value))
   (var kept (byte_prefix addition room))

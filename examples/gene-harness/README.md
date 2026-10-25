@@ -262,7 +262,8 @@ Generated requests appear under the turn that answers them. At a turn-limit
 pause, Continue grants another normal budget and Continue until finished
 continues automatically across budgets. Stop and per-response limits remain
 available; the final answer is shown separately below the last turn.
-Console output has its own collapsible pane. Questions preselect recommended
+Live output appears in a collapsed Output section inside its turn and disappears
+on reload. Questions preselect recommended
 choices but submit only when the operator answers. Skip individual questions
 or dismiss the batch.
 

@@ -42,3 +42,19 @@
     (let after (project_conversation [base update] [{^id "r" ^state "waiting"}]))
     ($assert (== before/0/id after/0/id))
     ($assert (== after/0/text "updated"))))
+
+(describe "Indexed request ownership"
+  (it "uses durable next-start order across rounds rather than display order" []
+    (let records [
+      (record "turn/start" 1 "" 1)
+      (record "turn/start" 9 "" 6)
+      (record "turn/start" 3 "" 4 ^props {^round_id "other"})
+      (record "turn/request" 1 "legacy" 2)
+      (record "turn/start" 2 "" 5)
+      (record "turn/request" 3 "explicit" 7 ^props {^round_id "other" ^for_turn 3 ^combine "replace"})])
+    (let requests ($filter (project_conversation records [{^id "r" ^state "done"} {^id "other" ^state "done"}])
+      (fn [item] (== item/phase "turn/request"))))
+    ($assert (== requests/.size 2))
+    ($assert (== requests/0/turn 2))
+    ($assert (== requests/1/round_id "other"))
+    ($assert (== requests/1/turn 3))))

@@ -1,7 +1,7 @@
 # Tests src/web/session_service.gene.
 (import $test [describe it])
 (import [isolated run_spec test_service set_test_provider fixture_path] ^from "../../support")
-(import [open_session_service close_session_service create_session submit receipt answer snapshot
+(import [open_session_service close_session_service create_session submit receipt answer snapshot browser_request
          host_status edit_session acknowledge_attention list_sessions command
          session_card_action session_card_receipt]
   ^from "../../../src/web/session_service")
@@ -828,6 +828,41 @@ child/.detach
           (close_session_service reopened))))))
 
 (describe "Browser live output projection"
+  (it "keeps warm and cold live request projections equivalent to saved history" []
+    (isolated this_mod/.path "keeps warm and cold live request projections equivalent to saved history"
+      (fn [workspace]
+        (let service (test_service ^workspace workspace ^provider (fn [request] "(Outcome ^^done ^reply \"ok\")")))
+        (let published [])
+        (service/publisher .set (fn [message]
+          (if (&& (== message/type "turn") (== message/data/phase "turn/request"))
+            (published .push message/data))))
+        (try
+          (let session (create_session service))
+          (transcript service/runtime session/id {^type "turn/request" ^round "r" ^turn 0
+            ^for_turn 1 ^combine "replace" ^initiator "user" ^^initial ^full "User input."})
+          (transcript service/runtime session/id {^type "turn/start" ^round "r" ^turn 1})
+          (transcript service/runtime session/id {^type "turn/request" ^round "r" ^turn 1
+            ^for_turn 2 ^combine "replace" ^full "base"})
+          (transcript service/runtime session/id {^type "turn/start" ^round "r" ^turn 2})
+          (transcript service/runtime session/id {^type "turn/request" ^round "r" ^turn 2
+            ^for_turn 2 ^combine "append" ^full "warm" ^^delegation})
+          (let warm ($last published))
+          ($assert (== warm/text "base\nwarm"))
+          (service/browser_requests/.get .delete session/id)
+          (transcript service/runtime session/id {^type "turn/request" ^round "r" ^turn 2
+            ^for_turn 2 ^combine "append" ^full "cold" ^^delegation})
+          ($assert (== (/text ($last published)) "base\nwarm\ncold"))
+          ($assert (== warm/source_ids/.size 2) "Later projection mutated an already published request.")
+          (let event ($last (events_for service/events "session" session/id)))
+          ($assert (== (/text (browser_request service session/id event)) "base\nwarm\ncold"))
+          (transcript service/runtime session/id {^type "turn/request" ^round "r" ^turn 2
+            ^for_turn 2 ^combine "replace" ^full "replaced"})
+          (let live ($last published))
+          (let saved ($first ($filter (/records (snapshot ^!console service session/id))
+            (fn [record] (== record/id live/id)))))
+          ($assert (== live saved))
+          ($assert (== live/source_ids/.size 4))
+        ensure (close_session_service service)))))
   (it "keeps diagnostic console records out of browser history and preserves command results" []
     (isolated this_mod/.path "keeps diagnostic console records out of browser history and preserves command results"
       (fn [workspace]
@@ -837,6 +872,7 @@ child/.detach
           (let session (create_session service))
           (let round (submit service session/id "live-test" 1 "check"))
           (service/controller/watchers/.get .get session/id ; .join)
+          ($assert ($absent? (service/browser_requests/.get .get session/id)))
           (repeat line in 200
             (transcript service/runtime session/id {^type "console" ^round round/id ^turn 1 ^text "noise\n" ^!late ^^ignorable}))
           (let browser (snapshot ^!console service session/id))

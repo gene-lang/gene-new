@@ -130,6 +130,7 @@
                 (|| ($absent? old/continued_by) (== old/continued_by receipt/id)))
           (do (let superseded (copy_data old))
             (superseded .put "continuation_stop" "superseded")
+            (superseded .put "continuation_error" nil)
             (superseded .put "continued_by" nil)
             (receipts .push superseded))
           (receipts .push old)))))

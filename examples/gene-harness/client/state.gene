@@ -4,16 +4,15 @@
 
 (fn merge_blocks [previous : (List Any), incoming : (List Any)] : (List Any)
   (var out : (List Any) [])
-  (for old in previous
-    (var replacement : Any old)
-    (for item in incoming
-      (if_yes (== old/id item/id) (set replacement item)))
-    (out .push replacement))
+  (var replacements : PropMap {}) (var known : PropMap {})
   (for item in incoming
-    (var found false)
-    (for old in previous
-      (if_yes (== old/id item/id) (set found true)))
-    (if_not found (out .push item)))
+    (var id : Str item/id) (set replacements/%id item))
+  (for old in previous
+    (var id : Str old/id) (set known/%id true)
+    (out .push (?? replacements/%id old)))
+  (for item in incoming
+    (var id : Str item/id)
+    (if_yes ($absent? known/%id) (out .push item)))
   out)
 
 # A saved first prompt leads paged history until its real request is visible.
@@ -153,24 +152,10 @@
   (var round : Int block/turn)
   $"${run}/turn-${round}")
 
-(fn step_block [block : Any] : Bool
-  (var round : Int block/turn)
-  (var phase : Str block/phase)
-  (var final : Bool false)
-  (if_not ($absent? block/final) (set final block/final))
-  (if_yes (&& (== phase "reply") final) (return false))
-  (&&
-    (> round 0)
-    (||
-      (== phase "code")
-      (== phase "turn/request")
-      (== phase "turn/patch")
-      (== phase "turn/error")
-      (== phase "reply"))))
-
 # Group by owner, including records separated by cards, media, or late effects.
 (fn conversation_groups [blocks : (List Any)] : (List Any)
   (var groups : (List Any) [])
+  (var index : PropMap {})
   (for block in blocks
     (var turn : Int block/turn)
     (var role : Str block/role)
@@ -179,12 +164,11 @@
       (groups .push {^kind "block" ^block block}) (continue))
     (if_yes (status_flag block/synthetic) (continue))
     (var key (step_key block))
-    (var group : Any nil)
-    (for item in groups
-      (if_yes (&& (== (status_text item/kind) "turn") (== (status_text item/key) key)) (set group item)))
+    (var group : Any index/%key)
     (if_yes ($absent? group)
       (var empty : (List Any) [])
-      (set group {^kind "turn" ^key key ^blocks empty}) (groups .push group))
+      (set group {^kind "turn" ^key key ^blocks empty})
+      (set index/%key group) (groups .push group))
     (var items : (List Any) group/blocks) (items .push block)
     (if_yes (&& (== phase "reply") (status_flag block/final))
       (groups .push {^kind "block" ^block block})))
@@ -200,9 +184,6 @@
   (var ad : Int ($json/parse a/1))
   (var bd : Int ($json/parse b/1))
   (|| (< ac bc) (&& (== ac bc) (< ad bd))))
-
-(fn marker_block [block : Any] : Bool
-  false)
 
 (fn merge_delegation [records : (List Any), block : Any] : (List Any)
   (var id : Str block/id)
