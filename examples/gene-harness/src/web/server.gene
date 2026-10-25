@@ -22,6 +22,7 @@
     cancel_operator_command
     host_status
     edit_session
+    remove_session
     acknowledge_attention
     session_card_action
     session_card_receipt
@@ -444,6 +445,8 @@
     (if_yes (&& (>= parts/.size 5) (== parts/1 "api")
                 (== parts/2 "v8") (== parts/3 "sessions"))
       (var id parts/4)
+      (if_yes (&& (== parts/.size 5) (== request/method "DELETE"))
+        (return (response 200 (remove_session host id (number (request_data request) "revision")))))
       (if_yes (&& (== parts/.size 5) (== request/method "PATCH"))
         (var data (request_data request))
         (return (response 200 (edit_session host id data

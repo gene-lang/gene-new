@@ -51,6 +51,20 @@ input::placeholder, textarea::placeholder { color: var(--muted); opacity: 1; }
 .session.selected { background: var(--selected-surface); }
 .session_name { width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .82rem; }
 .session.selected .session_name { font-weight: 550; }
+.session_row { display: flex; align-items: center; min-width: 0; position: relative; }
+.session_row.selected { background: var(--selected-surface); }
+.session_row .session { flex: 1; min-width: 0; margin: .15rem 0; }
+.session_more { flex-shrink: 0; width: 30px; min-height: 32px; padding: .1rem; border: 0; opacity: 0; color: var(--muted); font-size: 1.2rem; }
+.session_row:hover .session_more, .session_row:focus-within .session_more, .session_more[aria-expanded=true] { opacity: 1; }
+.session_menu { position: fixed; z-index: 20; width: 220px; max-width: calc(100vw - 16px); max-height: calc(100dvh - 16px); overflow: auto; padding: .4rem; border: 1px solid var(--line); background: var(--surface); color: var(--ink); box-shadow: 0 5px 18px #0002; font-size: .82rem; }
+.session_menu[role=menu] > button { display: block; width: 100%; border: 0; padding: .45rem .6rem; text-align: left; }
+.session_menu p { margin: .35rem; font-size: .78rem; }
+.session_menu strong, .session_menu label { display: block; margin: .35rem; font-weight: 550; }
+.session_menu input { width: 100%; min-width: 0; margin: .3rem 0 .5rem; padding: .35rem; border: 1px solid var(--line); background: var(--surface); }
+.session_menu .danger { color: var(--danger, #b42318); }
+.session_menu_error:empty { display: none; }
+.session_menu_error { color: var(--danger, #b42318); }
+@media (hover: none) { .session_more { opacity: 1; width: 36px; min-height: 40px; } }
 .session_meta { color: var(--muted); font-size: .7rem; }
 .sidebar_empty { margin: 0; padding: .4rem .65rem; color: var(--muted); font-size: .8rem; line-height: 1.6; }
 .sidebar_footer { border-top: 1px solid var(--line); margin-top: 1rem; padding-top: .75rem; }

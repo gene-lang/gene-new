@@ -1,0 +1,75 @@
+(import $test [describe it])
+(import [isolated run_spec test_service] ^from "../../support")
+(import [create_session edit_session remove_session close_session_service list_sessions RoundError]
+  ^from "../../../src/web/session_service")
+(import [create_session : create_record view_session require_record update_session delete_session SessionError]
+  ^from "../../../src/runtime/sessions")
+(import [submit_command cancel_command] ^from "../../../src/runtime/commands")
+(import [start_host stop_host] ^from "../../web_support")
+(import [connect api] ^from "../../../src/cli/client")
+(import [CliError] ^from "../../../src/cli/options")
+
+(describe "Conversation row actions"
+  (it "serves rename, pin and delete through the authenticated API" []
+    (isolated this_mod/.path "serves rename, pin and delete through the authenticated API"
+      (fn [workspace]
+        (let host (start_host $"${workspace}/host"))
+        (try
+          (let client (connect host/root))
+          (let session (api client "POST" "/sessions" {^title "Row actions"}))
+          (let edited (api client "PATCH" $"/sessions/${session/id}" {^title "Renamed" ^^pinned ^revision "0"}))
+          ($assert (== edited/title "Renamed")) ($assert edited/pinned)
+          (let listed ($first (/sessions (api client "GET" "/sessions"))))
+          ($assert (== listed/revision "1"))
+          ($assert (try (api client "DELETE" $"/sessions/${session/id}" {^revision "0"}) false
+            catch CliError (== $err/code "revision_conflict")))
+          (let removed (api client "DELETE" $"/sessions/${session/id}" {^revision "1"}))
+          ($assert (== removed/deleted [session/id]))
+          ($assert (try (api client "GET" $"/sessions/${session/id}/snapshot") false
+            catch CliError (== $err/code "not_found")))
+        ensure (stop_host host)))))
+  (it "renames, pins and explicitly deletes a viewed conversation and its children" []
+    (isolated this_mod/.path "renames, pins and explicitly deletes a viewed conversation and its children"
+      (fn [workspace]
+        (let service (test_service ^workspace workspace ^provider (fn [request] "")))
+        (let events [])
+        (service/publisher .set (fn [event] (events .push event)))
+        (try
+          (let session (create_session service))
+          (let child (create_record ^kind "child" ^parent {^session session/id ^round "r" ^delegation "d"}
+            service/sessions))
+          (let edited (edit_session service session/id {^title "Renamed" ^^pinned} 0))
+          ($assert (== edited/title "Renamed")) ($assert edited/pinned)
+          (let listed ($first (/sessions (list_sessions service))))
+          ($assert (== listed/revision "1"))
+          ($assert (== (/revision ($first listed/children)) "0"))
+          ($assert (== (/revision (require_record service/sessions session/id)) 1))
+          (view_session service/sessions session/id) (view_session service/sessions child/id)
+          ($assert (! (delete_session service/sessions session/id)))
+          ($assert (try (remove_session service session/id 0) false
+            catch SessionError (== $err/code "revision_conflict")))
+          (let removed (remove_session service session/id 1))
+          ($assert (== removed/deleted [session/id child/id]))
+          ($assert ($absent? (service/sessions/index/.get .get session/id)))
+          ($assert ($absent? (service/sessions/index/.get .get child/id)))
+          ($assert (== ($size ($filter events (fn [event] (== event/type "session/deleted")))) 2))
+        ensure (close_session_service service)))))
+  (it "refuses deletion while questions or operator commands are running" []
+    (isolated this_mod/.path "refuses deletion while questions or operator commands are running"
+      (fn [workspace]
+        (let service (test_service ^workspace workspace ^provider (fn [request] "")))
+        (try
+          (let session (create_session service))
+          (update_session service/sessions session/id {^status "waiting"})
+          ($assert (try (remove_session service session/id 0) false catch RoundError (== $err/code "busy")))
+          (update_session service/sessions session/id {^status "done"})
+          (let busy (submit_command service/runtime/commands session/id "/run ($sleep 60000)"))
+          ($assert (try (remove_session service session/id 0) false catch RoundError (== $err/code "busy")))
+          (cancel_command service/runtime/commands session/id busy/id)
+          (service/runtime/commands/watchers/.get .get $"${session/id}:${busy/id}"; .join)
+          (remove_session service session/id 0)
+          ($assert (try (require_record service/sessions session/id) false
+            catch SessionError (== $err/code "not_found")))
+        ensure (close_session_service service))))))
+
+(fn main [args] : Int (run_spec args))

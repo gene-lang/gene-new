@@ -14,7 +14,7 @@
   [write_body read_body bounded_request acquire_body_use release_body_use with_body_use])
 (import ^from "../storage/state"
   [core_state record_core_state flush_event_store next_sequence stream_key])
-(import ^from "./sessions" [load_session])
+(import ^from "./sessions" [load_session require_record])
 (import ^from "./appearance" [appearance_mode set_appearance])
 (import ^from "../web/theme" [theme_modes])
 (import ^from "./input_modes"
@@ -431,6 +431,7 @@ Stopped."""))))
   (var duplicate false)
   (let record
     (manager/gate (fn []
+      (require_record manager/runtime/sessions session)
       (let state (read_command_state manager/runtime session))
       (if_not ($absent? parsed/request_id)
         (for previous in state/records

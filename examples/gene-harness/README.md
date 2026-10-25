@@ -256,6 +256,11 @@ trigger, text and time filters query the durable index. Needs attention lists
 sessions of every kind. Opening a session or starting a new user round acknowledges its attention flag;
 another cause can set it again.
 
+Hover over a conversation to reveal **…** for Rename, Delete, and Pin/Unpin.
+The menu also works with keyboard focus and stays visible on touch screens.
+Delete confirms removal of the conversation and its children, and refuses
+running work or pending questions.
+
 Several session tabs can remain open with independent streams. Each turn shows
 the receiving Request, Response code, attachment and patch details, and replies.
 Generated requests appear under the turn that answers them. At a turn-limit

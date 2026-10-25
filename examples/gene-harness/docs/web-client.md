@@ -83,6 +83,13 @@ when the plugin is missing or broken.
 
 A session can be renamed and pinned or unpinned. Metadata edits carry the last
 seen revision; a stale edit fails rather than overwriting a newer one.
+Hover over a conversation row, or focus it with the keyboard, to reveal its
+**…** menu with **Rename**, **Delete**, and **Pin/Unpin**. Touch screens always
+show the menu button. These actions apply to that row without opening it.
+Rename keeps its draft through list updates. Delete asks for confirmation and
+removes child conversations too; running work and pending questions prevent
+deletion. Open tabs close when their conversation is deleted. Child conversations
+inherit their parent's pin.
 
 A submitted prompt appears immediately as a “You” message and replaces the
 welcome content, including while a newly created session connects. Pending
@@ -251,6 +258,7 @@ All API paths use /api/v8.
 | GET /sessions | Query index filters |
 | POST /sessions | Create an interactive session |
 | PATCH /sessions/ID | Rename/pin with metadata revision |
+| DELETE /sessions/ID | Delete a conversation and its children with metadata revision; refuses running work or pending questions |
 | POST /sessions/ID/open | Acknowledge attention when activating an open tab |
 | GET /sessions/ID/snapshot | Fetch transcript state |
 | POST /sessions/ID/rounds | Admit input with request id and submission sequence; `literal: true` submits prompt text without slash-command parsing; `card` sends a card's state with the text |
@@ -355,6 +363,7 @@ cookie, changes the process epoch and delivers a restarted notice.
 | Module | Responsibility |
 | --- | --- |
 | `client/main.gene` | Conversation navigation, commands, questions, streams and cached records |
+| `client/session_menu.gene` | Conversation row actions, rename editing, delete confirmation and keyboard dismissal |
 | `client/state.gene` | Transcript merge and grouping helpers |
 | `client/view.gene`, `client/markdown.gene`, `client/highlight.gene` | Turn and value display |
 | `client/components.gene` | Ordinary slot components |

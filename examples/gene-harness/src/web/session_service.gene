@@ -37,6 +37,7 @@
     require_record
     update_session
     load_session])
+(import [delete_session with_session_gate] ^from "../runtime/sessions")
 (import ^from "../agents/provider_selection" [provider_choice select_provider])
 (import ^from "../storage/state" [events_for])
 (import ^from "./contract" [protocol_version history_page_limit])
@@ -292,6 +293,8 @@
         (publish_message service "questions" changed/session changed/receipt/questions))
       (queue_snapshot service changed/session))
     (when (changed : SessionChanged)
+      (if (== changed/record/deleted true)
+        (publish_message service "session/deleted" "" {^id changed/record/id}))
       (publish_message service "session/list" "" (list_sessions service))
       (publish_message
         service
@@ -411,19 +414,25 @@
   (if (&& (== claim/owner request/client_id) (== claim/session session))
     claim (public_voice_state claim)))
 
+(fn public_session_index [record]
+  (let result ($thaw ($freeze_shallow record)))
+  (result .put "revision" ($to_str (?? record/revision 0)))
+  result)
+
 (fn list_sessions [service, ^after after : Str = "", ^limit limit : Int = 100, ^kind kind = nil, ^status status = nil, ^attention attention = nil, ^trigger trigger = nil, ^q q : Str = "", ^since since : Str = "", ^until until : Str = ""]
   (let results [])
   (for record in (session_records ^kind kind ^status status ^attention attention ^trigger trigger ^q q ^since since ^until until service/sessions)
     (if (&& (!= after "") (<= ($order/compare record/id after) 0)) (continue))
     (if (>= results/.size limit) (break))
+    (let shown (public_session_index record))
     (if_yes (&& (== q "") ($absent? kind) ($absent? status) ($absent? attention)
                 ($absent? trigger) (== since "") (== until ""))
       (let children [])
       (for child in (session_records ^kind "child" service/sessions)
-        (if (== child/parent/session record/id) (children .push child)))
-      (record .put "children" children))
-    (results .push record))
-  {^sessions results ^needs_attention (session_records ^^attention service/sessions) ^next ""})
+        (if (== child/parent/session record/id) (children .push (public_session_index child))))
+      (shown .put "children" children))
+    (results .push shown))
+  {^sessions results ^needs_attention ($map (session_records ^^attention service/sessions) public_session_index) ^next ""})
 
 (fn create_session [service, ^title title : Str = "New conversation"]
   (let record (create_record ^title title service/sessions))
@@ -433,6 +442,10 @@
   (edit_session service id {^title title} revision))
 
 (fn edit_session [service, id : Str, changes, revision : Int]
+  (with_session_gate service/sessions $"round/${id}"
+    (fn [] (edit_session_locked service id changes revision))))
+
+(fn edit_session_locked [service, id : Str, changes, revision : Int]
   (let record (require_record service/sessions id))
   (if (!= (?? record/revision 0) revision)
     (fail
@@ -453,6 +466,15 @@
   (let record (require_record service/sessions id))
   (if record/attention (update_session service/sessions id {^!attention}))
   {^^ok})
+
+(fn remove_session [service, id : Str, revision : Int]
+  (require_record service/sessions id)
+  (let ids [id])
+  (for [key record] in service/sessions/index/.get
+    (if (== record/parent/session id) (ids .push ($to_str key))))
+  (if_not (delete_session ^^explicit ^revision revision service/sessions id)
+    (fail (RoundError ^code "busy" ^message "Stop running work and answer or dismiss pending questions before deleting this conversation.")))
+  {^deleted ids})
 
 (fn submit [service, session : Str, request_id : Str, sequence : Int, text : Str, ^media media = [], ^card card = nil]
   (if_not (== ($head media) List)

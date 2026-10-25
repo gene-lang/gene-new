@@ -20,7 +20,13 @@ class Element extends EventTarget {
   appendChild(child) { this.children.push(child); child.parentNode = this; return child; }
   removeChild(child) { this.children.splice(this.children.indexOf(child), 1); child.parentNode = null; }
   setAttribute(name, value) { this.attributes[name] = value; if(name==='open') this.open=true; if(name==='hidden') this.hidden=true; }
-  focus() {}
+  focus() { document.activeElement = this; }
+  contains(node) { return node===this || this.children.some(child=>child.contains(node)); }
+  hasAttribute(key) { return key==='disabled'?!!this.disabled:Object.hasOwn(this.attributes,key); }
+  getAttribute(key) { return this.attributes[key]??null; }
+  querySelectorAll() { return this.children.flatMap(child=>[child,...child.querySelectorAll()]).filter(child=>['button','input','select','textarea','a'].includes(child.tag)); }
+  getClientRects() { return this.hidden?[]:[{}]; }
+  getBoundingClientRect() { return {left:100,top:100,width:220,height:160}; }
 }
 const elements = new Map();
 const stored = new Map();
@@ -33,6 +39,7 @@ const element = id => {
 Object.assign(globalThis, {
   HTMLElement: Element,
   document: {
+    body: new Element('body'),
     getElementById: element,
     createElement: tag => new Element(tag),
     createTextNode: text => new Element("#text", text),
@@ -46,7 +53,7 @@ Object.assign(globalThis, {
   fetch: (path, options) => new Promise(resolve => requests.push({
     path, options, reply: (status, data) => resolve({status, text: async () => JSON.stringify(data)}),
   })),
-  window: Object.assign(new EventTarget(), {location: {origin: "http://fixture", search: "", hash: ""}, history: {replaceState() {}}}),
+  window: Object.assign(new EventTarget(), {innerWidth:1200,innerHeight:800,location: {origin: "http://fixture", search: "", hash: ""}, history: {replaceState() {}}}),
   WebSocket: class extends EventTarget { constructor(url) { super(); this.url = url; } close() {} },
   // The fixture advances responses explicitly; browser reconnect timers stay idle.
   setTimeout: (callback,ms) => {timers.push({callback,ms}); return timers.length;},
@@ -490,4 +497,41 @@ assert.equal(c.round.id,'successor','an old source receipt must not replace its 
 assert.match(c.transcript.textContent,/Continuing automatically · 57 turns/);
 harness.apply_snapshot(c,{...snapshot(paused,[projectedRequest]),cursor:'10'});
 assert.equal(c.round.id,'successor','an older in-flight snapshot must not replace the successor');
+c=client();
+c.sessions=[{id:'menu-a',title:'A conversation',kind:'interactive',status:'done',revision:'2',pinned:false},
+  {id:'menu-b',title:'Another conversation',kind:'interactive',status:'done',revision:'0',pinned:false}];
+harness.render_sessions(c);
+const firstRow=c.list.children[0];
+assert.equal(firstRow.children[0].tag,'button');
+assert.equal(firstRow.children[1].attributes['aria-label'],'Actions for A conversation');
+firstRow.children[1].dispatchEvent(new Event('click'));
+assert.equal(c.selected,'s','opening row actions must not navigate');
+let menu=c.session_menu;
+assert.deepEqual(menu.panel.children.filter(node=>node.tag==='button').map(node=>node.textContent),['Rename','Delete','Pin']);
+menu.panel.children.find(node=>node.textContent==='Pin').dispatchEvent(new Event('click'));
+assert.equal(requests.at(-1).path,'/api/v8/sessions/menu-a');
+assert.equal(JSON.parse(requests.at(-1).options.body).revision,'2');
+requests.at(-1).reply(200,{...c.sessions[0],pinned:true,revision:'3'});await settled();
+assert.equal(c.selected,'s');
+assert.equal(c.sessions[0].pinned,true);
+assert.equal(c.session_revision,'0','editing another row must not change the selected revision');
+assert.equal(document.activeElement,c.list.children[0].children[1]);
+harness.render_sessions(c);
+assert.equal(document.activeElement,c.list.children[0].children[1],'a list refresh keeps keyboard focus on row actions');
+const menuTab=harness.session_tab(c,'menu-a');menuTab.cache.session=c.sessions[0];
+c.list.children[0].children[1].dispatchEvent(new Event('click'));
+menu.panel.children.find(node=>node.textContent==='Delete').dispatchEvent(new Event('click'));
+menu.panel.children.find(node=>node.tag==='button'&&node.textContent==='Delete').dispatchEvent(new Event('click'));
+assert.equal(requests.at(-1).options.method,'DELETE');
+requests.at(-1).reply(200,{deleted:['menu-a']});await settled();
+assert.equal(menuTab.closed,true);assert.equal(c.selected,'s');
+assert.equal(c.sessions.some(session=>session.id==='menu-a'),false);
+const deletedSelected=client();
+deletedSelected.ui=create_ui(element('ui_root'),true,deletedSelected.notices,noop,noop,noop,noop,'light');
+harness.session_tab(deletedSelected,'s');harness.session_tab(deletedSelected,'survivor');
+deletedSelected.sending=true;deletedSelected.prompt.value='A draft in the deleted conversation';
+stored.set('gene-harness/draft/s',deletedSelected.prompt.value);
+harness.forget_session(deletedSelected,'s');
+assert.equal(deletedSelected.selected,'survivor','deletion must navigate away even during a pending admission');
+assert.equal(stored.has('gene-harness/draft/s'),false);
 console.log("first submission: immediate prompts, delivery races, live output, receiving-request replacement and continuation controls passed");

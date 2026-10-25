@@ -3,6 +3,8 @@
   turn_output_key command_output_key clear_session_output output_epoch interrupt_output observe_output output_open command_output_text]
   ^from "./live_output.gene")
 (import [BrowserClients create_clients update_clients] ^from "./browser_clients.gene")
+(import [SessionMenu create_session_menu open_session_menu bind_session_menu finish_session_menu_render]
+  ^from "./session_menu.gene")
 (import [CommandClient create_commands configure_commands dispatch_command recover_command forget_command] ^from "./command_client.gene")
 (import [RoundClient create_rounds configure_rounds dispatch_round recover_round forget_round] ^from "./round_client.gene")
 (import [claim_modal release_modal keyboard_owned?] ^from "./overlays.gene")
@@ -76,7 +78,7 @@
   ^title EventTarget ^appearance Str ^style_signature Str ^cards Any
   ^delegation_epoch Int? ^delegation_recovery Any? ^child_open Any?
   ^browser_clients Any ^command_client Any ^creation_unknown Bool?
-  ^voice_client Any? ^voice_listeners Any? ^page_id Str? ^live_output Any?})
+  ^voice_client Any? ^voice_listeners Any? ^page_id Str? ^live_output Any? ^session_menu Any?})
 
 (fn live_store [client : Client] : LiveOutput
   (if_yes ($absent? client/live_output) (set client/live_output (create_output)))
@@ -504,7 +506,7 @@
                (small %state))
              (button ^type "button" ^aria-label %$"Close ${title}" ^on_click %(fn [event : Any] : Void (close_tab client id)) "×")))))))
 
-(fn close_tab [client : Client, id : Str] : Void
+(fn close_tab [client : Client, id : Str, ^navigate navigate : Bool = true] : Void
   (clear_session_output (live_store client) id)
   (voice_event client "session/close" id nil)
   (var tab (session_tab client id))
@@ -513,7 +515,7 @@
   (if_not ($absent? tab/socket)
     (var socket : EventTarget tab/socket)
     ($ws/close socket))
-  (if_yes (== id client/selected)
+  (if_yes (&& navigate (== id client/selected))
     (var next "")
     (for candidate in client/tabs
       (if_yes (&& (! candidate/closed) (!= candidate/id ""))
@@ -622,6 +624,12 @@
     (mount_question questions client/selected batch ($dom/element "input_fields") "conversation")))
 
 (fn render_sessions [client : Client] : Void
+  (var focused ($dom/active_element))
+  (set client/list/harness_focus_session
+    (if ($dom/contains? client/list focused) (string_or focused/harness_session "") ""))
+  (if_not ($absent? client/session_menu)
+    (var active_raw : Any client/session_menu)
+    (var active_menu : SessionMenu active_raw) (set active_menu/anchor nil))
   ($dom/clear client/list)
   (var attention ($dom/element "attention_sessions"))
   ($dom/clear attention)
@@ -652,7 +660,10 @@
   (if_yes (== ($size client/sessions) 0)
     ($dom/append
       client/list
-      ($dom/render `(p ^class_name "sidebar_empty" "Your conversations will appear here.")))))
+      ($dom/render `(p ^class_name "sidebar_empty" "Your conversations will appear here."))))
+  (if_not ($absent? client/session_menu)
+    (var menu_raw : Any client/session_menu)
+    (var menu : SessionMenu menu_raw) (finish_session_menu_render menu)))
 
 (fn render_session_button [client : Client, target : EventTarget, session : Any] : Void
   (var title : Str session/title)
@@ -660,12 +671,86 @@
   (var kind : Str session/kind)
   (var status : Str session/status)
   (var cls (if (== id client/selected) "session selected" "session"))
+  (var row ($dom/render `(div ^class_name %(if (== id client/selected) "session_row selected" "session_row"))))
   ($dom/append
-    target
+    row
     ($dom/render
       `(button ^type "button" ^class_name %cls ^on_click %(fn [event : Any] : Void (select_session client id))
          (span ^class_name "session_name" %title)
-         (span ^class_name "session_meta" %$"${kind} · ${status}")))))
+         (span ^class_name "session_meta" %$"${kind} · ${status}"))))
+  (var more ($dom/render `(button ^type "button" ^class_name "session_more"
+    ^aria-label %$"Actions for ${title}" ^aria-haspopup "menu" ^aria-expanded "false"
+    ^disabled %(! client/ready)
+    ^on_click %(fn [event : Any] : Void
+      ($dom/stop_propagation event)
+      (if_yes (keyboard_owned?) (return))
+      (var anchor : EventTarget event/current_target)
+      (open_session_menu (conversation_menu client) anchor session)) "…")))
+  ($dom/append row more) ($dom/append target row)
+  (set more/harness_session id)
+  (bind_session_menu (conversation_menu client) more session)
+  (if_yes (== id (string_or client/list/harness_focus_session "")) ($dom/focus more)))
+
+(fn conversation_menu [client : Client] : SessionMenu
+  (if_yes ($absent? client/session_menu)
+    (set client/session_menu (create_session_menu
+      (fn [method : Str, path : Str, data : Any, done : (Fn [Int Any] Void)] : Void
+        (api client method path data done))
+      (fn [record : Any] : Void (session_edited client record))
+      (fn [ids : (List Any)] : Void
+        (for value in ids (var id : Str value) (forget_session client id))
+        (refresh_sessions client)))))
+  (var raw : Any client/session_menu) (var menu : SessionMenu raw) menu)
+
+(fn session_edited [client : Client, record : Any] : Void
+  (var id : Str record/id)
+  (var roots : (List Any) [])
+  (for existing in client/sessions
+    (if (== (string_or existing/id "") id)
+      (do
+        (if_yes (&& ($absent? record/children) (! ($absent? existing/children)))
+          (set record/children existing/children))
+        (roots .push record))
+      (do
+        (var children (dlist existing/children))
+        (for child in children
+          (if_yes (== (string_or child/id "") id) (set existing/children (merge_blocks children [record]))))
+        (roots .push existing))))
+  (set client/sessions roots)
+  (for tab in client/tabs
+    (if_yes (== tab/id id)
+      (set tab/title record/title) (var cache : Any tab/cache) (set cache/session record)))
+  (if_yes (== id client/selected)
+    (set client/session_revision record/revision)
+    ($dom/set_text client/title (string_or record/title ""))
+    ($dom/set_text ($dom/element "pin_session") (if (launcher_flag record/pinned) "Unpin" "Pin")))
+  (render_sessions client) (render_tabs client) (refresh_sessions client))
+
+(fn forget_session [client : Client, id : Str] : Void
+  (var ids : (List Str) [id])
+  (for tab in client/tabs
+    (if_yes (== (string_or tab/cache/session/parent/session "") id) (ids .push tab/id)))
+  (var selected false)
+  (for removed in ids
+    (if_yes (== removed client/selected) (set selected true))
+    (if_yes (has_tab? client removed) (close_tab ^navigate false client removed)))
+  (var kept : (List Any) [])
+  (for record in client/sessions
+    (if_yes (== (string_or record/id "") id) (continue))
+    (var children : (List Any) [])
+    (for child in (dlist record/children)
+      (if_yes (!= (string_or child/id "") id) (children .push child)))
+    (set record/children children) (kept .push record))
+  (set client/sessions kept)
+  (if_yes selected
+    (var next "")
+    (for candidate in client/tabs
+      (if_yes (&& (! candidate/closed) (!= candidate/id "")) (set next candidate/id) (break)))
+    (select_session ^force true client next))
+  (for removed in ids
+    ($session_storage/remove (draft_key removed))
+    ($session_storage/remove (mode_pending_key removed)))
+  (render_sessions client) (render_tabs client))
 
 (fn refresh_sessions [client : Client] : Void
   (if_not client/ready (return))
@@ -1427,8 +1512,8 @@
     (if_yes (== tab/id id) (return true)))
   false)
 
-(fn select_session [client : Client, id : Str, ^snapshot snapshot : Any = nil] : Void
-  (if_yes client/sending
+(fn select_session [client : Client, id : Str, ^snapshot snapshot : Any = nil, ^force force : Bool = false] : Void
+  (if_yes (&& client/sending (! force))
     (notice client "Resolving your submission…")
     (return))
   (remember_draft client)
@@ -2170,6 +2255,8 @@
       (if_yes (== session tab/id) (live_console client session data))
       (if_yes (== tab/id client/selected) (set client/message_sequence sequence))
       (return))
+    (if_yes (== kind "session/deleted")
+      (forget_session client (string_or data/id "")) (return))
     (if_yes (== session tab/id) (observe_output output_store session kind data))
     (var ui : UiClient client/ui)
     (if_yes (|| (== kind "reply") (== kind "round/state") (== kind "voice/state") (== kind "ready"))

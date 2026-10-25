@@ -390,7 +390,7 @@
     (if (unload_session manager id) (set count (+ count 1))))
   count)
 
-(fn delete_session [manager : SessionManager, id : Str] : Bool
+(fn delete_session [manager : SessionManager, id : Str, ^explicit explicit : Bool = false, ^revision revision = nil] : Bool
   (let record (require_record manager id))
   (let root (if (== record/kind "child") record/parent/session id))
   (with_session_gate manager $"round/${root}" (fn []
@@ -398,7 +398,12 @@
     (if_yes (== root id)
       (for [child_id child] in manager/index/.get
         (if (== child/parent/session id) (ids .push ($to_str child_id)))))
-    (with_delete_gates manager ids 0 root (fn [] (delete_session_locked manager id ids))))))
+    (with_delete_gates manager ids 0 root (fn []
+      (let remove (fn []
+        (if (&& (! ($absent? revision)) (!= revision (?? (/revision (require_record manager id)) 0)))
+          (fail (SessionError ^code "revision_conflict" ^message "Conversation changed; refresh before deleting it.")))
+        (delete_session_locked ^explicit explicit manager id ids)))
+      (if ($absent? manager/runtime/commands) (remove) (manager/runtime/commands/gate remove)))))))
 
 (fn with_delete_gates [manager, ids, offset : Int, root : Str, body]
   (if (>= offset ids/.size) (return (body)))
@@ -417,16 +422,26 @@
   (record_core_state events "workspace" "workspace" "session/state" key {^^done})
   (flush_event_store events))
 
-(fn delete_session_locked [manager : SessionManager, id : Str, ids] : Bool
+(fn delete_session_locked [manager : SessionManager, id : Str, ids, ^explicit explicit : Bool = false] : Bool
   (require_open manager)
   (manager/mutating (fn []
     (let records [])
     (for candidate in ids
       (let record (require_record manager candidate))
       (let loaded (manager/loaded/.get .get candidate))
-      (if (|| record/pinned record/attention (["running" "waiting"] .contains? record/status)
-              (&& (! ($absent? loaded)) (> loaded/viewers/.get 0)))
+      (if (|| (["running" "waiting"] .contains? record/status)
+              (&& (! explicit) (|| record/pinned record/attention
+                (&& (! ($absent? loaded)) (> loaded/viewers/.get 0)))))
         (return false))
+      (if_not ($absent? manager/runtime/commands)
+        (for [key task] in manager/runtime/commands/active/.get
+          (if ($str/starts_with? ($to_str key) $"${candidate}:") (return false)))
+        # Admission persists a running receipt before its task is installed.
+        (let commands (core_state manager/events "session" candidate "commands"))
+        (if_not ($absent? commands/digest)
+          (for command in (/records ($serde/read_data (read_body manager/runtime commands/digest)))
+            (if (&& (== command/status "running") (== command/runtime_epoch manager/runtime/epoch))
+              (return false)))))
       (records .push record))
     (for candidate in ids
       (if_not ($absent? manager/before_remove) (manager/before_remove candidate "deleted")))
