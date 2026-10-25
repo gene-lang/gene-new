@@ -18,7 +18,7 @@ what Gene actually wants.
 | `Read error: unterminated interpolation '{...'` | String literal inside `${…}` | Bind it out, or use `$"""…"""` |
 | `map expects a Stream` | `map`/`filter`/`take`/`into` are stream ops | `(xs .to_stream)` first, `.into []` last |
 | `size expects a collection` | `$size` rejects strings | `($str/byte_size s)` or `($size ($chars s))` |
-| `no message 'size' on Str` | `Str` carries no messages | `$str/*` functions |
+| `no message 'size' on Str` | String length needs an explicit unit | `s/.byte_size` for UTF-8 bytes or `($size ($chars s))` for code points; ordinary text methods such as `(s .split ",")` are supported |
 | `no message 'foo' on T` | Sends dispatch only — no lexical fallback | Declare a `(message …)` in the type, or call the function directly |
 | `value is not callable: vkVoid` | Missing key read as `void`, then called | Check the path; supply `(?? m/k default)` |
 | `import source must be a namespace path or '^from "path"'` | Wrong import order | `(import [names] ^from "./path")` or `(import $str [names])` |

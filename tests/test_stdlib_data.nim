@@ -14,6 +14,58 @@ proc dataError(source: string): string =
   except CatchableError as error:
     error.msg
 
+suite "string and list receiver methods":
+  test "exposes existing text operations on literals, symbols and computed receivers":
+    check evalData("""
+      (let text " A,éB ")
+      [(text .split ",") text/.trim text/.lower text/.upper
+       (text .contains? "é") (text .starts_with? " A") (text .ends_with? " ")
+       text/.byte_size ("" .empty?) (" " .empty?)
+       (("a,b" .split ",") .get 1)]
+    """).print() == "[[\" A\" \"éB \"] \"A,éB\" \" a,éb \" \" A,éB \" true true true 7 true false \"b\"]"
+    check evalData("""
+      (let text "Aé🙂Z")
+      [(text .slice_bytes 1 4) (text .slice_bytes 1 1)
+       ($str/from_utf8 text/.to_utf8)]
+    """).print() == "[\"é\" \"\" \"Aé🙂Z\"]"
+
+  test "list get uses path indexing and join uses the existing string function":
+    check evalData("""
+      (let xs [10 nil 30])
+      [(xs .get 0) (xs .get -1) (xs .get 1) ($void? (xs .get 3))
+       ($void? (xs .get -4)) ($void? ([] .get 0))
+       (["a" "b"] .join) (["a" "b"] .join " / ") ([] .join ",")]
+    """).print() == "[10 30 nil true true true \"ab\" \"a / b\" \"\"]"
+
+  test "the documentation extraction that failed in the harness now works":
+    check evalData("""
+      (let chapter "Introduction## StatefulA small example## Next")
+      (((chapter .split "## Stateful") .get 1) .split "##")
+    """).print() == "[\"A small example\" \" Next\"]"
+
+  test "namespace functions and messages share their native identity across applications":
+    for i in 0..2:
+      let scope = newGlobalScope(newApplication(getCurrentDir()))
+      let strType = run(compileSource("Str"), scope)
+      for name in ["split", "trim", "lower", "upper", "empty?", "byte_size",
+                   "slice_bytes", "to_utf8", "starts_with?", "ends_with?", "contains?"]:
+        check typeDirectMessage(strType, name).bits ==
+          run(compileSource("$str/" & name), scope).bits
+      check typeDirectMessage(run(compileSource("List"), scope), "join").bits ==
+        run(compileSource("$str/join"), scope).bits
+
+  test "preserves validation and leaves ambiguous string indexing explicit":
+    for (source, message) in [
+        ("(\"a,b\" .split \"\")", "separator must not be empty"),
+        ("(\"a,b\" .split)", "str/split expects 2 arguments"),
+        ("(\"a,b\" .split 1)", "separator expects a Str"),
+        ("([1] .get \"0\")", "expects an Int"),
+        ("([1] .get)", "List/get expects 2 arguments"),
+        ("([1] .join \",\")", "str/join item expects a Str"),
+        ("(\"é\" .slice_bytes 1 1)", "start must be a UTF-8 boundary"),
+        ("(\"x\" .get 0)", "no message 'get' on Str")]:
+      check message in dataError(source)
+
 suite "owned byte slices":
   test "preserves binary bytes, empty boundaries, and source lifetime":
     check evalData("""

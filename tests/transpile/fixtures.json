@@ -2,6 +2,85 @@
   "version": 1,
   "cases": [
     {
+      "id": "receiver.qualified_protocols",
+      "source": "(protocol TextSplit (message split [separator : Str] : Str)) (impl TextSplit for Str (message split [separator : Str] : Str \"protocol text\")) (protocol Lookup (message get [index : Int] : Str)) (impl Lookup for List (message get [index : Int] : Str \"protocol list\")) [(\"x,y\" .TextSplit:split \",\") ((\"x,y\" .split \",\") .join \"|\") ([1] .Lookup:get 0) ($to_str ([1] .get 0))]",
+      "web_source": "(mod receiver_qualified_protocols ^profile web) (protocol TextSplit (message split [separator : Str] : Str)) (impl TextSplit for Str (message split [separator : Str] : Str \"protocol text\")) (protocol Lookup (message get [index : Int] : Str)) (impl Lookup for List (message get [index : Int] : Str \"protocol list\")) (fn run [] : (List Str) [(\"x,y\" .TextSplit:split \",\") ((\"x,y\" .split \",\") .join \"|\") ([1] .Lookup:get 0) ($to_str (?? ([1] .get 0) 0))])",
+      "web_export": "run",
+      "expected_value": {"kind": "list", "items": [{"kind": "str", "value": "protocol text"}, {"kind": "str", "value": "x|y"}, {"kind": "str", "value": "protocol list"}, {"kind": "str", "value": "1"}]},
+      "expected_error": null, "expected_stdout": "", "profile": {"status": "eligible"}
+    },
+    {
+      "id": "receiver.string_split",
+      "source": "(\"é,,🙂,\" .split \",\")",
+      "web_source": "(mod receiver_string_split ^profile web) (fn run [] : (List Str) (\"é,,🙂,\" .split \",\"))",
+      "web_export": "run",
+      "expected_value": {"kind": "list", "items": [{"kind": "str", "value": "é"}, {"kind": "str", "value": ""}, {"kind": "str", "value": "🙂"}, {"kind": "str", "value": ""}]},
+      "expected_error": null, "expected_stdout": "", "profile": {"status": "eligible"}
+    },
+    {
+      "id": "receiver.string_text",
+      "source": "(let text \" Éa \") [text/.trim text/.lower text/.upper (\"Aé🙂Z\" .slice_bytes 1 4) (\"é\" .slice_bytes 0 1) (\"  x   \" .trim)]",
+      "web_source": "(mod receiver_string_text ^profile web) (fn run [] : (List Str) (let text \" Éa \") [text/.trim text/.lower text/.upper (\"Aé🙂Z\" .slice_bytes 1 4) (\"é\" .slice_bytes 0 1) (\"  x   \" .trim)])",
+      "web_export": "run",
+      "expected_value": {"kind": "list", "items": [{"kind": "str", "value": "Éa"}, {"kind": "str", "value": " Éa "}, {"kind": "str", "value": " ÉA "}, {"kind": "str", "value": "é"}, {"kind": "str", "value": ""}, {"kind": "str", "value": "x"}]},
+      "expected_error": null, "expected_stdout": "", "profile": {"status": "eligible"}
+    },
+    {
+      "id": "receiver.string_predicates",
+      "source": "[(\"hello\" .contains? \"ell\") (\"hello\" .starts_with? \"he\") (\"hello\" .ends_with? \"no\") (\"\" .empty?) (\" \" .empty?)]",
+      "web_source": "(mod receiver_string_predicates ^profile web) (fn run [] : (List Bool) [(\"hello\" .contains? \"ell\") (\"hello\" .starts_with? \"he\") (\"hello\" .ends_with? \"no\") (\"\" .empty?) (\" \" .empty?)])",
+      "web_export": "run",
+      "expected_value": {"kind": "list", "items": [{"kind": "bool", "value": true}, {"kind": "bool", "value": true}, {"kind": "bool", "value": false}, {"kind": "bool", "value": true}, {"kind": "bool", "value": false}]},
+      "expected_error": null, "expected_stdout": "", "profile": {"status": "eligible"}
+    },
+    {
+      "id": "receiver.string_utf8",
+      "source": "(let text \"Aé🙂\") [text/.byte_size (\"\" .byte_size) ($str/byte_size ($str/from_utf8 text/.to_utf8))]",
+      "web_source": "(mod receiver_string_utf8 ^profile web) (fn run [] : (List Int) (let text \"Aé🙂\") [text/.byte_size (\"\" .byte_size) ($str/byte_size ($str/from_utf8 text/.to_utf8))])",
+      "web_export": "run",
+      "expected_value": {"kind": "list", "items": [{"kind": "int", "value": "7"}, {"kind": "int", "value": "0"}, {"kind": "int", "value": "7"}]},
+      "expected_error": null, "expected_stdout": "", "profile": {"status": "eligible"}
+    },
+    {
+      "id": "receiver.list_get",
+      "source": "(let xs [10 nil 30]) [(== (xs .get 0) 10) (== (xs .get -1) 30) ($nil? (xs .get 1)) ($void? (xs .get 3)) ($void? (xs .get -4)) ($void? ([] .get 0))]",
+      "web_source": "(mod receiver_list_get ^profile web) (fn run [] : (List Bool) (let xs : (List Int) [10 20 30]) (let empty : (List Int) []) [(== (?? (xs .get 0) 0) 10) (== (?? (xs .get -1) 0) 30) ($nil? ([nil] .get 0)) ($void? (xs .get 3)) ($void? (xs .get -4)) ($void? (empty .get 0))])",
+      "web_export": "run",
+      "expected_value": {"kind": "list", "items": [{"kind": "bool", "value": true}, {"kind": "bool", "value": true}, {"kind": "bool", "value": true}, {"kind": "bool", "value": true}, {"kind": "bool", "value": true}, {"kind": "bool", "value": true}]},
+      "expected_error": null, "expected_stdout": "", "profile": {"status": "eligible"}
+    },
+    {
+      "id": "receiver.list_join",
+      "source": "[([\"a\" \"b\"] .join) ([\"é\" \"🙂\"] .join \" / \") ([] .join \",\") ($str/join [\"x\" \"y\"])]",
+      "web_source": "(mod receiver_list_join ^profile web) (fn run [] : (List Str) (let empty : (List Str) []) [([\"a\" \"b\"] .join) ([\"é\" \"🙂\"] .join \" / \") (empty .join \",\") ($str/join [\"x\" \"y\"])])",
+      "web_export": "run",
+      "expected_value": {"kind": "list", "items": [{"kind": "str", "value": "ab"}, {"kind": "str", "value": "é / 🙂"}, {"kind": "str", "value": ""}, {"kind": "str", "value": "xy"}]},
+      "expected_error": null, "expected_stdout": "", "profile": {"status": "eligible"}
+    },
+    {
+      "id": "receiver.documentation_extraction",
+      "source": "(let chapter \"Introduction## StatefulA small example## Next\") (let section ((chapter .split \"## Stateful\") .get 1)) ((section .split \"##\") .get 0)",
+      "web_source": "(mod receiver_documentation_extraction ^profile web) (fn run [] : Str (let chapter \"Introduction## StatefulA small example## Next\") (let section (?? ((chapter .split \"## Stateful\") .get 1) \"\")) (?? ((section .split \"##\") .get 0) \"\"))",
+      "web_export": "run", "expected_value": {"kind": "str", "value": "A small example"},
+      "expected_error": null, "expected_stdout": "", "profile": {"status": "eligible"}
+    },
+    {
+      "id": "receiver.text_errors",
+      "source": "[(try (\"x\" .slice_bytes 2 0) catch RuntimeError $err/message) (try (\"Aé\" .slice_bytes 2 1) catch RuntimeError $err/message) (try (\"x\" .slice_bytes -1 1) catch RuntimeError $err/message) (try (\"x\" .slice_bytes 0 9223372036854775808) catch RuntimeError $err/message) (try (\"x\" .slice_bytes 9223372036854775808 1) catch RuntimeError $err/message)]",
+      "web_source": "(mod receiver_text_errors ^profile web) (fn run [] : (List Str) [(try (\"x\" .slice_bytes 2 0) catch RuntimeError $err/message) (try (\"Aé\" .slice_bytes 2 1) catch RuntimeError $err/message) (try (\"x\" .slice_bytes -1 1) catch RuntimeError $err/message) (try (\"x\" .slice_bytes 0 9223372036854775808) catch RuntimeError $err/message) (try (\"x\" .slice_bytes 9223372036854775808 1) catch RuntimeError $err/message)])",
+      "web_export": "run",
+      "expected_value": {"kind": "list", "items": [{"kind": "str", "value": "str/slice_bytes start exceeds string byte size"}, {"kind": "str", "value": "str/slice_bytes start must be a UTF-8 boundary"}, {"kind": "str", "value": "str/slice_bytes start and max_bytes must be non-negative"}, {"kind": "str", "value": "str/slice_bytes max_bytes expects an Int in int64 range"}, {"kind": "str", "value": "str/slice_bytes start expects an Int in int64 range"}]},
+      "expected_error": null, "expected_stdout": "", "profile": {"status": "eligible"}
+    },
+    {
+      "id": "receiver.evaluation_order",
+      "source": "(var log []) (fn source [] (log .push \"receiver\") \"a,b\") (fn separator [] (log .push \"separator\") \",\") (let parts ((source) .split (separator))) [log parts]",
+      "web_source": "(mod receiver_evaluation_order ^profile web) (fn source [log : (List Str)] : Str (log .push \"receiver\") \"a,b\") (fn separator [log : (List Str)] : Str (log .push \"separator\") \",\") (fn run [] : (List (List Str)) (var log : (List Str) []) (let parts ((source log) .split (separator log))) [log parts])",
+      "web_export": "run",
+      "expected_value": {"kind": "list", "items": [{"kind": "list", "items": [{"kind": "str", "value": "receiver"}, {"kind": "str", "value": "separator"}]}, {"kind": "list", "items": [{"kind": "str", "value": "a"}, {"kind": "str", "value": "b"}]}]},
+      "expected_error": null, "expected_stdout": "", "profile": {"status": "eligible"}
+    },
+    {
       "id": "path.message_web_rejected",
       "source": "(/.size [1 2])",
       "web_source": "(mod path_message_web_rejected ^profile web) (fn run [] : Int (/.size [1 2]))",

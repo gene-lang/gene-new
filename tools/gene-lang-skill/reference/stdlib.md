@@ -66,7 +66,7 @@ Root protocols: `Callable` `Error` `Send` `SerdeRef` `ToStr`.
 | Namespace | Functions | Types / sub-namespaces |
 |---|---|---|
 | `$fs` | `exists?` `list_dir` `make_dir` `read_bytes` `read_text` `read_text_async` `real_path` `remove` `watch` `write_bytes` `write_text` `write_text_async` `write_text_atomic` | `FsChange` `FsWatcher` `WatcherClosed` |
-| `$str` | `byte_size` `contains?` `ends_with?` `from_utf8` `join` `lower` `slice_bytes` `split` `starts_with?` `to_utf8` `trim` | — |
+| `$str` | `byte_size` `contains?` `empty?` `ends_with?` `from_utf8` `join` `lower` `slice_bytes` `split` `starts_with?` `to_utf8` `trim` `upper` | — |
 | `$stream` | `each` `filter` `into` `map` `take` `to_pairs_stream` `to_stream` | — |
 | `$math` | `abs` `acos` `asin` `atan` `atan2` `ceil` `clamp` `cos` `exp` `floor` `hypot` `log` `log10` `log2` `max` `min` `pow` `round` `sign` `sin` `sqrt` `tan` `trunc` | `e` `pi` `tau` |
 | `$bit` | `and` `not` `or` `shl` `shr` `xor` | — |
@@ -100,7 +100,7 @@ Root protocols: `Callable` `Error` `Send` `SerdeRef` `ToStr`.
 
 ## Common calls and argument order
 
-String operations are namespace functions, rather than messages on `Str`.
+String operations are available as `$str` functions and receiver messages.
 Byte offsets start at zero. `slice_bytes` takes a maximum byte **count**, not
 an end offset; it shortens the result to a UTF-8 boundary. The start must
 already be a UTF-8 boundary.
@@ -111,6 +111,10 @@ already be a UTF-8 boundary.
 ($str/split "a,b" ",")               # ["a" "b"]
 ($str/join ["a" "b"] ",")            # "a,b"
 ($str/trim " ok ")                   # "ok"
+("a,b" .split ",")                  # ["a" "b"]
+(" ok " .trim)                      # "ok"
+(["a" "b"] .get -1)                 # "b"; an out-of-range index returns void
+(["a" "b"] .join ",")               # "a,b"; separator defaults to ""
 ```
 
 Regex replacement takes a `Regex` first, then input text, then replacement
@@ -179,7 +183,8 @@ Sent bare on the receiver: `xs/.size`, `(xs .push v)`.
 
 | Type | Messages |
 |---|---|
-| `List` | `assoc` `set` `push` `size` `empty?` `first` `last` `contains?` `to_stream` |
+| `Str` | `split` `trim` `lower` `upper` `empty?` `byte_size` `slice_bytes` `to_utf8` `starts_with?` `ends_with?` `contains?` |
+| `List` | `assoc` `get` `join` `set` `push` `size` `empty?` `first` `last` `contains?` `to_stream` |
 | `Map` | `assoc` `get` `put` `delete` `to_stream` `to_pairs_stream` |
 | `Node` | `set_prop` `set_body` `push_body` `head` `props` `body` `meta` |
 | `Stream` | `has_next` `peek` `next` `try_next` `close` `map` `filter` `take` `into` `each` `to_pairs_stream` |
@@ -204,10 +209,16 @@ Sent bare on the receiver: `xs/.size`, `(xs .push v)`.
 | `Env` | `extend` |
 | `CallerEnv` | `snapshot` |
 
-`Str` carries no messages of its own — string work goes through `$str/*`,
-`$chars`, and `$graphemes`. `$size` is a *collection* function and rejects a
-string, so length is `($str/byte_size s)` for bytes or `($size ($chars s))` for
-code points.
+`Str` methods share the corresponding `$str/*` functions. On the VM, `split`
+requires a nonempty literal separator and retains empty fields; the web profile
+retains its browser-specific empty-separator UTF-16 code-unit behavior.
+`trim` strips surrounding whitespace; `lower`/`upper` change ASCII letters only.
+Use `s/.byte_size` for bytes or `($size ($chars s))` for code points. On the VM,
+`$size` remains a collection function and rejects strings. `Str` has no implicit
+`size` or `get` message.
+`List.get` supports negative indices and returns `void` when missing;
+`List.join` requires string elements. These new methods work on the VM and web
+profile; web `List.get` returns `(| T Void)` and can use `??` for a fallback.
 
 In the web profile, DOM code can create elements and text nodes and set
 attributes without embedding JavaScript:
@@ -222,6 +233,8 @@ attributes without embedding JavaScript:
 These DOM operations belong to the browser profile, rather than native VM
 bindings. `set_attribute` accepts an EventTarget followed by name/value strings.
 
-Where a name appears both as a root function and a message (`size`, `empty?`,
-`first`, `last`, `contains?`, `to_stream`), they are the *same* function value,
+Collection operations exposed as root functions and messages (`size`, `empty?`,
+`first`, `last`, `contains?`, `to_stream`) share the *same* function value,
 so `($size xs)` and `xs/.size` are interchangeable.
+String messages such as `empty?` and `contains?` instead share their `$str`
+functions, preserving the distinction between text and collection operations.

@@ -7220,6 +7220,12 @@ proc biListLast(args: openArray[Value]): Value {.nimcall.} =
   requireList("last", args[0])
   if args[0].listItems.len > 0: args[0].listItems[^1] else: VOID
 
+proc biListGet(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError, "List/get expects 2 arguments, got " & $args.len)
+  requireList("List/get", args[0])
+  readIndex(args[0].listItems, requireInt64("List/get", args[1]))
+
 proc biListAssoc(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 3:
     raise newException(GeneError, "List/assoc expects 3 arguments, got " & $args.len)
@@ -9595,14 +9601,14 @@ proc buildBuiltins(app: Application): Scope =
   for name in ["UnknownRef", "RefNotResolved", "RefAlreadyResolved",
                "CircularRefResolution", "InvalidRefDefinition"]:
     result.define(name, newType(name, refError, @[], @[], result))
-  # Scalars carry no messages, but they register through the same funnel so
-  # every built-in type identity lands in `gBuiltinSurfaceTypes`. These kinds
-  # are exactly `LeafValueKinds`; the two definitions are one rule.
+  # Leaf types register through the same funnel as containers. Str also has
+  # receiver messages for its standard text operations, registered below.
   for spec in [(vkInt, "Int"), (vkFloat, "Float"), (vkBool, "Bool"),
-               (vkString, "Str"), (vkSymbol, "Sym"), (vkChar, "Char"),
+               (vkSymbol, "Sym"), (vkChar, "Char"),
                (vkNil, "Nil"), (vkVoid, "Void")]:
     assert spec[0] in LeafValueKinds
     result.defineBuiltinType(spec[0], spec[1], newSeq[(string, Value)]())
+  result.defineBuiltinType(vkString, "Str", strReceiverNatives())
   let matchError = newType("MatchError", NIL,
                            @[TypeField(name: "message", optional: false,
                                        typeExpr: newSym("Str"), scope: result)],
@@ -9889,6 +9895,8 @@ proc buildBuiltins(app: Application): Scope =
   result.define("last", lastFn)
   result.defineBuiltinType(vkList, "List", {
     "assoc": builtinNativeFn("List/assoc", biListAssoc),
+    "get": builtinNativeFn("List/get", biListGet),
+    "join": sharedBuiltinNative("str/join", builtinNativeFn("str/join", biStrJoin)),
     "set": builtinNativeFn("List/set", biListSetBang),
     "push": builtinNativeFn("List/push", biListPushBang),
     "size": sizeFn,

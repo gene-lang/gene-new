@@ -2717,6 +2717,24 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
         messageName == "cancel":
       methodDecl = WebMethod(sourceName: messageName,
         emittedName: messageName, returnType: webType(wtkVoid), loc: loc)
+    if methodDecl == nil and receiver.typ.kind == wtkStr and messageName in
+        ["split", "trim", "lower", "upper", "empty?", "byte_size", "slice_bytes",
+         "to_utf8", "starts_with?", "ends_with?", "contains?"]:
+      let params = case messageName
+        of "split", "starts_with?", "ends_with?", "contains?":
+          @[WebParam(sourceName: "text", emittedName: "text", typ: webType(wtkStr), loc: loc)]
+        of "slice_bytes":
+          @[WebParam(sourceName: "start", emittedName: "start", typ: webType(wtkInt), loc: loc),
+            WebParam(sourceName: "max_bytes", emittedName: "max_bytes", typ: webType(wtkInt), loc: loc)]
+        else: newSeq[WebParam]()
+      let returnType = case messageName
+        of "split": webType(wtkList, webType(wtkStr))
+        of "empty?", "starts_with?", "ends_with?", "contains?": webType(wtkBool)
+        of "byte_size": webType(wtkInt)
+        of "to_utf8": WebType(kind: wtkBuffer, name: "U8")
+        else: webType(wtkStr)
+      methodDecl = WebMethod(sourceName: messageName, emittedName: messageName,
+        params: params, returnType: returnType, loc: loc)
     if methodDecl == nil and receiver.typ.kind == wtkMap and
         messageName in ["get", "size"]:
       let params = case messageName
@@ -2729,18 +2747,24 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       methodDecl = WebMethod(sourceName: messageName,
         emittedName: messageName, params: params, returnType: returnType, loc: loc)
     if methodDecl == nil and receiver.typ.kind == wtkList and
-        messageName in ["push", "pop", "size", "clear"]:
+        messageName in ["push", "pop", "size", "clear", "get", "join"]:
       # The minimum a List needs to be built and measured. Without `push` a
       # program cannot construct a collection at all, which is why every
       # accumulator in this profile had to be pre-sized by its caller.
       let params = case messageName
+        of "get": @[WebParam(sourceName: "index", emittedName: "index", typ: webType(wtkInt), loc: loc)]
+        of "join": @[WebParam(sourceName: "separator", emittedName: "separator", typ: webType(wtkStr), optional: true, loc: loc)]
         of "push": @[WebParam(sourceName: "item", emittedName: "item",
                                typ: receiver.typ.item, loc: loc)]
         else: newSeq[WebParam]()
       let returnType = case messageName
+        of "get": unionType(receiver.typ.item, webType(wtkVoid))
+        of "join": webType(wtkStr)
         of "pop", "push": receiver.typ.item
         of "size": webType(wtkInt)
         else: webType(wtkNil)
+      if messageName == "join":
+        analysis.requireType(loc, receiver.typ, webType(wtkList, webType(wtkStr)), "List/join receiver")
       methodDecl = WebMethod(sourceName: messageName,
         emittedName: messageName, params: params, returnType: returnType, loc: loc)
     if methodDecl == nil and receiver.typ.kind == wtkBuffer and
@@ -2899,11 +2923,23 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
         raise webError(loc,
           "actors are outside the web profile: actors require the VM scheduler")
       of "str/join":
-        paramTypes = @[webType(wtkList, webType(wtkStr)), webType(wtkStr)]
+        if value.body.len == 1:
+          paramTypes = @[webType(wtkList, webType(wtkStr))]
+        else:
+          paramTypes = @[webType(wtkList, webType(wtkStr)), webType(wtkStr)]
         returnType = webType(wtkStr)
       of "str/split":
         paramTypes = @[webType(wtkStr), webType(wtkStr)]
         returnType = webType(wtkList, webType(wtkStr))
+      of "str/empty?":
+        paramTypes = @[webType(wtkStr)]
+        returnType = webType(wtkBool)
+      of "str/byte_size":
+        paramTypes = @[webType(wtkStr)]
+        returnType = webType(wtkInt)
+      of "str/slice_bytes":
+        paramTypes = @[webType(wtkStr), webType(wtkInt), webType(wtkInt)]
+        returnType = webType(wtkStr)
       of "str/trim", "str/lower", "str/upper", "url/encode_component",
           "url/decode_component", "html/escape", "html/attr_escape":
         paramTypes = @[webType(wtkStr)]
@@ -4678,7 +4714,9 @@ proc analyzeExpr(analysis: WebAnalysis, value: Value,
     if '/' in value.symVal and not bindings.hasKey(value.symVal):
       let parts = value.symVal.split('/')
       if parts.len > 1 and bindings.hasKey(parts[0]):
-        return analysis.analyzeExpr(newNode(newSym("path"), body = parts.mapIt(newSym(it))),
+        # Reuse the reader's message/index markers. Splitting into raw symbols
+        # turns `text/.trim` into a lookup for a field literally named .trim.
+        return analysis.analyzeExpr(desugarPath(value.symVal),
                                     bindings, expected)
 
     if bindings.hasKey(value.symVal):
@@ -5909,9 +5947,12 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
     for child in expr.children: arguments.add emitter.emitExpr(child)
     case expr.text
     of "error_message": "$gene_error_text(" & arguments[0] & ")"
-    of "str/join": arguments[0] & ".join(" & arguments[1] & ")"
+    of "str/join": arguments[0] & ".join(" & (if arguments.len == 1: "\"\"" else: arguments[1]) & ")"
     of "str/split": arguments[0] & ".split(" & arguments[1] & ")"
     of "str/trim": arguments[0] & ".trim()"
+    of "str/empty?": "(" & arguments[0] & ".length === 0)"
+    of "str/byte_size": "BigInt($gene_str_to_utf8(" & arguments[0] & ").length)"
+    of "str/slice_bytes": "$gene_str_slice_bytes(" & arguments.join(", ") & ")"
     of "str/lower": "$gene_ascii_lower(" & arguments[0] & ")"
     of "str/upper": "$gene_ascii_upper(" & arguments[0] & ")"
     of "str/starts_with?": arguments[0] & ".startsWith(" & arguments[1] & ")"
@@ -6625,10 +6666,25 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
         (if arguments.len > 0: ", " & arguments.join(", ") else: "") & ")"
     # Lengths are Gene Int values on every backend. Numeric conversion is an
     # explicit, idempotent operation when a caller wants F64 arithmetic.
-    if expr.children[0].typ != nil and expr.children[0].typ.kind == wtkList:
+    if expr.keys.len == 0 and expr.children[0].typ != nil and expr.children[0].typ.kind == wtkStr:
+      case expr.text
+      of "split": return receiver & ".split(" & arguments[0] & ")"
+      of "trim": return receiver & ".trim()"
+      of "lower", "upper": return "$gene_ascii_" & expr.text & "(" & receiver & ")"
+      of "empty?": return "(" & receiver & ".length === 0)"
+      of "byte_size": return "BigInt($gene_str_to_utf8(" & receiver & ").length)"
+      of "slice_bytes": return "$gene_str_slice_bytes(" & receiver & ", " & arguments.join(", ") & ")"
+      of "to_utf8": return "$gene_str_to_utf8(" & receiver & ")"
+      of "starts_with?": return receiver & ".startsWith(" & arguments[0] & ")"
+      of "ends_with?": return receiver & ".endsWith(" & arguments[0] & ")"
+      of "contains?": return receiver & ".includes(" & arguments[0] & ")"
+      else: discard
+    if expr.keys.len == 0 and expr.children[0].typ != nil and expr.children[0].typ.kind == wtkList:
       let target = if emitter.typescript: "(" & receiver & " as any[])"
                    else: receiver
       case expr.text
+      of "get": return "$gene_at(" & target & ", " & arguments[0] & ")"
+      of "join": return target & ".join(" & (if arguments.len == 0: "\"\"" else: arguments[0]) & ")"
       of "push": return "$gene_list_push(" & target & ", " & arguments[0] & ")"
       of "pop": return target & ".pop()"
       of "size": return "BigInt(" & target & ".length)"
@@ -7156,6 +7212,11 @@ proc moduleUsesDivision(module: WebModule, kind: WebTypeKind): bool =
 
 proc usesBuiltin(expr: WebExpr, names: openArray[string]): bool =
   if expr.kind == wekBuiltin and expr.text in names: return true
+  if expr.kind == wekSend and expr.keys.len == 0 and expr.children.len > 0:
+    if expr.children[0].typ.kind == wtkStr and "str/" & expr.text in names: return true
+    if expr.children[0].typ.kind == wtkList:
+      if expr.text == "join" and "str/join" in names: return true
+      if expr.text == "get" and "List/get" in names: return true
   for child in expr.children:
     if usesBuiltin(child, names): return true
 
@@ -8062,12 +8123,14 @@ proc emitModule(module: WebModule, typescript: bool,
   # two different things per backend, with no error on either side.
   let needsIndex =
     moduleUsesExprKind(module, {wekPath, wekSelector, wekSetPath}) or
+    moduleUsesBuiltin(module, ["List/get"]) or
     moduleUsesTypeKind(module, wtkBuffer) or
     moduleExprUsesTypeKind(module, wtkBuffer)
   needsNode = needsCallable or needsMissing or moduleUsesTypeKind(module, wtkNode) or
     moduleUsesExprKind(module, {wekNode, wekSend}) or
     needsIntDivisor or needsF64Divisor or # the divisor guards raise a Gene node
-    needsIndex                            # and so does the index-range guard
+    needsIndex or                         # and so do the index/text guards
+    moduleUsesBuiltin(module, ["str/slice_bytes"])
   for fn in module.functions:
     for param in fn.params:
       if param.named and not param.optional: needsNode = true
@@ -8715,18 +8778,32 @@ proc emitModule(module: WebModule, typescript: bool,
   # per call: both are stateless for these uses and constructing a TextDecoder
   # per message showed up as the second-largest allocation in a protocol that
   # decodes a name per registry entry.
-  if moduleUsesBuiltin(module, ["str/to_utf8"]):
+  if moduleUsesBuiltin(module, ["str/to_utf8", "str/byte_size", "str/slice_bytes"]):
     let toParams = if typescript: "s: string" else: "s"
     let bufReturn = if typescript: ": Uint8Array" else: ""
     emitter.line("const $gene_utf8_encoder = new TextEncoder();")
     emitter.line("function $gene_str_to_utf8(" & toParams & ")" & bufReturn &
       " { return $gene_utf8_encoder.encode(s); }")
-  if moduleUsesBuiltin(module, ["str/from_utf8"]):
+  if moduleUsesBuiltin(module, ["str/from_utf8", "str/slice_bytes"]):
     let fromParams = if typescript: "bytes: Uint8Array" else: "bytes"
     let strReturn = if typescript: ": string" else: ""
     emitter.line("const $gene_utf8_decoder = new TextDecoder();")
     emitter.line("function $gene_str_from_utf8(" & fromParams & ")" &
       strReturn & " { return $gene_utf8_decoder.decode(bytes); }")
+  if moduleUsesBuiltin(module, ["str/slice_bytes"]):
+    let params = if typescript: "s: string, start: bigint, maxBytes: bigint" else: "s, start, maxBytes"
+    emitter.line("function $gene_str_slice_bytes(" & params & ")" & (if typescript: ": string" else: "") & " {")
+    emitter.line("  if (start < -9223372036854775808n || start > 9223372036854775807n) throw new GeneNode(Symbol.for(\"RuntimeError\"), { message: \"str/slice_bytes start expects an Int in int64 range\" }, [], true);")
+    emitter.line("  if (maxBytes < -9223372036854775808n || maxBytes > 9223372036854775807n) throw new GeneNode(Symbol.for(\"RuntimeError\"), { message: \"str/slice_bytes max_bytes expects an Int in int64 range\" }, [], true);")
+    emitter.line("  if (start < 0n || maxBytes < 0n) throw new GeneNode(Symbol.for(\"RuntimeError\"), { message: \"str/slice_bytes start and max_bytes must be non-negative\" }, [], true);")
+    emitter.line("  const bytes = $gene_str_to_utf8(s);")
+    emitter.line("  if (start > BigInt(bytes.length)) throw new GeneNode(Symbol.for(\"RuntimeError\"), { message: \"str/slice_bytes start exceeds string byte size\" }, [], true);")
+    emitter.line("  const first = Number(start);")
+    emitter.line("  if (first < bytes.length && (bytes[first] & 0xc0) === 0x80) throw new GeneNode(Symbol.for(\"RuntimeError\"), { message: \"str/slice_bytes start must be a UTF-8 boundary\" }, [], true);")
+    emitter.line("  let last = first + Number(maxBytes > BigInt(bytes.length - first) ? BigInt(bytes.length - first) : maxBytes);")
+    emitter.line("  while (last > first && last < bytes.length && (bytes[last] & 0xc0) === 0x80) last--;")
+    emitter.line("  return $gene_str_from_utf8(bytes.subarray(first, last));")
+    emitter.line("}")
   # --- WebSocket ---
   #
   # A socket travels as an `EventTarget`, so each helper casts. The cast is the

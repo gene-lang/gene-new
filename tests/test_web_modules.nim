@@ -1,6 +1,39 @@
 import gene/[web, vm, types]
 import std/[os, osproc, strutils, tempfiles, unittest]
 
+suite "web standard receiver methods":
+  test "preserves browser empty-separator code units through both spellings":
+    let root = createTempDir("gene-web-string-methods-", "")
+    defer: removeDir(root)
+    writeFile(root / "strings.gene", """
+      (mod strings ^profile web)
+      (fn direct [] : (List Str) ("A🙂B" .split ""))
+      (fn namespace [] : (List Str) ($str/split "A🙂B" ""))
+    """)
+    discard buildWebModule(root / "strings.gene", root / "out")
+    writeFile(root / "out" / "check.mjs", """
+      import assert from 'node:assert/strict';
+      import {direct, namespace} from './strings.mjs';
+      const expected = ['A', '\uD83D', '\uDE42', 'B'];
+      assert.deepEqual(direct(), expected);
+      assert.deepEqual(namespace(), expected);
+      assert.equal(direct().join(''), 'A🙂B');
+    """)
+    let ran = execCmdEx("node " & quoteShell(root / "out" / "check.mjs"))
+    checkpoint ran.output
+    check ran.exitCode == 0
+
+  test "rejects invalid string/list method argument types and arities":
+    let root = createTempDir("gene-web-method-errors-", "")
+    defer: removeDir(root)
+    for i, expression in ["(\"x\" .split)", "(\"x\" .split 1)",
+        "([1] .get \"0\")", "([1] .get 0 1)", "([1] .join \",\")"]:
+      let source = root / ("invalid_" & $i & ".gene")
+      writeFile(source, "(mod invalid_" & $i & " ^profile web) " &
+        "(fn run [] : Any " & expression & ")")
+      expect WebProfileError:
+        discard buildWebModule(source, root / "out")
+
 suite "web navigation host bindings":
   test "web/load source and compilation failures can be caught by Gene":
     let root = createTempDir("gene-web-load-error-", "")

@@ -819,6 +819,11 @@ proc biStrByteSize(args: openArray[Value]): Value {.nimcall.} =
   requireStr("str/byte_size", args[0])
   newInt(args[0].strVal.len)
 
+proc biStrEmpty(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("str/empty?", args)
+  requireStr("str/empty?", args[0])
+  newBool(args[0].strVal.len == 0)
+
 # --- portable UTF-8 -----------------------------------------------------------
 #
 # `str/to_utf8` and `str/from_utf8` exist under the same names in the web
@@ -906,6 +911,22 @@ proc biStrContains(args: openArray[Value]): Value {.nimcall.} =
   requireStr("str/contains?", args[0])
   requireStr("str/contains? needle", args[1])
   if args[0].strVal.contains(args[1].strVal): TRUE else: FALSE
+
+proc strReceiverNatives(): seq[(string, Value)] =
+  ## A namespace function and its receiver message share one function value,
+  ## just as the collection operations do. Keep both registrations together.
+  @[
+    ("split", sharedBuiltinNative("str/split", builtinNativeFn("str/split", biStrSplit))),
+    ("trim", sharedBuiltinNative("str/trim", builtinNativeFn("str/trim", biStrTrim))),
+    ("lower", sharedBuiltinNative("str/lower", builtinNativeFn("str/lower", biStrLower))),
+    ("upper", sharedBuiltinNative("str/upper", builtinNativeFn("str/upper", biStrUpper))),
+    ("empty?", sharedBuiltinNative("str/empty?", builtinNativeFn("str/empty?", biStrEmpty))),
+    ("byte_size", sharedBuiltinNative("str/byte_size", builtinNativeFn("str/byte_size", biStrByteSize))),
+    ("slice_bytes", sharedBuiltinNative("str/slice_bytes", builtinNativeFn("str/slice_bytes", biStrSliceBytes))),
+    ("to_utf8", sharedBuiltinNative("str/to_utf8", builtinNativeFn("str/to_utf8", biStrToUtf8))),
+    ("starts_with?", sharedBuiltinNative("str/starts_with?", builtinNativeFn("str/starts_with?", biStrStartsWith))),
+    ("ends_with?", sharedBuiltinNative("str/ends_with?", builtinNativeFn("str/ends_with?", biStrEndsWith))),
+    ("contains?", sharedBuiltinNative("str/contains?", builtinNativeFn("str/contains?", biStrContains)))]
 
 proc biParseInt(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("parse_int", args)
@@ -10756,19 +10777,10 @@ proc registerStdlibNamespaces(root: Scope) =
   mathScope.define("tau", newFloat(TAU))
   root.define("math", newNamespace("math", mathScope))
   let strScope = newScope(root)
-  strScope.define("join", builtinNativeFn("str/join", biStrJoin))
-  strScope.define("split", builtinNativeFn("str/split", biStrSplit))
-  strScope.define("trim", builtinNativeFn("str/trim", biStrTrim))
-  strScope.define("lower", builtinNativeFn("str/lower", biStrLower))
-  strScope.define("upper", builtinNativeFn("str/upper", biStrUpper))
-  strScope.define("byte_size", builtinNativeFn("str/byte_size", biStrByteSize))
-  strScope.define("slice_bytes", builtinNativeFn("str/slice_bytes", biStrSliceBytes))
-  strScope.define("to_utf8", builtinNativeFn("str/to_utf8", biStrToUtf8))
+  strScope.define("join", sharedBuiltinNative("str/join", builtinNativeFn("str/join", biStrJoin)))
+  for (name, native) in strReceiverNatives():
+    strScope.define(name, native)
   strScope.define("from_utf8", builtinNativeFn("str/from_utf8", biStrFromUtf8))
-  strScope.define("starts_with?", builtinNativeFn("str/starts_with?",
-                                              biStrStartsWith))
-  strScope.define("ends_with?", builtinNativeFn("str/ends_with?", biStrEndsWith))
-  strScope.define("contains?", builtinNativeFn("str/contains?", biStrContains))
   root.define("str", newNamespace("str", strScope))
   let aotScope = newScope(root)
   aotScope.define("load", builtinNativeCallFn("aot/load", biAotLoad,

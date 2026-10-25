@@ -48,6 +48,34 @@ backends; every other character is unchanged. For example,
 `($str/lower "ÉA")` is `"Éa"` and `($str/upper "éa")` is `"éA"`.
 Unicode case mapping is deliberately absent from these operations.
 
+Text operations also have receiver methods. They share the native function
+values used by `$str`, so `(text .split ",")` and `($str/split text ",")`
+have the same argument order, results, and validation.
+
+| Str method | Behavior |
+| --- | --- |
+| `split separator` | Split on a literal separator, retaining empty fields. The VM requires a nonempty separator. |
+| `trim` | Remove leading/trailing whitespace. |
+| `lower`, `upper` | Convert ASCII letter case. |
+| `empty?` | Test whether the string has no contents. |
+| `contains? text`, `starts_with? text`, `ends_with? text` | Test literal text. |
+| `byte_size`, `to_utf8` | Count UTF-8 bytes or encode a `(Buffer U8)`. |
+| `slice_bytes start max_bytes` | Take at most a byte count, ending at a UTF-8 boundary. The start must already be a boundary. |
+
+These methods work in the native VM and web profile. A zero-argument send on a
+bound string can use `text/.trim` or `text/.byte_size`. String indexing/length
+stays explicit: use `$chars` for code points or `$graphemes` for clusters on the
+VM; there is no implicit `Str.get` or ambiguous `Str.size` unit.
+The web profile retains its existing `split ""` behavior for browser lexing:
+it returns UTF-16 code-unit strings. That empty-separator case is not portable
+to the VM; use explicit character/grapheme iteration for native text work.
+
+```gene runnable
+(let names ("Ada,Grace" .split ","))
+[(names .get 1) (names .join " & ") (" ok " .trim)]
+# ["Grace" "Ada & Grace" "ok"]
+```
+
 `($binary/decode_utf8 bytes)` decodes a `Bytes` value strictly, rejecting invalid
 UTF-8, overlong encodings, surrogate code points and values above U+10FFFF. Use
 it when accepting uploaded text or other encoded input. The existing
@@ -520,9 +548,16 @@ Text helpers live under `$str`, and ordering helpers under `$order`.
 
 | Receiver | Operations |
 | --- | --- |
-| List | `assoc`, `set`, `push`, `size`, `empty?`, `first`, `last`, `contains?`, `map`, `filter_map`, `filter`, `take`, `drop`, `reverse`, `each`, `into`, `to_stream` |
+| List | `assoc`, `get`, `join`, `set`, `push`, `size`, `empty?`, `first`, `last`, `contains?`, `map`, `filter_map`, `filter`, `take`, `drop`, `reverse`, `each`, `into`, `to_stream` |
 | Map (PropMap or HashMap) | `assoc`, `get`, `has_key?`, `put`, `delete`, `map`, `filter_map`, `filter`, `each`, `to_pairs_stream` |
 | Stream | `has_next`, `peek`, `next`, `try_next`, `close`, `map`, `filter_map`, `filter`, `take`, `drop`, `each`, `into`, `to_stream`, `to_pairs_stream` |
+
+`(xs .get index)` reads the same element as an indexed Path: zero-based,
+negative indices count from the end, and out-of-range reads return `void`.
+Stored `nil` stays distinct from a missing element. In typed web code the result
+is `(| T Void)` for a `(List T)`; use `??` to supply a fallback when needed.
+`(strings .join separator)` shares `$str/join`, requires string elements, and
+defaults to an empty separator. Both messages are available in the web profile.
 
 `($reverse xs)` returns a fresh reversed List; `($drop xs n)` returns a fresh
 List without its first `n` items. Both are shallow copies and preserve the
