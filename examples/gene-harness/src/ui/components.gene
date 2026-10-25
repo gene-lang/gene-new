@@ -8,7 +8,7 @@
 (const component_slots ["sidebar" "conversation_sidebar" "toolbar" "composer" "status" "welcome" "status_summary" "panel" "view"])
 (const sidebar_widgets ["brand" "new_conversation" "filters" "attention" "extensions" "conversations" "workspace_tools"])
 (const interactive_tags ["form" "label" "input" "textarea" "select" "option" "table" "thead" "tbody" "tr" "th" "td"])
-(const interactive_attributes ["key" "field" "state" "action" "args" "positional" "name" "placeholder" "checked" "selected" "for" "rows" "required"])
+(const interactive_attributes ["key" "field" "state" "action" "args" "positional" "success_state" "name" "placeholder" "checked" "selected" "for" "rows" "required"])
 # Conversation cards (docs/cards.md) use the keyed controls without view-state
 # or function actions, plus their own card actions.
 (const card_attributes ["key" "field" "args" "name" "placeholder" "checked" "selected" "for" "rows" "required" "update" "send" "answer"])
@@ -147,6 +147,13 @@
       ($serde/write_data item)
       (attributes .put name item)
       (continue))
+    (if_yes (== name "success_state")
+      (if (!= ($head item) Map) (component_error "success_state must be a map"))
+      (for [field value] in item
+        (if_not ([Str Int Float Bool Nil] .contains? ($head value))
+          (component_error "success_state values must be scalar data")))
+      (attributes .put "success-state" item)
+      (continue))
     # Images and overlay geometry are scalar, bounded, and never CSS strings.
     (if_yes (== name "src")
       (if (!= tag "img") (component_error "src requires img"))
@@ -226,6 +233,9 @@
             (! (["docked" "full"] .contains? attributes/presentation)))
       (component_error "presentation requires a plugin view target and must be docked or full")))
   (if_yes experimental
+    (if (&& (! ($absent? attributes/success-state))
+            (|| (!= tag "form") ($absent? attributes/action)))
+      (component_error "success_state requires a form action"))
     (if (&& (== tag "form") (! ($absent? form))) (component_error "nested forms are unsupported"))
     (if_not ($absent? attributes/field)
       (if ($absent? form) (component_error "draft fields must belong to a form"))

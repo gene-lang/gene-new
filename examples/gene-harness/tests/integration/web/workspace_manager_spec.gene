@@ -109,6 +109,13 @@
                 ^sequence "1"
                 ^state {}}))
           ($assert ($absent? rendered/error) ($to_str rendered))
+          (let create_view (api client "POST" "/ui/render"
+            {^component "workspaces" ^revision view/revision ^instance "manager-test"
+             ^sequence "2" ^state {^selected "create"}}))
+          ($assert ($absent? create_view/error) ($to_str create_view))
+          (let create_form (/0 ($filter create_view/view/children
+            (fn [node] (== node/props/key "register-create")))))
+          ($assert (== create_form/props/success-state {^selected ""}))
           ($assert (exits_with_error home "manager" "--workspace" $"${root}/forbidden"))
           ($assert (! ($fs/exists? $"${root}/forbidden")))
           ($assert (exits_with_error home "web" "--root" $"${root}/forbidden"))

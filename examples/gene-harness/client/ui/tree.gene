@@ -3,7 +3,7 @@
 (import [UiNode UiClient text flag copy_map sync_controls] ^from "./model.gene")
 
 (fn metadata [name : Str] : Bool
-  (for key in ["key" "field" "state" "action" "args" "positional" "command" "prompt" "switch-view" "presentation"]
+  (for key in ["key" "field" "state" "action" "args" "positional" "success-state" "command" "prompt" "switch-view" "presentation"]
     (if_yes (== key name) (return true)))
   false)
 

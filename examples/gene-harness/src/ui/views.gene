@@ -66,6 +66,8 @@
   (if_not ($absent? tree/props/state)
     (if_not (candidate/view_state .has_key? tree/props/state)
       (ui_error "invalid_request" $"Undeclared view-state field ${tree/props/state}.")))
+  (if_not ($absent? tree/props/success-state)
+    (ui_view_state candidate tree/props/success-state))
   (for child in tree/children (validate_view_actions child candidate snapshot))
   nil)
 

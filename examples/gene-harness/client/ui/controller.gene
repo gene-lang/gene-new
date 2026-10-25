@@ -153,6 +153,7 @@
       ^named named})
   (set ui/pending
     {^format "2" ^request request ^form form ^version ui/version ^form_context ui/forms/%form
+     ^success_state (copy_map node/props/success-state)
      ^command_id "" ^view_state (copy_map ui/state) ^!uncertain ^!attempted})
   (persist_view ui)
   (post_action ui))

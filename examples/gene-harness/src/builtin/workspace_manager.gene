@@ -123,6 +123,7 @@
   (if (== selected "create")
     (panels .push
       `(form ^key "register-create" ^action "manager_workspace_action" ^args %{^operation "create"}
+         ^success_state {^selected ""}
          (h3 "Create workspace")
          (p %$"New workspaces are created in ${snapshot/workspaces_dir}.")
          (label

@@ -1,6 +1,7 @@
 # Tests src/ui/components.gene.
 (import $test [describe it run])
 (import ^from "../../../src/ui/components" [validate_web_component bounded_component_view bounded_card_view tree_has_commands?])
+(import ^from "../../../src/ui/views" [validate_view_actions])
 
 (describe
   "Harness web components"
@@ -79,6 +80,24 @@
     (let view (bounded_component_view ^^experimental source))
     ($assert (== view/props/args/revision "1"))
     ($assert (== view/props/positional ["task"])))
+  (it
+    "validates success patches on action forms against declared view state"
+    []
+    (let tree (bounded_component_view ^^experimental
+      (quote (form ^key "create" ^action "save" ^success_state {^selected ""}))))
+    ($assert (== tree/props/success-state {^selected ""}))
+    (let candidate {^actions ["save"] ^view_state {^selected "create"}})
+    (let snapshot {^registries {^ui_actions [{^key "save"}]}})
+    (validate_view_actions tree candidate snapshot)
+    (for patch in [{^unknown ""} {^selected true}]
+      (let invalid (bounded_component_view ^^experimental
+        `(form ^key "create" ^action "save" ^success_state %patch)))
+      ($assert (try (validate_view_actions invalid candidate snapshot) false catch Any true)))
+    (for source in [(quote (form ^key "create" ^action "save" ^success_state ""))
+                   (quote (form ^key "create" ^action "save" ^success_state {^selected []}))
+                   (quote (form ^key "create" ^success_state {^selected ""}))
+                   (quote (button ^key "create" ^action "save" ^success_state {^selected ""}))]
+      ($assert (try (bounded_component_view ^^experimental source) false catch Any true))))
   (it
     "rejects ambiguous keys, unowned fields and nested forms before display"
     []

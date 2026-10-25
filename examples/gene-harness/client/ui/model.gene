@@ -128,8 +128,6 @@
   (var saved (saved_view ui key))
   (var drafts (copy_map saved/drafts))
   (var forms (copy_map saved/forms))
-  # Untouched or already discarded forms have no retained edit context.
-  (if_yes ($absent? forms/%form) (return))
   # Form args capture the original record revision. A newly edited form with
   # another revision must not be cleared by an earlier receipt.
   (if_yes (!= ($json/stringify forms/%form) ($json/stringify pending/form_context)) (return))
@@ -144,11 +142,20 @@
     (var item : Any raw)
     (if_yes (== (text item/form) form) (set still_dirty true)))
   (if_not still_dirty (set forms/%form void))
+  (var state (copy_map saved/state))
+  # Close/reset a submitted form only after success. Preserve newer edits and
+  # navigation, including when recovering its receipt from another view.
+  (if_not still_dirty
+    (for [name value] in (copy_map pending/success_state)
+      (if_yes (== ($json/stringify state/%name) ($json/stringify pending/view_state/%name))
+        (set state/%name value))))
+  (set saved/state state)
   (set saved/drafts drafts)
   (set saved/forms forms)
   (set ui/navigation/snapshots/%key saved)
   (if_not ($session_storage/set key ($json/stringify saved))
     (notice ^key "storage" ^^sticky ^severity "error" ui "Saved, but draft recovery storage could not be updated. Keep this page open."))
   (if_yes active
+    (set ui/state state)
     (set ui/drafts drafts)
     (set ui/forms forms)))

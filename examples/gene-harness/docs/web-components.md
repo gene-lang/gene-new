@@ -298,6 +298,7 @@ input, textarea, select, option, table, thead, tbody, tr, th and td.
 | `action` | Function from the row's `actions` list, invoked by a form submission or button. |
 | `args` | Static named arguments, combined with submitted form fields. |
 | `positional` | Optional static list of positional arguments. |
+| `success_state` | Optional scalar view-state patch on an action form, applied after its receipt succeeds. Useful for closing a completed creation form. Fields must be declared in `view_state`. |
 | `value`, `checked`, `selected`, `required`, `placeholder`, `rows`, `for`, `name` | Ordinary control attributes. Values and checked state are updated without overwriting dirty fields. |
 
 Input types are text, search, checkbox, number and hidden. Field values are
@@ -314,6 +315,13 @@ returns plain quoted data; it performs conditions and iteration in ordinary
 Gene. Forms keep unsaved values locally until Save. Compatible keys preserve
 focus, selection and drafts; increment `state_version` to reset incompatible
 browser state.
+
+For example, `(form ^key "create" ^action "create_item"
+^success_state {^selected ""} ...)` closes a selected editor after successful
+creation. Failed or uncertain actions keep it open. Success clears only submitted
+drafts, preserves newer edits, and applies the patch only where the corresponding
+view-state value still matches the value captured at submission. Receipt recovery
+also updates a saved view when the user has navigated elsewhere.
 
 Normal status snapshots carry a stateful view's descriptor and invalidation
 revision, not a default-state tree. Workspace plugin-state updates and plugin

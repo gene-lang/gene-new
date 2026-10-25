@@ -29,7 +29,7 @@ suite "web speech boundaries":
       quoteShell(output / "host_audio.mjs"))
     checkpoint host.output
     check host.exitCode == 0
-    for fixture in ["first_submission", "history_start", "live_output", "conversation", "session_menu", "notifications"]:
+    for fixture in ["first_submission", "history_start", "live_output", "conversation", "session_menu", "notifications", "ui_form_success"]:
       let entry = if fixture == "first_submission": "main.mjs" elif fixture == "live_output": "live_output.mjs" elif fixture == "session_menu": "session_menu.mjs" else: "view.mjs"
       let browser = execCmdEx("node examples/gene-harness/tests/" & fixture & ".mjs " &
         quoteShell(output / entry))
