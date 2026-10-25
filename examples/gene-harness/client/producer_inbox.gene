@@ -2,10 +2,25 @@
 (mod harness_producer_inbox ^profile web)
 (import ^from "./question_editors.gene" [qtext qjson restored_map])
 (import ^from "./components.gene" [render_element])
-(import ^from "./notices.gene" [Notices put_notice remove_notice])
+(import ^from "./notices.gene" [Notices put_notice remove_notice clear_notices])
 
-(type ProducerInbox ^props {^cards PropMap ^epoch Str ^revision Int ^watermark Str ^opened Str ^ready Bool ^safe Bool ^selected Str ^pending PropMap ^sending PropMap ^notices Notices ^reference_generation Int ^api (Fn [Str Str Any (Fn [Int Any] Void)] Void) ^changed (Fn [Int] Void) ^navigate (Fn [Any] Void) ^draft (Fn [Str Str] Void)})
-(type ProducerCard ^props {^message Any ^element EventTarget ^heading EventTarget ^summary EventTarget ^source EventTarget ^details EventTarget ^content EventTarget ^actions EventTarget ^status EventTarget ^revision Int ^buttons PropMap ^reference EventTarget})
+(type ProducerInbox ^props {^cards PropMap ^epoch Str ^revision Int ^watermark Str ^opened Str ^ready Bool ^clearing Bool ^safe Bool ^selected Str ^pending PropMap ^sending PropMap ^notices Notices ^reference_generation Int ^api (Fn [Str Str Any (Fn [Int Any] Void)] Void) ^changed (Fn [Int] Void) ^navigate (Fn [Any] Void) ^draft (Fn [Str Str] Void)})
+(type ProducerCard ^props {^message Any ^element EventTarget ^heading EventTarget ^summary EventTarget ^source EventTarget ^details EventTarget ^content EventTarget ^actions EventTarget ^status EventTarget ^revision Int ^buttons PropMap ^reference EventTarget ^clear EventTarget})
+
+(fn message_controls [inbox : ProducerInbox] : Void
+  (var local 0) (var remote 0)
+  (for [key item] in inbox/notices/items (set local (+ local 1)))
+  (for [key raw] in inbox/cards
+    (var card : ProducerCard raw)
+    (if_not card/element/hidden (set remote (+ remote 1)))
+    (set card/clear/disabled (|| (! inbox/ready) inbox/clearing)))
+  (var clear ($dom/element "clear_messages"))
+  (set clear/disabled (|| inbox/clearing (&& (== local 0) (|| (! inbox/ready) (== remote 0)))))
+  ($dom/set_text clear (if inbox/clearing "Clearing messages…" "Clear messages"))
+  (var opened ($dom/element "ack_messages"))
+  (set opened/disabled (|| (! inbox/ready) (== remote 0)))
+  (var section ($dom/element "notification_message_section"))
+  (set section/hidden (== remote 0)))
 
 (fn producer_problem [inbox : ProducerInbox, message : Str] : Void
   (put_notice inbox/notices ($dom/element "notice") "inbox" "" "transport" message "error" true {}))
@@ -24,12 +39,17 @@
         (producer_problem inbox (qtext data/message "Messages could not be loaded."))))))
 
 (fn clear_producers [inbox : ProducerInbox, selected : (List Any)] : Void
-  (if_not inbox/ready (return))
+  (if_yes (|| inbox/clearing (== selected/.size 0)) (return))
+  (if_not inbox/ready (producer_problem inbox "Reconnect to clear server messages.") (return))
+  (var epoch inbox/epoch)
+  (set inbox/clearing true) (message_controls inbox)
   (inbox/api
     "POST"
     "/api/v8/notifications/clear"
     {^messages selected}
     (fn [code : Int, data : Any] : Void
+      (if_yes (!= epoch inbox/epoch) (return))
+      (set inbox/clearing false) (message_controls inbox)
       (if (== code 200)
         (refresh_inbox inbox)
         (producer_problem inbox "Clearing was not confirmed. Refresh messages before trying again.")))))
@@ -240,7 +260,7 @@
     :
     ProducerCard
     (if ($absent? found)
-      (ProducerCard ^message message ^element ($dom/render `(section ^class_name "notification_card producer_message")) ^heading ($dom/render `(h3)) ^summary ($dom/render `(p)) ^source ($dom/render `(small)) ^details ($dom/render `(details (summary "Details"))) ^content ($dom/render `(div)) ^actions ($dom/render `(div)) ^status ($dom/render `(p ^role "status")) ^revision 0 ^buttons {} ^reference ($dom/render `(button ^type "button" "Open conversation")))
+      (ProducerCard ^message message ^element ($dom/render `(section ^class_name "notification_card producer_message")) ^heading ($dom/render `(h3)) ^summary ($dom/render `(p)) ^source ($dom/render `(small)) ^details ($dom/render `(details (summary "Details"))) ^content ($dom/render `(div)) ^actions ($dom/render `(div)) ^status ($dom/render `(p ^role "status")) ^revision 0 ^buttons {} ^reference ($dom/render `(button ^type "button" "Open conversation")) ^clear ($dom/render `(button ^type "button" "Clear")))
       found))
   (set card/element/hidden false)
   (if_yes ($absent? found)
@@ -258,10 +278,9 @@
       (fn [event : Any] : Void
         (inbox/navigate card/message/origin)))
     ($dom/append card/element card/status)
-    (var clear ($dom/render `(button ^type "button" "Clear")))
-    ($dom/append card/element clear)
+    ($dom/append card/element card/clear)
     ($dom/add_event_listener
-      clear
+      card/clear
       "click"
       (fn [event : Any] : Void
         (clear_producers inbox [{^id card/message/id ^revision card/message/revision}])))
@@ -343,11 +362,13 @@
     (if_yes ($absent? seen/%key) (set card/element/hidden true)))
   (var count : Int data/new_messages)
   (inbox/changed count)
+  (message_controls inbox)
   (remove_notice inbox/notices "inbox" "" "transport"))
 
 (fn producer_event [inbox : ProducerInbox, kind : Str, epoch : Str, data : Any] : Void
   (if_yes (!= epoch inbox/epoch)
     (set inbox/epoch epoch)
+    (set inbox/clearing false)
     (set inbox/revision -1)
     (for [key raw] in inbox/cards
       (var card : ProducerCard raw)
@@ -369,6 +390,7 @@
   (var reconnect (&& ready (! inbox/ready)))
   (set inbox/ready ready)
   (set inbox/selected selected)
+  (message_controls inbox)
   (if_yes reconnect
     (refresh_inbox inbox)
     (for [key pending] in inbox/pending
@@ -376,7 +398,9 @@
 
 (fn create_producer_inbox [notices : Notices, safe : Bool, api : (Fn [Str Str Any (Fn [Int Any] Void)] Void), changed : (Fn [Int] Void), navigate : (Fn [Any] Void), draft : (Fn [Str Str] Void)] : ProducerInbox
   (var inbox
-    (ProducerInbox ^cards {} ^epoch "" ^revision -1 ^watermark "0" ^opened "0" ^!ready ^safe safe ^selected "" ^pending (restored_map "gene-harness/notification-actions") ^sending {} ^notices notices ^reference_generation 0 ^api api ^changed changed ^navigate navigate ^draft draft))
+    (ProducerInbox ^cards {} ^epoch "" ^revision -1 ^watermark "0" ^opened "0" ^!ready ^!clearing ^safe safe ^selected "" ^pending (restored_map "gene-harness/notification-actions") ^sending {} ^notices notices ^reference_generation 0 ^api api ^changed changed ^navigate navigate ^draft draft))
+  (var previous notices/changed)
+  (set notices/changed (fn [] : Void (previous) (message_controls inbox)))
   ($dom/add_event_listener
     ($dom/element "clear_messages")
     "click"
@@ -386,10 +410,12 @@
         (var card : ProducerCard raw)
         (if_not card/element/hidden
           (selected .push {^id card/message/id ^revision card/message/revision})))
+      (clear_notices inbox/notices)
       (clear_producers inbox selected)))
   ($dom/add_event_listener
     ($dom/element "ack_messages")
     "click"
     (fn [event : Any] : Void
       (opened_inbox inbox)))
+  (message_controls inbox)
   inbox)

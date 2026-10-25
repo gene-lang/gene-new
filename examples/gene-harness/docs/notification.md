@@ -153,9 +153,12 @@ Notifications · 2 need attention, 1 new message       [Close]
 ```
 
 Use **Clear** for removing informational messages from the normal list and
-**Clear messages** for the bulk action. Do not reuse Dismiss all for notification
-hiding. A condition may have **Hide popup** if suppression is appropriate, but
-its indicator and recovery controls remain available while it is active.
+**Clear messages** for the bulk action. The bulk action clears both local
+feedback and the observed revisions of server-published messages. Each local
+message has a dismiss button in its inline banner and in the center; dismissing
+either removes both presentations. Clearing messages does not answer pending
+questions, cancel operations, or discard receipt-recovery state. Question and
+confirmation cards follow their owning workflow's lifecycle.
 
 ### Feedback near the action
 
@@ -164,8 +167,8 @@ or composer. Independent keyed slots prevent Copied/Saved from replacing an
 unresolved error. Routine successes can time out; errors and decisions cannot
 vanish on a short timer.
 
-Inline notices and the center show the same item/projection. Do not make two
-copies with independent close controls. Limit compact overlays so they do not
+Inline notices and the center show the same item/projection, with synchronized
+dismiss controls. Limit compact overlays so they do not
 cover the composer.
 
 Stable keys use source + scope + logical condition identity, not message text.

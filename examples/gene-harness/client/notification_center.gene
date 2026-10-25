@@ -1,6 +1,6 @@
 # Workflow projections. Session metadata is a hint; only snapshots own questions.
 (mod harness_notification_center ^profile web)
-(import ^from "./notices.gene" [Notices Notice])
+(import ^from "./notices.gene" [Notices Notice remove_notice])
 (import ^from "./question_editors.gene" [QuestionEditors QuestionEditor mount_question qtext qjson])
 (import ^from "./question_state.gene" [current_fetch waiting_batch])
 
@@ -206,7 +206,7 @@
 (fn center_locals [center : NotificationCenter] : Void
   (for [key raw] in center/locals
     (if_yes ($absent? center/notices/items/%key)
-      (var element : EventTarget raw)
+      (var element : EventTarget raw/element)
       ($dom/remove element)
       (set center/locals/%key void)))
   (for [key raw] in center/notices/items
@@ -216,13 +216,19 @@
       :
       EventTarget
       (if ($absent? saved)
-        ($dom/render `(button ^type "button" ^class_name "notification_local"))
-        saved))
+        ($dom/render `(div ^class_name "notification_local"))
+        saved/element))
+    (var open : EventTarget (if ($absent? saved)
+      ($dom/render `(button ^type "button" ^class_name "notification_local_open")) saved/open))
     (if_yes ($absent? saved)
-      (set center/locals/%key element)
+      (set center/locals/%key {^element element ^open open})
+      ($dom/append element open)
+      ($dom/append element ($dom/render `(button ^type "button" ^class_name "notice_dismiss"
+        ^aria-label "Dismiss message" ^title "Dismiss message"
+        ^on_click %(fn [event : Any] : Void (remove_notice center/notices item/source item/scope item/key)) "×")))
       ($dom/append ($dom/element "notification_local") element)
       ($dom/add_event_listener
-        element
+        open
         "click"
         (fn [event : Any] : Void
           (if ($absent? item/action)
@@ -256,7 +262,7 @@
         item/origin/entity
         (qtext item/origin/arguments/id (qtext item/origin/arguments/entity))))
     ($dom/set_text
-      element
+      open
       ($to_str
         item/text
         " "

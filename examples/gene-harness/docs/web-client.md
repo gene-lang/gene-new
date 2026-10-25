@@ -91,6 +91,12 @@ removes child conversations too; running work and pending questions prevent
 deletion. Open tabs close when their conversation is deleted. Child conversations
 inherit their parent's pin.
 
+Feedback messages have a dismiss button in both the inline banner and the
+Notifications popup. Dismissing either removes the shared message from both.
+**Clear messages** clears local feedback and observed server messages; pending
+question cards remain until handled through their response controls. The button
+shows progress during a server clear and is disabled when there is nothing to clear.
+
 A submitted prompt appears immediately as a “You” message and replaces the
 welcome content, including while a newly created session connects. Pending
 submissions and admitted receipts keep it visible through delayed snapshots

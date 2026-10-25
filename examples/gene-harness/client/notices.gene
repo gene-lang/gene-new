@@ -20,6 +20,14 @@
   (set notices/items/%identity void)
   (notices/changed))
 
+(fn clear_notices [notices : Notices] : Void
+  (for [key raw] in notices/items
+    (var item : Notice raw)
+    (set item/version (+ item/version 1))
+    ($dom/remove item/element)
+    (set notices/items/%key void))
+  (notices/changed))
+
 (fn expire_notice [notices : Notices, item : Notice, version : Int] : Void
   ($time/after
     6000.0
@@ -44,6 +52,9 @@
   (if_yes ($absent? raw)
     (set notices/items/%identity item)
     ($dom/append item/element item/label)
+    ($dom/append item/element ($dom/render `(button ^type "button" ^class_name "notice_dismiss"
+      ^aria-label "Dismiss message" ^title "Dismiss message"
+      ^on_click %(fn [event : Any] : Void (remove_notice notices item/source item/scope item/key)) "×")))
     ($dom/append target item/element)
     ($dom/add_event_listener
       item/element

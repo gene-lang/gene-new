@@ -170,15 +170,17 @@
                  (h2 "Notifications")
                  (button ^id "close_notifications" ^type "button" "Close"))
                (p ^id "notifications_count" ^role "status" ^aria-live "polite")
+               (div ^class "notification_message_controls"
+                 (button ^id "clear_messages" ^type "button" ^^disabled "Clear messages"))
                (section ^id "notification_reference" ^^hidden
                  (h3 "Original evidence")
                  (pre ^id "notification_reference_text"))
                (div ^id "notification_local")
                (div ^id "notification_workflows")
-               (h3 "Messages")
-               (button ^id "ack_messages" ^type "button" "Mark messages opened")
-               (button ^id "clear_messages" ^type "button" "Clear messages")
-               (div ^id "notification_messages"))
+               (section ^id "notification_message_section" ^^hidden
+                 (h3 "Messages")
+                 (button ^id "ack_messages" ^type "button" "Mark messages opened")
+                 (div ^id "notification_messages")))
              (aside ^id "status_drawer" ^class "drawer" ^^hidden
                (div ^class "drawer_header"
                  (h2 "Workspace status")
