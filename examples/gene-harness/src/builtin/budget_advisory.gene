@@ -18,14 +18,13 @@
            (let remaining (- context/limit context/round_turn))
            (items .push
              {^id $"${context/turn}.budget" ^header "[harness_budget]"
-              ^value ($to_str "This is turn " context/round_turn " of "
+              ^value (if (== context/continuation_mode "automatic")
+                "Continuation across round boundaries is automatic. Keep working and verifying until the task is complete; return a done Outcome when complete, or ask when user input is required."
+                ($to_str "This is turn " context/round_turn " of "
                 context/limit " in this round; " remaining
-                " turns remain after this response. Prioritize implementation and verification; finish with Outcome when complete.")
+                " turns remain after this response. Prioritize implementation and verification; finish with Outcome when complete."))
               ^!settled})
-           (next {^session context/session ^round context/round
-                  ^turn context/turn ^round_turn context/round_turn
-                  ^limit context/limit
-                  ^items items}))})
+           (next (context .assoc "items" items)))})
       (contribute_text_doc host "harness/budget"
         "Model round budget notices and incremental delivery."
         "The request/prepare hook appends harness_budget with this round's turn number, limit and remaining turns. Finish with Outcome when complete; persist useful source and notes early. A user continuation starts another round with the same workspace and history. This hook does not increase the configured limit."

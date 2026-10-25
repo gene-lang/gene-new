@@ -1,0 +1,30 @@
+# Deterministic, model-free workspace for live conversation UI verification.
+(import [png] ^from "./png")
+(import [open_session_service close_session_service] ^from "../../src/web/session_service")
+(import [open_media_store put_media media_descriptor] ^from "../../src/storage/media")
+(fn main [args]
+  (let root args/0)
+  ($fs/make_dir root)
+  (let samples [])
+  (repeat y in 96
+    (samples .push 0)
+    (repeat x in 160
+      (samples .push (+ 40 x)) (samples .push (+ 80 y))
+      (samples .push 180) (samples .push 255)))
+  ($fs/write_bytes $"${root}/example.png" (png ^width 160 ^height 96 ^samples samples))
+  (let service (open_session_service ^workspace root ^^offline))
+  (var image nil)
+  (try
+    (let path $"${service/runtime/state_root}/config.gene")
+    (let config ($serde/read_data ($fs/read_text path)))
+    (config .put "turn_limit" 1)
+    ($fs/write_text path ($serde/write_data config))
+    (let store (open_media_store service/runtime/state_root))
+    (let asset (put_media store "example.png" ($fs/read_bytes $"${root}/example.png")))
+    (set image (media_descriptor store asset/id))
+  ensure (close_session_service service))
+  ($fs/write_text $"${root}/responses.gene" ($to_str [
+    $"($println \"First turn output: <script> stays literal.\") (append_prompt \"image\" ${image}) (Outcome ^prompt \"Inspect the saved image and check the next step.\" ^reply \"Prepared the image and inspected the task.\")"
+    "($sleep 1200) ($println \"Second turn output: verification complete.\") (Outcome ^prompt \"Present the complete result with the saved image.\" ^reply \"Verified the result.\")"
+    $"(Outcome ^^done ^reply \"![Example image](/api/v7/media/${image/id})\\n\\nThe conversation layout is ready.\")"]))
+  ($println "Conversation UI fixture prepared."))

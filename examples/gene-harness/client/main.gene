@@ -20,8 +20,8 @@
     draft_key
     bounded_blocks
     step_key
-    step_block
-    marker_block
+    conversation_groups
+    record_sequence
     run_label
     revision_before
     status_is_current])
@@ -905,53 +905,39 @@
 (fn render_run [client : Client, blocks : (List Any), run : Any] : Void
   (var target ($dom/render `(section ^class_name "run")))
   (var prompt "")
-  (var i 0)
   (var generation client/generation)
-  (while (< i ($size blocks))
-    (var block : Any blocks/%i)
-    (var role : Str block/role)
-    (if_yes (== role "user") (set prompt block/text))
-    (if (marker_block block)
+  (var groups (conversation_groups blocks))
+  (for group in groups
+    (if (== (string_or group/kind "") "block")
       (then
-        (set i (+ i 1)))
-      (elif (step_block block)
-        (var key (step_key block))
-        (var step : (List Any) [])
-        (while (< i ($size blocks))
-          (var next : Any blocks/%i)
-          (if (marker_block next)
-            (then
-              (set i (+ i 1)))
-            (elif (&& (step_block next) (== (step_key next) key))
-              (step .push next)
-              (set i (+ i 1)))
-            (else
-              (break))))
-        (var active false)
-        (if_not ($absent? run)
-          (var status : Str run/state)
-          (set active (&& (! (terminal status)) (== i ($size blocks)))))
-        ($dom/append
-          target
-          (step_view
+        (var block : Any group/block)
+        (if_yes (== (string_or block/role "") "user") (set prompt block/text))
+        (render_block client target block))
+      (else
+        (var step : (List Any) group/blocks)
+        (var block : Any step/0)
+        (var key : Str group/key)
+        (var active (&& (! ($absent? run)) (! (terminal (string_or run/state "")))))
+        ($dom/append target
+          (step_view step (expanded_block client key) active
+            (fn [text : Str] : Void (copy_text client text))
+            (fn [id : Str] : Bool (expanded_block client id))
+            (fn [id : Str, opened : Bool] : Void
+              (if_yes (== generation client/generation) (toggle_block client id opened)))
             ^on_speak (voice_replay_handler client)
             ^output_view (live_output_view client (turn_output_key client/selected (string_or block/round_id "") (dint block/turn)))
-            step
-            (expanded_block client key)
-            active
-            (fn [text : Str] : Void
-              (copy_text client text))
-            (fn [id : Str] : Bool
-              (expanded_block client id))
-            (fn [id : Str, opened : Bool] : Void
-              (if_yes (== generation client/generation) (toggle_block client id opened))))))
-      (else
-        (render_block client target block)
-        (set i (+ i 1)))))
+            ^render_extra (fn [content : EventTarget, item : Any] : Void (render_block client content item)))))))
   (if_not ($absent? run)
-    ($dom/append
-      target
-      (run_status_view run prompt (fn [text : Str] : Void (edit_prompt client text)))))
+    (var on_continue : Any nil)
+    (if_yes (== (string_or run/id "") (string_or client/round/id ""))
+      (var session client/selected) (var source : Str run/id)
+      (set on_continue (fn [mode : Str] : Void
+        (api client "POST" $"/api/v8/sessions/${session}/rounds/${source}/continue" {^mode mode}
+          (fn [code : Int, data : Any] : Void
+            (if (== code 202) (apply_run client session data)
+              (do (show_error ^session session client data)
+                (if_yes (== session client/selected) (render_transcript client)))))))))
+    ($dom/append target (run_status_view run prompt (fn [text : Str] : Void (edit_prompt client text)) ^on_continue on_continue)))
   ($dom/append client/transcript target))
 
 (fn render_transcript [client : Client, ^prepend prepend : Bool = false] : Void
@@ -1014,15 +1000,26 @@
   (var visible : (List Any) (historical_records all_visible))
   (var i 0)
   (var current_shown false)
+  (var seen_rounds : (List Str) [])
   (while (< i ($size visible))
     (var first : Any visible/%i)
     (var id : Str first/round_id)
     (var blocks : (List Any) [])
-    (while (< i ($size visible))
-      (var block : Any visible/%i)
-      (var block_run : Str block/round_id)
-      (if_yes (!= block_run id) (break))
-      (blocks .push block) (set i (+ i 1)))
+    (if (!= id "")
+      (then
+        (set i (+ i 1))
+        (var shown false)
+        (for seen in seen_rounds (if_yes (== seen id) (set shown true)))
+        (if_yes shown (continue))
+        (seen_rounds .push id)
+        (for record in visible
+          (if_yes (== (string_or record/round_id "") id) (blocks .push record))))
+      (else
+        (while (< i ($size visible))
+          (var block : Any visible/%i)
+          (var block_run : Str block/round_id)
+          (if_yes (!= block_run id) (break))
+          (blocks .push block) (set i (+ i 1)))))
     (var run : Any nil)
     (for receipt in client/rounds
       (var receipt_id : Str receipt/id)
@@ -1060,7 +1057,9 @@
 (fn update_controls [client : Client] : Void
   (var state : Str (if ($absent? client/round) "" client/round/state))
   (set client/server_busy (|| (== state "running")
-    (&& (== state "waiting") (! ($absent? client/round/delegation_wait)))))
+    (&& (== state "waiting") (! ($absent? client/round/delegation_wait)))
+    (&& (== state "paused") (== (string_or client/round/continuation_mode "") "automatic")
+      ($absent? client/round/continuation_stop))))
   (if ($absent? client/mode)
     (render_input client)
     (set_hidden "input_panel" true))
@@ -1262,7 +1261,8 @@
   (set client/loading_older true)
   (var generation client/generation)
   (var first : Any client/records/0)
-  (var before : Str first/seq)
+  (var tab (session_tab client client/selected))
+  (var before (string_or tab/cache/before_cursor (string_or first/seq "")))
   (api
     client
     "GET"
@@ -1280,6 +1280,7 @@
           (set client/rounds (merge_blocks client/rounds runs))
           (set client/records (bounded_blocks (merge_blocks older client/records) false))
           (set client/has_older data/has_older)
+          (set tab/cache/before_cursor data/before_cursor)
           (set client/autoscroll false)
           (set client/viewing_history true)
           (set client/preview [])
@@ -1288,9 +1289,33 @@
           (show_error client data))))))
 
 (fn apply_snapshot [client : Client, data : Any] : Void
+  (if_yes (== (string_or data/status/epoch client/epoch) client/epoch)
+    (var before_sequence : Int 0) (var next_sequence : Int 0)
+    (if_not ($absent? client/round/submission_seq) (set before_sequence client/round/submission_seq))
+    (if_not ($absent? data/round/submission_seq) (set next_sequence data/round/submission_seq))
+    (if_yes (|| (> before_sequence next_sequence)
+      (&& (== before_sequence next_sequence) (! ($absent? client/round))
+        (terminal (string_or client/round/state "")) (== (string_or data/round/state "") "running")))
+      (set data/round client/round)))
+  (if_yes client/viewing_history
+    (var current_tab (session_tab client client/selected))
+    (set data/before_cursor current_tab/cache/before_cursor))
   (output_epoch (live_store client) (string_or data/status/epoch ""))
   (set data/records (historical_records data/records))
   (set data/preview (historical_records data/preview))
+  (if_not client/viewing_history
+    (var cursor_text (string_or data/cursor "0"))
+    (if_yes (== cursor_text "") (set cursor_text "0"))
+    (var cursor : Int ($json/parse cursor_text))
+    (for previous in [client/records client/preview]
+      (for record in previous
+        (if_yes (> (record_sequence record) cursor)
+          (var incoming : (List Any) data/records)
+          (var present false)
+          (for item in incoming (if_yes (== item/id record/id) (set present true)))
+          (if present (set data/records (merge_blocks incoming [record]))
+            (do (var preview : (List Any) data/preview)
+              (set data/preview (merge_blocks preview [record]))))))))
   (if_not ($absent? data/status) (apply_status client data/status))
   (if_not client/viewing_history
     (var records : (List Any) (historical_records data/records))
@@ -1348,17 +1373,28 @@
 
 (fn apply_record [client : Client, record : Any] : Void
   (if_yes (== (string_or record/phase "") "console") (return))
+  (if_yes (&& (== (string_or record/phase "") "turn/start")
+    (== (string_or record/round_id "") (string_or client/round/id "")))
+    (set client/round/task_turns record/task_turns))
   (if_not client/viewing_history
     (var found false)
     (for saved in client/records
-      (if_yes (== saved/id record/id) (set found true)))
+      (if_yes (== saved/id record/id)
+        (set found true)
+        (var incoming_seq : Int ($json/parse (string_or record/seq "0")))
+        (var saved_seq : Int ($json/parse (string_or saved/seq "0")))
+        (if_yes (>= incoming_seq saved_seq)
+          (set client/records (merge_blocks client/records [record])))))
     (if_not found (set client/preview (bounded_blocks (merge_blocks client/preview [record]) true))))
   (render_transcript client))
 
 (fn apply_run [client : Client, session : Str, data : Any] : Void
   (acknowledge_run client data session)
   (if_yes (== session client/selected)
-    (set client/round data)
+    (var current_sequence : Int 0) (var incoming_sequence : Int 0)
+    (if_not ($absent? client/round/submission_seq) (set current_sequence client/round/submission_seq))
+    (if_not ($absent? data/submission_seq) (set incoming_sequence data/submission_seq))
+    (if_yes (>= incoming_sequence current_sequence) (set client/round data))
     (set client/rounds (bounded_blocks (merge_blocks client/rounds [data]) true))
     (render_transcript client))
   (update_controls client))

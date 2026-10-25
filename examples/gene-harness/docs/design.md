@@ -172,7 +172,10 @@ Concurrent retry answers resume once, and completion claims publish one
 terminal receipt for each execution.
 
 A round starts from a user or trigger request and contains one or more turns.
-Its states are running, waiting, done, failed, cancelled and interrupted.
+Its states are running, waiting, paused, done, failed, cancelled and interrupted.
+An operator turn-limit pause is terminal for that receipt and leaves the task
+unfinished. Continuation admits a new linked round, preserving task identity
+and cumulative turns. It does not reopen the old receipt or fail its last turn.
 One session admits one round at a time; a busy submission fails. Different
 sessions execute concurrently as root-lane fiber tasks.
 
@@ -349,9 +352,12 @@ clears this display. The CLI can still read diagnostic transcript records. Ignor
                        ^attention Bool?})
 ```
 
-`^^attention` flags the session for the operator. A round may take 24
-turns, or 12 in a trigger session; reaching the limit fails the round and shows
-the last request.
+`^^attention` flags the session for the operator. An operator round defaults to
+24 turns; reaching the limit pauses it and retains the unsent input. Continue
+admits a linked round with another budget, while Continue until finished admits
+successors automatically and shows cumulative task turns. The browser hides the
+unrun turn. Trigger rounds default to 12 turns and retain their existing failure
+and parent/trigger completion policies.
 
 ### Next request
 
@@ -592,7 +598,11 @@ latest references and the event store's fallback generations.
 Settlement can change the previous full request and the assistant body from
 the preceding turn; older message content remains stable. The
 `budget_advisory` hook adds `[harness_budget]` to the full request only; its
-settled form omits that item. Anthropic transport places cache checkpoints
+settled form omits that item. A limit continuation replaces only its identified,
+unsent trailing request with fresh preparation, preserving settled input and
+media; it does not append that request twice. Automatic continuation explains
+the mode instead of counting down to forced completion at every round boundary.
+Anthropic transport places cache checkpoints
 on the last two assistant messages. Compaction is the exceptional operation
 that rewrites old history.
 The stable-prefix invariant compares serialized message-content bytes from

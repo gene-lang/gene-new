@@ -1,6 +1,6 @@
 (mod history)
 (import [byte_prefix byte_suffix] ^from "../text")
-(import ^from "../storage/state" [core_state core_states record_core_state append_core_event events_for])
+(import ^from "../storage/state" [core_state core_states record_core_state append_core_event events_for flush_event_store])
 (import ^from "./response" [split_response])
 (import ^from "./history_policy" [normalize_history_policy])
 (import $store/fs [Store])
@@ -282,6 +282,34 @@ ELIDED
     (if_not media/.empty? (message .put "media" media))
     (state/messages .push message)
     (save_history runtime session state))))
+
+(fn pending_request [runtime, session : Str]
+  (history_gate (fn []
+    (let state (history_state runtime session))
+    (if state/messages/.empty? (return nil))
+    (let tail ($last state/messages))
+    (if (!= tail/role "user") (return nil))
+    {^round tail/round ^turn tail/turn ^role tail/role
+     ^digest ($crypto/sha256 ($serde/write_data tail))})))
+
+(fn replace_pending_request [runtime, session : Str, expected, prepared]
+  (history_gate (fn []
+    (let state (history_state runtime session))
+    (if state/messages/.empty? (fail (HistoryError ^message "Pending continuation history is missing.")))
+    (let tail ($last state/messages))
+    (if (|| (!= tail/round expected/round) (!= tail/turn expected/turn) (!= tail/role "user"))
+      (fail (HistoryError ^message "Pending continuation was superseded.")))
+    (let digest ($crypto/sha256 ($serde/write_data tail)))
+    (if (&& (!= digest expected/digest)
+            (! (&& (== tail/content prepared/full) (== tail/settled prepared/settled)
+                    (== tail/media (?? prepared/media tail/media)))))
+      (fail (HistoryError ^message "Pending continuation history changed.")))
+    (tail .put "content" prepared/full)
+    (tail .put "settled" prepared/settled)
+    (if_not ($absent? prepared/media) (tail .put "media" prepared/media))
+    (save_history runtime session state)
+    (flush_event_store runtime/events)
+    true)))
 
 (fn context_from_state [state, instructions : Str]
   (let messages [{^role "system" ^content instructions}])

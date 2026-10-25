@@ -54,7 +54,11 @@ in the run result, durable model diagnostics, and operator console.
 
 The function publishes final metadata and attaches the saved final image for
 the next model turn and the normal preview/download flow. Progress appears
-only in the operator console. An unreviewed candidate has an unknown score.
+in the producing turn's live Output. An unreviewed candidate has an unknown score.
+Include the selected image in the final Outcome reply using Markdown and its
+returned descriptor URL, for example `![Generated image](/api/v8/media/ID)` with
+the actual saved ID. Earlier turn previews are collapsed. Reference the existing
+asset instead of calling `media_show` or generating it again just to display it.
 There is one run per user round: identical calls return the recorded result;
 different inputs require a new user request. Repeated calls, final previews,
 plugin replacement and host restarts cannot reset the attempt counter. A new

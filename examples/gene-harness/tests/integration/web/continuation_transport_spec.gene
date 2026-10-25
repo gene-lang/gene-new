@@ -1,0 +1,35 @@
+(import $test [describe it])
+(import [isolated run_spec] ^from "../../support")
+(import [start_host stop_host cli] ^from "../../web_support")
+(import [connect api] ^from "../../../src/cli/client")
+
+(describe "Continuation HTTP and CLI"
+  (it "reports a manual pause and waits across automatic successor rounds through the real API" []
+    (isolated this_mod/.path "reports a manual pause and waits across automatic successor rounds through the real API"
+      (fn [workspace]
+        (let host (start_host $"${workspace}/host" ^script [
+          "(Outcome ^prompt \"Continue the implementation.\" ^reply \"Inspected.\")"
+          "($sleep 150) (Outcome ^prompt \"Verify the implementation.\" ^reply \"Implemented.\")"
+          "($sleep 150) (Outcome ^^done ^reply \"Verified and finished.\")"]))
+        (try
+          (let config_path $"${host/root}/.gene-harness/config.gene")
+          (let config ($serde/read_data ($fs/read_text config_path)))
+          (config .put "turn_limit" 1)
+          ($fs/write_text config_path ($serde/write_data config))
+          (let session (cli host/root ["sessions" "create"]))
+          (let paused (cli host/root ["--session" session/id "send" "--wait" "Build it"] ^expected 2))
+          ($assert (== paused/state "paused"))
+          ($assert (== paused/reason "turn_limit"))
+          (let client (connect host/root))
+          (let successor (api client "POST" $"/sessions/${session/id}/rounds/${paused/id}/continue" {^mode "automatic"}))
+          ($assert (!= successor/id paused/id))
+          (let done (cli host/root ["--session" session/id "wait" paused/id]))
+          ($assert (== done/state "done"))
+          ($assert (== done/reply "Verified and finished."))
+          ($assert (== done/original_round paused/id))
+          (let source (api client "GET" $"/sessions/${session/id}/rounds/${paused/id}"))
+          ($assert (== source/state "paused"))
+          ($assert (== source/continued_by successor/id))
+        ensure (stop_host host))))))
+
+(fn main [args] : Int (run_spec args))

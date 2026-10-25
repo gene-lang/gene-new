@@ -1,0 +1,97 @@
+# Browser projection. Original transcript events and CLI diagnostics stay intact.
+(mod conversation)
+
+(fn round_for [rounds, id]
+  (for round in rounds (if (== round/id id) (return round))) nil)
+
+(fn limit_round? [round]
+  (|| (== round/reason "turn_limit")
+      (&& (== round/state "failed") (== round/message "turn limit reached"))))
+
+(fn initiating_label [round, record]
+  (if_not ($absent? round/card) (return "Card action"))
+  (if_not ($absent? record/card) (return "Card action"))
+  (let initiator (?? record/initiator (?? round/initiator "")))
+  (if (== initiator "user") (return "User"))
+  (if ($str/starts_with? initiator "trigger:")
+    (return ($to_str "Trigger: " ($str/slice_bytes initiator 8 (- ($str/byte_size initiator) 8)))))
+  (if ($str/starts_with? initiator "parent:") (return "Parent agent"))
+  "Request")
+
+(fn project_conversation [records, rounds]
+  (let out []) (let requests {}) (let request_order [])
+  (for original in records
+    (let record ($thaw ($freeze_shallow original)))
+    (let round (round_for rounds record/round_id))
+    (let phase record/phase)
+    (if_yes (limit_round? round)
+      (if (|| (&& (== phase "reply") (== record/final true))
+              (&& (== phase "turn/error") (== record/text "turn limit reached"))) (continue)))
+    (if (&& (== record/synthetic true) (== phase "reply")) (continue))
+    (if (== record/role "user") (record .put "speaker" (initiating_label round record)))
+    (if (|| (!= phase "turn/request")
+            (&& (== record/role "user") (! ($str/starts_with? (?? round/initiator "") "continue:"))))
+      (do (out .push record) (continue)))
+    (var receiver (?? record/for_turn 0))
+    (var started false)
+    (for next in records
+      (if (|| (!= next/round_id record/round_id) (!= next/phase "turn/start")) (continue))
+      (if (&& (> receiver 0) (== next/turn receiver)) (set started true))
+      (if_yes (&& (== receiver 0) (> ($parse/parse_int next/seq) ($parse/parse_int record/seq)))
+        (set receiver next/turn) (set started true) (break)))
+    (if (== receiver 0) (set receiver (+ record/turn 1)))
+    (if (&& (! started) (|| (== record/at_limit true)
+         (["done" "failed" "paused" "cancelled" "interrupted" "recovery_required"] .contains? round/state))) (continue))
+    (let key $"${record/round_id}/request-${receiver}")
+    (let prior (requests .get key))
+    (let combine (?? record/combine
+      (if (&& (== record/delegation true) (== record/turn receiver)) "append" "replace")))
+    (let body (if (&& (== combine "append") (! ($absent? prior)))
+      $"${prior/text}\n${record/text}" record/text))
+    (let sources (if ($absent? prior) [] prior/source_ids))
+    (if_not (sources .contains? record/id) (sources .push record/id))
+    (if ($absent? prior) (request_order .push key))
+    (requests .put key {^id key ^seq record/seq ^round_id record/round_id
+      ^turn receiver ^for_turn receiver ^producer_turn record/turn
+      ^continued_from (?? record/continued_from nil) ^source_turn (?? record/source_turn nil)
+      ^role "assistant" ^phase "turn/request" ^kind "turn/request"
+      ^combine "replace" ^text body ^source_ids sources ^order record/order
+      ^media (?? record/media []) ^^durable}))
+  (for key in request_order (out .push (requests .get key)))
+  ($order/sort_by out (fn [record] record/order)))
+
+# Bound visible content, then attach all structural context for those turns.
+(fn conversation_page [records, after : Int, before : Int, limit : Int]
+  (let visible []) (let structural [])
+  (for record in records
+    (if (["turn/start" "turn/end"] .contains? record/phase)
+      (do (structural .push record) (continue)))
+    (let seq ($json/parse record/seq))
+    (if (&& (>= after 0) (<= seq after)) (continue))
+    (if (&& (>= before 0) (>= seq before)) (continue))
+    (visible .push record))
+  (var start ($math/max 0 (- visible/.size limit)))
+  (while (> start 0)
+    (let previous (- start 1))
+    (if (!= visible/%previous/seq visible/%start/seq) (break))
+    (set start previous))
+  (let page ($drop visible start))
+  (let before_cursor (if page/.empty? "" (/seq ($first page))))
+  (let owners {})
+  (for record in page (owners .put $"${record/round_id}/${record/turn}" true))
+  (let newest (if page/.empty? 0 (/order ($last page))))
+  (for record in structural
+    (let seq ($json/parse record/seq))
+    (if (|| ($has_key? owners $"${record/round_id}/${record/turn}")
+            (&& (== before -1) (== record/phase "turn/start")
+                (> record/order newest)))
+      (page .push record)))
+  (for record in records
+    (if (|| (!= record/phase "turn/request") (<= record/turn 0)
+            (! ($has_key? owners $"${record/round_id}/${record/turn}"))) (continue))
+    (var present false)
+    (for item in page (if (== item/id record/id) (set present true)))
+    (if present (continue))
+    (page .push record))
+  {^records ($order/sort_by page (fn [record] record/order))
+   ^before_cursor before_cursor ^has_older (> start 0)})

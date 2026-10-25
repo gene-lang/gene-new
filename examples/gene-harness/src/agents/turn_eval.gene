@@ -13,11 +13,20 @@
     recall])
 (import ^from "./eval_site" [evaluate_response])
 (import ^from "../runtime/patch" [prepare_patch commit_patch with_patch_gate])
-(import ^from "../text" [byte_prefix])
+(import ^from "../text" [byte_prefix without_markdown_images])
 (import [open_execution_scope close_execution_scope] ^from "../runtime/execution_budget")
 
 (fn response_error_line [failure]
   (?? failure/response_line (if (== failure/file "response") (?? failure/line nil) nil)))
+
+(fn literal_reply_hint [response]
+  (if response/forms/.empty? (return nil))
+  (match ($last response/forms)
+    (when (form : Node)
+      (if (!= ($head form) (quote Outcome)) (return nil))
+      (let value (($node/props form) .get "reply"))
+      (if (== ($head value) Str) (byte_prefix (without_markdown_images value) 1024) nil))
+    (else nil)))
 
 (fn evaluate_turn [number : Int, workspace_root : Str, text : Str,
                    ^bindings bindings = {}, ^timeout_ms timeout_ms : Int = 600000,
@@ -73,7 +82,7 @@
       # Durability precedes staging, while the workspace patch gate prevents
       # another response from preparing against this plan's original files.
       (if_not ($absent? record)
-        (record "turn/response" {^turn number ^response response
+        (record "turn/response" {^turn number ^response response ^reply_hint (literal_reply_hint response)
           ^patch_files (if ($absent? plan) [] plan/files)}))
       (if_not ($absent? plan)
         (set patch_result (commit_patch plan ^fail_after_renames fail_after_renames ^after_rename after_patch_rename)))

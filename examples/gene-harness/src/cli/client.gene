@@ -83,16 +83,44 @@
   (if (== session "") (problem "This operation requires --session ID."))
   $"/sessions/${($url/encode_component session)}${suffix}")
 
-(fn execution_receipt [client, session : Str, id : Str, kind : Str]
+(fn execution_receipt [client, session : Str, id : Str, kind : Str, ^deadline deadline : Int = 0]
   (let section (if (== kind "command") "commands" "rounds"))
-  (api client "GET" (session_path session $"/${section}/${($url/encode_component id)}")))
+  (api ^deadline deadline client "GET" (session_path session $"/${section}/${($url/encode_component id)}")))
+
+(fn resolve_wait_receipt [fetch, current : Str, parent : Str]
+  (let result (try (fetch current)
+    catch CliError
+      (if (&& (!= current parent) (== $err/code "not_found")) (fetch parent)
+        (fail $err))))
+  (if_yes (&& (!= current parent) (!= result/id parent)
+              (!= result/continued_from parent))
+    (let source (fetch parent))
+    (source .put "state" "interrupted")
+    (source .put "message" "Continuation was superseded.")
+    (return source))
+  result)
 
 (fn wait_for [client, session : Str, id : Str, kind : Str, timeout : Int]
   (let due (+ ($os/monotonic_ms) timeout))
+  (let original id)
+  (var current id)
+  (var parent id)
+  (let fetch (fn [selected] (execution_receipt ^deadline due client session selected kind)))
   (loop
-    (let result (execution_receipt client session id kind))
+    (let result (if (== kind "command") (fetch current) (resolve_wait_receipt fetch current parent)))
     (let state (if (== kind "command") result/status result/state))
-    (if (!= state "running") (return result))
+    (if_yes (&& (!= kind "command") (== state "paused") (== result/continuation_mode "automatic"))
+      (if_not ($absent? result/continuation_stop)
+        (result .put "state" "interrupted")
+        (result .put "message" $"Continuation ${result/continuation_stop}.")
+        (result .put "original_round" original)
+        (return result))
+      (set parent result/id)
+      (set current (?? result/continued_by result/id)))
+    (let automatic_wait (&& (!= kind "command") (== result/continuation_mode "automatic")
+      (|| (== state "paused") (&& (== state "waiting") ($absent? result/questions)))))
+    (if_yes (&& (!= state "running") (! automatic_wait))
+      (result .put "original_round" original) (return result))
     (if (>= ($os/monotonic_ms) due)
       (fail
         (CliError ^code "wait_timeout" ^execution_id id ^kind kind ^session session ^message $"Stopped waiting for ${id}. Work remains on the host; use receipt or wait to observe it.")))

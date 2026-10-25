@@ -1,0 +1,25 @@
+(import $test [describe it])
+(import [resolve_wait_receipt] ^from "../../../src/cli/client")
+(import [CliError] ^from "../../../src/cli/options")
+
+(describe "CLI continuation receipt resolution"
+  (it "rechecks the parent when a reserved successor is not retained yet" []
+    (let calls [])
+    (let parent {^id "parent" ^state "paused" ^continuation_mode "automatic" ^continuation_stop "failed"})
+    (let result (resolve_wait_receipt (fn [id]
+      (calls .push id)
+      (if (== id "future") (fail (CliError ^code "not_found" ^message "Not admitted.")) parent)) "future" "parent"))
+    ($assert (== calls ["future" "parent"]))
+    ($assert (== result/continuation_stop "failed")))
+  (it "never follows a newer user round occupying the reserved successor id" []
+    (let user {^id "future" ^state "done" ^initiator "user" ^reply "A different task."})
+    (let parent {^id "parent" ^state "paused" ^continuation_mode "automatic"})
+    (let result (resolve_wait_receipt (fn [id] (if (== id "future") user parent)) "future" "parent"))
+    ($assert (== result/id "parent"))
+    ($assert (== result/state "interrupted"))
+    ($assert (== user/state "done")))
+  (it "returns a linked successor without consulting unrelated receipts" []
+    (let calls [])
+    (let next {^id "future" ^state "paused" ^continued_from "parent" ^continuation {^source_round "future"}})
+    ($assert (== (resolve_wait_receipt (fn [id] (calls .push id) next) "future" "parent") next))
+    ($assert (== calls ["future"]))))

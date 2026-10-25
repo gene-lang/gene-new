@@ -1,0 +1,17 @@
+(import $test [describe it])
+(import [literal_reply_hint] ^from "../../../src/agents/turn_eval")
+(import [split_response] ^from "../../../src/agents/response")
+
+(describe "Literal response heading hints"
+  (it "removes complete image markup before applying the hint byte limit" []
+    (var alt "") (repeat i in 1200 (set alt $"${alt}x"))
+    (let reply $"![${alt}](/api/v7/media/image_id)\nReady.")
+    (let response (split_response $"(Outcome ^^done ^reply ${($json/stringify reply)})"))
+    ($assert (== (literal_reply_hint response) "\nReady.")))
+  (it "reads only a literal reply on the last direct Outcome without evaluating code" []
+    ($assert (== (literal_reply_hint (split_response "(missing_side_effect) (Outcome ^prompt 1 ^reply \"Preview\")")) "Preview"))
+    (for text in ["(Outcome ^^done ^reply ($fs/read_text \"secret\"))"
+                 "(do (Outcome ^^done ^reply \"Nested\"))"
+                 "(Outcome ^^done ^reply \"Earlier\") (+ 1 2)"
+                 "(quote (Outcome ^^done ^reply \"Data\"))"]
+      ($assert ($absent? (literal_reply_hint (split_response text)))))))

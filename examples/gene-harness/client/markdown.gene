@@ -1,6 +1,7 @@
 (mod harness_markdown ^profile web)
 
 (import [code_view] ^from "./highlight.gene")
+(import [referenced_media_id media_url] ^from "./media_reference.gene")
 
 # A small, text-only Markdown renderer. Every node is built through $dom;
 # source HTML is text and links accept only explicit safe URL forms.
@@ -36,6 +37,40 @@
   (var index (- (- n 1) from))
   positions/%index)
 
+(fn image_view [id : Str, alt : Str] : EventTarget
+  (var url (media_url id))
+  (var unavailable ($dom/render `(span ^hidden true "Image unavailable.")))
+  (var picture ($dom/render `(img ^src %url ^alt %alt ^loading "lazy"
+    ^on_error %(fn [event : Any] : Void
+      (set event/current_target/hidden true) (set unavailable/hidden false)))))
+  (var root ($dom/render `(span ^class_name "reply_image")))
+  (var link ($dom/render `(a ^href %url ^target "_blank" ^rel "noopener noreferrer")))
+  ($dom/append link picture) ($dom/append root link)
+  ($dom/append root unavailable)
+  ($dom/append root ($dom/render `(a ^href %$"${url}?download=1" "Download image")))
+  root)
+
+# Summary-only projection; the durable reply remains unchanged.
+(fn reply_summary [text : Str] : Str
+  (var chars : (List Str) (str/split text ""))
+  (var brackets (next_delimiters chars "]" false))
+  (var parens (next_delimiters chars ")" false))
+  (var clean "") (var i 0) (var n chars/.size)
+  (while (< i n)
+    (if_yes (&& (== chars/%i "!") (< (+ i 1) n) (== (text_at chars (+ i 1)) "["))
+      (var end (next_after brackets (+ i 1)))
+      (if_yes (&& (< (+ end 1) n) (== (text_at chars (+ end 1)) "("))
+        (var close (next_after parens (+ end 1)))
+        (if_yes (< close n) (set i (+ close 1)) (continue))))
+    (set clean $"${clean}${chars/%i}") (set i (+ i 1)))
+  (for line in (str/split clean "\n")
+    (var value (str/trim line))
+    (if_yes (!= value "")
+      (var letters : (List Str) (str/split value ""))
+      (if_yes (> letters/.size 160) (return $"${(slice_text letters 0 160)}…"))
+      (return value)))
+  "")
+
 (fn inline_text [parent : EventTarget, text : Str] : Void
   (var chars : (List Str) (str/split text ""))
   (var n ($size chars))
@@ -62,16 +97,25 @@
           (if (== char "`") ($dom/render `(code %content))
             (if (== width 2) ($dom/render `(strong %content)) ($dom/render `(em %content)))))
         (set end (+ end width))))
-    (if_yes (== char "[")
-      (set end (next_after brackets i))
+    (var image (&& (== char "!") (< (+ i 1) n) (== (text_at chars (+ i 1)) "[")))
+    (if_yes (|| image (== char "["))
+      (var start (if image (+ i 1) i))
+      (set end (next_after brackets start))
       (if_yes (&& (< (+ end 1) n) (== (text_at chars (+ end 1)) "("))
         (var close (next_after parens (+ end 1)))
         (if_yes (< close n)
           (var url (slice_text chars (+ end 2) close))
-          (if_yes (safe_link url)
-            (var label (slice_text chars (+ i 1) end))
-            (set node ($dom/render `(a ^href %url ^target "_blank" ^rel "noopener noreferrer" %label)))
-            (set end (+ close 1))))))
+          (var label (slice_text chars (+ start 1) end))
+          (if image
+            (then
+              (var id (referenced_media_id url))
+              (set node (if (== id "") ($dom/render `(span %(slice_text chars i (+ close 1))))
+                (image_view id label)))
+              (set end (+ close 1)))
+            (else
+              (if_yes (safe_link url)
+                (set node ($dom/render `(a ^href %url ^target "_blank" ^rel "noopener noreferrer" %label)))
+                (set end (+ close 1))))))))
     (if ($absent? node)
       (then (set plain $"${plain}${char}") (set i (+ i 1)))
       (else

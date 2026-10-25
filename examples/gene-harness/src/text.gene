@@ -1,6 +1,9 @@
 # UTF-8-safe bounds for operator output and model request items.
 (mod harness_text)
 
+(fn without_markdown_images [text : Str] : Str
+  ($regex/replace_all #"!\[[^]]*\]\([^)]+\)" text ""))
+
 (fn byte_prefix [text : Str, maximum : Int] : Str
   (var count ($math/min maximum ($str/byte_size text)))
   (while (>= count 0)

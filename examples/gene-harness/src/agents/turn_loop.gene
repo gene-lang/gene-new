@@ -13,6 +13,8 @@
     history_state
     write_body
     read_body])
+(import [pending_request replace_pending_request] ^from "./history")
+(import [operator_round?] ^from "../runtime/round_policy")
 (import ^from "../text" [byte_prefix])
 (import ^from "./provider_selection" [readiness_report select_provider session_settings])
 (import ^from "./model_call" [call_model])
@@ -80,7 +82,7 @@
 (fn attach_delegation_inputs [runtime, session : Str, round, turn : Int, request : Str, initial : Bool]
   (let known (?? round/request_sources []))
   (let incoming (delegation_request_items runtime/delegations session round/id turn
-    ^carry (&& initial (== round/initiator "user"))))
+    ^carry (&& initial (operator_round? round))))
   (let added ($filter incoming (fn [item] (! (known .contains? item/delegation_source)))))
   (if added/.empty? (return {^request request ^sources known}))
   (let rendered (bounded_request runtime session added))
@@ -91,8 +93,41 @@
   (if_not initial
     (append_message ^settled rendered/settled ^round round/id ^turn turn runtime session "user" rendered/full)
     (transcript runtime session {^type "turn/request" ^turn turn ^round round/id
-      ^full rendered/full ^settled rendered/settled ^delegation true}))
+      ^for_turn turn ^combine "append" ^full rendered/full ^settled rendered/settled ^delegation true}))
   {^request combined ^sources known})
+
+(fn prepare_continuation [runtime, session : Str, round, number : Int, limit : Int, lease]
+  (let key $"continuation/prepared/${round/id}")
+  (var rendered (core_state runtime/events "session" session key))
+  (if ($absent? rendered)
+    (then
+      (let saved ($serde/read_data (read_body runtime round/continuation/items_ref)))
+      (let items ($filter saved (fn [item] (!= item/settled false))))
+      (let sources (?? round/continuation/request_sources []))
+      (if_not ($absent? runtime/delegations)
+        (for item in (delegation_request_items runtime/delegations session round/id number ^carry true)
+          (if_not (sources .contains? item/delegation_source)
+            (items .push item) (sources .push item/delegation_source))))
+      (let prepared ($runtime/with_context
+        {^composition runtime/h/snapshots ^snapshot lease/snapshot}
+        (fn [] (request_prepare runtime lease/snapshot
+          {^session session ^round round/id ^turn number ^round_turn 1 ^limit limit
+           ^continuation_mode round/continuation_mode ^task_root round/task_root ^items items}))))
+      (set rendered (bounded_request runtime session prepared/items))
+      (rendered .put "media" (?? round/continuation/media []))
+      (rendered .put "sources" sources)
+      (record_core_state runtime/events "session" session "session/state" key rendered)
+      (flush_event_store runtime/events)))
+  (replace_pending_request runtime session round/continuation/history rendered)
+  (round .put "request" rendered/full)
+  (round .put "request_settled" rendered/settled)
+  (round .put "request_sources" rendered/sources)
+  (round .put "request_media" rendered/media)
+  (transcript runtime session {^type "turn/request" ^round round/id ^turn 0
+    ^for_turn number ^combine "replace" ^continued_from round/continuation/source_round
+    ^source_turn round/continuation/source_turn
+    ^full rendered/full ^settled rendered/settled ^media rendered/media})
+  rendered/full)
 
 (fn run_round [runtime, session : Str, round, ^resume resume : Bool = false]
   (let metadata (require_record runtime/sessions session))
@@ -100,7 +135,7 @@
     ($serde/read_data ($fs/read_text $"${runtime/state_root}/config.gene"))))
   (let limit
     (?? round/effective_limits/turn_limit
-      (if (== round/initiator "user") (?? config/turn_limit 24) (?? config/trigger_turn_limit 12))))
+      (if (operator_round? round) (?? config/turn_limit 24) (?? config/trigger_turn_limit 12))))
   (let collection (== round/delegation_collection true))
   (let ceiling (+ limit (if collection 1 0)))
   (var count (?? round/turn_count 0))
@@ -136,11 +171,13 @@
     (var stage "request/prepare")
     (var started false)
     (try
-      (if_not ($absent? runtime/delegations)
+      (let continuing (&& (! resume) (== count 1) (! ($absent? round/continuation))))
+      (if_yes continuing (set last_request (prepare_continuation runtime session round number limit lease)))
+      (if_yes (&& (! continuing) (! ($absent? runtime/delegations)))
         (let packet (attach_delegation_inputs runtime session round number last_request
           (&& (! resume) (== count 1))))
         (set last_request packet/request))
-      (if (&& (! resume) (== count 1))
+      (if (&& (! resume) (== count 1) (! continuing))
         (then
           (let source_request last_request)
           (let prepared
@@ -149,7 +186,8 @@
               (fn []
                 (request_prepare runtime lease/snapshot
                   {^session session ^round round/id ^turn number
-                   ^round_turn count ^limit limit ^items []}))))
+                   ^round_turn count ^limit limit ^continuation_mode (?? round/continuation_mode "manual")
+                   ^task_root (?? round/task_root round/id) ^items []}))))
           (let rendered (bounded_request runtime session prepared/items))
           (let settled
             (if (== rendered/settled "") source_request
@@ -162,10 +200,14 @@
             "user" last_request)
           (transcript runtime session
             {^type "turn/request" ^round round/id ^turn 0
+             ^for_turn number ^combine "replace" ^initiator round/initiator ^card (?? round/card nil)
              ^full last_request ^settled settled ^media (?? round/media []) ^^initial})))
       (transcript runtime session
-        {^type "turn/start" ^turn number ^round round/id})
+        {^type "turn/start" ^turn number ^round round/id ^initiator round/initiator ^card (?? round/card nil)
+         ^task_turns (+ (?? round/task_turns_base 0) count) ^task_root (?? round/task_root round/id)
+         ^continuation_mode (?? round/continuation_mode "manual")})
       (set started true)
+      (round .put "task_turns" (+ (?? round/task_turns_base 0) count))
       (flush_event_store runtime/events)
       (set stage "readiness")
       (let ready_message
@@ -238,7 +280,7 @@
         catch Any
           {^text text ^blobs {}}))
       (let response_recorded ($cell false))
-      (fn record_response [files]
+      (fn record_response [files, ^hint hint = nil]
         (if response_recorded/.get (return nil))
         (transcript
           runtime
@@ -250,6 +292,7 @@
             ^model_call completion/call_id
             ^text elided/text
             ^blobs elided/blobs
+            ^reply_hint hint
             ^patch_files files})
         (append_message ^settled elided/text ^round round/id ^turn number
           runtime
@@ -283,7 +326,7 @@
                       (bound .put "card_api" api)
                       (if_not ($absent? runtime/delegations)
                         (bound .put "delegation_context" (delegation_context runtime/delegations session round/id count limit collection)))
-                      bound) ^timeout_ms (?? config/response_budget/timeout_ms 600000) ^max_memory_mb (?? config/response_budget/max_memory_mb 1024) ^recall (fn [id] (recall_model_context runtime session id)) ^console_sink (fn [item] (console_output runtime session round/id number item)) ^record (fn [kind data] (if (== kind "turn/response") (record_response data/patch_files) (do (record_core_state runtime/events "session" session "session/state" $"patch/${number}" {^state "completed" ^result data/result ^round round/id ^turn number}) (transcript runtime session {^type "turn/patch" ^round round/id ^turn number ^result data/result ^text data/result/text}))))
+                      bound) ^timeout_ms (?? config/response_budget/timeout_ms 600000) ^max_memory_mb (?? config/response_budget/max_memory_mb 1024) ^recall (fn [id] (recall_model_context runtime session id)) ^console_sink (fn [item] (console_output runtime session round/id number item)) ^record (fn [kind data] (if (== kind "turn/response") (record_response ^hint data/reply_hint data/patch_files) (do (record_core_state runtime/events "session" session "session/state" $"patch/${number}" {^state "completed" ^result data/result ^round round/id ^turn number}) (transcript runtime session {^type "turn/patch" ^round round/id ^turn number ^result data/result ^text data/result/text}))))
           runtime/h
           number
           runtime/root
@@ -304,6 +347,7 @@
               (request_prepare runtime lease/snapshot
                 {^session session ^round round/id ^turn (+ number 1)
                  ^round_turn (+ count 1) ^limit limit
+                 ^continuation_mode (?? round/continuation_mode "manual") ^task_root (?? round/task_root round/id)
                  ^items result/request_items}))))
         (result .put "prepared_request_items" prepared/items))
     catch Any
@@ -342,7 +386,8 @@
     (finish_turn
       runtime
       session
-      {^type "turn/end" ^turn number ^round round/id ^reason result/kind ^!synthetic})
+      {^type "turn/end" ^turn number ^round round/id ^reason result/kind
+       ^text (?? result/error nil) ^!synthetic})
     (if_not ($absent? runtime/delegations)
       (flush_event_store runtime/events)
       (release_delegation_turn runtime/delegations session round/id number))
@@ -360,6 +405,7 @@
     (round .put "request_settled" requests/settled)
     (round .put "request_media" (?? result/media []))
     (round .put "request_items_ref" (write_body runtime ($serde/write_data requests/items)))
+    (round .put "logical_items_ref" (write_body runtime ($serde/write_data result/request_items)))
     (round .put "request_sources" (request_delegation_sources requests/items))
     (transcript
       runtime
@@ -367,6 +413,8 @@
       {
         ^type "turn/request"
         ^turn number
+        ^for_turn (+ number 1) ^combine "replace"
+        ^at_limit (>= count ceiling)
         ^round round/id
         ^full last_request
         ^settled requests/settled})
@@ -413,12 +461,22 @@
       ^delegation_collection true ^request (?? round/request last_request)
       ^request_sources (?? round/request_sources []) ^request_items_ref (?? round/request_items_ref nil)
       ^turn_count count ^last_turn number}))
+  (if_yes (operator_round? round)
+    (let turns (+ (?? round/task_turns_base 0) count))
+    (return {^state "paused" ^reason "turn_limit" ^message "turn limit reached"
+      ^request last_request ^turn_count count ^last_turn (?? round/last_turn 0)
+      ^task_turns turns ^continuation_mode (?? round/continuation_mode "manual")
+      ^continuation {^items_ref (?? round/logical_items_ref round/request_items_ref)
+        ^history (pending_request runtime session) ^media (?? round/request_media [])
+        ^request_sources (?? round/request_sources []) ^task_root (?? round/task_root round/id)
+        ^task_turns turns ^source_round round/id ^source_turn (?? round/last_turn 0)}}))
   (transcript
     runtime
     session
     {
       ^type "reply"
       ^turn (?? round/last_turn 0)
+      ^^synthetic ^reason "turn_limit"
       ^round round/id
       ^text ($to_str
               "The round reached its "

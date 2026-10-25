@@ -2,9 +2,12 @@
 (import [command_descriptors] ^from "../runtime/command_identity")
 (import [browser_client_descriptors] ^from "../ui/browser_clients")
 (import [speech_text speech_needs_audio_reply?] ^from "../runtime/speech_text")
+(import [project_conversation conversation_page initiating_label] ^from "./conversation")
 (import [VoiceChanged voice_snapshot public_voice_state claim_voice release_voice] ^from "../runtime/voice_state")
 (import [voice_output?] ^from "../runtime/voice_state")
 (import [append_core_event] ^from "../storage/state")
+(import [pending_request read_body] ^from "../agents/history")
+(import [operator_round?] ^from "../runtime/round_policy")
 (import ^from "../runtime/bootstrap" [open_runtime close_runtime prepare_workspace_root])
 (import ^from "../profiles/baseline" [baseline_profile])
 (import ^from "../profiles/offline" [offline_profile])
@@ -14,6 +17,8 @@
   [
     new_round_controller
     resume_answered_rounds
+    resume_continuations
+    continue_round
     submit_round
     round_receipt
     round_state
@@ -85,6 +90,10 @@
   (copy .put "first_request_round"
     $"round-${($str/slice_bytes ($crypto/sha256 record/id) 0 16)}-1")
   (let loaded (load_session service/sessions record/id))
+  (copy .put "first_request_speaker" "Request")
+  (for round in (/receipts (round_state service/controller record/id))
+    (if (== round/id copy/first_request_round)
+      (copy .put "first_request_speaker" (initiating_label round {}))))
   # Older sessions have the prompt label but not its media in the index.
   (if_yes (&& (!= record/first_request "") ($absent? record/first_request_media))
     (for event in (events_for service/events "session" record/id)
@@ -92,7 +101,9 @@
         (== event/payload/round copy/first_request_round))
         (copy .put "first_request_media" (?? event/payload/media []))
         (break))))
-  (copy .put "last_round" loaded/round/.get)
+  (let shown (public_round service record/id loaded/round/.get))
+  (copy .put "last_round" shown)
+  (if (== shown/state "paused") (copy .put "status" "paused"))
   (if_not ($absent? record/parent)
     (let owner (service/sessions/index/.get .get record/parent/session))
     (copy .put "parent_title" (?? owner/title record/parent/session)))
@@ -124,7 +135,7 @@
     ^kind event/type
     ^phase (if (== event/type "turn/response")
              "code"
-             (if (== event/type "turn/end")
+             (if (&& (== event/type "turn/end") (! ($absent? payload/text)))
                "turn/error"
                event/type))
     ^order (?? payload/at_ms event/seq)
@@ -136,17 +147,45 @@
     ^final (== payload/final true)
     ^patch_files (?? payload/patch_files [])
     ^blobs (?? payload/blobs {})
+    ^for_turn (?? payload/for_turn nil) ^combine (?? payload/combine nil)
+    ^continued_from (?? payload/continued_from nil) ^source_turn (?? payload/source_turn nil)
+    ^delegation (== payload/delegation true) ^answers (== payload/answers true)
+    ^initial (== payload/initial true) ^initiator (?? payload/initiator nil)
+    ^card (?? payload/card nil) ^reply_hint (?? payload/reply_hint nil)
+    ^reason (?? payload/reason nil) ^synthetic (== payload/synthetic true)
+    ^at_limit (== payload/at_limit true)
+    ^task_turns (?? payload/task_turns nil) ^task_root (?? payload/task_root nil)
+    ^continuation_mode (?? payload/continuation_mode nil)
+    ^patch_result (?? payload/result nil)
     ^^durable})
+
+(fn browser_request [service, session : Str, event]
+  (let records [])
+  (for source in (events_for service/events "session" session)
+    (if (["turn/request" "turn/start" "turn/end"] .contains? source/type)
+      (records .push (event_record session source))))
+  (let rounds (round_state service/controller session))
+  (let projected (project_conversation records rounds/receipts))
+  (let id $"${session}/${event/seq}")
+  (for record in projected
+    (if (== record/id id) (return record))
+    (if (&& (! ($absent? record/source_ids)) (record/source_ids .contains? id)) (return record)))
+  nil)
 
 (fn publish_transcript [service, session : Str, event]
   (let kind event/type)
+  (if (&& (== kind "reply") (== event/payload/synthetic true))
+    (do (queue_snapshot service session) (return nil)))
   (if_yes (== kind "delegation/state")
     (let data event/payload/state/record)
     (if_not ($absent? data)
       (if (== data/created_seq 0) (data .put "created_seq" event/seq))
       (publish_message service "delegation" session (delegation_block session data)))
     (queue_snapshot service session))
-  (if (|| (["turn/response" "turn/request" "turn/patch"] .contains? kind) (&& (== kind "turn/end") (! ($absent? event/payload/text))))
+  (if (== kind "turn/request")
+    (do (let request (browser_request service session event))
+      (if_not ($absent? request) (publish_message service "turn" session request))))
+  (if (["turn/response" "turn/start" "turn/end" "turn/patch"] .contains? kind)
     (publish_message service "turn" session (event_record session event)))
   (if (["reply" "console"] .contains? kind)
     (publish_message service kind session (event_record session event)))
@@ -206,7 +245,7 @@
         (publish_message service "ui/state" "" (ui_status service/runtime/h)))
       (if (== record/scope "session") (publish_transcript service record/stream record/envelope)))
     (when (changed : RoundChanged)
-      (publish_message service "round/state" changed/session changed/receipt)
+      (publish_message service "round/state" changed/session (public_round service changed/session changed/receipt))
       (if (== changed/receipt/state "waiting")
         (publish_message service "questions" changed/session changed/receipt/questions))
       (queue_snapshot service changed/session))
@@ -282,6 +321,7 @@
   (set service/controller (new_round_controller runtime))
   # Recovery recorded answered batches whose continuation never started.
   (resume_answered_rounds service/controller)
+  (resume_continuations service/controller)
   (service/subscriptions .push
     (runtime/h/bus .subscribe HarnessEvent (fn [event] (handle_harness_event service event))))
   # Runtime-owned observation must not inherit a plugin activation's callback
@@ -444,17 +484,36 @@
     (if_not ($absent? result) (return result)))
   (if (== kind "round")
     (for record in ((Path "receipts") (round_state service/controller session))
-      (if (== record/request_id request_id) (return record))))
+      (if (== record/request_id request_id) (return (public_round service session record)))))
   (fail
     (RoundError ^code "not_found" ^message "Request receipt is not retained; do not replay an uncertain operation.")))
 (fn cancel_operator_command [service, session : Str, id : Str]
   (cancel_command service/runtime/commands session id))
+(fn public_round [service, session : Str, source]
+  (if ($absent? source) (return nil))
+  (let result ($thaw ($freeze source)))
+  (if_yes (&& (operator_round? source) (== source/state "failed") (== source/message "turn limit reached"))
+    (result .put "state" "paused")
+    (result .put "reason" "turn_limit"))
+  (if_yes (== result/state "paused")
+    (let current (/round (load_session service/sessions session)))
+    (var available (&& (== (/id current/.get) source/id)
+      ($absent? source/continued_by) ($absent? source/continuation_stop)))
+    (if_yes available
+      (let tail (pending_request service/runtime session))
+      (let reference (?? source/continuation/items_ref source/request_items_ref))
+      (set available (&& (! ($absent? reference)) (== tail/round source/id)
+        (== tail/turn source/last_turn)
+        (try (== ($head ($serde/read_data (read_body service/runtime reference))) List) catch Any false))))
+    (result .put "resumable" available))
+  result)
+
 (fn receipt [service, session : Str, id : Str]
   (require_record service/sessions session)
   (let result (round_receipt service/controller session id))
   (if ($absent? result)
     (fail (RoundError ^code "not_found" ^message "Round receipt is not retained.")))
-  result)
+  (public_round service session result))
 (fn answer [service, session : Str, batch_id : Str, values, ^dismiss dismiss : Bool = false]
   (answer_round ^dismiss dismiss service/controller session batch_id values))
 (fn cancel [service, session : Str, id : Str]
@@ -484,8 +543,8 @@
   (var cursor 0)
   (for event in (events_for service/events "session" id)
     (set cursor event/seq)
-    (if (&& (>= after 0) (<= event/seq after)) (continue))
-    (if (&& (>= before 0) (>= event/seq before)) (continue))
+    (if (&& console (>= after 0) (<= event/seq after)) (continue))
+    (if (&& console (>= before 0) (>= event/seq before)) (continue))
     (if_yes (&& (== event/type "delegation/state") (! ($absent? event/payload/state/summary)))
       (let state event/payload/state)
       (records .push
@@ -493,7 +552,7 @@
          ^round_id state/round ^turn state/turn ^role "assistant"
          ^phase "delegation/update" ^kind "delegation/update" ^text state/summary
          ^order state/at_ms ^^durable}))
-    (if (|| (["turn/response" "turn/request" "turn/patch" "reply"] .contains? event/type) (&& console (== event/type "console")) (&& (== event/type "turn/end") (! ($absent? event/payload/text))))
+    (if (|| (["turn/response" "turn/request" "turn/patch" "reply"] .contains? event/type) (&& console (== event/type "console")) (&& (! console) (["turn/start" "turn/end"] .contains? event/type)) (&& (== event/type "turn/end") (! ($absent? event/payload/text))))
       (records .push (event_record id event)))
     # A later definition of a card shows a short line where it happened.
     (if_yes (== event/type "card/state")
@@ -581,17 +640,20 @@
   (for record in ordered
     (if (>= i start) (page .push record))
     (set i (+ i 1)))
+  (let browser (if console {^records page ^has_older (> start 0)}
+    (conversation_page (project_conversation ordered rounds/receipts) after before history_page_limit)))
   {
     ^protocol protocol_version
     ^session (public_session service metadata)
-    ^records page
+    ^records browser/records
+    ^before_cursor (?? browser/before_cursor (if page/.empty? "" (/seq ($first page))))
     ^cursor ($to_str cursor)
     ^preview []
-    ^has_older (> start 0)
-    ^rounds rounds/receipts
+    ^has_older browser/has_older
+    ^rounds ($map rounds/receipts (fn [round] (public_round service id round)))
     ^next_command_seq ($to_str commands/next_id)
     ^next_submission_seq ($to_str rounds/next_seq)
-    ^round loaded/round/.get
+    ^round (public_round service id loaded/round/.get)
     ^delegation_recovery delegations/recovery
     ^mode (mode_state service/runtime/modes id)
     ^status (host_status ^session id ^safe safe service)

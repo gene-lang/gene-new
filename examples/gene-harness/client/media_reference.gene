@@ -1,0 +1,23 @@
+(mod harness_media_reference ^profile web)
+(import [protocol_version] ^from "../src/web/contract.gene")
+
+(fn media_url [id : Str] : Str
+  $"/api/v${protocol_version}/media/${($url/encode_component id)}")
+
+# Persisted descriptor URLs identify an asset, not a historical HTTP endpoint.
+(fn referenced_media_id [url : Str] : Str
+  (var parts : (List Str) (str/split url "/"))
+  (if_yes (!= parts/.size 5) (return ""))
+  (if_yes (|| (!= parts/0 "") (!= parts/1 "api") (!= parts/3 "media")) (return ""))
+  (var version : (List Str) (str/split parts/2 ""))
+  (if_yes (|| (< version/.size 2) (!= version/0 "v")) (return ""))
+  (var i 1)
+  (while (< i version/.size)
+    (if_yes (! (str/contains? "0123456789" version/%i)) (return ""))
+    (set i (+ i 1)))
+  (var id : Str parts/4)
+  (var chars : (List Str) (str/split id ""))
+  (if_yes (|| (== id "") (> chars/.size 128)) (return ""))
+  (for char in chars
+    (if_yes (! (str/contains? "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" char)) (return "")))
+  id)

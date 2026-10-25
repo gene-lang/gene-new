@@ -24,7 +24,7 @@ const state = await import(new URL("./state.mjs", viewURL).href);
 const text = element => element.textContent + element.children.map(text).join("");
 const descendants = element => [element, ...element.children.flatMap(descendants)];
 const prompt = "Initial paragraph.\n\nFull prompt 世界 <script>not HTML</script>";
-const session = {title: "Renamed conversation", first_request: prompt, first_request_round: "round-a-1"};
+const session = {title: "Renamed conversation", first_request: prompt, first_request_round: "round-a-1", first_request_speaker: "User"};
 const real = {
   id: "session/1", role: "user", phase: "turn/request", round_id: "round-a-1",
   turn: 0n, text: prompt, media: [], durable: true,
@@ -41,7 +41,7 @@ const header = (metadata, records = [], preview = [], older = true, loading = fa
 let target = header(session, [later]);
 assert.deepEqual(target.children.map(child => child.tag), ["article", "button"]);
 assert.equal(target.children[0].attributes.class, "message user");
-assert.equal(text(target.children[0]), "You" + prompt);
+assert.equal(text(target.children[0]), "User" + prompt);
 assert.equal(text(target.children[1]), "Load earlier messages");
 assert.equal(descendants(target).some(element => element.tag === "script"), false);
 target.children[1].dispatchEvent(new Event("click"));
@@ -53,15 +53,15 @@ assert.equal(target.children.length, 0);
 target.appendChild(view.block_view(real, false, () => {}, false, () => {}));
 target.appendChild(view.block_view(later, false, () => {}, false, () => {}));
 assert.equal(target.children.filter(child => child.tag === "article").length, 2);
-assert.equal(text(target), "You" + prompt + "You" + prompt);
+assert.equal(text(target), "User" + prompt + "User" + prompt);
 assert.equal(header(session, [], [real]).children.length, 1, "a first-request preview must also suppress the fallback");
 assert.equal(header(session, [], [], true, true).children[1].attributes.disabled, "");
 assert.equal(header(session, [], [], true, true).children[1].textContent + text(header(session, [], [], true, true).children[1]), "Loading…");
 
 // New conversations have no fabricated prompt; titles are never a source.
 assert.equal(header({title: "Do not display as a prompt"}, [], [], false).children.length, 0);
-assert.equal(text(header({...session, title: "Renamed again"}, [], [], false)), "You" + prompt);
-assert.equal(text(header({title: "beat · time", first_request: "Full trigger\nrequest", first_request_round: "trigger-1"}, [], [], false)), "YouFull trigger\nrequest");
+assert.equal(text(header({...session, title: "Renamed again"}, [], [], false)), "User" + prompt);
+assert.equal(text(header({title: "beat · time", first_request: "Full trigger\nrequest", first_request_round: "trigger-1"}, [], [], false)), "RequestFull trigger\nrequest");
 
 // Attachment-only submissions retain the ordinary attachment gallery.
 const attachment = {id: "image-id", name: "pixel.png", kind: "image"};
@@ -82,7 +82,7 @@ for (const durable of [true, false]) {
   const step = view.step_view([code, next, {...progress, durable}], true, !durable,
     () => {}, () => false, () => {});
   assert.equal(step.attributes.open, "");
-  assert.equal(text(step.children[0]), "Turn 1: I checked the result." + (durable ? "" : " · Continuing…"));
+  assert.equal(text(step.children[0]), "Turn 1: I checked the result." + (durable ? "" : " · Evaluating code…"));
   const content = step.children[1];
   assert.equal(content.attributes.class, "step_content");
   assert.equal(content.children.length, 2, "expanded turn should contain code and next request only");

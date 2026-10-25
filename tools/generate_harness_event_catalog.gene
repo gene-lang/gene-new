@@ -53,7 +53,13 @@
       (if (== name "reply")
         "\n  (if_not ($absent? payload/audio_reply)\n    (if (|| (!= ($head payload/audio_reply) Str) (> ($str/byte_size payload/audio_reply) 2048))\n      ($panic \"reply audio_reply must be a string of at most 2 KiB\")))"
         ""))
-    (lines .push $"(fn validate_${name}_event [payload]\n  (require_event_fields payload [${joined}] ${label})${optional_reply}\n  payload)")
+    (let projection_fields
+      (if (== name "turn_request")
+        "\n  (if_not ($absent? payload/for_turn)\n    (if (|| (!= ($head payload/for_turn) Int) (< payload/for_turn 1))\n      ($panic \"turn/request for_turn must be a positive integer\")))\n  (if_not ($absent? payload/combine)\n    (if_not ([\"replace\" \"append\"] .contains? payload/combine)\n      ($panic \"turn/request combine must be replace or append\")))"
+        (if (== name "turn_response")
+          "\n  (if_not ($absent? payload/reply_hint)\n    (if (|| (!= ($head payload/reply_hint) Str) (> ($str/byte_size payload/reply_hint) 1024))\n      ($panic \"turn/response reply_hint must be a string of at most 1 KiB\")))"
+          "")))
+    (lines .push $"(fn validate_${name}_event [payload]\n  (require_event_fields payload [${joined}] ${label})${optional_reply}${projection_fields}\n  payload)")
     (lines .push ""))
   (lines .push "(var core_event_types")
   (var index 0)

@@ -224,7 +224,7 @@ CRLF delimiters are accepted while attachment bodies retain their line endings.
 | `effort` | `"medium"` | none, minimal, low, medium, high, xhigh or max |
 | `provider_timeout_ms` | `600000` | Timeout per provider attempt; one retry when `send` reports a timeout |
 | `response_budget` | `{^timeout_ms 600000 ^max_memory_mb 1024}` | Runaway limit for each response evaluation and command |
-| `turn_limit` | `24` | Turns per user round; reaching it fails the round |
+| `turn_limit` | `24` | Turns per operator round; reaching it pauses for continuation |
 | `trigger_turn_limit` | `12` | Turns per trigger round |
 | `trigger_timeout_ms` | `300000` | Running time per trigger round |
 | `trigger_concurrency` | `2` | Unfinished trigger rounds across the workspace |
@@ -257,7 +257,11 @@ sessions of every kind. Opening a session or starting a new user round acknowled
 another cause can set it again.
 
 Several session tabs can remain open with independent streams. Each turn shows
-response code, attachment and patch stubs, next-request items, and replies.
+the receiving Request, Response code, attachment and patch details, and replies.
+Generated requests appear under the turn that answers them. At a turn-limit
+pause, Continue grants another normal budget and Continue until finished
+continues automatically across budgets. Stop and per-response limits remain
+available; the final answer is shown separately below the last turn.
 Console output has its own collapsible pane. Questions preselect recommended
 choices but submit only when the operator answers. Skip individual questions
 or dismiss the batch.

@@ -1,0 +1,6 @@
+(mod round_policy)
+
+(fn operator_round? [round]
+  (|| (== round/initiator "user")
+      (&& ($str/starts_with? (?? round/initiator "") "continue:")
+          (! ($absent? round/continuation)))))

@@ -1,5 +1,6 @@
 # Deterministic spoken rendering; never evaluates reply text or invokes a model.
 (mod speech_text)
+(import [without_markdown_images] ^from "../text")
 
 (fn replace_matches [pattern, source : Str, render]
   (var rest source)
@@ -21,8 +22,9 @@
   token)
 
 (fn speech_line [source : Str] : Str
+  (var without_images (without_markdown_images source))
   (var text
-    (replace_matches #"\[([^]]+)\]\([^)]+\)" source (fn [match] match/groups/0)))
+    (replace_matches #"\[([^]]+)\]\([^)]+\)" without_images (fn [match] match/groups/0)))
   (set text (replace_matches #"https?://([^/\s]+)[^\s]*" text (fn [match] match/groups/0)))
   (set text
     (replace_matches #"`([^`]+)`" text (fn [match]

@@ -612,6 +612,8 @@
     (return))
   (if_yes (== kind "round/state")
     (set voice/round_state (text data/state "done"))
+    (if_yes (&& (== voice/round_state "paused") (!= (text data/continuation_mode) "automatic"))
+      (enqueue voice ($to_str (text data/id) "/paused") "Paused at the turn limit. Continue controls are on screen." false "paused"))
     (if_yes (== voice/round_state "waiting")
       (var count ($size (items data/questions/questions)))
       (enqueue voice ($to_str (text data/id) "/questions") ($to_str count " questions are on screen.") false "questions" count))

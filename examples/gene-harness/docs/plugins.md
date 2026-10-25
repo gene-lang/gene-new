@@ -289,7 +289,13 @@ opts in; the Gene REPL keeps its existing bindings after interruption.
 ### Shape a request or compaction decision
 
 `request/prepare` receives a context with `items`, session, round, turn and
-round budget. Its `run` callback takes that context and `next`. Calling
+round budget, plus `continuation_mode` (`manual` or `automatic`) and `task_root`
+for an operator task. Preserve context fields when forwarding, for example
+with `context .assoc "items" items`, so other hooks retain continuation metadata.
+Transient guidance uses `settled: false` and is regenerated when a paused task
+continues in a new round. Automatic continuation uses an explanatory advisory
+instead of repeatedly asking the model to wrap up at a round boundary.
+Its `run` callback takes that context and `next`. Calling
 `next` delegates; returning without it decides. The loop writes the result
 as `turn/request`, then records the final provider-specific input as
 `model/request` immediately before `send`. A hook that fails or times out is

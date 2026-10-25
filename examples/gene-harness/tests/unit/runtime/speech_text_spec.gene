@@ -1,7 +1,18 @@
 (import $test [describe it run])
 (import [speech_text] ^from "../../../src/runtime/speech_text")
+(import [announcement_text] ^from "../../../src/web/voice")
 
 (describe "Spoken reply normalization"
+  (it "uses an explicit pause announcement instead of failed or completed speech" []
+    ($assert (== (announcement_text {^announcement "paused"})
+      "Paused at the turn limit. Continue controls are on screen.")))
+  (it "omits image references without leaving punctuation or reading their URLs" []
+    (for [source expected] in [
+      ["![Generated logo](/api/v7/media/image_id)\nThe logo is ready." "The logo is ready."]
+      ["Done. ![logo](/api/v8/media/image_id)" "Done."]
+      ["![](/api/v8/media/image_id)" ""]
+      ["![external](https://example.com/logo.png)" ""]]
+      ($assert (== (speech_text source) expected))))
   (it "keeps prose and replaces code and tables without reading their contents" []
     ($assert (== (speech_text "Finished.\n```gene\n(secret code)\n```\nNext.") "Finished. Code on screen. Next."))
     ($assert (== (speech_text "| file | rows |\n| --- | --- |\n| a | 12 |") "Table on screen.")))

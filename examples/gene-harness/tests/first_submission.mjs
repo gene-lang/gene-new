@@ -102,7 +102,7 @@ assert.equal(harness.reviewed_voice_input(reviewClient,'s','ordinary text with a
 const bubbles = c => descendants(c.transcript).filter(node => node.tag === "article" && node.attributes.class?.includes("user"));
 function promptVisible(c, prompt) {
   assert.equal(bubbles(c).length, 1, "prompt must be displayed exactly once");
-  assert.equal(bubbles(c)[0].textContent, "You" + prompt);
+  assert.equal(bubbles(c)[0].textContent, "User" + prompt);
   assert.equal(c.transcript.textContent.includes("What would you like to work on?"), false);
 }
 const snapshot = (round = null, records = []) => ({
@@ -219,7 +219,7 @@ assert.ok(descendants(c.transcript).some(node => node.tag === "img" && node.attr
 // replace welcome content even without a currently loaded round.
 c = client();
 harness.apply_snapshot(c, {...snapshot(), session: {
-  id: "s", title: "Renamed", revision: "1", first_request: prompt, first_request_round: "round-s-1",
+  id: "s", title: "Renamed", revision: "1", first_request: prompt, first_request_round: "round-s-1", first_request_speaker: "User",
 }});
 promptVisible(c, prompt);
 
@@ -412,4 +412,30 @@ const fresh=client();
 harness.apply_snapshot(fresh,{...snapshot(),records:[codeBlock,oldConsole]});
 const freshPanel=descendants(fresh.transcript).find(x=>x.attributes.class==='execution live_output');
 assert.equal(freshPanel.hidden,true,'a reload cannot reconstruct printed output');
-console.log("first submission: immediate prompt, delayed snapshots/admission, durable replacement, late completion, rejection/uncertainty, session creation, equal prompts, attachments, and saved prompt passed");
+// A receiving Request has a stable identity but a later source sequence. Live
+// replacement and an older in-flight snapshot must retain the newest input.
+c=client();
+const projectedRound={id:'projection',state:'running',submission_seq:2n,initiator:'user',prompt:''};
+const projectedRequest={id:'projection/request-2',seq:'10',round_id:'projection',turn:2n,
+  role:'assistant',phase:'turn/request',text:'original prepared input',durable:true};
+harness.apply_snapshot(c,{...snapshot(projectedRound,[projectedRequest]),cursor:'10'});
+harness.apply_record(c,{...projectedRequest,seq:'11',text:'replacement with answered questions'});
+assert.match(c.transcript.textContent,/replacement with answered questions/);
+harness.apply_snapshot(c,{...snapshot(projectedRound,[projectedRequest]),cursor:'10'});
+assert.match(c.transcript.textContent,/replacement with answered questions/);
+assert.doesNotMatch(c.transcript.textContent,/original prepared input/);
+const paused={...projectedRound,state:'paused',reason:'turn_limit',continuation:{items_ref:'body'}};
+harness.apply_run(c,'s',paused);
+const resumeButtons=descendants(c.transcript).filter(node=>node.tag==='button'&&['Continue','Continue until finished'].includes(node.textContent));
+assert.equal(resumeButtons.length,2);
+resumeButtons[1].dispatchEvent(new Event('click'));
+assert.equal(requests.at(-1).path,'/api/v8/sessions/s/rounds/projection/continue');
+assert.equal(JSON.parse(requests.at(-1).options.body).mode,'automatic');
+assert.equal(descendants(c.transcript).some(node=>node.textContent==='Edit and retry'),false);
+harness.apply_run(c,'s',{...projectedRound,id:'successor',submission_seq:3n,continuation_mode:'automatic',task_turns:57n});
+harness.apply_run(c,'s',paused);
+assert.equal(c.round.id,'successor','an old source receipt must not replace its active successor');
+assert.match(c.transcript.textContent,/Continuing automatically · 57 turns/);
+harness.apply_snapshot(c,{...snapshot(paused,[projectedRequest]),cursor:'10'});
+assert.equal(c.round.id,'successor','an older in-flight snapshot must not replace the successor');
+console.log("first submission: immediate prompts, delivery races, live output, receiving-request replacement and continuation controls passed");

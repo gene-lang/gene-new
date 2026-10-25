@@ -306,6 +306,8 @@
       (if (|| (!= ($head data/count) Int) (< data/count 0) (> data/count 1000))
         (voice_error "invalid_request" "Invalid question count."))
       ($to_str data/count " questions are on screen."))
+    (elif (== data/announcement "paused")
+      "Paused at the turn limit. Continue controls are on screen.")
     (elif (["failed" "cancelled" "interrupted"] .contains? data/announcement)
       ($to_str "The request " data/announcement ". Details are on screen."))
     (else (voice_error "invalid_request" "Unknown voice announcement."))))

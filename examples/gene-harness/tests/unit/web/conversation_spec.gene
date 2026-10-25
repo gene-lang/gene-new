@@ -1,0 +1,44 @@
+(import $test [describe it])
+(import [project_conversation conversation_page] ^from "../../../src/web/conversation")
+
+(fn record [phase, turn, text, seq, ^props props = {}]
+  (let value {^id $"s/${seq}" ^seq ($to_str seq) ^round_id "r" ^turn turn
+    ^phase phase ^role "assistant" ^text text ^order seq ^^durable})
+  (for [key item] in props (value .put key item)) value)
+
+(describe "Receiving-turn projection"
+  (it "replaces resumed input, appends only delegation additions, and preserves provenance" []
+    (let records [
+      (record "turn/start" 1 "" 1)
+      (record "turn/request" 1 "base" 2)
+      (record "turn/request" 1 "base\nanswer" 3 ^props {^^answers})
+      (record "turn/request" 1 "base\nanswer\nchild" 4 ^props {^^delegation})
+      (record "turn/request" 2 "late child" 5 ^props {^^delegation})
+      (record "turn/start" 2 "" 6)
+      (record "code" 2 "(+ 1 2)" 7)])
+    (let projected (project_conversation records [{^id "r" ^state "done"}]))
+    (let requests ($filter projected (fn [item] (== item/phase "turn/request"))))
+    ($assert (== requests/.size 1))
+    ($assert (== requests/0/text "base\nanswer\nchild\nlate child"))
+    ($assert (== requests/0/turn 2))
+    ($assert (== requests/0/source_ids ["s/2" "s/3" "s/4" "s/5"]))
+    (let page (conversation_page projected -1 -1 1))
+    ($assert (== page/before_cursor "7"))
+    ($assert (== ($size ($filter page/records (fn [item] (== item/phase "turn/request")))) 1))
+    ($assert (== ($size ($filter page/records (fn [item] (== item/phase "turn/start")))) 1)))
+  (it "hides terminal unrun input and both legacy host limit artifacts" []
+    (let records [(record "turn/start" 1 "" 1)
+      (record "turn/end" 1 "" 2 ^props {^reason "continue"})
+      (record "turn/request" 1 "unsent" 3)
+      (record "reply" 1 "host limit notice" 4 ^props {^^final})
+      (record "turn/error" 1 "turn limit reached" 5 ^props {^reason "error"})])
+    (let projected (project_conversation records [{^id "r" ^state "failed" ^message "turn limit reached"}]))
+    ($assert (== projected/.size 2))
+    ($assert (== projected/1/reason "continue")))
+  (it "keeps a stable request key during active replacement and isolates rounds" []
+    (let base (record "turn/request" 4 "base" 1 ^props {^for_turn 5 ^combine "replace"}))
+    (let update (record "turn/request" 4 "updated" 2 ^props {^for_turn 5 ^combine "replace"}))
+    (let before (project_conversation [base] [{^id "r" ^state "waiting"}]))
+    (let after (project_conversation [base update] [{^id "r" ^state "waiting"}]))
+    ($assert (== before/0/id after/0/id))
+    ($assert (== after/0/text "updated"))))

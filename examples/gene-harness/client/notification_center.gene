@@ -55,6 +55,9 @@
   (set card/details/hidden (! card/expanded))
   (set card/fields/disabled (|| card/stale card/loading (! center/ready)))
   ($dom/set_text card/toggle (if card/expanded "Collapse details" "Details"))
+  (if_yes (&& (! card/loading) (! card/stale)
+    (== (qtext card/snapshot/round/state) "paused"))
+    ($dom/set_text card/status "Turn limit reached"))
   ($dom/set_attribute card/toggle "aria-expanded" (if card/expanded "true" "false"))
   (if_yes (&& card/expanded (! card/stale))
     (mount_question

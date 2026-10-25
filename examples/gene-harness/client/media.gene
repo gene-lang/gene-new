@@ -1,4 +1,5 @@
 (mod harness_media_composer ^profile web)
+(import [media_url] ^from "./media_reference.gene")
 
 (type MediaComposer ^props {^selected Str ^drafts PropMap ^enabled Bool ^working Bool
   ^list EventTarget ^input EventTarget ^status EventTarget
@@ -40,7 +41,7 @@
 (fn attachment_view [asset : Any] : EventTarget
   (var name : Str asset/name)
   (var id : Str asset/id)
-  (var url $"/api/v8/media/${($url/encode_component id)}")
+  (var url (media_url id))
   (var kind : Str asset/kind)
   (var view ($dom/render `(div ^class_name "attachment")))
   (if_yes (== kind "image")

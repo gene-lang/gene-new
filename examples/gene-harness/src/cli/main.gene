@@ -145,7 +145,7 @@ Profile: """
   (if (== result/ok true) (return 0))
   (if (&& (== ($head result/exit) Int) (!= result/exit 0)) (return 1))
   (let state (?? result/state result/status))
-  (if (== state "waiting")
+  (if (|| (== state "waiting") (== state "paused"))
     2
     (if (["failed" "error" "stale" "quarantined" "cancelled" "interrupted" "recovery_required"] .contains? state)
       1

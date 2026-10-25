@@ -33,6 +33,7 @@
   (var media : (List Any) [])
   (if_not ($absent? session/first_request_media) (set media session/first_request_media))
   {^id "first-request" ^round_id round_id ^turn 0 ^role "user"
+   ^speaker (status_text session/first_request_speaker "Request")
    ^phase "turn/request" ^text text ^media media
    ^^durable})
 
@@ -51,6 +52,7 @@
       (set receipt run)
       (set sequence next)))
   (if_yes (&& (! submitting) ($absent? receipt)) (return blocks))
+  (if_yes (str/starts_with? (status_text receipt/initiator) "continue:") (return blocks))
   (var round_id : Str (status_text receipt/id))
   (if_yes (&& (!= round_id "") (== round_id shown_round)) (return blocks))
   (if_yes (!= round_id "")
@@ -74,6 +76,7 @@
   (var prompt : Any {^id $"submission/${request_id}"
     ^round_id (if (== round_id "") $"submission/${request_id}" round_id)
     ^turn 0 ^role "user" ^phase "turn/request" ^text text ^media media
+    ^speaker (if submitting "User" (input_speaker receipt))
     ^durable (! ($absent? receipt))})
   (var out : (List Any) [])
   (var inserted false)
@@ -84,6 +87,18 @@
     (out .push block))
   (if_not inserted (out .push prompt))
   out)
+
+(fn input_speaker [round : Any] : Str
+  (if_not ($absent? round/card) (return "Card action"))
+  (var initiator (status_text round/initiator))
+  (if_yes (== initiator "user") (return "User"))
+  (if_yes (str/starts_with? initiator "trigger:")
+    (var chars : (List Str) (str/split initiator ""))
+    (var label "Trigger: ") (var i 8)
+    (while (< i chars/.size) (set label $"${label}${chars/%i}") (set i (+ i 1)))
+    (return label))
+  (if_yes (str/starts_with? initiator "parent:") (return "Parent agent"))
+  "Request")
 
 (fn query_value [source : Str, name : Str] : Str
   (var normalized : Str (str/join (str/split source "?") ""))
@@ -98,13 +113,40 @@
 
 (fn bounded_blocks [blocks : (List Any), latest : Bool] : (List Any)
   (var out : (List Any) [])
-  (var count ($size blocks))
+  (var count 0)
+  (for block in blocks (if_not (structural_block block) (set count (+ count 1))))
+  (if_yes (== count 0)
+    (var at 0)
+    (for block in blocks
+      (if_yes (&& (>= at (- blocks/.size 600)) (< out/.size 600)) (out .push block))
+      (set at (+ at 1)))
+    (return out))
   (var start (if (&& latest (> count 600)) (- count 600) 0))
-  (var i 0)
+  (var i 0) (var owners : PropMap {})
   (for block in blocks
-    (if_yes (&& (>= i start) (< ($size out) 600)) (out .push block))
+    (if_yes (structural_block block) (continue))
+    (if_yes (&& (>= i start) (< i (+ start 600)))
+      (var owner (record_owner block))
+      (if_yes (!= owner "") (set owners/%owner true)))
     (set i (+ i 1)))
+  (set i 0)
+  (for block in blocks
+    (if (structural_block block)
+      (do (var owner (record_owner block))
+        (if_yes (status_flag owners/%owner) (out .push block)))
+      (do
+        (if_yes (&& (>= i start) (< i (+ start 600))) (out .push block))
+        (set i (+ i 1)))))
   out)
+
+(fn structural_block [block : Any] : Bool
+  (var phase (status_text block/phase))
+  (|| (== phase "turn/start") (== phase "turn/end")))
+
+(fn record_owner [block : Any] : Str
+  (if_yes (|| ($absent? block/round_id) ($absent? block/turn)) (return ""))
+  (var round : Str block/round_id) (var turn : Int block/turn)
+  $"${round}/${turn}")
 
 (fn step_key [block : Any] : Str
   (var run : Str block/round_id)
@@ -112,9 +154,6 @@
   $"${run}/turn-${round}")
 
 (fn step_block [block : Any] : Bool
-  (var media : (List Any) [])
-  (if_not ($absent? block/media) (set media block/media))
-  (if_yes (> ($size media) 0) (return false))
   (var round : Int block/turn)
   (var phase : Str block/phase)
   (var final : Bool false)
@@ -128,6 +167,28 @@
       (== phase "turn/patch")
       (== phase "turn/error")
       (== phase "reply"))))
+
+# Group by owner, including records separated by cards, media, or late effects.
+(fn conversation_groups [blocks : (List Any)] : (List Any)
+  (var groups : (List Any) [])
+  (for block in blocks
+    (var turn : Int block/turn)
+    (var role : Str block/role)
+    (var phase : Str block/phase)
+    (if_yes (|| (== role "user") (<= turn 0))
+      (groups .push {^kind "block" ^block block}) (continue))
+    (if_yes (status_flag block/synthetic) (continue))
+    (var key (step_key block))
+    (var group : Any nil)
+    (for item in groups
+      (if_yes (&& (== (status_text item/kind) "turn") (== (status_text item/key) key)) (set group item)))
+    (if_yes ($absent? group)
+      (var empty : (List Any) [])
+      (set group {^kind "turn" ^key key ^blocks empty}) (groups .push group))
+    (var items : (List Any) group/blocks) (items .push block)
+    (if_yes (&& (== phase "reply") (status_flag block/final))
+      (groups .push {^kind "block" ^block block})))
+  groups)
 
 (fn revision_before [left : Str, right : Str] : Bool
   (if_yes (== left "") (return (!= right "")))
@@ -165,6 +226,15 @@
 
 # Status embeds session-dependent ordinary components. Workspace revisions
 # reject stale caches; render-start sequences reject late reads of one session.
+(fn status_flag [value : Any] : Bool
+  (if_yes ($absent? value) (return false))
+  (var flag : Bool value) flag)
+
+(fn record_sequence [record : Any] : Int
+  (var text (status_text record/seq "0"))
+  (if_yes (== text "") (return 0))
+  (var value : Int ($json/parse text)) value)
+
 (fn status_text [value : Any, fallback : Str = ""] : Str
   (if_yes ($absent? value) (return fallback))
   (var text : Str value)
@@ -193,6 +263,18 @@
   (var status : Str run/state)
   (var value : Any (?? run/outcome ""))
   (var outcome : Str value)
+  (if_yes (== status "paused")
+    (if_not ($absent? run/continuation_stop) (return "Continuation stopped"))
+    (if_not ($absent? run/continued_by) (return "Continued"))
+    (return "Paused · turn limit reached"))
+  (if_yes (&& (== status "running") (== (status_text run/continuation_mode) "automatic"))
+    (var turns : Int 0)
+    (if_not ($absent? run/task_turns_base) (set turns run/task_turns_base))
+    (if_not ($absent? run/task_turns) (set turns run/task_turns))
+    (return $"Continuing automatically · ${turns} turns"))
+  (if_yes (|| (== (status_text run/reason) "turn_limit")
+    (&& (== status "failed") (== (status_text run/message) "turn limit reached")))
+    (return "Turn limit reached"))
   (if (== status "waiting")
     (return (if ($absent? run/delegation_wait) "Waiting for your answer" "Waiting for children")))
   (if (== outcome "code_error")

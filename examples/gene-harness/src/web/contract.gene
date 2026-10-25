@@ -7,7 +7,7 @@
 
 (fn terminal_round [status : Str] : Bool
   (|| (== status "done") (== status "failed") (== status "cancelled")
-      (== status "interrupted") (== status "recovery_required")))
+      (== status "interrupted") (== status "recovery_required") (== status "paused")))
 
 (fn error_status [code : Str] : Int
   (if (== code "unauthorized") 401

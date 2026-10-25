@@ -100,11 +100,16 @@ title; rename does not change it. Attachment-only submissions save an
 the trigger's request. When the sequence-1 request record is loaded, it replaces
 the fallback rather than appearing twice. Identical later prompts remain visible.
 
-Each turn has a disclosure containing response code, attachment/patch stubs,
-patch results, and next-request items. An intermediate
-Outcome's concise `^reply` appears only in the disclosure heading as
-`Turn N: <reply>`, not again inside the expanded turn. A final reply appears
-once at the conversation level, outside its turn disclosure. Completed status
+Each turn groups the **Request** it receives, the Gene **Response** returned by
+the model, and its live **Output**, in that order. The initial message is labeled
+**User** (or Trigger/Card action/Parent agent for other sources) and is not
+repeated inside its first turn. A generated continuation belongs to the next
+turn. Turn headings and their Request, Response, and Output disclosures start
+collapsed. Cards, media, questions, and errors stay inside their producing turn.
+Pending turns have a blank summary; a host-extracted literal reply hint may fill
+it when code arrives, and the evaluated reply is authoritative. A concise reply
+appears only in its own heading as `Turn N: <reply>`. The full final reply appears
+once under **Agent final response**, outside the last turn. Completed status
 shows the status label without repeating reply text. Response code is
 highlighted when expanded. Printed text appears in an **Output · live** disclosure
 inside its owning turn, collapsed by default. Late output stays with its original
@@ -115,6 +120,22 @@ Command printing has a separate live disclosure under its command. Returned
 command results, help text, interactive shell output and exit status keep their
 normal presentation. Diagnostic console events and CLI transcript access remain
 available independently of the browser's temporary display.
+
+At an operator turn limit, the receipt ends **paused** and the unsent Request
+stays hidden. **Continue** admits a linked round with another normal turn budget;
+**Continue until finished** automatically continues across later round budgets,
+stopping for completion, input, failure, or Stop. Automatic status shows the
+cumulative task turns. Both actions retain the logical input, refresh transient
+voice/budget guidance, and replace its trailing model-history message rather
+than duplicating it. A continuation round has no new User bubble: its first turn
+shows the retained Request. New user input supersedes an unclaimed pause.
+
+The final reply should embed its selected generated image using the returned
+media descriptor URL: `![Description](/api/v8/media/ID)`. The renderer treats
+historical `/api/v<N>/media/ID` paths as media-ID references and resolves them
+through the current route. Other image URLs remain literal text on all Markdown
+surfaces, including `/view` and plugin docs. Image markup is omitted from turn
+summaries and fallback speech; saved reply text and explicit speech stay intact.
 
 Question batches show recommended choices preselected. Nothing is submitted
 automatically. Free text, multiple selections, per-question skipping and
