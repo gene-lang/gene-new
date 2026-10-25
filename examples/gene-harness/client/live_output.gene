@@ -151,6 +151,20 @@
       (if (flag entry/truncated) "\n[Output truncated for display.]" ""))
     (if (flag entry/incomplete) "\n[Live output interrupted; some text may be missing.]" "")))
 
+(fn command_output_text [entry : Any, command : Any] : Str
+  (var printed (output_text entry))
+  (var result (if (== (text command/status) "running") "" (text command/text)))
+  # A shell's returned value is its captured stream. Gene expressions have
+  # an independent return value, even when it happens to equal printed text.
+  (if_yes (&& (== (text command/name) "sh") (! ($absent? command/exit)))
+    (if_not ($absent? entry) (set result ""))
+    (var code : Int command/exit)
+    (if_yes (!= code 0)
+      (set result ($to_str result (if (== result "") "" "\n") $"[Process exited with code ${code}.]"))))
+  (if_yes (== printed "") (return result))
+  (if_yes (== result "") (return printed))
+  ($to_str printed (if (str/ends_with? printed "\n") "" "\n") result))
+
 (fn historical_records [records : (List Any)] : (List Any)
   (var kept : (List Any) [])
   (for record in records (if_yes (!= (text record/phase) "console") (kept .push record)))

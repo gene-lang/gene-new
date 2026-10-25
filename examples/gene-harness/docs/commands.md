@@ -43,6 +43,10 @@ other running sessions require `--confirm`.
 `/run` is one evaluation; use the REPL for persistent local bindings.
 `/run`, `/sh` and `/repl` keep their output and results in the operator transcript.
 `/view` adds a file pointer to the next user prompt.
+
+For `/sh`, `/run` and `/repl`, User shows the input once and Agent shows one
+plain monospace block containing stdout/stderr followed by the returned value.
+The command and its diagnostic id are not echoed in that block.
 Commands retain the submitting session and normal receipts/cancellation. Prefer Gene
 APIs/tooling when available. Disabling `core_commands` removes `/help`, `/run`,
 `/view` and this chapter. Disabling `shell` independently removes `/sh` and

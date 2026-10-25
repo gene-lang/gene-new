@@ -92,7 +92,7 @@
           (let current (snapshot ^!console service session/id))
           (let request ($first ($filter current/records (fn [record] (== record/id $"${session/id}/${running/id}/input")))))
           ($assert (== request/text code))
-          ($assert (== request/speaker "REPL input"))
+          ($assert (== request/speaker "User"))
           (released .set true)
           (service/runtime/commands/watchers/.get .get $"${session/id}:${running/id}"; .join)
           (let done (command_receipt service/runtime/commands session/id running/id))

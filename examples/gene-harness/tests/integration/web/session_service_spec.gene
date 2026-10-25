@@ -311,6 +311,26 @@
           ensure (close_session_service service))))))
 
 (describe "Harness live delivery"
+  (it "preserves explicit nil and other scalar command results for the browser" []
+    (isolated this_mod/.path "preserves explicit nil and other scalar command results for the browser"
+      (fn [workspace]
+        (let service (test_service ^workspace workspace ^provider (fn [request] "")))
+        (let messages [])
+        (service/publisher .set (fn [message] (messages .push message)))
+        (try
+          (let session (create_session service))
+          (for sample in [{^code "nil" ^expected "nil"} {^code "false" ^expected "false"}
+            {^code "0" ^expected "0"} {^code "\"\"" ^expected ""}]
+            (let submitted (command service session/id $"/run ${sample/code}"))
+            (service/runtime/commands/watchers/.get .get $"${session/id}:${submitted/id}"; .join)
+            (let records (/records (snapshot ^!console service session/id)))
+            (let result ($first ($filter records (fn [record] (== record/id $"${session/id}/${submitted/id}")))))
+            ($assert (== result/status "done"))
+            ($assert (== result/text sample/expected) $"Incorrect display for ${sample/code}: ${result/text}")
+            (let live ($last ($filter messages (fn [message]
+              (&& (== message/type "command") (== message/data/id submitted/id) (== message/data/status "done"))))))
+            ($assert (== live/data/display sample/expected)))
+        ensure (close_session_service service)))))
   (it "separates command inputs from execution output in live and restored history" []
     (isolated this_mod/.path "separates command inputs from execution output in live and restored history"
       (fn [workspace]
@@ -335,6 +355,19 @@
             ($assert (== result/role "assistant"))
             ($assert (== result/phase "command"))
             ($assert (!= result/text "") "execution output was lost")
+            (if ($str/starts_with? text "/run  ") ($assert (== result/text "5")))
+            (if_yes ($str/starts_with? text "/sh ")
+              ($assert (== result/text "shell output"))
+              ($assert (== result/exit 0)))
+            (if_yes (["run" "sh" "repl"] .contains? result/name)
+              ($assert (! ($str/starts_with? result/text $"[${submitted/id}.${result/name}] /"))
+                "browser result repeated the command header"))
+            (let live_results ($filter messages (fn [message]
+              (&& (== message/type "command") (== message/data/id submitted/id)
+                (!= message/data/status "running")))))
+            ($assert (> live_results/.size 0))
+            (let live_result ($last live_results))
+            ($assert (== live_result/data/display result/text))
             ($assert (> ($size ($filter messages (fn [message]
               (&& (== message/type "turn") (== message/data/id input_id)
                   (== message/data/role "user") (== message/data/text text))))) 0)

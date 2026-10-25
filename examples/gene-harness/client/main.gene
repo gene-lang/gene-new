@@ -1,6 +1,6 @@
 (mod harness_client ^profile web)
 (import [LiveOutput create_output output_entry receive_output output_text historical_records
-  turn_output_key command_output_key clear_session_output output_epoch interrupt_output observe_output output_open]
+  turn_output_key command_output_key clear_session_output output_epoch interrupt_output observe_output output_open command_output_text]
   ^from "./live_output.gene")
 (import [BrowserClients create_clients update_clients] ^from "./browser_clients.gene")
 (import [CommandClient create_commands configure_commands dispatch_command recover_command forget_command] ^from "./command_client.gene")
@@ -87,14 +87,16 @@
   (var store (live_store client))
   (for mount in store/mounts
     (var entry : Any (output_entry store (string_or mount/key "")))
-    (var panel : EventTarget mount/panel) (var pre : EventTarget mount/pre)
-    (var summary : EventTarget mount/summary)
+    (var command : Any mount/command)
+    (var pre : EventTarget mount/pre)
+    (var value (if ($absent? command) (output_text entry) (command_output_text entry command)))
+    (if_yes (!= value (string_or mount/text ""))
+      ($dom/set_text pre value) (set mount/text value))
+    (if_yes (! ($absent? command)) (continue))
+    (var panel : EventTarget mount/panel) (var summary : EventTarget mount/summary)
     (if_yes (! (same? entry mount/entry))
       (set panel/open (output_open entry (launcher_flag mount/default_open))) (set mount/entry entry))
     (set panel/hidden ($absent? entry))
-    (var value (output_text entry))
-    (if_yes (!= value (string_or mount/text ""))
-      ($dom/set_text pre value) (set mount/text value))
     (var label (if (launcher_flag entry/late) "Output · live · Late output" "Output · live"))
     (if_yes (!= label (string_or mount/label ""))
       ($dom/set_text summary label) (set mount/label label))))
@@ -122,16 +124,25 @@
 (fn begin_output_render [client : Client] : Void
   (var store (live_store client))
   (for mount in store/mounts
+    (if_yes (! ($absent? mount/command)) (continue))
     (var entry : Any (output_entry store (string_or mount/key "")))
     (if_yes (&& (! ($absent? entry)) (same? entry mount/entry))
       (var panel : EventTarget mount/panel) (set entry/open panel/open)))
   (set store/mounts []))
 
-(fn live_output_view [client : Client, key : Str, ^default_open default_open : Bool = false] : EventTarget
+(fn live_output_view [client : Client, key : Str, ^default_open default_open : Bool = false,
+  ^command command : Any = nil] : EventTarget
   (var store (live_store client))
   (var entry : Any (output_entry store key))
+  (if_yes (! ($absent? command))
+    (var combined_pre ($dom/render `(pre ^class_name "command_output")))
+    (var value (command_output_text entry command))
+    ($dom/set_text combined_pre value)
+    (store/mounts .push {^key key ^pre combined_pre ^text value ^command command})
+    (return combined_pre))
   (var pre ($dom/render `(pre)))
-  (var summary ($dom/render `(summary "Output · live")))
+  (var label "Output · live")
+  (var summary ($dom/render `(summary %label)))
   (var panel ($dom/render `(details ^class_name "execution live_output"
     ^open %(output_open entry default_open) ^hidden %($absent? entry)
     ^on_toggle %(fn [event : Any] : Void
@@ -139,9 +150,11 @@
       (if_not ($absent? current) (set current/open event/current_target/open))))))
   ($dom/append panel summary)
   ($dom/append panel ($dom/render `(button ^type "button" ^class_name "copy"
-    ^on_click %(fn [event : Any] : Void (copy_text client (output_text (output_entry store key)))) "Copy")))
+    ^on_click %(fn [event : Any] : Void
+      (copy_text client (output_text (output_entry store key)))) "Copy")))
   ($dom/append panel pre)
-  (store/mounts .push {^key key ^panel panel ^pre pre ^summary summary ^text "" ^label "Output · live" ^entry entry ^default_open default_open})
+  (store/mounts .push {^key key ^panel panel ^pre pre ^summary summary ^text "" ^label label ^entry entry
+    ^default_open default_open ^command command})
   panel)
 
 (fn client_page_id [client : Client] : Str
@@ -868,13 +881,14 @@
     (return))
   (var id : Str block/id)
   (var generation client/generation)
-  (var repl (&& (== block_phase "command") (== (string_or block/name "") "repl")
-    (! ($absent? block/mode_instance))))
-  (if_yes repl
-    ($dom/append target (live_output_view ^default_open true client
-      (command_output_key client/selected (string_or block/command_id "")))))
-  (if_yes (&& repl (== (string_or block/status "") "running")) (return))
-  ($dom/append
+  (var combined (&& (== block_phase "command") (execution_command block)))
+  (if combined
+    (do
+      (var article ($dom/render `(article ^class_name "message agent" (div ^class_name "speaker" "Agent"))))
+      ($dom/append article (live_output_view ^command block client
+        (command_output_key client/selected (string_or block/command_id ""))))
+      ($dom/append target article))
+    ($dom/append
     target
     (block_view
       ^on_speak (voice_replay_handler client)
@@ -884,9 +898,9 @@
         (copy_text client text))
       (expanded_block client id)
       (fn [opened : Bool] : Void
-        (if_yes (== generation client/generation) (toggle_block client id opened)))))
+        (if_yes (== generation client/generation) (toggle_block client id opened))))))
   (var phase : Str block/phase)
-  (if_yes (&& (== phase "command") ($absent? block/mode_instance))
+  (if_yes (&& (== phase "command") (! combined) ($absent? block/mode_instance))
     (var output_parts : (List Str) (str/split id "/"))
     ($dom/append target (live_output_view client (command_output_key client/selected (string_or block/command_id output_parts/1)))))
   (var status (string_or block/status ""))
@@ -1709,17 +1723,21 @@
               (== (string_or envelope/text "") ($dom/input_value client/prompt)))
     ($dom/set_input_value client/prompt "") (remember_draft client) (render_commands client)))
 
+(fn execution_command [data : Any] : Bool
+  (var name (string_or data/name ""))
+  (|| (== name "sh") (== name "run") (== name "repl")))
+
 (fn apply_command [client : Client, session : Str, data : Any] : Void
   (if_yes (!= session client/selected) (return))
   (var id : Str data/id)
   (var status : Str data/status)
   (var block_id $"${session}/${id}")
   (var text : Str (string_or data/display (string_or data/text "")))
-  (if_yes (&& (== text "") (! ($absent? data/raw)))
+  (if_yes (&& (! (execution_command data)) (== text "") (! ($absent? data/raw)))
     (var command_name : Str (string_or data/name "command"))
     (var command_raw : Str (string_or data/raw ""))
     (set text $"/${command_name} ${command_raw}"))
-  (if_yes (== status "running")
+  (if_yes (&& (== status "running") (! (execution_command data)))
     (for previous in client/preview
       (var previous_id : Str previous/id)
       (if_yes (== previous_id block_id)
@@ -1736,6 +1754,7 @@
       ^input_id data/input_id
       ^mode_instance data/mode_instance
       ^name data/name ^raw data/raw ^command_id id
+      ^exit data/exit ^seq ($to_str (dint data/start_seq))
       ^text text
       ^status status
       ^view data/view
@@ -2220,6 +2239,7 @@
                     ^phase "command"
                     ^name data/name ^raw data/raw ^command_id id
                     ^mode_instance data/mode_instance ^input_id data/input_id
+                    ^exit data/exit ^seq ($to_str (dint data/start_seq))
                     ^text output
                     ^status data/status
                     ^view data/view

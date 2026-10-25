@@ -55,7 +55,7 @@ groups=conversation_groups([...records,block('code',2,'(Outcome ^^done ^reply "R
   block('reply',2,'Ready.',{final:true}),block('turn/end',2,'',{reason:'done'})]);
 assert.equal(groups.filter(group=>group.kind==='turn').length,2);
 view=step_view(groups[1].blocks,false,false,()=>{},()=>false,()=>{});
-assert.equal(view.children[0].textContent,'Turn 2: Ready.');
+assert.equal(view.children[0].textContent,'Turn 2');
 const final=block_view(groups[2].block,false,()=>{},false,()=>{});
 assert.equal(final.textContent,'AgentReady.');
 const failed=step_view([block('code',3,'invalid',{reply_hint:'Unverified success'}),block('turn/end',3,'',{reason:'error'})],false,false,()=>{},()=>false,()=>{});

@@ -61,7 +61,7 @@ assert.equal(header(session, [], [], true, true).children[1].textContent + text(
 // New conversations have no fabricated prompt; titles are never a source.
 assert.equal(header({title: "Do not display as a prompt"}, [], [], false).children.length, 0);
 assert.equal(text(header({...session, title: "Renamed again"}, [], [], false)), "User" + prompt);
-assert.equal(text(header({title: "beat · time", first_request: "Full trigger\nrequest", first_request_round: "trigger-1"}, [], [], false)), "RequestFull trigger\nrequest");
+assert.equal(text(header({title: "beat · time", first_request: "Full trigger\nrequest", first_request_round: "trigger-1"}, [], [], false)), "UserFull trigger\nrequest");
 
 // Attachment-only submissions retain the ordinary attachment gallery.
 const attachment = {id: "image-id", name: "pixel.png", kind: "image"};
@@ -92,7 +92,7 @@ for (const durable of [true, false]) {
   assert.equal(text(step).split(progress.text).length - 1, 1);
 }
 
-// Final replies have a separate block group; their turn still owns the summary.
+// Final replies have a separate block group and are omitted from turn headings.
 const final = {...progress, id: "final-1", text: "Finished successfully.", final: true};
 const groups = state.conversation_groups([code, progress, final]);
 assert.deepEqual(groups.map(group => group.kind), ["turn", "block"]);
@@ -103,5 +103,5 @@ target.appendChild(view.step_view(groups[0].blocks, true, false, () => {}, () =>
 target.appendChild(view.block_view(groups[1].block, false, () => {}, false, () => {}));
 assert.equal(target.children[1].tag, "article");
 assert.equal(text(target.children[1]).split(final.text).length - 1, 1);
-assert.equal(text(target.children[0].children[1]).includes(final.text), false);
+assert.equal(text(target.children[0]).includes(final.text), false);
 console.log("turn replies: durable and preview progress only in headings; code, next requests and final replies preserved");

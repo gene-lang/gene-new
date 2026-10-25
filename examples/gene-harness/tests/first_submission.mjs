@@ -412,7 +412,7 @@ const fresh=client();
 harness.apply_snapshot(fresh,{...snapshot(),records:[codeBlock,oldConsole]});
 const freshPanel=descendants(fresh.transcript).find(x=>x.attributes.class==='execution live_output');
 assert.equal(freshPanel.hidden,true,'a reload cannot reconstruct printed output');
-// REPL mode inputs use the same page-owned buffer, between input and result.
+// Command streams and return values share one plain monospace Agent block.
 c=client();
 const replSource='($println "printed value") (+ 40 2)';
 const replInput={id:'s/c2/input',seq:'2',round_id:'',turn:0n,role:'user',phase:'prompt',
@@ -421,41 +421,49 @@ const replResult={id:'s/c2',seq:'2',round_id:'',turn:0n,role:'assistant',phase:'
   command_id:'c2',name:'repl',raw:replSource,mode_instance:'repl-instance',input_id:'repl-input',
   status:'running',text:'',durable:true};
 harness.apply_snapshot(c,{...snapshot(null,[replInput,replResult]),cursor:'2'});
-assert.equal(descendants(c.transcript).some(node=>node.tag==='summary'&&node.textContent==='Result'),false,
-  'an evaluation has no result until it finishes');
+assert.equal(descendants(c.transcript).filter(node=>node.tag==='pre'&&node.attributes.class==='command_output').length,1);
+assert.equal(descendants(c.transcript).some(node=>node.tag==='details'),false);
 harness.live_console(c,'s',{id:'s/c2/console',command_id:'c2',round_id:'',turn:0n,cumulative:true,text:'printed value\n'});
 timers.filter(t=>t.ms===40).at(-1).callback();
-panel=descendants(c.transcript).find(node=>node.attributes.class==='execution live_output');
-assert.equal(panel.open,true,'REPL output is visible by default');
-assert.equal(panel.hidden,false);
-assert.match(panel.textContent,/printed value/);
+let commandPre=descendants(c.transcript).find(node=>node.attributes.class==='command_output');
+assert.equal(commandPre.textContent,'printed value\n');
 const replDone={...replResult,status:'done',text:'42'};
 harness.apply_snapshot(c,{...snapshot(null,[replInput,replDone]),cursor:'2'});
 let replRun=descendants(c.transcript).find(node=>node.attributes.class==='run');
-assert.deepEqual(replRun.children.map(node=>node.tag),['article','details','article']);
-assert.equal(replRun.children[0].textContent,'REPL input'+replSource);
-assert.match(replRun.children[1].textContent,/printed value/);
-assert.match(replRun.children[2].textContent,/ResultCopy42$/);
-panel=replRun.children[1]; panel.open=false; panel.dispatchEvent(new Event('toggle'));
-harness.apply_snapshot(c,{...snapshot(null,[replInput,replDone]),cursor:'2'});
-assert.equal(descendants(c.transcript).find(node=>node.attributes.class==='execution live_output').open,false,
-  'an explicitly collapsed REPL output stays collapsed');
+assert.deepEqual(replRun.children.map(node=>node.tag),['article','article']);
+assert.equal(replRun.children[0].textContent,'User'+replSource);
+assert.equal(replRun.children[1].textContent,'Agentprinted value\n42');
+assert.equal(descendants(replRun).filter(node=>node.tag==='pre').length,1);
 const replReload=client();
 harness.apply_snapshot(replReload,snapshot(null,[replInput,replDone]));
-assert.equal(descendants(replReload.transcript).find(node=>node.attributes.class==='execution live_output').hidden,true);
-assert.match(replReload.transcript.textContent,/ResultCopy42/);
+assert.equal(descendants(replReload.transcript).find(node=>node.attributes.class==='command_output').textContent,'42');
 const liveRepl=client();
 harness.apply_record(liveRepl,replInput);
 harness.apply_command(liveRepl,'s',{id:'c2',name:'repl',raw:replSource,mode_instance:'repl-instance',
-  input_id:'repl-input',status:'running'});
+  input_id:'repl-input',status:'running',start_seq:2n});
 harness.live_console(liveRepl,'s',{id:'s/c2/console',command_id:'c2',round_id:'',turn:0n,cumulative:true,text:'live print\n'});
 timers.filter(t=>t.ms===40).at(-1).callback();
 harness.apply_command(liveRepl,'s',{id:'c2',name:'repl',raw:replSource,mode_instance:'repl-instance',
-  input_id:'repl-input',status:'done',display:'42'});
+  input_id:'repl-input',status:'done',display:'42',start_seq:2n});
 replRun=descendants(liveRepl.transcript).find(node=>node.attributes.class==='run');
-assert.deepEqual(replRun.children.map(node=>node.tag),['article','details','article']);
-assert.match(replRun.children[1].textContent,/live print/);
-assert.match(replRun.children[2].textContent,/ResultCopy42$/);
+assert.deepEqual(replRun.children.map(node=>node.tag),['article','article']);
+assert.equal(replRun.children[1].textContent,'Agentlive print\n42');
+for (const name of ['run','sh']) {
+  const execution=client();
+  const code=name==='run'?'($println "hello") 42':'printf hello';
+  const user={...replInput,text:`/${name} ${code}`};
+  const running={...replResult,name,raw:code,mode_instance:null};
+  harness.apply_snapshot(execution,{...snapshot(null,[user,running]),cursor:'2'});
+  harness.live_console(execution,'s',{id:'s/c2/console',command_id:'c2',round_id:'',turn:0n,cumulative:true,text:'hello\n'});
+  timers.filter(t=>t.ms===40).at(-1).callback();
+  harness.apply_command(execution,'s',{id:'c2',name,raw:code,status:'done',start_seq:2n,
+    display:name==='run'?'42':'hello\n',exit:name==='sh'?0n:null});
+  const run=descendants(execution.transcript).find(node=>node.attributes.class==='run');
+  const output=descendants(run).find(node=>node.attributes.class==='command_output');
+  assert.equal(output.textContent,name==='run'?'hello\n42':'hello\n');
+  assert.equal(descendants(run).some(node=>node.tag==='details'),false);
+  assert.equal(run.textContent.split(code).length-1,1,'the command appears only in its User message');
+}
 // A receiving Request has a stable identity but a later source sequence. Live
 // replacement and an older in-flight snapshot must retain the newest input.
 c=client();

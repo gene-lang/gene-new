@@ -200,6 +200,7 @@ input::placeholder, textarea::placeholder { color: var(--muted); opacity: 1; }
 .speaker { margin: 0 0 .55rem; color: var(--muted); font-size: .72rem; font-weight: 550; }
 .user { width: fit-content; max-width: 90%; margin-left: auto; margin-right: 0; padding: .85rem 1.1rem; text-align: left; color: var(--ink); background: var(--user); }
 .agent { padding: .2rem 0; }
+.command_output { margin: 0; padding: 0; background: transparent; border: 0; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .88rem; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
 .message_text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: .94rem; }
 .provisional .speaker { color: var(--accent); }
 .step { margin: 1rem 0 1.4rem; border-left: 1px solid var(--line); padding-left: 1rem; }

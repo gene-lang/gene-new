@@ -226,14 +226,28 @@
 
 (fn command_input_record [session : Str, record]
   # Older receipts retain the parsed command, but not its original spelling.
-  (let repl (&& (== record/name "repl") (! ($absent? record/mode_instance))))
-  (let text (if repl record/raw (?? record/input_text
+  (let mode_input (! ($absent? record/mode_instance)))
+  (let text (if mode_input record/raw (?? record/input_text
     ($to_str "/" record/name (if (== record/raw "") "" ($to_str " " record/raw))))))
   {^id $"${session}/${record/id}/input"
    ^seq ($to_str (?? record/start_seq 0)) ^round_id "" ^turn 0
    ^role "user" ^phase "prompt" ^kind "command/input"
-   ^speaker (if repl "REPL input" "User")
+   ^speaker "User"
    ^text text ^order (?? record/started_ms 0) ^^durable})
+
+(fn command_display [record]
+  (if_not (["sh" "run" "repl"] .contains? record/name)
+    (return (?? record/display "")))
+  (if (== record/status "running") (return ""))
+  (if (== record/status "cancelled") (return "Stopped."))
+  # The bounded item keeps only the value, including for older receipts whose
+  # display field still includes a command echo and diagnostic id.
+  (?? record/item/value (?? record/display "")))
+
+(fn public_command [record]
+  (let result ($thaw ($freeze_shallow record)))
+  (result .put "display" (command_display record))
+  result)
 
 (fn queue_snapshot [service, session : Str]
   (if service/closed/.get (return nil))
@@ -290,10 +304,9 @@
       (if_yes (== record/ui_action true)
         (publish_message service "ui/action" "" {^session session ^record record})
         (return nil))
-      (let repl (&& (== record/name "repl") (! ($absent? record/mode_instance))))
-      (if (&& (! ($absent? record/raw)) (|| ($absent? record/mode_instance) repl))
+      (if (! ($absent? record/raw))
         (publish_message service "turn" session (command_input_record session record)))
-      (if (&& (!= record/name "sh") (! ($absent? record/text)))
+      (if (! ($absent? record/text))
         (publish_message
           service
           "console"
@@ -310,7 +323,7 @@
             ^text record/output
             ^!late
             ^!durable})
-        (publish_message service "command" session record))
+        (publish_message service "command" session (public_command record)))
       (if ($absent? record/text) (queue_snapshot service session))))
   nil)
 
@@ -620,8 +633,7 @@
     (let seq (?? record/start_seq 0))
     (if (&& (>= after 0) (<= seq after)) (continue))
     (if (&& (>= before 0) (>= seq before)) (continue))
-    (if (|| ($absent? record/mode_instance) (&& (== record/name "repl") (! ($absent? record/raw))))
-      (records .push (command_input_record id record)))
+    (records .push (command_input_record id record))
     (if_yes (&& console (!= record/name "sh") (!= (?? record/output "") ""))
       (records .push
         {
@@ -650,7 +662,8 @@
         ^mode_instance (?? record/mode_instance nil)
         ^name record/name
         ^raw record/raw
-        ^text (?? record/display (if (== record/name "sh") (?? record/output "") ""))
+        ^text (command_display record)
+        ^exit (?? record/exit nil)
         ^status record/status
         ^view (?? record/view nil)
         ^order (?? record/started_ms 0)

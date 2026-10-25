@@ -146,7 +146,8 @@
       (turn/state .set "closed")
       (if_not completed/.get (discard_composition_changes ctx/runtime/h/snapshots turn))
       (close_execution_scope scope)))
-  (CommandResult ^display (operator_result turn value) ^!attached ^status "done"))
+  # Keep an evaluated nil distinct from an omitted display value.
+  (CommandResult ^display (operator_result turn (if ($nil? value) "nil" value)) ^!attached ^status "done"))
 
 (fn view_command [ctx]
   (let specification ($str/trim ctx/raw))

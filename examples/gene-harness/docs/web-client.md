@@ -101,24 +101,27 @@ the trigger's request. When the sequence-1 request record is loaded, it replaces
 the fallback rather than appearing twice. Identical later prompts remain visible.
 
 Each turn groups the **Request** it receives, the Gene **Response** returned by
-the model, and its live **Output**, in that order. The initial message is labeled
-**User** (or Trigger/Card action/Parent agent for other sources) and is not
-repeated inside its first turn. A generated continuation belongs to the next
+the model, and its live **Output**, in that order. Speaker labels are always
+**User** and **Agent**, including commands and input modes. The initial message
+is not repeated inside its first turn. A generated continuation belongs to the next
 turn. Turn headings and their Request, Response, and Output disclosures start
 collapsed. Cards, media, questions, and errors stay inside their producing turn.
 Pending turns have a blank summary; a host-extracted literal reply hint may fill
-it when code arrives, and the evaluated reply is authoritative. A concise reply
-appears only in its own heading as `Turn N: <reply>`. The full final reply appears
-once under **Agent**, outside the last turn. Completed status
+it when code arrives, and the evaluated reply is authoritative. A concise
+intermediate reply appears in its own heading as `Turn N: <reply>`. The final
+turn heading is just `Turn N`; the full final reply appears once under **Agent**,
+outside the last turn. Completed status
 shows the status label without repeating reply text. Response code is
 highlighted when expanded. Printed text appears in an **Output · live** disclosure
 inside its owning turn, collapsed by default. Late output stays with its original
 turn and is labeled. Output is held only in page memory: snapshots, pagination,
 reloads and new browser tabs never restore it. Same-page conversation switching
 and temporary reconnects retain received chunks; a host restart clears them.
-Command printing has a separate live disclosure under its command. Returned
-command results, help text, interactive shell output and exit status keep their
-normal presentation. Diagnostic console events and CLI transcript access remain
+`/sh`, `/run` and `/repl` show their input once under User. Agent combines stdout,
+stderr and the returned value in a plain monospace block, without a heading or
+disclosure. Shell output appears once. Captured printing is page-owned; returned
+command results and exit status remain available after reload. Help text and
+file viewers retain their presentation. Diagnostic console events and CLI transcript access remain
 available independently of the browser's temporary display.
 
 At an operator turn limit, the receipt ends **paused** and the unsent Request

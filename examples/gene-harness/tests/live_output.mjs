@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict';
 import {pathToFileURL} from 'node:url';
 const out=await import(pathToFileURL(process.argv[2]).href);
+assert.equal(out.command_output_text({text:'hello\n'},{name:'run',status:'done',text:'42'}),'hello\n42');
+assert.equal(out.command_output_text({text:'hello'},{name:'repl',status:'done',text:'hello'}),'hello\nhello');
+assert.equal(out.command_output_text({text:'hello\n'},{name:'sh',status:'done',text:'hello\n',exit:0n}),'hello\n');
+assert.equal(out.command_output_text({text:'error\n'},{name:'sh',status:'failed',text:'error\n',exit:1n}),
+  'error\n[Process exited with code 1.]');
+assert.equal(out.command_output_text({text:'printed\n'},{name:'run',status:'failed',text:'Failed.'}),'printed\nFailed.');
+assert.equal(out.command_output_text(null,{name:'run',status:'done',text:'42'}),'42');
 const chunk=(id,text,round='r',turn=1n,extra={})=>({id,text,round_id:round,turn,...extra});
 const key=out.turn_output_key('s','r',1n);
 const store=out.create_output();
