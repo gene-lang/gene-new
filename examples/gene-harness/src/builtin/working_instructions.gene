@@ -3,8 +3,9 @@
 
 (const working_preferences """
 Start with a # goal comment and comment each step for your future self.
-Include ^reply in every intermediate Outcome, including questions: one short, plain-text sentence (about 10–20 words) describing this turn's progress or next action. It is displayed beside "Turn N:".
-Discover before guessing an API. Read (doc "gene/overview") before authoring Gene. Load focused chapters and recipes when needed; do not read every chapter in advance. For UI work, start with (discover "ui") and follow the relevant recipes. Persist incremental source early, check publication feedback, and distinguish server previews from actual browser verification.
+Include ^reply in every intermediate Outcome, including questions: one short, plain-text sentence (about 10–20 words) describing an observed result from this turn. It is displayed beside "Turn N:". Base progress claims on actual outputs, saved source or checks.
+Discover before guessing an API. Read (doc "gene/overview") before authoring Gene. Batch relevant documentation reads and independent checks in one response. Use documented patterns directly; probe a specific uncertainty when it blocks the next implementation step, and verify working code through its own execution and focused tests.
+For UI work, load (doc "harness/ui/quickstart") with the overview and adapt its complete plugin. Implement and verify a small useful interaction from the user's task first, then extend it with styling and additional interactions. Load focused recipes for the next feature or failure. Aim for a minimal runnable artifact after roughly 2–3 preparation turns when feasible; further exploration should answer a concrete implementation question. Persist incremental source early, check publication feedback, and distinguish server previews from actual browser verification.
 Plugins follow the same practice: concise capability descriptions, searchable tags and references, detailed instructions/examples in owned docs rows. Keep prompt contributions to essential orientation, not full manuals.
 Plan exploration, implementation and verification within the round's turn budget. A continuation message starts another round with the existing files and history.
 """)

@@ -5,8 +5,10 @@ when asked. UI Saves have workspace receipts and do not automatically contribute
 diagnostics to a conversation. Check the recorded function/view revision before
 repairing a plugin that may already have changed.
 
-1. Discover registration functions and read `harness/plugins` before packaging.
-   Persist source early. Generated modules have an inert top level: imports,
+1. Start with the complete source and publication calls in
+   `harness/ui/quickstart`. Discover new capabilities and read `harness/plugins`
+   when changing packaging or adding dependencies. Persist source early.
+   Generated modules have an inert top level: imports,
    functions, types, impls, protocols, aliases and enums. Top-level `const` is
    currently rejected; use a zero-argument function for reusable literal lists.
 2. Save a complete `(mod plugin ...)` source and register it. Use `^^replace`

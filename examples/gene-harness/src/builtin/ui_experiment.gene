@@ -1,6 +1,6 @@
 (mod ui_experiment)
 (import [Plugin PluginHost] ^from "../plugin_api")
-(import [validate_ui_settings] ^from "../ui/state")
+(import [validate_ui_settings ui_settings] ^from "../ui/state")
 (import [ui_preview] ^from "../ui/views")
 (import [list_action_receipts] ^from "../ui/action_log")
 (import [contribute_doc] ^from "./documentation")
@@ -12,10 +12,16 @@
       (let loop_factory (host .PluginHost:resolve "loop"))
       (let runtime (/runtime (loop_factory)))
       (host .PluginHost:contribute "functions"
-        {^name "ui_configure" ^doc "Enable, select or theme the experimental workspace panel."
+        {^name "ui_configure" ^doc "Enable, select or theme the experimental workspace panel. Omitted keys keep their current values."
          ^tags ["ui" "layout" "theme" "panel"] ^docs ["harness/ui/configuration"]
          ^fn (fn [settings]
-           (let checked (validate_ui_settings settings))
+           # Merge over the effective settings so a partial call cannot reset
+           # an existing layout, theme or profile default.
+           (if (!= ($head settings) Map) (validate_ui_settings settings))
+           (let merged {})
+           (for [key value] in (ui_settings runtime/h) (merged .put key value))
+           (for [key value] in settings (merged .put key value))
+           (let checked (validate_ui_settings merged))
            (host .PluginHost:update_state checked)
            checked)})
       (host .PluginHost:contribute "functions"

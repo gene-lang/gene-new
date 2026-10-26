@@ -1,0 +1,100 @@
+(import $test [describe it])
+(import [isolated run_spec test_service] ^from "../../support")
+(import [create_session close_session_service] ^from "../../../src/web/session_service")
+(import [doc row] ^from "../../../src/kernel")
+(import [discover] ^from "../../../src/agents/discovery")
+(import [evaluate_harness_turn] ^from "../../../src/agents/harness_turn")
+(import [ui_preview] ^from "../../../src/ui/views")
+(import [ui_settings] ^from "../../../src/ui/state")
+(import [register_plugin] ^from "../../../src/storage/workspace")
+
+# Execute the actual documentation blocks, so source and publication examples
+# cannot drift from the plugin contract or teach an untested startup sequence.
+(fn quickstart_blocks [text : Str]
+  (let blocks [])
+  (let sections ($str/split text "```gene\n"))
+  (var index 1)
+  (while (< index sections/.size)
+    (blocks .push (/0 ($str/split sections/%index "```")))
+    (set index (+ index 1)))
+  ($assert (== blocks/.size 3) "quickstart needs source, publication and smoke-check blocks")
+  blocks)
+
+(describe "Tested UI quickstart"
+  (it "publishes the documented source, runs its checks and preserves state on restart/replacement" []
+    (isolated this_mod/.path "publishes the documented source, runs its checks and preserves state on restart/replacement"
+      (fn [workspace]
+        (let service (test_service ^workspace workspace ^provider (fn [request] "(Outcome ^^done ^reply \"unused\")")))
+        (let source ($cell ""))
+        (try
+          (let runtime service/runtime)
+          (let session (create_session service))
+          (let found (discover ^kind "docs" runtime/h "quickstart"))
+          ($assert (> ($size ($filter found/matches (fn [entry] (== entry/name "harness/ui/quickstart")))) 0))
+          (let blocks (quickstart_blocks (doc runtime/h "harness/ui/quickstart")))
+          (source .set blocks/0)
+          # An existing workspace UI must survive the starter's partial configure calls.
+          ((/fn (row runtime/h "functions" "ui_configure"))
+            {^^enabled ^layout "panel" ^side "right" ^width 60 ^theme {^accent "#335577"}})
+          (let save ($to_str `($fs/write_text "counter.gene" %blocks/0)))
+          (let published (evaluate_harness_turn ^session session/id
+            runtime/h 1 workspace ($to_str save "\n" blocks/1)))
+          ($assert (== published/kind "continue") ($to_str published/error))
+          ($assert ($fs/exists? $"${workspace}/counter.gene"))
+          ($assert ($str/contains? published/request "counter: active") published/request)
+          ($assert ($str/contains? published/request "[1.ui]") published/request)
+          ($assert (! ($absent? (row runtime/h "web_components" "counter"))))
+          (let checked (evaluate_harness_turn ^session session/id runtime/h 2 workspace blocks/2))
+          ($assert (== checked/kind "done") ($to_str checked/error))
+          (let settings (ui_settings runtime/h))
+          ($assert (&& (== settings/layout "panel") (== settings/side "right") (== settings/width 60)
+                       (== settings/theme/accent "#335577") (== settings/default_view "counter"))
+            ($to_str settings))
+          (let get (/fn (row runtime/h "functions" "counter_get")))
+          (let add (/fn (row runtime/h "functions" "counter_add")))
+          (let save_value (/fn (row runtime/h "functions" "counter_set")))
+          ($assert (== (get) 0))
+          # The smoke check restores whatever value it found.
+          (save_value ^value "5")
+          (let rechecked (evaluate_harness_turn ^session session/id runtime/h 3 workspace blocks/2))
+          ($assert (== rechecked/kind "done") ($to_str rechecked/error))
+          ($assert (== (get) 5))
+          # A failed assertion after a durable mutation must restore the saved value too.
+          (let failing_check ($regex/replace #"amount 2\) 12" blocks/2 "amount 2) 13"))
+          ($assert (!= failing_check blocks/2) "failed to inject a smoke-check assertion failure")
+          (let failed (evaluate_harness_turn ^session session/id runtime/h 4 workspace failing_check))
+          ($assert (== failed/kind "error") ($to_str failed))
+          ($assert ($str/contains? ($str/lower failed/error) "assert") failed/error)
+          ($assert (== (get) 5) "failed smoke check changed the saved counter")
+          (save_value ^value "0")
+          # Formatting a program alone cannot prove it is one plugin module.
+          ($fs/write_text $"${workspace}/counter.gene" ($to_str source/.get "\n(fn stray [] 1)\n"))
+          (let refused (evaluate_harness_turn ^session session/id runtime/h 5 workspace blocks/1))
+          ($assert (== refused/kind "error") ($to_str refused))
+          ($assert ($str/contains? refused/error "one complete module"))
+          ($assert (== ($size (?? refused/composition_changes [])) 0))
+          ($fs/write_text $"${workspace}/counter.gene" source/.get)
+          # Concurrent button actions share the gate shown in the starter.
+          (scope
+            (let tasks [])
+            (repeat i in 8 (tasks .push (spawn ^lane root (add ^amount 1))))
+            (for task in tasks (await task)))
+          ($assert (== (get) 8))
+          (save_value ^value "23")
+          (let preview (ui_preview runtime/h "counter"))
+          ($assert ($absent? preview/error) ($to_str preview))
+          ($assert ($str/contains? ($json/stringify preview/view) "23"))
+          ($assert (== preview/view/children/4/props/action "counter_set"))
+          ($assert (== preview/view/children/4/children/0/children/1/props/field "value"))
+        ensure (close_session_service service))
+        (let reopened (test_service ^workspace workspace ^provider (fn [request] "(Outcome ^^done ^reply \"unused\")")))
+        (try
+          (let restarted reopened/runtime)
+          ($assert (== ((/fn (row restarted/h "functions" "counter_get"))) 23))
+          (let replacement (register_plugin ^^replace restarted/workspace restarted/h "counter" source/.get))
+          ($assert (== replacement/state "active") ($to_str replacement))
+          ($assert (== ((/fn (row restarted/h "functions" "counter_get"))) 23))
+          ($assert ($absent? (/error (ui_preview restarted/h "counter"))))
+        ensure (close_session_service reopened))))))
+
+(fn main [args] : Int (run_spec args))

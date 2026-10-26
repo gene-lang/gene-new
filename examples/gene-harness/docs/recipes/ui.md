@@ -4,10 +4,15 @@ Use ordinary Gene plugins to customize the Harness. Begin with a small working
 workflow, persist its source, publish it, and then expand. No separate server or
 repository implementation imports are needed.
 
+Start with `(doc "harness/ui/quickstart")`: one complete tested plugin and its
+publication/smoke-check responses. Adapt that working source, then load the
+focused recipe needed by the next change.
+
 ## Choose the next reference
 
 | Need | Load |
 | --- | --- |
+| Complete first plugin with persistent state, actions, a form and a view | `(doc "harness/ui/quickstart")` |
 | Enable a panel, choose layout or panel colors, switch light/dark (`set_appearance`) | `(doc "harness/ui/configuration")` |
 | Default styles, shared classes and scoped CSS for a view | `(doc "harness/web_components")` |
 | Forms, named fields, labels and actions | `(doc "harness/ui/forms")` |
@@ -19,7 +24,8 @@ repository implementation imports are needed.
 
 Load the relevant recipe when you reach that step. Discover available functions
 with `(discover "ui" ^kind "functions")`; they are already callable. Read
-`gene/overview` before authoring Gene; probe uncertain constructs. In particular,
+`gene/overview` before authoring Gene. Verify the working implementation and
+probe specific blocking uncertainties. Batch independent checks. In particular,
 use `if_yes` for a multi-step guard, bind computed values before path access,
 and bind lists/labels before interpolating them into quoted views.
 

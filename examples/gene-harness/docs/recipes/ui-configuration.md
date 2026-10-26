@@ -11,6 +11,11 @@ Discover `ui_configure`, then enable a view and set fresh-tab defaults:
           ^dark {^accent "#7fc4b8"}}})
 ```
 
+Each call changes only the keys it names; omitted keys keep their current
+values, so `(ui_configure {^^enabled})` leaves an existing layout and theme in
+place. A supplied `theme` replaces the whole theme map; pass `^theme {}` to
+clear the overrides.
+
 `layout` is chat or panel; `side` is left or right; `width` is an integer from
 25 to 70. `theme` holds `^light` and `^dark` override maps; their keys are ink,
 muted, line, surface, sidebar, soft and accent, with six-digit hex colors. Keys a

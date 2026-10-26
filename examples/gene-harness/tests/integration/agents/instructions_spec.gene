@@ -20,7 +20,16 @@
           ($assert ($str/starts_with? initial response_format))
           ($assert ($str/contains? initial $"Workspace: ${runtime/root}\nSession kind: interactive"))
           ($assert ($str/contains? initial "(discover \"topic\")"))
+          ($assert ($str/contains? initial "All query words must match"))
           ($assert (! ($str/contains? initial "The rules that catch most errors")))
+          ($assert ($str/contains? initial "harness/ui/quickstart"))
+          (let overview (doc runtime/h "gene/overview"))
+          ($assert ($str/contains? overview "focused tests"))
+          ($assert (! ($str/contains? overview "Every construct you are not certain of")))
+          (let starter (doc runtime/h "harness/ui/quickstart"))
+          ($assert (< ($str/byte_size starter) 16384) "quickstart must fit without output elision")
+          ($assert ($str/contains? starter "(mod plugin"))
+          ($assert (! ($str/contains? initial "(mod plugin")) "starter source belongs in pull-only docs")
           (contribute runtime/h "core" "prompt"
             {^name "dynamic_probe" ^render (fn [current record]
               $"probe:${record/kind}")})

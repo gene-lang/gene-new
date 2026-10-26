@@ -2,7 +2,7 @@
 (import ^from "../kernel" [rows contribute])
 
 (const discovery_instructions """
-(discover "topic") searches active documentation and capabilities by names, summaries and tags; results include owners, callable signatures and chapter references. Narrow with ^kind "docs" or "functions", or ^owner "plugin_id". Results are paged: pass next_offset as ^offset to continue. (doc "chapter/name") loads one chapter. These helpers, session_id and workspace_root are always available; discovered functions are already callable in response code, /run and the REPL.
+(discover "topic") searches active documentation and capabilities by names, summaries and tags; results include owners, callable signatures and chapter references. All query words must match: use one focused topic or exact name per call, and batch separate queries when needed. Narrow with ^kind "docs" or "functions", or ^owner "plugin_id". Results are paged: pass next_offset as ^offset to continue. (doc "chapter/name") loads one chapter. These helpers, session_id and workspace_root are always available; discovered functions are already callable in response code, /run and the REPL.
 """)
 
 (const response_format """

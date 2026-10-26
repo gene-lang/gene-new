@@ -11,8 +11,10 @@ share map operations, with explicit consumption for streams.
 `(foo ^k 1)` in code position is a call, not data. Guessing produces code that
 reads plausibly and does not run.
 
-So: **probe**. Every construct you are not certain of goes through the binary
-before it goes into a file.
+Start from documented patterns and persist a small working version early.
+Verify the actual implementation with execution and focused tests. Use an
+isolated probe when a specific uncertainty blocks the next implementation
+step; batch independent probes and reuse their results.
 
 ## Probe
 
@@ -25,9 +27,14 @@ $ ./bin/gene eval '($println (([1 2 3] .to_stream) .into []))'
 [1 2 3]
 ```
 
-Probe the *shape* you are unsure about, in isolation, before writing the
-function that uses it. A probe that errors is the cheapest possible feedback;
-a wrong guess that reaches a file costs a whole debug cycle.
+Probe the *shape* that blocks the next change. A successful run or test of the
+working implementation also verifies the constructs it exercises. Convert
+useful probes into regression tests as the implementation grows.
+
+In a multi-turn Harness session, group relevant documentation reads and
+independent checks in one response. Aim for a minimal runnable artifact after
+roughly 2–3 preparation turns when feasible. Further exploration should answer
+a concrete implementation question or test failure.
 
 The rest of the surface:
 
@@ -37,11 +44,11 @@ The rest of the surface:
 | `./bin/gene fmt f.gene` | Canonical layout. Doubles as a syntax check, and shows you the idiomatic spelling of what you wrote. |
 | `./bin/gene parse f.gene` | What the reader actually built. Reach for it when a form means something you did not intend. |
 
-**Completion criterion:** every construct in the code you deliver has either
-appeared in a successful probe, or come verbatim from `examples/style_guide.gene`
-— and the finished file runs, then survives `gene fmt` unchanged. `fmt` is
-behavior-preserving and idempotent, so where it disagrees with your layout, take
-its output.
+**Completion criterion:** the finished implementation runs and focused tests
+exercise its intended behavior and relevant failure cases. Use documented
+patterns for routine constructs and targeted probes for remaining blockers.
+Adopt canonical `gene fmt` output and check second-pass idempotence; formatting
+is behavior-preserving.
 
 ## The rules that catch most errors
 
@@ -121,6 +128,10 @@ redundant. Reserve `then`/`elif`/`else` for branches that all do real work.
 **Only `nil`, `false`, and `void` are falsy.** `""`, `0`, and `[]` are truthy,
 so test emptiness explicitly: `(== s "")`, `xs/.empty?`, `($absent? v)`.
 
+**Boolean operators are `&&`, `||`, and `!`.** Write `(&& ready valid)`,
+`(|| empty missing)`, and `(! done)`. Bare `and` and `or` are not boolean
+operators.
+
 **Node literals are data only under quote.** In code position `(foo ^k 1 2)`
 is a call. Write `(quote (foo ^k 1 2))` or `` `(foo ^k 1 2) `` for the node.
 
@@ -128,6 +139,12 @@ is a call. Write `(quote (foo ^k 1 2))` or `` `(foo ^k 1 2) `` for the node.
 `?` a predicate; `-` never appears in a registered name.
 
 ## Reference
+
+In Gene Harness, use `(doc "gene/syntax")`, `(doc "gene/declarations")`,
+`(doc "gene/control_flow")`, `(doc "gene/stdlib")`, and `(doc "gene/pitfalls")`.
+The relative links below name repository files; Harness chapter names use the
+short `gene/...` names above. For a first UI plugin, use
+`(doc "harness/ui/quickstart")`.
 
 Load by branch — each file is self-contained:
 

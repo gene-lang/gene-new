@@ -4,11 +4,11 @@
 
 (fn gene_reference [] : Plugin
   (Plugin ^id "gene_reference"
-    ^provides [["prompt" "gene_reference"] ["docs" "gene/stdlib"]]
+    ^provides [["prompt" "gene_reference"] ["docs" "gene/stdlib"] ["docs" "harness/ui/quickstart"]]
     ^activate (fn [host]
       (host .PluginHost:contribute "prompt"
         {^name "gene_reference"
-         ^text "Write Gene using its documented constructs; probe uncertain spellings. The language guide is available on demand as gene/overview, with focused chapters discoverable by topic."})
+         ^text "Write Gene using documented patterns and verify the working implementation with focused tests. Probe specific blocking uncertainties. The language guide is gene/overview; a complete tested UI starter is harness/ui/quickstart. Focused chapters are discoverable by topic."})
       (contribute_doc host "gene/overview"
         "Writing and probing Gene; essential conventions and reference branches."
         "tools/gene-lang-skill/SKILL.md" ^tags ["language" "Gene" "syntax" "tooling"]
@@ -30,7 +30,12 @@
         "Complete contract for UI slots, keyed forms, browser state, actions and safe workspace images."
         "examples/gene-harness/docs/web-components.md"
         ^tags ["ui" "web" "components" "reference"]
-        ^docs ["harness/ui" "harness/ui/forms" "harness/ui/drafts" "harness/ui/revisions"])
+        ^docs ["harness/ui/quickstart" "harness/ui" "harness/ui/forms" "harness/ui/drafts" "harness/ui/revisions"])
+      (contribute_doc host "harness/ui/quickstart"
+        "Complete tested persistent counter plugin: actions, keyed form, view, publication and smoke checks. Start UI implementation here."
+        "examples/gene-harness/docs/recipes/ui-quickstart.md"
+        ^tags ["ui" "web" "quickstart" "starter" "plugin" "forms" "state"]
+        ^docs ["harness/ui" "harness/ui/forms" "harness/ui/publication"])
       (contribute_doc host "harness/cards"
         "Inline conversation cards: static cards, question views and live cards with state."
         "examples/gene-harness/docs/cards.md"
@@ -39,7 +44,7 @@
       (contribute_doc host "harness/ui"
         "Start a customized workflow UI: layout, routes and relevant recipes."
         "examples/gene-harness/docs/recipes/ui.md" ^tags ["ui" "web" "workflow" "layout"]
-        ^docs ["harness/ui/forms" "harness/ui/drafts" "harness/ui/revisions" "harness/ui/publication"])
+        ^docs ["harness/ui/quickstart" "harness/ui/forms" "harness/ui/drafts" "harness/ui/revisions" "harness/ui/publication"])
       (for entry in
           [["forms" "Build keyed forms, named action arguments and friendly labels."]
            ["drafts" "Retain browser drafts and selection; use true host discard."]
