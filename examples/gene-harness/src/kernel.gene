@@ -34,12 +34,13 @@
     flush_event_store])
 (import ^from "./storage/generated_event_catalog" [core_event_types])
 (import ^from "./views/view_api" [HarnessView view_provider])
-(import ^from "./ui/components" [validate_web_component])
-(import [validate_browser_client] ^from "./ui/browser_clients")
+(import [HarnessError] ^from "./errors" ^^export)
+(import [validate_discovery_metadata] ^from "./registries/contracts")
+(import [builtin_registry_specs] ^from "./registries/builtins")
 (import ^from "./notifications/publisher"
   [safe_publish update_notification list_source_messages clear_source_message])
 (import ^from "./runtime/call_supervision" [supervised_call])
-(import [execution_budget] ^from "./runtime/execution_budget")
+(import [execution_budget with_callback_budget] ^from "./runtime/execution_budget")
 (import ^from "./runtime/cordis_adapter"
   [RegistryHost retain_callback retained_callback? expire_scope_callbacks new_composition])
 (import ^from "." ^pkg "cordis" [LoaderOptions])
@@ -55,13 +56,11 @@
     close_composition_state
     immutable_view])
 
-(type HarnessError ^props {^message Str} ^impl [Error])
 (type CommandError ^props {^code Str ^message Str} ^impl [Error])
 (impl Error for CommandError)
 
-(impl Error for HarnessError)
-
-(type Registry ^props {^name Str ^unique Bool ^ordered Bool ^schema Any ^on_remove Any ^owner Str ^rows Any})
+(type Registry ^props {^name Str ^unique Bool ^ordered Bool ^schema Any ^on_remove Any
+  ^owner Str ^rows Any ^spec Any ^revision Str ^effects Any? ^owner_context Any? ^key Any? ^prepare Any?})
 
 (type RegistryRow ^props {^row_id Str ^owner Str ^registry Str ^key Str ^payload Any ^priority Int ^config_order Int ^acquired Int ^effects Any? ^cleanup_state Any?})
 
@@ -127,18 +126,20 @@
   (var registries h/registries/.get)
   (!= (registries .get name) void))
 
-(fn registry [h : Harness, name : Str, ^unique unique : Bool = false, ^ordered ordered : Bool = false, ^schema schema = nil, ^on_remove on_remove = nil, ^owner owner : Str = "core"] : Registry
+(fn registry [h : Harness, name : Str, ^unique unique : Bool = false, ^ordered ordered : Bool = false,
+  ^schema schema = nil, ^on_remove on_remove = nil, ^owner owner : Str = "core", ^spec spec = nil] : Registry
   (if (queue_registry_change? h)
     (then
       (let placeholder
-        (Registry ^name name ^unique unique ^ordered ordered ^schema schema ^on_remove on_remove ^owner owner ^rows ($cell [])))
+        (Registry ^name name ^unique unique ^ordered ordered ^schema schema ^on_remove on_remove
+          ^owner owner ^rows ($cell []) ^spec (?? spec {}) ^revision "queued"))
       (queue_composition_change
         h/snapshots
         {
           ^id owner
           ^kind "registry"
           ^apply (fn []
-                   (registry ^unique unique ^ordered ordered ^schema schema ^on_remove on_remove ^owner owner
+                   (registry ^unique unique ^ordered ordered ^schema schema ^on_remove on_remove ^owner owner ^spec spec
                      h
                      name))})
       (return placeholder)))
@@ -146,21 +147,71 @@
     (return
       (registry_change
         h
-        owner
         (fn []
-          (registry ^unique unique ^ordered ordered ^schema schema ^on_remove on_remove ^owner owner
+          (registry ^unique unique ^ordered ordered ^schema schema ^on_remove on_remove ^owner owner ^spec spec
             h
             name)))))
   (var registries_cell h/registries)
   (var registries registries_cell/.get)
   (if_not (== (registries .get name) void)
     (fail (HarnessError ^message $"registry ${name} already defined")))
+  (let declared (validate_registry_spec
+    (?? spec {^name name ^unique unique ^ordered ordered ^schema schema ^on_remove on_remove})))
+  (if (!= declared/name name) (fail (HarnessError ^message "registry spec name does not match its identity")))
+  (let policy (policy_for_owner h owner))
   (var created
-    (Registry ^name name ^unique unique ^ordered ordered ^schema schema ^on_remove on_remove ^owner owner ^rows ($cell (fresh_list))))
+    (Registry ^name name ^unique (?? declared/unique false) ^ordered (?? declared/ordered false)
+      ^schema (bind_registry_callback h owner declared/schema)
+      ^on_remove (bind_registry_callback h owner declared/on_remove)
+      ^key (if ($runtime/callable? declared/key) (bind_registry_callback h owner declared/key) (?? declared/key "name"))
+      ^prepare (bind_registry_callback h owner declared/prepare)
+      ^owner owner ^rows ($cell (fresh_list)) ^spec (immutable_view declared)
+      ^revision ($crypto/random_hex 16) ^effects policy/effects ^owner_context (callback_receiver h owner)))
   (registries .put name created)
   (registries_cell .set registries)
+  (if_not ($absent? h/registry_observer) (h/registry_observer "$registries" name))
   (publish_direct_registry_change h)
   created)
+
+(fn validate_registry_spec [spec]
+  (if (|| (!= ($head spec) Map) (!= ($head spec/name) Str) (== spec/name "")
+          ($str/starts_with? spec/name "$"))
+    (fail (HarnessError ^message "registry spec requires a nonempty name")))
+  (for [field value] in spec
+    (if_not (["name" "unique" "ordered" "schema" "key" "callbacks" "reserved"
+              "on_remove" "prepare" "signature" "same_owner"] .contains? ($to_str field))
+      (fail (HarnessError ^message $"unknown registry spec field ${field}"))))
+  (for field in ["unique" "ordered" "same_owner"]
+    (if (&& (! ($absent? (spec .get field))) (!= ($head (spec .get field)) Bool))
+      (fail (HarnessError ^message $"registry ${field} must be Bool"))))
+  (for field in ["schema" "on_remove" "prepare"]
+    (if (&& (! ($absent? (spec .get field))) (! ($runtime/callable? (spec .get field))))
+      (fail (HarnessError ^message $"registry ${field} must be callable"))))
+  (if (&& (! ($absent? spec/key)) (!= ($head spec/key) Str) (! ($runtime/callable? spec/key)))
+    (fail (HarnessError ^message "registry key must be a field name or callable")))
+  (let fields (?? spec/callbacks []))
+  (if (!= ($head fields) List) (fail (HarnessError ^message "registry callbacks must be a list")))
+  (let seen {})
+  (for field in fields
+    (if (|| (!= ($head field) Str) (== field "") (== (seen .get field) true))
+      (fail (HarnessError ^message "registry callback fields must be unique nonempty strings")))
+    (seen .put field true))
+  (if (&& (! ($absent? spec/signature)) (! (fields .contains? spec/signature)))
+    (fail (HarnessError ^message "registry signature must name a declared callback field")))
+  (if (!= ($head (?? spec/reserved {})) Map)
+    (fail (HarnessError ^message "registry reserved names must map to their owners")))
+  (for [key owner] in (?? spec/reserved {})
+    (if (!= ($head owner) Str) (fail (HarnessError ^message "reserved owner must be a string"))))
+  spec)
+
+# Definition callbacks retain the registry owner's budget and receiver, even
+# when a later generation of that owner has already published. These private
+# wrappers also permit the old on_remove to finish during retirement.
+(fn bind_registry_callback [h : Harness, owner : Str, callable]
+  (if ($absent? callable) (return nil))
+  (let limits (/limits (policy_for_owner h owner)))
+  (fn [args...]
+    (with_callback_budget ^owner owner limits (fn [] (callable args...)))))
 
 (fn queue_registry_change? [h : Harness] : Bool
   (let context ($runtime/context))
@@ -339,6 +390,17 @@
     (out .push record/payload))
   out)
 
+(fn run_hooks [h : Harness, point : Str, context]
+  (let definition (row h "hook_points" point))
+  (if ($absent? definition) (fail (HarnessError ^message $"hook point ${point} is not available")))
+  (if (== definition/dispatch "coordinator")
+    (fail (HarnessError ^message $"hook point ${point} requires its host coordinator")))
+  (let results [])
+  (let input (immutable_view context))
+  (for hook in (rows h "hooks")
+    (if (== hook/point point) (results .push (hook/run input))))
+  (immutable_view results))
+
 (fn row_record [h : Harness, registry_name : Str, key : Str]
   (var found void)
   (for record in (registry_row_records h registry_name)
@@ -402,35 +464,9 @@
   (if_yes cleanup
     (if_not ($absent? record/cleanup_state) (record/cleanup_state .set false))
     (if_not ($absent? r/on_remove)
-      (invoke_owned_callable h r/owner r/on_remove [(callback_receiver h r/owner) record/payload])))
+      (r/on_remove r/owner_context record/payload)))
   (publish_direct_registry_change h)
   true)
-
-# Warm speech resources belong to the exact activation that opened them.
-# A cleanup lease remains usable after operation callbacks expire, and Cordis
-# also disposes it on retirement even when the caller lost the open result.
-(fn own_speech_engine [h : Harness, owner : Str, engine]
-  (let effects (/effects (policy_for_owner h owner)))
-  (if ($absent? effects) (return engine))
-  (let owned ($cell []))
-  (let result ($thaw ($freeze_shallow engine)))
-  (result .put "open" (fn [settings]
-    (let resource (engine/open settings))
-    (let lease (try
-      (effects .defer (fn []
-        (try (engine/close resource)
-        ensure
-          (owned .set ($filter owned/.get (fn [item] (! (same? item/resource resource))))))))
-      catch Any (engine/close resource) (fail $err)))
-    (owned/.get .push {^resource resource ^lease lease})
-    resource))
-  (result .put "close" (fn [resource]
-    (for item in owned/.get
-      (if (same? item/resource resource) (item/lease .dispose)))))
-  (result .put "close_all" (fn []
-    (let resources owned/.get)
-    (for item in resources (try (item/lease .dispose) catch Any nil))))
-  result)
 
 (fn contribute
   [h : Harness, owner : Str, registry_name : Str, payload,
@@ -445,110 +481,40 @@
       (return $"queued:${owner}:${registry_name}")))
   (if (serialize_registry_change? h)
     (return (registry_change h (fn [] (contribute h owner registry_name payload ^key key ^priority priority ^config_order config_order ^replace replace)))))
-  (if (== registry_name "commands")
-    (then
-      (let reserved_owner
-        (if (== payload/name "sh")
-          "shell"
-          (if (["help" "run" "view"] .contains? payload/name)
-            "core_commands"
-            (if (["cancel" "stop" "restart" "theme"] .contains? payload/name)
-              "core"
-              (if (["new" "sessions"] .contains? payload/name) "cli"
-                (if (== payload/name "repl") "repl" nil))))))
-      (if (&& (! ($absent? reserved_owner))
-              (!= owner reserved_owner))
-        (fail (HarnessError ^message
-          $"command ${payload/name} is reserved by ${reserved_owner}")))))
-  (var r (registry_named h registry_name))
-  (var checked
-    (if ($absent? r/schema)
-      payload
-      (invoke_owned_callable h r/owner r/schema [payload])))
+
+  (let r (registry_named h registry_name))
+  (var checked (if ($absent? r/schema) payload (r/schema payload)))
   (validate_discovery_metadata checked)
-  (if_yes (== registry_name "event_types")
-    (set checked (validate_event_type_owner owner checked)))
-  (if_yes (["speech_recognizers" "speech_synthesizers"] .contains? registry_name)
-    (set checked (own_speech_engine h owner checked)))
-  # `Fn` is a type-level constructor for signatures, not a runtime value, and
-  # `$head` of a function is the function itself — so a `(== ($head run) Fn)`
-  # test both fails to resolve and could not answer the question. A row that
-  # carries a `run` is the row that gets a supervision boundary; whether that
-  # value is callable is settled when it is applied.
-  (if_yes (&& (== registry_name "commands")
-              (!= checked/run void)
-              ($runtime/callable? checked/run))
-    (var guarded (fresh_map))
-    (for [name value] in checked (guarded .put name value))
-    (guarded .put "run"
-      (guard_callback h owner checked/run false))
-    (set checked guarded))
-  (if_yes (["functions" "ui_actions" "ui_links"] .contains? registry_name)
-    (let guarded {})
-    (for [name value] in checked (guarded .put name value))
-    (guarded .put "signature" ($runtime/signature checked/fn))
-    (guarded .put "fn" (guard_callback h owner checked/fn false))
-    (set checked guarded))
-  (if_yes (["providers" "image_generators" "speech_recognizers" "speech_synthesizers"] .contains? registry_name)
-    (let guarded ($thaw ($freeze_shallow checked)))
-    (let fields (if (["speech_recognizers" "speech_synthesizers"] .contains? registry_name)
-      ["available" "open" "transcribe" "synthesize" "stream"]
-      ["available" "configure" "capabilities" "prepare" "send"]))
-    (for field in fields
-      (let callback (checked .get field))
-      (if_not ($absent? callback)
-        (guarded .put field (guard_callback h owner callback false))))
-    (set checked guarded))
-  (if_yes (== registry_name "input_modes")
-    (let guarded ($thaw ($freeze_shallow checked)))
-    (for field in ["classify" "run" "close"]
-      (guarded .put field (guard_callback h owner (checked .get field) false)))
-    (set checked guarded))
-  (if_yes (== registry_name "hooks")
-    (let guarded ($thaw ($freeze_shallow checked)))
-    (guarded .put "run" (guard_callback h owner checked/run false))
-    (set checked guarded))
-  (if_yes (&& (== registry_name "prompt") (! ($absent? checked/render)))
-    (let guarded ($thaw ($freeze_shallow checked)))
-    (guarded .put "render" (guard_callback h owner checked/render false))
-    (set checked guarded))
-  (if_yes (&& (== registry_name "web_components") (! ($absent? checked/render)))
-    (let guarded ($thaw ($freeze_shallow checked)))
-    (guarded .put "render" (guard_callback h owner checked/render false))
-    (set checked guarded))
-  (if_yes (&& (== registry_name "seams")
-              (!= checked/value void)
-              ($runtime/callable? checked/value))
-    (var guarded_seam_row (fresh_map))
-    (for [name value] in checked (guarded_seam_row .put name value))
-    (guarded_seam_row .put "value"
-      (guard_callback h owner checked/value false))
-    (set checked guarded_seam_row))
-  (if_yes (== registry_name "views")
-    (var guarded_view_row (fresh_map))
-    (for [name value] in checked (guarded_view_row .put name value))
-    (guarded_view_row .put "value"
-      (view_provider (GuardedView ^h h ^owner owner ^view checked/value)))
-    (set checked guarded_view_row))
-  (var logical_key
+  (if_not ($absent? r/prepare) (set checked (r/prepare owner checked)))
+  (let logical_key
     (if ($absent? key)
-      (if (== registry_name "triggers")
-        ($to_str checked/id)
-        (if (== registry_name "hooks")
-          $"${checked/point}/${checked/name}"
-          (if (!= checked/name void) ($to_str checked/name) "")))
+      ($to_str (if ($runtime/callable? r/key) (r/key checked) (?? (checked .get r/key) "")))
       ($to_str key)))
+  (let reserved_owner ((?? r/spec/reserved {}) .get logical_key))
+  (let reserved_label (if (== reserved_owner "") "the host" reserved_owner))
+  (if (&& (! ($absent? reserved_owner)) (!= owner reserved_owner))
+    (fail (HarnessError ^message
+      $"registry ${registry_name} key ${logical_key} is reserved by ${reserved_label}")))
+  (let guarded (fresh_map))
+  (for [field value] in checked (guarded .put field value))
+  (if_not ($absent? r/spec/signature)
+    (guarded .put "signature" ($runtime/signature (checked .get r/spec/signature))))
+  (for field in (?? r/spec/callbacks [])
+    (let callback (checked .get field))
+    (if ($runtime/callable? callback)
+      (guarded .put field (guard_callback h owner callback false))))
+  (set checked guarded)
   (if (&& r/unique (== logical_key ""))
-    (fail (HarnessError
-      ^message $"registry ${registry_name} requires a logical key")))
+    (fail (HarnessError ^message $"registry ${registry_name} requires a logical key")))
+
   (var existing void)
   (for candidate in r/rows/.get
     (if (&& (== existing void) (== candidate/key logical_key))
       (set existing candidate)))
-  (if_yes (&& (== registry_name "event_types") (!= existing void)
+  (if_yes (&& (== r/spec/same_owner true) (!= existing void)
               (!= existing/owner owner))
     (fail (HarnessError
-      ^message $"event type ${logical_key} is owned by ${existing/owner}")))
+      ^message $"registry ${registry_name} key ${logical_key} is owned by ${existing/owner}")))
   (if_yes (&& r/unique (!= existing void) (! replace))
     (fail (HarnessError
       ^message $"registry ${registry_name} key ${logical_key} already exists")))
@@ -602,8 +568,7 @@
     # Publication may already have removed this ID from discovery. Its owned
     # cleanup still runs once with the captured old payload and registry hook.
     (if_not ($absent? r/on_remove)
-      (invoke_owned_callable h r/owner r/on_remove
-        [(callback_receiver h r/owner) record/payload])))
+      (r/on_remove r/owner_context record/payload)))
   nil)
 
 (fn guard_callback [h : Harness, owner : Str, callable, inject_context : Bool]
@@ -637,7 +602,7 @@
     (set i (- i 1)))
   (var owned_registries (fresh_list))
   (for [name r] in h/registries/.get
-    (if (&& (== r/owner owner) (!= name "seams") (!= name "commands") (!= name "prompt") (!= name "views") (!= name "event_types") (!= name "subscriptions"))
+    (if (&& (== r/owner owner) (!= r/owner "core"))
       (owned_registries .push ($to_str name))))
   (for name in owned_registries
     (var registry_errors (remove_registry h name))
@@ -668,6 +633,7 @@
   (var registries registries_cell/.get)
   (registries .delete name)
   (registries_cell .set registries)
+  (if_not ($absent? h/registry_observer) (h/registry_observer "$registries" name))
   (publish_direct_registry_change h)
   errors)
 
@@ -675,7 +641,10 @@
   (var out (fresh_map))
   (for [name source] in h/registries/.get
     (var cloned
-      (Registry ^name source/name ^unique source/unique ^ordered source/ordered ^schema source/schema ^on_remove source/on_remove ^owner source/owner ^rows ($cell (copy_list source/rows/.get))))
+      (Registry ^name source/name ^unique source/unique ^ordered source/ordered
+        ^schema source/schema ^on_remove source/on_remove ^owner source/owner
+        ^rows ($cell (copy_list source/rows/.get)) ^spec source/spec ^revision source/revision
+        ^effects source/effects ^owner_context source/owner_context ^key source/key ^prepare source/prepare))
     (out .put name cloned))
   out)
 
@@ -755,6 +724,10 @@
       context)
     (message selected [registry_name : Str, key : Str] : Any
       (var h self/h)
+      (if_yes (== registry_name "$registries")
+        (let definition (h/registries/.get .get key))
+        (if ($absent? definition) (return nil))
+        (return {^row_id definition/revision ^payload {^name key} ^effects definition/effects}))
       (if_not (registry_exists? h registry_name) (return nil))
       (var selected void)
       # Cordis invokes selection callbacks outside RegistryHost.activate's
@@ -779,139 +752,6 @@
   (var current (policies .get owner))
   (if_yes (&& (!= current void) (== current/context context)) (policies .delete owner))
   nil)
-
-(fn validate_seam_row [candidate]
-  (if (|| (== candidate/name void) (== candidate/value void))
-    (fail (HarnessError ^message "a seam row requires ^name and ^value"))
-    candidate))
-
-(fn validate_command_row [candidate]
-  (if (|| (== candidate/name void) (== candidate/doc void) (== candidate/run void))
-    (fail (HarnessError ^message "a command row requires name doc run"))
-    candidate))
-
-(fn validate_function_row [candidate]
-  (if (|| ($absent? candidate/name) (== candidate/name "") ($absent? candidate/doc) (! ($runtime/callable? candidate/fn)))
-    (fail (HarnessError ^message "a function row requires name, doc and a callable fn")))
-  (if (["discover" "doc"] .contains? candidate/name)
-    (fail
-      (HarnessError ^message $"function ${candidate/name} is reserved by the shared discovery context")))
-  candidate)
-
-(fn validate_input_mode_row [candidate]
-  (for field in ["name" "label" "hint" "submit_label" "prompt"]
-    (let value (candidate .get field))
-    (if (|| (!= ($head value) Str) (== value ""))
-      (fail (HarnessError ^message $"an input mode needs a non-empty ${field}"))))
-  (for field in ["classify" "run" "close"]
-    (if_not ($runtime/callable? (candidate .get field))
-      (fail (HarnessError ^message $"an input mode needs a callable ${field}"))))
-  (if (&& (! ($absent? candidate/reset_on_interrupt)) (!= ($head candidate/reset_on_interrupt) Bool))
-    (fail (HarnessError ^message "input mode reset_on_interrupt must be Bool")))
-  candidate)
-
-(fn validate_provider_row [candidate]
-  (if (|| ($absent? candidate/name) (== candidate/name "") ($absent? candidate/doc) (! ($runtime/callable? candidate/configure)) (! ($runtime/callable? candidate/prepare)) (! ($runtime/callable? candidate/send)) (&& (! ($absent? candidate/available)) (! ($runtime/callable? candidate/available))) (&& (! ($absent? candidate/auto)) (!= ($head candidate/auto) Int)))
-    (fail (HarnessError ^message "a provider row needs name, doc, configure, prepare and send")))
-  (if (&& (! ($absent? candidate/capabilities)) (! ($runtime/callable? candidate/capabilities)))
-    (fail (HarnessError ^message "provider capabilities must be callable")))
-  (if (&& (! ($absent? candidate/media_recording))
-          (! (["inventory" "omit"] .contains? candidate/media_recording)))
-    (fail (HarnessError ^message "provider media_recording must be inventory or omit")))
-  candidate)
-
-(fn validate_speech_row [candidate, kind : Str]
-  (if (|| (!= ($head candidate/name) Str) (== candidate/name "")
-          (&& (! ($absent? candidate/auto)) (!= ($head candidate/auto) Int)))
-    (fail (HarnessError ^message "A speech engine needs a name and optional integer auto rank.")))
-  (for field in ["available" "open" "close"
-    (if (== kind "recognizer") (if (== candidate/mode "stream") "stream" "transcribe") "synthesize")]
-    (if_not ($runtime/callable? (candidate .get field))
-      (fail (HarnessError ^message $"A speech ${kind} needs callable ${field}."))))
-  (if (&& (== kind "recognizer") (! (["segments" "stream"] .contains? candidate/mode)))
-    (fail (HarnessError ^message "Recognizers declare mode segments or stream.")))
-  (if (&& (== kind "synthesizer") (!= ($head candidate/streaming) Bool))
-    (fail (HarnessError ^message "Synthesizers declare streaming Bool.")))
-  candidate)
-
-(fn validate_image_generator_row [candidate]
-  (validate_provider_row candidate)
-  (for field in ["available" "capabilities"]
-    (if_not ($runtime/callable? (candidate .get field))
-      (fail (HarnessError ^message $"an image generator needs callable ${field}"))))
-  candidate)
-
-(fn validate_hook_row [candidate]
-  (if (|| ($absent? candidate/name) (== candidate/name "") (! (["request/prepare" "history/compact"] .contains? candidate/point)) (! ($runtime/callable? candidate/run)))
-    (fail (HarnessError ^message "a hook row needs point, name and a callable run")))
-  candidate)
-
-(fn validate_trigger_row [candidate]
-  (if (|| (!= ($head candidate/id) Str) (!= ($head candidate/request) Str) (! (["heartbeat" "scheduled" "cron"] .contains? candidate/kind)))
-    (fail (HarnessError ^message "a trigger row requires id, kind and request")))
-  candidate)
-
-(fn validate_interaction_row [candidate]
-  (if (|| ($absent? candidate/name) (! ($runtime/callable? candidate/validate_request)) (! ($runtime/callable? candidate/validate_reply)))
-    (fail (HarnessError ^message "an interaction needs a name and request/reply validators")))
-  # An optional render draws the kind's question view (docs/cards.md).
-  (if (&& (! ($absent? candidate/render)) (! ($runtime/callable? candidate/render)))
-    (fail (HarnessError ^message "an interaction render must be callable")))
-  candidate)
-
-(fn validate_view_row [candidate]
-  (if (|| (== candidate/name void) (== candidate/value void))
-    (fail (HarnessError ^message "a view row requires name and value")))
-  (view_provider candidate/value)
-  candidate)
-
-(fn validate_prompt_row [candidate]
-  (if (|| (== candidate/name void) (== ($absent? candidate/text) ($absent? candidate/render)) (&& (! ($absent? candidate/render)) (! ($runtime/callable? candidate/render))))
-    (fail
-      (HarnessError ^message "a prompt row requires name and exactly one of text or callable render")))
-  candidate)
-
-(fn validate_discovery_metadata [candidate]
-  (if (&& (! ($absent? candidate/summary)) (!= ($head candidate/summary) Str))
-    (fail (HarnessError ^message "a discovery summary must be a string")))
-  (for field in ["tags" "docs"]
-    (let values (candidate .get field))
-    (if_not ($absent? values)
-      (if (!= ($head values) List)
-        (fail (HarnessError ^message $"discovery ${field} must be a list of strings")))
-      (for value in values
-        (if (|| (!= ($head value) Str) (== ($str/trim value) ""))
-          (fail (HarnessError ^message $"discovery ${field} must contain nonempty strings"))))))
-  candidate)
-
-(fn validate_docs_row [candidate]
-  (if (|| (== candidate/name void) (== ($absent? candidate/text) ($absent? candidate/path)) (&& (! ($absent? candidate/text)) (!= ($head candidate/text) Str)) (&& (! ($absent? candidate/path)) (!= ($head candidate/path) Str)))
-    (fail (HarnessError ^message "a docs row requires name and exactly one of text or path")))
-  candidate)
-
-(fn validate_event_type_row [candidate]
-  (if (|| (== candidate/name void) (== candidate/version void) (== candidate/ignorable void))
-    (fail (HarnessError ^message "an event type row requires name version ignorable")))
-  (if_yes (&& (!= candidate/schema void) (! ($runtime/callable? candidate/schema)))
-    (fail (HarnessError ^message "event type schema must be callable")))
-  candidate)
-
-(fn validate_event_type_owner [owner : Str, candidate]
-  (if (== owner "core")
-    (then
-      (if_not (&& (== candidate/origin "core") (== candidate/owner "core"))
-        (fail (HarnessError ^message "core event rows must be stamped core/core"))))
-    (else
-      (if_not (== candidate/origin "plugin")
-        (fail (HarnessError ^message "plugins cannot declare core event origin")))
-      (var declared_owner ($to_str candidate/owner))
-      (if_not (|| (== declared_owner owner) (== owner $"descriptor:${declared_owner}"))
-        (fail
-          (HarnessError ^message $"event owner ${declared_owner} does not match contributor ${owner}")))))
-  candidate)
-
-(fn cancel_subscription_row [context, candidate]
-  candidate/sub/.cancel)
 
 # Harness events. A plugin observes the harness through the event bus rather
 # than by being called back, because observation is what the bus is for and
@@ -951,27 +791,19 @@
              ^event_scope event_scope ^event_stream event_stream
              ^plugin_policies ($cell (fresh_map))
              ^plugin_depth ($cell 0) ^workspace workspace ^ui_epoch ($crypto/random_hex 12)))
-  (registry h "seams" ^^unique ^schema validate_seam_row)
-  (registry h "commands" ^^unique ^schema validate_command_row)
-  (registry h "input_modes" ^^unique ^schema validate_input_mode_row)
-  (registry h "functions" ^^unique ^schema validate_function_row)
-  (registry h "ui_actions" ^^unique ^schema validate_function_row)
-  (registry h "ui_links" ^^unique ^schema validate_function_row)
-  (registry h "providers" ^^unique ^schema validate_provider_row)
-  (registry h "image_generators" ^^unique ^schema validate_image_generator_row)
-  (registry h "speech_recognizers" ^^unique ^schema (fn [candidate] (validate_speech_row candidate "recognizer")))
-  (registry h "speech_synthesizers" ^^unique ^schema (fn [candidate] (validate_speech_row candidate "synthesizer")))
-  (registry h "hooks" ^^unique ^^ordered ^schema validate_hook_row)
-  (registry h "triggers" ^^unique ^schema validate_trigger_row)
-  (registry h "interactions" ^^unique ^schema validate_interaction_row)
-  (registry h "prompt" ^!unique ^^ordered ^schema validate_prompt_row)
-  (registry h "docs" ^^unique ^schema validate_docs_row)
-  (registry h "views" ^^unique ^schema validate_view_row)
-  (registry h "web_components" ^^unique ^^ordered ^schema validate_web_component)
-  (registry h "browser_clients" ^^unique ^^ordered ^schema validate_browser_client)
-  (registry h "event_types" ^^unique ^schema validate_event_type_row)
-  (registry h "subscriptions" ^!unique
-    ^on_remove cancel_subscription_row)
+
+  (for spec in (builtin_registry_specs h
+    (fn [owner, candidate]
+      (let guarded (fresh_map))
+      (for [field value] in candidate (guarded .put field value))
+      (guarded .put "value"
+        (view_provider (GuardedView ^h h ^owner owner ^view candidate/value)))
+      guarded)
+    (fn [registry_name, key] (row h registry_name key)))
+    (registry h spec/name ^spec spec))
+  (for point in ["request/prepare" "history/compact"]
+    (contribute h "core" "hook_points" {^name point ^dispatch "coordinator"}))
+
   (for event in core_event_types
     (contribute h "core" "event_types" event))
   # Plugin lifecycle is a Cordis composition. Activation happens in a staged
@@ -1388,15 +1220,22 @@
   (if_not ($runtime/callable? p/activate)
     (fail (HarnessError ^message "plugin activate must be callable")))
   (for requirement in (?? p/requires (fresh_list))
-    # Requirements accept the seam shorthand and the explicit
-    # [registry key] pair. Validate the registry vocabulary without requiring
-    # the row to be present yet; absence is the lifecycle's `pending` state.
+    # A registry can be supplied later by another plugin. Its absence, like a
+    # missing selected row or seam, is a dependency wait rather than bad syntax.
     (if (== ($head requirement) List)
       (then
         (if_not (== requirement/.size 2)
           (fail (HarnessError ^message "plugin requirement pair needs registry and key")))
-        (registry_named h ($to_str requirement/0)))
-      (else (registry_named h "seams"))))
+        (for value in requirement
+          (if (|| (!= ($head value) Str) (== value ""))
+            (fail (HarnessError ^message "plugin requirement names must be nonempty strings")))))
+      (elif (== ($head requirement) Map)
+        (if_not (&& (== ($size requirement) 1) (== ($head requirement/registry) Str)
+                    (!= requirement/registry ""))
+          (fail (HarnessError ^message "registry requirement must be {^registry NAME}"))))
+      (else
+        (if (|| (!= ($head requirement) Str) (== requirement ""))
+          (fail (HarnessError ^message "seam requirement must be a nonempty string"))))))
   p)
 
 (fn invoke_bounded [callable, argument, limits : ExecutionLimits]
@@ -1506,12 +1345,18 @@
   (message row_keys [registry_name : Str] : Any
     (var record self)
     (registry_row_keys record/h registry_name))
+  (message rows [registry_name : Str] : Any
+    (immutable_view (rows self/h registry_name)))
+  (message row [registry_name : Str, key : Str] : Any
+    (immutable_view (row self/h registry_name key)))
+  (message run_hooks [point : Str, context] : Any
+    (run_hooks self/h point context))
   (message create_registry [spec] : Any
     (var record self)
-    (if (== spec/name void) (fail (HarnessError ^message "registry spec requires ^name")))
-    (registry ^unique (if (== spec/unique void) false spec/unique) ^ordered (if (== spec/ordered void) false spec/ordered) ^schema (if_not (== spec/schema void) spec/schema) ^on_remove (if_not (== spec/on_remove void) spec/on_remove) ^owner record/owner
-      record/h
-      ($to_str spec/name)))
+    (validate_registry_spec spec)
+    (registry record/h spec/name ^spec spec ^owner record/owner)
+    (immutable_view {^name spec/name ^owner record/owner
+      ^unique (?? spec/unique false) ^ordered (?? spec/ordered false)}))
   (message resolve [seam : Str] : Any
     (var record self)
     (resolve record/h seam))

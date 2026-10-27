@@ -117,7 +117,8 @@ plugin and is removed when the activation unloads. Common rows are:
 | `ui_actions`, `ui_links` | Named supervised functions used by workspace views and navigation |
 
 The host also maintains `seams`, `event_types`, `subscriptions`, `interactions`
-and the legacy `views` registry. Additive PluginHost messages preserve
+and the legacy `views` registry. Hook points are declared in `hook_points`.
+Additive PluginHost messages preserve
 `PluginHost:2`; removing or changing a contract requires an explicit version
 and compatibility policy. A stored-entry mismatch names the differing interface.
 
@@ -148,6 +149,49 @@ allows `plugin_api`, declared shared helpers and public Gene/genex libraries.
 Remaining private imports are named migration exceptions; removing an import
 requires removing its exception, and new private imports fail the check.
 Stored plugins retain the enforced source-closure boundary described below.
+
+### Define an extension point
+
+`PluginHost:create_registry` accepts a data spec:
+
+```gene
+(host .PluginHost:create_registry
+  {^name "reviewers" ^^unique ^^ordered ^key "name" ^callbacks ["run"]
+   ^schema (fn [row] row)
+   ^on_remove (fn [owner_context, row] nil)})
+```
+
+The spec may set `unique`, `ordered`, `schema`, `key`, `callbacks`, `reserved`,
+`on_remove`, `prepare`, `signature` and `same_owner`. `key` is a field name
+(default `"name"`) or a callable returning the logical key. `callbacks` names
+fields whose callable values are supervised; the schema decides whether a
+field is required and which values are valid. `signature` names a callback
+whose original signature is published as row metadata. `reserved` maps logical
+keys to their allowed contributor; an empty owner reserves a key for the host.
+`same_owner` prevents cross-owner replacement. `prepare owner row` is an
+optional owned adapter after schema validation.
+
+Schemas, key functions, adapters and removal callbacks use the registry
+owner's captured budget. Each contributed callback uses its contributor's
+activation and budget, including when another plugin calls it. The creation
+result is immutable identity metadata. Public `rows registry` and
+`row registry key` return immutable views selected from the caller's lease;
+they expose no mutable registry storage. Retaining a row callback does not
+keep a retired activation callable.
+
+A contributor declares `^requires [{^registry "reviewers"}]`. A consumer can
+require a selected row with `^requires [["reviewers" "main"]]`. Both may be
+installed before the provider: they remain pending until their dependency
+exists, return to pending when it disappears, and reactivate when it returns.
+Old readers keep their old selection and cleanup until their lease ends.
+
+To define a generic hook point, contribute `{^name "review/finished"}` to
+`hook_points`, and require that row before contributing `hooks` rows at that
+point. `PluginHost:run_hooks point context` calls those callbacks in registry
+order with an immutable context and returns an immutable list of results.
+Failure aborts that dispatch. The existing `request/prepare` and
+`history/compact` points declare coordinator dispatch and retain their
+specialized host contracts; `run_hooks` refuses to call them.
 
 ### Make every plugin discoverable
 

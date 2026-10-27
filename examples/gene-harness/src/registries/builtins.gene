@@ -1,0 +1,58 @@
+# The host's feature registry catalog. The kernel interprets these specs using
+# the same machinery available to a plugin-defined extension point.
+(mod builtin_registry_specs)
+(import [HarnessError] ^from "../errors")
+(import [validate_seam_row validate_command_row validate_function_row validate_input_mode_row
+  validate_provider_row validate_speech_row validate_image_generator_row validate_hook_row
+  validate_hook_point_row validate_trigger_row validate_interaction_row validate_view_row
+  validate_prompt_row validate_docs_row validate_event_type_row validate_event_type_owner
+  cancel_subscription_row] ^from "./contracts")
+(import [validate_web_component] ^from "../ui/components")
+(import [validate_browser_client] ^from "../ui/browser_clients")
+(import [own_speech_engine] ^from "./resources")
+
+(fn builtin_registry_specs [h, guard_view, lookup]
+  (let discovery_reserved {^discover "" ^doc ""})
+  [
+    {^name "seams" ^^unique ^schema validate_seam_row ^callbacks ["value"]}
+    {^name "commands" ^^unique ^schema validate_command_row ^callbacks ["run"]
+     ^reserved {^sh "shell" ^repl "repl" ^help "core_commands" ^run "core_commands"
+                 ^view "core_commands" ^cancel "core" ^stop "core" ^restart "core"}}
+    {^name "input_modes" ^^unique ^schema validate_input_mode_row ^callbacks ["classify" "run" "close"]}
+    {^name "functions" ^^unique ^schema validate_function_row ^callbacks ["fn"]
+     ^signature "fn" ^reserved discovery_reserved}
+    {^name "ui_actions" ^^unique ^schema validate_function_row ^callbacks ["fn"]
+     ^signature "fn" ^reserved discovery_reserved}
+    {^name "ui_links" ^^unique ^schema validate_function_row ^callbacks ["fn"]
+     ^signature "fn" ^reserved discovery_reserved}
+    {^name "providers" ^^unique ^schema validate_provider_row
+     ^callbacks ["available" "configure" "capabilities" "prepare" "send"]}
+    {^name "image_generators" ^^unique ^schema validate_image_generator_row
+     ^callbacks ["available" "configure" "capabilities" "prepare" "send"]}
+    {^name "speech_recognizers" ^^unique
+     ^schema (fn [candidate] (validate_speech_row candidate "recognizer"))
+     ^prepare (fn [owner, candidate] (own_speech_engine h owner candidate))
+     ^callbacks ["available" "open" "transcribe" "stream"]}
+    {^name "speech_synthesizers" ^^unique
+     ^schema (fn [candidate] (validate_speech_row candidate "synthesizer"))
+     ^prepare (fn [owner, candidate] (own_speech_engine h owner candidate))
+     ^callbacks ["available" "open" "synthesize"]}
+    {^name "hook_points" ^^unique ^schema validate_hook_point_row}
+    {^name "hooks" ^^unique ^^ordered ^callbacks ["run"]
+     ^key (fn [candidate] $"${candidate/point}/${candidate/name}")
+     ^schema (fn [candidate]
+       (validate_hook_row candidate)
+       (if ($absent? (lookup "hook_points" candidate/point))
+         (fail (HarnessError ^message $"hook point ${candidate/point} is not available")))
+       candidate)}
+    {^name "triggers" ^^unique ^schema validate_trigger_row ^key "id"}
+    {^name "interactions" ^^unique ^schema validate_interaction_row
+     ^callbacks ["validate_request" "validate_reply" "render"]}
+    {^name "prompt" ^!unique ^^ordered ^schema validate_prompt_row ^callbacks ["render"]}
+    {^name "docs" ^^unique ^schema validate_docs_row}
+    {^name "views" ^^unique ^schema validate_view_row ^prepare guard_view}
+    {^name "web_components" ^^unique ^^ordered ^schema validate_web_component ^callbacks ["render"]}
+    {^name "browser_clients" ^^unique ^^ordered ^schema validate_browser_client}
+    {^name "event_types" ^^unique ^schema validate_event_type_row
+     ^prepare validate_event_type_owner ^^same_owner ^callbacks ["schema"]}
+    {^name "subscriptions" ^!unique ^on_remove cancel_subscription_row}])

@@ -1,0 +1,28 @@
+# Speech resources are a feature adapter, independent of registry dispatch.
+(mod registry_resources)
+# Warm speech resources belong to the exact activation that opened them.
+# A cleanup lease remains usable after operation callbacks expire, and Cordis
+# also disposes it on retirement even when the caller lost the open result.
+(fn own_speech_engine [h, owner : Str, engine]
+  (let policy (h/plugin_policies/.get .get owner))
+  (let effects policy/effects)
+  (if ($absent? effects) (return engine))
+  (let owned ($cell []))
+  (let result ($thaw ($freeze_shallow engine)))
+  (result .put "open" (fn [settings]
+    (let resource (engine/open settings))
+    (let lease (try
+      (effects .defer (fn []
+        (try (engine/close resource)
+        ensure
+          (owned .set ($filter owned/.get (fn [item] (! (same? item/resource resource))))))))
+      catch Any (engine/close resource) (fail $err)))
+    (owned/.get .push {^resource resource ^lease lease})
+    resource))
+  (result .put "close" (fn [resource]
+    (for item in owned/.get
+      (if (same? item/resource resource) (item/lease .dispose)))))
+  (result .put "close_all" (fn []
+    (let resources owned/.get)
+    (for item in resources (try (item/lease .dispose) catch Any nil))))
+  result)

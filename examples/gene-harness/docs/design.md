@@ -495,10 +495,12 @@ the host; a plugin keeps the host for later callbacks.
 | `subscribe`, `emit_event` | Observe the event bus; emit the plugin's own event types |
 | `state`, `update_state` | Workspace state, or per-session state with `^session` |
 | `defer` | Cleanup owned by the activation's effect scope; runs after its final reader |
+| `rows`, `row` | Immutable row payloads selected from the caller's composition lease |
+| `run_hooks` | Ordered generic hook dispatch at a declared point; coordinator hooks keep their host contracts |
 
 The registries are `functions`, `commands`, `input_modes`, `prompt`, `docs`,
 `providers`, `image_generators`, `speech_recognizers`, `speech_synthesizers`,
-`hooks`, `views`, `interactions`, `web_components`, `browser_clients`,
+`hook_points`, `hooks`, `views`, `interactions`, `web_components`, `browser_clients`,
 `ui_actions`, `ui_links`, `event_types`, `subscriptions`, `seams` and `triggers`. A
 `functions` row is `{^name ^fn ^doc}`. Names are unique across the workspace,
 and discovery returns each with its captured `$runtime/signature` and short doc.
@@ -933,6 +935,7 @@ The Harness relies on general runtime features, documented in
 | Elision/recall/compaction | agents/history |
 | Composition snapshots and retirement | runtime/composition, runtime/cordis_adapter |
 | Plugin contract and activation | plugin_api, kernel, storage/workspace |
+| Declarative registry policy and schemas | registries/builtins, registries/contracts, registries/resources |
 | Patch preflight/commit/recovery | runtime/patch |
 | Built-in contributions | builtin/gene_reference, builtin/plugin_admin, builtin/core_commands, builtin/shell, builtin/repl, builtin/triggers, builtin/provider_* |
 | Workspace and conversation features | builtin/working_instructions, builtin/budget_advisory, builtin/history_basic, builtin/sidebar, builtin/workspace_manager, builtin/ui_experiment |

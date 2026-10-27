@@ -1,0 +1,141 @@
+# Host feature row schemas; registry lifecycle belongs to the generic kernel.
+(mod registry_contracts)
+(import [HarnessError] ^from "../errors")
+(import [view_provider] ^from "../views/view_api")
+
+(fn validate_seam_row [candidate]
+  (if (|| (== candidate/name void) (== candidate/value void))
+    (fail (HarnessError ^message "a seam row requires ^name and ^value"))
+    candidate))
+
+(fn validate_command_row [candidate]
+  (if (|| (== candidate/name void) (== candidate/doc void) (== candidate/run void))
+    (fail (HarnessError ^message "a command row requires name doc run"))
+    candidate))
+
+(fn validate_function_row [candidate]
+  (if (|| ($absent? candidate/name) (== candidate/name "") ($absent? candidate/doc) (! ($runtime/callable? candidate/fn)))
+    (fail (HarnessError ^message "a function row requires name, doc and a callable fn")))
+  candidate)
+
+(fn validate_input_mode_row [candidate]
+  (for field in ["name" "label" "hint" "submit_label" "prompt"]
+    (let value (candidate .get field))
+    (if (|| (!= ($head value) Str) (== value ""))
+      (fail (HarnessError ^message $"an input mode needs a non-empty ${field}"))))
+  (for field in ["classify" "run" "close"]
+    (if_not ($runtime/callable? (candidate .get field))
+      (fail (HarnessError ^message $"an input mode needs a callable ${field}"))))
+  (if (&& (! ($absent? candidate/reset_on_interrupt)) (!= ($head candidate/reset_on_interrupt) Bool))
+    (fail (HarnessError ^message "input mode reset_on_interrupt must be Bool")))
+  candidate)
+
+(fn validate_provider_row [candidate]
+  (if (|| ($absent? candidate/name) (== candidate/name "") ($absent? candidate/doc) (! ($runtime/callable? candidate/configure)) (! ($runtime/callable? candidate/prepare)) (! ($runtime/callable? candidate/send)) (&& (! ($absent? candidate/available)) (! ($runtime/callable? candidate/available))) (&& (! ($absent? candidate/auto)) (!= ($head candidate/auto) Int)))
+    (fail (HarnessError ^message "a provider row needs name, doc, configure, prepare and send")))
+  (if (&& (! ($absent? candidate/capabilities)) (! ($runtime/callable? candidate/capabilities)))
+    (fail (HarnessError ^message "provider capabilities must be callable")))
+  (if (&& (! ($absent? candidate/media_recording))
+          (! (["inventory" "omit"] .contains? candidate/media_recording)))
+    (fail (HarnessError ^message "provider media_recording must be inventory or omit")))
+  candidate)
+
+(fn validate_speech_row [candidate, kind : Str]
+  (if (|| (!= ($head candidate/name) Str) (== candidate/name "")
+          (&& (! ($absent? candidate/auto)) (!= ($head candidate/auto) Int)))
+    (fail (HarnessError ^message "A speech engine needs a name and optional integer auto rank.")))
+  (for field in ["available" "open" "close"
+    (if (== kind "recognizer") (if (== candidate/mode "stream") "stream" "transcribe") "synthesize")]
+    (if_not ($runtime/callable? (candidate .get field))
+      (fail (HarnessError ^message $"A speech ${kind} needs callable ${field}."))))
+  (if (&& (== kind "recognizer") (! (["segments" "stream"] .contains? candidate/mode)))
+    (fail (HarnessError ^message "Recognizers declare mode segments or stream.")))
+  (if (&& (== kind "synthesizer") (!= ($head candidate/streaming) Bool))
+    (fail (HarnessError ^message "Synthesizers declare streaming Bool.")))
+  candidate)
+
+(fn validate_image_generator_row [candidate]
+  (validate_provider_row candidate)
+  (for field in ["available" "capabilities"]
+    (if_not ($runtime/callable? (candidate .get field))
+      (fail (HarnessError ^message $"an image generator needs callable ${field}"))))
+  candidate)
+
+(fn validate_hook_row [candidate]
+  (if (|| ($absent? candidate/name) (== candidate/name "")
+          (!= ($head candidate/point) Str) (== candidate/point "") (! ($runtime/callable? candidate/run)))
+    (fail (HarnessError ^message "a hook row needs point, name and a callable run")))
+  candidate)
+
+(fn validate_hook_point_row [candidate]
+  (if (|| (!= ($head candidate/name) Str) (== candidate/name "")
+          (! (["collect" "coordinator"] .contains? (?? candidate/dispatch "collect"))))
+    (fail (HarnessError ^message "a hook point needs a name and collect or coordinator dispatch")))
+  candidate)
+
+(fn validate_trigger_row [candidate]
+  (if (|| (!= ($head candidate/id) Str) (!= ($head candidate/request) Str) (! (["heartbeat" "scheduled" "cron"] .contains? candidate/kind)))
+    (fail (HarnessError ^message "a trigger row requires id, kind and request")))
+  candidate)
+
+(fn validate_interaction_row [candidate]
+  (if (|| ($absent? candidate/name) (! ($runtime/callable? candidate/validate_request)) (! ($runtime/callable? candidate/validate_reply)))
+    (fail (HarnessError ^message "an interaction needs a name and request/reply validators")))
+  # An optional render draws the kind's question view (docs/cards.md).
+  (if (&& (! ($absent? candidate/render)) (! ($runtime/callable? candidate/render)))
+    (fail (HarnessError ^message "an interaction render must be callable")))
+  candidate)
+
+(fn validate_view_row [candidate]
+  (if (|| (== candidate/name void) (== candidate/value void))
+    (fail (HarnessError ^message "a view row requires name and value")))
+  (view_provider candidate/value)
+  candidate)
+
+(fn validate_prompt_row [candidate]
+  (if (|| (== candidate/name void) (== ($absent? candidate/text) ($absent? candidate/render)) (&& (! ($absent? candidate/render)) (! ($runtime/callable? candidate/render))))
+    (fail
+      (HarnessError ^message "a prompt row requires name and exactly one of text or callable render")))
+  candidate)
+
+(fn validate_discovery_metadata [candidate]
+  (if (&& (! ($absent? candidate/summary)) (!= ($head candidate/summary) Str))
+    (fail (HarnessError ^message "a discovery summary must be a string")))
+  (for field in ["tags" "docs"]
+    (let values (candidate .get field))
+    (if_not ($absent? values)
+      (if (!= ($head values) List)
+        (fail (HarnessError ^message $"discovery ${field} must be a list of strings")))
+      (for value in values
+        (if (|| (!= ($head value) Str) (== ($str/trim value) ""))
+          (fail (HarnessError ^message $"discovery ${field} must contain nonempty strings"))))))
+  candidate)
+
+(fn validate_docs_row [candidate]
+  (if (|| (== candidate/name void) (== ($absent? candidate/text) ($absent? candidate/path)) (&& (! ($absent? candidate/text)) (!= ($head candidate/text) Str)) (&& (! ($absent? candidate/path)) (!= ($head candidate/path) Str)))
+    (fail (HarnessError ^message "a docs row requires name and exactly one of text or path")))
+  candidate)
+
+(fn validate_event_type_row [candidate]
+  (if (|| (== candidate/name void) (== candidate/version void) (== candidate/ignorable void))
+    (fail (HarnessError ^message "an event type row requires name version ignorable")))
+  (if_yes (&& (!= candidate/schema void) (! ($runtime/callable? candidate/schema)))
+    (fail (HarnessError ^message "event type schema must be callable")))
+  candidate)
+
+(fn validate_event_type_owner [owner : Str, candidate]
+  (if (== owner "core")
+    (then
+      (if_not (&& (== candidate/origin "core") (== candidate/owner "core"))
+        (fail (HarnessError ^message "core event rows must be stamped core/core"))))
+    (else
+      (if_not (== candidate/origin "plugin")
+        (fail (HarnessError ^message "plugins cannot declare core event origin")))
+      (var declared_owner ($to_str candidate/owner))
+      (if_not (|| (== declared_owner owner) (== owner $"descriptor:${declared_owner}"))
+        (fail
+          (HarnessError ^message $"event owner ${declared_owner} does not match contributor ${owner}")))))
+  candidate)
+
+(fn cancel_subscription_row [context, candidate]
+  candidate/sub/.cancel)

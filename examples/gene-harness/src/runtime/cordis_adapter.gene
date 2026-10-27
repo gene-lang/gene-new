@@ -114,6 +114,7 @@
   selection)
 
 (fn requirement_pair [requirement] ^^private
+  (if (== ($head requirement) Map) (return ["$registries" requirement/registry]))
   (if (== ($head requirement) List)
     requirement
     ["seams" ($to_str requirement)]))

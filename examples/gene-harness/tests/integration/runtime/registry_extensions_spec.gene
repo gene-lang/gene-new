@@ -1,0 +1,205 @@
+(import $test [describe it])
+(import [isolated run_spec] ^from "../../support")
+(import [Plugin PluginHost ExecutionLimits] ^from "../../../src/plugin_api")
+(import [new_harness put_cordis_plugin shutdown_harness status_of row uninstall registry_names plugin_error]
+  ^from "../../../src/kernel")
+(import [acquire_snapshot release_snapshot] ^from "../../../src/runtime/composition")
+(import [execution_owner execution_budget] ^from "../../../src/runtime/execution_budget")
+
+(fn invoke [h, name : Str, args...]
+  (let callable (/fn (row h "functions" name)))
+  (callable args...))
+
+(fn leased [h, lease, operation]
+  ($runtime/with_context {^composition h/snapshots ^snapshot lease/snapshot} operation))
+
+(describe "Plugin-owned registry extensions"
+  (it "leases A's schema, B's supervised rows and C's selection through replacement and dependency loss" []
+    (isolated this_mod/.path
+      "leases A's schema, B's supervised rows and C's selection through replacement and dependency loss"
+      (fn [root]
+        (let h (new_harness))
+        (let removed ($cell []))
+        (let removal_budgets ($cell []))
+        (let disposed ($cell []))
+        (let activations ($cell 0))
+        (let callback_owner ($cell nil))
+        (fn owner [version]
+          (Plugin ^id "a" ^activate (fn [host]
+            (let descriptor (host .PluginHost:create_registry
+              {^name "extensions" ^^unique ^^ordered ^key "id" ^callbacks ["run"]
+               ^reserved {^host_only "a"}
+               ^schema (fn [candidate]
+                 ($assert (== (execution_owner) "a") "schema ran as the contributor")
+                 ($assert ($runtime/callable? candidate/run))
+                 (candidate .assoc "schema_version" version))
+               ^on_remove (fn [context, candidate]
+                 ($assert (== (execution_owner) "a") "on_remove ran as the contributor")
+                 (removal_budgets/.get .push [version (/max_memory_mb (/callback_limits (execution_budget)))])
+                 (removed/.get .push [version candidate/version]))}))
+            ($assert ($absent? descriptor/rows))
+            ($assert ($absent? descriptor/effects))
+            ($assert (try (descriptor .put "name" "changed") false catch Any true))
+            (host .PluginHost:defer (fn [] (disposed/.get .push ["a" version]))))))
+        (fn contributor [version]
+          (Plugin ^id "b" ^requires [{^registry "extensions"}]
+            ^activate (fn [host]
+              (activations .set (+ activations/.get 1))
+              (host .PluginHost:contribute "extensions"
+                {^id "entry" ^version version ^nested {^original true}
+                 ^run (fn [mode]
+                   (callback_owner .set {^owner (execution_owner) ^budget host/.PluginHost:execution_budget})
+                   (if (== mode "slow") ($sleep 2000))
+                   version)})
+              (host .PluginHost:defer (fn [] (disposed/.get .push ["b" version]))))))
+        (let consumer (Plugin ^id "c" ^requires [["extensions" "entry"]]
+          ^activate (fn [host]
+            (host .PluginHost:contribute "functions"
+              {^name "extension_value" ^doc "Consume B through its public registry."
+               ^fn (fn [mode : Str = "normal"]
+                 (let selected (host .PluginHost:row "extensions" "entry"))
+                 [(selected/run mode) selected/schema_version])})
+            (host .PluginHost:contribute "functions"
+              {^name "extension_rows" ^doc "Read immutable extension data."
+               ^fn (fn [] (host .PluginHost:rows "extensions"))}))))
+        (let a_limits (ExecutionLimits ^max_memory_mb 256 ^timeout_ms 1500))
+        (let b_limits (ExecutionLimits ^max_memory_mb 128 ^timeout_ms 300))
+        (let c_limits (ExecutionLimits ^max_memory_mb 512 ^timeout_ms 4000))
+        (try
+          (put_cordis_plugin h (contributor 1) {^limits b_limits ^!host})
+          (put_cordis_plugin h consumer {^limits c_limits ^!host})
+          ($assert (== (status_of h "b") "pending"))
+          ($assert (== (status_of h "c") "pending"))
+          (put_cordis_plugin h (owner 1) {^limits a_limits ^!host})
+          ($assert (== (status_of h "b") "ready") (?? (plugin_error h "b") ""))
+          ($assert (== (status_of h "c") "ready") (?? (plugin_error h "c") ""))
+          ($assert (== (invoke h "extension_value") [1 1]))
+          ($assert (== callback_owner/.get/owner "b"))
+          ($assert (== callback_owner/.get/budget/callback_limits/max_memory_mb 128))
+          (let rows (invoke h "extension_rows"))
+          ($assert (try (rows .push {}) false catch Any true))
+          ($assert (try (rows/0/nested .put "original" false) false catch Any true))
+          ($assert (try (invoke h "extension_value" "slow") false catch Any true)
+            "B's callback escaped its shorter budget through C")
+          ($assert (== callback_owner/.get/owner "b"))
+          ($assert (== callback_owner/.get/budget/callback_limits/timeout_ms 300))
+          (let before disposed/.get/.size)
+          (let first (acquire_snapshot h/snapshots))
+          (let old_callback (leased h first (fn [] (/fn (row h "functions" "extension_value")))))
+          (try
+            (put_cordis_plugin ^^replace h (contributor 2) {^limits b_limits ^!host})
+            ($assert (== disposed/.get/.size before) "replacement closed a leased generation")
+            ($assert (== (leased h first (fn [] (old_callback))) [1 1]))
+            ($assert (== (invoke h "extension_value") [2 1]))
+          ensure (release_snapshot h/snapshots first))
+          ($assert (> disposed/.get/.size before))
+          ($assert (try (old_callback) false catch Any true) "retained C callback survived retirement")
+          ($assert (try (rows/0/run "normal") false catch Any true) "retained B row callback survived retirement")
+          ($assert (removed/.get .contains? [1 1]))
+          ($assert (== ($size ($filter removed/.get (fn [item] (== item [1 1])))) 1))
+          (let second (acquire_snapshot h/snapshots))
+          (try
+            (put_cordis_plugin ^^replace h (owner 2)
+              {^limits (ExecutionLimits ^max_memory_mb 64 ^timeout_ms 1500) ^!host})
+            ($assert (== (leased h second (fn [] (invoke h "extension_value"))) [2 1]))
+            ($assert (== (invoke h "extension_value") [2 2]))
+          ensure (release_snapshot h/snapshots second))
+          ($assert (removed/.get .contains? [1 2]) "old row lost its old registry removal callback")
+          ($assert (removal_budgets/.get .contains? [1 256]) "old on_remove lost its captured owner budget")
+          (let third (acquire_snapshot h/snapshots))
+          (try
+            (uninstall h "a")
+            ($assert (== (status_of h "b") "pending"))
+            ($assert (== (status_of h "c") "pending"))
+            ($assert (! ((registry_names h) .contains? "extensions")))
+            ($assert (== (leased h third (fn [] (invoke h "extension_value"))) [2 2]))
+          ensure (release_snapshot h/snapshots third))
+          (let previous_activations activations/.get)
+          (put_cordis_plugin h (owner 3) {^limits a_limits ^!host})
+          ($assert (== (status_of h "b") "ready"))
+          ($assert (== (status_of h "c") "ready"))
+          ($assert (> activations/.get previous_activations) "B did not re-contribute after A returned")
+          ($assert (== (invoke h "extension_value") [2 3]))
+        ensure (shutdown_harness h))))))
+
+(describe "Registry definition supervision"
+  (it "applies the registry owner's schema deadline and declares reservations without kernel special cases" []
+    (isolated this_mod/.path
+      "applies the registry owner's schema deadline and declares reservations without kernel special cases"
+      (fn [root]
+        (let h (new_harness))
+        (let schema_owner ($cell nil))
+        (try
+          (put_cordis_plugin h (Plugin ^id "definition" ^activate (fn [host]
+            (host .PluginHost:create_registry
+              {^name "checks" ^^unique ^key "code" ^reserved {^reserved "definition"}
+               ^schema (fn [candidate]
+                 (schema_owner .set {^owner (execution_owner) ^budget host/.PluginHost:execution_budget})
+                 (if (== candidate/slow true) ($sleep 2000))
+                 candidate)})))
+            {^!host ^limits (ExecutionLimits ^max_memory_mb 128 ^timeout_ms 300)})
+          (put_cordis_plugin h (Plugin ^id "reserved_intruder" ^requires [{^registry "checks"}]
+            ^activate (fn [host] (host .PluginHost:contribute "checks" {^code "reserved"}))) {})
+          ($assert (== (status_of h "reserved_intruder") "error"))
+          ($assert ($str/contains? (plugin_error h "reserved_intruder") "reserved"))
+          (put_cordis_plugin h (Plugin ^id "slow_contributor" ^requires [{^registry "checks"}]
+            ^activate (fn [host] (host .PluginHost:contribute "checks" {^code "slow" ^^slow})))
+            {^!host ^limits (ExecutionLimits ^max_memory_mb 512 ^timeout_ms 4000)})
+          ($assert (== (status_of h "slow_contributor") "error"))
+          ($assert (== schema_owner/.get/owner "definition"))
+          ($assert (== schema_owner/.get/budget/callback_limits/timeout_ms 300))
+          (put_cordis_plugin h (Plugin ^id "malformed" ^activate (fn [host]
+            (host .PluginHost:create_registry {^name "malformed" ^callbacks ["run" "run"]}))) {})
+          ($assert (== (status_of h "malformed") "error"))
+          ($assert (! ((registry_names h) .contains? "malformed")))
+        ensure (shutdown_harness h))))))
+
+(describe "Public extensible hook points"
+  (it "dispatches ordered supervised callbacks from one lease and keeps coordinator hooks separate" []
+    (isolated this_mod/.path
+      "dispatches ordered supervised callbacks from one lease and keeps coordinator hooks separate"
+      (fn [root]
+        (let h (new_harness))
+        (let observed ($cell []))
+        (fn hooks [version]
+          (Plugin ^id "hook_contributor" ^requires [["hook_points" "example/collect"]]
+            ^activate (fn [host]
+              (for value in [1 2]
+                (host .PluginHost:contribute "hooks"
+                  {^name ($to_str value) ^point "example/collect"
+                   ^run (fn [context]
+                     (observed/.get .push (execution_owner))
+                     ($assert (try (context .put "value" 0) false catch Any true))
+                     (+ version value context/value))})))))
+        (let point (Plugin ^id "hook_owner" ^activate (fn [host]
+          (host .PluginHost:contribute "hook_points" {^name "example/collect"}))))
+        (let consumer (Plugin ^id "hook_consumer" ^requires [["hook_points" "example/collect"]]
+          ^activate (fn [host]
+            (host .PluginHost:contribute "functions"
+              {^name "collect_hooks" ^doc "Dispatch the extension."
+               ^fn (fn [] (host .PluginHost:run_hooks "example/collect" {^value 10}))})
+            (host .PluginHost:contribute "functions"
+              {^name "wrong_coordinator" ^doc "Check coordinator admission."
+               ^fn (fn [] (host .PluginHost:run_hooks "request/prepare" {}))}))))
+        (try
+          (put_cordis_plugin h point {})
+          (put_cordis_plugin h (hooks 100) {})
+          (put_cordis_plugin h consumer {})
+          (let results (invoke h "collect_hooks"))
+          ($assert (== results [111 112]))
+          ($assert (== observed/.get ["hook_contributor" "hook_contributor"]))
+          ($assert (try (results .push 0) false catch Any true))
+          ($assert (try (invoke h "wrong_coordinator") false
+            catch Any ($str/contains? $err/message "requires its host coordinator")))
+          (let lease (acquire_snapshot h/snapshots))
+          (try
+            (put_cordis_plugin ^^replace h (hooks 200) {})
+            ($assert (== (leased h lease (fn [] (invoke h "collect_hooks"))) [111 112]))
+            ($assert (== (invoke h "collect_hooks") [211 212]))
+          ensure (release_snapshot h/snapshots lease))
+          (uninstall h "hook_owner")
+          ($assert (== (status_of h "hook_contributor") "pending"))
+          ($assert (== (status_of h "hook_consumer") "pending"))
+        ensure (shutdown_harness h))))))
+
+(fn main [args] : Int (run_spec args))
