@@ -24,6 +24,41 @@
   ensure (close_session_service service)))
 
 (describe "Slack user names"
+  (it "resolves and caches the configured channel name without accepting another channel" []
+    (isolated this_mod/.path "resolves and caches the configured channel name without accepting another channel"
+      (fn [workspace]
+        (fixture workspace (fn [channels]
+          (let calls ($cell 0))
+          (set channels/users (open_users ^requester (fn [request]
+            (calls .set (+ calls/.get 1))
+            ($assert (== request/method "conversations.info"))
+            ($assert (== request/http_method "GET"))
+            ($assert (== request/params/channel "C123"))
+            (response {^^ok ^channel {^id "C123" ^name "team-dobi"}}))))
+          (let input {^account "dobi" ^team "T123" ^channel "C123"})
+          (for index in [1 2]
+            ($assert (== (/body/name (channel_request channels "POST" "/api/v8/channels/channel" input)) "team-dobi")))
+          ($assert (== calls/.get 1))
+          ($assert (try (channel_request channels "POST" "/api/v8/channels/channel"
+            (input .assoc "channel" "COTHER")) false catch ChannelError (== $err/code "forbidden")))
+          ($assert (== calls/.get 1)))))))
+
+  (it "keeps channel names available when user-profile permission is missing" []
+    (isolated this_mod/.path "keeps channel names available when user-profile permission is missing"
+      (fn [workspace]
+        (fixture workspace (fn [channels]
+          (let calls ($cell []))
+          (set channels/users (open_users ^requester (fn [request]
+            (calls/.get .push request/method)
+            (if (== request/method "users.info")
+              (response {^!ok ^error "missing_scope"})
+              (response {^^ok ^channel {^id "C123" ^name "team-dobi"}})))))
+          ($assert (== (/body/name (channel_request channels "POST" "/api/v8/channels/user"
+            {^account "dobi" ^team "T123" ^author "UOWNER"})) ""))
+          ($assert (== (/body/name (channel_request channels "POST" "/api/v8/channels/channel"
+            {^account "dobi" ^team "T123" ^channel "C123"})) "team-dobi"))
+          ($assert (== calls/.get ["users.info" "conversations.info"])))))))
+
   (it "prefers full names and falls back through optional profile fields" []
     ($assert (== (profile_name {^profile {^real_name " Guoliang Cao " ^display_name "gcao"}}) "Guoliang Cao"))
     ($assert (== (profile_name {^real_name "Full name"}) "Full name"))

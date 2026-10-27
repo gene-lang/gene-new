@@ -3,8 +3,8 @@
 (import [snapshot mutate] ^from "./store")
 (import [queue_status resume_queue pending_parts discard_inputs resolve_claim] ^from "./queue")
 (import [channel_error] ^from "./model")
-(import [bind_workspace receive_handoff user_name] ^from "./service")
-(import [lookup_user] ^from "./users")
+(import [bind_workspace receive_handoff user_name channel_name] ^from "./service")
+(import [lookup_user lookup_channel] ^from "./users")
 (import [accept_output output_result pending_output resolve_output] ^from "./delivery")
 (import [setup_account setup_route] ^from "./setup")
 (import [with_session_gate] ^from "../runtime/sessions")
@@ -47,6 +47,8 @@
       (when "/api/v8/channels/owner/routes" (setup_route service data))
       (when "/api/v8/channels/owner/user" (lookup_user service/users service/owner data))
       (when "/api/v8/channels/user" (user_name service data))
+      (when "/api/v8/channels/owner/channel" (lookup_channel service/users service/owner data))
+      (when "/api/v8/channels/channel" (channel_name service data))
       (when "/api/v8/channels/owner/authorize"
         (authorize service/owner data/route data/author ^workspace data/workspace))
       (when "/api/v8/channels/owner/authorize-parts"

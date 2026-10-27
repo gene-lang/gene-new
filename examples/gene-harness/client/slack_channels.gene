@@ -1,0 +1,33 @@
+(mod slack_channel_notice ^profile web)
+
+(type SlackChannelNotice ^props {^cache PropMap ^key Str ^target EventTarget
+  ^lookup (Fn [Any (Fn [Int Any] Void)] Void)})
+
+(fn create_channel_notice [target : EventTarget,
+    lookup : (Fn [Any (Fn [Int Any] Void)] Void)] : SlackChannelNotice
+  (SlackChannelNotice ^cache {} ^key "" ^target target ^lookup lookup))
+
+(fn sharing_text [channel : Str, name : Str] : Str
+  (var label (if (== name "") channel $"#${name} (${channel})"))
+  $"Shared with Slack channel ${label}. Messages and Agent replies are published to its thread. Approved Slack participants can run code with this host's file and process access.")
+
+(fn update_channel_notice [notice : SlackChannelNotice, shared : Any] : Void
+  (set notice/target/hidden ($absent? shared))
+  (if_yes ($absent? shared) (set notice/key "") (return))
+  (var account : Str shared/account) (var team : Str shared/team)
+  (var channel : Str shared/channel)
+  (var key $"${account}/${team}/${channel}")
+  (set notice/key key)
+  (var cached : Any notice/cache/%key)
+  (if_not ($absent? cached)
+    (var cached_name : Str cached/name)
+    ($dom/set_text notice/target (sharing_text channel cached_name)) (return))
+  (var entry : Any {^name ""}) (set notice/cache/%key entry)
+  ($dom/set_text notice/target (sharing_text channel ""))
+  (notice/lookup {^account account ^team team ^channel channel}
+    (fn [code : Int, data : Any] : Void
+      (var name : Str "")
+      (if_yes (&& (== code 200) (! ($absent? data/name))) (set name data/name))
+      (set entry/name name)
+      (if_yes (== notice/key key)
+        ($dom/set_text notice/target (sharing_text channel name))))))

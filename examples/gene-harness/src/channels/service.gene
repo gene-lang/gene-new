@@ -13,7 +13,7 @@
 (import [admit_channel_queue round_state] ^from "../runtime/round_controller")
 (import [core_state events_for append_core_event flush_event_store next_sequence stream_key unload_event_stream] ^from "../storage/state")
 (import [RoundChanged DurableRecord] ^from "../kernel")
-(import [open_users lookup_user] ^from "./users")
+(import [open_users lookup_user lookup_channel] ^from "./users")
 
 (type ChannelService ^props {^runtime Any ^controller Any ^owner Any ^gate Any ^closed Cell
   ^settings Cell ^health Cell ^dirty Cell ^retry_at Cell ^subscriptions List ^users Any})
@@ -70,6 +70,15 @@
   (if (local_owner? service source)
     (lookup_user service/users service/owner data)
     (owner_call service "POST" "user" data)))
+
+(fn channel_name [service, data]
+  (let source (/source (source_header service)))
+  (if (|| ($absent? source) (!= source/account data/account) (!= source/team data/team)
+          (!= source/channel data/channel))
+    (channel_error "forbidden" "The Slack channel does not match this workspace's channel source."))
+  (if (local_owner? service source)
+    (lookup_channel service/users service/owner data)
+    (owner_call service "POST" "channel" data)))
 
 (fn authorize_input [service, author : Str]
   (let source (source_header service))

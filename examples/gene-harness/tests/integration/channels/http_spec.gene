@@ -47,6 +47,8 @@
           # the routed workspace has no credentials. Missing profiles fall back.
           (let name_request {^account "dobi" ^team "T123" ^author "UOWNER"})
           ($assert (== (/name (api remote "POST" "/channels/user" name_request)) ""))
+          ($assert (== (/name (api remote "POST" "/channels/channel"
+            {^account "dobi" ^team "T123" ^channel "C123"})) ""))
           (let names_without_auth (wire local/connection "POST" "/channels/owner/user" name_request))
           ($assert (== names_without_auth/status 401))
           (let wrong_team (wire remote/connection "POST" "/channels/user"

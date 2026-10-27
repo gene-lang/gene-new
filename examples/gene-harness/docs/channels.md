@@ -53,6 +53,12 @@ then the display name or username. Lookups use the connection owner's bot token
 with `users:read`, cache results for an hour, and fall back to the user ID when
 unavailable. Authorization always uses the original IDs.
 
+The browser's sharing notice shows `Shared with Slack channel #name (CHANNEL_ID)`.
+Channel names use the same bounded lookup cache, with
+[`conversations.info`](https://docs.slack.dev/reference/methods/conversations.info/)
+through the connection owner. If the name is unavailable, the notice keeps the
+channel ID visible. User-profile lookup failures do not block channel-name lookup.
+
 Threads isolate conversation history. Sessions in the same Gene workspace
 still share files, plugins and workspace memory. Concurrent work needs the
 same coordination as concurrent browser sessions. Separate workspaces provide

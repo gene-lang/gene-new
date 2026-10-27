@@ -14,21 +14,26 @@
       (return ($str/join (value/.trim .split "\n") " "))))
   "")
 
+(fn channel_name [channel] : Str
+  (let value channel/name)
+  (if (&& (== ($head value) Str) (<= value/.byte_size 512)) value/.trim ""))
+
 # Display metadata only. Lookups run separately from transcript snapshots and
 # socket intake, and never change the IDs used by authorization or admission.
-(fn lookup_user [users, owner, data]
+(fn lookup_name [users, owner, data, kind : Str]
   (let account (account_id data/account))
   (let team (identifier data/team "T" "team ID"))
-  (let author (identifier data/author "UW" "author ID"))
+  (let subject (if (== kind "channel") (identifier data/channel "CG" "channel ID")
+    (identifier data/author "UW" "author ID")))
   (let configured (read owner (fn [state] (state/accounts .get account))))
   (if (|| ($absent? configured) (!= configured/team team))
-    (channel_error "forbidden" "The Slack user belongs to another configured account."))
+    (channel_error "forbidden" "The Slack identity belongs to another configured account."))
   (users/gate (fn []
-    (let id (key [account team author]))
+    (let id (key [kind account team subject]))
     (let now ($os/monotonic_ms))
     (let cached (users/cache/.get .get id))
     (if (> (?? cached/until 0) now) (return cached/value))
-    (let group (key [configured/app team]))
+    (let group (key [kind configured/app team]))
     (if (> (?? (users/blocked/.get .get group) 0) now)
       (return {^name ""}))
     (var name "")
@@ -37,9 +42,11 @@
       (let credentials (read_slack_credentials configured/secret_file))
       (let api (open_api credentials/bot ^requester users/requester))
       (try
-        (let user (/user (api_call api "users.info" {^user author} ^http_method "GET")))
-        (if (!= user/id author) (channel_error "invalid_response" "Slack returned a different user."))
-        (set name (profile_name user))
+        (let response (api_call api (if (== kind "channel") "conversations.info" "users.info")
+          (if (== kind "channel") {^channel subject} {^user subject}) ^http_method "GET"))
+        (let info (if (== kind "channel") response/channel response/user))
+        (if (!= info/id subject) (channel_error "invalid_response" "Slack returned a different identity."))
+        (set name (if (== kind "channel") (channel_name info) (profile_name info)))
       ensure (close_api api))
     catch Error
       (set ttl 60000)
@@ -53,3 +60,6 @@
     (if (>= ($size users/blocked/.get) 1024) (users/blocked .set {}))
     (users/cache/.get .put id {^until (+ ($os/monotonic_ms) ttl) ^value result})
     result)))
+
+(fn lookup_user [users, owner, data] (lookup_name users owner data "user"))
+(fn lookup_channel [users, owner, data] (lookup_name users owner data "channel"))

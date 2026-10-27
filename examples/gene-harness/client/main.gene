@@ -10,6 +10,7 @@
 (import [claim_modal release_modal keyboard_owned?] ^from "./overlays.gene")
 (import [items : launcher_items flag : launcher_flag] ^from "../src/common/launcher.gene")
 (import [SlackUserLabels create_user_labels user_label] ^from "./slack_users.gene")
+(import [SlackChannelNotice create_channel_notice update_channel_notice] ^from "./slack_channels.gene")
 
 (import ^from "./state.gene"
   [
@@ -79,7 +80,15 @@
   ^title EventTarget ^appearance Str ^style_signature Str ^cards Any
   ^delegation_epoch Int? ^delegation_recovery Any?
   ^browser_clients Any ^command_client Any ^creation_unknown Bool?
-  ^voice_client Any? ^voice_listeners Any? ^page_id Str? ^live_output Any? ^session_menu Any? ^slack_users Any?})
+  ^voice_client Any? ^voice_listeners Any? ^page_id Str? ^live_output Any? ^session_menu Any? ^slack_users Any? ^slack_channel Any?})
+
+(fn render_channel_sharing [client : Client, shared : Any] : Void
+  (if_yes ($absent? client/slack_channel)
+    (set client/slack_channel (create_channel_notice ($dom/element "channel_sharing")
+      (fn [data : Any, done : (Fn [Int Any] Void)] : Void
+        (api client "POST" "/api/v8/channels/channel" data done)))))
+  (var raw : Any client/slack_channel) (var notice : SlackChannelNotice raw)
+  (update_channel_notice notice shared))
 
 (fn resolve_slack_author [client : Client, source : Any, target : EventTarget] : Void
   (if_yes ($absent? client/slack_users)
@@ -1441,13 +1450,7 @@
   (set client/session_revision data/session/revision)
   (var title : Str data/session/title)
   ($dom/set_text client/title title)
-  (var shared : Any data/session/channel)
-  (set_hidden "channel_sharing" ($absent? shared))
-  (if_not ($absent? shared)
-    (var account : Str shared/account)
-    (var channel : Str shared/channel)
-    ($dom/set_text ($dom/element "channel_sharing")
-      $"Shared with Slack channel ${channel} (${account}). Messages and Agent replies are published to its thread. Approved Slack participants can run code with this host's file and process access."))
+  (render_channel_sharing client data/session/channel)
   (var raw_delivery : Any (?? data/channel_delivery empty_runs))
   (var delivery_issues : (List Any) raw_delivery)
   (set_hidden "channel_delivery" (== delivery_issues/.size 0))
