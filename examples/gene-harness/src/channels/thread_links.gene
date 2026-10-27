@@ -18,8 +18,11 @@
         (remember_message result message/message))))
   (for name in ["outbox" "deliveries"]
     (for [id record] in (?? (state .get name) {})
-      (if (|| (!= record/intent/mode "post") (! (same_thread? record/intent source))) (continue))
-      (for part in (?? (if (== name "outbox") record/result/parts record/parts) [])
+      (let parts (?? (if (== name "outbox") record/result/parts record/parts) []))
+      (let destination (if (== record/intent/mode "thread")
+        (record/intent .assoc "thread" (/ts (/0 parts))) record/intent))
+      (if (|| (! (["post" "thread"] .contains? record/intent/mode)) (! (same_thread? destination source))) (continue))
+      (for part in parts
         (if (&& (== part/status "sent") (! ($absent? part/ts)))
           (remember_message result part/ts)))))
   result/last_message)

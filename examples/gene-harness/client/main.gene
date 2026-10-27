@@ -10,7 +10,8 @@
 (import [claim_modal release_modal keyboard_owned?] ^from "./overlays.gene")
 (import [items : launcher_items flag : launcher_flag] ^from "../src/common/launcher.gene")
 (import [SlackUserLabels create_user_labels user_label] ^from "./slack_users.gene")
-(import [SlackChannelNotice create_channel_notice update_channel_notice] ^from "./slack_channels.gene")
+(import [SlackChannelNotice create_channel_notice update_channel_notice can_share_session? session_share_pending?]
+  ^from "./slack_channels.gene")
 (import [SlackSessionTitle create_session_title update_session_title] ^from "./slack_session_title.gene")
 
 (import ^from "./state.gene"
@@ -81,7 +82,7 @@
   ^title EventTarget ^appearance Str ^style_signature Str ^cards Any
   ^delegation_epoch Int? ^delegation_recovery Any?
   ^browser_clients Any ^command_client Any ^creation_unknown Bool?
-  ^voice_client Any? ^voice_listeners Any? ^page_id Str? ^live_output Any? ^session_menu Any? ^slack_users Any? ^slack_channel Any? ^slack_title Any?})
+  ^voice_client Any? ^voice_listeners Any? ^page_id Str? ^live_output Any? ^session_menu Any? ^slack_users Any? ^slack_channel Any? ^slack_title Any? ^slack_pending Str?})
 
 (fn render_session_title [client : Client, text : Str, shared : Any] : Void
   (if_yes ($absent? client/slack_title)
@@ -486,6 +487,29 @@
   (var message (string_or result/message "The request could not be completed."))
   (notice ^key "request-error" ^scope session ^^sticky ^severity "error" client message))
 
+(fn add_session_to_slack [client : Client] : Void
+  (var session client/selected)
+  (if_yes (|| (== session "") (!= (string_or client/slack_pending "") "")) (return))
+  (set client/slack_pending session)
+  (update_controls client)
+  (api client "POST" $"/api/v8/sessions/${($url/encode_component session)}/slack"
+    {^revision client/session_revision}
+    (fn [code : Int, data : Any] : Void
+      (set client/slack_pending "")
+      (if (== code 202)
+        (then
+          (var tab (session_tab client session))
+          # The live snapshot can finish linking before this POST returns.
+          (var received_revision : Int ($json/parse (string_or data/revision "0")))
+          (var cached_revision : Int ($json/parse (string_or tab/cache/session/revision "0")))
+          (if_yes (>= received_revision cached_revision)
+            (upsert_session client data)
+            (set tab/cache/session data)
+            (if_yes (== session client/selected) (set client/session_revision data/revision)))
+          (notice client "Adding this conversation to Slack. Its title will link to the thread when ready."))
+        (else (show_error ^session session client data)))
+      (update_controls client))))
+
 (fn session_tab [client : Client, id : Str] : SessionTab
   (for tab in client/tabs
     (if_yes (== tab/id id) (return tab)))
@@ -598,6 +622,15 @@
   (var rename ($dom/element "rename_session"))
   (set rename/disabled
     (|| (! client/ready) (! client/connected) (== client/selected "") client/busy))
+  (var session : Any nil)
+  (for selected_tab in client/tabs
+    (if_yes (== selected_tab/id client/selected) (set session selected_tab/cache/session)))
+  (var share_button ($dom/element "add_to_slack"))
+  (set share_button/hidden (|| (== client/selected "") (! (can_share_session? session))))
+  (var sharing (|| (== (string_or client/slack_pending "") client/selected) (session_share_pending? session)))
+  (set share_button/disabled (|| (! client/ready) (! client/connected) client/busy sharing
+    (!= (string_or client/slack_pending "") "")))
+  ($dom/set_text share_button (if sharing "Adding to Slack…" "Add to Slack"))
   (var pin ($dom/element "pin_session"))
   (set pin/disabled (|| (! client/ready) (! client/connected) (== client/selected "")))
   (var create_button ($dom/element "create_session"))
@@ -717,6 +750,11 @@
 
 (fn session_edited [client : Client, record : Any] : Void
   (var id : Str record/id)
+  (var received_revision : Int ($json/parse (string_or record/revision "0")))
+  (for tab in client/tabs
+    (if_yes (== tab/id id)
+      (var cached_revision : Int ($json/parse (string_or tab/cache/session/revision "0")))
+      (if_yes (< received_revision cached_revision) (return))))
   (var roots : (List Any) [])
   (for existing in client/sessions
     (if (== (string_or existing/id "") id)
@@ -737,7 +775,7 @@
     (set client/session_revision record/revision)
     (render_session_title client (string_or record/title "") record/channel)
     ($dom/set_text ($dom/element "pin_session") (if (launcher_flag record/pinned) "Unpin" "Pin")))
-  (render_sessions client) (render_tabs client) (refresh_sessions client))
+  (render_sessions client) (render_tabs client) (refresh_sessions client) (update_controls client))
 
 (fn forget_session [client : Client, id : Str] : Void
   (var ids : (List Str) [id])
@@ -2109,7 +2147,11 @@
         (if_yes (== session client/selected)
           (set client/session_revision data/revision)
           (var title : Str data/title)
-          (render_session_title client title data/channel)))
+          (render_session_title client title data/channel)
+          (render_channel_sharing client data/channel)
+          (var selected_tab (session_tab client session))
+          (set selected_tab/cache/session data)
+          (update_controls client)))
       (elif (== kind "snapshot")
         (if_yes (== session client/selected) (apply_snapshot client data)))
       (elif (== kind "mode/state")
@@ -2681,6 +2723,10 @@
     (fn [event : Any] : Void
       (set_hidden "status_drawer" true)
       ($dom/focus ($dom/element "status_button"))))
+  ($dom/add_event_listener
+    ($dom/element "add_to_slack")
+    "click"
+    (fn [event : Any] : Void (add_session_to_slack client)))
   ($dom/add_event_listener
     ($dom/element "rename_session")
     "click"

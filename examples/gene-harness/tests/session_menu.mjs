@@ -26,7 +26,7 @@ const mod=await import(pathToFileURL(process.argv[2]));
 const requests=[],updates=[],deleted=[];
 const menu=mod.create_session_menu((method,path,data,done)=>{requests.push({method,path,data,done});},
   data=>{updates.push(data);},ids=>{deleted.push(ids);});
-const buttons=()=>menu.panel.querySelectorAll().filter(node=>node.tag==='button');
+const buttons=()=>menu.panel.querySelectorAll().filter(node=>node.tag==='button'&&!node.hidden);
 const choose=label=>buttons().find(node=>node.textContent===label).dispatchEvent(new Event('click'));
 const anchor=new Element('button');body.append(anchor);
 const session={id:'a',title:'First',revision:'2',pinned:false};
@@ -84,3 +84,42 @@ for (const revision of [0n,2n,'0','2',undefined]) {
   assert.equal(menu.panel.hidden,true);
 }
 console.log('session menu: rename drafts, revisions, errors, pin toggling, delete confirmation and keyboard/outside dismissal passed');
+
+const browserSession={...session,id:'browser a&b',kind:'interactive',status:'done',slack_available:true};
+mod.open_session_menu(menu,anchor,browserSession);
+assert.deepEqual(buttons().map(node=>node.textContent),['Add to Slack','Rename','Delete','Pin']);
+assert.equal(document.activeElement.textContent,'Add to Slack');
+choose('Add to Slack');
+const shareRequest=requests.at(-1);
+assert.equal(shareRequest.method,'POST');
+assert.equal(shareRequest.path,'/api/v8/sessions/browser%20a%26b/slack');
+assert.deepEqual(shareRequest.data,{revision:'2'});
+assert.equal(menu.pending,true);
+choose('Add to Slack');
+assert.equal(requests.at(-1),shareRequest,'duplicate clicks cannot create another request');
+shareRequest.done(503n,{message:'Slack is unavailable.'});
+assert.equal(menu.pending,false);
+assert.equal(buttons()[0].disabled,false);
+assert.match(menu.panel.textContent,/Slack is unavailable/);
+choose('Add to Slack');
+requests.at(-1).done(202n,{...browserSession,revision:'3',slack_share:{status:'pending'}});
+assert.equal(menu.panel.hidden,true);
+assert.equal(updates.at(-1).id,browserSession.id);
+mod.open_session_menu(menu,anchor,{...browserSession,slack_share:{status:'accepted'}});
+assert.equal(buttons()[0].textContent,'Adding to Slack…');
+assert.equal(buttons()[0].disabled,true);
+mod.bind_session_menu(menu,anchor,{...browserSession,channel:{transport:'slack'}});
+assert.deepEqual(buttons().map(node=>node.textContent),['Rename','Delete','Pin']);
+mod.close_session_menu(menu);
+for (const changes of [{slack_available:false},{kind:'child'},{channel:{transport:'slack'}},{parent:{session:'parent'}}]) {
+  mod.open_session_menu(menu,anchor,{...browserSession,...changes});
+  assert.equal(buttons().some(button=>button.textContent==='Add to Slack'),false);
+  mod.close_session_menu(menu);
+}
+for (const status of ['running','waiting']) {
+  mod.open_session_menu(menu,anchor,{...browserSession,status});
+  assert.equal(buttons()[0].textContent,'Add to Slack');
+  assert.equal(buttons()[0].disabled,true);
+  mod.close_session_menu(menu);
+}
+console.log('Slack menu action: eligibility, target session, retries, duplicate clicks and live refresh passed');

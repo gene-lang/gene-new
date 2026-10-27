@@ -28,6 +28,7 @@
     (if ($absent? table) (continue))
     (let remove [])
     (for [id record] in table
+      (if (&& (== name "outbox") (== record/intent/mode "thread") (!= record/linked true)) (continue))
       (if (&& (== name "controls") (!= record/state "done")) (continue))
       (if (! (["ignored" "denied" "handed_off" "consumed" "discarded" "admitted"
                "refused" "owner_resolved" "delivered" "deleted" "control"] .contains? record/status)) (continue))

@@ -125,6 +125,7 @@
                    (div ^id "mode" ^class "mode" "Local workspace")
                    (span ^id "input_mode_label" ^class "mode"))
                  (button ^id "leave_mode" ^class "quiet" ^type "button" ^^hidden "Leave mode")
+                 (button ^id "add_to_slack" ^class "quiet" ^type "button" ^^hidden "Add to Slack")
                  (button ^id "rename_session" ^class "quiet" ^type "button" "Rename")
                  (button ^id "pin_session" ^class "quiet" ^type "button" "Pin"))
                (div ^id "child_origin" ^class "mode" ^^hidden)

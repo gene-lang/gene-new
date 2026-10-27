@@ -1,7 +1,8 @@
 (mod session_menu ^profile web)
 (import [text flag] ^from "../src/common/launcher.gene")
+(import [can_share_session? session_share_pending? session_share_busy?] ^from "./slack_channels.gene")
 
-(type SessionMenu ^props {^panel EventTarget ^error EventTarget ^session Any ^anchor Any ^pin Any
+(type SessionMenu ^props {^panel EventTarget ^error EventTarget ^session Any ^anchor Any ^pin Any ^share Any
   ^phase Str ^pending Bool ^generation Int
   ^api (Fn [Str Str Any (Fn [Int Any] Void)] Void)
   ^updated (Fn [Any] Void) ^deleted (Fn [(List Any)] Void)})
@@ -26,7 +27,8 @@
   ($dom/set_style menu/panel "left" $"${left}px")
   ($dom/set_style menu/panel "top" $"${top}px"))
 
-(fn mutate_session [menu : SessionMenu, method : Str, changes : Any] : Void
+(fn mutate_session [menu : SessionMenu, method : Str, changes : Any,
+    ^suffix suffix : Str = "", ^accepted accepted : Int = 200] : Void
   (if_yes menu/pending (return))
   (var generation menu/generation)
   (var id (text menu/session/id))
@@ -37,10 +39,10 @@
   ($dom/set_text menu/error "")
   (var controls ($dom/focusables menu/panel))
   (for control in controls (set control/disabled true))
-  (menu/api method $"/api/v8/sessions/${($url/encode_component id)}" changes
+  (menu/api method $"/api/v8/sessions/${($url/encode_component id)}${suffix}" changes
     (fn [code : Int, data : Any] : Void
       (set menu/pending false)
-      (if (== code 200)
+      (if (== code accepted)
         (do
           (if (== method "DELETE")
             (do
@@ -51,7 +53,14 @@
         (do
           (if_yes (== generation menu/generation)
             (for control in controls (set control/disabled false))
+            (if_yes (== menu/phase "menu") (update_share_action menu menu/session))
             ($dom/set_text menu/error (text data/message "The conversation could not be updated. Try again."))))))))
+
+(fn update_share_action [menu : SessionMenu, session : Any] : Void
+  (var share : EventTarget menu/share)
+  (set share/hidden (! (can_share_session? session)))
+  (set share/disabled (|| menu/pending (session_share_busy? session)))
+  ($dom/set_text share (if (session_share_pending? session) "Adding to Slack…" "Add to Slack")))
 
 (fn edit_session_title [menu : SessionMenu] : Void
   (set menu/phase "rename") ($dom/clear menu/panel)
@@ -95,6 +104,11 @@
   ($dom/set_attribute menu/panel "role" "menu")
   ($dom/set_attribute menu/panel "aria-label" "Conversation actions")
   ($dom/set_attribute anchor "aria-expanded" "true")
+  (var share ($dom/render `(button ^type "button" ^role "menuitem"
+    ^on_click %(fn [event : Any] : Void
+      (mutate_session ^suffix "/slack" ^accepted 202 menu "POST" {})) "Add to Slack")))
+  (set menu/share share) (update_share_action menu session)
+  ($dom/append menu/panel share)
   (var rename ($dom/render `(button ^type "button" ^role "menuitem"
     ^on_click %(fn [event : Any] : Void (edit_session_title menu)) "Rename")))
   ($dom/append menu/panel rename)
@@ -107,13 +121,16 @@
     %(if (flag session/pinned) "Unpin" "Pin"))))
   (set menu/pin pin) ($dom/append menu/panel pin)
   ($dom/append menu/panel menu/error) (set menu/panel/hidden false)
-  (position_session_menu menu) ($dom/focus rename))
+  (position_session_menu menu)
+  (var choices ($dom/focusables menu/panel))
+  (if_yes (> choices/.size 0) ($dom/focus choices/0)))
 
 (fn bind_session_menu [menu : SessionMenu, anchor : EventTarget, session : Any] : Void
   (if_yes (&& (! menu/panel/hidden) (== (text menu/session/id) (text session/id)))
     (set menu/anchor anchor)
     (if_yes (!= menu/phase "delete") (set menu/session session))
     (if_yes (== menu/phase "menu")
+      (update_share_action menu session)
       (var pin : EventTarget menu/pin)
       ($dom/set_text pin (if (flag session/pinned) "Unpin" "Pin")))
     ($dom/set_attribute anchor "aria-expanded" "true")))
@@ -125,7 +142,7 @@
   updated : (Fn [Any] Void), deleted : (Fn [(List Any)] Void)] : SessionMenu
   (var panel ($dom/render `(div ^class_name "session_menu" ^hidden true)))
   (var error ($dom/render `(p ^class_name "session_menu_error" ^role "status")))
-  (var menu (SessionMenu ^panel panel ^error error ^session nil ^anchor nil ^pin nil ^phase "menu"
+  (var menu (SessionMenu ^panel panel ^error error ^session nil ^anchor nil ^pin nil ^share nil ^phase "menu"
     ^!pending ^generation 0 ^api api ^updated updated ^deleted deleted))
   ($dom/append ($dom/body) panel)
   ($dom/add_event_listener panel "click" (fn [event : Any] : Void ($dom/stop_propagation event)))

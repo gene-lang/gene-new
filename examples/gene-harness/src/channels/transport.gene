@@ -146,7 +146,7 @@
   (let blocked {})
   (for delivery in ($order/sort_by deliveries /sequence)
     (let id delivery/intent/id)
-    (let thread ($to_str delivery/intent/account "/" delivery/intent/channel "/" delivery/intent/thread))
+    (let thread ($to_str delivery/intent/workspace "/" delivery/intent/session))
     (if ($has_key? blocked thread) (continue))
     (if (== delivery/status "delivered") (continue))
     (let account (state/accounts .get delivery/intent/account))

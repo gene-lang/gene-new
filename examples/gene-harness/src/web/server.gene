@@ -27,6 +27,7 @@
     session_card_action
     session_card_receipt
     session_slack_thread
+    session_add_to_slack
     CardError
     RoundError])
 (import ^from "./page" [page])
@@ -455,6 +456,8 @@
       (var id parts/4)
       (if_yes (&& (== parts/.size 6) (== parts/5 "slack-thread") (== request/method "GET"))
         (return (redirect (session_slack_thread host id))))
+      (if_yes (&& (== parts/.size 6) (== parts/5 "slack") (== request/method "POST"))
+        (return (response 202 (session_add_to_slack host id (number (request_data request) "revision")))))
       (if_yes (&& (== parts/.size 5) (== request/method "DELETE"))
         (return (response 200 (remove_session host id (number (request_data request) "revision")))))
       (if_yes (&& (== parts/.size 5) (== request/method "PATCH"))

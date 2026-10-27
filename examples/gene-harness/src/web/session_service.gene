@@ -8,7 +8,8 @@
 (import [append_core_event] ^from "../storage/state")
 (import [pending_request read_body] ^from "../agents/history")
 (import [operator_round?] ^from "../runtime/round_policy")
-(import [open_channel_service close_channel_service delivery_status thread_link] ^from "../channels/service")
+(import [open_channel_service close_channel_service delivery_status thread_link share_session] ^from "../channels/service")
+(import [sharing_available?] ^from "../channels/sharing")
 (import ^from "../runtime/bootstrap" [open_runtime close_runtime prepare_workspace_root])
 (import ^from "../profiles/baseline" [baseline_profile])
 (import ^from "../profiles/offline" [offline_profile])
@@ -87,6 +88,7 @@
 
 (fn public_session [service, record]
   (let copy ($thaw ($freeze record)))
+  (copy .put "slack_available" (&& (! ($absent? service/runtime/channels)) (sharing_available? service/runtime)))
   (copy .put "revision" ($to_str (?? record/revision 0)))
   # Match the sequence-1 round, not prompt text: later prompts may be identical.
   (copy .put "first_request_round"
@@ -121,6 +123,11 @@
   (if (== result/url "")
     (fail (RoundError ^code "unavailable" ^message "The Slack thread link is temporarily unavailable.")))
   result/url)
+
+(fn session_add_to_slack [service, id : Str, revision : Int]
+  (if ($absent? service/runtime/channels)
+    (fail (RoundError ^code "unavailable" ^message "Slack is unavailable in recovery mode.")))
+  (public_session service (share_session service/runtime/channels id revision)))
 
 (fn publish_message [service, kind : Str, session : Str, data, ^reason reason = nil]
   (let publisher service/publisher/.get)
@@ -458,10 +465,12 @@
 
 (fn list_sessions [service, ^after after : Str = "", ^limit limit : Int = 100, ^kind kind = nil, ^status status = nil, ^attention attention = nil, ^trigger trigger = nil, ^q q : Str = "", ^since since : Str = "", ^until until : Str = ""]
   (let results [])
+  (let slack_available (&& (! ($absent? service/runtime/channels)) (sharing_available? service/runtime)))
   (for record in (session_records ^kind kind ^status status ^attention attention ^trigger trigger ^q q ^since since ^until until service/sessions)
     (if (&& (!= after "") (<= ($order/compare record/id after) 0)) (continue))
     (if (>= results/.size limit) (break))
     (let shown (public_session_index record))
+    (shown .put "slack_available" slack_available)
     (if_yes (&& (== q "") ($absent? kind) ($absent? status) ($absent? attention)
                 ($absent? trigger) (== since "") (== until ""))
       (let children [])

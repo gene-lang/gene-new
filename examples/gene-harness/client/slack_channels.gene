@@ -1,4 +1,15 @@
 (mod slack_channel_notice ^profile web)
+(import [text flag] ^from "../src/common/launcher.gene")
+
+(fn can_share_session? [session : Any] : Bool
+  (&& (flag session/slack_available) (== (text session/kind) "interactive")
+    ($absent? session/channel) ($absent? session/parent)))
+
+(fn session_share_pending? [session : Any] : Bool (! ($absent? session/slack_share)))
+
+(fn session_share_busy? [session : Any] : Bool
+  (var status (text session/status))
+  (|| (session_share_pending? session) (== status "running") (== status "waiting")))
 
 (type SlackChannelNotice ^props {^cache PropMap ^key Str ^target EventTarget
   ^lookup (Fn [Any (Fn [Int Any] Void)] Void)})

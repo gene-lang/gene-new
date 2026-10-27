@@ -251,6 +251,8 @@
 (fn observe_round_state [state, session : Str, receipt]
     (let queue (state/queues .get session))
     (if ($absent? queue) (return nil))
+    (let binding (state/bindings .get queue/binding))
+    (if ((?? binding/archived_rounds []) .contains? receipt/id) (return nil))
     (let source ($to_str (?? receipt/task_root receipt/id)))
     (let prior (queue/observed .get receipt/id))
     (let observed [receipt/state (?? receipt/continuation_mode "manual") source (?? receipt/continuation_stop nil)])

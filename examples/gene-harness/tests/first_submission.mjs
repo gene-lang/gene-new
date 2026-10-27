@@ -507,7 +507,7 @@ assert.equal(firstRow.children[1].attributes['aria-label'],'Actions for A conver
 firstRow.children[1].dispatchEvent(new Event('click'));
 assert.equal(c.selected,'s','opening row actions must not navigate');
 let menu=c.session_menu;
-assert.deepEqual(menu.panel.children.filter(node=>node.tag==='button').map(node=>node.textContent),['Rename','Delete','Pin']);
+assert.deepEqual(menu.panel.children.filter(node=>node.tag==='button'&&!node.hidden).map(node=>node.textContent),['Rename','Delete','Pin']);
 menu.panel.children.find(node=>node.textContent==='Pin').dispatchEvent(new Event('click'));
 assert.equal(requests.at(-1).path,'/api/v8/sessions/menu-a');
 assert.equal(JSON.parse(requests.at(-1).options.body).revision,'2');
@@ -535,3 +535,58 @@ harness.forget_session(deletedSelected,'s');
 assert.equal(deletedSelected.selected,'survivor','deletion must navigate away even during a pending admission');
 assert.equal(stored.has('gene-harness/draft/s'),false);
 console.log("first submission: immediate prompts, delivery races, live output, receiving-request replacement and continuation controls passed");
+
+// A late share response must preserve a newer, already-linked live snapshot.
+c = client();
+const shareTab = harness.session_tab(c, 's');
+shareTab.cache.session = {id: 's', kind: 'interactive', title: 'Share me', revision: '0', slack_available: true};
+harness.update_controls(c);
+assert.equal(element('add_to_slack').hidden, false);
+assert.equal(element('add_to_slack').disabled, false);
+harness.add_session_to_slack(c);
+harness.add_session_to_slack(c);
+assert.equal(requests.length, 1, 'double clicks send a single share request');
+assert.equal(requests[0].path, '/api/v8/sessions/s/slack');
+assert.equal(element('add_to_slack').disabled, true);
+assert.equal(element('add_to_slack').textContent, 'Adding to Slack…');
+shareTab.cache.session = {...shareTab.cache.session, revision: '3', channel: {transport: 'slack', thread: '1.000001'}};
+c.session_revision = '3';
+requests[0].reply(202, {id: 's', kind: 'interactive', title: 'Share me', revision: '1',
+  slack_available: true, slack_share: {id: 'share-s', status: 'pending'}});
+await settled();
+assert.equal(shareTab.cache.session.channel.thread, '1.000001');
+assert.equal(c.session_revision, '3');
+assert.equal(element('add_to_slack').hidden, true);
+for (const session of [
+  {id: 's', kind: 'child', slack_available: true},
+  {id: 's', kind: 'interactive', slack_available: false},
+]) {
+  shareTab.cache.session = session;
+  harness.update_controls(c);
+  assert.equal(element('add_to_slack').hidden, true);
+}
+shareTab.cache.session = {id: 's', kind: 'interactive', slack_available: true};
+harness.add_session_to_slack(c);
+requests[1].reply(503, {message: 'The Slack channel connection is disabled.'});
+await settled();
+assert.equal(element('add_to_slack').disabled, false, 'a rejected request can be retried');
+console.log('Slack share button: eligibility, duplicate clicks, late responses and errors passed');
+
+c=client();
+c.sessions=[{id:'other',title:'Share another conversation',kind:'interactive',status:'done',revision:'2',slack_available:true}];
+harness.render_sessions(c);
+c.list.children[0].children[1].dispatchEvent(new Event('click'));
+c.session_menu.panel.children.find(node=>node.textContent==='Add to Slack').dispatchEvent(new Event('click'));
+assert.equal(c.selected,'s','sharing another row must not navigate away from the current conversation');
+assert.equal(requests[0].path,'/api/v8/sessions/other/slack');
+assert.deepEqual(JSON.parse(requests[0].options.body),{revision:'2'});
+requests[0].reply(202,{...c.sessions[0],revision:'3',slack_share:{status:'pending'}});
+await settled();
+assert.equal(c.sessions[0].slack_share.status,'pending');
+assert.equal(c.session_revision,'0','sharing another row must preserve the selected revision');
+assert.equal(c.session_menu.panel.hidden,true);
+const newerTab=harness.session_tab(c,'other');
+newerTab.cache.session={...c.sessions[0],revision:'5',channel:{transport:'slack',thread:'1.000001'}};
+harness.session_edited(c,{...c.sessions[0],revision:'3'});
+assert.equal(newerTab.cache.session.channel.thread,'1.000001','late menu responses preserve the newer linked snapshot');
+console.log('Slack menu integration: unselected session targeting and late-response protection passed');

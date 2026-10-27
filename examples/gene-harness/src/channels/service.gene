@@ -3,6 +3,7 @@
 (import [snapshot mutate close_channel_store read has_queue? take_changes] ^from "./store")
 (import [channel_error key binding_key required_text slack_ts] ^from "./model")
 (import [last_thread_message] ^from "./thread_links")
+(import [finish_shares prepare_share] ^from "./sharing")
 (import [configure_queues enqueue queue_status activate_binding tombstone_session] ^from "./queue")
 (import [queue_output pending_output due_output defer_output accept_output output_result reconcile_output recover_deliveries] ^from "./delivery")
 (import [pending_ingress handoff_schedule defer_handoff wake_root_waiters finish_handoff] ^from "./ingress")
@@ -27,6 +28,7 @@
   (let service (ChannelService ^runtime runtime ^controller controller ^owner owner ^gate ($sync/gate)
     ^closed ($cell false) ^settings ($cell (?? (/settings (snapshot runtime/channel_queues)) {}))
     ^health ($cell {}) ^dirty ($cell dirty) ^retry_at ($cell {}) ^subscriptions [] ^users (open_users)))
+  (finish_shares service)
   (let mark (fn [id]
     (if (has_queue? runtime/channel_queues id) (service/dirty/.get .put id true))))
   (service/subscriptions .push (runtime/h/bus .subscribe RoundChanged
@@ -63,6 +65,19 @@
 
 (fn local_owner? [service, source]
   (== source/owner (read service/owner (fn [state] state/id))))
+
+(fn share_session [service, session : Str, revision : Int]
+  (let header (source_header service))
+  (let source header/source)
+  (if ($absent? source) (channel_error "unavailable" "Configure a Slack channel for this workspace first."))
+  (let policy (if (local_owner? service source) (public_authority service/owner)
+    (api (connect header/owner_root) "GET" "/channels/owner/policy")))
+  (let route (policy/routes .get source/id))
+  (var account nil)
+  (for candidate in policy/accounts (if (== candidate/id source/account) (set account candidate)))
+  (if (|| (!= route/enabled true) (!= account/enabled true))
+    (channel_error "unavailable" "The Slack channel connection is disabled."))
+  (prepare_share service session revision))
 
 (fn user_name [service, data]
   (let source (/source (source_header service)))
@@ -128,7 +143,8 @@
       (let queue (state/queues .get session))
       (let binding (state/bindings .get queue/binding))
       {^source state/source ^queues ({} .assoc session queue) ^bindings ({} .assoc binding/id binding)
-       ^messages ({} .assoc binding/root_input (state/messages .get binding/root_input))})))
+       ^messages (if ($absent? binding/root_input) {}
+         ({} .assoc binding/root_input (state/messages .get binding/root_input)))})))
     (let queue (state/queues .get session))
     (let binding (state/bindings .get queue/binding))
     (if (== binding/status "deleted") (return nil))
@@ -278,6 +294,7 @@
   (let binding (state/bindings .get queue/binding))
   (if (!= binding/status "active") (return nil))
   (for receipt in (/receipts (round_state service/controller session))
+    (if ((?? binding/archived_rounds []) .contains? receipt/id) (continue))
     (let id ($to_str "progress-" (key [session receipt/id])))
     (let prior (read service/runtime/channel_queues (fn [state] ((?? state/progress {}) .get id))))
     (let display_state (if (&& (== receipt/state "paused") (! ($absent? receipt/continuation_stop)))
@@ -350,6 +367,7 @@
           (output_result service/owner outgoing/intent/id)
           (owner_call service "POST" "result" {^id outgoing/intent/id}))))
       (reconcile_output service/runtime/channel_queues result)
+      (if (== result/intent/mode "thread") (finish_shares service))
       (if (&& (!= outgoing/result/status result/status)
               (["uncertain" "failed" "delivered"] .contains? result/status))
         (then
@@ -389,6 +407,7 @@
 # projections and recovery live in this core service and survive its retirement.
 (fn tick_channels [service]
   (if service/closed/.get (return nil))
+  (finish_shares service)
   (for [id changed] in (take_changes service/runtime/channel_queues)
     (if (!= ($to_str id) "revision") (service/dirty/.get .put ($to_str id) true)))
   (for [id due] in service/retry_at/.get

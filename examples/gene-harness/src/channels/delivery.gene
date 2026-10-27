@@ -16,7 +16,7 @@
   (if (|| (!= ($head revision) Int) (< revision 0))
     (channel_error "invalid_request" "Invalid output revision."))
   (let mode (?? supplied/mode "post"))
-  (if (! (["post" "progress"] .contains? mode))
+  (if (! (["post" "progress" "thread"] .contains? mode))
     (channel_error "invalid_request" "Invalid channel output mode."))
   (if (&& (== mode "progress") (!= parts/.size 1))
     (channel_error "invalid_request" "Progress uses one updatable message."))
@@ -29,11 +29,21 @@
    ^workspace (required_text supplied/workspace "workspace directory" ^max_bytes 4096)
    ^account (required_text supplied/account "account ID")
    ^team (identifier supplied/team "T" "team ID")
-   ^channel (identifier supplied/channel "CG" "channel ID") ^thread (slack_ts supplied/thread)
+   ^channel (identifier supplied/channel "CG" "channel ID")
+   ^thread (if (== mode "thread") nil (slack_ts supplied/thread))
    ^session (required_text supplied/session "session ID")
    ^round (required_text supplied/round "round ID")
    ^revision revision ^mode mode ^parts (copy parts)})
   (if (== supplied/remove true) (intent .put "remove" true))
+  (if_yes (== mode "thread")
+    (if (|| (!= ($head supplied/through) Int) (< supplied/through 0))
+      (channel_error "invalid_request" "A new Slack thread needs its conversation boundary."))
+    (intent .put "through" supplied/through)
+    (if_not ($absent? supplied/archived_rounds)
+      (let archived supplied/archived_rounds)
+      (if (!= ($head archived) List) (channel_error "invalid_request" "Invalid archived round IDs."))
+      (for id in archived (required_text id "archived round ID"))
+      (intent .put "archived_rounds" (copy archived))))
   intent)
 
 (fn intent_digest [intent] (key intent))
@@ -111,6 +121,9 @@
             (!= route/team intent/team) (!= route/channel intent/channel))
       (channel_error "forbidden" "Delivery does not match the connection owner's route."))
     (let previous (state/deliveries .get intent/id))
+    (if (&& (== intent/mode "thread") ($absent? previous)
+            (|| (!= route/enabled true) (!= (/enabled (state/accounts .get intent/account)) true)))
+      (channel_error "unavailable" "The Slack channel connection is disabled."))
     (if_yes (! ($absent? previous))
       (if (!= (delivery_identity previous/intent) (delivery_identity intent))
         (channel_error "submission_conflict" "Delivery destination changed."))
@@ -172,7 +185,7 @@
           (remember_message binding part/ts))))
     record) ^changes (fn [state]
       (let queue (state/queues .get result/intent/session))
-      {^outbox [result/intent/id] ^bindings [queue/binding]})))
+      {^outbox [result/intent/id] ^bindings (if ($absent? queue) [] [queue/binding])})))
 
 # Only an authenticated host owner can make this explicit content/effect choice.
 # Empty history scans never cause a resend. A retry may duplicate a post if the
@@ -261,6 +274,8 @@
     (part .put "retry_at" (?? outcome/retry_at 0))
     (if (== outcome/error "rate_limited")
       (record_quota state record/intent/account "write" (?? outcome/retry_at 0)))
+    (if (&& (== record/intent/mode "thread") (== index 0) (== outcome/status "sent"))
+      (record .put "reconcile_cursor" nil))
     (summarize_delivery record)
     record) ^changes {^deliveries [id] ^rate_limits nil}))
 
@@ -303,7 +318,9 @@
       (if update (then (data .put "ts" claimed/part/ts))
         (else
           (data .put "unfurl_links" false) (data .put "unfurl_media" false)
-          (data .put "thread_ts" intent/thread)))
+          (let thread (if (== intent/mode "thread")
+            (if (== index 0) nil (/ts (/0 (/parts (output_result owner id))))) intent/thread))
+          (if_not ($absent? thread) (data .put "thread_ts" thread))))
       (let outcome (try
         (let response (api_call api (if update "chat.update" "chat.postMessage") data))
         {^status "sent" ^ts (slack_ts response/ts)}
@@ -338,10 +355,13 @@
         (record .put "reconcile_error" nil)))
     nil) ^changes {^deliveries [id]})
   (let account (/accounts (snapshot owner); .get original/intent/account))
-  (let query {^channel original/intent/channel ^ts original/intent/thread
+  (let new_root (&& (== original/intent/mode "thread") (!= original/parts/0/status "sent")))
+  (let thread (if (== original/intent/mode "thread") original/parts/0/ts original/intent/thread))
+  (let query {^channel original/intent/channel
     ^include_all_metadata true ^limit 100})
+  (if_not new_root (query .put "ts" thread))
   (if_not ($absent? original/reconcile_cursor) (query .put "cursor" original/reconcile_cursor))
-  (let response (try (api_call api "conversations.replies" query ^http_method "GET")
+  (let response (try (api_call api (if new_root "conversations.history" "conversations.replies") query ^http_method "GET")
     catch SlackError
       (let failure $err)
       (if (== failure/code "rate_limited")
@@ -364,7 +384,8 @@
       (if (&& (== message/user account/bot_user) (== metadata/event_type "gene_harness_delivery")
                (== external/delivery id) (== external/part part/index)
                (== external/revision original/intent/revision)
-               (== (?? message/thread_ts message/ts) original/intent/thread)
+               (if new_root (== (?? message/thread_ts message/ts) message/ts)
+                 (== (?? message/thread_ts message/ts) thread))
                (== external/body_digest (key original/intent/parts/%index)))
         (matches .push message)))
     (if (== matches/.size 1)
@@ -373,6 +394,7 @@
     (let record (state/deliveries .get id))
     (if (!= record/intent/revision original/intent/revision) (return record))
     (let cursor response/response_metadata/next_cursor)
-    (record .put "reconcile_cursor" (if (|| ($absent? cursor) (== cursor "")) nil cursor))
+    (record .put "reconcile_cursor" (if (|| ($absent? cursor) (== cursor "")
+      (&& new_root (== record/parts/0/status "sent"))) nil cursor))
     (record .put "reconcile_at" ($os/wall_ms))
     record) ^changes {^deliveries [id]}))

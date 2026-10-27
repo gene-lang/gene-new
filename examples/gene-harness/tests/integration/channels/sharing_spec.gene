@@ -1,0 +1,207 @@
+(import $test [describe it])
+(import [isolated run_spec test_service] ^from "../../support")
+(import [create_session close_session_service session_add_to_slack submit remove_session list_sessions] ^from "../../../src/web/session_service")
+(import [require_record update_session create_session : create_record SessionError] ^from "../../../src/runtime/sessions")
+(import [configure_account configure_route snapshot authorize] ^from "../../../src/channels/authority")
+(import [bind_workspace handoff_outputs project_events project_rounds receive_handoff drain_session] ^from "../../../src/channels/service")
+(import [finish_shares conversation_archive] ^from "../../../src/channels/sharing")
+(import [pending_output output_result deliver_output begin_part recover_deliveries reconcile_remote reconcile_output] ^from "../../../src/channels/delivery")
+(import [read mutate] ^from "../../../src/channels/store")
+(import [queue_status] ^from "../../../src/channels/queue")
+(import [open_api close_api] ^from "../../../src/channels/slack_api")
+(import [open_transport close_transport deliver_pending] ^from "../../../src/channels/transport")
+(import [ChannelError key] ^from "../../../src/channels/model")
+(import [last_thread_message] ^from "../../../src/channels/thread_links")
+(import [append_core_event flush_event_store record_core_state] ^from "../../../src/storage/state")
+
+(fn fixture [workspace, body]
+  (let harness (test_service ^workspace workspace ^without_plugins ["slack"]
+    ^provider (fn [request] "(Outcome ^^done ^reply \"New answer.\")")))
+  (let channels harness/runtime/channels)
+  (try
+    (let credentials ($path/join workspace "fake-slack-credentials"))
+    ($fs/write_text credentials "Bot user oauth token: xoxb-test\nApp token: xapp-test\nChannel id: C12345678\n")
+    (configure_account channels/owner "dobi" credentials "/adapter.so"
+      {^team "T123" ^app "A123" ^bot "B123" ^bot_user "UBOT" ^operator "UOWNER"})
+    (let route (configure_route channels/owner "dobi" "C123" workspace))
+    (bind_workspace channels workspace route/id)
+    (let session (create_session harness ^title "Calculator & notes"))
+    (body {^harness harness ^channels channels ^route route ^session session})
+  ensure (close_session_service harness)))
+
+(fn archived_events [f]
+  (record_core_state f/harness/events "session" f/session/id "round/state" "rounds"
+    {^next_seq 3 ^receipts [{^id "old-failed" ^state "failed" ^submission_seq 1}
+      {^id "old-done" ^state "done" ^submission_seq 2}]})
+  (for event in [
+      {^type "turn/request" ^initial true ^initiator "user" ^text "Build a calculator." ^round "old"}
+      {^type "turn/request" ^!initial ^text "Private generated follow-up." ^round "old"}
+      {^type "reply" ^!final ^text "Private Gene code." ^round "old"}
+      {^type "reply" ^^final ^text "Calculator ready." ^round "old"}
+      {^type "console" ^text "Private stdout." ^round "old"}
+      {^type "reply" ^^final ^^synthetic ^text "Private synthetic reply." ^round "old"}]
+    (event .put "turn" 1)
+    (if_yes (== event/type "turn/request") (event .put "full" event/text) (event .put "settled" event/text))
+    (if (== event/type "console") (event .put "late" false))
+    (append_core_event f/harness/events "session" f/session/id event))
+  (flush_event_store f/harness/events))
+
+(fn wait_round [harness, session]
+  (let task (harness/controller/watchers/.get .get session))
+  (if_not ($absent? task) task/.join))
+
+(describe "Add a browser conversation to Slack"
+  (it "copies public history, links the same session and continues in both directions without replay" []
+    (isolated this_mod/.path "copies public history, links the same session and continues in both directions without replay"
+      (fn [workspace]
+        (fixture workspace (fn [f]
+          (archived_events f)
+          (let listed ($first (/sessions (list_sessions f/harness))))
+          ($assert listed/slack_available "Sidebar records must advertise the configured Slack destination.")
+          (let prepared (session_add_to_slack f/harness f/session/id 0))
+          ($assert (== prepared/slack_share/status "pending"))
+          ($assert ($absent? prepared/channel))
+          ($assert (try (remove_session f/harness f/session/id 1) false catch SessionError (== $err/code "busy")))
+          (session_add_to_slack f/harness f/session/id 0)
+          ($assert (== ($size (pending_output f/harness/runtime/channel_queues)) 1))
+          (let outgoing ($first (pending_output f/harness/runtime/channel_queues)))
+          ($assert (== outgoing/intent/parts/0/text "Calculator &amp; notes"))
+          ($assert (== outgoing/intent/parts/1/text "User (Harness browser):\nBuild a calculator.\nAgent:\nCalculator ready.")
+            ($serde/write_data outgoing/intent/parts))
+          # A new browser prompt arrives after the frozen archive boundary.
+          (let followup (submit f/harness f/session/id "followup" 3 "Add decimals."))
+          (wait_round f/harness f/session/id)
+          (handoff_outputs ^^force f/channels)
+          (let posted ($cell []))
+          (let requester (fn [request]
+            (posted/.get .push request/params)
+            {^status 200 ^headers [] ^body ($binary/from_str ($json/stringify
+              {^^ok ^ts ($to_str posted/.get/.size ".000001")}))}))
+          (let api (open_api "test-token" ^requester requester))
+          (let transport (open_transport f/channels ^!start ^requester requester))
+          (try
+            (deliver_output f/channels/owner api outgoing/intent/id ^max_parts 1)
+            (handoff_outputs ^^force f/channels)
+            (let linked (require_record f/harness/sessions f/session/id))
+            ($assert (== linked/channel/thread "1.000001"))
+            ($assert ($absent? posted/.get/0/thread_ts))
+            ($assert (== posted/.get/0/blocks/0/text/type "plain_text"))
+            (project_events f/channels f/session/id)
+            (project_events f/channels f/session/id)
+            (project_rounds f/channels f/session/id)
+            (let pending (pending_output f/harness/runtime/channel_queues))
+            ($assert (== pending/.size 3) ($serde/write_data pending))
+            ($assert (== pending/1/intent/parts/0/text "User (Harness browser):\nAdd decimals."))
+            ($assert (== pending/2/intent/parts/0/text "Agent:\nNew answer."))
+            (handoff_outputs ^^force f/channels)
+            (deliver_pending transport)
+            ($assert (== posted/.get/.size 2) "Live messages must wait for the copied history.")
+            (handoff_outputs ^^force f/channels)
+            ($assert (== posted/.get/1/thread_ts "1.000001"))
+            (let completed (require_record f/harness/sessions f/session/id))
+            ($assert (== completed/slack_share/status "delivered"))
+            (let state (snapshot f/harness/runtime/channel_queues))
+            ($assert (== (last_thread_message state linked/channel) "2.000001"))
+            (repeat 2 (transport/next_send .set {}) (deliver_pending transport))
+            ($assert (== ($map posted/.get /thread_ts) [nil "1.000001" "1.000001" "1.000001"]))
+            ($assert (== posted/.get/2/text "User (Harness browser):\nAdd decimals."))
+            ($assert (== posted/.get/3/text "Agent:\nNew answer."))
+            (let input {^transport "slack" ^account "dobi" ^team "T123" ^channel "C123"
+              ^thread "1.000001" ^message "3.000001" ^author "UOWNER" ^text "Also add percent."})
+            (let accepted (receive_handoff f/channels {^route f/route ^workspace workspace ^message input ^!start_allowed}))
+            ($assert (== accepted/session f/session/id))
+            ($assert (== (/kind (drain_session f/channels f/session/id)) "admitted"))
+            (wait_round f/harness f/session/id)
+            ($assert (== ($size f/harness/sessions/index/.get) 1))
+            (close_session_service f/harness)
+            (let restored (test_service ^workspace workspace ^without_plugins ["slack"]
+              ^provider (fn [request] "(Outcome ^^done)")))
+            (try
+              ($assert (! (/held (queue_status restored/runtime/channel_queues f/session/id)))
+                "Historical failures must not become new queue holds after restart.")
+              (project_rounds restored/runtime/channels f/session/id)
+              (let outputs (pending_output restored/runtime/channel_queues))
+              ($assert (== ($size ($filter outputs (fn [out] (== out/intent/round "old-failed")))) 0))
+            ensure (close_session_service restored))
+          ensure (close_transport transport) (close_api api)))))))
+
+  (it "recovers an uncertain parent from bot metadata without creating another thread" []
+    (isolated this_mod/.path "recovers an uncertain parent from bot metadata without creating another thread"
+      (fn [workspace]
+        (fixture workspace (fn [f]
+          (archived_events f)
+          (session_add_to_slack f/harness f/session/id 0)
+          (handoff_outputs ^^force f/channels)
+          (let outgoing ($first (pending_output f/harness/runtime/channel_queues)))
+          (begin_part f/channels/owner outgoing/intent/id 0 0)
+          (recover_deliveries f/channels/owner)
+          (let calls ($cell []))
+          (let api (open_api "test-token" ^requester (fn [request]
+            (calls/.get .push request/method)
+            (if (== request/method "conversations.history")
+              {^status 200 ^headers [] ^body ($binary/from_str ($json/stringify {^^ok
+                ^response_metadata {^next_cursor "history-page-2"} ^messages [
+                {^user "UBOT" ^ts "9.000001" ^metadata {^event_type "gene_harness_delivery"
+                  ^event_payload {^delivery outgoing/intent/id ^part 0 ^revision 0
+                    ^body_digest (key outgoing/intent/parts/0)}}}]}))}
+              (do
+                ($assert (== request/params/thread_ts "9.000001"))
+                {^status 200 ^headers [] ^body ($binary/from_str ($json/stringify {^^ok ^ts "10.000001"}))})))))
+          (try
+            (reconcile_remote f/channels/owner api outgoing/intent/id)
+            ($assert ($absent? (/reconcile_cursor (output_result f/channels/owner outgoing/intent/id))))
+            (handoff_outputs ^^force f/channels)
+            (let recovered (require_record f/harness/sessions f/session/id))
+            ($assert (== recovered/channel/thread "9.000001"))
+            (deliver_output f/channels/owner api outgoing/intent/id)
+            (handoff_outputs ^^force f/channels)
+            ($assert (== calls/.get ["conversations.history" "chat.postMessage"]))
+            ($assert (== (/status (output_result f/channels/owner outgoing/intent/id)) "delivered"))
+          ensure (close_api api)))))))
+
+  (it "rejects stale, busy, child and disabled destinations before publishing" []
+    (isolated this_mod/.path "rejects stale, busy, child and disabled destinations before publishing"
+      (fn [workspace]
+        (fixture workspace (fn [f]
+          ($assert (try (session_add_to_slack f/harness f/session/id 99) false
+            catch ChannelError (== $err/code "revision_conflict")))
+          (update_session f/harness/sessions f/session/id {^status "running"})
+          ($assert (try (session_add_to_slack f/harness f/session/id 0) false
+            catch ChannelError (== $err/code "busy")))
+          (update_session f/harness/sessions f/session/id {^status "done"})
+          (let child (create_record f/harness/sessions ^kind "child"
+            ^parent {^session f/session/id ^round "r" ^delegation "d"}))
+          ($assert (try (session_add_to_slack f/harness child/id 0) false
+            catch ChannelError (== $err/code "conflict")))
+          (configure_route f/channels/owner "dobi" "C123" workspace ^!enabled)
+          ($assert (try (session_add_to_slack f/harness f/session/id 0) false
+            catch ChannelError (== $err/code "unavailable")))
+          ($assert (== ($size (pending_output f/harness/runtime/channel_queues)) 0)))))))
+
+  (it "restores the link after a crash between confirming Slack output and updating session metadata" []
+    (isolated this_mod/.path "restores the link after a crash between confirming Slack output and updating session metadata"
+      (fn [workspace]
+        (fixture workspace (fn [f]
+          (session_add_to_slack f/harness f/session/id 0)
+          (handoff_outputs ^^force f/channels)
+          (let outgoing ($first (pending_output f/harness/runtime/channel_queues)))
+          (let api (open_api "test-token" ^requester (fn [request]
+            {^status 200 ^headers [] ^body ($binary/from_str ($json/stringify {^^ok ^ts "4.000001"}))})))
+          (try
+            (reconcile_output f/harness/runtime/channel_queues (deliver_output f/channels/owner api outgoing/intent/id))
+          ensure (close_api api))
+          ($assert ($absent? (/channel (require_record f/harness/sessions f/session/id))))
+          (close_session_service f/harness)
+          (let restored (test_service ^workspace workspace ^without_plugins ["slack"]
+            ^provider (fn [request] "(Outcome ^^done)")))
+          (try
+            (let record (require_record restored/sessions f/session/id))
+            ($assert (== record/channel/thread "4.000001"))
+            ($assert (== record/slack_share/status "delivered"))
+            ($assert (== ($size (pending_output restored/runtime/channel_queues)) 0))
+            (session_add_to_slack restored record/id 0)
+            ($assert (== ($size (pending_output restored/runtime/channel_queues)) 0))
+          ensure (close_session_service restored)))))))
+)
+
+(fn main [args] : Int (run_spec args))

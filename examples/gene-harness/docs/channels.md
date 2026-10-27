@@ -118,6 +118,23 @@ Slack participants can trigger code execution on the host.
 
 ## Slack session lifecycle
 
+Browser-only interactive conversations have an **Add to Slack** button to the
+left of Rename, and the same action in the conversation's menu, when their
+workspace has a configured Slack destination. Once
+the Agent finishes its current request, the button creates a channel message
+with the session title and copies the user prompts and final Agent replies,
+in order, into its thread. Long history is split into bounded replies. Code,
+console output and generated follow-up requests stay in Harness; images use
+the existing transcript references.
+
+The session retains its ID and browser history. Its title becomes a Slack
+thread link, and later browser and Slack messages share the same conversation.
+The copy records a history boundary so concurrent browser messages are sent
+once, after the copied history. A durable delivery ID makes retries and restarts
+reuse the same parent message. Unknown sends require reconciliation rather
+than blindly posting again. Deletion waits for pending sharing to finish or
+be resolved.
+
 1. **Start.** A top-level `@Agent build a calculator` message in a configured
    channel creates a Harness session and binds the root message to it. Include
    that original request in the session before starting the model. The bot's

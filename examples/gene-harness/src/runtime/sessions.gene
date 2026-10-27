@@ -433,6 +433,11 @@
     (for candidate in ids
       (let record (require_record manager candidate))
       (let loaded (manager/loaded/.get .get candidate))
+      (if (&& (! ($absent? record/slack_share))
+              (! (["delivered" "failed"] .contains? record/slack_share/status)))
+        (if explicit
+          (fail (SessionError ^code "busy" ^message "Finish or resolve the Slack share before deleting this conversation."))
+          (return false)))
       (if (|| (["running" "waiting"] .contains? record/status)
               (&& (! explicit) (|| record/pinned record/attention
                 (&& (! ($absent? loaded)) (> loaded/viewers/.get 0)))))

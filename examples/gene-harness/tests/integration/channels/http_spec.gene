@@ -74,6 +74,16 @@
           (let unlinked (api remote "POST" "/sessions" {^title "Browser-only conversation"}))
           ($assert (== (/status (wire remote/connection "GET"
             ($to_str "/sessions/" unlinked/id "/slack-thread") ^credentials remote/credentials)) 404))
+          (let share_path ($to_str "/sessions/" unlinked/id "/slack"))
+          ($assert unlinked/slack_available)
+          ($assert (== (/status (wire remote/connection "POST" share_path {^revision "0"})) 401))
+          ($assert (== (/status (wire remote/connection "POST" share_path {^revision "0"}
+            ^credentials {^cookie remote/credentials/cookie ^csrf ""})) 403))
+          ($assert (== (/status (wire remote/connection "POST" share_path {^revision "9"}
+            ^credentials remote/credentials)) 409))
+          (let shared (api remote "POST" share_path {^revision "0"}))
+          ($assert (== shared/slack_share/status "pending"))
+          ($assert (== (/id (api remote "POST" share_path {^revision "0"})) unlinked/id))
           (let view (api remote "GET" ($to_str "/sessions/" session "/snapshot?ui=default")))
           ($assert (== view/session/channel/channel "C123"))
           ($assert (== view/next_submission_seq "2"))
