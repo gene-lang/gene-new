@@ -1,0 +1,47 @@
+# A ratchet for the migration: new built-ins use the public contract and shared
+# helpers. Existing private dependencies are explicit, and stale exceptions fail.
+(import $test [describe it])
+
+(fn private_imports []
+  {^computer.gene ["../storage/media" "./media"]
+   ^core_commands.gene ["../runtime/commands"]
+   ^documentation.gene ["../agents/instructions"]
+   ^history_basic.gene ["../agents/history_policy"]
+   ^image_openrouter.gene ["../runtime/image_contract" "../agents/model_recording"]
+   ^media.gene ["../storage/media" "../storage/documents" "../agents/history"
+                "../storage/image_runs" "../agents/outcome"]
+   ^plugin_admin.gene ["../runtime/composition" "../storage/workspace"]
+   ^provider_anthropic.gene ["../agents/content"]
+   ^provider_claude.gene ["../agents/content"]
+   ^provider_codex.gene ["../agents/content"]
+   ^provider_openrouter.gene ["../agents/content"]
+   ^repl.gene ["../runtime/repl_sessions"]
+   ^shell.gene ["../runtime/shell_sessions"]
+   ^slack.gene ["../channels/transport"]
+   ^spotlight.gene ["../kernel"]
+   ^triggers.gene ["../runtime/triggers"]
+   ^ui_experiment.gene ["../ui/state" "../ui/views" "../ui/action_log"]
+   ^voice.gene ["../kernel" "../runtime/voice_state" "../audio/engines" "../audio/mac_recognition"]
+   ^workspace_manager.gene ["../runtime/workspace_manager"]})
+
+(describe "Built-in import boundary"
+  (it "admits public dependencies and only the remaining named private exceptions" []
+    (let exceptions (private_imports))
+    (let shared ["../plugin_api" "./documentation" "./provider_common" "../text"])
+    (let observed {})
+    (let root ($path/join this_pkg/root "src" "builtin"))
+    (for name in ($fs/list_dir root)
+      (if_not ($str/ends_with? name ".gene") (continue))
+      (for form in ($parse/read_all ($fs/read_text ($path/join root name)))
+        (if_not (["import" "import_impl"] .contains? ($to_str ($head form))) (continue))
+        # Native libraries and explicitly named Gene/genex packages are public.
+        (if (|| (!= ($head form/from) Str) (! ($absent? form/pkg))) (continue))
+        (let path form/from)
+        (if (shared .contains? path) (continue))
+        ($assert ((?? (exceptions .get name) []) .contains? path)
+          $"${name} imports host internals: ${path}; use a narrow public protocol")
+        (observed .put ($to_str name ":" path) true)))
+    (for [name paths] in exceptions
+      (for path in paths
+        ($assert (== (observed .get ($to_str name ":" path)) true)
+          $"Remove the retired import exception ${name}: ${path}")))))

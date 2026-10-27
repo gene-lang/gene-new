@@ -1,0 +1,39 @@
+# The host owns durable inbox state, action validation and operator identity.
+# A plugin receives an opaque handle and immutable records, never the inbox/store.
+(mod notification_host)
+(import [NotificationHost] ^from "../plugin_api")
+(import [safe_publish update_notification] ^from "./publisher")
+(import [inbox_snapshot message_detail clear_messages notification_error] ^from "./inbox")
+(import [immutable_view] ^from "../runtime/composition")
+
+(var hosts ^^private ($cell []))
+
+(fn inbox_host [handle]
+  (for record in hosts/.get
+    (if (same? record/token handle/token) (return record/h)))
+  (notification_error "unavailable" "The operator inbox is closed."))
+
+(type HostedNotifications ^^private ^props {^token Any}
+  (impl NotificationHost
+    (message post [message] : Any
+      (immutable_view (safe_publish (inbox_host self) "operator" message)))
+    (message update [id : Str, changes] : Any
+      (immutable_view (update_notification (inbox_host self) "operator" id changes)))
+    (message list [] : Any
+      (immutable_view (inbox_snapshot (/notifications (inbox_host self)))))
+    (message detail [id : Str] : Any
+      (immutable_view (message_detail (/notifications (inbox_host self)) id)))
+    (message clear [id : Str, revision : Int] : Any
+      (immutable_view (clear_messages (/notifications (inbox_host self)) [{^id id ^revision revision}])))))
+
+(fn open_notification_host [h]
+  (let token ($cell nil))
+  (hosts/.get .push {^token token ^h h})
+  ($freeze_shallow (HostedNotifications ^token token)))
+
+(fn close_notification_host [h]
+  (let remaining [])
+  (for record in hosts/.get
+    (if_not (same? record/h h) (remaining .push record)))
+  (hosts .set remaining)
+  nil)

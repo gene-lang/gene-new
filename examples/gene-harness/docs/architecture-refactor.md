@@ -8,7 +8,7 @@ trusted-code model and the existing Gene syntax remain invariants.
 | Batch | Deliverables and acceptance | Status |
 | --- | --- | --- |
 | 1. Fixes and policy | Five trigger routes return unavailable after disabled boot/live deactivation; re-enable preserves definitions. Remove unused private modules/helpers, update reference material and organization, retain additive PluginHost:2, identify interface mismatch accurately. | Complete |
-| 2. Operator inbox | Narrow operator-inbox protocol, stored notifications replacement, unchanged plugin-owned publishers. Pre-existing/foreign/keyed message operations, revisions, replacement and restart. Public defer cleanup and an explicit built-in import boundary. | Pending |
+| 2. Operator inbox | Narrow operator-inbox protocol, stored notifications replacement, unchanged plugin-owned publishers. Pre-existing/foreign/keyed message operations, revisions, replacement and restart. Public defer cleanup and an explicit built-in import boundary. | Complete |
 | 3. Registries | Declarative owned specs/callbacks/keys/reservations, leased rows/row and extensible hook points/dispatch. Registry requirements move dependents pending and reactivate them. A/B/C replacement, supervision, immutable views and leased cleanup. | Pending |
 | 4. Feature services | Narrow feature host contracts, retire raw loop/command-context access, static host service dependencies with normal/recovery/partial-open cleanup, feature HTTP routes and browser handlers behind authenticated admission and the core stream coordinator. Failure injection and existing client/recovery coverage. | Pending |
 | 5. Turn participants | Explicit internal phase/transaction contract, delegation then a second consumer; one lease, unconditional core records/base Outcome rules, no replay, cancellation/panic cleanup, owned/schema-checked extension keys and initiators. | Pending |
@@ -36,3 +36,24 @@ passing a narrow test is not evidence for the entire refactor.
   inventories and disclosure behavior were corrected, proposal/evidence
   documents moved with their local links rebased, and the manager plugin
   definition expanded. Notifications formatting lands with batch 2's rewrite.
+
+## Batch 2 evidence
+
+- The notification integration suite passed all 5 cases. The new stored
+  replacement imports only `plugin_api`, runs in a profile with no `loop`,
+  and preserves operator ownership, foreign-source visibility, keyed identity,
+  frozen actions, immutable results and observed-revision clears across restart.
+  Existing publisher/action and CLI/HTTP delivery cases remain green.
+- The public cleanup acceptance case passed: old readers retain their resource,
+  the last release retires it once, and failed activation unwinds once.
+  Kernel snapshot/event cases passed (4), Cordis effect cases passed (2),
+  trigger lifecycle cases passed (3), and Slack transport cases passed (6),
+  including replacement/withdrawal without deleting core queues.
+- Slack and triggers use public `defer` instead of growing activation lists.
+  The operator-inbox handle is opaque and revoked on workspace close. Provider
+  adapters now use public `ProviderError` rather than importing the kernel.
+  Provider and built-in import checks passed (12 cases). The import check names
+  remaining migration exceptions and rejects stale exceptions and new private
+  dependencies. Feature migrations in later batches must reduce that list.
+- `PluginHost:2` is unchanged. Old raw entry points remain during additive
+  migration; retirement waits for batch 6's compatibility policy.

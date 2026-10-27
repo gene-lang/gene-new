@@ -1,0 +1,145 @@
+(import $test [describe it])
+(import [isolated run_spec] ^from "../../support")
+(import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
+(import [Profile] ^from "../../../src/profiles/profile")
+(import [notifications] ^from "../../../src/builtin/notifications")
+(import [Plugin PluginHost NotificationHost] ^from "../../../src/plugin_api")
+(import [row resolve] ^from "../../../src/kernel")
+(import [register_plugin] ^from "../../../src/storage/workspace")
+
+(fn stored_notifications []
+  (quote
+    (mod plugin
+      (import [Plugin PluginHost NotificationHost] ^from "src/plugin_api.gene")
+      (fn init [descriptor]
+        (Plugin ^id "notifications" ^requires ["notifications/host"]
+          ^provides [["functions" "notification_post"] ["functions" "notification_update"]
+                     ["functions" "notification_list"] ["functions" "notification_detail"]
+                     ["functions" "notification_clear"]]
+          ^activate (fn [host]
+            (let inbox (host .PluginHost:resolve "notifications/host"))
+            (for definition in
+              [{^name "notification_post" ^doc "Stored operator publisher."
+                ^fn (fn [message] (inbox .NotificationHost:post message))}
+               {^name "notification_update" ^doc "Stored operator update."
+                ^fn (fn [id : Str, changes] (inbox .NotificationHost:update id changes))}
+               {^name "notification_list" ^doc "Stored whole-inbox list."
+                ^fn (fn [] inbox/.NotificationHost:list)}
+               {^name "notification_detail" ^doc "Stored whole-inbox detail."
+                ^fn (fn [id : Str] (inbox .NotificationHost:detail id))}
+               {^name "notification_clear" ^doc "Stored revision-checked clear."
+                ^fn (fn [id : Str, revision : Int] (inbox .NotificationHost:clear id revision))}]
+              (host .PluginHost:contribute "functions" definition))))))))
+
+(fn call [h, name : Str, args...]
+  (let callback (/fn (row h "functions" name)))
+  (callback args...))
+
+(fn listed [h, id : Str] : Bool
+  (for message in ((Path "messages") (call h "notification_list"))
+    (if (== message/id id) (return true)))
+  false)
+
+(describe "Operator inbox host protocol"
+  (it "preserves sources, keyed revisions and whole-inbox operations through a stored replacement and restart" []
+    (isolated this_mod/.path
+      "preserves sources, keyed revisions and whole-inbox operations through a stored replacement and restart"
+      (fn [root]
+        (let publisher ($cell nil))
+        (let profile (Profile ^name "inbox-contract" ^plugins
+          [(notifications)
+           (Plugin ^id "other_producer" ^activate (fn [host] (publisher .set host)))]))
+        (let saved ($cell nil))
+        (let original (open_runtime root "default" profile))
+        (let old_handle (resolve original/h "notifications/host"))
+        (try
+          (let h original/h)
+          ($assert (try (resolve h "loop") false catch Any
+            ($str/contains? $err/message "no provider for seam loop"))
+            "fixture unexpectedly supplied raw runtime access")
+          (let plain (call h "notification_post" {^title "Before replacement"}))
+          (let keyed (call h "notification_post" {^key "job" ^title "Job"
+            ^origin {^entity "job-1"}
+            ^actions [{^id "draft" ^label "Review" ^prompt "Review job evidence."}]}))
+          (let foreign (publisher/.get .PluginHost:notify {^key "job" ^title "Foreign job"}))
+          ($assert (&& plain/ok keyed/ok foreign/ok))
+          ($assert (!= keyed/id foreign/id) "operator and plugin source keys collided")
+          (let before (call h "notification_detail" keyed/id))
+          (let replaced (register_plugin ^^replace original/workspace h "notifications"
+            (stored_notifications)))
+          ($assert (== replaced/status "ready") ($to_str replaced))
+          ($assert (== (/doc (row h "functions" "notification_post")) "Stored operator publisher."))
+          (for receipt in [plain keyed foreign]
+            ($assert (listed h receipt/id))
+            (let detail (call h "notification_detail" receipt/id))
+            ($assert (== detail/source (if (== receipt/id foreign/id) "other_producer" "operator")))
+            ($assert (try (detail .put "title" "mutated") false catch Any true)
+              "facade returned mutable public data"))
+          (let listed_snapshot (call h "notification_list"))
+          ($assert (try (listed_snapshot/messages .push {}) false catch Any true))
+          (let denied (call h "notification_update" foreign/id {^title "Stolen"}))
+          ($assert (&& (! denied/ok) (== denied/code "forbidden")))
+          (let plugin_denied (publisher/.get .PluginHost:notification_update keyed/id {^title "Stolen"}))
+          ($assert (&& (! plugin_denied/ok) (== plugin_denied/code "forbidden")))
+          (let owned_messages (publisher/.get .PluginHost:notifications))
+          ($assert (== owned_messages/.size 1))
+          (let invalid (call h "notification_post" {^title "Invalid" ^detail (quote (script "bad"))}))
+          ($assert (! invalid/ok) "facade bypassed detail validation")
+          (let bad_action (call h "notification_post" {^title "Invalid action"
+            ^actions [{^id "bad" ^label "Bad" ^command "/nonexistent_command"}]}))
+          ($assert (! bad_action/ok) "facade bypassed action validation")
+          (let updated (call h "notification_update" keyed/id {^detail "Additional evidence"}))
+          ($assert updated/ok ($to_str updated))
+          ($assert (== updated/id keyed/id))
+          ($assert (> updated/revision keyed/revision))
+          ($assert (== updated/sequence keyed/sequence))
+          (let after (call h "notification_detail" keyed/id))
+          ($assert (== after/actions before/actions))
+          ($assert (== after/origin before/origin))
+          (let foreign_updated (publisher/.get .PluginHost:notification_update foreign/id {^title "Foreign job updated"}))
+          ($assert foreign_updated/ok)
+          # Clearing an older observed revision must not hide newer content.
+          (for receipt in [keyed foreign]
+            (call h "notification_clear" receipt/id receipt/revision)
+            ($assert (listed h receipt/id)))
+          ($assert (try (call h "notification_clear" keyed/id (+ updated/revision 1)) false
+            catch Any (== $err/code "invalid_request")))
+          (call h "notification_clear" plain/id plain/revision)
+          ($assert (! (listed h plain/id)))
+          (saved .set {^plain plain ^keyed updated ^foreign foreign_updated ^actions after/actions})
+        ensure (close_runtime original))
+        ($assert (try old_handle/.NotificationHost:list false catch Any (== $err/code "unavailable"))
+          "closed facade retained a workspace")
+        (let restarted (open_runtime root "default" profile))
+        (try
+          (let restored_h restarted/h)
+          (let state saved/.get)
+          ($assert (== (/doc (row restored_h "functions" "notification_post")) "Stored operator publisher."))
+          ($assert (! (listed restored_h state/plain/id)))
+          ($assert (== (/source (call restored_h "notification_detail" state/plain/id)) "operator"))
+          (for receipt in [state/keyed state/foreign]
+            ($assert (listed restored_h receipt/id))
+            ($assert (== (/revision (call restored_h "notification_detail" receipt/id)) receipt/revision)))
+          (let detail (call restored_h "notification_detail" state/keyed/id))
+          ($assert (== detail/source "operator"))
+          ($assert (== detail/actions state/actions) "restart rebound frozen actions")
+          ($assert (== (/source (call restored_h "notification_detail" state/foreign/id)) "other_producer"))
+          (let restored_denied (call restored_h "notification_update" state/foreign/id {^title "Stolen after restart"}))
+          ($assert (&& (! restored_denied/ok) (== restored_denied/code "forbidden")))
+          (for receipt in [state/keyed state/foreign]
+            (call restored_h "notification_clear" receipt/id (- receipt/revision 1))
+            ($assert (listed restored_h receipt/id)))
+          (let restored_update (call restored_h "notification_update" state/keyed/id {^detail "Restart evidence"}))
+          ($assert restored_update/ok)
+          ($assert (== restored_update/id state/keyed/id))
+          ($assert (> restored_update/revision state/keyed/revision))
+          ($assert (== (/actions (call restored_h "notification_detail" state/keyed/id)) state/actions))
+          (for receipt in [restored_update state/foreign]
+            (call restored_h "notification_clear" receipt/id receipt/revision)
+            ($assert (! (listed restored_h receipt/id))))
+          (let next (call restored_h "notification_post" {^key "after-restart" ^title "New operator message"}))
+          ($assert next/ok)
+          ($assert (== (/source (call restored_h "notification_detail" next/id)) "operator"))
+        ensure (close_runtime restarted))))))
+
+(fn main [args] : Int (run_spec args))

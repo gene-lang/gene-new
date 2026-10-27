@@ -4,7 +4,6 @@
 (import [contribute_doc] ^from "./documentation")
 
 (fn slack [^driver driver = nil, ^requester requester = nil] : Plugin
-  (let activations [])
   (Plugin ^id "slack" ^requires ["loop"]
     ^activate (fn [host]
       (let factory (host .PluginHost:resolve "loop"))
@@ -13,10 +12,7 @@
         (if_not ($absent? requester) (set loop/runtime/channels/users/requester requester))
         (let transport (open_transport loop/runtime/channels ^owner host/effects ^start (?? loop/start true)
           ^driver driver ^requester requester))
-        (activations .push {^host host ^transport transport}))
+        (host .PluginHost:defer (fn [] (close_transport transport))))
       (contribute_doc host "harness/channels"
         "Slack accounts, thread sessions, operator trust and queue controls."
-        "examples/gene-harness/docs/channels.md" ^tags ["slack" "channels" "sessions"]))
-    ^deactivate (fn [host]
-      (for active in activations
-        (if (same? active/host host) (close_transport active/transport))))))
+        "examples/gene-harness/docs/channels.md" ^tags ["slack" "channels" "sessions"]))))

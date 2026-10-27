@@ -1486,6 +1486,12 @@
 
 (impl PluginHost for Host
   (message execution_budget [] : Any (execution_budget))
+  (message defer [cleanup] : Any
+    (if_not ($runtime/callable? cleanup)
+      (fail (HarnessError ^message "defer requires a cleanup callback")))
+    (let h self/h)
+    (self/effects .defer (fn [] (cleanup_registry_context h cleanup)))
+    nil)
   (message notify [message] : Any
     (safe_publish ^revision self/notification_revision self/h self/owner message))
   (message notifications [] : Any

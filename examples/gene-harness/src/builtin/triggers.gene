@@ -5,7 +5,6 @@
 (import ^from "./documentation" [contribute_doc])
 
 (fn triggers [] : Plugin
-  (let activations [])
   (Plugin ^id "triggers" ^requires ["loop"]
     ^provides [["functions" "create_trigger"] ["functions" "list_triggers"]
                ["functions" "delete_trigger"]]
@@ -16,7 +15,9 @@
         (open_trigger_manager ^owner host/effects
           ^start (?? loop/start true) ^boot (?? loop/boot true)
           loop/runtime loop/controller))
-      (activations .push {^host host ^manager manager ^runtime loop/runtime})
+      (host .PluginHost:defer (fn []
+        (close_trigger_manager manager)
+        (if (same? loop/runtime/triggers manager) (set loop/runtime/triggers nil))))
       (host .PluginHost:contribute "functions"
         {^name "create_trigger" ^doc "Schedule workspace work."
          ^tags ["schedule" "heartbeat" "cron" "triggers"] ^docs ["harness/triggers"]
@@ -31,11 +32,4 @@
          ^fn (fn [id : Str] (delete_trigger manager id))})
       (contribute_doc host "harness/triggers"
         "Schedule heartbeat, one-shot and cron work; policies and verification."
-        "examples/gene-harness/docs/triggers.md" ^tags ["schedule" "heartbeat" "cron" "triggers"]))
-    ^deactivate (fn [host]
-      (for active in activations
-        (if (same? active/host host)
-          (then
-            (close_trigger_manager active/manager)
-            (if (same? active/runtime/triggers active/manager)
-              (set active/runtime/triggers nil))))))))
+        "examples/gene-harness/docs/triggers.md" ^tags ["schedule" "heartbeat" "cron" "triggers"]))))

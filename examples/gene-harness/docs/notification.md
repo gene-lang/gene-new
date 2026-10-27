@@ -15,6 +15,14 @@ and the [review notifier example](../examples/notifications/README.md).
 The [verification record](verification/notification-verification.md) maps the acceptance
 criteria to automated tests and observed browser behavior.
 
+The built-in uses the public `NotificationHost` at `notifications/host`.
+That handle exposes operator-owned publish/update and whole-inbox
+list/detail/revision-checked clear without exposing the inbox store or runtime.
+It is separate from PluginHost's source-scoped publisher messages. A stored
+replacement using only `plugin_api` is covered by
+`tests/integration/notifications/host_spec.gene`, including existing and
+foreign-source messages, keyed updates, immutable replies and restart.
+
 ## Purpose and scope
 
 Give the operator a dependable way to notice something, expand its details and

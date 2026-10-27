@@ -121,6 +121,34 @@ and the legacy `views` registry. Additive PluginHost messages preserve
 `PluginHost:2`; removing or changing a contract requires an explicit version
 and compatibility policy. A stored-entry mismatch names the differing interface.
 
+### Host services and activation cleanup
+
+Resolve `notifications/host` to use the public `NotificationHost` protocol.
+`post message` and `update id changes` write as `"operator"`; `list` returns
+the whole inbox and its opened watermark; `detail id` reads any retained
+message; `clear id revision` clears only the observed revision, across sources.
+The returned collections are immutable. Keyed updates preserve the original
+source, identity, origin and frozen actions unless explicitly changed, with
+the same host validation as the built-in. An older clear never hides a newer
+revision. This facade does not change PluginHost's source-owned `notify`,
+`notifications`, `notification_update` and `notification_clear` messages.
+
+Use `(host .PluginHost:defer (fn [] ...))` to register activation cleanup.
+It returns nil; Cordis invokes the callback under the activation's cleanup
+policy after the final reader releases the retired generation, including
+failed-activation unwind. Register cleanup as soon as a resource is acquired.
+Shell and REPL keep explicit accounting for sessions shared by overlapping
+generations; `defer` does not supply a shared-resource lifetime policy.
+
+Provider adapters can raise the public `ProviderError` from `plugin_api`.
+Transport and content helpers remain separate modules.
+
+The [built-in import check](../tests/unit/builtin/import_policy_spec.gene)
+allows `plugin_api`, declared shared helpers and public Gene/genex libraries.
+Remaining private imports are named migration exceptions; removing an import
+requires removing its exception, and new private imports fail the check.
+Stored plugins retain the enforced source-closure boundary described below.
+
 ### Make every plugin discoverable
 
 Plugins use progressive discovery themselves. Their functions and other active

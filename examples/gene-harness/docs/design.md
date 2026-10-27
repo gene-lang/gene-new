@@ -494,6 +494,7 @@ the host; a plugin keeps the host for later callbacks.
 | `resolve`, `provide`, `replace` | Seams |
 | `subscribe`, `emit_event` | Observe the event bus; emit the plugin's own event types |
 | `state`, `update_state` | Workspace state, or per-session state with `^session` |
+| `defer` | Cleanup owned by the activation's effect scope; runs after its final reader |
 
 The registries are `functions`, `commands`, `input_modes`, `prompt`, `docs`,
 `providers`, `image_generators`, `speech_recognizers`, `speech_synthesizers`,

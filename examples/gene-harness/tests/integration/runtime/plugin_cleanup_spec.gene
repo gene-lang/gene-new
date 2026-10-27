@@ -1,0 +1,49 @@
+(import $test [describe it])
+(import [isolated run_spec] ^from "../../support")
+(import [Plugin PluginHost] ^from "../../../src/plugin_api")
+(import [new_harness install put_cordis_plugin shutdown_harness status_of row uninstall]
+  ^from "../../../src/kernel")
+(import [acquire_snapshot release_snapshot] ^from "../../../src/runtime/composition")
+
+(describe "Public plugin cleanup"
+  (it "defers cleanup through the final reader and unwinds failed activation once" []
+    (isolated this_mod/.path "defers cleanup through the final reader and unwinds failed activation once"
+      (fn [root]
+        (let h (new_harness))
+        (let closed ($cell []))
+        (fn plugin [version]
+          (Plugin ^id "resource" ^activate (fn [host]
+            (let disposed ($cell false))
+            (host .PluginHost:defer (fn []
+              ($assert (! disposed/.get) "resource closed twice")
+              (disposed .set true)
+              (closed/.get .push version)))
+            (host .PluginHost:contribute "functions"
+              {^name "resource_value" ^doc "Read the leased resource."
+               ^fn (fn [] ($assert (! disposed/.get)) version)}))))
+        (try
+          (install h (plugin 1))
+          (let lease (acquire_snapshot h/snapshots))
+          (try
+            (put_cordis_plugin ^^replace h (plugin 2) {^!host})
+            ($assert (== closed/.get []))
+            ($runtime/with_context {^composition h/snapshots ^snapshot lease/snapshot}
+              (fn []
+                (let old (/fn (row h "functions" "resource_value")))
+                ($assert (== (old) 1))))
+          ensure (release_snapshot h/snapshots lease))
+          ($assert (== closed/.get [1]))
+          (let current (/fn (row h "functions" "resource_value")))
+          ($assert (== (current) 2))
+          (uninstall h "resource")
+          ($assert (== closed/.get [1 2]))
+          (install h (Plugin ^id "broken" ^activate (fn [host]
+            (host .PluginHost:defer (fn [] (closed/.get .push "failed")))
+            (fail "activation failed"))))
+          ($assert (== (status_of h "broken") "error"))
+          ($assert (== closed/.get [1 2 "failed"]))
+          (uninstall h "broken")
+          ($assert (== closed/.get [1 2 "failed"]))
+        ensure (shutdown_harness h))))))
+
+(fn main [args] : Int (run_spec args))

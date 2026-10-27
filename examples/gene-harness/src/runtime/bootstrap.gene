@@ -4,6 +4,7 @@
 (import ^from "../profiles/profile" [profile_admissions])
 (import ^from "../storage/state" [open_event_store close_event_store flush_event_store])
 (import ^from "../notifications/inbox" [open_inbox close_inbox])
+(import ^from "../notifications/host" [open_notification_host close_notification_host])
 (import ^from "../ui/actions" [open_ui_actions close_ui_actions])
 (import ^from "../storage/workspace"
   [open_workspace close_workspace prepare_workspace activate_workspace_plan set_profile_plugins attach_history record_application_result])
@@ -76,6 +77,7 @@
         (close_workspace runtime/workspace)
       ensure
         (if_not ($absent? runtime/channel_queues) (close_channel_store runtime/channel_queues))
+        (close_notification_host runtime/h)
         (if_not ($absent? runtime/h/notifications) (close_inbox runtime/h/notifications))))
   ensure
     (try
@@ -143,7 +145,9 @@
     (if (== profile/name "manager")
       (set h/ui_defaults {^^enabled ^layout "chat" ^default_view "workspaces"
         ^panel "" ^side "left" ^width 50 ^theme {}}))
-    (if_not recovery (set h/notifications (open_inbox $"${state_root}/notifications")))
+    (if_not recovery
+      (set h/notifications (open_inbox $"${state_root}/notifications"))
+      (provide h "core" "notifications/host" (open_notification_host h)))
     (install_core_prompt_rows h)
     (if_yes (&& activate (! recovery))
       (let prepared (prepare_workspace ^session session workspace h))
@@ -200,7 +204,9 @@
           (close_channel_store runtime/channel_queues))
         (if_not ($absent? h)
           (try (shutdown_harness h)
-            ensure (if_not ($absent? h/notifications) (close_inbox h/notifications))))
+            ensure
+              (close_notification_host h)
+              (if_not ($absent? h/notifications) (close_inbox h/notifications))))
       ensure
         (try
           (if_not ($absent? workspace) (close_workspace workspace))

@@ -1,5 +1,5 @@
 (mod provider_common)
-(import ^from "../kernel" [HarnessError])
+(import ^from "../plugin_api" [ProviderError])
 (import $net/http_client [request])
 
 (fn nonempty [value]
@@ -10,12 +10,12 @@
 (fn configure_model [model, effort, timeout, default_model : Str,
                      ^minimal_is_low minimal_is_low : Bool = false]
   (if (|| (!= ($head timeout) Int) (<= timeout 0) (> timeout 86400000))
-    (fail (HarnessError ^message
+    (fail (ProviderError ^message
       "provider_timeout_ms must be an integer between 1 and 86400000")))
   (let selected_effort (?? (nonempty effort) "medium"))
   (if_not (["none" "minimal" "low" "medium" "high" "xhigh" "max"]
            .contains? selected_effort)
-    (fail (HarnessError ^message
+    (fail (ProviderError ^message
       "GENE_HARNESS_THINKING_EFFORT must be none, minimal, low, medium, high, xhigh, or max")))
   {^model (?? (nonempty model) default_model)
    ^effort (if (&& minimal_is_low (== selected_effort "minimal"))

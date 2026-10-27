@@ -2,7 +2,7 @@
 (import [chat_messages] ^from "../agents/content")
 (import ^from "../plugin_api" [Plugin PluginHost])
 (import ^from "./documentation" [contribute_text_doc])
-(import ^from "../kernel" [HarnessError])
+(import ^from "../plugin_api" [ProviderError])
 (import ^from "./provider_common" [nonempty configure_model http_json_attempt])
 
 (fn api_key []
@@ -11,12 +11,12 @@
 
 (fn openrouter_text [response] : Str
   (if_not (== response/status 200)
-    (fail (HarnessError ^message
+    (fail (ProviderError ^message
       $"openrouter ${response/status}: provider request failed")))
   (let parsed ($json/parse response/body))
   (let content parsed/choices/0/message/content)
   (if_not (== ($head content) Str)
-    (fail (HarnessError ^message
+    (fail (ProviderError ^message
       "provider returned invalid text content")))
   content)
 
@@ -42,7 +42,7 @@
          ^send (fn [prepared]
            (let key (api_key))
            (if ($absent? key)
-             (fail (HarnessError ^message
+             (fail (ProviderError ^message
                "no OpenRouter API key; set OPENROUTER_API_KEY (or OPENROUTER_KEY)")))
            (http_json_attempt "https://openrouter.ai/api/v1/chat/completions"
              {^content-type "application/json"

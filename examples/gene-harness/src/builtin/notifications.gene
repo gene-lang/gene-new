@@ -1,9 +1,33 @@
 (mod notifications)
-(import ^from "../plugin_api" [Plugin PluginHost])
-(import ^from "../notifications/publisher" [safe_publish update_notification])
-(import ^from "../notifications/inbox"
-  [inbox_snapshot message_detail clear_messages])
-(import ^from "./documentation" [contribute_doc])
+(import [Plugin PluginHost NotificationHost] ^from "../plugin_api")
 
 (fn notifications [] : Plugin
-  (Plugin ^id "notifications" ^requires ["loop"] ^provides [["functions" "notification_post"] ["functions" "notification_update"] ["functions" "notification_list"] ["functions" "notification_detail"] ["functions" "notification_clear"]] ^activate (fn [host] (let factory (host .PluginHost:resolve "loop")) (let runtime ((Path "runtime") (factory))) (for definition in [{^name "notification_post" ^doc "Publish a stored operator message; inspect ok before reporting success." ^fn (fn [message] (safe_publish runtime/h "operator" message))} {^name "notification_update" ^doc "Update an operator-owned keyed message." ^fn (fn [id : Str, changes] (update_notification runtime/h "operator" id changes))} {^name "notification_list" ^doc "List recent messages and the opened watermark." ^fn (fn [] (inbox_snapshot runtime/h/notifications))} {^name "notification_detail" ^doc "Read a retained notification and its original evidence references." ^fn (fn [id : Str] (message_detail runtime/h/notifications id))} {^name "notification_clear" ^doc "Clear only the observed message revision; never answers a question." ^fn (fn [id : Str, revision : Int] (clear_messages runtime/h/notifications [{^id id ^revision revision}]))}] (definition .put "tags" ["notifications" "messages" "attention"]) (definition .put "docs" ["harness/notifications" "harness/notifications/publishing"]) (host .PluginHost:contribute "functions" definition)) (contribute_doc ^tags ["notifications" "messages" "questions"] host "harness/notifications" "Notices, pending workflows and the producer inbox." "examples/gene-harness/docs/recipes/notifications.md") (contribute_doc ^tags ["notifications" "plugins" "actions"] host "harness/notifications/publishing" "Source-scoped plugin publishing, receipts and declared actions." "examples/gene-harness/docs/recipes/notification-publishing.md"))))
+  (Plugin ^id "notifications" ^requires ["notifications/host"]
+    ^provides [["functions" "notification_post"] ["functions" "notification_update"]
+               ["functions" "notification_list"] ["functions" "notification_detail"]
+               ["functions" "notification_clear"]]
+    ^activate (fn [host]
+      (let inbox (host .PluginHost:resolve "notifications/host"))
+      (for definition in
+        [{^name "notification_post"
+          ^doc "Publish a stored operator message; inspect ok before reporting success."
+          ^fn (fn [message] (inbox .NotificationHost:post message))}
+         {^name "notification_update" ^doc "Update an operator-owned keyed message."
+          ^fn (fn [id : Str, changes] (inbox .NotificationHost:update id changes))}
+         {^name "notification_list" ^doc "List recent messages and the opened watermark."
+          ^fn (fn [] inbox/.NotificationHost:list)}
+         {^name "notification_detail" ^doc "Read a retained notification and its original evidence references."
+          ^fn (fn [id : Str] (inbox .NotificationHost:detail id))}
+         {^name "notification_clear" ^doc "Clear only the observed message revision; never answers a question."
+          ^fn (fn [id : Str, revision : Int] (inbox .NotificationHost:clear id revision))}]
+        (definition .put "tags" ["notifications" "messages" "attention"])
+        (definition .put "docs" ["harness/notifications" "harness/notifications/publishing"])
+        (host .PluginHost:contribute "functions" definition))
+      (for chapter in
+        [["harness/notifications" "Notices, pending workflows and the producer inbox."
+          "notifications.md" ["notifications" "messages" "questions"]]
+         ["harness/notifications/publishing" "Source-scoped plugin publishing, receipts and declared actions."
+          "notification-publishing.md" ["notifications" "plugins" "actions"]]]
+        (host .PluginHost:contribute "docs"
+          {^name chapter/0 ^summary chapter/1 ^tags chapter/3
+           ^path ($path/join this_pkg/root "docs" "recipes" chapter/2)})))))

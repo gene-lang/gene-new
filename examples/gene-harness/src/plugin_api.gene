@@ -31,6 +31,10 @@
 (type ImageError ^props {^code Str ^message Str ^status Int? ^usage Any? ^diagnostic Str?} ^impl [Error])
 (impl Error for ImageError)
 
+# Provider adapters share one failure contract without importing the kernel.
+(type ProviderError ^props {^message Str} ^impl [Error])
+(impl Error for ProviderError)
+
 (import [DelegationError] ^from "./runtime/delegation_contract" ^^export)
 
 (protocol DelegationHost
@@ -52,6 +56,7 @@
 
 (protocol PluginHost
   (message execution_budget [] : Any)
+  (message defer [cleanup] : Any)
   (message registry_names [] : Any)
   (message row_keys [registry : Str] : Any)
   (message create_registry [spec] : Any)
@@ -68,6 +73,15 @@
   (message notifications [] : Any)
   (message notification_update [id : Str, changes] : Any)
   (message notification_clear [id : Str, revision : Int] : Any))
+
+# Operator-inbox access is distinct from PluginHost's source-owned publisher.
+# Reads and revision-checked clears cover all sources; writes remain operator-owned.
+(protocol NotificationHost
+  (message post [message] : Any)
+  (message update [id : Str, changes] : Any)
+  (message list [] : Any)
+  (message detail [id : Str] : Any)
+  (message clear [id : Str, revision : Int] : Any))
 
 (import ^from "./agents/outcome" [append_plugin_prompt TurnClosed])
 (fn append_prompt [label : Str, value]
