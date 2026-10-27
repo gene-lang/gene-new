@@ -514,6 +514,9 @@ reports holds and their revision. An owner can explicitly resume using
 `!continue-until-finished [ROUND_ID]`, and `!resume-queue QUEUE_REVISION`.
 Questions display the exact `!answer BATCH_ID {JSON}` reply to send. Continuing
 the task preserves existing queue holds.
+Controls tolerate the trailing “Sent using” attribution added by Slack
+integrations, including when Slack flattens it onto the command line. Literal
+requests and answer JSON retain their content.
 
 `!resume-queue` never replaces an unresolved paused task. To explicitly choose
 the queued requests instead, inspect `!status` and send

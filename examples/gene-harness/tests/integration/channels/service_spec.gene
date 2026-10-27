@@ -13,6 +13,7 @@
 (import [qualification_provider] ^from "../../../probes/slack_live")
 (import [put_cordis_plugin] ^from "../../../src/kernel")
 (import [channel_settings] ^from "../../../src/channels/http")
+(import [parse_control] ^from "../../../src/channels/controls")
 
 (fn wait_round [service, session]
   (let watcher (service/controller/watchers/.get .get session))
@@ -45,6 +46,35 @@
   (if (== incoming/status "pending") (receive_handoff f/channels incoming) incoming))
 
 (describe "Workspace channel service"
+  (it "accepts attributed Slack controls without changing answer JSON or literal prompts" []
+    ($assert (== (parse_control "!continue-until-finished round-1 *Sent using* <@UAPP>")
+      {^name "continue-until-finished" ^args "round-1"}))
+    ($assert (== (parse_control "!status\n\n*Sent using* <@UAPP|App>") {^name "status" ^args ""}))
+    (let json "q1 {\n  \"note\": \"literal *Sent using* <@UAPP>\"\n}")
+    ($assert (== (/args (parse_control ($to_str "!answer " json "\n\n*Sent using* <@UAPP>"))) json))
+    ($assert ($absent? (parse_control "Explain *Sent using* <@UAPP>"))))
+
+  (it "continues a paused Slack task from a connector-attributed command" []
+    (isolated this_mod/.path "continues a paused Slack task from a connector-attributed command"
+      (fn [workspace]
+        (fixture workspace (fn [f]
+          (let calls ($cell 0))
+          (set_test_provider f/harness/runtime (fn [request]
+            (calls .set (+ calls/.get 1))
+            (if (== calls/.get 1) "(Outcome ^prompt \"Finish the task.\")" "(Outcome ^^done ^reply \"Done.\")")))
+          (let filename ($path/join workspace ".gene-harness/config.gene"))
+          (let config ($serde/read_data ($fs/read_text filename)))
+          (config .put "turn_limit" 1) ($fs/write_text filename ($serde/write_data config))
+          (let root (receive f "Ev1" "1.000001" "<@UBOT> Start."))
+          (let admitted (drain_session f/channels root/session))
+          (wait_round f/harness root/session)
+          (let command ($to_str "!continue-until-finished " admitted/receipt/id " *Sent using* <@UAPP>"))
+          (let resumed (receive f "Ev2" "2.000001" command ^thread "1.000001"))
+          ($assert (== resumed/result/code "ok") ($serde/write_data resumed))
+          (wait_round f/harness root/session)
+          ($assert (== calls/.get 2))
+          ($assert (== resumed (receive f "Ev2" "2.000001" command ^thread "1.000001"))))))))
+
   (it "restores renderer settings and owner binding after reopening the workspace" []
     (isolated this_mod/.path "restores renderer settings and owner binding after reopening the workspace"
       (fn [workspace]

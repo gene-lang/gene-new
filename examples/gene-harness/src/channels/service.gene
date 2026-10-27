@@ -230,8 +230,9 @@
       "\nThe whole batch exceeds the request limit. The host operator can review with channels queue, explicitly discard selected messages with channels discard, and then resume. Nothing was truncated or executed." "")
     (if (> ($size ($filter holds (fn [hold] (== hold/reason "uncertain_admission")))) 0)
       "\nThe admission receipt window has expired. The host owner must resolve the claimed batch with channels resolve-batch before queue resume can help." "")
-    "\nInspect with !status. Explicit resume: !resume-queue " status/revision
-    ". Active work and unresolved pauses still block admission."))
+    (if holds/.empty? ""
+      ($to_str "\nInspect with !status. Explicit resume: !resume-queue " status/revision
+        ". Active work and unresolved pauses still block admission."))))
   (queue_progress service status/binding id "channel-queue" text)
   nil)
 
@@ -255,8 +256,7 @@
           "\nContinue until finished: !continue-until-finished " receipt/id
           "\nTo replace it with queued requests, review !status then use !replace-paused " receipt/id " QUEUE_REVISION.") "")
       (if (["failed" "interrupted"] .contains? display_state)
-        ($to_str "\n" (byte_prefix (?? receipt/continuation_error (?? receipt/message "Work did not finish.")) 256)) "")
-      "\nQueue status: !status. Resume queued requests with !resume-queue QUEUE_REVISION after reviewing that status."))
+        ($to_str "\n" (byte_prefix (?? receipt/continuation_error (?? receipt/message "Work did not finish.")) 256)) "")))
     (queue_progress service binding id receipt/id text)
     (if_yes (&& (== receipt/state "waiting") (! ($absent? receipt/questions)))
       (let question_id ($to_str "questions-" (key [session receipt/questions/id])))
