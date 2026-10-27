@@ -656,5 +656,6 @@ modules and development constraints.
 
 The built-in [delegation plugin](docs/sub-agent.md) starts independent child
 sessions for concrete tasks, collects their results, and supports follow-ups
-and question handoff. Children appear under their parent in the sidebar, and
-their host-owned transcript blocks provide state, usage, navigation and Cancel.
+and question handoff. Children are opened from their delegation blocks in the
+parent transcript. These host-owned blocks provide state, usage, navigation
+and Cancel; child sessions are omitted from the conversation sidebar.

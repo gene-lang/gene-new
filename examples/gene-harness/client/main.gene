@@ -29,7 +29,7 @@
     status_is_current])
 (import ^from "../src/web/contract.gene" [protocol_version])
 (import ^from "./view.gene" [block_view step_view run_status_view not_durable append_history_start])
-(import [delegation_view recovery_view session_link dint dlist dstrings] ^from "./delegations.gene")
+(import [delegation_view recovery_view session_link dint dlist] ^from "./delegations.gene")
 (import ^from "./media.gene"
   [MediaComposer create_media media_select media_move media_ids media_has
    media_blocked media_admitted media_controls])
@@ -76,7 +76,7 @@
   ^media Any ^notices Notices ^confirmations Any ^questions Any ^center Any ^inbox Any ^safe_ui Bool
   ^root EventTarget ^list EventTarget ^transcript EventTarget ^prompt EventTarget ^notice EventTarget
   ^title EventTarget ^appearance Str ^style_signature Str ^cards Any
-  ^delegation_epoch Int? ^delegation_recovery Any? ^child_open Any?
+  ^delegation_epoch Int? ^delegation_recovery Any?
   ^browser_clients Any ^command_client Any ^creation_unknown Bool?
   ^voice_client Any? ^voice_listeners Any? ^page_id Str? ^live_output Any? ^session_menu Any?})
 
@@ -636,28 +636,12 @@
   (if_not ($absent? client/center)
     (var center : NotificationCenter client/center)
     (center_sessions center client/sessions client/needs_attention))
+  (var visible 0)
   (for session in client/sessions
+    (if_yes (== (string_or session/kind "") "child") (continue))
     (render_session_button client client/list session)
-    (var children (dlist session/children))
-    (if_yes (> ($size children) 0)
-      (var id : Str session/id)
-      (var opened (dstrings client/child_open))
-      (var expanded false)
-      (for item in opened
-        (if_yes (== item id) (set expanded true)))
-      (var group ($dom/render `(details ^open %expanded
-        ^on_toggle %(fn [event : Any] : Void
-          (var open : Bool event/current_target/open)
-          (var next : (List Str) [])
-          (var previous (dstrings client/child_open))
-          (for item in previous
-            (if_yes (!= item id) (next .push item)))
-          (if_yes open (next .push id))
-          (set client/child_open next))
-        (summary %$"Child sessions (${($size children)})"))))
-      (for child in children (render_session_button client group child))
-      ($dom/append client/list group)))
-  (if_yes (== ($size client/sessions) 0)
+    (set visible (+ visible 1)))
+  (if_yes (== visible 0)
     ($dom/append
       client/list
       ($dom/render `(p ^class_name "sidebar_empty" "Your conversations will appear here."))))

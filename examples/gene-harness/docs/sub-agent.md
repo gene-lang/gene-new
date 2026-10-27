@@ -336,11 +336,11 @@ interactive sessions.
   live from push messages. This is a host record kind (`delegation`), not a
   model card, because the host owns its truth. A follow-up adds a block for its
   new admission at the turn that started it, preserving the earlier result.
-- **In the sidebar**, children are nested under their parent and collapsed by
-  default, and are kept out of the top-level list. A failed or waiting child
-  sets attention on itself and on the parent. Explicit search and listing
-  filters include children as ordinary results; the `child` kind filter lists
-  them directly. Pinning or unpinning a parent updates its children.
+- **In the sidebar**, child sessions are omitted, including from search and
+  filtered results. Open them from the delegation block at the turn that
+  started the work. A failed or waiting child sets attention on itself and on
+  the parent. The CLI and API can still list children with the `child` kind
+  filter. Pinning or unpinning a parent updates its children.
 - **In the child transcript**, a header line reads "Delegated by <parent> ·
   turn 57", with a link back.
 - **Typing into a child.** The user may continue a finished child like any
@@ -597,7 +597,7 @@ row has a name, a role prompt, a model and budgets, and is used as
    - ownership of the unfinished set, cancellation and recovery, with the
      crash-point acceptance checks;
    - the workspace-wide patch gate;
-   - the delegation block, sidebar nesting and CLI printing;
+   - the delegation block, child-session navigation and CLI printing;
    - depth 1.
 2. **Conversation with a child.** This adds `continue_delegation`,
    `answer_delegation` and waking on child questions, plus a per-child

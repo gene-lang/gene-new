@@ -86,7 +86,6 @@
                    (select ^id "kind_filter" ^aria-label "Session kind"
                      (option ^value "" "Interactive + pinned")
                      (option ^value "interactive" "Interactive")
-                     (option ^value "child" "Child sessions")
                      (option ^value "heartbeat" "Heartbeat")
                      (option ^value "scheduled" "Scheduled")
                      (option ^value "cron" "Cron"))

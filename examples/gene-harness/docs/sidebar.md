@@ -7,6 +7,10 @@ The sidebar is optional: disabling it hides the left panel and its hamburger
 without closing sessions, tabs or running work. `/ui/default` uses host-owned
 recovery navigation and does not run sidebar plugin render callbacks.
 
+The conversation list excludes sub-agent sessions, including search and
+filtered results. Open a sub-agent from its delegation block in the parent
+transcript at the turn that started the work.
+
 ```gene
 (disable_plugin "sidebar")
 (enable_plugin "sidebar")
