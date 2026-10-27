@@ -1,6 +1,6 @@
 (import $test [describe it])
 (import [isolated run_spec test_service] ^from "../../support")
-(import [create_session edit_session remove_session close_session_service list_sessions RoundError]
+(import [create_session edit_session remove_session close_session_service list_sessions queue_snapshot RoundError]
   ^from "../../../src/web/session_service")
 (import [create_session : create_record view_session require_record update_session delete_session SessionError]
   ^from "../../../src/runtime/sessions")
@@ -54,6 +54,43 @@
           ($assert ($absent? (service/sessions/index/.get .get child/id)))
           ($assert (== ($size ($filter events (fn [event] (== event/type "session/deleted")))) 2))
         ensure (close_session_service service)))))
+  (it "does not publish an error when deletion overtakes a queued snapshot" []
+    (isolated this_mod/.path "does not publish an error when deletion overtakes a queued snapshot"
+      (fn [workspace]
+        (let service (test_service ^workspace workspace ^provider (fn [request] "")))
+        (let messages [])
+        (service/publisher .set (fn [message] (messages .push message)))
+        (try
+          (let session (create_session service))
+          (queue_snapshot service session/id)
+          (let jobs [])
+          (for [id slot] in service/snapshot_jobs/.get (jobs .push slot/.get))
+          (remove_session service session/id 0)
+          (for job in jobs job/.join)
+          ($assert (== ($size ($filter messages (fn [message] (== message/type "error")))) 0)
+            ($serde/write_data messages))
+          ($assert (== ($size ($filter messages (fn [message] (== message/type "session/deleted")))) 1))
+        ensure (close_session_service service)))))
+
+  (it "still reports snapshot errors for existing conversations" []
+    (isolated this_mod/.path "still reports snapshot errors for existing conversations"
+      (fn [workspace]
+        (let service (test_service ^workspace workspace ^provider (fn [request] "")))
+        (let messages [])
+        (service/publisher .set (fn [message] (messages .push message)))
+        (try
+          (let session (create_session service))
+          (set service/ui_audience (fn [] (fail (RoundError ^code "snapshot_fixture" ^message "Snapshot fixture failed."))))
+          (queue_snapshot service session/id)
+          (let jobs [])
+          (for [id slot] in service/snapshot_jobs/.get (jobs .push slot/.get))
+          (for job in jobs job/.join)
+          (let errors ($filter messages (fn [message] (== message/type "error"))))
+          ($assert (== errors/.size 1))
+          ($assert (== errors/0/session session/id))
+          ($assert (== errors/0/data/message "Snapshot fixture failed."))
+        ensure (close_session_service service)))))
+
   (it "refuses deletion while questions or operator commands are running" []
     (isolated this_mod/.path "refuses deletion while questions or operator commands are running"
       (fn [workspace]

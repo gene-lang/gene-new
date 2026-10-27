@@ -148,6 +148,7 @@
       (if (== entry/status "queued") (entry .put "status" "deleted")))
     binding) ^changes (fn [state]
       (let queue (state/queues .get session))
+      (if ($absent? queue) (return {}))
       {^queues [session] ^bindings [queue/binding] ^messages (?? queue/order [])})))
 
 (fn pending_parts [store, session : Str]

@@ -264,6 +264,11 @@
   (result .put "display" (command_display record))
   result)
 
+(fn snapshot_job_current? [service, session : Str, version : Int] : Bool
+  (&& (! service/closed/.get)
+      (== (service/snapshot_versions/.get .get session) version)
+      (! ($absent? (service/sessions/index/.get .get session)))))
+
 (fn queue_snapshot [service, session : Str]
   (if service/closed/.get (return nil))
   (if ($absent? service/publisher/.get) (return nil))
@@ -276,7 +281,18 @@
   (let slot ($cell nil))
   (service/snapshot_jobs/.get .put id slot)
   (let job
-    (spawn ^lane root (try (if_not service/closed/.get ($runtime/with_context nil (fn [] (let safe (if ($absent? service/ui_audience) false (! (service/ui_audience)))) (let data (snapshot ^!console ^safe safe service session)) (if (&& (! service/closed/.get) (== (service/snapshot_versions/.get .get session) version)) (publish_message service "snapshot" session data))))) catch Any (if_not service/closed/.get (publish_message service "error" session {^message ($to_str $err/message)})) ensure (service/snapshot_jobs/.get .delete id))))
+    (spawn ^lane root
+      (try
+        (if (snapshot_job_current? service session version)
+          ($runtime/with_context nil (fn []
+            (let safe (if ($absent? service/ui_audience) false (! (service/ui_audience))))
+            (let data (snapshot ^!console ^safe safe service session))
+            (if (snapshot_job_current? service session version)
+              (publish_message service "snapshot" session data)))))
+      catch Any
+        (if (snapshot_job_current? service session version)
+          (publish_message service "error" session {^message ($to_str $err/message)}))
+      ensure (service/snapshot_jobs/.get .delete id))))
   (slot .set job)
   nil)
 
@@ -310,7 +326,10 @@
       (queue_snapshot service changed/session))
     (when (changed : SessionChanged)
       (if (== changed/record/deleted true)
-        (publish_message service "session/deleted" "" {^id changed/record/id}))
+        (then
+          (let versions service/snapshot_versions/.get)
+          (versions .put changed/record/id (+ (?? (versions .get changed/record/id) 0) 1))
+          (publish_message service "session/deleted" "" {^id changed/record/id})))
       (publish_message service "session/list" "" (list_sessions service))
       (publish_message
         service
