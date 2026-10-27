@@ -4,8 +4,11 @@
 (import [configure_account configure_route] ^from "../../../src/channels/authority")
 (import [bind_workspace] ^from "../../../src/channels/service")
 (import [channel_request] ^from "../../../src/channels/http")
-(import [open_users lookup_user profile_name] ^from "../../../src/channels/users")
+(import [open_users lookup_user profile_name thread_url] ^from "../../../src/channels/users")
 (import [ChannelError] ^from "../../../src/channels/model")
+(import [message_after?] ^from "../../../src/channels/model")
+(import [last_thread_message] ^from "../../../src/channels/thread_links")
+(import [mutate] ^from "../../../src/channels/store")
 
 (fn response [body, ^status status = 200, ^headers headers = []]
   {^status status ^headers headers ^body ($binary/from_str ($json/stringify body))})
@@ -24,6 +27,62 @@
   ensure (close_session_service service)))
 
 (describe "Slack user names"
+  (it "selects the newest stored conversation message and excludes progress and unconfirmed sends" []
+    (let source {^account "dobi" ^team "T123" ^channel "C123" ^thread "1.000001" ^last_message "8.000001"})
+    (let latest (last_thread_message
+      {^messages {^incoming {^message (source .assoc "message" "9.000001")}}
+       ^deliveries {^posted {^intent (source .assoc "mode" "post") ^parts [{^status "sent" ^ts "10.000001"}]}
+                    ^working {^intent (source .assoc "mode" "progress") ^parts [{^status "sent" ^ts "99.000001"}]}
+                    ^unknown {^intent (source .assoc "mode" "post") ^parts [{^status "uncertain" ^ts "88.000001"}]}
+                    ^elsewhere {^intent (source .assoc "mode" "post"; .assoc "thread" "2.000001")
+                                ^parts [{^status "sent" ^ts "77.000001"}]}}} source))
+    ($assert (== latest "10.000001"))
+    ($assert (message_after? "10.000001" "9.999999"))
+    ($assert (! (message_after? "1.1" "1.100000")))
+    ($assert (== (last_thread_message {} source) "8.000001")))
+
+  (it "keeps thread links on Slack and bound to the exact channel and root message" []
+    (let root "https://example.slack.com/archives/C123/p1000001")
+    (let expected ($to_str root "?thread_ts=1.000001&cid=C123"))
+    ($assert (== (thread_url root "C123" "1.000001") expected))
+    ($assert (== (thread_url "https://example.slack.com/archives/C123/p2000001"
+      "C123" "1.000001" ^message "2.000001")
+      "https://example.slack.com/archives/C123/p2000001?thread_ts=1.000001&cid=C123"))
+    ($assert (== (thread_url ($to_str root "?thread_ts=other") "C123" "1.000001") expected))
+    (for url in ["https://example.com/archives/C123/p1000001"
+      "https://example.slack.com/archives/COTHER/p1000001"
+      "https://example.slack.com/archives/C123/p2000001" "javascript:alert(1)"]
+      ($assert (== (thread_url url "C123" "1.000001") ""))))
+
+  (it "resolves and caches a session thread permalink through the connection owner" []
+    (isolated this_mod/.path "resolves and caches a session thread permalink through the connection owner"
+      (fn [workspace]
+        (fixture workspace (fn [channels]
+          (let calls ($cell 0))
+          (set channels/users (open_users ^requester (fn [request]
+            (calls .set (+ calls/.get 1))
+            ($assert (== request/method "chat.getPermalink"))
+            ($assert (== request/http_method "GET"))
+            ($assert (== request/params {^channel "C123" ^message_ts "1.000001"}))
+            (response {^^ok ^channel "C123" ^permalink "https://example.slack.com/archives/C123/p1000001"}))))
+          (let input {^account "dobi" ^team "T123" ^channel "C123" ^thread "1.000001"})
+          (for index in [1 2]
+            ($assert (== (/body/url (channel_request channels "POST" "/api/v8/channels/thread" input))
+              "https://example.slack.com/archives/C123/p1000001?thread_ts=1.000001&cid=C123")))
+          ($assert (== calls/.get 1))
+          ($assert (try (channel_request channels "POST" "/api/v8/channels/thread"
+            (input .assoc "channel" "COTHER")) false catch ChannelError (== $err/code "forbidden")))
+          (mutate channels/owner (fn [state]
+            (state/deliveries .put "new-reply"
+              {^intent (input .assoc "mode" "post") ^parts [{^status "sent" ^ts "2.000001"}]})))
+          (set channels/users/requester (fn [request]
+            (calls .set (+ calls/.get 1))
+            ($assert (== request/params/message_ts "2.000001"))
+            (response {^^ok ^channel "C123" ^permalink "https://example.slack.com/archives/C123/p2000001"})))
+          ($assert (== (/body/url (channel_request channels "POST" "/api/v8/channels/thread" input))
+            "https://example.slack.com/archives/C123/p2000001?thread_ts=1.000001&cid=C123"))
+          ($assert (== calls/.get 2)))))))
+
   (it "resolves and caches the configured channel name without accepting another channel" []
     (isolated this_mod/.path "resolves and caches the configured channel name without accepting another channel"
       (fn [workspace]

@@ -11,6 +11,7 @@
 (import [items : launcher_items flag : launcher_flag] ^from "../src/common/launcher.gene")
 (import [SlackUserLabels create_user_labels user_label] ^from "./slack_users.gene")
 (import [SlackChannelNotice create_channel_notice update_channel_notice] ^from "./slack_channels.gene")
+(import [SlackSessionTitle create_session_title update_session_title] ^from "./slack_session_title.gene")
 
 (import ^from "./state.gene"
   [
@@ -80,7 +81,13 @@
   ^title EventTarget ^appearance Str ^style_signature Str ^cards Any
   ^delegation_epoch Int? ^delegation_recovery Any?
   ^browser_clients Any ^command_client Any ^creation_unknown Bool?
-  ^voice_client Any? ^voice_listeners Any? ^page_id Str? ^live_output Any? ^session_menu Any? ^slack_users Any? ^slack_channel Any?})
+  ^voice_client Any? ^voice_listeners Any? ^page_id Str? ^live_output Any? ^session_menu Any? ^slack_users Any? ^slack_channel Any? ^slack_title Any?})
+
+(fn render_session_title [client : Client, text : Str, shared : Any] : Void
+  (if_yes ($absent? client/slack_title)
+    (set client/slack_title (create_session_title client/title)))
+  (var raw : Any client/slack_title) (var title : SlackSessionTitle raw)
+  (update_session_title title text shared client/selected))
 
 (fn render_channel_sharing [client : Client, shared : Any] : Void
   (if_yes ($absent? client/slack_channel)
@@ -728,7 +735,7 @@
       (set tab/title record/title) (var cache : Any tab/cache) (set cache/session record)))
   (if_yes (== id client/selected)
     (set client/session_revision record/revision)
-    ($dom/set_text client/title (string_or record/title ""))
+    (render_session_title client (string_or record/title "") record/channel)
     ($dom/set_text ($dom/element "pin_session") (if (launcher_flag record/pinned) "Unpin" "Pin")))
   (render_sessions client) (render_tabs client) (refresh_sessions client))
 
@@ -1449,7 +1456,7 @@
   (set client/next_seq data/next_submission_seq)
   (set client/session_revision data/session/revision)
   (var title : Str data/session/title)
-  ($dom/set_text client/title title)
+  (render_session_title client title data/session/channel)
   (render_channel_sharing client data/session/channel)
   (var raw_delivery : Any (?? data/channel_delivery empty_runs))
   (var delivery_issues : (List Any) raw_delivery)
@@ -2102,7 +2109,7 @@
         (if_yes (== session client/selected)
           (set client/session_revision data/revision)
           (var title : Str data/title)
-          ($dom/set_text client/title title)))
+          (render_session_title client title data/channel)))
       (elif (== kind "snapshot")
         (if_yes (== session client/selected) (apply_snapshot client data)))
       (elif (== kind "mode/state")
@@ -2702,7 +2709,7 @@
               (set_hidden "rename_form" true)
               (set client/session_revision data/revision)
               (var title : Str data/title)
-              ($dom/set_text client/title title)
+              (render_session_title client title data/channel)
               (var tab (session_tab client client/selected))
               (set tab/title title)
               (var cache : Any tab/cache)

@@ -1,7 +1,8 @@
 (mod channel_service)
 (import [open_authority authorize authorize_parts public_authority] ^from "./authority")
 (import [snapshot mutate close_channel_store read has_queue? take_changes] ^from "./store")
-(import [channel_error key binding_key required_text] ^from "./model")
+(import [channel_error key binding_key required_text slack_ts] ^from "./model")
+(import [last_thread_message] ^from "./thread_links")
 (import [configure_queues enqueue queue_status activate_binding tombstone_session] ^from "./queue")
 (import [queue_output pending_output due_output defer_output accept_output output_result reconcile_output recover_deliveries] ^from "./delivery")
 (import [pending_ingress handoff_schedule defer_handoff wake_root_waiters finish_handoff] ^from "./ingress")
@@ -13,7 +14,7 @@
 (import [admit_channel_queue round_state] ^from "../runtime/round_controller")
 (import [core_state events_for append_core_event flush_event_store next_sequence stream_key unload_event_stream] ^from "../storage/state")
 (import [RoundChanged DurableRecord] ^from "../kernel")
-(import [open_users lookup_user lookup_channel] ^from "./users")
+(import [open_users lookup_user lookup_channel lookup_thread] ^from "./users")
 
 (type ChannelService ^props {^runtime Any ^controller Any ^owner Any ^gate Any ^closed Cell
   ^settings Cell ^health Cell ^dirty Cell ^retry_at Cell ^subscriptions List ^users Any})
@@ -79,6 +80,20 @@
   (if (local_owner? service source)
     (lookup_channel service/users service/owner data)
     (owner_call service "POST" "channel" data)))
+
+(fn thread_link [service, data]
+  (slack_ts data/thread)
+  (let source (/source (source_header service)))
+  (if (|| ($absent? source) (!= source/account data/account) (!= source/team data/team)
+          (!= source/channel data/channel))
+    (channel_error "forbidden" "The Slack thread does not match this workspace's channel source."))
+  (let target (read service/runtime/channel_queues (fn [state]
+    (let binding (state/bindings .get (binding_key (data .assoc "transport" "slack"))))
+    (last_thread_message state (data .assoc "last_message" binding/last_message)))))
+  (let request (data .assoc "message" target))
+  (if (local_owner? service source)
+    (lookup_thread service/users service/owner request)
+    (owner_call service "POST" "thread" request)))
 
 (fn authorize_input [service, author : Str]
   (let source (source_header service))

@@ -1,7 +1,8 @@
 (mod channel_queue)
+(import [last_thread_message] ^from "./thread_links")
 (import [open_channel_store close_channel_store snapshot mutate read has_queue?] ^from "./store" ^^export)
 (import [channel_error copy key normalize_message binding_key message_key
-         normalize_channel_input render_parts required_text] ^from "./model")
+         normalize_channel_input render_parts required_text remember_message] ^from "./model")
 
 (fn open_queues [root : Str, workspace : Str]
   (let store (open_channel_store root "workspace"
@@ -113,6 +114,9 @@
       (state/queues .put session {^session session ^binding thread ^revision 0
         ^holds {} ^order [] ^batch nil ^observed {}}))
     (let queue (require_queue state binding/session))
+    (if ($absent? binding/last_message)
+      (binding .put "last_message" (last_thread_message state binding)))
+    (remember_message binding message/message)
     (state .put "sequence" (+ state/sequence 1))
     (record .put "status" "queued")
     (record .put "session" binding/session)

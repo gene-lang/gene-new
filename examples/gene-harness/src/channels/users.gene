@@ -1,7 +1,8 @@
 (mod slack_users)
 (import [read] ^from "./store")
-(import [account_id identifier key channel_error] ^from "./model")
+(import [account_id identifier key channel_error slack_ts] ^from "./model")
 (import [read_slack_credentials open_api close_api api_call] ^from "./slack_api")
+(import [last_thread_message] ^from "./thread_links")
 
 (type SlackUsers ^props {^cache Cell ^blocked Cell ^gate Any ^requester Any?})
 
@@ -18,35 +19,51 @@
   (let value channel/name)
   (if (&& (== ($head value) Str) (<= value/.byte_size 512)) value/.trim ""))
 
+(fn thread_url [url, channel : Str, thread : Str, ^message message : Str = ""] : Str
+  (if (!= ($head url) Str) (return ""))
+  (let base (/0 (url .split "?")))
+  (let matched (#"^https://[a-z0-9-]+\.slack\.com/archives/([CG][A-Z0-9]+)/p([0-9]+)$" .match base))
+  (if (|| ($absent? matched) (!= matched/groups/0 channel)
+          (!= matched/groups/1 ($str/join ((if (== message "") thread message) .split ".") ""))) (return ""))
+  ($to_str base "?thread_ts=" ($url/encode_component thread) "&cid=" channel))
+
 # Display metadata only. Lookups run separately from transcript snapshots and
 # socket intake, and never change the IDs used by authorization or admission.
 (fn lookup_name [users, owner, data, kind : Str]
   (let account (account_id data/account))
   (let team (identifier data/team "T" "team ID"))
-  (let subject (if (== kind "channel") (identifier data/channel "CG" "channel ID")
+  (let subject (if (!= kind "user") (identifier data/channel "CG" "channel ID")
     (identifier data/author "UW" "author ID")))
+  (let thread (if (== kind "thread") (slack_ts data/thread) ""))
+  (let target (if (== kind "thread") (read owner (fn [state] (last_thread_message state data))) ""))
+  (let empty (if (== kind "thread") {^url ""} {^name ""}))
   (let configured (read owner (fn [state] (state/accounts .get account))))
   (if (|| ($absent? configured) (!= configured/team team))
     (channel_error "forbidden" "The Slack identity belongs to another configured account."))
   (users/gate (fn []
-    (let id (key [kind account team subject]))
+    (let id (key [kind account team subject thread target]))
     (let now ($os/monotonic_ms))
     (let cached (users/cache/.get .get id))
     (if (> (?? cached/until 0) now) (return cached/value))
     (let group (key [kind configured/app team]))
     (if (> (?? (users/blocked/.get .get group) 0) now)
-      (return {^name ""}))
-    (var name "")
+      (return empty))
+    (var value empty)
     (var ttl 3600000)
     (try
       (let credentials (read_slack_credentials configured/secret_file))
       (let api (open_api credentials/bot ^requester users/requester))
       (try
-        (let response (api_call api (if (== kind "channel") "conversations.info" "users.info")
-          (if (== kind "channel") {^channel subject} {^user subject}) ^http_method "GET"))
-        (let info (if (== kind "channel") response/channel response/user))
-        (if (!= info/id subject) (channel_error "invalid_response" "Slack returned a different identity."))
-        (set name (if (== kind "channel") (channel_name info) (profile_name info)))
+        (if (== kind "thread")
+          (then
+            (let response (api_call api "chat.getPermalink" {^channel subject ^message_ts target} ^http_method "GET"))
+            (set value {^url (thread_url response/permalink subject thread ^message target)}))
+          (else
+            (let response (api_call api (if (== kind "channel") "conversations.info" "users.info")
+              (if (== kind "channel") {^channel subject} {^user subject}) ^http_method "GET"))
+            (let info (if (== kind "channel") response/channel response/user))
+            (if (!= info/id subject) (channel_error "invalid_response" "Slack returned a different identity."))
+            (set value {^name (if (== kind "channel") (channel_name info) (profile_name info))})))
       ensure (close_api api))
     catch Error
       (set ttl 60000)
@@ -55,11 +72,11 @@
       (if (== $err/code "rate_limited") (set ttl ($math/max 1000 (?? $err/retry_after_ms 60000))))
       (if (["rate_limited" "missing_scope" "invalid_auth" "not_authed" "credentials_unavailable"] .contains? $err/code)
         (users/blocked/.get .put group (+ ($os/monotonic_ms) ttl))))
-    (let result {^name name})
     (if (>= ($size users/cache/.get) 1024) (users/cache .set {}))
     (if (>= ($size users/blocked/.get) 1024) (users/blocked .set {}))
-    (users/cache/.get .put id {^until (+ ($os/monotonic_ms) ttl) ^value result})
-    result)))
+    (users/cache/.get .put id {^until (+ ($os/monotonic_ms) ttl) ^value value})
+    value)))
 
 (fn lookup_user [users, owner, data] (lookup_name users owner data "user"))
 (fn lookup_channel [users, owner, data] (lookup_name users owner data "channel"))
+(fn lookup_thread [users, owner, data] (lookup_name users owner data "thread"))

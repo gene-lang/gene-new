@@ -9,6 +9,7 @@
 (import [open_api close_api] ^from "../../../src/channels/slack_api")
 (import [mutate] ^from "../../../src/channels/store")
 (import [ChannelError key] ^from "../../../src/channels/model")
+(import [prune] ^from "../../../src/channels/retention")
 
 (fn envelope [id : Str, ^event_type event_type : Str = "message", ^text text : Str = "<@UBOT> build it",
               ^author author : Str = "UOWNER", ^ts ts : Str = "1.000001"]
@@ -109,6 +110,16 @@
               catch ChannelError (== $err/code "submission_conflict")))
             ($assert (try (accept_output f/owner (outgoing .assoc "workspace" "/wrong")) false
               catch ChannelError (== $err/code "forbidden")))
+            (let now ($os/wall_ms))
+            (mutate f/queues (fn [state] (prune state now) (prune state (+ now 691200000)) nil))
+            (close_channel_store f/queues)
+            (let reopened (open_queues ($path/join workspace "queues") workspace))
+            (try
+              (let stored (snapshot reopened))
+              (let queue (stored/queues .get f/session))
+              ($assert (== (/last_message (stored/bindings .get queue/binding)) "2.000002"))
+              ($assert (== ($size stored/outbox) 0))
+            ensure (close_channel_store reopened))
           ensure (close_api api)))))))
 
   (it "preserves partial success and unknown sends across restart without replaying the model or Slack post" []

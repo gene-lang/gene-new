@@ -8,7 +8,7 @@
 (import [append_core_event] ^from "../storage/state")
 (import [pending_request read_body] ^from "../agents/history")
 (import [operator_round?] ^from "../runtime/round_policy")
-(import [open_channel_service close_channel_service delivery_status] ^from "../channels/service")
+(import [open_channel_service close_channel_service delivery_status thread_link] ^from "../channels/service")
 (import ^from "../runtime/bootstrap" [open_runtime close_runtime prepare_workspace_root])
 (import ^from "../profiles/baseline" [baseline_profile])
 (import ^from "../profiles/offline" [offline_profile])
@@ -110,6 +110,17 @@
     (let owner (service/sessions/index/.get .get record/parent/session))
     (copy .put "parent_title" (?? owner/title record/parent/session)))
   copy)
+
+(fn session_slack_thread [service, id : Str] : Str
+  (let record (require_record service/sessions id))
+  (if ($absent? service/runtime/channels)
+    (fail (RoundError ^code "unavailable" ^message "Slack is unavailable in recovery mode.")))
+  (if (|| ($absent? record/channel) (!= record/channel/transport "slack"))
+    (fail (RoundError ^code "not_found" ^message "This session is not linked to Slack.")))
+  (let result (thread_link service/runtime/channels record/channel))
+  (if (== result/url "")
+    (fail (RoundError ^code "unavailable" ^message "The Slack thread link is temporarily unavailable.")))
+  result/url)
 
 (fn publish_message [service, kind : Str, session : Str, data, ^reason reason = nil]
   (let publisher service/publisher/.get)

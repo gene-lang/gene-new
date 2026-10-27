@@ -1,0 +1,25 @@
+(mod channel_thread_links)
+(import [remember_message] ^from "./model")
+
+(fn same_thread? [left, right] : Bool
+  (&& (== left/account right/account) (== left/team right/team)
+      (== left/channel right/channel) (== left/thread right/thread)))
+
+# Read only timestamps already observed by Harness. Progress messages are
+# temporary and may be deleted, so they are never navigation targets.
+(fn last_thread_message [state, source] : Str
+  (let result {^thread source/thread ^last_message source/thread})
+  (for timestamp in [source/last_message source/message]
+    (if_not ($absent? timestamp) (remember_message result timestamp)))
+  (for name in ["messages" "ingress"]
+    (for [id record] in (?? (state .get name) {})
+      (let message record/message)
+      (if (&& (! ($absent? message)) (same_thread? message source))
+        (remember_message result message/message))))
+  (for name in ["outbox" "deliveries"]
+    (for [id record] in (?? (state .get name) {})
+      (if (|| (!= record/intent/mode "post") (! (same_thread? record/intent source))) (continue))
+      (for part in (?? (if (== name "outbox") record/result/parts record/parts) [])
+        (if (&& (== part/status "sent") (! ($absent? part/ts)))
+          (remember_message result part/ts)))))
+  result/last_message)

@@ -1,0 +1,24 @@
+(mod slack_session_title ^profile web)
+(import [text : string_value] ^from "../src/common/launcher.gene")
+
+(type SlackSessionTitle ^props {^text Str ^target EventTarget ^rendered_text Str? ^rendered_url Str?})
+
+(fn create_session_title [target : EventTarget] : SlackSessionTitle
+  (SlackSessionTitle ^text "" ^target target))
+
+(fn paint_title [state : SlackSessionTitle, url : Str] : Void
+  (if_yes (&& (! ($absent? state/rendered_text))
+    (== (string_value state/rendered_text) state/text) (== (string_value state/rendered_url) url)) (return))
+  (set state/rendered_text state/text) (set state/rendered_url url)
+  (if_yes (== url "") ($dom/set_text state/target state/text) (return))
+  ($dom/clear state/target)
+  ($dom/append state/target ($dom/render
+    `(a ^href %url ^target "_blank" ^rel "noopener noreferrer"
+      ^title "Open Slack thread" %state/text))))
+
+(fn update_session_title [state : SlackSessionTitle, text : Str, shared : Any, session : Str] : Void
+  (set state/text text)
+  (var transport (string_value shared/transport))
+  (var url (if (&& (== transport "slack") (!= session ""))
+    $"/api/v8/sessions/${($url/encode_component session)}/slack-thread" ""))
+  (paint_title state url))

@@ -4,6 +4,7 @@ class Element extends EventTarget {
   constructor(tag, text = '') { super(); this.tag = tag; this.text = text; this.children = []; this.attributes = {}; }
   append(...nodes) { this.children.push(...nodes); }
   appendChild(node) { this.children.push(node); node.parentNode = this; return node; }
+  replaceChildren() { this.children = []; this.text = ''; }
   setAttribute(key, value) { this.attributes[key] = value; }
   get textContent() { return this.text + this.children.map(child => child.textContent).join(''); }
   set textContent(value) { this.text = value; this.children = []; }
@@ -66,3 +67,29 @@ assert.match(noticeTarget.textContent, /^Shared with Slack channel CMISSING\./);
 update_channel_notice(notice, null);
 assert.equal(noticeTarget.hidden, true);
 console.log('Slack channel sharing: channel names, cached lookup, fallback and stale-response protection passed');
+
+const {create_session_title, update_session_title} = await import(new URL('slack_session_title.mjs', main));
+const titleTarget = new Element('h1');
+const titleState = create_session_title(titleTarget);
+const titleSharing = {...sharing, transport: 'slack', thread: '1793119946.024039'};
+update_session_title(titleState, 'Regular conversation', null, 'regular');
+assert.equal(titleTarget.textContent, 'Regular conversation');
+assert.equal(titleTarget.children.length, 0);
+update_session_title(titleState, 'Slack conversation', titleSharing, 'session a&b');
+update_session_title(titleState, 'Renamed conversation', titleSharing, 'session a&b');
+const threadLink = '/api/v8/sessions/session%20a%26b/slack-thread';
+let titleLink = titleTarget.children.find(node => node.tag === 'a');
+assert.equal(titleLink.textContent, 'Renamed conversation');
+assert.equal(titleLink.attributes.href, threadLink);
+assert.equal(titleLink.attributes.target, '_blank');
+assert.equal(titleLink.attributes.rel, 'noopener noreferrer');
+update_session_title(titleState, 'Renamed conversation', titleSharing, 'session a&b');
+assert.equal(titleTarget.children.find(node => node.tag === 'a'), titleLink, 'unchanged snapshots preserve link focus');
+update_session_title(titleState, 'Renamed again', titleSharing, 'session a&b');
+assert.equal(titleTarget.children.find(node => node.tag === 'a').textContent, 'Renamed again');
+update_session_title(titleState, 'Other Slack thread', {...titleSharing, thread: '2.000001'}, 'other');
+assert.equal(titleTarget.children.find(node => node.tag === 'a').attributes.href, '/api/v8/sessions/other/slack-thread');
+update_session_title(titleState, 'Regular again', null, 'regular');
+assert.equal(titleTarget.textContent, 'Regular again');
+assert.equal(titleTarget.children.length, 0);
+console.log('Slack session titles: Slack-only links, click-time resolution, new tabs, focus and rename updates passed');

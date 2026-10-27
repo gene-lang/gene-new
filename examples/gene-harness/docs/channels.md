@@ -59,6 +59,18 @@ Channel names use the same bounded lookup cache, with
 through the connection owner. If the name is unavailable, the notice keeps the
 channel ID visible. User-profile lookup failures do not block channel-name lookup.
 
+Slack session titles open the thread at its newest known conversation message
+in a new tab. The destination is resolved when the title is clicked, so an open
+browser does not keep a stale target as the conversation continues. Received
+messages and confirmed permanent replies update a durable `last_message` on
+the binding. Temporary progress messages and unsent parts are excluded. Older
+bindings can use retained message and delivery records; the parent is the fallback.
+The connection owner resolves and caches the target permalink using
+[`chat.getPermalink`](https://docs.slack.dev/reference/methods/chat.getPermalink/).
+The parent timestamp remains the `thread_ts` context. Other sessions keep plain
+titles. The redirect requires Harness authentication and reports an unavailable
+link if Slack lookup fails.
+
 Threads isolate conversation history. Sessions in the same Gene workspace
 still share files, plugins and workspace memory. Concurrent work needs the
 same coordination as concurrent browser sessions. Separate workspaces provide

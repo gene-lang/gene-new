@@ -32,6 +32,19 @@
     (channel_error "invalid_request" "Invalid Slack message timestamp."))
   value)
 
+(fn message_after? [candidate : Str, current : Str] : Bool
+  (let order_key (fn [value]
+    (slack_ts value)
+    (let parts (value .split "."))
+    ($to_str ($str/slice_bytes "00000000000000000000" 0 (- 20 parts/0/.byte_size)) parts/0
+      ($str/slice_bytes ($to_str parts/1 "000000000") 0 9))))
+  (> ($order/compare (order_key candidate) (order_key current)) 0))
+
+(fn remember_message [binding, timestamp : Str]
+  (if (message_after? timestamp (?? binding/last_message binding/thread))
+    (binding .put "last_message" timestamp))
+  nil)
+
 (fn binding_key [source]
   (key [source/transport source/account source/team source/channel source/thread]))
 

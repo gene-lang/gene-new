@@ -49,6 +49,8 @@
           ($assert (== (/name (api remote "POST" "/channels/user" name_request)) ""))
           ($assert (== (/name (api remote "POST" "/channels/channel"
             {^account "dobi" ^team "T123" ^channel "C123"})) ""))
+          ($assert (== (/url (api remote "POST" "/channels/thread"
+            {^account "dobi" ^team "T123" ^channel "C123" ^thread "1.000001"})) ""))
           (let names_without_auth (wire local/connection "POST" "/channels/owner/user" name_request))
           ($assert (== names_without_auth/status 401))
           (let wrong_team (wire remote/connection "POST" "/channels/user"
@@ -65,6 +67,13 @@
             ($sleep 25))
           ($assert ($fs/exists? ($path/join project_root "proof.txt")))
           (let session selected/.get/id)
+          (let target_path ($to_str "/sessions/" session "/slack-thread"))
+          ($assert (== (/status (wire remote/connection "GET" target_path)) 401))
+          ($assert (== (/status (wire remote/connection "GET" target_path
+            ^credentials remote/credentials)) 503))
+          (let unlinked (api remote "POST" "/sessions" {^title "Browser-only conversation"}))
+          ($assert (== (/status (wire remote/connection "GET"
+            ($to_str "/sessions/" unlinked/id "/slack-thread") ^credentials remote/credentials)) 404))
           (let view (api remote "GET" ($to_str "/sessions/" session "/snapshot?ui=default")))
           ($assert (== view/session/channel/channel "C123"))
           ($assert (== view/next_submission_seq "2"))
