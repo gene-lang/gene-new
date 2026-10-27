@@ -85,6 +85,10 @@
         {^^ok ^messages (remote_messages root)}))}))
     (let messages (remote_messages root))
     (let data request/params)
+    (if_yes (== request/method "chat.delete")
+      (let kept ($filter messages (fn [message] (!= message/ts data/ts))))
+      ($fs/write_text_atomic ($path/join root "remote-messages.gene") ($serde/write_data kept))
+      (return {^status 200 ^headers [] ^body ($binary/from_str ($json/stringify {^^ok ^ts data/ts}))}))
     (if_yes (== request/method "chat.update")
       (var found false)
       (for message in messages
@@ -96,7 +100,10 @@
       ($fs/write_text_atomic ($path/join root "remote-messages.gene") ($serde/write_data messages))
       (return {^status 200 ^headers [] ^body ($binary/from_str ($json/stringify {^^ok ^ts data/ts}))}))
     ($assert (== request/method "chat.postMessage"))
-    (let ts ($to_str (+ messages/.size 2) ".000001"))
+    (let counter ($path/join root "remote-sequence"))
+    (let next (+ (if ($fs/exists? counter) ($parse/parse_int ($fs/read_text counter)) messages/.size) 1))
+    ($fs/write_text_atomic counter ($to_str next))
+    (let ts ($to_str (+ next 1) ".000001"))
     (messages .push {^user "UBOT" ^ts ts ^thread_ts data/thread_ts ^text data/text
       ^metadata data/metadata})
     ($fs/write_text_atomic ($path/join root "remote-messages.gene") ($serde/write_data messages))
@@ -111,7 +118,7 @@
               (&& (== point "handoff") (== side "before") (== record/status "handed_off")))
         (crash root point)))
     (for [id record] in state/deliveries
-      (if (&& reply_only (!= record/intent/parts/0/text "Complete.")) (continue))
+      (if (&& reply_only (!= record/intent/parts/0/text "Agent:\nComplete.")) (continue))
       (if (|| (&& (== point "owner_accept") (== side "after") (== record/status "accepted"))
               (&& (== point "owner_result") (== side "after") (== record/status "delivered")))
         (crash root point)))))
@@ -134,7 +141,7 @@
               (&& (== point "oversized_hold") (== hold/reason "oversized"))))
           (crash root point))))
     (for [id record] in state/outbox
-      (if (&& reply_only (!= record/intent/parts/0/text "Complete.")) (continue))
+      (if (&& reply_only (!= record/intent/parts/0/text "Agent:\nComplete.")) (continue))
       (if (|| (&& (== point "intent") (== side "after") (== record/status "pending"))
               (&& (== point "workspace_result") (== side "after") (== record/status "delivered")))
         (crash root point)))))

@@ -9,6 +9,7 @@
 (import [RoundClient create_rounds configure_rounds dispatch_round recover_round forget_round] ^from "./round_client.gene")
 (import [claim_modal release_modal keyboard_owned?] ^from "./overlays.gene")
 (import [items : launcher_items flag : launcher_flag] ^from "../src/common/launcher.gene")
+(import [SlackUserLabels create_user_labels user_label] ^from "./slack_users.gene")
 
 (import ^from "./state.gene"
   [
@@ -78,7 +79,15 @@
   ^title EventTarget ^appearance Str ^style_signature Str ^cards Any
   ^delegation_epoch Int? ^delegation_recovery Any?
   ^browser_clients Any ^command_client Any ^creation_unknown Bool?
-  ^voice_client Any? ^voice_listeners Any? ^page_id Str? ^live_output Any? ^session_menu Any?})
+  ^voice_client Any? ^voice_listeners Any? ^page_id Str? ^live_output Any? ^session_menu Any? ^slack_users Any?})
+
+(fn resolve_slack_author [client : Client, source : Any, target : EventTarget] : Void
+  (if_yes ($absent? client/slack_users)
+    (set client/slack_users (create_user_labels
+      (fn [data : Any, done : (Fn [Int Any] Void)] : Void
+        (api client "POST" "/api/v8/channels/user" data done)))))
+  (var raw : Any client/slack_users) (var users : SlackUserLabels raw)
+  (user_label users source target))
 
 (fn live_store [client : Client] : LiveOutput
   (if_yes ($absent? client/live_output) (set client/live_output (create_output)))
@@ -950,7 +959,8 @@
     ($dom/append target (card_update_line block))
     (return))
   (if_yes (== block_phase "questions")
-    ($dom/append target (answered_view block (fn [text : Str] : Void (stage_prompt client text))))
+    ($dom/append target (answered_view block (fn [text : Str] : Void (stage_prompt client text))
+      ^resolve_author (fn [source : Any, target : EventTarget] : Void (resolve_slack_author client source target))))
     (return))
   (var id : Str block/id)
   (var generation client/generation)
@@ -964,6 +974,7 @@
     ($dom/append
     target
     (block_view
+      ^resolve_author (fn [source : Any, target : EventTarget] : Void (resolve_slack_author client source target))
       ^on_speak (voice_replay_handler client)
       block
       (not_durable block)

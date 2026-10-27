@@ -7,6 +7,7 @@
 (import [queue_output pending_output accept_output output_result reconcile_output
          begin_part finish_part recover_deliveries deliver_output reconcile_remote] ^from "../../../src/channels/delivery")
 (import [open_api close_api] ^from "../../../src/channels/slack_api")
+(import [mutate] ^from "../../../src/channels/store")
 (import [ChannelError key] ^from "../../../src/channels/model")
 
 (fn envelope [id : Str, ^event_type event_type : Str = "message", ^text text : Str = "<@UBOT> build it",
@@ -163,6 +164,59 @@
             (deliver_output f/owner api multipart/id)
             ($assert (== calls/.get 1))
             ($assert ($absent? (begin_part f/owner multipart/id 0 1)))
+          ensure (close_api api)))))))
+
+  (it "drops an unsent working status without posting or inventing a Slack timestamp" []
+    (isolated this_mod/.path "drops an unsent working status without posting or inventing a Slack timestamp"
+      (fn [workspace]
+        (fixture workspace (fn [f]
+          (let working (intent f ^mode "progress" ^parts [{^text "Agent: running."}]))
+          (accept_output f/owner working)
+          (let removed (working .assoc "revision" 1; .assoc "remove" true))
+          (accept_output f/owner removed)
+          (let api (open_api "test-token" ^requester (fn [request]
+            ($assert false "An unsent status must not reach Slack."))))
+          (try
+            (let result (deliver_output f/owner api working/id))
+            ($assert (== result/status "delivered"))
+            ($assert ($absent? result/parts/0/ts))
+            ($assert (== result (deliver_output f/owner api working/id)))
+          ensure (close_api api)))))))
+
+  (it "retries lost progress removals after a restart without reposting the status" []
+    (isolated this_mod/.path "retries lost progress removals after a restart without reposting the status"
+      (fn [workspace]
+        (fixture workspace (fn [f]
+          (let working (intent f ^mode "progress" ^parts [{^text "Agent: running."}]))
+          (accept_output f/owner working)
+          (let calls ($cell []))
+          (let api (open_api "test-token" ^requester (fn [request]
+            (calls/.get .push request/method)
+            (if (== request/method "chat.postMessage")
+              (return {^status 200 ^headers [] ^body ($binary/from_str ($json/stringify {^^ok ^ts "9.000001"}))}))
+            ($assert (== request/method "chat.delete"))
+            ($assert (== request/params {^channel "C123" ^ts "9.000001"}))
+            (if (== calls/.get/.size 2)
+              {^status 503 ^headers [] ^body ($binary/from_str "{}")}
+              {^status 200 ^headers [] ^body ($binary/from_str ($json/stringify {^!ok ^error "message_not_found"}))}))))
+          (try
+            (deliver_output f/owner api working/id)
+            (accept_output f/owner (working .assoc "revision" 1; .assoc "remove" true))
+            (let lost (deliver_output f/owner api working/id))
+            ($assert (== lost/status "accepted"))
+            ($assert (== lost/parts/0/status "pending"))
+            (deliver_output f/owner api working/id)
+            ($assert (== calls/.get/.size 2) "Backoff must prevent an immediate retry.")
+            (mutate f/owner (fn [state]
+              (let current (state/deliveries .get working/id))
+              (current/parts/0 .put "retry_at" 0)))
+            (begin_part f/owner working/id 1 0)
+            (recover_deliveries f/owner)
+            (let recovered (output_result f/owner working/id))
+            ($assert (== recovered/parts/0/status "pending"))
+            ($assert (== recovered/parts/0/ts "9.000001"))
+            ($assert (== (/status (deliver_output f/owner api working/id)) "delivered"))
+            ($assert (== calls/.get ["chat.postMessage" "chat.delete" "chat.delete"]))
           ensure (close_api api)))))))
 
   (it "confirms unknown posts from bot metadata without replaying a send or trusting another author" []

@@ -45,6 +45,14 @@ Each configured account/team/channel route selects one Gene workspace. The
 transport uses IDs for routing; display names can change. Future transports
 can have their own optional account bindings on the same workspace.
 
+In the browser, Slack messages show `Slack · Name(USER_ID) · message_timestamp`.
+Names are resolved separately from transcript loading with Slack's
+[`users.info`](https://docs.slack.dev/reference/methods/users.info/) API, so saved
+messages also gain names without rewriting history. The full name is preferred,
+then the display name or username. Lookups use the connection owner's bot token
+with `users:read`, cache results for an hour, and fall back to the user ID when
+unavailable. Authorization always uses the original IDs.
+
 Threads isolate conversation history. Sessions in the same Gene workspace
 still share files, plugins and workspace memory. Concurrent work needs the
 same coordination as concurrent browser sessions. Separate workspaces provide
@@ -224,7 +232,13 @@ user; a loopback URL only works on the machine running Harness.
 
 Show a compact working status, questions, final responses and failures in
 Slack. Update one progress message per active round, with bounded update
-frequency. Preserve each round's final response as a normal thread reply.
+frequency. Preserve each round's final response as a normal thread reply with
+`Agent:` on its own line above the response. Browser messages mirrored into the
+thread use `User (Harness browser):` above the user's text.
+When a round finishes, remove its working-status message instead of retaining
+an `Agent: done.` message before the final reply. A status that has not reached
+Slack is dropped without posting it. Status removal preserves delivery pacing
+and can safely resume after a restart.
 Honor Slack's server-provided retry intervals across the app/team, including
 after restart or a newer progress revision. Pace posts per channel and
 reconciliation reads separately; see [Slack rate limits](https://docs.slack.dev/apis/web-api/rate-limits/).

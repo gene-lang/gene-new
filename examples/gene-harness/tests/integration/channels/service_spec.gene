@@ -145,7 +145,7 @@
           (project_events f/channels session)
           (let outputs (pending_output f/harness/runtime/channel_queues))
           ($assert (== outputs/.size 1))
-          ($assert (== outputs/0/intent/parts/0/text "Task completed."))
+          ($assert (== outputs/0/intent/parts/0/text "Agent:\nTask completed."))
           # message and app_mention subscriptions describe the same logical input.
           (receive_envelope f/channels/owner "dobi" (event "Ev2" "1.000001" "<@UBOT> Build it." ^kind "app_mention"))
           (handoff_inputs f/channels)
@@ -157,12 +157,15 @@
           (let next (drain_session f/channels session))
           ($assert (== ($map next/receipt/input/messages /author) ["UOWNER" "UOTHER"]))
           (wait_round f/harness session)
-          (submit f/harness session "browser-followup" 3 "From the shared browser.")
+          (let browser_round (submit f/harness session "browser-followup" 3 "From the shared browser."))
           (wait_round f/harness session)
           (project_events f/channels session)
           (let all (pending_output f/harness/runtime/channel_queues))
           ($assert (> ($size ($filter all (fn [out]
             (out/intent/parts/0/text .contains? "User (Harness browser):\nFrom the shared browser.")))) 0))
+          ($assert (== ($size ($filter all (fn [out]
+            (&& (== out/intent/round browser_round/id)
+                (== out/intent/parts/0/text "Agent:\nTask completed."))))) 1))
           ($assert (== ($size f/harness/sessions/index/.get) 1))
           (handoff_outputs f/channels)
           (let posted ($cell []))
@@ -315,6 +318,44 @@
           ($assert ($str/contains? latest/content "REPLACEMENT_QUEUED_REQUEST"))
           ($assert (! ($str/contains? latest/content "OLD_PAUSED_PENDING_TASK")))
           ($assert (== replaced (receive f "Ev5" "5.000001" text ^thread "1.000001"))))))))
+
+  (it "removes the working status on completion and publishes only the actual Agent reply" []
+    (isolated this_mod/.path "removes the working status on completion and publishes only the actual Agent reply"
+      (fn [workspace]
+        (fixture workspace (fn [f]
+          (let ready ($cell false))
+          (set_test_provider f/harness/runtime (fn [request]
+            (while (! ready/.get) ($sleep 5))
+            "(Outcome ^^done ^reply \"Hi three!\")"))
+          (let calls ($cell []))
+          (let api (open_api "test-token" ^requester (fn [request]
+            (calls/.get .push {^method request/method ^data request/params})
+            {^status 200 ^headers [] ^body ($binary/from_str ($json/stringify
+              {^^ok ^ts (?? request/params/ts ($to_str calls/.get/.size ".000002"))}))})))
+          (try
+            (let root (receive f "Ev1" "1.000001" "<@UBOT> hi three"))
+            (drain_session f/channels root/session)
+            (project_rounds f/channels root/session)
+            (let working ($first (pending_output f/harness/runtime/channel_queues)))
+            (handoff_outputs f/channels)
+            (reconcile_output f/harness/runtime/channel_queues
+              (deliver_output f/channels/owner api working/intent/id))
+            (ready .set true) (wait_round f/harness root/session)
+            (project_events f/channels root/session)
+            (project_rounds f/channels root/session)
+            (handoff_outputs f/channels)
+            (for outgoing in (pending_output f/harness/runtime/channel_queues)
+              (reconcile_output f/harness/runtime/channel_queues
+                (deliver_output f/channels/owner api outgoing/intent/id)))
+            ($assert (== ($map calls/.get /method) ["chat.postMessage" "chat.delete" "chat.postMessage"]))
+            ($assert (== calls/.get/1/data {^channel "C123" ^ts "1.000002"}))
+            ($assert (== calls/.get/2/data/text "Agent:\nHi three!"))
+            ($assert (== ($size (pending_output f/harness/runtime/channel_queues)) 0))
+            (project_rounds f/channels root/session)
+            ($assert (== ($size (pending_output f/harness/runtime/channel_queues)) 0))
+          ensure
+            (ready .set true)
+            (close_api api)))))))
 
   (it "publishes browser answers to the shared thread without duplicating Slack answers" []
     (isolated this_mod/.path "publishes browser answers to the shared thread without duplicating Slack answers"

@@ -1,0 +1,78 @@
+(import $test [describe it])
+(import [isolated run_spec test_service] ^from "../../support")
+(import [close_session_service] ^from "../../../src/web/session_service")
+(import [configure_account configure_route] ^from "../../../src/channels/authority")
+(import [bind_workspace] ^from "../../../src/channels/service")
+(import [channel_request] ^from "../../../src/channels/http")
+(import [open_users lookup_user profile_name] ^from "../../../src/channels/users")
+(import [ChannelError] ^from "../../../src/channels/model")
+
+(fn response [body, ^status status = 200, ^headers headers = []]
+  {^status status ^headers headers ^body ($binary/from_str ($json/stringify body))})
+
+(fn fixture [workspace, body]
+  (let service (test_service ^workspace workspace ^without_plugins ["slack"]
+    ^provider (fn [request] "(Outcome ^^done ^reply \"Done.\")")))
+  (try
+    (let filename ($path/join workspace "fake-slack-credentials"))
+    ($fs/write_text filename "Bot user oauth token: xoxb-test\nApp token: xapp-test\nChannel id: C12345678\n")
+    (configure_account service/runtime/channels/owner "dobi" filename "/fake-adapter"
+      {^team "T123" ^app "A123" ^bot "B123" ^bot_user "UBOT" ^operator "UOWNER"})
+    (let route (configure_route service/runtime/channels/owner "dobi" "C123" workspace))
+    (bind_workspace service/runtime/channels workspace route/id)
+    (body service/runtime/channels)
+  ensure (close_session_service service)))
+
+(describe "Slack user names"
+  (it "prefers full names and falls back through optional profile fields" []
+    ($assert (== (profile_name {^profile {^real_name " Guoliang Cao " ^display_name "gcao"}}) "Guoliang Cao"))
+    ($assert (== (profile_name {^real_name "Full name"}) "Full name"))
+    ($assert (== (profile_name {^profile {^real_name " " ^display_name "Display name"}}) "Display name"))
+    ($assert (== (profile_name {^name "username"}) "username"))
+    ($assert (== (profile_name {^profile {^real_name 42}}) "")))
+
+  (it "resolves old transcript identities through the workspace endpoint and caches by account and team" []
+    (isolated this_mod/.path "resolves old transcript identities through the workspace endpoint and caches by account and team"
+      (fn [workspace]
+        (fixture workspace (fn [channels]
+          (let calls ($cell 0))
+          (set channels/users (open_users ^requester (fn [request]
+            (calls .set (+ calls/.get 1))
+            ($assert (== request/method "users.info"))
+            ($assert (== request/http_method "GET"))
+            ($assert (== request/params/user "UOWNER"))
+            ($assert (== request/headers/authorization "Bearer xoxb-test"))
+            (response {^^ok ^user {^id "UOWNER" ^profile {^real_name "Guoliang Cao"}}}))))
+          (let input {^account "dobi" ^team "T123" ^author "UOWNER"})
+          (for index in [1 2]
+            (let result (channel_request channels "POST" "/api/v8/channels/user" input))
+            ($assert (== result/body/name "Guoliang Cao")))
+          ($assert (== calls/.get 1))
+          ($assert (try (lookup_user channels/users channels/owner (input .assoc "team" "TOTHER")) false
+            catch ChannelError (== $err/code "forbidden")))
+          ($assert (try (channel_request channels "POST" "/api/v8/channels/user"
+            (input .assoc "account" "other")) false catch ChannelError (== $err/code "forbidden")))
+          ($assert (== calls/.get 1)))))))
+
+  (it "keeps names optional when scopes are missing and backs off across users" []
+    (isolated this_mod/.path "keeps names optional when scopes are missing and backs off across users"
+      (fn [workspace]
+        (fixture workspace (fn [channels]
+          (let calls ($cell 0))
+          (let users (open_users ^requester (fn [request]
+            (calls .set (+ calls/.get 1)) (response {^!ok ^error "missing_scope"}))))
+          (for author in ["UOWNER" "UOTHER" "UOWNER"]
+            ($assert (== (/name (lookup_user users channels/owner
+              {^account "dobi" ^team "T123" ^author author})) "")))
+          ($assert (== calls/.get 1)))))))
+
+  (it "rejects mismatched Slack identities without failing the transcript" []
+    (isolated this_mod/.path "rejects mismatched Slack identities without failing the transcript"
+      (fn [workspace]
+        (fixture workspace (fn [channels]
+          (let users (open_users ^requester (fn [request]
+            (response {^^ok ^user {^id "UOTHER" ^profile {^real_name "Wrong person"}}}))))
+          ($assert (== (/name (lookup_user users channels/owner
+            {^account "dobi" ^team "T123" ^author "UOWNER"})) ""))))))))
+
+(fn main [args] : Int (run_spec args))

@@ -4,6 +4,7 @@
 (import [code_view] ^from "./highlight.gene")
 (import [run_label terminal first_prompt_block status_text status_flag] ^from "./state.gene")
 (import [attachment_view] ^from "./media.gene")
+(import [author_line] ^from "./slack_users.gene")
 
 (fn execution_view [text : Str, summary : Str, is_gene : Bool,
                     expanded : Bool, on_copy : (Fn [Str] Void),
@@ -29,7 +30,8 @@
 
 (fn block_view [block : Any, provisional : Bool, on_copy : (Fn [Str] Void),
                 expanded : Bool, on_toggle : (Fn [Bool] Void),
-                ^source_text source_text : Any = nil, ^on_speak on_speak : Any = nil] : EventTarget
+                ^source_text source_text : Any = nil, ^on_speak on_speak : Any = nil,
+                ^resolve_author resolve_author : Any = nil] : EventTarget
   (var role : Str block/role)
   (var phase : Str block/phase)
   (var text : Str (if ($absent? source_text) block/text source_text))
@@ -64,16 +66,16 @@
     (set content ($dom/render `(div ^class_name "channel_inputs")))
     (var messages : (List Any) block/input/messages)
     (for part in messages
-      (var author : Str part/author)
       (var message : Str part/message)
       (var body : Str part/text)
-      ($dom/append content ($dom/render
-        `(div (p ^class_name "muted" %$"Slack · ${author} · ${message}")
-           (div ^class_name "message_text" %body))))))
+      (var incoming ($dom/render `(div)))
+      ($dom/append incoming (author_line "Slack · " part $" · ${message}" resolve_author))
+      ($dom/append incoming ($dom/render `(div ^class_name "message_text" %body)))
+      ($dom/append content incoming)))
   ($dom/append article content)
   (if_yes (== (status_text block/answer_source/transport) "slack")
-    (var author : Str block/answer_source/author)
-    ($dom/append article ($dom/render `(p ^class_name "muted" %$"User · Slack ${author} answered the questions."))))
+    ($dom/append article (author_line "User · Slack " block/answer_source
+      " answered the questions." resolve_author)))
   (if_yes (== (status_text block/answer_source/kind) "harness")
     ($dom/append article ($dom/render `(p ^class_name "muted" "User · Harness answered the questions."))))
   (if_not ($absent? block/media)

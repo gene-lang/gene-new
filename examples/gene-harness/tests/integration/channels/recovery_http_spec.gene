@@ -62,7 +62,7 @@
                 (let state (api client "GET" ($to_str "/sessions/" sessions/sessions/0/id "/snapshot?ui=default")))
                 (view .set state)
                 (let status (api client "GET" "/channels"))
-                (let complete ($filter (remote_messages owner_root) (fn [message] (== message/text "Complete."))))
+                (let complete ($filter (remote_messages owner_root) (fn [message] (== message/text "Agent:\nComplete."))))
                 (if (&& (== state/round/state (if interrupted "interrupted" "done"))
                          (if interrupted true (&& (== complete/.size 1) (== status/outgoing/.size 0))))
                   (break)))

@@ -1,0 +1,55 @@
+(mod slack_users)
+(import [read] ^from "./store")
+(import [account_id identifier key channel_error] ^from "./model")
+(import [read_slack_credentials open_api close_api api_call] ^from "./slack_api")
+
+(type SlackUsers ^props {^cache Cell ^blocked Cell ^gate Any ^requester Any?})
+
+(fn open_users [^requester requester = nil]
+  (SlackUsers ^cache ($cell {}) ^blocked ($cell {}) ^gate ($sync/gate) ^requester requester))
+
+(fn profile_name [user] : Str
+  (for value in [user/profile/real_name user/real_name user/profile/display_name user/name]
+    (if (&& (== ($head value) Str) (!= value/.trim "") (<= value/.byte_size 512))
+      (return ($str/join (value/.trim .split "\n") " "))))
+  "")
+
+# Display metadata only. Lookups run separately from transcript snapshots and
+# socket intake, and never change the IDs used by authorization or admission.
+(fn lookup_user [users, owner, data]
+  (let account (account_id data/account))
+  (let team (identifier data/team "T" "team ID"))
+  (let author (identifier data/author "UW" "author ID"))
+  (let configured (read owner (fn [state] (state/accounts .get account))))
+  (if (|| ($absent? configured) (!= configured/team team))
+    (channel_error "forbidden" "The Slack user belongs to another configured account."))
+  (users/gate (fn []
+    (let id (key [account team author]))
+    (let now ($os/monotonic_ms))
+    (let cached (users/cache/.get .get id))
+    (if (> (?? cached/until 0) now) (return cached/value))
+    (let group (key [configured/app team]))
+    (if (> (?? (users/blocked/.get .get group) 0) now)
+      (return {^name ""}))
+    (var name "")
+    (var ttl 3600000)
+    (try
+      (let credentials (read_slack_credentials configured/secret_file))
+      (let api (open_api credentials/bot ^requester users/requester))
+      (try
+        (let user (/user (api_call api "users.info" {^user author} ^http_method "GET")))
+        (if (!= user/id author) (channel_error "invalid_response" "Slack returned a different user."))
+        (set name (profile_name user))
+      ensure (close_api api))
+    catch Error
+      (set ttl 60000)
+      (if (["missing_scope" "invalid_auth" "not_authed" "credentials_unavailable"] .contains? $err/code)
+        (set ttl 300000))
+      (if (== $err/code "rate_limited") (set ttl ($math/max 1000 (?? $err/retry_after_ms 60000))))
+      (if (["rate_limited" "missing_scope" "invalid_auth" "not_authed" "credentials_unavailable"] .contains? $err/code)
+        (users/blocked/.get .put group (+ ($os/monotonic_ms) ttl))))
+    (let result {^name name})
+    (if (>= ($size users/cache/.get) 1024) (users/cache .set {}))
+    (if (>= ($size users/blocked/.get) 1024) (users/blocked .set {}))
+    (users/cache/.get .put id {^until (+ ($os/monotonic_ms) ttl) ^value result})
+    result)))

@@ -19,7 +19,10 @@
     (channel_error "invalid_request" "Invalid channel output mode."))
   (if (&& (== mode "progress") (!= parts/.size 1))
     (channel_error "invalid_request" "Progress uses one updatable message."))
-  {^id (required_text supplied/id "delivery ID" ^max_bytes 128)
+  (if (&& (! ($absent? supplied/remove))
+          (|| (!= ($head supplied/remove) Bool) (!= mode "progress")))
+    (channel_error "invalid_request" "Only progress messages can be removed."))
+  (let intent {^id (required_text supplied/id "delivery ID" ^max_bytes 128)
    ^owner (required_text supplied/owner "connection owner")
    ^route (required_text supplied/route "route ID")
    ^workspace (required_text supplied/workspace "workspace directory" ^max_bytes 4096)
@@ -29,6 +32,8 @@
    ^session (required_text supplied/session "session ID")
    ^round (required_text supplied/round "round ID")
    ^revision revision ^mode mode ^parts (copy parts)})
+  (if (== supplied/remove true) (intent .put "remove" true))
+  intent)
 
 (fn intent_digest [intent] (key intent))
 (fn delivery_identity [intent]
@@ -200,7 +205,9 @@
   (mutate owner (fn [state]
     (for [id record] in state/deliveries
       (for part in record/parts
-        (if (== part/status "sending") (part .put "status" "uncertain")))
+        (if (== part/status "sending")
+          # Removing a known status message is idempotent, unlike posting one.
+          (part .put "status" (if (== record/intent/remove true) "pending" "uncertain"))))
       (summarize_delivery record))
     nil)))
 
@@ -235,7 +242,9 @@
       (channel_error "conflict" "Output part is not awaiting a result."))
     (if (! (["sent" "pending" "uncertain" "failed"] .contains? outcome/status))
       (channel_error "invalid_request" "Invalid output outcome."))
-    (if (== outcome/status "sent") (part .put "ts" (slack_ts outcome/ts)))
+    (if (&& (== outcome/status "sent")
+            (! (&& (== record/intent/remove true) ($absent? outcome/ts))))
+      (part .put "ts" (slack_ts outcome/ts)))
     (part .put "status" outcome/status)
     (part .put "error" (?? outcome/error nil))
     (part .put "retry_at" (?? outcome/retry_at 0))
@@ -243,6 +252,23 @@
       (record_quota state record/intent/account "write" (?? outcome/retry_at 0)))
     (summarize_delivery record)
     record) ^changes {^deliveries [id] ^rate_limits nil}))
+
+(fn remove_progress [api, intent, part]
+  # The timestamp comes only from this owner's earlier progress delivery. A
+  # status that was never posted needs no Slack call and no invented timestamp.
+  (if ($absent? part/ts) (return {^status "sent" ^ts nil}))
+  (try
+    (api_call api "chat.delete" {^channel intent/channel ^ts part/ts})
+    {^status "sent" ^ts part/ts}
+  catch SlackError
+    (if (== $err/code "message_not_found")
+      {^status "sent" ^ts part/ts}
+      (if (["rate_limited" "transport_unknown" "server_unknown" "invalid_response" "internal_error"
+            "fatal_error" "request_timeout" "service_unavailable"] .contains? $err/code)
+        {^status "pending" ^error $err/code
+         ^retry_at (+ ($os/wall_ms) (?? $err/retry_after_ms 1000))}
+        {^status "failed" ^error $err/code}))
+  catch Error {^status "pending" ^error "unconfirmed_removal" ^retry_at (+ ($os/wall_ms) 1000)}))
 
 (fn deliver_output [owner, api, id : Str, ^max_parts maximum : Int = 512]
   (let original (output_result owner id))
@@ -253,6 +279,10 @@
     (let claimed (begin_part owner id revision index))
     (if_yes (! ($absent? claimed))
       (let intent claimed/intent)
+      (if_yes (== intent/remove true)
+        (let removed (remove_progress api intent claimed/part))
+        (finish_part owner id revision index removed)
+        (break))
       (let rendered intent/parts/%index)
       (let data {^channel intent/channel ^text rendered/text ^parse "none"
         ^metadata {^event_type "gene_harness_delivery"

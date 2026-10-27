@@ -10,6 +10,7 @@
       (let factory (host .PluginHost:resolve "loop"))
       (let loop (factory))
       (if_not ($absent? loop/runtime/channels)
+        (if_not ($absent? requester) (set loop/runtime/channels/users/requester requester))
         (let transport (open_transport loop/runtime/channels ^owner host/effects ^start (?? loop/start true)
           ^driver driver ^requester requester))
         (activations .push {^host host ^transport transport}))

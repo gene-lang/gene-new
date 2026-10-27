@@ -3,6 +3,7 @@
 # defined live, or after the user clicks Enable. A reload disables every card
 # that has code or command buttons; nothing here survives a reload on purpose.
 (mod harness_cards ^profile web)
+(import [author_line] ^from "./slack_users.gene")
 
 (type CardHost ^props {^enabled PropMap ^pending PropMap ^errors PropMap ^drafts PropMap
   ^api (Fn [Str Str Any (Fn [Int Any] Void)] Void)
@@ -299,7 +300,8 @@
   encoded)
 
 # An answered batch stays answered: its saved answers, read-only.
-(fn answered_view [block : Any, on_prompt : (Fn [Str] Void)] : EventTarget
+(fn answered_view [block : Any, on_prompt : (Fn [Str] Void),
+                   ^resolve_author resolve_author : Any = nil] : EventTarget
   (var batch : Any block/batch)
   (var section ($dom/render `(section ^class_name "card_block card_answered")))
   (var intent (ctext batch/intent "continue"))
@@ -308,8 +310,7 @@
       (strong ^class_name "card_title" "Questions")
       (span ^class_name "card_status" %(if (== intent "cancel") "Cancelled" "Answered")))))
   (if_yes (== (ctext batch/answer_source/transport) "slack")
-    (var author (ctext batch/answer_source/author))
-    ($dom/append section ($dom/render `(p ^class_name "muted" %$"User · Slack ${author}"))))
+    ($dom/append section (author_line "User · Slack " batch/answer_source "" resolve_author)))
   (if_yes (== (ctext batch/answer_source/kind) "harness")
     ($dom/append section ($dom/render `(p ^class_name "muted" "User · Harness"))))
   (var questions : (List Any) batch/questions)

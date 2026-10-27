@@ -13,9 +13,10 @@
 (import [admit_channel_queue round_state] ^from "../runtime/round_controller")
 (import [core_state events_for append_core_event flush_event_store next_sequence stream_key unload_event_stream] ^from "../storage/state")
 (import [RoundChanged DurableRecord] ^from "../kernel")
+(import [open_users lookup_user] ^from "./users")
 
 (type ChannelService ^props {^runtime Any ^controller Any ^owner Any ^gate Any ^closed Cell
-  ^settings Cell ^health Cell ^dirty Cell ^retry_at Cell ^subscriptions List})
+  ^settings Cell ^health Cell ^dirty Cell ^retry_at Cell ^subscriptions List ^users Any})
 
 (fn open_channel_service [runtime, controller]
   (let owner (open_authority ($path/join runtime/state_root "channels" "owner")))
@@ -24,7 +25,7 @@
     (let ids {}) (for [id queue] in state/queues (ids .put ($to_str id) true)) ids)))
   (let service (ChannelService ^runtime runtime ^controller controller ^owner owner ^gate ($sync/gate)
     ^closed ($cell false) ^settings ($cell (?? (/settings (snapshot runtime/channel_queues)) {}))
-    ^health ($cell {}) ^dirty ($cell dirty) ^retry_at ($cell {}) ^subscriptions []))
+    ^health ($cell {}) ^dirty ($cell dirty) ^retry_at ($cell {}) ^subscriptions [] ^users (open_users)))
   (let mark (fn [id]
     (if (has_queue? runtime/channel_queues id) (service/dirty/.get .put id true))))
   (service/subscriptions .push (runtime/h/bus .subscribe RoundChanged
@@ -61,6 +62,14 @@
 
 (fn local_owner? [service, source]
   (== source/owner (read service/owner (fn [state] state/id))))
+
+(fn user_name [service, data]
+  (let source (/source (source_header service)))
+  (if (|| ($absent? source) (!= source/account data/account) (!= source/team data/team))
+    (channel_error "forbidden" "The Slack user does not match this workspace's channel source."))
+  (if (local_owner? service source)
+    (lookup_user service/users service/owner data)
+    (owner_call service "POST" "user" data)))
 
 (fn authorize_input [service, author : Str]
   (let source (source_header service))
@@ -177,7 +186,8 @@
     (if_yes (! (read service/runtime/channel_queues (fn [state] ($has_key? state/outbox id))))
       (if (&& (== event/type "reply") (== payload/final true) (!= payload/synthetic true))
         (queue_output service/runtime/channel_queues
-          (output_intent service binding id payload/round (?? payload/text "(Empty reply)"))))
+          (output_intent service binding id payload/round
+            ($to_str "Agent:\n" (?? payload/text "(Empty reply)")))))
       (if (&& (== event/type "turn/request") (== payload/initial true) (== payload/initiator "user"))
         (queue_output service/runtime/channel_queues (output_intent service binding id payload/round
           ($to_str "User (Harness browser):\n" (?? payload/text payload/settled)))))
@@ -194,9 +204,11 @@
       (latest/cursors .put session through)) ^changes {^cursors [session]}))
   nil)
 
-(fn queue_progress [service, binding, id : Str, round : Str, text : Str]
-  (let fingerprint (key text))
+(fn queue_progress [service, binding, id : Str, round : Str, text : Str,
+                    ^remove remove : Bool = false]
+  (let fingerprint (key (if remove ["remove"] text)))
   (let candidate (output_intent service binding id round text ^mode "progress"))
+  (if remove (candidate .put "remove" true))
   (let record (mutate service/runtime/channel_queues (fn [latest]
     (if ($absent? latest/progress) (latest .put "progress" {}))
     (let existing (latest/progress .get id))
@@ -249,6 +261,9 @@
     (let active (["running" "waiting" "paused"] .contains? display_state))
     (if (&& (! active) ($absent? prior)
              (! (["failed" "interrupted" "cancelled"] .contains? display_state))) (continue))
+    (if_yes (== display_state "done")
+      (queue_progress service binding id receipt/id "Agent status" ^^remove)
+      (continue))
     (let text ($to_str "Agent: " display_state "."
       (if (== display_state "running") ($to_str " Stop: !stop " receipt/id) "")
       (if (== display_state "paused")

@@ -1,0 +1,44 @@
+(mod slack_user_labels ^profile web)
+
+(type SlackUserLabels ^props {^cache PropMap ^lookup (Fn [Any (Fn [Int Any] Void)] Void)})
+
+(fn create_user_labels [lookup : (Fn [Any (Fn [Int Any] Void)] Void)] : SlackUserLabels
+  (SlackUserLabels ^cache {} ^lookup lookup))
+
+(fn user_label [users : SlackUserLabels, source : Any, target : EventTarget] : Void
+  (var author : Str source/author)
+  (if_yes (|| ($absent? source/account) ($absent? source/team)) (return))
+  (var account : Str source/account) (var team : Str source/team)
+  (var key $"${account}/${team}/${author}")
+  (var cached : Any users/cache/%key)
+  (if_not ($absent? cached)
+    (if cached/ready
+      ($dom/set_text target cached/text)
+      (do (var cached_nodes : (List Any) cached/nodes) (cached_nodes .push target)))
+    (return))
+  (var nodes : (List Any) [target])
+  (var entry : Any {^!ready ^text author ^nodes nodes})
+  (set users/cache/%key entry)
+  (users/lookup {^account account ^team team ^author author}
+    (fn [code : Int, data : Any] : Void
+      (var name : Str "")
+      (if_yes (&& (== code 200) (! ($absent? data/name))) (set name data/name))
+      (set entry/text (if (== name "") author $"${name}(${author})"))
+      (set entry/ready true)
+      (var waiting : (List Any) entry/nodes)
+      (var empty : (List Any) []) (set entry/nodes empty)
+      (for raw in waiting
+        (var node : EventTarget raw) ($dom/set_text node entry/text)))))
+
+(fn author_view [source : Any, resolve : Any = nil] : EventTarget
+  (var author : Str source/author)
+  (var target ($dom/render `(span %author)))
+  (if_not ($absent? resolve)
+    (var apply : (Fn [Any EventTarget] Void) resolve) (apply source target))
+  target)
+
+(fn author_line [prefix : Str, source : Any, suffix : Str, resolve : Any = nil] : EventTarget
+  (var target ($dom/render `(p ^class_name "muted" %prefix)))
+  ($dom/append target (author_view source resolve))
+  ($dom/append target ($dom/render `(span %suffix)))
+  target)

@@ -35,7 +35,7 @@
   (let requester (fn [request]
     (let result (api/requester request))
     (if (&& (== point "remote_unknown") (== request/method "chat.postMessage")
-             (== request/params/text "Complete.")) (crash root point))
+             (== request/params/text "Agent:\nComplete.")) (crash root point))
     result))
   (let base (baseline_profile))
   (let plugins [])

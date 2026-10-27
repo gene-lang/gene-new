@@ -43,6 +43,15 @@
             ($io/flush_stdout)
             (fail $err))
           ($println "Channel HTTP peer: workspace bound.") ($io/flush_stdout)
+          # Historical names are requested from the connection owner even when
+          # the routed workspace has no credentials. Missing profiles fall back.
+          (let name_request {^account "dobi" ^team "T123" ^author "UOWNER"})
+          ($assert (== (/name (api remote "POST" "/channels/user" name_request)) ""))
+          (let names_without_auth (wire local/connection "POST" "/channels/owner/user" name_request))
+          ($assert (== names_without_auth/status 401))
+          (let wrong_team (wire remote/connection "POST" "/channels/user"
+            (name_request .assoc "team" "TOTHER") ^credentials remote/credentials))
+          ($assert (== wrong_team/status 403))
           (let deadline (+ ($os/monotonic_ms) 10000))
           (let selected ($cell nil))
           (loop
