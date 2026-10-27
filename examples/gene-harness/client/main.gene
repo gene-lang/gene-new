@@ -10,7 +10,7 @@
 (import [claim_modal release_modal keyboard_owned?] ^from "./overlays.gene")
 (import [items : launcher_items flag : launcher_flag] ^from "../src/common/launcher.gene")
 (import [SlackUserLabels create_user_labels user_label] ^from "./slack_users.gene")
-(import [SlackChannelNotice create_channel_notice update_channel_notice can_share_session? session_share_pending?]
+(import [can_share_session? session_share_pending?]
   ^from "./slack_channels.gene")
 (import [SlackSessionTitle create_session_title update_session_title] ^from "./slack_session_title.gene")
 
@@ -82,21 +82,13 @@
   ^title EventTarget ^appearance Str ^style_signature Str ^cards Any
   ^delegation_epoch Int? ^delegation_recovery Any?
   ^browser_clients Any ^command_client Any ^creation_unknown Bool?
-  ^voice_client Any? ^voice_listeners Any? ^page_id Str? ^live_output Any? ^session_menu Any? ^slack_users Any? ^slack_channel Any? ^slack_title Any? ^slack_pending Str?})
+  ^voice_client Any? ^voice_listeners Any? ^page_id Str? ^live_output Any? ^session_menu Any? ^slack_users Any? ^slack_title Any? ^slack_pending Str?})
 
 (fn render_session_title [client : Client, text : Str, shared : Any] : Void
   (if_yes ($absent? client/slack_title)
     (set client/slack_title (create_session_title client/title)))
   (var raw : Any client/slack_title) (var title : SlackSessionTitle raw)
   (update_session_title title text shared client/selected))
-
-(fn render_channel_sharing [client : Client, shared : Any] : Void
-  (if_yes ($absent? client/slack_channel)
-    (set client/slack_channel (create_channel_notice ($dom/element "channel_sharing")
-      (fn [data : Any, done : (Fn [Int Any] Void)] : Void
-        (api client "POST" "/api/v8/channels/channel" data done)))))
-  (var raw : Any client/slack_channel) (var notice : SlackChannelNotice raw)
-  (update_channel_notice notice shared))
 
 (fn resolve_slack_author [client : Client, source : Any, target : EventTarget] : Void
   (if_yes ($absent? client/slack_users)
@@ -1085,7 +1077,7 @@
             ^on_speak (voice_replay_handler client)
             ^output_view (live_output_view client (turn_output_key client/selected (string_or block/round_id "") (dint block/turn)))
             ^render_extra (fn [content : EventTarget, item : Any] : Void (render_block client content item)))))))
-  (if_not ($absent? run)
+  (if_yes (&& (! ($absent? run)) (!= (run_label run) "Completed"))
     (var on_continue : Any nil)
     (if_yes (== (string_or run/id "") (string_or client/round/id ""))
       (var session client/selected) (var source : Str run/id)
@@ -1112,10 +1104,10 @@
     (var retained false)
     (for block in client/records
       (var block_id : Str block/id)
-      (if_yes (|| (== block_id id) (== (step_key block) id)) (set retained true)))
+      (if_yes (|| (== block_id id) (== (step_key block) id) (== $"collapsed/${block_id}" id)) (set retained true)))
     (for block in client/preview
       (var block_id : Str block/id)
-      (if_yes (|| (== block_id id) (== (step_key block) id)) (set retained true)))
+      (if_yes (|| (== block_id id) (== (step_key block) id) (== $"collapsed/${block_id}" id)) (set retained true)))
     (if_yes retained (expanded .push id)))
   (set client/expanded expanded)
   ($dom/clear client/transcript)
@@ -1495,7 +1487,6 @@
   (set client/session_revision data/session/revision)
   (var title : Str data/session/title)
   (render_session_title client title data/session/channel)
-  (render_channel_sharing client data/session/channel)
   (var raw_delivery : Any (?? data/channel_delivery empty_runs))
   (var delivery_issues : (List Any) raw_delivery)
   (set_hidden "channel_delivery" (== delivery_issues/.size 0))
@@ -1597,7 +1588,6 @@
   (set client/expanded [])
   (set client/components [])
   (set client/round nil)
-  (set_hidden "channel_sharing" true)
   (set_hidden "channel_delivery" true)
   (set client/mode nil)
   (set client/mode_pending nil)
@@ -2148,7 +2138,6 @@
           (set client/session_revision data/revision)
           (var title : Str data/title)
           (render_session_title client title data/channel)
-          (render_channel_sharing client data/channel)
           (var selected_tab (session_tab client session))
           (set selected_tab/cache/session data)
           (update_controls client)))

@@ -590,3 +590,18 @@ newerTab.cache.session={...c.sessions[0],revision:'5',channel:{transport:'slack'
 harness.session_edited(c,{...c.sessions[0],revision:'3'});
 assert.equal(newerTab.cache.session.channel.thread,'1.000001','late menu responses preserve the newer linked snapshot');
 console.log('Slack menu integration: unselected session targeting and late-response protection passed');
+
+const responseClient=client();
+harness.apply_snapshot(responseClient,snapshot(null,[codeBlock]));
+const responsePanel=()=>descendants(responseClient.transcript).find(node=>node.tag==='details'&&node.children[0]?.textContent==='Response');
+const turnPanel=()=>descendants(responseClient.transcript).find(node=>node.attributes.class==='step');
+turnPanel().open=true;turnPanel().dispatchEvent(new Event('toggle'));
+assert.equal(responsePanel().open,true);
+responsePanel().open=false;responsePanel().dispatchEvent(new Event('toggle'));
+harness.apply_snapshot(responseClient,snapshot(null,[codeBlock]));
+assert.equal(turnPanel().open,true);
+assert.equal(responsePanel().open,false,'live snapshots preserve a manually collapsed Response');
+turnPanel().open=false;turnPanel().dispatchEvent(new Event('toggle'));
+turnPanel().open=true;turnPanel().dispatchEvent(new Event('toggle'));
+assert.equal(responsePanel().open,true,'reopening the turn opens its Response again');
+console.log('Response disclosure: turn expansion and manual collapse across snapshots passed');

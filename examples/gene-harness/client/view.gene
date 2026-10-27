@@ -8,7 +8,7 @@
 
 (fn execution_view [text : Str, summary : Str, is_gene : Bool,
                     expanded : Bool, on_copy : (Fn [Str] Void),
-                    on_toggle : (Fn [Bool] Void)] : EventTarget
+                    on_toggle : (Fn [Bool] Void), ^on_mount on_mount : Any = nil] : EventTarget
   (var pre ($dom/render `(pre)))
   (var colored (&& is_gene expanded))
   ($dom/append pre (code_view text colored))
@@ -26,12 +26,14 @@
        (button ^type "button" ^class_name "copy"
          ^on_click %(fn [event : Any] : Void (on_copy text)) "Copy"))))
   ($dom/append details pre)
+  (if_not ($absent? on_mount)
+    (var mounted : (Fn [EventTarget] Void) on_mount) (mounted details))
   details)
 
 (fn block_view [block : Any, provisional : Bool, on_copy : (Fn [Str] Void),
                 expanded : Bool, on_toggle : (Fn [Bool] Void),
                 ^source_text source_text : Any = nil, ^on_speak on_speak : Any = nil,
-                ^resolve_author resolve_author : Any = nil] : EventTarget
+                ^resolve_author resolve_author : Any = nil, ^on_execution on_execution : Any = nil] : EventTarget
   (var role : Str block/role)
   (var phase : Str block/phase)
   (var text : Str (if ($absent? source_text) block/text source_text))
@@ -51,7 +53,7 @@
           (execution_view text (if (&& (== (status_text block/name) "repl")
             (! ($absent? block/mode_instance))) "Result" "Command output") false true on_copy on_toggle)
           (if (== phase "code")
-            (execution_view text "Response" true expanded on_copy on_toggle)
+            (execution_view ^on_mount on_execution text "Response" true expanded on_copy on_toggle)
             (if (== phase "turn/request")
               (execution_view text "Request" false expanded on_copy on_toggle)
               (if (== phase "reply")
@@ -139,10 +141,23 @@
   (if_yes failed (set progress " · Code error"))
   (if_yes answered (set progress " · Questions"))
   (var title ($to_str $"Turn ${round}" (if (== reply "") "" $": ${reply}") progress))
+  (var responses : (List Any) [])
+  (var was_open opened)
   (var details ($dom/render
     `(details ^class_name "step" ^open %opened
        ^on_toggle %(fn [event : Any] : Void
-         (var open : Bool event/current_target/open) (on_toggle key open))
+         (var open : Bool event/current_target/open)
+         # An initially open details element also emits toggle after rendering.
+         # Only a real parent transition resets the Response disclosure.
+         (if_yes (== open was_open) (return))
+         (set was_open open)
+         (if_yes open
+           (for response in responses
+             (var panel : EventTarget response/panel)
+             (var id : Str response/id)
+             (set panel/open true)
+             (on_toggle $"collapsed/${id}" false)))
+         (on_toggle key open))
        (summary %title))))
   (var content ($dom/render `(div ^class_name "step_content")))
   (for wanted in ["turn/request" "code"]
@@ -150,8 +165,13 @@
       (var phase : Str block/phase)
       (if_yes (!= phase wanted) (continue))
       (var id : Str block/id)
-      ($dom/append content (block_view block (not_durable block) on_copy (is_open id)
-        (fn [open : Bool] : Void (on_toggle id open))))))
+      (var response (== phase "code"))
+      (var expanded (if response (&& opened (! (is_open $"collapsed/${id}"))) (is_open id)))
+      ($dom/append content (block_view block (not_durable block) on_copy expanded
+        (fn [open : Bool] : Void
+          (if response (on_toggle $"collapsed/${id}" (! open)) (on_toggle id open)))
+        ^on_execution (fn [panel : EventTarget] : Void
+          (responses .push {^id id ^panel panel}))))))
   (if_not ($absent? output_view)
     (var output : EventTarget output_view) ($dom/append content output))
   (for block in blocks

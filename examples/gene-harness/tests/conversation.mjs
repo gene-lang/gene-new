@@ -5,6 +5,7 @@ class Element extends EventTarget {
   constructor(tag,text=''){super();this.tag=tag;this.text=text;this.children=[];this.attributes={};this.open=false;}
   append(...nodes){nodes.forEach(node=>this.appendChild(node));}
   appendChild(node){this.children.push(node);node.parentNode=this;return node;}
+  replaceChildren(){this.children=[];this.text='';}
   setAttribute(key,value){this.attributes[key]=value;if(key==='open')this.open=true;}
   get textContent(){return this.text+this.children.map(node=>node.textContent).join('');}
   set textContent(value){this.text=value;this.children=[];}
@@ -60,6 +61,25 @@ const final=block_view(groups[2].block,false,()=>{},false,()=>{});
 assert.equal(final.textContent,'AgentReady.');
 const failed=step_view([block('code',3,'invalid',{reply_hint:'Unverified success'}),block('turn/end',3,'',{reason:'error'})],false,false,()=>{},()=>false,()=>{});
 assert.equal(failed.children[0].textContent,'Turn 3 · Code error');
+// Opening a turn opens Response; its own triangle remains independent. A live
+// redraw must preserve an explicit collapse rather than treating mount as open.
+const preferences=new Set();
+const remember=(id,open)=>{if(open)preferences.add(id);else preferences.delete(id);};
+const disclosureBlocks=[block('turn/request',4,'Generated request.'),block('code',4,'(+ 1 2)')];
+const disclosure=opened=>step_view(disclosureBlocks,opened,false,()=>{},id=>preferences.has(id),remember);
+const panel=(root,label)=>descendants(root).find(node=>node.tag==='details'&&node.children[0]?.textContent===label);
+let turn=disclosure(false);
+assert.equal(panel(turn,'Response').open,false);
+turn.open=true;turn.dispatchEvent(new Event('toggle'));
+assert.equal(panel(turn,'Response').open,true);
+assert.equal(panel(turn,'Request').open,false);
+panel(turn,'Response').dispatchEvent(new Event('toggle'));
+panel(turn,'Response').open=false;panel(turn,'Response').dispatchEvent(new Event('toggle'));
+turn=disclosure(true);turn.dispatchEvent(new Event('toggle'));
+assert.equal(panel(turn,'Response').open,false,'redrawing an open turn preserves the manual Response collapse');
+turn.open=false;turn.dispatchEvent(new Event('toggle'));
+turn.open=true;turn.dispatchEvent(new Event('toggle'));
+assert.equal(panel(turn,'Response').open,true,'reopening the turn opens Response again');
 for (const source of ['![a](', 'x ![a](b']) assert.equal(reply_summary(source),source);
 let status=run_status_view({state:'paused',resumable:false,continuation_stop:'failed',
   continued_by:'reserved',continuation_error:'History is unavailable.'},'',()=>{}, ()=>{});

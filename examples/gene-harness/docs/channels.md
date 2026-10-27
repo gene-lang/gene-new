@@ -53,11 +53,7 @@ then the display name or username. Lookups use the connection owner's bot token
 with `users:read`, cache results for an hour, and fall back to the user ID when
 unavailable. Authorization always uses the original IDs.
 
-The browser's sharing notice shows `Shared with Slack channel #name (CHANNEL_ID)`.
-Channel names use the same bounded lookup cache, with
-[`conversations.info`](https://docs.slack.dev/reference/methods/conversations.info/)
-through the connection owner. If the name is unavailable, the notice keeps the
-channel ID visible. User-profile lookup failures do not block channel-name lookup.
+The browser's session list identifies Slack conversations with their channel ID.
 
 Slack session titles open the thread at its newest known conversation message
 in a new tab. The destination is resolved when the title is clicked, so an open
@@ -112,9 +108,7 @@ when forming a batch, including input previously allowed at intake. Revocation
 blocks subsequent authorization decisions; work whose admission was already
 authorized requires an explicit Stop to cancel it.
 
-Disabling mention requirements does not change the allowlist. The browser's
-sharing notice must state both where messages are published and that approved
-Slack participants can trigger code execution on the host.
+Disabling mention requirements does not change the allowlist.
 
 ## Slack session lifecycle
 

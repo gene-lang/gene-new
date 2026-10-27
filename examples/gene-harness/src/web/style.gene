@@ -83,7 +83,9 @@ input::placeholder, textarea::placeholder { color: var(--muted); opacity: 1; }
 .session_tabs { display: flex; flex: 1; gap: .35rem; min-width: 0; overflow: auto; }
 .session_tab { display: flex; flex-shrink: 0; border: 1px solid var(--line); font-size: .75rem; max-width: 260px; }
 .session_tab.selected { background: var(--soft); border-color: var(--accent); }
-.session_tab button { border: 0; padding: .3rem .5rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session_tab button { border: 0; padding: .3rem .5rem; white-space: nowrap; }
+.session_tab button:first-child { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.session_tab button:last-child { flex: 0 0 28px; padding: .3rem 0; margin: 0; }
 .session_tab small { display: block; color: var(--muted); font-size: .65rem; }
 .live_output[hidden] { display: none; }
 .live_output summary { color: var(--muted); }
@@ -98,8 +100,8 @@ input::placeholder, textarea::placeholder { color: var(--muted); opacity: 1; }
 .topbar { display: flex; align-items: center; flex-shrink: 0; gap: 1rem; min-height: 76px; padding: 1rem 2.25rem; }
 .heading { flex: 1; min-width: 0; }
 .topbar h1 { margin: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: .88rem; font-weight: 550; letter-spacing: -.015em; }
-#conversation_title a { color: inherit; text-decoration: none; }
-#conversation_title a:hover { text-decoration: underline; }
+#conversation_title a { color: inherit; text-decoration: underline; text-decoration-color: var(--muted); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+#conversation_title a:hover, #conversation_title a:focus-visible { color: var(--accent); text-decoration-color: currentColor; }
 .mode { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; margin-top: .1rem; color: var(--muted); font-size: .7rem; }
 .quiet { border-color: transparent; color: var(--muted); font-size: .78rem; }
 .web_components:empty { display: none; }

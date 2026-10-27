@@ -51,6 +51,7 @@
                  (button ^id "ui_cancel" ^type "button" ^^hidden "Cancel action")
                  (button ^id "ui_dismiss_pending" ^type "button" ^^hidden "Dismiss"))
                (div ^id "ui_action_status" ^role "status")
+               (div ^id "notice" ^class "notice" ^role "status" ^aria-live "polite")
                (details ^id "command_receipt_discard" ^^hidden
                  (summary "Forget unresolved command…")
                  (p "Inspect the conversation and host first. This command may already have run. Forgetting only removes this tab's saved request; it does not cancel or replay it.")
@@ -139,7 +140,6 @@
                (section ^id "transcript" ^class "transcript" ^aria-label "Conversation")
                (button ^id "new_output" ^class "new_output" ^type "button" ^^hidden "New output ↓")
                (div ^class "composer_wrap"
-                 (section ^id "channel_sharing" ^class "auth_notice" ^^hidden ^role "note")
                  (section ^id "channel_delivery" ^class "auth_notice" ^^hidden ^role "status")
                  (div ^id "web_composer" ^class "web_components")
                  (section ^id "input_panel" ^class "input_panel" ^^hidden
@@ -160,7 +160,6 @@
                    (div ^class "composer_actions"
                      (span ^id "composer_hint" ^class "hint" "Shift+Enter for a new line · / for commands")
                      (button ^id "send" ^class "send" ^type "submit" "Send")))
-                 (div ^id "notice" ^class "notice" ^role "status" ^aria-live "polite")
                  (button ^id "resolve_submission" ^class "resolve" ^type "button" ^^hidden "Resolve submission")))
              (aside ^id "ui_panel" ^class "ui_panel" ^^hidden ^aria-label "Workspace panel"
                (h2 ^id "ui_view_title" ^tabindex "-1" "Workspace view")
