@@ -1,0 +1,311 @@
+(import $test [describe it])
+(import [isolated run_spec test_service set_test_provider] ^from "../../support")
+(import [close_session_service submit answer] ^from "../../../src/web/session_service")
+(import [open_channel_service close_channel_service receive_handoff drain_session project_events
+         handoff_inputs handoff_outputs bind_workspace project_rounds project_queue] ^from "../../../src/channels/service")
+(import [configure_account configure_route snapshot authorize] ^from "../../../src/channels/authority")
+(import [receive_envelope pending_ingress] ^from "../../../src/channels/ingress")
+(import [queue_status] ^from "../../../src/channels/queue")
+(import [pending_output deliver_output reconcile_output] ^from "../../../src/channels/delivery")
+(import [open_api close_api] ^from "../../../src/channels/slack_api")
+(import [delete_session] ^from "../../../src/runtime/sessions")
+(import [round_receipt] ^from "../../../src/runtime/round_controller")
+(import [qualification_provider] ^from "../../../probes/slack_live")
+(import [put_cordis_plugin] ^from "../../../src/kernel")
+(import [channel_settings] ^from "../../../src/channels/http")
+
+(fn wait_round [service, session]
+  (let watcher (service/controller/watchers/.get .get session))
+  (if_not ($absent? watcher) watcher/.join))
+
+(fn fixture [workspace, body]
+  (let calls ($cell []))
+  (let harness (test_service ^workspace workspace ^without_plugins ["slack"] ^provider (fn [request]
+    (calls/.get .push request)
+    "($fs/write_text \"channel-service-proof.txt\" \"executed\") (Outcome ^^done ^reply \"Task completed.\")")))
+  (let channels harness/runtime/channels)
+  (try
+    (configure_account channels/owner "dobi" "/reference" "/adapter.so"
+      {^team "T123" ^app "A123" ^bot "B123" ^bot_user "UBOT" ^operator "UOWNER"})
+    (let route (configure_route channels/owner "dobi" "C123" workspace ^approved ["UOWNER" "UOTHER"]))
+    (bind_workspace channels workspace route/id)
+    (body {^harness harness ^channels channels ^route route ^calls calls})
+  ensure
+    (close_session_service harness)))
+
+(fn event [id : Str, ts : Str, text : Str, ^thread thread = nil, ^author author : Str = "UOWNER",
+           ^kind kind : Str = "message"]
+  (let message {^type kind ^ts ts ^text text ^user author ^channel "C123"})
+  (if_not ($absent? thread) (message .put "thread_ts" thread))
+  {^envelope_id id ^type "events_api" ^payload {^type "event_callback" ^api_app_id "A123"
+    ^team_id "T123" ^event_id id ^event message}})
+
+(fn receive [f, id : Str, ts : Str, text : Str, ^thread thread = nil, ^author author : Str = "UOWNER"]
+  (let incoming (receive_envelope f/channels/owner "dobi" (event id ts text ^thread thread ^author author)))
+  (if (== incoming/status "pending") (receive_handoff f/channels incoming) incoming))
+
+(describe "Workspace channel service"
+  (it "restores renderer settings and owner binding after reopening the workspace" []
+    (isolated this_mod/.path "restores renderer settings and owner binding after reopening the workspace"
+      (fn [workspace]
+        (fixture workspace (fn [f]
+          (channel_settings f/channels {^surface "markdown" ^public_url "https://harness.example.com"})
+          (let original (snapshot f/harness/runtime/channel_queues))
+          (close_session_service f/harness)
+          (let restored (test_service ^workspace workspace ^without_plugins ["slack"]
+            ^provider (fn [request] "(Outcome ^^done)")))
+          (try
+            ($assert (== restored/runtime/channels/settings/.get
+              {^surface "markdown" ^public_url "https://harness.example.com"}))
+            (let state (snapshot restored/runtime/channel_queues))
+            ($assert (== state/source original/source))
+            ($assert (== state/owner_root original/owner_root))
+          ensure (close_session_service restored)))))))
+
+  (it "executes the bounded live-qualification response without any Slack network access" []
+    (isolated this_mod/.path "executes the bounded live-qualification response without any Slack network access"
+      (fn [workspace]
+        (fixture workspace (fn [f]
+          (let calls ($cell 0))
+          (put_cordis_plugin f/harness/runtime/h (qualification_provider calls)
+            {^^host ^limits f/harness/runtime/profile/limits})
+          (set f/harness/runtime/profile/provider "qualification")
+          (let root (receive f "Ev1" "1.000001" "<@UBOT> Gene Harness live test"))
+          (let admitted (drain_session f/channels root/session))
+          (wait_round f/harness root/session)
+          ($assert (== (/state (round_receipt f/harness/controller root/session admitted/receipt/id)) "done"))
+          ($assert (== ($fs/read_text ($path/join workspace "slack-live-proof.txt")) "executed"))
+          ($assert (== calls/.get 1)))))))
+
+  (it "makes an oversized whole batch visible without starting the model" []
+    (isolated this_mod/.path "makes an oversized whole batch visible without starting the model"
+      (fn [workspace]
+        (fixture workspace (fn [f]
+          (let pieces [])
+          (repeat 8000 (pieces .push "abcdefghij"))
+          (let text ($str/join pieces ""))
+          (let root (receive f "Ev1" "1.000001" ($to_str "<@UBOT> " text)))
+          ($assert (== (/kind (drain_session f/channels root/session)) "held"))
+          (project_queue f/channels root/session)
+          ($assert (== f/calls/.get/.size 0))
+          ($assert (== (/pending (queue_status f/harness/runtime/channel_queues root/session)) 1))
+          (let pending (pending_output f/harness/runtime/channel_queues))
+          ($assert (== pending/.size 1))
+          ($assert (pending/0/intent/parts/0/text .contains? "whole batch exceeds")))))))
+
+  (it "creates interactive sessions from roots, batches shared authors and publishes final replies and browser continuations" []
+    (isolated this_mod/.path "creates interactive sessions from roots, batches shared authors and publishes final replies and browser continuations"
+      (fn [workspace]
+        (fixture workspace (fn [f]
+          (let incoming (receive_envelope f/channels/owner "dobi" (event "Ev1" "1.000001" "<@UBOT> Build it.")))
+          (let checked (receive_handoff f/channels incoming))
+          ($assert (== checked/status "queued") ($serde/write_data checked))
+          (handoff_inputs f/channels)
+          ($assert (== ($size (pending_ingress f/channels/owner)) 0))
+          (let state (snapshot f/channels/owner))
+          (let handoff (state/ingress .get incoming/id))
+          (let session handoff/result/session)
+          (let metadata (f/harness/sessions/index/.get .get session))
+          ($assert (== metadata/kind "interactive"))
+          ($assert (== metadata/title "Build it."))
+          ($assert (== metadata/channel/thread "1.000001"))
+          (drain_session f/channels session)
+          (wait_round f/harness session)
+          ($assert ($fs/exists? ($path/join workspace "channel-service-proof.txt")))
+          (project_events f/channels session)
+          (let outputs (pending_output f/harness/runtime/channel_queues))
+          ($assert (== outputs/.size 1))
+          ($assert (== outputs/0/intent/parts/0/text "Task completed."))
+          # message and app_mention subscriptions describe the same logical input.
+          (receive_envelope f/channels/owner "dobi" (event "Ev2" "1.000001" "<@UBOT> Build it." ^kind "app_mention"))
+          (handoff_inputs f/channels)
+          ($assert (== (/kind (drain_session f/channels session)) "empty"))
+          ($assert (== f/calls/.get/.size 1))
+          (receive_envelope f/channels/owner "dobi" (event "Ev3" "2.000001" "Add X." ^thread "1.000001"))
+          (receive_envelope f/channels/owner "dobi" (event "Ev4" "3.000001" "Actually skip X." ^thread "1.000001" ^author "UOTHER"))
+          (handoff_inputs f/channels)
+          (let next (drain_session f/channels session))
+          ($assert (== ($map next/receipt/input/messages /author) ["UOWNER" "UOTHER"]))
+          (wait_round f/harness session)
+          (submit f/harness session "browser-followup" 3 "From the shared browser.")
+          (wait_round f/harness session)
+          (project_events f/channels session)
+          (let all (pending_output f/harness/runtime/channel_queues))
+          ($assert (> ($size ($filter all (fn [out]
+            (out/intent/parts/0/text .contains? "User (Harness browser):\nFrom the shared browser.")))) 0))
+          ($assert (== ($size f/harness/sessions/index/.get) 1))
+          (handoff_outputs f/channels)
+          (let posted ($cell []))
+          (let api (open_api "test-token" ^requester (fn [request]
+            (posted/.get .push request/params)
+            {^status 200 ^headers [] ^body ($binary/from_str ($json/stringify
+              {^^ok ^ts ($to_str posted/.get/.size ".000002")}))})))
+          (try
+            (for output in all
+              (reconcile_output f/harness/runtime/channel_queues
+                (deliver_output f/channels/owner api output/intent/id)))
+            ($assert (== ($size (pending_output f/harness/runtime/channel_queues)) 0))
+            ($assert (== posted/.get/.size all/.size))
+          ensure (close_api api))
+          (let separate (receive f "separate-root" "7.000001" "<@UBOT> Another task."))
+          ($assert (!= separate/session session))
+          ($assert (== ($size f/harness/sessions/index/.get) 2))
+          (drain_session f/channels separate/session)
+          (wait_round f/harness separate/session)
+          (let first_request ($to_str f/calls/.get/3/messages))
+          ($assert (! (first_request .contains? "From the shared browser.")))
+          ($assert (first_request .contains? "Another task.")))))))
+
+  (it "ignores unknown threads and unmentioned roots and never recreates a deleted conversation" []
+    (isolated this_mod/.path "ignores unknown threads and unmentioned roots and never recreates a deleted conversation"
+      (fn [workspace]
+        (fixture workspace (fn [f]
+          (let ordinary (receive_envelope f/channels/owner "dobi" (event "Ev1" "1.000001" "Ordinary channel chat.")))
+          ($assert (== (/status (receive_handoff f/channels ordinary)) "ignored"))
+          (let unknown (receive_envelope f/channels/owner "dobi" (event "Ev2" "2.000001" "Follow up." ^thread "1.000001")))
+          ($assert (== (/status (receive_handoff f/channels unknown)) "ignored"))
+          ($assert (== ($size f/harness/sessions/index/.get) 0))
+          (let root (receive_envelope f/channels/owner "dobi" (event "Ev3" "3.000001" "<@UBOT> First task.")))
+          (let received (receive_handoff f/channels root))
+          ($assert (== ($size f/harness/sessions/index/.get) 1))
+          (delete_session f/harness/sessions received/session ^^explicit)
+          (let later (receive_envelope f/channels/owner "dobi" (event "Ev4" "4.000001" "Next task." ^thread "3.000001")))
+          ($assert (== (/status (receive_handoff f/channels later)) "deleted"))
+          (let replies (pending_output f/harness/runtime/channel_queues))
+          ($assert (> ($size ($filter replies (fn [out]
+            (out/intent/parts/0/text .contains? "conversation was deleted")))) 0))
+          ($assert (== ($size f/harness/sessions/index/.get) 0)))))))
+
+  (it "separates idempotent Stop and revisioned queue resume from prompts and rejects stale controls" []
+    (isolated this_mod/.path "separates idempotent Stop and revisioned queue resume from prompts and rejects stale controls"
+      (fn [workspace]
+        (fixture workspace (fn [f]
+          (let root (receive f "Ev1" "1.000001" "<@UBOT> Build it."))
+          (let admitted (drain_session f/channels root/session))
+          (wait_round f/harness root/session)
+          (receive f "Ev2" "2.000001" "A queued follow-up." ^thread "1.000001")
+          (let stopped (receive f "Ev3" "3.000001" "!stop" ^thread "1.000001"))
+          ($assert (== stopped/status "control"))
+          ($assert (== stopped/result/code "ok") ($serde/write_data stopped))
+          (let held (queue_status f/harness/runtime/channel_queues root/session))
+          ($assert held/held)
+          ($assert (== held/pending 1))
+          (submit f/harness root/session "browser-unrelated" 2 "Other browser work.")
+          (wait_round f/harness root/session)
+          ($assert (/held (queue_status f/harness/runtime/channel_queues root/session)))
+          (let stale (receive f "Ev4" "4.000001" ($to_str "!resume-queue " held/revision) ^thread "1.000001"))
+          ($assert (== stale/result/code "stale") ($serde/write_data stale))
+          (let current (queue_status f/harness/runtime/channel_queues root/session))
+          (let command ($to_str "!resume-queue " current/revision))
+          (let resumed (receive f "Ev5" "5.000001" command ^thread "1.000001"))
+          ($assert (== resumed/result/code "resumed") ($serde/write_data resumed))
+          ($assert (! (/held (queue_status f/harness/runtime/channel_queues root/session))))
+          (drain_session f/channels root/session)
+          (wait_round f/harness root/session)
+          ($assert (== resumed (receive f "Ev5" "5.000001" command ^thread "1.000001")))
+          (let before (queue_status f/harness/runtime/channel_queues root/session))
+          (let old (receive f "Ev6" "6.000001" ($to_str "!stop " admitted/receipt/id) ^thread "1.000001"))
+          ($assert (!= old/result/code "ok"))
+          ($assert (== before/revision (/revision (queue_status f/harness/runtime/channel_queues root/session))))
+          ($assert (== f/calls/.get/.size 3)))))))
+
+  (it "shows questions and answers them without treating ordinary follow-ups or denied authors as answers" []
+    (isolated this_mod/.path "shows questions and answers them without treating ordinary follow-ups or denied authors as answers"
+      (fn [workspace]
+        (fixture workspace (fn [f]
+          (let calls ($cell 0))
+          (let requests ($cell []))
+          (set_test_provider f/harness/runtime (fn [request]
+            (requests/.get .push request)
+            (calls .set (+ calls/.get 1))
+            (if (== calls/.get 1)
+              "(Outcome ^questions [{^id \"color\" ^prompt \"Choose a color\" ^choices [\"blue\" \"red\"]}] ^reply \"Choose a color.\")"
+              "(Outcome ^^done ^reply \"Blue selected.\")")))
+          (let root (receive f "Ev1" "1.000001" "<@UBOT> Build it."))
+          (drain_session f/channels root/session)
+          (wait_round f/harness root/session)
+          (project_rounds f/channels root/session)
+          (let current (f/harness/sessions/loaded/.get .get root/session))
+          (let batch current/round/.get/questions/id)
+          ($assert (! ($absent? batch)))
+          (let outgoing (pending_output f/harness/runtime/channel_queues))
+          ($assert (> ($size ($filter outgoing (fn [out] (out/intent/parts/0/text .contains? "!answer ")))) 0))
+          (receive f "Ev2" "2.000001" "Also add a footer." ^thread "1.000001")
+          ($assert (== (/kind (drain_session f/channels root/session)) "busy"))
+          (let answer ($to_str "!answer " batch " {\"color\":\"blue\"}"))
+          (let denied (receive f "Ev3" "3.000001" answer ^thread "1.000001" ^author "UGUEST"))
+          ($assert (== denied/status "denied"))
+          ($assert (== current/round/.get/state "waiting"))
+          (let accepted (receive f "Ev4" "4.000001" answer ^thread "1.000001" ^author "UOTHER"))
+          ($assert (== accepted/result/code "ok") ($serde/write_data accepted))
+          (wait_round f/harness root/session)
+          ($assert (== current/round/.get/state "done"))
+          (let resumed ($last requests/.get/1/messages))
+          ($assert (resumed/content .contains? "Slack message 4.000001 from UOTHER"))
+          ($assert (== (/pending (queue_status f/harness/runtime/channel_queues root/session)) 1))
+          ($assert (== calls/.get 2)))))))
+
+  (it "requires an explicit current revision to replace paused work with a queued batch" []
+    (isolated this_mod/.path "requires an explicit current revision to replace paused work with a queued batch"
+      (fn [workspace]
+        (fixture workspace (fn [f]
+          (let requests ($cell []))
+          (set_test_provider f/harness/runtime (fn [request]
+            (requests/.get .push request)
+            (if (== requests/.get/.size 1)
+              "(Outcome ^prompt \"OLD_PAUSED_PENDING_TASK\" ^reply \"Paused work.\")"
+              "(Outcome ^^done ^reply \"Queued work complete.\")")))
+          (let filename ($path/join workspace ".gene-harness" "config.gene"))
+          (let config ($serde/read_data ($fs/read_text filename)))
+          (config .put "turn_limit" 1) ($fs/write_text filename ($serde/write_data config))
+          (let root (receive f "Ev1" "1.000001" "<@UBOT> Original work."))
+          (let first (drain_session f/channels root/session))
+          (wait_round f/harness root/session)
+          ($assert (== (/state (round_receipt f/harness/controller root/session first/receipt/id)) "paused"))
+          (receive f "Ev2" "2.000001" "REPLACEMENT_QUEUED_REQUEST" ^thread "1.000001")
+          (let held (queue_status f/harness/runtime/channel_queues root/session))
+          (receive f "Ev3" "3.000001" ($to_str "!resume-queue " held/revision) ^thread "1.000001")
+          ($assert (== (/kind (drain_session f/channels root/session)) "held"))
+          (let stale (receive f "Ev4" "4.000001" ($to_str "!replace-paused " first/receipt/id " " held/revision) ^thread "1.000001"))
+          ($assert (== stale/result/code "stale"))
+          (let status (queue_status f/harness/runtime/channel_queues root/session))
+          (let text ($to_str "!replace-paused " first/receipt/id " " status/revision))
+          (let replaced (receive f "Ev5" "5.000001" text ^thread "1.000001"))
+          ($assert (== replaced/result/code "replaced") ($serde/write_data replaced))
+          ($assert (! (/held (queue_status f/harness/runtime/channel_queues root/session))))
+          ($assert (== (/continuation_stop (round_receipt f/harness/controller root/session first/receipt/id)) "superseded"))
+          (let next (drain_session f/channels root/session))
+          ($assert (== next/kind "admitted"))
+          (wait_round f/harness root/session)
+          ($assert (== requests/.get/.size 2))
+          (let latest ($last requests/.get/1/messages))
+          ($assert ($str/contains? latest/content "REPLACEMENT_QUEUED_REQUEST"))
+          ($assert (! ($str/contains? latest/content "OLD_PAUSED_PENDING_TASK")))
+          ($assert (== replaced (receive f "Ev5" "5.000001" text ^thread "1.000001"))))))))
+
+  (it "publishes browser answers to the shared thread without duplicating Slack answers" []
+    (isolated this_mod/.path "publishes browser answers to the shared thread without duplicating Slack answers"
+      (fn [workspace]
+        (fixture workspace (fn [f]
+          (let calls ($cell 0))
+          (set_test_provider f/harness/runtime (fn [request]
+            (calls .set (+ calls/.get 1))
+            (if (== calls/.get 1)
+              "(Outcome ^questions [{^id \"color\" ^prompt \"Choose a color\"}] ^reply \"Choose a color.\")"
+              "(Outcome ^^done ^reply \"Answer received.\")")))
+          (let root (receive f "Ev1" "1.000001" "<@UBOT> Ask a question."))
+          (drain_session f/channels root/session) (wait_round f/harness root/session)
+          (let loaded (f/harness/sessions/loaded/.get .get root/session))
+          (answer f/harness root/session loaded/round/.get/questions/id {^color "blue"})
+          (wait_round f/harness root/session)
+          (project_events f/channels root/session)
+          (let outgoing (pending_output f/harness/runtime/channel_queues))
+          (let replies ($filter outgoing (fn [out]
+            (out/intent/parts/0/text .contains? "User (Harness) answered questions:"))))
+          ($assert (== replies/.size 1))
+          ($assert (replies/0/intent/parts/0/text .contains? "Choose a color: blue"))
+          (project_events f/channels root/session)
+          ($assert (== ($size (pending_output f/harness/runtime/channel_queues)) outgoing/.size)))))))
+)
+
+(fn main [args] : Int (run_spec args))

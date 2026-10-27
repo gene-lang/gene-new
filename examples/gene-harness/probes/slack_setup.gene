@@ -1,0 +1,33 @@
+# Production setup qualification against real credentials, without starting the
+# transport plugin. Only local configuration is written. No Slack messages or
+# application event acknowledgments are sent.
+(import [open_queues close_channel_store] ^from "../src/channels/queue")
+(import [open_channel_service close_channel_service] ^from "../src/channels/service")
+(import [setup_account setup_route] ^from "../src/channels/setup")
+(import [snapshot] ^from "../src/channels/store")
+(import [secret_path load_socket_library] ^from "../src/channels/slack_api")
+
+(fn main [argv] : Int
+  (let args ($body argv))
+  ($assert (== args/.size 3) "slack_setup.gene CREDENTIAL_FILE NATIVE_LIBRARY ISOLATED_DIRECTORY")
+  ($fs/make_dir args/2)
+  (let root ($fs/real_path args/2))
+  (let state_root ($path/join root ".gene-harness"))
+  (let queues (open_queues ($path/join state_root "channels" "queues") root))
+  (let service (open_channel_service {^root root ^state_root state_root ^channel_queues queues} nil))
+  (try
+    (let configured (setup_account service
+      {^id "dobi" ^secret_file args/0 ^library args/1}))
+    (let route (setup_route service {^account "dobi" ^channel configured/channel ^workspace root}))
+    (let account (/accounts (snapshot service/owner); .get "dobi"))
+    ($assert (== route/approved [account/operator]))
+    ($assert (== account/secret_file (secret_path args/0)))
+    ($assert (! ($has_key? account "bot_token")))
+    (let native (load_socket_library args/1))
+    ($assert (== (native/open_count) 0))
+    ($println ($json/stringify {^account_configured true ^operator_paired true
+      ^route_configured true ^workspace_bound true ^credential_references_only true ^socket_closed true}))
+  ensure
+    (close_channel_service service)
+    (close_channel_store queues))
+  0)

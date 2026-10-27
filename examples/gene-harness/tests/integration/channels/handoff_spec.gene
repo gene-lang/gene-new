@@ -1,0 +1,196 @@
+(import $test [describe it])
+(import [isolated run_spec] ^from "../../support")
+(import [open_authority configure_account configure_route authorize snapshot close_channel_store]
+  ^from "../../../src/channels/authority")
+(import [receive_envelope pending_ingress finish_handoff] ^from "../../../src/channels/ingress")
+(import [open_queues configure_queues enqueue] ^from "../../../src/channels/queue")
+(import [queue_output pending_output accept_output output_result reconcile_output
+         begin_part finish_part recover_deliveries deliver_output reconcile_remote] ^from "../../../src/channels/delivery")
+(import [open_api close_api] ^from "../../../src/channels/slack_api")
+(import [ChannelError key] ^from "../../../src/channels/model")
+
+(fn envelope [id : Str, ^event_type event_type : Str = "message", ^text text : Str = "<@UBOT> build it",
+              ^author author : Str = "UOWNER", ^ts ts : Str = "1.000001"]
+  {^envelope_id ($to_str "envelope-" id) ^type "events_api"
+   ^payload {^type "event_callback" ^event_id id ^team_id "T123" ^api_app_id "A123"
+     ^event {^type event_type ^user author ^channel "C123" ^ts ts ^text text}}})
+
+(fn fixture [workspace, body]
+  (let root ($path/join workspace "owner"))
+  (let owner (open_authority root))
+  (let queues (open_queues ($path/join workspace "queues") workspace))
+  (try
+    (configure_account owner "dobi" "/reference" "/adapter.so"
+      {^team "T123" ^app "A123" ^bot "B123" ^bot_user "UBOT" ^operator "UOWNER"})
+    (let route (configure_route owner "dobi" "C123" workspace))
+    (configure_queues queues route)
+    (let input (enqueue queues {^transport "slack" ^account "dobi" ^team "T123"
+      ^channel "C123" ^thread "1.000001" ^message "1.000001" ^author "UOWNER" ^text "build it"}
+      (authorize owner route/id "UOWNER") ^start_allowed true))
+    (body {^owner owner ^queues queues ^route route ^session input/session ^workspace workspace ^owner_root root})
+  ensure
+    (close_channel_store queues)
+    (close_channel_store owner)))
+
+(fn intent [f, ^id id : Str = "delivery-1", ^mode mode : Str = "post", ^revision revision : Int = 0,
+            ^parts parts = [{^text "First"} {^text "Second"}]]
+  {^id id ^owner f/route/owner ^route f/route/id ^workspace f/workspace
+   ^account "dobi" ^team "T123" ^channel "C123" ^thread "1.000001"
+   ^session f/session ^round "round-1" ^mode mode ^revision revision ^parts parts})
+
+(describe "Slack durable ingress"
+  (it "records routing before acknowledgement and preserves it across retry, policy change and restart" []
+    (isolated this_mod/.path "records routing before acknowledgement and preserves it across retry, policy change and restart"
+      (fn [workspace]
+        (fixture workspace (fn [f]
+          (let first (receive_envelope f/owner "dobi" (envelope "Ev1")))
+          ($assert (== first/status "pending"))
+          ($assert (== first/message/text "build it"))
+          ($assert (== first/workspace workspace))
+          ($assert first/start_allowed)
+          (configure_route f/owner "dobi" "C123" workspace ^approved [])
+          ($assert (== first (receive_envelope f/owner "dobi" (envelope "Ev1"))))
+          ($assert (== ($size (pending_ingress f/owner)) 1))
+          ($assert (== (/status (receive_envelope f/owner "dobi" (envelope "Ev2"))) "denied"))
+          ($assert (try (receive_envelope f/owner "dobi" (envelope "Ev1" ^text "changed")) false
+            catch ChannelError (== $err/code "submission_conflict")))
+          (close_channel_store f/owner)
+          (let recovered (open_authority f/owner_root))
+          (try
+            ($assert (== first/route (/route (/0 (pending_ingress recovered)))))
+            (finish_handoff recovered first/id {^status "denied"})
+            ($assert (== ($size (pending_ingress recovered)) 0))
+            ($assert (== (/status (receive_envelope recovered "dobi" (envelope "Ev1"))) "handed_off"))
+          ensure (close_channel_store recovered)))))))
+
+  (it "rejects cross-account payloads and excludes bots, edits and denied text" []
+    (isolated this_mod/.path "rejects cross-account payloads and excludes bots, edits and denied text"
+      (fn [workspace]
+        (fixture workspace (fn [f]
+          (let other (envelope "Ev1"))
+          (other/payload .put "team_id" "TOTHER")
+          ($assert (try (receive_envelope f/owner "dobi" other) false
+            catch ChannelError (== $err/code "forbidden")))
+          (let bot (envelope "Ev2" ^author "UBOT"))
+          ($assert (== (/status (receive_envelope f/owner "dobi" bot)) "ignored"))
+          (let edited (envelope "Ev3"))
+          (edited/payload/event .put "subtype" "message_changed")
+          ($assert (== (/status (receive_envelope f/owner "dobi" edited)) "ignored"))
+          (let denied (receive_envelope f/owner "dobi" (envelope "Ev4" ^author "UGUEST" ^text "private denied text")))
+          ($assert (== denied/status "denied"))
+          ($assert (! ($str/contains? ($serde/write_data denied) "private denied text")))
+          ($assert (== ($size (pending_ingress f/owner)) 0)))))))
+)
+
+(describe "Channel delivery ownership"
+  (it "reconciles lost acceptance and result acknowledgements and delivers ordered parts only once" []
+    (isolated this_mod/.path "reconciles lost acceptance and result acknowledgements and delivers ordered parts only once"
+      (fn [workspace]
+        (fixture workspace (fn [f]
+          (let outgoing (intent f))
+          (queue_output f/queues outgoing)
+          (let accepted (accept_output f/owner outgoing))
+          ($assert (== accepted (accept_output f/owner outgoing)))
+          (let calls ($cell []))
+          (let api (open_api "test-bot" ^requester (fn [request]
+            (calls/.get .push request/params)
+            {^status 200 ^headers [] ^body ($binary/from_str
+              ($json/stringify {^^ok ^ts ($to_str calls/.get/.size ".000002")}))})))
+          (try
+            (let result (deliver_output f/owner api outgoing/id))
+            ($assert (== result/status "delivered") ($serde/write_data result))
+            ($assert (== ($map calls/.get /text) ["First" "Second"]))
+            ($assert (== result (deliver_output f/owner api outgoing/id)))
+            ($assert (== calls/.get/.size 2))
+            (reconcile_output f/queues (output_result f/owner outgoing/id))
+            ($assert (== ($size (pending_output f/queues)) 0))
+            ($assert (try (accept_output f/owner (outgoing .assoc "parts" [{^text "changed"}])) false
+              catch ChannelError (== $err/code "submission_conflict")))
+            ($assert (try (accept_output f/owner (outgoing .assoc "workspace" "/wrong")) false
+              catch ChannelError (== $err/code "forbidden")))
+          ensure (close_api api)))))))
+
+  (it "preserves partial success and unknown sends across restart without replaying the model or Slack post" []
+    (isolated this_mod/.path "preserves partial success and unknown sends across restart without replaying the model or Slack post"
+      (fn [workspace]
+        (fixture workspace (fn [f]
+          (let outgoing (intent f))
+          (queue_output f/queues outgoing)
+          (accept_output f/owner outgoing)
+          (begin_part f/owner outgoing/id 0 0)
+          (finish_part f/owner outgoing/id 0 0 {^status "sent" ^ts "1.000002"})
+          (begin_part f/owner outgoing/id 0 1)
+          (close_channel_store f/owner)
+          (let recovered (open_authority f/owner_root))
+          (try
+            (recover_deliveries recovered)
+            (let result (output_result recovered outgoing/id))
+            ($assert (== result/parts/0/status "sent"))
+            ($assert (== result/parts/1/status "uncertain"))
+            ($assert ($absent? (begin_part recovered outgoing/id 0 1)))
+            (reconcile_output f/queues result)
+            ($assert (== ($size (pending_output f/queues)) 1))
+            # A matching remote-history lookup can confirm the lost response.
+            (finish_part recovered outgoing/id 0 1 {^status "sent" ^ts "2.000002"})
+            (reconcile_output f/queues (output_result recovered outgoing/id))
+            ($assert (== ($size (pending_output f/queues)) 0))
+          ensure (close_channel_store recovered)))))))
+
+  (it "never lets older progress replace a newer revision and rate limits before later parts" []
+    (isolated this_mod/.path "never lets older progress replace a newer revision and rate limits before later parts"
+      (fn [workspace]
+        (fixture workspace (fn [f]
+          (let first (intent f ^mode "progress" ^parts [{^text "Working"}]))
+          (accept_output f/owner first)
+          (begin_part f/owner first/id 0 0)
+          (let newer (first .assoc "revision" 1; .assoc "parts" [{^text "Finished"}]))
+          ($assert (try (accept_output f/owner newer) false catch ChannelError (== $err/code "uncertain")))
+          (finish_part f/owner first/id 0 0 {^status "sent" ^ts "1.000002"})
+          (let revised (accept_output f/owner newer))
+          ($assert (== revised/parts/0/ts "1.000002"))
+          ($assert (== revised (accept_output f/owner first)))
+          ($assert (try (begin_part f/owner first/id 0 0) false catch ChannelError (== $err/code "stale")))
+          (let multipart (intent f ^id "rate-limited"))
+          (accept_output f/owner multipart)
+          (let calls ($cell 0))
+          (let api (open_api "test-bot" ^requester (fn [request]
+            (calls .set (+ calls/.get 1))
+            {^status 429 ^headers [["retry-after" "60"]] ^body ($binary/from_str "{}")})))
+          (try
+            (let delayed (deliver_output f/owner api multipart/id))
+            ($assert (== delayed/status "accepted") ($serde/write_data delayed))
+            ($assert (== delayed/parts/0/status "pending") ($serde/write_data delayed))
+            (deliver_output f/owner api multipart/id)
+            ($assert (== calls/.get 1))
+            ($assert ($absent? (begin_part f/owner multipart/id 0 1)))
+          ensure (close_api api)))))))
+
+  (it "confirms unknown posts from bot metadata without replaying a send or trusting another author" []
+    (isolated this_mod/.path "confirms unknown posts from bot metadata without replaying a send or trusting another author"
+      (fn [workspace]
+        (fixture workspace (fn [f]
+          (let outgoing (intent f ^parts [{^text "First"}]))
+          (accept_output f/owner outgoing)
+          (begin_part f/owner outgoing/id 0 0)
+          (recover_deliveries f/owner)
+          (let author ($cell "UOTHER"))
+          (let api (open_api "test-token" ^requester (fn [request]
+            ($assert (== request/method "conversations.replies"))
+            ($assert (== request/http_method "GET"))
+            ($assert request/params/include_all_metadata)
+            {^status 200 ^headers [] ^body ($binary/from_str ($json/stringify
+              {^^ok ^messages [{^user author/.get ^text "First" ^thread_ts "1.000001" ^ts "2.000002"
+                ^metadata {^event_type "gene_harness_delivery"
+                  ^event_payload {^delivery outgoing/id ^part 0 ^revision 0
+                    ^body_digest (key outgoing/parts/0)}}}]}))})))
+          (try
+            ($assert (== (/status (reconcile_remote f/owner api outgoing/id)) "uncertain"))
+            ($assert ($absent? (begin_part f/owner outgoing/id 0 0)))
+            (author .set "UBOT")
+            (let confirmed (reconcile_remote f/owner api outgoing/id))
+            ($assert (== confirmed/status "delivered"))
+            ($assert (== confirmed/parts/0/ts "2.000002"))
+          ensure (close_api api)))))))
+)
+
+(fn main [args] : Int (run_spec args))

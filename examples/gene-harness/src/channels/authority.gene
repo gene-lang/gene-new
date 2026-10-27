@@ -1,0 +1,98 @@
+(mod channel_authority)
+(import [open_channel_store close_channel_store snapshot mutate] ^from "./store" ^^export)
+(import [channel_error copy key account_id identifier required_text] ^from "./model")
+
+(fn open_authority [root : Str]
+  (open_channel_store root "owner"
+    {^id ($to_str "owner-" ($crypto/random_hex 16)) ^policy_revision 0
+     ^accounts {} ^routes {} ^ingress {} ^deliveries {}}))
+
+(fn route_key [account : Str, team : Str, channel : Str]
+  (key ["slack" account team channel]))
+
+# The account stores host-owned references and verified public identity fields,
+# never a copy of the token file. Only owner tooling calls this configuration API.
+(fn configure_account [owner, id : Str, secret_file : Str, library : Str, identity]
+  (account_id id)
+  (required_text secret_file "credential reference" ^max_bytes 4096)
+  (required_text library "native library reference" ^max_bytes 4096)
+  (let record {^id id ^transport "slack" ^secret_file secret_file ^library library
+    ^team (identifier identity/team "T" "team ID")
+    ^app (identifier identity/app "A" "app ID")
+    ^bot (identifier identity/bot "B" "bot ID")
+    ^bot_user (identifier identity/bot_user "UW" "bot user ID")
+    ^operator (identifier identity/operator "UW" "operator ID") ^^enabled})
+  (mutate owner (fn [state]
+    (for [name existing] in state/accounts
+      (if (&& (!= ($to_str name) id) (== existing/app record/app) (== existing/team record/team))
+        (channel_error "conflict" "This Slack app/team already has a configured account.")))
+    (let previous (state/accounts .get id))
+    (if (&& (! ($absent? previous))
+            (|| (!= previous/app record/app) (!= previous/team record/team)
+                (!= previous/bot_user record/bot_user)))
+      (channel_error "conflict" "An account's Slack identity cannot be replaced in place."))
+    (if_yes (!= previous record)
+      (state/accounts .put id record)
+      (state .put "policy_revision" (+ state/policy_revision 1)))
+    {^account id ^owner state/id ^policy_revision state/policy_revision})))
+
+(fn configure_route [owner, account : Str, channel : Str, workspace : Str,
+                     ^approved approved = nil, ^require_mention require_mention : Bool = true,
+                     ^enabled enabled : Bool = true]
+  (identifier channel "CG" "channel ID")
+  (required_text workspace "workspace directory" ^max_bytes 4096)
+  (if_not (workspace .starts_with? "/")
+    (channel_error "invalid_request" "The routed workspace must be an absolute directory."))
+  (let canonical ($path/normalize workspace))
+  (mutate owner (fn [state]
+    (let selected (state/accounts .get account))
+    (if ($absent? selected) (channel_error "not_found" "Channel account not found."))
+    (let users (if ($absent? approved) [selected/operator] approved))
+    (if (!= ($head users) List) (channel_error "invalid_request" "Approved Slack users must be a list."))
+    (let normalized [])
+    (for user in users
+      (identifier user "UW" "approved user ID")
+      (if_not (normalized .contains? user) (normalized .push user)))
+    (let id (route_key account selected/team channel))
+    (let previous (state/routes .get id))
+    (if (&& (! ($absent? previous)) (!= previous/workspace canonical))
+      (channel_error "conflict" "Moving a Slack channel to another workspace requires an explicit migration."))
+    (for [other candidate] in state/routes
+      (if (&& enabled candidate/enabled (!= ($to_str other) id) (== candidate/workspace canonical))
+        (channel_error "conflict" "The workspace already has an enabled Slack binding.")))
+    (let record {^id id ^owner state/id ^account account ^team selected/team ^channel channel
+      ^workspace canonical ^approved normalized ^require_mention require_mention ^enabled enabled})
+    (if_yes (!= previous record)
+      (state/routes .put id record)
+      (state .put "policy_revision" (+ state/policy_revision 1)))
+    (copy record))))
+
+# One snapshot is one authorization decision. A remote workspace must query
+# this authority again before admitting a queued batch instead of using a cache.
+(fn authorize_state [state, id : Str, user : Str, workspace]
+  (let selected (state/routes .get id))
+  (let account (if ($absent? selected) nil (state/accounts .get selected/account)))
+  (let allowed (&& (! ($absent? selected)) selected/enabled (! ($absent? account)) account/enabled
+    (|| ($absent? workspace) (== selected/workspace workspace))
+    (selected/approved .contains? user)))
+  {^allowed allowed ^owner state/id ^policy_revision state/policy_revision
+   ^route (if ($absent? selected) nil (copy selected)) ^author user})
+
+(fn authorize [owner, id : Str, user : Str, ^workspace workspace = nil]
+  (authorize_state (snapshot owner) id user workspace))
+
+(fn authorize_parts [owner, id : Str, parts, ^workspace workspace = nil]
+  (let state (snapshot owner))
+  (let decisions {})
+  (for part in parts
+    (decisions .put part/id (authorize_state state id part/author workspace)))
+  decisions)
+
+(fn public_authority [owner]
+  (let state (snapshot owner))
+  (let accounts [])
+  (for [id account] in state/accounts
+    (accounts .push {^id ($to_str id) ^transport "slack" ^team account/team ^app account/app
+      ^bot_user account/bot_user ^operator account/operator ^enabled account/enabled}))
+  {^owner state/id ^revision state/revision ^policy_revision state/policy_revision
+   ^accounts accounts ^routes (copy state/routes)})

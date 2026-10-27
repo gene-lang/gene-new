@@ -1,0 +1,223 @@
+(import $test [describe it])
+(import [isolated run_spec fixture_path] ^from "../../support")
+(import [counted_service read_count event intake session_id wait_round remote_api remote_messages]
+  ^from "../../fixtures/channel_recovery")
+(import [close_session_service submit] ^from "../../../src/web/session_service")
+(import [handoff_inputs handoff_outputs drain_session] ^from "../../../src/channels/service")
+(import [snapshot configure_route] ^from "../../../src/channels/authority")
+(import [queue_status hold_queue pending_parts discard_inputs resume_queue] ^from "../../../src/channels/queue")
+(import [round_state round_receipt] ^from "../../../src/runtime/round_controller")
+(import [pending_output output_result deliver_output reconcile_remote] ^from "../../../src/channels/delivery")
+(import [close_api] ^from "../../../src/channels/slack_api")
+
+(fn crashed [workspace : Str, point : Str]
+  ($println ($to_str "Checking crash checkpoint: " point)) ($io/flush_stdout)
+  (let root ($path/join workspace point))
+  ($fs/make_dir root)
+  (let child (await ($os/exec_async ($os/executable_path) "run" "--snapshot"
+    (fixture_path "channel_recovery") root point ^timeout_ms 30000 ^max_bytes 1048576)))
+  ($assert (== child/status 73) ($to_str "Crash stage " point ": " child/stdout child/stderr))
+  ($assert (== ($fs/read_text ($path/join root "crash-marker")) point))
+  root)
+
+(describe "Channel process recovery"
+  (it "repairs a superseded task blocker after death between core and queue checkpoints" []
+    (isolated this_mod/.path "repairs a superseded task blocker after death between core and queue checkpoints"
+      (fn [workspace]
+        (let root (crashed workspace "superseded_boundary"))
+        (let service (counted_service root))
+        (try
+          (let session (session_id service))
+          (let status (queue_status service/runtime/channel_queues session))
+          ($assert status/held)
+          ($assert (== ($size ($filter status/holds (fn [hold] (== hold/kind "temporary")))) 0))
+          ($assert (== (read_count root) 1))
+          (resume_queue service/runtime/channel_queues session status/revision)
+          ($assert (== (/kind (drain_session service/runtime/channels session)) "admitted"))
+          (wait_round service session)
+          ($assert (== (read_count root) 2))
+          ($assert (! (/held (queue_status service/runtime/channel_queues session))))
+        ensure (close_session_service service)))))
+
+  (it "recovers raw intake, queue creation, session binding and lost handoff acknowledgments without duplicate work" []
+    (isolated this_mod/.path "recovers raw intake, queue creation, session binding and lost handoff acknowledgments without duplicate work"
+      (fn [workspace]
+        (for point in ["ingress" "queued" "binding" "handoff"]
+          (let root (crashed workspace point))
+          (let service (counted_service root))
+          (try
+            ($assert (== (read_count root) 0))
+            (handoff_inputs service/runtime/channels)
+            (let session (session_id service))
+            ($assert (== ($size service/sessions/index/.get) 1))
+            (let first (drain_session service/runtime/channels session))
+            ($assert (== first/kind "admitted"))
+            (wait_round service session)
+            ($assert (== (read_count root) 1))
+            (intake service (event "duplicate-subscription" "1.000001" "<@UBOT> Build once."))
+            (handoff_inputs service/runtime/channels)
+            ($assert (== (/kind (drain_session service/runtime/channels session)) "empty"))
+            ($assert (== (read_count root) 1))
+            ($assert (== (/receipts (round_state service/controller session); .size) 1))
+          ensure (close_session_service service))))))
+
+  (it "reauthorizes an unadmitted claimed batch after restart and excludes revoked text from the model" []
+    (isolated this_mod/.path "reauthorizes an unadmitted claimed batch after restart and excludes revoked text from the model"
+      (fn [workspace]
+        (let root (crashed workspace "batch"))
+        (let service (counted_service root))
+        (try
+          (let session (session_id service))
+          (configure_route service/runtime/channels/owner "dobi" "C123" root ^approved ["UOTHER"])
+          ($assert (== (/kind (drain_session service/runtime/channels session)) "empty"))
+          ($assert (== (read_count root) 0))
+          (intake service (event "approved" "2.000001" "Use only this approved request." ^thread "1.000001" ^author "UOTHER"))
+          (handoff_inputs service/runtime/channels)
+          (let admitted (drain_session service/runtime/channels session))
+          ($assert (== admitted/receipt/input/messages/.size 1))
+          ($assert (== admitted/receipt/input/messages/0/author "UOTHER"))
+          (wait_round service session)
+          ($assert (== (read_count root) 1))
+        ensure (close_session_service service)))))
+
+  (it "resolves saved admissions before consumption and never replays interrupted Gene effects" []
+    (isolated this_mod/.path "resolves saved admissions before consumption and never replays interrupted Gene effects"
+      (fn [workspace]
+        (for point in ["receipt" "consumed" "effect"]
+          (let root (crashed workspace point))
+          (let service (counted_service root))
+          (try
+            (let session (session_id service))
+            (let before (read_count root))
+            (let result (drain_session service/runtime/channels session))
+            ($assert (["admitted" "held"] .contains? result/kind))
+            ($assert (== (read_count root) before))
+            ($assert (== before (if (== point "effect") 1 0)))
+            (let rounds (round_state service/controller session))
+            ($assert (== rounds/receipts/.size 1))
+            ($assert (== rounds/receipts/0/state "interrupted"))
+            (let queue (queue_status service/runtime/channel_queues session))
+            ($assert (== queue/pending 0))
+            ($assert ($absent? queue/batch))
+            ($assert queue/held)
+            (if (== point "effect") ($assert (== ($fs/read_text ($path/join root "effect.txt")) "once")))
+          ensure (close_session_service service))))))
+
+  (it "recovers outgoing intents, acceptance, partial uncertain posts and results without another model run or duplicate post" []
+    (isolated this_mod/.path "recovers outgoing intents, acceptance, partial uncertain posts and results without another model run or duplicate post"
+      ^timeout_ms 300000
+      (fn [workspace]
+        (for point in ["intent" "owner_accept" "remote_unknown" "owner_result" "workspace_result"]
+          (let root (crashed workspace point))
+          (let service (counted_service root))
+          (let api (remote_api root))
+          (try
+            ($assert (== (read_count root) 1))
+            (handoff_outputs service/runtime/channels)
+            (let before (output_result service/runtime/channels/owner "test-reply"))
+            (if_yes (== point "remote_unknown")
+              ($assert (== before/parts/0/status "sent"))
+              ($assert (== before/parts/1/status "uncertain"))
+              ($assert (== before/parts/2/status "pending"))
+              (reconcile_remote service/runtime/channels/owner api "test-reply"))
+            (let delivered (deliver_output service/runtime/channels/owner api "test-reply"))
+            ($assert (== delivered/status "delivered"))
+            (handoff_outputs service/runtime/channels)
+            ($assert (== ($size (pending_output service/runtime/channel_queues)) 0))
+            (let messages (remote_messages root))
+            ($assert (== messages/.size 3))
+            ($assert (== ($map messages /text) ["First" "Second" "Third"]))
+            ($assert (== (read_count root) 1))
+            (deliver_output service/runtime/channels/owner api "test-reply")
+            ($assert (== ($size (remote_messages root)) 3))
+          ensure (close_api api) (close_session_service service))))))
+
+  (it "preserves answer provenance and continuation policy when a process dies before task resumption" []
+    (isolated this_mod/.path "preserves answer provenance and continuation policy when a process dies before task resumption"
+      (fn [workspace]
+        (for point in ["question_answered" "continuation_claim"]
+          (let root (crashed workspace point))
+          (let service (counted_service root))
+          (try
+            (let session (session_id service))
+            (wait_round service session)
+            (handoff_inputs service/runtime/channels)
+            (wait_round service session)
+            ($assert (== (read_count root) 2))
+            (let rounds (round_state service/controller session))
+            (let last ($last rounds/receipts))
+            ($assert (== last/state "done"))
+            ($assert ($absent? last/deadline_ms))
+            ($assert (/held (queue_status service/runtime/channel_queues session)))
+            (if (== point "question_answered")
+              (then
+                ($assert (last/request .contains? "Slack message 2.000001 from UOTHER"))
+                ($assert (== rounds/receipts/.size 1)))
+              (else
+                ($assert (== rounds/receipts/.size 2))
+                ($assert (== last/input/kind "channel"))
+                ($assert (== (/pending (queue_status service/runtime/channel_queues session)) 1))))
+          ensure (close_session_service service))))))
+
+  (it "recovers a recorded paused-task replacement but preserves a newer Stop" []
+    (isolated this_mod/.path "recovers a recorded paused-task replacement but preserves a newer Stop"
+      (fn [workspace]
+        (for newer in [false true]
+          (let parent ($path/join workspace (if newer "new-stop" "ordinary")))
+          ($fs/make_dir parent)
+          (let root (crashed parent "replacement_saved"))
+          (let service (counted_service root))
+          (try
+            (let session (session_id service))
+            (if newer (hold_queue service/runtime/channel_queues session "stop" "newer-operator-choice"))
+            (handoff_inputs service/runtime/channels)
+            (let result (drain_session service/runtime/channels session))
+            (if newer
+              (then
+                ($assert (== result/kind "held"))
+                ($assert (== (read_count root) 1))
+                ($assert (/held (queue_status service/runtime/channel_queues session))))
+              (else
+                ($assert (== result/kind "admitted"))
+                (wait_round service session)
+                ($assert (== (read_count root) 2))
+                ($assert (! (/held (queue_status service/runtime/channel_queues session))))))
+          ensure (close_session_service service))))))
+
+  (it "keeps Stop, failure, manual-pause and oversized holds after process death and unrelated browser completion" []
+    (isolated this_mod/.path "keeps Stop, failure, manual-pause and oversized holds after process death and unrelated browser completion"
+      ^timeout_ms 300000
+      (fn [workspace]
+        (for point in ["stop_hold" "failed_hold" "manual_hold" "oversized_hold"]
+          (let root (crashed workspace point))
+          (let service (counted_service root))
+          (try
+            ($println ($to_str "Reopened checkpoint: " point)) ($io/flush_stdout)
+            (let session (session_id service))
+            ($assert (/held (queue_status service/runtime/channel_queues session)))
+            (let state (round_state service/controller session))
+            (submit service session "unrelated-browser" state/next_seq "Unrelated browser request.")
+            (wait_round service session)
+            ($println ($to_str "Browser round completed after: " point)) ($io/flush_stdout)
+            ($assert (/held (queue_status service/runtime/channel_queues session)))
+            ($assert (== (/kind (drain_session service/runtime/channels session)) "held"))
+            (if_yes (== point "stop_hold")
+              (handoff_inputs service/runtime/channels)
+              (let saved (snapshot service/runtime/channel_queues))
+              (for [id control] in saved/controls
+                (if (== control/command/name "stop")
+                  ($assert (== control/result/code "ok") "A recorded Stop replayed against later browser work")))
+              ($assert (/held (queue_status service/runtime/channel_queues session))))
+            (if_yes (== point "oversized_hold")
+              (let parts (pending_parts service/runtime/channel_queues session))
+              (let held (queue_status service/runtime/channel_queues session))
+              (let discarded (discard_inputs service/runtime/channel_queues session held/revision [parts/2/id] "Reviewed after restart."))
+              ($assert (/held (queue_status service/runtime/channel_queues session)))
+              (resume_queue service/runtime/channel_queues session discarded/revision)
+              ($assert (== (/kind (drain_session service/runtime/channels session)) "admitted"))
+              (wait_round service session)
+              ($assert (! (/held (queue_status service/runtime/channel_queues session)))))
+          ensure (close_session_service service))))))
+)
+
+(fn main [args] : Int (run_spec args))

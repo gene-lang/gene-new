@@ -1,0 +1,82 @@
+(mod channel_model)
+(type ChannelError ^props {^code Str ^message Str} ^impl [Error])
+(impl Error for ChannelError)
+
+(fn channel_error [code : Str, message : Str]
+  (fail (ChannelError ^code code ^message message)))
+
+(fn copy [value] ($serde/read_data ($serde/write_data value)))
+(fn key [parts] ($crypto/sha256 ($serde/write_data parts)))
+
+(fn required_text [value, label : Str, ^max_bytes maximum : Int = 256] : Str
+  (if (|| (!= ($head value) Str) (== value "") (> value/.byte_size maximum))
+    (channel_error "invalid_request" ($to_str "Invalid channel " label ".")))
+  value)
+
+(fn identifier [value, prefix : Str, label : Str] : Str
+  (required_text value label ^max_bytes 80)
+  (if (|| ($absent? (#"^[A-Z0-9]+$" .match value))
+          (! (prefix .contains? ($str/slice_bytes value 0 1))))
+    (channel_error "invalid_request" ($to_str "Invalid Slack " label ".")))
+  value)
+
+(fn account_id [value] : Str
+  (required_text value "account ID" ^max_bytes 64)
+  (if ($absent? (#"^[a-z][a-z0-9_-]*$" .match value))
+    (channel_error "invalid_request" "Invalid channel account ID."))
+  value)
+
+(fn slack_ts [value] : Str
+  (required_text value "message ID" ^max_bytes 40)
+  (if ($absent? (#"^[0-9]{1,20}\.[0-9]{1,9}$" .match value))
+    (channel_error "invalid_request" "Invalid Slack message timestamp."))
+  value)
+
+(fn binding_key [source]
+  (key [source/transport source/account source/team source/channel source/thread]))
+
+(fn message_key [source]
+  (key [source/transport source/account source/team source/channel source/message]))
+
+(fn normalize_message [source]
+  (if (|| (!= ($head source) Map) (!= source/transport "slack"))
+    (channel_error "invalid_request" "Expected a Slack channel input."))
+  (let received (?? source/received_at ($os/wall_ms)))
+  (if (|| (!= ($head received) Int) (< received 0))
+    (channel_error "invalid_request" "Invalid channel receipt time."))
+  {^transport "slack" ^account (account_id source/account)
+   ^team (identifier source/team "T" "team ID")
+   ^channel (identifier source/channel "CG" "channel ID")
+   ^thread (slack_ts source/thread) ^message (slack_ts source/message)
+   ^author (identifier source/author "UW" "author ID")
+   # Intake is bounded by the socket envelope. Admission applies the smaller
+   # 64 KiB rendered-request limit and holds the complete batch for review.
+   ^text (required_text source/text "message text" ^max_bytes 1048576)
+   ^received_at received})
+
+(fn render_parts [parts] : Str
+  (let lines [])
+  (for part in parts
+    (lines .push ($to_str "[Slack message " part/message " from " part/author "]\n" part/text)))
+  ($str/join lines "\n\n"))
+
+(fn normalize_channel_input [value]
+  (if (|| (!= ($head value) Map) (!= value/kind "channel")
+          (!= ($head value/messages) List) (== value/messages/.size 0)
+          (> value/messages/.size 1024))
+    (channel_error "invalid_request" "Channel input needs an ordered message batch."))
+  (let parts [])
+  (let seen {})
+  (for supplied in value/messages
+    (let part (normalize_message supplied))
+    (if (|| (!= part/account value/account) (!= part/team value/team)
+            (!= part/channel value/channel) (!= part/thread value/thread))
+      (channel_error "invalid_request" "Channel batch members must share one external conversation."))
+    (let id (message_key part))
+    (if ($has_key? seen id) (channel_error "invalid_request" "Channel batch repeats a message identity."))
+    (seen .put id true)
+    (parts .push part))
+  (let first parts/0)
+  {^kind "channel" ^transport "slack" ^account first/account ^team first/team
+   ^channel first/channel ^thread first/thread
+   ^batch (required_text value/batch "batch ID" ^max_bytes 128) ^messages parts})

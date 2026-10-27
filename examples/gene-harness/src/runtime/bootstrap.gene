@@ -20,12 +20,13 @@
 (import [open_image_host recover_image_host close_image_host] ^from "./image_service")
 (import [open_delegation_host close_delegation_host] ^from "./delegations")
 (import [new_voice_state close_voice_state] ^from "./voice_state")
+(import [open_queues close_channel_store] ^from "../channels/queue")
 (import ^from "../agents/history" [collect_unreferenced_bodies])
 (import ^from "../agents/instructions" [install_core_prompt_rows])
 (import ^from "../agents/provider_selection" [readiness_report])
 (import ^from "../plugin_api" [ExecutionLimits response_execution_limits])
 
-(type HarnessRuntime ^props {^root Str ^state_root Str ^epoch Str ^h Any ^workspace Any ^profile Any ^events Any ^sessions Any ^commands Any ^triggers Any ^body_users Any ^body_collecting Any ^body_gc_pending Any ^stopping Any ^exit_code Any ^ownership Any ^owns_ownership Bool ^owns_events Bool ^closed Any ^restarted Bool ^shutdown_watchdog Any ^modes Any? ^listen_port Any? ^supervised Bool? ^actions Any? ^images Any? ^recovery Bool? ^managed Bool? ^workspace_manager Any? ^cards Any? ^delegations Any? ^voice Any?})
+(type HarnessRuntime ^props {^root Str ^state_root Str ^epoch Str ^h Any ^workspace Any ^profile Any ^events Any ^sessions Any ^commands Any ^triggers Any ^body_users Any ^body_collecting Any ^body_gc_pending Any ^stopping Any ^exit_code Any ^ownership Any ^owns_ownership Bool ^owns_events Bool ^closed Any ^restarted Bool ^shutdown_watchdog Any ^modes Any? ^listen_port Any? ^supervised Bool? ^actions Any? ^images Any? ^recovery Bool? ^managed Bool? ^workspace_manager Any? ^cards Any? ^delegations Any? ^voice Any? ^channel_queues Any? ^channels Any?})
 (type RuntimeCleanupError ^props {^message Str} ^impl [Error])
 (impl Error for RuntimeCleanupError)
 
@@ -74,6 +75,7 @@
       (try
         (close_workspace runtime/workspace)
       ensure
+        (if_not ($absent? runtime/channel_queues) (close_channel_store runtime/channel_queues))
         (if_not ($absent? runtime/h/notifications) (close_inbox runtime/h/notifications))))
   ensure
     (try
@@ -160,6 +162,8 @@
         (let current ($serde/read_data ($fs/read_text $"${state_root}/config.gene")))
         (readiness_report runtime current)))
     (set runtime/sessions (open_session_manager runtime events state_root))
+    (if_not recovery
+      (set runtime/channel_queues (open_queues ($path/join state_root "channels" "queues") canonical)))
     (set runtime/cards (open_card_service runtime))
     (set runtime/delegations (open_delegation_host runtime))
     (provide h "core" "delegations/runtime" runtime/delegations/handle)
@@ -192,6 +196,8 @@
           (close_delegation_host runtime/delegations))
         (if (&& (! ($absent? runtime)) (! ($absent? runtime/sessions)))
           (close_session_manager runtime/sessions))
+        (if (&& (! ($absent? runtime)) (! ($absent? runtime/channel_queues)))
+          (close_channel_store runtime/channel_queues))
         (if_not ($absent? h)
           (try (shutdown_harness h)
             ensure (if_not ($absent? h/notifications) (close_inbox h/notifications))))

@@ -201,6 +201,7 @@
           (transcript runtime session
             {^type "turn/request" ^round round/id ^turn 0
              ^for_turn number ^combine "replace" ^initiator round/initiator ^card (?? round/card nil)
+             ^input (?? round/input nil)
              ^full last_request ^settled settled ^media (?? round/media []) ^^initial})))
       (transcript runtime session
         {^type "turn/start" ^turn number ^round round/id ^initiator round/initiator ^card (?? round/card nil)

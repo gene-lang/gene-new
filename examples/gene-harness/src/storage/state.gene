@@ -16,7 +16,7 @@
           ^core_projections Any ^state_writers Any
           ^generation Any ^last_manifest Any ^dirty Any
           ^dirty_streams Any ^closed Any ^catalog Any ^quarantined Any ^writing Any
-          ^observer Any?
+          ^observer Any? ^checkpoint Any?
           ^formats_validated Any
           ^segment_events Int ^retained_segments Int
           ^max_event_bytes Int ^max_state_bytes Int
@@ -560,6 +560,7 @@
   (events/generation .set generation)
   (events/last_manifest .set manifest)
   (clear_dirty events)
+  (if_not ($absent? events/checkpoint) (events/checkpoint generation))
   {^generation generation ^manifest manifest})
 
 (fn flush_event_store [events : EventStore]

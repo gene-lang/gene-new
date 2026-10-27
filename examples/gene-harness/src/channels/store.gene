@@ -1,0 +1,50 @@
+(mod channel_store)
+(import $store/fs [open : store_open Store])
+(import [ChannelError channel_error copy] ^from "./model")
+
+(type ChannelStore ^props {^backend Any ^state Cell ^gate Any ^closed Cell ^checkpoint Any?})
+
+(fn open_channel_store [root : Str, kind : Str, initial]
+  ($fs/make_dir root)
+  (let backend (store_open ^root root))
+  (try
+    (let loaded backend/.Store:load_checkpoint)
+    (let state (if ($absent? loaded)
+      ((copy initial) .assoc "format" 1; .assoc "kind" kind; .assoc "revision" 0)
+      loaded/records/channels))
+    (if (|| (!= state/format 1) (!= state/kind kind) (!= ($head state/revision) Int))
+      (channel_error "unavailable" "Unsupported durable channel state."))
+    (ChannelStore ^backend backend ^state ($cell state) ^gate ($sync/gate) ^closed ($cell false))
+  catch Error
+    backend/.Store:close
+    (fail $err)))
+
+(fn require_open [store : ChannelStore]
+  (if store/closed/.get (channel_error "unavailable" "The channel store is closed.")))
+
+(fn snapshot [store : ChannelStore]
+  (store/gate (fn [] (require_open store) (copy store/state/.get))))
+
+(fn mutate [store : ChannelStore, operation]
+  (if (== (/ui_render ($runtime/context)) true)
+    (channel_error "forbidden" "Render callbacks cannot change channel state."))
+  (store/gate (fn []
+    (require_open store)
+    (let next (copy store/state/.get))
+    (let result (operation next))
+    (if_yes (!= next store/state/.get)
+      (next .put "revision" (+ store/state/.get/revision 1))
+      # Host-only diagnostic seam, also used to kill qualification processes
+      # on either side of the physical checkpoint. Callbacks get detached data.
+      (if_not ($absent? store/checkpoint) (store/checkpoint "before" (copy next) (copy result)))
+      (store/backend .Store:checkpoint next/revision {^channels next})
+      (if_not ($absent? store/checkpoint) (store/checkpoint "after" (copy next) (copy result)))
+      (store/state .set next))
+    (copy result))))
+
+(fn close_channel_store [store : ChannelStore]
+  (store/gate (fn []
+    (if store/closed/.get (return nil))
+    store/backend/.Store:close
+    (store/closed .set true)))
+  nil)

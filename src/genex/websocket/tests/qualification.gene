@@ -1,0 +1,107 @@
+(import [load open send_text receive_text flush WebSocketError] ^from "../src/websocket")
+
+(fn report [text : Str]
+  ($println text)
+  ($io/flush_stdout))
+
+(fn repeated [text : Str, count : Int] : Str
+  (let parts [])
+  (repeat index in count (parts .push text))
+  ($str/join parts ""))
+
+(fn next_text [native, socket]
+  (let due (+ ($os/monotonic_ms) 10000))
+  (loop
+    (let value (receive_text native socket))
+    (if_not ($absent? value) (return value))
+    ($assert (< ($os/monotonic_ms) due) "WebSocket message timed out")
+    ($sleep 2)))
+
+(fn refused [native, url : Str, ^ca_file ca_file : Str = "", ^timeout_ms timeout_ms : Int = 1000]
+  (report $"Checking refusal: ${url}")
+  (let error (try
+    (let socket (open native url ^ca_file ca_file ^timeout_ms timeout_ms))
+    ($C/close socket)
+    nil
+  catch WebSocketError $err/message))
+  ($assert (! ($absent? error)) $"Expected refusal for ${url}")
+  ($assert (== (native/open_count) 0) "failed handshake leaked a socket"))
+
+(fn cancellation [native, url : Str]
+  (scope
+    (let task (spawn ^lane root
+      (do
+        (let socket (open native url ^timeout_ms 10000))
+        (try (loop (receive_text native socket) ($sleep 2))
+        ensure ($C/close socket)))))
+    (let due (+ ($os/monotonic_ms) 2000))
+    (while (== (native/open_count) 0)
+      ($assert (< ($os/monotonic_ms) due) "WebSocket task did not start")
+      ($sleep 2))
+    ($sleep 30)
+    task/.cancel
+    (match task/.join
+      (when TaskOutcome/cancelled nil)
+      (else ($assert false "Expected cancellation"))))
+  ($assert (== (native/open_count) 0) "cancelled task leaked its socket"))
+
+(fn main [argv] : Int
+  (let args ($body argv))
+  ($assert (== args/.size 4) "qualification.gene LIB WS_BASE WSS_BASE CA_FILE")
+  (let native (load args/0))
+  (let base args/1)
+  (let secure args/2)
+  ($assert (== (native/open_count) 0))
+  (let socket (open native ($to_str base "/text")))
+  (try
+    ($assert (== (next_text native socket) "hello 雪 👋"))
+    ($assert (== (next_text native socket) "") "empty text must be distinct from no message")
+    (let payload (repeated (repeated "x" 1024) 2048))
+    (send_text native socket payload)
+    ($assert (== (next_text native socket) payload) "partial text send changed the payload")
+    ($assert (flush native socket))
+  ensure ($C/close socket))
+  ($assert (== (native/open_count) 0))
+  (report "PASS — cooperative connect, fragmented UTF-8, empty text and backpressured text send")
+
+  ($assert (try
+    (let limited (open native ($to_str base "/limit") ^max_message_bytes 64))
+    (try (next_text native limited) ensure ($C/close limited))
+    false
+  catch WebSocketError true) "oversized incoming message was accepted")
+  (let queued (open native ($to_str base "/quiet") ^max_queued_bytes 64))
+  (try
+    ($assert (try (send_text native queued (repeated "x" 65)) false
+      catch WebSocketError true) "outgoing byte limit was ignored")
+    (repeat index in 256 (send_text native queued ""))
+    ($assert (try (send_text native queued "") false catch WebSocketError true)
+      "outgoing count limit was ignored")
+  ensure ($C/close queued))
+  ($assert (== (native/open_count) 0))
+  (report "PASS — incoming bytes and outgoing byte/count limits")
+
+  (refused native ($to_str base "/reject"))
+  (refused native ($to_str base "/bad-accept"))
+  (refused native ($to_str base "/redirect"))
+  (refused native ($to_str base "/stall") ^timeout_ms 40)
+  (let closed (open native ($to_str base "/close")))
+  (try
+    ($assert (try (next_text native closed) false catch WebSocketError true))
+  ensure ($C/close closed))
+  ($assert (== (native/open_count) 0))
+  (report "PASS — invalid upgrade, invalid accept, redirect, timeout and peer close")
+
+  (refused native ($to_str secure "/tls"))
+  (let trusted (open native ($to_str secure "/tls") ^ca_file args/3))
+  (try ($assert (== (next_text native trusted) "verified TLS"))
+  ensure ($C/close trusted))
+  (let wrong_host ($regex/replace #"localhost" secure "127.0.0.1"))
+  (refused native ($to_str wrong_host "/tls") ^ca_file args/3)
+  (refused native ($to_str secure "/tls") ^ca_file ($to_str args/3 ".missing"))
+  ($assert (== (native/open_count) 0))
+  (report "PASS — untrusted certificate and hostname mismatch rejected; explicit CA verified")
+
+  (cancellation native ($to_str base "/stall"))
+  (cancellation native ($to_str base "/quiet"))
+  (report "PASS — cancellation during handshake and receive releases native sockets")
+  0)

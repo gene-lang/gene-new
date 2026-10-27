@@ -1,0 +1,209 @@
+(mod slack_transport)
+(import [spawn_effect_call] ^from "." ^pkg "cordis")
+(import [snapshot] ^from "./store")
+(import [channel_error] ^from "./model")
+(import [read_slack_credentials open_api close_api connect_socket socket_message
+         acknowledge load_socket_library] ^from "./slack_api")
+(import [receive_envelope] ^from "./ingress")
+(import [deliver_output reconcile_remote] ^from "./delivery")
+(import [tick_channels handoff_inputs handoff_outputs] ^from "./service")
+
+(type SlackTransport ^props {^service Any ^owner Any? ^closed Cell ^jobs Cell
+  ^task Cell ^apis Cell ^driver Any ^requester Any? ^next_send Cell})
+
+(fn default_driver []
+  {^load load_socket_library ^connect connect_socket ^receive socket_message
+   ^ack acknowledge ^close (fn [socket] ($C/close socket))})
+
+(fn transport_health [transport, id : Str, connected : Bool, code : Str]
+  (transport/service/health/.get .put id
+    {^connected connected ^code code ^at ($os/wall_ms)}))
+
+(fn socket_session [transport, app : Str, account]
+  (let credentials (read_slack_credentials account/secret_file))
+  (let client (open_api credentials/bot ^requester transport/requester))
+  (try
+    (let native (transport/driver/load account/library))
+    (let socket (transport/driver/connect client native credentials/app))
+    (try
+      (var initialized false)
+      (let deadline (+ ($os/monotonic_ms) 10000))
+      (while (! transport/closed/.get)
+        (if (&& (! initialized) (>= ($os/monotonic_ms) deadline))
+          (channel_error "hello_timeout" "Slack did not send a connection hello."))
+        (let message (transport/driver/receive native socket))
+        (if_yes ($absent? message) ($sleep 10) (continue))
+        (if_yes (! initialized)
+          (if (|| (!= message/type "hello") (!= message/connection_info/app_id app))
+            (channel_error "invalid_hello" "The connected Slack application does not match its account."))
+          (if (!= message/num_connections 1)
+            (channel_error "conflicting_receiver" "Another Socket Mode receiver is connected to this Slack app."))
+          (set initialized true)
+          (transport_health transport app true "connected")
+          (continue))
+        (if (== message/type "disconnect") (return nil))
+        (if_yes (! ($absent? message/envelope_id))
+          (let state (snapshot transport/service/owner))
+          (var selected nil)
+          (for [id candidate] in state/accounts
+            (if (&& candidate/enabled (== candidate/app app)
+                    (== candidate/team message/payload/team_id))
+              (set selected candidate)))
+          (if ($absent? selected)
+            # Unconfigured teams have no eligible workspace or author policy.
+            (then (transport/driver/ack native socket message/envelope_id))
+            (else
+              (receive_envelope transport/service/owner selected/id message)
+              (transport/driver/ack native socket message/envelope_id)))))
+    ensure (transport/driver/close socket))
+  ensure (close_api client)))
+
+(fn socket_loop [transport, app : Str, account]
+  (var delay 1000)
+  (while (! transport/closed/.get)
+    (try
+      (socket_session transport app account)
+      (set delay 1000)
+    catch Error
+      # Do not print errors from native/TLS/HTTP libraries: they may contain a
+      # short-lived Socket Mode URL. Only stable, non-secret status codes escape.
+      (transport_health transport app false (?? $err/code "connection_error")))
+    (if (! transport/closed/.get) ($sleep delay))
+    (set delay ($math/min 30000 (* delay 2)))))
+
+(fn spawn_owned [transport, name : Str, callback, args]
+  (if ($absent? transport/owner)
+    (spawn ^lane root (callback args ...))
+    (spawn_effect_call transport/owner name callback args)))
+
+(fn reconcile_connections [transport]
+  (let state (snapshot transport/service/owner))
+  (let apps {})
+  (let ids [])
+  (for [id account] in state/accounts (ids .push ($to_str id)))
+  (for id in ($order/sort ids)
+    (let account (state/accounts .get id))
+    (if (&& account/enabled (! ($has_key? apps account/app))) (apps .put account/app account)))
+  (let jobs transport/jobs/.get)
+  (let remove [])
+  (for [app job] in jobs
+    (let name ($to_str app))
+    (if_yes (!= job/account (apps .get name))
+      job/task/.cancel job/task/.join
+      (remove .push name)))
+  (for id in remove (jobs .delete id))
+  (for [app account] in apps
+    (let name ($to_str app))
+    (if_not ($has_key? jobs name)
+      (let task (spawn_owned transport "Slack Socket Mode" socket_loop [transport name account]))
+      (jobs .put name {^task task ^account account})))
+  nil)
+
+(fn account_api [transport, account]
+  (let clients transport/apis/.get)
+  (let found (clients .get account/id))
+  (if_not ($absent? found) (return found))
+  (let credentials (read_slack_credentials account/secret_file))
+  (let client (open_api credentials/bot ^requester transport/requester))
+  (clients .put account/id client)
+  client)
+
+(fn backoff_until [transport, id : Str, wall_deadline : Int]
+  (let remaining (- wall_deadline ($os/wall_ms)))
+  (if (> remaining 0)
+    (transport/next_send/.get .put id
+      ($math/max (?? (transport/next_send/.get .get id) 0) (+ ($os/monotonic_ms) remaining)))))
+
+(fn deliver_pending [transport]
+  (let state (snapshot transport/service/owner))
+  (let deliveries [])
+  (for [id delivery] in state/deliveries (deliveries .push delivery))
+  (for [id until] in (?? state/rate_limits {}) (backoff_until transport ($to_str id) until))
+  # Restore per-app/team server backoffs before considering another channel.
+  (for delivery in deliveries
+    (let account (state/accounts .get delivery/intent/account))
+    (if ($absent? account) (continue))
+    (let group ($to_str account/app "/" account/team))
+    (for part in delivery/parts
+      (if (== part/error "rate_limited")
+        (backoff_until transport ($to_str "write/" group) (?? part/retry_at 0))))
+    (if (== delivery/reconcile_error "rate_limited")
+      (backoff_until transport ($to_str "read/" group) (?? delivery/reconcile_after 0))))
+  (let blocked {})
+  (for delivery in ($order/sort_by deliveries /sequence)
+    (let id delivery/intent/id)
+    (let thread ($to_str delivery/intent/account "/" delivery/intent/channel "/" delivery/intent/thread))
+    (if ($has_key? blocked thread) (continue))
+    (if (== delivery/status "delivered") (continue))
+    (let account (state/accounts .get delivery/intent/account))
+    (if (|| ($absent? account) (! account/enabled)) (continue))
+    (let group ($to_str account/app "/" account/team))
+    (if_yes (== delivery/status "uncertain")
+      (blocked .put thread true)
+      (if (&& (>= ($os/wall_ms) (?? delivery/reconcile_after (+ (?? delivery/reconcile_at 0) 30000)))
+              (>= ($os/monotonic_ms) (?? (transport/next_send/.get .get ($to_str "read/" group)) 0)))
+        (try
+          (reconcile_remote transport/service/owner (account_api transport account) id)
+          (transport/next_send/.get .put ($to_str "read/" group) (+ ($os/monotonic_ms) 1100))
+        catch Error
+          (backoff_until transport ($to_str "read/" group) (+ ($os/wall_ms) (?? $err/retry_after_ms 30000)))
+          (transport_health transport delivery/intent/account false (?? $err/code "reconcile_unavailable"))))
+      (continue))
+    (if (!= delivery/status "accepted") (continue))
+    (let channel ($to_str delivery/intent/team "/" delivery/intent/channel))
+    (if (> ($math/max (?? (transport/next_send/.get .get channel) 0)
+                     (?? (transport/next_send/.get .get ($to_str "write/" group)) 0)) ($os/monotonic_ms))
+      (then (blocked .put thread true) (continue)))
+    (try
+      (let result (deliver_output transport/service/owner (account_api transport account) id ^max_parts 1))
+      (var delay 1100)
+      (for part in result/parts
+        (if (== part/error "rate_limited")
+          (then
+            (set delay ($math/max delay (- (?? part/retry_at 0) ($os/wall_ms))))
+            (backoff_until transport ($to_str "write/" group) (?? part/retry_at 0)))))
+      (transport/next_send/.get .put channel (+ ($os/monotonic_ms) delay))
+      (if (!= result/status "delivered") (blocked .put thread true))
+    catch Error
+      (blocked .put thread true)
+      (transport_health transport delivery/intent/account false (?? $err/code "delivery_error"))))
+  nil)
+
+(fn transport_tick [transport]
+  (reconcile_connections transport)
+  (try (handoff_inputs transport/service)
+    catch Error (transport_health transport "intake" false (?? $err/code "handoff_unavailable")))
+  (tick_channels transport/service)
+  (try (handoff_outputs transport/service)
+    catch Error (transport_health transport "outbox" false (?? $err/code "handoff_unavailable")))
+  (deliver_pending transport)
+  # Reconcile a completed owner result without waiting for a new model event.
+  (try (handoff_outputs transport/service) catch Error nil)
+  nil)
+
+(fn transport_loop [transport]
+  (while (! transport/closed/.get)
+    (try (transport_tick transport)
+      catch Error (transport_health transport "transport" false (?? $err/code "transport_error")))
+    ($sleep 100)))
+
+(fn open_transport [service, ^owner owner = nil, ^driver driver = nil,
+                    ^requester requester = nil, ^start start : Bool = true]
+  (let transport (SlackTransport ^service service ^owner owner ^closed ($cell false)
+    ^jobs ($cell {}) ^task ($cell nil) ^apis ($cell {})
+    ^next_send ($cell {})
+    ^driver (if ($absent? driver) (default_driver) driver) ^requester requester))
+  (if start
+    (transport/task .set (spawn_owned transport "Slack channel service" transport_loop [transport])))
+  transport)
+
+(fn close_transport [transport]
+  (if (transport/closed .swap true) (return nil))
+  (let main transport/task/.get)
+  (if_not ($absent? main) main/.cancel main/.join)
+  (let jobs (transport/jobs .swap {}))
+  (for [id job] in jobs job/task/.cancel)
+  (for [id job] in jobs job/task/.join)
+  (let clients (transport/apis .swap {}))
+  (for [id client] in clients (close_api client))
+  nil)

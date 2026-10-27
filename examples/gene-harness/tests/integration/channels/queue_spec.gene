@@ -1,0 +1,228 @@
+(import $test [describe it])
+(import [isolated run_spec] ^from "../../support")
+(import [open_authority configure_account configure_route authorize authorize_parts]
+  ^from "../../../src/channels/authority")
+(import [open_queues configure_queues enqueue activate_binding tombstone_session
+         pending_parts queue_status hold_queue resume_queue observe_round claim_batch
+         finish_admission release_batch snapshot close_channel_store discard_inputs]
+  ^from "../../../src/channels/queue")
+(import [ChannelError] ^from "../../../src/channels/model")
+
+(fn fixture [workspace, body]
+  (let owner (open_authority ($path/join workspace "owner")))
+  (let root ($path/join workspace "queues"))
+  (let queues (open_queues root workspace))
+  (try
+    (configure_account owner "dobi" "/credential-reference" "/adapter.so"
+      {^team "T123" ^app "A123" ^bot "B123" ^bot_user "UBOT" ^operator "UOWNER"})
+    (let route (configure_route owner "dobi" "C123" workspace ^approved ["UOWNER" "UOTHER"]))
+    (configure_queues queues route)
+    (body {^owner owner ^queues queues ^root root ^workspace workspace ^route route})
+  ensure
+    (close_channel_store queues)
+    (close_channel_store owner)))
+
+(fn post [fixture, message : Str, text : Str, ^author author : Str = "UOWNER",
+          ^thread thread : Str = "1.000001", ^start start : Bool = false]
+  (enqueue fixture/queues
+    {^transport "slack" ^account "dobi" ^team "T123" ^channel "C123"
+     ^thread thread ^message message ^author author ^text text}
+    (authorize fixture/owner fixture/route/id author ^workspace fixture/workspace)
+    ^start_allowed start))
+
+(fn claim [fixture, session : Str, sequence : Int]
+  (let decisions (authorize_parts fixture/owner fixture/route/id
+    (pending_parts fixture/queues session) ^workspace fixture/workspace))
+  (claim_batch fixture/queues session decisions sequence))
+
+(fn receipt [batch, id : Str]
+  {^id id ^request_id batch/request_id ^submission_seq batch/sequence ^state "running" ^task_root id})
+
+(fn repeated [count : Int]
+  (let parts [])
+  (repeat index in count (parts .push "x"))
+  ($str/join parts ""))
+
+(describe "Durable channel queues"
+  (it "ends automatic blockers when their task is superseded or continuation fails" []
+    (isolated this_mod/.path "ends automatic blockers when their task is superseded or continuation fails"
+      (fn [workspace]
+        (fixture workspace (fn [f]
+          (let root (post f "1.000001" "build it" ^start true))
+          (let paused {^id "old" ^state "paused" ^continuation_mode "automatic" ^task_root "old"})
+          (observe_round f/queues root/session paused)
+          ($assert (/held (queue_status f/queues root/session)))
+          (observe_round f/queues root/session (paused .assoc "continuation_stop" "superseded"))
+          ($assert (! (/held (queue_status f/queues root/session))))
+          (let failed (paused .assoc "id" "failed"; .assoc "task_root" "failed"))
+          (observe_round f/queues root/session failed)
+          (observe_round f/queues root/session (failed .assoc "continuation_stop" "failed"))
+          (let status (queue_status f/queues root/session))
+          ($assert status/held)
+          ($assert (== ($size ($filter status/holds (fn [hold] (== hold/kind "temporary")))) 0))
+          ($assert (== status/holds/0/reason "failed"))
+          (resume_queue f/queues root/session status/revision)
+          (observe_round f/queues root/session (failed .assoc "continuation_stop" "failed"))
+          ($assert (! (/held (queue_status f/queues root/session)))))))))
+
+  (it "keeps new arrivals outside an authorized finite snapshot and validates snapshot membership" []
+    (isolated this_mod/.path "keeps new arrivals outside an authorized finite snapshot and validates snapshot membership"
+      (fn [workspace]
+        (fixture workspace (fn [f]
+          (let root (post f "1.000001" "build it" ^start true))
+          (let parts (pending_parts f/queues root/session))
+          (let decisions (authorize_parts f/owner f/route/id parts ^workspace workspace))
+          (let later (post f "2.000001" "later correction"))
+          ($assert (try (claim_batch f/queues root/session decisions 1 ^members [root/id root/id]) false
+            catch ChannelError (== $err/code "invalid_request")))
+          ($assert (try (claim_batch f/queues root/session decisions 1 ^members ["unknown"]) false
+            catch ChannelError (== $err/code "stale")))
+          (let batch (claim_batch f/queues root/session decisions 1 ^members ($map parts /id)))
+          ($assert (== batch/batch/members [root/id]))
+          ($assert (== ($map (pending_parts f/queues root/session) /id) [later/id])))))))
+
+  (it "requires explicit revisioned discard and preserves holds while oversized input is reviewed" []
+    (isolated this_mod/.path "requires explicit revisioned discard and preserves holds while oversized input is reviewed"
+      (fn [workspace]
+        (fixture workspace (fn [f]
+          (let root (post f "1.000001" "initial task" ^start true))
+          (let next (post f "2.000001" "unwanted queued amendment"))
+          (hold_queue f/queues root/session "oversized" "review")
+          (let held (queue_status f/queues root/session))
+          ($assert (try (discard_inputs f/queues root/session (- held/revision 1) [next/id] "Reviewed.") false
+            catch ChannelError (== $err/code "stale")))
+          ($assert (try (discard_inputs f/queues root/session held/revision [next/id "wrong"] "Reviewed.") false
+            catch ChannelError (== $err/code "stale")))
+          ($assert (== ($map (pending_parts f/queues root/session) /id) [root/id next/id]))
+          (let discarded (discard_inputs f/queues root/session held/revision [next/id] "Operator removed this amendment."))
+          ($assert (/held (queue_status f/queues root/session)))
+          ($assert (== ($map (pending_parts f/queues root/session) /id) [root/id]))
+          (resume_queue f/queues root/session discarded/revision)
+          ($assert (== (/kind (claim f root/session 1)) "prepared")))))))
+
+  (it "isolates roots, shares thread participants, deduplicates and keeps deletion tombstones" []
+    (isolated this_mod/.path "isolates roots, shares thread participants, deduplicates and keeps deletion tombstones"
+      (fn [workspace]
+        (fixture workspace (fn [f]
+          (let root (post f "1.000001" "build calculator" ^start true))
+          (let follow (post f "2.000001" "add history" ^author "UOTHER"))
+          ($assert (== root/session follow/session))
+          ($assert (== (post f "2.000001" "add history" ^author "UOTHER") follow))
+          ($assert (== (/pending (queue_status f/queues root/session)) 2))
+          (let second (post f "3.000001" "another task" ^thread "3.000001" ^start true))
+          ($assert (!= second/session root/session))
+          ($assert (== (/status (post f "4.000001" "not approved" ^author "UUNKNOWN")) "denied"))
+          ($assert (== (/status (post f "5.000001" "unbound reply" ^thread "9.000001")) "ignored"))
+          ($assert (try (post f "2.000001" "changed content" ^author "UOTHER") false
+            catch ChannelError (== $err/code "submission_conflict")))
+          (let status (queue_status f/queues root/session))
+          (activate_binding f/queues status/binding/id)
+          (tombstone_session f/queues root/session)
+          ($assert (== (/status (post f "6.000001" "follow up")) "deleted"))
+          ($assert (== (/pending (queue_status f/queues root/session)) 0))
+          ($assert (try (resume_queue f/queues root/session (/revision (queue_status f/queues root/session))) false
+            catch ChannelError (== $err/code "not_found"))))))))
+
+  (it "coalesces amendments with per-author identity and recovers prepared/admitted batches" []
+    (isolated this_mod/.path "coalesces amendments with per-author identity and recovers prepared/admitted batches"
+      (fn [workspace]
+        (fixture workspace (fn [f]
+          (let root (post f "1.000001" "build calculator" ^start true))
+          (post f "2.000001" "also add X")
+          (post f "3.000001" "and Y" ^author "UOTHER")
+          (post f "4.000001" "actually skip X")
+          (let prepared (claim f root/session 1))
+          ($assert (== prepared/kind "prepared"))
+          ($assert (== ($map prepared/batch/input/messages (fn [entry] entry/text))
+            ["build calculator" "also add X" "and Y" "actually skip X"]))
+          ($assert (== prepared/batch/input/messages/2/author "UOTHER"))
+          (post f "5.000001" "later arrival")
+          (let recovered (claim f root/session 1))
+          ($assert (== recovered/kind "recover"))
+          ($assert (== recovered/batch prepared/batch))
+          (close_channel_store f/queues)
+          (let reopened (open_queues f/root workspace))
+          (try
+            (let persisted (claim_batch reopened root/session {} 1))
+            ($assert (== persisted/batch prepared/batch))
+            (let admitted (finish_admission reopened prepared/batch/id (receipt prepared/batch "round-1")))
+            ($assert (== admitted/status "admitted"))
+            ($assert (== (finish_admission reopened prepared/batch/id (receipt prepared/batch "round-1")) admitted))
+            ($assert (== (/pending (queue_status reopened root/session)) 1))
+            ($assert (try (release_batch reopened prepared/batch/id) false
+              catch ChannelError (== $err/code "conflict")))
+            (let next_fixture (f .assoc "queues" reopened))
+            (let next (claim next_fixture root/session 2))
+            ($assert (== next/batch/input/messages/.size 1))
+            ($assert (== next/batch/input/messages/0/text "later arrival"))
+          ensure (close_channel_store reopened)))))))
+
+  (it "reauthorizes each queued part and refuses missing policy decisions" []
+    (isolated this_mod/.path "reauthorizes each queued part and refuses missing policy decisions"
+      (fn [workspace]
+        (fixture workspace (fn [f]
+          (let root (post f "1.000001" "allowed" ^start true))
+          (post f "2.000001" "revoked amendment" ^author "UOTHER")
+          ($assert (try (claim_batch f/queues root/session {} 1) false
+            catch ChannelError (== $err/code "unavailable")))
+          ($assert ($absent? (/batch (queue_status f/queues root/session))))
+          (configure_route f/owner "dobi" "C123" workspace ^approved ["UOWNER"])
+          (let batch (/batch (claim f root/session 1)))
+          ($assert (== batch/input/messages/.size 1))
+          ($assert (== batch/input/messages/0/author "UOWNER"))
+          ($assert (! ($str/contains? batch/text "revoked amendment")))
+          (close_channel_store f/owner)
+          ($assert (try (authorize_parts f/owner f/route/id []) false
+            catch ChannelError (== $err/code "unavailable"))))))))
+
+  (it "preserves operator holds across unrelated browser completion, continuations and restart" []
+    (isolated this_mod/.path "preserves operator holds across unrelated browser completion, continuations and restart"
+      (fn [workspace]
+        (fixture workspace (fn [f]
+          (let root (post f "1.000001" "start" ^start true))
+          (let batch (/batch (claim f root/session 1)))
+          (finish_admission f/queues batch/id (receipt batch "round-1"))
+          (observe_round f/queues root/session {^id "round-1" ^state "running"})
+          (post f "2.000001" "waiting amendment")
+          (observe_round f/queues root/session {^id "round-1" ^state "cancelled"})
+          (let stopped (queue_status f/queues root/session))
+          (observe_round f/queues root/session {^id "browser-2" ^state "running"})
+          (observe_round f/queues root/session {^id "browser-2" ^state "done"})
+          ($assert (/held (queue_status f/queues root/session)))
+          ($assert (== (/kind (claim f root/session 3)) "held"))
+          ($assert (try (resume_queue f/queues root/session stopped/revision) false
+            catch ChannelError (== $err/code "stale")))
+          (close_channel_store f/queues)
+          (let reopened (open_queues f/root workspace))
+          (try
+            (let saved (queue_status reopened root/session))
+            ($assert saved/held)
+            (resume_queue reopened root/session saved/revision)
+            ($assert (! (/held (queue_status reopened root/session))))
+            (observe_round reopened root/session {^id "task-3" ^state "paused" ^continuation_mode "manual"})
+            (observe_round reopened root/session {^id "continue-4" ^task_root "task-3" ^state "running"})
+            (observe_round reopened root/session {^id "continue-4" ^task_root "task-3" ^state "done"})
+            ($assert (/held (queue_status reopened root/session)) "continued task completion cleared an operator hold")
+            (resume_queue reopened root/session (/revision (queue_status reopened root/session)))
+            (observe_round reopened root/session {^id "auto-5" ^state "paused" ^continuation_mode "automatic"})
+            ($assert (/held (queue_status reopened root/session)))
+            (observe_round reopened root/session {^id "auto-6" ^task_root "auto-5" ^state "running"})
+            (observe_round reopened root/session {^id "auto-6" ^task_root "auto-5" ^state "done"})
+            ($assert (! (/held (queue_status reopened root/session))))
+          ensure (close_channel_store reopened)))))))
+
+  (it "holds oversized batches without claiming a partial amendment set" []
+    (isolated this_mod/.path "holds oversized batches without claiming a partial amendment set"
+      (fn [workspace]
+        (fixture workspace (fn [f]
+          (let root (post f "1.000001" (repeated 40000) ^start true))
+          (post f "2.000001" (repeated 40000))
+          (let result (claim f root/session 1))
+          ($assert (&& (== result/kind "held") (== result/reason "oversized")))
+          (let status (queue_status f/queues root/session))
+          ($assert (&& status/held (== status/pending 2) ($absent? status/batch)))
+          (observe_round f/queues root/session {^id "unrelated-browser" ^state "done"})
+          ($assert (/held (queue_status f/queues root/session))))))))
+)
+
+(fn main [args] : Int (run_spec args))

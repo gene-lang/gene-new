@@ -1,0 +1,146 @@
+(mod slack_api)
+(import $io [IoResource])
+(import [load open send_text receive_text flush] ^from "." ^pkg "websocket")
+
+(type SlackError ^props {^code Str ^message Str ^retry_after_ms Int?} ^impl [Error])
+(impl Error for SlackError)
+(type SlackApi ^props {^client Any ^bot Str ^requester Any? ^closed Cell})
+
+(fn slack_error [code : Str, message : Str]
+  (fail (SlackError ^code code ^message message)))
+
+(fn secret_path [filename : Str] : Str
+  (if (filename .starts_with? "~/")
+    ($path/join ($os/get_env "HOME") ($str/slice_bytes filename 2 (- filename/.byte_size 2)))
+    (if (filename .starts_with? "/") ($path/normalize filename)
+      ($path/join ($os/launch_dir) filename))))
+
+(fn unquote_secret [text : Str] : Str
+  (let value text/.trim)
+  (for quote in ["`" "\"" "'"]
+    (if (&& (> value/.byte_size 1) (value .starts_with? quote) (value .ends_with? quote))
+      (return ($str/slice_bytes value 1 (- value/.byte_size 2)))))
+  value)
+
+# Only recognized fields are retained. Never include file lines or values in
+# validation errors: this format is also used with real operator credentials.
+(fn read_slack_credentials [path : Str]
+  (let values {^bot "" ^app "" ^user "" ^channel ""})
+  (let source (try ($fs/read_text (secret_path path))
+    catch Error (slack_error "credentials_unavailable" "The Slack credential file could not be read.")))
+  (for line in (source .split "\n")
+    (let delimiter (if (line .contains? ":") ":" "="))
+    (let parts (line .split delimiter))
+    (if (< parts/.size 2) (continue))
+    (let name parts/0/.trim/.lower)
+    (let value (unquote_secret ($str/join ($drop parts 1) delimiter)))
+    (if_yes (&& (name .contains? "bot") (name .contains? "token"))
+      (values .put "bot" value) (continue))
+    (if_yes (&& (name .contains? "app") (name .contains? "token"))
+      (values .put "app" value) (continue))
+    (if_yes (&& (name .contains? "user") (name .contains? "token"))
+      (values .put "user" value) (continue))
+    (if (&& (name .contains? "channel") (name .contains? "id"))
+      (values .put "channel" value)))
+  (if (|| (! (values/bot .starts_with? "xoxb-")) (! (values/app .starts_with? "xapp-")))
+    (slack_error "invalid_credentials" "Slack credentials need bot and app tokens."))
+  (if (&& (!= values/user "") (! (values/user .starts_with? "xoxp-")))
+    (slack_error "invalid_credentials" "The optional Slack user token is invalid."))
+  (if ($absent? (#"^[CG][A-Z0-9]{5,}$" .match values/channel))
+    (slack_error "invalid_credentials" "Slack credentials need a channel ID."))
+  values)
+
+(fn open_api [bot : Str, ^requester requester = nil]
+  (SlackApi ^bot bot ^closed ($cell false) ^requester requester
+    ^client (if ($absent? requester)
+      (await ($net/http_client/open ^max_connections 2 ^max_connections_per_origin 2)) nil)))
+
+(fn close_api [api : SlackApi]
+  (if api/closed/.get (return nil))
+  (api/closed .set true)
+  (if_not ($absent? api/client)
+    api/client/.IoResource:close
+    (await api/client/.IoResource:wait_closed))
+  nil)
+
+(fn retry_delay [headers] : Int
+  (for pair in headers
+    (if (== pair/0/.lower "retry-after")
+      (return (* 1000 ($math/max 1 (try ($parse/parse_int pair/1) catch Error 1))))))
+  1000)
+
+(fn api_call [api : SlackApi, method : Str, data = {}, ^token token = nil,
+              ^http_method http_method : Str = "POST"]
+  (if api/closed/.get (slack_error "closed" "The Slack API client is closed."))
+  (if ($absent? (#"^[a-zA-Z][a-zA-Z0-9.]+$" .match method))
+    (slack_error "invalid_method" "Invalid Slack API method."))
+  (if_not (["GET" "POST"] .contains? http_method)
+    (slack_error "invalid_method" "Unsupported Slack HTTP method."))
+  (let headers {^authorization ($to_str "Bearer " (?? token api/bot)) ^content-type "application/json; charset=utf-8"})
+  (var address ($to_str "https://slack.com/api/" method))
+  (let body (if (== http_method "POST") ($json/stringify data) nil))
+  (if_yes (== http_method "GET")
+    (let query [])
+    (for [key value] in data
+      (query .push ($to_str ($url/encode_component ($to_str key)) "=" ($url/encode_component ($to_str value)))))
+    (if_not query/.empty? (set address ($to_str address "?" ($str/join query "&")))))
+  (let request {^method method ^http_method http_method ^url address ^headers headers ^body body ^params data})
+  (let response (try
+    (if ($absent? api/requester)
+      (await (api/client .request ^method http_method ^url address
+        ^headers headers ^body body ^timeout_ms 20000 ^max_bytes 1048576))
+      (api/requester request))
+    catch Error (slack_error "transport_unknown" "The Slack request outcome is unknown; reconcile delivery before retrying.")))
+  (if (== response/status 429)
+    (fail (SlackError ^code "rate_limited" ^retry_after_ms (retry_delay response/headers)
+      ^message "Slack rate limited this request.")))
+  (if (>= response/status 500)
+    (slack_error "server_unknown" "Slack returned a server error; reconcile delivery before retrying."))
+  (let result (try ($json/parse ^^strict ($binary/decode_utf8 response/body))
+    catch Error (slack_error "invalid_response" "Slack returned an invalid response.")))
+  (if_yes (|| (< response/status 200) (>= response/status 300) (!= result/ok true))
+    (let candidate (?? result/error "api_error"))
+    (let code (if (&& (== ($head candidate) Str) (< candidate/.byte_size 81)
+      (! ($absent? (#"^[a-z_]+$" .match candidate)))) candidate "api_error"))
+    (slack_error code ($to_str "Slack " method " failed: " code ".")))
+  result)
+
+(fn identify [api : SlackApi, credentials]
+  (let bot (api_call api "auth.test"))
+  (let user (if (== credentials/user "") nil (api_call api "auth.test" ^token credentials/user)))
+  (if (|| ($absent? bot/team_id) ($absent? bot/user_id) ($absent? bot/bot_id))
+    (slack_error "invalid_identity" "The configured bot token did not identify a Slack bot."))
+  (if (&& (! ($absent? user))
+          (|| (!= user/team_id bot/team_id) ($absent? user/user_id) (! ($absent? user/bot_id))))
+    (slack_error "invalid_identity" "The operator token must identify a human in the bot's Slack team."))
+  (let details (/bot (api_call api "bots.info" {^bot bot/bot_id} ^http_method "GET")))
+  (if (|| (!= details/id bot/bot_id) ($absent? details/app_id))
+    (slack_error "invalid_identity" "Slack did not identify the bot's application."))
+  (let channel (/channel (api_call api "conversations.info" {^channel credentials/channel} ^http_method "GET")))
+  (if (|| (!= channel/id credentials/channel) (== channel/is_im true) (== channel/is_mpim true))
+    (slack_error "invalid_channel" "The configured Slack destination must be a channel."))
+  {^team bot/team_id ^bot_user bot/user_id ^bot bot/bot_id ^app details/app_id
+   ^operator (?? user/user_id "") ^channel channel/id ^member (== channel/is_member true)})
+
+(fn connect_socket [api : SlackApi, native, app_token : Str]
+  (let address (/url (api_call api "apps.connections.open" ^token app_token)))
+  (if (|| (!= ($head address) Str) (! (address .starts_with? "wss://")))
+    (slack_error "invalid_socket_url" "Slack did not return a secure Socket Mode URL."))
+  (try (open native address ^timeout_ms 10000 ^max_message_bytes 1048576 ^max_queued_bytes 1048576)
+    catch Error (slack_error "socket_connect" "The Slack Socket Mode connection failed.")))
+
+(fn socket_message [native, socket]
+  (let text (receive_text native socket))
+  (if ($absent? text) (return nil))
+  (let value (try ($json/parse ^^strict text)
+    catch Error (slack_error "invalid_socket_message" "Slack sent malformed Socket Mode JSON.")))
+  (if (!= ($head value) Map)
+    (slack_error "invalid_socket_message" "Slack sent an invalid Socket Mode envelope."))
+  value)
+
+# The caller must persist an eligible event or its rejection before this ack.
+(fn acknowledge [native, socket, envelope : Str]
+  (send_text native socket ($json/stringify {^envelope_id envelope}))
+  (flush native socket))
+
+(fn load_socket_library [path : Str] (load path))

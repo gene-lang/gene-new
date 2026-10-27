@@ -1,0 +1,255 @@
+(import $test [describe it])
+(import [isolated run_spec test_service] ^from "../../support")
+(import [close_session_service snapshot command submit] ^from "../../../src/web/session_service")
+(import [create_session : create_record delete_session] ^from "../../../src/runtime/sessions")
+(import [admit_channel_queue submit_round round_receipt round_state continue_round save_round RoundError]
+  ^from "../../../src/runtime/round_controller")
+(import [command_state] ^from "../../../src/runtime/commands")
+(import [with_session_gate] ^from "../../../src/runtime/sessions")
+(import [open_authority configure_account configure_route authorize authorize_parts close_channel_store]
+  ^from "../../../src/channels/authority")
+(import [configure_queues enqueue queue_status activate_binding resume_queue snapshot : queue_snapshot]
+  ^from "../../../src/channels/queue")
+(import [ChannelError] ^from "../../../src/channels/model")
+
+(fn wait_round [service, session]
+  (loop
+    (let watcher (service/controller/watchers/.get .get session))
+    (if ($absent? watcher) (return nil))
+    watcher/.join
+    (if (same? watcher (service/controller/watchers/.get .get session)) (return nil))))
+
+(fn fixture [workspace, provider, body]
+  (let service (test_service ^workspace workspace ^provider provider ^without_plugins ["slack"]))
+  (let owner (open_authority ($path/join workspace "test-authority")))
+  (try
+    (configure_account owner "dobi" "/credential-reference" "/adapter.so"
+      {^team "T123" ^app "A123" ^bot "B123" ^bot_user "UBOT" ^operator "UOWNER"})
+    (let route (configure_route owner "dobi" "C123" workspace))
+    (let queues service/runtime/channel_queues)
+    (configure_queues queues route)
+    (let input (enqueue queues {^transport "slack" ^account "dobi" ^team "T123" ^channel "C123"
+      ^thread "1.000001" ^message "1.000001" ^author "UOWNER" ^text "Build the requested feature."}
+      (authorize owner route/id "UOWNER") ^start_allowed true))
+    (let status (queue_status queues input/session))
+    (create_record service/runtime/sessions ^id input/session ^title "Slack task"
+      ^channel {^transport "slack" ^account "dobi" ^team "T123" ^channel "C123"
+        ^thread "1.000001" ^binding status/binding/id ^owner route/owner ^route route/id})
+    (activate_binding queues status/binding/id)
+    (body {^service service ^owner owner ^queues queues ^route route ^session input/session})
+  ensure
+    (close_channel_store owner)
+    (close_session_service service)))
+
+(fn drain [fixture]
+  (admit_channel_queue fixture/service/controller fixture/session
+    (fn [parts] (authorize_parts fixture/owner fixture/route/id parts ^workspace fixture/service/runtime/root))))
+
+(fn amendment [fixture]
+  (enqueue fixture/queues {^transport "slack" ^account "dobi" ^team "T123" ^channel "C123"
+    ^thread "1.000001" ^message "2.000001" ^author "UOWNER" ^text "A waiting amendment."}
+    (authorize fixture/owner fixture/route/id "UOWNER")))
+
+(describe "Channel round admission"
+  (it "releases a superseded automatic task blocker after an explicit browser request" []
+    (isolated this_mod/.path "releases a superseded automatic task blocker after an explicit browser request"
+      (fn [workspace]
+        (let calls ($cell 0))
+        (fixture workspace (fn [request]
+          (calls .set (+ calls/.get 1))
+          (if (== calls/.get 1) "(Outcome ^prompt \"Pending work.\")" "(Outcome ^^done ^reply \"Done.\")"))
+          (fn [f]
+            (let filename ($path/join workspace ".gene-harness" "config.gene"))
+            (let config ($serde/read_data ($fs/read_text filename)))
+            (config .put "turn_limit" 1) ($fs/write_text filename ($serde/write_data config))
+            (let admitted (drain f)) (wait_round f/service f/session)
+            (amendment f)
+            (with_session_gate f/service/sessions ($to_str "round/" f/session) (fn []
+              (resume_queue f/queues f/session (/revision (queue_status f/queues f/session)))
+              (let paused (round_receipt f/service/controller f/session admitted/receipt/id))
+              (paused .put "continuation_mode" "automatic")
+              (save_round f/service/controller f/session paused)))
+            (submit f/service f/session "explicit-new-work" 2 "Replace the paused task.")
+            (wait_round f/service f/session)
+            ($assert (! (/held (queue_status f/queues f/session))))
+            ($assert (== (/kind (drain f)) "admitted"))
+            (wait_round f/service f/session)
+            ($assert (== calls/.get 3)))))))
+
+  (it "forces each admission ordering and preserves the losing request" []
+    (isolated this_mod/.path "forces each admission ordering and preserves the losing request"
+      (fn [workspace]
+        (for winner in ["browser" "channel"]
+          (let root ($path/join workspace winner))
+          (let entered ($cell false)) (let attempted ($cell false))
+          (let admission ($channel ^capacity 1)) (let model ($channel ^capacity 1))
+          (fixture root (fn [request] (model .recv) "(Outcome ^^done ^reply \"Done.\")")
+            (fn [f]
+              (let browser (fn [blocked]
+                (try
+                  {^kind "admitted" ^receipt (submit_round f/service/controller f/session "browser-forced" 1 "Unsent browser draft"
+                    ^on_admit (fn [receipt]
+                      (if blocked (then (entered .set true) (admission .recv)))))}
+                catch RoundError {^kind $err/code})))
+              (let channel (fn [blocked]
+                (admit_channel_queue f/service/controller f/session (fn [parts]
+                  (if blocked (then (entered .set true) (admission .recv)))
+                  (authorize_parts f/owner f/route/id parts ^workspace root)))))
+              (scope
+                (let first (spawn ^lane root (if (== winner "browser") (browser true) (channel true))))
+                (let due (+ ($os/monotonic_ms) 5000))
+                (while (! entered/.get)
+                  ($assert (< ($os/monotonic_ms) due) "Winning admission did not acquire the session gate")
+                  ($sleep 1))
+                (let second (spawn ^lane root
+                  (do (attempted .set true)
+                    (if (== winner "browser") (channel false) (browser false)))))
+                (while (! attempted/.get) ($sleep 1))
+                (admission .send nil)
+                ($assert (== (/kind (await first)) "admitted"))
+                ($assert (== (/kind (await second)) "busy")))
+              ($assert (== ($size (/receipts (round_state f/service/controller f/session))) 1))
+              ($assert (== (/pending (queue_status f/queues f/session)) (if (== winner "browser") 1 0)))
+              (model .send nil) (wait_round f/service f/session)
+              (if_yes (== winner "browser")
+                ($assert (== (/kind (drain f)) "admitted"))
+                (model .send nil) (wait_round f/service f/session))
+              ($assert (== (/pending (queue_status f/queues f/session)) 0))))))))
+
+  (it "leaves arrivals during authorization for the next drain" []
+    (isolated this_mod/.path "leaves arrivals during authorization for the next drain"
+      (fn [workspace]
+        (let requests ($cell [])) (let entered ($cell false))
+        (let release ($channel ^capacity 1))
+        (fixture workspace (fn [request]
+          (requests/.get .push request)
+          "(Outcome ^^done ^reply \"Done.\")")
+          (fn [f]
+            (scope
+              (let draining (spawn ^lane root
+                (admit_channel_queue f/service/controller f/session (fn [parts]
+                  (let decisions (authorize_parts f/owner f/route/id parts ^workspace workspace))
+                  (entered .set true) (release .recv)
+                  decisions))))
+              (let due (+ ($os/monotonic_ms) 5000))
+              (while (! entered/.get)
+                ($assert (< ($os/monotonic_ms) due) "Drain did not enter authorization") ($sleep 1))
+              (amendment f)
+              (release .send nil)
+              (let first (await draining))
+              ($assert (== first/receipt/input/messages/.size 1)))
+            (wait_round f/service f/session)
+            ($assert (== (/pending (queue_status f/queues f/session)) 1))
+            ($assert (! ($str/contains? ($to_str requests/.get/0/messages) "A waiting amendment.")))
+            ($assert (== (/kind (drain f)) "admitted"))
+            (wait_round f/service f/session)
+            ($assert (== requests/.get/.size 2))
+            ($assert (== (/pending (queue_status f/queues f/session)) 0)))))))
+
+  (it "runs Gene with operator policy, preserves browser attachments and projects source metadata" []
+    (isolated this_mod/.path "runs Gene with operator policy, preserves browser attachments and projects source metadata"
+      (fn [workspace]
+        (let requests ($cell []))
+        (fixture workspace (fn [request]
+          (requests/.get .push request)
+          "($fs/write_text \"channel-proof.txt\" \"executed\") (Outcome ^^done ^reply \"Channel task finished.\")")
+          (fn [f]
+            ($fs/write_text ($path/join workspace "STAGED_FOR_BROWSER.txt") "browser-only attachment")
+            (let staged (command f/service f/session "/view STAGED_FOR_BROWSER.txt"))
+            (f/service/runtime/commands/watchers/.get .get $"${f/session}:${staged/id}"; .join)
+            (let admitted (drain f))
+            ($assert (== admitted/kind "admitted"))
+            ($assert (== admitted/receipt/initiator "channel:slack/dobi"))
+            ($assert ($absent? admitted/receipt/deadline_ms))
+            (wait_round f/service f/session)
+            ($assert (== (/state (round_receipt f/service/controller f/session admitted/receipt/id)) "done"))
+            ($assert ($fs/exists? ($path/join workspace "channel-proof.txt")))
+            ($assert ($str/contains? ($to_str requests/.get/0/messages) "Build the requested feature."))
+            ($assert (! ($str/contains? ($to_str requests/.get/0/messages) "browser-only attachment")))
+            ($assert (> ($size (/attached (command_state f/service/runtime f/session))) 0))
+            (let view (snapshot ^!console f/service f/session))
+            (let initial (/0 ($filter view/records (fn [item]
+              (&& (== item/role "user") (== item/kind "turn/request"))))))
+            ($assert (== initial/speaker "User"))
+            ($assert (== initial/input/messages/0/author "UOWNER") "Channel author metadata missing")
+            ($assert (! (/held (queue_status f/queues f/session))))
+            ($assert (try (submit_round f/service/controller f/session "forged-user-origin" 2 admitted/receipt/prompt
+              ^input admitted/receipt/input) false catch ChannelError (== $err/code "forbidden")))
+            ($assert (try (submit_round f/service/controller f/session "wrong-channel-origin" 2 "different text"
+              ^initiator "channel:slack/dobi" ^input admitted/receipt/input) false
+              catch RoundError (== $err/code "invalid_request")))
+            ($assert (try (submit_round f/service/controller f/session "channel-card" 2 admitted/receipt/prompt
+              ^initiator "channel:slack/dobi" ^input admitted/receipt/input
+              ^card {^id "card" ^revision 1 ^definition_revision 1}) false
+              catch RoundError (== $err/code "invalid_request")))
+            (submit f/service f/session "browser-next" 2 "A fresh browser request.")
+            (wait_round f/service f/session)
+            ($assert ($str/contains? ($to_str requests/.get/1/messages) "user viewed STAGED_FOR_BROWSER.txt"))
+            ($assert (== ($size (/attached (command_state f/service/runtime f/session))) 0)))))))
+
+  (it "preserves channel input through continuation and keeps its queue held after browser completion" []
+    (isolated this_mod/.path "preserves channel input through continuation and keeps its queue held after browser completion"
+      (fn [workspace]
+        (let calls ($cell 0))
+        (fixture workspace (fn [request]
+          (calls .set (+ calls/.get 1))
+          (if (== calls/.get 1) "(Outcome ^prompt \"Pending channel work.\" ^reply \"Inspected.\")"
+            "(Outcome ^^done ^reply \"Finished.\")"))
+          (fn [f]
+            (let file ($path/join workspace ".gene-harness" "config.gene"))
+            (let config ($serde/read_data ($fs/read_text file)))
+            (config .put "turn_limit" 1)
+            ($fs/write_text file ($serde/write_data config))
+            (let first (drain f))
+            (wait_round f/service f/session)
+            (let paused (round_receipt f/service/controller f/session first/receipt/id))
+            ($assert (== paused/state "paused"))
+            (amendment f)
+            ($assert (== (/kind (drain f)) "held"))
+            (let continued (continue_round f/service/controller f/session paused/id "manual"))
+            ($assert ($absent? continued/deadline_ms))
+            ($assert (== continued/input paused/input))
+            (wait_round f/service f/session)
+            ($assert (/held (queue_status f/queues f/session)))
+            (submit f/service f/session "browser-unrelated" 3 "Unrelated browser work.")
+            (wait_round f/service f/session)
+            ($assert (/held (queue_status f/queues f/session)))
+            (let held (queue_status f/queues f/session))
+            (resume_queue f/queues f/session held/revision)
+            ($assert (== (/kind (drain f)) "admitted"))
+            (wait_round f/service f/session)
+            ($assert (! (/held (queue_status f/queues f/session)))))))))
+
+  (it "lets exactly one browser or drain admission win the session gate" []
+    (isolated this_mod/.path "lets exactly one browser or drain admission win the session gate"
+      (fn [workspace]
+        (let blocker ($channel ^capacity 1))
+        (fixture workspace (fn [request]
+          (blocker .recv)
+          "(Outcome ^^done ^reply \"Done.\")")
+          (fn [f]
+            (let results (scope
+              (let a (spawn ^lane root (drain f)))
+              (let b (spawn ^lane root (try
+                {^kind "admitted" ^receipt (submit f/service f/session "browser-race" 1 "browser text")}
+                catch RoundError {^kind $err/code})))
+              [(await a) (await b)]))
+            ($assert (== ($size ($filter results (fn [result] (== result/kind "admitted")))) 1))
+            ($assert (== ($size (/receipts (round_state f/service/controller f/session))) 1))
+            (blocker .send nil)
+            (wait_round f/service f/session))))))
+
+  (it "tombstones a channel binding when the ordinary session deletion path runs" []
+    (isolated this_mod/.path "tombstones a channel binding when the ordinary session deletion path runs"
+      (fn [workspace]
+        (fixture workspace (fn [request] "(Outcome ^^done ^reply \"Done.\")")
+          (fn [f]
+            (drain f)
+            (wait_round f/service f/session)
+            ($assert (delete_session f/service/runtime/sessions f/session ^^explicit))
+            (let deleted (queue_status f/queues f/session))
+            ($assert (== deleted/binding/status "deleted"))
+            ($assert (== (/status (amendment f)) "deleted")))))))
+)
+
+(fn main [args] : Int (run_spec args))

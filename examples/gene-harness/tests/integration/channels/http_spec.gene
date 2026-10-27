@@ -1,0 +1,104 @@
+(import $test [describe it])
+(import [isolated run_spec] ^from "../../support")
+(import [start_host stop_host cli] ^from "../../web_support")
+(import [connect api wire] ^from "../../../src/cli/client")
+(import [open_authority configure_account configure_route close_channel_store] ^from "../../../src/channels/authority")
+(import [receive_envelope] ^from "../../../src/channels/ingress")
+
+(describe "Channel host handoff"
+  (it "uses owner authentication across hosts and reauthorizes after policy and credential changes without replay" []
+    (isolated this_mod/.path "uses owner authentication across hosts and reauthorizes after policy and credential changes without replay"
+      (fn [workspace]
+        (let owner_root ($path/join workspace "owner"))
+        (let project_root ($path/join workspace "project"))
+        ($fs/make_dir owner_root) ($fs/make_dir project_root)
+        # Seed the same owner configuration store while the host is stopped.
+        # Fake credential references cannot open any real Slack connection.
+        (let owner (open_authority ($path/join owner_root ".gene-harness" "channels" "owner")))
+        (let routing ($cell nil)) (let delivery ($cell nil))
+        (try
+          (configure_account owner "dobi" "/missing-test-credential-reference" "/missing-adapter"
+            {^team "T123" ^app "A123" ^bot "B123" ^bot_user "UBOT" ^operator "UOWNER"})
+          (routing .set (configure_route owner "dobi" "C123" project_root))
+          (delivery .set (receive_envelope owner "dobi" {^envelope_id "envelope-1" ^type "events_api"
+            ^payload {^type "event_callback" ^api_app_id "A123" ^team_id "T123" ^event_id "Ev1"
+              ^event {^type "message" ^ts "1.000001" ^channel "C123" ^user "UOWNER" ^text "<@UBOT> Build it."}}}))
+        ensure (close_channel_store owner))
+        (let project (start_host project_root ^script [
+          "($fs/write_text \"proof.txt\" \"executed\") (Outcome ^^done ^reply \"Project finished.\")"]))
+        ($println "Channel HTTP peer: project ready.") ($io/flush_stdout)
+        (let gateway (start_host owner_root))
+        ($println "Channel HTTP peer: owner ready.") ($io/flush_stdout)
+        (try
+          (let remote (connect project_root)) (let local (connect owner_root))
+          (let queued (api local "GET" "/channels"))
+          ($assert (== queued/incoming/.size 1))
+          ($assert (== queued/incoming/0/status "queued"))
+          ($assert (== queued/incoming/0/workspace project_root))
+          ($println "Channel HTTP peer: both clients authenticated.") ($io/flush_stdout)
+          (try
+            (api remote "POST" "/channels/bind" {^owner_root owner_root ^route routing/.get/id})
+          catch Error
+            ($println ($to_str "Channel HTTP peer: bind failed: " (?? $err/code "error") " " $err/message))
+            ($io/flush_stdout)
+            (fail $err))
+          ($println "Channel HTTP peer: workspace bound.") ($io/flush_stdout)
+          (let deadline (+ ($os/monotonic_ms) 10000))
+          (let selected ($cell nil))
+          (loop
+            (let sessions (api remote "GET" "/sessions"))
+            (if_yes (> sessions/sessions/.size 0)
+              (selected .set sessions/sessions/0)
+              (if (&& (== selected/.get/status "done") (> selected/.get/turns 0)) (break)))
+            ($assert (< ($os/monotonic_ms) deadline) "Cross-host channel admission did not complete")
+            ($sleep 25))
+          ($assert ($fs/exists? ($path/join project_root "proof.txt")))
+          (let session selected/.get/id)
+          (let view (api remote "GET" ($to_str "/sessions/" session "/snapshot?ui=default")))
+          ($assert (== view/session/channel/channel "C123"))
+          ($assert (== view/next_submission_seq "2"))
+          (let stopped_input (delivery/.get .assoc "message"
+            (delivery/.get/message .assoc "message" "2.000001"; .assoc "text" "!stop")))
+          (let stopped (api remote "POST" "/channels/input" stopped_input))
+          ($assert (== stopped/result/code "ok"))
+          (let review_input (delivery/.get .assoc "message"
+            (delivery/.get/message .assoc "message" "3.000001"; .assoc "text" "Discard this queued amendment.")))
+          ($assert (== (/status (api remote "POST" "/channels/input" review_input)) "queued"))
+          (let review (cli project_root ["channels" "queue" "--session" session]))
+          ($assert (== review/parts/.size 1))
+          (let file ($path/join project_root "review.gene"))
+          ($fs/write_text file ($serde/write_data {^ids [review/parts/0/id] ^reason "Reviewed by test."}))
+          (let discarded (cli project_root ["channels" "discard" "--session" session
+            "--revision" ($to_str review/revision) "--file" file]))
+          (let still_held (cli project_root ["channels" "queue" "--session" session]))
+          ($assert still_held/held)
+          ($assert (== still_held/pending 0))
+          (cli project_root ["channels" "resume" "--session" session "--revision" ($to_str discarded/revision)])
+          (let denied (wire local/connection "POST" "/channels/owner/authorize"
+            {^route routing/.get/id ^author "UOWNER" ^workspace project_root}))
+          ($assert (== denied/status 401))
+          (let no_csrf (wire local/connection "POST" "/channels/owner/authorize"
+            {^route routing/.get/id ^author "UOWNER" ^workspace project_root}
+            ^credentials {^cookie local/credentials/cookie ^csrf ""}))
+          ($assert (== no_csrf/status 403))
+          (let forged (delivery/.get .assoc "route" {^id "wrong" ^owner routing/.get/owner}))
+          (let mismatch (wire remote/connection "POST" "/channels/input" forged ^credentials remote/credentials))
+          ($assert (== mismatch/status 403))
+          (api local "POST" "/channels/owner/routes"
+            {^account "dobi" ^channel "C123" ^workspace project_root ^approved []})
+          (api local "POST" "/auth/reset")
+          (let later (delivery/.get .assoc "message" (delivery/.get/message .assoc "message" "4.000001")))
+          ($assert (== (/status (api remote "POST" "/channels/input" later)) "denied"))
+          (let after (api remote "GET" ($to_str "/sessions/" session "/snapshot?ui=default")))
+          ($assert (== after/next_submission_seq "2"))
+          (let status (cli project_root ["channels" "status"]))
+          ($assert (== status/source/owner routing/.get/owner))
+          ($assert (! ($str/contains? ($json/stringify status) "missing-test-credential-reference")))
+          (let configured (api remote "POST" "/channels/settings"
+            {^surface "mrkdwn" ^public_url "https://harness.example.com"}))
+          ($assert (== configured/public_url "https://harness.example.com"))
+        ensure
+          (stop_host gateway)
+          (stop_host project))))))
+
+(fn main [args] : Int (run_spec args))

@@ -1,0 +1,140 @@
+# Posting qualification: run only with explicit approval to reply in the test
+# thread. The human starts that thread from Slack; no user write scope is needed.
+(import [Profile] ^from "../src/profiles/profile")
+(import [baseline_profile] ^from "../src/profiles/baseline")
+(import [Plugin PluginHost] ^from "../src/plugin_api")
+(import [slack] ^from "../src/builtin/slack")
+(import [default_driver] ^from "../src/channels/transport")
+(import [open_session_service close_session_service] ^from "../src/web/session_service")
+(import [setup_account setup_route] ^from "../src/channels/setup")
+(import [open_api close_api api_call load_socket_library read_slack_credentials] ^from "../src/channels/slack_api")
+(import [snapshot mutate] ^from "../src/channels/store")
+(import [pending_output] ^from "../src/channels/delivery")
+(import [round_state] ^from "../src/runtime/round_controller")
+
+(fn qualification_provider [calls]
+  (Plugin ^id "provider_qualification" ^provides [["providers" "qualification"]]
+    ^activate (fn [host]
+      (host .PluginHost:contribute "providers" {^name "qualification"
+        ^doc "A bounded deterministic Gene response for the live transport check."
+        ^configure (fn [model effort timeout] {^model "qualification" ^effort "none" ^timeout_ms timeout})
+        ^prepare (fn [request] request)
+        ^send (fn [request]
+          (calls .set (+ calls/.get 1))
+          ($assert (== calls/.get 1) "A duplicate model admission occurred")
+          {^text "($fs/write_text \"slack-live-proof.txt\" \"executed\") (Outcome ^^done ^reply \"Gene Harness live test succeeded.\\n\\n- Gene code ran in the workspace.\\n- This reply belongs to the same Slack thread.\\n- Literal formatting check: `<!here>` stays text.\")"})}))))
+
+(fn qualification_driver [original, allowed, thread, marker : Str]
+  (original .assoc "receive" (fn [native socket]
+    (let envelope (original/receive native socket))
+    (if (|| ($absent? envelope) (!= envelope/type "events_api")) (return envelope))
+    (let event envelope/payload/event)
+    (let route allowed/.get)
+    (if (|| ($absent? route) (!= envelope/payload/team_id route/team) (!= event/channel route/channel)) (return nil))
+    (if_yes ($absent? thread/.get)
+      (if (&& (== event/user route/operator) (== (?? event/thread_ts event/ts) event/ts)
+               (== ($head event/text) Str) (event/text .contains? marker))
+        (thread .set event/ts)))
+    (if (&& (! ($absent? thread/.get))
+            (== (?? event/thread_ts event/message/thread_ts) thread/.get)
+            (|| (== event/user route/bot_user) (== event/message/user route/bot_user))) (return envelope))
+    (if (&& (! ($absent? thread/.get)) (== event/ts thread/.get)) (return envelope))
+    # Unrelated events are left unacknowledged for Slack retry. This temporary
+    # qualifier must never execute or reply to another human conversation.
+    nil)))
+
+(fn completed_qualification [service, thread]
+  (if ($absent? thread) (return nil))
+  (let root service/runtime/root)
+  (let queues (snapshot service/runtime/channel_queues))
+  (for [id binding] in queues/bindings
+    (if (!= binding/thread thread) (continue))
+    (let rounds (round_state service/controller binding/session))
+    (if rounds/receipts/.empty? (continue))
+    (let receipt ($last rounds/receipts))
+    (if (["failed" "interrupted" "cancelled"] .contains? receipt/state)
+      (fail "The live Gene request did not finish"))
+    (let outgoing (pending_output service/runtime/channel_queues))
+    (for output in outgoing
+      (if (== output/result/status "failed") (fail "Slack rejected an outgoing test message; inspect its delivery record")))
+    (var delivered false)
+    (for [id output] in queues/outbox
+      (if (&& (== output/intent/session binding/session) (== output/status "delivered")
+               (== output/result/status "delivered")
+               (output/intent/parts/0/text .contains? "Gene Harness live test succeeded."))
+        (set delivered true)))
+    (if (&& (== receipt/state "done") outgoing/.empty? delivered
+             ($fs/exists? ($path/join root "slack-live-proof.txt")))
+      (then
+        ($assert ($absent? receipt/deadline_ms))
+        ($assert (== receipt/initiator "channel:slack/qualification"))
+        ($assert (== receipt/input/messages/0/message thread))
+        ($assert (== ($fs/read_text ($path/join root "slack-live-proof.txt")) "executed"))
+        (return {^session binding/session ^round receipt/id ^thread binding/thread}))))
+  nil)
+
+(fn retire_qualification [service, native = nil]
+  (try
+    (mutate service/runtime/channels/owner (fn [state]
+      (let account (state/accounts .get "qualification"))
+      (if_not ($absent? account) (account .put "enabled" false))
+      (for [id route] in state/routes
+        (if (== route/account "qualification") (route .put "enabled" false)))
+      (state .put "policy_revision" (+ state/policy_revision 1)) nil))
+  ensure
+    (try (close_session_service service)
+    ensure
+      (if_not ($absent? native) ($assert (== (native/open_count) 0))))))
+
+(fn main [argv] : Int
+  (let args ($body argv))
+  ($assert (== args/.size 3) "slack_live.gene CREDENTIAL_FILE NATIVE_LIBRARY ISOLATED_BASE_DIRECTORY")
+  ($fs/make_dir args/2)
+  (let root ($path/join ($fs/real_path args/2) ($to_str "slack-live-" ($crypto/random_hex 6))))
+  (let marker ($to_str "Gene Harness live test " ($crypto/random_hex 3)))
+  (let allowed ($cell nil)) (let thread ($cell nil)) (let calls ($cell 0))
+  (let driver (qualification_driver (default_driver) allowed thread marker))
+  (let base (baseline_profile))
+  (let plugins [])
+  (for plugin in base/plugins
+    (plugins .push (if (== plugin/id "slack") (slack ^driver driver) plugin)))
+  (plugins .push (qualification_provider calls))
+  (let profile (Profile ^name "slack-qualification" ^plugins plugins ^requires base/requires
+    ^limits base/limits ^provider "qualification"))
+  (let service (open_session_service ^workspace root ^profile profile))
+  (let native ($cell nil))
+  (try
+    (let configured (setup_account service/runtime/channels
+      {^id "qualification" ^secret_file args/0 ^library args/1}))
+    (let account (/accounts (snapshot service/runtime/channels/owner); .get "qualification"))
+    (allowed .set {^team account/team ^channel configured/channel ^operator account/operator ^bot_user account/bot_user})
+    (setup_route service/runtime/channels
+      {^account "qualification" ^channel configured/channel ^workspace root ^^enabled})
+    (native .set (load_socket_library args/1))
+    (let connected (+ ($os/monotonic_ms) 20000))
+    (while (!= (/connected (service/runtime/channels/health/.get .get account/app)) true)
+      ($assert (< ($os/monotonic_ms) connected) "Socket Mode did not become ready; inspect the app receiver and subscriptions")
+      ($sleep 20))
+    (let client (open_api (/bot (read_slack_credentials args/0))))
+    (try
+      (let info (/channel (api_call client "conversations.info" {^channel configured/channel} ^http_method "GET")))
+      (let bot (/bot (api_call client "bots.info" {^bot account/bot} ^http_method "GET")))
+      ($println ($json/stringify {^ready true ^channel_name info/name ^bot_name bot/name ^message marker ^workspace root}))
+      ($io/flush_stdout)
+    ensure (close_api client))
+    (let deadline (+ ($os/monotonic_ms) 600000))
+    (let finished ($cell nil))
+    (while ($absent? finished/.get)
+      ($assert (< ($os/monotonic_ms) deadline) "No completed live test was observed before the qualifier deadline")
+      (finished .set (completed_qualification service thread/.get))
+      (if ($absent? finished/.get) ($sleep 50)))
+    ($assert (== calls/.get 1))
+    ($println ($json/stringify {^passed true ^workspace root ^session finished/.get/session
+      ^thread finished/.get/thread ^native_input true ^gene_executed true ^native_delivery true
+      ^operator_policy true ^model_calls calls/.get}))
+    ($io/flush_stdout)
+  ensure
+    # Keep the transcript reviewable, but opening this test workspace later
+    # must not restart a receiver or publish into another Slack conversation.
+    (retire_qualification service native/.get))
+  0)

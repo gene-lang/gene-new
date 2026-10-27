@@ -3,10 +3,18 @@
   [url : C/CStr timeout_ms : C/Int] : (C/OwnedPtr GXSocket))
 (ffi/fn connect_protocol ^symbol "gx_ws_connect_protocol" ^release "gx_ws_free"
   [url : C/CStr protocol : C/CStr timeout_ms : C/Int] : (C/OwnedPtr GXSocket))
+(ffi/fn begin ^symbol "gx_ws_begin" ^release "gx_ws_free"
+  [url : C/CStr protocol : C/CStr ca_file : C/CStr timeout_ms : C/Int
+   max_message : C/Size max_queued : C/Size] : (C/OwnedPtr GXSocket))
+(ffi/fn connected ^symbol "gx_ws_connected" [socket : (C/Ptr GXSocket)] : C/Int)
+(ffi/fn open_count ^symbol "gx_ws_open_count" [] : C/Size)
 (ffi/fn last_error ^symbol "gx_ws_last_error" [] : C/CStr)
 (ffi/fn error ^symbol "gx_ws_error" [socket : (C/Ptr GXSocket)] : C/CStr)
 (ffi/fn send ^symbol "gx_ws_send"
   [socket : (C/Ptr GXSocket) data : (Buffer C/UInt8)] : C/Int)
+(ffi/fn send_text ^symbol "gx_ws_send_text"
+  [socket : (C/Ptr GXSocket) data : (Buffer C/UInt8)] : C/Int)
+(ffi/fn flush ^symbol "gx_ws_flush" [socket : (C/Ptr GXSocket)] : C/Int)
 (ffi/fn poll ^symbol "gx_ws_poll" [socket : (C/Ptr GXSocket)] : C/Int)
 (ffi/fn size ^symbol "gx_ws_size" [socket : (C/Ptr GXSocket)] : C/Size)
 (ffi/fn kind ^symbol "gx_ws_kind" [socket : (C/Ptr GXSocket)] : C/Int)

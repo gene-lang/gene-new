@@ -1,0 +1,66 @@
+(mod channel_http)
+(import [public_authority authorize authorize_parts] ^from "./authority")
+(import [snapshot mutate] ^from "./store")
+(import [queue_status resume_queue pending_parts discard_inputs] ^from "./queue")
+(import [channel_error] ^from "./model")
+(import [bind_workspace receive_handoff] ^from "./service")
+(import [accept_output output_result pending_output] ^from "./delivery")
+(import [setup_account setup_route] ^from "./setup")
+(import [with_session_gate] ^from "../runtime/sessions")
+(import [transcript_reference] ^from "./render")
+(import [pending_ingress] ^from "./ingress")
+
+(fn channel_settings [service, data]
+  (let surface (?? data/surface "mrkdwn"))
+  (if (! (["mrkdwn" "markdown"] .contains? surface))
+    (channel_error "invalid_request" "Choose mrkdwn or markdown for Slack rendering."))
+  (let url (?? data/public_url nil))
+  (if (&& (! ($absent? url)) (== (transcript_reference "check" url) "Harness session check"))
+    (channel_error "invalid_request" "Use a reachable browser URL without credentials, query or fragment, or leave it unset."))
+  (let settings {^surface surface ^public_url url})
+  (mutate service/runtime/channel_queues (fn [state] (state .put "settings" settings) settings))
+  (service/settings .set settings)
+  settings)
+
+# The server calls this only after owner authentication, Origin and CSRF checks.
+# No unauthenticated endpoint is exposed for external sender assertions.
+(fn channel_request [service, method : Str, endpoint : Str, data = {}]
+  (if (! (endpoint .starts_with? "/api/v8/channels")) (return nil))
+  (if ($absent? service) (channel_error "unavailable" "Channels are unavailable in recovery mode."))
+  (if (&& (== method "GET") (== endpoint "/api/v8/channels"))
+    (return {^status 200 ^body {^source (/source (snapshot service/runtime/channel_queues))
+      ^health service/health/.get ^owner (public_authority service/owner)
+      ^incoming ($map (pending_ingress service/owner) (fn [record]
+        {^id record/id ^workspace record/workspace ^account record/account
+         ^channel record/message/channel ^thread record/message/thread ^author record/message/author
+         ^status "queued" ^last_error (?? (service/health/.get .get record/id) nil)}))
+      ^outgoing ($map (pending_output service/runtime/channel_queues) (fn [record]
+        {^id record/intent/id ^session record/intent/session ^round record/intent/round
+         ^status (?? record/result/status record/status) ^parts (?? record/result/parts [])}))}}))
+  (if (&& (== method "GET") (== endpoint "/api/v8/channels/owner/policy"))
+    (return {^status 200 ^body (public_authority service/owner)}))
+  (if (!= method "POST") (return nil))
+  (let body
+    (match endpoint ^!exhaustive
+      (when "/api/v8/channels/owner/accounts" (setup_account service data))
+      (when "/api/v8/channels/owner/routes" (setup_route service data))
+      (when "/api/v8/channels/owner/authorize"
+        (authorize service/owner data/route data/author ^workspace data/workspace))
+      (when "/api/v8/channels/owner/authorize-parts"
+        (authorize_parts service/owner data/route data/parts ^workspace data/workspace))
+      (when "/api/v8/channels/owner/deliver" (accept_output service/owner data))
+      (when "/api/v8/channels/owner/result" (output_result service/owner data/id))
+      (when "/api/v8/channels/input" (receive_handoff service data))
+      (when "/api/v8/channels/bind" (bind_workspace service data/owner_root data/route))
+      (when "/api/v8/channels/settings" (channel_settings service data))
+      (when "/api/v8/channels/queue/status"
+        ((queue_status service/runtime/channel_queues data/session) .assoc "parts"
+          (pending_parts service/runtime/channel_queues data/session)))
+      (when "/api/v8/channels/queue/discard"
+        (with_session_gate service/runtime/sessions ($to_str "round/" data/session)
+          (fn [] (discard_inputs service/runtime/channel_queues data/session data/revision data/ids data/reason))))
+      (when "/api/v8/channels/queue/resume"
+        (with_session_gate service/runtime/sessions ($to_str "round/" data/session)
+          (fn [] (resume_queue service/runtime/channel_queues data/session data/revision))))
+      (when _ (return nil))))
+  {^status 200 ^body body})

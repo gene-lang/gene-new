@@ -1,0 +1,33 @@
+# Read-only preflight for live qualification. Never prints token values.
+(import [read_slack_credentials open_api close_api api_call] ^from "../src/channels/slack_api")
+
+(fn scopes [token : Str]
+  (if (== token "") (return []))
+  (let client (open_api token))
+  (try
+    (let response (await (client/client .request ^method "POST"
+      ^url "https://slack.com/api/auth.test"
+      ^headers {^authorization ($to_str "Bearer " token) ^content-type "application/json"}
+      ^body "{}" ^timeout_ms 10000 ^max_bytes 65536)))
+    ($assert (== response/status 200) "Slack scope preflight failed")
+    (let names [])
+    (for pair in response/headers
+      (if (== pair/0/.lower "x-oauth-scopes")
+        (for name in (pair/1 .split ",") (names .push name/.trim))))
+    names
+  ensure (close_api client)))
+
+(fn main [argv] : Int
+  (let args ($body argv))
+  ($assert (== args/.size 1) "slack_permissions.gene CREDENTIAL_FILE")
+  (let credentials (read_slack_credentials args/0))
+  (let bot (scopes credentials/bot))
+  (let user (scopes credentials/user))
+  (let client (open_api credentials/bot))
+  (try
+    (let channel (/channel (api_call client "conversations.info" {^channel credentials/channel} ^http_method "GET")))
+    ($println ($json/stringify {^channel_name channel/name ^bot_scopes_reported (! bot/.empty?)
+      ^user_scopes_reported (! user/.empty?) ^bot_can_post (bot .contains? "chat:write")
+      ^user_can_post (|| (user .contains? "chat:write") (user .contains? "chat:write:user"))}))
+  ensure (close_api client))
+  0)

@@ -1,0 +1,78 @@
+(import $test [describe it])
+(import [isolated run_spec fixture_path] ^from "../../support")
+(import [ready_host stop_host] ^from "../../web_support")
+(import [connect api] ^from "../../../src/cli/client")
+(import [read_count remote_messages] ^from "../../fixtures/channel_recovery")
+
+(fn start_peer [root : Str, role : Str, point : Str, other : Str]
+  ($fs/make_dir root)
+  (let host {^root root ^process ($os/exec_async ($os/executable_path) "run" "--snapshot"
+    (fixture_path "channel_peer") root role point other ^timeout_ms 120000 ^max_bytes 1048576)})
+  (try
+    (host .put "connection" (ready_host host))
+    host
+  catch Error
+    host/process/.cancel
+    (let ended (try (await host/process) catch Any nil))
+    (fail ($to_str "Peer did not start: " $err/message "\n" (?? ended/stdout "") (?? ended/stderr "")))))
+
+(describe "Channel cross-process recovery"
+  (it "recovers either host at each input and output handoff boundary without replaying requests or replies" []
+    (isolated this_mod/.path "recovers either host at each input and output handoff boundary without replaying requests or replies"
+      ^timeout_ms 300000
+      (fn [workspace]
+        (for scenario in [
+          ["owner" "ingress"] ["workspace" "queued"] ["workspace" "binding"] ["owner" "handoff"]
+          ["workspace" "receipt"] ["workspace" "effect"] ["workspace" "intent"]
+          ["owner" "owner_accept"] ["owner" "remote_unknown"] ["owner" "owner_result"] ["workspace" "workspace_result"]]
+          (let root ($path/join workspace scenario/1))
+          (let owner_root ($path/join root "owner"))
+          (let project_root ($path/join root "project"))
+          ($fs/make_dir owner_root) ($fs/make_dir project_root)
+          (let owner ($cell (start_peer owner_root "owner" (if (== scenario/0 "owner") scenario/1 "none") project_root)))
+          (let project ($cell nil))
+          (try
+            (project .set (start_peer project_root "workspace" (if (== scenario/0 "workspace") scenario/1 "none") owner_root))
+            (let authority (api (connect owner_root) "GET" "/channels/owner/policy"))
+            (let route ($cell nil))
+            (for [id binding] in authority/routes (route .set binding))
+            (api (connect project_root) "POST" "/channels/bind" {^owner_root owner_root ^route route/.get/id})
+            ($fs/write_text ($path/join owner_root "inject") "go")
+            (let dying (if (== scenario/0 "owner") owner/.get project/.get))
+            (let due (+ ($os/monotonic_ms) 20000))
+            (while (! dying/process/.done?)
+              ($assert (< ($os/monotonic_ms) due) ($to_str "Peer did not reach " scenario/1))
+              ($sleep 20))
+            (let dead (await dying/process))
+            ($assert (== dead/status 73) ($to_str scenario/1 ": " dead/stdout dead/stderr))
+            ($assert (== ($fs/read_text ($path/join dying/root "crash-marker")) scenario/1))
+            (if (== scenario/0 "owner")
+              (owner .set (start_peer owner_root "owner" "none" project_root))
+              (project .set (start_peer project_root "workspace" "none" owner_root)))
+            (let interrupted (["receipt" "effect"] .contains? scenario/1))
+            (let finished (+ ($os/monotonic_ms) 20000))
+            (let view ($cell nil))
+            (loop
+              (let client (connect project_root))
+              (let sessions (api client "GET" "/sessions"))
+              (if_yes (== sessions/sessions/.size 1)
+                (let state (api client "GET" ($to_str "/sessions/" sessions/sessions/0/id "/snapshot?ui=default")))
+                (view .set state)
+                (let status (api client "GET" "/channels"))
+                (let complete ($filter (remote_messages owner_root) (fn [message] (== message/text "Complete."))))
+                (if (&& (== state/round/state (if interrupted "interrupted" "done"))
+                         (if interrupted true (&& (== complete/.size 1) (== status/outgoing/.size 0))))
+                  (break)))
+              ($assert (< ($os/monotonic_ms) finished) ($to_str "Handoff did not reconcile after " scenario/1))
+              ($sleep 50))
+            ($assert (== (read_count owner_root) 0))
+            ($assert (== (read_count project_root) (if (== scenario/1 "receipt") 0 1)))
+            ($assert (== view/.get/next_submission_seq "2"))
+            (if (== scenario/1 "effect")
+              ($assert (== ($fs/read_text ($path/join project_root "effect.txt")) "once")))
+          ensure
+            (if_not ($absent? project/.get) (stop_host project/.get))
+            (stop_host owner/.get))))))
+)
+
+(fn main [args] : Int (run_spec args))

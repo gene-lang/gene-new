@@ -1,0 +1,133 @@
+(import $test [describe it])
+(import [isolated run_spec test_service] ^from "../../support")
+(import [qualification_provider qualification_driver completed_qualification retire_qualification]
+  ^from "../../../probes/slack_live")
+(import [close_session_service] ^from "../../../src/web/session_service")
+(import [put_cordis_plugin] ^from "../../../src/kernel")
+(import [open_authority configure_account configure_route snapshot close_channel_store]
+  ^from "../../../src/channels/authority")
+(import [bind_workspace receive_handoff drain_session project_events handoff_outputs]
+  ^from "../../../src/channels/service")
+(import [receive_envelope] ^from "../../../src/channels/ingress")
+(import [pending_output deliver_output] ^from "../../../src/channels/delivery")
+(import [open_api close_api] ^from "../../../src/channels/slack_api")
+(import [ChannelError] ^from "../../../src/channels/model")
+
+(fn frame [ts : Str, text : Str, ^author author : Str = "UOWNER", ^thread thread = nil,
+           ^team team : Str = "T123", ^channel channel : Str = "C123"]
+  {^type "events_api" ^envelope_id ts ^payload {^type "event_callback" ^event_id ts
+    ^team_id team ^api_app_id "A123"
+    ^event {^type "message" ^user author ^channel channel ^ts ts ^thread_ts thread ^text text}}})
+
+(fn frames_driver [frames]
+  (let position ($cell 0))
+  {^receive (fn [native socket]
+    (let at position/.get) (position .set (+ at 1)) frames/%at)})
+
+(fn fixture [workspace, body]
+  (let service (test_service ^workspace workspace ^without_plugins ["slack"]
+    ^provider (fn [request] "(Outcome ^^done)")))
+  (let calls ($cell 0))
+  (try
+    (put_cordis_plugin service/runtime/h (qualification_provider calls)
+      {^^host ^limits service/runtime/profile/limits})
+    (set service/runtime/profile/provider "qualification")
+    (configure_account service/runtime/channels/owner "qualification" "/unused" "/unused"
+      {^team "T123" ^app "A123" ^bot "B123" ^bot_user "UBOT" ^operator "UOWNER"})
+    (let route (configure_route service/runtime/channels/owner "qualification" "C123" workspace))
+    (bind_workspace service/runtime/channels workspace route/id)
+    (body service calls route)
+  ensure (close_session_service service)))
+
+(describe "Live qualifier boundaries"
+  (it "passes transport controls without admitting input before route setup" []
+    (let frames [nil {^type "hello"} {^type "disconnect"} (frame "1.000001" "nonce")])
+    (let thread ($cell nil))
+    (let driver (qualification_driver (frames_driver frames) ($cell nil) thread "nonce"))
+    ($assert ($absent? (driver/receive nil nil)))
+    ($assert (== (driver/receive nil nil) frames/1))
+    ($assert (== (driver/receive nil nil) frames/2))
+    ($assert ($absent? (driver/receive nil nil)))
+    ($assert ($absent? thread/.get)))
+
+  (it "accepts one matching operator root and bot replies while rejecting unrelated human conversations" []
+    (let route {^team "T123" ^channel "C123" ^operator "UOWNER" ^bot_user "UBOT"})
+    (let rejected [
+      (frame "2.000001" "nonce" ^author "UOTHER")
+      (frame "2.000001" "nonce" ^team "TOTHER")
+      (frame "2.000001" "nonce" ^channel "COTHER")
+      (frame "2.000001" "something else")
+      (frame "2.000001" "nonce" ^thread "1.000001")])
+    (let root (frame "3.000001" "nonce"))
+    (let bot (frame "4.000001" "reply" ^author "UBOT" ^thread "3.000001"))
+    (let other_root (frame "5.000001" "nonce"))
+    (let followup (frame "6.000001" "another human request" ^thread "3.000001"))
+    (let elsewhere (frame "7.000001" "reply" ^author "UBOT" ^thread "5.000001"))
+    (let frames [])
+    (for item in rejected (frames .push item))
+    (for item in [root root bot other_root followup elsewhere] (frames .push item))
+    (let thread ($cell nil))
+    (let driver (qualification_driver (frames_driver frames) ($cell route) thread "nonce"))
+    (for item in rejected ($assert ($absent? (driver/receive nil nil))))
+    ($assert (== (driver/receive nil nil) root))
+    ($assert (== (driver/receive nil nil) root))
+    ($assert (== (driver/receive nil nil) bot))
+    (repeat 3 ($assert ($absent? (driver/receive nil nil))))
+    ($assert (== thread/.get "3.000001")))
+
+  (it "requires a reconciled final delivery rather than an empty outbox before projection" []
+    (isolated this_mod/.path "requires a reconciled final delivery rather than an empty outbox before projection"
+      (fn [workspace]
+        (fixture workspace (fn [service calls route]
+          (let incoming (receive_envelope service/runtime/channels/owner "qualification"
+            (frame "1.000001" "<@UBOT> nonce")))
+          (let accepted (receive_handoff service/runtime/channels incoming))
+          ($assert ($absent? (completed_qualification service "1.000001")))
+          (drain_session service/runtime/channels accepted/session)
+          (let watcher (service/controller/watchers/.get .get accepted/session))
+          watcher/.join
+          ($assert (== calls/.get 1))
+          ($assert ($absent? (completed_qualification service "1.000001")))
+          (project_events service/runtime/channels accepted/session)
+          (handoff_outputs service/runtime/channels)
+          ($assert ($absent? (completed_qualification service "1.000001")))
+          (let api (open_api "test" ^requester (fn [request]
+            {^status 200 ^headers [] ^body ($binary/from_str ($json/stringify {^^ok ^ts "2.000001"}))})))
+          (try
+            (for outgoing in (pending_output service/runtime/channel_queues)
+              (deliver_output service/runtime/channels/owner api outgoing/intent/id))
+            ($assert ($absent? (completed_qualification service "1.000001")))
+            (handoff_outputs service/runtime/channels)
+            ($assert (== (/session (completed_qualification service "1.000001")) accepted/session))
+          ensure (close_api api)))))))
+
+  (it "disables only its account and closes the runtime even when retiring configuration fails" []
+    (isolated this_mod/.path "disables only its account and closes the runtime even when retiring configuration fails"
+      (fn [workspace]
+        (for fail_retirement in [false true]
+          (let root ($path/join workspace (if fail_retirement "failure" "ordinary")))
+          (fixture root (fn [service calls route]
+            (configure_account service/runtime/channels/owner "other" "/unused" "/unused"
+              {^team "T456" ^app "A456" ^bot "B456" ^bot_user "UBOT2" ^operator "UOTHER"})
+            (let other (configure_route service/runtime/channels/owner "other" "C456" ($path/join root "other")))
+            (if fail_retirement (close_channel_store service/runtime/channels/owner))
+            (let checked ($cell false))
+            (let native {^open_count (fn [] (checked .set true) 0)})
+            (let failed (try (retire_qualification service native) false
+              catch ChannelError (== $err/code "unavailable")))
+            ($assert (== failed fail_retirement))
+            ($assert checked/.get)
+            ($assert service/closed/.get)
+            ($assert service/runtime/closed/.get)
+            (if_not fail_retirement
+              (let owner (open_authority ($path/join service/runtime/state_root "channels" "owner")))
+              (try
+                (let state (snapshot owner))
+                ($assert (! (/enabled (state/accounts .get "qualification"))))
+                ($assert (/enabled (state/accounts .get "other")))
+                ($assert (! (/enabled (state/routes .get route/id))))
+                ($assert (/enabled (state/routes .get other/id)))
+              ensure (close_channel_store owner)))))))))
+)
+
+(fn main [args] : Int (run_spec args))

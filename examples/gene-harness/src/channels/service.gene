@@ -1,0 +1,286 @@
+(mod channel_service)
+(import [open_authority authorize authorize_parts public_authority] ^from "./authority")
+(import [snapshot mutate close_channel_store] ^from "./store")
+(import [channel_error key binding_key required_text] ^from "./model")
+(import [configure_queues enqueue queue_status activate_binding tombstone_session] ^from "./queue")
+(import [queue_output pending_output accept_output output_result reconcile_output recover_deliveries] ^from "./delivery")
+(import [pending_ingress finish_handoff] ^from "./ingress")
+(import [render_reply] ^from "./render")
+(import [parse_control apply_control] ^from "./controls")
+(import [byte_prefix] ^from "../text")
+(import [connect api] ^from "../cli/client")
+(import [create_session_unlocked] ^from "../runtime/sessions")
+(import [admit_channel_queue round_state] ^from "../runtime/round_controller")
+(import [core_state events_for] ^from "../storage/state")
+
+(type ChannelService ^props {^runtime Any ^controller Any ^owner Any ^gate Any ^closed Cell
+  ^settings Cell ^health Cell})
+
+(fn open_channel_service [runtime, controller]
+  (let owner (open_authority ($path/join runtime/state_root "channels" "owner")))
+  (recover_deliveries owner)
+  (ChannelService ^runtime runtime ^controller controller ^owner owner ^gate ($sync/gate)
+    ^closed ($cell false) ^settings ($cell (?? (/settings (snapshot runtime/channel_queues)) {}))
+    ^health ($cell {})))
+
+(fn close_channel_service [service]
+  (if (service/closed .swap true) (return nil))
+  (close_channel_store service/owner))
+
+(fn source_state [service]
+  (if service/closed/.get (channel_error "unavailable" "The channel service is closed."))
+  (snapshot service/runtime/channel_queues))
+
+(fn owner_call [service, method : Str, suffix : Str, data = nil]
+  (let state (source_state service))
+  (let root state/owner_root)
+  (if ($absent? root) (channel_error "unavailable" "The channel authority is not connected."))
+  (api (connect root) method ($to_str "/channels/owner/" suffix) data))
+
+(fn local_owner? [service, source]
+  (== source/owner (/id (snapshot service/owner))))
+
+(fn authorize_input [service, author : Str]
+  (let source (source_state service))
+  (if ($absent? source/source) (channel_error "unavailable" "No channel is bound to this workspace."))
+  (if (local_owner? service source/source)
+    (authorize service/owner source/source/id author ^workspace service/runtime/root)
+    (owner_call service "POST" "authorize"
+      {^route source/source/id ^workspace service/runtime/root ^author author})))
+
+(fn authorize_batch [service, parts]
+  (let source (/source (source_state service)))
+  (if (local_owner? service source)
+    (authorize_parts service/owner source/id parts ^workspace service/runtime/root)
+    (owner_call service "POST" "authorize-parts"
+      {^route source/id ^workspace service/runtime/root
+       ^parts ($map parts (fn [part] {^id part/id ^author part/author}))})))
+
+(fn bind_workspace [service, owner_root : Str, route_id : Str]
+  (let canonical ($fs/real_path owner_root))
+  (let policy (if (== canonical service/runtime/root) (public_authority service/owner)
+    (api (connect canonical) "GET" "/channels/owner/policy")))
+  (let route (policy/routes .get route_id))
+  (if (|| ($absent? route) (!= route/owner policy/owner) (!= route/workspace service/runtime/root))
+    (channel_error "forbidden" "The owner has no matching route to this workspace."))
+  (configure_queues service/runtime/channel_queues route ^owner_root canonical)
+  {^source (/source (source_state service))})
+
+(fn ensure_session [service, session : Str]
+  (let manager service/runtime/sessions)
+  (manager/mutating (fn []
+    (let state (source_state service))
+    (let queue (state/queues .get session))
+    (let binding (state/bindings .get queue/binding))
+    (if (== binding/status "deleted") (return nil))
+    (let existing (manager/index/.get .get session))
+    (if_yes ($absent? existing)
+      (if (|| (== binding/status "active")
+              (! ($absent? (core_state service/runtime/events "workspace" "workspace" ($to_str "session_delete/" session)))))
+        (then (tombstone_session service/runtime/channel_queues session) (return nil)))
+      (let root (state/messages .get binding/root_input))
+      (let title (byte_prefix ($str/join (root/message/text .split "\n") " ") 160))
+      (create_session_unlocked manager ^id session ^title title ^first_request root/message/text
+        ^channel {^transport "slack" ^account binding/account ^team binding/team
+          ^channel binding/channel ^thread binding/thread ^binding binding/id
+          ^owner state/source/owner ^route state/source/id}))
+    (activate_binding service/runtime/channel_queues binding/id))))
+
+(fn deleted_notice [service, disposition, message]
+  (if (!= disposition/status "deleted") (return nil))
+  (let status (queue_status service/runtime/channel_queues disposition/session))
+  (queue_output service/runtime/channel_queues
+    (output_intent service status/binding ($to_str "deleted-" (key [message/account message/channel message/message]))
+      "channel-binding" "This Harness conversation was deleted. Start a new top-level request in a new Slack thread."))
+  nil)
+
+# Authenticated host route only: forwarded sender fields by themselves are not
+# credentials. Current policy is fetched from the configured authority again.
+(fn receive_handoff [service, supplied]
+  (service/gate (fn []
+    (let state (source_state service))
+    (let source state/source)
+    (if (|| ($absent? source) (!= supplied/route/id source/id)
+            (!= supplied/route/owner source/owner) (!= supplied/workspace state/workspace))
+      (channel_error "forbidden" "The forwarded event has a different configured route."))
+    (let decision (authorize_input service supplied/message/author))
+    (if_yes (&& decision/allowed (! ($absent? (parse_control supplied/message/text))))
+      (let result (apply_control service supplied/message
+        (fn [] (authorize_input service supplied/message/author))))
+      (if_yes (== result/status "control")
+        (let status (queue_status service/runtime/channel_queues result/session))
+        (queue_output service/runtime/channel_queues
+          (output_intent service status/binding ($to_str "control-" result/id)
+            (?? result/result/round (?? result/target "channel-control")) result/result/text)))
+      (deleted_notice service result supplied/message)
+      (return result))
+    (let disposition (enqueue service/runtime/channel_queues supplied/message decision
+      ^start_allowed (== supplied/start_allowed true)))
+    (if (== disposition/status "queued") (ensure_session service disposition/session))
+    (deleted_notice service disposition supplied/message)
+    disposition)))
+
+(fn drain_session [service, session : Str]
+  (let binding (ensure_session service session))
+  (if ($absent? binding) (return {^kind "deleted"}))
+  (admit_channel_queue service/controller session (fn [parts] (authorize_batch service parts))))
+
+(fn output_intent [service, binding, id : Str, round : Str, text : Str,
+                   ^mode mode : Str = "post", ^revision revision : Int = 0]
+  (let state (source_state service))
+  {^id id ^owner state/source/owner ^route state/source/id ^workspace state/workspace
+   ^account binding/account ^team binding/team ^channel binding/channel ^thread binding/thread
+   ^session binding/session ^round round ^mode mode ^revision revision
+   ^parts (render_reply text binding/session
+     ^surface (?? service/settings/.get/surface "mrkdwn")
+     ^public_url (?? service/settings/.get/public_url nil))})
+
+(fn project_events [service, session : Str]
+  (let state (source_state service))
+  (let queue (state/queues .get session))
+  (let binding (state/bindings .get queue/binding))
+  (if (|| ($absent? binding) (!= binding/status "active")) (return nil))
+  (let cursors (?? state/cursors {}))
+  (let cursor (?? (cursors .get session) 0))
+  (var through cursor)
+  (for event in (events_for service/runtime/events "session" session)
+    (if (<= event/seq cursor) (continue))
+    (let payload event/payload)
+    (let id ($to_str "event-" (key [session event/seq])))
+    (if_yes (! ($has_key? state/outbox id))
+      (if (&& (== event/type "reply") (== payload/final true) (!= payload/synthetic true))
+        (queue_output service/runtime/channel_queues
+          (output_intent service binding id payload/round (?? payload/text "(Empty reply)"))))
+      (if (&& (== event/type "turn/request") (== payload/initial true) (== payload/initiator "user"))
+        (queue_output service/runtime/channel_queues (output_intent service binding id payload/round
+          ($to_str "User (Harness browser):\n" (?? payload/text payload/settled)))))
+      (if_yes (&& (== event/type "question/answered") (== payload/state/answer_source/kind "harness"))
+        (let lines ["User (Harness) answered questions:"])
+        (for question in payload/state/questions
+          (lines .push ($to_str question/prompt ": " (payload/state/answers .get question/id))))
+        (queue_output service/runtime/channel_queues (output_intent service binding id payload/state/round
+          ($str/join lines "\n")))))
+    (set through event/seq))
+  (if (> through cursor)
+    (mutate service/runtime/channel_queues (fn [latest]
+      (if ($absent? latest/cursors) (latest .put "cursors" {}))
+      (latest/cursors .put session through))))
+  nil)
+
+(fn queue_progress [service, binding, id : Str, round : Str, text : Str]
+  (let fingerprint (key text))
+  (let candidate (output_intent service binding id round text ^mode "progress"))
+  (let record (mutate service/runtime/channel_queues (fn [latest]
+    (if ($absent? latest/progress) (latest .put "progress" {}))
+    (let existing (latest/progress .get id))
+    (if (== existing/fingerprint fingerprint) (return existing))
+    (candidate .put "revision" (+ (?? existing/intent/revision -1) 1))
+    (let next {^fingerprint fingerprint ^intent candidate})
+    (latest/progress .put id next)
+    next)))
+  (queue_output service/runtime/channel_queues record/intent))
+
+(fn project_queue [service, session : Str]
+  (let state (source_state service))
+  (let status (queue_status service/runtime/channel_queues session))
+  (if (!= status/binding/status "active") (return nil))
+  (let holds ($filter status/holds (fn [hold] (== hold/kind "operator"))))
+  (let id ($to_str "queue-" (key session)))
+  (if (&& holds/.empty? ($absent? ((?? state/progress {}) .get id))) (return nil))
+  (let names [])
+  (for hold in holds
+    (let name (byte_prefix hold/reason 64))
+    (if (&& (< names/.size 8) (! (names .contains? name))) (names .push name)))
+  (let reasons ($str/join names ", "))
+  (let text ($to_str
+    (if holds/.empty? "No operator queue hold." ($to_str "Queued requests held: " reasons "."))
+    "\nPending messages: " status/pending ". Queue revision: " status/revision "."
+    (if (> ($size ($filter holds (fn [hold] (== hold/reason "oversized")))) 0)
+      "\nThe whole batch exceeds the request limit. The host operator can review with channels queue, explicitly discard selected messages with channels discard, and then resume. Nothing was truncated or executed." "")
+    "\nInspect with !status. Explicit resume: !resume-queue " status/revision
+    ". Active work and unresolved pauses still block admission."))
+  (queue_progress service status/binding id "channel-queue" text)
+  nil)
+
+(fn project_rounds [service, session : Str]
+  (let state (source_state service))
+  (let queue (state/queues .get session))
+  (let binding (state/bindings .get queue/binding))
+  (if (!= binding/status "active") (return nil))
+  (for receipt in (/receipts (round_state service/controller session))
+    (let id ($to_str "progress-" (key [session receipt/id])))
+    (let prior ((?? state/progress {}) .get id))
+    (let display_state (if (&& (== receipt/state "paused") (! ($absent? receipt/continuation_stop)))
+      (if (== receipt/continuation_stop "superseded") "superseded" "failed") receipt/state))
+    (let active (["running" "waiting" "paused"] .contains? display_state))
+    (if (&& (! active) ($absent? prior)
+             (! (["failed" "interrupted" "cancelled"] .contains? display_state))) (continue))
+    (let text ($to_str "Agent: " display_state "."
+      (if (== display_state "running") ($to_str " Stop: !stop " receipt/id) "")
+      (if (== display_state "paused")
+        ($to_str "\nContinue current work: !continue " receipt/id
+          "\nContinue until finished: !continue-until-finished " receipt/id
+          "\nTo replace it with queued requests, review !status then use !replace-paused " receipt/id " QUEUE_REVISION.") "")
+      (if (["failed" "interrupted"] .contains? display_state)
+        ($to_str "\n" (byte_prefix (?? receipt/continuation_error (?? receipt/message "Work did not finish.")) 256)) "")
+      "\nQueue status: !status. Resume queued requests with !resume-queue QUEUE_REVISION after reviewing that status."))
+    (queue_progress service binding id receipt/id text)
+    (if_yes (&& (== receipt/state "waiting") (! ($absent? receipt/questions)))
+      (let question_id ($to_str "questions-" (key [session receipt/questions/id])))
+      (if_not ($has_key? state/outbox question_id)
+        (let lines ["Agent needs answers:"])
+        (let example {})
+        (for question in receipt/questions/questions
+          (lines .push ($to_str question/id ": " question/prompt))
+          (if_not ($absent? question/choices)
+            (lines .push ($to_str "Choices: " ($json/stringify question/choices))))
+          (example .put question/id (if (== question/multi true) []
+            (?? question/recommended (if ($absent? question/choices) "your answer" question/choices/0)))))
+        (lines .push ($to_str "Reply using !answer " receipt/questions/id " " ($json/stringify example)))
+        (queue_output service/runtime/channel_queues
+          (output_intent service binding question_id receipt/id ($str/join lines "\n"))))))
+  nil)
+
+(fn handoff_inputs [service]
+  (for incoming in (pending_ingress service/owner)
+    (try
+      (let result (if (== incoming/workspace service/runtime/root)
+        (receive_handoff service incoming)
+        (api (connect incoming/workspace) "POST" "/channels/input" incoming)))
+      (finish_handoff service/owner incoming/id result)
+      (service/health/.get .delete incoming/id)
+    catch Error
+      (service/health/.get .put incoming/id {^code (?? $err/code "handoff_unavailable") ^at ($os/wall_ms)})))
+  nil)
+
+(fn handoff_outputs [service]
+  (let source (/source (source_state service)))
+  (if ($absent? source) (return nil))
+  (for outgoing in (pending_output service/runtime/channel_queues)
+    (try
+      (let result (if (local_owner? service source)
+        (accept_output service/owner outgoing/intent)
+        (owner_call service "POST" "deliver" outgoing/intent)))
+      (reconcile_output service/runtime/channel_queues result)
+      (service/health/.get .delete outgoing/intent/id)
+    catch Error
+      (service/health/.get .put outgoing/intent/id {^code (?? $err/code "handoff_unavailable") ^at ($os/wall_ms)})))
+  nil)
+
+# Network work is driven by the Slack plugin. Durable queues, transcript
+# projections and recovery live in this core service and survive its retirement.
+(fn tick_channels [service]
+  (if service/closed/.get (return nil))
+  (let state (source_state service))
+  (for [session queue] in state/queues
+    (let id ($to_str session))
+    (let binding (state/bindings .get queue/binding))
+    (if (== binding/status "deleted") (continue))
+    (try
+      (drain_session service id)
+      (project_events service id)
+      (project_rounds service id)
+      (project_queue service id)
+    catch Error
+      (service/health/.get .put id {^code (?? $err/code "channel_error") ^at ($os/wall_ms)})))
+  nil)

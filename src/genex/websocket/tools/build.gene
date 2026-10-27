@@ -1,0 +1,77 @@
+# Run with: gene run src/genex/websocket/tools/build.gene [output-directory]
+# Gene drives the C bootstrap directly; compiler/SDK/package paths are explicit
+# environment overrides and no command is interpreted by a shell.
+(type BuildError ^props {^message Str} ^impl [Error])
+(impl Error for BuildError)
+
+(fn checked [command : Str, args, ^environment environment = {}]
+  (let result (await ($os/exec_async command args... ^env environment
+    ^timeout_ms 120000 ^max_bytes 4194304)))
+  (if (|| result/timed_out result/truncated (!= result/status 0))
+    (fail (BuildError ^message $"WebSocket build failed: ${result/stderr}")))
+  result/stdout)
+
+(fn words [text : Str]
+  ($filter ($str/split ($str/trim text) " ") (fn [word] (!= word ""))))
+
+(fn choose_sdk [compiler : Str, out : Str, environment]
+  (if_not ($absent? ($os/env? "SDKROOT")) (return nil))
+  (let source ($path/join out ".sdk-probe.c"))
+  (let binary ($path/join out ".sdk-probe"))
+  ($fs/write_text source "int main(void) { return 0; }\n")
+  (let probe (fn []
+    (try (checked compiler [source "-o" binary] ^environment environment) true
+      catch BuildError false)))
+  (try
+    (if (probe) (return nil))
+    (let developer ($str/trim (checked "xcode-select" ["-p"])))
+    (let directory ($path/join developer "Platforms/MacOSX.platform/Developer/SDKs"))
+    (if ($fs/exists? directory)
+      (for entry in ($fs/list_dir directory)
+        (let name (if (== ($head entry) Str) entry entry/name))
+        (if_yes (&& ($str/starts_with? name "MacOSX") ($str/ends_with? name ".sdk"))
+          (environment .put "SDKROOT" ($path/join directory name))
+          (if (probe) (return nil)))))
+    (fail (BuildError ^message "No compatible macOS SDK linked. Set CC and SDKROOT explicitly."))
+  ensure
+    (if ($fs/exists? source) ($fs/remove source))
+    (if ($fs/exists? binary) ($fs/remove binary))))
+
+(fn main [argv] : Int
+  (let args ($body argv))
+  (let root ($path/parent ($path/parent this_mod/.path)))
+  (let out (if (> args/.size 0)
+    (if (args/0 .starts_with? "/") ($path/normalize args/0) ($path/join ($os/launch_dir) args/0))
+    ($path/join root "build")))
+  ($fs/make_dir out)
+  (let environment {})
+  (if ($absent? ($os/env? "PKG_CONFIG_PATH"))
+    (for directory in ["/opt/homebrew/opt/curl/lib/pkgconfig" "/usr/local/opt/curl/lib/pkgconfig"]
+      (if_yes ($fs/exists? directory) (environment .put "PKG_CONFIG_PATH" directory) (break))))
+  (let pkg (?? ($os/env? "PKG_CONFIG") "pkg-config"))
+  (checked pkg ["--atleast-version=8.11.0" "libcurl"] ^environment environment)
+  (let flags (words (checked pkg ["--cflags" "libcurl"] ^environment environment)))
+  (let links (words (checked pkg ["--libs" "libcurl"] ^environment environment)))
+  (let mac ($fs/exists? "/usr/bin/sw_vers"))
+  (let compiler (?? ($os/env? "CC") "cc"))
+  (if mac (choose_sdk compiler out environment))
+  (let library ($path/join out (if mac "libgene_websocket.dylib" "libgene_websocket.so")))
+  (let source ($path/join out "gene_websocket.c"))
+  ($fs/write_text source (checked ($os/executable_path)
+    ["compile" "--target" "c" ($path/join root "src/native.gene")] ^environment environment))
+  (let temporary ($to_str library ".new"))
+  (let command ["-std=c11" "-O2" "-DGENE_AOT_DYNAMIC_ENTRIES=1" "-shared" "-fPIC"])
+  (if_yes mac
+    (for argument in ["-undefined" "dynamic_lookup" ($to_str "-Wl,-install_name," library)]
+      (command .push argument)))
+  (for argument in flags (command .push argument))
+  (for argument in [source ($path/join root "native/websocket.c") "-o" temporary "-pthread"]
+    (command .push argument))
+  (for argument in links
+    (command .push argument)
+    (if ($str/starts_with? argument "-L")
+      (command .push ($to_str "-Wl,-rpath," ($str/slice_bytes argument 2 (- argument/.byte_size 2))))))
+  (checked compiler command ^environment environment)
+  ($fs/rename temporary library)
+  ($println library)
+  0)

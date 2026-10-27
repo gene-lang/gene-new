@@ -43,11 +43,12 @@
     (set runtime/profile/provider "test"))
   (production_controller runtime))
 
-(fn test_service [^workspace workspace : Str = "", ^provider provider]
+(fn test_service [^workspace workspace : Str = "", ^provider provider, ^without_plugins without_plugins = []]
   (let cell ($cell provider))
   (let base (baseline_profile))
   (let plugins [])
-  (for plugin in base/plugins (plugins .push plugin))
+  (for plugin in base/plugins
+    (if_not (without_plugins .contains? plugin/id) (plugins .push plugin)))
   (plugins .push (callback_plugin cell))
   (let profile (Profile ^name "test" ^plugins plugins ^limits base/limits
     ^requires base/requires ^provider "test"))

@@ -1,0 +1,54 @@
+(mod channel_setup)
+(import [configure_account configure_route snapshot route_key] ^from "./authority")
+(import [channel_error required_text] ^from "./model")
+(import [read_slack_credentials secret_path open_api close_api identify api_call
+         load_socket_library connect_socket socket_message] ^from "./slack_api")
+(import [bind_workspace] ^from "./service")
+
+(fn setup_account [service, data]
+  (let filename (secret_path (required_text data/secret_file "credential reference" ^max_bytes 4096)))
+  (let library (secret_path (required_text data/library "native library reference" ^max_bytes 4096)))
+  (let credentials (read_slack_credentials filename))
+  (let client (open_api credentials/bot))
+  (try
+    (let identity (identify client credentials))
+    (if (! identity/member) (channel_error "forbidden" "Invite the Slack bot into the configured channel first."))
+    (if (== identity/operator "")
+      (channel_error "invalid_request" "Initial pairing requires the operator's Slack user token in the credential file."))
+    (let native (load_socket_library library))
+    (let socket (connect_socket client native credentials/app))
+    (try
+      (let due (+ ($os/monotonic_ms) 10000))
+      (var hello nil)
+      (while ($absent? hello)
+        (if (>= ($os/monotonic_ms) due) (channel_error "unavailable" "Slack connection hello timed out."))
+        (set hello (socket_message native socket))
+        (if ($absent? hello) ($sleep 5)))
+      (if (|| (!= hello/type "hello") (!= hello/connection_info/app_id identity/app))
+        (channel_error "forbidden" "The Slack app and bot tokens do not identify the same application."))
+    ensure ($C/close socket))
+    (let result (configure_account service/owner data/id filename library identity))
+    (result .put "channel" credentials/channel)
+    result
+  ensure (close_api client)))
+
+(fn setup_route [service, data]
+  (let owner (snapshot service/owner))
+  (let account (owner/accounts .get data/account))
+  (if ($absent? account) (channel_error "not_found" "Slack account not configured."))
+  (let workspace (try ($fs/real_path data/workspace)
+    catch Error (channel_error "not_found" "Create the routed workspace directory first.")))
+  (let previous (owner/routes .get (route_key data/account account/team data/channel)))
+  (if_yes ($absent? previous)
+    (let credentials (read_slack_credentials account/secret_file))
+    (let client (open_api credentials/bot))
+    (try
+      (let info (api_call client "conversations.info" {^channel data/channel} ^http_method "GET"))
+      (if (|| (!= info/channel/is_member true) (== info/channel/is_im true) (== info/channel/is_mpim true))
+        (channel_error "forbidden" "The bot must belong to the selected Slack channel."))
+    ensure (close_api client)))
+  (let route (configure_route service/owner data/account data/channel workspace
+    ^approved (?? data/approved previous/approved) ^require_mention (?? data/require_mention (?? previous/require_mention true))
+    ^enabled (?? data/enabled (?? previous/enabled true))))
+  (if (== workspace service/runtime/root) (bind_workspace service workspace route/id))
+  route)

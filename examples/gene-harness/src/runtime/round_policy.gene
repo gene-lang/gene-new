@@ -2,5 +2,7 @@
 
 (fn operator_round? [round]
   (|| (== round/initiator "user")
+      (&& (== round/input/kind "channel") (== round/input/transport "slack")
+          (== round/initiator ($to_str "channel:slack/" round/input/account)))
       (&& ($str/starts_with? (?? round/initiator "") "continue:")
           (! ($absent? round/continuation)))))

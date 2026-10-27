@@ -1,0 +1,158 @@
+(mod channel_controls)
+(import [snapshot mutate] ^from "./store")
+(import [channel_error key message_key binding_key copy] ^from "./model")
+(import [check_decision add_hold queue_status resume_queue_state] ^from "./queue")
+(import [with_body_use] ^from "../agents/history")
+(import [load_session with_session_gate] ^from "../runtime/sessions")
+(import [cancel_round_locked continue_round_locked answer_round_impl replace_paused_round_locked round_receipt]
+  ^from "../runtime/round_controller")
+(import [close_delegation_owner] ^from "../runtime/delegations")
+
+(fn parse_control [text : Str]
+  (let source text/.trim)
+  (let matched (#"^!(stop|status|continue|continue-until-finished|resume-queue|replace-paused|answer)([ \t]|$)" .match source))
+  (if ($absent? matched) (return nil))
+  (let name matched/groups/0)
+  (let offset (+ name/.byte_size 1))
+  {^name name ^args ($str/trim ($str/slice_bytes source offset (- source/.byte_size offset)))})
+
+(fn complete_control [queues, id : Str, result]
+  (mutate queues (fn [state]
+    (let record (state/controls .get id))
+    (record .put "state" "done")
+    (record .put "result" result)
+    record)))
+
+(fn claim_replacement [queues, session : Str, id : Str, expected : Int]
+  (mutate queues (fn [state]
+    (let queue (state/queues .get session))
+    (let control (state/controls .get id))
+    (if_yes (! ($absent? control/replacement))
+      (if (!= queue/holds control/replacement/holds)
+        (channel_error "stale" "Queue holds changed after the replacement choice; review them again."))
+      (return control))
+    (if (!= queue/revision expected)
+      (channel_error "stale" "The queue changed; inspect its current state before replacing paused work."))
+    (if_not ($absent? queue/batch)
+      (channel_error "uncertain" "Resolve the existing admission before replacing paused work."))
+    (if (== ($size ($filter queue/order (fn [member]
+      (== (/status (state/messages .get member)) "queued")))) 0)
+      (channel_error "invalid_request" "There are no queued requests to replace the paused task."))
+    (control .put "replacement" {^revision expected ^holds (copy queue/holds)})
+    control)))
+
+(fn finish_replacement [queues, session : Str, id : Str]
+  (mutate queues (fn [state]
+    (let queue (state/queues .get session))
+    (let control (state/controls .get id))
+    (if (!= queue/holds control/replacement/holds)
+      (channel_error "stale" "A newer queue hold needs an explicit operator decision."))
+    # The session gate excludes newer Stop/hold transitions. Arrivals may have
+    # increased the revision since this durable claim; they do not revoke it.
+    (resume_queue_state state session queue/revision)
+    (control .put "state" "done")
+    (control .put "result" {^code "replaced"
+      ^text "The paused task was replaced. Queued requests are enabled and will be reauthorized before admission."})
+    control)))
+
+(fn apply_control [service, message, authorize]
+  (let queues service/runtime/channel_queues)
+  (let initial (snapshot queues))
+  (let binding (initial/bindings .get (binding_key message)))
+  (if ($absent? binding) (return {^status "ignored" ^reason "unbound_thread"}))
+  (if (== binding/status "deleted") (return {^status "deleted" ^session binding/session}))
+  (let outcome (with_body_use service/runtime (fn []
+    (with_session_gate service/runtime/sessions ($to_str "round/" binding/session) (fn []
+      (let decision (authorize))
+      (check_decision (snapshot queues) message decision)
+      (if (! decision/allowed) (return {^status "denied"}))
+      (let command (parse_control message/text))
+      (if ($absent? command) (channel_error "invalid_request" "Unknown channel control."))
+      (let id (message_key message))
+      (let digest (key message/text))
+      (let current (/round (load_session service/runtime/sessions binding/session); .get))
+      (let control (mutate queues (fn [state]
+        (if ($absent? state/controls) (state .put "controls" {}))
+        (let previous (state/controls .get id))
+        (if_yes (! ($absent? previous))
+          (if (!= previous/digest digest)
+            (channel_error "submission_conflict" "Control message has different content."))
+          (return previous))
+        (let record {^id id ^status "control" ^state "prepared" ^session binding/session
+          ^command command ^digest digest ^decision decision
+          ^target (if (&& (["stop" "continue" "continue-until-finished"] .contains? command/name)
+                          (!= command/args "")) command/args current/id)})
+        (state/controls .put id record)
+        record)))
+      (if (== control/state "done") (return control))
+      (let result (try
+        (let name control/command/name)
+        (var text "")
+        (var responding_round control/target)
+        (if_yes (== name "status")
+          (let status (queue_status queues binding/session))
+          (set text ($to_str "Agent: " (?? current/state "idle")
+            ". Queued requests: " status/pending ". Queue revision: " status/revision
+            (if status/held ". Queue held." ". Queue enabled."))))
+        (if_yes (== name "stop")
+          (var recorded (== control/stop_recorded true))
+          (for hold in (/holds (queue_status queues binding/session))
+            (if (&& (== hold/reason "stop") (== hold/source id)) (set recorded true)))
+          (if recorded
+            (then (set responding_round (?? control/responding_round control/target)))
+            (else
+              (if_not ($absent? control/target)
+                (let stopped (cancel_round_locked service/controller binding/session control/target))
+                (set responding_round stopped/id))
+              (mutate queues (fn [state]
+                (add_hold (state/queues .get binding/session) "operator" "stop" id)
+                (let saved (state/controls .get id))
+                (saved .put "stop_recorded" true)
+                (saved .put "responding_round" responding_round)
+                nil))))
+          (set text "Stop requested. Queued requests remain held until explicitly resumed."))
+        (if_yes (["continue" "continue-until-finished"] .contains? name)
+          (if ($absent? control/target) (channel_error "stale" "There is no paused task to continue."))
+          (let continued (continue_round_locked service/controller binding/session control/target
+            (if (== name "continue") "manual" "automatic")))
+          (set text ($to_str "Continuing current work in " continued/id ". Queued requests keep their existing holds.")))
+        (if_yes (== name "answer")
+          (let supplied (#"^([^ \t]+)[ \t]+(.+)$" .match control/command/args))
+          (if ($absent? supplied)
+            (channel_error "invalid_request" "Use !answer BATCH_ID followed by a JSON object of answers."))
+          (let values (try ($json/parse ^^strict supplied/groups/1)
+            catch Error (channel_error "invalid_request" "Answers must be a JSON object.")))
+          (answer_round_impl service/controller binding/session supplied/groups/0 values ^channel_input message)
+          (set text "Answers accepted."))
+        (if_yes (== name "replace-paused")
+          (let supplied (#"^([^ \t]+)[ \t]+([0-9]{1,16})$" .match control/command/args))
+          (if ($absent? supplied)
+            (channel_error "invalid_request" "Use !replace-paused ROUND_ID QUEUE_REVISION after reviewing !status."))
+          (let prior (round_receipt service/controller binding/session supplied/groups/0))
+          (if (&& (== prior/queue_replacement id) (!= current/id supplied/groups/0))
+            (return (complete_control queues id {^code "replaced"
+              ^text "The replacement was recorded before recovery. Later work and queue holds were preserved."})))
+          (claim_replacement queues binding/session id ($parse/parse_int supplied/groups/1))
+          (replace_paused_round_locked service/controller binding/session supplied/groups/0 id)
+          (return (finish_replacement queues binding/session id)))
+        (if_yes (== name "resume-queue")
+          (if ($absent? (#"^[0-9]{1,16}$" .match control/command/args))
+            (channel_error "invalid_request" "Use !status, then !resume-queue QUEUE_REVISION."))
+          (let expected ($parse/parse_int control/command/args))
+          # Resume admission is recorded in the same checkpoint as the hold
+          # changes. A lost response cannot turn an identical retry into stale.
+          (return (mutate queues (fn [state]
+            (resume_queue_state state binding/session expected)
+            (let record (state/controls .get id))
+            (record .put "state" "done")
+            (record .put "result" {^code "resumed" ^text "Queue holds cleared. Unresolved pauses and active work still block admission."})
+            record))))
+        {^code "ok" ^text text ^round responding_round}
+      catch Error {^code (?? $err/code "control_error") ^text (?? $err/message "The control failed.")}))
+      (complete_control queues id result))))))
+  (if (&& (["stop" "replace-paused"] .contains? outcome/command/name)
+          (["ok" "replaced"] .contains? outcome/result/code)
+          (! ($absent? outcome/target)))
+    (close_delegation_owner service/runtime/delegations binding/session
+      (?? outcome/result/round outcome/target) "The parent round was cancelled."))
+  outcome)

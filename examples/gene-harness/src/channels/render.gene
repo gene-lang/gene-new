@@ -1,0 +1,124 @@
+(mod slack_render)
+(import [byte_prefix] ^from "../text")
+(import [channel_error] ^from "./model")
+
+(fn replace_literal [text : Str, needle : Str, replacement : Str]
+  ($str/join (text .split needle) replacement))
+
+(fn escape_slack [text : Str]
+  (replace_literal (replace_literal (replace_literal text "&" "&amp;") "<" "&lt;") ">" "&gt;"))
+
+(fn media_id [url : Str]
+  (let matched (#"^/api/v[0-9]+/media/([A-Za-z0-9_-]{1,128})$" .match url))
+  (if ($absent? matched) nil matched/groups/0))
+
+(fn transcript_reference [session : Str, public_url]
+  # This is an operator-configured, externally reachable browser URL. Never
+  # publish a local owner link (which contains a login token) into Slack.
+  (if (|| (!= ($head public_url) Str)
+          ($absent? (#"^https?://[^/@?# ]+[^?# ]*$" .match public_url))
+          (! ($absent? (#"(?i)^https?://(localhost|127\.[0-9.]+|\[::1\])(:|/|$)" .match public_url))))
+    (return ($to_str "Harness session " session)))
+  (var base public_url)
+  (while (base .ends_with? "/") (set base ($str/slice_bytes base 0 (- base/.byte_size 1))))
+  ($to_str base "/?session=" ($url/encode_component session)))
+
+# Process links and images before Slack escaping, and never interpret their
+# labels as Slack controls. Unsupported image URLs remain readable literal text.
+(fn inline_text [text : Str, surface : Str, reference : Str]
+  (let found ($into ($regex/find_all #"!?\[([^]\n]*)\]\(([^)\n]+)\)" text) []))
+  (let output [])
+  (var position 0)
+  (for token in found
+    (output .push (escape_slack ($str/slice_bytes text position (- token/start position))))
+    (let label token/groups/0)
+    (let url token/groups/1)
+    (let image (token/text .starts_with? "!"))
+    (if (&& image (! ($absent? (media_id url))))
+      (output .push (escape_slack ($to_str (if (== label "") "Image" label)
+        " (image available in " reference ")")))
+      (if (&& (! image) (! ($absent? (#"^https?://[^<>|\s]+$" .match url))))
+        (output .push (if (== surface "markdown")
+          ($to_str "[" (escape_slack label) "](" (escape_slack url) ")")
+          ($to_str "<" (escape_slack url) "|" (replace_literal (escape_slack label) "|" "¦") ">")))
+        (output .push (escape_slack token/text))))
+    (set position token/end))
+  (output .push (escape_slack ($str/slice_bytes text position (- text/.byte_size position))))
+  ($str/join output ""))
+
+(fn format_lines [text : Str, surface : Str, reference : Str]
+  (let output [])
+  (var fence nil)
+  (for line in (text .split "\n")
+    (let marker (#"^[ \t]*(`{3,}|~{3,})([^`~]*)$" .match line))
+    (if_yes (! ($absent? marker))
+      (let selected ($str/slice_bytes marker/groups/0 0 1))
+      (if ($absent? fence)
+        (then (set fence selected) (output .push "```"))
+        (else (if (== fence selected) (then (set fence nil) (output .push "```"))
+          (else (output .push (escape_slack line))))))
+      (continue))
+    (if_yes (! ($absent? fence))
+      (output .push (escape_slack line)) (continue))
+    (var rendered (inline_text line surface reference))
+    (if_yes (== surface "mrkdwn")
+      (let heading (#"^#{1,6}[ \t]+(.+)$" .match rendered))
+      (if_not ($absent? heading) (set rendered ($to_str "*" heading/groups/0 "*")))
+      (set rendered (replace_literal rendered "**" "*"))
+      (set rendered (replace_literal rendered "~~" "~"))
+      (set rendered ($regex/replace #"^[ \t]*[-+][ \t]+" rendered "• ")))
+    (output .push rendered))
+  (if_not ($absent? fence) (output .push "```"))
+  output)
+
+(fn split_lines [lines, maximum : Int]
+  (let parts [])
+  (var current "")
+  (var fenced false)
+  (let emit (fn []
+    (if (!= current "") (parts .push ($to_str current (if fenced "\n```" ""))))
+    (set current (if fenced "```\n" ""))))
+  (for line in lines
+    (if_yes (== line "```")
+      (if (> (+ current/.byte_size 8) maximum) (emit))
+      (set current ($to_str current (if (== current "") "" "\n") "```"))
+      (set fenced (! fenced))
+      (continue))
+    (let tokens (if fenced [line]
+      ($map ($into ($regex/find_all #"<https?://[^>]+>|\[[^]\n]*\]\(https?://[^)\n]+\)|[^\s]+|[ \t]+" line) []) /text)))
+    (var first true)
+    (for supplied in tokens
+      (var token supplied)
+      (let separator (if (&& first (!= current "")) "\n" ""))
+      (if (> (+ current/.byte_size separator/.byte_size token/.byte_size 5) maximum) (emit))
+      (if (&& first (!= current "") (! (current .ends_with? "\n")))
+        (set current ($to_str current "\n")))
+      (set first false)
+      (while (> token/.byte_size (- maximum current/.byte_size 5))
+        (let prefix (byte_prefix token (- maximum current/.byte_size 5)))
+        (if (== prefix "") (channel_error "too_large" "A Slack output unit exceeds its message bound."))
+        (set current ($to_str current prefix))
+        (set token ($str/slice_bytes token prefix/.byte_size (- token/.byte_size prefix/.byte_size)))
+        (emit))
+      (set current ($to_str current token)))
+    (if (&& tokens/.empty? (!= current "")) (set current ($to_str current "\n"))))
+  (if (!= current "") (emit))
+  parts)
+
+(fn render_reply [text : Str, session : Str, ^surface surface : Str = "mrkdwn",
+                  ^public_url public_url = nil, ^max_bytes maximum : Int = 3000]
+  (if (! (["mrkdwn" "markdown"] .contains? surface))
+    (channel_error "invalid_request" "Unknown Slack rendering surface."))
+  (if (|| (< maximum 256) (> maximum 3000))
+    (channel_error "invalid_request" "Slack part bounds must be 256–3000 bytes."))
+  (let reference (transcript_reference session public_url))
+  (let rendered (split_lines (format_lines text surface reference) maximum))
+  (let parts [])
+  (for body in rendered
+    (let part {^text body})
+    (part .put "blocks" (if (== surface "markdown")
+      [{^type "markdown" ^text body}]
+      [{^type "section" ^text {^type "mrkdwn" ^text body ^verbatim true}}]))
+    (parts .push part))
+  (if parts/.empty? (parts .push {^text "(Empty reply)"}))
+  parts)

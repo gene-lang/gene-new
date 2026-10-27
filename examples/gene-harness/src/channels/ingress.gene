@@ -1,0 +1,78 @@
+(mod slack_ingress)
+(import [snapshot mutate] ^from "./store")
+(import [route_key authorize_state] ^from "./authority")
+(import [channel_error copy key required_text normalize_message] ^from "./model")
+
+# Run only on the connection owner's authenticated socket. Returning means the
+# disposition is durable and the caller may acknowledge this Slack envelope.
+# Network delivery to the workspace happens later, outside the socket reader.
+(fn receive_envelope [owner, account_id : Str, envelope]
+  (required_text envelope/envelope_id "envelope ID" ^max_bytes 256)
+  (mutate owner (fn [state]
+    (let account (state/accounts .get account_id))
+    (if ($absent? account) (channel_error "not_found" "Slack account not configured."))
+    (if (!= envelope/type "events_api")
+      (return {^status "ignored" ^reason "unsupported_envelope"}))
+    (let payload envelope/payload)
+    (if (|| (!= payload/type "event_callback") (!= payload/team_id account/team)
+            (!= payload/api_app_id account/app))
+      (channel_error "forbidden" "Slack event does not match the connected account."))
+    (let event_id (required_text payload/event_id "event ID" ^max_bytes 256))
+    (let id (key [account_id account/team event_id]))
+    (let digest (key payload/event))
+    (let previous (state/ingress .get id))
+    (if_yes (! ($absent? previous))
+      (if (!= previous/digest digest)
+        (channel_error "submission_conflict" "Slack event ID has different content."))
+      (return previous))
+    (let event payload/event)
+    (state .put "ingress_sequence" (+ (?? state/ingress_sequence 0) 1))
+    (let record {^id id ^event_id event_id ^account account_id ^digest digest
+      ^sequence state/ingress_sequence ^status "ignored" ^reason "unsupported_event"
+      ^received_at ($os/wall_ms)})
+    (if_yes (&& (["message" "app_mention"] .contains? event/type)
+                ($absent? event/subtype) ($absent? event/bot_id)
+                (!= event/user account/bot_user)
+                (== ($head event/text) Str) (!= event/text/.trim ""))
+      (let route_id (route_key account_id account/team (?? event/channel "")))
+      (let decision (authorize_state state route_id (?? event/user "") nil))
+      (record .put "decision" decision)
+      (record .put "status" "denied")
+      (record .put "reason" "sender_policy")
+      (if_yes decision/allowed
+        (let mention ($to_str "<@" account/bot_user ">"))
+        (let text ($str/join (event/text .split mention) ""))
+        (let message (normalize_message {^transport "slack" ^account account_id ^team account/team
+          ^channel event/channel ^thread (?? event/thread_ts event/ts) ^message event/ts
+          ^author event/user ^text (if (== text/.trim "") event/text text/.trim)
+          ^received_at record/received_at}))
+        (record .put "route" (copy decision/route))
+        (record .put "workspace" decision/route/workspace)
+        (record .put "payload" {^team_id payload/team_id ^api_app_id payload/api_app_id
+          ^event_id payload/event_id ^event (copy event)})
+        (record .put "message" message)
+        (record .put "start_allowed" (|| (! decision/route/require_mention) (event/text .contains? mention)))
+        (record .put "status" "pending")
+        (record .delete "reason")))
+    (state/ingress .put id record)
+    record)))
+
+(fn pending_ingress [owner]
+  (let state (snapshot owner))
+  (let pending [])
+  (for [id record] in state/ingress
+    (if (== record/status "pending") (pending .push record)))
+  ($order/sort_by pending /sequence))
+
+(fn finish_handoff [owner, id : Str, result]
+  (mutate owner (fn [state]
+    (let record (state/ingress .get id))
+    (if ($absent? record) (channel_error "not_found" "Ingress delivery not found."))
+    (if (== record/status "handed_off") (return record))
+    (if (!= record/status "pending")
+      (channel_error "conflict" "This ingress record is not awaiting handoff."))
+    (if (|| (!= ($head result) Map) (! (["queued" "claimed" "consumed" "denied" "ignored" "deleted" "control"] .contains? result/status)))
+      (channel_error "invalid_request" "Workspace did not return a durable channel disposition."))
+    (record .put "status" "handed_off")
+    (record .put "result" (copy result))
+    record)))

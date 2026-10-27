@@ -670,6 +670,10 @@
   (var id : Str session/id)
   (var kind : Str session/kind)
   (var status : Str session/status)
+  (var metadata $"${kind} · ${status}")
+  (if_yes (== (string_or session/channel/transport "") "slack")
+    (var destination : Str session/channel/channel)
+    (set metadata $"Slack ${destination} · ${metadata}"))
   (var cls (if (== id client/selected) "session selected" "session"))
   (var row ($dom/render `(div ^class_name %(if (== id client/selected) "session_row selected" "session_row"))))
   ($dom/append
@@ -677,7 +681,7 @@
     ($dom/render
       `(button ^type "button" ^class_name %cls ^on_click %(fn [event : Any] : Void (select_session client id))
          (span ^class_name "session_name" %title)
-         (span ^class_name "session_meta" %$"${kind} · ${status}"))))
+         (span ^class_name "session_meta" %metadata))))
   (var more ($dom/render `(button ^type "button" ^class_name "session_more"
     ^aria-label %$"Actions for ${title}" ^aria-haspopup "menu" ^aria-expanded "false"
     ^disabled %(! client/ready)
@@ -1442,6 +1446,13 @@
   (set client/session_revision data/session/revision)
   (var title : Str data/session/title)
   ($dom/set_text client/title title)
+  (var shared : Any data/session/channel)
+  (set_hidden "channel_sharing" ($absent? shared))
+  (if_not ($absent? shared)
+    (var account : Str shared/account)
+    (var channel : Str shared/channel)
+    ($dom/set_text ($dom/element "channel_sharing")
+      $"Shared with Slack channel ${channel} (${account}). Messages and Agent replies are published to its thread. Approved Slack participants can run code with this host's file and process access."))
   (var origin ($dom/element "child_origin"))
   ($dom/clear origin)
   (set_hidden "child_origin" ($absent? data/session/parent))
@@ -1534,6 +1545,7 @@
   (set client/expanded [])
   (set client/components [])
   (set client/round nil)
+  (set_hidden "channel_sharing" true)
   (set client/mode nil)
   (set client/mode_pending nil)
   (set client/rounds [])

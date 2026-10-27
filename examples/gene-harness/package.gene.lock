@@ -1,13 +1,13 @@
 {
   ^lock_format 1
-  ^root_manifest_digest "sha256:7990e2948a6962f1aae22cd1a466cc1f5baafea9b36874ce881b12048e9d0531"
+  ^root_manifest_digest "sha256:87e213e7a33bf3754cc13b930f92f5500c73c6135593af8c3cd79517ef1936bc"
   ^workspace_digest "sha256:fc2162cc3f53253d71cefe2b0b1aff86e38baedf5c3e230b17d47d035a38ca06"
   ^registry_snapshots [
   ]
-  ^roots [ "workspace:gene/harness@0.1.0#sha256:0348ea719cffacb477deae55d8ba8d2be529592b1fc30dbbb41b54ae22f88139"]
+  ^roots [ "workspace:gene/harness@0.1.0#sha256:76acfdc2aca896a403b1de59d209b6c4dbaa00162d578a0ff00ba36d9e5ee6f3"]
   ^packages [
     (locked_package
-      ^id "path:gene/reference@0.1.0#sha256:70110c7deea4545bd6c1c3d19141fd745fe2a396e3d8714e89c8614d650893bf"
+      ^id "path:gene/reference@0.1.0#sha256:ca8bed3e10317e8658f206141e57deb67a17c959b0d9403e294aca875b383398"
       ^name "gene/reference"
       ^version "0.1.0"
       ^manifest_digest "sha256:f71f62e936371d313f8db901320f78046576814babbdd3c4855dce92283954bd"
@@ -17,7 +17,7 @@
       }
       ^compatibility (compatibility ^package_format 1 ^runtime ">=0.1.0 <0.2.0"))
     (locked_package
-      ^id "path:genex/audio@0.1.0#sha256:e78df2ffe3b2c02ff2de00cc53168c70c36f33b57c7f4daf06063aaf5db4b88f"
+      ^id "path:genex/audio@0.1.0#sha256:27867ff97f5824048404d6de0e6127d11c4ebe29ac57e8e270397a774266b051"
       ^name "genex/audio"
       ^version "0.1.0"
       ^manifest_digest "sha256:554031c1e2ec426bd338d0236d187521acb705d9e0e6ab469e88983dbf782fa5"
@@ -27,7 +27,7 @@
       }
       ^compatibility (compatibility ^package_format 1 ^runtime ">=0.1.0 <0.2.0"))
     (locked_package
-      ^id "path:genex/computer@0.1.0#sha256:420dcb842505ec0b51904608825de200d8a57bb542f655ab9ee85f066bdc5772"
+      ^id "path:genex/computer@0.1.0#sha256:482c9bdfacc8afd7868ff188a5f1ef6b7728e1e0331e7981bd5df4634b9c8d47"
       ^name "genex/computer"
       ^version "0.1.0"
       ^manifest_digest "sha256:9d03105dcffefa3ae765070c584940abfe814c030825a93a4238ce0c57307535"
@@ -37,7 +37,7 @@
       }
       ^compatibility (compatibility ^package_format 1 ^runtime ">=0.1.0 <0.2.0"))
     (locked_package
-      ^id "path:genex/cordis@0.1.0#sha256:3ebdc04387137a0e9ef7fd014d3e86bf6b5fffc0c9c0f93621262be24707dc77"
+      ^id "path:genex/cordis@0.1.0#sha256:cb1f9baf8914e46243fe29faea92b87ffd9c5e1409bb7dedbcfda8f34c25d263"
       ^name "genex/cordis"
       ^version "0.1.0"
       ^manifest_digest "sha256:2cb48d7dfc2c847c2be017cbbcac9c393b62cd63713f1f877f5f7de7cc88b9ea"
@@ -47,7 +47,7 @@
       }
       ^compatibility (compatibility ^package_format 1 ^runtime ">=0.1.0 <0.2.0"))
     (locked_package
-      ^id "path:genex/documents@0.1.0#sha256:2044702969b95e512f640fc02e70db56ac535876007ab6b599bc22448c16c884"
+      ^id "path:genex/documents@0.1.0#sha256:126192c78bc93faf77760444e2c85196b7566f36ef4bf3fa03bc797889461381"
       ^name "genex/documents"
       ^version "0.1.0"
       ^manifest_digest "sha256:13390d8e58279543066d4e35b378454a1b9204000e4fe68da24d79a30277322e"
@@ -57,7 +57,7 @@
       }
       ^compatibility (compatibility ^package_format 1 ^runtime ">=0.1.0 <0.2.0"))
     (locked_package
-      ^id "path:genex/raster@0.1.0#sha256:70b992d4f02c20804ee4d6a2fca3552b63428e78d24199433a6bf6cb7f03414d"
+      ^id "path:genex/raster@0.1.0#sha256:df04d62e8a038a51a2913ca2e55560cd44ff91c7c9f8329aa5d5532e085adffa"
       ^name "genex/raster"
       ^version "0.1.0"
       ^manifest_digest "sha256:474db269cb68872f029516cb2b0eee9dbfed73efdaeee4d1a1169535d7f20ba7"
@@ -67,19 +67,30 @@
       }
       ^compatibility (compatibility ^package_format 1 ^runtime ">=0.1.0 <0.2.0"))
     (locked_package
-      ^id "workspace:gene/harness@0.1.0#sha256:0348ea719cffacb477deae55d8ba8d2be529592b1fc30dbbb41b54ae22f88139"
+      ^id "path:genex/websocket@0.1.0#sha256:a85a4c079bf1966912a1fd7a5a1b14dfdabda2bb69b6bf0f26f8869764beb5b4"
+      ^name "genex/websocket"
+      ^version "0.1.0"
+      ^manifest_digest "sha256:7764a3c9ff0548902714703b7666053642835146cbb7419ae4800382deb4dc5d"
+      ^source (path ^path "../../src/genex/websocket")
+      ^features []
+      ^dependencies {
+      }
+      ^compatibility (compatibility ^package_format 1 ^runtime ">=0.1.0 <0.2.0"))
+    (locked_package
+      ^id "workspace:gene/harness@0.1.0#sha256:76acfdc2aca896a403b1de59d209b6c4dbaa00162d578a0ff00ba36d9e5ee6f3"
       ^name "gene/harness"
       ^version "0.1.0"
-      ^manifest_digest "sha256:7990e2948a6962f1aae22cd1a466cc1f5baafea9b36874ce881b12048e9d0531"
+      ^manifest_digest "sha256:87e213e7a33bf3754cc13b930f92f5500c73c6135593af8c3cd79517ef1936bc"
       ^source (workspace ^path ".")
       ^features []
       ^dependencies {
-        ^audio (locked_edge ^scope runtime ^target "path:genex/audio@0.1.0#sha256:e78df2ffe3b2c02ff2de00cc53168c70c36f33b57c7f4daf06063aaf5db4b88f")
-        ^computer (locked_edge ^scope runtime ^target "path:genex/computer@0.1.0#sha256:420dcb842505ec0b51904608825de200d8a57bb542f655ab9ee85f066bdc5772")
-        ^cordis (locked_edge ^scope runtime ^target "path:genex/cordis@0.1.0#sha256:3ebdc04387137a0e9ef7fd014d3e86bf6b5fffc0c9c0f93621262be24707dc77")
-        ^documents (locked_edge ^scope runtime ^target "path:genex/documents@0.1.0#sha256:2044702969b95e512f640fc02e70db56ac535876007ab6b599bc22448c16c884")
-        ^gene_reference (locked_edge ^scope runtime ^target "path:gene/reference@0.1.0#sha256:70110c7deea4545bd6c1c3d19141fd745fe2a396e3d8714e89c8614d650893bf")
-        ^raster (locked_edge ^scope runtime ^target "path:genex/raster@0.1.0#sha256:70b992d4f02c20804ee4d6a2fca3552b63428e78d24199433a6bf6cb7f03414d")
+        ^audio (locked_edge ^scope runtime ^target "path:genex/audio@0.1.0#sha256:27867ff97f5824048404d6de0e6127d11c4ebe29ac57e8e270397a774266b051")
+        ^computer (locked_edge ^scope runtime ^target "path:genex/computer@0.1.0#sha256:482c9bdfacc8afd7868ff188a5f1ef6b7728e1e0331e7981bd5df4634b9c8d47")
+        ^cordis (locked_edge ^scope runtime ^target "path:genex/cordis@0.1.0#sha256:cb1f9baf8914e46243fe29faea92b87ffd9c5e1409bb7dedbcfda8f34c25d263")
+        ^documents (locked_edge ^scope runtime ^target "path:genex/documents@0.1.0#sha256:126192c78bc93faf77760444e2c85196b7566f36ef4bf3fa03bc797889461381")
+        ^gene_reference (locked_edge ^scope runtime ^target "path:gene/reference@0.1.0#sha256:ca8bed3e10317e8658f206141e57deb67a17c959b0d9403e294aca875b383398")
+        ^raster (locked_edge ^scope runtime ^target "path:genex/raster@0.1.0#sha256:df04d62e8a038a51a2913ca2e55560cd44ff91c7c9f8329aa5d5532e085adffa")
+        ^websocket (locked_edge ^scope runtime ^target "path:genex/websocket@0.1.0#sha256:a85a4c079bf1966912a1fd7a5a1b14dfdabda2bb69b6bf0f26f8869764beb5b4")
       }
       ^compatibility (compatibility ^package_format 1 ^runtime ">=0.1.0 <0.2.0"))
   ]

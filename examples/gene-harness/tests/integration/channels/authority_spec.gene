@@ -1,0 +1,87 @@
+(import $test [describe it])
+(import [isolated run_spec] ^from "../../support")
+(import [open_authority configure_account configure_route authorize public_authority
+         snapshot close_channel_store]
+  ^from "../../../src/channels/authority")
+(import [ChannelError normalize_message normalize_channel_input render_parts]
+  ^from "../../../src/channels/model")
+
+(fn identity []
+  {^team "T123" ^app "A123" ^bot "B123" ^bot_user "UBOT" ^operator "UOWNER"})
+
+(describe "Channel authorization authority"
+  (it "persists one revisioned policy and revocation across reopen without storing tokens" []
+    (isolated this_mod/.path "persists one revisioned policy and revocation across reopen without storing tokens"
+      (fn [workspace]
+        (let root ($path/join workspace "authority"))
+        (let selected ($cell ""))
+        (let revision ($cell 0))
+        (let owner (open_authority root))
+        (try
+          (configure_account owner "dobi" "/private/credential-reference" "/adapter.so" (identity))
+          (let binding (configure_route owner "dobi" "C123" workspace))
+          (selected .set binding/id)
+          ($assert (/allowed (authorize owner binding/id "UOWNER" ^workspace workspace)))
+          ($assert (! (/allowed (authorize owner binding/id "UOTHER"))))
+          ($assert (! (/allowed (authorize owner binding/id "UOWNER" ^workspace "/another-workspace"))))
+          (let before (/policy_revision (snapshot owner)))
+          (configure_route owner "dobi" "C123" workspace)
+          ($assert (== before (/policy_revision (snapshot owner))) "idempotent config changed policy revision")
+          (configure_route owner "dobi" "C123" workspace ^approved ["UOTHER"])
+          (let decision (authorize owner binding/id "UOWNER"))
+          ($assert (! decision/allowed) "revoked operator was still approved")
+          ($assert (> decision/policy_revision before))
+          (revision .set decision/policy_revision)
+          ($assert (/allowed (authorize owner binding/id "UOTHER")))
+          (let public ($serde/write_data (public_authority owner)))
+          ($assert (! ($str/contains? public "credential-reference")))
+          ($assert (! ($str/contains? public "adapter.so")))
+        ensure (close_channel_store owner))
+        (let reopened (open_authority root))
+        (try
+          (let restored (authorize reopened selected/.get "UOWNER"))
+          ($assert (! restored/allowed))
+          ($assert (== restored/policy_revision revision/.get))
+          ($assert (/allowed (authorize reopened selected/.get "UOTHER")))
+        ensure (close_channel_store reopened)))))
+
+  (it "refuses ambiguous app, channel and workspace routes and fails closed after close" []
+    (isolated this_mod/.path "refuses ambiguous app, channel and workspace routes and fails closed after close"
+      (fn [workspace]
+        (let owner (open_authority ($path/join workspace "authority")))
+        (try
+          (configure_account owner "dobi" "/reference" "/adapter.so" (identity))
+          (let binding (configure_route owner "dobi" "C123" workspace))
+          ($assert (try (configure_account owner "duplicate" "/reference" "/adapter.so" (identity)) false
+            catch ChannelError (== $err/code "conflict")))
+          ($assert (try (configure_route owner "dobi" "C456" workspace) false
+            catch ChannelError (== $err/code "conflict")))
+          ($assert (try (configure_route owner "dobi" "C123" "/different-workspace") false
+            catch ChannelError (== $err/code "conflict")))
+          (configure_route owner "dobi" "C123" workspace ^enabled false)
+          ($assert (! (/allowed (authorize owner binding/id "UOWNER"))))
+          (close_channel_store owner)
+          ($assert (try (authorize owner binding/id "UOWNER") false
+            catch ChannelError (== $err/code "unavailable")))
+        ensure (close_channel_store owner)))))
+)
+
+(describe "Channel input metadata"
+  (it "preserves ordered authors and rejects cross-thread or duplicate members" []
+    (let first (normalize_message {^transport "slack" ^account "dobi" ^team "T123"
+      ^channel "C123" ^thread "1.000001" ^message "1.000001" ^author "UOWNER"
+      ^text "also add X" ^received_at 1}))
+    (let second (first .assoc "message" "2.000001"; .assoc "author" "UOTHER"; .assoc "text" "actually skip X"))
+    (let value {^kind "channel" ^account "dobi" ^team "T123" ^channel "C123"
+      ^thread "1.000001" ^batch "batch-1" ^messages [first second]})
+    (let checked (normalize_channel_input value))
+    ($assert (== checked/messages [first second]))
+    ($assert ($str/contains? (render_parts checked/messages) "from UOTHER"))
+    ($assert (try (normalize_channel_input (value .assoc "messages" [first first])) false
+      catch ChannelError (== $err/code "invalid_request")))
+    ($assert (try (normalize_channel_input
+      (value .assoc "messages" [first (second .assoc "thread" "3.000001")])) false
+      catch ChannelError (== $err/code "invalid_request"))))
+)
+
+(fn main [args] : Int (run_spec args))

@@ -8,6 +8,7 @@
 (import [append_core_event] ^from "../storage/state")
 (import [pending_request read_body] ^from "../agents/history")
 (import [operator_round?] ^from "../runtime/round_policy")
+(import [open_channel_service close_channel_service] ^from "../channels/service")
 (import ^from "../runtime/bootstrap" [open_runtime close_runtime prepare_workspace_root])
 (import ^from "../profiles/baseline" [baseline_profile])
 (import ^from "../profiles/offline" [offline_profile])
@@ -152,6 +153,8 @@
     ^continued_from (?? payload/continued_from nil) ^source_turn (?? payload/source_turn nil)
     ^delegation (== payload/delegation true) ^answers (== payload/answers true)
     ^initial (== payload/initial true) ^initiator (?? payload/initiator nil)
+    ^input (?? payload/input nil)
+    ^answer_source (?? payload/answer_source nil)
     ^card (?? payload/card nil) ^reply_hint (?? payload/reply_hint nil)
     ^reason (?? payload/reason nil) ^synthetic (== payload/synthetic true)
     ^at_limit (== payload/at_limit true)
@@ -367,6 +370,8 @@
   # Recovery recorded answered batches whose continuation never started.
   (resume_answered_rounds service/controller)
   (resume_continuations service/controller)
+  (if_not ($absent? runtime/channel_queues)
+    (set runtime/channels (open_channel_service runtime service/controller)))
   (service/subscriptions .push
     (runtime/h/bus .subscribe HarnessEvent (fn [event] (handle_harness_event service event))))
   # Runtime-owned observation must not inherit a plugin activation's callback
@@ -579,7 +584,7 @@
     (fail (RoundError ^code "not_found" ^message "Round receipt is not retained.")))
   (public_round service session result))
 (fn answer [service, session : Str, batch_id : Str, values, ^dismiss dismiss : Bool = false]
-  (answer_round ^dismiss dismiss service/controller session batch_id values))
+  (answer_round ^dismiss dismiss ^^operator_input service/controller session batch_id values))
 (fn cancel [service, session : Str, id : Str]
   (cancel_round service/controller session id))
 
@@ -636,6 +641,7 @@
            ^round_id (?? batch/round "") ^turn (?? batch/turn 0) ^role "assistant"
            ^phase "questions" ^kind "questions" ^text ""
            ^batch {^id batch/id ^questions batch/questions ^answers batch/answers
+                   ^answer_source (?? batch/answer_source nil)
                    ^intent (?? batch/intent "continue")}
            ^order (?? batch/answered_ms event/seq) ^^durable}))))
   (for card in (card_records service/runtime id)
@@ -825,4 +831,5 @@
   (withdraw_seam service/runtime/h "core" "loop")
   (if_not ($absent? service/runtime/triggers) (close_trigger_manager service/runtime/triggers))
   (close_round_controller service/controller)
+  (if_not ($absent? service/runtime/channels) (close_channel_service service/runtime/channels))
   (close_runtime service/runtime))

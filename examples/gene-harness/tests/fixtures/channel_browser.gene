@@ -1,0 +1,9 @@
+# An isolated fake-Slack workspace with a public test-only login credential.
+# Production hosts never use this entry point or credential.
+(import [main : peer_main] ^from "./channel_peer")
+
+(fn main [args]
+  ($fs/make_dir ($path/join args/0 ".gene-harness"))
+  ($fs/write_text_atomic ^^owner_only ($path/join args/0 ".gene-harness" "web_secret")
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+  (peer_main [args/0 "workspace" "browser" args/1]))

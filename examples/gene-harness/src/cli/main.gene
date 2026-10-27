@@ -4,6 +4,7 @@
 (import ^from "../runtime/maintenance" [repair reset_offline])
 (import ^from "../runtime/workspace_lock" [WorkspaceInUse])
 (import ^from "./notification_presenter" [notification_command present_message])
+(import [channel_command] ^from "./channels")
 
 (fn usage [] """Gene Harness: one web host per workspace.
   gene-harness web [--workspace DIR] [--port PORT] [--offline | --script FILE]
@@ -20,6 +21,11 @@ Workspace commands:
   status | link | auth reset | stop [--confirm] | restart [--confirm]
   sessions [create --title TITLE]
   triggers [list | create FILE | delete ID | occurrences [ID]]
+  channels [status | account NAME --file FILE | route ACCOUNT --file FILE]
+  channels bind ROUTE --file FILE | queue --session ID | resume --session ID --revision N
+  channels delivery ID
+  channels settings --file FILE
+  channels discard --session ID --revision N --file FILE
   notifications [list | show ID | clear ID --revision N | clear --all | ack | watch]
   doctor | enable ID | disable ID | restore ID  (offline repair only)
   plugins [--q TEXT] [--status STATE] [--offline]
@@ -157,7 +163,7 @@ Profile: """
   (let action parsed/command)
   (if (["chat" "scripted"] .contains? action)
     (problem "Standalone terminal chat is retired. Start gene-harness web, then use sessions create and send --session ID."))
-  (if_not (["doctor" "enable" "disable" "restore" "plugins" "history" "revert" "status" "link" "auth" "stop" "restart" "sessions" "triggers" "notifications" "transcript" "receipt" "wait" "answer" "dismiss" "cancel" "send" "run" "sh" "view" "command"] .contains? action)
+  (if_not (["doctor" "enable" "disable" "restore" "plugins" "history" "revert" "status" "link" "auth" "stop" "restart" "sessions" "triggers" "channels" "notifications" "transcript" "receipt" "wait" "answer" "dismiss" "cancel" "send" "run" "sh" "view" "command"] .contains? action)
     (problem $"Unknown command ${action}. Use --help for usage."))
   (for key in ["port" "restart-port" "startup-id" "script" "supervised" "recovery" "managed"]
     (if_not ($absent? (options .get key)) (problem $"--${key} is a web-host option.")))
@@ -191,6 +197,7 @@ Profile: """
   (let root ($fs/real_path selected))
   (if (== action "link") (return (connection_link root)))
   (let client (connect root))
+  (if (== action "channels") (return (channel_command client words options)))
   (if (== action "plugins")
     (return (api client "GET" ($to_str "/plugins?q="
       ($url/encode_component (?? options/q "")) "&state="

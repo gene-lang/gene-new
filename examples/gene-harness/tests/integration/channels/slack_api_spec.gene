@@ -1,0 +1,81 @@
+(import $test [describe it])
+(import [isolated run_spec] ^from "../../support")
+(import [read_slack_credentials secret_path open_api close_api api_call identify SlackError]
+  ^from "../../../src/channels/slack_api")
+
+(type ProbeError ^props {^message Str} ^impl [Error])
+(impl Error for ProbeError)
+
+(fn response [body, ^status status = 200, ^headers headers = []]
+  {^status status ^headers headers ^body ($binary/from_str ($json/stringify body))})
+
+(describe "Slack API boundary"
+  (it "reads recognized credential fields without exposing secret values in validation errors" []
+    (isolated this_mod/.path "reads recognized credential fields without exposing secret values in validation errors"
+      (fn [workspace]
+        (let path ($path/join workspace "slack-credentials"))
+        ($fs/write_text path "User oauth token: xoxp-test-user\nBot user oauth token: `xoxb-test-bot`\nApp token: xapp-test-app\n\n#team-dobi channel id: C12345678\n")
+        ($assert ($fs/exists? (secret_path path)) "credential fixture path was not resolved")
+        (let found (read_slack_credentials path))
+        ($assert (&& (== found/user "xoxp-test-user") (== found/bot "xoxb-test-bot")
+                     (== found/app "xapp-test-app") (== found/channel "C12345678")))
+        ($fs/write_text path "Bot user oauth token: secret-must-not-appear\nApp token: xapp-test-app\nchannel id: C12345678\n")
+        (let error (try (read_slack_credentials path) nil catch SlackError $err))
+        ($assert (== error/code "invalid_credentials"))
+        ($assert (! ($str/contains? error/message "secret-must-not-appear")))
+        (let missing (try (read_slack_credentials ($to_str path ".missing")) nil catch SlackError $err))
+        ($assert (== missing/code "credentials_unavailable")))))
+
+  (it "verifies bot, operator and channel identities through separately scoped tokens" []
+    (let calls [])
+    (let api (open_api "xoxb-test-bot" ^requester (fn [request]
+      (let method request/method)
+      (let headers request/headers)
+      (calls .push method)
+      (if (== method "auth.test")
+        (if (== headers/authorization "Bearer xoxp-test-user")
+          (response {^^ok ^team_id "T123" ^user_id "U123"})
+          (response {^^ok ^team_id "T123" ^user_id "UBOT" ^bot_id "B123"}))
+        (if (== method "bots.info")
+          (response {^^ok ^bot {^id "B123" ^app_id "A123"}})
+          (do
+            ($assert (== headers/authorization "Bearer xoxb-test-bot"))
+            ($assert (== request/http_method "GET"))
+            ($assert (== request/params/channel "C12345678"))
+            ($assert ($str/ends_with? request/url "?channel=C12345678"))
+            (response {^^ok ^channel {^id "C12345678" ^^is_member}})))))))
+    (try
+      (let result (identify api {^user "xoxp-test-user" ^channel "C12345678"}))
+      ($assert (&& (== result/operator "U123") (== result/bot_user "UBOT") result/member))
+      ($assert (== calls ["auth.test" "auth.test" "bots.info" "conversations.info"]))
+    ensure (close_api api))
+    (close_api api)
+    ($assert (try (api_call api "auth.test") false catch SlackError (== $err/code "closed"))))
+
+  (it "preserves rate limits and unknown delivery outcomes without exposing response details" []
+    (let responses [
+      (response {} ^status 429 ^headers [["Retry-After" "2"]])
+      (response {} ^status 503)
+      (response {^!ok ^error "missing_scope"})
+      (response {^!ok ^error "secret-must-not-appear"})])
+    (let index ($cell 0))
+    (let api (open_api "xoxb-test-bot" ^requester (fn [request]
+      (let at index/.get)
+      (index .set (+ at 1))
+      (if (>= at responses/.size) (fail (ProbeError ^message "secret-must-not-appear")))
+      responses/%at)))
+    (try
+      (let limited (try (api_call api "chat.postMessage") nil catch SlackError $err))
+      ($assert (&& (== limited/code "rate_limited") (== limited/retry_after_ms 2000)))
+      ($assert (try (api_call api "chat.postMessage") false catch SlackError (== $err/code "server_unknown")))
+      ($assert (try (api_call api "chat.postMessage") false catch SlackError (== $err/code "missing_scope")))
+      (let invalid (try (api_call api "chat.postMessage") nil catch SlackError $err))
+      ($assert (== invalid/code "api_error"))
+      ($assert (! ($str/contains? invalid/message "secret-must-not-appear")))
+      (let unknown (try (api_call api "chat.postMessage") nil catch SlackError $err))
+      ($assert (== unknown/code "transport_unknown"))
+      ($assert (! ($str/contains? unknown/message "secret-must-not-appear")))
+    ensure (close_api api)))
+)
+
+(fn main [args] : Int (run_spec args))

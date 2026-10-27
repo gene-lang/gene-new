@@ -3,7 +3,7 @@
  ^description "A living plugin harness: seams, an effect ledger, and atomic activation"
  ^version "0.1.0"
  ^files {^include ["package.gene" "README.md" "src/**" "client/**" "docs/**"
-                   "tests/**" "website/**" "experiments/**" "bin/**" "probes/**"]
+                   "tests/**" "tools/**" "website/**" "experiments/**" "bin/**" "probes/**"]
          ^exclude ["**/.gene-harness/**" "**/tmp/**"]}
  ^applications [
    (application "harness" ^entry "src/main.gene")
@@ -14,4 +14,5 @@
    ^cordis (dep "genex/cordis" "0.1.0" ^path "../cordis")
    ^computer (dep "genex/computer" "0.1.0" ^path "../../src/genex/computer")
    ^documents (dep "genex/documents" "0.1.0" ^path "../../src/genex/documents")
-   ^raster (dep "genex/raster" "0.1.0" ^path "../../src/genex/raster")}}
+   ^raster (dep "genex/raster" "0.1.0" ^path "../../src/genex/raster")
+   ^websocket (dep "genex/websocket" "0.1.0" ^path "../../src/genex/websocket")}}

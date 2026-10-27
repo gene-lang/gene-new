@@ -6,6 +6,36 @@
 
 (fn load [path : Str] ($aot/load path))
 
+# Poll the handshake cooperatively so task cancellation can close an in-flight
+# TLS/upgrade operation without blocking the host's other sessions.
+(fn open [native, url : Str, ^protocol protocol : Str = "", ^ca_file ca_file : Str = "",
+          ^timeout_ms timeout_ms : Int = 5000,
+          ^max_message_bytes max_message_bytes : Int = 16777216,
+          ^max_queued_bytes max_queued_bytes : Int = 8388608]
+  (if (|| (< timeout_ms 1) (> timeout_ms 2147483647)
+          (< max_message_bytes 1) (> max_message_bytes 16777216)
+          (< max_queued_bytes 1) (> max_queued_bytes 8388608))
+    (fail (new WebSocketError "WebSocket timeout and byte limits must be positive and within the native limits.")))
+  (if_not ($runtime/callable? native/begin)
+    (fail (new WebSocketError "Rebuild the genex/websocket native adapter for cooperative connections.")))
+  (let socket (try
+    (native/begin url protocol ca_file timeout_ms max_message_bytes max_queued_bytes)
+    catch Error (fail (new WebSocketError (native/last_error)))))
+  (var complete false)
+  (let deadline (+ ($os/monotonic_ms) timeout_ms))
+  (try
+    (while (== (native/connected socket) 0)
+      (if (< (native/poll socket) 0)
+        (fail (new WebSocketError (native/error socket))))
+      (if (&& (== (native/connected socket) 0) (>= ($os/monotonic_ms) deadline))
+        (fail (new WebSocketError "WebSocket handshake timed out.")))
+      (if (== (native/connected socket) 0) ($sleep 2)))
+    (if (< (native/connected socket) 0)
+      (fail (new WebSocketError (native/error socket))))
+    (set complete true)
+    socket
+  ensure (if_not complete ($C/close socket))))
+
 (fn connect [native url : Str]
   (try (native/connect url 5000)
     catch Error (fail (new WebSocketError (native/last_error)))))
@@ -21,6 +51,19 @@
   (if (< (native/send socket bytes) 0)
     (fail (new WebSocketError (native/error socket)))))
 
+(fn send_text [native, socket, text : Str] : Nil
+  (let encoded text/.to_utf8)
+  (let bytes ($buffer C/UInt8 encoded/.to_list))
+  (if (< (native/send_text socket bytes) 0)
+    (fail (new WebSocketError (native/error socket)))))
+
+# True means every queued payload was handed to curl, not that the peer has
+# acknowledged an application-level message.
+(fn flush [native, socket] : Bool
+  (let result (native/flush socket))
+  (if (< result 0) (fail (new WebSocketError (native/error socket))))
+  (== result 1))
+
 # nil means no complete message yet; an empty buffer is a real empty message.
 (fn receive [native socket]
   (var ready (native/poll socket))
@@ -32,3 +75,11 @@
   (if (< (native/read socket bytes) 0)
     (fail (new WebSocketError (native/error socket))))
   ($buffer U8 bytes/.to_list))
+
+(fn receive_text [native, socket]
+  (let bytes (receive native socket))
+  (if ($absent? bytes) (return nil))
+  (if (!= (native/kind socket) 1)
+    (fail (new WebSocketError "Expected a WebSocket text message.")))
+  (try ($str/from_utf8 bytes)
+    catch Error (fail (new WebSocketError "WebSocket text is not valid UTF-8."))))

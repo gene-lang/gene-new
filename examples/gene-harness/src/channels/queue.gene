@@ -1,0 +1,333 @@
+(mod channel_queue)
+(import [open_channel_store close_channel_store snapshot mutate] ^from "./store" ^^export)
+(import [channel_error copy key normalize_message binding_key message_key
+         normalize_channel_input render_parts required_text] ^from "./model")
+
+(fn open_queues [root : Str, workspace : Str]
+  (let store (open_channel_store root "workspace"
+    {^workspace ($path/normalize workspace) ^source nil ^sequence 0
+     ^bindings {} ^messages {} ^queues {} ^batches {} ^outbox {}}))
+  (if_yes (!= store/state/.get/workspace ($path/normalize workspace))
+    (close_channel_store store)
+    (channel_error "forbidden" "The channel store belongs to another workspace."))
+  store)
+
+(fn configure_queues [store, route, ^owner_root owner_root = nil]
+  (mutate store (fn [state]
+    (if (!= route/workspace state/workspace)
+      (channel_error "forbidden" "The channel route belongs to another workspace."))
+    (let source {^id (required_text route/id "route ID")
+      ^owner (required_text route/owner "connection owner")
+      ^account (required_text route/account "account ID") ^team route/team
+      ^channel route/channel ^workspace state/workspace})
+    (if (&& (! ($absent? state/source)) (!= state/source source))
+      (channel_error "conflict" "Changing a workspace's channel source requires an explicit migration."))
+    (state .put "source" source)
+    (if_not ($absent? owner_root)
+      (state .put "owner_root" (required_text owner_root "owner workspace directory" ^max_bytes 4096)))
+    source)))
+
+(fn require_queue [state, session : Str]
+  (let queue (state/queues .get session))
+  (if ($absent? queue) (channel_error "not_found" "Channel queue not found."))
+  queue)
+
+(fn check_decision [state, message, decision]
+  (if (|| ($absent? state/source) (!= decision/owner state/source/owner)
+          (!= decision/author message/author) (!= ($head decision/policy_revision) Int))
+    (channel_error "unavailable" "A current decision from the configured channel authority is required."))
+  (if_yes (== decision/allowed true)
+    (let route decision/route)
+    (if (|| (!= route/id state/source/id) (!= route/workspace state/workspace)
+            (!= route/account message/account) (!= route/team message/team)
+            (!= route/channel message/channel) (!= route/owner state/source/owner))
+      (channel_error "forbidden" "The authorization decision does not match the channel route.")))
+  nil)
+
+(fn audit_decision [decision]
+  {^allowed (== decision/allowed true) ^owner decision/owner
+   ^policy_revision decision/policy_revision ^author decision/author})
+
+(fn queue_changed [queue]
+  (queue .put "revision" (+ queue/revision 1)))
+
+(fn add_hold [queue, kind : Str, reason : Str, source : Str]
+  (let id (key [kind reason source]))
+  (if_not ($has_key? queue/holds id)
+    (queue/holds .put id {^kind kind ^reason reason ^source source})
+    (queue_changed queue)))
+
+(fn clear_temporary [queue, source : Str]
+  (let remove [])
+  (for [id hold] in queue/holds
+    (if (&& (== hold/kind "temporary") (== hold/source source)) (remove .push ($to_str id))))
+  (for id in remove (queue/holds .delete id))
+  (if_not remove/.empty? (queue_changed queue)))
+
+(fn enqueue [store, supplied, decision, ^start_allowed start_allowed : Bool = false]
+  (let message (normalize_message supplied))
+  (let id (message_key message))
+  (let digest (key [message/account message/team message/channel message/thread
+                    message/message message/author message/text]))
+  (mutate store (fn [state]
+    (check_decision state message decision)
+    (let existing (state/messages .get id))
+    (if_yes (! ($absent? existing))
+      (if (!= existing/digest digest)
+        (channel_error "submission_conflict" "The external message identity has different content."))
+      (return existing))
+    (let record {^id id ^digest digest ^author message/author
+      ^decision (audit_decision decision) ^status "denied"})
+    (if_yes (!= decision/allowed true)
+      (state/messages .put id record)
+      (return record))
+    (let thread (binding_key message))
+    (var binding (state/bindings .get thread))
+    (if_yes (&& ($absent? binding)
+                (|| (! start_allowed) (!= message/thread message/message)))
+      (record .put "status" "ignored")
+      (record .put "reason" "unbound_thread")
+      (state/messages .put id record)
+      (return record))
+    (if_yes (&& (! ($absent? binding)) (== binding/status "deleted"))
+      (record .put "status" "deleted")
+      (record .put "session" binding/session)
+      (state/messages .put id record)
+      (return record))
+    (if_yes ($absent? binding)
+      (let session ($to_str "s-" ($crypto/random_hex 12)))
+      (set binding {^id thread ^session session ^status "pending" ^root_input id
+        ^transport "slack" ^account message/account ^team message/team
+        ^channel message/channel ^thread message/thread})
+      (state/bindings .put thread binding)
+      (state/queues .put session {^session session ^binding thread ^revision 0
+        ^holds {} ^order [] ^batch nil ^observed {}}))
+    (let queue (require_queue state binding/session))
+    (state .put "sequence" (+ state/sequence 1))
+    (record .put "status" "queued")
+    (record .put "session" binding/session)
+    (record .put "sequence" state/sequence)
+    (record .put "message" message)
+    (state/messages .put id record)
+    (queue/order .push id)
+    (queue_changed queue)
+    record)))
+
+(fn activate_binding [store, id : Str]
+  (mutate store (fn [state]
+    (let binding (state/bindings .get id))
+    (if ($absent? binding) (channel_error "not_found" "Channel binding not found."))
+    (if (== binding/status "pending") (binding .put "status" "active"))
+    binding)))
+
+(fn tombstone_session [store, session : Str]
+  (mutate store (fn [state]
+    (let queue (state/queues .get session))
+    (if ($absent? queue) (return nil))
+    (let binding (state/bindings .get queue/binding))
+    (binding .put "status" "deleted")
+    (add_hold queue "operator" "deleted" session)
+    (for id in queue/order
+      (let entry (state/messages .get id))
+      (if (== entry/status "queued") (entry .put "status" "deleted")))
+    binding)))
+
+(fn pending_parts [store, session : Str]
+  (let state (snapshot store))
+  (let queue (require_queue state session))
+  (let parts [])
+  (for id in queue/order
+    (let entry (state/messages .get id))
+    (if (== entry/status "queued")
+      (parts .push {^id id ^author entry/author ^message entry/message})))
+  parts)
+
+(fn queue_status [store, session : Str]
+  (let state (snapshot store))
+  (let queue (require_queue state session))
+  (let holds [])
+  (for [id hold] in queue/holds (holds .push hold))
+  (let pending ($size ($filter queue/order (fn [id] (== (/status (state/messages .get id)) "queued")))))
+  {^session session ^revision queue/revision ^holds holds ^held (! holds/.empty?)
+   ^pending pending ^batch queue/batch ^binding (state/bindings .get queue/binding)})
+
+(fn hold_queue [store, session : Str, reason : Str, source : Str]
+  (mutate store (fn [state]
+    (let queue (require_queue state session))
+    (add_hold queue "operator" reason source)
+    {^revision queue/revision})))
+
+(fn discard_inputs [store, session : Str, expected : Int, ids, reason : Str]
+  (if (|| (!= ($head ids) List) (== ids/.size 0))
+    (channel_error "invalid_request" "Choose the queued message IDs to discard."))
+  (required_text reason "discard reason" ^max_bytes 512)
+  (mutate store (fn [state]
+    (let queue (require_queue state session))
+    (if (!= queue/revision expected)
+      (channel_error "stale" "The queue changed; review it again before discarding input."))
+    (if_not ($absent? queue/batch)
+      (channel_error "uncertain" "Resolve the claimed batch's admission before discarding queued input."))
+    (let seen {})
+    (for id in ids
+      (required_text id "queued message ID")
+      (if ($has_key? seen id) (channel_error "invalid_request" "A discard list repeats a message ID."))
+      (seen .put id true)
+      (let entry (state/messages .get id))
+      (if (|| ($absent? entry) (!= entry/session session) (!= entry/status "queued"))
+        (channel_error "stale" "Only pending messages in this queue can be discarded.")))
+    (for id in ids
+      (let entry (state/messages .get id))
+      (entry .put "status" "discarded")
+      (entry .put "discard" {^actor "host-owner" ^reason reason ^at ($os/wall_ms)}))
+    (queue_changed queue)
+    # Discarding is an explicit content decision, not permission to drain.
+    # Keep all existing holds until the operator separately resumes the queue.
+    {^revision queue/revision ^discarded ids})))
+
+(fn resume_queue [store, session : Str, expected : Int]
+  (mutate store (fn [state] (resume_queue_state state session expected))))
+
+# Also used by channel control admission so clearing holds and recording its
+# idempotency receipt share one checkpoint, while the caller holds the gate.
+(fn resume_queue_state [state, session : Str, expected : Int]
+    (let queue (require_queue state session))
+    (if (== (/status (state/bindings .get queue/binding)) "deleted")
+      (channel_error "not_found" "The channel session was deleted."))
+    (if (!= queue/revision expected) (channel_error "stale" "The queue changed; inspect its current state before resuming."))
+    (let remove [])
+    (for [id hold] in queue/holds
+      (if (== hold/kind "operator") (remove .push ($to_str id))))
+    (for id in remove (queue/holds .delete id))
+    (if_not remove/.empty? (queue_changed queue))
+    {^revision queue/revision})
+
+# Core round observation persists holds independently of plugin connectivity.
+# It is idempotent and never clears operator holds on an unrelated completion.
+(fn observe_round_state [state, session : Str, receipt]
+    (let queue (state/queues .get session))
+    (if ($absent? queue) (return nil))
+    (let source ($to_str (?? receipt/task_root receipt/id)))
+    (let prior (queue/observed .get receipt/id))
+    (let observed [receipt/state (?? receipt/continuation_mode "manual") source (?? receipt/continuation_stop nil)])
+    (if (|| (== prior observed)
+            (&& ($absent? receipt/continuation_stop)
+                (== prior [receipt/state (?? receipt/continuation_mode "manual") source]))) (return nil))
+    (queue/observed .put receipt/id observed)
+    (if (["running" "waiting"] .contains? receipt/state)
+      (add_hold queue "temporary" "work" source))
+    (if_yes (== receipt/state "paused")
+      (if ($absent? receipt/continuation_stop)
+        (then
+          (if (== receipt/continuation_mode "automatic")
+            (add_hold queue "temporary" "continuation" source)
+            (add_hold queue "operator" "manual_pause" ($to_str receipt/id))))
+        (else
+          (if (!= receipt/continuation_stop "superseded")
+            (add_hold queue "operator" "failed" ($to_str receipt/id))))))
+    (if (== receipt/state "cancelled") (add_hold queue "operator" "stop" ($to_str receipt/id)))
+    (if (["failed" "interrupted"] .contains? receipt/state)
+      (add_hold queue "operator" receipt/state ($to_str receipt/id)))
+    (if (|| (["done" "failed" "interrupted" "cancelled"] .contains? receipt/state)
+            (&& (== receipt/state "paused")
+                (|| (!= receipt/continuation_mode "automatic") (! ($absent? receipt/continuation_stop)))))
+      (clear_temporary queue source))
+    nil)
+
+(fn observe_round [store, session : Str, receipt]
+  (mutate store (fn [state] (observe_round_state state session receipt))))
+
+(fn observe_rounds [store, session : Str, receipts]
+  (mutate store (fn [state]
+    (for receipt in receipts (observe_round_state state session receipt))
+    nil)))
+
+# Caller holds the session admission gate and has checked current runtime
+# eligibility. Decisions are fresh owner responses for this finite snapshot.
+(fn claim_batch [store, session : Str, decisions, sequence : Int, ^members members = nil]
+  (mutate store (fn [state]
+    (let queue (require_queue state session))
+    (if_not ($absent? queue/batch)
+      (return {^kind "recover" ^batch (state/batches .get queue/batch)}))
+    (if (> ($size queue/holds) 0) (return {^kind "held"}))
+    (if_yes (! ($absent? members))
+      (if (!= ($head members) List) (channel_error "invalid_request" "Batch members must be an ordered ID list."))
+      (let seen {})
+      (for id in members
+        (if ($has_key? seen id) (channel_error "invalid_request" "The batch snapshot repeats a message ID."))
+        (seen .put id true)
+        (let entry (state/messages .get id))
+        (if (|| ($absent? entry) (!= entry/session session) (!= entry/status "queued"))
+          (channel_error "stale" "The batch snapshot no longer identifies pending messages in this queue."))))
+    (let ids [])
+    (let parts [])
+    (let authorizations {})
+    (for id in queue/order
+      (if (&& (! ($absent? members)) (! (members .contains? id))) (continue))
+      (let entry (state/messages .get id))
+      (if (!= entry/status "queued") (continue))
+      (let decision (decisions .get id))
+      (check_decision state entry/message decision)
+      (if_yes (!= decision/allowed true)
+        (entry .put "status" "denied")
+        (entry .put "decision" (audit_decision decision))
+        (queue_changed queue)
+        (continue))
+      (ids .push id)
+      (parts .push entry/message)
+      (authorizations .put id (audit_decision decision)))
+    (if ids/.empty? (return {^kind "empty"}))
+    (let text (render_parts parts))
+    (if_yes (|| (> parts/.size 1024) (> text/.byte_size 65536))
+      (add_hold queue "operator" "oversized" (key ids))
+      (return {^kind "held" ^reason "oversized"}))
+    (let id ($to_str "batch-" ($crypto/random_hex 16)))
+    (let first parts/0)
+    (let input (normalize_channel_input {^kind "channel" ^transport "slack"
+      ^account first/account ^team first/team ^channel first/channel ^thread first/thread
+      ^batch id ^messages parts}))
+    (let batch {^id id ^session session ^status "prepared" ^members ids
+      ^authorizations authorizations ^text text ^input input ^sequence sequence
+      ^request_id ($to_str "channel/" id)})
+    (for member in ids
+      (let entry (state/messages .get member))
+      (entry .put "status" "claimed")
+      (entry .put "batch" id))
+    (state/batches .put id batch)
+    (queue .put "batch" id)
+    (queue_changed queue)
+    {^kind "prepared" ^batch batch})))
+
+(fn finish_admission [store, batch_id : Str, receipt]
+  (mutate store (fn [state]
+    (let batch (state/batches .get batch_id))
+    (if ($absent? batch) (channel_error "not_found" "Channel batch not found."))
+    (if (|| (!= batch/request_id receipt/request_id) (!= batch/sequence receipt/submission_seq))
+      (channel_error "submission_conflict" "The round receipt does not match the channel batch."))
+    (if (== batch/status "admitted") (return batch))
+    (let queue (require_queue state batch/session))
+    (if (!= queue/batch batch_id) (channel_error "stale" "Channel admission claim was replaced."))
+    (batch .put "status" "admitted")
+    (batch .put "receipt" (copy receipt))
+    (for id in batch/members ((state/messages .get id) .put "status" "consumed"))
+    (queue .put "batch" nil)
+    (queue_changed queue)
+    batch)))
+
+# Only a definite pre-admission refusal can release these inputs. Unknown
+# outcomes remain prepared and must be resolved by the original request ID.
+(fn release_batch [store, batch_id : Str, ^reason reason : Str = "busy"]
+  (mutate store (fn [state]
+    (let batch (state/batches .get batch_id))
+    (if ($absent? batch) (channel_error "not_found" "Channel batch not found."))
+    (if (!= batch/status "prepared") (channel_error "conflict" "An admitted batch cannot be replayed."))
+    (let queue (require_queue state batch/session))
+    (if (!= queue/batch batch_id) (channel_error "stale" "Channel batch claim is no longer current."))
+    (for id in batch/members
+      (let entry (state/messages .get id))
+      (entry .put "status" "queued")
+      (entry .delete "batch"))
+    (batch .put "status" "refused")
+    (queue .put "batch" nil)
+    (if (!= reason "busy") (add_hold queue "operator" reason batch_id))
+    (queue_changed queue)
+    nil)))

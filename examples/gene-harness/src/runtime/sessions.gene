@@ -1,4 +1,5 @@
 (mod sessions)
+(import [tombstone_session : tombstone_channel_session] ^from "../channels/queue")
 
 (import ^from "../storage/state"
   [
@@ -220,19 +221,21 @@
     (for child in children (update_session_unlocked manager child {^pinned record/pinned})))
   (copy_data record))
 
-(fn create_session [manager : SessionManager, ^id id : Str = "", ^kind kind : Str = "interactive", ^title title : Str = "New conversation", ^trigger trigger = nil, ^occurrence occurrence = nil, ^first_request first_request : Str = "", ^pinned pinned : Bool = false, ^parent parent = nil, ^model_settings model_settings = nil]
+(fn create_session [manager : SessionManager, ^id id : Str = "", ^kind kind : Str = "interactive", ^title title : Str = "New conversation", ^trigger trigger = nil, ^occurrence occurrence = nil, ^first_request first_request : Str = "", ^pinned pinned : Bool = false, ^parent parent = nil, ^model_settings model_settings = nil, ^channel channel = nil]
   (require_open manager)
   (manager/mutating (fn []
-    (create_session_unlocked ^id id ^kind kind ^title title ^trigger trigger ^occurrence occurrence ^first_request first_request ^pinned pinned ^parent parent ^model_settings model_settings
+    (create_session_unlocked ^id id ^kind kind ^title title ^trigger trigger ^occurrence occurrence ^first_request first_request ^pinned pinned ^parent parent ^model_settings model_settings ^channel channel
       manager))))
 
-(fn create_session_unlocked [manager : SessionManager, ^id id : Str = "", ^kind kind : Str = "interactive", ^title title : Str = "New conversation", ^trigger trigger = nil, ^occurrence occurrence = nil, ^first_request first_request : Str = "", ^pinned pinned : Bool = false, ^parent parent = nil, ^model_settings model_settings = nil]
+(fn create_session_unlocked [manager : SessionManager, ^id id : Str = "", ^kind kind : Str = "interactive", ^title title : Str = "New conversation", ^trigger trigger = nil, ^occurrence occurrence = nil, ^first_request first_request : Str = "", ^pinned pinned : Bool = false, ^parent parent = nil, ^model_settings model_settings = nil, ^channel channel = nil]
   (require_open manager)
   (let chosen (if (== id "") $"s-${($crypto/random_hex 12)}" id))
   (if_not (safe_id? chosen)
     (fail (SessionError ^code "invalid_request" ^message "invalid session id")))
   (let previous (manager/index .get; .get chosen))
   (if_not ($absent? previous)
+    (if (&& (! ($absent? channel)) (!= previous/channel channel))
+      (fail (SessionError ^code "conflict" ^message "Session has another channel origin.")))
     (if (&& (== previous/kind kind) (== previous/trigger trigger) (== previous/occurrence occurrence)
             (|| (!= kind "child")
                 (&& (== previous/parent/session parent/session) (== previous/parent/delegation parent/delegation))))
@@ -272,6 +275,7 @@
     (let parent_record (require_record manager parent/session))
     (record .put "pinned" parent_record/pinned))
   (if_not ($absent? model_settings) (record .put "model_settings" (copy_data model_settings)))
+  (if_not ($absent? channel) (record .put "channel" (copy_data channel)))
   (record_core_state
     manager/events
     "workspace"
@@ -449,6 +453,8 @@
     (let intent {^records records ^done false})
     (record_core_state manager/events "workspace" "workspace" "session/state" key intent)
     (flush_event_store manager/events)
+    (if_not ($absent? manager/runtime/channel_queues)
+      (for candidate in ids (tombstone_channel_session manager/runtime/channel_queues candidate)))
     (finish_session_deletion manager/events key intent)
     (for candidate in ids
       (manager/index/.get .delete candidate)

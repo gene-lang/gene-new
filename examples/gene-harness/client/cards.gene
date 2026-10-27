@@ -307,6 +307,11 @@
     ($dom/render `(div ^class_name "card_header"
       (strong ^class_name "card_title" "Questions")
       (span ^class_name "card_status" %(if (== intent "cancel") "Cancelled" "Answered")))))
+  (if_yes (== (ctext batch/answer_source/transport) "slack")
+    (var author (ctext batch/answer_source/author))
+    ($dom/append section ($dom/render `(p ^class_name "muted" %$"User · Slack ${author}"))))
+  (if_yes (== (ctext batch/answer_source/kind) "harness")
+    ($dom/append section ($dom/render `(p ^class_name "muted" "User · Harness"))))
   (var questions : (List Any) batch/questions)
   (var answers : PropMap {})
   (if_not ($absent? batch/answers) (set answers batch/answers))

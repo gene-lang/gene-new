@@ -1,0 +1,11 @@
+(mod input_metadata)
+(import [normalize_voice_input] ^from "./voice_state")
+(import [normalize_channel_input channel_error] ^from "../channels/model")
+
+(fn normalize_round_input [value, ^channel channel : Bool = false]
+  (if ($absent? value) (return nil))
+  (if_yes (== value/kind "channel")
+    (if_not channel
+      (channel_error "forbidden" "Channel identities require an authenticated channel admission."))
+    (return (normalize_channel_input value)))
+  (normalize_voice_input value))

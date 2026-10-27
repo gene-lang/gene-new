@@ -128,13 +128,13 @@
   (flush_event_store events)
   batch)
 
-(fn answer_questions [events, session : Str, id : Str, values, ^dismiss dismiss : Bool = false, ^validators validators = {}, ^intent intent : Str = "continue"]
-  (answer_gate (fn [] (answer_questions_serial events session id values ^dismiss dismiss ^validators validators ^intent intent))))
+(fn answer_questions [events, session : Str, id : Str, values, ^dismiss dismiss : Bool = false, ^validators validators = {}, ^intent intent : Str = "continue", ^source source = nil]
+  (answer_gate (fn [] (answer_questions_serial events session id values ^dismiss dismiss ^validators validators ^intent intent ^source source))))
 
 # Finalizing a batch records the intended round action with it: answers and
 # Dismiss all continue the round, Cancel round cancels it. Recovery applies
 # exactly that recorded action after a crash.
-(fn answer_questions_serial [events, session : Str, id : Str, values, ^dismiss dismiss : Bool = false, ^validators validators = {}, ^intent intent : Str = "continue"]
+(fn answer_questions_serial [events, session : Str, id : Str, values, ^dismiss dismiss : Bool = false, ^validators validators = {}, ^intent intent : Str = "continue", ^source source = nil]
   (let batch (core_state events "session" session $"questions/${id}"))
   (if ($absent? batch) (fail (QuestionError ^message $"unknown question batch ${id}")))
   (let submitted (submitted_digest values dismiss))
@@ -154,6 +154,7 @@
   (batch .put "answers" answers)
   (batch .put "digest" digest)
   (batch .put "submitted_digest" submitted)
+  (if_not ($absent? source) (batch .put "answer_source" ($thaw ($freeze source))))
   (batch .put "intent" intent)
   (batch .put "answered_ms" ($os/wall_ms))
   (record_core_state events "session" session "question/answered" $"questions/${id}" batch)

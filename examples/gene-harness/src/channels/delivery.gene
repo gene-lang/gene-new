@@ -1,0 +1,284 @@
+(mod channel_delivery)
+(import [snapshot mutate] ^from "./store")
+(import [channel_error copy key required_text identifier slack_ts] ^from "./model")
+(import [api_call SlackError] ^from "./slack_api")
+
+(fn normalize_intent [supplied]
+  (let parts supplied/parts)
+  (if (|| (!= ($head parts) List) (== parts/.size 0) (> parts/.size 512))
+    (channel_error "invalid_request" "Channel output needs 1–512 rendered parts."))
+  (for part in parts
+    (required_text part/text "output text" ^max_bytes 12000)
+    (if (&& (! ($absent? part/blocks)) (!= ($head part/blocks) List))
+      (channel_error "invalid_request" "Channel output blocks must be a list.")))
+  (let revision (?? supplied/revision 0))
+  (if (|| (!= ($head revision) Int) (< revision 0))
+    (channel_error "invalid_request" "Invalid output revision."))
+  (let mode (?? supplied/mode "post"))
+  (if (! (["post" "progress"] .contains? mode))
+    (channel_error "invalid_request" "Invalid channel output mode."))
+  (if (&& (== mode "progress") (!= parts/.size 1))
+    (channel_error "invalid_request" "Progress uses one updatable message."))
+  {^id (required_text supplied/id "delivery ID" ^max_bytes 128)
+   ^owner (required_text supplied/owner "connection owner")
+   ^route (required_text supplied/route "route ID")
+   ^workspace (required_text supplied/workspace "workspace directory" ^max_bytes 4096)
+   ^account (required_text supplied/account "account ID")
+   ^team (identifier supplied/team "T" "team ID")
+   ^channel (identifier supplied/channel "CG" "channel ID") ^thread (slack_ts supplied/thread)
+   ^session (required_text supplied/session "session ID")
+   ^round (required_text supplied/round "round ID")
+   ^revision revision ^mode mode ^parts (copy parts)})
+
+(fn intent_digest [intent] (key intent))
+(fn delivery_identity [intent]
+  [intent/id intent/owner intent/route intent/workspace intent/account intent/team
+   intent/channel intent/thread intent/session intent/round intent/mode])
+
+(fn record_quota [state, account_id : Str, method : Str, until : Int]
+  (let account (state/accounts .get account_id))
+  (let id ($to_str method "/" account/app "/" account/team))
+  (if ($absent? state/rate_limits) (state .put "rate_limits" {}))
+  (state/rate_limits .put id ($math/max (?? (state/rate_limits .get id) 0) until)))
+
+# The workspace writes before attempting its authenticated owner handoff.
+(fn queue_output [queues, supplied]
+  (let intent (normalize_intent supplied))
+  (mutate queues (fn [state]
+    (let queue (state/queues .get intent/session))
+    (if ($absent? queue) (channel_error "not_found" "Channel queue not found."))
+    (let binding (state/bindings .get queue/binding))
+    (let source state/source)
+    (if (|| (!= intent/owner source/owner) (!= intent/route source/id)
+            (!= intent/workspace state/workspace) (!= intent/account binding/account)
+            (!= intent/team binding/team) (!= intent/channel binding/channel)
+            (!= intent/thread binding/thread))
+      (channel_error "forbidden" "Output does not match the session's shared destination."))
+    (let previous (state/outbox .get intent/id))
+    (if_yes (! ($absent? previous))
+      (if (!= (delivery_identity previous/intent) (delivery_identity intent))
+        (channel_error "submission_conflict" "Delivery destination changed."))
+      (if (< intent/revision previous/intent/revision) (return previous))
+      (if_yes (== intent/revision previous/intent/revision)
+        (if (!= previous/digest (intent_digest intent))
+          (channel_error "submission_conflict" "Delivery ID/revision has different content."))
+        (return previous))
+      (if (!= intent/mode "progress")
+        (channel_error "submission_conflict" "Final output cannot be revised in place.")))
+    (state .put "outbox_sequence" (+ (?? state/outbox_sequence 0) 1))
+    (let record {^intent intent ^digest (intent_digest intent) ^status "pending"
+      ^sequence (?? previous/sequence state/outbox_sequence)})
+    (state/outbox .put intent/id record)
+    record)))
+
+(fn pending_output [queues]
+  (let result [])
+  (let state (snapshot queues))
+  (for [id record] in state/outbox
+    (if (!= record/status "delivered") (result .push record)))
+  ($order/sort_by result /sequence))
+
+# Owner acceptance is durable before it returns. Only this owner performs API
+# calls. Revisions update one progress message; final replies have immutable IDs.
+(fn accept_output [owner, supplied]
+  (let intent (normalize_intent supplied))
+  (mutate owner (fn [state]
+    (let route (state/routes .get intent/route))
+    (if (|| (!= intent/owner state/id) ($absent? route)
+            (!= route/workspace intent/workspace) (!= route/account intent/account)
+            (!= route/team intent/team) (!= route/channel intent/channel))
+      (channel_error "forbidden" "Delivery does not match the connection owner's route."))
+    (let previous (state/deliveries .get intent/id))
+    (if_yes (! ($absent? previous))
+      (if (!= (delivery_identity previous/intent) (delivery_identity intent))
+        (channel_error "submission_conflict" "Delivery destination changed."))
+      (if (< intent/revision previous/intent/revision) (return previous))
+      (if_yes (== intent/revision previous/intent/revision)
+        (if (!= previous/digest (intent_digest intent))
+          (channel_error "submission_conflict" "Delivery ID/revision has different content."))
+        (return previous))
+      (if (!= intent/mode "progress")
+        (channel_error "submission_conflict" "Final output cannot be revised in place."))
+      (for part in previous/parts
+        (if (["sending" "uncertain"] .contains? part/status)
+          (channel_error "uncertain" "Reconcile the earlier progress update before replacing it."))))
+    (let parts [])
+    (var index 0)
+    (for rendered in intent/parts
+      (parts .push {^index index ^status "pending"
+        ^ts (if ($absent? previous) nil previous/parts/%index/ts)})
+      (set index (+ index 1)))
+    (state .put "delivery_sequence" (+ (?? state/delivery_sequence 0) 1))
+    (let record {^intent intent ^digest (intent_digest intent) ^parts parts ^status "accepted"
+      ^sequence (?? previous/sequence state/delivery_sequence)})
+    (state/deliveries .put intent/id record)
+    record)))
+
+(fn output_result [owner, id : Str]
+  (let record (/deliveries (snapshot owner); .get id))
+  (if ($absent? record) (channel_error "not_found" "Delivery not found."))
+  record)
+
+(fn reconcile_output [queues, result]
+  (mutate queues (fn [state]
+    (let record (state/outbox .get result/intent/id))
+    (if ($absent? record) (channel_error "not_found" "Workspace output not found."))
+    (if (!= (delivery_identity record/intent) (delivery_identity result/intent))
+      (channel_error "forbidden" "The delivery result belongs to a different destination."))
+    (if (< result/intent/revision record/intent/revision) (return record))
+    (if (!= record/digest result/digest)
+      (channel_error "submission_conflict" "The delivery result does not match its intent."))
+    (record .put "result" (copy result))
+    (record .put "status" (if (== result/status "delivered") "delivered" "accepted"))
+    record)))
+
+(fn summarize_delivery [record]
+  (var status "delivered")
+  (for part in record/parts
+    (if (== part/status "failed") (set status "failed"))
+    (if (&& (!= status "failed") (["sending" "uncertain"] .contains? part/status))
+      (set status "uncertain"))
+    (if (&& (== status "delivered") (!= part/status "sent")) (set status "accepted")))
+  (record .put "status" status))
+
+# A restart after marking sending cannot distinguish a crash before the HTTP
+# call from a lost success response. Preserve uncertainty instead of replaying.
+(fn recover_deliveries [owner]
+  (mutate owner (fn [state]
+    (for [id record] in state/deliveries
+      (for part in record/parts
+        (if (== part/status "sending") (part .put "status" "uncertain")))
+      (summarize_delivery record))
+    nil)))
+
+(fn begin_part [owner, id : Str, revision : Int, index : Int]
+  (mutate owner (fn [state]
+    (let record (state/deliveries .get id))
+    (if (|| ($absent? record) (!= record/intent/revision revision))
+      (channel_error "stale" "Output revision changed."))
+    (let route (state/routes .get record/intent/route))
+    (let account (state/accounts .get record/intent/account))
+    (if (|| (!= route/enabled true) (!= account/enabled true))
+      (channel_error "unavailable" "The channel connection is disabled."))
+    (let part (if (&& (>= index 0) (< index record/parts/.size)) record/parts/%index nil))
+    (if ($absent? part) (channel_error "not_found" "Output part not found."))
+    # Later parts never pass a failed, rate-limited or uncertain predecessor.
+    (var before 0)
+    (while (< before index)
+      (if (!= record/parts/%before/status "sent") (return nil))
+      (set before (+ before 1)))
+    (if (|| (!= part/status "pending") (> (?? part/retry_at 0) ($os/wall_ms))) (return nil))
+    (part .put "status" "sending")
+    (summarize_delivery record)
+    {^intent record/intent ^part part})))
+
+(fn finish_part [owner, id : Str, revision : Int, index : Int, outcome]
+  (mutate owner (fn [state]
+    (let record (state/deliveries .get id))
+    (if (|| ($absent? record) (!= record/intent/revision revision))
+      (channel_error "stale" "Output revision changed."))
+    (let part (if (&& (>= index 0) (< index record/parts/.size)) record/parts/%index nil))
+    (if (|| ($absent? part) (! (["sending" "uncertain"] .contains? part/status)))
+      (channel_error "conflict" "Output part is not awaiting a result."))
+    (if (! (["sent" "pending" "uncertain" "failed"] .contains? outcome/status))
+      (channel_error "invalid_request" "Invalid output outcome."))
+    (if (== outcome/status "sent") (part .put "ts" (slack_ts outcome/ts)))
+    (part .put "status" outcome/status)
+    (part .put "error" (?? outcome/error nil))
+    (part .put "retry_at" (?? outcome/retry_at 0))
+    (if (== outcome/error "rate_limited")
+      (record_quota state record/intent/account "write" (?? outcome/retry_at 0)))
+    (summarize_delivery record)
+    record)))
+
+(fn deliver_output [owner, api, id : Str, ^max_parts maximum : Int = 512]
+  (let original (output_result owner id))
+  (let revision original/intent/revision)
+  (var index 0)
+  (var sent 0)
+  (while (< index original/parts/.size)
+    (let claimed (begin_part owner id revision index))
+    (if_yes (! ($absent? claimed))
+      (let intent claimed/intent)
+      (let rendered intent/parts/%index)
+      (let data {^channel intent/channel ^text rendered/text ^parse "none"
+        ^metadata {^event_type "gene_harness_delivery"
+          ^event_payload {^delivery id ^part index ^revision revision ^body_digest (key rendered)}}})
+      (if_not ($absent? rendered/blocks) (data .put "blocks" rendered/blocks))
+      (let update (! ($absent? claimed/part/ts)))
+      (if update (then (data .put "ts" claimed/part/ts))
+        (else
+          (data .put "unfurl_links" false) (data .put "unfurl_media" false)
+          (data .put "thread_ts" intent/thread)))
+      (let outcome (try
+        (let response (api_call api (if update "chat.update" "chat.postMessage") data))
+        {^status "sent" ^ts (slack_ts response/ts)}
+        catch SlackError
+          (if (== $err/code "rate_limited")
+            {^status "pending" ^error "rate_limited" ^retry_at (+ ($os/wall_ms) (?? $err/retry_after_ms 1000))}
+            (if (["transport_unknown" "server_unknown" "invalid_response" "internal_error"
+                  "fatal_error" "request_timeout" "service_unavailable"] .contains? $err/code)
+              {^status "uncertain" ^error $err/code}
+              {^status "failed" ^error $err/code}))
+        catch Error {^status "uncertain" ^error "unconfirmed_response"}))
+      (finish_part owner id revision index outcome)
+      (set sent (+ sent 1))
+      (if (|| (!= outcome/status "sent") (>= sent maximum)) (break)))
+    (set index (+ index 1)))
+  (output_result owner id))
+
+# Read-only recovery: never import thread history into model context and never
+# treat an absent search result as proof that an unknown post can be replayed.
+# One bounded page per call keeps Socket Mode processing independent of lookup.
+(fn reconcile_remote [owner, api, id : Str]
+  (let original (output_result owner id))
+  (if (!= original/status "uncertain") (return original))
+  (if (&& (== original/reconcile_error "rate_limited")
+          (> (?? original/reconcile_after 0) ($os/wall_ms))) (return original))
+  (mutate owner (fn [state]
+    (let record (state/deliveries .get id))
+    (if (== record/intent/revision original/intent/revision)
+      (then
+        (record .put "reconcile_at" ($os/wall_ms))
+        (record .put "reconcile_after" (+ ($os/wall_ms) 30000))
+        (record .put "reconcile_error" nil)))
+    nil))
+  (let account (/accounts (snapshot owner); .get original/intent/account))
+  (let query {^channel original/intent/channel ^ts original/intent/thread
+    ^include_all_metadata true ^limit 100})
+  (if_not ($absent? original/reconcile_cursor) (query .put "cursor" original/reconcile_cursor))
+  (let response (try (api_call api "conversations.replies" query ^http_method "GET")
+    catch SlackError
+      (let failure $err)
+      (if (== failure/code "rate_limited")
+        (mutate owner (fn [state]
+          (let record (state/deliveries .get id))
+          (if (== record/intent/revision original/intent/revision)
+            (then
+              (record .put "reconcile_error" "rate_limited")
+              (record .put "reconcile_after" (+ ($os/wall_ms) (?? failure/retry_after_ms 1000)))
+              (record_quota state record/intent/account "read" record/reconcile_after)))
+          nil)))
+      (fail failure)))
+  (for part in original/parts
+    (if (!= part/status "uncertain") (continue))
+    (let index part/index)
+    (let matches [])
+    (for message in (?? response/messages [])
+      (let metadata message/metadata)
+      (let external metadata/event_payload)
+      (if (&& (== message/user account/bot_user) (== metadata/event_type "gene_harness_delivery")
+               (== external/delivery id) (== external/part part/index)
+               (== external/revision original/intent/revision)
+               (== (?? message/thread_ts message/ts) original/intent/thread)
+               (== external/body_digest (key original/intent/parts/%index)))
+        (matches .push message)))
+    (if (== matches/.size 1)
+      (finish_part owner id original/intent/revision part/index {^status "sent" ^ts matches/0/ts})))
+  (mutate owner (fn [state]
+    (let record (state/deliveries .get id))
+    (if (!= record/intent/revision original/intent/revision) (return record))
+    (let cursor response/response_metadata/next_cursor)
+    (record .put "reconcile_cursor" (if (|| ($absent? cursor) (== cursor "")) nil cursor))
+    (record .put "reconcile_at" ($os/wall_ms))
+    record)))

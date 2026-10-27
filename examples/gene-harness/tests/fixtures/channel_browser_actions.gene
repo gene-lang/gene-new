@@ -1,0 +1,28 @@
+(import [connect api] ^from "../../src/cli/client")
+
+(fn main [args]
+  (let root args/0) (let action args/1)
+  (let client (connect root))
+  (let status (api client "GET" "/channels"))
+  (let source status/source)
+  ($assert (&& (== source/team "T123") (== source/channel "C123")) "This helper is restricted to the fake Slack fixture.")
+  (let sessions (api client "GET" "/sessions"))
+  (let session sessions/sessions/0/id)
+  (let send (fn [text : Str, author : Str]
+    (let filename ($path/join root "browser-input-counter"))
+    (let next (+ (if ($fs/exists? filename) ($parse/parse_int ($fs/read_text filename)) 10) 1))
+    ($fs/write_text filename ($to_str next))
+    (api client "POST" "/channels/input" {^route {^id source/id ^owner source/owner} ^workspace root
+      ^message {^transport "slack" ^account source/account ^team source/team ^channel source/channel
+        ^thread "1.000001" ^message ($to_str next ".000001") ^author author ^text text}})))
+  (if_yes (== action "batch")
+    (send "!stop" "UOWNER")
+    (send "Also add X." "UOWNER")
+    (send "Actually, skip X and add Y." "UOTHER")
+    (let queue (api client "POST" "/channels/queue/status" {^session session}))
+    (send ($to_str "!resume-queue " queue/revision) "UOWNER")
+    ($println "Two approved authors queued and resumed in one batch.") (return 0))
+  (if_yes (== action "question")
+    ($fs/write_text ($path/join root "ask-question") "go")
+    ($println "The next model call will ask a question.") (return 0))
+  (fail "Use batch or question."))

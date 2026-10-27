@@ -1,0 +1,34 @@
+# Read-only live qualification: identities, channel access, Socket Mode hello.
+# This probe neither posts messages nor acknowledges application events.
+(import [read_slack_credentials open_api close_api identify connect_socket
+         socket_message load_socket_library SlackError]
+  ^from "../src/channels/slack_api")
+
+(fn main [argv] : Int
+  (let args ($body argv))
+  ($assert (== args/.size 2) "slack.gene CREDENTIAL_FILE NATIVE_LIBRARY")
+  (let credentials (read_slack_credentials args/0))
+  (let api (open_api credentials/bot))
+  (try
+    (let identity (identify api credentials))
+    (let native (load_socket_library args/1))
+    (let socket (connect_socket api native credentials/app))
+    (try
+      (let due (+ ($os/monotonic_ms) 10000))
+      (var hello nil)
+      (while ($absent? hello)
+        ($assert (< ($os/monotonic_ms) due) "Slack hello timed out.")
+        (set hello (socket_message native socket))
+        (if ($absent? hello) ($sleep 5)))
+      ($assert (== hello/type "hello") "Slack's first frame was not a hello.")
+      ($assert (== hello/connection_info/app_id identity/app)
+        "The app token and bot token belong to different Slack applications.")
+      ($println ($json/stringify
+        {^bot_authenticated true ^operator_authenticated (!= identity/operator "")
+         ^same_team true ^channel_accessible true ^channel_member identity/member
+         ^socket_hello true ^connections hello/num_connections
+         ^app_identified (! ($absent? hello/connection_info/app_id))}))
+    ensure ($C/close socket))
+    ($assert (== (native/open_count) 0))
+  ensure (close_api api))
+  0)

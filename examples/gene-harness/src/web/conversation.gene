@@ -10,6 +10,7 @@
   (if_not ($absent? record/card) (return "Card action"))
   (let initiator (?? record/initiator (?? round/initiator "")))
   (if (== initiator "user") (return "User"))
+  (if ($str/starts_with? initiator "channel:slack/") (return "User"))
   (if ($str/starts_with? initiator "trigger:")
     (return ($to_str "Trigger: " ($str/slice_bytes initiator 8 (- ($str/byte_size initiator) 8)))))
   (if ($str/starts_with? initiator "parent:") (return "Parent agent"))

@@ -1,0 +1,54 @@
+# Real authenticated HTTP peer with deterministic Socket Mode / Slack API
+# fixtures. All credentials and external Slack responses here are fake.
+(import [main : web_main] ^from "../../src/web/server")
+(import [Profile] ^from "../../src/profiles/profile")
+(import [baseline_profile] ^from "../../src/profiles/baseline")
+(import [Plugin PluginHost] ^from "../../src/plugin_api")
+(import [callback_plugin] ^from "../support")
+(import [slack] ^from "../../src/builtin/slack")
+(import [open_authority configure_account configure_route close_channel_store] ^from "../../src/channels/authority")
+(import [model_callback remote_api event crash install_channel_crash] ^from "./channel_recovery")
+
+(fn main [args]
+  (let root args/0) (let role args/1) (let point args/2) (let other args/3)
+  ($fs/make_dir root)
+  (if_yes (== role "owner")
+    (let filename ($path/join root "fake-slack-credentials"))
+    ($fs/write_text filename "Bot user oauth token: xoxb-test\nApp token: xapp-test\nChannel id: C12345678\n")
+    (let authority (open_authority ($path/join root ".gene-harness" "channels" "owner")))
+    (try
+      (configure_account authority "dobi" filename "/fake-adapter"
+        {^team "T123" ^app "A123" ^bot "B123" ^bot_user "UBOT" ^operator "UOWNER"})
+      (configure_route authority "dobi" "C123" other)
+    ensure (close_channel_store authority)))
+  (let seen ($cell 0))
+  (let driver {^load (fn [filename] nil) ^connect (fn [api native app] 1)
+    ^receive (fn [native socket]
+      (if_yes (== seen/.get 0)
+        (seen .set 1)
+        (return {^type "hello" ^connection_info {^app_id "A123"} ^num_connections 1}))
+      (if (&& (== seen/.get 1) ($fs/exists? ($path/join root "inject")))
+        (then (seen .set 2) (return (event "root" "1.000001" "<@UBOT> Build once."))))
+      nil)
+    ^ack (fn [native socket id] nil) ^close (fn [socket] nil)})
+  (let api (remote_api root))
+  (let requester (fn [request]
+    (let result (api/requester request))
+    (if (&& (== point "remote_unknown") (== request/method "chat.postMessage")
+             (== request/params/text "Complete.")) (crash root point))
+    result))
+  (let base (baseline_profile))
+  (let plugins [])
+  (for plugin in base/plugins (if (!= plugin/id "slack") (plugins .push plugin)))
+  (plugins .push (slack ^driver driver ^requester requester))
+  (plugins .push (callback_plugin ($cell (model_callback root ^point
+    (if (["effect" "browser"] .contains? point) point "normal")))))
+  (plugins .push (Plugin ^id "channel_fault" ^requires ["loop"]
+    ^activate (fn [host]
+      (let factory (host .PluginHost:resolve "loop"))
+      (let loop (factory))
+      (install_channel_crash {^runtime loop/runtime ^events loop/runtime/events ^controller loop/controller}
+        point ^reply_only true))))
+  (let profile (Profile ^name "channel-peer" ^plugins plugins ^requires base/requires
+    ^limits base/limits ^provider "test"))
+  (web_main ["--workspace" root "--port" "0"] ^profile profile))

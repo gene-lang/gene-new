@@ -60,7 +60,22 @@
       `(article ^class_name %cls
          (div ^class_name "speaker" %label
            %(if (&& provisional (!= role "user")) " · in progress" "")))))
+  (if_yes (&& (== role "user") (! ($absent? block/input)) (== (status_text block/input/kind) "channel"))
+    (set content ($dom/render `(div ^class_name "channel_inputs")))
+    (var messages : (List Any) block/input/messages)
+    (for part in messages
+      (var author : Str part/author)
+      (var message : Str part/message)
+      (var body : Str part/text)
+      ($dom/append content ($dom/render
+        `(div (p ^class_name "muted" %$"Slack · ${author} · ${message}")
+           (div ^class_name "message_text" %body))))))
   ($dom/append article content)
+  (if_yes (== (status_text block/answer_source/transport) "slack")
+    (var author : Str block/answer_source/author)
+    ($dom/append article ($dom/render `(p ^class_name "muted" %$"User · Slack ${author} answered the questions."))))
+  (if_yes (== (status_text block/answer_source/kind) "harness")
+    ($dom/append article ($dom/render `(p ^class_name "muted" "User · Harness answered the questions."))))
   (if_not ($absent? block/media)
     (var attachments : (List Any) block/media)
     (var gallery ($dom/render `(div ^class_name "message_attachments")))

@@ -1,0 +1,20 @@
+# Run the complete channel qualification suite. Slack peers and credentials in
+# these specs are fake; HTTP and crash tests use isolated local processes.
+(fn main [args] : Int
+  (let root (/source_root ($pkg/application)))
+  (let directory ($path/join root "tests" "integration" "channels"))
+  (let specs [])
+  (for filename in ($fs/list_dir directory)
+    (if ($str/ends_with? filename "_spec.gene") (specs .push filename)))
+  (let failed [])
+  (for filename in ($order/sort specs)
+    ($println ($to_str "Checking " filename))
+    ($io/flush_stdout)
+    (let result (await ($os/exec_async ($os/executable_path) "run" "--snapshot"
+      ($path/join directory filename) ^timeout_ms 360000 ^max_bytes 1048576)))
+    (if (!= result/stdout "") ($print result/stdout))
+    (if (!= result/stderr "") ($print result/stderr))
+    (if (|| (!= result/status 0) result/truncated) (failed .push filename))
+    ($io/flush_stdout))
+  ($println ($to_str (- specs/.size failed/.size) "/" specs/.size " channel suites passed."))
+  (if failed/.empty? 0 1))
