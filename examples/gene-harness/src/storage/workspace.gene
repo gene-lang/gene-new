@@ -32,7 +32,7 @@
     uninstall
     module_dir])
 (import ^from "./state" [validate_event_catalog repair_interrupted_turns])
-(import ^from "../runtime/interface_policy" [current_interfaces])
+(import ^from "../runtime/interface_policy" [current_interfaces interface_diagnostic])
 (import ^from "./plugin_history"
   [archive_host_build archive_baseline archive_candidate archived_record
    history_list history_revision history_entry append_history_result history_results])
@@ -443,8 +443,8 @@
   out)
 
 (fn load_entry_descriptor [workspace : Workspace, h : Harness, entry, ^events events : Bool = true]
-  (if_not (== entry/interfaces workspace/interfaces)
-    (fail (CompositionError ^message "stored plugin predates interface 2; re-register it")))
+  (let mismatch (interface_diagnostic entry/interfaces workspace/interfaces))
+  (if (!= mismatch "") (fail (CompositionError ^message mismatch)))
   (if_not (entry/closure .contains? entry/module_digest)
     (fail (CompositionError ^message $"plugin ${entry/id} dependency closure omits its root")))
   (for digest in entry/closure
@@ -1046,8 +1046,8 @@
   (validate_entry saved (fresh_map))
   (if (|| (== saved/builtin true) ($absent? saved/module_digest))
     (fail (CompositionError ^message "revert requires a stored plugin version; use restore for a built-in default")))
-  (if (!= saved/interfaces workspace/interfaces)
-    (fail (CompositionError ^message "historical plugin interfaces do not match this host")))
+  (let mismatch (interface_diagnostic saved/interfaces workspace/interfaces))
+  (if (!= mismatch "") (fail (CompositionError ^message mismatch)))
   # Verify inert source bytes without loading or invoking the historical code.
   (for digest in saved/closure
     (digest_hex digest)

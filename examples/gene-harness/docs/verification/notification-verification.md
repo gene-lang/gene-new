@@ -30,7 +30,7 @@ checks pass. Browser and live-model evidence is mapped below.
 The live authoring run used an isolated workspace and a test edition revision.
 It verified notification publication and discovery, not the existence or quality
 of a real edition review. The reusable source is in
-[the example directory](../examples/notifications/README.md).
+[the example directory](../../examples/notifications/README.md).
 
 ## Reproduce the automated checks
 

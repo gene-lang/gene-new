@@ -117,14 +117,16 @@ Each turn groups the **Request** it receives, the Gene **Response** returned by
 the model, and its live **Output**, in that order. Speaker labels are always
 **User** and **Agent**, including commands and input modes. The initial message
 is not repeated inside its first turn. A generated continuation belongs to the next
-turn. Turn headings and their Request, Response, and Output disclosures start
-collapsed. Cards, media, questions, and errors stay inside their producing turn.
+turn. Turn headings start collapsed. Opening a turn opens its Response;
+the Response triangle can collapse it independently, and that choice survives
+live updates until the turn is reopened. Request and Output stay collapsed by
+default. Cards, media, questions, and errors stay inside their producing turn.
 Pending turns have a blank summary; a host-extracted literal reply hint may fill
 it when code arrives, and the evaluated reply is authoritative. A concise
 intermediate reply appears in its own heading as `Turn N: <reply>`. The final
 turn heading is just `Turn N`; the full final reply appears once under **Agent**,
-outside the last turn. Completed status
-shows the status label without repeating reply text. Response code is
+outside the last turn. A normally completed round has no trailing status line;
+paused, failed, stopped and other exceptional states retain their status. Response code is
 highlighted when expanded. Printed text appears in an **Output · live** disclosure
 inside its owning turn, collapsed by default. Late output stays with its original
 turn and is labeled. Output is held only in page memory: snapshots, pagination,

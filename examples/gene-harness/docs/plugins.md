@@ -109,9 +109,17 @@ plugin and is removed when the activation unloads. Common rows are:
 | `docs` | `{^name ^summary ^tags ^text}` or `{^name ^summary ^tags ^path}`; body read with `(doc name)` |
 | `providers` | `{^name ^doc ^available ^configure ^prepare ^send}`; a text model adapter, optionally declaring `capabilities` and `media_recording` |
 | `image_generators` | `{^name ^doc ^available ^configure ^capabilities ^prepare ^send}`; a separately selected image adapter returning exactly one PNG |
+| `speech_recognizers`, `speech_synthesizers` | Owned speech engines with availability, open/close and recognition/synthesis callbacks; see [Voice](audio.md) |
 | `hooks` | `{^point ^name ^run}`; an ordered listener at a published shaping point |
 | `triggers` | A definition that starts workspace work without a user |
 | `web_components` | `{^name ^slot ^view}` or `{^name ^slot ^render}`; quoted UI, with `view_state` and `actions` for experimental panel forms |
+| `browser_clients` | Owned browser asset and optional stylesheet mounted through the host bridge |
+| `ui_actions`, `ui_links` | Named supervised functions used by workspace views and navigation |
+
+The host also maintains `seams`, `event_types`, `subscriptions`, `interactions`
+and the legacy `views` registry. Additive PluginHost messages preserve
+`PluginHost:2`; removing or changing a contract requires an explicit version
+and compatibility policy. A stored-entry mismatch names the differing interface.
 
 ### Make every plugin discoverable
 

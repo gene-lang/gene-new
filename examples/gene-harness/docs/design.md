@@ -5,7 +5,7 @@ opt-in experiment; its authoring API may change. The
 [README](../README.md) covers operation, [plugins](plugins.md) covers the
 extension contract, and [web components](web-components.md) covers UI authoring.
 
-The [memory proposal](memory.md) describes planned durable notes, retrieval,
+The [memory proposal](proposals/memory.md) describes planned durable notes, retrieval,
 and final-response memory. It includes open design questions and is not yet
 implemented.
 
@@ -496,8 +496,9 @@ the host; a plugin keeps the host for later callbacks.
 | `state`, `update_state` | Workspace state, or per-session state with `^session` |
 
 The registries are `functions`, `commands`, `input_modes`, `prompt`, `docs`,
-`providers`, `hooks`, `views`, `interactions`, `web_components`, `event_types`,
-`subscriptions`, `seams` and `triggers`. A
+`providers`, `image_generators`, `speech_recognizers`, `speech_synthesizers`,
+`hooks`, `views`, `interactions`, `web_components`, `browser_clients`,
+`ui_actions`, `ui_links`, `event_types`, `subscriptions`, `seams` and `triggers`. A
 `functions` row is `{^name ^fn ^doc}`. Names are unique across the workspace,
 and discovery returns each with its captured `$runtime/signature` and short doc.
 Contributions may add a summary, topic tags and docs chapter references. A
@@ -933,6 +934,9 @@ The Harness relies on general runtime features, documented in
 | Plugin contract and activation | plugin_api, kernel, storage/workspace |
 | Patch preflight/commit/recovery | runtime/patch |
 | Built-in contributions | builtin/gene_reference, builtin/plugin_admin, builtin/core_commands, builtin/shell, builtin/repl, builtin/triggers, builtin/provider_* |
+| Workspace and conversation features | builtin/working_instructions, builtin/budget_advisory, builtin/history_basic, builtin/sidebar, builtin/workspace_manager, builtin/ui_experiment |
+| Notifications, media and integrations | builtin/notifications, builtin/media, builtin/computer, builtin/voice, builtin/slack |
+| Image and child-task policies | builtin/image, builtin/image_openrouter, builtin/delegation |
 | Commands, triggers and supervisor | runtime/commands, runtime/triggers, runtime/supervisor |
 | Operator modes and persistent REPL | runtime/input_modes, runtime/repl_sessions, builtin/repl |
 | Durable streams and catalog | storage/state, events.catalog |

@@ -14,7 +14,7 @@
 # once order is load-bearing, composition has to be expressed as a stack and the
 # stack has to be printable to be understood. Make unmet dependencies a *state*
 # instead (§3.3.5) and the problem the layers were solving stops existing.
-# `boot_reversed` is here to keep that claim honest.
+# Composition specs check that dependency readiness is independent of order.
 #
 # What a profile does *not* do is patch another profile. Modifying a running
 # harness is `install`, `uninstall`, and `replace` — named operations an
@@ -50,21 +50,6 @@
   (let admissions (profile_admissions p))
   (put_cordis_plugins h admissions)
   h)
-
-(fn reversed [xs] : Any
-  (var out [])
-  (var i (- xs/.size 1))
-  (while (>= i 0)
-    (out .push xs/%i)
-    (set i (- i 1)))
-  out)
-
-(fn boot_reversed [p : Profile] : Harness
-  # Exists to keep the claim in this file's header honest. Booting a profile
-  # backwards must reach the same state as booting it forwards; if it ever does
-  # not, "a profile is a set" was wrong and the layers were right.
-  (boot (Profile ^name p/name ^plugins (reversed p/plugins) ^limits p/limits
-    ^requires p/requires ^provider p/provider)))
 
 (fn plugin_names [p : Profile] : Any
   (var out [])

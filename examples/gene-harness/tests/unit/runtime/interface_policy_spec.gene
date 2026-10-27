@@ -1,0 +1,15 @@
+(import $test [describe it])
+(import [current_interfaces interface_diagnostic] ^from "../../../src/runtime/interface_policy")
+
+(describe "Plugin interface diagnostics"
+  (it "identifies unsupported, missing and unknown interfaces without changing admission" []
+    (let current (current_interfaces))
+    ($assert (== (interface_diagnostic current current) ""))
+    (let obsolete (current .assoc "core" "gene-harness/PluginHost:1"))
+    ($assert ($str/contains? (interface_diagnostic obsolete current) "core: requires gene-harness/PluginHost:1"))
+    (let future (current .assoc "plugin_api" "gene-harness/Plugin:99"))
+    ($assert ($str/contains? (interface_diagnostic future current) "plugin_api: requires gene-harness/Plugin:99"))
+    (let unknown (current .assoc "unknown" "test:1"))
+    ($assert ($str/contains? (interface_diagnostic unknown current) "unsupported interface unknown"))
+    ($assert ($str/contains? (interface_diagnostic {} current) "omits"))
+    ($assert ($str/contains? (interface_diagnostic [] current) "must be a map"))))

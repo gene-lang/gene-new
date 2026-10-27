@@ -2,7 +2,7 @@
 
 The three-stage first slice in `tmp/harness-spotlight.md`, including review
 decisions S1–S7, is implemented. Operator and contribution author guidance is
-in [Spotlight](spotlight.md).
+in [Spotlight](../spotlight.md).
 
 ## Review corrections
 

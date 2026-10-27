@@ -12,7 +12,7 @@ and frozen action admission. `client/producer_inbox.gene` and the CLI presenter
 consume protocol 8 notification delivery. The public usage guides are
 [overview](recipes/notifications.md), [publishing](recipes/notification-publishing.md)
 and the [review notifier example](../examples/notifications/README.md).
-The [verification record](notification-verification.md) maps the acceptance
+The [verification record](verification/notification-verification.md) maps the acceptance
 criteria to automated tests and observed browser behavior.
 
 ## Purpose and scope

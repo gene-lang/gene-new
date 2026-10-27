@@ -36,7 +36,7 @@ traces include the estimated end-of-speech point so it can be examined separatel
 
 ## Reproduce
 
-Set the normal engine environment from [audio.md](audio.md), with a warm
+Set the normal engine environment from [audio.md](../audio.md), with a warm
 whisper.cpp `/inference` server and Piper model. From `examples/gene-harness`:
 
 ```sh

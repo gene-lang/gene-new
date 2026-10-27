@@ -27,7 +27,7 @@ with the runtime and persistence model already present in this repository.
 ### Operating model
 
 Harness response code and plugins run in-process with the full standard library
-and filesystem access, as documented in the [implemented design](design.md).
+and filesystem access, as documented in the [implemented design](../design.md).
 Memory admission protects quality and consistency through the supported API;
 it is not a security boundary against code that can write `.gene-harness/`
 directly. Process/OS isolation remains a separate deployment decision.
@@ -679,7 +679,7 @@ If scans become slow, SQLite FTS5 provides indexed text search and BM25 ranking.
 SQLite library at runtime, so qualify FTS5 on each supported host, including
 Linux x86_64. Use `$db/sqlite/open_file` for a persistent index, since its pager
 avoids the whole-image publication mode of `open` described in the repository's
-[library guide](../../../docs/stdlib.md).
+[library guide](../../../../docs/stdlib.md).
 
 A derived index then needs explicit canonical revision checks, replay/rebuild
 progress, recent-change handling, and deletion suppression. Those obligations
@@ -970,7 +970,7 @@ gate. The milestone labels below identify when each scenario becomes required.
 | 5 | A derived index can be lost/rebuilt without stale revisions; failed embeddings fall back to Gene retrieval; delayed consolidation respects revised/deleted source dependencies. |
 
 Also replay a small set of real Harness tasks using the
-[todo replay](todo-replay.md) format. Include a remembered gotcha,
+[todo replay](../todo-replay.md) format. Include a remembered gotcha,
 a corrected false lesson, and an unrelated task where memory should stay quiet.
 Score mistakes avoided, action/test outcomes, source correctness, and context
 bytes spent. Keep this real-model replay distinct from deterministic contract

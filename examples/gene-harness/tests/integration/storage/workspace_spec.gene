@@ -282,12 +282,12 @@
           (commit_composition runtime/workspace entries)
           (prepare_workspace runtime/workspace runtime/h)
           ($assert
-            (==
+            ($str/contains?
               (runtime/workspace/errors
                 .get
                 ; .get "obsolete")
-              "stored plugin predates interface 2; re-register it")
-            "v1 plugin did not receive the re-register quarantine")
+              "unsupported interface core: requires gene-harness/PluginHost:1")
+            "v1 plugin did not identify its unsupported interface")
           ($println "plugin v2: direct activation, API-only sharing, full I/O, text registration and explicit session state")
         ensure
           (close_runtime runtime))))))

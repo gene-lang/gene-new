@@ -1,8 +1,8 @@
 # Harness plugin manager
 
 Status: implemented and verified. See the
-[acceptance audit](plugin-manager-verification.md), the
-[implementation ledger](plugin-manager-progress.md), and the
+[acceptance audit](verification/plugin-manager-verification.md), the
+[implementation ledger](verification/plugin-manager-progress.md), and the
 [operator guide](plugin-manager-guide.md) for the implemented
 UI and commands. This document defines the design and acceptance contract;
 the presence of an implementation does not by itself establish acceptance.

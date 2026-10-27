@@ -1,7 +1,26 @@
-# Supported versions of the generated-plugin contracts.
+# Exact versions recorded by generated plugins. Additive messages keep these
+# versions; removal or changed semantics requires an explicit compatibility policy.
 (mod interface_policy)
 
 (fn current_interfaces []
   {^core "gene-harness/PluginHost:2"
    ^plugin_api "gene-harness/Plugin:2"
    ^harness_render "gene-harness/HarnessRender:1"})
+
+# This batch preserves exact-map admission. Name the difference instead of
+# describing every mismatch as an old v1 plugin. Compatibility is a later step.
+(fn interface_diagnostic [required, offered] : Str
+  (if (== required offered) (return ""))
+  (if (!= ($head required) Map) (return "stored plugin interface requirements must be a map"))
+  (for [field version] in required
+    (let name ($to_str field))
+    (let available (offered .get name))
+    (if ($absent? available)
+      (return $"unsupported interface ${name}: requires ${version}; this host does not provide it"))
+    (if (!= version available)
+      (return $"unsupported interface ${name}: requires ${version}; this host provides ${available}")))
+  (for [field version] in offered
+    (let name ($to_str field))
+    (if_not ($has_key? required name)
+      (return $"stored plugin interface map omits ${name} (${version}); re-register it for this host")))
+  "stored plugin interfaces do not match this host")

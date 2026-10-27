@@ -1,6 +1,6 @@
 # Channel implementation and verification
 
-Status: local and live qualification passed, 2026-10-27. Objective: implement [channels.md](channels.md), including
+Status: local and live qualification passed, 2026-10-27. Objective: implement [channels.md](../channels.md), including
 both milestones and live Slack qualification using the operator-provided
 credential file. Credential values are never stored in this record or source.
 

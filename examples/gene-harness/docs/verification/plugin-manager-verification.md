@@ -1,6 +1,6 @@
 # Plugin manager acceptance audit
 
-Status: **verified** against [plugin-manager.md](plugin-manager.md).
+Status: **verified** against [plugin-manager.md](../plugin-manager.md).
 
 The full objective is implemented, including managed-state writer provenance.
 The contract's explicitly separate designs remain outside this implementation:
@@ -11,14 +11,14 @@ execution, and artifact garbage collection.
 
 | Gate | Result | Evidence |
 | --- | --- | --- |
-| Full Harness integration suite | 184 passed; no failures/errors | [Report](../../../tmp/plugin-manager-integration.log) |
-| Full Harness unit suite | 69 passed; no failures/errors | [Report](../../../tmp/plugin-manager-unit.log) |
-| Standalone Cordis suite | 22 passed; no failures/errors | [Report](../../../tmp/plugin-manager-cordis.log) |
-| Native provenance suite | 4 passed | [Report](../../../tmp/plugin-manager-provenance.log) |
+| Full Harness integration suite | 184 passed; no failures/errors | [Report](../../../../tmp/plugin-manager-integration.log) |
+| Full Harness unit suite | 69 passed; no failures/errors | [Report](../../../../tmp/plugin-manager-unit.log) |
+| Standalone Cordis suite | 22 passed; no failures/errors | [Report](../../../../tmp/plugin-manager-cordis.log) |
+| Native provenance suite | 4 passed | [Report](../../../../tmp/plugin-manager-provenance.log) |
 | Native store persistence suite | 22 passed | `tests/spec_runner.nim`, store persistence protocol |
-| Native package suite | 24 passed, 1 filesystem-specific skip | [Report](../../../tmp/plugin-manager-package.log) |
+| Native package suite | 24 passed, 1 filesystem-specific skip | [Report](../../../../tmp/plugin-manager-package.log) |
 | Browser client | Compiled; desktop/mobile workflows verified | Screenshots below |
-| Final validation-history regression | 7 plan cases passed, also included in the full integration suite | [Report](../../../tmp/plugin-manager-plans.log) |
+| Final validation-history regression | 7 plan cases passed, also included in the full integration suite | [Report](../../../../tmp/plugin-manager-plans.log) |
 | Final formatting | New manager modules checked; last two formatting edits preserve parsed forms | `gene-fmt`, canonical parse comparison |
 | Patch hygiene | `git diff --check` passed | Current worktree |
 
@@ -74,8 +74,8 @@ defaults and both verification plugins are enabled. The previous Gene Sheets
 workspace and workbook were not modified.
 
 Desktop and 390px mobile screenshots are saved as
-[desktop](../../../tmp/plugin-manager-desktop.jpg) and
-[mobile](../../../tmp/plugin-manager-mobile.jpg). Mobile document width equals
+[desktop](../../../../tmp/plugin-manager-desktop.jpg) and
+[mobile](../../../../tmp/plugin-manager-mobile.jpg). Mobile document width equals
 viewport width. The fresh conflict-test tab reported no console warnings or
 errors.
 

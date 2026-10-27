@@ -1,0 +1,57 @@
+(import $test [describe it])
+(import [isolated run_spec] ^from "../../support")
+(import [start_host stop_host] ^from "../../web_support")
+(import [connect api wire] ^from "../../../src/cli/client")
+(import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
+(import [offline_profile] ^from "../../../src/profiles/offline")
+(import [set_entry_disabled] ^from "../../../src/storage/workspace")
+
+(fn unavailable_routes [client]
+  (for route in [["GET" "/triggers" nil]
+                ["GET" "/trigger-occurrences" nil]
+                ["GET" "/triggers/probe/occurrences" nil]
+                ["POST" "/triggers" {}]
+                ["DELETE" "/triggers/probe" nil]]
+    (let result (wire client/connection route/0 route/1 route/2 ^credentials client/credentials))
+    ($assert (== result/status 503) ($to_str route/0 " " route/1 ": " result/status))
+    ($assert (== result/body/code "unavailable"))))
+
+(fn plugin_command [client, session : Str, text : Str]
+  (let pending (api client "POST" $"/sessions/${session}/commands" {^text text}))
+  (let deadline (+ ($os/monotonic_ms) 10000))
+  (loop
+    (let receipt (api client "GET" $"/sessions/${session}/commands/${pending/id}"))
+    (if (!= receipt/status "running")
+      (then ($assert (== receipt/status "done") ($serde/write_data receipt)) (return receipt)))
+    ($assert (< ($os/monotonic_ms) deadline) "Plugin command did not finish.")
+    ($sleep 20)))
+
+(describe "Trigger route availability"
+  (it "reports unavailable on every route when booted with triggers disabled" []
+    (isolated this_mod/.path "reports unavailable on every route when booted with triggers disabled"
+      (fn [root]
+        (let setup (open_runtime root "default" (offline_profile) ^!activate))
+        (try (set_entry_disabled setup/workspace "triggers" true) ensure (close_runtime setup))
+        (let host (start_host root))
+        (try (unavailable_routes (connect root)) ensure (stop_host host)))))
+
+  (it "reports unavailable after live disable and restores persisted definitions on enable" []
+    (isolated this_mod/.path "reports unavailable after live disable and restores persisted definitions on enable"
+      (fn [root]
+        (let host (start_host root))
+        (try
+          (let client (connect root))
+          (api client "POST" "/triggers" {^id "probe" ^kind "scheduled"
+            ^at (+ ($os/wall_ms) 86400000) ^request "Do not fire during this test."})
+          (let session (api client "POST" "/sessions" {^title "Trigger availability"}))
+          (plugin_command client session/id "/run (disable_plugin \"triggers\")")
+          (unavailable_routes client)
+          (plugin_command client session/id "/run (enable_plugin \"triggers\")")
+          (let restored (api client "GET" "/triggers"))
+          ($assert (== restored/triggers/.size 1))
+          ($assert (== restored/triggers/0/id "probe"))
+          (api client "DELETE" "/triggers/probe")
+        ensure (stop_host host)))))
+)
+
+(fn main [args] : Int (run_spec args))

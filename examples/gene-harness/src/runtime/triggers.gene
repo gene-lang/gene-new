@@ -4,6 +4,7 @@
   [core_states record_core_state flush_event_store copy_data])
 (import ^from "./sessions" [create_session require_record list_sessions unload_idle_sessions update_session delete_session load_session session_busy?])
 (import ^from "../kernel" [rows])
+(import [composition_entries] ^from "../storage/workspace")
 (import ^from "../agents/history" [collect_unreferenced_bodies])
 (import [spawn_effect_call] ^from "." ^pkg "cordis")
 (import ^from "./round_controller" [submit_round round_state round_receipt answer_round])
@@ -95,6 +96,17 @@
       (definition .put "rules" rules)
       (definition .put "next_ms" (cron/next pattern rules now))))
   definition)
+
+(fn require_trigger_manager [runtime]
+  # A retired scheduler can still be retained by an admitted command/round.
+  # Its lease permits that work to finish, not new HTTP operations after disable.
+  (for entry in (composition_entries runtime/workspace)
+    (if (&& (== entry/id "triggers") (== entry/disabled true))
+      (fail (TriggerError ^code "unavailable" ^message "The trigger scheduler is disabled or unavailable."))))
+  (let manager runtime/triggers)
+  (if (|| ($absent? manager) manager/closed/.get)
+    (fail (TriggerError ^code "unavailable" ^message "The trigger scheduler is disabled or unavailable.")))
+  manager)
 
 (fn require_accepting [manager]
   (if (|| manager/closed/.get manager/runtime/stopping/.get)

@@ -45,7 +45,8 @@
   (for item in snapshot/workspaces
     (let controls [])
     (if (["running" "recovery"] .contains? item/status)
-      (controls .push `(a ^href %$"/api/v8/ui/open?name=workspace_open&id=${($url/encode_component item/id)}" ^target "_blank" "Open"))
+      (controls .push
+        `(a ^href %$"/api/v8/ui/open?name=workspace_open&id=${($url/encode_component item/id)}" ^target "_blank" "Open"))
       (controls .push
         `(button ^key %$"start/${item/id}" ^action "manager_workspace_action" ^args %{^operation "start" ^id item/id} "Start")))
     (if (["running" "recovery" "starting" "unavailable"] .contains? item/status)
@@ -101,7 +102,11 @@
       (panels .push
         `(section
            (h3 %$"Archive ${item/name}?")
-           (p %$"The workspace moves to ${snapshot/archive_dir} with all files, sessions and settings. Stop it first; Restore brings it back.")
+           (p
+             %($to_str
+                "The workspace moves to "
+                snapshot/archive_dir
+                " with all files, sessions and settings. Stop it first; Restore brings it back."))
            (button ^key %$"archive-confirm/${item/id}" ^action "manager_workspace_action" ^args %{^operation "archive" ^id item/id} "Archive")
            (button ^key %$"archive-cancel/${item/id}" ^state "selected" ^value "" "Cancel"))))
     (if (== selected $"delete/${item/id}")
@@ -122,16 +127,11 @@
       (panels .push `(p ^role "status" %message))))
   (if (== selected "create")
     (panels .push
-      `(form ^key "register-create" ^action "manager_workspace_action" ^args %{^operation "create"}
-         ^success_state {^selected ""}
+      `(form ^key "register-create" ^action "manager_workspace_action" ^args %{^operation "create"} ^success_state {^selected ""}
          (h3 "Create workspace")
          (p %$"New workspaces are created in ${snapshot/workspaces_dir}.")
-         (label
-           "Name"
-           (input ^key "name" ^field "name" ^placeholder "todo-app" ^^required))
-         (label
-           "Port (0 or blank for automatic)"
-           (input ^key "port" ^field "port" ^type "number"))
+         (label "Name" (input ^key "name" ^field "name" ^placeholder "todo-app" ^^required))
+         (label "Port (0 or blank for automatic)" (input ^key "port" ^field "port" ^type "number"))
          (button ^key "register-submit" ^type "submit" "Create")
          (button ^key "register-cancel" ^type "button" ^state "selected" ^value "" "Cancel"))))
   (let archived [])
@@ -143,23 +143,81 @@
   (let archived_block
     (if archived/.empty?
       `(span "")
-      `(details ^key "archived"
-         (summary %$"Archived (${archived/.size})")
-         (ul %archived...))))
+      `(details ^key "archived" (summary %$"Archived (${archived/.size})") (ul %archived...))))
   `(section ^key "workspace-manager"
      (div ^class "actions"
        (button ^key "create" ^state "selected" ^value "create" "Create workspace")
        (button ^key "refresh" ^action "manager_workspace_action" ^args %{^operation "refresh"} "Refresh")
        (button ^key "discuss" ^switch_view "workspaces" ^presentation "docked" "Discuss in Harness"))
      (p "Workspaces live in " (code %snapshot/workspaces_dir) ".")
-     (table
-       (thead (tr (th "Name") (th "Port") (th "Status") (th "Actions")))
-       (tbody %rows...))
+     (table (thead (tr (th "Name") (th "Port") (th "Status") (th "Actions"))) (tbody %rows...))
      %(if rows/.empty?
-        (quote (p "Create a workspace to get started, or place a project directory in the workspaces directory."))
+        (quote
+          (p "Create a workspace to get started, or place a project directory in the workspaces directory."))
         (quote (span "")))
      %panels...
      %archived_block))
 
 (fn workspace_manager [] : Plugin
-  (Plugin ^id "workspace_manager" ^requires ["loop"] ^provides [["web_components" "workspaces"] ["ui_actions" "manager_workspace_action"] ["ui_links" "workspace_open"] ["functions" "workspace_list"] ["functions" "workspace_inspect"] ["functions" "workspace_create"] ["functions" "workspace_start"] ["functions" "workspace_stop"] ["functions" "workspace_restart"] ["functions" "workspace_set_port"] ["functions" "workspace_rename"] ["functions" "workspace_archive"] ["functions" "workspace_restore"]] ^activate (fn [host] (let runtime ((Path "runtime") ((host .PluginHost:resolve "loop")))) (let manager (open_workspace_manager runtime)) (start_manager_polling manager) (let functions [{^name "workspace_list" ^doc "List the workspaces under the manager's workspaces directory, their status, and archived names." ^fn (fn [] (manager_list manager))} {^name "workspace_inspect" ^doc "Inspect one workspace by name, with bounded startup diagnostics." ^fn (fn [id : Str] (manager_inspect manager id))} {^name "workspace_create" ^doc "Create an empty workspace named NAME under the workspaces directory. Does not start it." ^fn (fn [name : Str, ^port port = nil] (manager_operation manager "create" {^name name ^port port}))} {^name "workspace_start" ^doc "Start a workspace by name, or use its already running host." ^fn (fn [id : Str] (manager_operation manager "start" {^id id}))} {^name "workspace_stop" ^doc "Gracefully stop a workspace. Active-work interruption requires confirmation in the view." ^fn (fn [id : Str] (manager_operation manager "stop" {^id id}))} {^name "workspace_restart" ^doc "Stop then launch a workspace with its saved settings. Active work requires user confirmation." ^fn (fn [id : Str] (manager_operation manager "restart" {^id id}))} {^name "workspace_set_port" ^doc "Save a workspace port (0 for automatic). A running host needs restart to apply it." ^fn (fn [id : Str, port : Int] (manager_operation manager "port" {^id id ^port port}))} {^name "workspace_rename" ^doc "Rename a stopped workspace by renaming its directory." ^fn (fn [id : Str, name : Str] (manager_operation manager "rename" {^id id ^name name}))} {^name "workspace_archive" ^doc "Move a stopped workspace to the archive directory, keeping all files." ^fn (fn [id : Str] (manager_operation manager "archive" {^id id}))} {^name "workspace_restore" ^doc "Move an archived workspace back to the workspaces directory." ^fn (fn [name : Str] (manager_operation manager "restore" {^name name}))}]) (for function in functions (function .put "tags" ["workspace" "manager"]) (function .put "docs" ["harness/workspace-manager"]) (host .PluginHost:contribute "functions" function)) (host .PluginHost:contribute "ui_actions" {^name "manager_workspace_action" ^doc "Confirmed browser operations for the Workspaces view." ^fn (fn [^operation operation : Str, ^id id : Str = "", ^name name : Str = "", ^port port = nil, ^confirm_dir confirm_dir : Str = "", ^confirm_busy confirm_busy : Bool = false, ^expected expected : Str = ""] (workspace_action manager operation id name port confirm_dir confirm_busy expected))}) (host .PluginHost:contribute "ui_links" {^name "workspace_open" ^doc "Authenticated browser-only redirect to a workspace." ^fn (fn [params] (manager_open_link manager params/id))}) (host .PluginHost:contribute "web_components" {^name "workspaces" ^title "Workspaces" ^slot "view" ^default_presentation "full" ^view_state {^selected ""} ^state_version "2" ^actions ["manager_workspace_action"] ^render (fn [context] (manager_view manager context))}) (contribute_text_doc ^tags ["workspace" "manager"] host "harness/workspace-manager" "Create and control the workspaces under this manager's root." "Every managed workspace is a directory ROOT/workspaces/NAME, and NAME is its ID; a directory placed there appears automatically. Use workspace_list and workspace_inspect, then workspace_create/start/stop/restart/set_port/rename/archive/restore. Rename and archive require a stopped workspace; archive moves it to ROOT/archive and restore moves it back. The port setting lives in each workspace. Stop/restart never confirm interruption of active work; direct the user to the Workspaces view when confirmation is required. Permanent deletion and authenticated Open are browser-only actions. No manager function returns credentials. Unresponsive hosts require external process control; no forced termination is available."))))
+  (Plugin ^id "workspace_manager" ^requires ["loop"]
+    ^provides [["web_components" "workspaces"]
+               ["ui_actions" "manager_workspace_action"] ["ui_links" "workspace_open"]
+               ["functions" "workspace_list"] ["functions" "workspace_inspect"]
+               ["functions" "workspace_create"] ["functions" "workspace_start"]
+               ["functions" "workspace_stop"] ["functions" "workspace_restart"]
+               ["functions" "workspace_set_port"] ["functions" "workspace_rename"]
+               ["functions" "workspace_archive"] ["functions" "workspace_restore"]]
+    ^activate (fn [host]
+      (let runtime ((Path "runtime") ((host .PluginHost:resolve "loop"))))
+      (let manager (open_workspace_manager runtime))
+      (start_manager_polling manager)
+      (let functions
+        [{^name "workspace_list"
+          ^doc "List the workspaces under the manager's workspaces directory, their status, and archived names."
+          ^fn (fn [] (manager_list manager))}
+         {^name "workspace_inspect"
+          ^doc "Inspect one workspace by name, with bounded startup diagnostics."
+          ^fn (fn [id : Str] (manager_inspect manager id))}
+         {^name "workspace_create"
+          ^doc "Create an empty workspace named NAME under the workspaces directory. Does not start it."
+          ^fn (fn [name : Str, ^port port = nil]
+            (manager_operation manager "create" {^name name ^port port}))}
+         {^name "workspace_start" ^doc "Start a workspace by name, or use its already running host."
+          ^fn (fn [id : Str] (manager_operation manager "start" {^id id}))}
+         {^name "workspace_stop"
+          ^doc "Gracefully stop a workspace. Active-work interruption requires confirmation in the view."
+          ^fn (fn [id : Str] (manager_operation manager "stop" {^id id}))}
+         {^name "workspace_restart"
+          ^doc "Stop then launch a workspace with its saved settings. Active work requires user confirmation."
+          ^fn (fn [id : Str] (manager_operation manager "restart" {^id id}))}
+         {^name "workspace_set_port"
+          ^doc "Save a workspace port (0 for automatic). A running host needs restart to apply it."
+          ^fn (fn [id : Str, port : Int] (manager_operation manager "port" {^id id ^port port}))}
+         {^name "workspace_rename" ^doc "Rename a stopped workspace by renaming its directory."
+          ^fn (fn [id : Str, name : Str] (manager_operation manager "rename" {^id id ^name name}))}
+         {^name "workspace_archive"
+          ^doc "Move a stopped workspace to the archive directory, keeping all files."
+          ^fn (fn [id : Str] (manager_operation manager "archive" {^id id}))}
+         {^name "workspace_restore"
+          ^doc "Move an archived workspace back to the workspaces directory."
+          ^fn (fn [name : Str] (manager_operation manager "restore" {^name name}))}])
+      (for function in functions
+        (function .put "tags" ["workspace" "manager"])
+        (function .put "docs" ["harness/workspace-manager"])
+        (host .PluginHost:contribute "functions" function))
+      (host .PluginHost:contribute "ui_actions"
+        {^name "manager_workspace_action" ^doc "Confirmed browser operations for the Workspaces view."
+         ^fn (fn [^operation operation : Str, ^id id : Str = "", ^name name : Str = "",
+                  ^port port = nil, ^confirm_dir confirm_dir : Str = "",
+                  ^confirm_busy confirm_busy : Bool = false, ^expected expected : Str = ""]
+           (workspace_action manager operation id name port confirm_dir confirm_busy expected))})
+      (host .PluginHost:contribute "ui_links"
+        {^name "workspace_open" ^doc "Authenticated browser-only redirect to a workspace."
+         ^fn (fn [params] (manager_open_link manager params/id))})
+      (host .PluginHost:contribute "web_components"
+        {^name "workspaces" ^title "Workspaces" ^slot "view" ^default_presentation "full"
+         ^view_state {^selected ""} ^state_version "2" ^actions ["manager_workspace_action"]
+         ^render (fn [context] (manager_view manager context))})
+      (contribute_text_doc ^tags ["workspace" "manager"] host "harness/workspace-manager"
+        "Create and control the workspaces under this manager's root."
+        "Every managed workspace is a directory ROOT/workspaces/NAME, and NAME is its ID; a directory placed there appears automatically. Use workspace_list and workspace_inspect, then workspace_create/start/stop/restart/set_port/rename/archive/restore. Rename and archive require a stopped workspace; archive moves it to ROOT/archive and restore moves it back. The port setting lives in each workspace. Stop/restart never confirm interruption of active work; direct the user to the Workspaces view when confirmation is required. Permanent deletion and authenticated Open are browser-only actions. No manager function returns credentials. Unresponsive hosts require external process control; no forced termination is available."))))

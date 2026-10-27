@@ -107,8 +107,8 @@ notice and preserve typed input.
 
 ## Verification status
 
-See [implementation and verification](audio-implementation.md) and the
-[browser benchmark](audio-benchmarks.md). Availability or a passing fixture is
+See [implementation and verification](verification/audio-implementation.md) and the
+[browser benchmark](verification/audio-benchmarks.md). Availability or a passing fixture is
 not a claim that microphone/echo behavior is qualified on physical hardware.
 
 `probes/audio_engines.gene` runs an opt-in real-engine smoke test and prints

@@ -1,6 +1,6 @@
 # Plugin manager implementation
 
-Status: implemented and verified. The contract remains [plugin-manager.md](plugin-manager.md);
+Status: implemented and verified. The contract remains [plugin-manager.md](../plugin-manager.md);
 [the acceptance audit](plugin-manager-verification.md) tracks each requirement.
 
 ## Delivered behavior

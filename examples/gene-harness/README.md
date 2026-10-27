@@ -10,6 +10,9 @@ isolation.
 
 ## Documentation
 
+The [documentation index](docs/README.md) separates implemented reference,
+proposals, and implementation/verification records.
+
 | Need | Guide |
 | --- | --- |
 | Architecture, lifetimes and module responsibilities | [Design](docs/design.md) |
