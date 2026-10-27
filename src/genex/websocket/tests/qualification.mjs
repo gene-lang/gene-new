@@ -17,7 +17,7 @@ const temporary = await mkdtemp(join(tmpdir(), "gene-websocket-"));
 const key = join(temporary, "key.pem"), certificate = join(temporary, "cert.pem");
 const peers = new Set();
 const paths = new Map();
-let failure, sawText = false, sawPong = false, sawClose = false;
+let failure, sawText = false, sawPong = false, sawClose = false, sawPing = false;
 
 function frame(opcode, bytes = Buffer.alloc(0), final = true) {
   const at = bytes.length < 126 ? 2 : bytes.length <= 65535 ? 4 : 10;
@@ -81,7 +81,8 @@ function accept(socket) {
         const body = Buffer.from(buffer.subarray(at, at + size));
         for (let i = 0; i < body.length; i++) body[i] ^= mask[i % 4];
         buffer = buffer.subarray(at + size);
-        if (opcode === 10) { assert.equal(body.toString(), "control"); sawPong = true; }
+        if (opcode === 9) { sawPing = true; socket.write(frame(10, body)); }
+        else if (opcode === 10) { assert.equal(body.toString(), "control"); sawPong = true; }
         else if (opcode === 1) {
           assert.equal(path, "/text");
           assert.equal(body.length, 2 * 1024 * 1024);
@@ -117,7 +118,7 @@ try {
   clearTimeout(deadline);
   assert.equal(code, 0, output);
   if (failure) throw failure;
-  assert(sawText && sawPong && sawClose, "peer did not observe text, PONG and close");
+  assert(sawText && sawPong && sawClose && sawPing, "peer did not observe text, PING/PONG and close");
   assert.equal(paths.get("/text"), 1, "client followed a redirect");
   assert(paths.get("/stall") >= 2, "timeout and handshake cancellation were not exercised");
   console.log("PASS — independent WS/TLS peers verified frames, trust, limits and cancellation");

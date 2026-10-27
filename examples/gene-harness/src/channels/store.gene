@@ -1,20 +1,133 @@
 (mod channel_store)
 (import $store/fs [open : store_open Store])
 (import [ChannelError channel_error copy] ^from "./model")
+(import [prune] ^from "./retention")
 
-(type ChannelStore ^props {^backend Any ^state Cell ^gate Any ^closed Cell ^checkpoint Any?})
+(type ChannelStore ^props {^backend Any ^state Cell ^gate Any ^closed Cell ^checkpoint Any?
+  ^manifest Cell ^buckets Cell ^changed Cell})
+
+(fn shallow [value]
+  (let result {})
+  (for [name item] in value (result .put ($to_str name) item))
+  result)
+
+(fn bucket_id [id : Str] ($str/slice_bytes ($crypto/sha256 id) 0 2))
+
+# Immutable records and bounded hash buckets are written before the small root
+# checkpoint. A crash exposes either complete generation, never half a mutation.
+(fn stored_record [store, prefix : Str, value]
+  (let encoded ($serde/write_data value))
+  # Reject an unreadable individual record BEFORE publishing its checkpoint.
+  ($serde/read_data encoded)
+  (let digest ($crypto/sha256 encoded))
+  (let id ($to_str prefix digest))
+  (if_not (store/backend .Store:has? id) (store/backend .Store:put id value))
+  digest)
+
+(fn load_record [backend, prefix : Str, digest : Str]
+  (let value (backend .Store:get ($to_str prefix digest)))
+  (if (|| ($absent? value) (!= ($crypto/sha256 ($serde/write_data value)) digest))
+    (channel_error "unavailable" "Missing or corrupt immutable channel record."))
+  value)
+
+(fn load_manifest [backend, manifest]
+  (let state (copy manifest/scalars))
+  (let buckets {})
+  (for [name shards] in manifest/tables
+    (let table {})
+    (let cached {})
+    (for [bucket digest] in shards
+      (let entries (load_record backend "channel/bucket/" digest))
+      (cached .put ($to_str bucket) entries)
+      (for [id record_digest] in entries
+        (let record (load_record backend "channel/record/" record_digest))
+        (table .put ($to_str id) (if (== manifest/leaf_encoding 1) record/value record))))
+    (state .put ($to_str name) table)
+    (buckets .put ($to_str name) cached))
+  {^state state ^buckets buckets})
+
+(fn publish_records [store, next, changes]
+  (let previous store/state/.get)
+  (let tables (copy store/manifest/.get/tables))
+  (let buckets (shallow store/buckets/.get))
+  (let scalars {})
+  (for [field value] in next
+    (let name ($to_str field))
+    (if (!= ($head value) Map) (then (scalars .put name value) (continue)))
+    (let old (previous .get name))
+    (if (&& (! ($absent? changes)) (! ($has_key? changes name))
+             ($has_key? tables name)) (continue))
+    (let keys (if ($absent? changes) [] (?? (changes .get name) [])))
+    # Map iteration below is intentional: avoid relying on map iterator tuple shape.
+    (let ids {})
+    (if (|| ($absent? changes) ($absent? (changes .get name)))
+      (then
+        (for [id ignored] in (?? old {}) (ids .put ($to_str id) true))
+        (for [id ignored] in value (ids .put ($to_str id) true)))
+      (else (for id in keys (ids .put id true))))
+    (let shards (shallow (?? (tables .get name) {})))
+    (let cached (shallow (?? (buckets .get name) {})))
+    (let dirty {})
+    (for [id ignored] in ids
+      (let key ($to_str id))
+      (let current (value .get key))
+      (if (&& (== store/manifest/.get/leaf_encoding 1) ($has_key? tables name)
+               (== ($has_key? value key) ($has_key? (?? old {}) key))
+               (== current ((?? old {}) .get key))) (continue))
+      (let bucket (bucket_id key))
+      (if_not ($has_key? dirty bucket)
+        (dirty .put bucket (shallow (?? (cached .get bucket) {}))))
+      (let entries (dirty .get bucket))
+      (if (! ($has_key? value key))
+        (entries .delete key)
+        (entries .put key (stored_record store "channel/record/" {^value current}))))
+    (for [bucket entries] in dirty
+      (let id ($to_str bucket))
+      (if (== ($size entries) 0)
+        (then (shards .delete id) (cached .delete id))
+        (else
+          (shards .put id (stored_record store "channel/bucket/" entries))
+          (cached .put id entries))))
+    (tables .put name shards) (buckets .put name cached))
+  (let manifest {^format 2 ^leaf_encoding 1 ^kind next/kind ^revision next/revision ^scalars scalars ^tables tables})
+  (store/backend .Store:checkpoint next/revision {^channel_manifest manifest})
+  (store/manifest .set manifest) (store/buckets .set buckets))
+
+(fn collect_records [store]
+  (let retained {})
+  (let directory ($path/join store/backend/root "generations"))
+  (for generation in ($fs/list_dir directory)
+    (let filename ($path/join directory generation "channel_manifest.gene"))
+    (if_not ($fs/exists? filename) (continue))
+    (let manifest ($serde/read_data ($fs/read_text filename)))
+    (for [name shards] in manifest/tables
+      (for [bucket digest] in shards
+        (let id ($to_str "channel/bucket/" digest))
+        (retained .put id true)
+        (for [key record] in (load_record store/backend "channel/bucket/" digest)
+          (retained .put ($to_str "channel/record/" record) true)))))
+  (for id in store/backend/.Store:keys
+    (if (&& (id .starts_with? "channel/") (! ($has_key? retained id)))
+      (store/backend .Store:delete id)))
+  nil)
 
 (fn open_channel_store [root : Str, kind : Str, initial]
   ($fs/make_dir root)
-  (let backend (store_open ^root root))
+  # The larger policy is solely for importing an existing monolithic generation.
+  # New records are preflighted against the normal serde limits independently.
+  (let backend (store_open ^root root ^policy {^max_nodes 2000000 ^max_bytes 104857600}))
   (try
     (let loaded backend/.Store:load_checkpoint)
+    (let manifest (?? loaded/records/channel_manifest {^tables {}}))
+    (let restored (if (== manifest/format 2) (load_manifest backend manifest) nil))
     (let state (if ($absent? loaded)
       ((copy initial) .assoc "format" 1; .assoc "kind" kind; .assoc "revision" 0)
-      loaded/records/channels))
-    (if (|| (!= state/format 1) (!= state/kind kind) (!= ($head state/revision) Int))
+      (if ($absent? restored) loaded/records/channels restored/state)))
+    (if (|| (!= state/format 1) (!= state/kind kind) (!= ($head state/revision) Int)
+            (&& (! ($absent? loaded)) (!= state/revision loaded/generation)))
       (channel_error "unavailable" "Unsupported durable channel state."))
-    (ChannelStore ^backend backend ^state ($cell state) ^gate ($sync/gate) ^closed ($cell false))
+    (ChannelStore ^backend backend ^state ($cell state) ^gate ($sync/gate) ^closed ($cell false)
+      ^manifest ($cell manifest) ^buckets ($cell (?? restored/buckets {})) ^changed ($cell {}))
   catch Error
     backend/.Store:close
     (fail $err)))
@@ -25,21 +138,56 @@
 (fn snapshot [store : ChannelStore]
   (store/gate (fn [] (require_open store) (copy store/state/.get))))
 
-(fn mutate [store : ChannelStore, operation]
+# Select before detaching. Hot paths never copy unrelated sessions or payloads.
+(fn read [store : ChannelStore, select]
+  (store/gate (fn [] (require_open store) (copy (select store/state/.get)))))
+
+(fn has_queue? [store, session : Str]
+  (read store (fn [state] ($has_key? state/queues session))))
+
+(fn take_changes [store]
+  (store/gate (fn [] (store/changed .swap {}))))
+
+# Trusted host callbacks declare table -> record IDs for selective detachment;
+# nil IDs select the entire table. A selector is evaluated under this gate.
+# Omission is the safe full-copy path for configuration and maintenance.
+(fn mutate [store : ChannelStore, operation, ^changes changes = nil]
   (if (== (/ui_render ($runtime/context)) true)
     (channel_error "forbidden" "Render callbacks cannot change channel state."))
   (store/gate (fn []
     (require_open store)
-    (let next (copy store/state/.get))
+    (if ($runtime/callable? changes) (set changes (changes store/state/.get)))
+    (let maintenance (== (// (+ store/state/.get/revision 1) 64) 0))
+    (if maintenance (set changes nil))
+    (let previous_queues store/state/.get/queues)
+    (let next (if ($absent? changes) (copy store/state/.get) (shallow store/state/.get)))
+    (if_not ($absent? changes)
+      (for [field ids] in changes
+        (let name ($to_str field))
+        (let table (if ($absent? ids) (copy (?? (next .get name) {}))
+          (shallow (?? (next .get name) {}))))
+        (if_not ($absent? ids)
+          (for id in ids
+            (if ($has_key? table id) (table .put id (copy (table .get id))))))
+        (next .put name table)))
     (let result (operation next))
+    (if maintenance (prune next ($os/wall_ms)))
     (if_yes (!= next store/state/.get)
       (next .put "revision" (+ store/state/.get/revision 1))
       # Host-only diagnostic seam, also used to kill qualification processes
       # on either side of the physical checkpoint. Callbacks get detached data.
       (if_not ($absent? store/checkpoint) (store/checkpoint "before" (copy next) (copy result)))
-      (store/backend .Store:checkpoint next/revision {^channels next})
+      (publish_records store next (if (== store/manifest/.get/leaf_encoding 1) changes nil))
       (if_not ($absent? store/checkpoint) (store/checkpoint "after" (copy next) (copy result)))
-      (store/state .set next))
+      (store/state .set next)
+      (store/changed/.get .put "revision" next/revision)
+      (for [session queue] in (?? next/queues {})
+        (if (!= queue ((?? previous_queues {}) .get ($to_str session)))
+          (store/changed/.get .put ($to_str session) true)))
+      # Publication is already durable. Failed best-effort GC is retried on a
+      # later maintenance pass and must never turn an acknowledged commit into
+      # an apparent failure.
+      (if maintenance (try (collect_records store) catch Error nil)))
     (copy result))))
 
 (fn close_channel_store [store : ChannelStore]

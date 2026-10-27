@@ -422,6 +422,12 @@ must not repeat work; subscriptions such as message and app-mention events
 may describe the same Slack message under different event IDs. Use the
 account/team/channel/message identity to prevent duplicate requests.
 
+Replies to a root already recorded as ignored or denied receive a terminal
+disposition immediately. A reply whose root has not arrived waits for up to
+five minutes, with persisted backoff between handoff attempts. Deferred records
+keep later replies in their thread ordered, while allowing the root through.
+Observing that root wakes its waiting replies without waiting for the backoff.
+
 ### Outgoing record ownership and handoff
 
 The **workspace** records each logical delivery intent in its outbox: stable
@@ -445,6 +451,12 @@ A timeout after a Slack API request may leave the remote result unknown. Keep
 that operation explicitly uncertain and reconcile it before another send.
 This handoff design does not promise exactly-once remote posting; recovery
 must preserve the distinction between known failure and unknown success.
+
+The owner can explicitly resolve a failed or uncertain part after reviewing
+the thread. An empty history scan alone never authorizes another post.
+Workspace outboxes poll accepted results with backoff rather than handing the
+same payload over repeatedly. Failed and uncertain delivery is visible beside
+the browser composer, with its delivery ID.
 
 Message edits and deletions do not automatically rerun or undo admitted work.
 An explicit follow-up requests a change to work already started.
@@ -521,6 +533,41 @@ by default, or `markdown` for an eligible Slack AI surface) and optional
 `public_url`. Supply a browser URL reachable by the Slack participants, with
 no credentials, query or fragment. Without one, image references identify the
 Harness session instead of publishing broken media links.
+
+Use `channels delivery ID` on the connection owner to inspect a stuck output.
+Then `channels resolve-delivery ID --file FILE` accepts an inert definition:
+
+```gene
+{^revision 0 ^review_revision 0 ^part 0 ^decision "retry"
+ ^reason "Checked the Slack thread; this part was not posted."}
+```
+
+Copy `revision` and `review_revision` from the current delivery (a missing
+review revision is zero). Choose `sent` with its actual Slack `ts`, `retry`, or
+`failed` to abandon the output. Retry is an explicit owner decision and can
+duplicate a message if its earlier success was overlooked. Resolution cannot
+replace a request still actively being sent. Other requests in the thread can
+proceed after the uncertain output is resolved.
+
+A claimed batch normally recovers automatically, even if a browser request
+used its reserved sequence. If that sequence's receipt has been pruned, the
+queue stays held. Inspect `channels queue --session ID`, then use
+`channels resolve-batch --session ID --revision N --file FILE` with
+`{^batch "BATCH_ID" ^decision "discard" ^reason "Reviewed the prior work."}`.
+The other choice, `requeue`, explicitly accepts possible replay. This resolves
+the claim and preserves the hold; review and resume separately.
+
+Channel storage checkpoints a small manifest over immutable individual records
+and hash buckets. Existing channel checkpoints migrate on the next mutation.
+Terminal transport records retain seven days of deduplication evidence;
+transcript history remains in the event store. Unresolved effects and pending
+inputs never expire. Delivered progress slots retain compact revision, digest,
+destination and Slack message-ID records after their rendered bodies expire,
+so later updates keep editing the same message even if the owner and workspace
+run maintenance at different times. Maintenance reclaims records unreachable from all retained
+checkpoint generations. Idle sessions are processed only after relevant changes
+and can unload normally. Socket Mode sends periodic PINGs and reconnects after
+90 seconds without a received frame, including control frames.
 
 ## Milestones
 

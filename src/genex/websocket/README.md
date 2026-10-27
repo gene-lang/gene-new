@@ -60,6 +60,13 @@ payload. This is not a remote application acknowledgment. Polling receive also
 advances writes. TLS peer and hostname verification are always enabled; the
 adapter does not inherit proxy settings or follow HTTP redirects.
 
+The native binding also provides `ping socket` (1 sent, 0 would block, -1 error)
+and `idle_ms socket`, elapsed monotonic time since the last received frame.
+PING/PONG control frames count as activity without becoming application text.
+TCP keepalive is enabled. The consuming protocol owns heartbeat intervals and
+reconnection policy; the Harness Slack integration uses a 30-second PING interval and a 90-second receive
+deadline. Rebuild the native adapter when upgrading to these bindings.
+
 Messages are bounded to 16 MiB. Output is bounded to 8 MiB and 256 queued
 messages. Each socket belongs to its creating thread. Native libraries are
 trusted after admission through `aot/load`; this is not a native-code sandbox.

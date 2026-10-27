@@ -97,7 +97,7 @@
             (for outgoing in (pending_output service/runtime/channel_queues)
               (deliver_output service/runtime/channels/owner api outgoing/intent/id))
             ($assert ($absent? (completed_qualification service "1.000001")))
-            (handoff_outputs service/runtime/channels)
+            (handoff_outputs service/runtime/channels ^^force)
             ($assert (== (/session (completed_qualification service "1.000001")) accepted/session))
           ensure (close_api api)))))))
 

@@ -1,0 +1,43 @@
+(mod channel_retention)
+
+# Transcript history belongs to the event store. Terminal transport payloads
+# keep a seven-day dedup/reconciliation window; unresolved effects never expire.
+(fn compact_progress [state, table_name : Str, id : Str, record]
+  # A stable progress ID may be updated long after its rendered body expires.
+  # Retain its identity, revision, digest and known Slack message timestamp on
+  # both sides, so asymmetric maintenance cannot reset or repost the message.
+  (if (== table_name "outbox")
+    (then
+      (let progress ((?? state/progress {}) .get id))
+      (if_not ($absent? progress)
+        (progress .put "revision" ($math/max (?? progress/revision -1) record/intent/revision))
+        # A newer intent may have been saved just before a crash, before it
+        # reached the outbox. Retiring the old delivery must not discard it.
+        (if (<= (?? progress/intent/revision progress/revision) record/intent/revision)
+          (then
+            (progress .put "retired" true)
+            (progress .delete "intent"))))))
+  (record/intent .delete "parts")
+  (if_not ($absent? record/result/intent) (record/result/intent .delete "parts"))
+  (record .put "compacted" true))
+
+(fn prune [state, now : Int]
+  (let cutoff (- now 604800000))
+  (for name in ["ingress" "messages" "batches" "outbox" "deliveries" "controls"]
+    (let table (state .get name))
+    (if ($absent? table) (continue))
+    (let remove [])
+    (for [id record] in table
+      (if (&& (== name "controls") (!= record/state "done")) (continue))
+      (if (! (["ignored" "denied" "handed_off" "consumed" "discarded" "admitted"
+               "refused" "owner_resolved" "delivered" "deleted" "control"] .contains? record/status)) (continue))
+      (let at (?? record/finished_at (?? record/received_at now)))
+      (if ($absent? record/finished_at) (record .put "finished_at" at))
+      (if (< at cutoff) (remove .push ($to_str id))))
+    (for id in remove
+      (let record (table .get id))
+      (if (&& (["outbox" "deliveries"] .contains? name)
+              (== record/status "delivered") (== record/intent/mode "progress"))
+        (compact_progress state name id record)
+        (table .delete id))))
+  nil)

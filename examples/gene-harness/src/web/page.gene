@@ -140,6 +140,7 @@
                (button ^id "new_output" ^class "new_output" ^type "button" ^^hidden "New output ↓")
                (div ^class "composer_wrap"
                  (section ^id "channel_sharing" ^class "auth_notice" ^^hidden ^role "note")
+                 (section ^id "channel_delivery" ^class "auth_notice" ^^hidden ^role "status")
                  (div ^id "web_composer" ^class "web_components")
                  (section ^id "input_panel" ^class "input_panel" ^^hidden
                    (strong "Answer any questions; skipped answers are unanswered.")

@@ -64,6 +64,19 @@
   ($assert (== (native/open_count) 0))
   (report "PASS — cooperative connect, fragmented UTF-8, empty text and backpressured text send")
 
+  (let heartbeat (open native ($to_str base "/heartbeat")))
+  (try
+    ($sleep 30)
+    ($assert (>= (native/idle_ms heartbeat) 20))
+    ($assert (== (native/ping heartbeat) 1))
+    (let due (+ ($os/monotonic_ms) 1000))
+    (while (>= (native/idle_ms heartbeat) 20)
+      ($assert ($absent? (receive_text native heartbeat)))
+      ($assert (< ($os/monotonic_ms) due) "PONG did not reset receive activity")
+      ($sleep 1))
+  ensure ($C/close heartbeat))
+  (report "PASS — client PING and control-frame receive activity")
+
   ($assert (try
     (let limited (open native ($to_str base "/limit") ^max_message_bytes 64))
     (try (next_text native limited) ensure ($C/close limited))

@@ -10089,6 +10089,7 @@ proc storeLoadFilesystemCheckpoint(scope: Scope, store: Value,
     except ValueError: continue
     let dir = generations / name
     let manifestPath = dir / "MANIFEST.gene"
+    var decodingRecords = false
     try:
       if not fsPathExists(manifestPath):
         continue
@@ -10108,11 +10109,18 @@ proc storeLoadFilesystemCheckpoint(scope: Scope, store: Value,
           break
         encoded[recordName] = fsReadBytes(path)
       if complete:
+        decodingRecords = true
         let loaded = storeDecodeCheckpoint(scope, store, generation,
                                            manifestText, encoded)
         if loaded.kind != vkVoid:
           return loaded
-    except GeneError, IOError, OSError:
+    except GeneError as e:
+      # A complete, checksummed generation that our policy cannot decode is
+      # still committed. Falling back would silently roll back acknowledged
+      # work and leave the next writer behind CURRENT's CAS generation.
+      if decodingRecords or "payload exceeds max_" in e.msg:
+        raise
+    except IOError, OSError:
       discard
   NIL
 
@@ -10146,6 +10154,7 @@ proc storeLoadSqliteCheckpoint(scope: Scope, store: Value): Value =
     if generation > publishedGeneration:
       continue
     let manifestText = row.mapEntries[names.dataColumn].strVal
+    var decodingRecords = false
     try:
       let manifest = storeDecode(scope, "data", manifestText, NIL, "manifest")
       if manifest.kind != vkMap:
@@ -10165,12 +10174,14 @@ proc storeLoadSqliteCheckpoint(scope: Scope, store: Value): Value =
           break
         encoded[recordName] = record[0].mapEntries[names.dataColumn].strVal
       if complete:
+        decodingRecords = true
         let loaded = storeDecodeCheckpoint(scope, store, generation,
                                            manifestText, encoded)
         if loaded.kind != vkVoid:
           return loaded
-    except GeneError:
-      discard
+    except GeneError as e:
+      if decodingRecords or "payload exceeds max_" in e.msg:
+        raise
   NIL
 
 proc biStoreLoadCheckpoint(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =

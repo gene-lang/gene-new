@@ -8,6 +8,8 @@
    max_message : C/Size max_queued : C/Size] : (C/OwnedPtr GXSocket))
 (ffi/fn connected ^symbol "gx_ws_connected" [socket : (C/Ptr GXSocket)] : C/Int)
 (ffi/fn open_count ^symbol "gx_ws_open_count" [] : C/Size)
+(ffi/fn idle_ms ^symbol "gx_ws_idle_ms" [socket : (C/Ptr GXSocket)] : C/Size)
+(ffi/fn ping ^symbol "gx_ws_ping" [socket : (C/Ptr GXSocket)] : C/Int)
 (ffi/fn last_error ^symbol "gx_ws_last_error" [] : C/CStr)
 (ffi/fn error ^symbol "gx_ws_error" [socket : (C/Ptr GXSocket)] : C/CStr)
 (ffi/fn send ^symbol "gx_ws_send"

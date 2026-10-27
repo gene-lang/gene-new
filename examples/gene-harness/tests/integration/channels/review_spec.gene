@@ -1,0 +1,390 @@
+(import $test [describe it])
+(import [isolated run_spec test_service] ^from "../../support")
+(import [fixture receive wait_round] ^from "./service_spec")
+(import [fixture : delivery_fixture intent] ^from "./handoff_spec")
+(import [fixture : transport_fixture] ^from "./transport_spec")
+(import [open_channel_store close_channel_store mutate snapshot read collect_records] ^from "../../../src/channels/store")
+(import [drain_session handoff_inputs handoff_outputs queue_progress tick_channels delivery_status output_intent] ^from "../../../src/channels/service")
+(import [pending_parts claim_batch queue_status resume_queue resolve_claim] ^from "../../../src/channels/queue")
+(import [authorize_parts] ^from "../../../src/channels/authority")
+(import [receive_envelope pending_ingress defer_handoff] ^from "../../../src/channels/ingress")
+(import [event] ^from "./service_spec")
+(import [submit snapshot : browser_snapshot close_session_service] ^from "../../../src/web/session_service")
+(import [unload_session] ^from "../../../src/runtime/sessions")
+(import [queue_output accept_output begin_part finish_part reconcile_output due_output resolve_output output_result deliver_output] ^from "../../../src/channels/delivery")
+(import [open_api close_api] ^from "../../../src/channels/slack_api")
+(import [open_transport close_transport socket_session] ^from "../../../src/channels/transport")
+(import [ChannelError key] ^from "../../../src/channels/model")
+(import [decode_text] ^from "../../../src/channels/slack_text")
+(import [render_reply] ^from "../../../src/channels/render")
+(import [prune] ^from "../../../src/channels/retention")
+(import [round_state] ^from "../../../src/runtime/round_controller")
+(import [record_core_state flush_event_store] ^from "../../../src/storage/state")
+(import $store/fs [open : store_open Store])
+
+(fn prune_later [store]
+  (let now ($os/wall_ms))
+  (mutate store (fn [state] (prune state now) (prune state (+ now 691200000)) nil)))
+
+(fn restored_fixture [f, workspace : Str, body]
+  (close_session_service f/harness)
+  (let restored (test_service ^workspace workspace ^without_plugins ["slack"]
+    ^provider (fn [request] "(Outcome ^^done)")))
+  (try (body {^harness restored ^channels restored/runtime/channels ^route f/route})
+  ensure (close_session_service restored)))
+
+(fn deliver_progress [f, binding, api, text : Str]
+  (queue_progress f/channels binding "retained-progress" "round-test" text)
+  (handoff_outputs f/channels ^^force)
+  (deliver_output f/channels/owner api "retained-progress")
+  (handoff_outputs f/channels ^^force))
+
+(describe "Channel review regressions"
+  (it "checkpoints independent records beyond the aggregate serde limit and rejects an unreadable record before commit" []
+    (isolated this_mod/.path "checkpoints independent records beyond the aggregate serde limit and rejects an unreadable record before commit"
+      (fn [workspace]
+        (let directory ($path/join workspace "records"))
+        (let store (open_channel_store directory "review" {^items {}}))
+        (try
+          (mutate store (fn [state]
+            (var index 0)
+            (while (< index 4000)
+              (let row {}) (var field 0)
+              (while (< field 30) (row .put ($to_str field) "data") (set field (+ field 1)))
+              (state/items .put ($to_str index) row) (set index (+ index 1))) nil))
+          ($assert (== ($size (/items (snapshot store))) 4000))
+          (let revision (/revision (snapshot store)))
+          ($assert (try
+            (mutate store (fn [state]
+              (let huge []) (repeat 100001 (huge .push 1))
+              (state/items .put "huge" huge) nil) ^changes {^items ["huge"]}) false
+            catch Error true))
+          ($assert (== (/revision (snapshot store)) revision))
+          (collect_records store)
+        ensure (close_channel_store store))
+        (let reopened (open_channel_store directory "review" {^items {}}))
+        (try
+          ($assert (== ($size (/items (snapshot reopened))) 4000))
+          (mutate reopened (fn [state] (state/items .put "last" {^ok true}) nil) ^changes {^items ["last"]})
+        ensure (close_channel_store reopened)))))
+
+  (it "refuses to roll back a committed checkpoint when the reader policy rejects it" []
+    (isolated this_mod/.path "refuses to roll back a committed checkpoint when the reader policy rejects it"
+      (fn [workspace]
+        (let directory ($path/join workspace "policy")) ($fs/make_dir directory)
+        (let writer (store_open ^root directory))
+        (writer .Store:checkpoint 1 {^data [1]})
+        (let many []) (repeat 100 (many .push 1))
+        (writer .Store:checkpoint 2 {^data many}) writer/.Store:close
+        (let reader (store_open ^root directory ^policy {^max_nodes 30}))
+        (try ($assert (try reader/.Store:load_checkpoint false catch Error true))
+        ensure reader/.Store:close))))
+
+  (it "migrates monolithic checkpoints and preserves nil records without accepting corrupt leaves" []
+    (isolated this_mod/.path "migrates monolithic checkpoints and preserves nil records without accepting corrupt leaves"
+      (fn [workspace]
+        (let directory ($path/join workspace "legacy")) ($fs/make_dir directory)
+        (let legacy (store_open ^root directory))
+        (legacy .Store:checkpoint 1 {^channels {^format 1 ^kind "review" ^revision 1 ^items {^nil nil ^old "kept"}}})
+        legacy/.Store:close
+        (let current (open_channel_store directory "review" {^items {}}))
+        (mutate current (fn [state] (state/items .put "new" "added") nil) ^changes {^items ["new"]})
+        (close_channel_store current)
+        (let migrated (open_channel_store directory "review" {^items {}}))
+        (try
+          ($assert (== (/items (snapshot migrated)) {^nil nil ^old "kept" ^new "added"}))
+          (let corrupt ($cell nil))
+          (for [id entries] in migrated/buckets/.get/items
+            (if ($has_key? entries "new") (corrupt .set (entries .get "new"))))
+          (migrated/backend .Store:put ($to_str "channel/record/" corrupt/.get) {^value "corrupt"})
+        ensure (close_channel_store migrated))
+        ($assert (try (open_channel_store directory "review" {^items {}}) false
+          catch ChannelError (== $err/code "unavailable"))))))
+
+  (it "waits for an out-of-order root and decodes Slack code and JSON text once" []
+    (isolated this_mod/.path "waits for an out-of-order root and decodes Slack code and JSON text once"
+      (fn [workspace]
+        (fixture workspace (fn [f]
+          (let reply (receive f "EvEarly" "2.000001" "fix `a &lt; b &amp;&amp; c`" ^thread "1.000001"))
+          ($assert (== reply/status "waiting_root"))
+          (receive f "EvRoot" "1.000001" "<@UBOT> Start with <https://example.com|docs>.")
+          (handoff_inputs f/channels)
+          ($assert (== ($size (pending_ingress f/channels/owner)) 0))
+          (let queues (snapshot f/harness/runtime/channel_queues))
+          (for [id queue] in queues/queues
+            (let parts (pending_parts f/harness/runtime/channel_queues ($to_str id)))
+            ($assert (== parts/.size 2))
+            ($assert (== parts/0/message/text "Start with https://example.com."))
+            ($assert (== parts/1/message/text "fix `a < b && c`")))
+          ($assert (== (decode_text "!answer q {\"url\":\"<https://a.example/?x=1&amp;y=2>\",\"literal\":\"&amp;lt;\"}")
+            "!answer q {\"url\":\"https://a.example/?x=1&y=2\",\"literal\":\"&lt;\"}")))))))
+
+  (it "releases an unadmitted claim after a browser uses its sequence and leaves idle sessions unloaded" []
+    (isolated this_mod/.path "releases an unadmitted claim after a browser uses its sequence and leaves idle sessions unloaded"
+      (fn [workspace]
+        (fixture workspace (fn [f]
+          (let root (receive f "Ev1" "1.000001" "<@UBOT> Queued task."))
+          (let parts (pending_parts f/harness/runtime/channel_queues root/session))
+          (let decisions (authorize_parts f/channels/owner f/route/id parts ^workspace workspace))
+          (claim_batch f/harness/runtime/channel_queues root/session decisions 1)
+          (submit f/harness root/session "browser-first" 1 "Browser wins during plugin retirement.")
+          (wait_round f/harness root/session)
+          ($assert (== (/kind (drain_session f/channels root/session)) "admitted"))
+          (wait_round f/harness root/session)
+          (repeat 3 (tick_channels f/channels))
+          ($assert (unload_session f/harness/sessions root/session))
+          (f/channels/dirty/.get .put root/session true)
+          (repeat 5 (tick_channels f/channels))
+          ($assert ($absent? (f/harness/sessions/loaded/.get .get root/session)))
+          ($assert (! ($has_key? f/harness/events/streams/.get ($to_str "session:" root/session)))))))))
+
+  (it "keeps uncertain effects held until revisioned owner resolution and backs off known delivery results" []
+    (isolated this_mod/.path "keeps uncertain effects held until revisioned owner resolution and backs off known delivery results"
+      (fn [workspace]
+        (delivery_fixture workspace (fn [f]
+          (let output (intent f))
+          (queue_output f/queues output)
+          (accept_output f/owner output)
+          (begin_part f/owner output/id 0 0)
+          (reconcile_output f/queues (output_result f/owner output/id))
+          ($assert (== (read f/queues (fn [state] (/status (state/outbox .get output/id)))) "accepted"))
+          (let unknown (finish_part f/owner output/id 0 0 {^status "uncertain" ^error "transport_unknown"}))
+          (reconcile_output f/queues unknown)
+          ($assert (== ($size (due_output f/queues)) 0))
+          ($assert (try (resolve_output f/owner output/id 1 0 "retry" "Reviewed") false
+            catch ChannelError (== $err/code "stale")))
+          (let retried (resolve_output f/owner output/id 0 0 "retry" "Owner checked Slack and confirms no post."))
+          ($assert (== retried/parts/0/status "pending"))
+          ($assert (try (resolve_output f/owner output/id 0 0 "retry" "Stale choice") false
+            catch ChannelError (== $err/code "stale")))
+          (begin_part f/owner output/id 0 0)
+          (finish_part f/owner output/id 0 0 {^status "uncertain"})
+          (let abandoned (resolve_output f/owner output/id 0 0 "failed" "Owner abandons this output." ^review_revision 1))
+          (reconcile_output f/queues abandoned)
+          ($assert (== ($size (due_output f/queues)) 0))
+          ($assert (== (/status (output_result f/owner output/id)) "failed")))))))
+
+  (it "requires owner review when a claimed admission has fallen outside the receipt window" []
+    (isolated this_mod/.path "requires owner review when a claimed admission has fallen outside the receipt window"
+      (fn [workspace]
+        (fixture workspace (fn [f]
+          (let root (receive f "EvClaim" "1.000001" "<@UBOT> A queued task."))
+          (let parts (pending_parts f/harness/runtime/channel_queues root/session))
+          (let decisions (authorize_parts f/channels/owner f/route/id parts ^workspace workspace))
+          (let claimed (/batch (claim_batch f/harness/runtime/channel_queues root/session decisions 1)))
+          (submit f/harness root/session "browser" 1 "Other work.")
+          (wait_round f/harness root/session)
+          (let latest (/receipts (round_state f/harness/controller root/session)))
+          (latest/0 .put "submission_seq" 130)
+          (record_core_state f/harness/events "session" root/session "round/state" "rounds"
+            {^next_seq 131 ^receipts latest})
+          (flush_event_store f/harness/events)
+          ($assert (== (/kind (drain_session f/channels root/session)) "uncertain"))
+          (let status (queue_status f/harness/runtime/channel_queues root/session))
+          (resolve_claim f/harness/runtime/channel_queues root/session status/revision claimed/id "discard" "Owner confirms effects must not be replayed.")
+          ($assert (/held (queue_status f/harness/runtime/channel_queues root/session)))
+          ($assert ($absent? (/batch (queue_status f/harness/runtime/channel_queues root/session))))
+          ($assert (== f/calls/.get/.size 1)))))))
+
+  (it "exposes a stuck delivery in the bound conversation browser snapshot" []
+    (isolated this_mod/.path "exposes a stuck delivery in the bound conversation browser snapshot"
+      (fn [workspace]
+        (fixture workspace (fn [f]
+          (let root (receive f "Ev1" "1.000001" "<@UBOT> Task."))
+          (let status (queue_status f/harness/runtime/channel_queues root/session))
+          (let output (output_intent f/channels status/binding "stuck" "test-round" "A reply."))
+          (queue_output f/harness/runtime/channel_queues output)
+          (accept_output f/channels/owner output)
+          (begin_part f/channels/owner "stuck" 0 0)
+          (let unknown (finish_part f/channels/owner "stuck" 0 0 {^status "uncertain"}))
+          (reconcile_output f/harness/runtime/channel_queues unknown)
+          ($assert (== (/channel_delivery (browser_snapshot f/harness root/session))
+            [{^id "stuck" ^status "uncertain"}])))))))
+
+  (it "bounds terminal payload retention without expiring pending work or uncertain effects" []
+    (let state {^ingress {^old {^status "denied" ^received_at 1} ^pending {^status "pending" ^received_at 1}}
+      ^outbox {^old {^status "delivered" ^finished_at 1 ^intent {^mode "progress" ^revision 4 ^parts [{^text "old reply"}]}}
+               ^unknown {^status "uncertain" ^finished_at 1}}
+      ^progress {^old {^fingerprint "known" ^intent {^revision 4 ^parts [{^text "old reply"}]}}}})
+    (prune state 700000000)
+    ($assert ($absent? state/ingress/old))
+    ($assert (== state/ingress/pending/status "pending"))
+    ($assert (== state/outbox/unknown/status "uncertain"))
+    ($assert state/progress/old/retired)
+    ($assert (== state/progress/old/revision 4))
+    ($assert (== state/outbox/old/intent/revision 4))
+    ($assert ($absent? state/outbox/old/intent/parts))
+    ($assert ($absent? state/progress/old/intent)))
+
+  (it "preserves progress revision and Slack timestamp across asymmetric pruning and reopening" []
+    (isolated this_mod/.path "preserves progress revision and Slack timestamp across asymmetric pruning and reopening"
+      (fn [workspace]
+        (for order in [["workspace"] ["owner"] ["workspace" "owner"] ["owner" "workspace"]]
+          (let root ($path/join workspace ($str/join order "-")))
+          (fixture root (fn [f]
+            (let request (receive f "EvRoot" "1.000001" "<@UBOT> Start."))
+            (let binding (/binding (queue_status f/harness/runtime/channel_queues request/session)))
+            (let calls ($cell []))
+            (let api (open_api "test" ^requester (fn [request]
+              (calls/.get .push {^method request/method ^ts (?? request/params/ts nil)})
+              {^status 200 ^headers [] ^body ($binary/from_str "{\"ok\":true,\"ts\":\"3.000001\"}")})))
+            (try
+              (deliver_progress f binding api "Progress A")
+              (deliver_progress f binding api "Progress B")
+              (for side in order
+                (prune_later (if (== side "owner") f/channels/owner f/harness/runtime/channel_queues)))
+              (queue_progress f/channels binding "retained-progress" "round-test" "Progress B")
+              ($assert (== calls/.get/.size 2))
+              (restored_fixture f root (fn [restored]
+                (deliver_progress restored binding api "Progress C")
+                (let result (output_result restored/channels/owner "retained-progress"))
+                ($assert (== result/intent/revision 2))
+                ($assert (== result/parts/0/ts "3.000001"))
+                ($assert (== result/status "delivered"))
+                ($assert (== ($map calls/.get /method) ["chat.postMessage" "chat.update" "chat.update"]))
+                ($assert (== calls/.get/2/ts "3.000001"))
+                (prune_later restored/harness/runtime/channel_queues)
+                (prune_later restored/channels/owner)
+                (queue_progress restored/channels binding "retained-progress" "round-test" "Progress C")
+                ($assert (== ($size (due_output restored/harness/runtime/channel_queues)) 0))
+                ($assert (== calls/.get/.size 3))))
+            ensure (close_api api))))))))
+
+  (it "preserves a newer saved progress intent while compacting its older delivery" []
+    (isolated this_mod/.path "preserves a newer saved progress intent while compacting its older delivery"
+      (fn [workspace]
+        (fixture workspace (fn [f]
+          (let root (receive f "EvRoot" "1.000001" "<@UBOT> Start."))
+          (let binding (/binding (queue_status f/harness/runtime/channel_queues root/session)))
+          (let calls ($cell []))
+          (let api (open_api "test" ^requester (fn [request]
+            (calls/.get .push request/method)
+            {^status 200 ^headers [] ^body ($binary/from_str "{\"ok\":true,\"ts\":\"3.000001\"}")})))
+          (try
+            (deliver_progress f binding api "Progress A")
+            (deliver_progress f binding api "Progress B")
+            (let saved (output_intent f/channels binding "retained-progress" "round-test" "Progress C"
+              ^mode "progress" ^revision 2))
+            # The first checkpoint of queue_progress committed; the outbox
+            # handoff has not yet been recorded when maintenance runs.
+            (mutate f/harness/runtime/channel_queues (fn [state]
+              (state/progress .put "retained-progress"
+                {^fingerprint (key "Progress C") ^revision 2 ^intent saved}) nil)
+              ^changes {^progress ["retained-progress"]})
+            (prune_later f/harness/runtime/channel_queues)
+            (let pending (read f/harness/runtime/channel_queues
+              (fn [state] (state/progress .get "retained-progress"))))
+            ($assert (== pending/intent/revision 2))
+            (restored_fixture f workspace (fn [restored]
+              (deliver_progress restored binding api "Progress C")
+              ($assert (== calls/.get ["chat.postMessage" "chat.update" "chat.update"]))
+              ($assert (== (/intent (output_result restored/channels/owner "retained-progress")) saved))))
+          ensure (close_api api)))))))
+
+  (it "disposes of replies to known ignored roots without retrying or creating a session" []
+    (isolated this_mod/.path "disposes of replies to known ignored roots without retrying or creating a session"
+      (fn [workspace]
+        (fixture workspace (fn [f]
+          ($assert (== (/status (receive f "EvRoot" "1.000001" "Ordinary channel chat.")) "ignored"))
+          ($assert (== (/status (receive f "EvReply" "2.000001" "A human reply." ^thread "1.000001")) "ignored"))
+          (handoff_inputs f/channels)
+          ($assert (== ($size (pending_ingress f/channels/owner)) 0))
+          (let revision (/revision (snapshot f/channels/owner)))
+          (repeat 20 (handoff_inputs f/channels))
+          ($assert (== (/revision (snapshot f/channels/owner)) revision))
+          ($assert (== ($size f/harness/sessions/index/.get) 0)))))))
+
+  (it "persists missing-root backoff and wakes the waiting reply when its root arrives" []
+    (isolated this_mod/.path "persists missing-root backoff and wakes the waiting reply when its root arrives"
+      (fn [workspace]
+        (fixture workspace (fn [f]
+          (receive f "EvEarly" "2.000001" "An early reply." ^thread "1.000001")
+          (handoff_inputs f/channels)
+          (let waiting ($first (pending_ingress f/channels/owner)))
+          ($assert (== waiting/handoff_attempts 1))
+          ($assert (== waiting/handoff_delay 1000))
+          ($assert (> waiting/next_handoff_at ($os/wall_ms)))
+          # Keep the test independent of machine speed while checking durable scheduling.
+          (mutate f/channels/owner (fn [state]
+            ((state/ingress .get waiting/id) .put "next_handoff_at" (+ ($os/wall_ms) 60000)) nil)
+            ^changes {^ingress [waiting/id]})
+          (restored_fixture f workspace (fn [restored]
+            (let revision (/revision (snapshot restored/channels/owner)))
+            (repeat 20 (handoff_inputs restored/channels))
+            ($assert (== (/revision (snapshot restored/channels/owner)) revision))
+            (receive restored "EvRoot" "1.000001" "<@UBOT> The root arrives.")
+            (handoff_inputs restored/channels)
+            (handoff_inputs restored/channels)
+            ($assert (== ($size (pending_ingress restored/channels/owner)) 0))
+            (let state (snapshot restored/harness/runtime/channel_queues))
+            (for [id queue] in state/queues
+              ($assert (== (/pending (queue_status restored/harness/runtime/channel_queues ($to_str id))) 2))))))))))
+
+  (it "keeps later amendments behind a deferred handoff in the same thread" []
+    (isolated this_mod/.path "keeps later amendments behind a deferred handoff in the same thread"
+      (fn [workspace]
+        (fixture workspace (fn [f]
+          (let root (receive f "EvRoot" "1.000001" "<@UBOT> Start."))
+          (handoff_inputs f/channels)
+          (let first (receive_envelope f/channels/owner "dobi"
+            (event "EvFirst" "2.000001" "First amendment." ^thread "1.000001")))
+          (receive_envelope f/channels/owner "dobi"
+            (event "EvSecond" "3.000001" "Second amendment." ^thread "1.000001"))
+          (defer_handoff f/channels/owner first/id "handoff_unavailable")
+          (mutate f/channels/owner (fn [state]
+            ((state/ingress .get first/id) .put "next_handoff_at" (+ ($os/wall_ms) 60000)) nil)
+            ^changes {^ingress [first/id]})
+          (repeat 5 (handoff_inputs f/channels))
+          ($assert (== (/pending (queue_status f/harness/runtime/channel_queues root/session)) 1))
+          ($assert (== ($size (pending_ingress f/channels/owner)) 2))
+          (mutate f/channels/owner (fn [state]
+            ((state/ingress .get first/id) .put "next_handoff_at" 0) nil) ^changes {^ingress [first/id]})
+          (handoff_inputs f/channels)
+          ($assert (== ($map (pending_parts f/harness/runtime/channel_queues root/session)
+            (fn [part] part/message/text)) ["Start." "First amendment." "Second amendment."])))))))
+
+  (it "expires a missing-root reply at its bounded deadline without blocking another thread" []
+    (isolated this_mod/.path "expires a missing-root reply at its bounded deadline without blocking another thread"
+      (fn [workspace]
+        (fixture workspace (fn [f]
+          (receive f "EvEarly" "2.000001" "No root yet." ^thread "1.000001")
+          (handoff_inputs f/channels)
+          (let waiting ($first (pending_ingress f/channels/owner)))
+          (mutate f/channels/owner (fn [state]
+            (let record (state/ingress .get waiting/id))
+            (record/message .put "received_at" (- ($os/wall_ms) 300001))
+            (record .put "next_handoff_at" 0) nil) ^changes {^ingress [waiting/id]})
+          (receive f "EvOther" "3.000001" "<@UBOT> A different thread.")
+          (handoff_inputs f/channels)
+          ($assert (== ($size (pending_ingress f/channels/owner)) 0))
+          (let result (read f/channels/owner (fn [state] (/result (state/ingress .get waiting/id)))))
+          ($assert (== result/status "ignored"))
+          ($assert (== ($size f/harness/sessions/index/.get) 1)))))))
+
+  (it "detects a blackholed Socket Mode connection after hello and retires its socket" []
+    (isolated this_mod/.path "detects a blackholed Socket Mode connection after hello and retires its socket"
+      (fn [workspace]
+        (transport_fixture workspace (fn [harness]
+          (let received ($cell false)) (let closed ($cell false))
+          (let driver {^load (fn [filename] nil) ^connect (fn [api native app] 1)
+            ^receive (fn [native socket]
+              (if (received .swap true) nil {^type "hello" ^connection_info {^app_id "A123"} ^num_connections 1}))
+            ^idle_ms (fn [native socket] 90001) ^ping (fn [native socket] nil)
+            ^close (fn [socket] (closed .set true))})
+          (let transport (open_transport harness/runtime/channels ^driver driver ^start false))
+          (try
+            (let account (/dobi (/accounts (snapshot harness/runtime/channels/owner))))
+            ($assert (try (socket_session transport "A123" account) false
+              catch ChannelError (== $err/code "heartbeat_timeout")))
+            ($assert closed/.get)
+          ensure (close_transport transport)))))))
+
+  (it "preserves inline operators and emits raw code on the Markdown surface" []
+    (let text "Use `2 ** 10` and ``a ~~ b`` with **bold**.")
+    ($assert (== (/text (/0 (render_reply text "s-1"))) "Use `2 ** 10` and ``a ~~ b`` with *bold*."))
+    (let code "```\nif a < b && c > d:\n```\n`<@U123> & x`")
+    ($assert (== (/text (/0 (render_reply code "s-1" ^surface "markdown"))) code))
+    ($assert ((/text (/0 (render_reply code "s-1"))) .contains? "&lt; b &amp;&amp; c &gt;"))))
+
+(fn main [args] : Int
+  (run_spec (if ($absent? args/0) [nil "Channel review regressions"] args)))

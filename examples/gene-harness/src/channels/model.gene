@@ -5,7 +5,7 @@
 (fn channel_error [code : Str, message : Str]
   (fail (ChannelError ^code code ^message message)))
 
-(fn copy [value] ($serde/read_data ($serde/write_data value)))
+(fn copy [value] ($thaw ($freeze value)))
 (fn key [parts] ($crypto/sha256 ($serde/write_data parts)))
 
 (fn required_text [value, label : Str, ^max_bytes maximum : Int = 256] : Str

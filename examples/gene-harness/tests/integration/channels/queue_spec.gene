@@ -112,7 +112,7 @@
           (let second (post f "3.000001" "another task" ^thread "3.000001" ^start true))
           ($assert (!= second/session root/session))
           ($assert (== (/status (post f "4.000001" "not approved" ^author "UUNKNOWN")) "denied"))
-          ($assert (== (/status (post f "5.000001" "unbound reply" ^thread "9.000001")) "ignored"))
+          ($assert (== (/status (post f "5.000001" "unbound reply" ^thread "9.000001")) "waiting_root"))
           ($assert (try (post f "2.000001" "changed content" ^author "UOTHER") false
             catch ChannelError (== $err/code "submission_conflict")))
           (let status (queue_status f/queues root/session))

@@ -156,8 +156,8 @@
           ($assert (! (first_request .contains? "From the shared browser.")))
           ($assert (first_request .contains? "Another task.")))))))
 
-  (it "ignores unknown threads and unmentioned roots and never recreates a deleted conversation" []
-    (isolated this_mod/.path "ignores unknown threads and unmentioned roots and never recreates a deleted conversation"
+  (it "ignores unmentioned roots and their replies and never recreates a deleted conversation" []
+    (isolated this_mod/.path "ignores unmentioned roots and their replies and never recreates a deleted conversation"
       (fn [workspace]
         (fixture workspace (fn [f]
           (let ordinary (receive_envelope f/channels/owner "dobi" (event "Ev1" "1.000001" "Ordinary channel chat.")))
@@ -194,7 +194,10 @@
           (wait_round f/harness root/session)
           ($assert (/held (queue_status f/harness/runtime/channel_queues root/session)))
           (let stale (receive f "Ev4" "4.000001" ($to_str "!resume-queue " held/revision) ^thread "1.000001"))
-          ($assert (== stale/result/code "stale") ($serde/write_data stale))
+          ($assert (== stale/result/code "stale") ($serde/write_data
+            {^control stale ^held held ^current (queue_status f/harness/runtime/channel_queues root/session)
+             ^channel (/channel (f/harness/sessions/index/.get .get root/session))
+             ^observed (/observed (/queues (snapshot f/harness/runtime/channel_queues); .get root/session))}))
           (let current (queue_status f/harness/runtime/channel_queues root/session))
           (let command ($to_str "!resume-queue " current/revision))
           (let resumed (receive f "Ev5" "5.000001" command ^thread "1.000001"))

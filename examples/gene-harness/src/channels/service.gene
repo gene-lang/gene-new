@@ -1,47 +1,69 @@
 (mod channel_service)
 (import [open_authority authorize authorize_parts public_authority] ^from "./authority")
-(import [snapshot mutate close_channel_store] ^from "./store")
+(import [snapshot mutate close_channel_store read has_queue? take_changes] ^from "./store")
 (import [channel_error key binding_key required_text] ^from "./model")
 (import [configure_queues enqueue queue_status activate_binding tombstone_session] ^from "./queue")
-(import [queue_output pending_output accept_output output_result reconcile_output recover_deliveries] ^from "./delivery")
-(import [pending_ingress finish_handoff] ^from "./ingress")
+(import [queue_output pending_output due_output defer_output accept_output output_result reconcile_output recover_deliveries] ^from "./delivery")
+(import [pending_ingress handoff_schedule defer_handoff wake_root_waiters finish_handoff] ^from "./ingress")
 (import [render_reply] ^from "./render")
 (import [parse_control apply_control] ^from "./controls")
 (import [byte_prefix] ^from "../text")
 (import [connect api] ^from "../cli/client")
 (import [create_session_unlocked] ^from "../runtime/sessions")
 (import [admit_channel_queue round_state] ^from "../runtime/round_controller")
-(import [core_state events_for] ^from "../storage/state")
+(import [core_state events_for append_core_event flush_event_store next_sequence stream_key unload_event_stream] ^from "../storage/state")
+(import [RoundChanged DurableRecord] ^from "../kernel")
 
 (type ChannelService ^props {^runtime Any ^controller Any ^owner Any ^gate Any ^closed Cell
-  ^settings Cell ^health Cell})
+  ^settings Cell ^health Cell ^dirty Cell ^retry_at Cell ^subscriptions List})
 
 (fn open_channel_service [runtime, controller]
   (let owner (open_authority ($path/join runtime/state_root "channels" "owner")))
   (recover_deliveries owner)
-  (ChannelService ^runtime runtime ^controller controller ^owner owner ^gate ($sync/gate)
+  (let dirty (read runtime/channel_queues (fn [state]
+    (let ids {}) (for [id queue] in state/queues (ids .put ($to_str id) true)) ids)))
+  (let service (ChannelService ^runtime runtime ^controller controller ^owner owner ^gate ($sync/gate)
     ^closed ($cell false) ^settings ($cell (?? (/settings (snapshot runtime/channel_queues)) {}))
-    ^health ($cell {})))
+    ^health ($cell {}) ^dirty ($cell dirty) ^retry_at ($cell {}) ^subscriptions []))
+  (let mark (fn [id]
+    (if (has_queue? runtime/channel_queues id) (service/dirty/.get .put id true))))
+  (service/subscriptions .push (runtime/h/bus .subscribe RoundChanged
+    (fn [event] (mark event/session))))
+  (service/subscriptions .push (runtime/h/bus .subscribe DurableRecord
+    (fn [event] (if (== event/scope "session") (mark event/stream)))))
+  service)
 
 (fn close_channel_service [service]
   (if (service/closed .swap true) (return nil))
+  (for subscription in service/subscriptions subscription/.cancel)
   (close_channel_store service/owner))
 
 (fn source_state [service]
   (if service/closed/.get (channel_error "unavailable" "The channel service is closed."))
   (snapshot service/runtime/channel_queues))
 
+(fn source_header [service]
+  (read service/runtime/channel_queues (fn [state]
+    {^source state/source ^owner_root state/owner_root ^workspace state/workspace})))
+
+(fn session_state [service, session : Str]
+  (read service/runtime/channel_queues (fn [state]
+    (let queue (state/queues .get session))
+    {^queues ({} .assoc session queue)
+     ^bindings ({} .assoc queue/binding (state/bindings .get queue/binding))
+     ^cursors ({} .assoc session ((?? state/cursors {}) .get session))})))
+
 (fn owner_call [service, method : Str, suffix : Str, data = nil]
-  (let state (source_state service))
+  (let state (source_header service))
   (let root state/owner_root)
   (if ($absent? root) (channel_error "unavailable" "The channel authority is not connected."))
   (api (connect root) method ($to_str "/channels/owner/" suffix) data))
 
 (fn local_owner? [service, source]
-  (== source/owner (/id (snapshot service/owner))))
+  (== source/owner (read service/owner (fn [state] state/id))))
 
 (fn authorize_input [service, author : Str]
-  (let source (source_state service))
+  (let source (source_header service))
   (if ($absent? source/source) (channel_error "unavailable" "No channel is bound to this workspace."))
   (if (local_owner? service source/source)
     (authorize service/owner source/source/id author ^workspace service/runtime/root)
@@ -49,7 +71,7 @@
       {^route source/source/id ^workspace service/runtime/root ^author author})))
 
 (fn authorize_batch [service, parts]
-  (let source (/source (source_state service)))
+  (let source (/source (source_header service)))
   (if (local_owner? service source)
     (authorize_parts service/owner source/id parts ^workspace service/runtime/root)
     (owner_call service "POST" "authorize-parts"
@@ -69,7 +91,11 @@
 (fn ensure_session [service, session : Str]
   (let manager service/runtime/sessions)
   (manager/mutating (fn []
-    (let state (source_state service))
+    (let state (read service/runtime/channel_queues (fn [state]
+      (let queue (state/queues .get session))
+      (let binding (state/bindings .get queue/binding))
+      {^source state/source ^queues ({} .assoc session queue) ^bindings ({} .assoc binding/id binding)
+       ^messages ({} .assoc binding/root_input (state/messages .get binding/root_input))})))
     (let queue (state/queues .get session))
     (let binding (state/bindings .get queue/binding))
     (if (== binding/status "deleted") (return nil))
@@ -127,7 +153,7 @@
 
 (fn output_intent [service, binding, id : Str, round : Str, text : Str,
                    ^mode mode : Str = "post", ^revision revision : Int = 0]
-  (let state (source_state service))
+  (let state (source_header service))
   {^id id ^owner state/source/owner ^route state/source/id ^workspace state/workspace
    ^account binding/account ^team binding/team ^channel binding/channel ^thread binding/thread
    ^session binding/session ^round round ^mode mode ^revision revision
@@ -136,18 +162,19 @@
      ^public_url (?? service/settings/.get/public_url nil))})
 
 (fn project_events [service, session : Str]
-  (let state (source_state service))
+  (let state (session_state service session))
   (let queue (state/queues .get session))
   (let binding (state/bindings .get queue/binding))
   (if (|| ($absent? binding) (!= binding/status "active")) (return nil))
   (let cursors (?? state/cursors {}))
   (let cursor (?? (cursors .get session) 0))
+  (if (<= (next_sequence service/runtime/events (stream_key "session" session)) (+ cursor 1)) (return nil))
   (var through cursor)
   (for event in (events_for service/runtime/events "session" session)
     (if (<= event/seq cursor) (continue))
     (let payload event/payload)
     (let id ($to_str "event-" (key [session event/seq])))
-    (if_yes (! ($has_key? state/outbox id))
+    (if_yes (! (read service/runtime/channel_queues (fn [state] ($has_key? state/outbox id))))
       (if (&& (== event/type "reply") (== payload/final true) (!= payload/synthetic true))
         (queue_output service/runtime/channel_queues
           (output_intent service binding id payload/round (?? payload/text "(Empty reply)"))))
@@ -164,7 +191,7 @@
   (if (> through cursor)
     (mutate service/runtime/channel_queues (fn [latest]
       (if ($absent? latest/cursors) (latest .put "cursors" {}))
-      (latest/cursors .put session through))))
+      (latest/cursors .put session through)) ^changes {^cursors [session]}))
   nil)
 
 (fn queue_progress [service, binding, id : Str, round : Str, text : Str]
@@ -174,19 +201,23 @@
     (if ($absent? latest/progress) (latest .put "progress" {}))
     (let existing (latest/progress .get id))
     (if (== existing/fingerprint fingerprint) (return existing))
-    (candidate .put "revision" (+ (?? existing/intent/revision -1) 1))
-    (let next {^fingerprint fingerprint ^intent candidate})
+    (let prior (latest/outbox .get id))
+    (let revision (+ 1 ($math/max (?? existing/revision (?? existing/intent/revision -1))
+      (?? prior/intent/revision -1))))
+    (candidate .put "revision" revision)
+    (let next {^fingerprint fingerprint ^revision revision ^intent candidate})
     (latest/progress .put id next)
-    next)))
-  (queue_output service/runtime/channel_queues record/intent))
+    next) ^changes {^progress [id]}))
+  (if (== record/retired true) nil
+    (queue_output service/runtime/channel_queues record/intent)))
 
 (fn project_queue [service, session : Str]
-  (let state (source_state service))
   (let status (queue_status service/runtime/channel_queues session))
   (if (!= status/binding/status "active") (return nil))
   (let holds ($filter status/holds (fn [hold] (== hold/kind "operator"))))
   (let id ($to_str "queue-" (key session)))
-  (if (&& holds/.empty? ($absent? ((?? state/progress {}) .get id))) (return nil))
+  (if (&& holds/.empty? (read service/runtime/channel_queues
+        (fn [state] ($absent? ((?? state/progress {}) .get id))))) (return nil))
   (let names [])
   (for hold in holds
     (let name (byte_prefix hold/reason 64))
@@ -197,19 +228,21 @@
     "\nPending messages: " status/pending ". Queue revision: " status/revision "."
     (if (> ($size ($filter holds (fn [hold] (== hold/reason "oversized")))) 0)
       "\nThe whole batch exceeds the request limit. The host operator can review with channels queue, explicitly discard selected messages with channels discard, and then resume. Nothing was truncated or executed." "")
+    (if (> ($size ($filter holds (fn [hold] (== hold/reason "uncertain_admission")))) 0)
+      "\nThe admission receipt window has expired. The host owner must resolve the claimed batch with channels resolve-batch before queue resume can help." "")
     "\nInspect with !status. Explicit resume: !resume-queue " status/revision
     ". Active work and unresolved pauses still block admission."))
   (queue_progress service status/binding id "channel-queue" text)
   nil)
 
 (fn project_rounds [service, session : Str]
-  (let state (source_state service))
+  (let state (session_state service session))
   (let queue (state/queues .get session))
   (let binding (state/bindings .get queue/binding))
   (if (!= binding/status "active") (return nil))
   (for receipt in (/receipts (round_state service/controller session))
     (let id ($to_str "progress-" (key [session receipt/id])))
-    (let prior ((?? state/progress {}) .get id))
+    (let prior (read service/runtime/channel_queues (fn [state] ((?? state/progress {}) .get id))))
     (let display_state (if (&& (== receipt/state "paused") (! ($absent? receipt/continuation_stop)))
       (if (== receipt/continuation_stop "superseded") "superseded" "failed") receipt/state))
     (let active (["running" "waiting" "paused"] .contains? display_state))
@@ -227,7 +260,7 @@
     (queue_progress service binding id receipt/id text)
     (if_yes (&& (== receipt/state "waiting") (! ($absent? receipt/questions)))
       (let question_id ($to_str "questions-" (key [session receipt/questions/id])))
-      (if_not ($has_key? state/outbox question_id)
+      (if_not (read service/runtime/channel_queues (fn [state] ($has_key? state/outbox question_id)))
         (let lines ["Agent needs answers:"])
         (let example {})
         (for question in receipt/questions/questions
@@ -242,45 +275,100 @@
   nil)
 
 (fn handoff_inputs [service]
-  (for incoming in (pending_ingress service/owner)
+  (let blocked {})
+  (for incoming in (handoff_schedule service/owner)
+    (let thread (binding_key incoming/message))
+    (let root (== incoming/message/thread incoming/message/message))
+    (if (&& (! root) ($has_key? blocked thread)) (continue))
+    (if_yes (== incoming/deferred true) (blocked .put thread true) (continue))
     (try
       (let result (if (== incoming/workspace service/runtime/root)
         (receive_handoff service incoming)
         (api (connect incoming/workspace) "POST" "/channels/input" incoming)))
+      (if (== result/status "waiting_root")
+        (channel_error "waiting_root" "Waiting for the thread root before admitting this reply."))
       (finish_handoff service/owner incoming/id result)
+      (if root (wake_root_waiters service/owner incoming/message))
       (service/health/.get .delete incoming/id)
     catch Error
-      (service/health/.get .put incoming/id {^code (?? $err/code "handoff_unavailable") ^at ($os/wall_ms)})))
+      (let failure $err)
+      (blocked .put thread true)
+      (defer_handoff service/owner incoming/id (?? failure/code "handoff_unavailable"))
+      (service/health/.get .put incoming/id {^code (?? failure/code "handoff_unavailable") ^at ($os/wall_ms)})))
   nil)
 
-(fn handoff_outputs [service]
-  (let source (/source (source_state service)))
+(fn handoff_outputs [service, ^force force : Bool = false]
+  (let source (/source (source_header service)))
   (if ($absent? source) (return nil))
-  (for outgoing in (pending_output service/runtime/channel_queues)
+  (for outgoing in (if force (pending_output service/runtime/channel_queues)
+                    (due_output service/runtime/channel_queues))
     (try
-      (let result (if (local_owner? service source)
-        (accept_output service/owner outgoing/intent)
-        (owner_call service "POST" "deliver" outgoing/intent)))
+      (let result (if (== outgoing/status "pending")
+        (if (local_owner? service source)
+          (accept_output service/owner outgoing/intent)
+          (owner_call service "POST" "deliver" outgoing/intent))
+        (if (local_owner? service source)
+          (output_result service/owner outgoing/intent/id)
+          (owner_call service "POST" "result" {^id outgoing/intent/id}))))
       (reconcile_output service/runtime/channel_queues result)
+      (if (&& (!= outgoing/result/status result/status)
+              (["uncertain" "failed" "delivered"] .contains? result/status))
+        (then
+          (append_core_event service/runtime/events "session" outgoing/intent/session
+            {^type "trace" ^kind "channel/status" ^text "Channel delivery status changed."
+             ^delivery outgoing/intent/id ^status result/status ^^ignorable})
+          (flush_event_store service/runtime/events)))
       (service/health/.get .delete outgoing/intent/id)
     catch Error
+      (defer_output service/runtime/channel_queues outgoing/intent/id ^error (?? $err/code "handoff_unavailable"))
+      (if (&& (== $err/code "uncertain") (!= outgoing/last_error "uncertain"))
+        (then
+          (append_core_event service/runtime/events "session" outgoing/intent/session
+            {^type "trace" ^kind "channel/status" ^text "Channel delivery needs owner review."
+             ^delivery outgoing/intent/id ^status "uncertain" ^^ignorable})
+          (flush_event_store service/runtime/events)))
       (service/health/.get .put outgoing/intent/id {^code (?? $err/code "handoff_unavailable") ^at ($os/wall_ms)})))
   nil)
+
+(fn delivery_status [service, session : Str]
+  (if ($absent? service) (return []))
+  (read service/runtime/channel_queues (fn [state]
+    (let result [])
+    (for [id record] in state/outbox
+      (if (&& (== record/intent/session session)
+              (|| (["uncertain" "failed"] .contains? record/status) (== record/last_error "uncertain")))
+        (result .push {^id record/intent/id
+          ^status (if (== record/last_error "uncertain") "uncertain" record/status)})))
+    (let queue (state/queues .get session))
+    (if_not ($absent? queue)
+      (for [id hold] in queue/holds
+        (if (== hold/reason "uncertain_admission")
+          (result .push {^id hold/source ^status "uncertain_admission"}))))
+    result)))
 
 # Network work is driven by the Slack plugin. Durable queues, transcript
 # projections and recovery live in this core service and survive its retirement.
 (fn tick_channels [service]
   (if service/closed/.get (return nil))
-  (let state (source_state service))
-  (for [session queue] in state/queues
+  (for [id changed] in (take_changes service/runtime/channel_queues)
+    (if (!= ($to_str id) "revision") (service/dirty/.get .put ($to_str id) true)))
+  (for [id due] in service/retry_at/.get
+    (if (<= due ($os/wall_ms)) (service/dirty/.get .put ($to_str id) true)))
+  (for [session ignored] in (service/dirty .swap {})
     (let id ($to_str session))
-    (let binding (state/bindings .get queue/binding))
+    (let status (queue_status service/runtime/channel_queues id))
+    (let binding status/binding)
     (if (== binding/status "deleted") (continue))
     (try
-      (drain_session service id)
+      (if (|| (== binding/status "pending") (> status/pending 0) (! ($absent? status/batch)))
+        (drain_session service id))
       (project_events service id)
       (project_rounds service id)
       (project_queue service id)
+      (if ($absent? (service/runtime/sessions/loaded/.get .get id))
+        (unload_event_stream service/runtime/events "session" id))
+      (service/retry_at/.get .delete id)
     catch Error
+      (service/retry_at/.get .put id (+ ($os/wall_ms) 1000))
       (service/health/.get .put id {^code (?? $err/code "channel_error") ^at ($os/wall_ms)})))
   nil)

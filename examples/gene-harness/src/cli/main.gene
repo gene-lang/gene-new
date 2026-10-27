@@ -24,6 +24,8 @@ Workspace commands:
   channels [status | account NAME --file FILE | route ACCOUNT --file FILE]
   channels bind ROUTE --file FILE | queue --session ID | resume --session ID --revision N
   channels delivery ID
+  channels resolve-delivery ID --file FILE
+  channels resolve-batch --session ID --revision N --file FILE
   channels settings --file FILE
   channels discard --session ID --revision N --file FILE
   notifications [list | show ID | clear ID --revision N | clear --all | ack | watch]

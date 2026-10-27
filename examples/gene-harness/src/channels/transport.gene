@@ -1,6 +1,6 @@
 (mod slack_transport)
 (import [spawn_effect_call] ^from "." ^pkg "cordis")
-(import [snapshot] ^from "./store")
+(import [snapshot read] ^from "./store")
 (import [channel_error] ^from "./model")
 (import [read_slack_credentials open_api close_api connect_socket socket_message
          acknowledge load_socket_library] ^from "./slack_api")
@@ -13,6 +13,9 @@
 
 (fn default_driver []
   {^load load_socket_library ^connect connect_socket ^receive socket_message
+   ^idle_ms (fn [native socket] (native/idle_ms socket))
+   ^ping (fn [native socket]
+     (if (< (native/ping socket) 0) (channel_error "connection_error" "Socket ping failed.")))
    ^ack acknowledge ^close (fn [socket] ($C/close socket))})
 
 (fn transport_health [transport, id : Str, connected : Bool, code : Str]
@@ -27,11 +30,18 @@
     (let socket (transport/driver/connect client native credentials/app))
     (try
       (var initialized false)
+      (var last_ping ($os/monotonic_ms))
       (let deadline (+ ($os/monotonic_ms) 10000))
       (while (! transport/closed/.get)
         (if (&& (! initialized) (>= ($os/monotonic_ms) deadline))
           (channel_error "hello_timeout" "Slack did not send a connection hello."))
         (let message (transport/driver/receive native socket))
+        (if (&& initialized (! ($absent? transport/driver/idle_ms)))
+          (then
+            (if (> (transport/driver/idle_ms native socket) 90000)
+              (channel_error "heartbeat_timeout" "No WebSocket frame received before the heartbeat deadline."))
+            (if (> (- ($os/monotonic_ms) last_ping) 30000)
+              (then (transport/driver/ping native socket) (set last_ping ($os/monotonic_ms))))))
         (if_yes ($absent? message) ($sleep 10) (continue))
         (if_yes (! initialized)
           (if (|| (!= message/type "hello") (!= message/connection_info/app_id app))
@@ -43,7 +53,7 @@
           (continue))
         (if (== message/type "disconnect") (return nil))
         (if_yes (! ($absent? message/envelope_id))
-          (let state (snapshot transport/service/owner))
+          (let state (read transport/service/owner (fn [state] {^accounts state/accounts})))
           (var selected nil)
           (for [id candidate] in state/accounts
             (if (&& candidate/enabled (== candidate/app app)
@@ -77,7 +87,7 @@
     (spawn_effect_call transport/owner name callback args)))
 
 (fn reconcile_connections [transport]
-  (let state (snapshot transport/service/owner))
+  (let state (read transport/service/owner (fn [state] {^accounts state/accounts})))
   (let apps {})
   (let ids [])
   (for [id account] in state/accounts (ids .push ($to_str id)))
@@ -115,7 +125,11 @@
       ($math/max (?? (transport/next_send/.get .get id) 0) (+ ($os/monotonic_ms) remaining)))))
 
 (fn deliver_pending [transport]
-  (let state (snapshot transport/service/owner))
+  (let state (read transport/service/owner (fn [state]
+    (let active {})
+    (for [id record] in state/deliveries
+      (if (["accepted" "uncertain"] .contains? record/status) (active .put ($to_str id) record)))
+    {^accounts state/accounts ^rate_limits (?? state/rate_limits {}) ^deliveries active})))
   (let deliveries [])
   (for [id delivery] in state/deliveries (deliveries .push delivery))
   (for [id until] in (?? state/rate_limits {}) (backoff_until transport ($to_str id) until))

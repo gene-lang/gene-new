@@ -1,5 +1,5 @@
 (mod channel_authority)
-(import [open_channel_store close_channel_store snapshot mutate] ^from "./store" ^^export)
+(import [open_channel_store close_channel_store snapshot mutate read] ^from "./store" ^^export)
 (import [channel_error copy key account_id identifier required_text] ^from "./model")
 
 (fn open_authority [root : Str]
@@ -79,13 +79,13 @@
    ^route (if ($absent? selected) nil (copy selected)) ^author user})
 
 (fn authorize [owner, id : Str, user : Str, ^workspace workspace = nil]
-  (authorize_state (snapshot owner) id user workspace))
+  (read owner (fn [state] (authorize_state state id user workspace))))
 
 (fn authorize_parts [owner, id : Str, parts, ^workspace workspace = nil]
-  (let state (snapshot owner))
   (let decisions {})
-  (for part in parts
-    (decisions .put part/id (authorize_state state id part/author workspace)))
+  (read owner (fn [state]
+    (for part in parts
+      (decisions .put part/id (authorize_state state id part/author workspace)))))
   decisions)
 
 (fn public_authority [owner]

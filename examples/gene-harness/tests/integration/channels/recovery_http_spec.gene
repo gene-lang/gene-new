@@ -12,9 +12,10 @@
     (host .put "connection" (ready_host host))
     host
   catch Error
+    (let failure $err)
     host/process/.cancel
     (let ended (try (await host/process) catch Any nil))
-    (fail ($to_str "Peer did not start: " $err/message "\n" (?? ended/stdout "") (?? ended/stderr "")))))
+    ($assert false ($to_str "Peer did not start: " failure/message "\n" (?? ended/stdout "") (?? ended/stderr "")))))
 
 (describe "Channel cross-process recovery"
   (it "recovers either host at each input and output handoff boundary without replaying requests or replies" []
@@ -25,6 +26,7 @@
           ["owner" "ingress"] ["workspace" "queued"] ["workspace" "binding"] ["owner" "handoff"]
           ["workspace" "receipt"] ["workspace" "effect"] ["workspace" "intent"]
           ["owner" "owner_accept"] ["owner" "remote_unknown"] ["owner" "owner_result"] ["workspace" "workspace_result"]]
+          ($println ($to_str "Checking HTTP crash checkpoint: " scenario/1)) ($io/flush_stdout)
           (let root ($path/join workspace scenario/1))
           (let owner_root ($path/join root "owner"))
           (let project_root ($path/join root "project"))
@@ -44,6 +46,7 @@
               ($assert (< ($os/monotonic_ms) due) ($to_str "Peer did not reach " scenario/1))
               ($sleep 20))
             (let dead (await dying/process))
+            (dying .put "reaped" true)
             ($assert (== dead/status 73) ($to_str scenario/1 ": " dead/stdout dead/stderr))
             ($assert (== ($fs/read_text ($path/join dying/root "crash-marker")) scenario/1))
             (if (== scenario/0 "owner")

@@ -1,0 +1,16 @@
+(mod slack_text)
+
+# Slack escapes only these three entities. Decode once, after recognizing its
+# real link tokens, so an escaped literal <...> is never reinterpreted as markup.
+(fn decode_text [text : Str]
+  (let parts [])
+  (var at 0)
+  (for token in ($into ($regex/find_all #"<(https?://[^>|\s]+)(?:\|[^>]*)?>" text) [])
+    (parts .push ($str/slice_bytes text at (- token/start at)))
+    (parts .push token/groups/0)
+    (set at token/end))
+  (parts .push ($str/slice_bytes text at (- text/.byte_size at)))
+  (var result ($str/join parts ""))
+  (for pair in [["&lt;" "<"] ["&gt;" ">"] ["&amp;" "&"]]
+    (set result ($str/join (result .split pair/0) pair/1)))
+  result)

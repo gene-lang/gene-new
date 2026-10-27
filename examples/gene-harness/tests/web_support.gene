@@ -46,6 +46,7 @@
     ($assert false ($to_str message "\n" (?? stopped/stdout "") (?? stopped/stderr "")))))
 
 (fn stop_host [host]
+  (if (== host/reaped true) (return nil))
   (if_not host/process/.done?
     (try
       (api (connect host/root) "POST" "/control" {^action "stop" ^^confirm})
@@ -55,7 +56,9 @@
   (while (&& (! host/process/.done?) (< ($os/monotonic_ms) due))
     ($sleep 20))
   (if_not host/process/.done? host/process/.cancel)
-  (await host/process))
+  (let result (await host/process))
+  (host .put "reaped" true)
+  result)
 
 (fn cli [root : Str, arguments, ^expected expected : Int = 0]
   (let args ["run" "--snapshot" (package_path "src/main.gene") "--workspace" root "--json"])

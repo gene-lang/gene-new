@@ -13,8 +13,14 @@
     (return (api client "POST" "/channels/queue/resume"
       {^session options/session ^revision ($parse/parse_int (?? options/revision "-1"))})))
   (if ($absent? options/file)
-    (problem "Use channels account NAME, route ACCOUNT or bind ROUTE --file FILE."))
+    (problem "Use --file FILE for account, route, binding, settings or recovery definitions."))
   (let definition (read_data_file options/file))
+  (if (== action "resolve-delivery")
+    (return (api client "POST" "/channels/owner/resolve" (definition .assoc "id" words/2))))
+  (if (== action "resolve-batch")
+    (return (api client "POST" "/channels/queue/resolve"
+      ((definition .assoc "session" options/session)
+        .assoc "revision" ($parse/parse_int (?? options/revision "-1"))))))
   (if (== action "discard")
     (return (api client "POST" "/channels/queue/discard"
       {^session options/session ^revision ($parse/parse_int (?? options/revision "-1"))

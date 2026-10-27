@@ -156,11 +156,15 @@
           (finish_channel_admission queues stored/id found)
           (observe_channel_round queues session found)
           (return {^kind "admitted" ^batch stored/id ^receipt found ^^recovered}))
-        (if_yes (!= stored/sequence state/next_seq)
+        (var covered (== stored/sequence state/next_seq))
+        (for receipt in state/receipts
+          (if (== receipt/submission_seq stored/sequence) (set covered true)))
+        (if_not covered
           (hold_channel_queue queues session "uncertain_admission" stored/id)
           (return {^kind "uncertain" ^batch stored/id}))
-        # The sequence high-watermark is unchanged and no request receipt
-        # exists: no round was admitted. Re-form and reauthorize the snapshot.
+        # A retained receipt or the unused next sequence covers the claim. A
+        # different browser request may have used it while Slack was disabled;
+        # absence of this request ID now proves no channel admission occurred.
         (release_channel_batch queues stored/id))
       (if (|| (session_busy? loaded) (! ($absent? (controller/active/.get .get session))))
         (return {^kind "busy"}))
@@ -250,7 +254,8 @@
     session
     {^status receipt/state ^last_active ($to_str ($now)) ^last_active_ms ($os/wall_ms)}))
   (flush_event_store events)
-  (if_not ($absent? controller/runtime/channel_queues)
+  (if_yes (&& (! ($absent? controller/runtime/channel_queues))
+          (! ($absent? (/channel (controller/runtime/sessions/index/.get .get session)))))
     (for superseded in superseded_receipts
       (observe_channel_round controller/runtime/channel_queues session superseded))
     (observe_channel_round controller/runtime/channel_queues session receipt))

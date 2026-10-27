@@ -1,5 +1,5 @@
 (mod channel_delivery)
-(import [snapshot mutate] ^from "./store")
+(import [snapshot mutate read] ^from "./store")
 (import [channel_error copy key required_text identifier slack_ts] ^from "./model")
 (import [api_call SlackError] ^from "./slack_api")
 
@@ -69,14 +69,30 @@
     (let record {^intent intent ^digest (intent_digest intent) ^status "pending"
       ^sequence (?? previous/sequence state/outbox_sequence)})
     (state/outbox .put intent/id record)
-    record)))
+    record) ^changes {^outbox [intent/id]}))
 
 (fn pending_output [queues]
-  (let result [])
-  (let state (snapshot queues))
-  (for [id record] in state/outbox
-    (if (!= record/status "delivered") (result .push record)))
-  ($order/sort_by result /sequence))
+  (read queues (fn [state]
+    (let result [])
+    (for [id record] in state/outbox
+      (if (!= record/status "delivered") (result .push record)))
+    ($order/sort_by result /sequence))))
+
+(fn due_output [queues]
+  (read queues (fn [state]
+    (let result [])
+    (for [id record] in state/outbox
+      (if (&& (!= record/status "delivered") (<= (?? record/next_check_at 0) ($os/wall_ms)))
+        (result .push record)))
+    ($order/sort_by result /sequence))))
+
+(fn defer_output [queues, id : Str, ^error error : Str = "handoff_unavailable"]
+  (mutate queues (fn [state]
+    (let record (state/outbox .get id))
+    (let delay ($math/min 30000 (* 2 (?? record/check_delay 500))))
+    (record .put "check_delay" delay)
+    (record .put "last_error" error)
+    (record .put "next_check_at" (+ ($os/wall_ms) delay)) nil) ^changes {^outbox [id]}))
 
 # Owner acceptance is durable before it returns. Only this owner performs API
 # calls. Revisions update one progress message; final replies have immutable IDs.
@@ -112,10 +128,10 @@
     (let record {^intent intent ^digest (intent_digest intent) ^parts parts ^status "accepted"
       ^sequence (?? previous/sequence state/delivery_sequence)})
     (state/deliveries .put intent/id record)
-    record)))
+    record) ^changes {^deliveries [intent/id]}))
 
 (fn output_result [owner, id : Str]
-  (let record (/deliveries (snapshot owner); .get id))
+  (let record (read owner (fn [state] (state/deliveries .get id))))
   (if ($absent? record) (channel_error "not_found" "Delivery not found."))
   record)
 
@@ -128,9 +144,46 @@
     (if (< result/intent/revision record/intent/revision) (return record))
     (if (!= record/digest result/digest)
       (channel_error "submission_conflict" "The delivery result does not match its intent."))
+    (var status result/status)
+    # An owner query can overlap its live HTTP send. Only a recovered/lost
+    # outcome is uncertain; an in-flight part still needs normal result polling.
+    (for part in result/parts
+      (if (== part/status "sending") (set status "accepted")))
     (record .put "result" (copy result))
-    (record .put "status" (if (== result/status "delivered") "delivered" "accepted"))
-    record)))
+    (record .put "last_error" nil)
+    (record .put "status" status)
+    (let delay (if (== status "failed") 30000
+      (if (== status "uncertain") ($math/min 30000 (* 2 (?? record/check_delay 500))) 1000)))
+    (record .put "next_check_at" (+ ($os/wall_ms) delay))
+    (record .put "check_delay" (if (== status "uncertain") delay 500))
+    record) ^changes {^outbox [result/intent/id]}))
+
+# Only an authenticated host owner can make this explicit content/effect choice.
+# Empty history scans never cause a resend. A retry may duplicate a post if the
+# owner declares it absent incorrectly; the reason is retained with the part.
+(fn resolve_output [owner, id : Str, revision : Int, index : Int, decision : Str,
+                    reason : Str, ^ts ts = nil, ^review_revision expected : Int = 0]
+  (required_text reason "delivery resolution reason" ^max_bytes 1024)
+  (if (! (["sent" "retry" "failed"] .contains? decision))
+    (channel_error "invalid_request" "Choose sent, retry or failed for the delivery part."))
+  (if (== decision "sent") (slack_ts ts))
+  (mutate owner (fn [state]
+    (let record (state/deliveries .get id))
+    (if (|| ($absent? record) (!= record/intent/revision revision)
+            (!= (?? record/review_revision 0) expected))
+      (channel_error "stale" "Review the current delivery before resolving it."))
+    (let part (if (&& (>= index 0) (< index record/parts/.size)) record/parts/%index nil))
+    (if (! (["uncertain" "failed"] .contains? part/status))
+      (channel_error "conflict" "Only an uncertain or failed part needs owner resolution."))
+    (part .put "status" (if (== decision "retry") "pending" decision))
+    (if (== decision "sent") (part .put "ts" ts))
+    (part .put "resolution" {^decision decision ^reason reason ^at ($os/wall_ms)})
+    (part .put "error" (if (== decision "failed") "owner_declared_failed" nil))
+    (part .put "retry_at" 0)
+    (record .put "review_revision" (+ expected 1))
+    (record .put "reconcile_cursor" nil)
+    (summarize_delivery record)
+    record) ^changes {^deliveries [id]}))
 
 (fn summarize_delivery [record]
   (var status "delivered")
@@ -170,7 +223,7 @@
     (if (|| (!= part/status "pending") (> (?? part/retry_at 0) ($os/wall_ms))) (return nil))
     (part .put "status" "sending")
     (summarize_delivery record)
-    {^intent record/intent ^part part})))
+    {^intent record/intent ^part part}) ^changes {^deliveries [id]}))
 
 (fn finish_part [owner, id : Str, revision : Int, index : Int, outcome]
   (mutate owner (fn [state]
@@ -189,7 +242,7 @@
     (if (== outcome/error "rate_limited")
       (record_quota state record/intent/account "write" (?? outcome/retry_at 0)))
     (summarize_delivery record)
-    record)))
+    record) ^changes {^deliveries [id] ^rate_limits nil}))
 
 (fn deliver_output [owner, api, id : Str, ^max_parts maximum : Int = 512]
   (let original (output_result owner id))
@@ -242,7 +295,7 @@
         (record .put "reconcile_at" ($os/wall_ms))
         (record .put "reconcile_after" (+ ($os/wall_ms) 30000))
         (record .put "reconcile_error" nil)))
-    nil))
+    nil) ^changes {^deliveries [id]})
   (let account (/accounts (snapshot owner); .get original/intent/account))
   (let query {^channel original/intent/channel ^ts original/intent/thread
     ^include_all_metadata true ^limit 100})
@@ -258,7 +311,7 @@
               (record .put "reconcile_error" "rate_limited")
               (record .put "reconcile_after" (+ ($os/wall_ms) (?? failure/retry_after_ms 1000)))
               (record_quota state record/intent/account "read" record/reconcile_after)))
-          nil)))
+          nil) ^changes {^deliveries [id] ^rate_limits nil}))
       (fail failure)))
   (for part in original/parts
     (if (!= part/status "uncertain") (continue))
@@ -281,4 +334,4 @@
     (let cursor response/response_metadata/next_cursor)
     (record .put "reconcile_cursor" (if (|| ($absent? cursor) (== cursor "")) nil cursor))
     (record .put "reconcile_at" ($os/wall_ms))
-    record)))
+    record) ^changes {^deliveries [id]}))

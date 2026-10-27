@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <time.h>
 
 #define MAX_MESSAGE (16u * 1024u * 1024u)
 #define MAX_QUEUED (8u * 1024u * 1024u)
@@ -34,7 +35,18 @@ typedef struct GXSocket {
   Message *head, *tail;
   size_t queued_bytes, queue_count;
   size_t max_message, max_queued;
+  uint64_t received_ms;
 } GXSocket;
+
+static uint64_t monotonic_ms(void) {
+  struct timespec now;
+  clock_gettime(CLOCK_MONOTONIC, &now);
+  return (uint64_t)now.tv_sec * 1000 + (uint64_t)now.tv_nsec / 1000000;
+}
+size_t gx_ws_idle_ms(GXSocket *s) {
+  return (size_t)(monotonic_ms() - s->received_ms);
+}
+int gx_ws_ping(GXSocket *s);
 
 static _Thread_local char open_error[CURL_ERROR_SIZE];
 static _Atomic size_t open_sockets;
@@ -195,6 +207,9 @@ static GXSocket *prepare_socket(const char *url, const char *protocol,
   SET(CURLOPT_CONNECTTIMEOUT_MS, (long)timeout_ms);
   SET(CURLOPT_TIMEOUT_MS, (long)timeout_ms);
   SET(CURLOPT_NOSIGNAL, 1L);
+  SET(CURLOPT_TCP_KEEPALIVE, 1L);
+  SET(CURLOPT_TCP_KEEPIDLE, 60L);
+  SET(CURLOPT_TCP_KEEPINTVL, 15L);
   SET(CURLOPT_HTTP_VERSION, (long)CURL_HTTP_VERSION_1_1);
   SET(CURLOPT_VERBOSE, 1L);
   SET(CURLOPT_DEBUGFUNCTION, capture_key);
@@ -263,6 +278,7 @@ static int finish_connect(GXSocket *s) {
     curl_slist_free_all(s->headers); s->headers = NULL;
   }
   s->connected = 1;
+  s->received_ms = monotonic_ms();
   return 0;
 }
 
@@ -365,6 +381,14 @@ int gx_ws_flush(GXSocket *s) {
   return s->head ? 0 : 1;
 }
 
+int gx_ws_ping(GXSocket *s) {
+  if (owner(s) != 0 || s->closed || !s->connected) return -1;
+  size_t sent = 0;
+  CURLcode rc = curl_ws_send(s->curl, "", 0, &sent, 0, CURLWS_PING);
+  if (rc == CURLE_AGAIN) return 0;
+  return rc == CURLE_OK ? 1 : curl_fail(s, rc);
+}
+
 int gx_ws_poll(GXSocket *s) {
   if (owner(s) != 0 || s->closed) return -1;
   if (!s->connected) {
@@ -380,6 +404,7 @@ int gx_ws_poll(GXSocket *s) {
     CURLcode rc = curl_ws_recv(s->curl, chunk, sizeof chunk, &received, &meta);
     if (rc == CURLE_AGAIN) return 0;
     if (rc != CURLE_OK) return curl_fail(s, rc);
+    s->received_ms = monotonic_ms();
     if (!meta) { s->closed = 1; return fail(s, "missing WebSocket frame metadata"); }
     const int flags = meta->flags;
     const curl_off_t left = meta->bytesleft;

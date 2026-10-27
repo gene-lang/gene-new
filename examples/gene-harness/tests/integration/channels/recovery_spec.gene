@@ -113,7 +113,7 @@
           (let api (remote_api root))
           (try
             ($assert (== (read_count root) 1))
-            (handoff_outputs service/runtime/channels)
+            (handoff_outputs service/runtime/channels ^^force)
             (let before (output_result service/runtime/channels/owner "test-reply"))
             (if_yes (== point "remote_unknown")
               ($assert (== before/parts/0/status "sent"))
@@ -122,7 +122,7 @@
               (reconcile_remote service/runtime/channels/owner api "test-reply"))
             (let delivered (deliver_output service/runtime/channels/owner api "test-reply"))
             ($assert (== delivered/status "delivered"))
-            (handoff_outputs service/runtime/channels)
+            (handoff_outputs service/runtime/channels ^^force)
             ($assert (== ($size (pending_output service/runtime/channel_queues)) 0))
             (let messages (remote_messages root))
             ($assert (== messages/.size 3))

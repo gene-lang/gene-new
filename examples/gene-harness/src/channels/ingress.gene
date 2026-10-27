@@ -1,7 +1,8 @@
 (mod slack_ingress)
-(import [snapshot mutate] ^from "./store")
+(import [snapshot mutate read] ^from "./store")
 (import [route_key authorize_state] ^from "./authority")
-(import [channel_error copy key required_text normalize_message] ^from "./model")
+(import [channel_error copy key required_text normalize_message binding_key] ^from "./model")
+(import [decode_text] ^from "./slack_text")
 
 # Run only on the connection owner's authenticated socket. Returning means the
 # disposition is durable and the caller may acknowledge this Slack envelope.
@@ -36,12 +37,13 @@
                 (== ($head event/text) Str) (!= event/text/.trim ""))
       (let route_id (route_key account_id account/team (?? event/channel "")))
       (let decision (authorize_state state route_id (?? event/user "") nil))
-      (record .put "decision" decision)
+      (record .put "decision" {^allowed decision/allowed ^owner decision/owner
+        ^policy_revision decision/policy_revision ^author decision/author})
       (record .put "status" "denied")
       (record .put "reason" "sender_policy")
       (if_yes decision/allowed
         (let mention ($to_str "<@" account/bot_user ">"))
-        (let text ($str/join (event/text .split mention) ""))
+        (let text (decode_text ($str/join (event/text .split mention) "")))
         (let message (normalize_message {^transport "slack" ^account account_id ^team account/team
           ^channel event/channel ^thread (?? event/thread_ts event/ts) ^message event/ts
           ^author event/user ^text (if (== text/.trim "") event/text text/.trim)
@@ -55,14 +57,62 @@
         (record .put "status" "pending")
         (record .delete "reason")))
     (state/ingress .put id record)
-    record)))
+    record) ^changes {^ingress [(key [account_id envelope/payload/team_id envelope/payload/event_id])]}))
 
 (fn pending_ingress [owner]
-  (let state (snapshot owner))
-  (let pending [])
+  (read owner (fn [state]
+    (let pending [])
+    (for [id record] in state/ingress
+      (if (== record/status "pending") (pending .push record)))
+    ($order/sort_by pending /sequence))))
+
+(fn handoff_schedule [owner]
+  (read owner (fn [state]
+    (let pending [])
+    (for [id record] in state/ingress
+      (if (!= record/status "pending") (continue))
+      (if (<= (?? record/next_handoff_at 0) ($os/wall_ms))
+        (pending .push record)
+        # A small ordering barrier keeps later replies behind a deferred
+        # handoff without copying its payload on every transport tick.
+        (pending .push {^sequence record/sequence ^^deferred
+          ^message {^transport record/message/transport ^account record/message/account
+            ^team record/message/team ^channel record/message/channel
+            ^thread record/message/thread ^message record/message/message}})))
+    ($order/sort_by pending /sequence))))
+
+(fn defer_handoff [owner, id : Str, code : Str]
+  (mutate owner (fn [state]
+    (let record (state/ingress .get id))
+    (if (!= record/status "pending") (return nil))
+    (let delay ($math/min 30000 (* 2 (?? record/handoff_delay 500))))
+    (let next (+ ($os/wall_ms) delay))
+    (record .put "handoff_delay" delay)
+    (record .put "handoff_attempts" (+ (?? record/handoff_attempts 0) 1))
+    (record .put "handoff_error" code)
+    (record .put "next_handoff_at" (if (== code "waiting_root")
+      ($math/min next (+ record/message/received_at 300000)) next))
+    nil) ^changes {^ingress [id]}))
+
+(fn root_waiters [state, thread : Str]
+  (let ids [])
   (for [id record] in state/ingress
-    (if (== record/status "pending") (pending .push record)))
-  ($order/sort_by pending /sequence))
+    (if (&& (== record/status "pending") (== record/handoff_error "waiting_root")
+            (== (binding_key record/message) thread))
+      (ids .push ($to_str id))))
+  ids)
+
+# Wake only this thread's waiting replies. A deferred reply never delays a root,
+# and observing even an ignored root lets the workspace dispose of it promptly.
+(fn wake_root_waiters [owner, message]
+  (let thread (binding_key message))
+  (mutate owner (fn [state]
+    (for id in (root_waiters state thread)
+      (let record (state/ingress .get id))
+      (record .put "next_handoff_at" 0)
+      (record .put "handoff_delay" 500)
+      (record .put "handoff_error" nil))
+    nil) ^changes (fn [state] {^ingress (root_waiters state thread)})))
 
 (fn finish_handoff [owner, id : Str, result]
   (mutate owner (fn [state]
@@ -74,5 +124,12 @@
     (if (|| (!= ($head result) Map) (! (["queued" "claimed" "consumed" "denied" "ignored" "deleted" "control"] .contains? result/status)))
       (channel_error "invalid_request" "Workspace did not return a durable channel disposition."))
     (record .put "status" "handed_off")
-    (record .put "result" (copy result))
-    record)))
+    (record .put "result" {^status result/status ^id (?? result/id nil)
+      ^session (?? result/session nil) ^reason (?? result/reason nil)})
+    # The logical message and routing decision have reached the workspace.
+    # Keep dedup evidence, not a second permanent copy of its transcript.
+    (record .delete "payload") (record .delete "message") (record .delete "decision")
+    (record .delete "route")
+    (record .delete "next_handoff_at") (record .delete "handoff_delay") (record .delete "handoff_error")
+    (record .put "finished_at" ($os/wall_ms))
+    record) ^changes {^ingress [id]}))

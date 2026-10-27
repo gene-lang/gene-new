@@ -105,7 +105,7 @@ flows as specified in the proposal.
   `runtime/round_controller_spec.gene`: 9 passed;
   `storage/state_spec.gene`: 2 passed.
 - `gene run --snapshot examples/gene-harness/tools/verify_channels.gene`:
-  final run passed 12/12 suites, 58 cases, with exit status 0 on 2026-10-27.
+  final review-fix run passed 13/13 suites, 75 cases, with exit status 0 on 2026-10-27.
   This includes all qualification, settings and queued-ingress checks. The
   gate uses fake Slack credentials and peers, real loopback HTTP, and isolated
   process termination; it never posts to Slack.
@@ -166,6 +166,59 @@ The peer caught that libcurl 8.19 does not itself validate the upgrade accept
 hash. The adapter now checks the RFC 6455 nonce/hash, required upgrade headers
 and unsolicited protocol/extensions. A cooperative deadline also bounds a peer
 that connects but never finishes the HTTP upgrade.
+
+## Review corrections (2026-10-27)
+
+The review of `defdb6a8` exposed gaps beyond the original qualification matrix.
+
+- Channel storage now writes immutable records and bounded index buckets before
+  publishing a small checkpoint manifest. Hot mutations detach selected records;
+  reads select before copying. Legacy checkpoints migrate on mutation, explicit
+  nil values survive, corrupt leaves fail closed, and each record is checked
+  against serde limits before publication. Maintenance retains seven days of
+  terminal transport evidence and reclaims unreachable blobs across retained
+  generations; pending work and uncertain effects do not expire. The standard
+  library's filesystem and SQLite stores no longer silently roll back a valid
+  committed checkpoint after a decode failure.
+- Dirty session sets replace scans of every historical conversation. Projection
+  cursors skip unchanged histories, idle sessions and event streams can unload,
+  and channel-free browser rounds skip channel persistence. A scratch check with
+  both 5 and 40 completed sessions measured 20 idle ticks below the monotonic
+  timer's 1 ms resolution, with zero reloaded sessions.
+- Known delivery results are queried with backoff instead of resubmitting their
+  payloads. A live send remains in progress; a lost result stays uncertain.
+  Authenticated `resolve-delivery` and `resolve-batch` commands allow explicit,
+  revisioned owner decisions. Composer notices expose unresolved deliveries and
+  pruned admission receipts. An absent thread search never triggers a resend.
+- Slack entities and URL tokens are normalized before prompt/control parsing.
+  Early thread replies wait for their root, and a failed handoff cannot allow a
+  later reply to overtake it. Claims recover after a browser uses their reserved
+  sequence when a retained receipt proves that ownership.
+  Replies to known ignored roots now terminate immediately. Missing-root and
+  failed handoffs use persisted per-record backoff with ordering barriers; a
+  root can bypass and wake its waiting replies.
+- Delivered progress records compact their rendered bodies while preserving
+  revisions, digests, destination identity and Slack timestamps on both hosts.
+  Workspace pruning also preserves any newer saved intent not yet queued into
+  the outbox, closing the progress-checkpoint recovery gap.
+- Native PINGs, control-frame receive timestamps, TCP keepalive and a receive
+  deadline cover silent connection loss. Inline code survives mrkdwn conversion;
+  native Markdown code uses its original characters. The latter is covered by
+  renderer checks, without posting to an additional live Slack surface.
+
+`channels/review_spec.gene` adds 17 regression cases covering aggregate storage
+limits, preflight rejection, decode refusal, migration/integrity, early replies,
+Slack input, admission recovery, idle unloading, explicit effect resolution,
+browser status, retention, asymmetric progress compaction, deferred input
+ordering and wakeup, liveness and code rendering. The independent native
+peer also verifies a masked client PING and PONG activity. Existing round
+controller (9 cases) and event storage (2 cases) checks passed again; a separate
+SQLite probe confirmed decode-policy refusal without rollback.
+The complete 13-suite gate passed after these corrections, including all 22
+process-termination scenarios and 11 separate owner/workspace HTTP crash cases.
+The independent native WebSocket/TLS qualification and existing binary peer
+passed. Crash-fixture cleanup now preserves startup errors and does not await
+an already reaped peer a second time.
 
 ## Language friction
 

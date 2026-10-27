@@ -887,6 +887,10 @@ be restored together. The application chooses save timing; this does not
 replay arbitrary in-flight effects. [Cordis](../examples/cordis/README.md)
 illustrates lifecycle and persistence in an application.
 
+Checkpoint recovery can skip incomplete or checksum-invalid generations. A
+complete, checksummed generation that fails decoding is reported as an error;
+changing a serde limit must not silently restore older committed state.
+
 ## Logging
 
 ```gene runnable
