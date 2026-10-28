@@ -26,6 +26,15 @@
   (var voice (voice_rounds client))
   (! ($absent? voice/pending)))
 
+(fn browser_capabilities [client : Client, name : Str] : Any
+  (if_yes (!= name "voice") (return {}))
+  {^voice {
+    ^pending (fn [] : Bool (voice_pending? client))
+    ^submit (fn [session : Str, value : Str, input : Any, done : (Fn [Int Any] Void)] : Void
+      (voice_submit client session value input done))
+    ^review (fn [session : Str, value : Str, input : Any] : Bool
+      (voice_review client session value input))}})
+
 (fn voice_replay_handler [client : Client] : Any
   (var available false)
   (for contribution in (launcher_items client/status/browser_clients)

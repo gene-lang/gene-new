@@ -2,6 +2,7 @@
 (mod plugin_manager)
 (import ^from "./composition" [acquire_snapshot release_snapshot run_composition_change])
 (import [entry_core_interface retired_requirement] ^from "./interface_policy")
+(import [participant_quarantine] ^from "../storage/participant_health")
 (import ^from "../storage/workspace"
   [composition_entries composition_revision verify_stored_entry digest_hex entry_limits plugin_history_page])
 (import ^from "../storage/plugin_history" [history_entry])
@@ -98,6 +99,7 @@
     (let enabled (!= entry/disabled true))
     (let active (revisions .get id))
     (let active_digest (if (!= active/active true) nil (?? active/options/digest "builtin")))
+    (let health (participant_quarantine workspace id))
     (var metadata nil)
     (try
       (set metadata (saved_metadata workspace/store id digest build))
@@ -172,6 +174,10 @@
         ^transitive_required_by []
         ^!required_by_profile
         ^error error})
+    (if_yes (&& (! ($absent? health)) (== health/digest active_digest))
+      (row .put "participant_quarantine" health)
+      (diagnostics .push {^id id ^kind "participant_quarantine"
+        ^message $"Turn participants quarantined after ${health/phase}: ${health/message}"}))
     (let state_records [])
     (for record in writers
       (if (== record/plugin id) (state_records .push record)))

@@ -68,6 +68,10 @@
   (loaded/round .set nil)
   (close_runtime runtime))
 
+(fn packet_value [packets, name : Str]
+  (for packet in packets (if (== packet/name name) (return packet/value)))
+  (fail (ParticipantFailure ^participant name ^phase "test" ^code "missing" ^message "Expected participant was not selected.")))
+
 (describe "Internal turn participant consumers"
   (it "commits staged delegation once and releases children only after the terminal record is durable" []
     (isolated this_mod/.path
@@ -85,7 +89,7 @@
           ($assert (== result/kind "wait") ($to_str result))
           ($assert ($absent? (staged_record runtime "audit")))
           (let packets (run_turn_phase transaction "commit" result))
-          (let committed packets/0/value)
+          (let committed (packet_value packets "core/delegation"))
           ($assert (== committed/suspension/state "waiting"))
           (let child (staged_record runtime "audit"))
           ($assert (== child/admissions/.size 1))
@@ -206,7 +210,7 @@
           (try
             (begin_turn_transaction next)
             (let packets (run_turn_phase next "request_items"))
-            (let incoming packets/0/value)
+            (let incoming (packet_value packets "core/delegation"))
             ($assert (== incoming/.size 1))
             ($assert (== incoming/0/source admission/source))
             ($assert ($str/contains? incoming/0/value "Child complete."))
@@ -261,10 +265,12 @@
           (begin_turn_transaction current)
           (let old_values (run_turn_phase old "bindings"))
           (let new_values (run_turn_phase current "bindings"))
-          ($assert (== old_values/2/value/version "old"))
-          ($assert (== old_values/2/value/snapshot old_lease/snapshot/id))
-          ($assert (== new_values/2/value/version "new"))
-          ($assert (== new_values/2/value/snapshot new_lease/snapshot/id))
+          (let old_value (packet_value old_values "core/selection_probe"))
+          (let new_value (packet_value new_values "core/selection_probe"))
+          ($assert (== old_value/version "old"))
+          ($assert (== old_value/snapshot old_lease/snapshot/id))
+          ($assert (== new_value/version "new"))
+          ($assert (== new_value/snapshot new_lease/snapshot/id))
           ($assert (!= old_lease/snapshot/id new_lease/snapshot/id))
           ($assert (try
             (contribute runtime/h "unadmitted" "turn_participants"

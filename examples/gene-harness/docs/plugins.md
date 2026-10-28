@@ -75,7 +75,7 @@ data literals are preserved.
     (fn double [value] (* value 2)))))
 (let import_path ($to_str "./" ($crypto/sha256 ($to_str dependency)) ".gene"))
 (let plugin
-  `(mod plugin
+  `(mod plugin @interfaces {^core "gene-harness/PluginHost:3"}
     (import ^from "src/plugin_api.gene" [Plugin PluginHost])
     (import ^from %import_path [double])
     (fn init [descriptor]
@@ -133,8 +133,11 @@ New code can select the public receiver and callback contract explicitly:
 `@interfaces` is module author metadata using existing Gene syntax. Each value
 is one exact required version, never a list of supported versions. The host
 supports both `PluginHost:2` and `PluginHost:3`, with `Plugin:2` for the shared
-plugin API. An unannotated module keeps exact version-2 requirements, including
-on re-registration; opting into 3 is an explicit source change. Descriptor
+plugin API. A new plugin id defaults to version 3. An unannotated replacement
+inherits the existing entry's recorded core version, including historical plan
+bases; it does not silently upgrade legacy callbacks. Use an explicit
+`@interfaces {^core "gene-harness/PluginHost:2"}` annotation when new code needs
+the legacy contract, or select version 3 to migrate an existing entry. Descriptor
 construction receives that entry's selected version in `core_interface` during
 both preflight and activation.
 

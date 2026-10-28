@@ -81,6 +81,22 @@ become an optional-hook warning or another model iteration. Expected rejection
 of model-authored field data is a typed validation result; it produces the
 existing repair request without admitting that turn's staged child work.
 
+A stored plugin's unexpected participant failure also quarantines that owner's
+participant callbacks for later turns. The failing turn still fails with its
+participant and phase, and all acquired cleanup slots are attempted. Quarantine
+survives restart. The next round receives a `[N.plugins]` explanation and can
+reach the model to repair the source. The plugin's functions, providers and other
+capabilities remain available, so recovery does not remove the model provider
+or the functions needed to repair it. A successful republish, explicit re-enable,
+restore or reversion retries the participants. A late failure from a replaced
+generation cannot quarantine its replacement. Operator cancellation does not
+quarantine a healthy participant.
+
+Native host participants remain mandatory and are never automatically excluded.
+This containment changes future selection only; it never replays a failed phase
+or treats a partial turn as successful. The plugin catalog reports participant
+quarantine separately from activation state.
+
 An invalid Outcome discards new delegation staging. Already admitted external
 effects retain their receipts. Card progress still flushes at the turn boundary
 and image-attempt cleanup still records interrupted work. A commit failure is

@@ -36,6 +36,7 @@
   [current_interfaces latest_interfaces source_interfaces entry_core_interface retired_requirement
    interface_diagnostic InterfacePolicyError])
 (import [public_modules public_import?] ^from "../runtime/public_modules")
+(import [reset_participant_quarantine] ^from "./participant_health")
 (import ^from "./plugin_history"
   [archive_host_build archive_baseline archive_candidate archived_record
    history_list history_revision history_entry append_history_result history_results])
@@ -558,19 +559,24 @@
    ^turn (if (== source/kind "model") context/turn/turn nil)
    ^command (?? context/command nil)})
 
-(fn source_entry_interfaces [workspace : Workspace, source]
-  (let required (try (source_interfaces source)
+(fn source_entry_interfaces [workspace : Workspace, id : Str, source, ^previous previous = void]
+  (var inherited previous)
+  (if_yes (== inherited void)
+    (set inherited nil)
+    (for entry in (composition_entries workspace)
+      (if (== entry/id id) (set inherited entry))))
+  (let required (try (source_interfaces source ^previous inherited/interfaces)
     catch InterfacePolicyError (fail (CompositionError ^message $err/message))))
   (let diagnostic (interface_diagnostic required workspace/interfaces))
   (if (!= diagnostic "") (fail (CompositionError ^message diagnostic)))
   required)
 
-(fn stage_plugin_entry [workspace : Workspace, id : Str, source, ^dependencies dependencies = []]
+(fn stage_plugin_entry [workspace : Workspace, id : Str, source, ^dependencies dependencies = [], ^previous previous = void]
   (require_open workspace)
   (if_not (safe_module_id? id) (fail (CompositionError ^message "unsafe plugin id")))
   (if (!= ($head dependencies) List) (fail (CompositionError ^message "dependencies must be a list of modules")))
   (let parsed (parse_plugin_source source))
-  (let required (source_entry_interfaces workspace parsed))
+  (let required (source_entry_interfaces workspace id parsed ^previous previous))
   (let text (canonical_module_source parsed))
   (let digest $"sha256:${(sha256 text)}")
   (let closure [digest])
@@ -619,7 +625,7 @@
       (fail (CompositionError
         ^message $"composition entry ${id} already exists"))))
   (set source (parse_plugin_source source))
-  (let required (source_entry_interfaces workspace source))
+  (let required (source_entry_interfaces workspace id source))
   (var bounded
     (if ($absent? limits)
       (default_limits_data)
@@ -700,6 +706,7 @@
         ; .delete id))
   catch Any
     (record_quarantine workspace id ($to_str $err)))
+  (if (== status "ready") (reset_participant_quarantine workspace id))
   (record_composition_change
     h
     id
@@ -927,7 +934,10 @@
       (fail (CompositionError ^message $"composition entry ${id} does not exist"))
       (if disabled
         (next_entries .push {^id id ^^builtin ^^disabled})
-        (return (composition_revision workspace)))))
+        (do
+          (reset_participant_quarantine workspace id)
+          (return (composition_revision workspace))))))
+  (if_not disabled (reset_participant_quarantine workspace id))
   (if (== next_entries entries) (return (composition_revision workspace)))
   (var revision (commit_composition ^origin (?? origin
     {^kind (if ($absent? h) "direct" "offline") ^operation (if disabled "disable" "enable") ^plugin id})
@@ -954,6 +964,7 @@
 (fn restore_entry [workspace : Workspace, id : Str, ^h h = nil, ^origin origin = nil]
   (if ($absent? (workspace/profile_plugins/.get .get id))
     (fail (CompositionError ^message $"plugin ${id} has no profile default to restore")))
+  (reset_participant_quarantine workspace id)
   (let entries (composition_entries workspace))
   (let kept (fresh_list))
   (var removed false)
@@ -1105,6 +1116,7 @@
   (saved .put "origin" origin)
   (let next (entries_with (composition_entries workspace) saved true))
   (let committed (commit_composition ^origin origin workspace next))
+  (reset_participant_quarantine workspace id)
   (composition_history_result workspace {^plugin id ^status "unverified" ^operation "revert"})
   {^id id ^revision committed ^source_revision revision ^status "unverified"})
 
@@ -1138,6 +1150,7 @@
       catch Any
         (set status "error")
         (record_quarantine workspace id $err/message))
+      (if (== status "ready") (reset_participant_quarantine workspace id))
       (record_composition_change h id previous saved/module_digest committed
         (if ($absent? origin/turn) "direct" ($to_str origin/turn)) "reverted")
       (flush_harness h)

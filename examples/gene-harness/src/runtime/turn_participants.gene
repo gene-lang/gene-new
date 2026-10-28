@@ -7,7 +7,7 @@
   ^cause Any? ^errors Any?} ^impl [Error])
 (impl Error for ParticipantFailure)
 (type TurnTransaction ^props {^context Any ^participants Any ^entered Any
-  ^started Any ^closed Any ^failed Any ^last_phase Any ^limits Any ^finishing Any ^scope Any})
+  ^started Any ^closed Any ^failed Any ^last_phase Any ^limits Any ^finishing Any ^scope Any ^on_failure Any?})
 
 (const phases ["request_items" "request_admitted" "bindings" "response_recorded"
   "validate_outcome" "commit"])
@@ -39,7 +39,7 @@
     ^message $"Turn participant ${name} failed in ${phase}: ${message}"))
 
 (fn new_turn_transaction [context, participants,
-  ^limits limits = {^timeout_ms 600000 ^max_memory_mb 1024}, ^scope scope = nil]
+  ^limits limits = {^timeout_ms 600000 ^max_memory_mb 1024}, ^scope scope = nil, ^on_failure on_failure = nil]
   (let names {})
   (let selected [])
   (for participant in participants
@@ -64,7 +64,16 @@
   (let ordered ($order/sort_by by_name /priority))
   (TurnTransaction ^context context ^participants ordered ^entered []
     ^started ($cell false) ^closed ($cell false) ^failed ($cell false)
-    ^last_phase ($cell -1) ^limits limits ^finishing ($cell false) ^scope scope))
+    ^last_phase ($cell -1) ^limits limits ^finishing ($cell false) ^scope scope ^on_failure on_failure))
+
+(fn failed_participant [transaction, entry, phase : Str, code : Str, message : Str, ^cause cause = nil]
+  (let failure (participant_failure entry/definition/name phase code message ^cause cause))
+  (if_not ($absent? transaction/on_failure)
+    (try (transaction/on_failure entry/definition phase failure)
+      catch Any
+        (fail (participant_failure entry/definition/name phase code
+          $"${message}; failure reporting also failed: ${$err/message}" ^cause failure))))
+  (fail failure))
 
 (fn transaction_scope [transaction]
   (let result {})
@@ -79,6 +88,7 @@
   (entry/phases .put phase true)
   (let callback (entry/definition .get phase))
   (if ($absent? callback) (return nil))
+  (let deadline (+ ($os/monotonic_ms) transaction/limits/timeout_ms))
   (let frame {^token ($cell nil) ^name entry/definition/name ^phase phase
     ^context transaction/context ^state entry/state ^used ($cell false) ^active ($cell true)})
   (phase_gate (fn [] (phase_calls/.get .push frame)))
@@ -93,11 +103,15 @@
   (match outcome ^!exhaustive
     (when (TaskOutcome/ok result) result)
     (when (TaskOutcome/error error)
-      (fail (participant_failure entry/definition/name phase "callback_error" error/message ^cause error)))
+      (failed_participant transaction entry phase "callback_error"
+        (if (== ($head error/message) Str) error/message "Participant raised an error without a textual message.")
+        ^cause error))
     (when (TaskOutcome/panic message)
-      (fail (participant_failure entry/definition/name phase "panic" message)))
+      (failed_participant transaction entry phase "panic" message))
     (when TaskOutcome/cancelled
-      (fail (participant_failure entry/definition/name phase "cancelled" "Callback cancelled or its budget expired.")))))
+      (failed_participant transaction entry phase
+        (if (>= ($os/monotonic_ms) deadline) "timeout" "cancelled")
+        "Callback cancelled or its budget expired."))))
 
 (fn begin_turn_transaction [transaction]
   (if (|| transaction/closed/.get (transaction/started .swap true))

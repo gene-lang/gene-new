@@ -1,0 +1,21 @@
+# Participant quarantine is host state, independent of plugin-owned state.
+(mod participant_health)
+(import $store/fs [Store])
+(var gate ^^private ($sync/gate))
+
+(fn health_key [id : Str] $"participant_quarantine/${id}")
+
+(fn participant_quarantine [workspace, id : Str]
+  (if ($absent? workspace) (return nil))
+  (let key (health_key id))
+  (gate (fn [] (if (workspace/store .Store:has? key) (workspace/store .Store:get key) nil))))
+
+(fn quarantine_participant [workspace, id : Str, record]
+  (gate (fn [] (workspace/store .Store:put (health_key id) record)))
+  nil)
+
+(fn reset_participant_quarantine [workspace, id : Str]
+  (if ($absent? workspace) (return nil))
+  (let key (health_key id))
+  (gate (fn [] (if (workspace/store .Store:has? key) (workspace/store .Store:delete key))))
+  nil)

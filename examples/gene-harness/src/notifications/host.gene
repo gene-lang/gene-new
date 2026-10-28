@@ -7,10 +7,13 @@
 (import [immutable_view] ^from "../runtime/composition")
 
 (var hosts ^^private ($cell []))
+(var gate ^^private ($sync/gate))
 
 (fn inbox_host [handle]
-  (for record in hosts/.get
-    (if (same? record/token handle/token) (return record/h)))
+  (let selected (gate (fn []
+    (for record in hosts/.get (if (same? record/token handle/token) (return record/h)))
+    nil)))
+  (if_not ($absent? selected) (return selected))
   (notification_error "unavailable" "The operator inbox is closed."))
 
 (type HostedNotifications ^^private ^props {^token Any}
@@ -28,12 +31,9 @@
 
 (fn open_notification_host [h]
   (let token ($cell nil))
-  (hosts/.get .push {^token token ^h h})
+  (gate (fn [] (hosts/.get .push {^token token ^h h})))
   ($freeze_shallow (HostedNotifications ^token token)))
 
 (fn close_notification_host [h]
-  (let remaining [])
-  (for record in hosts/.get
-    (if_not (same? record/h h) (remaining .push record)))
-  (hosts .set remaining)
+  (gate (fn [] (hosts .set ($filter hosts/.get (fn [record] (! (same? record/h h)))))))
   nil)

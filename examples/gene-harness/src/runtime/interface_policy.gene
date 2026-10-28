@@ -12,10 +12,10 @@
 
 (fn latest_interfaces [] {^core public_core ^plugin_api plugin_interface})
 
-(fn registration_interfaces []
-  # Unannotated code may have been authored for 2. Re-registration must not
-  # silently claim its receiver/context code conforms to the stronger contract.
-  {^core legacy_core ^plugin_api plugin_interface})
+(fn registration_interfaces [^previous previous = nil]
+  # New ids use the public contract. A replacement keeps its recorded core
+  # version unless its source explicitly opts into a different one.
+  {^core (?? previous/core public_core) ^plugin_api plugin_interface})
 
 (fn effective_interfaces [required]
   (if (!= ($head required) Map) (return required))
@@ -51,12 +51,12 @@
       (return $"unsupported interface ${name}: requires ${version}; this host provides ${supported}")))
   "")
 
-(fn source_interfaces [source]
+(fn source_interfaces [source, ^previous previous = nil]
   (let meta ($meta source))
   (let declared (?? (meta .get "interfaces") {}))
   (if (!= ($head declared) Map)
     (fail (InterfacePolicyError ^message "@interfaces must declare a map of exact required versions.")))
-  (let required (registration_interfaces))
+  (let required (registration_interfaces ^previous previous))
   (for [key version] in declared (required .put key version))
   (let invalid (requirements_diagnostic required))
   (if (!= invalid "") (fail (InterfacePolicyError ^message invalid)))

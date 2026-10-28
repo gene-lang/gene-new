@@ -74,7 +74,7 @@ const submissions = [], requests = [], reviews = [];
 const root = new Element(), toolbar = new Element();
 root.harness_bridge = {
   toolbar,
-  state: () => ({session: currentSession, workspace: "fixture", client_id: "page", voice_pending: false}),
+  state: () => ({session: currentSession, workspace: "fixture", client_id: "page"}),
   keyboard_owned: () => false,
   ensure_session: done => { done(200n, {id: currentSession}); },
   subscribe: callback => { listener = callback; return () => { listener = null; }; },
@@ -87,13 +87,13 @@ root.harness_bridge = {
       done(200n, claim);
     } else done(200n, {voice: {...claim,token:undefined}, state: "done"});
   },
-  voice_submit: (session, text, input, done) => {
+  capabilities: {voice: {pending: () => false, submit: (session, text, input, done) => {
     submissions.push({session, text, input});
     stored.delete("gene-harness/voice-draft/fixture/" + session);
     listener("voice/admitted", session, {state: "running"});
     done(202n, {state: "running"});
   },
-  voice_review: (session, text, input) => { reviews.push({session, text, input}); return true; },
+  review: (session, text, input) => { reviews.push({session, text, input}); return true; }}},
 };
 plugin.main(root);
 assert.equal(root.textContent.includes('[object EventTarget]'), false, 'native controls must be appended as DOM nodes, never rendered as text');

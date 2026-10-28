@@ -17,7 +17,7 @@ only the supported shared API. Rename the plugin ID and contribution names
 together when adapting it for an application.
 
 ```gene
-(mod plugin
+(mod plugin @interfaces {^core "gene-harness/PluginHost:3"}
   (import ^from "src/plugin_api.gene" [Plugin PluginHost])
 
   (fn current_count [host] : Int

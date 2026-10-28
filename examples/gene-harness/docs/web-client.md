@@ -400,6 +400,10 @@ page-owned state. Browser contributions subscribe through a generic event
 hub after stream validation. Each observer receives its own payload copy;
 observer failures do not stop core handling. Replacement and failed mounts
 revoke their subscriptions, including attempts to reuse a retired bridge.
+The bridge's state and operations are generic. Each mounted client receives its
+own `capabilities` map; only the voice client receives voice pending-state,
+submission and review functions from `voice_glue.gene`. The private capability
+factory is not passed to contributions.
 
 The native runtime and session service use static dependency tables in
 `runtime/runtime_services.gene` and `web/service_lifecycle.gene`. They do not

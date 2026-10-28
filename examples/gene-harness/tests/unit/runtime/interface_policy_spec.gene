@@ -21,14 +21,20 @@
     ($assert ($str/contains? (interface_diagnostic [] current) "must be a map"))
     ($assert ($str/contains? (interface_diagnostic current current) "exact version")))
   (it "migrates only the proven legacy render requirement and keeps unknown requirements fail-closed" []
-    (let legacy ((registration_interfaces) .assoc "harness_render" "gene-harness/HarnessRender:1"))
-    ($assert (== (effective_interfaces legacy) (registration_interfaces)))
+    (let old {^core "gene-harness/PluginHost:2" ^plugin_api "gene-harness/Plugin:2"})
+    (let legacy (old .assoc "harness_render" "gene-harness/HarnessRender:1"))
+    ($assert (== (effective_interfaces legacy) old))
     ($assert (== (interface_diagnostic legacy (current_interfaces)) ""))
     ($assert (legacy .has_key? "harness_render") "Compatibility mutated the archived map.")
     ($assert ($str/contains? (interface_diagnostic (legacy .assoc "future" "future:1") (current_interfaces)) "future"))
     ($assert ($str/contains? (interface_diagnostic (legacy .assoc "harness_render" "render:99") (current_interfaces)) "harness_render")))
-  (it "uses existing source metadata for explicit opt-in and keeps conservative defaults otherwise" []
-    ($assert (== (source_interfaces (quote (mod plugin))) (registration_interfaces)))
+  (it "defaults new ids to the public contract and inherits a replacement's recorded version unless explicitly changed" []
+    ($assert (== (source_interfaces (quote (mod plugin))) (latest_interfaces)))
+    (let old {^core "gene-harness/PluginHost:2" ^plugin_api "gene-harness/Plugin:2"})
+    ($assert (== (source_interfaces ^previous old (quote (mod plugin))) old))
+    ($assert (== (source_interfaces ^previous old (quote (mod plugin @interfaces {^core "gene-harness/PluginHost:3"})))
+      (latest_interfaces)))
+    ($assert (== (source_interfaces (quote (mod plugin @interfaces {^core "gene-harness/PluginHost:2"}))) old))
     ($assert (== (source_interfaces (quote (mod plugin @interfaces {^core "gene-harness/PluginHost:3"})))
       (latest_interfaces)))
     ($assert (try

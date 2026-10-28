@@ -515,7 +515,7 @@ one from an attachment:
 (append_prompt "plugin" (register_plugin "line_counter" (attachment "plugin")))
 (Outcome ^prompt "Count the lines in notes.txt.")
 <<<plugin END
-(mod plugin
+(mod plugin @interfaces {^core "gene-harness/PluginHost:3"}
   (import ^from "src/plugin_api.gene" [Plugin PluginHost])
   (fn count_lines [path : Str] : Int
     (let lines ($str/split ($fs/read_text path) "\n"))

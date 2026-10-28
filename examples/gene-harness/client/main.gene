@@ -8,7 +8,8 @@
 (import [trigger_fields trigger_occurrences : trigger_history load_triggers : trigger_load create_trigger : trigger_create] ^from "./trigger_ui.gene")
 (import [voice_pending? : pending_voice voice_replay_handler : replay_voice voice_rounds : rounds_voice
   voice_submit : submit_voice voice_review_key : review_key_voice reviewed_voice_input : input_voice
-  voice_review : review_voice initialize_voice : initialize_voice_feature configure_voice] ^from "./voice_glue.gene")
+  initialize_voice : initialize_voice_feature configure_voice
+  browser_capabilities : feature_capabilities] ^from "./voice_glue.gene")
 
 (import [LiveOutput create_output output_entry receive_output output_text historical_records
   turn_output_key command_output_key clear_session_output output_epoch interrupt_output observe_output output_open command_output_text]
@@ -106,8 +107,6 @@
 (fn voice_rounds [client : Client] : RoundClient (ensure_feature_host client) (rounds_voice client))
 (fn voice_review_key [client : Client, session : Str] : Str (ensure_feature_host client) (review_key_voice client session))
 (fn reviewed_voice_input [client : Client, session : Str, value : Str] : Any (ensure_feature_host client) (input_voice client session value))
-(fn voice_review [client : Client, session : Str, value : Str, input : Any] : Bool
-  (ensure_feature_host client) (review_voice client session value input))
 (fn voice_submit [client : Client, session : Str, value : Str, input : Any, done : (Fn [Int Any] Void)] : Void
   (ensure_feature_host client) (submit_voice client session value input done))
 
@@ -317,7 +316,7 @@
       ^ready client/ready ^connected client/connected ^sending client/sending
       ^commands (launcher_items client/status/commands) ^views (launcher_items ui/navigation/views)
       ^pending_command commands/pending ^client_id (client_page_id client) ^csrf client/csrf
-      ^voice_pending (voice_pending? client) ^busy client/busy ^round client/round
+      ^busy client/busy ^round client/round
       ^workspace (string_or client/status/workspace "")})
    ^api (fn [method : Str, path : Str, payload : Any, done : (Fn [Int Any] Void)] : Void
      (api client method path payload done))
@@ -328,14 +327,11 @@
    ^ensure_session (fn [done : (Fn [Int Any] Void)] : Void
      (if (!= client/selected "")
        (done 200 {^id client/selected})
-       (request_session client "Voice conversation"
+       (request_session client "New conversation"
          (fn [code : Int, data : Any] : Void
            (if_yes (== code 201) (select_session client (string_or data/id "")))
            (done code data)))))
-   ^voice_submit (fn [session : Str, value : Str, input : Any, done : (Fn [Int Any] Void)] : Void
-     (voice_submit client session value input done))
-   ^voice_review (fn [session : Str, value : Str, input : Any] : Bool
-     (voice_review client session value input))
+   ^capabilities_for (fn [name : Str] : Any (feature_capabilities client name))
    ^subscribe (fn [callback : (Fn [Str Str Any] Void)] : (Fn [] Void)
      (subscribe_browser client "" callback))
    ^subscribe_owned (fn [owner : Str, callback : (Fn [Str Str Any] Void)] : (Fn [] Void)

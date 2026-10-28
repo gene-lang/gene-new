@@ -207,10 +207,11 @@
       (if_not ($absent? result)
         (record_turn_result runtime session round number result
           ^reply (&& (! failed) ($absent? failure) body_completed)))
-      (let record (finish_turn runtime session
-        {^type "turn/end" ^turn number ^round round/id
-         ^reason (if failed "error" terminal/kind) ^stage stage
-         ^text (if failed ($str/join ($map errors /message) "; ") (?? terminal/error nil)) ^!synthetic}))
+      (let reason (if failed "error" terminal/kind))
+      (let ended {^type "turn/end" ^turn number ^round round/id ^reason reason
+        ^text (if failed ($str/join ($map errors /message) "; ") (?? terminal/error nil)) ^!synthetic})
+      (if (== reason "error") (ended .put "stage" stage))
+      (let record (finish_turn runtime session ended))
       (flush_event_store runtime/events)
       record)
     (try

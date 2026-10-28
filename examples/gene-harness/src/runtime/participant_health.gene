@@ -1,0 +1,44 @@
+(mod runtime_participant_health)
+(import [participant_quarantine quarantine_participant] ^from "../storage/participant_health")
+(import [CallbackCancelled] ^from "./execution_budget")
+(import [run_composition_change] ^from "./composition")
+(import [byte_prefix] ^from "../text")
+
+(fn participant_excluded? [runtime, definition]
+  (if (|| (== definition/_host true) ($absent? definition/_owner)) (return false))
+  (let saved (participant_quarantine runtime/workspace definition/_owner))
+  (&& (! ($absent? saved)) (== saved/digest definition/_source_digest)))
+
+(fn record_participant_fault [runtime, definition, phase : Str, error]
+  (if (|| (== definition/_host true) ($absent? runtime/workspace)
+          (! ($str/starts_with? (?? definition/_source_digest "") "sha256:"))) (return nil))
+  # Operator cancellation is not evidence of a faulty participant. A callback
+  # deadline is reported separately by its supervised contributor guard.
+  (if (|| (== error/code "cancelled")
+          (&& (== ($head error/cause) CallbackCancelled) (! error/cause/deadline))) (return nil))
+  (run_composition_change runtime/h/snapshots (fn []
+    (let current (runtime/h/plugin_policies/.get .get definition/_owner))
+    (if (!= current/activation_revision definition/_activation_revision) (return nil))
+    (let existing (participant_quarantine runtime/workspace definition/_owner))
+    (if (&& (! ($absent? existing)) (== existing/digest definition/_source_digest)) (return nil))
+    (quarantine_participant runtime/workspace definition/_owner
+      {^format 1 ^id definition/_owner ^digest definition/_source_digest
+       ^participant definition/name ^phase phase ^message (byte_prefix error/message 1024)
+       ^at ($to_str ($now))})))
+  nil)
+
+(fn health_participant [runtime]
+  {^name "core/plugin_recovery" ^priority -100
+   ^request_items (fn [context state value]
+     (if (|| (!= context/count 1) ($absent? runtime/workspace)) (return nil))
+     (let notices [])
+     (for entry in runtime/workspace/entries/.get
+       (if (== entry/disabled true) (continue))
+       (let saved (participant_quarantine runtime/workspace entry/id))
+       (if (|| ($absent? saved) (!= saved/digest entry/module_digest)) (continue))
+       (notices .push $"${entry/id}: turn participants quarantined after ${saved/phase}: ${saved/message}"))
+     (if notices/.empty? (return nil))
+     [{^id $"${context/turn}.plugins" ^header $"[${context/turn}.plugins]"
+       ^value ($to_str ($str/join notices "\n")
+         "\nTheir other capabilities remain available. Repair with register_plugin ^^replace, or explicitly re-enable/restore the plugin to retry its participants.")
+       ^settled true}])})

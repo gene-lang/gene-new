@@ -8,6 +8,7 @@
 (import ^from "../storage/plugin_metadata" [descriptor_data saved_metadata capabilities])
 (import ^from "../storage/plugin_history" [history_revision append_history_result])
 (import ^from "../storage/plugin_source" [assign_creation preserve_creation_on_revert])
+(import [reset_participant_quarantine] ^from "../storage/participant_health")
 (import ^from "../storage/workspace"
   [
     CompositionError
@@ -129,7 +130,7 @@
           (if (&& (== ($head operation/dependency_source) Str) (!= ($str/trim operation/dependency_source) ""))
             ($into ($parse/read_all operation/dependency_source) [])
             (?? operation/dependencies [])))
-        (set updated (stage_plugin_entry ^dependencies dependencies workspace id operation/source))
+        (set updated (stage_plugin_entry ^dependencies dependencies ^previous existing workspace id operation/source))
         (updated .put "source_origin" {^kind "operator"})
         (assign_creation ^revision revision workspace updated existing)))
     (if (&& (! ($absent? operation/enabled)) (!= ($head operation/enabled) Bool))
@@ -324,6 +325,12 @@
         (record_validation_failure ^plan plan/id runtime request ($str/join plan/errors "; ")))
       plan)))
 
+(fn reset_plan_participants [workspace, plan]
+  (for changed in plan/diff (reset_participant_quarantine workspace changed/id))
+  (for changed in plan/changes
+    (if (&& (== changed/kind "set_enabled") (== changed/enabled true))
+      (reset_participant_quarantine workspace changed/id))))
+
 (fn apply_plan_once [runtime, id : Str]
   (run_composition_change
     runtime/h/snapshots
@@ -339,7 +346,8 @@
         (fail
           (CompositionConflict ^code "stale_plan" ^expected plan/base_revision ^actual (composition_revision workspace) ^message "Host, profile, or configuration changed; validate this draft again.")))
       (if_not plan/errors/.empty? (plan_error "plan has validation errors"))
-      (if (&& plan/diff/.empty? (!= plan/retry true))
+      (if_yes (&& plan/diff/.empty? (!= plan/retry true))
+        (reset_plan_participants workspace plan)
         (return {^id id ^state "applied" ^revision plan/base_revision ^^no_change}))
       (let origin
         {
@@ -353,6 +361,7 @@
       (try
         (if_yes (== runtime/recovery true)
           (let revision (commit_composition ^origin origin workspace plan/entries))
+          (reset_plan_participants workspace plan)
           (composition_history_result workspace {^plan id ^status "unverified" ^operation "repair"})
           (return {^id id ^revision revision ^state "saved" ^activation "unverified"}))
         (let admissions [])
@@ -388,6 +397,7 @@
               (if (!= plan/stamp (fingerprint runtime))
                 (plan_error "Configuration changed before commit; validate the draft again."))
               (commit_composition ^origin origin workspace plan/entries))))
+        (reset_plan_participants workspace plan)
         (workspace/errors .set {})
         (update_active_revision workspace runtime/h)
         (composition_history_result

@@ -3,22 +3,26 @@
 (mod command_scope)
 (import [ServiceError] ^from "../plugin_api")
 (var calls ^^private ($cell []))
+(var gate ^^private ($sync/gate))
 
 (fn with_command_scope [runtime, context, operation]
   (let token ($cell nil))
-  (calls/.get .push {^token token ^runtime runtime ^context context ^aliases []})
+  (gate (fn [] (calls/.get .push {^token token ^runtime runtime ^context context ^aliases []})))
   (let inherited (?? ($runtime/context) {}))
   (try
     ($runtime/with_context (inherited .assoc "operator_scope" token) operation)
   ensure
-    (calls .set ($filter calls/.get (fn [record] (! (same? record/token token)))))))
+    (gate (fn [] (calls .set ($filter calls/.get (fn [record] (! (same? record/token token)))))))))
 
 (fn admit_command_alias [context, alias]
   (let token (/operator_scope ($runtime/context)))
-  (for record in calls/.get
-    (if_yes (&& (same? record/token token) (command_context_matches? record context))
-      (record/aliases .push alias)
-      (return alias)))
+  (let admitted (gate (fn []
+    (for record in calls/.get
+      (if_yes (&& (same? record/token token) (command_context_matches? record context))
+        (record/aliases .push alias)
+        (return true)))
+    false)))
+  (if admitted (return alias))
   (fail (ServiceError ^code "command_required" ^message "A public command projection requires an admitted command.")))
 
 (fn command_context_matches? [record, supplied]
@@ -28,14 +32,20 @@
 
 (fn original_command_context [supplied]
   (let token (/operator_scope ($runtime/context)))
-  (for record in calls/.get
-    (if (&& (same? record/token token) (command_context_matches? record supplied))
-      (return record/context)))
+  (let original (gate (fn []
+    (for record in calls/.get
+      (if (&& (same? record/token token) (command_context_matches? record supplied))
+        (return record/context)))
+    nil)))
+  (if_not ($absent? original) (return original))
   (fail (ServiceError ^code "command_required" ^message "A public command projection requires its admitted operator command.")))
 
 (fn require_command_scope [runtime, supplied]
   (let token (/operator_scope ($runtime/context)))
-  (for record in calls/.get
-    (if (&& (same? record/token token) (same? record/runtime runtime) (command_context_matches? record supplied))
-      (return record/context)))
+  (let original (gate (fn []
+    (for record in calls/.get
+      (if (&& (same? record/token token) (same? record/runtime runtime) (command_context_matches? record supplied))
+        (return record/context)))
+    nil)))
+  (if_not ($absent? original) (return original))
   (fail (ServiceError ^code "command_required" ^message "This operation requires its admitted operator command.")))

@@ -1,0 +1,195 @@
+(import $test [describe it])
+(import [isolated run_spec test_controller] ^from "../../support")
+(import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
+(import [Profile] ^from "../../../src/profiles/profile")
+(import [plugin_admin] ^from "../../../src/builtin/plugin_admin")
+(import [Plugin PluginHost ExecutionLimits] ^from "../../../src/plugin_api")
+(import [register_plugin set_plugin_enabled restore_plugin] ^from "../../../src/storage/workspace")
+(import [participant_quarantine] ^from "../../../src/storage/participant_health")
+(import [plugin_catalog] ^from "../../../src/runtime/plugin_manager")
+(import [validate_plan apply_plan] ^from "../../../src/runtime/plugin_plans")
+(import [submit_round round_receipt close_round_controller cancel_round] ^from "../../../src/runtime/round_controller")
+(import [plugin_state events_for] ^from "../../../src/storage/state")
+
+(fn profile [^limits limits = nil]
+  (Profile ^name "participant-health" ^plugins [(plugin_admin)
+    (Plugin ^id "faulty" ^activate (fn [host]
+      (host .PluginHost:contribute "functions" {^name "faulty_marker" ^doc "Profile default." ^fn (fn [] "default")})))]
+    ^limits limits))
+
+(fn fault_source [mode : Str, ^entered entered : Str = "", ^release release : Str = ""]
+  `(mod plugin
+    (import [Plugin PluginHost ServiceError] ^from "src/plugin_api.gene")
+    (type UnnamedError ^props {^details Str})
+    (impl Error for UnnamedError
+      (message message [] : Str ^errors [] self/details))
+    (fn init [descriptor]
+      (Plugin ^id "faulty" ^requires [{^registry "turn_participants"}]
+        ^activate (fn [host]
+          (host .PluginHost:contribute "functions"
+            {^name "faulty_marker" ^doc "Unaffected capabilities remain usable." ^fn (fn [] %mode)})
+          (host .PluginHost:contribute "turn_participants" {^name "faulty/memory"
+            ^begin (fn [context state value]
+              (if_yes (["blocked" "waiting"] .contains? %mode)
+                ($fs/write_text %entered "entered")
+                (while (! ($fs/exists? %release)) ($sleep 5)))
+              (if (== %mode "timeout") ($sleep 1500))
+              (if (== %mode "panic") ($panic "Participant panic."))
+              (if (== %mode "unnamed_error") (fail (UnnamedError ^details "No message property.")))
+              (if (["error" "blocked"] .contains? %mode)
+                (fail (ServiceError ^code "fixture" ^message "Participant begin failed.")))
+              (host .PluginHost:update_state {^began true})
+              nil)
+            ^request_items (fn [context state value]
+              (if (== %mode "request_error")
+                (fail (ServiceError ^code "fixture" ^message "Participant request preparation failed.")))
+              nil)}))))))
+
+(fn wait_round [controller, receipt]
+  (let watcher (controller/watchers/.get .get "default"))
+  watcher/.join
+  (round_receipt controller "default" receipt/id))
+
+(describe "Stored participant failure containment"
+  (it "fails the first round then lets the model see the exclusion and publish its own repair" []
+    (isolated this_mod/.path
+      "fails the first round then lets the model see the exclusion and publish its own repair"
+      (fn [root]
+        (let runtime (open_runtime root "default" (profile)))
+        (let installed (register_plugin ^^replace runtime/workspace runtime/h "faulty" (fault_source "error")))
+        ($assert (== installed/status "ready") ($to_str installed))
+        (let calls ($cell 0))
+        (let controller (test_controller runtime (fn [request]
+          (calls .set (+ calls/.get 1))
+          (if (== calls/.get 1)
+            (then
+              ($assert ($str/contains? ($to_str request/messages) ".plugins]"))
+              ($assert ($str/contains? ($to_str request/messages) "faulty: turn participants quarantined after begin"))
+              ($to_str "(register_plugin ^^replace \"faulty\" (quote " (fault_source "healthy")
+                ")) (Outcome ^prompt \"Verify the repaired plugin.\")"))
+            (else "(Outcome ^^done ^reply (faulty_marker))")))))
+        (try
+          (let failed (wait_round controller (submit_round controller "default" "first" 1 "Start.")))
+          ($assert (== failed/state "failed") ($to_str failed))
+          ($assert ($str/contains? failed/message "faulty/memory"))
+          ($assert (== calls/.get 0))
+          ($assert (! ($absent? (participant_quarantine runtime/workspace "faulty"))))
+          (let catalog (plugin_catalog runtime))
+          (let faulty ($filter catalog/plugins (fn [item] (== item/id "faulty"))))
+          ($assert (== faulty/0/participant_quarantine/phase "begin"))
+          ($assert (== ($size ($filter catalog/diagnostics (fn [item] (== item/kind "participant_quarantine")))) 1))
+          (let repaired (wait_round controller (submit_round controller "default" "repair" 2 "Repair your plugin.")))
+          ($assert (== repaired/state "done") ($to_str repaired))
+          ($assert (== repaired/reply "healthy"))
+          ($assert (== calls/.get 2))
+          ($assert ($absent? (participant_quarantine runtime/workspace "faulty")))
+          ($assert (/began (plugin_state runtime/events "workspace" "workspace" "faulty")))
+          (for event in (events_for runtime/events "session" "default")
+            (if (&& (== event/type "turn/end") (== event/payload/reason "done"))
+              ($assert ($absent? event/payload/stage))))
+        ensure (close_round_controller controller) (close_runtime runtime)))))
+
+  (it "persists exclusions through restart and retries only after explicit re-enable or restore" []
+    (isolated this_mod/.path
+      "persists exclusions through restart and retries only after explicit re-enable or restore"
+      (fn [root]
+        (let first (open_runtime root "default" (profile)))
+        (register_plugin ^^replace first/workspace first/h "faulty" (fault_source "error"))
+        (let first_controller (test_controller first (fn [request] (fail "The faulty begin must precede the model."))))
+        (try
+          ($assert (== (/state (wait_round first_controller (submit_round first_controller "default" "fail" 1 "Start."))) "failed"))
+        ensure (close_round_controller first_controller) (close_runtime first))
+        (let restarted (open_runtime root "default" (profile)))
+        (let calls ($cell 0))
+        (let controller (test_controller restarted (fn [request]
+          (calls .set (+ calls/.get 1))
+          "(Outcome ^^done ^reply (faulty_marker))")))
+        (try
+          (let resumed (wait_round controller (submit_round controller "default" "next" 2 "Continue.")))
+          ($assert (== resumed/state "done") ($to_str resumed))
+          ($assert (== resumed/reply "error") "Quarantine disabled the plugin's other capabilities.")
+          (set_plugin_enabled restarted/workspace restarted/h "faulty" true)
+          ($assert ($absent? (participant_quarantine restarted/workspace "faulty")))
+          ($assert (== (/state (wait_round controller (submit_round controller "default" "retry" 3 "Retry."))) "failed"))
+          ($assert (== calls/.get 1))
+          (let plan (validate_plan restarted {^base_revision restarted/workspace/revision/.get
+            ^changes [{^id "faulty" ^kind "set_enabled" ^^enabled}]}))
+          ($assert plan/valid ($to_str plan/errors))
+          (apply_plan restarted plan/id)
+          ($assert ($absent? (participant_quarantine restarted/workspace "faulty")))
+          ($assert (== (/state (wait_round controller (submit_round controller "default" "plan-retry" 4 "Retry."))) "failed"))
+          ($assert (== calls/.get 1))
+          (restore_plugin restarted/workspace restarted/h "faulty")
+          ($assert ($absent? (participant_quarantine restarted/workspace "faulty")))
+          (let restored (wait_round controller (submit_round controller "default" "restored" 5 "Continue.")))
+          ($assert (== restored/reply "default") ($to_str restored))
+        ensure (close_round_controller controller) (close_runtime restarted)))))
+
+  (it "contains public pre-model panics deadlines and request failures without bypassing the failed turn" []
+    (isolated this_mod/.path "contains public pre-model panics deadlines and request failures without bypassing the failed turn"
+      (fn [root]
+        (for mode in ["panic" "timeout" "request_error" "unnamed_error"]
+          (let runtime (open_runtime ($path/join root mode) "default"
+            (profile ^limits (ExecutionLimits ^max_memory_mb 128 ^timeout_ms 400))))
+          (register_plugin ^^replace runtime/workspace runtime/h "faulty" (fault_source mode))
+          (let calls ($cell 0))
+          (let controller (test_controller runtime (fn [request]
+            (calls .set (+ calls/.get 1)) "(Outcome ^^done ^reply \"Recovered.\")")))
+          (try
+            (let failed (wait_round controller (submit_round controller "default" "fail" 1 "Start.")))
+            ($assert (== failed/state "failed") ($to_str failed))
+            ($assert (== calls/.get 0))
+            ($assert (! ($absent? (participant_quarantine runtime/workspace "faulty"))) mode)
+            ($assert (== (/state (wait_round controller (submit_round controller "default" "next" 2 "Continue."))) "done"))
+          ensure (close_round_controller controller) (close_runtime runtime))))))
+
+  (it "does not quarantine a replacement when an old leased participant finishes with an error" []
+    (isolated this_mod/.path
+      "does not quarantine a replacement when an old leased participant finishes with an error"
+      (fn [root]
+        (let runtime (open_runtime root "default" (profile)))
+        (let entered $"${root}/entered")
+        (let release $"${root}/release")
+        (register_plugin ^^replace runtime/workspace runtime/h "faulty"
+          (fault_source "blocked" ^entered entered ^release release))
+        (let controller (test_controller runtime (fn [request] "(Outcome ^^done ^reply (faulty_marker))")))
+        (try
+          (let first (submit_round controller "default" "first" 1 "Start."))
+          (let deadline (+ ($os/monotonic_ms) 5000))
+          (while (! ($fs/exists? entered))
+            ($assert (< ($os/monotonic_ms) deadline)) ($sleep 5))
+          (register_plugin ^^replace runtime/workspace runtime/h "faulty" (fault_source "healthy"))
+          ($fs/write_text release "go")
+          ($assert (== (/state (wait_round controller first)) "failed"))
+          ($assert ($absent? (participant_quarantine runtime/workspace "faulty")))
+          (let next (wait_round controller (submit_round controller "default" "next" 2 "Continue.")))
+          ($assert (== next/reply "healthy") ($to_str next))
+          ($assert (/began (plugin_state runtime/events "workspace" "workspace" "faulty")))
+        ensure
+          ($fs/write_text release "go")
+          (close_round_controller controller) (close_runtime runtime)))))
+  (it "does not quarantine public participants when the operator cancels an admitted round" []
+    (isolated this_mod/.path "does not quarantine public participants when the operator cancels an admitted round"
+      (fn [root]
+        (let runtime (open_runtime root "default" (profile)))
+        (let entered $"${root}/entered")
+        (let release $"${root}/release")
+        (register_plugin ^^replace runtime/workspace runtime/h "faulty"
+          (fault_source "waiting" ^entered entered ^release release))
+        (let controller (test_controller runtime (fn [request] "(Outcome ^^done ^reply \"Done.\")")))
+        (try
+          (let first (submit_round controller "default" "cancel" 1 "Start."))
+          (let deadline (+ ($os/monotonic_ms) 5000))
+          (while (! ($fs/exists? entered)) ($assert (< ($os/monotonic_ms) deadline)) ($sleep 5))
+          (cancel_round controller "default" first/id)
+          (wait_round controller first)
+          ($assert ($absent? (participant_quarantine runtime/workspace "faulty")))
+          ($fs/write_text release "go")
+          (let next (wait_round controller (submit_round controller "default" "next" 2 "Continue.")))
+          ($assert (== next/state "done") ($to_str next))
+        ensure
+          ($fs/write_text release "go")
+          (close_round_controller controller) (close_runtime runtime)))))
+)
+
+(fn main [args] : Int (run_spec args))

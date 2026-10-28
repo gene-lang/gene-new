@@ -48,7 +48,7 @@ height and keep it scrollable. Branding and headings can be ordinary plugin
 content; including the `brand` widget is optional.
 
 ```gene
-(mod plugin
+(mod plugin @interfaces {^core "gene-harness/PluginHost:3"}
   (import ^from "src/plugin_api.gene" [Plugin PluginHost])
   (fn init [descriptor]
     (Plugin ^id "sidebar"

@@ -50,6 +50,7 @@ try {
     }`).toString('base64');
   const toolbar=new Element();
   const host=create_clients(body,false,{toolbar,
+    capabilities_for:name=>name==='voice'?{voice:{pending:()=>true}}:{},
     subscribe:callback=>subscribe_feature(events,callback),
     subscribe_owned:(owner,callback)=>subscribe_feature(events,callback,owner)});
   const descriptor=(version,fail=false)=>({name:'example',revision:String(version),url:module(version,fail),stylesheet:''});
@@ -76,5 +77,14 @@ try {
   assert.equal(events.listeners.length,0,'a failed bridge accepted a later subscription');
   update_clients(host,[],{});
   assert.equal(events.listeners.length,0);
+  update_clients(host,[{...descriptor(4),name:'voice'},descriptor(5)],{});
+  await until(()=>retainedFeatureBridges.length===5);
+  const voiceBridge=retainedFeatureBridges.find(bridge=>bridge.capabilities?.voice);
+  const ordinaryBridge=retainedFeatureBridges.at(-1);
+  assert.equal(voiceBridge.capabilities.voice.pending(),true);
+  assert.equal(voiceBridge.capabilities_for,null,'a contribution received the private capability factory');
+  assert.equal(voiceBridge.voice_submit,undefined,'voice methods remain on the generic bridge');
+  assert.equal(ordinaryBridge.capabilities.voice,undefined,'another client received voice capabilities');
+  update_clients(host,[],{});
 } finally { console.error=originalError; }
 console.log('feature events: arbitrary validated events, isolated payloads/failures, replacement, stale bridges and failed-mount cleanup passed');

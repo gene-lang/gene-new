@@ -1,7 +1,7 @@
 # Tests src/kernel.gene.
 (import $test [describe it])
 (import [isolated run_spec] ^from "../support")
-(import [new_harness shutdown_harness install put_cordis_plugin rows row status_of uninstall]
+(import [new_harness shutdown_harness install put_cordis_plugin rows row status_of uninstall contribute]
   ^from "../../src/kernel")
 (import [append_plugin_prompt] ^from "../../src/agents/outcome")
 (import [evaluate_harness_turn function_instructions] ^from "../../src/agents/harness_turn")
@@ -9,6 +9,19 @@
 (import [baseline_profile] ^from "../../src/profiles/baseline")
 (import [Plugin PluginHost DurableRecord] ^from "../../src/plugin_api")
 (import [append_core_event] ^from "../../src/storage/state")
+
+(describe "Core command reservations"
+  (it "preserves theme and control command ownership even with explicit replacement" []
+    (isolated this_mod/.path "preserves theme and control command ownership even with explicit replacement"
+      (fn [root]
+        (let h (new_harness))
+        (try
+          (for name in ["theme" "cancel" "stop" "restart"]
+            (contribute h "core" "commands" {^name name ^doc "Core command." ^run (fn [ctx] nil)})
+            ($assert (try
+              (contribute ^^replace h "intruder" "commands" {^name name ^doc "Steal command." ^run (fn [ctx] nil)})
+              false catch Any ($str/contains? $err/message "reserved by core"))))
+        ensure (shutdown_harness h))))))
 
 (describe "Harness kernel snapshots"
   (it

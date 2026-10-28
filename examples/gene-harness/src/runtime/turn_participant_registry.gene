@@ -8,6 +8,7 @@
 (import [cards_participant] ^from "./cards_participant")
 (import [response_execution_limits] ^from "../plugin_api")
 (import [public_turn_context public_phase_value public_phase_result] ^from "./participant_contract")
+(import [participant_excluded? record_participant_fault health_participant] ^from "./participant_health")
 
 # Plugin IDs cannot contain '/', so this host publisher cannot be a stored
 # plugin claiming the ordinary spelling "core".
@@ -65,6 +66,9 @@
   (for [key value] in candidate (prepared .put key value))
   (prepared .put "_host" native)
   (prepared .put "_owner" owner)
+  (let policy (runtime/h/plugin_policies/.get .get owner))
+  (prepared .put "_source_digest" policy/source_digest)
+  (prepared .put "_activation_revision" policy/activation_revision)
   (for field in (callback_fields)
     (let callback (candidate .get field))
     (if_not ($absent? callback)
@@ -76,7 +80,8 @@
   (registry runtime/h "turn_participants" ^owner native_owner
     ^spec {^name "turn_participants" ^^unique ^^ordered ^schema validate_participant
       ^prepare (fn [owner candidate] (prepare_participant runtime owner candidate)) ^callbacks (callback_fields)
-      ^reserved {^core/delegation native_owner ^core/cards native_owner} ^^same_owner})
+      ^reserved {^core/delegation native_owner ^core/cards native_owner ^core/plugin_recovery native_owner} ^^same_owner})
+  (contribute runtime/h native_owner "turn_participants" (health_participant runtime))
   (if_not ($absent? runtime/delegations)
     (contribute runtime/h native_owner "turn_participants" (delegation_participant runtime/delegations)))
   (if_not ($absent? runtime/cards)
@@ -93,9 +98,11 @@
   (let boundary (== context/boundary "limit"))
   (for record in (?? (snapshot/registries .get "turn_participants") [])
     (let definition record/payload)
+    (if (participant_excluded? runtime definition) (continue))
     (if (&& boundary ($absent? definition/limit)) (continue))
     (selected .push definition))
   (new_turn_transaction (context .assoc "composition_revision" snapshot/id ; .assoc "workspace_root" runtime/root) selected
     ^limits (?? runtime/profile/limits (response_execution_limits))
+    ^on_failure (fn [definition phase error] (record_participant_fault runtime definition phase error))
     ^scope {^composition runtime/h/snapshots ^snapshot snapshot ^session context/session
       ^round context/round/id}))

@@ -477,7 +477,7 @@ returns a Plugin. `^activate` is the activation function itself and receives
 the host; a plugin keeps the host for later callbacks.
 
 ```gene
-(mod plugin
+(mod plugin @interfaces {^core "gene-harness/PluginHost:3"}
   (import ^from "src/plugin_api.gene" [Plugin PluginHost])
   (fn init [descriptor]
     (Plugin ^id "line_counter" ^provides [["functions" "count_lines"]]

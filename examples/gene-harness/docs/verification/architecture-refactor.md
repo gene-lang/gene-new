@@ -5,6 +5,11 @@ The accepted review is `tmp/harness-review.md` (2026-10-27, baseline
 Durable admission/recovery, one workspace owner, leased snapshots, the
 trusted-code model and the existing Gene syntax remain invariants.
 
+This is the historical implementation record. The later code-review fixes
+below update public participant recovery and the default authoring version;
+the current contracts are in [plugins](../plugins.md) and
+[turn participants](../turn-participants.md).
+
 | Batch | Deliverables and acceptance | Status |
 | --- | --- | --- |
 | 1. Fixes and policy | Five trigger routes return unavailable after disabled boot/live deactivation; re-enable preserves definitions. Remove unused private modules/helpers, update reference material and organization, retain additive PluginHost:2, identify interface mismatch accurately. | Complete |
@@ -175,7 +180,7 @@ passing a narrow test is not evidence for the entire refactor.
 
 ## Batch 5 evidence
 
-- The [transaction contract](turn-participants.md) specifies mandatory phase
+- The [transaction contract](../turn-participants.md) specifies mandatory phase
   order, invalid-Outcome behavior, durable finalization, terminal recording,
   cancellation/panic cleanup and receipt-based recovery without phase replay.
 - The isolated runner has 9 passing unit cases. It contains callback errors,
@@ -336,3 +341,30 @@ state still belongs to the trusted host; the public version-3 API supplies
 projections and opaque handles. Shared shell/REPL resources retain their
 explicit counted ownership, as the accepted plan requires. No new Gene syntax
 or language semantics are introduced.
+
+## Code-review follow-up, 2026-10-28
+
+- Stored participant faults fail the current turn, then quarantine that source's
+  participant callbacks until explicit retry or repair. Other capabilities stay
+  available so the model can repair its own plugin. Quarantine persists through
+  restart and appears in the next request and catalog. Native participants stay
+  mandatory; old-generation faults cannot quarantine a replacement, and operator
+  cancellation does not quarantine a healthy participant.
+- New plugin ids default to PluginHost:3. Unannotated replacements inherit the
+  existing entry's core version, including historical plan bases. Version 2 for
+  new code is explicit; examples and the UI starter declare version 3.
+- `/theme` retains its core reservation, including explicit replacement attempts.
+- The shared browser bridge has generic state and a per-client capabilities
+  map. Voice methods and pending state come from the voice feature module.
+  Feature routes bind/import only their dependencies. This evidence record now
+  lives under `verification/`.
+- Command-scope, service-handle and notification-host table updates are gated.
+  Successful turn records omit the error-stage field.
+- Focused runtime/participant/compatibility/catalog qualification passes 29
+  cases. Command/budget/health qualification passes 14; scoped-host and
+  compatibility qualification passes 9. Browser qualification passes both Gene
+  cases, covering all fourteen emitted-module fixtures, and route/quickstart
+  qualification passes 4. The unit run reports 199 passed with the same existing
+  theme failure and three unavailable-zdump errors. Reports are retained under
+  repository-root `tmp/harness-cr-*.log`; these are targeted checks, not a claim
+  of a new full-package run.

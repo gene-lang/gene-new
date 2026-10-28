@@ -130,8 +130,8 @@
     ($dom/remove_attribute voice/transcript "readonly"))
   ($dom/set_input_value voice/transcript
     (if (|| voice/recording voice/finalizing) voice/partial (text value/text)))
-  (var snapshot (state voice))
-  (var pending (flag snapshot/voice_pending))
+  (var pending_state : (Fn [] Bool) voice/bridge/capabilities/voice/pending)
+  (var pending (pending_state))
   (set voice/send_button/disabled (|| voice/submitting pending (== (text value/text) "")))
   (set voice/discard_button/disabled (|| voice/submitting pending (== (text value/text) "")))
   (var feedback
@@ -224,7 +224,7 @@
   (var duration (integer value/audio_ms))
   (var input : Any {^kind "voice" ^recognizer (text value/recognizer voice/recognizer) ^audio_ms duration})
   (if_yes (&& (! voice/autosend) (! explicit))
-    (var review : (Fn [Str Str Any] Bool) voice/bridge/voice_review)
+    (var review : (Fn [Str Str Any] Bool) voice/bridge/capabilities/voice/review)
     (if (review voice/session content input)
       (do
         (var session voice/session)
@@ -236,7 +236,7 @@
   (set voice/held false)
   (var generation voice/generation)
   (var released voice/release_at)
-  (var submit : (Fn [Str Str Any (Fn [Int Any] Void)] Void) voice/bridge/voice_submit)
+  (var submit : (Fn [Str Str Any (Fn [Int Any] Void)] Void) voice/bridge/capabilities/voice/submit)
   (submit voice/session content input
     (fn [code : Int, data : Any] : Void
       (if_yes (|| voice/disposed (!= generation voice/generation)) (return))

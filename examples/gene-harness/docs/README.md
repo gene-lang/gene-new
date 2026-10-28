@@ -25,7 +25,7 @@ available feature.
 
 These are dated evidence and progress records, not alternate API contracts.
 
-- [Architecture refactor batches](architecture-refactor.md)
+- [Architecture refactor batches](verification/architecture-refactor.md)
 - [Notifications](verification/notification-verification.md)
 - [Plugin manager verification](verification/plugin-manager-verification.md) and [progress](verification/plugin-manager-progress.md)
 - [Workspace views](verification/workspace-views-verification.md)

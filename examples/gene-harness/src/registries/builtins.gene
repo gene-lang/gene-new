@@ -19,7 +19,7 @@
     {^name "commands" ^^unique ^schema validate_command_row ^callbacks ["run"]
      ^prepare (fn [owner, candidate] (prepare_command_callback h owner candidate))
      ^reserved {^sh "shell" ^repl "repl" ^help "core_commands" ^run "core_commands"
-                 ^view "core_commands" ^cancel "core" ^stop "core" ^restart "core"}}
+                 ^view "core_commands" ^cancel "core" ^stop "core" ^restart "core" ^theme "core"}}
     {^name "input_modes" ^^unique ^schema validate_input_mode_row ^callbacks ["classify" "run" "close"]
      ^prepare (fn [owner, candidate] (prepare_command_callback h owner candidate))}
     {^name "functions" ^^unique ^schema validate_function_row ^callbacks ["fn"]
