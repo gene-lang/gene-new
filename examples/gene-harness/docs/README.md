@@ -8,6 +8,7 @@ available feature.
 
 - [Design and module responsibilities](design.md)
 - [Plugin contract](plugins.md), [plugin manager](plugin-manager.md) and [source/history](plugin-source.md)
+- [Turn participants, Outcome schemas and initiators](turn-participants.md)
 - [Browser client](web-client.md), [workspace views](workspace-views.md) and [components](web-components.md)
 - [Workspace manager](manager.md), [commands](commands.md), [shell](shell.md) and [REPL](repl.md)
 - [Notifications](notification.md), [cards](cards.md), [media](media.md) and [images](image-generation.md)

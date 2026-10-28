@@ -1,0 +1,139 @@
+(mod initiators)
+(import [registry contribute rows] ^from "../kernel")
+(import [acquire_snapshot release_snapshot current_snapshot] ^from "./composition")
+(import [core_initiators core_source_owner initiator_matches?] ^from "./initiator_specs")
+(import [register_channel_initiators channel_source_owner] ^from "../channels/initiators")
+(import [normalize_round_input] ^from "./input_metadata")
+(import [RoundError] ^from "./round_errors")
+(import [freeze_turn_data] ^from "./turn_data")
+(import [supervised_call] ^from "./call_supervision")
+(import [default_execution_limits response_execution_limits] ^from "../plugin_api")
+
+(fn initiator_error [message : Str, ^code code : Str = "invalid_request"]
+  (fail (RoundError ^code code ^message message)))
+
+(fn validate_initiator [candidate]
+  (if (|| (!= ($head candidate) Map) (!= ($head candidate/name) Str) (== candidate/name "")
+          (!= ($head candidate/prefix) Str) (== candidate/prefix "")
+          (!= ($head candidate/kind) Str) (! ($runtime/callable? candidate/normalize))
+          (!= ($head candidate/operator) Bool))
+    (initiator_error "An initiator needs name, prefix, kind, operator policy and normalize callback."))
+  (for [key value] in candidate
+    (if_not (["name" "prefix" "kind" "transport" "operator" "normalize" "exact"
+              "requires_continuation" "summary" "tags" "docs"] .contains? ($to_str key))
+      (initiator_error $"Unknown initiator field ${key}.")))
+  (for key in ["exact" "requires_continuation"]
+    (if (&& (! ($absent? (candidate .get key))) (!= ($head (candidate .get key)) Bool))
+      (initiator_error $"Initiator ${key} must be a boolean.")))
+  candidate)
+
+(fn overlaps? [a, b]
+  (if (== a/exact true) (return (initiator_matches? b a/prefix)))
+  (if (== b/exact true) (return (initiator_matches? a b/prefix)))
+  (|| ($str/starts_with? a/prefix b/prefix) ($str/starts_with? b/prefix a/prefix)))
+
+(fn prepare_initiator [runtime, owner : Str, candidate]
+  (let native (|| (== owner core_source_owner) (== owner channel_source_owner)))
+  (if_not native
+    (if (|| (! ($str/starts_with? candidate/name $"${owner}/")) (== candidate/name $"${owner}/")
+            (! (["channel" "plugin"] .contains? candidate/kind))
+            (candidate .has_key? "requires_continuation")
+            (! (|| ($str/starts_with? candidate/prefix $"${owner}:")
+                    ($str/starts_with? candidate/prefix $"channel:${owner}/"))))
+      (initiator_error "Initiator names and routes must belong to their contributor's namespace."))
+    (if (&& (== candidate/kind "channel") (!= candidate/transport owner))
+      (initiator_error "A channel initiator's transport belongs to its contributor.")))
+  (for existing in (rows runtime/h "initiators")
+    (if (&& (== existing/name candidate/name) (== existing/_owner owner)) (continue))
+    (if (overlaps? candidate existing)
+      (initiator_error $"Initiator route ${candidate/prefix} overlaps ${existing/name}."))
+    (if (&& (== candidate/kind "channel") (== existing/kind "channel")
+            (== candidate/transport existing/transport))
+      (initiator_error $"Channel transport ${candidate/transport} already has an initiator.")))
+  (let prepared {})
+  (for [key value] in candidate (prepared .put key value))
+  (prepared .put "_owner" owner)
+  (prepared .put "_host" native)
+  (if_not native
+    (let normalize candidate/normalize)
+    (let kind candidate/kind)
+    (let transport candidate/transport)
+    (prepared .put "normalize" (fn [context value]
+      (let result (normalize (freeze_turn_data context) (freeze_turn_data value)))
+      (if_not ($absent? result)
+        (if (!= ($head result) Map) (initiator_error "An initiator must return input metadata or nil."))
+        (if (== kind "channel")
+          (if (|| (!= result/kind "channel") (!= result/transport transport))
+            (initiator_error "Channel metadata does not match its registered transport.")))
+        (if (== kind "plugin")
+          (if (|| (!= result/kind "plugin") (!= result/owner owner))
+            (initiator_error "Plugin input metadata must name its registered owner."))))
+      (freeze_turn_data result))))
+  prepared)
+
+(fn install_initiators [runtime]
+  (registry runtime/h "initiators" ^owner core_source_owner
+    ^spec {^name "initiators" ^^unique ^^ordered ^schema validate_initiator
+      ^prepare (fn [owner candidate] (prepare_initiator runtime owner candidate))
+      ^callbacks ["normalize"] ^^same_owner
+      ^reserved {^core/user core_source_owner ^core/trigger core_source_owner
+        ^core/parent core_source_owner ^core/continue core_source_owner ^slack/channel channel_source_owner}})
+  (for definition in (core_initiators) (contribute runtime/h core_source_owner "initiators" definition))
+  (register_channel_initiators runtime/h contribute)
+  nil)
+
+(fn policy_rows [snapshot]
+  ($map (?? (snapshot/registries .get "initiators") []) /payload))
+
+(fn channel_policy [snapshot, transport]
+  (for policy in (policy_rows snapshot)
+    (if (&& (== policy/kind "channel") (== policy/transport transport)) (return policy)))
+  nil)
+
+(fn invoke_normalizer [policy, context, input]
+  (let limits (if policy/_host (default_execution_limits) (response_execution_limits)))
+  (match (supervised_call policy/normalize [context input] limits) ^!exhaustive
+    (when (TaskOutcome/ok value) value)
+    (when (TaskOutcome/error error) (fail error))
+    (when (TaskOutcome/panic message) (initiator_error $"Initiator ${policy/name} panicked: ${message}" ^code "unavailable"))
+    (when TaskOutcome/cancelled (initiator_error $"Initiator ${policy/name} exceeded its budget." ^code "unavailable"))))
+
+(fn resolve_initiator [runtime, session : Str, initiator : Str, text : Str, input, continuation]
+  (let lease (acquire_snapshot runtime/h/snapshots))
+  (try
+    ($runtime/with_context {^composition runtime/h/snapshots ^snapshot lease/snapshot}
+      (fn []
+        (var selected nil)
+        (for policy in (policy_rows lease/snapshot)
+          (if (initiator_matches? policy initiator) (set selected policy)))
+        # Unknown legacy automation spellings remain non-operator inputs.
+        (if ($absent? selected)
+          (return {^kind "legacy" ^name "legacy/unknown" ^operator false ^channel false
+            ^input (normalize_round_input input)}))
+        (let continued (&& (== selected/kind "continue") (! ($absent? continuation))))
+        (let carried_plugin (&& continued (== input/kind "plugin")))
+        (if (&& carried_plugin (!= input continuation/input))
+          (initiator_error "Continuation input differs from its recorded source metadata."))
+        (var normalizer selected)
+        (if (&& continued (== input/kind "channel"))
+          (set normalizer (channel_policy lease/snapshot input/transport))
+          (if ($absent? normalizer) (initiator_error "The continuation's input kind is unavailable." ^code "unavailable")))
+        (let subject (if (== selected/exact true) ""
+          ($str/slice_bytes initiator ($str/byte_size selected/prefix)
+            (- ($str/byte_size initiator) ($str/byte_size selected/prefix)))))
+        (let context {^workspace_root runtime/root ^session_id session ^initiator initiator
+          ^text text ^subject subject ^continued continued})
+        # A claimed continuation carries metadata already admitted by its
+        # original source. It remains usable if that plugin has been disabled.
+        (let normalized (if carried_plugin (freeze_turn_data input)
+          (invoke_normalizer normalizer context input)))
+        {^kind selected/kind ^name selected/name ^subject subject
+         ^operator (&& selected/operator (|| (!= selected/requires_continuation true) continued))
+         ^channel (&& (== selected/kind "channel") (! continued)) ^input normalized}))
+  ensure (release_snapshot runtime/h/snapshots lease)))
+
+(fn make_initiator [h, kind : Str, subject : Str = "", ^transport transport = nil]
+  (for policy in (policy_rows (current_snapshot h/snapshots))
+    (if (&& (== policy/kind kind) (|| ($absent? transport) (== policy/transport transport)))
+      (return (if (== policy/exact true) policy/prefix ($to_str policy/prefix subject)))))
+  (initiator_error $"Initiator kind ${kind} is unavailable." ^code "unavailable"))

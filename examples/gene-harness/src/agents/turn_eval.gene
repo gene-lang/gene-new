@@ -15,6 +15,7 @@
 (import ^from "../runtime/patch" [prepare_patch commit_patch with_patch_gate])
 (import ^from "../text" [byte_prefix without_markdown_images])
 (import [open_execution_scope close_execution_scope] ^from "../runtime/execution_budget")
+(import [ParticipantFailure] ^from "../runtime/turn_participants")
 
 (fn response_error_line [failure]
   (?? failure/response_line (if (== failure/file "response") (?? failure/line nil) nil)))
@@ -33,6 +34,7 @@
                    ^max_memory_mb max_memory_mb : Int = 1024,
                    ^console_sink console_sink = nil, ^recall recall_function = nil,
                    ^record record = nil, ^context inherited = nil,
+                   ^normalize_outcome normalize_outcome = nil,
                    ^turn_sink turn_sink = nil,
                    ^validators validators = {},
                    ^renderers renderers = {},
@@ -42,6 +44,9 @@
   (let bytes ($cell 0))
   (let truncated ($cell false))
   (let turn (new_turn_items number ^recall recall_function))
+  (fn validate_value [value]
+    (let prepared (if ($absent? normalize_outcome) value (normalize_outcome turn value)))
+    (validate_outcome turn prepared ^validators validators ^renderers renderers))
   (if_not ($absent? inherited/delegations)
     (turn .put "delegation_guard" inherited/delegations/guard)
     (turn .put "delegation_collection" (== inherited/delegations/collection true)))
@@ -124,7 +129,7 @@
                 ensure deadline/.cancel deadline/.join))
               ensure (close_execution_scope execution)))
             (match outcome ^!exhaustive
-              (when (TaskOutcome/ok value) (set validated (validate_outcome turn value ^validators validators ^renderers renderers)))
+              (when (TaskOutcome/ok value) (set validated (validate_value value)))
               (when (TaskOutcome/error failure)
                 (set error ($to_str failure/message))
                 (set error_line (response_error_line failure)))
@@ -132,7 +137,8 @@
               (when TaskOutcome/cancelled
                 (if expired/.get (set error "response budget timed out") (set cancelled true)))))
           (else
-            (set validated (validate_outcome turn (if ($absent? patch_result) nil patch_result/text) ^validators validators ^renderers renderers))))))
+            (set validated (validate_value (if ($absent? patch_result) nil patch_result/text)))))))
+    catch ParticipantFailure (fail $err)
     catch Any
       (set error ($to_str $err/message))
       (set error_line (response_error_line $err))

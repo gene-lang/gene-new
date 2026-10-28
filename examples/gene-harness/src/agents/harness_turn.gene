@@ -6,6 +6,7 @@
 (import ^from "../storage/workspace" [drain_workspace_changes])
 (import ^from "../text" [byte_prefix])
 (import [ui_publication_preview bounded_render_call] ^from "../ui/views")
+(import [normalize_harness_outcome] ^from "./outcome_admission")
 
 (fn plugin_change_summary [changes]
   (let lines [])
@@ -108,7 +109,10 @@
     (let bindings
       (workspace_bindings ^extra extra_bindings h lease/snapshot session workspace_root))
     (let result
-      (evaluate_turn ^validators (question_validators lease/snapshot) ^renderers (question_renderers h lease/snapshot) ^bindings bindings ^timeout_ms timeout_ms ^max_memory_mb max_memory_mb ^console_sink console_sink ^recall recall_function ^record record ^after_patch_rename after_patch_rename ^turn_sink turn_ref ^context {^composition h/snapshots ^snapshot lease/snapshot ^session session ^round round ^reviewer pinned_reviewer ^cards (?? (extra_bindings .get "card_api") nil) ^delegations (?? (extra_bindings .get "delegation_context") nil)}
+      (evaluate_turn ^validators (question_validators lease/snapshot) ^renderers (question_renderers h lease/snapshot) ^bindings bindings ^timeout_ms timeout_ms ^max_memory_mb max_memory_mb ^console_sink console_sink ^recall recall_function ^record record ^after_patch_rename after_patch_rename ^turn_sink turn_ref
+        ^normalize_outcome (fn [turn value]
+          (normalize_harness_outcome h lease/snapshot session round turn extra_bindings value))
+        ^context {^composition h/snapshots ^snapshot lease/snapshot ^session session ^round round ^reviewer pinned_reviewer ^cards (?? (extra_bindings .get "card_api") nil) ^delegations (?? (extra_bindings .get "delegation_context") nil)}
         number
         workspace_root
         text))

@@ -1,0 +1,69 @@
+# Internal first consumer of the mandatory turn transaction. Durable child
+# admission and recovery remain in delegations; this owns only phase wiring.
+(mod delegation_participant)
+(import [delegation_context delegation_request_items begin_delegation_request
+  mark_delegation_results_seen commit_delegation_turn release_delegation_turn
+  has_owned_work?] ^from "./delegations")
+(import [new_turn_items] ^from "../agents/outcome")
+
+(fn sourced_items [items]
+  ($map items (fn [item]
+    (if ($absent? item/delegation_source) item
+      (item .assoc "source" item/delegation_source)))))
+
+(fn waiting_result [context, result]
+  {^state "waiting" ^questions nil ^delegation_wait result/delegation_wait
+   ^delegation_collection (== result/delegation_collection true)
+   ^collection_turns (if (== result/delegation_collection true) 1 0)})
+
+(fn commit_result [service, context, state, result]
+  (let committed (commit_delegation_turn service context/session context/round/id context/turn result
+    ^limit context/limit ^count context/count ^collection context/collection))
+  (committed .put "request_items" (sourced_items committed/request_items))
+  (if (== committed/kind "delegation_wait")
+    (committed .put "suspension" (waiting_result context committed)))
+  # Failure after durable admission must leave children fenced. Recovery uses
+  # the existing admission journal rather than replaying this phase.
+  (state .put "committed" true)
+  committed)
+
+(fn delegation_participant [service]
+  {^name "core/delegation" ^priority 0 ^request_record {^^delegation}
+   ^request_items (fn [context state value]
+     (let known (?? context/round/request_sources []))
+     (let incoming (delegation_request_items service context/session context/round/id context/turn
+       ^carry context/carry))
+     (sourced_items ($filter incoming (fn [item] (! (known .contains? item/delegation_source))))))
+   ^request_admitted (fn [context state value]
+     (begin_delegation_request service context/session context/round/id context/turn
+       (?? context/round/request_sources [])))
+   ^bindings (fn [context state value]
+     {^delegation_context (delegation_context service context/session context/round/id
+       context/count context/limit context/collection)})
+   ^response_recorded (fn [context state value]
+     (let sources (?? context/round/request_sources []))
+     (if sources/.empty? (return nil))
+     (if_not ($absent? service/checkpoint)
+       (service/checkpoint "parent_response_recorded" context/session))
+     (mark_delegation_results_seen service context/session context/round/id context/turn sources)
+     (if_not ($absent? service/checkpoint)
+       (service/checkpoint "parent_response" context/session))
+     nil)
+   ^commit (fn [context state result] (commit_result service context state result))
+   ^finalize (fn [context state result]
+     (if_not ($absent? result/turn) (result/turn/delegation_staged .set []))
+     nil)
+   ^release (fn [context state completion]
+     (let errors (?? completion/finalization_errors []))
+     (if (&& (== state/committed true) (== completion/turn_end_durable true)
+             (! (["error" "cancelled"] .contains? (?? completion/result/kind "error")))
+             errors/.empty?)
+       (release_delegation_turn service context/session context/round/id context/turn))
+     nil)
+   ^limit (fn [context state value]
+     (if (|| context/collection (! (has_owned_work? service context/session context/round/id)))
+       (return nil))
+     (let parked (commit_delegation_turn service context/session context/round/id context/turn
+       {^kind "continue" ^turn (new_turn_items context/turn) ^request_items [] ^validated nil}
+       ^limit context/limit ^count context/count))
+     (waiting_result context parked))})

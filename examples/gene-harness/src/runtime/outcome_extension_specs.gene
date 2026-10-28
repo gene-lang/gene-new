@@ -1,0 +1,44 @@
+# Existing optional fields are host-owned schemas. Their legacy spellings stay
+# accepted during the additive migration; canonical values live under extensions.
+(mod outcome_extension_specs)
+(import [normalize_delegation_wait delegation_result_data] ^from "./delegation_contract")
+(import [DelegationError] ^from "../plugin_api")
+
+(fn audio_schema [context, value]
+  (if ($absent? value) (return {^value nil}))
+  (let reply context/outcome/reply)
+  (if (&& (== ($head value) Str) (<= ($str/byte_size value) 2048)
+          (try ($binary/decode_utf8 ($binary/from_str value)) true catch Any false)
+          (! ($absent? reply)) (!= ($str/trim reply) "") (!= ($str/trim value) ""))
+    (return {^value ($str/trim value)}))
+  {^value nil ^warning "Ignored audio_reply: use at most 2 KiB of nonempty text alongside reply.\n"})
+
+(fn wait_schema [context, value]
+  (if ($absent? value) (return {^value nil}))
+  (if (|| context/outcome/done context/outcome/has_questions)
+    (return {^error "wait cannot be combined with done or questions."}))
+  (if context/collection
+    (return {^error "The collection turn cannot wait or start more work; finish with done."}))
+  (let wake (if (context/extension_inputs .has_key? "delegation/wake_on_questions")
+    (context/extension_inputs .get "delegation/wake_on_questions") context/legacy/wake_on_questions))
+  (try
+    (normalize_delegation_wait value ^wake_on_questions (== wake true))
+    {^value value}
+  catch DelegationError {^error $err/message}))
+
+(fn result_schema [context, value]
+  (if ($absent? value) (return {^value nil}))
+  (if_not context/outcome/done (return {^error "result requires a done Outcome."}))
+  (try {^value (delegation_result_data value)}
+    catch DelegationError {^error $err/message}))
+
+(fn wake_schema [context, value]
+  (if ($absent? value) (return {^value nil}))
+  (if (!= ($head value) Bool) (return {^error "wake_on_questions must be a boolean."}))
+  {^value value})
+
+(fn builtin_outcome_schemas []
+  [{^name "voice/audio_reply" ^alias "audio_reply" ^schema audio_schema}
+   {^name "delegation/wait" ^alias "wait" ^schema wait_schema}
+   {^name "delegation/result" ^alias "result" ^schema result_schema}
+   {^name "delegation/wake_on_questions" ^alias "wake_on_questions" ^schema wake_schema}])

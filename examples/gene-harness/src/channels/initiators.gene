@@ -1,0 +1,28 @@
+# The channel host owns durable input policy independently of Slack transport
+# activation, so queued and historical work remains inspectable while it is off.
+(mod channel_initiators)
+(import [normalize_channel_input render_parts] ^from "./model")
+(import [RoundError] ^from "../runtime/round_errors")
+
+(const channel_source_owner "$host/channels")
+
+(fn normalize_slack_source [context, value]
+  (let input (normalize_channel_input value))
+  (if_not context/continued
+    (if (|| (!= context/initiator ($to_str "channel:slack/" input/account))
+            (!= context/text (render_parts input/messages)))
+      (fail (RoundError ^code "invalid_request" ^message "Channel request and origin metadata do not match."))))
+  input)
+
+(fn slack_initiator []
+  {^name "slack/channel" ^kind "channel" ^transport "slack" ^prefix "channel:slack/"
+   ^operator true ^normalize normalize_slack_source})
+
+(fn register_channel_initiators [h, contribute]
+  (contribute h channel_source_owner "initiators" (slack_initiator))
+  nil)
+
+(fn legacy_channel_operator? [round]
+  (let policy (slack_initiator))
+  (&& (== round/input/kind policy/kind) (== round/input/transport policy/transport)
+      (== round/initiator ($to_str policy/prefix round/input/account))))

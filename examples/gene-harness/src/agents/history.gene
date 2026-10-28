@@ -220,6 +220,8 @@
       ^settled (if (== item/settled false) false true) ^^saved})
     (if_not ($absent? item/delegation_source)
       (saved .put "delegation_source" item/delegation_source))
+    (if_not ($absent? item/source)
+      (saved .put "source" item/source))
     (saved_items .push saved)
     (set bytes (+ bytes (+ separator ($str/byte_size rendered)))))
   {^full ($str/join full "\n") ^settled ($str/join settled "\n") ^items saved_items})

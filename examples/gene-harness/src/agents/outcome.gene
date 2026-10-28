@@ -3,11 +3,16 @@
 (import [normalize_delegation_wait delegation_result_data] ^from "../runtime/delegation_contract")
 
 (type Outcome ^props {^done Bool? ^prompt Any? ^reply Str? ^audio_reply Any? ^questions Any? ^attention Bool?
-  ^wait Any? ^result Any? ^wake_on_questions Bool?})
+  ^wait Any? ^result Any? ^wake_on_questions Bool? ^extensions Any?})
+(type CheckedOutcome ^^private ^props {^value Outcome})
 (type OutcomeError ^props {^message Str ^response_line Int?} ^impl [Error])
 (impl Error for OutcomeError)
 (type TurnClosed ^props {^message Str ^turn Int?} ^impl [Error])
 (impl Error for TurnClosed)
+
+# Only the harness's leased schema admission creates this private envelope.
+# A plain Outcome carrying unverified extension data is rejected below.
+(fn checked_outcome_extensions [value : Outcome] (CheckedOutcome ^value value))
 
 (fn new_turn_items [turn : Int, ^attachments attachments = {}, ^recall recall = nil, ^console console = nil]
   {
@@ -100,10 +105,18 @@
   # Copy rather than mutate: a model may return a frozen Outcome.
   (Outcome ^done value/done ^prompt value/prompt ^reply value/reply ^audio_reply audio
     ^questions value/questions ^attention value/attention ^wait value/wait
-    ^result value/result ^wake_on_questions value/wake_on_questions))
+    ^result value/result ^wake_on_questions value/wake_on_questions ^extensions value/extensions))
 
 (fn validate_outcome [turn, value, ^validators validators = {}, ^renderers renderers = {}]
-  (let outcome (normalize_audio_reply turn (if (== ($head value) Outcome) value (Outcome ^prompt value))))
+  (let checked (== ($head value) CheckedOutcome))
+  (let raw (if checked value/value value))
+  (let candidate (if (== ($head raw) Outcome) raw (Outcome ^prompt raw)))
+  (if_not ($absent? candidate/extensions)
+    (if (!= ($head candidate/extensions) Map)
+      (fail (OutcomeError ^message "Outcome extensions must be a map of registered keys.")))
+    (if (&& (! checked) (> ($size candidate/extensions) 0))
+      (fail (OutcomeError ^message "Outcome extension data requires leased schema validation."))))
+  (let outcome (normalize_audio_reply turn candidate))
   (if_not ($absent? outcome/result)
     (if (!= outcome/done true) (fail (OutcomeError ^message "result requires a done Outcome.")))
     (delegation_result_data outcome/result))
@@ -121,14 +134,14 @@
       (if (|| (!= outcome/prompt void) (!= outcome/questions void))
         (fail (OutcomeError ^message "done Outcome rejects prompt and questions")))
       (if turn/composition_queued/.get
-        (return {^kind "continue" ^outcome (Outcome ^reply outcome/reply ^audio_reply outcome/audio_reply)
+        (return {^kind "continue" ^outcome (Outcome ^reply outcome/reply ^audio_reply outcome/audio_reply ^extensions outcome/extensions)
           ^questions nil ^^rejected_done}))
       (if (|| (! turn/delegation_staged/.get/.empty?)
               (&& (! ($absent? turn/delegation_guard)) (turn/delegation_guard)))
-        (return {^kind "continue" ^outcome (Outcome ^reply outcome/reply ^audio_reply outcome/audio_reply)
+        (return {^kind "continue" ^outcome (Outcome ^reply outcome/reply ^audio_reply outcome/audio_reply ^extensions outcome/extensions)
           ^questions nil ^^rejected_delegation_done}))
       (if_not turn/media/.get/.empty?
-        (return {^kind "continue" ^outcome (Outcome ^reply outcome/reply ^audio_reply outcome/audio_reply)
+        (return {^kind "continue" ^outcome (Outcome ^reply outcome/reply ^audio_reply outcome/audio_reply ^extensions outcome/extensions)
           ^questions nil ^^rejected_done}))
       (if (> ($size turn/items/.get) 0)
         (then

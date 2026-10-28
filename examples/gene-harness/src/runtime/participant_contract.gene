@@ -1,0 +1,109 @@
+# Public projections and result admission. These private envelope types are
+# created by the host; plugins exchange ordinary owned data, never these tags.
+(mod participant_contract)
+(import [ParticipantFailure] ^from "./turn_participants")
+(import [freeze_turn_data] ^from "./turn_data")
+
+(type ParticipantBindings ^props {^owner Str ^slot Str ^value Any})
+(type ParticipantCommit ^props {^items Any})
+(type ParticipantValidation ^props {^error Str? ^items Any ^defer_done Bool})
+
+(fn contract_error [name : Str, phase : Str, message : Str]
+  (fail (ParticipantFailure ^participant name ^phase phase ^code "invalid_result" ^message message)))
+
+(fn public_turn_context [context]
+  (let round (if (== ($head context/round) Str) context/round (?? context/round/id context/round_id)))
+  (freeze_turn_data {^workspace_root context/workspace_root
+    ^session_id (?? context/session context/session_id) ^round_id round ^turn context/turn
+    ^round_turn (?? context/count context/round_turn) ^turn_limit (?? context/limit context/turn_limit)
+    ^composition_revision context/composition_revision ^collection (== context/collection true)
+    ^boundary (?? context/boundary "turn")}))
+
+(fn public_outcome [outcome]
+  (freeze_turn_data {^done (== outcome/done true) ^reply (?? outcome/reply nil)
+    ^attention (== outcome/attention true) ^has_questions (! ($absent? outcome/questions))
+    ^has_prompt (!= outcome/prompt void) ^extensions (?? outcome/extensions {})}))
+
+(fn public_turn_result [result]
+  (let questions [])
+  (for question in (?? result/validated/questions [])
+    (questions .push {^id question/id ^prompt question/prompt ^kind question/kind
+      ^choices question/choices ^recommended question/recommended ^multi question/multi}))
+  (let items [])
+  (for item in (?? result/request_items [])
+    (items .push {^id item/id ^header item/header ^value item/value ^source item/source
+      ^settled (!= item/settled false)}))
+  (freeze_turn_data {^kind (?? result/kind "error") ^error (?? result/error nil)
+    ^outcome (public_outcome result/validated/outcome) ^questions questions
+    ^request_items items ^media (?? result/media [])}))
+
+(fn public_phase_value [phase : Str, value]
+  (if (== phase "release")
+    (then
+      (let errors [])
+      (for failure in (?? value/finalization_errors [])
+        (errors .push {^participant failure/participant ^phase failure/phase
+          ^code failure/code ^message failure/message}))
+      (return (freeze_turn_data {^result (public_turn_result value/result)
+        ^turn_end_durable (== value/turn_end_durable true) ^errors errors}))))
+  (if (== phase "response_recorded")
+    (return (freeze_turn_data {^patch_files (?? value/patch_files []) ^reply_hint value/reply_hint})))
+  (if (["validate_outcome" "commit" "finalize"] .contains? phase)
+    (return (public_turn_result value)))
+  nil)
+
+(fn public_request_items [name : Str, context, phase : Str, value]
+  (if ($absent? value) (return []))
+  (if (|| (!= ($head value) List) (> value/.size 64))
+    (contract_error name phase "Return at most 64 request items."))
+  (let result [])
+  (let seen {})
+  (for item in value
+    (if (!= ($head item) Map) (contract_error name phase "A request item must be a map."))
+    (for [key field] in item
+      (if_not (["id" "value" "source" "settled"] .contains? ($to_str key))
+        (contract_error name phase $"Unknown request item field ${key}.")))
+    (if (|| (!= ($head item/id) Str)
+            ($absent? (#"^[a-z0-9][a-z0-9_-]{0,63}$" .match item/id))
+            (seen .has_key? item/id) (!= ($head item/value) Str))
+      (contract_error name phase "Request items need distinct local ids and string values."))
+    (if (&& (! ($absent? item/settled)) (!= ($head item/settled) Bool))
+      (contract_error name phase "Request item settled must be a boolean."))
+    (let id $"${context/turn}.${name}/${item/id}")
+    (let admitted {^id id ^header $"[${id}]" ^value item/value ^settled (!= item/settled false)})
+    (if_not ($absent? item/source)
+      (if (|| (!= ($head item/source) Str) (== item/source "") (> ($str/byte_size item/source) 256))
+        (contract_error name phase "Request item source must be a nonempty string of at most 256 bytes."))
+      (admitted .put "source" $"participant:${name}/${item/source}"))
+    (seen .put item/id true)
+    (result .push admitted))
+  (freeze_turn_data result))
+
+(fn public_phase_result [owner : Str, slot : Str, name : Str, context, phase : Str, value]
+  (if (== phase "request_items") (return (public_request_items name context phase value)))
+  (if (== phase "bindings")
+    (then
+      (if ($absent? value) (return nil))
+      (if (!= ($head value) Map) (contract_error name phase "Public bindings must be a data map."))
+      (return (ParticipantBindings ^owner owner ^slot slot ^value (freeze_turn_data value)))))
+  (if (== phase "commit")
+    (return (ParticipantCommit ^items (public_request_items name context phase value))))
+  (if (== phase "validate_outcome")
+    (then
+      (if ($absent? value) (return nil))
+      (if (!= ($head value) Map) (contract_error name phase "Outcome validation must return a verdict map or nil."))
+      (for [key field] in value
+        (if_not (["error" "request_items" "defer_done"] .contains? ($to_str key))
+          (contract_error name phase $"Unknown validation verdict field ${key}.")))
+      (if (&& (! ($absent? value/error))
+               (|| (!= ($head value/error) Str) (== ($str/trim value/error) "")))
+        (contract_error name phase "A validation error must be nonempty text."))
+      (if (&& (! ($absent? value/defer_done)) (!= ($head value/defer_done) Bool))
+        (contract_error name phase "defer_done must be a boolean."))
+      (let items (public_request_items name context phase value/request_items))
+      (if (&& (== value/defer_done true) items/.empty?)
+        (contract_error name phase "Deferring completion requires owned request context."))
+      (return (ParticipantValidation ^error (?? value/error nil) ^items items
+        ^defer_done (== value/defer_done true)))))
+  # Notification/acquisition/cleanup return values are intentionally ignored.
+  nil)

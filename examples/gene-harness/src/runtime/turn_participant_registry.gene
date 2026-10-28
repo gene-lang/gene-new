@@ -1,0 +1,101 @@
+# Native coordinator installation. Plugin registration remains closed until
+# both existing consumers have moved through the production transaction path.
+(mod turn_participant_registry)
+(import [registry contribute row] ^from "../kernel")
+(import [new_turn_transaction guard_participant_callback ParticipantFailure phases]
+  ^from "./turn_participants")
+(import [delegation_participant] ^from "./delegation_participant")
+(import [cards_participant] ^from "./cards_participant")
+(import [response_execution_limits] ^from "../plugin_api")
+(import [public_turn_context public_phase_value public_phase_result] ^from "./participant_contract")
+
+# Plugin IDs cannot contain '/', so this host publisher cannot be a stored
+# plugin claiming the ordinary spelling "core".
+(const native_owner "$host/turn_participants")
+
+(fn callback_fields [] ($into phases ["begin" "finalize" "release" "limit"]))
+
+(fn invalid_definition [name, message : Str]
+  (fail (ParticipantFailure ^participant ($to_str (?? name "unknown"))
+    ^phase "register" ^code "invalid_definition" ^message message)))
+
+(fn validate_participant [candidate]
+  (if (|| (!= ($head candidate) Map) (!= ($head candidate/name) Str) (== candidate/name ""))
+    (invalid_definition candidate/name "A turn participant requires a nonempty name."))
+  (let fields ($into (callback_fields) ["name" "priority" "request_record" "summary" "tags" "docs"]))
+  (for [key value] in candidate
+    (if_not (fields .contains? ($to_str key))
+      (invalid_definition candidate/name $"Unknown turn participant field ${key}.")))
+  (if (!= ($head (?? candidate/priority 0)) Int)
+    (invalid_definition candidate/name "Turn participant priority must be an integer."))
+  (if (!= ($head (?? candidate/request_record {})) Map)
+    (invalid_definition candidate/name "Native request annotations must be a map."))
+  (for field in (callback_fields)
+    (let callback (candidate .get field))
+    (if (&& (! ($absent? callback)) (! ($runtime/callable? callback)))
+      (invalid_definition candidate/name $"Turn participant ${field} must be callable.")))
+  candidate)
+
+(fn public_callback [owner : Str, slot : Str, name : Str, phase : Str, callback]
+  (fn [context state value]
+    (let result (callback (public_turn_context context) state (public_phase_value phase value)))
+    (public_phase_result owner slot name context phase result)))
+
+(fn prepare_participant [runtime, owner : Str, candidate]
+  (let native (== owner native_owner))
+  (var slot "")
+  (if_not native
+    (let prefix $"${owner}/")
+    (if (|| (! ($str/starts_with? candidate/name prefix)) (== candidate/name prefix)
+            (> ($str/byte_size candidate/name) 192) (candidate .has_key? "request_record")
+            (candidate .has_key? "limit"))
+      (invalid_definition candidate/name "Public participants use their owner's namespace; host record annotations and limit policy are reserved."))
+    (set slot ($str/slice_bytes candidate/name ($str/byte_size prefix)
+      (- ($str/byte_size candidate/name) ($str/byte_size prefix))))
+    (if ($str/contains? slot "/")
+      (invalid_definition candidate/name "Use one participant name below the owner namespace."))
+    (if_not ($absent? candidate/bindings)
+      (let parsed (try ($into ($parse/read_all owner) []) catch Any []))
+      (if (|| (!= parsed/.size 1) (!= ($head parsed/0) Sym) (!= ($to_str parsed/0) owner)
+              (["Outcome" "session_id" "workspace_root" "doc" "discover" "append_prompt_at"
+                "attachment" "recall"] .contains? owner)
+              (! ($absent? (row runtime/h "functions" owner))))
+        (invalid_definition candidate/name "The public data binding namespace conflicts with an existing or reserved binding."))))
+  (let prepared {})
+  (for [key value] in candidate (prepared .put key value))
+  (prepared .put "_host" native)
+  (prepared .put "_owner" owner)
+  (for field in (callback_fields)
+    (let callback (candidate .get field))
+    (if_not ($absent? callback)
+      (let admitted (if native callback (public_callback owner slot candidate/name field callback)))
+      (prepared .put field (guard_participant_callback candidate/name field admitted))))
+  prepared)
+
+(fn install_turn_participants [runtime]
+  (registry runtime/h "turn_participants" ^owner native_owner
+    ^spec {^name "turn_participants" ^^unique ^^ordered ^schema validate_participant
+      ^prepare (fn [owner candidate] (prepare_participant runtime owner candidate)) ^callbacks (callback_fields)
+      ^reserved {^core/delegation native_owner ^core/cards native_owner} ^^same_owner})
+  (if_not ($absent? runtime/delegations)
+    (contribute runtime/h native_owner "turn_participants" (delegation_participant runtime/delegations)))
+  (if_not ($absent? runtime/cards)
+    (contribute runtime/h native_owner "turn_participants" (cards_participant runtime)))
+  nil)
+
+(fn new_runtime_turn_transaction [runtime, lease, context]
+  (if (|| ($absent? lease/closed) lease/closed/.get
+          (! (same? lease/counter (runtime/h/snapshots/counts/.get .get ($to_str lease/snapshot/id)))))
+    (fail (ParticipantFailure ^participant "coordinator" ^phase "select" ^code "lease_required"
+      ^message "Turn participants require a live lease from this workspace.")))
+  (let snapshot lease/snapshot)
+  (let selected [])
+  (let boundary (== context/boundary "limit"))
+  (for record in (?? (snapshot/registries .get "turn_participants") [])
+    (let definition record/payload)
+    (if (&& boundary ($absent? definition/limit)) (continue))
+    (selected .push definition))
+  (new_turn_transaction (context .assoc "composition_revision" snapshot/id ; .assoc "workspace_root" runtime/root) selected
+    ^limits (?? runtime/profile/limits (response_execution_limits))
+    ^scope {^composition runtime/h/snapshots ^snapshot snapshot ^session context/session
+      ^round context/round/id}))

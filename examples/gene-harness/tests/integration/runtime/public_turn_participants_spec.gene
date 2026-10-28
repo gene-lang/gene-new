@@ -1,0 +1,291 @@
+(import $test [describe it])
+(import [isolated run_spec test_controller] ^from "../../support")
+(import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
+(import [baseline_profile] ^from "../../../src/profiles/baseline")
+(import [register_plugin] ^from "../../../src/storage/workspace")
+(import [submit_round round_receipt close_round_controller] ^from "../../../src/runtime/round_controller")
+(import [plugin_state events_for] ^from "../../../src/storage/state")
+(import [row put_cordis_plugin] ^from "../../../src/kernel")
+(import [ExecutionLimits] ^from "../../../src/plugin_api")
+
+(fn notes_source [version : Str = "one", ^broken broken : Bool = false, ^delay delay : Int = 0]
+  `(mod plugin
+     (import [Plugin PluginHost ServiceError] ^from "src/plugin_api.gene")
+     (fn init [descriptor]
+       (Plugin ^id "notes"
+         ^requires [{^registry "turn_participants"} {^registry "outcome_extensions"}]
+         ^provides [["outcome_extensions" "notes/facts"] ["turn_participants" "notes/memory"]]
+         ^activate (fn [host]
+           (let schemas ($cell 0))
+           (host .PluginHost:contribute "outcome_extensions"
+             {^name "notes/facts" ^schema (fn [context value]
+               (schemas .set (+ schemas/.get 1))
+               (if (> %delay 0) ($sleep %delay))
+               (if %broken (fail (ServiceError ^code "broken_schema" ^message "Schema implementation failed.")))
+               ($assert ($absent? context/runtime))
+               ($assert ($absent? context/snapshot))
+               ($assert ($absent? context/legacy))
+               ($assert ($absent? context/extension_inputs))
+               ($assert (== ($head context/round_id) Str))
+               ($assert (try (context .put "forged" true) false catch Any true))
+               (if (!= ($head value) List) (return {^error "facts must be a list of strings"}))
+               ($assert (try (value .push "forged") false catch Any true))
+               (for fact in value
+                 (if (!= ($head fact) Str) (return {^error "facts must be strings"})))
+               {^value ($map value (fn [fact] ($to_str %version ":" ($str/trim fact))))})})
+           (host .PluginHost:contribute "turn_participants"
+             {^name "notes/memory"
+              ^begin (fn [context state value]
+                ($assert ($absent? context/runtime))
+                ($assert ($absent? context/round))
+                ($assert (== ($head context/turn) Int))
+                ($assert (try (context .put "forged" true) false catch Any true))
+                (state .put "turn" context/turn))
+              ^bindings (fn [context state value] {^generation %version})
+              ^commit (fn [context state value]
+                ($assert (== state/turn context/turn))
+                ($assert ($absent? value/turn))
+                ($assert (try (value .put "forged" true) false catch Any true))
+                (let facts (value/outcome/extensions .get "notes/facts"))
+                (if (&& (== value/kind "done") (! ($absent? facts)))
+                  (host .PluginHost:update_state {^generation %version ^facts facts
+                    ^schema_calls schemas/.get ^context context ^private_turn state/turn}))
+                nil)
+              ^release (fn [context state value]
+                ($assert ($absent? value/result/turn))
+                ($assert ($absent? value/evidence))
+                nil)}))))))
+
+(fn state [runtime]
+  (plugin_state runtime/events "workspace" "workspace" "notes"))
+
+(fn wait_round [controller, receipt]
+  (let watcher (controller/watchers/.get .get "default"))
+  watcher/.join
+  (round_receipt controller "default" receipt/id))
+
+(fn declaration_source [id : Str, registry : Str, definition, ^duplicate duplicate : Bool = false]
+  `(mod plugin
+     (import [Plugin PluginHost] ^from "src/plugin_api.gene")
+     (fn init [descriptor]
+       (Plugin ^id %id ^requires [{^registry %registry}]
+         ^activate (fn [host]
+           (host .PluginHost:contribute %registry %definition)
+           (if %duplicate (host .PluginHost:contribute %registry %definition)))))))
+
+(describe "Public turn participants and Outcome schemas"
+  (it "loads API-only owned callbacks, publishes namespaced data and commits checked optional fields" []
+    (isolated this_mod/.path
+      "loads API-only owned callbacks, publishes namespaced data and commits checked optional fields"
+      (fn [root]
+        (let runtime (open_runtime root "default" (baseline_profile)))
+        (let registered (register_plugin runtime/workspace runtime/h "notes" (notes_source)))
+        ($assert (== registered/status "ready") ($to_str registered))
+        (let controller (test_controller runtime (fn [request]
+          "($assert (== notes/memory/generation \"one\")) (Outcome ^^done ^reply \"Saved.\" ^extensions {^notes/facts [\"  fact  \"]})")))
+        (try
+          (let result (wait_round controller (submit_round controller "default" "remember" 1 "Remember a fact.")))
+          ($assert (== result/state "done") ($to_str result))
+          ($assert (== result/reply "Saved."))
+          (let saved (state runtime))
+          ($assert (== saved/facts ["one:fact"]) ($to_str saved))
+          ($assert (== saved/schema_calls 1))
+          ($assert (== saved/context/session_id "default"))
+          ($assert (== saved/context/round_id result/id))
+          ($assert (== saved/private_turn 1))
+          ($assert ($absent? saved/context/runtime))
+        ensure
+          (close_round_controller controller)
+          (close_runtime runtime))
+        (let reopened (open_runtime root "default" (baseline_profile)))
+        (try ($assert (== (/facts (state reopened)) ["one:fact"]))
+          ensure (close_runtime reopened)))))
+
+  (it "repairs rejected model data while treating schema implementation failure as a mandatory failure" []
+    (isolated this_mod/.path
+      "repairs rejected model data while treating schema implementation failure as a mandatory failure"
+      (fn [root]
+        (for broken in [false true]
+          (let runtime (open_runtime ($path/join root (if broken "broken" "rejected")) "default" (baseline_profile)))
+          (let registered (register_plugin runtime/workspace runtime/h "notes" (notes_source ^broken broken)))
+          ($assert (== registered/status "ready") ($to_str registered))
+          (let calls ($cell 0))
+          (let controller (test_controller runtime (fn [request]
+            (calls .set (+ calls/.get 1))
+            (if (== calls/.get 1)
+              "(Outcome ^^done ^reply \"Candidate.\" ^extensions {^notes/facts \"wrong type\"})"
+              (do
+                ($assert ($str/contains? ($to_str request/messages) "facts must be a list"))
+                "(Outcome ^^done ^reply \"Repaired.\" ^extensions {^notes/facts [\"valid\"]})")))))
+          (try
+            (let result (wait_round controller (submit_round controller "default" "data" 1 "Validate data.")))
+            ($assert (== result/state (if broken "failed" "done")) ($to_str result))
+            ($assert (== calls/.get (if broken 1 2)))
+            (if broken
+              ($assert ($str/contains? result/message "notes/facts"))
+              ($assert (== (/facts (state runtime)) ["one:valid"])))
+          ensure
+            (close_round_controller controller)
+            (close_runtime runtime))))))
+
+  (it "does not accept undeclared fields and does not require optional extension data" []
+    (isolated this_mod/.path
+      "does not accept undeclared fields and does not require optional extension data"
+      (fn [root]
+        (let runtime (open_runtime root "default" (baseline_profile)))
+        (register_plugin runtime/workspace runtime/h "notes" (notes_source))
+        (let calls ($cell 0))
+        (let controller (test_controller runtime (fn [request]
+          (calls .set (+ calls/.get 1))
+          (if (== calls/.get 1)
+            "(Outcome ^^done ^reply \"Candidate.\" ^extensions {^missing/facts [\"x\"]})"
+            (do
+              ($assert ($str/contains? ($to_str request/messages) "Unknown Outcome extension missing/facts"))
+              "(Outcome ^^done ^reply \"No notes requested.\")")))))
+        (try
+          (let result (wait_round controller (submit_round controller "default" "optional" 1 "Just answer.")))
+          ($assert (== result/state "done") ($to_str result))
+          ($assert (== calls/.get 2))
+          ($assert ($absent? (state runtime)))
+        ensure
+          (close_round_controller controller)
+          (close_runtime runtime)))))
+)
+
+(describe "Public extension ownership and supervision"
+  (it "refuses unowned keys, legacy aliases, host annotations and duplicate declarations during activation" []
+    (isolated this_mod/.path
+      "refuses unowned keys, legacy aliases, host annotations and duplicate declarations during activation"
+      (fn [root]
+        (let runtime (open_runtime root "default" (baseline_profile)))
+        (try
+          (register_plugin runtime/workspace runtime/h "notes" (notes_source))
+          (for attempt in
+            [{^id "intruder" ^registry "outcome_extensions" ^name "notes/facts"
+              ^definition (quote {^name "notes/facts" ^schema (fn [ctx value] {^value value})})}
+             {^id "intruder_part" ^registry "turn_participants" ^name "notes/memory"
+              ^definition (quote {^name "notes/memory" ^begin (fn [ctx state value] nil)})}
+             {^id "aliases" ^registry "outcome_extensions" ^name "aliases/field"
+              ^definition (quote {^name "aliases/field" ^alias "reply" ^schema (fn [ctx value] {^value value})})}
+             {^id "annotations" ^registry "turn_participants" ^name "annotations/policy"
+              ^definition (quote {^name "annotations/policy" ^request_record {^type "reply"}
+                ^begin (fn [ctx state value] nil)})}
+             {^id "duplicate" ^registry "outcome_extensions" ^name "duplicate/field" ^^duplicate
+              ^definition (quote {^name "duplicate/field" ^schema (fn [ctx value] {^value value})})}
+             {^id "duplicate_part" ^registry "turn_participants" ^name "duplicate_part/pipeline" ^^duplicate
+              ^definition (quote {^name "duplicate_part/pipeline" ^begin (fn [ctx state value] nil)})}]
+            (let result (register_plugin runtime/workspace runtime/h attempt/id
+              (declaration_source attempt/id attempt/registry attempt/definition
+                ^duplicate (== attempt/duplicate true))))
+            ($assert (== result/status "error") ($to_str attempt/id ": " result))
+            (let retained (row runtime/h attempt/registry attempt/name))
+            (if ($str/starts_with? attempt/name "notes/")
+              ($assert (== retained/_owner "notes"))
+              ($assert ($absent? retained) $"Failed declaration left a row: ${attempt/name}")))
+        ensure (close_runtime runtime)))))
+
+  (it "keeps an old participant and schema generation alive for the complete admitted turn" []
+    (isolated this_mod/.path
+      "keeps an old participant and schema generation alive for the complete admitted turn"
+      (fn [root]
+        (let runtime (open_runtime root "default" (baseline_profile)))
+        (let first (register_plugin runtime/workspace runtime/h "notes" (notes_source "one")))
+        ($assert (== first/status "ready"))
+        (let entered ($cell false))
+        (let released ($cell false))
+        (let calls ($cell 0))
+        (let controller (test_controller runtime (fn [request]
+          (calls .set (+ calls/.get 1))
+          (let generation (if (== calls/.get 1) "one" "two"))
+          (if_yes (== calls/.get 1)
+            (entered .set true)
+            (while (! released/.get) ($sleep 1)))
+          ($to_str "($assert (== notes/memory/generation \"" generation
+            "\")) (Outcome ^^done ^reply \"Saved.\" ^extensions {^notes/facts [\"fact\"]})"))))
+        (try
+          (let admitted (submit_round controller "default" "old" 1 "Hold this generation."))
+          (let due (+ ($os/monotonic_ms) 5000))
+          (while (! entered/.get) ($assert (< ($os/monotonic_ms) due)) ($sleep 1))
+          (let replacement (register_plugin runtime/workspace runtime/h "notes" (notes_source "two") ^^replace))
+          ($assert (== replacement/status "ready") ($to_str replacement))
+          (released .set true)
+          (let old (wait_round controller admitted))
+          ($assert (== old/state "done") ($to_str old))
+          ($assert (== (/generation (state runtime)) "one"))
+          ($assert (== (/facts (state runtime)) ["one:fact"]))
+          (let current (wait_round controller (submit_round controller "default" "new" 2 "Use the new generation.")))
+          ($assert (== current/state "done") ($to_str current))
+          ($assert (== (/generation (state runtime)) "two"))
+          ($assert (== (/facts (state runtime)) ["two:fact"]))
+        ensure
+          (released .set true)
+          (close_round_controller controller)
+          (close_runtime runtime)))))
+
+  (it "uses the contributor's schema deadline and does not repair or replay a timed-out callback" []
+    (isolated this_mod/.path
+      "uses the contributor's schema deadline and does not repair or replay a timed-out callback"
+      (fn [root]
+        (let runtime (open_runtime root "default" (baseline_profile)))
+        (let installed (register_plugin runtime/workspace runtime/h "notes" (notes_source ^delay 1000)))
+        ($assert (== installed/status "ready") ($to_str installed))
+        # Stored entry limits govern descriptor evaluation. Set an actual
+        # callback policy here, below the wider response/coordinator policy.
+        (let options {})
+        (for [key value] in (runtime/h/composition_entries/.get .get "notes")
+          (options .put key value))
+        (options .put "limits" (ExecutionLimits ^timeout_ms 250 ^max_memory_mb 64))
+        (put_cordis_plugin runtime/h (runtime/h/plugins/.get .get "notes") options ^^replace)
+        ($assert (== (/timeout_ms (/limits (runtime/h/plugin_policies/.get .get "notes"))) 250))
+        (let calls ($cell 0))
+        (let controller (test_controller runtime (fn [request]
+          (calls .set (+ calls/.get 1))
+          "(Outcome ^^done ^reply \"Candidate.\" ^extensions {^notes/facts [\"fact\"]})")))
+        (try
+          (let start ($os/monotonic_ms))
+          (let result (wait_round controller (submit_round controller "default" "deadline" 1 "Bound this schema.")))
+          ($assert (== result/state "failed") ($to_str result))
+          ($assert ($str/contains? result/message "notes/facts"))
+          ($assert (== calls/.get 1))
+          ($assert (< (- ($os/monotonic_ms) start) 2500) "Schema used the wider host response budget.")
+          ($assert ($absent? (state runtime)))
+        ensure
+          (close_round_controller controller)
+          (close_runtime runtime)))))
+)
+
+(describe "Public commit ordering"
+  (it "passes a deferred completion to later participants before they commit final-only data" []
+    (isolated this_mod/.path
+      "passes a deferred completion to later participants before they commit final-only data"
+      (fn [root]
+        (let runtime (open_runtime root "default" (baseline_profile)))
+        (register_plugin runtime/workspace runtime/h "notes" (notes_source))
+        (let gate (register_plugin runtime/workspace runtime/h "gate"
+          (declaration_source "gate" "turn_participants"
+            (quote {^name "gate/review" ^priority -10
+              ^commit (fn [context state value]
+                (if (&& (== context/round_turn 1) (== value/kind "done"))
+                  [{^id "review" ^value "Confirm the final work before finishing."}]
+                  nil))}))))
+        ($assert (== gate/status "ready") ($to_str gate))
+        (let calls ($cell 0))
+        (let controller (test_controller runtime (fn [request]
+          (calls .set (+ calls/.get 1))
+          (if (== calls/.get 1)
+            "(Outcome ^^done ^reply \"Candidate.\" ^extensions {^notes/facts [\"first\"]})"
+            (do
+              ($assert ($absent? (state runtime)) "A later participant committed data from a deferred final reply.")
+              ($assert ($str/contains? ($to_str request/messages) "Confirm the final work"))
+              "(Outcome ^^done ^reply \"Confirmed.\" ^extensions {^notes/facts [\"final\"]})")))))
+        (try
+          (let result (wait_round controller (submit_round controller "default" "ordered" 1 "Check finalization ordering.")))
+          ($assert (== result/state "done") ($to_str result))
+          ($assert (== calls/.get 2))
+          ($assert (== (/facts (state runtime)) ["one:final"]))
+        ensure
+          (close_round_controller controller)
+          (close_runtime runtime)))))
+)
+
+(fn main [args] : Int (run_spec args))

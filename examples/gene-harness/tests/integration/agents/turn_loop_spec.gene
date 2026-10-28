@@ -6,10 +6,11 @@
 (import [gene_reference] ^from "../../../src/builtin/gene_reference")
 (import [budget_advisory] ^from "../../../src/builtin/budget_advisory")
 (import [create_session load_session unload_session require_record] ^from "../../../src/runtime/sessions")
-(import [new_round_controller submit_round round_receipt answer_round close_round_controller]
+(import [new_round_controller submit_round continue_round round_receipt answer_round close_round_controller]
   ^from "../../../src/runtime/round_controller")
 (import [events_for] ^from "../../../src/storage/state")
 (import [scripted_profile] ^from "../../../src/profiles/scripted")
+(import [read_body] ^from "../../../src/agents/history")
 
 (describe "Harness turn loop"
   (it
@@ -79,6 +80,8 @@ END
                 "last response did not know the budget was exhausted")
               (return "(Outcome ^prompt \"RAW_PENDING_REQUEST\")"))
             ($assert (== request/budget/used 1) "continuation did not reset the round budget")
+            ($assert ($str/contains? latest/content "RAW_PENDING_REQUEST")
+              "continuation lost the retained pending request")
             (let active_metadata (require_record runtime/sessions "default"))
             ($assert
               (! active_metadata/attention)
@@ -92,17 +95,17 @@ END
             ; .get "default"
             ; .join)
           (let finished (round_receipt controller "default" receipt/id))
+          ($assert (== finished/state "paused") ($to_str finished))
+          ($assert (== finished/reason "turn_limit"))
           ($assert (== finished/message "turn limit reached") $"unexpected failure: ${finished}")
           (let replies
             ((events_for runtime/events "session" "default") .filter
               (fn [event]
                 (== event/type "reply"))))
-          ($assert
-            ($str/contains? replies/0/payload/text "continuation")
-            "limit reply lacked recovery instructions")
-          ($assert
-            (! ($str/contains? replies/0/payload/text "RAW_PENDING_REQUEST"))
-            "limit reply dumped a pending request")
+          ($assert replies/.empty? "an operator pause emitted a synthetic final reply")
+          ($assert (! ($absent? finished/continuation/history)))
+          ($assert ($str/contains? (read_body runtime finished/continuation/items_ref) "RAW_PENDING_REQUEST")
+            "pause did not durably retain its pending request")
           (let metadata (require_record runtime/sessions "default"))
           ($assert
             (== metadata/title "Build the app")
@@ -110,7 +113,7 @@ END
           (submit_round controller "default" "first" 1 prompt)
           (let retried_metadata (require_record runtime/sessions "default"))
           ($assert retried_metadata/attention "idempotent retry acknowledged failure")
-          (let continued (submit_round controller "default" "second" 2 "Finish."))
+          (let continued (continue_round controller "default" receipt/id "manual"))
           (controller/watchers
             .get
             ; .get "default"

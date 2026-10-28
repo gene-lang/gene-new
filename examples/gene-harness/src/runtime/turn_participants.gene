@@ -1,0 +1,203 @@
+# Mandatory turn phases. This is independent of optional hooks and owns no
+# feature policy, registry storage, durable journal, or composition lease.
+(mod turn_participants)
+(import [supervised_call] ^from "./call_supervision")
+
+(type ParticipantFailure ^props {^message Str ^participant Str ^phase Str ^code Str
+  ^cause Any? ^errors Any?} ^impl [Error])
+(impl Error for ParticipantFailure)
+(type TurnTransaction ^props {^context Any ^participants Any ^entered Any
+  ^started Any ^closed Any ^failed Any ^last_phase Any ^limits Any ^finishing Any ^scope Any})
+
+(const phases ["request_items" "request_admitted" "bindings" "response_recorded"
+  "validate_outcome" "commit"])
+
+(var phase_calls ^^private ($cell []))
+(var phase_gate ^^private ($sync/gate))
+
+# Published coordinator callbacks remain callable values in leased rows, but
+# invoking one requires its exact, live coordinator frame. A retained callback
+# or a copied context cannot create a second phase entry.
+(fn guard_participant_callback [name : Str, phase : Str, callback]
+  (fn [context state value]
+    (let token (/turn_participant_scope ($runtime/context)))
+    (let frame (phase_gate (fn []
+      (for current in phase_calls/.get
+        (if (&& (same? current/token token) current/active/.get
+                (== current/name name) (== current/phase phase)
+                (same? current/context context) (same? current/state state))
+          (return current)))
+      nil)))
+    (if ($absent? frame)
+      (fail (participant_failure name phase "phase_required" "Callback requires its admitted coordinator phase.")))
+    (if (frame/used .swap true)
+      (fail (participant_failure name phase "phase_reentered" "Callback already entered in this phase.")))
+    (callback context state value)))
+
+(fn participant_failure [name : Str, phase : Str, code : Str, message : Str, ^cause cause = nil]
+  (ParticipantFailure ^participant name ^phase phase ^code code ^cause cause
+    ^message $"Turn participant ${name} failed in ${phase}: ${message}"))
+
+(fn new_turn_transaction [context, participants,
+  ^limits limits = {^timeout_ms 600000 ^max_memory_mb 1024}, ^scope scope = nil]
+  (let names {})
+  (let selected [])
+  (for participant in participants
+    (let name participant/name)
+    (if (|| (!= ($head name) Str) (== name "") (names .has_key? name))
+      (fail (participant_failure ($to_str (?? name "unknown")) "select" "invalid_definition"
+        "Participant names must be nonempty and unique.")))
+    (let priority (?? participant/priority 0))
+    (if (!= ($head priority) Int)
+      (fail (participant_failure name "select" "invalid_definition" "Priority must be an integer.")))
+    (for phase in ($into phases ["begin" "finalize" "release" "limit"])
+      (let callback (participant .get phase))
+      (if (&& (! ($absent? callback)) (! ($runtime/callable? callback)))
+        (fail (participant_failure name "select" "invalid_definition" $"${phase} must be callable."))))
+    (names .put name true)
+    # Capture the definition now. Later mutations cannot change this turn.
+    (let copy {})
+    (for [key value] in participant (copy .put key value))
+    (copy .put "priority" priority)
+    (selected .push ($freeze_shallow copy)))
+  (let by_name ($order/sort_by selected /name))
+  (let ordered ($order/sort_by by_name /priority))
+  (TurnTransaction ^context context ^participants ordered ^entered []
+    ^started ($cell false) ^closed ($cell false) ^failed ($cell false)
+    ^last_phase ($cell -1) ^limits limits ^finishing ($cell false) ^scope scope))
+
+(fn transaction_scope [transaction]
+  (let result {})
+  (for [key value] in (?? ($runtime/context) {}) (result .put key value))
+  (for [key value] in (?? transaction/scope {}) (result .put key value))
+  result)
+
+(fn invoke_participant [transaction, entry, phase : Str, value]
+  (if (entry/phases .has_key? phase)
+    (fail (participant_failure entry/definition/name phase "phase_reentered" "Phase already entered; it will not be replayed.")))
+  # Entry precedes invocation, including a callback whose result is lost.
+  (entry/phases .put phase true)
+  (let callback (entry/definition .get phase))
+  (if ($absent? callback) (return nil))
+  (let frame {^token ($cell nil) ^name entry/definition/name ^phase phase
+    ^context transaction/context ^state entry/state ^used ($cell false) ^active ($cell true)})
+  (phase_gate (fn [] (phase_calls/.get .push frame)))
+  (let scoped ((transaction_scope transaction) .assoc "turn_participant_scope" frame/token))
+  (let outcome (try
+    ($runtime/with_context scoped
+      (fn [] (supervised_call callback [transaction/context entry/state value] transaction/limits)))
+  ensure
+    (phase_gate (fn []
+      (frame/active .set false)
+      (phase_calls .set ($filter phase_calls/.get (fn [item] (! (same? item/token frame/token)))))))))
+  (match outcome ^!exhaustive
+    (when (TaskOutcome/ok result) result)
+    (when (TaskOutcome/error error)
+      (fail (participant_failure entry/definition/name phase "callback_error" error/message ^cause error)))
+    (when (TaskOutcome/panic message)
+      (fail (participant_failure entry/definition/name phase "panic" message)))
+    (when TaskOutcome/cancelled
+      (fail (participant_failure entry/definition/name phase "cancelled" "Callback cancelled or its budget expired.")))))
+
+(fn begin_turn_transaction [transaction]
+  (if (|| transaction/closed/.get (transaction/started .swap true))
+    (fail (participant_failure "coordinator" "begin" "phase_reentered" "Transaction already started or closed.")))
+  (var completed false)
+  (try
+    (for definition in transaction/participants
+      # An acquisition that fails part way through still owns its cleanup slot.
+      (let entry {^definition definition ^state {} ^phases {}})
+      (transaction/entered .push entry)
+      (invoke_participant transaction entry "begin" nil))
+    (set completed true)
+    nil
+  ensure (if_not completed (transaction/failed .set true))))
+
+(fn enter_turn_phase [transaction, phase : Str]
+  (var index -1)
+  (var at 0)
+  (for candidate in phases
+    (if (== candidate phase) (set index at))
+    (set at (+ at 1)))
+  (let boundary (== transaction/context/boundary "limit"))
+  (if (&& boundary (== phase "limit")) (set index phases/.size))
+  (if (&& boundary (!= phase "limit")) (set index -1))
+  (if (|| (< index 0) (! transaction/started/.get) transaction/closed/.get
+          transaction/failed/.get (<= index transaction/last_phase/.get))
+    (fail (participant_failure "coordinator" phase "invalid_phase"
+      "Phase is unknown, repeated, out of order, or its transaction is unavailable.")))
+  (transaction/last_phase .set index)
+  nil)
+
+(fn dispatch_turn_phase [transaction, phase : Str, value, reduce]
+  (enter_turn_phase transaction phase)
+  (var completed false)
+  (try
+    (let results [])
+    (var current value)
+    (for entry in transaction/entered
+      (let result (invoke_participant transaction entry phase current))
+      (let packet {^name entry/definition/name ^value result})
+      (results .push packet)
+      (if_not ($absent? reduce) (set current (reduce current packet))))
+    (set completed true)
+    {^results results ^value current}
+  ensure (if_not completed (transaction/failed .set true))))
+
+(fn run_turn_phase [transaction, phase : Str, value = nil]
+  (/results (dispatch_turn_phase transaction phase value nil)))
+
+(fn reduce_turn_phase [transaction, phase : Str, value, reduce]
+  (/value (dispatch_turn_phase transaction phase value reduce)))
+
+(fn release_turn_transaction [transaction, completion = nil]
+  (if (transaction/closed .swap true) (return nil))
+  (let errors [])
+  (var at transaction/entered/.size)
+  (while (> at 0)
+    (set at (- at 1))
+    (let entry transaction/entered/%at)
+    (try (invoke_participant transaction entry "release" completion)
+      catch Any (errors .push $err)))
+  (if_not errors/.empty?
+    (transaction/failed .set true)
+    (fail (ParticipantFailure ^participant "coordinator" ^phase "release" ^code "cleanup_failed"
+      ^errors errors ^message $"Turn participant cleanup failed: ${($map errors /message)}")))
+  nil)
+
+# Durable finalization precedes the core terminal record; resource release and
+# dispatch fences follow it. The caller owns the core-only seal callback.
+# Nothing here retries a callback after failure or loss of its result.
+(fn finish_turn_transaction [transaction, completion, seal]
+  (if (|| transaction/closed/.get (transaction/finishing .swap true))
+    (fail (participant_failure "coordinator" "finish" "phase_reentered" "Transaction already finished or closed.")))
+  (let errors [])
+  (for entry in transaction/entered
+    (try (invoke_participant transaction entry "finalize" completion)
+      catch Any (errors .push $err)))
+  (if_not errors/.empty? (transaction/failed .set true))
+  (var sealed false)
+  (var evidence nil)
+  (try
+    # A failed feature finalizer cannot skip the core record. Contain a core
+    # seal panic too, so every acquired participant still gets its cleanup.
+    (let outcome ($runtime/with_context (transaction_scope transaction)
+      (fn [] (supervised_call seal [completion errors] transaction/limits))))
+    (match outcome ^!exhaustive
+      (when (TaskOutcome/ok value) (set evidence value) (set sealed true))
+      (when (TaskOutcome/error error)
+        (errors .push (participant_failure "coordinator" "seal" "callback_error" error/message ^cause error)))
+      (when (TaskOutcome/panic message)
+        (errors .push (participant_failure "coordinator" "seal" "panic" message)))
+      (when TaskOutcome/cancelled
+        (errors .push (participant_failure "coordinator" "seal" "cancelled" "Terminal recording was cancelled."))))
+  ensure
+    (try (release_turn_transaction transaction
+      {^result completion ^turn_end_durable sealed ^finalization_errors errors ^evidence evidence})
+      catch ParticipantFailure
+        (for error in (?? $err/errors [$err]) (errors .push error))))
+  (if_not errors/.empty?
+    (transaction/failed .set true)
+    (fail (ParticipantFailure ^participant "coordinator" ^phase "finish" ^code "finalization_failed"
+      ^errors errors ^message $"Turn finalization failed: ${($map errors /message)}")))
+  evidence)

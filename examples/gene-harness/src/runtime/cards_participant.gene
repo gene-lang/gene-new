@@ -1,0 +1,13 @@
+# The second internal consumer. Model-facing bindings and durable progress
+# share the transaction boundary, including error and cancellation paths.
+(mod cards_participant)
+(import [card_bindings flush_card_progress] ^from "./cards")
+
+(fn cards_participant [runtime]
+  {^name "core/cards" ^priority 10
+   ^bindings (fn [context state value]
+     (let api (card_bindings runtime context/session context/round/id context/turn))
+     (let bound ($thaw ($freeze_shallow api)))
+     (bound .put "card_api" api)
+     bound)
+   ^finalize (fn [context state result] (flush_card_progress runtime context/session))})

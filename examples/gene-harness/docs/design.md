@@ -501,7 +501,10 @@ the host; a plugin keeps the host for later callbacks.
 The registries are `functions`, `commands`, `input_modes`, `prompt`, `docs`,
 `providers`, `image_generators`, `speech_recognizers`, `speech_synthesizers`,
 `hook_points`, `hooks`, `views`, `interactions`, `web_components`, `browser_clients`,
-`ui_actions`, `ui_links`, `event_types`, `subscriptions`, `seams` and `triggers`. A
+`ui_actions`, `ui_links`, `event_types`, `subscriptions`, `seams` and `triggers`.
+Normal runtime boot also installs `turn_participants`, `outcome_extensions`
+and `initiators`; their [transaction contract](turn-participants.md) defines
+leased dispatch, owned model fields and persisted source policy. A
 `functions` row is `{^name ^fn ^doc}`. Names are unique across the workspace,
 and discovery returns each with its captured `$runtime/signature` and short doc.
 Contributions may add a summary, topic tags and docs chapter references. A

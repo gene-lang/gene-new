@@ -31,6 +31,9 @@
 (import [open_computer_host close_computer_host computer_host_binding] ^from "./computer_host")
 (import [open_operator_host close_operator_host operator_host_binding] ^from "./operator_host")
 (import [composition_host_binding] ^from "./composition_host")
+(import [install_turn_participants] ^from "./turn_participant_registry")
+(import [install_outcome_extensions] ^from "./outcome_extensions")
+(import [install_initiators] ^from "./initiators")
 
 (fn close_kernel [ctx, h]
   (if (== ctx/harness_closed true) (return nil))
@@ -176,6 +179,12 @@
      ^recover nil ^close (fn [ctx, service] (close_delegation_host service))}
     {^name "images" ^requires ["delegations"] ^open image_service ^recover nil
      ^close (fn [ctx, service] (close_image_host service))}
+    {^name "participants" ^requires ["delegations" "cards"]
+     ^open (fn [ctx]
+       (install_initiators ctx/runtime)
+       (install_outcome_extensions ctx/runtime)
+       (install_turn_participants ctx/runtime)
+       nil) ^recover nil}
     {^name "commands" ^requires ["images"]
      ^open (fn [ctx]
        (provide ctx/h "core" "ui/state_lock"
@@ -222,7 +231,7 @@
          manager
        catch Any (close_workspace_manager manager) (fail $err)))
      ^recover nil ^close (fn [ctx, manager] (close_workspace_manager manager))}
-    {^name "plugins" ^requires {^normal ["actions" "voice" "channel_queues" "manager" "media" "computer" "operator" "plugin_api"] ^recovery ["runtime"]}
+    {^name "plugins" ^requires {^normal ["actions" "voice" "channel_queues" "manager" "media" "computer" "operator" "plugin_api" "participants"] ^recovery ["runtime"]}
      ^open activate_services ^recover activate_services ^close close_kernel}
     {^name "initial_session" ^requires ["plugins" "sessions"]
      ^open (fn [ctx]

@@ -1,0 +1,111 @@
+(mod outcome_extensions)
+(import [registry contribute] ^from "../kernel")
+(import [ParticipantFailure] ^from "./turn_participants")
+(import [freeze_turn_data TurnDataError] ^from "./turn_data")
+(import [public_turn_context] ^from "./participant_contract")
+(import [supervised_call] ^from "./call_supervision")
+(import [default_execution_limits response_execution_limits] ^from "../plugin_api")
+(import [builtin_outcome_schemas] ^from "./outcome_extension_specs")
+
+(const native_owner "$host/outcome_extensions")
+
+(fn schema_failure [name, message : Str]
+  (fail (ParticipantFailure ^participant ($to_str (?? name "unknown")) ^phase "outcome/schema"
+    ^code "invalid_result" ^message message)))
+
+(fn schema_verdict [name : Str, value]
+  (if (!= ($head value) Map) (schema_failure name "An Outcome schema must return {^value DATA} or {^error TEXT}."))
+  (for [key field] in value
+    (if_not (["value" "error" "warning"] .contains? ($to_str key))
+      (schema_failure name $"Unknown Outcome schema verdict field ${key}.")))
+  (let accepted (value .has_key? "value"))
+  (let rejected (value .has_key? "error"))
+  (if (== accepted rejected) (schema_failure name "An Outcome schema must accept or reject exactly once."))
+  (if_yes rejected
+    (if (|| (!= ($head value/error) Str) (== ($str/trim value/error) "") (value .has_key? "warning"))
+      (schema_failure name "A schema rejection requires nonempty error text."))
+    (return {^error value/error}))
+  (if (&& (! ($absent? value/warning)) (!= ($head value/warning) Str))
+    (schema_failure name "Schema warning must be text."))
+  {^value (freeze_turn_data value/value) ^warning (?? value/warning nil)})
+
+(fn validate_schema_definition [candidate]
+  (if (|| (!= ($head candidate) Map) (!= ($head candidate/name) Str) (== candidate/name "")
+          (! ($runtime/callable? candidate/schema)))
+    (schema_failure candidate/name "An Outcome extension needs a name and callable schema."))
+  (for [key value] in candidate
+    (if_not (["name" "schema" "alias" "summary" "tags" "docs"] .contains? ($to_str key))
+      (schema_failure candidate/name $"Unknown Outcome extension field ${key}.")))
+  candidate)
+
+(fn prepare_schema [owner : Str, candidate]
+  (let native (== owner native_owner))
+  (let name candidate/name)
+  (if_not native
+    (if (|| (! ($str/starts_with? candidate/name $"${owner}/"))
+            (== candidate/name $"${owner}/") (candidate .has_key? "alias"))
+      (schema_failure candidate/name "Outcome extension keys belong to their contributor's namespace; legacy aliases belong to the host.")))
+  (let schema candidate/schema)
+  (let prepared {})
+  (for [key value] in candidate (prepared .put key value))
+  (prepared .put "_host" native)
+  (prepared .put "_owner" owner)
+  (prepared .put "schema" (fn [context value]
+    (if native (return (schema_verdict name (schema context value))))
+    (var input nil)
+    (try (set input (freeze_turn_data value))
+      catch TurnDataError (return {^error $err/message}))
+    (let flags context/outcome)
+    (let projection ((public_turn_context context) .assoc "extension" name
+      ; .assoc "outcome" (freeze_turn_data {^done flags/done ^reply flags/reply
+        ^attention flags/attention ^has_questions flags/has_questions ^has_prompt flags/has_prompt})))
+    (schema_verdict name (schema (freeze_turn_data projection) input))))
+  prepared)
+
+(fn install_outcome_extensions [runtime]
+  (let definitions (builtin_outcome_schemas))
+  (let reserved {})
+  (for definition in definitions (reserved .put definition/name native_owner))
+  (registry runtime/h "outcome_extensions" ^owner native_owner
+    ^spec {^name "outcome_extensions" ^^unique ^^ordered ^schema validate_schema_definition
+      ^prepare prepare_schema ^callbacks ["schema"] ^reserved reserved ^^same_owner})
+  (for definition in definitions (contribute runtime/h native_owner "outcome_extensions" definition))
+  nil)
+
+(fn normalize_extension_fields [snapshot, context, fields, raw]
+  (let input (if ($absent? raw) {} raw))
+  (if (!= ($head input) Map) (return {^error "Outcome extensions must be a map of registered keys."}))
+  (let definitions [])
+  (let known {})
+  (for record in (?? (snapshot/registries .get "outcome_extensions") [])
+    (definitions .push record/payload)
+    (known .put record/payload/name true))
+  (for [key value] in input
+    (if_not (&& ([Str Sym] .contains? ($head key)) (known .has_key? ($to_str key)))
+      (return {^error $"Unknown Outcome extension ${key}; use an active owner's declared field."})))
+  (let values {})
+  (let aliases {})
+  (let warnings [])
+  (for definition in definitions
+    (let canonical (input .has_key? definition/name))
+    (let alias (&& (! ($absent? definition/alias)) (! ($absent? (fields .get definition/alias)))))
+    (if (&& canonical alias)
+      (return {^error $"Outcome supplies both ${definition/name} and its legacy spelling ${definition/alias}."}))
+    (if_not (|| canonical alias) (continue))
+    (let value (if canonical (input .get definition/name) (fields .get definition/alias)))
+    (let scoped (context .assoc "legacy" fields ; .assoc "extension_inputs" input))
+    (let limits (if definition/_host (default_execution_limits) (response_execution_limits)))
+    (let outcome (supervised_call definition/schema [scoped value] limits))
+    (let verdict (match outcome ^!exhaustive
+      (when (TaskOutcome/ok result) result)
+      (when (TaskOutcome/error failure)
+        (fail (ParticipantFailure ^participant definition/name ^phase "outcome/schema"
+          ^code "callback_error" ^cause failure ^message $"Outcome schema ${definition/name} failed: ${failure/message}")))
+      (when (TaskOutcome/panic message) (schema_failure definition/name message))
+      (when TaskOutcome/cancelled (schema_failure definition/name "Outcome schema cancelled or exceeded its budget."))))
+    (if (verdict .has_key? "error")
+      (return {^error $"Outcome extension ${definition/name}: ${verdict/error}"}))
+    (values .put definition/name verdict/value)
+    (if_not ($absent? definition/alias) (aliases .put definition/alias verdict/value))
+    (if_not ($absent? verdict/warning) (warnings .push verdict/warning)))
+  {^values (freeze_turn_data values) ^aliases aliases ^warnings warnings})

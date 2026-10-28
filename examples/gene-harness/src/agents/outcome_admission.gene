@@ -1,0 +1,25 @@
+# Adapt one typed Outcome through schemas from the same leased composition.
+(mod outcome_extension_admission)
+(import [Outcome OutcomeError checked_outcome_extensions] ^from "./outcome")
+(import [normalize_extension_fields] ^from "../runtime/outcome_extensions")
+
+(fn normalize_harness_outcome [h, snapshot, session : Str, round, turn, bindings, value]
+  (if (!= ($head value) Outcome) (return value))
+  (let fields {^done value/done ^prompt value/prompt ^reply value/reply
+    ^audio_reply value/audio_reply ^questions value/questions ^attention value/attention
+    ^wait value/wait ^result value/result ^wake_on_questions value/wake_on_questions})
+  (let context {^session session ^round round ^turn turn/turn
+    ^workspace_root h/workspace/workspace_root ^composition_revision snapshot/id
+    ^count bindings/delegation_context/round_turn ^limit bindings/delegation_context/turn_limit
+    ^collection (== turn/delegation_collection true)
+    ^outcome {^done (== value/done true) ^reply (?? value/reply nil)
+      ^attention (== value/attention true) ^has_questions (! ($absent? value/questions))
+      ^has_prompt (!= value/prompt void)}})
+  (let result (normalize_extension_fields snapshot context fields value/extensions))
+  (if_not ($absent? result/error) (fail (OutcomeError ^message result/error)))
+  (for [key normalized] in result/aliases (fields .put key normalized))
+  (if (|| (! ($absent? value/extensions)) (> ($size result/values) 0))
+    (fields .put "extensions" result/values))
+  (for warning in result/warnings
+    (if_not ($absent? turn/console) (turn/console warning)))
+  (checked_outcome_extensions (Outcome fields...)))

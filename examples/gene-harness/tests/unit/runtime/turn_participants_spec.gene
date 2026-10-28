@@ -1,0 +1,188 @@
+(import $test [describe it])
+(import [ParticipantFailure new_turn_transaction begin_turn_transaction run_turn_phase
+  release_turn_transaction finish_turn_transaction guard_participant_callback]
+  ^from "../../../src/runtime/turn_participants")
+
+(const phases ["request_items" "request_admitted" "bindings" "response_recorded" "validate_outcome" "commit"])
+
+(fn participant [name : Str, events, ^priority priority : Int = 0, ^fail_at fail_at = nil]
+  (let definition {^name name ^priority priority})
+  (let callbacks ($into phases ["begin"]))
+  (callbacks .push "release")
+  (for phase in callbacks
+    (let current phase)
+    (definition .put current (fn [context state value]
+      (events .push $"${name}/${current}")
+      (if (== current "begin") (state .put "owner" name))
+      ($assert (== state/owner name) "Participant state crossed an owner boundary.")
+      (if (== current fail_at)
+        (fail (ParticipantFailure ^participant name ^phase current ^code "injected" ^message "injected")))
+      {^owner name ^snapshot context/snapshot ^value value})))
+  definition)
+
+(describe "Mandatory turn participant transactions"
+  (it "captures definitions, orders phases deterministically and keeps private state per participant" []
+    (let events [])
+    (let later (participant "z" events ^priority 1))
+    (let first (participant "b" events))
+    (let earlier (participant "a" events))
+    (let transaction (new_turn_transaction {^snapshot "leased-7"} [later first earlier]))
+    (earlier .put "begin" (fn [context state value]
+      (fail (ParticipantFailure ^participant "a" ^phase "begin" ^code "mutated" ^message "A mutated definition ran."))))
+    (begin_turn_transaction transaction)
+    (for phase in phases
+      (let results (run_turn_phase transaction phase {^input phase}))
+      ($assert (== ($map results /name) ["a" "b" "z"]))
+      (for result in results ($assert (== result/value/snapshot "leased-7"))))
+    (release_turn_transaction transaction {^kind "done"})
+    (release_turn_transaction transaction)
+    ($assert (== ($take events 3) ["a/begin" "b/begin" "z/begin"]))
+    ($assert (== ($drop events (- events/.size 3)) ["z/release" "b/release" "a/release"])))
+
+  (it "aborts on every mandatory phase failure and never replays an entered callback" []
+    (for target in ($into phases ["begin"])
+      (let events [])
+      (let transaction (new_turn_transaction {} [(participant "a" events) (participant "b" events ^fail_at target)]))
+      ($assert (try
+        (begin_turn_transaction transaction)
+        (for phase in phases (run_turn_phase transaction phase))
+        false
+      catch ParticipantFailure (&& (== $err/participant "b") (== $err/phase target))))
+      ($assert transaction/failed/.get)
+      ($assert (try (run_turn_phase transaction target) false catch ParticipantFailure true))
+      (release_turn_transaction transaction {^kind "failed"})
+      ($assert (== ($size ($filter events (fn [event] (== event $"b/${target}")))) 1))
+      ($assert (== ($drop events (- events/.size 2)) ["b/release" "a/release"]))))
+
+  (it "attempts all cleanup once even after partial begin and a cleanup panic" []
+    (let events [])
+    (let broken (participant "b" events ^fail_at "begin"))
+    (broken .put "release" (fn [context state completion]
+      ($assert (== state/owner "b"))
+      (events .push "b/release")
+      ($panic "cleanup panic")))
+    (let transaction (new_turn_transaction {} [(participant "a" events) broken (participant "c" events)]))
+    ($assert (try (begin_turn_transaction transaction) false catch ParticipantFailure true))
+    ($assert (try (release_turn_transaction transaction) false catch ParticipantFailure
+      (&& (== $err/code "cleanup_failed") (== $err/errors/0/code "panic"))))
+    ($assert (== events ["a/begin" "b/begin" "b/release" "a/release"]))
+    (release_turn_transaction transaction)
+    ($assert (== events/.size 4)))
+
+  (it "rejects repeated, out-of-order and closed phases without repeating work" []
+    (let events [])
+    (let transaction (new_turn_transaction {} [(participant "a" events)]))
+    ($assert (try (run_turn_phase transaction "bindings") false catch ParticipantFailure true))
+    (begin_turn_transaction transaction)
+    (run_turn_phase transaction "bindings")
+    ($assert (try (run_turn_phase transaction "bindings") false catch ParticipantFailure true))
+    ($assert (try (run_turn_phase transaction "request_items") false catch ParticipantFailure true))
+    (release_turn_transaction transaction)
+    ($assert (try (run_turn_phase transaction "commit") false catch ParticipantFailure true))
+    ($assert (== events ["a/begin" "a/bindings" "a/release"])))
+
+  (it "contains a mandatory callback panic and releases every acquired participant" []
+    (let events [])
+    (let definition (participant "b" events))
+    (definition .put "commit" (fn [context state value]
+      (events .push "b/commit") ($panic "commit panic")))
+    (let transaction (new_turn_transaction {} [(participant "a" events) definition]))
+    (begin_turn_transaction transaction)
+    ($assert (try (run_turn_phase transaction "commit") false catch ParticipantFailure
+      (&& (== $err/participant "b") (== $err/code "panic"))))
+    (release_turn_transaction transaction {^kind "failed"})
+    ($assert (== events ["a/begin" "b/begin" "a/commit" "b/commit" "b/release" "a/release"])))
+
+  (it "admits a published phase callback once and rejects forged, reentered and retired contexts" []
+    (let calls ($cell 0))
+    (let saved ($cell nil))
+    (let callback ($cell nil))
+    (let guarded (guard_participant_callback "owned/phase" "bindings" (fn [context state value]
+      (calls .set (+ calls/.get 1))
+      (saved .set {^context ($runtime/context) ^argument context ^state state})
+      (let retained callback/.get)
+      ($assert (try (retained context state value) false catch ParticipantFailure
+        (== $err/code "phase_reentered")))
+      "result")))
+    (callback .set guarded)
+    ($assert (try (guarded {} {} nil) false catch ParticipantFailure (== $err/code "phase_required")))
+    (let transaction (new_turn_transaction {} [{^name "owned/phase" ^bindings guarded}]))
+    (begin_turn_transaction transaction)
+    ($assert (== (/value (/0 (run_turn_phase transaction "bindings"))) "result"))
+    (let previous saved/.get)
+    ($assert (try
+      ($runtime/with_context previous/context (fn [] (guarded previous/argument previous/state nil)))
+      false catch ParticipantFailure (== $err/code "phase_required")))
+    ($assert (== calls/.get 1))
+    (release_turn_transaction transaction))
+
+  (it "keeps terminal recording unconditional after failed finalization and fences release behind durability" []
+    (for fail_seal in [false true]
+      (let events [])
+      (let definition (participant "a" events))
+      (definition .put "finalize" (fn [context state completion]
+        (events .push "a/finalize")
+        (fail (ParticipantFailure ^participant "a" ^phase "finalize" ^code "injected" ^message "finalize failed"))))
+      (definition .put "release" (fn [context state completion]
+        ($assert (== completion/turn_end_durable (! fail_seal)))
+        (events .push "a/release")))
+      (let transaction (new_turn_transaction {} [definition]))
+      (begin_turn_transaction transaction)
+      ($assert (try
+        (finish_turn_transaction transaction {^kind "error"} (fn [completion errors]
+          ($assert (== errors/.size 1))
+          (events .push "core/seal")
+          (if fail_seal ($panic "seal panic"))
+          "terminal-receipt"))
+        false
+      catch ParticipantFailure
+        (&& (== $err/code "finalization_failed") (== $err/errors/.size (if fail_seal 2 1)))))
+      ($assert (== events ["a/begin" "a/finalize" "core/seal" "a/release"]))
+      ($assert (try (finish_turn_transaction transaction {} (fn [completion errors] (events .push "replayed")))
+        false catch ParticipantFailure true))
+      ($assert (== events/.size 4))))
+
+  (it "contains callback timeouts and cleans up after cancellation" []
+    (for cancel in [false true]
+      (let events [])
+      (let definition (participant "a" events))
+      (let entered ($cell false))
+      (definition .put "bindings" (fn [context state value]
+        (entered .set true)
+        ($sleep 1000)))
+      (let transaction (new_turn_transaction {} [definition]
+        ^limits {^timeout_ms (if cancel 1000 20) ^max_memory_mb 64}))
+      (let result (scope
+        (let task (spawn ^lane root (try
+          (begin_turn_transaction transaction)
+          (run_turn_phase transaction "bindings")
+        ensure (finish_turn_transaction transaction {^kind "cancelled"}
+          (fn [completion errors] (events .push "core/seal") "terminal-receipt")))))
+        (if_yes cancel
+          (while (! entered/.get) ($sleep 1))
+          task/.cancel)
+        task/.join))
+      ($assert (match result ^!exhaustive
+        (when (TaskOutcome/error failure) (== failure/phase "bindings"))
+        (when TaskOutcome/cancelled cancel)
+        (else false)))
+      ($assert (== events ["a/begin" "core/seal" "a/release"]))
+      ($assert transaction/closed/.get)))
+
+  (it "keeps a round-limit boundary separate from model-turn phases and terminal recording" []
+    (let events [])
+    (let definition {^name "owned/boundary"
+      ^begin (fn [context state value] (events .push "begin"))
+      ^limit (fn [context state value] (events .push "limit") {^state "waiting"})
+      ^finalize (fn [context state value] (events .push "invented turn"))
+      ^release (fn [context state value]
+        ($assert (== value/turn_end_durable false))
+        (events .push "release"))})
+    (let transaction (new_turn_transaction {^boundary "limit"} [definition]))
+    (begin_turn_transaction transaction)
+    ($assert (try (run_turn_phase transaction "bindings") false catch ParticipantFailure true))
+    (let result (run_turn_phase transaction "limit"))
+    ($assert (== result/0/value/state "waiting"))
+    ($assert (try (run_turn_phase transaction "limit") false catch ParticipantFailure true))
+    (release_turn_transaction transaction {^turn_end_durable false})
+    ($assert (== events ["begin" "limit" "release"]))))

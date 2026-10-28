@@ -1,7 +1,8 @@
 (mod round_controller)
 (import [operator_round?] ^from "./round_policy")
-(import [normalize_round_input] ^from "./input_metadata")
-(import [render_parts normalize_message] ^from "../channels/model")
+(import [normalize_message] ^from "../channels/model")
+(import [resolve_initiator make_initiator] ^from "./initiators")
+(import [RoundError] ^from "./round_errors" ^^export)
 (import [observe_round : observe_channel_round
          observe_rounds : observe_channel_rounds snapshot : channel_queue_snapshot
          queue_status : channel_queue_status pending_parts : channel_pending_parts
@@ -37,8 +38,6 @@
 (import [connect_delegation_host note_delegation_round queue_delegation_answer
   close_delegation_owner prepare_delegations_stop] ^from "./delegations")
 
-(type RoundError ^props {^code Str ^message Str} ^impl [Error])
-(impl Error for RoundError)
 (type RoundController ^props {^runtime Any ^active Any ^watchers Any ^completions Any})
 
 (fn new_round_controller [runtime]
@@ -107,7 +106,7 @@
         " turn " admission/starting_turn " · " admission/id "]\n"
         (?? admission/child_prompt "") "\n\n" brief))
       (submit_round_impl controller admission/session admission/request_id state/next_seq text
-        ^initiator $"parent:${parent/session}/${admission/id}"
+        ^initiator (make_initiator controller/runtime/h "parent" $"${parent/session}/${admission/id}")
         ^limits {^turn_limit admission/turn_limit ^timeout_ms admission/timeout_ms}
         ^delegation {^parent parent/session ^id admission/id ^admission admission/number
           ^source admission/source}))))))
@@ -181,7 +180,8 @@
       (let batch prepared/batch)
       (try
         (let admitted (submit_round_impl controller session batch/request_id batch/sequence batch/text
-          ^initiator ($to_str "channel:slack/" batch/input/account) ^input batch/input
+          ^initiator (make_initiator controller/runtime/h "channel" batch/input/account ^transport batch/input/transport)
+          ^input batch/input
           ^on_admit (fn [receipt] (finish_channel_admission queues batch/id receipt))))
         {^kind "admitted" ^batch batch/id ^receipt admitted}
       catch Error
@@ -368,15 +368,10 @@
             text))))))
 
 (fn submit_round_impl [controller : RoundController, session : Str, request_id : Str, sequence : Int, text : Str, ^initiator initiator : Str = "user", ^on_admit on_admit = nil, ^media media = [], ^card card = nil, ^limits limits = nil, ^delegation delegation = nil, ^input input = nil, ^continuation continuation = nil]
-  (let channel_source ($str/starts_with? initiator "channel:slack/"))
-  (let channel_continuation (&& (! ($absent? continuation))
-    ($str/starts_with? initiator "continue:") (== continuation/input/kind "channel")))
-  (let checked_input (normalize_round_input input ^channel (|| channel_source channel_continuation)))
-  (if_yes channel_source
-    (if (|| (!= checked_input/kind "channel")
-            (!= initiator ($to_str "channel:slack/" checked_input/account))
-            (!= text (render_parts checked_input/messages)))
-      (fail (RoundError ^code "invalid_request" ^message "Channel request and origin metadata do not match."))))
+  (let source (resolve_initiator controller/runtime session initiator text input continuation))
+  (let user_source (== source/kind "user"))
+  (let channel_source source/channel)
+  (let checked_input source/input)
   (require_chat controller/runtime/modes session)
   (if (> ($str/byte_size text) prompt_limit)
     (fail (RoundError ^code "too_large" ^message "Message text exceeds 64 KiB; attach the document instead.")))
@@ -402,7 +397,7 @@
         # A browser draft can carry the sequence a channel drain just claimed.
         # Preserve request-ID conflicts, but report this admission race as busy
         # while the channel round is active so the draft remains retryable.
-        (if_yes (&& (== initiator "user") (!= old/request_id request_id))
+        (if_yes (&& user_source (!= old/request_id request_id))
           (let competing (load_session controller/runtime/sessions session))
           (if (&& (== competing/round/.get/input/kind "channel") (session_busy? competing))
             (fail (RoundError ^code "busy" ^message "this session already has a channel round"))))
@@ -420,7 +415,7 @@
     (fail (RoundError ^code "submission_conflict" ^message "unexpected submission sequence")))
   (let card_item (if ($absent? card_ref) nil
     (do
-      (if (!= initiator "user")
+      (if_not user_source
         (fail (RoundError ^code "invalid_request" ^message "Only the user sends cards.")))
       (card_send_item controller/runtime session card_ref text))))
   (let admission_lease (acquire_snapshot controller/runtime/h/snapshots))
@@ -441,11 +436,11 @@
   (let changes {})
   (let display_request (if (&& (== ($str/trim text) "") (! attachments/.empty?))
     $"Attachment: ${attachments/0/name}" text))
-  (if (operator_round? {^initiator initiator ^continuation continuation ^input checked_input}) (changes .put "attention" false))
+  (if source/operator (changes .put "attention" false))
   (if_yes (== metadata/first_request "")
     (changes .put "first_request" display_request)
     (changes .put "first_request_media" attachments)
-    (if_yes (&& (== initiator "user") (== metadata/title "New conversation"))
+    (if_yes (&& user_source (== metadata/title "New conversation"))
       (let normalized ($str/trim ($regex/replace_all #"\s+" display_request " ")))
       (let title ($first ($regex/split #"[.!?](?:\s|$)" normalized)))
       (if_yes (!= title "")
@@ -465,6 +460,7 @@
       ^digest digest
       ^state "running"
       ^initiator initiator
+      ^initiator_kind source/name ^operator source/operator
       ^prompt text
       ^request text
       ^turn_count 0
@@ -484,7 +480,7 @@
       (let config
         ($serde/read_data ($fs/read_text $"${controller/runtime/state_root}/config.gene")))
       (receipt .put "deadline_ms" (+ ($os/wall_ms) (?? limits/timeout_ms (?? config/trigger_timeout_ms 300000))))))
-  (if (== initiator "user")
+  (if user_source
     (then
       (let items (take_command_attachments controller/runtime session))
       (if_not items/.empty?
@@ -500,7 +496,7 @@
     (let rendered (bounded_request controller/runtime session [card_item]))
     (receipt .put "card" card_ref)
     (receipt .put "request" ($to_str receipt/request "\n" rendered/full)))
-  (if ($str/starts_with? initiator "trigger:")
+  (if (== source/kind "trigger")
     (then
       (receipt .put
         "request"
@@ -602,7 +598,8 @@
   (save_round controller session claimed)
   (try
     (submit_round_impl controller session request_id sequence ""
-      ^initiator $"continue:${source}" ^limits old/effective_limits ^continuation descriptor
+      ^initiator (make_initiator controller/runtime/h "continue" source)
+      ^limits old/effective_limits ^continuation descriptor
       ^input (?? descriptor/input nil))
   catch Any
     (let failure $err)
@@ -771,6 +768,7 @@
   (receipt .put "request_items_ref" (write_body controller/runtime ($serde/write_data rendered/items)))
   (receipt .put "request_sources" ($filter sources (fn [source] (!= source ""))))
   (receipt .put "delegation_collection" collection)
+  (receipt .put "collection_turns" (if collection 1 0))
   (receipt .put "delegation_wait" nil)
   (receipt .put "questions" nil)
   (receipt .put "state" "running")

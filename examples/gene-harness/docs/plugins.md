@@ -227,6 +227,12 @@ specialized host contracts; `run_hooks` refuses to call them.
 
 ### Make every plugin discoverable
 
+Mandatory turn callbacks and optional model-authored fields use the owned
+`turn_participants` and `outcome_extensions` registries. The
+[transaction contract](turn-participants.md) defines phases, immutable public
+projections, schema results, failure behavior and initiator rows. These phases
+are separate from optional hooks and cannot suppress core protocol records.
+
 Plugins use progressive discovery themselves. Their functions and other active
 contributions appear automatically in `(discover "topic")`; there is no separate
 catalog to synchronize. Keep doc descriptions concise. Add optional `summary`,
@@ -268,6 +274,8 @@ It can be disabled, replaced and restored in the same way. Its
 `conversation_sidebar` component composes named host navigation controls with
 ordinary plugin content. The hamburger and Recovery UI remain host-owned.
 See [sidebar plugins](sidebar.md).
+
+### Provider and callback budgets
 
 `prepare` on a provider row returns plain model-visible data
 without credentials; `send` adds transport authentication and makes one

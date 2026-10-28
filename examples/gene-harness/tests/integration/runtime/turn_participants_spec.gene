@@ -1,0 +1,385 @@
+(import $test [describe it])
+(import [isolated run_spec test_controller] ^from "../../support")
+(import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
+(import [baseline_profile] ^from "../../../src/profiles/baseline")
+(import [load_session] ^from "../../../src/runtime/sessions")
+(import [acquire_snapshot release_snapshot current_snapshot new_composition_state close_composition_state]
+  ^from "../../../src/runtime/composition")
+(import [begin_turn_transaction run_turn_phase finish_turn_transaction
+  release_turn_transaction ParticipantFailure] ^from "../../../src/runtime/turn_participants")
+(import [new_runtime_turn_transaction native_owner] ^from "../../../src/runtime/turn_participant_registry")
+(import [contribute] ^from "../../../src/kernel")
+(import [evaluate_harness_turn] ^from "../../../src/agents/harness_turn")
+(import [append_core_event append_turn_end_once flush_event_store events_for]
+  ^from "../../../src/storage/state")
+(import [card_record] ^from "../../../src/runtime/cards")
+(import [checkpoint_delegations] ^from "../../../src/runtime/delegations")
+(import [write_body] ^from "../../../src/agents/history")
+(import [submit_round cancel_round round_receipt close_round_controller] ^from "../../../src/runtime/round_controller")
+(import [require_record] ^from "../../../src/runtime/sessions")
+
+(type InjectedFailure ^props {^message Str} ^impl [Error])
+(impl Error for InjectedFailure)
+
+(fn context [runtime, id : Str]
+  (let round {^id id ^state "running" ^request_sources []})
+  (let loaded (load_session runtime/sessions "default"))
+  (loaded/round .set round)
+  {^session "default" ^round round ^turn 1 ^count 1 ^limit 4 ^collection false ^carry false})
+
+(fn evaluate_transaction [runtime, lease, transaction, ctx, source : Str]
+  (append_core_event runtime/events "session" ctx/session
+    {^type "turn/start" ^round ctx/round/id ^turn ctx/turn ^initiator "user"})
+  (begin_turn_transaction transaction)
+  (run_turn_phase transaction "request_items")
+  (run_turn_phase transaction "request_admitted")
+  (let bindings {})
+  (for packet in (run_turn_phase transaction "bindings")
+    (if_not ($absent? packet/value)
+      (for [name value] in packet/value (bindings .put name value))))
+  (let result (evaluate_harness_turn runtime/h ctx/turn runtime/root source
+    ^session ctx/session ^round ctx/round/id ^lease lease ^bindings bindings
+    ^reviewer {^name "scripted" ^settings {^model "test" ^effort "none"} ^row {}}
+    ^record (fn [kind data]
+      (if (== kind "turn/response")
+        (then
+          (append_core_event runtime/events "session" ctx/session
+            {^type "turn/response" ^round ctx/round/id ^turn ctx/turn ^text source
+             ^blobs {} ^patch_files data/patch_files ^reply_hint data/reply_hint})
+          (flush_event_store runtime/events)
+          (run_turn_phase transaction "response_recorded" data))))))
+  (run_turn_phase transaction "validate_outcome" result)
+  result)
+
+(fn seal [runtime, ctx, result, errors]
+  (let ended (append_turn_end_once runtime/events ctx/session
+    {^type "turn/end" ^round ctx/round/id ^turn ctx/turn
+     ^reason (if errors/.empty? result/kind "error") ^!synthetic}))
+  (flush_event_store runtime/events)
+  ended/event)
+
+(fn staged_record [runtime, id : Str]
+  (let parent (runtime/delegations/parents .get "default"))
+  (parent/records .get id))
+
+(fn close_fixture [runtime]
+  # This fixture supplies the round marker normally owned by RoundController.
+  (let loaded (load_session runtime/sessions "default"))
+  (loaded/round .set nil)
+  (close_runtime runtime))
+
+(describe "Internal turn participant consumers"
+  (it "commits staged delegation once and releases children only after the terminal record is durable" []
+    (isolated this_mod/.path
+      "commits staged delegation once and releases children only after the terminal record is durable"
+      (fn [root]
+        (let runtime (open_runtime root "default" (baseline_profile)))
+        # Admission is exercised without starting a scheduler or model call.
+        (set runtime/delegations/callbacks {})
+        (let lease (acquire_snapshot runtime/h/snapshots))
+        (let ctx (context runtime "parent"))
+        (let transaction (new_runtime_turn_transaction runtime lease ctx))
+        (try
+          (let result (evaluate_transaction runtime lease transaction ctx
+            "(delegate \"audit\" ^title \"Audit\" ^brief \"Inspect assigned files.\") (Outcome ^wait \"all\")"))
+          ($assert (== result/kind "wait") ($to_str result))
+          ($assert ($absent? (staged_record runtime "audit")))
+          (let packets (run_turn_phase transaction "commit" result))
+          (let committed packets/0/value)
+          ($assert (== committed/suspension/state "waiting"))
+          (let child (staged_record runtime "audit"))
+          ($assert (== child/admissions/.size 1))
+          ($assert (== child/admissions/0/ready false))
+          (finish_turn_transaction transaction committed (fn [result errors]
+            ($assert (== child/admissions/0/ready false))
+            (seal runtime ctx result errors)))
+          ($assert (== child/admissions/0/ready true))
+          ($assert (== committed/turn/delegation_staged/.get []))
+          ($assert (try (run_turn_phase transaction "commit" result) false catch ParticipantFailure true))
+          ($assert (== child/admissions/.size 1))
+        ensure
+          (release_turn_transaction transaction)
+          (release_snapshot runtime/h/snapshots lease)
+          (close_fixture runtime)))))
+
+  (it "keeps durable admission fenced when a commit result is lost and never retries that phase" []
+    (isolated this_mod/.path
+      "keeps durable admission fenced when a commit result is lost and never retries that phase"
+      (fn [root]
+        (let runtime (open_runtime root "default" (baseline_profile)))
+        (set runtime/delegations/callbacks {})
+        (let attempts ($cell 0))
+        (set runtime/delegations/checkpoint (fn [point session]
+          (if_yes (== point "admission_intent")
+            (attempts .set (+ attempts/.get 1))
+            (fail (InjectedFailure ^message "lost commit result")))))
+        (let lease (acquire_snapshot runtime/h/snapshots))
+        (let ctx (context runtime "lost"))
+        (let transaction (new_runtime_turn_transaction runtime lease ctx))
+        (try
+          (let result (evaluate_transaction runtime lease transaction ctx
+            "(delegate \"audit\" ^title \"Audit\" ^brief \"Inspect assigned files.\") (Outcome ^wait \"all\")"))
+          ($assert (try (run_turn_phase transaction "commit" result) false catch ParticipantFailure
+            (== $err/phase "commit")))
+          ($assert (try (run_turn_phase transaction "commit" result) false catch ParticipantFailure true))
+          (let child (staged_record runtime "audit"))
+          ($assert (== child/admissions/.size 1))
+          ($assert (== attempts/.get 1))
+          (result .put "kind" "error")
+          (finish_turn_transaction transaction result (fn [result errors] (seal runtime ctx result errors)))
+          ($assert (== child/admissions/0/ready false))
+          ($assert (== attempts/.get 1))
+        ensure
+          (set runtime/delegations/checkpoint nil)
+          (release_turn_transaction transaction)
+          (release_snapshot runtime/h/snapshots lease)
+          (close_fixture runtime)))))
+
+  (it "discards invalid-Outcome child staging and still durably finalizes card progress" []
+    (isolated this_mod/.path
+      "discards invalid-Outcome child staging and still durably finalizes card progress"
+      (fn [root]
+        (let runtime (open_runtime root "default" (baseline_profile)))
+        (set runtime/delegations/callbacks {})
+        (let lease (acquire_snapshot runtime/h/snapshots))
+        (let ctx (context runtime "invalid"))
+        (let transaction (new_runtime_turn_transaction runtime lease ctx))
+        (try
+          (let result (evaluate_transaction runtime lease transaction ctx """
+(card "tests" ^title "Tests" ^state {^done 0}
+  ^view (fn [state] `(p %($to_str state/done " done"))))
+(card_update "tests" {^done 2})
+(delegate "discard" ^title "Discard" ^brief "This invalid Outcome must not admit a child.")
+(Outcome ^^done)
+"""))
+          ($assert (== result/kind "error") ($to_str result/error))
+          ($assert (== (/state (card_record runtime "default" "tests")) {^done 0}))
+          (run_turn_phase transaction "commit" result)
+          ($assert ($absent? (staged_record runtime "discard")))
+          (finish_turn_transaction transaction result (fn [result errors]
+            ($assert (== (/state (card_record runtime "default" "tests")) {^done 2}))
+            (seal runtime ctx result errors)))
+          ($assert (== runtime/cards/transient/.get {}))
+          ($assert (== result/turn/delegation_staged/.get []))
+          ($assert (== (/tree/children/0 (card_record runtime "default" "tests")) "2 done"))
+        ensure
+          (release_turn_transaction transaction)
+          (release_snapshot runtime/h/snapshots lease)
+          (close_fixture runtime)))))
+
+  (it "acknowledges request sources only after durable response recording and preserves the checkpoint through restart" []
+    (isolated this_mod/.path
+      "acknowledges request sources only after durable response recording and preserves the checkpoint through restart"
+      (fn [root]
+        (let runtime (open_runtime root "default" (baseline_profile)))
+        (set runtime/delegations/callbacks {})
+        (let lease (acquire_snapshot runtime/h/snapshots))
+        (let ctx (context runtime "sources"))
+        (let transaction (new_runtime_turn_transaction runtime lease ctx))
+        (try
+          (let result (evaluate_transaction runtime lease transaction ctx
+            "(delegate \"audit\" ^title \"Audit\" ^brief \"Inspect assigned files.\") (Outcome ^wait \"all\")"))
+          (run_turn_phase transaction "commit" result)
+          (finish_turn_transaction transaction result (fn [result errors] (seal runtime ctx result errors)))
+          (release_snapshot runtime/h/snapshots lease)
+          (let child (staged_record runtime "audit"))
+          (let admission child/admissions/0)
+          (admission .put "state" "done")
+          (admission .put "reply_ref" (write_body runtime "Child complete."))
+          (checkpoint_delegations runtime/delegations (runtime/delegations/parents .get "default"))
+          (let points [])
+          (set runtime/delegations/checkpoint (fn [point session]
+            (if (== point "parent_response_recorded")
+              (then
+                ($assert (! runtime/events/dirty/.get) "Response acknowledgment preceded durable flush.")
+                (let responses ($filter (events_for runtime/events "session" session)
+                  (fn [event] (&& (== event/type "turn/response") (== event/payload/turn 2)))))
+                ($assert (== responses/.size 1) "Expected exactly one durable response before acknowledgment.")
+                ($assert (!= admission/seen true) "The child result was already consumed before response acknowledgment.")))
+            (if (["parent_request" "parent_response_recorded" "parent_response"] .contains? point)
+              (points .push point))))
+          (let next_ctx (context runtime "sources"))
+          (next_ctx .put "turn" 2)
+          (next_ctx .put "count" 2)
+          (let next_lease (acquire_snapshot runtime/h/snapshots))
+          (let next (new_runtime_turn_transaction runtime next_lease next_ctx))
+          (try
+            (begin_turn_transaction next)
+            (let packets (run_turn_phase next "request_items"))
+            (let incoming packets/0/value)
+            ($assert (== incoming/.size 1))
+            ($assert (== incoming/0/source admission/source))
+            ($assert ($str/contains? incoming/0/value "Child complete."))
+            (next_ctx/round .put "request_sources" [incoming/0/source])
+            (run_turn_phase next "request_admitted")
+            ($assert (!= admission/seen true))
+            (run_turn_phase next "bindings")
+            (append_core_event runtime/events "session" "default"
+              {^type "turn/response" ^round "sources" ^turn 2 ^text "(Outcome ^^done ^reply \"Collected.\")"
+               ^patch_files [] ^blobs {}})
+            (flush_event_store runtime/events)
+            (run_turn_phase next "response_recorded")
+            ($assert (== admission/seen true))
+            ($assert (== admission/seen_turn 2))
+            ($assert (== points ["parent_request" "parent_response_recorded" "parent_response"]))
+            ($assert (try (run_turn_phase next "response_recorded") false catch ParticipantFailure true))
+            ($assert (== points/.size 3))
+            (finish_turn_transaction next {^kind "done"} (fn [result errors] (seal runtime next_ctx result errors)))
+          ensure
+            (release_turn_transaction next)
+            (release_snapshot runtime/h/snapshots next_lease))
+        ensure
+          (release_turn_transaction transaction)
+          (release_snapshot runtime/h/snapshots lease)
+          (close_fixture runtime))
+        (let restarted (open_runtime root "default" (baseline_profile)))
+        (try
+          (let restored_child (staged_record restarted "audit"))
+          ($assert (== restored_child/admissions/0/seen true))
+          ($assert (== restored_child/admissions/0/seen_turn 2))
+        ensure (close_runtime restarted))))))
+
+(describe "Leased turn participant selection"
+  (it "keeps phase reads on the selected lease and rejects foreign, closed and unadmitted callers" []
+    (isolated this_mod/.path
+      "keeps phase reads on the selected lease and rejects foreign, closed and unadmitted callers"
+      (fn [root]
+        (let runtime (open_runtime root "default" (baseline_profile)))
+        (let definition (fn [version : Str]
+          {^name "core/selection_probe" ^priority 20
+           ^bindings (fn [ctx state value]
+             {^version version ^snapshot (/id (current_snapshot runtime/h/snapshots))})}))
+        (contribute runtime/h native_owner "turn_participants" (definition "old"))
+        (let old_lease (acquire_snapshot runtime/h/snapshots))
+        (contribute runtime/h native_owner "turn_participants" (definition "new") ^^replace)
+        (let new_lease (acquire_snapshot runtime/h/snapshots))
+        (let ctx (context runtime "selection"))
+        (let old (new_runtime_turn_transaction runtime old_lease ctx))
+        (let current (new_runtime_turn_transaction runtime new_lease ctx))
+        (try
+          (begin_turn_transaction old)
+          (begin_turn_transaction current)
+          (let old_values (run_turn_phase old "bindings"))
+          (let new_values (run_turn_phase current "bindings"))
+          ($assert (== old_values/2/value/version "old"))
+          ($assert (== old_values/2/value/snapshot old_lease/snapshot/id))
+          ($assert (== new_values/2/value/version "new"))
+          ($assert (== new_values/2/value/snapshot new_lease/snapshot/id))
+          ($assert (!= old_lease/snapshot/id new_lease/snapshot/id))
+          ($assert (try
+            (contribute runtime/h "unadmitted" "turn_participants"
+              {^name "core/injected" ^begin (fn [context state value] nil)})
+            false catch ParticipantFailure (== $err/phase "register")))
+          (let foreign_state (new_composition_state {} [] (fn [value] nil)))
+          (let foreign (acquire_snapshot foreign_state))
+          (try
+            ($assert (try (new_runtime_turn_transaction runtime foreign ctx) false
+              catch ParticipantFailure (== $err/code "lease_required")))
+          ensure
+            (release_snapshot foreign_state foreign)
+            (close_composition_state foreign_state))
+          (release_turn_transaction old)
+          (release_snapshot runtime/h/snapshots old_lease)
+          ($assert (try (new_runtime_turn_transaction runtime old_lease ctx) false
+            catch ParticipantFailure (== $err/code "lease_required")))
+        ensure
+          (release_turn_transaction old)
+          (release_turn_transaction current)
+          (release_snapshot runtime/h/snapshots old_lease)
+          (release_snapshot runtime/h/snapshots new_lease)
+          (close_fixture runtime)))))
+)
+
+(describe "Production participant failures"
+  (it "aborts every mandatory phase without replay and preserves the core turn records" []
+    (isolated this_mod/.path
+      "aborts every mandatory phase without replay and preserves the core turn records"
+      (fn [root]
+        (for target in ["begin" "request_items" "request_admitted" "bindings" "response_recorded"
+                        "validate_outcome" "commit" "finalize" "release"]
+          (let runtime (open_runtime ($path/join root target) "default" (baseline_profile)))
+          (let calls ($cell 0))
+          (let entries [])
+          (let definition {^name "core/fault_probe" ^priority 20
+            ^begin (fn [context state value] (entries .push "begin"))
+            ^release (fn [context state value] (entries .push "release"))})
+          (definition .put target (fn [context state value]
+            (entries .push target)
+            (fail (InjectedFailure ^message $"failure in ${target}"))))
+          (contribute runtime/h native_owner "turn_participants" definition)
+          (let controller (test_controller runtime (fn [request]
+            (calls .set (+ calls/.get 1))
+            "($fs/write_text \"executed\" \"once\") (Outcome ^^done ^reply \"Finished.\")")))
+          (try
+            (let admitted (submit_round controller "default" "fault" 1 "Exercise a mandatory phase."))
+            (let watcher (controller/watchers/.get .get "default"))
+            watcher/.join
+            (let finished (round_receipt controller "default" admitted/id))
+            ($assert (== finished/state "failed") ($to_str target ": " finished))
+            ($assert ($str/contains? finished/message target) finished/message)
+            ($assert (== ($size ($filter entries (fn [phase] (== phase target)))) 1)
+              $"Phase ${target} was replayed: ${entries}")
+            ($assert (== ($size ($filter entries (fn [phase] (== phase "release")))) 1)
+              $"Release did not run once after ${target}: ${entries}")
+            (let events (events_for runtime/events "session" "default"))
+            (let count_type (fn [type : Str]
+              ($size ($filter events (fn [event] (== event/type type))))))
+            ($assert (== (count_type "turn/start") 1) $"${target}: missing or duplicate turn/start")
+            ($assert (== (count_type "turn/end") 1) $"${target}: missing or duplicate turn/end")
+            (let model_calls (if (["begin" "request_items" "request_admitted"] .contains? target) 0 1))
+            ($assert (== calls/.get model_calls) $"${target}: model calls were repeated")
+            ($assert (== (count_type "model/request") model_calls))
+            ($assert (== (count_type "model/result") model_calls))
+            (let responses (if (["begin" "request_items" "request_admitted" "bindings"] .contains? target) 0 1))
+            ($assert (== (count_type "turn/response") responses) $"${target}: response was recorded again")
+            (let evaluated (["validate_outcome" "commit" "finalize" "release"] .contains? target))
+            ($assert (== ($fs/exists? ($path/join runtime/root "executed")) evaluated))
+            (let ends ($filter events (fn [event] (== event/type "turn/end"))))
+            ($assert (== ends/0/payload/reason (if (== target "release") "done" "error")))
+            (if (== target "release")
+              ($assert (> (count_type "trace") 0) "Post-terminal cleanup failure lost its diagnostic."))
+          ensure
+            (close_round_controller controller)
+            (close_runtime runtime))))))
+)
+
+(describe "Production participant cancellation"
+  (it "keeps admitted children fenced when cancellation interrupts a later commit" []
+    (isolated this_mod/.path
+      "keeps admitted children fenced when cancellation interrupts a later commit"
+      (fn [root]
+        (let runtime (open_runtime root "default" (baseline_profile)))
+        (let entered ($cell false))
+        (let child_calls ($cell 0))
+        (contribute runtime/h native_owner "turn_participants"
+          {^name "core/cancel_probe" ^priority 20
+           ^commit (fn [context state value]
+             (entered .set true)
+             (while true ($sleep 10)))})
+        (let controller (test_controller runtime (fn [request]
+          (if (== (/kind (require_record runtime/sessions request/session)) "child")
+            (do (child_calls .set (+ child_calls/.get 1)) "(Outcome ^^done ^reply \"child\")")
+            "(delegate \"audit\" ^title \"Audit\" ^brief \"Never start before this parent turn seals.\") (Outcome ^wait \"all\")"))))
+        (try
+          (let receipt (submit_round controller "default" "cancel-after-admission" 1 "Stage and cancel."))
+          (let due (+ ($os/monotonic_ms) 5000))
+          (while (! entered/.get) ($assert (< ($os/monotonic_ms) due)) ($sleep 1))
+          (let staged (/0 (/admissions (staged_record runtime "audit"))))
+          ($assert (== staged/ready false))
+          (cancel_round controller "default" receipt/id)
+          (let watcher (controller/watchers/.get .get "default"))
+          watcher/.join
+          ($assert (== (/state (round_receipt controller "default" receipt/id)) "cancelled"))
+          ($assert (== child_calls/.get 0))
+          (let admission (/0 (/admissions (staged_record runtime "audit"))))
+          ($assert (== admission/state "cancelled"))
+          ($assert (== admission/ready false) "Cancelled completion released a child dispatch fence.")
+          (let ends ($filter (events_for runtime/events "session" "default")
+            (fn [event] (== event/type "turn/end"))))
+          ($assert (== ends/.size 1))
+        ensure
+          (close_round_controller controller)
+          (close_runtime runtime)))))
+)
+
+(fn main [args] : Int (run_spec args))

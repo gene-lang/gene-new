@@ -1,0 +1,19 @@
+# Data crossing a public turn-extension boundary has no live capabilities.
+(mod turn_data)
+(type TurnDataError ^props {^message Str} ^impl [Error])
+(impl Error for TurnDataError)
+
+(fn freeze_turn_data [value, ^depth depth : Int = 0]
+  (if (> depth 32) (fail (TurnDataError ^message "Turn extension data exceeds 32 levels.")))
+  (let kind ($head value))
+  (if ([Void Nil Bool Int Float Str Sym] .contains? kind) (return value))
+  (if (== kind List)
+    (return ($freeze_shallow ($map value (fn [item] (freeze_turn_data item ^depth (+ depth 1)))))))
+  (if_yes (== kind Map)
+    (let result {})
+    (for [key item] in value
+      (if_not ([Str Sym] .contains? ($head key))
+        (fail (TurnDataError ^message "Turn extension data keys must be strings or symbols.")))
+      (result .put key (freeze_turn_data item ^depth (+ depth 1))))
+    (return ($freeze_shallow result)))
+  (fail (TurnDataError ^message "Turn extensions accept inert scalars, lists and maps, not live values.")))

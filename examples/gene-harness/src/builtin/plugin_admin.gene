@@ -7,7 +7,7 @@
     ^provides [["functions" "register_plugin"] ["functions" "plugin_states"]
       ["functions" "inspect_plugin"] ["functions" "enable_plugin"] ["functions" "disable_plugin"]
       ["functions" "restore_plugin"] ["functions" "plugin_history"] ["functions" "revert_plugin"]
-      ["docs" "harness/plugins"] ["docs" "harness/plugin_manager"]]
+      ["docs" "harness/plugins"] ["docs" "harness/plugin_manager"] ["docs" "harness/turn-participants"]]
     ^activate (fn [host]
       (let administration (host .PluginHost:resolve "plugins/host"))
       (host .PluginHost:contribute "functions"
@@ -49,6 +49,10 @@
       (contribute_doc host "harness/plugin_manager"
         "Review plugin capabilities, validate batches, revert versions, and repair startup."
         "examples/gene-harness/docs/plugin-manager-guide.md" ^tags ["plugins" "manager" "recovery" "history" "revert"])
+      (contribute_doc host "harness/turn-participants"
+        "Add owned turn callbacks, checked optional Outcome fields and source policies."
+        "examples/gene-harness/docs/turn-participants.md"
+        ^tags ["plugins" "turn" "outcome" "memory" "extensions" "initiators"])
       (contribute_doc host "harness/plugins"
         "Author self-describing plugins; publication, restricted imports, inert declarations and lifecycle."
         "examples/gene-harness/docs/plugins.md" ^tags ["plugins" "register" "publish" "discovery" "dependencies" "modules"]))))

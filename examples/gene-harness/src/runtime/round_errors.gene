@@ -1,0 +1,3 @@
+(mod round_errors)
+(type RoundError ^props {^code Str ^message Str} ^impl [Error])
+(impl Error for RoundError)

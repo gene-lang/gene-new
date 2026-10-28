@@ -1,0 +1,90 @@
+(import $test [describe it])
+(import [isolated run_spec test_controller] ^from "../../support")
+(import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
+(import [baseline_profile] ^from "../../../src/profiles/baseline")
+(import [register_plugin set_plugin_enabled] ^from "../../../src/storage/workspace")
+(import [submit_round continue_round round_receipt close_round_controller] ^from "../../../src/runtime/round_controller")
+(import [operator_round?] ^from "../../../src/runtime/round_policy")
+(import [row] ^from "../../../src/kernel")
+
+(fn source [prefix : Str = "toy:", ^overlap overlap : Bool = false]
+  `(mod plugin
+     (import [Plugin PluginHost] ^from "src/plugin_api.gene")
+     (fn init [descriptor]
+       (Plugin ^id "toy" ^requires [{^registry "initiators"}]
+         ^provides [["initiators" "toy/messages"]]
+         ^activate (fn [host]
+           (host .PluginHost:contribute "initiators"
+             {^name "toy/messages" ^kind "plugin" ^prefix %prefix ^^operator
+              ^normalize (fn [context value]
+                ($assert ($absent? context/runtime))
+                ($assert ($absent? context/snapshot))
+                ($assert (try (context .put "forged" true) false catch Any true))
+                ($assert (try (value .put "forged" true) false catch Any true))
+                {^kind "plugin" ^owner "toy" ^marker value/marker ^subject context/subject})})
+           (if %overlap
+             (host .PluginHost:contribute "initiators"
+               {^name "toy/overlap" ^kind "plugin" ^prefix %prefix ^!operator
+                ^normalize (fn [context value] nil)})))))))
+
+(fn wait_round [controller, receipt]
+  (let watcher (controller/watchers/.get .get "default"))
+  watcher/.join
+  (round_receipt controller "default" receipt/id))
+
+(describe "Owned initiator policies"
+  (it "admits a stored source kind and retains its operator policy and input after disable and continuation" []
+    (isolated this_mod/.path
+      "admits a stored source kind and retains its operator policy and input after disable and continuation"
+      (fn [root]
+        (let runtime (open_runtime root "default" (baseline_profile)))
+        (let installed (register_plugin runtime/workspace runtime/h "toy" (source)))
+        ($assert (== installed/status "ready") ($to_str installed))
+        (let file ($path/join runtime/state_root "config.gene"))
+        (let config ($serde/read_data ($fs/read_text file)))
+        (config .put "turn_limit" 1)
+        ($fs/write_text_atomic file ($serde/write_data config))
+        (let calls ($cell 0))
+        (let controller (test_controller runtime (fn [request]
+          (calls .set (+ calls/.get 1))
+          (if (== calls/.get 1) "(Outcome ^prompt \"Retained work.\")"
+            "(Outcome ^^done ^reply \"Continued.\")"))))
+        (try
+          (let first (submit_round controller "default" "source" 1 "Start custom work."
+            ^initiator "toy:first" ^input {^marker "kept"}))
+          (let paused (wait_round controller first))
+          ($assert (== paused/state "paused") ($to_str paused))
+          ($assert (== paused/initiator_kind "toy/messages"))
+          ($assert (== paused/operator true))
+          ($assert (== paused/input {^kind "plugin" ^owner "toy" ^marker "kept" ^subject "first"}))
+          ($assert ($absent? paused/deadline_ms))
+          (set_plugin_enabled runtime/workspace runtime/h "toy" false)
+          ($assert ($absent? (row runtime/h "initiators" "toy/messages")))
+          ($assert (operator_round? paused))
+          (let next (continue_round controller "default" paused/id "manual"))
+          (let completed (wait_round controller next))
+          ($assert (== completed/state "done") ($to_str completed))
+          ($assert (== completed/input paused/input))
+          ($assert (== completed/operator true))
+          ($assert (== calls/.get 2))
+        ensure
+          (close_round_controller controller)
+          (close_runtime runtime)))))
+
+  (it "rejects route hijacking and overlapping policies before they can admit work" []
+    (isolated this_mod/.path
+      "rejects route hijacking and overlapping policies before they can admit work"
+      (fn [root]
+        (for collision in [false true]
+          (let runtime (open_runtime ($path/join root (if collision "overlap" "unowned"))
+            "default" (baseline_profile)))
+          (try
+            (let result (register_plugin runtime/workspace runtime/h "toy"
+              (source (if collision "toy:" "user") ^overlap collision)))
+            ($assert (== result/status "error") ($to_str result))
+            ($assert ($absent? (row runtime/h "initiators" "toy/messages")))
+            ($assert (== (/kind (row runtime/h "initiators" "core/user")) "user"))
+          ensure (close_runtime runtime))))))
+)
+
+(fn main [args] : Int (run_spec args))

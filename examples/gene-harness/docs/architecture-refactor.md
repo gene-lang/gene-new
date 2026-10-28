@@ -11,7 +11,7 @@ trusted-code model and the existing Gene syntax remain invariants.
 | 2. Operator inbox | Narrow operator-inbox protocol, stored notifications replacement, unchanged plugin-owned publishers. Pre-existing/foreign/keyed message operations, revisions, replacement and restart. Public defer cleanup and an explicit built-in import boundary. | Complete |
 | 3. Registries | Declarative owned specs/callbacks/keys/reservations, leased rows/row and extensible hook points/dispatch. Registry requirements move dependents pending and reactivate them. A/B/C replacement, supervision, immutable views and leased cleanup. | Complete |
 | 4. Feature services | Narrow feature host contracts, migrate built-ins off raw loop/command-context access, static host service dependencies with normal/recovery/partial-open cleanup, feature HTTP routes and browser handlers behind authenticated admission and the core stream coordinator. Failure injection and existing client/recovery coverage. | Complete |
-| 5. Turn participants | Explicit internal phase/transaction contract, delegation then a second consumer; one lease, unconditional core records/base Outcome rules, no replay, cancellation/panic cleanup, owned/schema-checked extension keys and initiators. | Pending |
+| 5. Turn participants | Explicit internal phase/transaction contract, delegation then a second consumer; one lease, unconditional core records/base Outcome rules, no replay, cancellation/panic cleanup, owned/schema-checked extension keys and initiators. | Complete |
 | 6. Compatibility | Separate exact entry requirements from supported versions; shared load/plan/revert checks, legacy migration and unsupported-version/history cases. Retire HarnessRender, views/HarnessView after checking stored descriptors; preserve archived history. | Pending |
 
 Each batch records its actual validation here before committing. The final
@@ -172,3 +172,54 @@ passing a narrow test is not evidence for the entire refactor.
 - Legacy entry points stay available until batch 6's compatibility policy.
   That policy must also cover prompt renderers: their current two-argument
   callback receives the raw runtime, as noted in the latest review addendum.
+
+## Batch 5 evidence
+
+- The [transaction contract](turn-participants.md) specifies mandatory phase
+  order, invalid-Outcome behavior, durable finalization, terminal recording,
+  cancellation/panic cleanup and receipt-based recovery without phase replay.
+- The isolated runner has 9 passing unit cases. It contains callback errors,
+  panics and timeouts, revokes exact phase-admission frames, rejects forged or
+  retained contexts, attempts all cleanup and keeps core terminal recording
+  unconditional after a failed finalizer.
+- Internal delegation and card adapters pass host-state acceptance for staged
+  admission, terminal-durability dispatch fences, a lost commit result without
+  replay, invalid-Outcome discard, card progress and response-source
+  acknowledgment across restart. These exercise the new interface directly.
+- A native registry now installs both guarded adapters before plugin activation.
+  Five host-state cases pass, including old/new phase reads on distinct leases,
+  rejection of closed/foreign leases and rejection of unadmitted contributors.
+  Both real startup/unwind cases pass with the new service prefix too.
+- The production loop now dispatches the selected transaction. Delegation's
+  eight production cases and the nine card cases passed before public
+  registration was enabled. Mandatory failure injection covers all nine turn
+  phases with no repeated model/response record and one terminal record.
+  Cancellation after durable child admission preserves the dispatch fence.
+- API-only stored callbacks receive immutable public projections and owned
+  per-turn state. Namespaced response bindings contain data, not host objects.
+  Public schema rejection repairs model input, while implementation errors or
+  deadline failures abort once. Seven public cases cover optional fields,
+  collisions, forbidden aliases/annotations, replacement during an active
+  model call, contributor deadlines and sequential final-only commits.
+- Outcome fields are checked against owned schemas from the same lease. The
+  direct Outcome validator refuses an unchecked bag. All 16 Outcome unit cases
+  pass, including field preservation through audio normalization and every
+  existing completion deferral. The model's legacy field spellings remain
+  additive until batch 6's compatibility interval.
+- Owned initiator rows replace controller prefix policy. The Slack adapter
+  owns channel validation independently of transport activation; admitted
+  receipts persist operator policy. Two integration and two policy cases pass,
+  including source disable/continuation, overlap refusal and historical readers.
+  The seven existing channel-admission cases pass too.
+- Broad agent/runtime qualification passed 203 cases; HTTP crash/session
+  qualification passed 21, including all eleven fake-peer handoff checkpoints.
+  The initial broad unit run reported 193 passed with the same theme failure
+  and three missing-zdump errors recorded in batch 1. Additional focused Outcome
+  cases pass after that run. Import/discovery checks passed (5) and the event
+  catalog is current. Reports are retained under repository-root
+  `tmp/harness-batch5-{agents-runtime,http,unit}.log`; no green all-suite claim
+  is made for the known environmental/baseline unit failures.
+- The obsolete turn-limit fixture now checks a pause, retained pending input,
+  no synthetic final reply and an explicit continuation. All four turn-loop
+  cases pass. Registry callbacks retain exact phase admission, and the native
+  startup/unwind cases still release ownership last with the new service.

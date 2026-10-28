@@ -1,7 +1,7 @@
 # Tests src/agents/outcome.gene.
 (import $test [describe it before_each assert_equal assert_raises run])
 (import [Outcome OutcomeError TurnClosed new_turn_items append_prompt_at append_plugin_prompt
-         validate_outcome render_request rewrite_prompt_calls]
+         validate_outcome render_request rewrite_prompt_calls checked_outcome_extensions]
   ^from "../../../src/agents/outcome")
 (import [split_response] ^from "../../../src/agents/response")
 (import [evaluate_response] ^from "../../../src/agents/eval_site")
@@ -149,6 +149,28 @@ next"""))
     ($assert (try (rewrite_prompt_calls computed) false
       catch OutcomeError (&& ($str/contains? $err/message "literal (fn ...)") (== $err/response_line 2)))
       "a computed view function was accepted")))
+
+(describe "Outcome extension admission"
+  (it "rejects unchecked data bags and malformed extension containers" []
+    (for value in [{^unknown/key "unchecked"} [] true]
+      (assert_raises (fn []
+        (validate_outcome (new_turn_items 1) (Outcome ^^done ^reply "Candidate." ^extensions value)))
+        OutcomeError)))
+  (it "keeps an empty optional extension map compatible with a plain final reply" []
+    ($assert (== (/kind (validate_outcome (new_turn_items 1)
+      (Outcome ^^done ^reply "Done." ^extensions {}))) "done")))
+  (it "keeps checked fields through publication, work and media completion deferral" []
+    (for reason in ["publication" "work" "media"]
+      (let turn (new_turn_items 1))
+      (if (== reason "publication") (turn/composition_queued .set true))
+      (if (== reason "work") (turn/delegation_staged/.get .push {}))
+      (if (== reason "media") (turn/media/.get .push {^id "image"}))
+      (let fields {^notes/facts ["checked"]})
+      (let value (checked_outcome_extensions (Outcome ^^done ^reply "Candidate." ^extensions fields)))
+      (let result (validate_outcome turn value))
+      ($assert (== result/kind "continue"))
+      ($assert (== result/outcome/extensions fields))))
+)
 
 (fn main [args] : Int
   (let result (run ^name (?? args/0 "")))

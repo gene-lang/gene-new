@@ -1,0 +1,127 @@
+# Turn coordination knows phase contracts, never a feature's service object.
+(mod turn_participation)
+(import [run_turn_phase reduce_turn_phase begin_turn_transaction release_turn_transaction ParticipantFailure]
+  ^from "../runtime/turn_participants")
+(import [new_runtime_turn_transaction] ^from "../runtime/turn_participant_registry")
+(import [acquire_snapshot release_snapshot] ^from "../runtime/composition")
+(import [ParticipantBindings ParticipantCommit ParticipantValidation] ^from "../runtime/participant_contract")
+(import [freeze_turn_data] ^from "../runtime/turn_data")
+(import [request_items] ^from "./outcome")
+
+(fn bad_phase_result [name : Str, phase : Str, message : Str]
+  (fail (ParticipantFailure ^participant name ^phase phase ^code "invalid_result" ^message message)))
+
+# Compatibility for saved continuation items. Newly produced items use source.
+(fn request_source [item] (?? item/source item/delegation_source))
+
+(fn request_sources [items]
+  (let sources [])
+  (for item in items
+    (let source (request_source item))
+    (if (&& (! ($absent? source)) (! (sources .contains? source))) (sources .push source)))
+  sources)
+
+(fn definition_for [transaction, name : Str]
+  (for definition in transaction/participants
+    (if (== definition/name name) (return definition)))
+  nil)
+
+(fn participant_inputs [transaction]
+  (let items [])
+  (let annotations {})
+  (for packet in (run_turn_phase transaction "request_items")
+    (if ($absent? packet/value) (continue))
+    (if (!= ($head packet/value) List)
+      (bad_phase_result packet/name "request_items" "A participant must return a list of request items."))
+    (for item in packet/value (items .push item))
+    (if packet/value/.empty? (continue))
+    (let definition (definition_for transaction packet/name))
+    (if (== definition/_host true)
+      (for [key value] in (?? definition/request_record {}) (annotations .put key value))))
+  {^items items ^annotations annotations})
+
+(fn participant_bindings [transaction]
+  (let bindings {})
+  (let public {})
+  (for packet in (run_turn_phase transaction "bindings")
+    (if ($absent? packet/value) (continue))
+    (if (== ($head packet/value) ParticipantBindings)
+      (then
+        (let data packet/value)
+        (if_not (public .has_key? data/owner) (public .put data/owner {}))
+        (let namespace (public .get data/owner))
+        (namespace .put data/slot data/value)
+        (continue)))
+    (let definition (definition_for transaction packet/name))
+    (if (|| (!= definition/_host true) (!= ($head packet/value) Map))
+      (bad_phase_result packet/name "bindings" "Participant bindings must be a map."))
+    (for [name value] in packet/value
+      (if (bindings .has_key? name)
+        (bad_phase_result packet/name "bindings" $"Participant binding ${name} is already owned."))
+      (bindings .put name value)))
+  (for [owner data] in public
+    (if (bindings .has_key? owner)
+      (bad_phase_result ($to_str owner) "bindings" "A public data namespace conflicts with a host binding."))
+    (let registries (?? transaction/scope/snapshot/registries {}))
+    (for record in (?? (registries .get "functions") [])
+      (if (== record/payload/name ($to_str owner))
+        (bad_phase_result ($to_str owner) "bindings" "A public data namespace conflicts with a selected function.")))
+    (bindings .put owner (freeze_turn_data data)))
+  bindings)
+
+(fn commit_participants [transaction, result]
+  (reduce_turn_phase transaction "commit" result (fn [current packet]
+    (if ($absent? packet/value) (return current))
+    (if (== ($head packet/value) ParticipantCommit)
+      (then
+        (for item in packet/value/items (current/request_items .push item))
+        (if (&& (! packet/value/items/.empty?) (== current/kind "done")) (current .put "kind" "continue"))
+        (return current)))
+    (let definition (definition_for transaction packet/name))
+    (if (|| (!= definition/_host true) (!= ($head packet/value) Map) ($absent? packet/value/kind))
+      (bad_phase_result packet/name "commit" "This participant returned an invalid commit result."))
+    packet/value)))
+
+(fn validate_participants [transaction, result]
+  (let errors [])
+  (let additions [])
+  (var deferred false)
+  (for packet in (run_turn_phase transaction "validate_outcome" result)
+    (if ($absent? packet/value) (continue))
+    (if (!= ($head packet/value) ParticipantValidation)
+      (bad_phase_result packet/name "validate_outcome" "Invalid participant validation verdict."))
+    (if_not ($absent? packet/value/error) (errors .push $"${packet/name}: ${packet/value/error}"))
+    (for item in packet/value/items (additions .push item))
+    (if packet/value/defer_done (set deferred true)))
+  (if_not errors/.empty?
+    (let message ($str/join errors "\n"))
+    (result .put "kind" "error")
+    (result .put "validated" nil)
+    (result .put "error" message)
+    (let items (request_items result/turn nil
+      ^patch result/patch/text ^error message))
+    (result .put "request_items" items))
+  (for item in additions (result/request_items .push item))
+  (if (&& (|| deferred (! additions/.empty?)) (== result/kind "done")) (result .put "kind" "continue"))
+  result)
+
+(fn round_limit_participants [runtime, session : Str, round, turn : Int, count : Int, limit : Int, collection : Bool]
+  (let lease (acquire_snapshot runtime/h/snapshots))
+  (var transaction nil)
+  (var selected nil)
+  (try
+    (set transaction (new_runtime_turn_transaction runtime lease
+      {^session session ^round round ^turn turn ^count count ^limit limit
+       ^collection collection ^carry false ^boundary "limit"}))
+    (begin_turn_transaction transaction)
+    (for packet in (run_turn_phase transaction "limit")
+      (if ($absent? packet/value) (continue))
+      (if (|| (!= ($head packet/value) Map) ($absent? packet/value/state) (! ($absent? selected)))
+        (bad_phase_result packet/name "limit" "A round limit may have one owned suspension result."))
+      (set selected packet/value))
+    selected
+  ensure
+    (try
+      (if_not ($absent? transaction)
+        (release_turn_transaction transaction {^result selected ^turn_end_durable false}))
+    ensure (release_snapshot runtime/h/snapshots lease))))
