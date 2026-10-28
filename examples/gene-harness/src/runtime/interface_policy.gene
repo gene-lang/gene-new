@@ -14,8 +14,12 @@
 
 (fn registration_interfaces [^previous previous = nil]
   # New ids use the public contract. A replacement keeps its recorded core
-  # version unless its source explicitly opts into a different one.
-  {^core (?? previous/core public_core) ^plugin_api plugin_interface})
+  # version while supported; retired entries can be re-authored as legacy v2.
+  # Explicit source requirements are applied separately and remain exact.
+  (let current (current_interfaces))
+  (let core (if ($absent? previous) public_core
+    (if (current/core .contains? previous/core) previous/core legacy_core)))
+  {^core core ^plugin_api plugin_interface})
 
 (fn effective_interfaces [required]
   (if (!= ($head required) Map) (return required))

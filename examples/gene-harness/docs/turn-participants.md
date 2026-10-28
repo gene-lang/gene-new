@@ -84,9 +84,11 @@ existing repair request without admitting that turn's staged child work.
 A stored plugin's unexpected participant failure also quarantines that owner's
 participant callbacks for later turns. The failing turn still fails with its
 participant and phase, and all acquired cleanup slots are attempted. Quarantine
-survives restart. The next round receives a `[N.plugins]` explanation and can
-reach the model to repair the source. The plugin's functions, providers and other
-capabilities remain available, so recovery does not remove the model provider
+also covers result admission failures, including public data namespace conflicts
+discovered while merging bindings. Quarantine survives restart. The next round
+receives a `[N.plugins]` explanation and can reach the model to repair the source.
+The plugin's functions, providers and other capabilities remain available, so
+recovery does not remove the model provider
 or the functions needed to repair it. A successful republish, explicit re-enable,
 restore or reversion retries the participants. A late failure from a replaced
 generation cannot quarantine its replacement. Operator cancellation does not

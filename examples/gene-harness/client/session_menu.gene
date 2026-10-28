@@ -1,6 +1,6 @@
 (mod session_menu ^profile web)
 (import [text flag] ^from "../src/common/launcher.gene")
-(import [can_share_session? session_share_pending? session_share_busy?] ^from "./slack_channels.gene")
+(import [can_share_session? session_share_label session_share_busy?] ^from "./slack_channels.gene")
 
 (type SessionMenu ^props {^panel EventTarget ^error EventTarget ^session Any ^anchor Any ^pin Any ^share Any
   ^phase Str ^pending Bool ^generation Int
@@ -60,7 +60,7 @@
   (var share : EventTarget menu/share)
   (set share/hidden (! (can_share_session? session)))
   (set share/disabled (|| menu/pending (session_share_busy? session)))
-  ($dom/set_text share (if (session_share_pending? session) "Adding to Slack…" "Add to Slack")))
+  ($dom/set_text share (session_share_label session)))
 
 (fn edit_session_title [menu : SessionMenu] : Void
   (set menu/phase "rename") ($dom/clear menu/panel)

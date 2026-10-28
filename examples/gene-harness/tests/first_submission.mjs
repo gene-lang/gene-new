@@ -570,6 +570,12 @@ harness.add_session_to_slack(c);
 requests[1].reply(503, {message: 'The Slack channel connection is disabled.'});
 await settled();
 assert.equal(element('add_to_slack').disabled, false, 'a rejected request can be retried');
+for (const [status,label] of [['failed','Slack share failed'],['uncertain','Slack share needs attention'],['accepted','Adding to Slack…']]) {
+  shareTab.cache.session = {id:'s',kind:'interactive',slack_available:true,slack_share:{status}};
+  harness.update_controls(c);
+  assert.equal(element('add_to_slack').textContent,label);
+  assert.equal(element('add_to_slack').disabled,true,'a durable share must be resolved by the owner');
+}
 console.log('Slack share button: eligibility, duplicate clicks, late responses and errors passed');
 
 c=client();

@@ -2,6 +2,8 @@
 (import [ParticipantFailure new_turn_transaction begin_turn_transaction run_turn_phase
   release_turn_transaction finish_turn_transaction guard_participant_callback]
   ^from "../../../src/runtime/turn_participants")
+(import [participant_bindings] ^from "../../../src/agents/turn_participation")
+(import [ParticipantBindings] ^from "../../../src/runtime/participant_contract")
 
 (const phases ["request_items" "request_admitted" "bindings" "response_recorded" "validate_outcome" "commit"])
 
@@ -68,6 +70,29 @@
     ($assert (== events ["a/begin" "b/begin" "b/release" "a/release"]))
     (release_turn_transaction transaction)
     ($assert (== events/.size 4)))
+
+  (it "reports binding merge conflicts against the actual public participant and fails the transaction" []
+    (for conflict in ["host" "function"]
+      (let faults [])
+      (let transaction (new_turn_transaction {}
+        [{^name "core/data" ^_host true ^bindings (fn [context state value]
+           (if (== conflict "host") {^notes "host data"} {}))}
+         {^name "notes/memory" ^bindings (fn [context state value]
+           (ParticipantBindings ^owner "notes" ^slot "memory" ^value {}))}]
+        ^scope {^snapshot {^registries {^functions
+          (if (== conflict "function") [{^payload {^name "notes"}}] [])}}}
+        ^on_failure (fn [definition phase failure]
+          (faults .push {^name definition/name ^phase phase ^failure failure}))))
+      (begin_turn_transaction transaction)
+      ($assert (try (participant_bindings transaction) false catch ParticipantFailure
+        (&& (== $err/participant "notes/memory") (== $err/phase "bindings") (== $err/code "invalid_result"))))
+      ($assert transaction/failed/.get)
+      ($assert (== faults/.size 1))
+      ($assert (== faults/0/name "notes/memory"))
+      ($assert (== faults/0/phase "bindings"))
+      ($assert (try (run_turn_phase transaction "response_recorded") false catch ParticipantFailure
+        (== $err/code "invalid_phase")))
+      (release_turn_transaction transaction)))
 
   (it "rejects repeated, out-of-order and closed phases without repeating work" []
     (let events [])

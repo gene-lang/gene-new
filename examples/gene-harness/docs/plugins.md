@@ -134,8 +134,9 @@ New code can select the public receiver and callback contract explicitly:
 is one exact required version, never a list of supported versions. The host
 supports both `PluginHost:2` and `PluginHost:3`, with `Plugin:2` for the shared
 plugin API. A new plugin id defaults to version 3. An unannotated replacement
-inherits the existing entry's recorded core version, including historical plan
-bases; it does not silently upgrade legacy callbacks. Use an explicit
+inherits the existing entry's recorded core version while supported, including
+historical plan bases. Re-registering an entry with a retired version defaults
+to version 2; explicit source requirements still apply exactly. Use an explicit
 `@interfaces {^core "gene-harness/PluginHost:2"}` annotation when new code needs
 the legacy contract, or select version 3 to migrate an existing entry. Descriptor
 construction receives that entry's selected version in `core_interface` during

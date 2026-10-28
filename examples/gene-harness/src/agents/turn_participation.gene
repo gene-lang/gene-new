@@ -1,6 +1,6 @@
 # Turn coordination knows phase contracts, never a feature's service object.
 (mod turn_participation)
-(import [run_turn_phase reduce_turn_phase begin_turn_transaction release_turn_transaction ParticipantFailure]
+(import [run_turn_phase reduce_turn_phase begin_turn_transaction release_turn_transaction fail_turn_participant]
   ^from "../runtime/turn_participants")
 (import [new_runtime_turn_transaction] ^from "../runtime/turn_participant_registry")
 (import [acquire_snapshot release_snapshot] ^from "../runtime/composition")
@@ -8,8 +8,8 @@
 (import [freeze_turn_data] ^from "../runtime/turn_data")
 (import [request_items] ^from "./outcome")
 
-(fn bad_phase_result [name : Str, phase : Str, message : Str]
-  (fail (ParticipantFailure ^participant name ^phase phase ^code "invalid_result" ^message message)))
+(fn bad_phase_result [transaction, name : Str, phase : Str, message : Str]
+  (fail_turn_participant transaction name phase "invalid_result" message))
 
 # Compatibility for saved continuation items. Newly produced items use source.
 (fn request_source [item] (?? item/source item/delegation_source))
@@ -32,7 +32,7 @@
   (for packet in (run_turn_phase transaction "request_items")
     (if ($absent? packet/value) (continue))
     (if (!= ($head packet/value) List)
-      (bad_phase_result packet/name "request_items" "A participant must return a list of request items."))
+      (bad_phase_result transaction packet/name "request_items" "A participant must return a list of request items."))
     (for item in packet/value (items .push item))
     (if packet/value/.empty? (continue))
     (let definition (definition_for transaction packet/name))
@@ -43,29 +43,32 @@
 (fn participant_bindings [transaction]
   (let bindings {})
   (let public {})
+  (let public_sources {})
   (for packet in (run_turn_phase transaction "bindings")
     (if ($absent? packet/value) (continue))
     (if (== ($head packet/value) ParticipantBindings)
       (then
         (let data packet/value)
+        (if_not (public_sources .has_key? data/owner) (public_sources .put data/owner packet/name))
         (if_not (public .has_key? data/owner) (public .put data/owner {}))
         (let namespace (public .get data/owner))
         (namespace .put data/slot data/value)
         (continue)))
     (let definition (definition_for transaction packet/name))
     (if (|| (!= definition/_host true) (!= ($head packet/value) Map))
-      (bad_phase_result packet/name "bindings" "Participant bindings must be a map."))
+      (bad_phase_result transaction packet/name "bindings" "Participant bindings must be a map."))
     (for [name value] in packet/value
       (if (bindings .has_key? name)
-        (bad_phase_result packet/name "bindings" $"Participant binding ${name} is already owned."))
+        (bad_phase_result transaction packet/name "bindings" $"Participant binding ${name} is already owned."))
       (bindings .put name value)))
   (for [owner data] in public
+    (let source (public_sources .get owner))
     (if (bindings .has_key? owner)
-      (bad_phase_result ($to_str owner) "bindings" "A public data namespace conflicts with a host binding."))
+      (bad_phase_result transaction source "bindings" "A public data namespace conflicts with a host binding."))
     (let registries (?? transaction/scope/snapshot/registries {}))
     (for record in (?? (registries .get "functions") [])
       (if (== record/payload/name ($to_str owner))
-        (bad_phase_result ($to_str owner) "bindings" "A public data namespace conflicts with a selected function.")))
+        (bad_phase_result transaction source "bindings" "A public data namespace conflicts with a selected function.")))
     (bindings .put owner (freeze_turn_data data)))
   bindings)
 
@@ -79,7 +82,7 @@
         (return current)))
     (let definition (definition_for transaction packet/name))
     (if (|| (!= definition/_host true) (!= ($head packet/value) Map) ($absent? packet/value/kind))
-      (bad_phase_result packet/name "commit" "This participant returned an invalid commit result."))
+      (bad_phase_result transaction packet/name "commit" "This participant returned an invalid commit result."))
     packet/value)))
 
 (fn validate_participants [transaction, result]
@@ -89,7 +92,7 @@
   (for packet in (run_turn_phase transaction "validate_outcome" result)
     (if ($absent? packet/value) (continue))
     (if (!= ($head packet/value) ParticipantValidation)
-      (bad_phase_result packet/name "validate_outcome" "Invalid participant validation verdict."))
+      (bad_phase_result transaction packet/name "validate_outcome" "Invalid participant validation verdict."))
     (if_not ($absent? packet/value/error) (errors .push $"${packet/name}: ${packet/value/error}"))
     (for item in packet/value/items (additions .push item))
     (if packet/value/defer_done (set deferred true)))
@@ -117,7 +120,7 @@
     (for packet in (run_turn_phase transaction "limit")
       (if ($absent? packet/value) (continue))
       (if (|| (!= ($head packet/value) Map) ($absent? packet/value/state) (! ($absent? selected)))
-        (bad_phase_result packet/name "limit" "A round limit may have one owned suspension result."))
+        (bad_phase_result transaction packet/name "limit" "A round limit may have one owned suspension result."))
       (set selected packet/value))
     selected
   ensure

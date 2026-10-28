@@ -3,12 +3,13 @@
 (import [isolated run_spec] ^from "../../support")
 (import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
 (import [Profile] ^from "../../../src/profiles/profile")
+(import [provider_offline] ^from "../../../src/builtin/provider_offline")
 (import [PluginHost] ^from "../../../src/plugin_api")
 (import [row provide registry_names] ^from "../../../src/kernel")
 (import [register_plugin composition_entries composition_revision commit_composition
   load_entry_descriptor revert_plugin plugin_history verify_stored_entry stage_plugin_entry]
   ^from "../../../src/storage/workspace")
-(import [validate_plan] ^from "../../../src/runtime/plugin_plans")
+(import [validate_plan apply_plan] ^from "../../../src/runtime/plugin_plans")
 (import [acquire_snapshot release_snapshot] ^from "../../../src/runtime/composition")
 (import [submit_command command_receipt] ^from "../../../src/runtime/commands")
 (import [mode_state submit_mode_input close_mode] ^from "../../../src/runtime/input_modes")
@@ -130,6 +131,43 @@
           ($assert (! ($absent? host/.PluginHost:execution_budget))))))))
 
 (describe "Stored interface compatibility"
+  (it "re-registers retired version-one entries directly and through plans using unannotated source" []
+    (isolated this_mod/.path
+      "re-registers retired version-one entries directly and through plans using unannotated source"
+      (fn [root]
+        (let profile (Profile ^name "compatibility" ^plugins [(provider_offline)] ^provider "offline"))
+        (for mode in ["direct" "plan"]
+          (let workspace ($path/join root mode))
+          (let first (open_runtime workspace "default" profile))
+          (try
+            (let entry (stage_plugin_entry first/workspace "compat" (legacy_module)))
+            (set entry/interfaces {^core "gene-harness/PluginHost:1" ^plugin_api "gene-harness/Plugin:1"})
+            (commit_composition first/workspace [entry])
+          ensure (close_runtime first))
+          (let restarted (open_runtime workspace "default" profile))
+          (try
+            ($assert ($absent? (row restarted/h "functions" "compat_version")))
+            (if (== mode "direct")
+              (then
+                (let registered (register_plugin ^^replace restarted/workspace restarted/h "compat" (legacy_module)))
+                ($assert (== registered/status "ready") ($to_str registered)))
+              (else
+                (let plan (validate_plan restarted {^base_revision (composition_revision restarted/workspace)
+                  ^changes [{^id "compat" ^kind "replace" ^source (legacy_module)}]}))
+                ($assert plan/valid ($to_str plan/errors))
+                (let applied (apply_plan restarted plan/id))
+                ($assert (== applied/state "applied") ($to_str applied))))
+            ($assert (! ($absent? (row restarted/h "functions" "compat_version"))) mode)
+            ($assert (== (invoke restarted "compat_version") 2))
+            ($assert (== (/interfaces ($first (composition_entries restarted/workspace)))
+              {^core "gene-harness/PluginHost:2" ^plugin_api "gene-harness/Plugin:2"}))
+          ensure (close_runtime restarted))
+          (let final_runtime (open_runtime workspace "default" profile))
+          (try
+            ($assert (! ($absent? (row final_runtime/h "functions" "compat_version"))) ($to_str mode ": after restart"))
+            ($assert (== (invoke final_runtime "compat_version") 2))
+          ensure (close_runtime final_runtime))))))
+
   (it "preserves actual whole-map entries and typed legacy callbacks across upgrade restart and historical revert" []
     (isolated this_mod/.path
       "preserves actual whole-map entries and typed legacy callbacks across upgrade restart and historical revert"

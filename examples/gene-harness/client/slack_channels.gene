@@ -5,8 +5,19 @@
   (&& (flag session/slack_available) (== (text session/kind) "interactive")
     ($absent? session/channel) ($absent? session/parent)))
 
-(fn session_share_pending? [session : Any] : Bool (! ($absent? session/slack_share)))
+(fn session_share_pending? [session : Any] : Bool
+  (var status (text session/slack_share/status))
+  (|| (== status "pending") (== status "accepted")))
+
+(fn session_share_label [session : Any] : Str
+  (var status (text session/slack_share/status))
+  (if_yes (== status "failed") (return "Slack share failed"))
+  (if_yes (== status "uncertain") (return "Slack share needs attention"))
+  (if_yes (session_share_pending? session) (return "Adding to Slack…"))
+  "Add to Slack")
 
 (fn session_share_busy? [session : Any] : Bool
   (var status (text session/status))
-  (|| (session_share_pending? session) (== status "running") (== status "waiting")))
+  # A failed or uncertain delivery still needs owner reconciliation. A second
+  # share request cannot retry the durable intent or safely create a new one.
+  (|| (! ($absent? session/slack_share)) (== status "running") (== status "waiting")))

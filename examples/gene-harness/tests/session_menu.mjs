@@ -108,6 +108,11 @@ assert.equal(updates.at(-1).id,browserSession.id);
 mod.open_session_menu(menu,anchor,{...browserSession,slack_share:{status:'accepted'}});
 assert.equal(buttons()[0].textContent,'Adding to Slack…');
 assert.equal(buttons()[0].disabled,true);
+for (const [status,label] of [['failed','Slack share failed'],['uncertain','Slack share needs attention'],['pending','Adding to Slack…']]) {
+  mod.bind_session_menu(menu,anchor,{...browserSession,slack_share:{status}});
+  assert.equal(buttons()[0].textContent,label);
+  assert.equal(buttons()[0].disabled,true,'durable shares require owner reconciliation before retry');
+}
 mod.bind_session_menu(menu,anchor,{...browserSession,channel:{transport:'slack'}});
 assert.deepEqual(buttons().map(node=>node.textContent),['Rename','Delete','Pin']);
 mod.close_session_menu(menu);

@@ -10,6 +10,8 @@
 (import [validate_plan apply_plan] ^from "../../../src/runtime/plugin_plans")
 (import [submit_round round_receipt close_round_controller cancel_round] ^from "../../../src/runtime/round_controller")
 (import [plugin_state events_for] ^from "../../../src/storage/state")
+(import [contribute] ^from "../../../src/kernel")
+(import [native_owner] ^from "../../../src/runtime/turn_participant_registry")
 
 (fn profile [^limits limits = nil]
   (Profile ^name "participant-health" ^plugins [(plugin_admin)
@@ -50,7 +52,57 @@
   watcher/.join
   (round_receipt controller "default" receipt/id))
 
+(fn binding_conflict_source [conflict : Str]
+  `(mod plugin
+    (import [Plugin PluginHost] ^from "src/plugin_api.gene")
+    (fn init [descriptor]
+      (Plugin ^id "faulty" ^activate (fn [host]
+        (host .PluginHost:contribute "functions"
+          {^name "faulty_marker" ^doc "Available after quarantine." ^fn (fn [] "available")})
+        (host .PluginHost:contribute "turn_participants"
+          {^name "faulty/memory" ^bindings (fn [context state value] {^value true})})
+        # Contribute the function after the participant to reach merge admission.
+        (if (== %conflict "function")
+          (host .PluginHost:contribute "functions"
+            {^name "faulty" ^doc "Conflicts with the data namespace." ^fn (fn [] nil)})))))))
+
 (describe "Stored participant failure containment"
+  (it "quarantines binding conflicts after the model response and keeps the exclusion through restart" []
+    (isolated this_mod/.path
+      "quarantines binding conflicts after the model response and keeps the exclusion through restart"
+      (fn [root]
+        (for conflict in ["host" "function"]
+          (let workspace ($path/join root conflict))
+          (let runtime (open_runtime workspace "default" (profile)))
+          (if (== conflict "host")
+            (contribute runtime/h native_owner "turn_participants"
+              {^name "core/conflict" ^bindings (fn [context state value] {^faulty "host data"})}))
+          (let registered (register_plugin ^^replace runtime/workspace runtime/h "faulty" (binding_conflict_source conflict)))
+          ($assert (== registered/status "ready") ($to_str registered))
+          (let calls ($cell 0))
+          (let controller (test_controller runtime (fn [request]
+            (calls .set (+ calls/.get 1)) "(Outcome ^^done ^reply (faulty_marker))")))
+          (try
+            (let failed (wait_round controller (submit_round controller "default" "conflict" 1 "Start.")))
+            ($assert (== failed/state "failed") ($to_str failed))
+            ($assert (== calls/.get 1))
+            (let saved (participant_quarantine runtime/workspace "faulty"))
+            ($assert (== saved/participant "faulty/memory") ($to_str saved))
+            ($assert (== saved/phase "bindings"))
+            ($assert ($str/contains? saved/message (if (== conflict "host") "host binding" "selected function")))
+            (let next (wait_round controller (submit_round controller "default" "recover" 2 "Continue.")))
+            ($assert (== next/state "done") ($to_str next))
+            ($assert (== next/reply "available"))
+          ensure (close_round_controller controller) (close_runtime runtime))
+          (let restarted (open_runtime workspace "default" (profile)))
+          (let resumed (test_controller restarted (fn [request]
+            ($assert ($str/contains? ($to_str request/messages) "faulty: turn participants quarantined after bindings"))
+            "(Outcome ^^done ^reply (faulty_marker))")))
+          (try
+            ($assert (== (/state (wait_round resumed (submit_round resumed "default" "restart" 3 "Continue."))) "done"))
+            ($assert (! ($absent? (participant_quarantine restarted/workspace "faulty"))))
+          ensure (close_round_controller resumed) (close_runtime restarted))))))
+
   (it "fails the first round then lets the model see the exclusion and publish its own repair" []
     (isolated this_mod/.path
       "fails the first round then lets the model see the exclusion and publish its own repair"

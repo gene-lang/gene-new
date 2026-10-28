@@ -23,7 +23,7 @@
 (import [RoundClient create_rounds configure_rounds dispatch_round recover_round forget_round] ^from "./round_client.gene")
 (import [claim_modal release_modal keyboard_owned?] ^from "./overlays.gene")
 (import [items : launcher_items flag : launcher_flag] ^from "../src/common/launcher.gene")
-(import [can_share_session? session_share_pending?]
+(import [can_share_session? session_share_pending? session_share_busy? session_share_label]
   ^from "./slack_channels.gene")
 
 (import ^from "./state.gene"
@@ -544,8 +544,8 @@
   (set share_button/hidden (|| (== client/selected "") (! (can_share_session? session))))
   (var sharing (|| (== (slack_pending client) client/selected) (session_share_pending? session)))
   (set share_button/disabled (|| (! client/ready) (! client/connected) client/busy sharing
-    (!= (slack_pending client) "")))
-  ($dom/set_text share_button (if sharing "Adding to Slack…" "Add to Slack"))
+    (session_share_busy? session) (!= (slack_pending client) "")))
+  ($dom/set_text share_button (if sharing "Adding to Slack…" (session_share_label session)))
   (var pin ($dom/element "pin_session"))
   (set pin/disabled (|| (! client/ready) (! client/connected) (== client/selected "")))
   (var create_button ($dom/element "create_session"))

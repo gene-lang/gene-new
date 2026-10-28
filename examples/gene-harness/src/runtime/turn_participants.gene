@@ -66,13 +66,18 @@
     ^started ($cell false) ^closed ($cell false) ^failed ($cell false)
     ^last_phase ($cell -1) ^limits limits ^finishing ($cell false) ^scope scope ^on_failure on_failure))
 
-(fn failed_participant [transaction, entry, phase : Str, code : Str, message : Str, ^cause cause = nil]
-  (let failure (participant_failure entry/definition/name phase code message ^cause cause))
+(fn fail_turn_participant [transaction, name : Str, phase : Str, code : Str, message : Str, ^cause cause = nil]
+  (let failure (participant_failure name phase code message ^cause cause))
+  # Result admission can fail after callback dispatch has completed. It owns
+  # the same transaction failure and reporting path as a callback failure.
+  (transaction/failed .set true)
   (if_not ($absent? transaction/on_failure)
-    (try (transaction/on_failure entry/definition phase failure)
-      catch Any
-        (fail (participant_failure entry/definition/name phase code
-          $"${message}; failure reporting also failed: ${$err/message}" ^cause failure))))
+    (for definition in transaction/participants
+      (if (== definition/name name)
+        (try (transaction/on_failure definition phase failure)
+          catch Any
+            (fail (participant_failure name phase code
+              $"${message}; failure reporting also failed: ${$err/message}" ^cause failure))))))
   (fail failure))
 
 (fn transaction_scope [transaction]
@@ -103,13 +108,13 @@
   (match outcome ^!exhaustive
     (when (TaskOutcome/ok result) result)
     (when (TaskOutcome/error error)
-      (failed_participant transaction entry phase "callback_error"
+      (fail_turn_participant transaction entry/definition/name phase "callback_error"
         (if (== ($head error/message) Str) error/message "Participant raised an error without a textual message.")
         ^cause error))
     (when (TaskOutcome/panic message)
-      (failed_participant transaction entry phase "panic" message))
+      (fail_turn_participant transaction entry/definition/name phase "panic" message))
     (when TaskOutcome/cancelled
-      (failed_participant transaction entry phase
+      (fail_turn_participant transaction entry/definition/name phase
         (if (>= ($os/monotonic_ms) deadline) "timeout" "cancelled")
         "Callback cancelled or its budget expired."))))
 

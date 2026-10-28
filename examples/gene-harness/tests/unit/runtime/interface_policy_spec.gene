@@ -39,4 +39,16 @@
       (latest_interfaces)))
     ($assert (try
       (source_interfaces (quote (mod plugin @interfaces {^core ["gene-harness/PluginHost:2"]})))
-      false catch InterfacePolicyError true))))
+      false catch InterfacePolicyError true)))
+  (it "re-registers retired entries with the legacy contract while preserving explicit requirements" []
+    (let retired {^core "gene-harness/PluginHost:1" ^plugin_api "gene-harness/Plugin:1"})
+    (let legacy {^core "gene-harness/PluginHost:2" ^plugin_api "gene-harness/Plugin:2"})
+    ($assert (== (registration_interfaces ^previous retired) legacy))
+    ($assert (== (source_interfaces ^previous retired (quote (mod plugin))) legacy))
+    ($assert (== (source_interfaces ^previous (latest_interfaces) (quote (mod plugin))) (latest_interfaces)))
+    ($assert (== (source_interfaces ^previous retired
+      (quote (mod plugin @interfaces {^core "gene-harness/PluginHost:3"}))) (latest_interfaces)))
+    (let explicit (source_interfaces ^previous retired
+      (quote (mod plugin @interfaces {^core "gene-harness/PluginHost:1"}))))
+    ($assert ($str/contains? (interface_diagnostic explicit (current_interfaces))
+      "core: requires gene-harness/PluginHost:1"))))
