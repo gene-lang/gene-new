@@ -1,0 +1,24 @@
+# Pure image-payload redaction shared by provider adapters and recording.
+(mod model_text)
+(fn escaped_slashes [text : Str]
+  ($str/join ($str/split text "/") "\\/"))
+
+(fn payload_forms [image]
+  (if (!= ($head image/base64) Str) (return []))
+  [["json_data_url" (escaped_slashes image/data_url)] ["data_url" image/data_url]
+   ["json_base64" (escaped_slashes image/base64)] ["base64" image/base64]])
+
+(fn redact_image_text [message : Str, inventory]
+  (var text message)
+  (for image in inventory
+    (for form in (payload_forms image)
+      (if (!= form/1 "")
+        (set text ($str/join ($str/split text form/1) "[image data omitted]")))))
+  text)
+
+(fn safe_error [message : Str, inventory]
+  (let text (redact_image_text message inventory))
+  (if (|| (> ($str/byte_size text) 1024) ($str/contains? text "data:image/")
+          ($str/contains? text "#B16#"))
+    "Image-input provider call failed; its payload-bearing diagnostic was omitted."
+    text))

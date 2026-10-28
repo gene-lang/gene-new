@@ -11,7 +11,7 @@
 (import [append_core_event flush_event_store events_for repair_interrupted_turns] ^from "../storage/state")
 (import [call_model record_request record_result load_part] ^from "../agents/model_call")
 (import [safe_error] ^from "../agents/model_recording")
-(import [attach_media] ^from "../builtin/media")
+(import [attach_media] ^from "./media_host")
 (import [byte_prefix] ^from "../text")
 
 (var ^^private services ($cell []))

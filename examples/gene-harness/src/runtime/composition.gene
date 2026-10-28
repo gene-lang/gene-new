@@ -2,7 +2,7 @@
 
 (type CompositionSnapshot ^props {^id Int ^registries Any ^instances Any ^plugins Any?})
 (type SnapshotLease ^props {^snapshot CompositionSnapshot ^counter Any ^closed Any})
-(type CompositionState ^props {^current Any ^next_id Any ^snapshots Any ^counts Any ^pending Any ^retiring Any ^retire Any ^closed Any ^publishing Any ^mutating Any ^on_publish Any?})
+(type CompositionState ^props {^current Any ^next_id Any ^snapshots Any ^counts Any ^pending Any ^retiring Any ^retire Any ^closed Any ^closing Any ^publishing Any ^mutating Any ^on_publish Any?})
 (type CompositionClosed ^props {^message Str} ^impl [Error])
 (impl Error for CompositionClosed)
 
@@ -35,7 +35,7 @@
   (snapshots .put "0" snapshot)
   (let counts {})
   (counts .put "0" ($atomic_cell 0))
-  (CompositionState ^current ($cell snapshot) ^next_id ($cell 1) ^snapshots ($cell snapshots) ^counts ($cell counts) ^pending ($cell []) ^retiring ($cell []) ^retire retire ^closed ($cell false) ^publishing ($sync/gate) ^mutating ($sync/gate)))
+  (CompositionState ^current ($cell snapshot) ^next_id ($cell 1) ^snapshots ($cell snapshots) ^counts ($cell counts) ^pending ($cell []) ^retiring ($cell []) ^retire retire ^closed ($cell false) ^closing ($cell false) ^publishing ($sync/gate) ^mutating ($sync/gate)))
 
 (fn run_composition_change [state : CompositionState, change]
   (require_open state)
@@ -61,6 +61,7 @@
 
 (fn acquire_snapshot [state : CompositionState] : SnapshotLease
   (require_open state)
+  (if state/closing/.get (fail (CompositionClosed ^message "workspace composition is closing")))
   (while true
     (let snapshot state/current/.get)
     (let counter (state/counts/.get .get ($to_str snapshot/id)))
@@ -84,6 +85,7 @@
 # withdrawn resource. Call before publication's retirement drain.
 (fn retain_snapshot [state : CompositionState, snapshot] : SnapshotLease
   (require_open state)
+  (if state/closing/.get (fail (CompositionClosed ^message "workspace composition is closing")))
   (let counter (state/counts/.get .get ($to_str snapshot/id)))
   (if ($absent? counter)
     (fail (CompositionClosed ^message "snapshot has already retired")))
@@ -151,8 +153,9 @@
 
 (fn instance_is_leased? [state : CompositionState, instance] : Bool
   (let current state/current/.get)
-  (for live in current/instances
-    (if (== live instance) (return true)))
+  (if_not state/closing/.get
+    (for live in current/instances
+      (if (== live instance) (return true))))
   (for [id counter] in state/counts/.get
     (if (> counter/.load 0)
       (then
@@ -190,12 +193,19 @@
     (state/snapshots/.get .delete id))
   nil)
 
-(fn close_composition_state [state : CompositionState]
+(fn begin_close_composition_state [state : CompositionState]
   (if state/closed/.get (return nil))
   (for [id counter] in state/counts/.get
     (if (> counter/.load 0)
       (fail (CompositionClosed ^message
         $"composition still has active turn leases at snapshot ${id}: ${counter/.load}"))))
+  (state/closing .set true)
+  (drain_retirements state)
+  nil)
+
+(fn close_composition_state [state : CompositionState]
+  (if state/closed/.get (return nil))
+  (begin_close_composition_state state)
   (drain_retirements state)
   (state/pending .set [])
   (state/snapshots .set {})

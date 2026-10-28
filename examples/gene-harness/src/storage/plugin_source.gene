@@ -11,9 +11,12 @@
   result)
 
 (fn capture_source_origin [context]
-  (let turn context/turn)
+  # Operator evaluations also own a turn-shaped execution scope for media and
+  # queued publication. That scope does not make their source model-authored.
+  (let command (! ($absent? context/command)))
+  (let turn (if command nil context/turn))
   (let result
-    {^kind (if ($absent? turn) (if ($absent? context/command) "direct" "command") "model")})
+    {^kind (if command "command" (if ($absent? turn) "direct" "model"))})
   (if (&& (== ($head context/session) Str) (!= context/session ""))
     (result .put "session" context/session))
   (if_not ($absent? turn/turn) (result .put "turn" ($to_str turn/turn)))

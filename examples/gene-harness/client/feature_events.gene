@@ -1,0 +1,40 @@
+# Validated stream/local events are observed here. A listener cannot mutate the
+# coordinator's payload, break core handling, or survive its owner's disposal.
+(mod feature_events ^profile web)
+(import [items text flag] ^from "../src/common/launcher.gene")
+
+(type FeatureEvents ^props {^listeners (List Any) ^sequence Int})
+
+(fn create_feature_events [] : FeatureEvents
+  (FeatureEvents ^listeners [] ^sequence 0))
+
+(fn subscribe_feature [events : FeatureEvents, callback : (Fn [Str Str Any] Void),
+                       ^owner owner : Str = ""] : (Fn [] Void)
+  (set events/sequence (+ events/sequence 1))
+  (var id ($to_str events/sequence))
+  (var record : Any {^id id ^owner owner ^callback callback ^^active})
+  (events/listeners .push record)
+  (fn [] : Void
+    (if_yes (! (flag record/active)) (return))
+    (set record/active false)
+    (var kept : (List Any) [])
+    (for entry in events/listeners
+      (if_yes (!= (text entry/id) id) (kept .push entry)))
+    (set events/listeners kept)))
+
+(fn feature_subscribed? [events : FeatureEvents, owner : Str] : Bool
+  (for listener in events/listeners
+    (if_yes (&& (flag listener/active) (== (text listener/owner) owner)) (return true)))
+  false)
+
+(fn emit_feature_event [events : FeatureEvents, kind : Str, session : Str, data : Any] : Void
+  # Snapshot the listener set: replacement or subscription during a callback
+  # cannot duplicate dispatch, and a revoked listener is skipped immediately.
+  (var listeners : (List Any) [])
+  (for listener in events/listeners (listeners .push listener))
+  (for listener in listeners
+    (if_yes (! (flag listener/active)) (continue))
+    (try
+      (var callback : (Fn [Str Str Any] Void) listener/callback)
+      (callback kind session ($json/parse ($json/stringify data)))
+    catch Any ($console/error "A browser feature listener failed."))))

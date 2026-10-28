@@ -4,6 +4,7 @@
 (import [close_session_service] ^from "../../../src/web/session_service")
 (import [create_trigger delete_trigger list_occurrences] ^from "../../../src/runtime/triggers")
 (import [triggers : trigger_plugin] ^from "../../../src/builtin/triggers")
+(import [trigger_host_binding] ^from "../../../src/runtime/trigger_host")
 (import [put_cordis_plugin] ^from "../../../src/kernel")
 (import [ExecutionLimits] ^from "../../../src/plugin_api")
 (import [start_host stop_host cli] ^from "../../web_support")
@@ -98,7 +99,7 @@
           ($assert (>= (calls .get; .size) 3)
             $"automatic triggers did not invoke the provider: calls=${calls/.get}; occurrences=${(list_occurrences manager)}")
           (let scheduler manager/task/.get)
-          (withdraw_seam service/runtime/h "core" "loop")
+          (withdraw_seam service/runtime/h "core" "triggers/host")
           # A heartbeat may already have admitted another round before its
           # first finished occurrence was observed and the definition deleted.
           # Withdrawal stops discovery immediately; retained snapshot leases
@@ -113,21 +114,21 @@
           ($assert scheduler/.done? "scheduler task survived plugin deactivation")
         ensure (close_session_service service)))))
 
-  (it "waits for the loop seam and stops with it" []
-    (isolated this_mod/.path "waits for the loop seam and stops with it"
+  (it "waits for the trigger host and stops when it is withdrawn" []
+    (isolated this_mod/.path "waits for the trigger host and stops when it is withdrawn"
       (fn [workspace]
         (let runtime (open_runtime workspace "default" (baseline_profile)))
         (let controller (new_round_controller runtime))
         (try
           ($assert (== (status_of runtime/h "triggers") "pending")
-            "trigger plugin activated before the loop existed")
+            "trigger plugin activated before its host existed")
           ($assert (== (row runtime/h "functions" "create_trigger") void)
             "pending trigger callable was visible")
-          (provide runtime/h "core" "loop"
-            (fn [] {^runtime runtime ^controller controller ^!start ^!boot}))
+          (provide runtime/h "core" "triggers/host"
+            (trigger_host_binding runtime controller ^!start ^!boot))
           (let active_status (status_of runtime/h "triggers"))
           ($assert (== active_status "ready")
-            $"loop seam did not activate triggers: ${active_status}; ${runtime/h/plugin_errors/.get}")
+            $"trigger host did not activate its plugin: ${active_status}; ${runtime/h/plugin_errors/.get}")
           ($assert (! ($absent? runtime/triggers)) "trigger manager did not start")
           ($assert (! ($absent? (row runtime/h "functions" "list_triggers")))
             "trigger functions were not contributed")
@@ -142,7 +143,7 @@
           ($assert (== result/kind "continue")
             "response code could not call the trigger plugin")
           (let manager runtime/triggers)
-          (withdraw_seam runtime/h "core" "loop")
+          (withdraw_seam runtime/h "core" "triggers/host")
           ($assert manager/closed/.get "trigger scheduler did not close on seam loss")
           ($assert (== runtime/triggers nil) "closed manager stayed on runtime")
           ($assert (== (row runtime/h "functions" "list_triggers") void)
@@ -150,7 +151,7 @@
           ($assert (== (/total (discover runtime/h ^owner "triggers")) 0)
             "trigger documentation survived seam loss")
         ensure
-          (withdraw_seam runtime/h "core" "loop")
+          (withdraw_seam runtime/h "core" "triggers/host")
           (close_round_controller controller)
           (close_runtime runtime))))))
 

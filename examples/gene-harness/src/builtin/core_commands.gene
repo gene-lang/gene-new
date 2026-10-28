@@ -1,15 +1,21 @@
 (mod core_commands)
-(import ^from "../plugin_api" [Plugin PluginHost])
-(import ^from "../runtime/commands" [shared_command_rows])
-(import ^from "./documentation" [contribute_doc])
+(import ^from "../plugin_api" [Plugin PluginHost OperatorHost])
+(import ^from "../public/documentation" [contribute_doc])
 
 (fn core_commands [] : Plugin
-  (Plugin ^id "core_commands"
+  (Plugin ^id "core_commands" ^requires ["operator/host"]
     ^provides [["commands" "help"] ["commands" "run"]
                ["commands" "view"]]
     ^activate (fn [host]
-      (for command in (shared_command_rows)
-        (let row ($thaw ($freeze_shallow command)))
+      (let operator (host .PluginHost:resolve "operator/host"))
+      (for command in
+        [{^name "help" ^usage "/help [command]" ^doc "List commands or show a command's usage."
+          ^run (fn [ctx] (operator .OperatorHost:command "help" ctx)) ^^raw_input}
+         {^name "run" ^usage "/run <Gene code>" ^doc "Evaluate Gene with plugin functions and the standard library."
+          ^run (fn [ctx] (operator .OperatorHost:command "run" ctx)) ^^raw_input}
+         {^name "view" ^usage "/view <path>[:from-to]" ^doc "View a file or directory, up to 400 lines."
+          ^run (fn [ctx] (operator .OperatorHost:command "view" ctx)) ^^raw_input}]
+        (let row command)
         (row .put "docs" ["harness/commands"])
         (row .put "tags" ["commands" "operator"])
         (host .PluginHost:contribute "commands" row))

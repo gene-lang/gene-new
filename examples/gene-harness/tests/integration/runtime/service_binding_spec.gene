@@ -1,0 +1,43 @@
+(import $test [describe it])
+(import [isolated run_spec] ^from "../../support")
+(import [Plugin PluginHost ServiceError] ^from "../../../src/plugin_api")
+(import [new_harness install provide replace row shutdown_harness] ^from "../../../src/kernel")
+(import [service_binding require_service] ^from "../../../src/runtime/service_handles")
+(import [acquire_snapshot release_snapshot] ^from "../../../src/runtime/composition")
+
+(describe "Scoped service dependency replacement"
+  (it "stages an active binding swap without recursive-lock cleanup and keeps old handles leased" []
+    (isolated this_mod/.path "stages an active binding swap without recursive-lock cleanup and keeps old handles leased"
+      (fn [root]
+        (let h (new_harness))
+        (let runtime {^h h ^closed ($cell false)})
+        (let handles ($cell []))
+        (let closed ($cell []))
+        (fn binding [value]
+          (service_binding runtime "test" (fn [token] {^token token}) ^config {^value value}))
+        (try
+          (provide h "core" "test/service" (binding 1))
+          (install h (Plugin ^id "consumer" ^requires ["test/service"] ^activate (fn [host]
+            (let service (host .PluginHost:resolve "test/service"))
+            (let value (/value (/config (require_service service))))
+            (handles/.get .push service)
+            (host .PluginHost:defer (fn [] (closed/.get .push value)))
+            (host .PluginHost:contribute "functions" {^name "service_value" ^doc "Read the scoped binding."
+              ^fn (fn [] (/value (/config (require_service service))))}))))
+          (let lease (acquire_snapshot h/snapshots))
+          (try
+            (replace h "core" "test/service" (binding 2))
+            ($assert (== closed/.get []))
+            (let current (/fn (row h "functions" "service_value")))
+            ($assert (== (current) 2))
+            ($runtime/with_context {^composition h/snapshots ^snapshot lease/snapshot}
+              (fn []
+                (let old (/fn (row h "functions" "service_value")))
+                ($assert (== (old) 1))))
+          ensure (release_snapshot h/snapshots lease))
+          ($assert (== closed/.get [1]))
+          ($assert (try (require_service handles/.get/0) false
+            catch ServiceError (== $err/code "unavailable")))
+        ensure (shutdown_harness h))))))
+
+(fn main [args] : Int (run_spec args))

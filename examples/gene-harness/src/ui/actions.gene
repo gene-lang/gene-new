@@ -128,11 +128,15 @@
   (if_not ($absent? task) task/.cancel)
   receipt)
 
+(fn quiesce_ui_actions [manager : UiActionManager]
+  (manager/accepting .set false)
+  (for [id task] in manager/active/.get task/.cancel)
+  (for [id watcher] in manager/watchers/.get watcher/.join)
+  nil)
+
 (fn close_ui_actions [manager : UiActionManager]
   (if (manager/closed .swap true) (return nil))
-  (manager/accepting .set false)
   (try
-    (for [id task] in manager/active/.get task/.cancel)
-    (for [id watcher] in manager/watchers/.get watcher/.join)
+    (quiesce_ui_actions manager)
     ensure (close_action_log manager/log))
   nil)

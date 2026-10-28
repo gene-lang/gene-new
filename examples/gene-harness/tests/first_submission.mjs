@@ -77,7 +77,7 @@ function client() {
     queued_prompt: "", queued_submit: false, message_sequence: 0n, sending: false,
     busy: false, autoscroll: true, has_older: false, loading_older: false, socket_epoch: 0n,
     viewing_history: false, generation: 1n, records: [], preview: [], sessions: [],
-    needs_attention: [], filter_epoch: 0n, trigger_selected: "", tabs: [], expanded: [],
+    needs_attention: [], filter_epoch: 0n, tabs: [], expanded: [],
     rounds: [], input_id: "", answering: false, round: null, mode: null, mode_pending: null,
     action_cooldown: false, was_executing: false, pending: null, status: null,
     status_epoch: "", status_revision: "", status_generation: 0n, components: [],
@@ -605,3 +605,49 @@ turnPanel().open=false;turnPanel().dispatchEvent(new Event('toggle'));
 turnPanel().open=true;turnPanel().dispatchEvent(new Event('toggle'));
 assert.equal(responsePanel().open,true,'reopening the turn opens its Response again');
 console.log('Response disclosure: turn expansion and manual collapse across snapshots passed');
+
+// Feature handlers receive frames only after the common stream guards. One
+// page subscription handles selected and background sessions without mixing
+// their records, and a failed observer cannot prevent the core projection.
+c=client();
+const featureBus=await import(new URL('feature_events.mjs',mainURL));
+const {create_question_editors}=await import(new URL('question_editors.mjs',mainURL));
+const {create_center}=await import(new URL('notification_center.mjs',mainURL));
+const {create_producer_inbox}=await import(new URL('producer_inbox.mjs',mainURL));
+c.ui=create_ui(element('ui_root'),true,c.notices,noop,noop,noop,noop,'light');
+c.questions=create_question_editors(c.notices,noop,noop);
+c.center=create_center(c.notices,c.questions,noop,noop);
+c.inbox=create_producer_inbox(c.notices,false,noop,noop,noop,noop);
+harness.apply_snapshot(c,snapshot());
+harness.ensure_feature_host(c);
+const selectedTab=harness.session_tab(c,'s');
+const backgroundTab=harness.session_tab(c,'feature-background');
+const observed=[];
+const failingObserver=featureBus.subscribe_feature(c.feature_events,()=>{throw new Error('fixture observer failed');});
+const observing=featureBus.subscribe_feature(c.feature_events,(kind,session)=>observed.push([kind,session]));
+const featureFrame=(sequence,session,type,data,epoch='features-host')=>JSON.stringify({
+  protocol:8,epoch,sequence:String(sequence),session,type,data});
+const delegationBlock=(id,revision)=>({id,round_id:'r',turn:1,phase:'delegation/update',
+  role:'assistant',seq:'1',text:'',durable:true,delegation:{revision}});
+const priorConsoleError=console.error;
+console.error=()=>{};
+try {
+  harness.stream_message(c,selectedTab,featureFrame(1,'s','delegation',delegationBlock('selected-child',2)));
+  assert.equal(c.records.find(row=>row.id==='selected-child').delegation.revision,2n);
+  assert.equal(selectedTab.cache.records.find(row=>row.id==='selected-child').delegation.revision,2n);
+  harness.stream_message(c,backgroundTab,featureFrame(1,'feature-background','delegation',delegationBlock('background-child',3)));
+  assert.equal(backgroundTab.cache.records.find(row=>row.id==='background-child').delegation.revision,3n);
+  assert.equal(c.records.some(row=>row.id==='background-child'),false);
+  harness.stream_message(c,selectedTab,featureFrame(2,'s','extension/custom',{value:'accepted'}));
+  assert.deepEqual(observed.at(-1),['extension/custom','s']);
+  const beforeRejected=observed.length;
+  harness.stream_message(c,selectedTab,featureFrame(3,'s','extension/custom',{},'retired-host'));
+  // A genuinely new epoch is accepted once; the former epoch is then stale.
+  const afterEpoch=observed.length;
+  harness.stream_message(c,selectedTab,featureFrame(4,'s','extension/custom',{},'features-host'));
+  assert.equal(observed.length,afterEpoch,'an old epoch reached feature handlers');
+  assert.ok(afterEpoch>beforeRejected);
+  harness.stream_message(c,selectedTab,featureFrame(8,'s','extension/custom',{}));
+  assert.equal(observed.length,afterEpoch,'a sequence gap reached feature handlers');
+} finally { console.error=priorConsoleError; failingObserver(); observing(); }
+console.log('Feature stream coordination: guards, arbitrary events, failure isolation and selected/background delegation passed');

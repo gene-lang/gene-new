@@ -1,0 +1,7 @@
+# Generic host binding, interpreted only by PluginHost:resolve. Ordinary seam
+# values retain their existing identity; new service factories bind to a caller.
+(mod service_binding)
+(type HostServiceBinding ^props {^factory Any})
+
+(fn bind_service [value, host]
+  (if (== ($head value) HostServiceBinding) (value/factory host) value))

@@ -1,24 +1,34 @@
 (mod harness_client ^profile web)
+
+(import [initialize_delegation begin_delegation_render delegation_recovery set_delegation_recovery
+  render_delegation render_delegation_recovery] ^from "./delegation_ui.gene")
+(import [Client SessionTab] ^from "./workspace_model.gene" ^^export)
+(import [FeatureHost] ^from "./feature_host.gene")
+(import [render_session_title : slack_title resolve_slack_author : slack_author add_session_to_slack : slack_share pending_session : slack_pending] ^from "./slack_ui.gene")
+(import [trigger_fields trigger_occurrences : trigger_history load_triggers : trigger_load create_trigger : trigger_create] ^from "./trigger_ui.gene")
+(import [voice_pending? : pending_voice voice_replay_handler : replay_voice voice_rounds : rounds_voice
+  voice_submit : submit_voice voice_review_key : review_key_voice reviewed_voice_input : input_voice
+  voice_review : review_voice initialize_voice : initialize_voice_feature configure_voice] ^from "./voice_glue.gene")
+
 (import [LiveOutput create_output output_entry receive_output output_text historical_records
   turn_output_key command_output_key clear_session_output output_epoch interrupt_output observe_output output_open command_output_text]
   ^from "./live_output.gene")
 (import [BrowserClients create_clients update_clients] ^from "./browser_clients.gene")
+(import [FeatureEvents create_feature_events subscribe_feature feature_subscribed? emit_feature_event]
+  ^from "./feature_events.gene")
 (import [SessionMenu create_session_menu open_session_menu bind_session_menu finish_session_menu_render]
   ^from "./session_menu.gene")
 (import [CommandClient create_commands configure_commands dispatch_command recover_command forget_command] ^from "./command_client.gene")
 (import [RoundClient create_rounds configure_rounds dispatch_round recover_round forget_round] ^from "./round_client.gene")
 (import [claim_modal release_modal keyboard_owned?] ^from "./overlays.gene")
 (import [items : launcher_items flag : launcher_flag] ^from "../src/common/launcher.gene")
-(import [SlackUserLabels create_user_labels user_label] ^from "./slack_users.gene")
 (import [can_share_session? session_share_pending?]
   ^from "./slack_channels.gene")
-(import [SlackSessionTitle create_session_title update_session_title] ^from "./slack_session_title.gene")
 
 (import ^from "./state.gene"
   [
     terminal
     merge_blocks
-    merge_delegation
     delegation_snapshot
     submission_blocks
     first_prompt_block
@@ -33,7 +43,7 @@
     status_is_current])
 (import ^from "../src/web/contract.gene" [protocol_version])
 (import ^from "./view.gene" [block_view step_view run_status_view not_durable append_history_start])
-(import [delegation_view recovery_view session_link dint dlist] ^from "./delegations.gene")
+(import [session_link dint dlist] ^from "./delegations.gene")
 (import ^from "./media.gene"
   [MediaComposer create_media media_select media_move media_ids media_has
    media_blocked media_admitted media_controls])
@@ -65,38 +75,41 @@
   [create : create_ui update : update_ui controls : ui_controls event : ui_event open_reference
    set_appearance : ui_appearance])
 
-(type SessionTab ^props {^id Str ^title Str ^cache Any ^socket Any ^socket_epoch Int ^sequence Int ^connected Bool ^closed Bool ^expanded (List Str) ^server_epoch Str})
 
-(type Client ^props {
-  ^selected Str ^csrf Str ^cursor Str ^next_seq Str ^epoch Str ^ready Bool ^connected Bool
-  ^server_busy Bool ^awaiting Str ^awaiting_session Str ^queued_prompt Str ^queued_submit Bool
-  ^message_sequence Int ^sending Bool ^busy Bool ^autoscroll Bool ^has_older Bool ^loading_older Bool
-  ^socket_epoch Int ^viewing_history Bool ^generation Int ^records (List Any) ^preview (List Any)
-  ^sessions (List Any) ^needs_attention (List Any) ^filter_epoch Int ^trigger_selected Str
-  ^tabs (List SessionTab) ^expanded (List Str) ^rounds (List Any) ^input_id Str ^answering Bool
-  ^round Any ^mode Any ^mode_pending Any ^action_cooldown Bool ^was_executing Bool ^pending Any
-  ^status Any ^status_epoch Str ^status_revision Str ^status_generation Int
-  ^components (List Any) ^component_buttons PropMap ^socket Any ^session_revision Str ^ui Any
-  ^media Any ^notices Notices ^confirmations Any ^questions Any ^center Any ^inbox Any ^safe_ui Bool
-  ^root EventTarget ^list EventTarget ^transcript EventTarget ^prompt EventTarget ^notice EventTarget
-  ^title EventTarget ^appearance Str ^style_signature Str ^cards Any
-  ^delegation_epoch Int? ^delegation_recovery Any?
-  ^browser_clients Any ^command_client Any ^creation_unknown Bool?
-  ^voice_client Any? ^voice_listeners Any? ^page_id Str? ^live_output Any? ^session_menu Any? ^slack_users Any? ^slack_title Any? ^slack_pending Str?})
+(fn ensure_feature_host [client : Client] : Void
+  (if_yes (! ($absent? client/services)) (return))
+  (set client/services (FeatureHost
+    ^api (fn [method : Str, path : Str, payload : Any, done : (Fn [Int Any] Void)] : Void (api client method path payload done))
+    ^error (fn [data : Any, session : Str] : Void (show_error client data ^session session))
+    ^feedback (fn [key : Str, message : Str, sticky : Bool] : Void (notice client message ^key key ^sticky sticky))
+    ^controls (fn [] : Void (update_controls client))
+    ^select (fn [id : Str] : Void (select_session client id))
+    ^refresh (fn [] : Void (refresh_sessions client))
+    ^tab (fn [id : Str] : Any (session_tab client id))
+    ^upsert (fn [data : Any] : Void (upsert_session client data))
+    ^remember (fn [] : Void (remember_draft client))
+    ^apply_run (fn [session : Str, data : Any] : Void (apply_run client session data))
+    ^emit (fn [kind : Str, session : Str, data : Any] : Void (browser_event client kind session data))
+    ^render (fn [] : Void (render_transcript client))))
+  (initialize_delegation client))
 
 (fn render_session_title [client : Client, text : Str, shared : Any] : Void
-  (if_yes ($absent? client/slack_title)
-    (set client/slack_title (create_session_title client/title)))
-  (var raw : Any client/slack_title) (var title : SlackSessionTitle raw)
-  (update_session_title title text shared client/selected))
-
+  (ensure_feature_host client) (slack_title client text shared))
 (fn resolve_slack_author [client : Client, source : Any, target : EventTarget] : Void
-  (if_yes ($absent? client/slack_users)
-    (set client/slack_users (create_user_labels
-      (fn [data : Any, done : (Fn [Int Any] Void)] : Void
-        (api client "POST" "/api/v8/channels/user" data done)))))
-  (var raw : Any client/slack_users) (var users : SlackUserLabels raw)
-  (user_label users source target))
+  (ensure_feature_host client) (slack_author client source target))
+(fn add_session_to_slack [client : Client] : Void (ensure_feature_host client) (slack_share client))
+(fn trigger_occurrences [client : Client, id : Str] : Void (ensure_feature_host client) (trigger_history client id))
+(fn load_triggers [client : Client] : Void (ensure_feature_host client) (trigger_load client))
+(fn create_trigger [client : Client] : Void (ensure_feature_host client) (trigger_create client))
+(fn voice_pending? [client : Client] : Bool (ensure_feature_host client) (pending_voice client))
+(fn voice_replay_handler [client : Client] : Any (ensure_feature_host client) (replay_voice client))
+(fn voice_rounds [client : Client] : RoundClient (ensure_feature_host client) (rounds_voice client))
+(fn voice_review_key [client : Client, session : Str] : Str (ensure_feature_host client) (review_key_voice client session))
+(fn reviewed_voice_input [client : Client, session : Str, value : Str] : Any (ensure_feature_host client) (input_voice client session value))
+(fn voice_review [client : Client, session : Str, value : Str, input : Any] : Bool
+  (ensure_feature_host client) (review_voice client session value input))
+(fn voice_submit [client : Client, session : Str, value : Str, input : Any, done : (Fn [Int Any] Void)] : Void
+  (ensure_feature_host client) (submit_voice client session value input done))
 
 (fn live_store [client : Client] : LiveOutput
   (if_yes ($absent? client/live_output) (set client/live_output (create_output)))
@@ -181,74 +194,21 @@
   (if_yes ($absent? client/page_id) (set client/page_id ($browser/request_id)))
   (string_or client/page_id ""))
 
-(fn voice_event [client : Client, kind : Str, session : Str, data : Any] : Void
-  (if_yes ($absent? client/voice_listeners) (return))
-  (var listeners (launcher_items client/voice_listeners))
-  (for listener in listeners
-    (try
-      (var callback : (Fn [Str Str Any] Void) listener/callback)
-      (callback kind session data)
-    catch Any ($console/error "A voice browser listener failed."))))
+(fn client_events [client : Client] : FeatureEvents
+  (if_yes ($absent? client/feature_events) (set client/feature_events (create_feature_events)))
+  (var raw : Any client/feature_events)
+  (var events : FeatureEvents raw)
+  events)
 
-(fn voice_pending? [client : Client] : Bool
-  (if_yes ($absent? client/voice_client) (return false))
-  (var voice (voice_rounds client))
-  (! ($absent? voice/pending)))
+(fn browser_event [client : Client, kind : Str, session : Str, data : Any] : Void
+  (emit_feature_event (client_events client) kind session data))
 
-(fn voice_replay_handler [client : Client] : Any
-  (var listeners (launcher_items client/voice_listeners))
-  (var available false)
-  (for contribution in (launcher_items client/status/browser_clients)
-    (if_yes (== (string_or contribution/name "") "voice") (set available true)))
-  (if_yes (|| (! available) (== listeners/.size 0)) (return nil))
-  (var session client/selected)
-  (fn [record : Any] : Void (voice_event client "voice/replay" session record)))
-
-(fn voice_rounds [client : Client] : RoundClient
-  (var raw : Any client/voice_client)
-  (var result : RoundClient raw)
-  result)
-
-(fn voice_submit [client : Client, session : Str, value : Str, input : Any,
-                  done : (Fn [Int Any] Void)] : Void
-  (if_yes (|| (! client/ready) client/sending (! ($absent? client/pending)))
-    (done 409 {^^not_sent ^message "Resolve the current submission before sending voice."}) (return))
-  (set client/sending true) (update_controls client)
-  (var voice (voice_rounds client))
-  (dispatch_round voice session value input
-    (fn [code : Int, data : Any] : Void
-      (set client/sending false) (update_controls client)
-      (done code data))))
-
-(fn voice_review_key [client : Client, session : Str] : Str
-  (var workspace (string_or client/status/workspace ""))
-  $"gene-harness/voice-review/${workspace}/${session}")
-
-(fn reviewed_voice_input [client : Client, session : Str, value : Str] : Any
-  (var key (voice_review_key client session))
-  (var saved (?? ($session_storage/get key) ""))
-  (if_yes (== saved "") (return nil))
-  (try
-    (var review : Any ($json/parse saved))
-    (if_yes (&& (!= (string_or review/text "") "") (!= (str/trim value) ""))
-      (return review/input))
-    catch Any nil)
-  ($session_storage/remove key)
-  nil)
-
-(fn voice_review [client : Client, session : Str, value : Str, input : Any] : Bool
-  (if_yes (|| (== session "") client/sending (! ($absent? client/pending))) (return false))
-  (var previous (if (== session client/selected) ($dom/input_value client/prompt)
-    (?? ($session_storage/get (draft_key session)) "")))
-  (var combined ($to_str previous (if (== previous "") "" "\n\n") value))
-  (if_yes (! ($session_storage/set (voice_review_key client session)
-    ($json/stringify {^text value ^input input}))) (return false))
-  (if_yes (! ($session_storage/set (draft_key session) combined)) (return false))
-  (if_yes (== session client/selected)
-    ($dom/set_input_value client/prompt combined)
-    (notice client "Voice text appended for review. Edit freely; Enter sends text only. Clear the composer to return to typed input. Attachments stay in your draft.")
-    ($dom/focus client/prompt))
-  true)
+(fn subscribe_browser [client : Client, owner : Str, callback : (Fn [Str Str Any] Void)] : (Fn [] Void)
+  (var dispose (subscribe_feature (client_events client) callback ^owner owner))
+  (if_yes client/ready (render_transcript client))
+  (fn [] : Void
+    (dispose)
+    (if_yes client/ready (render_transcript client))))
 
 (fn creation_outcome [client : Client, code : Int] : Void
   (if_yes (|| (== code 0) (>= code 500)) (set client/creation_unknown true))
@@ -377,19 +337,9 @@
    ^voice_review (fn [session : Str, value : Str, input : Any] : Bool
      (voice_review client session value input))
    ^subscribe (fn [callback : (Fn [Str Str Any] Void)] : (Fn [] Void)
-     (if_yes ($absent? client/voice_listeners)
-       (var empty : (List Any) [])
-       (set client/voice_listeners empty))
-     (var listeners (launcher_items client/voice_listeners))
-     (var id ($browser/request_id))
-     (listeners .push {^id id ^callback callback})
-     (if_yes client/ready (render_transcript client))
-     (fn [] : Void
-       (var kept : (List Any) [])
-       (var current (launcher_items client/voice_listeners))
-       (for listener in current (if_yes (!= (string_or listener/id "") id) (kept .push listener)))
-       (set client/voice_listeners kept)
-       (if_yes client/ready (render_transcript client))))
+     (subscribe_browser client "" callback))
+   ^subscribe_owned (fn [owner : Str, callback : (Fn [Str Str Any] Void)] : (Fn [] Void)
+     (subscribe_browser client owner callback))
    ^claim (fn [owner : Str, panel : EventTarget, close : (Fn [Bool] Void), fallback : EventTarget] : Bool
      (claim_modal owner client/root panel close fallback))
    ^release (fn [owner : Str, restore : Bool] : Void (release_modal owner restore))})
@@ -479,29 +429,6 @@
   (var message (string_or result/message "The request could not be completed."))
   (notice ^key "request-error" ^scope session ^^sticky ^severity "error" client message))
 
-(fn add_session_to_slack [client : Client] : Void
-  (var session client/selected)
-  (if_yes (|| (== session "") (!= (string_or client/slack_pending "") "")) (return))
-  (set client/slack_pending session)
-  (update_controls client)
-  (api client "POST" $"/api/v8/sessions/${($url/encode_component session)}/slack"
-    {^revision client/session_revision}
-    (fn [code : Int, data : Any] : Void
-      (set client/slack_pending "")
-      (if (== code 202)
-        (then
-          (var tab (session_tab client session))
-          # The live snapshot can finish linking before this POST returns.
-          (var received_revision : Int ($json/parse (string_or data/revision "0")))
-          (var cached_revision : Int ($json/parse (string_or tab/cache/session/revision "0")))
-          (if_yes (>= received_revision cached_revision)
-            (upsert_session client data)
-            (set tab/cache/session data)
-            (if_yes (== session client/selected) (set client/session_revision data/revision)))
-          (notice client "Adding this conversation to Slack. Its title will link to the thread when ready."))
-        (else (show_error ^session session client data)))
-      (update_controls client))))
-
 (fn session_tab [client : Client, id : Str] : SessionTab
   (for tab in client/tabs
     (if_yes (== tab/id id) (return tab)))
@@ -522,7 +449,7 @@
   (set cache/cursor client/cursor)
   (set cache/next_submission_seq client/next_seq)
   (set cache/has_older client/has_older)
-  (set cache/delegation_recovery client/delegation_recovery)
+  (set cache/delegation_recovery (delegation_recovery client))
   (if_yes (== (string_or client/status/status_session "") client/selected)
     (set cache/status client/status))
   (set tab/expanded client/expanded))
@@ -549,7 +476,7 @@
 
 (fn close_tab [client : Client, id : Str, ^navigate navigate : Bool = true] : Void
   (clear_session_output (live_store client) id)
-  (voice_event client "session/close" id nil)
+  (browser_event client "session/close" id nil)
   (var tab (session_tab client id))
   (set tab/closed true)
   (set tab/socket_epoch (+ tab/socket_epoch 1))
@@ -619,9 +546,9 @@
     (if_yes (== selected_tab/id client/selected) (set session selected_tab/cache/session)))
   (var share_button ($dom/element "add_to_slack"))
   (set share_button/hidden (|| (== client/selected "") (! (can_share_session? session))))
-  (var sharing (|| (== (string_or client/slack_pending "") client/selected) (session_share_pending? session)))
+  (var sharing (|| (== (slack_pending client) client/selected) (session_share_pending? session)))
   (set share_button/disabled (|| (! client/ready) (! client/connected) client/busy sharing
-    (!= (string_or client/slack_pending "") "")))
+    (!= (slack_pending client) "")))
   ($dom/set_text share_button (if sharing "Adding to Slack…" "Add to Slack"))
   (var pin ($dom/element "pin_session"))
   (set pin/disabled (|| (! client/ready) (! client/connected) (== client/selected "")))
@@ -820,112 +747,6 @@
         (else
           (show_error client data))))))
 
-(fn trigger_fields [] : Void
-  (var kind ($dom/input_value ($dom/element "trigger_kind")))
-  (set_hidden "trigger_every_field" (!= kind "heartbeat"))
-  (set_hidden "trigger_at_field" (!= kind "scheduled"))
-  (set_hidden "trigger_cron_field" (!= kind "cron"))
-  (set_hidden "trigger_timezone_field" (!= kind "cron")))
-
-(fn trigger_occurrences [client : Client, id : Str] : Void
-  (set client/trigger_selected id)
-  (var target ($dom/element "trigger_occurrences"))
-  ($dom/clear target)
-  ($dom/append target ($dom/render `(h3 %id)))
-  ($dom/set_input_value ($dom/element "trigger_filter") id)
-  (refresh_sessions client)
-  (api
-    client
-    "GET"
-    $"/api/v8/triggers/${($url/encode_component id)}/occurrences"
-    nil
-    (fn [code : Int, data : Any] : Void
-      (if_yes (!= client/trigger_selected id) (return))
-      (if (!= code 200)
-        (then
-          (show_error client data))
-        (else
-          (var occurrences : (List Any) data/occurrences)
-          (for occurrence in occurrences
-            (var state : Str occurrence/state)
-            (var name : Str occurrence/id)
-            (var session : Str occurrence/session)
-            (var reason : Str (string_or occurrence/outcome (string_or occurrence/reason "")))
-            ($dom/append
-              target
-              ($dom/render
-                `(button ^type "button" ^class_name "occurrence" ^disabled %(|| (== state "due") (== state "skipped")) ^on_click %(fn [event : Any] : Void (set_hidden "trigger_drawer" true) (select_session client session))
-                   (span %name)
-                   (span %$"${state} ${reason}"))))))))))
-
-(fn load_triggers [client : Client] : Void
-  (api
-    client
-    "GET"
-    "/api/v8/triggers"
-    nil
-    (fn [code : Int, data : Any] : Void
-      (if (!= code 200)
-        (then
-          (show_error client data))
-        (else
-          (var target ($dom/element "trigger_list"))
-          ($dom/clear target)
-          (var definitions : (List Any) data/triggers)
-          (if_yes (== ($size definitions) 0)
-            ($dom/append target ($dom/render `(p "No triggers yet."))))
-          (for definition in definitions
-            (var id : Str definition/id)
-            (var kind : Str definition/kind)
-            ($dom/append
-              target
-              ($dom/render
-                `(div ^class_name "trigger_row"
-                   (button ^type "button" ^on_click %(fn [event : Any] : Void (trigger_occurrences client id))
-                     %id
-                     (small %kind))
-                   (button ^type "button" ^on_click %(fn [event : Any] : Void (api client "DELETE" $"/api/v8/triggers/${($url/encode_component id)}" nil (fn [status : Int, result : Any] : Void (if (== status 200) (load_triggers client) (show_error client result))))) "Delete"))))))))))
-
-(fn create_trigger [client : Client] : Void
-  (try
-    (var kind ($dom/input_value ($dom/element "trigger_kind")))
-    (var keep : Int ($json/parse ($dom/input_value ($dom/element "trigger_keep"))))
-    (var checkbox ($dom/element "trigger_continue"))
-    (var continued : Bool checkbox/checked)
-    (var data
-      :
-      Any
-      {
-        ^id ($dom/input_value ($dom/element "trigger_id"))
-        ^kind kind
-        ^request ($dom/input_value ($dom/element "trigger_request"))
-        ^missed ($dom/input_value ($dom/element "trigger_missed"))
-        ^overlap ($dom/input_value ($dom/element "trigger_overlap"))
-        ^continue_session continued
-        ^retention {^keep keep}})
-    (if (== kind "heartbeat")
-      (then
-        (var every : Int ($json/parse ($dom/input_value ($dom/element "trigger_every"))))
-        (set data/every_ms every)))
-    (if (== kind "scheduled") (set data/at ($dom/input_value ($dom/element "trigger_at"))))
-    (if_yes (== kind "cron")
-      (set data/cron ($dom/input_value ($dom/element "trigger_cron")))
-      (set data/timezone ($dom/input_value ($dom/element "trigger_timezone"))))
-    (api
-      client
-      "POST"
-      "/api/v8/triggers"
-      data
-      (fn [code : Int, result : Any] : Void
-        (if (== code 201)
-          (then
-            (load_triggers client)
-            (notice client "Trigger created."))
-          (else
-            (show_error client result)))))
-  catch Any
-    (notice client "Check the trigger's interval and retention values.")))
-
 (fn expanded_block [client : Client, id : Str] : Bool
   (for previous in client/expanded
     (if_yes (== previous id) (return true)))
@@ -982,21 +803,7 @@
 
 (fn render_block [client : Client, target : EventTarget, block : Any] : Void
   (var block_phase : Str block/phase)
-  (if_yes (== block_phase "delegation/update") (return))
-  (if_yes (== block_phase "delegation")
-    (var session client/selected)
-    (var epoch : Int (?? client/delegation_epoch 0))
-    (var data : Any block/delegation)
-    ($dom/append target (delegation_view data
-      (fn [id : Str] : Void (select_session client id))
-      (fn [] : Void
-        (var id : Str data/id)
-        (api client "POST" $"/api/v8/sessions/${session}/delegations/${id}/cancel"
-          {^admission data/admission}
-          (fn [code : Int, result : Any] : Void
-            (if_yes (!= code 200) (show_error ^session session client result)))))
-      (fn [] : Bool (&& (== session client/selected) (== epoch (dint client/delegation_epoch))))))
-    (return))
+  (if_yes (render_delegation client target block) (return))
   (if_yes (== block_phase "card")
     (var host : CardHost client/cards)
     ($dom/append target (card_view host client/selected block/card (card_owned client block/card) client/safe_ui))
@@ -1092,7 +899,8 @@
 
 (fn render_transcript [client : Client, ^prepend prepend : Bool = false] : Void
   (begin_output_render client)
-  (set client/delegation_epoch (+ (?? client/delegation_epoch 0) 1))
+  (ensure_feature_host client)
+  (begin_delegation_render client)
   (var old_top ($dom/scroll_top client/transcript))
   (var old_height ($dom/scroll_height client/transcript))
   (var follow (&& (! client/viewing_history)
@@ -1181,15 +989,7 @@
   (if_yes (&& (! ($absent? client/round)) (! current_shown))
     (var status : Str client/round/state)
     (if_not (terminal status) (render_run client [] client/round)))
-  (if_not ($absent? client/delegation_recovery)
-    (var recovery : Any client/delegation_recovery)
-    (var session client/selected)
-    ($dom/append client/transcript (recovery_view recovery
-      (fn [action : Str] : Void
-        (api client "POST" $"/api/v8/sessions/${session}/delegations/recovery"
-          {^round_id recovery/round ^action action}
-          (fn [code : Int, result : Any] : Void
-            (if_yes (!= code 200) (show_error ^session session client result))))))))
+  (render_delegation_recovery client client/transcript)
   (refresh_live_output client)
   (if follow
     (then
@@ -1291,9 +1091,7 @@
   (set client/status_revision revision)
   (var unchanged (== ($json/stringify client/status) ($json/stringify data)))
   (set client/status data)
-  (if_not ($absent? client/voice_client)
-    (var voice (voice_rounds client))
-    (configure_rounds voice (string_or data/workspace "")))
+  (configure_voice client data)
   (if_not ($absent? client/command_client)
     (var commands : CommandClient client/command_client)
     (configure_commands commands (string_or data/workspace "")))
@@ -1474,7 +1272,7 @@
     (set client/preview (historical_records data/preview))
     (set client/has_older data/has_older))
   (set client/round data/round)
-  (set client/delegation_recovery (?? data/delegation_recovery nil))
+  (set_delegation_recovery client (?? data/delegation_recovery nil))
   (set client/mode (?? data/mode nil))
   (resolve_mode_receipt client data/records)
   (var empty_runs : (List Any) [])
@@ -1576,7 +1374,7 @@
   (var refresh (&& ($absent? initial) (== id client/selected) client/viewing_history))
   (save_tab client)
   (set client/selected id)
-  (voice_event client "session/change" id nil)
+  (browser_event client "session/change" id nil)
   (var attachments : MediaComposer client/media)
   (media_select attachments id)
   (set client/queued_prompt "")
@@ -2150,10 +1948,6 @@
           (update_controls client)))
       (elif (|| (== kind "turn") (== kind "reply"))
         (if_yes (== session client/selected) (apply_record client data)))
-      (elif (== kind "delegation")
-        (if_yes (== session client/selected)
-          (set client/records (merge_delegation client/records data))
-          (render_transcript client)))
       (elif (== kind "records")
         (if_yes (== session client/selected)
           (var records : (List Any) data/records)
@@ -2297,6 +2091,7 @@
       (interrupt_output (live_store client) tab/id) (schedule_live_output client)
       (connect_stream client tab)
       (return))
+    (ensure_feature_host client)
     (set tab/sequence sequence)
     (var server_epoch : Str message/epoch)
     (var output_store (live_store client))
@@ -2312,13 +2107,17 @@
     (if_yes (== kind "console")
       (if_yes (== session tab/id) (live_console client session data))
       (if_yes (== tab/id client/selected) (set client/message_sequence sequence))
+      (if_yes (== session tab/id) (browser_event client kind session data))
       (return))
     (if_yes (== kind "session/deleted")
-      (forget_session client (string_or data/id "")) (return))
+      (var observed_here (|| (== session tab/id) (== tab/id client/selected)))
+      (forget_session client (string_or data/id ""))
+      (if_yes observed_here (browser_event client kind session data))
+      (return))
     (if_yes (== session tab/id) (observe_output output_store session kind data))
     (var ui : UiClient client/ui)
-    (if_yes (|| (== kind "reply") (== kind "round/state") (== kind "voice/state") (== kind "ready"))
-      (voice_event client kind session data))
+    (if_yes (|| (== session tab/id) (&& (== session "") (== tab/id client/selected)))
+      (browser_event client kind session data))
     (var center : NotificationCenter client/center)
     (if_yes (!= center/epoch server_epoch)
       (set center/epoch server_epoch)
@@ -2358,9 +2157,6 @@
         (if_yes (&& (== session tab/id) (|| (== kind "turn") (== kind "reply")))
           (var preview : (List Any) cache/preview)
           (set cache/preview (bounded_blocks (merge_blocks preview [data]) true)))
-        (if_yes (&& (== session tab/id) (== kind "delegation"))
-          (var records : (List Any) cache/records)
-          (set cache/records (merge_delegation records data)))
         (if_yes (&& (== session tab/id) (== kind "round/state"))
           (set cache/round data)
           (var rounds : (List Any) cache/rounds)
@@ -2449,7 +2245,7 @@
   (var initial_mode : Str "light")
   (if_not ($absent? document/dataset/theme) (set initial_mode document/dataset/theme))
   (var client
-    (Client ^browser_clients nil ^command_client nil ^selected (query_value ($browser/search) "session") ^csrf "" ^cursor "" ^next_seq "1" ^epoch "" ^!ready ^!sending ^!connected ^!server_busy ^awaiting "" ^awaiting_session "" ^queued_prompt "" ^!queued_submit ^message_sequence 0 ^!busy ^^autoscroll ^generation 0 ^!has_older ^!loading_older ^socket_epoch 0 ^!viewing_history ^records [] ^preview [] ^sessions [] ^needs_attention [] ^filter_epoch 0 ^trigger_selected "" ^tabs [] ^expanded [] ^rounds [] ^input_id "" ^!answering ^round nil ^mode nil ^mode_pending nil ^!action_cooldown ^!was_executing ^pending nil ^status nil ^status_epoch "" ^status_revision "" ^status_generation 0 ^components [] ^component_buttons {} ^socket nil ^session_revision "1" ^ui nil ^media nil ^notices (create_notices) ^confirmations nil ^questions nil ^center nil ^inbox nil ^safe_ui (== (query_value ($browser/search) "ui") "default") ^root root ^list ($dom/element "sessions") ^transcript ($dom/element "transcript") ^prompt ($dom/element "prompt") ^notice ($dom/element "notice") ^title ($dom/element "conversation_title") ^appearance initial_mode ^style_signature "" ^cards nil))
+    (Client ^browser_clients nil ^command_client nil ^selected (query_value ($browser/search) "session") ^csrf "" ^cursor "" ^next_seq "1" ^epoch "" ^!ready ^!sending ^!connected ^!server_busy ^awaiting "" ^awaiting_session "" ^queued_prompt "" ^!queued_submit ^message_sequence 0 ^!busy ^^autoscroll ^generation 0 ^!has_older ^!loading_older ^socket_epoch 0 ^!viewing_history ^records [] ^preview [] ^sessions [] ^needs_attention [] ^filter_epoch 0 ^tabs [] ^expanded [] ^rounds [] ^input_id "" ^!answering ^round nil ^mode nil ^mode_pending nil ^!action_cooldown ^!was_executing ^pending nil ^status nil ^status_epoch "" ^status_revision "" ^status_generation 0 ^components [] ^component_buttons {} ^socket nil ^session_revision "1" ^ui nil ^media nil ^notices (create_notices) ^confirmations nil ^questions nil ^center nil ^inbox nil ^safe_ui (== (query_value ($browser/search) "ui") "default") ^root root ^list ($dom/element "sessions") ^transcript ($dom/element "transcript") ^prompt ($dom/element "prompt") ^notice ($dom/element "notice") ^title ($dom/element "conversation_title") ^appearance initial_mode ^style_signature "" ^cards nil))
   (set client/command_client
     (create_commands
       ^settled (fn [envelope : Any, receipt : Any] : Void (command_settled client envelope receipt))
@@ -2467,40 +2263,9 @@
         (if_yes (&& (! ($absent? client/browser_clients)) (! ($absent? client/status)))
           (var browsers : BrowserClients client/browser_clients)
           (update_clients browsers (launcher_items client/status/browser_clients) client/status)))))
-  (set client/voice_client
-    (create_rounds
-      (fn [method : Str, path : Str, payload : Any, done : (Fn [Int Any] Void)] : Void
-        (api client method path payload done))
-      (fn [message : Str] : Void
-        (var voice (voice_rounds client))
-        (var pending (! ($absent? voice/pending)))
-        (set_hidden "voice_receipt_recover" (! pending))
-        (set_hidden "voice_receipt_discard" (! pending))
-        (var forget ($dom/element "voice_receipt_forget"))
-        (set forget/disabled voice/resolving)
-        (notice ^key "voice-recovery" ^sticky pending client message)
-        (voice_event client "submission/state" "" {^pending pending}))
-      (fn [envelope : Any, receipt : Any] : Void
-        (var session (string_or envelope/session ""))
-        (apply_run client session receipt)
-        (var key (voice_review_key client session))
-        (if_yes (!= (?? ($session_storage/get key) "") "")
-          ($session_storage/remove key)
-          (if (== session client/selected)
-            (if_yes (== (string_or envelope/text "") ($dom/input_value client/prompt))
-              ($dom/set_input_value client/prompt "") (remember_draft client))
-            (if_yes (== (?? ($session_storage/get (draft_key session)) "") (string_or envelope/text ""))
-              ($session_storage/remove (draft_key session)))))
-        (voice_event client "voice/admitted" session receipt))))
+  (ensure_feature_host client)
+  (initialize_voice_feature client)
   (set client/browser_clients (create_clients root client/safe_ui (browser_bridge client)))
-  ($dom/add_event_listener ($dom/element "voice_receipt_recover") "click"
-    (fn [event : Any] : Void
-      (var voice (voice_rounds client))
-      (recover_round voice)))
-  ($dom/add_event_listener ($dom/element "voice_receipt_forget") "click"
-    (fn [event : Any] : Void
-      (var voice (voice_rounds client))
-      (forget_round voice)))
   ($dom/add_event_listener ($dom/element "command_receipt_recover") "click"
     (fn [event : Any] : Void
       (var commands : CommandClient client/command_client)

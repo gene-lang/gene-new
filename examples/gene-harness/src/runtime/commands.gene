@@ -1,4 +1,5 @@
 (mod commands)
+(import [with_command_scope] ^from "./command_scope")
 (import [byte_prefix] ^from "../text")
 (import [command_identity same_command_identity?] ^from "./command_identity")
 (import [ui_record] ^from "../ui/state")
@@ -495,7 +496,8 @@ Stopped."""))))
         parsed/handler
         [ctx]))
     (let task
-      (spawn ^lane root ($runtime/with_context {^session session ^composition manager/runtime/h/snapshots ^snapshot lease/snapshot ^output sink ^command record/id} (fn [] (scope (invoke))))))
+      (spawn ^lane root ($runtime/with_context {^session session ^composition manager/runtime/h/snapshots ^snapshot lease/snapshot ^output sink ^command record/id}
+        (fn [] (with_command_scope manager/runtime ctx (fn [] (scope (invoke))))))))
     (acquire_body_use manager/runtime)
     (manager/active
       .get
@@ -558,8 +560,7 @@ Stopped."""))))
     (save_command_state runtime session state)
     items)))
 
-(fn close_command_manager [manager]
-  (if (manager/closed .swap true) (return nil))
+(fn quiesce_command_manager [manager]
   (manager/accepting .set false)
   (if_not ($absent? manager/modes) (close_input_modes manager/modes))
   (for [id task] in manager/active/.get
@@ -567,3 +568,7 @@ Stopped."""))))
   (for [id watcher] in manager/watchers/.get
     watcher/.join)
   nil)
+
+(fn close_command_manager [manager]
+  (if (manager/closed .swap true) (return nil))
+  (quiesce_command_manager manager))

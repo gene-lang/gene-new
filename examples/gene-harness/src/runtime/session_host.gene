@@ -1,0 +1,23 @@
+# Read-only public projections; callers never receive loaded-session cells,
+# the mutable round record, or a session manager.
+(mod session_host)
+(import [SessionHost] ^from "../plugin_api")
+(import [require_record] ^from "./sessions")
+(import [service_binding require_service] ^from "./service_handles")
+(import [immutable_view] ^from "./composition")
+
+(type HostedSessions ^^private ^props {^token Any}
+  (impl SessionHost
+    (message record [session : Str] : Any
+      (let runtime (/runtime (require_service self)))
+      (immutable_view (require_record runtime/sessions session)))
+    (message round [session : Str] : Any
+      (let runtime (/runtime (require_service self)))
+      (let loaded (runtime/sessions/loaded/.get .get session))
+      (if ($absent? loaded) (return nil))
+      (let round loaded/round/.get)
+      (if ($absent? round) (return nil))
+      (immutable_view {^id round/id ^state round/state ^input (?? round/input nil)}))))
+
+(fn session_host_binding [runtime]
+  (service_binding runtime "sessions" (fn [token] (HostedSessions ^token token))))

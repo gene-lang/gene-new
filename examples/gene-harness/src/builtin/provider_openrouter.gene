@@ -1,9 +1,9 @@
 (mod provider_openrouter)
-(import [chat_messages] ^from "../agents/content")
+(import [chat_messages] ^from "../public/model_content")
 (import ^from "../plugin_api" [Plugin PluginHost])
-(import ^from "./documentation" [contribute_text_doc])
+(import ^from "../public/documentation" [contribute_text_doc])
 (import ^from "../plugin_api" [ProviderError])
-(import ^from "./provider_common" [nonempty configure_model http_json_attempt])
+(import ^from "../public/provider" [nonempty configure_model http_json_attempt])
 
 (fn api_key []
   (?? (nonempty ($os/env? "OPENROUTER_API_KEY"))

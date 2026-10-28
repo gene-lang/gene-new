@@ -1,9 +1,9 @@
 (mod provider_codex)
 (import ^from "../plugin_api" [Plugin PluginHost])
-(import ^from "./documentation" [contribute_text_doc])
+(import ^from "../public/documentation" [contribute_text_doc])
 (import ^from "../plugin_api" [ProviderError])
-(import ^from "./provider_common" [nonempty configure_model http_json_attempt])
-(import [responses_content] ^from "../agents/content")
+(import ^from "../public/provider" [nonempty configure_model http_json_attempt])
+(import [responses_content] ^from "../public/model_content")
 (import [byte_prefix] ^from "../text")
 
 (fn auth_file []

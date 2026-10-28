@@ -1,6 +1,6 @@
 (mod budget_advisory)
 (import ^from "../plugin_api" [Plugin PluginHost])
-(import ^from "./documentation" [contribute_text_doc])
+(import ^from "../public/documentation" [contribute_text_doc])
 
 (fn budget_advisory [] : Plugin
   (Plugin ^id "budget_advisory"

@@ -17,6 +17,12 @@
   (if_yes (! ($absent? record/toolbar))
     (var toolbar : EventTarget record/toolbar)
     ($dom/remove toolbar))
+  (var subscriptions : (List Any) (if ($absent? record/subscriptions) [] record/subscriptions))
+  (for subscription in subscriptions
+    (try
+      (var revoke : (Fn [] Void) subscription)
+      (revoke)
+    catch Any ($console/error "Browser contribution subscription cleanup failed.")))
   (try
     (if_yes (! ($absent? mount/harness_controller/dispose))
       (var cleanup : (Fn [] Void) mount/harness_controller/dispose)
@@ -58,9 +64,31 @@
         ($dom/append host_toolbar toolbar)
         (set bridge/toolbar toolbar)
         (var owner $"${name}:${generation}")
+        (var subscriptions : (List Any) [])
+        (set bridge/subscribe (fn [callback : (Fn [Str Str Any] Void)] : (Fn [] Void)
+          (var current : Any host/mounts/%name)
+          (if_yes (|| ($absent? current) (flag current/failed) (!= (integer current/generation) generation))
+            (return (fn [] : Void (return))))
+          (var unsubscribe : (Fn [] Void)
+            (if ($absent? source_bridge/subscribe_owned)
+              (do
+                (var subscribe : (Fn [(Fn [Str Str Any] Void)] (Fn [] Void)) source_bridge/subscribe)
+                (subscribe callback))
+              (do
+                (var subscribe_owned : (Fn [Str (Fn [Str Str Any] Void)] (Fn [] Void)) source_bridge/subscribe_owned)
+                (subscribe_owned ($to_str name) callback))))
+          (var active true)
+          (var revoke (fn [] : Void
+            (if_yes (! active) (return))
+            (set active false)
+            (unsubscribe)))
+          (subscriptions .push revoke)
+          revoke))
+        (set bridge/subscribe_owned nil)
         (set mount/harness_bridge bridge)
         (set mount/harness_owner owner)
-        (set record {^root mount ^toolbar toolbar ^revision descriptor/revision ^owner owner ^generation generation ^status status})
+        (set record {^root mount ^toolbar toolbar ^revision descriptor/revision ^owner owner
+          ^generation generation ^status status ^subscriptions subscriptions})
         (set host/mounts/%name record)
         ($dom/append ($dom/body) mount)
         (if_yes (!= (text descriptor/stylesheet) "")

@@ -1,0 +1,21 @@
+# Authenticated, call-local command context. A public CommandContext is not
+# itself authority to execute a second command or create a new receipt.
+(mod command_scope)
+(import [ServiceError] ^from "../plugin_api")
+(var calls ^^private ($cell []))
+
+(fn with_command_scope [runtime, context, operation]
+  (let token ($cell nil))
+  (calls/.get .push {^token token ^runtime runtime ^context context})
+  (let inherited (?? ($runtime/context) {}))
+  (try
+    ($runtime/with_context (inherited .assoc "operator_scope" token) operation)
+  ensure
+    (calls .set ($filter calls/.get (fn [record] (! (same? record/token token)))))))
+
+(fn require_command_scope [runtime, supplied]
+  (let token (/operator_scope ($runtime/context)))
+  (for record in calls/.get
+    (if (&& (same? record/token token) (same? record/runtime runtime) (same? record/context supplied))
+      (return record/context)))
+  (fail (ServiceError ^code "command_required" ^message "This operation requires its admitted operator command.")))

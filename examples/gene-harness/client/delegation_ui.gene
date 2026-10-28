@@ -1,0 +1,67 @@
+(mod delegation_ui ^profile web)
+(import [Client] ^from "./workspace_model.gene")
+(import [features client_events api show_error select_session session_tab render_transcript string_or]
+  ^from "./feature_helpers.gene")
+(import [subscribe_feature] ^from "./feature_events.gene")
+(import [merge_delegation] ^from "./state.gene")
+(import [delegation_view recovery_view] ^from "./delegations.gene")
+
+(type DelegationUi ^props {^epoch Int ^recovery Any? ^subscribed Bool})
+(fn state [client : Client] : DelegationUi
+  (var states (features client))
+  (if_yes ($absent? states/delegation) (set states/delegation (DelegationUi ^epoch 0 ^!subscribed)))
+  (var result : DelegationUi states/delegation) result)
+
+(fn initialize_delegation [client : Client] : Void
+  (var feature (state client))
+  (if_yes feature/subscribed (return))
+  (set feature/subscribed true)
+  (subscribe_feature (client_events client)
+    (fn [kind : Str, session : Str, data : Any] : Void
+      (if_yes (!= kind "delegation") (return))
+      (if (== session client/selected)
+        (do
+          (set client/records (merge_delegation client/records data))
+          (render_transcript client))
+        (do
+          (var tab : Any (session_tab client session))
+          (var cache : Any tab/cache)
+          (var records : (List Any) cache/records)
+          (set cache/records (merge_delegation records data)))))
+    ^owner "host/delegation")
+  (return))
+
+(fn begin_delegation_render [client : Client] : Void
+  (var feature (state client)) (set feature/epoch (+ feature/epoch 1)))
+(fn delegation_recovery [client : Client] : Any (/recovery (state client)))
+(fn set_delegation_recovery [client : Client, value : Any] : Void
+  (var feature (state client)) (set feature/recovery value))
+
+(fn render_delegation [client : Client, target : EventTarget, block : Any] : Bool
+  (var phase (string_or block/phase ""))
+  (if_yes (== phase "delegation/update") (return true))
+  (if_yes (!= phase "delegation") (return false))
+  (var feature (state client))
+  (var session client/selected)
+  (var epoch feature/epoch)
+  (var data : Any block/delegation)
+  ($dom/append target (delegation_view data
+    (fn [id : Str] : Void (select_session client id))
+    (fn [] : Void
+      (var id : Str data/id)
+      (api client "POST" $"/api/v8/sessions/${session}/delegations/${id}/cancel" {^admission data/admission}
+        (fn [code : Int, result : Any] : Void
+          (if_yes (!= code 200) (show_error client result ^session session)))))
+    (fn [] : Bool (&& (== session client/selected) (== epoch feature/epoch)))))
+  true)
+
+(fn render_delegation_recovery [client : Client, target : EventTarget] : Void
+  (var feature (state client))
+  (if_yes ($absent? feature/recovery) (return))
+  (var recovery : Any feature/recovery)
+  (var session client/selected)
+  ($dom/append target (recovery_view recovery (fn [action : Str] : Void
+    (api client "POST" $"/api/v8/sessions/${session}/delegations/recovery"
+      {^round_id recovery/round ^action action}
+      (fn [code : Int, result : Any] : Void
+        (if_yes (!= code 200) (show_error client result ^session session))))))))

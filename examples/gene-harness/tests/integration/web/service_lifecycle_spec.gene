@@ -1,0 +1,33 @@
+(import $test [describe it])
+(import [isolated run_spec] ^from "../../support")
+(import [open_session_service close_session_service] ^from "../../../src/web/session_service")
+(import [HostServiceError] ^from "../../../src/runtime/host_services")
+(import [lock_held?] ^from "../../../src/runtime/workspace_manager")
+
+(describe "Session service lifecycle"
+  (it "unwinds every opened session-host prefix and releases runtime ownership after controller/channel cleanup" []
+    (isolated this_mod/.path
+      "unwinds every opened session-host prefix and releases runtime ownership after controller/channel cleanup"
+      (fn [root]
+        (let names [])
+        (let baseline (open_session_service ^^offline ^workspace ($path/join root "baseline")
+          ^service_event (fn [phase, name] (if (== phase "after") (names .push name)))))
+        (close_session_service baseline)
+        (close_session_service baseline)
+        (for target in names
+          (let workspace ($path/join root target))
+          (let closed [])
+          ($assert (try
+            (open_session_service ^^offline ^workspace workspace ^service_event (fn [phase, name]
+              (if_yes (== phase "close")
+                (closed .push name)
+                ($assert (== (lock_held? ($path/join workspace ".gene-harness" "lock")) (!= name "runtime"))
+                  $"Runtime ownership was released before ${name}."))
+              (if (&& (== phase "after") (== name target))
+                (fail (HostServiceError ^message $"injected session failure after ${target}")))))
+            false
+          catch HostServiceError ($str/contains? $err/message "injected session failure")))
+          ($assert (== ($last closed) "runtime"))
+          ($assert (! (lock_held? ($path/join workspace ".gene-harness" "lock")))))))))
+
+(fn main [args] : Int (run_spec args))

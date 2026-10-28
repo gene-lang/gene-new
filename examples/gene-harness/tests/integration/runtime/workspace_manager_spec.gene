@@ -4,7 +4,7 @@
 (import ^from "../../../src/runtime/workspace_settings"
   [write_workspace_settings read_workspace_settings])
 (import ^from "../../../src/runtime/workspace_manager"
-  [manager_operation manager_list manager_inspect ManagerError])
+  [manager_operation manager_list manager_inspect lock_held? ManagerError])
 (import ^from "../../../src/kernel" [row])
 (import ^from "../../../src/runtime/workspace_lock" [acquire_workspace_lock close_workspace_lock])
 (import ^from "../../../src/runtime/bootstrap" [prepare_layout])
@@ -37,10 +37,19 @@
   (ui_action_receipt service/runtime/actions id))
 
 (fn stop_project [root]
+  (if (&& (! (lock_held? $"${root}/.gene-harness/lock"))
+          (! (lock_held? $"${root}/.gene-harness/launcher_lock"))) (return nil))
   (try
     (api (connect root) "POST" "/control" {^action "stop" ^^confirm})
   catch Any
-    nil))
+    nil)
+  # The stop response acknowledges admission. The supervisor still needs the
+  # startup marker and log directory until it has reaped the child and exited.
+  (let due (+ ($os/monotonic_ms) 20000))
+  (while (|| (lock_held? $"${root}/.gene-harness/lock")
+             (lock_held? $"${root}/.gene-harness/launcher_lock"))
+    ($assert (< ($os/monotonic_ms) due) $"Fixture host did not finish stopping: ${root}")
+    ($sleep 20)))
 
 (fn manager_service [root]
   ($fs/make_dir $"${root}/.gene-harness")

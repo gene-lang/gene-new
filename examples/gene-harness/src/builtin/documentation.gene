@@ -1,14 +1,3 @@
-# Shared registration helper; each calling plugin owns its documentation row.
+# Host compatibility import; implementation is a declared public library.
 (mod documentation)
-(import ^from "../plugin_api" [PluginHost])
-(import ^from "../agents/instructions" [reference_path])
-
-(fn contribute_doc [host, name : Str, summary : Str, relative_path : Str, ^tags tags = [], ^docs references = []]
-  (host .PluginHost:contribute
-    "docs"
-    {^name name ^summary summary ^tags tags ^docs references ^path (reference_path relative_path)}))
-
-(fn contribute_text_doc [host, name : Str, summary : Str, text : Str, ^tags tags = [], ^docs references = []]
-  (host .PluginHost:contribute
-    "docs"
-    {^name name ^summary summary ^text text ^tags tags ^docs references}))
+(import [reference_path contribute_doc contribute_text_doc] ^from "../public/documentation" ^^export)

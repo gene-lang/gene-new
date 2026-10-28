@@ -1,0 +1,73 @@
+(import $test [describe it])
+(import [isolated run_spec test_service] ^from "../../support")
+(import [create_session submit receipt close_session_service] ^from "../../../src/web/session_service")
+(import [Plugin PluginHost MediaHost ServiceError] ^from "../../../src/plugin_api")
+(import [register_plugin] ^from "../../../src/storage/workspace")
+(import [put_cordis_plugin withdraw_seam] ^from "../../../src/kernel")
+
+(fn replacement []
+  (quote (mod plugin
+    (import [Plugin PluginHost MediaHost] ^from "src/plugin_api.gene")
+    (fn init [descriptor]
+      (Plugin ^id "media" ^requires ["media/host"]
+        ^provides [["functions" "media_list"] ["functions" "media_show"]
+                   ["functions" "media_import"] ["functions" "media_page"]]
+        ^activate (fn [host]
+          (let media (host .PluginHost:resolve "media/host"))
+          (for function in
+            [{^name "media_list" ^doc "Stored attachment list." ^fn (fn [] media/.MediaHost:list)}
+             {^name "media_show" ^doc "Stored attachment observation." ^fn (fn [id : Str] (media .MediaHost:show id))}
+             {^name "media_import" ^doc "Stored workspace import." ^fn (fn [path : Str] (media .MediaHost:import_file path))}
+             {^name "media_page" ^doc "Stored PDF page." ^fn (fn [id : Str, page : Int] (media .MediaHost:page id page))}]
+            (host .PluginHost:contribute "functions" function))))))))
+
+(describe "Public media host"
+  (it "runs a stored replacement without loop and preserves media through restart while revoking old handles" []
+    (isolated this_mod/.path
+      "runs a stored replacement without loop and preserves media through restart while revoking old handles"
+      (fn [root]
+        (let calls ($cell 0))
+        (let handle ($cell nil))
+        (let imported ($cell nil))
+        (let provider (fn [request]
+          (calls .set (+ calls/.get 1))
+          (if (== calls/.get 2) (imported .set (/id (/0 (/media ($last request/messages))))))
+          (if (== calls/.get 1)
+            "(media_import \"pixel.png\") (Outcome ^prompt \"Inspect the imported image.\")"
+            "(Outcome ^^done ^reply ($to_str (media_list)))")))
+        (let pixel "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAEElEQVR4AQEFAPr/AFBkeP8EYAIs1SXmQwAAAABJRU5ErkJggg==")
+        (let service (test_service ^workspace root ^provider provider))
+        (let session (create_session service))
+        (try
+          ($fs/write_bytes ($path/join root "pixel.png") ($base64/decode pixel))
+          (put_cordis_plugin service/runtime/h
+            (Plugin ^id "media_probe" ^requires ["media/host"] ^activate (fn [host]
+              (handle .set (host .PluginHost:resolve "media/host")))) {})
+          (let original handle/.get)
+          ($assert ($absent? original/runtime))
+          ($assert ($absent? original/manager))
+          (let stored (original .MediaHost:store "pixel.png" ($base64/decode pixel)))
+          ($assert (try (stored .put "name" "changed") false catch Any true))
+          (withdraw_seam service/runtime/h "core" "loop")
+          (let registered (register_plugin ^^replace service/runtime/workspace service/runtime/h "media" (replacement)))
+          ($assert (== registered/status "ready") ($to_str registered))
+          ($assert (try original/.MediaHost:list false
+            catch ServiceError (== $err/code "unavailable")) "old service handle survived its activation")
+          (let pending (submit service session/id "import" 1 "Import and inspect the image."))
+          (service/controller/watchers .get; .get session/id; .join)
+          (let result (receipt service session/id pending/id))
+          ($assert (== result/state "done") ($to_str result))
+          ($assert (! ($absent? imported/.get)))
+          ($assert ($str/contains? result/reply imported/.get) result/reply)
+        ensure (close_session_service service))
+        (let restarted (test_service ^workspace root ^provider provider))
+        (try
+          (withdraw_seam restarted/runtime/h "core" "loop")
+          (let next_pending (submit restarted session/id "list" 2 "List the retained attachment."))
+          (restarted/controller/watchers .get; .get session/id; .join)
+          (let next_result (receipt restarted session/id next_pending/id))
+          ($assert (== next_result/state "done") ($to_str next_result))
+          ($assert ($str/contains? next_result/reply imported/.get) next_result/reply)
+        ensure (close_session_service restarted))))))
+
+(fn main [args] : Int (run_spec args))

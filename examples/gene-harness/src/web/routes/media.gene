@@ -1,0 +1,37 @@
+# Host-only feature routes. Called only after common HTTP admission.
+(mod media_routes)
+(import [response fail_request field optional_field number request_data session_path?] ^from "../request")
+(import [put_media_base64 media_descriptor media_bytes] ^from "../../storage/media")
+(import $net/http [bytes : http_bytes])
+
+(fn media_request [context, request, parts]
+  (let host context/host)
+  (let root context/root)
+  (let safe context/safe)
+  (let media_store context/media)
+  (let voice_hub context/voice)
+  (let browser context/browser)
+  (let auth context/auth)
+  (let origin context/origin)
+  (let request_origin context/request_origin)
+  (let plugin_control context/plugin_control)
+    (if_yes (== request/path "/api/v8/media")
+      (if (== request/method "GET")
+        (return (response 200 {^max_file_bytes media_store/max_file_bytes
+          ^max_files 16 ^max_message_bytes 41943040})))
+      (if_yes (== request/method "POST")
+        (let data (try ($json/parse request/body ^^strict ^max_depth 8)
+          catch Any (fail_request "invalid_request" "The upload must contain a JSON object.")))
+        (return (response 201 (put_media_base64 media_store
+          (field data "name") (field data "data"))))))
+    (if_yes (&& (== parts/.size 5) (== parts/1 "api") (== parts/2 "v8")
+                (== parts/3 "media") (== request/method "GET"))
+      (let descriptor (media_descriptor media_store parts/4))
+      (let result (http_bytes 200 (media_bytes media_store parts/4)))
+      (result/headers .put "content-type" descriptor/mime)
+      (let disposition (if (&& (== descriptor/kind "image")
+        (!= (?? request/params/download "") "1")) "inline" "attachment"))
+      (result/headers .put "content-disposition"
+        $"${disposition}; filename*=UTF-8''${($url/encode_component descriptor/name)}")
+      (return result))
+  nil)

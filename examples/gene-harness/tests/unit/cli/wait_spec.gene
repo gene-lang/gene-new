@@ -1,5 +1,5 @@
 (import $test [describe it])
-(import [resolve_wait_receipt] ^from "../../../src/cli/client")
+(import [resolve_wait_receipt poll_wait_receipt] ^from "../../../src/cli/client")
 (import [CliError] ^from "../../../src/cli/options")
 
 (describe "CLI continuation receipt resolution"
@@ -23,3 +23,32 @@
     (let next {^id "future" ^state "paused" ^continued_from "parent" ^continuation {^source_round "future"}})
     ($assert (== (resolve_wait_receipt (fn [id] (calls .push id) next) "future" "parent") next))
     ($assert (== calls ["future"]))))
+
+(describe "CLI local wait deadlines"
+  (it "reports an already expired wait without starting another receipt request" []
+    (let calls [])
+    ($assert (try
+      (poll_wait_receipt (fn [id] (calls .push id)) "current" "parent" "command"
+        (- ($os/monotonic_ms) 1) "session" "requested")
+      false
+    catch CliError (&& (== $err/code "wait_timeout") (== $err/execution_id "requested")
+      (== $err/session "session") (== $err/kind "command"))))
+    ($assert calls/.empty?))
+
+  (it "normalizes only polling failures caused by exhaustion of the local deadline" []
+    (for code in ["control_timeout" "connection_lost" "not_found"]
+      (let due (+ ($os/monotonic_ms) 50))
+      ($assert (try
+        (poll_wait_receipt (fn [id]
+          (while (< ($os/monotonic_ms) due) ($sleep 1))
+          (fail (CliError ^code code ^message "poll failed")))
+          "current" "current" "command" due "session" "requested")
+        false
+      catch CliError (== $err/code (if (== code "not_found") "not_found" "wait_timeout"))))))
+
+  (it "preserves a connection error before the deadline instead of hiding it as a timeout" []
+    ($assert (try
+      (poll_wait_receipt (fn [id] (fail (CliError ^code "connection_lost" ^message "closed")))
+        "current" "current" "command" (+ ($os/monotonic_ms) 10000) "session" "requested")
+      false
+    catch CliError (&& (== $err/code "connection_lost") (== $err/message "closed"))))))

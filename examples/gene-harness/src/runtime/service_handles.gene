@@ -1,0 +1,32 @@
+# Private workspace/activation lookup for public opaque service handles.
+(mod service_handles)
+(import [ServiceError] ^from "../plugin_api")
+(import [HostServiceBinding] ^from "./service_binding")
+(var handles ^^private ($cell []))
+
+(fn require_service [handle]
+  (for record in handles/.get
+    (if (same? record/token handle/token)
+      (if_not record/runtime/closed/.get (return record))))
+  (fail (ServiceError ^code "unavailable" ^message "This host service handle has retired or closed.")))
+
+(fn revoke_service_handle [token]
+  (handles .set ($filter handles/.get (fn [record] (! (same? record/token token)))))
+  nil)
+
+(fn service_binding [runtime, name : Str, constructor, ^config config = nil]
+  (HostServiceBinding ^factory (fn [host]
+    (if (|| runtime/closed/.get (! (same? host/h runtime/h)))
+      (fail (ServiceError ^code "unavailable" ^message "Host service belongs to a closed or different workspace.")))
+    (for record in handles/.get
+      (if (&& (same? record/runtime runtime) (same? record/host host) (== record/name name))
+        (return record/handle)))
+    (let token ($cell nil))
+    (let handle ($freeze_shallow (constructor token)))
+    (let record {^token token ^name name ^runtime runtime ^host host ^handle handle
+      ^config config ^values ($cell {})})
+    (handles/.get .push record)
+    (try
+      (host/effects .defer (fn [] (revoke_service_handle token)))
+      handle
+    catch Any (revoke_service_handle token) (fail $err)))))

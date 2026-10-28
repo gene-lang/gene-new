@@ -1,0 +1,43 @@
+(mod ui_host)
+(import [UiHost PluginHost ServiceError] ^from "../plugin_api")
+(import [service_binding require_service] ^from "./service_handles")
+(import [immutable_view] ^from "./composition")
+(import [validate_ui_settings ui_settings] ^from "../ui/state")
+(import [ui_preview] ^from "../ui/views")
+(import [list_action_receipts] ^from "../ui/action_log")
+(import [load_session require_record list_sessions] ^from "./sessions")
+
+(fn ui_context_data [runtime, session : Str, state]
+  (let loaded (if (== session "") nil (load_session runtime/sessions session)))
+  (let config ($serde/read_data ($fs/read_text $"${runtime/state_root}/config.gene")))
+  ($freeze {^session_id session ^session (if ($absent? loaded) nil (require_record runtime/sessions session))
+    ^round (if ($absent? loaded) nil loaded/round/.get) ^workspace runtime/root
+    ^model {^provider config/provider ^model config/model} ^sessions (list_sessions runtime/sessions)
+    ^view_state state}))
+
+(fn configure_ui [handle, settings]
+  (let service (require_service handle))
+  (if (!= service/host/owner "ui_experiment")
+    (fail (ServiceError ^code "forbidden" ^message "UI settings belong to the ui_experiment plugin.")))
+  (if (!= ($head settings) Map) (validate_ui_settings settings))
+  (let merged {})
+  (for [key value] in (ui_settings service/runtime/h) (merged .put key value))
+  (for [key value] in settings (merged .put key value))
+  (let checked (validate_ui_settings merged))
+  (service/host .PluginHost:update_state checked)
+  (immutable_view checked))
+
+(type HostedUi ^^private ^props {^token Any}
+  (impl UiHost
+    (message settings [] : Any (immutable_view (ui_settings (/h (/runtime (require_service self))))))
+    (message configure [settings] : Any (configure_ui self settings))
+    (message preview [name : Str, state = {}] : Any
+      (immutable_view (ui_preview (/h (/runtime (require_service self))) name state)))
+    (message receipts [^view view : Str = "", ^status status : Str = "", ^input_id input_id : Str = "",
+                       ^before before : Int = 0, ^limit limit : Int = 25] : Any
+      (let runtime (/runtime (require_service self)))
+      (immutable_view (list_action_receipts runtime/actions/log
+        ^view view ^status status ^input_id input_id ^before before ^limit limit)))))
+
+(fn ui_host_binding [runtime]
+  (service_binding runtime "ui" (fn [token] (HostedUi ^token token))))

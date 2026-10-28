@@ -43,7 +43,8 @@
     (set runtime/profile/provider "test"))
   (production_controller runtime))
 
-(fn test_service [^workspace workspace : Str = "", ^provider provider, ^without_plugins without_plugins = []]
+(fn test_service [^workspace workspace : Str = "", ^provider provider, ^without_plugins without_plugins = [],
+  ^channel_options channel_options = nil]
   (let cell ($cell provider))
   (let base (baseline_profile))
   (let plugins [])
@@ -52,7 +53,7 @@
   (plugins .push (callback_plugin cell))
   (let profile (Profile ^name "test" ^plugins plugins ^limits base/limits
     ^requires base/requires ^provider "test"))
-  (let service (open_session_service ^workspace workspace ^profile profile))
+  (let service (open_session_service ^workspace workspace ^profile profile ^channel_options channel_options))
   (callback_cells/.get .put service/runtime/root cell)
   service)
 

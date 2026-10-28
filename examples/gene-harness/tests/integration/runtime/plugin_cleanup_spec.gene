@@ -1,6 +1,6 @@
 (import $test [describe it])
 (import [isolated run_spec] ^from "../../support")
-(import [Plugin PluginHost] ^from "../../../src/plugin_api")
+(import [Plugin PluginHost ServiceError] ^from "../../../src/plugin_api")
 (import [new_harness install put_cordis_plugin shutdown_harness status_of row uninstall]
   ^from "../../../src/kernel")
 (import [acquire_snapshot release_snapshot] ^from "../../../src/runtime/composition")
@@ -45,5 +45,24 @@
           (uninstall h "broken")
           ($assert (== closed/.get [1 2 "failed"]))
         ensure (shutdown_harness h))))))
+
+(describe "Plugin shutdown cleanup"
+  (it "attempts every cleanup and reports a deferred failure after closing admission" []
+    (isolated this_mod/.path "attempts every cleanup and reports a deferred failure after closing admission"
+      (fn [root]
+        (let h (new_harness))
+        (let calls ($cell []))
+        (install h (Plugin ^id "cleanup" ^activate (fn [host]
+          (host .PluginHost:defer (fn [] (calls/.get .push "healthy")))
+          (host .PluginHost:defer (fn []
+            (calls/.get .push "failed")
+            (fail (ServiceError ^code "cleanup" ^message "intentional cleanup failure")))))))
+        (let result (shutdown_harness h))
+        ($assert (== result/status "recovery_required") ($to_str result))
+        ($assert ($str/contains? ($to_str result/errors) "intentional cleanup failure"))
+        ($assert (== calls/.get/.size 2))
+        ($assert (calls/.get .contains? "healthy"))
+        ($assert (calls/.get .contains? "failed"))
+        ($assert (try (acquire_snapshot h/snapshots) false catch Any true))))))
 
 (fn main [args] : Int (run_spec args))

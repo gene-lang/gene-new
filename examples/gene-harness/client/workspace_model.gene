@@ -1,0 +1,20 @@
+(mod workspace_model ^profile web)
+(import [Notices] ^from "./notices.gene")
+
+(type SessionTab ^props {^id Str ^title Str ^cache Any ^socket Any ^socket_epoch Int ^sequence Int ^connected Bool ^closed Bool ^expanded (List Str) ^server_epoch Str})
+
+(type Client ^props {
+  ^selected Str ^csrf Str ^cursor Str ^next_seq Str ^epoch Str ^ready Bool ^connected Bool
+  ^server_busy Bool ^awaiting Str ^awaiting_session Str ^queued_prompt Str ^queued_submit Bool
+  ^message_sequence Int ^sending Bool ^busy Bool ^autoscroll Bool ^has_older Bool ^loading_older Bool
+  ^socket_epoch Int ^viewing_history Bool ^generation Int ^records (List Any) ^preview (List Any)
+  ^sessions (List Any) ^needs_attention (List Any) ^filter_epoch Int
+  ^tabs (List SessionTab) ^expanded (List Str) ^rounds (List Any) ^input_id Str ^answering Bool
+  ^round Any ^mode Any ^mode_pending Any ^action_cooldown Bool ^was_executing Bool ^pending Any
+  ^status Any ^status_epoch Str ^status_revision Str ^status_generation Int
+  ^components (List Any) ^component_buttons PropMap ^socket Any ^session_revision Str ^ui Any
+  ^media Any ^notices Notices ^confirmations Any ^questions Any ^center Any ^inbox Any ^safe_ui Bool
+  ^root EventTarget ^list EventTarget ^transcript EventTarget ^prompt EventTarget ^notice EventTarget
+  ^title EventTarget ^appearance Str ^style_signature Str ^cards Any
+  ^browser_clients Any ^command_client Any ^creation_unknown Bool?
+  ^feature_events Any? ^page_id Str? ^live_output Any? ^session_menu Any? ^services Any? ^features Any?})

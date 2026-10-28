@@ -1,6 +1,6 @@
 (mod sidebar)
 (import ^from "../plugin_api" [Plugin PluginHost])
-(import ^from "./documentation" [contribute_doc])
+(import ^from "../public/documentation" [contribute_doc])
 
 (fn sidebar [] : Plugin
   (Plugin ^id "sidebar" ^provides [["web_components" "conversation_sidebar"] ["docs" "harness/sidebar"]] ^activate (fn [host] (host .PluginHost:contribute "web_components" {^name "conversation_sidebar" ^slot "conversation_sidebar" ^summary "Conversation navigation, filters and workspace tools." ^tags ["sidebar" "navigation" "conversations"] ^docs ["harness/sidebar"] ^view (quote (div ^class_name "sidebar_content" (host_widget ^name "brand") (host_widget ^name "new_conversation") (host_widget ^name "filters") (host_widget ^name "attention") (div ^class_name "section_label" "Conversations") (host_widget ^name "extensions") (host_widget ^name "conversations") (host_widget ^name "workspace_tools")))}) (contribute_doc ^tags ["sidebar" "navigation" "conversations" "plugins"] host "harness/sidebar" "Replace or disable the conversation sidebar; compose persistent host navigation widgets." "examples/gene-harness/docs/sidebar.md"))))

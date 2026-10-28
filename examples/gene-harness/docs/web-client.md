@@ -388,6 +388,26 @@ RoundController. web/push.gene routes ordered frames and viewer lifetimes.
 The web host runs all rounds, including prompts submitted by the CLI; there is
 no per-session plugin activation or second CLI runtime.
 
+`src/web/routes/` owns the feature HTTP handlers. The server performs Host,
+Origin, owner-authentication, CSRF and stopping checks before dispatching to
+them. Session/round admission and the ordered event stream remain in the
+shared coordinator.
+
+The client keeps sequence/epoch validation, resynchronization, tab selection,
+background caches and submission recovery in `client/main.gene`. Slack,
+triggers, delegation and voice glue live in separate feature modules with
+page-owned state. Browser contributions subscribe through a generic event
+hub after stream validation. Each observer receives its own payload copy;
+observer failures do not stop core handling. Replacement and failed mounts
+revoke their subscriptions, including attempts to reuse a retired bridge.
+
+The native runtime and session service use static dependency tables in
+`runtime/runtime_services.gene` and `web/service_lifecycle.gene`. They do not
+accept plugin-defined services. Shutdown quiesces admission and jobs while
+dependencies remain usable, then closes acquired resources in reverse order.
+Recovery skips optional activation, and partial-open unwind releases workspace
+ownership last. Caller-owned event stores remain caller-owned.
+
 The package's `gene test` specs cover protocol-8 service delivery, live
 records before completion, console routing, custom question validation,
 metadata revisions/attention, command execution, restart authentication,

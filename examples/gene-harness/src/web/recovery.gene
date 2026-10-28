@@ -2,7 +2,7 @@
 # application-state streams and never constructs normal execution controllers.
 (mod recovery_server)
 (import $net/http [serve stop html])
-(import ^from "./server" [response secure_response cookie_value field number request_data])
+(import ^from "./request" [response secure_response cookie_value field number request_data])
 (import ^from "./auth" [open_auth authenticate exchange reset_auth AuthError])
 (import ^from "./connection" [bind_workspace publish_connection publish_link clear_connection])
 (import ^from "./plugin_page" [plugin_page manager_client])

@@ -1,0 +1,113 @@
+(import $test [describe it])
+(import [isolated run_spec test_service] ^from "../../support")
+(import [create_session command submit receipt close_session_service] ^from "../../../src/web/session_service")
+(import [command_receipt] ^from "../../../src/runtime/commands")
+(import [open_computer_host close_computer_host computer_host_binding] ^from "../../../src/runtime/computer_host")
+(import [register_plugin] ^from "../../../src/storage/workspace")
+(import [replace : replace_seam row] ^from "../../../src/kernel")
+(import [CommandContext ServiceError] ^from "../../../src/plugin_api")
+(import [open_driver normalize_result targets] ^from "." ^pkg "computer")
+
+(fn stored_computer []
+  (quote (mod plugin
+    (import [Plugin PluginHost ComputerHost] ^from "src/plugin_api.gene")
+    (fn init [descriptor]
+      (Plugin ^id "computer" ^requires ["computer/host"]
+        ^activate (fn [host]
+          (let computer (host .PluginHost:resolve "computer/host"))
+          computer/.ComputerHost:start
+          (host .PluginHost:contribute "commands"
+            {^name "computer" ^doc "Stored computer operator policy." ^usage "/computer"
+             ^run (fn [ctx] (computer .ComputerHost:command ctx))})
+          (for definition in
+            [{^name "computer_targets" ^doc "Stored target inventory." ^fn (fn [] computer/.ComputerHost:targets)}
+             {^name "computer_observe" ^doc "Stored observation."
+              ^fn (fn [target : Str] (computer .ComputerHost:observe target))}
+             {^name "computer_act" ^doc "Stored action."
+              ^fn (fn [target : Str, observation : Str, request : Str]
+                (computer .ComputerHost:act target observation "click" {^x 0 ^y 0} request))}
+             {^name "computer_receipt" ^doc "Stored receipt recovery."
+              ^fn (fn [request : Str] (computer .ComputerHost:receipt request))}
+             {^name "computer_scope_probe" ^doc "Reject contexts outside command admission."
+              ^fn (fn [ctx] (computer .ComputerHost:command ctx))}]
+            (host .PluginHost:contribute "functions" definition))))))))
+
+(fn finished [service, session : Str, id : Str]
+  (let due (+ ($os/monotonic_ms) 5000))
+  (loop
+    (let result (command_receipt service/runtime/commands session id))
+    (if (!= result/status "running") (return result))
+    ($assert (< ($os/monotonic_ms) due))
+    ($sleep 10)))
+
+(describe "Public computer host"
+  (it "preserves grants through stored replacement, enforces command admission and recovers action receipts without replay" []
+    (isolated this_mod/.path
+      "preserves grants through stored replacement, enforces command admission and recovers action receipts without replay"
+      (fn [root]
+        (let calls ($cell 0))
+        (let actions ($cell 0))
+        (let ends ($cell 0))
+        (let target ($cell nil))
+        (let driver_cell ($cell nil))
+        (let pixel ($base64/decode "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAEElEQVR4AQEFAPr/AFBkeP8EYAIs1SXmQwAAAABJRU5ErkJggg=="))
+        (let transport (fn [name args]
+          (if (== name "get_window_state")
+            (return (normalize_result ^image pixel {^snapshot_id "window" ^capture_id "capture-1"})))
+          (if (== name "click") (actions .set (+ actions/.get 1)))
+          (if (== name "end_session") (ends .set (+ ends/.get 1)))
+          (normalize_result {^status "ok"})))
+        (let provider (fn [request]
+          (calls .set (+ calls/.get 1))
+          (if (== calls/.get 1)
+            (return $"(computer_observe \"${target/.get}\") (Outcome ^prompt \"Inspect the observation.\")"))
+          (if_yes (== calls/.get 2)
+            ($assert (! ($absent? (/images ($last request/messages)))))
+            (let active_driver driver_cell/.get)
+            (let observed active_driver/observations/.get)
+            (let observation (/id (observed .get target/.get)))
+            (return $"(computer_act \"${target/.get}\" \"${observation}\" \"once\") (computer_act \"${target/.get}\" \"${observation}\" \"once\") (Outcome ^prompt \"Review the action receipt.\")"))
+          "(computer_receipt \"once\") (Outcome ^^done ^reply \"Receipt retained.\")"))
+        (let service (test_service ^workspace root ^provider provider))
+        (let driver (open_driver ($path/join root "computer-fixture") ^transport transport))
+        (driver_cell .set driver)
+        (let state (open_computer_host service/runtime ^driver driver))
+        (let session (create_session service))
+        (try
+          (replace_seam service/runtime/h "core" "computer/host" (computer_host_binding state))
+          (let pending (command service session/id "/computer allow 123 456"))
+          (let command_result (finished service session/id pending/id))
+          ($assert (== command_result/status "done") ($to_str command_result))
+          (target .set (/id (/0 (targets driver session/id))))
+          (let installed (register_plugin ^^replace service/runtime/workspace service/runtime/h "computer" (stored_computer)))
+          ($assert (== installed/status "ready") ($to_str installed))
+          ($assert (== (targets driver session/id) [{^id target/.get ^owner session/id ^kind "window" ^pid 123 ^window_id 456}]))
+          (let probe (/fn (row service/runtime/h "functions" "computer_scope_probe")))
+          (let fake (CommandContext ^session session/id ^raw "allow 8 9" ^id "forged"
+            ^manager nil ^runtime nil ^snapshot nil ^output (fn [text] nil)))
+          ($assert (try (probe fake) false catch ServiceError (== $err/code "command_required")))
+          ($assert (== ($size (targets driver session/id)) 1))
+          (let round (submit service session/id "computer" 1 "Inspect the target and click once."))
+          (service/controller/watchers .get; .get session/id; .join)
+          (let round_result (receipt service session/id round/id))
+          ($assert (== round_result/state "done") ($to_str round_result))
+          ($assert (== actions/.get 1))
+        ensure
+          (close_session_service service)
+          (close_computer_host state))
+        ($assert (== ends/.get 1) "Contacted computer session was not released exactly once.")
+        (let restarted (test_service ^workspace root ^provider provider))
+        (let next_driver (open_driver ($path/join root "computer-fixture") ^transport transport))
+        (let next_state (open_computer_host restarted/runtime ^driver next_driver))
+        (try
+          (replace_seam restarted/runtime/h "core" "computer/host" (computer_host_binding next_state))
+          (let next_round (submit restarted session/id "receipt" 2 "Read the previous receipt."))
+          (restarted/controller/watchers .get; .get session/id; .join)
+          (let next_result (receipt restarted session/id next_round/id))
+          ($assert (== next_result/state "done") ($to_str next_result))
+          ($assert (== actions/.get 1) "Receipt recovery replayed a computer action.")
+        ensure
+          (close_session_service restarted)
+          (close_computer_host next_state))))))
+
+(fn main [args] : Int (run_spec args))

@@ -1,35 +1,26 @@
 (mod triggers)
-(import ^from "../plugin_api" [Plugin PluginHost])
-(import ^from "../runtime/triggers"
-  [open_trigger_manager close_trigger_manager create_trigger list_triggers delete_trigger])
-(import ^from "./documentation" [contribute_doc])
+(import ^from "../plugin_api" [Plugin PluginHost TriggerHost])
+(import ^from "../public/documentation" [contribute_doc])
 
 (fn triggers [] : Plugin
-  (Plugin ^id "triggers" ^requires ["loop"]
+  (Plugin ^id "triggers" ^requires ["triggers/host"]
     ^provides [["functions" "create_trigger"] ["functions" "list_triggers"]
                ["functions" "delete_trigger"]]
     ^activate (fn [host]
-      (let loop_factory (host .PluginHost:resolve "loop"))
-      (let loop (loop_factory))
-      (let manager
-        (open_trigger_manager ^owner host/effects
-          ^start (?? loop/start true) ^boot (?? loop/boot true)
-          loop/runtime loop/controller))
-      (host .PluginHost:defer (fn []
-        (close_trigger_manager manager)
-        (if (same? loop/runtime/triggers manager) (set loop/runtime/triggers nil))))
+      (let scheduler (host .PluginHost:resolve "triggers/host"))
+      scheduler/.TriggerHost:start
       (host .PluginHost:contribute "functions"
         {^name "create_trigger" ^doc "Schedule workspace work."
          ^tags ["schedule" "heartbeat" "cron" "triggers"] ^docs ["harness/triggers"]
-         ^fn (fn [definition] (create_trigger manager definition))})
+         ^fn (fn [definition] (scheduler .TriggerHost:create definition))})
       (host .PluginHost:contribute "functions"
         {^name "list_triggers" ^doc "List trigger definitions."
          ^tags ["schedule" "triggers"] ^docs ["harness/triggers"]
-         ^fn (fn [] (list_triggers manager))})
+         ^fn (fn [] scheduler/.TriggerHost:list)})
       (host .PluginHost:contribute "functions"
         {^name "delete_trigger" ^doc "Disable a trigger by id."
          ^tags ["schedule" "triggers"] ^docs ["harness/triggers"]
-         ^fn (fn [id : Str] (delete_trigger manager id))})
+         ^fn (fn [id : Str] (scheduler .TriggerHost:delete id))})
       (contribute_doc host "harness/triggers"
         "Schedule heartbeat, one-shot and cron work; policies and verification."
         "examples/gene-harness/docs/triggers.md" ^tags ["schedule" "heartbeat" "cron" "triggers"]))))

@@ -1,0 +1,45 @@
+# Scoped scheduler activation and ID-based operations. Only the host sees the
+# controller, scheduler manager and effect scope.
+(mod trigger_host)
+(import [TriggerHost ServiceError] ^from "../plugin_api")
+(import [service_binding require_service] ^from "./service_handles")
+(import [immutable_view] ^from "./composition")
+(import [open_trigger_manager close_trigger_manager require_trigger_manager
+  list_triggers create_trigger delete_trigger list_occurrences] ^from "./triggers")
+
+(fn scheduler [handle]
+  (let service (require_service handle))
+  (let manager (service/values/.get .get "manager"))
+  (if_not ($absent? manager)
+    (if_not manager/closed/.get (return manager)))
+  (require_trigger_manager service/runtime))
+
+(fn start_scheduler [handle]
+  (let service (require_service handle))
+  (if (!= service/host/owner "triggers")
+    (fail (ServiceError ^code "forbidden" ^message "Scheduler activation belongs to the triggers plugin.")))
+  (let previous (service/values/.get .get "manager"))
+  (if (&& (! ($absent? previous)) (! previous/closed/.get)) (return {^^available}))
+  (let manager (open_trigger_manager service/runtime service/config/controller
+    ^owner service/host/effects ^start service/config/start ^boot service/config/boot))
+  (fn close []
+    (close_trigger_manager manager)
+    (if (same? service/runtime/triggers manager) (set service/runtime/triggers nil)))
+  (try
+    (service/values/.get .put "manager" manager)
+    (service/host/effects .defer close)
+    {^^available}
+  catch Any (close) (fail $err)))
+
+(type HostedTriggers ^^private ^props {^token Any}
+  (impl TriggerHost
+    (message start [] : Any (start_scheduler self))
+    (message list [] : Any (immutable_view (list_triggers (scheduler self))))
+    (message create [definition] : Any (immutable_view (create_trigger (scheduler self) definition)))
+    (message delete [id : Str] : Any (immutable_view (delete_trigger (scheduler self) id)))
+    (message occurrences [^trigger trigger : Str = ""] : Any
+      (immutable_view (list_occurrences (scheduler self) ^trigger (if (== trigger "") nil trigger))))))
+
+(fn trigger_host_binding [runtime, controller, ^start start : Bool = true, ^boot boot : Bool = true]
+  (service_binding runtime "triggers" (fn [token] (HostedTriggers ^token token))
+    ^config {^controller controller ^start start ^boot boot}))

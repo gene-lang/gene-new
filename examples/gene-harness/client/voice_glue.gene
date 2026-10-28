@@ -1,0 +1,119 @@
+(mod voice_glue ^profile web)
+(import [Client] ^from "./workspace_model.gene")
+(import [RoundClient create_rounds dispatch_round recover_round forget_round configure_rounds] ^from "./round_client.gene")
+(import [items : launcher_items] ^from "../src/common/launcher.gene")
+(import [feature_subscribed?] ^from "./feature_events.gene")
+(import [draft_key] ^from "./state.gene")
+(import [api string_or set_hidden notice update_controls remember_draft apply_run browser_event client_events features] ^from "./feature_helpers.gene")
+
+
+# Page-owned receipts survive replacement/disable of the optional browser plugin.
+(type VoiceGlue ^props {^rounds Any?})
+(fn voice_state [client : Client] : VoiceGlue
+  (var states (features client))
+  (if_yes ($absent? states/voice) (set states/voice (VoiceGlue)))
+  (var state : VoiceGlue states/voice) state)
+(fn configure_voice [client : Client, data : Any] : Void
+  (var state (voice_state client))
+  (if_yes ($absent? state/rounds) (return))
+  (var raw : Any state/rounds)
+  (var rounds : RoundClient raw)
+  (configure_rounds rounds (string_or data/workspace "")))
+
+(fn voice_pending? [client : Client] : Bool
+  (var state (voice_state client))
+  (if_yes ($absent? state/rounds) (return false))
+  (var voice (voice_rounds client))
+  (! ($absent? voice/pending)))
+
+(fn voice_replay_handler [client : Client] : Any
+  (var available false)
+  (for contribution in (launcher_items client/status/browser_clients)
+    (if_yes (== (string_or contribution/name "") "voice") (set available true)))
+  (if_yes (|| (! available) (! (feature_subscribed? (client_events client) "voice"))) (return nil))
+  (var session client/selected)
+  (fn [record : Any] : Void (browser_event client "voice/replay" session record)))
+
+(fn voice_rounds [client : Client] : RoundClient
+  (var state (voice_state client))
+  (var raw : Any state/rounds)
+  (var result : RoundClient raw)
+  result)
+
+(fn voice_submit [client : Client, session : Str, value : Str, input : Any,
+                  done : (Fn [Int Any] Void)] : Void
+  (if_yes (|| (! client/ready) client/sending (! ($absent? client/pending)))
+    (done 409 {^^not_sent ^message "Resolve the current submission before sending voice."}) (return))
+  (set client/sending true) (update_controls client)
+  (var voice (voice_rounds client))
+  (dispatch_round voice session value input
+    (fn [code : Int, data : Any] : Void
+      (set client/sending false) (update_controls client)
+      (done code data))))
+
+(fn voice_review_key [client : Client, session : Str] : Str
+  (var workspace (string_or client/status/workspace ""))
+  $"gene-harness/voice-review/${workspace}/${session}")
+
+(fn reviewed_voice_input [client : Client, session : Str, value : Str] : Any
+  (var key (voice_review_key client session))
+  (var saved (?? ($session_storage/get key) ""))
+  (if_yes (== saved "") (return nil))
+  (try
+    (var review : Any ($json/parse saved))
+    (if_yes (&& (!= (string_or review/text "") "") (!= (str/trim value) ""))
+      (return review/input))
+    catch Any nil)
+  ($session_storage/remove key)
+  nil)
+
+(fn voice_review [client : Client, session : Str, value : Str, input : Any] : Bool
+  (if_yes (|| (== session "") client/sending (! ($absent? client/pending))) (return false))
+  (var previous (if (== session client/selected) ($dom/input_value client/prompt)
+    (?? ($session_storage/get (draft_key session)) "")))
+  (var combined ($to_str previous (if (== previous "") "" "\n\n") value))
+  (if_yes (! ($session_storage/set (voice_review_key client session)
+    ($json/stringify {^text value ^input input}))) (return false))
+  (if_yes (! ($session_storage/set (draft_key session) combined)) (return false))
+  (if_yes (== session client/selected)
+    ($dom/set_input_value client/prompt combined)
+    (notice client "Voice text appended for review. Edit freely; Enter sends text only. Clear the composer to return to typed input. Attachments stay in your draft.")
+    ($dom/focus client/prompt))
+  true)
+
+(fn initialize_voice [client : Client] : Void
+  (var state (voice_state client))
+  (set state/rounds
+    (create_rounds
+      (fn [method : Str, path : Str, payload : Any, done : (Fn [Int Any] Void)] : Void
+        (api client method path payload done))
+      (fn [message : Str] : Void
+        (var voice (voice_rounds client))
+        (var pending (! ($absent? voice/pending)))
+        (set_hidden "voice_receipt_recover" (! pending))
+        (set_hidden "voice_receipt_discard" (! pending))
+        (var forget ($dom/element "voice_receipt_forget"))
+        (set forget/disabled voice/resolving)
+        (notice ^key "voice-recovery" ^sticky pending client message)
+        (browser_event client "submission/state" "" {^pending pending}))
+      (fn [envelope : Any, receipt : Any] : Void
+        (var session (string_or envelope/session ""))
+        (apply_run client session receipt)
+        (var key (voice_review_key client session))
+        (if_yes (!= (?? ($session_storage/get key) "") "")
+          ($session_storage/remove key)
+          (if (== session client/selected)
+            (if_yes (== (string_or envelope/text "") ($dom/input_value client/prompt))
+              ($dom/set_input_value client/prompt "") (remember_draft client))
+            (if_yes (== (?? ($session_storage/get (draft_key session)) "") (string_or envelope/text ""))
+              ($session_storage/remove (draft_key session)))))
+        (browser_event client "voice/admitted" session receipt))))
+  ($dom/add_event_listener ($dom/element "voice_receipt_recover") "click"
+    (fn [event : Any] : Void
+      (var voice (voice_rounds client))
+      (recover_round voice)))
+  ($dom/add_event_listener ($dom/element "voice_receipt_forget") "click"
+    (fn [event : Any] : Void
+      (var voice (voice_rounds client))
+      (forget_round voice)))
+)

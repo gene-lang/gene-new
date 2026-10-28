@@ -1,64 +1,51 @@
 (mod plugin_admin)
-(import ^from "../plugin_api" [Plugin PluginHost])
-(import ^from "../runtime/composition" [current_snapshot])
-(import ^from "../storage/workspace"
-  [register_plugin set_plugin_enabled restore_plugin plugin_history plugin_history_page revert_plugin])
-(import ^from "./documentation" [contribute_doc])
+(import ^from "../plugin_api" [Plugin PluginHost CompositionHost])
+(import ^from "../public/documentation" [contribute_doc])
 
 (fn plugin_admin [] : Plugin
-  (Plugin ^id "plugin_admin"
+  (Plugin ^id "plugin_admin" ^requires ["plugins/host"]
     ^provides [["functions" "register_plugin"] ["functions" "plugin_states"]
       ["functions" "inspect_plugin"] ["functions" "enable_plugin"] ["functions" "disable_plugin"]
       ["functions" "restore_plugin"] ["functions" "plugin_history"] ["functions" "revert_plugin"]
       ["docs" "harness/plugins"] ["docs" "harness/plugin_manager"]]
     ^activate (fn [host]
-      (let h host/h)
+      (let administration (host .PluginHost:resolve "plugins/host"))
       (host .PluginHost:contribute "functions"
         {^name "register_plugin" ^doc "Queue a workspace plugin for publication."
          ^tags ["plugins" "publish" "register" "replace"] ^docs ["harness/plugins"]
          ^fn (fn [id : Str source, ^dependencies dependencies = [],
                   ^replace replace : Bool = false]
-           (register_plugin ^dependencies dependencies ^replace replace
-             h/workspace h id source))})
+           (administration .CompositionHost:register id source ^dependencies dependencies ^replace replace))})
       (host .PluginHost:contribute "functions"
         {^name "plugin_states" ^doc "List plugins from the leased composition."
          ^tags ["plugins" "inspect"] ^docs ["harness/plugins"]
-         ^fn (fn []
-           (let snapshot (current_snapshot h/snapshots))
-           {^plugins (?? snapshot/plugins [])
-            ^readiness (if ($absent? h/readiness) nil (h/readiness))})})
+         ^fn (fn [] administration/.CompositionHost:states)})
       (host .PluginHost:contribute "functions"
         {^name "inspect_plugin" ^doc "Inspect one plugin in the leased composition."
          ^tags ["plugins" "inspect"] ^docs ["harness/plugins"]
-         ^fn (fn [id : Str]
-           (let snapshot (current_snapshot h/snapshots))
-           (for plugin in (?? snapshot/plugins [])
-             (if (== plugin/id id) (return plugin)))
-           nil)})
+         ^fn (fn [id : Str] (administration .CompositionHost:inspect id))})
       (host .PluginHost:contribute "functions"
         {^name "enable_plugin" ^doc "Enable a stored or built-in plugin."
          ^tags ["plugins" "enable"] ^docs ["harness/plugins"]
-         ^fn (fn [id : Str] (set_plugin_enabled h/workspace h id true))})
+         ^fn (fn [id : Str] (administration .CompositionHost:enable id true))})
       (host .PluginHost:contribute "functions"
         {^name "disable_plugin" ^doc "Disable a stored or built-in plugin."
          ^tags ["plugins" "disable"] ^docs ["harness/plugins"]
-         ^fn (fn [id : Str] (set_plugin_enabled h/workspace h id false))})
+         ^fn (fn [id : Str] (administration .CompositionHost:enable id false))})
       (host .PluginHost:contribute "functions"
         {^name "restore_plugin" ^doc "Restore a built-in plugin to its profile default."
          ^tags ["plugins" "restore"] ^docs ["harness/plugins"]
-         ^fn (fn [id : Str] (restore_plugin h/workspace h id))})
+         ^fn (fn [id : Str] (administration .CompositionHost:restore id))})
       (host .PluginHost:contribute "functions"
         {^name "plugin_history" ^doc "Inspect archived composition revisions or one plugin's stored versions."
          ^tags ["plugins" "history" "revert"] ^docs ["harness/plugins"]
          ^fn (fn [id : Str = "", ^limit limit : Int = 50, ^before before = nil, ^page page : Bool = false]
-           (if page
-             (plugin_history_page ^limit limit ^before before h/workspace id)
-             (plugin_history ^limit limit ^before before h/workspace id)))})
+           (administration .CompositionHost:history id ^limit limit ^before before ^page page))})
       (host .PluginHost:contribute "functions"
         {^name "revert_plugin" ^doc "Revert to a retained plugin entry, preserving application data and enabled state."
          ^tags ["plugins" "history" "revert"] ^docs ["harness/plugins"]
          ^fn (fn [id : Str, revision : Int, ^expected expected = nil]
-           (revert_plugin ^expected expected h/workspace h id revision))})
+           (administration .CompositionHost:revert id revision ^expected expected))})
       (contribute_doc host "harness/plugin_manager"
         "Review plugin capabilities, validate batches, revert versions, and repair startup."
         "examples/gene-harness/docs/plugin-manager-guide.md" ^tags ["plugins" "manager" "recovery" "history" "revert"])

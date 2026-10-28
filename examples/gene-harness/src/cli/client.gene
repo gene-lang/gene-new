@@ -100,6 +100,24 @@
     (return source))
   result)
 
+(fn wait_expired [session : Str, id : Str, kind : Str]
+  (fail (CliError ^code "wait_timeout" ^execution_id id ^kind kind ^session session
+    ^message $"Stopped waiting for ${id}. Work remains on the host; use receipt or wait to observe it.")))
+
+(fn poll_wait_receipt [fetch, current : Str, parent : Str, kind : Str, due : Int,
+                       session : Str, requested : Str]
+  (if (>= ($os/monotonic_ms) due) (wait_expired session requested kind))
+  (try
+    (if (== kind "command") (fetch current) (resolve_wait_receipt fetch current parent))
+  catch CliError
+    (let failure $err)
+    # The same local deadline bounds HTTP polling. Exhausting it is a wait
+    # timeout, even when it expires before wire() starts or during its request.
+    (if (&& (["control_timeout" "connection_lost"] .contains? failure/code)
+            (>= ($os/monotonic_ms) due))
+      (wait_expired session requested kind))
+    (fail failure)))
+
 (fn wait_for [client, session : Str, id : Str, kind : Str, timeout : Int]
   (let due (+ ($os/monotonic_ms) timeout))
   (let original id)
@@ -107,7 +125,7 @@
   (var parent id)
   (let fetch (fn [selected] (execution_receipt ^deadline due client session selected kind)))
   (loop
-    (let result (if (== kind "command") (fetch current) (resolve_wait_receipt fetch current parent)))
+    (let result (poll_wait_receipt fetch current parent kind due session original))
     (let state (if (== kind "command") result/status result/state))
     (if_yes (&& (!= kind "command") (== state "paused") (== result/continuation_mode "automatic"))
       (if_not ($absent? result/continuation_stop)
@@ -125,6 +143,5 @@
     (if_yes (&& (!= state "running") (! automatic_wait))
       (result .put "original_round" original) (return result))
     (if (>= ($os/monotonic_ms) due)
-      (fail
-        (CliError ^code "wait_timeout" ^execution_id id ^kind kind ^session session ^message $"Stopped waiting for ${id}. Work remains on the host; use receipt or wait to observe it.")))
+      (wait_expired session original kind))
     ($sleep 100)))

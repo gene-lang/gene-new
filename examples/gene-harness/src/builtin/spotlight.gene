@@ -1,6 +1,5 @@
 (mod spotlight)
 (import [Plugin PluginHost] ^from "../plugin_api")
-(import [module_dir] ^from "../kernel")
 
 (var asset ($cell nil))
 (var asset_path ($cell ""))
@@ -50,4 +49,4 @@
         {^name "spotlight" ^title "Search Harness" ^asset prepared_asset ^style prepared_style}))))
 
 (fn spotlight [] : Plugin
-  (spotlight_from $"${(module_dir this_mod/.path)}/../../client/plugins/spotlight.gene"))
+  (spotlight_from ($path/join this_pkg/root "client" "plugins" "spotlight.gene")))

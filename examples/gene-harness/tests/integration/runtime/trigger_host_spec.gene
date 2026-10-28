@@ -1,0 +1,75 @@
+(import $test [describe it])
+(import [isolated run_spec] ^from "../../support")
+(import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
+(import [new_round_controller close_round_controller] ^from "../../../src/runtime/round_controller")
+(import [trigger_host_binding] ^from "../../../src/runtime/trigger_host")
+(import [triggers] ^from "../../../src/builtin/triggers")
+(import [Profile] ^from "../../../src/profiles/profile")
+(import [provide row] ^from "../../../src/kernel")
+(import [register_plugin] ^from "../../../src/storage/workspace")
+(import [acquire_snapshot release_snapshot] ^from "../../../src/runtime/composition")
+
+(fn stored_triggers []
+  (quote (mod plugin
+    (import [Plugin PluginHost TriggerHost] ^from "src/plugin_api.gene")
+    (fn init [descriptor]
+      (Plugin ^id "triggers" ^requires ["triggers/host"]
+        ^provides [["functions" "create_trigger"] ["functions" "list_triggers"] ["functions" "delete_trigger"]]
+        ^activate (fn [host]
+          (let scheduler (host .PluginHost:resolve "triggers/host"))
+          scheduler/.TriggerHost:start
+          (for definition in
+            [{^name "create_trigger" ^doc "Stored scheduling policy."
+              ^fn (fn [definition] (scheduler .TriggerHost:create definition))}
+             {^name "list_triggers" ^doc "Stored scheduler inventory."
+              ^fn (fn [] scheduler/.TriggerHost:list)}
+             {^name "delete_trigger" ^doc "Stored scheduler deletion."
+              ^fn (fn [id : Str] (scheduler .TriggerHost:delete id))}]
+            (host .PluginHost:contribute "functions" definition))))))))
+
+(fn invoke [h, name : Str, args...]
+  (let callback (/fn (row h "functions" name)))
+  (callback args...))
+
+(describe "Public trigger host"
+  (it "preserves definitions and leased schedulers across a stored replacement and restart without loop" []
+    (isolated this_mod/.path
+      "preserves definitions and leased schedulers across a stored replacement and restart without loop"
+      (fn [root]
+        (let profile (Profile ^name "trigger-api" ^plugins [(triggers)]))
+        (let runtime (open_runtime root "default" profile))
+        (let controller (new_round_controller runtime))
+        (try
+          (provide runtime/h "core" "triggers/host" (trigger_host_binding runtime controller ^!start ^!boot))
+          (invoke runtime/h "create_trigger" {^id "retained" ^kind "scheduled"
+            ^at (+ ($os/wall_ms) 86400000) ^request "Retained work."})
+          (let old_manager runtime/triggers)
+          (let lease (acquire_snapshot runtime/h/snapshots))
+          (try
+            (let result (register_plugin ^^replace runtime/workspace runtime/h "triggers" (stored_triggers)))
+            ($assert (== result/status "ready") ($to_str result))
+            ($assert (! old_manager/closed/.get))
+            ($runtime/with_context {^composition runtime/h/snapshots ^snapshot lease/snapshot}
+              (fn [] ($assert (== (/id (/0 (invoke runtime/h "list_triggers"))) "retained"))))
+          ensure (release_snapshot runtime/h/snapshots lease))
+          ($assert old_manager/closed/.get)
+          ($assert (! runtime/triggers/closed/.get) "old cleanup closed the new scheduler")
+          (let definitions (invoke runtime/h "list_triggers"))
+          ($assert (== definitions/.size 1))
+          ($assert (try (definitions .push {}) false catch Any true))
+        ensure
+          (close_round_controller controller)
+          (close_runtime runtime))
+        (let restarted (open_runtime root "default" profile))
+        (let next_controller (new_round_controller restarted))
+        (try
+          (provide restarted/h "core" "triggers/host"
+            (trigger_host_binding restarted next_controller ^!start ^!boot))
+          ($assert (== (/id (/0 (invoke restarted/h "list_triggers"))) "retained"))
+          (invoke restarted/h "delete_trigger" "retained")
+          ($assert (== (invoke restarted/h "list_triggers") []))
+        ensure
+          (close_round_controller next_controller)
+          (close_runtime restarted))))))
+
+(fn main [args] : Int (run_spec args))

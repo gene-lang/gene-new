@@ -1,0 +1,13 @@
+# Declared application SDK modules. This is shared by source validation,
+# descriptor loading and the runtime loader; no directory-wide import bypass.
+(mod public_modules)
+(fn public_modules []
+  ["src/plugin_api.gene" "src/text.gene"
+   "src/public/documentation.gene" "src/public/provider.gene"
+   "src/public/history_policy.gene" "src/public/model_content.gene"
+   "src/public/image_contract.gene" "src/public/model_text.gene"
+   "src/public/speech_engines.gene" "src/public/mac_recognition.gene"
+   "src/public/voice_frames.gene"])
+
+(fn public_import? [path : Str] : Bool
+  ((public_modules) .contains? path))

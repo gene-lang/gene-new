@@ -208,8 +208,10 @@
       this_mod/.path
       "answers and dismisses questions, rejects busy submissions and cancels host work explicitly"
       (fn [workspace]
+        # Keep these operations active until cancellation. CLI subprocesses
+        # may take longer than a fixed sleep before reaching the busy checks.
         (let host
-          (start_host ^script ["(Outcome ^questions [{^id \"name\" ^prompt \"Name?\"}])" "(Outcome ^^done ^reply \"answered\")" "(Outcome ^questions [{^id \"ok\" ^prompt \"Continue?\" ^kind \"confirm\"}])" "(Outcome ^^done ^reply \"dismissed\")" "($sleep 5000) (Outcome ^^done ^reply \"slow\")" "(Outcome ^^done ^reply \"other\")"]
+          (start_host ^script ["(Outcome ^questions [{^id \"name\" ^prompt \"Name?\"}])" "(Outcome ^^done ^reply \"answered\")" "(Outcome ^questions [{^id \"ok\" ^prompt \"Continue?\" ^kind \"confirm\"}])" "(Outcome ^^done ^reply \"dismissed\")" "(while true ($sleep 100)) (Outcome ^^done ^reply \"slow\")" "(Outcome ^^done ^reply \"other\")"]
             $"${workspace}/host"))
         (try
           (let session ((Path "id") (cli host/root ["sessions" "create"])))
@@ -258,15 +260,12 @@
               ((Path "state") (cli ^expected 1 host/root ["--session" session "wait" slow/id]))
               "cancelled")
             "round did not cancel")
-          (let command (cli host/root ["--session" session "run" "($sleep 5000) 42" "--no-wait"]))
+          (let command (cli host/root ["--session" session "run" "(while true ($sleep 100)) 42" "--no-wait"]))
+          (let local_wait (cli ^expected 1 host/root
+            ["--session" session "wait" "--command" command/id "--timeout-ms" "10"]))
           ($assert
-            (==
-              ((Path "code")
-                (cli ^expected 1
-                  host/root
-                  ["--session" session "wait" "--command" command/id "--timeout-ms" "10"]))
-              "wait_timeout")
-            "wait did not time out locally")
+            (== local_wait/code "wait_timeout")
+            ($to_str "wait did not time out locally: " local_wait))
           ($assert
             (==
               ((Path "status")

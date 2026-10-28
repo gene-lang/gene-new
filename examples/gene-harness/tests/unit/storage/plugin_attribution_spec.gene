@@ -41,6 +41,8 @@
     ($assert (== (capture_source_origin {^session ""}) {^kind "direct"}))
     ($assert (== (capture_source_origin {^session "a" ^command "c1"})
       {^kind "command" ^session "a"}))
+    ($assert (== (capture_source_origin {^session "a" ^command "c1" ^turn {^turn 9}})
+      {^kind "command" ^session "a"}))
     ($assert (== (capture_source_origin {^session "b" ^turn {^turn 7}})
       {^kind "model" ^session "b" ^turn "7"})))
 

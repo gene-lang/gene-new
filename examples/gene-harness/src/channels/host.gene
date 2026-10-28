@@ -1,0 +1,42 @@
+# Channel queues and identity stay host-owned. A plugin owns only the scoped
+# transport activation and receives public status, never accounts or API clients.
+(mod channel_host)
+(import [ChannelHost ServiceError] ^from "../plugin_api")
+(import [service_binding require_service] ^from "../runtime/service_handles")
+(import [immutable_view] ^from "../runtime/composition")
+(import [open_transport close_transport] ^from "./transport")
+(import [public_authority] ^from "./authority")
+
+(fn channel_service [handle]
+  (let record (require_service handle))
+  (let service record/runtime/channels)
+  (if (|| ($absent? service) service/closed/.get)
+    (fail (ServiceError ^code "unavailable" ^message "The channel service is unavailable.")))
+  service)
+
+(fn start_channel_transport [handle]
+  (let record (require_service handle))
+  (if (!= record/host/owner "slack")
+    (fail (ServiceError ^code "forbidden" ^message "Slack transport activation belongs to the slack plugin.")))
+  (let previous (record/values/.get .get "transport"))
+  (if (&& (! ($absent? previous)) (! previous/closed/.get)) (return {^^started}))
+  (let service (channel_service handle))
+  (let options (?? record/config {}))
+  (if_not ($absent? options/requester) (set service/users/requester options/requester))
+  (let transport (open_transport service ^owner record/host/effects
+    ^start (?? options/start true) ^driver options/driver ^requester options/requester))
+  (try
+    (record/values/.get .put "transport" transport)
+    (record/host/effects .defer (fn [] (close_transport transport)))
+    {^^started}
+  catch Any (close_transport transport) (fail $err)))
+
+(type HostedChannels ^^private ^props {^token Any}
+  (impl ChannelHost
+    (message start [] : Any (start_channel_transport self))
+    (message state [] : Any
+      (let service (channel_service self))
+      (immutable_view {^owner (public_authority service/owner) ^health service/health/.get}))))
+
+(fn channel_host_binding [runtime, ^options options = nil]
+  (service_binding runtime "channels" (fn [token] (HostedChannels ^token token)) ^config options))

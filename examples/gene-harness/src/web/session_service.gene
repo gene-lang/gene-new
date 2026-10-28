@@ -1,4 +1,5 @@
 (mod session_service)
+(import [open_session_lifecycle close_session_lifecycle] ^from "./service_lifecycle")
 (import [command_descriptors] ^from "../runtime/command_identity")
 (import [browser_client_descriptors] ^from "../ui/browser_clients")
 (import [speech_text speech_needs_audio_reply?] ^from "../runtime/speech_text")
@@ -8,13 +9,11 @@
 (import [append_core_event] ^from "../storage/state")
 (import [pending_request read_body] ^from "../agents/history")
 (import [operator_round?] ^from "../runtime/round_policy")
-(import [open_channel_service close_channel_service delivery_status thread_link share_session] ^from "../channels/service")
+(import [delivery_status thread_link share_session] ^from "../channels/service")
 (import [sharing_available?] ^from "../channels/sharing")
 (import ^from "../runtime/bootstrap" [open_runtime close_runtime prepare_workspace_root])
-(import ^from "../profiles/baseline" [baseline_profile])
-(import ^from "../profiles/offline" [offline_profile])
 (import ^from "../profiles/registry" [workspace_profile])
-(import ^from "../runtime/workspace_manager" [WorkspaceManagerChanged open_workspace_manager start_manager_polling])
+(import ^from "../runtime/workspace_manager" [WorkspaceManagerChanged])
 (import ^from "../runtime/round_controller" ^^export
   [
     new_round_controller
@@ -55,9 +54,6 @@
   [
     rows
     contribute
-    provide
-    withdraw_seam
-    HarnessEvent
     RoundChanged
     CommandChanged
     SessionChanged
@@ -84,7 +80,7 @@
     delete_trigger
     list_occurrences])
 
-(type WorkspaceService ^props {^runtime Any ^events Any ^sessions Any ^controller Any ^epoch Str ^publisher Any ^revision Any ^closed Any ^model_info Any ^offline Bool ^subscriptions Any ^snapshot_jobs Any ^snapshot_versions Any ^browser_requests Any ^ui_audience Any? ^snapshot_audience Any?})
+(type WorkspaceService ^props {^runtime Any ^events Any ^sessions Any ^controller Any ^epoch Str ^publisher Any ^revision Any ^closed Any ^model_info Any ^offline Bool ^subscriptions Any ^snapshot_jobs Any ^snapshot_versions Any ^browser_requests Any ^ui_audience Any? ^snapshot_audience Any? ^lifecycle Any?})
 
 (fn public_session [service, record]
   (let copy ($thaw ($freeze record)))
@@ -372,7 +368,7 @@
       (if ($absent? record/text) (queue_snapshot service session))))
   nil)
 
-(fn open_session_service [^workspace workspace : Str = "", ^offline offline : Bool = false, ^profile supplied_profile = nil, ^ownership ownership = nil, ^managed managed : Bool = false]
+(fn open_session_service [^workspace workspace : Str = "", ^offline offline : Bool = false, ^profile supplied_profile = nil, ^ownership ownership = nil, ^managed managed : Bool = false, ^channel_options channel_options = nil, ^service_event service_event = nil]
   (let canonical (prepare_workspace_root ^root workspace))
   (let profile (workspace_profile ^base supplied_profile ^offline offline canonical))
   (let runtime
@@ -380,6 +376,8 @@
       canonical
       "default"
       profile))
+  (var service nil)
+  (try
   (contribute
     runtime/h
     "web"
@@ -395,35 +393,18 @@
     catch Any
       (let choice (provider_choice runtime settings))
       {^provider choice/name ^model "Unavailable" ^effort ""}))
-  (let service
+  (set service
     (WorkspaceService ^runtime runtime ^events runtime/events ^sessions runtime/sessions ^controller nil ^epoch ($crypto/random_hex 16) ^publisher ($cell nil) ^revision ($atomic_cell 0) ^closed ($cell false) ^model_info model_info ^offline offline ^subscriptions [] ^snapshot_jobs ($cell {}) ^snapshot_versions ($cell {}) ^browser_requests ($cell {})))
-  (runtime/h/notifications/observer .set
-    (fn [kind, data]
-      (let copy ($thaw ($freeze data)))
-      (copy .put "epoch" service/epoch)
-      (publish_message service kind "" copy)))
-  (runtime/actions/log/observer .set
-    (fn [record, metadata]
-      (publish_message service "ui/action" "" {^record record ^actions metadata})))
-  (set service/controller (new_round_controller runtime))
-  # Recovery recorded answered batches whose continuation never started.
-  (resume_answered_rounds service/controller)
-  (resume_continuations service/controller)
-  (if_not ($absent? runtime/channel_queues)
-    (set runtime/channels (open_channel_service runtime service/controller)))
-  (service/subscriptions .push
-    (runtime/h/bus .subscribe HarnessEvent (fn [event] (handle_harness_event service event))))
-  # Runtime-owned observation must not inherit a plugin activation's callback
-  # budget or stop when the manager view is replaced.
-  (if (== profile/name "manager")
-    (start_manager_polling (open_workspace_manager runtime)))
-  (provide
-    runtime/h
-    "core"
-    "loop"
-    (fn []
-      {^runtime runtime ^controller service/controller ^^start ^^boot}))
-  service)
+  (set service/lifecycle (open_session_lifecycle service publish_message handle_harness_event
+    ^channel_options channel_options ^observe service_event))
+  service
+  catch Any
+    (let original $err)
+    (if_not ($absent? service) (service/closed .set true))
+    (if (|| ($absent? service) ($absent? service/lifecycle))
+      (close_runtime runtime)
+      (close_session_lifecycle service/lifecycle))
+    (fail original)))
 
 (fn row_voice [service]
   (let snapshot (current_snapshot service/runtime/h/snapshots))
@@ -857,21 +838,4 @@
 
 (fn close_session_service [service]
   (if (service/closed .swap true) (return nil))
-  (service/runtime/h/notifications/observer .set nil)
-  (service/runtime/actions/log/observer .set nil)
-  (for subscription in service/subscriptions
-    subscription/.cancel)
-  (let jobs (service/snapshot_jobs .swap {}))
-  (for [id slot] in jobs
-    (while ($absent? slot/.get)
-      ($sleep 1))
-    (let job slot/.get)
-    job/.cancel)
-  (for [id slot] in jobs
-    (let job slot/.get)
-    job/.join)
-  (withdraw_seam service/runtime/h "core" "loop")
-  (if_not ($absent? service/runtime/triggers) (close_trigger_manager service/runtime/triggers))
-  (close_round_controller service/controller)
-  (if_not ($absent? service/runtime/channels) (close_channel_service service/runtime/channels))
-  (close_runtime service/runtime))
+  (close_session_lifecycle service/lifecycle))

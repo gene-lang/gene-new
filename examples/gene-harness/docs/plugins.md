@@ -146,9 +146,41 @@ Transport and content helpers remain separate modules.
 
 The [built-in import check](../tests/unit/builtin/import_policy_spec.gene)
 allows `plugin_api`, declared shared helpers and public Gene/genex libraries.
-Remaining private imports are named migration exceptions; removing an import
-requires removing its exception, and new private imports fail the check.
+All built-ins satisfy that boundary; the private-import exception list is
+empty. The check rejects both new private dependencies and stale exceptions.
 Stored plugins retain the enforced source-closure boundary described below.
+
+Additional host services are resolved through these public protocols. Handles
+are opaque and belong to the resolving activation; they stop working after
+that activation retires. Their returned data collections are immutable.
+
+| Seam | Protocol and operations |
+| --- | --- |
+| `media/host` | `MediaHost`: `list`, `show id`, `import_file path`, `page id page`, `store name bytes`. Showing media requires an open turn in the same workspace. |
+| `triggers/host` | `TriggerHost`: `start`, `list`, `create definition`, `delete id`, `occurrences`. Scheduler activation belongs to the `triggers` plugin; other plugins normally use its contributed functions. |
+| `channels/host` | `ChannelHost`: `start` and `state`. The `slack` plugin owns transport activation; host-owned accounts and queues survive its replacement or disable. Status contains public identity/health data. |
+| `sessions/host` | Read-only `SessionHost`: `record session` and `round session`. `round` returns a projection of the loaded round or nil, with no session cells or manager. |
+| `voice/host` | `VoiceHost`: `output session` and `reset_if_unused`, for spoken-reply policy and activation cleanup. |
+| `ui/host` | `UiHost`: `settings`, `configure changes`, `preview name state`, and filtered `receipts`. Configuration writes remain owned by `ui_experiment`. |
+| `workspaces/host` | Manager-only `WorkspaceHost`: `list`, `snapshot`, `inspect id`, `operation name values`, browser `action`, and `open_link id`. Browser actions keep their existing confirmation checks. |
+| `computer/host` | `ComputerHost`: scoped activation, admitted operator `command`, conversation `targets`, `observe`, `act`, and durable `receipt`. Grants stay alive through overlapping activation readers. |
+| `operator/host` | `OperatorHost`: execute an admitted command, retain/classify/run/close the shell or REPL mode. A supplied CommandContext alone does not authorize execution. |
+| `plugins/host` | `CompositionHost`: register, enable/disable, restore, inspect states/history and revert. Publication retains its origin-owned turn queue and durable admission. |
+
+`WorkspaceHost:open_link` returns a `BrowserTarget` reference, carrying only
+the workspace identity. An authenticated browser redirect resolves it to the
+owner URL; the plugin never receives a credential-bearing link. Existing
+ordinary string-valued `ui_links` remain supported.
+
+Public helper imports have explicit paths: `src/public/documentation.gene`,
+`provider.gene`, `history_policy.gene`, `model_content.gene`, `image_contract.gene`,
+`model_text.gene`, `speech_engines.gene`, `mac_recognition.gene` and
+`voice_frames.gene` (each remaining name is under `src/public/`).
+`src/text.gene` supplies bounded text helpers. The loader and source validator
+share the exact manifest in `runtime/public_modules.gene`; other paths under
+`src/public/` receive no implicit permission. Helpers cannot import private host
+implementation modules. Stored-plugin acceptance covers all helper families
+and restart, alongside rejection of private, undeclared and traversal paths.
 
 ### Define an extension point
 

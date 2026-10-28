@@ -1,0 +1,146 @@
+# Runtime-owned computer grants and durable driver receipts. The replaceable
+# plugin sees IDs/records and retains a counted lease through its last reader.
+(mod computer_host)
+(import [ComputerHost CommandContext CommandResult ServiceError append_prompt] ^from "../plugin_api")
+(import [service_binding require_service] ^from "./service_handles")
+(import [require_command_scope] ^from "./command_scope")
+(import [execution_origin] ^from "./execution_budget")
+(import [require_turn] ^from "../agents/outcome")
+(import [immutable_view] ^from "./composition")
+(import [attach_media] ^from "./media_host")
+(import [open_media_store put_media] ^from "../storage/media")
+(import [open_driver driver_call grant_window grant_browser targets observe action action_receipt close_session session_label]
+  ^from "." ^pkg "computer")
+
+(fn open_computer_host [runtime, ^driver supplied_driver = nil]
+  {^runtime runtime ^client ($cell supplied_driver) ^owners ($cell {}) ^readers ($cell 0)
+   ^gate ($sync/gate) ^closed ($cell false)})
+
+(fn close_grants [state]
+  (let owners (state/owners .swap {}))
+  (let errors [])
+  (if_not ($absent? state/client/.get)
+    (for [session present] in owners
+      (try (close_session state/client/.get ($to_str session))
+        catch Any (errors .push $err/message))))
+  (if_not errors/.empty?
+    (fail (ServiceError ^code "cleanup_failed" ^message $"Computer session cleanup needs attention: ${errors}")))
+  nil)
+
+(fn close_computer_host [state]
+  (if (state/closed .swap true) (return nil))
+  (close_grants state))
+
+(fn driver [state]
+  (if state/closed/.get (fail (ServiceError ^code "unavailable" ^message "Computer host is closed.")))
+  (if_yes ($absent? state/client/.get)
+    (let config ($serde/read_data ($fs/read_text $"${state/runtime/state_root}/config.gene")))
+    (let options (?? config/computer {}))
+    (state/client .set (open_driver $"${state/runtime/state_root}/computer"
+      ^command (?? options/command "cua-driver") ^socket (?? options/socket ""))))
+  state/client/.get)
+
+(fn start_computer [handle]
+  (let record (require_service handle))
+  (if (!= record/host/owner "computer")
+    (fail (ServiceError ^code "forbidden" ^message "Computer activation belongs to the computer plugin.")))
+  (if (== (record/values/.get .get "started") true) (return nil))
+  (let state record/config)
+  (state/gate (fn []
+    (state/readers .set (+ state/readers/.get 1))
+    (try
+      (record/host/effects .defer (fn [] (state/gate (fn []
+        (state/readers .set (- state/readers/.get 1))
+        (if (== state/readers/.get 0) (close_grants state))))))
+      (record/values/.get .put "started" true)
+    catch Any
+      (state/readers .set (- state/readers/.get 1))
+      (fail $err))))
+  nil)
+
+(fn computer_state [handle]
+  (let record (require_service handle))
+  (if (!= (record/values/.get .get "started") true)
+    (fail (ServiceError ^code "unavailable" ^message "Computer activation has not started.")))
+  record/config)
+
+(fn calling_session [state]
+  (let context ($runtime/context))
+  (if (|| (! (same? context/composition state/runtime/h/snapshots))
+          (!= ($head context/session) Str) (== context/session ""))
+    (fail (ServiceError ^code "session_required" ^message "Computer operations require a calling conversation.")))
+  (state/owners/.get .put context/session true)
+  context/session)
+
+(fn calling_turn [state]
+  (let origin (execution_origin))
+  (if (|| ($absent? origin) (! (same? origin/composition state/runtime/h/snapshots)))
+    (fail (ServiceError ^code "turn_required" ^message "Computer model operations require an open turn.")))
+  (require_turn origin/turn)
+  (state/owners/.get .put origin/session true)
+  origin/session)
+
+(fn computer_command [handle, supplied]
+  (let state (computer_state handle))
+  (let ctx (require_command_scope state/runtime supplied))
+  (let parts ($filter ($str/split ($str/trim ctx/raw) " ") (fn [part] (!= part ""))))
+  (let operation (?? parts/0 "help"))
+  (let help "Use /computer windows, /computer allow PID WINDOW, /computer browser PID WINDOW, or /computer close. See (doc \"harness/computer\") for driver setup.")
+  (if_not (["windows" "allow" "browser" "close"] .contains? operation)
+    (return ($freeze (CommandResult ^display help ^!attached))))
+  (let connection (driver state))
+  (state/owners/.get .put ctx/session true)
+  (if (&& (== operation "windows") (== parts/.size 1))
+    (return ($freeze (CommandResult ^display ($serde/write_data
+      (driver_call connection "list_windows" {^session (session_label connection ctx/session)})) ^!attached))))
+  (if (&& (== operation "allow") (== parts/.size 3))
+    (return ($freeze (CommandResult ^display ($serde/write_data
+      (grant_window connection ctx/session ($parse/parse_int parts/1) ($parse/parse_int parts/2))) ^!attached))))
+  (if (&& (== operation "browser") (== parts/.size 3))
+    (return ($freeze (CommandResult ^display ($serde/write_data
+      (grant_browser connection ctx/session ($parse/parse_int parts/1) ($parse/parse_int parts/2))) ^!attached))))
+  (if (&& (== operation "close") (== parts/.size 1))
+    (return ($freeze (CommandResult ^display ($serde/write_data (close_session connection ctx/session)) ^!attached))))
+  ($freeze (CommandResult ^display help ^!attached)))
+
+(fn computer_observe [handle, target : Str, query : Str]
+  (let state (computer_state handle))
+  (let session (calling_turn state))
+  (let result (observe ^query query (driver state) session target))
+  (let raw (?? result/result result))
+  (let content [])
+  (for block in (?? raw/content [])
+    (if (== block/type "image")
+      (then
+        (let extension (if (== block/mimeType "image/jpeg") "jpg" "png"))
+        (let item (put_media ^source "screenshot" (open_media_store state/runtime/state_root)
+          $"screenshot.${extension}" ($base64/decode block/data)))
+        (attach_media state/runtime item/id)
+        (content .push {^type "image" ^media item}))
+      (else (content .push block))))
+  (let output {^target target ^observation result/observation
+    ^state raw/structuredContent ^content content ^isError (== raw/isError true)})
+  (append_prompt "computer" output)
+  (immutable_view output))
+
+(type HostedComputer ^^private ^props {^token Any}
+  (impl ComputerHost
+    (message start [] : Any (start_computer self))
+    (message command [context : CommandContext] : Any (computer_command self context))
+    (message targets [] : Any
+      (let state (computer_state self))
+      (immutable_view (targets (driver state) (calling_session state))))
+    (message observe [target : Str, ^query query : Str = ""] : Any (computer_observe self target query))
+    (message act [target : Str, observation : Str, name : Str, params, request : Str] : Any
+      (let state (computer_state self))
+      (let receipt (action (driver state) (calling_turn state) target observation name params request))
+      (append_prompt "computer" receipt)
+      (immutable_view receipt))
+    (message receipt [request : Str] : Any
+      (let state (computer_state self))
+      (let receipt (action_receipt (driver state) (calling_turn state) request))
+      (append_prompt "computer" receipt)
+      (immutable_view receipt))))
+
+(fn computer_host_binding [state]
+  (service_binding state/runtime "computer" (fn [token] (HostedComputer ^token token)) ^config state))

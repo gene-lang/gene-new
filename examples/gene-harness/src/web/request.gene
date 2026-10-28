@@ -1,0 +1,63 @@
+# Parsing and responses shared by authenticated host route modules.
+(mod web_request)
+(import [RoundError] ^from "../runtime/round_controller")
+(import $net/http [json])
+
+(fn response [status : Int, value]
+  (json status ($json/stringify value)))
+
+(fn fail_request [code : Str, message : Str]
+  (fail (RoundError ^code code ^message message)))
+
+(fn optional_field [data, key : Str]
+  (let value (field ^default "" data key))
+  (if (== value "")
+    nil
+    value))
+
+(fn field [data, key : Str, ^default fallback = nil] : Str
+  (var value (try (data .get key) catch Any nil))
+  (if ($absent? value)
+    (if ($absent? fallback)
+      (fail_request "invalid_request" $"Missing ${key}.")
+      (return fallback)))
+  (if_not (== ($head value) Str) (fail_request "invalid_request" $"${key} must be text."))
+  value)
+
+(fn number [data, key : Str, ^default fallback : Str = ""] : Int
+  (var value (field ^default fallback data key))
+  (if (|| (== value "") (> ($str/byte_size value) 24))
+    (fail_request "invalid_request" $"Invalid ${key}."))
+  (try
+    ($parse/parse_int value)
+  catch Any
+    (fail_request "invalid_request" $"Invalid ${key}.")))
+
+(fn request_data [request]
+  (try
+    ($json/parse request/body)
+  catch Any
+    (fail_request "invalid_request" "The request must contain JSON.")))
+
+(fn path_parts [path : Str]
+  (let parts [])
+  (for part in ($str/split path "/")
+    (parts .push (try ($url/decode_component part)
+      catch Any (fail_request "invalid_request" "Invalid URL path component."))))
+  parts)
+
+(fn session_path? [parts] : Bool
+  (&& (>= parts/.size 5) (== parts/1 "api") (== parts/2 "v8") (== parts/3 "sessions")))
+
+(fn cookie_value [header : Str, name : Str] : Str
+  (for part in ($str/split header ";")
+    (var pair ($str/split ($str/trim part) "="))
+    (if_yes (&& (== pair/.size 2) (== pair/0 name)) (return pair/1)))
+  "")
+
+(fn secure_response [result]
+  (if_not ($absent? result/headers)
+    (result/headers .put "cache-control" "no-store")
+    (result/headers .put "x-content-type-options" "nosniff")
+    (result/headers .put "referrer-policy" "no-referrer"))
+  result)

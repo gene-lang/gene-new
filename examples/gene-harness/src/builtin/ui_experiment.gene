@@ -1,38 +1,25 @@
 (mod ui_experiment)
-(import [Plugin PluginHost] ^from "../plugin_api")
-(import [validate_ui_settings ui_settings] ^from "../ui/state")
-(import [ui_preview] ^from "../ui/views")
-(import [list_action_receipts] ^from "../ui/action_log")
-(import [contribute_doc] ^from "./documentation")
+(import [Plugin PluginHost UiHost] ^from "../plugin_api")
+(import [contribute_doc] ^from "../public/documentation")
 
 (fn ui_experiment [] : Plugin
-  (Plugin ^id "ui_experiment" ^requires ["loop"]
+  (Plugin ^id "ui_experiment" ^requires ["ui/host"]
     ^provides [["functions" "ui_configure"] ["functions" "ui_preview"] ["functions" "ui_action_receipts"]]
     ^activate (fn [host]
-      (let loop_factory (host .PluginHost:resolve "loop"))
-      (let runtime (/runtime (loop_factory)))
+      (let ui (host .PluginHost:resolve "ui/host"))
       (host .PluginHost:contribute "functions"
         {^name "ui_configure" ^doc "Enable, select or theme the experimental workspace panel. Omitted keys keep their current values."
          ^tags ["ui" "layout" "theme" "panel"] ^docs ["harness/ui/configuration"]
-         ^fn (fn [settings]
-           # Merge over the effective settings so a partial call cannot reset
-           # an existing layout, theme or profile default.
-           (if (!= ($head settings) Map) (validate_ui_settings settings))
-           (let merged {})
-           (for [key value] in (ui_settings runtime/h) (merged .put key value))
-           (for [key value] in settings (merged .put key value))
-           (let checked (validate_ui_settings merged))
-           (host .PluginHost:update_state checked)
-           checked)})
+         ^fn (fn [settings] (ui .UiHost:configure settings))})
       (host .PluginHost:contribute "functions"
         {^name "ui_preview" ^doc "Validate a panel tree using supplied browser view state."
          ^tags ["ui" "preview" "verify"] ^docs ["harness/ui/publication"]
-         ^fn (fn [name : Str, state = {}] (ui_preview runtime/h name state))})
+         ^fn (fn [name : Str, state = {}] (ui .UiHost:preview name state))})
       (host .PluginHost:contribute "functions"
         {^name "ui_action_receipts" ^doc "Read recent workspace UI action outcomes without creating a conversation. Filter by view, status or input_id; before is the returned pagination cursor."
          ^tags ["ui" "actions" "receipts" "diagnostics"] ^docs ["harness/ui/publication"]
          ^fn (fn [^view view : Str = "", ^status status : Str = "", ^input_id input_id : Str = "", ^before before : Int = 0, ^limit limit : Int = 25]
-           (list_action_receipts runtime/actions/log ^view view ^status status ^input_id input_id ^before before ^limit limit))})
+           (ui .UiHost:receipts ^view view ^status status ^input_id input_id ^before before ^limit limit))})
       (contribute_doc host "harness/ui/configuration"
         "Enable a panel; layout, width, theme tokens and default-UI recovery."
         "examples/gene-harness/docs/recipes/ui-configuration.md"

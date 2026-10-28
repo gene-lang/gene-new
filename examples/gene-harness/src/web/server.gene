@@ -1,4 +1,5 @@
 (mod harness_web_server)
+(import [ServiceError] ^from "../plugin_api")
 
 (import ^from "./session_service"
   [
@@ -10,13 +11,9 @@
     submit
     receipt
     cancel
-    cancel_child
-    recover_children
     answer
     command
     command_sequence
-    session_voice_state
-    session_voice_claim
     operator_receipt
     request_receipt
     cancel_operator_command
@@ -24,25 +21,15 @@
     edit_session
     remove_session
     acknowledge_attention
-    session_card_action
-    session_card_receipt
-    session_slack_thread
-    session_add_to_slack
     CardError
     RoundError])
 (import ^from "./page" [page])
 (import ^from "./plugin_page" [plugin_page manager_client])
 (import ^from "./startup" [mark_ready browser_connection_message])
-(import ^from "../ui/images" [workspace_image WorkspaceImageError])
-(import ^from "../kernel" [row])
+(import ^from "../ui/images" [WorkspaceImageError])
 (import [search_sessions] ^from "../runtime/launcher_search")
-(import ^from "../ui/state" [ui_status UiError])
-(import ^from "../ui/views" [ui_render])
-(import ^from "../ui/actions" [ui_action ui_action_receipt cancel_ui_action])
-(import ^from "../notifications/inbox"
-  [inbox_snapshot message_detail clear_messages acknowledge_messages NotificationError])
-(import ^from "../notifications/publisher" [publish_notification])
-(import ^from "../notifications/actions" [invoke_notification_action])
+(import ^from "../ui/state" [UiError])
+(import ^from "../notifications/inbox" [NotificationError])
 (import ^from "./contract" [error_status])
 (import ^from "./push" [new_push_hub add_peer remove_peer expire_peers disconnect_peers broadcast])
 (import ^from "../website/page" [website_page])
@@ -51,33 +38,30 @@
 (import ^from "../runtime/commands" [CommandError])
 (import ^from "../runtime/round_controller" [request_stop submit_round])
 (import [continue_round] ^from "../runtime/round_controller")
-(import [VoiceError record_voice_timing voice_timings] ^from "../runtime/voice_state")
-(import [append_core_event] ^from "../storage/state")
-(import [new_voice_hub add_voice_peer remove_voice_peer voice_message tick_voice close_voice_hub] ^from "./voice")
-(import [speech_catalog] ^from "../runtime/speech_service")
+(import [VoiceError] ^from "../runtime/voice_state")
+(import [new_voice_hub tick_voice close_voice_hub] ^from "./voice")
 (import ^from "../runtime/bootstrap" [prepare_workspace_root])
-(import ^from "../runtime/plugin_manager" [plugin_catalog inspect_descriptor plugin_history_catalog])
-(import ^from "./plugin_control" [new_plugin_control plugin_control_request close_plugin_control])
-(import ^from "../storage/workspace" [composition_revision revert_plugin record_application_result CompositionConflict CompositionError])
-(import ^from "../storage/plugin_history" [PluginHistoryError pin_history])
+(import ^from "./plugin_control" [new_plugin_control close_plugin_control])
+(import ^from "../storage/workspace" [record_application_result CompositionConflict CompositionError])
+(import ^from "../storage/plugin_history" [PluginHistoryError])
 (import ^from "../runtime/workspace_lock" [acquire_workspace_lock close_workspace_lock])
 (import ^from "../runtime/workspace_settings" [read_workspace_settings update_workspace_settings])
 (import ^from "../runtime/input_modes" [submit_mode_input close_mode expire_modes ModeError])
 (import ^from "../runtime/questions" [QuestionError])
 (import [DelegationError] ^from "../runtime/delegation_contract")
-(import [channel_request] ^from "../channels/http")
 (import [ChannelError] ^from "../channels/model")
 (import [SlackError] ^from "../channels/slack_api")
-(import ^from "../runtime/triggers"
-  [list_triggers create_trigger delete_trigger list_occurrences require_trigger_manager TriggerError])
+(import ^from "../runtime/triggers" [TriggerError])
 (import ^from "../profiles/scripted" [scripted_profile])
 (import ^from "../profiles/offline" [offline_profile])
-(import $net/http [serve stop html json redirect bytes : http_bytes ws_accept ws_close])
+(import $net/http [serve stop html redirect ws_accept ws_close])
 (import ^from "./auth" [open_auth exchange authenticate reset_auth AuthError])
-(import [open_media_store put_media_base64 media_descriptor media_bytes MediaError]
+(import [open_media_store MediaError]
   ^from "../storage/media")
 (import ^from "./connection" [bind_workspace publish_connection publish_link clear_connection])
 (import $os [get_env])
+(import [response fail_request field optional_field number request_data path_parts cookie_value secure_response] ^from "./request")
+(import [feature_request] ^from "./routes/catalog")
 
 # The informational page is static for the life of the server: one copy per
 # theme, chosen per request.
@@ -85,56 +69,7 @@
   {^light (website_page ^mode "embedded" ^appearance "light")
    ^dark (website_page ^mode "embedded" ^appearance "dark")})
 
-(fn response [status : Int, value]
-  (json status ($json/stringify value)))
-
-(fn fail_request [code : Str, message : Str]
-  (fail (RoundError ^code code ^message message)))
-
-(fn optional_field [data, key : Str]
-  (let value (field ^default "" data key))
-  (if (== value "")
-    nil
-    value))
-
-(fn field [data, key : Str, ^default fallback = nil] : Str
-  (var value (try (data .get key) catch Any nil))
-  (if ($absent? value)
-    (if ($absent? fallback)
-      (fail_request "invalid_request" $"Missing ${key}.")
-      (return fallback)))
-  (if_not (== ($head value) Str) (fail_request "invalid_request" $"${key} must be text."))
-  value)
-
-(fn number [data, key : Str, ^default fallback : Str = ""] : Int
-  (var value (field ^default fallback data key))
-  (if (|| (== value "") (> ($str/byte_size value) 24))
-    (fail_request "invalid_request" $"Invalid ${key}."))
-  (try
-    ($parse/parse_int value)
-  catch Any
-    (fail_request "invalid_request" $"Invalid ${key}.")))
-
-(fn request_data [request]
-  (try
-    ($json/parse request/body)
-  catch Any
-    (fail_request "invalid_request" "The request must contain JSON.")))
-
-(fn cookie_value [header : Str, name : Str] : Str
-  (for part in ($str/split header ";")
-    (var pair ($str/split ($str/trim part) "="))
-    (if_yes (&& (== pair/.size 2) (== pair/0 name)) (return pair/1)))
-  "")
-
-(fn secure_response [result]
-  (if_not ($absent? result/headers)
-    (result/headers .put "cache-control" "no-store")
-    (result/headers .put "x-content-type-options" "nosniff")
-    (result/headers .put "referrer-policy" "no-referrer"))
-  result)
-
-(fn main [argv, ^profile supplied_profile = nil]
+(fn main [argv, ^profile supplied_profile = nil, ^channel_options channel_options = nil, ^on_open on_open = nil]
   (manager_client)
   (var args [])
   (for arg in argv (args .push ($to_str arg)))
@@ -189,7 +124,8 @@
   (set server (bind_workspace $"${root}/.gene-harness" ^port port ^restart_port restart_port))
   (set port server/port)
   (set host (open_session_service ^workspace root ^offline offline
-    ^profile selected_profile ^ownership ownership ^managed managed))
+    ^profile selected_profile ^ownership ownership ^managed managed ^channel_options channel_options))
+  (if_not ($absent? on_open) (on_open host))
   (set plugin_control (new_plugin_control host/runtime))
   (set voice_hub (new_voice_hub host))
   (let media_store (open_media_store host/runtime/state_root))
@@ -248,12 +184,12 @@
         (fail_request "forbidden" "Refresh this page before making a change.")))
     (if_yes (&& (!= request/method "GET") host/runtime/stopping/.get)
       (fail_request "stopped" "The workspace is stopping."))
-    (let channel_result (channel_request host/runtime/channels request/method request/path
-      (if (&& (== request/method "POST") (request/path .starts_with? "/api/v8/channels"))
-        (request_data request) {})))
-    (if_not ($absent? channel_result) (return (response channel_result/status channel_result/body)))
-    (let management (plugin_control_request plugin_control request))
-    (if_not ($absent? management) (return (response management/status management/body)))
+    (let parts (path_parts request/path))
+    (let feature (feature_request
+      {^host host ^root root ^safe safe ^media media_store ^voice voice_hub
+       ^browser browser ^auth auth ^origin origin ^request_origin request_origin ^plugin_control plugin_control}
+      request parts))
+    (if_not ($absent? feature) (return feature))
     (if_yes (&& (== request/method "POST") (== request/path "/api/v8/auth/reset"))
       (reset_auth auth)
       (disconnect_peers push)
@@ -277,19 +213,6 @@
         (let data (request_data request))
         (return (response 200 (update_workspace_settings ^expected (?? data/expected "")
           root (?? data/changes data))))))
-    (if_yes (&& (== request/method "GET") (== request/path "/api/v8/ui/open"))
-      (let target (row host/runtime/h "ui_links" (field request/params "name")))
-      (if ($absent? target) (fail_request "not_found" "This browser link is unavailable."))
-      (return (redirect (target/fn request/params))))
-    # This route is deliberately below owner authentication.
-    (if_yes (&& (== request/method "GET") (== request/path "/api/v8/ui/image"))
-      (let image (workspace_image root (field request/params "path" ^default "")))
-      (let result (http_bytes 200 image/data))
-      (result/headers .put "content-type" image/mime)
-      # SVG documents remain inert even when opened directly.
-      (result/headers .put "content-security-policy"
-        "sandbox; default-src 'none'; script-src 'none'; style-src 'none'; base-uri 'none'; frame-ancestors 'none'")
-      (return result))
     (if_yes (&& (== request/method "GET") (== request/path "/api/v8/status"))
       (var result (host_status ^safe safe ^session (field request/params "session" ^default "") host))
       (result .put "csrf" browser/csrf)
@@ -298,62 +221,6 @@
       (let q (field request/params "q" ^default ""))
       (if (> ($str/byte_size q) 256) (fail_request "invalid_request" "Search query exceeds 256 bytes."))
       (return (response 200 (search_sessions ^limit (number request/params "limit" ^default "50") host/sessions q))))
-    (if_yes (&& (== request/method "GET") (== request/path "/api/v8/plugins/history"))
-      (return (response 200
-        (plugin_history_catalog
-           ^limit (if ($absent? request/params/limit) 50 (number request/params "limit"))
-           ^before (if ($absent? request/params/before) nil (number request/params "before"))
-           host/runtime (field request/params "id" ^default "")))))
-    (if_yes (&& (== request/method "GET") (== request/path "/api/v8/plugins"))
-      (let result (plugin_catalog
-        ^query (field request/params "q" ^default "")
-        ^state (field request/params "state" ^default "") host/runtime))
-      (result .put "csrf" browser/csrf)
-      (result .put "epoch" host/runtime/epoch)
-      (result .put "appearance" (appearance_mode host/runtime/h))
-      (return (response 200 result)))
-    (if_yes (&& (== request/method "POST") (== request/path "/api/v8/plugins/revert"))
-      (let data (request_data request))
-      (if (|| (!= ($head data/revision) Int) (!= ($head data/expected) Int))
-        (fail_request "invalid_request" "Revert requires integer revision and expected revision."))
-      (try
-        (return (response 200 (revert_plugin ^expected data/expected
-          host/runtime/workspace host/runtime/h (field data "id") data/revision)))
-      catch CompositionConflict
-        (return (response 409 {^code $err/code ^message $err/message}))))
-    (if_yes (&& (== request/method "POST") (== request/path "/api/v8/plugins/inspect"))
-      (let data (request_data request))
-      (if (&& (! ($absent? data/revision)) (!= ($head data/revision) Int))
-        (fail_request "invalid_request" "Historical revision must be an integer."))
-      (return (response 200 (inspect_descriptor ^revision (?? data/revision nil)
-        host/runtime (field data "id")))))
-    (if_yes (&& (== request/method "POST") (== request/path "/api/v8/plugins/history/pin"))
-      (let data (request_data request))
-      (if (|| (!= ($head data/revision) Int) (!= ($head data/pinned) Bool))
-        (fail_request "invalid_request" "Pin requires an integer revision and boolean pinned value."))
-      (return (response 200 (pin_history host/runtime/workspace/store
-        host/runtime/workspace/history_head/.get data/revision data/pinned))))
-    (if_yes (== request/path "/api/v8/media")
-      (if (== request/method "GET")
-        (return (response 200 {^max_file_bytes media_store/max_file_bytes
-          ^max_files 16 ^max_message_bytes 41943040})))
-      (if_yes (== request/method "POST")
-        (let data (try ($json/parse request/body ^^strict ^max_depth 8)
-          catch Any (fail_request "invalid_request" "The upload must contain a JSON object.")))
-        (return (response 201 (put_media_base64 media_store
-          (field data "name") (field data "data"))))))
-    (if_yes (&& (== request/method "GET") (== request/path "/api/v8/voice/status"))
-      (if safe (fail_request "unavailable" "Voice is off in the recovery UI."))
-      (return (response 200 (speech_catalog voice_hub/speech))))
-    (if_yes (&& (== request/method "GET") (== request/path "/api/v8/voice"))
-      (if (|| safe (!= request_origin origin) ($absent? (row host/runtime/h "browser_clients" "voice")))
-        (fail_request "forbidden" "The active voice plugin and a same-origin socket are required."))
-      (return (ws_accept request ^subprotocol "gene-harness-voice.1"
-        ^on_open (fn [connection]
-          (add_voice_peer voice_hub connection browser/csrf
-            (fn [] (== browser/generation ($crypto/sha256 auth/secret)))))
-        ^on_message (fn [connection payload] (voice_message voice_hub connection payload))
-        ^on_close (fn [connection] (remove_voice_peer voice_hub connection)))))
     (if_yes (&& (== request/method "GET") (== request/path "/api/v8/events"))
       (if (!= request_origin origin) (fail_request "forbidden" "A same-origin socket is required."))
       (var watched (field request/params "session" ^default ""))
@@ -366,38 +233,6 @@
             (add_peer ^safe safe ^client_id client_id push connection watched 0)
             (ws_close connection)))
         ^on_close (fn [connection] (remove_peer push connection)))))
-    (if_yes (&& (== request/path "/api/v8/notifications") (== request/method "GET"))
-      (let state (inbox_snapshot host/runtime/h/notifications))
-      (state .put "epoch" host/epoch)
-      (if safe (for item in state/messages (item .put "detail" nil)))
-      (return (response 200 state)))
-    (if_yes (&& (== request/path "/api/v8/notifications") (== request/method "POST"))
-      (return (response 201 (publish_notification host/runtime/h "operator" (request_data request)))))
-    (if_yes (&& (== request/path "/api/v8/notifications/ack") (== request/method "POST"))
-      (let data (request_data request))
-      (return (response 200 (acknowledge_messages host/runtime/h/notifications
-        (if (== ($head data/through) Int) data/through (number data "through"))))))
-    (if_yes (&& (== request/path "/api/v8/notifications/clear") (== request/method "POST"))
-      (let data (request_data request))
-      (return (response 200 (clear_messages host/runtime/h/notifications data/messages))))
-    (if_yes (&& (== request/path "/api/v8/notifications/action") (== request/method "POST"))
-      (let result (invoke_notification_action host/runtime (request_data request)))
-      (return (response (if (== result/kind "command") 202 200) result)))
-    (if_yes (&& (== request/path "/api/v8/ui/render") (== request/method "POST"))
-      (if safe (fail_request "unavailable" "The default UI has no experimental views."))
-      (let data (request_data request))
-      (return (response 200 (ui_render ^instance (field data "instance") ^sequence (field data "sequence")
-        host/runtime/h (field data "session" ^default "") (field data "component")
-        (field data "revision") (?? data/state {})))))
-    (if_yes (&& (== request/path "/api/v8/ui/settings") (== request/method "POST"))
-      (if safe (fail_request "unavailable" "Leave the recovery page to change the experimental UI."))
-      (let configure (/fn (row host/runtime/h "functions" "ui_configure")))
-      (if ($absent? configure) (fail_request "unavailable" "The UI experiment is unavailable."))
-      (configure (request_data request))
-      (return (response 200 (ui_status host/runtime/h))))
-    (if_yes (&& (== request/path "/api/v8/ui/actions") (== request/method "POST"))
-      (if safe (fail_request "unavailable" "Leave the recovery page to submit a new view action."))
-      (return (response 202 (ui_action host/runtime/actions (request_data request)))))
     (if_yes (== request/path "/api/v8/sessions")
       (if (== request/method "GET")
         (return (response 200 (list_sessions host
@@ -413,64 +248,15 @@
       (if (== request/method "POST")
         (return (response 201 (create_session host
           ^title (field (request_data request) "title" ^default "New conversation"))))))
-    (let parts [])
-    (for part in ($str/split request/path "/")
-      (parts .push (try ($url/decode_component part)
-        catch Any (fail_request "invalid_request" "Invalid URL path component."))))
-    (if_yes (&& (== parts/.size 5) (== parts/1 "api") (== parts/2 "v8")
-                (== parts/3 "media") (== request/method "GET"))
-      (let descriptor (media_descriptor media_store parts/4))
-      (let result (http_bytes 200 (media_bytes media_store parts/4)))
-      (result/headers .put "content-type" descriptor/mime)
-      (let disposition (if (&& (== descriptor/kind "image")
-        (!= (?? request/params/download "") "1")) "inline" "attachment"))
-      (result/headers .put "content-disposition"
-        $"${disposition}; filename*=UTF-8''${($url/encode_component descriptor/name)}")
-      (return result))
-    (if_yes (&& (>= parts/.size 6) (== parts/1 "api") (== parts/2 "v8")
-                (== parts/3 "ui") (== parts/4 "actions"))
-      (if (&& (== parts/.size 6) (== request/method "GET"))
-        (return (response 200 (ui_action_receipt host/runtime/actions parts/5))))
-      (if (&& (== parts/.size 7) (== parts/6 "cancel") (== request/method "POST"))
-        (return (response 200 (cancel_ui_action host/runtime/actions parts/5)))))
-    (if_yes (&& (== request/path "/api/v8/trigger-occurrences") (== request/method "GET"))
-      (return (response 200 {^occurrences (list_occurrences (require_trigger_manager host/runtime))})))
-    (if_yes (&& (== parts/.size 5) (== parts/1 "api") (== parts/2 "v8")
-                (== parts/3 "notifications") (== request/method "GET"))
-      (let message (message_detail host/runtime/h/notifications parts/4))
-      (if safe (message .put "detail" nil))
-      (return (response 200 message)))
-    (if (== request/path "/api/v8/triggers")
-      (then
-        (if (== request/method "GET")
-          (return (response 200 {^triggers (list_triggers (require_trigger_manager host/runtime))})))
-        (if (== request/method "POST")
-          (return (response 201 (create_trigger (require_trigger_manager host/runtime) (request_data request)))))))
-    (if_yes (&& (>= parts/.size 5) (== parts/1 "api") (== parts/2 "v8") (== parts/3 "triggers"))
-      (if (&& (== parts/.size 5) (== request/method "DELETE"))
-        (return (response 200 (delete_trigger (require_trigger_manager host/runtime) parts/4))))
-      (if (&& (== parts/.size 6) (== parts/5 "occurrences") (== request/method "GET"))
-        (return (response 200 {^occurrences (list_occurrences (require_trigger_manager host/runtime) ^trigger parts/4)}))))
     (if_yes (&& (>= parts/.size 5) (== parts/1 "api")
                 (== parts/2 "v8") (== parts/3 "sessions"))
       (var id parts/4)
-      (if_yes (&& (== parts/.size 6) (== parts/5 "slack-thread") (== request/method "GET"))
-        (return (redirect (session_slack_thread host id))))
-      (if_yes (&& (== parts/.size 6) (== parts/5 "slack") (== request/method "POST"))
-        (return (response 202 (session_add_to_slack host id (number (request_data request) "revision")))))
       (if_yes (&& (== parts/.size 5) (== request/method "DELETE"))
         (return (response 200 (remove_session host id (number (request_data request) "revision")))))
       (if_yes (&& (== parts/.size 5) (== request/method "PATCH"))
         (var data (request_data request))
         (return (response 200 (edit_session host id data
           (number data "revision")))))
-      (if_yes (&& (== parts/.size 7) (== parts/5 "delegations") (== parts/6 "recovery") (== request/method "POST"))
-        (let data (request_data request))
-        (return (response 200 (recover_children host id (field data "round_id") (field data "action")))))
-      (if_yes (&& (== parts/.size 8) (== parts/5 "delegations") (== parts/7 "cancel") (== request/method "POST"))
-        (let data (request_data request))
-        (let admission (if (== ($head data/admission) Int) data/admission (number data "admission")))
-        (return (response 200 (cancel_child host id parts/6 admission))))
       (if_yes (&& (== parts/.size 6) (== parts/5 "open") (== request/method "POST"))
         (return (response 200 (acknowledge_attention host id))))
       (if_yes (&& (== parts/.size 6) (== parts/5 "snapshot") (== request/method "GET"))
@@ -487,29 +273,6 @@
           (fail_request "invalid_request" "Voice input must be submitted literally."))
         (return (response 202 (submit ^media (?? data/media []) ^card (?? data/card nil) host id (field data "request_id")
           (number data "submission_seq") (field data "text")))))
-      (if_yes (&& (== parts/.size 6) (== parts/5 "voice"))
-        (if safe (fail_request "unavailable" "Voice is unavailable in the recovery UI."))
-        (if (== request/method "GET") (return (response 200 (session_voice_state host id))))
-        (if (== request/method "POST") (return (response 200 (session_voice_claim host id (request_data request))))))
-      (if_yes (&& (== parts/.size 7) (== parts/5 "voice") (== parts/6 "latency") (== request/method "POST"))
-        (let data (request_data request))
-        (let identity (field data "identity" ^default ""))
-        (let input_kind (field data "input_kind" ^default ""))
-        (if (|| (! (["input" "output" "loop" "round" "error"] .contains? data/kind)) (!= ($head data/elapsed_ms) Int)
-                (> ($str/byte_size identity) 256) (! (["" "typed" "voice"] .contains? input_kind))
-                (< data/elapsed_ms 0) (> data/elapsed_ms 3600000))
-          (fail_request "invalid_request" "Invalid voice timing."))
-        (append_core_event host/runtime/events "session" id
-          {^type "trace" ^kind "voice/latency" ^text "voice/latency"
-           ^timing (record_voice_timing ^identity identity ^input_kind input_kind
-             host/runtime/voice id data/kind data/elapsed_ms) ^^ignorable})
-        (return (response 200 {^^ok})))
-      (if_yes (&& (== parts/.size 7) (== parts/5 "voice") (== parts/6 "latency") (== request/method "GET"))
-        (return (response 200 {^timings (voice_timings host/runtime/voice id)})))
-      (if_yes (&& (== parts/.size 8) (== parts/5 "cards") (== parts/7 "actions") (== request/method "POST"))
-        (return (response 200 (session_card_action host id parts/6 (request_data request)))))
-      (if_yes (&& (== parts/.size 7) (== parts/5 "card-actions") (== request/method "GET"))
-        (return (response 200 (session_card_receipt host id parts/6))))
       (if_yes (&& (== parts/.size 6) (["questions" "answers"] .contains? parts/5) (== request/method "POST"))
         (var data (request_data request))
         (return (response 202 (answer host id (field data "batch_id")
@@ -571,6 +334,7 @@
         catch ChannelError (response (error_status $err/code) {^code $err/code ^message $err/message})
         catch SlackError (response (error_status $err/code) {^code $err/code ^message $err/message})
         catch TriggerError (response (error_status $err/code) {^code $err/code ^message $err/message})
+        catch ServiceError (response (error_status $err/code) {^code $err/code ^message $err/message})
         catch CommandError (response (error_status $err/code) {^code $err/code ^message $err/message})
         catch SessionError (response (error_status $err/code) {^code $err/code ^message $err/message})
         catch QuestionError (response 400 {^code "invalid_request" ^message $err/message})

@@ -1,0 +1,72 @@
+(import $test [describe it])
+(import [isolated run_spec] ^from "../../support")
+(import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
+(import [Profile] ^from "../../../src/profiles/profile")
+(import [register_plugin] ^from "../../../src/storage/workspace")
+(import [row doc] ^from "../../../src/kernel")
+
+(fn sdk_plugin []
+  (quote (mod plugin
+    (import [Plugin PluginHost] ^from "src/plugin_api.gene")
+    (import [contribute_doc] ^from "src/public/documentation.gene")
+    (import [configure_model] ^from "src/public/provider.gene")
+    (import [normalize_history_policy] ^from "src/public/history_policy.gene")
+    (import [responses_content] ^from "src/public/model_content.gene")
+    (import [image_usage] ^from "src/public/image_contract.gene")
+    (import [safe_error] ^from "src/public/model_text.gene")
+    (import [whisper_row] ^from "src/public/speech_engines.gene")
+    (import [mac_recognizer_row] ^from "src/public/mac_recognition.gene")
+    (import [encode_audio_frame] ^from "src/public/voice_frames.gene")
+    (import [byte_prefix] ^from "src/text.gene")
+    (fn init [descriptor]
+      (Plugin ^id "public_sdk" ^provides [["functions" "sdk_probe"]]
+        ^activate (fn [host]
+          (contribute_doc host "sdk/reference" "Captured documentation." "examples/gene-harness/docs/repl.md")
+          (host .PluginHost:contribute "functions"
+            {^name "sdk_probe" ^doc "Exercise public helper contracts without host internals."
+             ^fn (fn []
+               {^model (/model (configure_model nil nil 1000 "test-model"))
+                ^policy (normalize_history_policy {^trigger_bytes 20 ^target_bytes 10})
+                ^content (responses_content {^role "user" ^content "text"})
+                ^usage (image_usage {^tokens 1})
+                ^error (safe_error "payload-secret" [{^base64 "payload-secret" ^data_url "data:image/png;base64,payload-secret"}])
+                ^recognizer (/name (whisper_row)) ^mac (/name (mac_recognizer_row))
+                ^frame_bytes ($binary/size (encode_audio_frame 1 1 0 ($binary/from_list [0 0])))
+                ^text (byte_prefix "héllo" 3)})})))))))
+
+(fn check_sdk [runtime]
+  (let probe (/fn (row runtime/h "functions" "sdk_probe")))
+  (let result (probe))
+  ($assert (== result/model "test-model"))
+  ($assert (== result/policy/trigger_bytes 20))
+  ($assert (== result/content/0/text "text"))
+  ($assert (== result/usage/tokens 1))
+  ($assert (== result/error "[image data omitted]"))
+  ($assert (== result/recognizer "whisper_local"))
+  ($assert (== result/mac "macos"))
+  ($assert (== result/frame_bytes 11))
+  ($assert (== result/text "hé"))
+  ($assert ($str/contains? (doc runtime/h "sdk/reference") "/repl")))
+
+(describe "Declared public plugin libraries"
+  (it "loads all public helper families in a stored plugin and keeps their identities through restart" []
+    (isolated this_mod/.path "loads all public helper families in a stored plugin and keeps their identities through restart"
+      (fn [root]
+        (let profile (Profile ^name "public-sdk" ^plugins []))
+        (let first (open_runtime root "default" profile))
+        (try
+          (let registered (register_plugin first/workspace first/h "public_sdk" (sdk_plugin)))
+          ($assert (== registered/status "ready") ($to_str registered))
+          (check_sdk first)
+          (for path in ["src/kernel.gene" "src/agents/content.gene" "src/public/../kernel.gene" "src/public/undeclared.gene"]
+            (let invalid `(mod plugin
+              (import [Plugin] ^from "src/plugin_api.gene")
+              (import [nothing] ^from %path)
+              (fn init [descriptor] (Plugin ^id "invalid" ^activate (fn [host] nil)))))
+            ($assert (try (register_plugin first/workspace first/h "invalid" invalid) false
+              catch Any ($str/contains? $err/message "outside its dependency closure"))))
+        ensure (close_runtime first))
+        (let restarted (open_runtime root "default" profile))
+        (try (check_sdk restarted) ensure (close_runtime restarted))))))
+
+(fn main [args] : Int (run_spec args))

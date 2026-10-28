@@ -1,0 +1,92 @@
+(import $test [describe it])
+(import [new_host_services start_host_services close_host_services HostServiceError]
+  ^from "../../../src/runtime/host_services")
+
+(fn specs []
+  [{^name "consumer" ^requires {^normal ["transport"] ^recovery ["ownership"]}
+    ^open (fn [ctx] (ctx/opened .push "consumer") "consumer")
+    ^recover (fn [ctx] (ctx/opened .push "consumer") "consumer")
+    ^close (fn [ctx, value] (ctx/closed .push value))}
+   {^name "transport" ^requires ["ownership"]
+    ^open (fn [ctx] (ctx/opened .push "transport") "transport") ^recover nil
+    ^close (fn [ctx, value] (ctx/closed .push value))}
+   {^name "ownership" ^requires []
+    ^open (fn [ctx] (ctx/opened .push "ownership") "ownership")
+    ^recover (fn [ctx] (ctx/opened .push "ownership") "ownership")
+    ^close (fn [ctx, value] (ctx/closed .push value))}])
+
+(describe "Static host service wiring"
+  (it "orders normal and recovery startup and closes once in reverse dependency order" []
+    (for mode in ["normal" "recovery"]
+      (let ctx {^opened [] ^closed []})
+      (let owner (new_host_services ctx (specs)))
+      (start_host_services owner mode)
+      (close_host_services owner)
+      (close_host_services owner)
+      ($assert (== ctx/opened (if (== mode "normal")
+        ["ownership" "transport" "consumer"] ["ownership" "consumer"])))
+      ($assert (== ctx/closed (if (== mode "normal")
+        ["consumer" "transport" "ownership"] ["consumer" "ownership"])))
+      ($assert (try (start_host_services owner mode) false catch HostServiceError true))))
+
+  (it "unwinds every acquired prefix when failure is injected before or after an open" []
+    (for phase in ["before" "after"]
+      (for target in ["ownership" "transport" "consumer"]
+        (let ctx {^opened [] ^closed []})
+        (let owner (new_host_services ctx (specs) ^observe (fn [event, name]
+          (if (&& (== event phase) (== name target))
+            (fail (HostServiceError ^message "injected startup failure"))))))
+        ($assert (try (start_host_services owner "normal") false catch Any
+          ($str/contains? $err/message "injected startup failure")))
+        (let expected [])
+        (var at ctx/opened/.size)
+        (while (> at 0) (set at (- at 1)) (expected .push ctx/opened/%at))
+        ($assert (== ctx/closed expected))
+        (close_host_services owner)
+        ($assert (== ctx/closed expected)))))
+
+  (it "attempts later cleanup and ownership release after a close failure" []
+    (let ctx {^opened [] ^closed []})
+    (let definitions (specs))
+    (definitions/0 .put "close" (fn [ctx, value]
+      (ctx/closed .push value) (fail (HostServiceError ^message "failed consumer cleanup"))))
+    (let owner (new_host_services ctx definitions))
+    (start_host_services owner "normal")
+    ($assert (try (close_host_services owner) false catch HostServiceError
+      ($str/contains? $err/message "failed consumer cleanup")))
+    ($assert (== ctx/closed ["consumer" "transport" "ownership"])))
+
+  (it "rejects cycles, unknown dependencies and unavailable recovery prerequisites" []
+    ($assert (try (new_host_services {} [{^name "a" ^requires ["missing"]}]) false
+      catch HostServiceError true))
+    ($assert (try (new_host_services {} [{^name "a" ^requires ["b"]} {^name "b" ^requires ["a"]}]) false
+      catch HostServiceError true))
+    (let ctx {^opened [] ^closed []})
+    (let definitions (specs))
+    (definitions/0 .put "requires" ["transport"])
+    (let owner (new_host_services ctx definitions))
+    ($assert (try (start_host_services owner "recovery") false catch HostServiceError
+      ($str/contains? $err/message "unavailable transport")))
+    ($assert (== ctx/closed ["ownership"]))))
+
+(describe "Host service quiescence"
+  (it "drains work before plugin retirement and preserves dependencies through cleanup failures" []
+    (for fail_quiesce in [false true]
+      (let ctx {^events [] ^stopped false ^store_open true})
+      (let definitions
+        [{^name "store" ^requires [] ^open (fn [ctx] "store")
+          ^close (fn [ctx, value] (set ctx/store_open false) (ctx/events .push "store"))}
+         {^name "worker" ^requires ["store"] ^open (fn [ctx] "worker")
+          ^quiesce (fn [ctx, value]
+            (set ctx/stopped true) (ctx/events .push "quiesce")
+            (if fail_quiesce (fail (HostServiceError ^message "quiesce failed"))))
+          ^close (fn [ctx, value] (ctx/events .push "worker"))}
+         {^name "plugins" ^requires ["worker"] ^open (fn [ctx] "plugins")
+          ^close (fn [ctx, value]
+            ($assert ctx/stopped) ($assert ctx/store_open)
+            (ctx/events .push "plugins"))}])
+      (let owner (new_host_services ctx definitions))
+      (start_host_services owner "normal")
+      (let failed (try (close_host_services owner) false catch HostServiceError true))
+      ($assert (== failed fail_quiesce))
+      ($assert (== ctx/events ["quiesce" "plugins" "worker" "store"])))))

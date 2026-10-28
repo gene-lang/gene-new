@@ -1,0 +1,58 @@
+(mod mac_recognition)
+(import [audio_error] ^from "./audio" ^pkg "audio")
+(import [open_worker close_worker read_json write_json write_packet] ^from "./worker" ^pkg "audio")
+(import [mac_helper mac_reason] ^from "./speech_engines")
+(import [encode_audio_frame] ^from "./voice_frames")
+
+(fn mac_open [settings]
+  (let worker (open_worker (mac_helper) ["--stt" (?? settings/language "en-US")]))
+  (var ready false)
+  (try
+    (let hello (read_json worker/reader))
+    (if (!= hello/ok true) (audio_error (?? hello/message "SpeechAnalyzer did not initialize.")))
+    (worker .put "streams" ($cell {})) (worker .put "next" ($cell 0))
+    (worker .put "dispatch_message" (fn [message]
+        (let key ($to_str message/stream))
+        (let stream (worker/streams/.get .get key))
+        (if ($absent? stream) (return nil))
+        (if (== message/type "partial") (then (stream/partial message/text))
+          (elif (== message/type "final")
+            (worker/streams/.get .delete key) (stream/final message/text))
+          (elif (== message/type "error")
+            (worker/streams/.get .delete key) (stream/error (?? message/message "SpeechAnalyzer failed."))))
+        nil))
+    (worker .put "dispatch_error" (fn []
+        (let streams (worker/streams .swap {}))
+        (for [key stream] in streams (stream/error "SpeechAnalyzer disconnected. Enable voice again to restart it."))))
+    (set ready true)
+    worker
+  ensure (if_not ready (close_worker worker))))
+
+(fn mac_stream [worker, settings, partial, final, error]
+  (if worker/closed/.get (audio_error "SpeechAnalyzer is closed. Enable voice again to restart it."))
+  (let id (+ worker/next/.get 1)) (worker/next .set id)
+  (let key ($to_str id))
+  (let sequence ($cell 0))
+  (let closed ($cell false))
+  (worker/streams/.get .put key {^partial partial ^final final ^error error})
+  (worker/gate (fn [] (write_json worker/writer {^op "start" ^stream id})))
+  {^push (fn [pcm : Bytes]
+     (if closed/.get (return nil))
+     (worker/gate (fn []
+       (write_packet worker/writer (encode_audio_frame 1 id sequence/.get pcm))
+       (sequence .set (+ sequence/.get 1))))
+     nil)
+   ^finish (fn []
+     (if_not (closed .swap true)
+       (worker/gate (fn [] (write_json worker/writer {^op "end" ^stream id}))))
+     nil)
+   ^close (fn []
+     (worker/streams/.get .delete key)
+     (if_not worker/closed/.get
+       (worker/gate (fn [] (write_json worker/writer {^op "cancel" ^stream id}))))
+     (closed .set true)
+     nil)})
+
+(fn mac_recognizer_row []
+  {^name "macos" ^auto 30 ^summary "Local streaming macOS SpeechAnalyzer" ^mode "stream"
+   ^available mac_reason ^open mac_open ^close close_worker ^stream mac_stream})

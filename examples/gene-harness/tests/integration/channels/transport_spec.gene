@@ -6,7 +6,8 @@
 (import [accept_output begin_part recover_deliveries reconcile_remote] ^from "../../../src/channels/delivery")
 (import [key] ^from "../../../src/channels/model")
 (import [slack] ^from "../../../src/builtin/slack")
-(import [put_cordis_plugin provide withdraw_seam] ^from "../../../src/kernel")
+(import [put_cordis_plugin provide withdraw_seam replace : replace_seam] ^from "../../../src/kernel")
+(import [channel_host_binding] ^from "../../../src/channels/host")
 (import [bind_workspace receive_handoff] ^from "../../../src/channels/service")
 (import [receive_envelope] ^from "../../../src/channels/ingress")
 (import [queue_status hold_queue] ^from "../../../src/channels/queue")
@@ -198,7 +199,7 @@
   (it "retires active plugin sockets on withdrawal and replacement while core queue holds survive" []
     (isolated this_mod/.path "retires active plugin sockets on withdrawal and replacement while core queue holds survive"
       (fn [workspace]
-        (fixture workspace ^builtin true (fn [harness]
+        (fixture workspace (fn [harness]
           (let opened ($cell 0)) (let closed ($cell 0)) (let clients ($cell []))
           (let seen ($cell {}))
           (let driver {^load (fn [filename] nil)
@@ -215,15 +216,17 @@
           (let requester (fn [request]
             {^status 200 ^headers [] ^body ($binary/from_str ($json/stringify {^^ok ^ts "9.000001"}))}))
           (let install (fn []
-            (put_cordis_plugin harness/runtime/h (slack ^driver driver ^requester requester)
+            (put_cordis_plugin harness/runtime/h (slack)
               {^^host ^limits harness/runtime/profile/limits} ^^replace)))
+          (replace_seam harness/runtime/h "core" "channels/host"
+            (channel_host_binding harness/runtime ^options {^driver driver ^requester requester}))
           (install)
           (let wait_open (fn [count]
             (let due (+ ($os/monotonic_ms) 5000))
             (while (< opened/.get count)
               ($assert (< ($os/monotonic_ms) due) "plugin socket did not start") ($sleep 5))))
           (wait_open 1)
-          ($assert (withdraw_seam harness/runtime/h "core" "loop"))
+          ($assert (withdraw_seam harness/runtime/h "core" "channels/host"))
           ($assert (== opened/.get closed/.get))
           (for client in clients/.get ($assert client/closed/.get))
           (let route (configure_route harness/runtime/channels/owner "dobi" "C123" workspace))
@@ -239,8 +242,8 @@
           watcher/.join
           ($assert (/held (queue_status harness/runtime/channel_queues accepted/session)))
           ($assert (== (/pending (queue_status harness/runtime/channel_queues accepted/session)) 1))
-          (provide harness/runtime/h "core" "loop" (fn []
-            {^runtime harness/runtime ^controller harness/controller ^^start ^^boot}))
+          (provide harness/runtime/h "core" "channels/host"
+            (channel_host_binding harness/runtime ^options {^driver driver ^requester requester}))
           (wait_open 2)
           (install)
           (wait_open 3)

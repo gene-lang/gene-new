@@ -1,33 +1,10 @@
 (mod bootstrap)
+(import [new_host_services start_host_services close_host_services HostServiceError] ^from "./host_services")
+(import [runtime_service_specs configure_runtime_readiness] ^from "./runtime_services")
+(import [host_build] ^from "./host_identity")
+(import [acquire_workspace_lock close_workspace_lock WorkspaceInUse] ^from "./workspace_lock" ^^export)
 
-(import ^from "../kernel" [new_harness module_dir shutdown_harness provide])
-(import ^from "../profiles/profile" [profile_admissions])
-(import ^from "../storage/state" [open_event_store close_event_store flush_event_store])
-(import ^from "../notifications/inbox" [open_inbox close_inbox])
-(import ^from "../notifications/host" [open_notification_host close_notification_host])
-(import ^from "../ui/actions" [open_ui_actions close_ui_actions])
-(import ^from "../storage/workspace"
-  [open_workspace close_workspace prepare_workspace activate_workspace_plan set_profile_plugins attach_history record_application_result])
-(import ^from "./host_identity" [host_build])
-(import ^from "./workspace_lock" ^^export
-  [acquire_workspace_lock close_workspace_lock WorkspaceInUse])
-(import ^from "./workspace_manager" [close_workspace_manager])
-(import ^from "./sessions"
-  [open_session_manager close_session_manager create_session load_session with_session_gate])
-(import ^from "./commands" [new_command_manager close_command_manager])
-(import ^from "./cards" [open_card_service])
-(import ^from "./appearance" [open_appearance install_appearance_rows])
-(import ^from "./triggers" [close_trigger_manager])
-(import [open_image_host recover_image_host close_image_host] ^from "./image_service")
-(import [open_delegation_host close_delegation_host] ^from "./delegations")
-(import [new_voice_state close_voice_state] ^from "./voice_state")
-(import [open_queues close_channel_store] ^from "../channels/queue")
-(import ^from "../agents/history" [collect_unreferenced_bodies])
-(import ^from "../agents/instructions" [install_core_prompt_rows])
-(import ^from "../agents/provider_selection" [readiness_report])
-(import ^from "../plugin_api" [ExecutionLimits response_execution_limits])
-
-(type HarnessRuntime ^props {^root Str ^state_root Str ^epoch Str ^h Any ^workspace Any ^profile Any ^events Any ^sessions Any ^commands Any ^triggers Any ^body_users Any ^body_collecting Any ^body_gc_pending Any ^stopping Any ^exit_code Any ^ownership Any ^owns_ownership Bool ^owns_events Bool ^closed Any ^restarted Bool ^shutdown_watchdog Any ^modes Any? ^listen_port Any? ^supervised Bool? ^actions Any? ^images Any? ^recovery Bool? ^managed Bool? ^workspace_manager Any? ^cards Any? ^delegations Any? ^voice Any? ^channel_queues Any? ^channels Any?})
+(type HarnessRuntime ^props {^root Str ^state_root Str ^epoch Str ^h Any ^workspace Any ^profile Any ^events Any ^sessions Any ^commands Any ^triggers Any ^body_users Any ^body_collecting Any ^body_gc_pending Any ^stopping Any ^exit_code Any ^ownership Any ^owns_ownership Bool ^owns_events Bool ^closed Any ^restarted Bool ^shutdown_watchdog Any ^modes Any? ^listen_port Any? ^supervised Bool? ^actions Any? ^images Any? ^recovery Bool? ^managed Bool? ^workspace_manager Any? ^cards Any? ^delegations Any? ^voice Any? ^channel_queues Any? ^channels Any? ^services Any?})
 (type RuntimeCleanupError ^props {^message Str} ^impl [Error])
 (impl Error for RuntimeCleanupError)
 
@@ -59,159 +36,47 @@
 
 (fn close_runtime [runtime : HarnessRuntime]
   (if runtime/closed/.get (return nil))
-  (var outcome nil)
   (try
-    (try
-      (close_voice_state runtime/voice)
-      (if_not ($absent? runtime/workspace_manager) (close_workspace_manager runtime/workspace_manager))
-      (if_not ($absent? runtime/delegations) (close_delegation_host runtime/delegations))
-      (if_not ($absent? runtime/triggers) (close_trigger_manager runtime/triggers))
-      (if_not ($absent? runtime/actions) (close_ui_actions runtime/actions))
-      (if_not ($absent? runtime/commands) (close_command_manager runtime/commands))
-      (if_not ($absent? runtime/images) (close_image_host runtime/images))
-      (if_not ($absent? runtime/sessions) (close_session_manager runtime/sessions))
-      (set outcome (shutdown_harness runtime/h))
-      (if runtime/body_gc_pending/.get (collect_unreferenced_bodies runtime))
-    ensure
-      (try
-        (close_workspace runtime/workspace)
-      ensure
-        (if_not ($absent? runtime/channel_queues) (close_channel_store runtime/channel_queues))
-        (close_notification_host runtime/h)
-        (if_not ($absent? runtime/h/notifications) (close_inbox runtime/h/notifications))))
+    (close_host_services runtime/services)
+  catch HostServiceError
+    (fail (RuntimeCleanupError ^message $err/message))
   ensure
-    (try
-      (if_not ($absent? runtime/events)
-        (if runtime/owns_events
-          (close_event_store runtime/events)
-          (flush_event_store runtime/events)))
-    ensure
-      (if runtime/owns_ownership (close_workspace_lock runtime/ownership))
-      (runtime/closed .set true)
-      (let watchdog runtime/shutdown_watchdog/.get)
-      (if_not ($absent? watchdog)
-        watchdog/.cancel
-        watchdog/.join)))
-  (if_yes (&& (! ($absent? outcome)) (== outcome/status "recovery_required"))
-    (fail
-      (RuntimeCleanupError ^message $"Composition cleanup requires recovery: ${outcome/errors}")))
+    (runtime/closed .set true)
+    (let watchdog runtime/shutdown_watchdog/.get)
+    (if_not ($absent? watchdog) watchdog/.cancel watchdog/.join))
   nil)
 
-(fn open_runtime [root : Str, session : Str, profile, ^events supplied_events = nil, ^ownership supplied_ownership = nil, ^entry entry : Str = "", ^event_scope event_scope : Str = "session", ^activate activate : Bool = true, ^recovery recovery : Bool = false, ^managed managed : Bool = false, ^lock_wait_ms lock_wait_ms : Int = 0] : HarnessRuntime
-  # Capture was performed by the launcher before loading any host modules.
-  # Refuse an unidentifiable mutation host before acquiring or writing state.
+(fn open_runtime [root : Str, session : Str, profile, ^events supplied_events = nil,
+  ^ownership supplied_ownership = nil, ^entry entry : Str = "", ^event_scope event_scope : Str = "session",
+  ^activate activate : Bool = true, ^recovery recovery : Bool = false, ^managed managed : Bool = false,
+  ^lock_wait_ms lock_wait_ms : Int = 0, ^service_event service_event = nil] : HarnessRuntime
+  # Identify the mutation host before acquiring ownership or writing state.
   (let build (host_build))
   (let canonical (prepare_workspace_root ^root root))
-  (let owns_ownership ($absent? supplied_ownership))
-  (let ownership
-    (if owns_ownership
-      (acquire_workspace_lock ^wait_ms lock_wait_ms canonical (if (== entry "") this_mod/.path entry))
-      supplied_ownership))
-  (var events (if recovery nil supplied_events))
-  (var workspace nil)
-  (var h nil)
-  (var runtime nil)
-  (var ready false)
-  (let owned (&& (! recovery) ($absent? supplied_events)))
+  (let context
+    {^root canonical ^session session ^profile profile ^build build
+     ^supplied_events supplied_events ^owns_events (&& (! recovery) ($absent? supplied_events))
+     ^events nil ^workspace nil ^h nil ^runtime nil ^inbox nil ^harness_closed false
+     ^owns_ownership ($absent? supplied_ownership) ^supplied_ownership supplied_ownership
+     ^entry (if (== entry "") this_mod/.path entry) ^event_scope event_scope ^activate activate
+     ^recovery recovery ^managed managed ^lock_wait_ms lock_wait_ms})
+  (let services (new_host_services context
+    (runtime_service_specs prepare_layout
+      (fn [ctx]
+        (let runtime (HarnessRuntime ^root ctx/root ^state_root ctx/state_root
+          ^epoch ($crypto/random_hex 16) ^sessions nil ^commands nil ^triggers nil
+          ^body_users ($atomic_cell 0) ^body_collecting ($cell false) ^body_gc_pending ($cell false)
+          ^stopping ($cell false) ^exit_code ($cell 0) ^restarted ctx/restarted ^shutdown_watchdog ($cell nil)
+          ^h ctx/h ^workspace ctx/workspace ^profile ctx/profile ^events ctx/events
+          ^ownership ctx/ownership ^owns_ownership ctx/owns_ownership ^owns_events ctx/owns_events
+          ^closed ($cell false) ^recovery ctx/recovery ^managed ctx/managed ^services ctx/services))
+        (configure_runtime_readiness runtime)
+        runtime))
+    ^observe service_event))
+  (set context/services services)
   (try
-    (let state_root (prepare_layout canonical))
-    (let settings (if recovery {} ($serde/read_data ($fs/read_text $"${state_root}/config.gene"))))
-    (let response_budget (?? settings/response_budget {}))
-    (let base_limits (?? profile/limits (response_execution_limits)))
-    (let profile_limits
-      (ExecutionLimits
-        ^max_memory_mb (?? response_budget/max_memory_mb base_limits/max_memory_mb)
-        ^timeout_ms (?? response_budget/timeout_ms base_limits/timeout_ms)))
-    (let restarted ($fs/exists? $"${state_root}/restart_notice"))
-    (if restarted ($fs/remove $"${state_root}/restart_notice"))
-    ($os/set_cwd canonical)
-    (if owned (set events (open_event_store $"${state_root}/events")))
-    (set workspace
-      (open_workspace ^blob_root $"${state_root}/modules" ^state_root state_root ^workspace_root canonical ^generated_dir $"${state_root}/modules/source"
-        $"${state_root}/composition"))
-    (set_profile_plugins workspace (profile_admissions ^limits profile_limits profile))
-    (let builtins [])
-    (for plugin in profile/plugins
-      (builtins .push {^id plugin/id ^provides (?? plugin/provides [])
-        ^requires (?? plugin/requires [])}))
-    (attach_history workspace build
-      {^name profile/name ^requires (?? profile/requires [])
-       ^provider (?? profile/provider nil) ^builtins builtins
-       ^limits {^max_memory_mb profile_limits/max_memory_mb
-         ^timeout_ms profile_limits/timeout_ms}})
-    (set h
-      (new_harness ^event_store events ^event_scope event_scope ^event_stream session ^workspace workspace ^limits profile_limits))
-    (set h/appearance (open_appearance state_root))
-    (if (== profile/name "manager")
-      (set h/ui_defaults {^^enabled ^layout "chat" ^default_view "workspaces"
-        ^panel "" ^side "left" ^width 50 ^theme {}}))
-    (if_not recovery
-      (set h/notifications (open_inbox $"${state_root}/notifications"))
-      (provide h "core" "notifications/host" (open_notification_host h)))
-    (install_core_prompt_rows h)
-    (if_yes (&& activate (! recovery))
-      (let prepared (prepare_workspace ^session session workspace h))
-      (activate_workspace_plan ^profile_admissions (profile_admissions ^limits profile_limits profile) prepared h))
-    (set runtime
-      (HarnessRuntime ^root canonical ^state_root state_root ^epoch ($crypto/random_hex 16) ^sessions nil ^commands nil ^triggers nil ^body_users ($atomic_cell 0) ^body_collecting ($cell false) ^body_gc_pending ($cell false) ^stopping ($cell false) ^exit_code ($cell 0) ^restarted restarted ^shutdown_watchdog ($cell nil) ^h h ^workspace workspace ^profile profile ^events events ^ownership ownership ^owns_ownership owns_ownership ^owns_events owned ^closed ($cell false) ^recovery recovery))
-    (if_yes recovery
-      (set h/readiness (fn [] "Recovery mode: repair composition, then retry normal startup."))
-      (set ready true)
-      (return runtime))
-    (set runtime/managed managed)
-    (set runtime/voice (new_voice_state runtime))
-    (provide h "core" "voice/runtime" runtime/voice)
-    (set h/readiness
-      (fn []
-        (let current ($serde/read_data ($fs/read_text $"${state_root}/config.gene")))
-        (readiness_report runtime current)))
-    (set runtime/sessions (open_session_manager runtime events state_root))
-    (if_not recovery
-      (set runtime/channel_queues (open_queues ($path/join state_root "channels" "queues") canonical)))
-    (set runtime/cards (open_card_service runtime))
-    (set runtime/delegations (open_delegation_host runtime))
-    (provide h "core" "delegations/runtime" runtime/delegations/handle)
-    (set runtime/images (open_image_host runtime))
-    (recover_image_host runtime/images)
-    (provide h "core" "image/runtime" runtime/images)
-    # Runtime-owned gates survive plugin replacement and serialize data edits
-    # made by UI actions and direct model/REPL calls to the same function.
-    (provide h "core" "ui/state_lock"
-      (fn [key : Str, body] (with_session_gate runtime/sessions $"ui-state/${key}" body)))
-    (set runtime/commands (new_command_manager runtime))
-    (install_appearance_rows h)
-    (set runtime/actions (open_ui_actions runtime))
-    (set h/ui_action_log runtime/actions/log)
-    (if (&& activate (== event_scope "session"))
-      (then
-        (create_session ^id session runtime/sessions)
-        (load_session runtime/sessions session)))
-    (if activate (record_application_result workspace h {^status "runtime_open"}))
-    (set ready true)
-    runtime
-  ensure
-    (if_not ready
-      (try
-        (if (&& (! ($absent? runtime)) (! ($absent? runtime/actions)))
-          (close_ui_actions runtime/actions))
-        (if (&& (! ($absent? runtime)) (! ($absent? runtime/images)))
-          (close_image_host runtime/images))
-        (if (&& (! ($absent? runtime)) (! ($absent? runtime/delegations)))
-          (close_delegation_host runtime/delegations))
-        (if (&& (! ($absent? runtime)) (! ($absent? runtime/sessions)))
-          (close_session_manager runtime/sessions))
-        (if (&& (! ($absent? runtime)) (! ($absent? runtime/channel_queues)))
-          (close_channel_store runtime/channel_queues))
-        (if_not ($absent? h)
-          (try (shutdown_harness h)
-            ensure
-              (close_notification_host h)
-              (if_not ($absent? h/notifications) (close_inbox h/notifications))))
-      ensure
-        (try
-          (if_not ($absent? workspace) (close_workspace workspace))
-        ensure
-          (try
-            (if (&& owned (! ($absent? events))) (close_event_store events))
-          ensure
-            (if owns_ownership (close_workspace_lock ownership))))))))
+    (start_host_services services (if recovery "recovery" "normal"))
+    context/runtime
+  catch Any
+    (if_not ($absent? context/runtime) (context/runtime/closed .set true))
+    (fail $err)))

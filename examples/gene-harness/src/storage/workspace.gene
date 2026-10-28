@@ -33,6 +33,7 @@
     module_dir])
 (import ^from "./state" [validate_event_catalog repair_interrupted_turns])
 (import ^from "../runtime/interface_policy" [current_interfaces interface_diagnostic])
+(import [public_modules public_import?] ^from "../runtime/public_modules")
 (import ^from "./plugin_history"
   [archive_host_build archive_baseline archive_candidate archived_record
    history_list history_revision history_entry append_history_result history_results])
@@ -149,7 +150,7 @@
         (real_path generated_dir))))
   (var interfaces (current_interfaces))
   (var workspace
-    (Workspace ^root canonical_root ^state_root canonical_state_root ^workspace_root canonical_workspace_root ^store (store_open ^root canonical_root) ^blob_store (store_open ^root canonical_blob_root) ^revision ($cell 0) ^entries ($cell (fresh_list)) ^busy ($cell false) ^closed ($cell false) ^generated_dir generated ^shared ["src/plugin_api.gene"] ^interfaces interfaces ^core_interface interfaces/core ^active_revision ($cell nil) ^errors ($cell (fresh_map)) ^profile_plugins ($cell (fresh_map)) ^history_head ($cell nil) ^history_build ($cell nil) ^history_profile ($cell nil) ^metadata_errors ($cell [])))
+    (Workspace ^root canonical_root ^state_root canonical_state_root ^workspace_root canonical_workspace_root ^store (store_open ^root canonical_root) ^blob_store (store_open ^root canonical_blob_root) ^revision ($cell 0) ^entries ($cell (fresh_list)) ^busy ($cell false) ^closed ($cell false) ^generated_dir generated ^shared (public_modules) ^interfaces interfaces ^core_interface interfaces/core ^active_revision ($cell nil) ^errors ($cell (fresh_map)) ^profile_plugins ($cell (fresh_map)) ^history_head ($cell nil) ^history_build ($cell nil) ^history_profile ($cell nil) ^metadata_errors ($cell [])))
   (load_composition workspace)
   (let marker (active_revision_path workspace))
   (if ($fs/exists? marker)
@@ -380,7 +381,7 @@
     (if_yes (["import" "import_impl"] .contains? kind)
       (var path form/from)
       (if_yes (== ($head path) Str)
-        (if_not (== path "src/plugin_api.gene")
+        (if_not (public_import? path)
           (var digest (relative_import_digest path))
           (if (|| ($absent? digest) (! (closure .contains? digest)))
             (fail
@@ -546,10 +547,11 @@
 
 (fn change_origin [h : Harness, operation : Str, id : Str]
   (let context ($runtime/context))
-  (let turn context/turn)
-  {^kind (if ($absent? turn) (if ($absent? context/command) "direct" "command") "model")
+  (let source (capture_source_origin context))
+  {^kind source/kind
    ^operation operation ^plugin id ^session (?? context/session nil)
-   ^turn (if ($absent? turn) nil turn/turn) ^command (?? context/command nil)})
+   ^turn (if (== source/kind "model") context/turn/turn nil)
+   ^command (?? context/command nil)})
 
 (fn stage_plugin_entry [workspace : Workspace, id : Str, source, ^dependencies dependencies = []]
   (require_open workspace)
@@ -626,14 +628,15 @@
     (validate_source_imports (parse_plugin_source dependency) closure))
   (materialize_module_blob workspace digest text)
   (let caller ($runtime/context))
-  (var authenticated_turn (if ($absent? caller/turn) "direct" ($to_str caller/turn/turn)))
+  (let source_origin (capture_source_origin caller))
+  (var authenticated_turn (if (== source_origin/kind "model") source_origin/turn "direct"))
   (var entry
     {^id id ^module_digest digest ^closure closure
      ^interfaces (data_copy workspace/interfaces)
      ^limits bounded ^!disabled
      ^by by ^model model ^at at
      ^session (?? caller/session nil) ^turn authenticated_turn
-     ^source_origin (capture_source_origin caller)})
+     ^source_origin source_origin})
   (entry .put "origin" (change_origin h (if replace "replace" "register") id))
   (if_not ($absent? (workspace/profile_plugins/.get .get id))
     (entry .put "replaces_builtin" true))

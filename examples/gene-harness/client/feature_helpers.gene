@@ -1,0 +1,46 @@
+(mod feature_helpers ^profile web)
+(import [Client] ^from "./workspace_model.gene")
+(import [FeatureHost] ^from "./feature_host.gene")
+(import [FeatureEvents create_feature_events] ^from "./feature_events.gene")
+
+(fn host [client : Client] : FeatureHost
+  (var raw : Any client/services)
+  (var result : FeatureHost raw)
+  result)
+(fn features [client : Client] : PropMap
+  (if_yes ($absent? client/features) (set client/features {}))
+  (var raw : Any client/features)
+  (var result : PropMap raw) result)
+(fn api [client : Client, method : Str, path : Str, payload : Any, done : (Fn [Int Any] Void)] : Void
+  (var bridge (host client)) (bridge/api method path payload done))
+(fn show_error [client : Client, data : Any, ^session session : Str = ""] : Void
+  (var bridge (host client)) (bridge/error data session))
+(fn notice [client : Client, text : Str, ^key key : Str = "feedback", ^sticky sticky : Bool = false] : Void
+  (var bridge (host client)) (bridge/feedback key text sticky))
+(fn update_controls [client : Client] : Void
+  (var bridge (host client)) (bridge/controls))
+(fn select_session [client : Client, id : Str] : Void
+  (var bridge (host client)) (bridge/select id))
+(fn refresh_sessions [client : Client] : Void
+  (var bridge (host client)) (bridge/refresh))
+(fn session_tab [client : Client, id : Str] : Any
+  (var bridge (host client)) (bridge/tab id))
+(fn upsert_session [client : Client, data : Any] : Void
+  (var bridge (host client)) (bridge/upsert data))
+(fn remember_draft [client : Client] : Void
+  (var bridge (host client)) (bridge/remember))
+(fn apply_run [client : Client, session : Str, data : Any] : Void
+  (var bridge (host client)) (bridge/apply_run session data))
+(fn browser_event [client : Client, kind : Str, session : Str, data : Any] : Void
+  (var bridge (host client)) (bridge/emit kind session data))
+(fn render_transcript [client : Client] : Void
+  (var bridge (host client)) (bridge/render))
+(fn set_hidden [id : Str, hidden : Bool] : Void
+  (var element ($dom/element id)) (set element/hidden hidden))
+(fn string_or [value : Any, fallback : Str] : Str
+  (if_yes ($absent? value) (return fallback))
+  (var text : Str value) text)
+
+(fn client_events [client : Client] : FeatureEvents
+  (if_yes ($absent? client/feature_events) (set client/feature_events (create_feature_events)))
+  (var raw : Any client/feature_events) (var result : FeatureEvents raw) result)

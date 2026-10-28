@@ -3,7 +3,6 @@
 (import [resolve] ^from "../kernel")
 (import [acquire_snapshot release_snapshot] ^from "../runtime/composition")
 (import [spawn_composition_call] ^from "../runtime/cordis_adapter")
-(import [load_session list_sessions require_record] ^from "../runtime/sessions")
 (import [bounded_component_view WebComponentError] ^from "./components")
 (import [ui_settings ui_record ui_revision ui_data_revision ui_descriptor ui_error] ^from "./state")
 (import [view_outline outline_text] ^from "./outline")
@@ -31,14 +30,8 @@
     (bounded_render_call h callback [context])))
 
 (fn ui_context [h, session : Str, state]
-  (let loop_factory (resolve h "loop"))
-  (let runtime (/runtime (loop_factory)))
-  (let loaded (if (== session "") nil (load_session runtime/sessions session)))
-  (let config ($serde/read_data ($fs/read_text $"${runtime/state_root}/config.gene")))
-  ($freeze {^session_id session ^session (if ($absent? loaded) nil (require_record runtime/sessions session))
-    ^round (if ($absent? loaded) nil loaded/round/.get) ^workspace runtime/root
-    ^model {^provider config/provider ^model config/model} ^sessions (list_sessions runtime/sessions)
-    ^view_state state}))
+  (let builder (resolve h "ui/context"))
+  (builder session state))
 
 (fn ui_view_state [candidate, supplied]
   (if (!= ($head supplied) Map) (ui_error "invalid_request" "View state must be a map."))

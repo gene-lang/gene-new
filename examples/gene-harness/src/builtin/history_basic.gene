@@ -1,7 +1,7 @@
 (mod history_basic)
 (import ^from "../plugin_api" [Plugin PluginHost])
-(import ^from "./documentation" [contribute_text_doc])
-(import ^from "../agents/history_policy" [normalize_history_policy])
+(import ^from "../public/documentation" [contribute_text_doc])
+(import ^from "../public/history_policy" [normalize_history_policy])
 
 (fn basic_history_policy [context]
   (normalize_history_policy

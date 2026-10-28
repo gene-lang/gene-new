@@ -1,6 +1,6 @@
 (mod provider_scripted)
 (import ^from "../plugin_api" [Plugin PluginHost])
-(import ^from "./documentation" [contribute_text_doc])
+(import ^from "../public/documentation" [contribute_text_doc])
 
 (type ScriptedProviderError ^props {^message Str} ^impl [Error])
 (impl Error for ScriptedProviderError)

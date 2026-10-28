@@ -3,7 +3,6 @@
 (import [main : web_main] ^from "../../src/web/server")
 (import [Profile] ^from "../../src/profiles/profile")
 (import [baseline_profile] ^from "../../src/profiles/baseline")
-(import [Plugin PluginHost] ^from "../../src/plugin_api")
 (import [callback_plugin] ^from "../support")
 (import [slack] ^from "../../src/builtin/slack")
 (import [open_authority configure_account configure_route close_channel_store] ^from "../../src/channels/authority")
@@ -21,14 +20,18 @@
         {^team "T123" ^app "A123" ^bot "B123" ^bot_user "UBOT" ^operator "UOWNER"})
       (configure_route authority "dobi" "C123" other)
     ensure (close_channel_store authority)))
-  (let seen ($cell 0))
-  (let driver {^load (fn [filename] nil) ^connect (fn [api native app] 1)
+  (let seen ($cell {}))
+  (let sockets ($cell 0))
+  (let driver {^load (fn [filename] nil) ^connect (fn [api native app]
+    (sockets .set (+ sockets/.get 1)) sockets/.get)
     ^receive (fn [native socket]
-      (if_yes (== seen/.get 0)
-        (seen .set 1)
+      (let id ($to_str socket))
+      (let at (?? (seen/.get .get id) 0))
+      (if_yes (== at 0)
+        (seen/.get .put id 1)
         (return {^type "hello" ^connection_info {^app_id "A123"} ^num_connections 1}))
-      (if (&& (== seen/.get 1) ($fs/exists? ($path/join root "inject")))
-        (then (seen .set 2) (return (event "root" "1.000001" "<@UBOT> Build once."))))
+      (if (&& (== at 1) ($fs/exists? ($path/join root "inject")))
+        (then (seen/.get .put id 2) (return (event "root" "1.000001" "<@UBOT> Build once."))))
       nil)
     ^ack (fn [native socket id] nil) ^close (fn [socket] nil)})
   (let api (remote_api root))
@@ -40,15 +43,11 @@
   (let base (baseline_profile))
   (let plugins [])
   (for plugin in base/plugins (if (!= plugin/id "slack") (plugins .push plugin)))
-  (plugins .push (slack ^driver driver ^requester requester))
+  (plugins .push (slack))
   (plugins .push (callback_plugin ($cell (model_callback root ^point
     (if (["effect" "browser"] .contains? point) point "normal")))))
-  (plugins .push (Plugin ^id "channel_fault" ^requires ["loop"]
-    ^activate (fn [host]
-      (let factory (host .PluginHost:resolve "loop"))
-      (let loop (factory))
-      (install_channel_crash {^runtime loop/runtime ^events loop/runtime/events ^controller loop/controller}
-        point ^reply_only true))))
   (let profile (Profile ^name "channel-peer" ^plugins plugins ^requires base/requires
     ^limits base/limits ^provider "test"))
-  (web_main ["--workspace" root "--port" "0"] ^profile profile))
+  (web_main ["--workspace" root "--port" "0"] ^profile profile
+    ^channel_options {^driver driver ^requester requester}
+    ^on_open (fn [service] (install_channel_crash service point ^reply_only true))))

@@ -1,0 +1,33 @@
+# Plain policy data crosses the hook boundary; no unleased callbacks escape it.
+(mod history_policy)
+
+(type HistoryPolicyError ^props {^message Str} ^impl [Error])
+(impl Error for HistoryPolicyError)
+
+(const default_summary_instructions "Summarize earlier work, decisions, outputs and recall ids.")
+
+(fn normalize_history_policy [decision]
+  (if_not (== ($head decision) Map)
+    (fail (HistoryPolicyError ^message "history policy must be a map")))
+  (for field in ["trigger_bytes" "target_bytes"]
+    (let value (decision .get field))
+    (if_not ([Int Float] .contains? ($head value))
+      (fail (HistoryPolicyError ^message $"history policy ${field} must be a number")))
+    (if (|| (! (> value 0)) (!= (- value value) (if (== ($head value) Float) 0.0 0)))
+      (fail (HistoryPolicyError ^message $"history policy ${field} must be positive and finite"))))
+  (if_not (> decision/trigger_bytes decision/target_bytes)
+    (fail (HistoryPolicyError ^message "history policy trigger_bytes must exceed target_bytes")))
+  (let retained (?? decision/retain_rounds []))
+  (if_not (== ($head retained) List)
+    (fail (HistoryPolicyError ^message "history policy retain_rounds must be a list")))
+  (for round in retained
+    (if (|| (!= ($head round) Str) (== round ""))
+      (fail (HistoryPolicyError ^message "history policy retain_rounds must contain nonempty round ids"))))
+  (let elide (?? decision/elide_assistant true))
+  (if_not (== ($head elide) Bool)
+    (fail (HistoryPolicyError ^message "history policy elide_assistant must be Bool")))
+  (let instructions (?? decision/summary_instructions default_summary_instructions))
+  (if (|| (!= ($head instructions) Str) (== ($str/trim instructions) ""))
+    (fail (HistoryPolicyError ^message "history policy summary_instructions must be nonempty text")))
+  ($freeze {^trigger_bytes decision/trigger_bytes ^target_bytes decision/target_bytes
+    ^retain_rounds retained ^elide_assistant elide ^summary_instructions instructions}))

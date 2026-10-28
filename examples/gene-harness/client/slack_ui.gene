@@ -1,0 +1,53 @@
+(mod slack_ui ^profile web)
+(import [Client] ^from "./workspace_model.gene")
+(import [SlackUserLabels create_user_labels user_label] ^from "./slack_users.gene")
+(import [SlackSessionTitle create_session_title update_session_title] ^from "./slack_session_title.gene")
+(import [api string_or show_error notice update_controls session_tab upsert_session features] ^from "./feature_helpers.gene")
+
+
+(type SlackUi ^props {^users Any? ^title Any? ^pending Str})
+(fn slack_state [client : Client] : SlackUi
+  (var states (features client))
+  (if_yes ($absent? states/slack) (set states/slack (SlackUi ^pending "")))
+  (var state : SlackUi states/slack) state)
+(fn pending_session [client : Client] : Str (/pending (slack_state client)))
+
+(fn render_session_title [client : Client, text : Str, shared : Any] : Void
+  (var state (slack_state client))
+  (if_yes ($absent? state/title)
+    (set state/title (create_session_title client/title)))
+  (var raw : Any state/title) (var title : SlackSessionTitle raw)
+  (update_session_title title text shared client/selected))
+
+(fn resolve_slack_author [client : Client, source : Any, target : EventTarget] : Void
+  (var state (slack_state client))
+  (if_yes ($absent? state/users)
+    (set state/users (create_user_labels
+      (fn [data : Any, done : (Fn [Int Any] Void)] : Void
+        (api client "POST" "/api/v8/channels/user" data done)))))
+  (var raw : Any state/users) (var users : SlackUserLabels raw)
+  (user_label users source target))
+
+(fn add_session_to_slack [client : Client] : Void
+  (var state (slack_state client))
+  (var session client/selected)
+  (if_yes (|| (== session "") (!= (string_or state/pending "") "")) (return))
+  (set state/pending session)
+  (update_controls client)
+  (api client "POST" $"/api/v8/sessions/${($url/encode_component session)}/slack"
+    {^revision client/session_revision}
+    (fn [code : Int, data : Any] : Void
+      (set state/pending "")
+      (if (== code 202)
+        (then
+          (var tab (session_tab client session))
+          # The live snapshot can finish linking before this POST returns.
+          (var received_revision : Int ($json/parse (string_or data/revision "0")))
+          (var cached_revision : Int ($json/parse (string_or tab/cache/session/revision "0")))
+          (if_yes (>= received_revision cached_revision)
+            (upsert_session client data)
+            (set tab/cache/session data)
+            (if_yes (== session client/selected) (set client/session_revision data/revision)))
+          (notice client "Adding this conversation to Slack. Its title will link to the thread when ready."))
+        (else (show_error ^session session client data)))
+      (update_controls client))))

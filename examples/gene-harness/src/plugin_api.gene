@@ -35,6 +35,78 @@
 (type ProviderError ^props {^message Str} ^impl [Error])
 (impl Error for ProviderError)
 
+(type ServiceError ^props {^code Str ^message Str} ^impl [Error])
+(impl Error for ServiceError)
+
+(protocol MediaHost
+  (message list [] : Any)
+  (message show [id : Str] : Any)
+  (message import_file [path : Str] : Any)
+  (message page [id : Str, page : Int] : Any)
+  (message store [name : Str, data, ^source source : Str = "upload"] : Any))
+
+(protocol TriggerHost
+  (message start [] : Any)
+  (message list [] : Any)
+  (message create [definition] : Any)
+  (message delete [id : Str] : Any)
+  (message occurrences [^trigger trigger : Str = ""] : Any))
+
+(protocol ChannelHost
+  (message start [] : Any)
+  (message state [] : Any))
+
+(protocol SessionHost
+  (message record [session : Str] : Any)
+  (message round [session : Str] : Any))
+
+(protocol VoiceHost
+  (message output [session : Str] : Bool)
+  (message reset_if_unused [] : Any))
+
+(protocol UiHost
+  (message settings [] : Any)
+  (message configure [settings] : Any)
+  (message preview [name : Str, state = {}] : Any)
+  (message receipts [^view view : Str = "", ^status status : Str = "", ^input_id input_id : Str = "",
+                     ^before before : Int = 0, ^limit limit : Int = 25] : Any))
+
+# A browser redirect reference carries no owner credential. Only the
+# authenticated HTTP host resolves it to a navigation URL.
+(type BrowserTarget ^props {^kind Str ^id Str})
+
+(protocol WorkspaceHost
+  (message list [] : Any)
+  (message snapshot [] : Any)
+  (message inspect [id : Str] : Any)
+  (message operation [operation : Str, values = {}] : Any)
+  (message action [operation : Str, values] : Any)
+  (message open_link [id : Str] : BrowserTarget))
+
+(protocol ComputerHost
+  (message start [] : Any)
+  (message command [context : CommandContext] : Any)
+  (message targets [] : Any)
+  (message observe [target : Str, ^query query : Str = ""] : Any)
+  (message act [target : Str, observation : Str, name : Str, params, request : Str] : Any)
+  (message receipt [request : Str] : Any))
+
+(protocol OperatorHost
+  (message command [name : Str, context : CommandContext] : Any)
+  (message retain_mode [mode : Str] : Any)
+  (message classify [mode : Str, text : Str] : Str)
+  (message input [mode : Str, context : CommandContext] : Any)
+  (message close [mode : Str, session : Str] : Any))
+
+(protocol CompositionHost
+  (message register [id : Str, source, ^dependencies dependencies = [], ^replace replace : Bool = false] : Any)
+  (message states [] : Any)
+  (message inspect [id : Str] : Any)
+  (message enable [id : Str, enabled : Bool] : Any)
+  (message restore [id : Str] : Any)
+  (message history [id : Str = "", ^limit limit : Int = 50, ^before before = nil, ^page page : Bool = false] : Any)
+  (message revert [id : Str, revision : Int, ^expected expected = nil] : Any))
+
 (import [DelegationError] ^from "./runtime/delegation_contract" ^^export)
 
 (protocol DelegationHost

@@ -1,6 +1,6 @@
 (mod delegation)
 (import [Plugin PluginHost DelegationHost] ^from "../plugin_api")
-(import [contribute_doc] ^from "./documentation")
+(import [contribute_doc] ^from "../public/documentation")
 
 (const child_prompt "You are working on one delegated task in a shared workspace. The brief is self-contained; do not assume parent history. Change only the files assigned by the brief and coordinate through your parent if work overlaps. Finish with (Outcome ^^done ^reply \"compact conclusion\" ^result data). The reply and inert result go to the parent agent. Ask a question when a necessary decision is missing. You cannot delegate further; return a proposed split instead.")
 

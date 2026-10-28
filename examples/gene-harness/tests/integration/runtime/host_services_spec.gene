@@ -1,0 +1,88 @@
+(import $test [describe it])
+(import [isolated run_spec] ^from "../../support")
+(import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
+(import [acquire_workspace_lock close_workspace_lock WorkspaceInUse] ^from "../../../src/runtime/workspace_lock")
+(import [HostServiceError] ^from "../../../src/runtime/host_services")
+(import [Profile] ^from "../../../src/profiles/profile")
+(import [Plugin PluginHost] ^from "../../../src/plugin_api")
+(import [open_event_store close_event_store append_core_event plugin_state] ^from "../../../src/storage/state")
+
+(describe "Real host service startup and unwind"
+  (it "qualifies every acquired prefix in normal and recovery modes and releases ownership last" []
+    (isolated this_mod/.path
+      "qualifies every acquired prefix in normal and recovery modes and releases ownership last"
+      (fn [root]
+        (let activated ($cell 0))
+        (let retired ($cell 0))
+        (let profile (Profile ^name "service-audit" ^plugins
+          [(Plugin ^id "marker" ^activate (fn [host]
+            (activated .set (+ activated/.get 1))
+            (host .PluginHost:defer (fn []
+              (retired .set (+ retired/.get 1))
+              # Plugin retirement still has its durable dependencies available.
+              (host .PluginHost:update_state {^^closed})))))]))
+        (for mode in ["normal" "recovery"]
+          (let is_recovery (== mode "recovery"))
+          (let names [])
+          (let baseline (open_runtime ($path/join root mode "baseline") "default" profile
+            ^recovery is_recovery ^service_event (fn [phase, name]
+              (if (== phase "after") (names .push name)))))
+          (if is_recovery
+            (then
+              ($assert ($absent? baseline/events))
+              ($assert ($absent? baseline/sessions))
+              ($assert ($absent? baseline/voice))
+              ($assert ($absent? baseline/h/notifications))))
+          (close_runtime baseline)
+          (close_runtime baseline)
+          (if_not is_recovery
+            (let saved (open_event_store ($path/join baseline/state_root "events")))
+            (try
+              ($assert (== (/closed (plugin_state saved "workspace" "workspace" "marker")) true)
+                "Plugin cleanup could not commit while its event store was still open.")
+            ensure (close_event_store saved)))
+          (let count_before activated/.get)
+          (for target in names
+            (let workspace ($path/join root mode target))
+            (let closed [])
+            ($assert (try
+              (open_runtime workspace "default" profile ^recovery is_recovery
+                ^service_event (fn [phase, name]
+                  (if (== phase "close")
+                    (then
+                      (closed .push name)
+                      (let available (try
+                        (let lock (acquire_workspace_lock workspace "service-audit"))
+                        (close_workspace_lock lock)
+                        true
+                      catch WorkspaceInUse false))
+                      ($assert (== available (== name "ownership"))
+                        $"Ownership was released before ${name} finished.")))
+                  (if (&& (== phase "after") (== name target))
+                    (fail (HostServiceError ^message $"injected after ${target}")))))
+              false
+            catch HostServiceError ($str/contains? $err/message $"injected after ${target}")))
+            ($assert (== ($last closed) "ownership"))
+            (let reacquired (acquire_workspace_lock workspace "after-unwind"))
+            (close_workspace_lock reacquired))
+          (if is_recovery ($assert (== activated/.get count_before) "recovery activated optional plugins")))
+        ($assert (== activated/.get retired/.get)
+          $"Failed startup leaked a generation: activated ${activated/.get}, retired ${retired/.get}."))))
+
+  (it "keeps caller-owned event storage usable after a partial-open failure" []
+    (isolated this_mod/.path "keeps caller-owned event storage usable after a partial-open failure"
+      (fn [root]
+        ($fs/make_dir ($path/join root ".gene-harness" "events"))
+        (let events (open_event_store ($path/join root ".gene-harness" "events")))
+        (try
+          ($assert (try
+            (open_runtime root "default" (Profile ^name "borrowed" ^plugins []) ^events events
+              ^service_event (fn [phase, name]
+                (if (&& (== phase "after") (== name "kernel"))
+                  (fail (HostServiceError ^message "injected borrowed-store failure")))))
+            false
+          catch HostServiceError true))
+          (append_core_event events "workspace" "workspace" {^type "trace" ^text "still owned by caller" ^^ignorable})
+        ensure (close_event_store events))))))
+
+(fn main [args] : Int (run_spec args))

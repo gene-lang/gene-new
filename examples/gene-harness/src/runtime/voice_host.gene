@@ -1,0 +1,17 @@
+(mod voice_host)
+(import [VoiceHost] ^from "../plugin_api")
+(import [row] ^from "../kernel")
+(import [voice_output? reset_voice] ^from "./voice_state")
+(import [service_binding require_service] ^from "./service_handles")
+
+(type HostedVoice ^^private ^props {^token Any}
+  (impl VoiceHost
+    (message output [session : Str] : Bool
+      (voice_output? (/voice (/runtime (require_service self))) session))
+    (message reset_if_unused [] : Any
+      (let runtime (/runtime (require_service self)))
+      (if ($absent? (row runtime/h "browser_clients" "voice")) (reset_voice runtime/voice))
+      nil)))
+
+(fn voice_host_binding [runtime]
+  (service_binding runtime "voice" (fn [token] (HostedVoice ^token token))))

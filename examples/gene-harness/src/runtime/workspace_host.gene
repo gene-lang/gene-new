@@ -1,0 +1,49 @@
+(mod workspace_host)
+(import [WorkspaceHost BrowserTarget ServiceError] ^from "../plugin_api")
+(import [service_binding require_service] ^from "./service_handles")
+(import [immutable_view] ^from "./composition")
+(import [manager_list manager_snapshot manager_inspect manager_operation manager_open_link manager_error]
+  ^from "./workspace_manager")
+
+(fn workspace_manager [handle]
+  (let runtime (/runtime (require_service handle)))
+  (let manager runtime/workspace_manager)
+  (if (|| ($absent? manager) manager/closed/.get)
+    (fail (ServiceError ^code "unavailable" ^message "This workspace is not an available manager.")))
+  manager)
+
+(fn workspace_action [handle, operation : Str, values]
+  (if ($absent? (/ui_action ($runtime/context)))
+    (manager_error "view_only" "This action requires the Workspaces view."))
+  (let manager (workspace_manager handle))
+  (if (== operation "refresh") (return (immutable_view (manager_list manager))))
+  (if (== operation "inspect") (return (immutable_view (manager_inspect manager values/id))))
+  (let port values/port)
+  (let selected_port (if (|| ($absent? port) (== port "")) nil
+    (if (== ($head port) Int) port ($parse/parse_int port))))
+  (let checked (values .assoc "port" selected_port))
+  (immutable_view (manager_operation manager operation checked ^confirmed (== values/confirm_busy true))))
+
+(type HostedWorkspaces ^^private ^props {^token Any}
+  (impl WorkspaceHost
+    (message list [] : Any (immutable_view (manager_list (workspace_manager self))))
+    (message snapshot [] : Any (immutable_view (manager_snapshot (workspace_manager self))))
+    (message inspect [id : Str] : Any (immutable_view (manager_inspect (workspace_manager self) id)))
+    (message operation [operation : Str, values = {}] : Any
+      (immutable_view (manager_operation (workspace_manager self) operation values)))
+    (message action [operation : Str, values] : Any (workspace_action self operation values))
+    (message open_link [id : Str] : BrowserTarget
+      (workspace_manager self)
+      ($freeze_shallow (BrowserTarget ^kind "workspace" ^id id)))))
+
+(fn workspace_host_binding [runtime]
+  (service_binding runtime "workspaces" (fn [token] (HostedWorkspaces ^token token))))
+
+(fn resolve_browser_target [runtime, target] : Str
+  (if (== ($head target) Str) (return target))
+  (if (&& (== ($head target) BrowserTarget) (== target/kind "workspace"))
+    (then
+      (if ($absent? runtime/workspace_manager)
+        (fail (ServiceError ^code "unavailable" ^message "Workspace manager is unavailable.")))
+      (return (manager_open_link runtime/workspace_manager target/id))))
+  (fail (ServiceError ^code "invalid_request" ^message "Unknown browser link target.")))

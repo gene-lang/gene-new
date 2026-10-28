@@ -1,0 +1,27 @@
+# Shared registration helper; each calling plugin owns its documentation row.
+(mod documentation)
+(import ^from "../plugin_api" [PluginHost ServiceError])
+(fn reference_path [relative_path : Str] : Str
+  # Documentation is part of the captured package closure, not a search up a
+  # mutable checkout. Keep existing chapter paths as stable authoring names.
+  (let reference ($pkg/dependency this_pkg "gene_reference"))
+  (for [prefix root] in
+      [["examples/gene-harness/" this_pkg/root]
+       ["tools/gene-lang-skill/" reference/root]]
+    (if_yes ($str/starts_with? relative_path prefix)
+      (return ($path/join root
+        ($str/slice_bytes relative_path ($str/byte_size prefix)
+          (- ($str/byte_size relative_path) ($str/byte_size prefix)))))))
+  (fail (ServiceError ^code "invalid_request" ^message $"Unknown bundled documentation path: ${relative_path}")))
+
+
+
+(fn contribute_doc [host, name : Str, summary : Str, relative_path : Str, ^tags tags = [], ^docs references = []]
+  (host .PluginHost:contribute
+    "docs"
+    {^name name ^summary summary ^tags tags ^docs references ^path (reference_path relative_path)}))
+
+(fn contribute_text_doc [host, name : Str, summary : Str, text : Str, ^tags tags = [], ^docs references = []]
+  (host .PluginHost:contribute
+    "docs"
+    {^name name ^summary summary ^text text ^tags tags ^docs references}))

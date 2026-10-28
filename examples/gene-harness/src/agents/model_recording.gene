@@ -14,13 +14,7 @@
   (if_not ($absent? image/digest) (return image/digest))
   ($crypto/sha256 (if (== ($head image/base64) Str) image/base64 "uncatalogued")))
 
-(fn escaped_slashes [text : Str]
-  ($str/join ($str/split text "/") "\\/"))
-
-(fn payload_forms [image]
-  (if (!= ($head image/base64) Str) (return []))
-  [["json_data_url" (escaped_slashes image/data_url)] ["data_url" image/data_url]
-   ["json_base64" (escaped_slashes image/base64)] ["base64" image/base64]])
+(import [escaped_slashes payload_forms redact_image_text safe_error] ^from "../public/model_text" ^^export)
 
 (fn split_media_text [text : Str, inventory, matched]
   (var parts [text])
@@ -150,25 +144,9 @@
   (if_not ($absent? reason)
     (return {^harness_prepared_omitted {^reason reason ^media (image_catalog inventory)}}))
   (store_part runtime rewritten))
-
 (fn result_record [runtime, value, inventory]
   (if ($absent? value) (return nil))
   (let rewritten (replace_media value inventory {}))
   (if (&& (! inventory/.empty?) (opaque_value? rewritten))
     (return {^harness_output_omitted "Provider output contains an unsupported image representation."}))
   (store_part runtime rewritten))
-
-(fn redact_image_text [message : Str, inventory]
-  (var text message)
-  (for image in inventory
-    (for form in (payload_forms image)
-      (if (!= form/1 "")
-        (set text ($str/join ($str/split text form/1) "[image data omitted]")))))
-  text)
-
-(fn safe_error [message : Str, inventory]
-  (let text (redact_image_text message inventory))
-  (if (|| (> ($str/byte_size text) 1024) ($str/contains? text "data:image/")
-          ($str/contains? text "#B16#"))
-    "Image-input provider call failed; its payload-bearing diagnostic was omitted."
-    text))

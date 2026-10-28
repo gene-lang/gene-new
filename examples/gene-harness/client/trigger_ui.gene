@@ -1,0 +1,117 @@
+(mod trigger_ui ^profile web)
+(import [Client] ^from "./workspace_model.gene")
+(import [api string_or set_hidden show_error notice refresh_sessions select_session features] ^from "./feature_helpers.gene")
+
+
+(type TriggerUi ^props {^selected Str})
+(fn trigger_state [client : Client] : TriggerUi
+  (var states (features client))
+  (if_yes ($absent? states/triggers) (set states/triggers (TriggerUi ^selected "")))
+  (var state : TriggerUi states/triggers) state)
+
+(fn trigger_fields [] : Void
+  (var kind ($dom/input_value ($dom/element "trigger_kind")))
+  (set_hidden "trigger_every_field" (!= kind "heartbeat"))
+  (set_hidden "trigger_at_field" (!= kind "scheduled"))
+  (set_hidden "trigger_cron_field" (!= kind "cron"))
+  (set_hidden "trigger_timezone_field" (!= kind "cron")))
+
+(fn trigger_occurrences [client : Client, id : Str] : Void
+  (var state (trigger_state client))
+  (set state/selected id)
+  (var target ($dom/element "trigger_occurrences"))
+  ($dom/clear target)
+  ($dom/append target ($dom/render `(h3 %id)))
+  ($dom/set_input_value ($dom/element "trigger_filter") id)
+  (refresh_sessions client)
+  (api
+    client
+    "GET"
+    $"/api/v8/triggers/${($url/encode_component id)}/occurrences"
+    nil
+    (fn [code : Int, data : Any] : Void
+      (if_yes (!= state/selected id) (return))
+      (if (!= code 200)
+        (then
+          (show_error client data))
+        (else
+          (var occurrences : (List Any) data/occurrences)
+          (for occurrence in occurrences
+            (var state : Str occurrence/state)
+            (var name : Str occurrence/id)
+            (var session : Str occurrence/session)
+            (var reason : Str (string_or occurrence/outcome (string_or occurrence/reason "")))
+            ($dom/append
+              target
+              ($dom/render
+                `(button ^type "button" ^class_name "occurrence" ^disabled %(|| (== state "due") (== state "skipped")) ^on_click %(fn [event : Any] : Void (set_hidden "trigger_drawer" true) (select_session client session))
+                   (span %name)
+                   (span %$"${state} ${reason}"))))))))))
+
+(fn load_triggers [client : Client] : Void
+  (api
+    client
+    "GET"
+    "/api/v8/triggers"
+    nil
+    (fn [code : Int, data : Any] : Void
+      (if (!= code 200)
+        (then
+          (show_error client data))
+        (else
+          (var target ($dom/element "trigger_list"))
+          ($dom/clear target)
+          (var definitions : (List Any) data/triggers)
+          (if_yes (== ($size definitions) 0)
+            ($dom/append target ($dom/render `(p "No triggers yet."))))
+          (for definition in definitions
+            (var id : Str definition/id)
+            (var kind : Str definition/kind)
+            ($dom/append
+              target
+              ($dom/render
+                `(div ^class_name "trigger_row"
+                   (button ^type "button" ^on_click %(fn [event : Any] : Void (trigger_occurrences client id))
+                     %id
+                     (small %kind))
+                   (button ^type "button" ^on_click %(fn [event : Any] : Void (api client "DELETE" $"/api/v8/triggers/${($url/encode_component id)}" nil (fn [status : Int, result : Any] : Void (if (== status 200) (load_triggers client) (show_error client result))))) "Delete"))))))))))
+
+(fn create_trigger [client : Client] : Void
+  (try
+    (var kind ($dom/input_value ($dom/element "trigger_kind")))
+    (var keep : Int ($json/parse ($dom/input_value ($dom/element "trigger_keep"))))
+    (var checkbox ($dom/element "trigger_continue"))
+    (var continued : Bool checkbox/checked)
+    (var data
+      :
+      Any
+      {
+        ^id ($dom/input_value ($dom/element "trigger_id"))
+        ^kind kind
+        ^request ($dom/input_value ($dom/element "trigger_request"))
+        ^missed ($dom/input_value ($dom/element "trigger_missed"))
+        ^overlap ($dom/input_value ($dom/element "trigger_overlap"))
+        ^continue_session continued
+        ^retention {^keep keep}})
+    (if (== kind "heartbeat")
+      (then
+        (var every : Int ($json/parse ($dom/input_value ($dom/element "trigger_every"))))
+        (set data/every_ms every)))
+    (if (== kind "scheduled") (set data/at ($dom/input_value ($dom/element "trigger_at"))))
+    (if_yes (== kind "cron")
+      (set data/cron ($dom/input_value ($dom/element "trigger_cron")))
+      (set data/timezone ($dom/input_value ($dom/element "trigger_timezone"))))
+    (api
+      client
+      "POST"
+      "/api/v8/triggers"
+      data
+      (fn [code : Int, result : Any] : Void
+        (if (== code 201)
+          (then
+            (load_triggers client)
+            (notice client "Trigger created."))
+          (else
+            (show_error client result)))))
+  catch Any
+    (notice client "Check the trigger's interval and retention values.")))

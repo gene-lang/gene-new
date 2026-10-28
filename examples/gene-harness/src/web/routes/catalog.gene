@@ -1,0 +1,29 @@
+# Static host dispatch, reached only after server admission. Feature handlers
+# return nil for routes they do not own; the session/stream coordinator stays core.
+(mod feature_routes)
+(import [channels_request] ^from "./channels")
+(import [plugins_request] ^from "./plugins")
+(import [media_request] ^from "./media")
+(import [voice_request] ^from "./voice")
+(import [notifications_request] ^from "./notifications")
+(import [ui_request] ^from "./ui")
+(import [triggers_request] ^from "./triggers")
+(import [delegations_request] ^from "./delegations")
+(import [cards_request] ^from "./cards")
+
+(fn feature_routes []
+  [{^name "channels" ^request channels_request}
+   {^name "plugins" ^request plugins_request}
+   {^name "media" ^request media_request}
+   {^name "voice" ^request voice_request}
+   {^name "notifications" ^request notifications_request}
+   {^name "ui" ^request ui_request}
+   {^name "triggers" ^request triggers_request}
+   {^name "delegations" ^request delegations_request}
+   {^name "cards" ^request cards_request}])
+
+(fn feature_request [context, request, parts]
+  (for feature in (feature_routes)
+    (let result (feature/request context request parts))
+    (if_not ($absent? result) (return result)))
+  nil)

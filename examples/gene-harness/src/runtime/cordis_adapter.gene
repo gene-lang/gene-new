@@ -435,11 +435,21 @@
   (for current in compositions/.get
     (if (== current/token handle/token) (set record current)))
   (if ($absent? record) (return nil))
-  record/runtime/.close
+  (let before ($size (/diagnostics record/runtime/.inspect)))
+  (let errors [])
+  (try record/runtime/.close
+    catch Any (errors .push $err/message))
+  (var at 0)
+  (for diagnostic in (/diagnostics record/runtime/.inspect)
+    (if (&& (>= at before) (["cleanup_failed" "loader_close_failed"] .contains? diagnostic/kind))
+      (errors .push diagnostic/message))
+    (set at (+ at 1)))
   (let kept ($thaw #[]))
   (for current in compositions/.get
     (if_not (== current/token handle/token) (kept .push current)))
   (compositions .set kept)
+  (if_not errors/.empty?
+    (fail (RecoveryRequired ^message $"Host plugin cleanup failed: ${errors}" ^cause errors)))
   nil)
 
 (type RetainedCallback ^^private ^props {^token Any}

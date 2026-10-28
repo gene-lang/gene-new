@@ -1,0 +1,62 @@
+# Media IDs and attachment admission are host operations, independent of the
+# replaceable function/documentation plugin.
+(mod media_host)
+(import [MediaHost append_prompt] ^from "../plugin_api")
+(import [service_binding require_service] ^from "./service_handles")
+(import [immutable_view] ^from "./composition")
+(import [execution_origin] ^from "./execution_budget")
+(import [open_media_store media_descriptor put_media MediaError] ^from "../storage/media")
+(import [media_pdf_page] ^from "../storage/documents")
+(import [history_state history_media_refs] ^from "../agents/history")
+(import [image_catalog] ^from "../storage/image_runs")
+(import [require_turn] ^from "../agents/outcome")
+
+(fn attach_media [runtime, id : Str]
+  (let origin (execution_origin))
+  (if (|| ($absent? origin) (! (same? origin/composition runtime/h/snapshots)))
+    (fail (MediaError ^code "invalid_request" ^message "Showing media requires an open turn in this workspace.")))
+  (let turn (require_turn origin/turn))
+  (let descriptor (media_descriptor (open_media_store runtime/state_root) id))
+  (if (>= turn/media/.get/.size 16)
+    (fail (MediaError ^code "too_large" ^message "At most 16 media items can be shown per turn.")))
+  (for previous in turn/media/.get
+    (if (== previous/id id) (return (immutable_view descriptor))))
+  (turn/media/.get .push descriptor)
+  (append_prompt "media" descriptor)
+  (immutable_view descriptor))
+
+(fn list_media [runtime]
+  (let context ($runtime/context))
+  (let state (history_state runtime context/session))
+  (let items (history_media_refs state/messages))
+  (let seen {})
+  (for item in items (seen .put item/id true))
+  (for item in (image_catalog runtime context/session)
+    (if_not ($has_key? seen item/id) (items .push item)))
+  (immutable_view items))
+
+(fn import_media_file [runtime, path : Str]
+  (let resolved ($fs/real_path ($path/join runtime/root path)))
+  (if_not ($str/starts_with? resolved $"${runtime/root}/")
+    (fail (MediaError ^code "invalid_request" ^message "Media imports must be inside this workspace.")))
+  (let info ($fs/info resolved))
+  (if (> info/size 10485760)
+    (fail (MediaError ^code "too_large" ^message "Media import exceeds 10 MiB.")))
+  (let item (put_media (open_media_store runtime/state_root) path ($fs/read_bytes resolved)))
+  (attach_media runtime item/id))
+
+(type HostedMedia ^^private ^props {^token Any}
+  (impl MediaHost
+    (message list [] : Any (list_media (/runtime (require_service self))))
+    (message show [id : Str] : Any (attach_media (/runtime (require_service self)) id))
+    (message import_file [path : Str] : Any (import_media_file (/runtime (require_service self)) path))
+    (message page [id : Str, page : Int] : Any
+      (let runtime (/runtime (require_service self)))
+      (let result (media_pdf_page (open_media_store runtime/state_root) id page))
+      (attach_media runtime result/media/id))
+    (message store [name : Str, data, ^source source : Str = "upload"] : Any
+      (let runtime (/runtime (require_service self)))
+      (immutable_view (put_media (open_media_store runtime/state_root) name data ^source source)))))
+
+(fn media_host_binding [runtime]
+  (service_binding runtime "media" (fn [token] (HostedMedia ^token token))))

@@ -1,0 +1,37 @@
+(import $test [describe it])
+(import [isolated run_spec] ^from "../../support")
+(import [start_host stop_host] ^from "../../web_support")
+(import [connect wire] ^from "../../../src/cli/client")
+(import $net/http_client [request])
+
+(describe "Feature route admission"
+  (it "keeps every extracted feature behind owner authentication, Origin and CSRF checks" []
+    (isolated this_mod/.path "keeps every extracted feature behind owner authentication, Origin and CSRF checks"
+      (fn [root]
+        (let host (start_host root))
+        (try
+          (let client (connect root))
+          (for path in ["/channels" "/plugins" "/media" "/voice/status" "/notifications"
+                        "/ui/image?path=missing.png" "/triggers" "/trigger-occurrences"
+                        "/sessions/missing/slack-thread" "/sessions/missing/voice"
+                        "/sessions/missing/card-actions/missing"]
+            (let denied (wire client/connection "GET" path))
+            ($assert (== denied/status 401) ($to_str path ": " denied/status)))
+          (let wrong_csrf (client/credentials .assoc "csrf" "wrong"))
+          (for path in ["/channels/configure" "/plugins/inspect" "/media" "/notifications"
+                        "/notifications/action" "/ui/render" "/ui/actions" "/triggers"
+                        "/sessions/missing/slack" "/sessions/missing/voice"
+                        "/sessions/missing/delegations/recovery" "/sessions/missing/cards/x/actions"]
+            (let denied (wire client/connection "POST" path {} ^credentials wrong_csrf))
+            ($assert (== denied/status 403) ($to_str path ": " denied/status)))
+          (let foreign (request ^method "POST" ^url $"${client/connection/origin}/api/v8/notifications"
+            ^headers {^origin "http://foreign.invalid" ^cookie client/credentials/cookie
+              ^x-csrf-token client/credentials/csrf ^content-type "application/json"} ^body "{}"))
+          (let response (try (await foreign) ensure foreign/.cancel))
+          ($assert (== response/status 403))
+          (let retained (wire client/connection "GET" "/notifications" ^credentials client/credentials))
+          ($assert (== retained/status 200))
+          ($assert (== retained/body/messages []))
+        ensure (stop_host host))))))
+
+(fn main [args] : Int (run_spec args))

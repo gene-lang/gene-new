@@ -37,6 +37,8 @@
 (import [HarnessError] ^from "./errors" ^^export)
 (import [validate_discovery_metadata] ^from "./registries/contracts")
 (import [builtin_registry_specs] ^from "./registries/builtins")
+(import [bind_service] ^from "./runtime/service_binding")
+(import [public_modules] ^from "./runtime/public_modules")
 (import ^from "./notifications/publisher"
   [safe_publish update_notification list_source_messages clear_source_message])
 (import ^from "./runtime/call_supervision" [supervised_call])
@@ -53,6 +55,7 @@
     take_composition_changes
     run_composition_change
     queue_retirement
+    begin_close_composition_state
     close_composition_state
     immutable_view])
 
@@ -381,7 +384,8 @@
   nil)
 
 (fn publish_direct_registry_change [h : Harness]
-  (if (&& (! ($absent? h/snapshots)) (! h/publishing/.get)) (publish_registry_snapshot h))
+  (if (&& (! ($absent? h/snapshots)) (! h/publishing/.get) (! h/snapshots/closing/.get))
+    (publish_registry_snapshot h))
   nil)
 
 (fn rows [h : Harness, registry_name : Str]
@@ -824,7 +828,7 @@
         limits)
       ^options (LoaderOptions
         ^plugin_root (if ($absent? workspace) $"${package_root}/plugins/generated" workspace/generated_dir)
-        ^shared ["src/plugin_api.gene"]
+        ^shared (public_modules)
         ^max_namespaces ($runtime/sandbox_namespaces)
         ^default_limits nil ^reload_policy nil
         ^retirement (fn [ticket]
@@ -1130,13 +1134,27 @@
 
 # --- seams -----------------------------------------------------------------
 
+(fn mutate_seam [h : Harness, owner : Str, seam : Str, change]
+  (if (queue_registry_change? h)
+    (then
+      (queue_composition_change h/snapshots {^id owner ^kind "seam"
+        ^apply (fn [] (mutate_seam h owner seam change))})
+      (return true)))
+  (if h/publishing/.get (return (change)))
+  # Dependency projections belong to a staged generation. Disposing an old
+  # projection under the direct registry gate can deadlock its cleanup and
+  # would also bypass outstanding composition leases.
+  (run_composition_change h/snapshots (fn []
+    (let result ($cell nil))
+    (reconcile_cordis_harness h ^prepare (fn [] (result .set (change))))
+    result/.get)))
+
 (fn provide [h : Harness, id : Str, seam : Str, value] : Str
   # Binding is explicit: a seam already bound is refused rather than shadowed.
   # There is no last-wins, so no registration order decides behaviour.
   (if_yes (seam_bound h seam)
     (fail (HarnessError ^message $"seam ${seam} already bound; replace it explicitly")))
-  (contribute h id "seams" {^name seam ^value value} ^key seam)
-  (if_not h/publishing/.get (reconcile_cordis_harness h))
+  (mutate_seam h id seam (fn [] (contribute h id "seams" {^name seam ^value value} ^key seam)))
   seam)
 
 (fn replace [h : Harness, id : Str, seam : Str, value] : Str
@@ -1153,9 +1171,8 @@
   # dependent is deactivated for a substitution it was never meant to notice.
   (if_not (seam_bound h seam)
     (fail (HarnessError ^message $"seam ${seam} is not bound; provide it first")))
-  (contribute h id "seams" {^name seam ^value value}
-    ^key seam ^^replace)
-  (if_not h/publishing/.get (reconcile_cordis_harness h))
+  (mutate_seam h id seam (fn []
+    (contribute h id "seams" {^name seam ^value value} ^key seam ^^replace)))
   seam)
 
 (fn resolve [h : Harness, seam : Str] : Any
@@ -1168,8 +1185,7 @@
   (if ($absent? record) (return false))
   (if_not (== record/owner owner)
     (fail (HarnessError ^message $"seam ${seam} belongs to ${record/owner}")))
-  (remove_registry_row h record/row_id)
-  (if_not h/publishing/.get (reconcile_cordis_harness h))
+  (mutate_seam h owner seam (fn [] (remove_registry_row h record/row_id)))
   true)
 
 (fn seam_bound [h : Harness, seam : Str] : Bool
@@ -1359,7 +1375,7 @@
       ^unique (?? spec/unique false) ^ordered (?? spec/ordered false)}))
   (message resolve [seam : Str] : Any
     (var record self)
-    (resolve record/h seam))
+    (bind_service (resolve record/h seam) record))
   (message provide [seam : Str, value] : Str
     (var record self)
     (provide record/h record/owner seam value))
@@ -1531,14 +1547,19 @@
 (fn shutdown_harness [h : Harness]
   (var errors (fresh_list))
   (try
-    (close_composition_state h/snapshots)
+    (begin_close_composition_state h/snapshots)
   catch Any
     (errors .push ($to_str $err)))
   (if (> errors/.size 0) (return {^status "recovery_required" ^errors errors}))
+  # Cordis is retiring the whole composition; cleanup must not install fresh
+  # selected-entry projections while its dependency graph is being closed.
+  (set h/registry_observer nil)
   (try
     h/composition/.close
   catch Any
     (errors .push ($to_str $err)))
+  (try (close_composition_state h/snapshots)
+    catch Any (errors .push ($to_str $err)))
   (h/plugins .set (fresh_map))
   (h/composition_entries .set (fresh_map))
   (h/plugin_errors .set (fresh_map))
