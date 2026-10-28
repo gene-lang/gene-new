@@ -2,7 +2,7 @@
 # accepts replacement source or a revised operation list from the client.
 (mod plugin_plans)
 (import $store/fs [Store])
-(import ^from "./composition" [run_composition_change])
+(import ^from "./composition" [run_composition_change current_snapshot])
 (import ^from "./plugin_manager" [plugin_catalog inspect_descriptor])
 (import ^from "../agents/provider_selection" [readiness_report])
 (import ^from "../storage/plugin_metadata" [descriptor_data saved_metadata capabilities])
@@ -212,7 +212,9 @@
           (let inspected (inspect_descriptor ^candidate entry runtime id))
           (if inspected/ok
             (do (set data inspected/descriptor) (checked .put id inspected/descriptor))
-            (warnings .push $"${id}: restricted inspection unavailable: ${inspected/message}"))
+            (if (== inspected/code "unsupported_interface")
+              (errors .push $"${id}: ${inspected/message}")
+              (warnings .push $"${id}: restricted inspection unavailable: ${inspected/message}")))
         catch Any
           (if repair
             (warnings .push $"${id}: unavailable during repair: ${$err/message}")
@@ -228,6 +230,18 @@
         (for row in live/observed
           (claim_capability providers claims [row/registry row/key] id))))
     (let conflicts [])
+    # Registry definitions are leased host metadata, not ordinary contributed
+    # rows. Count an observed provider only if the plan keeps that generation.
+    # An edited/new provider remains unverified until candidate activation.
+    (let selected (current_snapshot runtime/h/snapshots))
+    (for [name definition] in (?? selected/registry_owners {})
+      (let owner definition/owner)
+      (let desired (effective .get owner))
+      (let live (current .get owner))
+      (if (|| (== owner "core") ($str/starts_with? owner "$host/")
+              (&& (! ($absent? desired)) (!= desired/disabled true)
+                  (== live/active_digest (?? desired/module_digest "builtin"))))
+        (claim_capability providers claims ["$registries" ($to_str name)] owner)))
     (for [key claim] in claims
       (let registry (runtime/h/registries/.get .get claim/registry))
       (if (&& (== registry/unique true) (> claim/owners/.size 1))

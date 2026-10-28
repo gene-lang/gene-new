@@ -1,7 +1,0 @@
-(mod seams)
-(protocol HarnessRender (message render [text : Str] : Str))
-(type TextRender)
-(impl HarnessRender for TextRender (message render [text : Str] : Str text))
-(type HtmlRender)
-(impl HarnessRender for HtmlRender (message render [text : Str] : Str $"<p>${($html/escape text)}</p>"))
-(fn render_provider [value : HarnessRender] : HarnessRender value)

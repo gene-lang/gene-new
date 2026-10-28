@@ -1,5 +1,5 @@
 # Host-only Cordis integration. Generated plugins import the stable PluginHost
-# protocol. Activation receives an ordinary host carrying its effect scope.
+# protocol. The selected interface version determines the activation receiver.
 (mod cordis_adapter)
 
 (import ^from "." ^pkg "cordis"
@@ -32,7 +32,7 @@
   (message cleanup [thunk] : Any)
   (message enter_call [] : Nil)
   (message leave_call [] : Nil)
-  (message describe [module, id : Str, limits, callback_limits] : Plugin)
+  (message describe [module, id : Str, limits, callback_limits, core_interface] : Plugin)
   (message context [plugin, effects, observer, policy] : PluginHost)
   (message selected [registry : Str, key : Str] : Any))
 
@@ -246,7 +246,7 @@
           (CompositionError ^message $"source ${row/id} escaped its verified dependency closure")))
       (if (&& (== node/identity graph/root) (!= node/source_digest policy/digest))
         (fail (CompositionError ^message $"source ${row/id} changed after preflight")))))
-  (let plugin (record/host .RegistryHost:describe module row/id policy/init_limits policy/limits))
+  (let plugin (record/host .RegistryHost:describe module row/id policy/init_limits policy/limits policy/core_interface))
   (var expected nil)
   (for descriptor in record/pending/.get
     (if (== descriptor/id row/id) (set expected descriptor)))
@@ -365,7 +365,7 @@
       (fail (CompositionError ^message $"plugin id ${plugin/id} is reserved by Harness")))
     (let supplied (?? (entry_options .get plugin/id) #{}))
     (for [name value] in supplied
-      (if_not (["module" "limits" "init_limits" "host" "digest" "closure"] .contains? ($to_str name))
+      (if_not (["module" "limits" "init_limits" "host" "digest" "closure" "core_interface"] .contains? ($to_str name))
         (fail (CompositionError ^message $"unknown Harness entry option ${name}"))))
     (let source (supplied .get "module"))
     (let requested (?? (supplied .get "limits") record/limits))
@@ -375,6 +375,7 @@
     (let is_host (?? (supplied .get "host") ($absent? source)))
     (let policy
       {^host is_host ^limits limits ^init_limits (?? (supplied .get "init_limits") (default_execution_limits))
+       ^core_interface (supplied .get "core_interface")
        ^module source ^namespaces ($runtime/sandbox_namespaces)
        ^digest (supplied .get "digest") ^closure (supplied .get "closure")})
     (metadata .put plugin/id policy)
@@ -460,24 +461,25 @@
 (type CallbackRecord ^^private ^props {^token Any ^scope Any ^callable Any ^host_context Any ^inject_context Bool})
 
 (var ^^private callbacks ($cell ($thaw #[])))
+(var ^^private callback_gate ($sync/gate))
 
 (fn expire_callback [token] ^^private
-  (var kept ($thaw #[]))
-  (for record in callbacks/.get
-    (if_not (== record/token token) (kept .push record)))
-  (callbacks .set kept)
+  (callback_gate (fn []
+    (callbacks .set ($filter callbacks/.get (fn [record] (! (same? record/token token)))))))
   nil)
 
 (fn invoke_retained [token, call] ^^private
-  (for record in callbacks/.get
-    (if_yes (== record/token token)
-      (var forwarded ($thaw #[]))
-      (for arg in call/body
-        (forwarded .push arg))
-      (if (&& record/inject_context (> forwarded/.size 0)) (forwarded .set 0 record/host_context))
-      (let invoke ($runtime/bind_call ^named call/named record/callable forwarded))
-      (return (invoke_effect_owner record/scope PluginCallKind/operation invoke []))))
-  (fail (EffectDisposed ^message "callback activation revision has retired")))
+  (let record (callback_gate (fn []
+    (for current in callbacks/.get (if (same? current/token token) (return current)))
+    nil)))
+  (if ($absent? record) (fail (EffectDisposed ^message "callback activation revision has retired")))
+  # Never hold the table gate while entering plugin code. Effect-owner admission
+  # still decides whether this captured generation can accept the invocation.
+  (var forwarded ($thaw #[]))
+  (for arg in call/body (forwarded .push arg))
+  (if (&& record/inject_context (> forwarded/.size 0)) (forwarded .set 0 record/host_context))
+  (let invoke ($runtime/bind_call ^named call/named record/callable forwarded))
+  (invoke_effect_owner record/scope PluginCallKind/operation invoke []))
 
 (fn retain_callback [owner, label : Str, callable,
                      ^host_context host_context = nil, ^inject_context inject_context : Bool = false]
@@ -487,9 +489,10 @@
   # revision's single cleanup runs `expire_scope_callbacks`; acquiring a child
   # effect per callback cost a bounded plugin invocation per contributed row.
   (var token ($cell nil))
-  (callbacks/.get .push
-    (CallbackRecord ^token token ^scope owner ^callable callable
-      ^host_context host_context ^inject_context inject_context))
+  (callback_gate (fn []
+    (callbacks/.get .push
+      (CallbackRecord ^token token ^scope owner ^callable callable
+        ^host_context host_context ^inject_context inject_context))))
   (RetainedCallback ^token token))
 
 (fn retained_callback? [value] : Bool
@@ -509,8 +512,6 @@
     [callback args policy context]))
 
 (fn expire_scope_callbacks [scope]
-  (var kept ($thaw #[]))
-  (for record in callbacks/.get
-    (if_not (same? record/scope scope) (kept .push record)))
-  (callbacks .set kept)
+  (callback_gate (fn []
+    (callbacks .set ($filter callbacks/.get (fn [record] (! (same? record/scope scope)))))))
   nil)

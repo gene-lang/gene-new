@@ -4,6 +4,7 @@
 (import [new_harness install put_cordis_plugin shutdown_harness status_of row uninstall]
   ^from "../../../src/kernel")
 (import [acquire_snapshot release_snapshot] ^from "../../../src/runtime/composition")
+(import [retain_callback expire_scope_callbacks] ^from "../../../src/runtime/cordis_adapter")
 
 (describe "Public plugin cleanup"
   (it "defers cleanup through the final reader and unwinds failed activation once" []
@@ -64,5 +65,39 @@
         ($assert (calls/.get .contains? "healthy"))
         ($assert (calls/.get .contains? "failed"))
         ($assert (try (acquire_snapshot h/snapshots) false catch Any true))))))
+
+(describe "Concurrent callback ownership"
+  (it "keeps callbacks added by a live activation while another scope's table is being retired" []
+    (isolated this_mod/.path
+      "keeps callbacks added by a live activation while another scope's table is being retired"
+      (fn [root]
+        (let h (new_harness))
+        (let owner ($cell nil))
+        (try
+          (install h (Plugin ^id "live" ^activate (fn [host] (owner .set host/effects))))
+          (fn marker [value] (fn [] value))
+          (for batch in ($range 0 8)
+            (let retired ($cell nil))
+            (for at in ($range 0 2000) (retain_callback retired "retiring" (marker at)))
+            (let ready ($cell false))
+            (let selected ($cell []))
+            (let writer (spawn ^lane root (do
+              (while (! ready/.get) ($sleep 1))
+              (for at in ($range 0 64)
+                (selected/.get .push (retain_callback owner/.get "live" (marker at)))
+                ($sleep 1)))))
+            (let cleaner (spawn ^lane root (do
+              (ready .set true)
+              (for at in ($range 0 8)
+                (expire_scope_callbacks retired)
+                ($sleep 1)))))
+            ($assert (== ($head writer/.join) TaskOutcome/ok))
+            ($assert (== ($head cleaner/.join) TaskOutcome/ok))
+            (var at 0)
+            (for callback in selected/.get
+              ($assert (== (callback) at) $"Live callback lost during retirement in batch ${batch}.")
+              (set at (+ at 1)))
+            ($assert (== at 64)))
+        ensure (shutdown_harness h))))))
 
 (fn main [args] : Int (run_spec args))

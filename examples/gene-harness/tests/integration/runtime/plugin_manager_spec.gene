@@ -3,8 +3,10 @@
 (import ^from "../../../src/plugin_api" [Plugin PluginHost])
 (import ^from "../../../src/profiles/profile" [Profile])
 (import ^from "../../../src/runtime/bootstrap" [open_runtime close_runtime])
-(import ^from "../../../src/runtime/plugin_manager" [plugin_catalog inspect_descriptor])
-(import ^from "../../../src/runtime/composition" [current_snapshot])
+(import ^from "../../../src/runtime/plugin_manager" [plugin_catalog inspect_descriptor requirement_status])
+(import ^from "../../../src/runtime/composition" [current_snapshot acquire_snapshot release_snapshot])
+(import [validate_plan] ^from "../../../src/runtime/plugin_plans")
+(import [registration_interfaces] ^from "../../../src/runtime/interface_policy")
 (import ^from "../../../src/storage/workspace"
   [
     register_plugin
@@ -140,7 +142,7 @@
           (write_module_blob runtime/workspace digest source)
           (commit_composition runtime/workspace
             [{^id "spin" ^module_digest digest ^closure [digest]
-              ^interfaces runtime/workspace/interfaces ^limits (default_limits_data) ^^disabled}])
+              ^interfaces (registration_interfaces) ^limits (default_limits_data) ^^disabled}])
           (let rejected (inspect_descriptor runtime "spin"))
           ($assert (! rejected/ok))
           ($assert (|| ($str/contains? rejected/message "steps")
@@ -148,6 +150,66 @@
           (let final_snapshot (current_snapshot runtime/h/snapshots))
           ($assert (== final_snapshot/id after/id))
         ensure (close_runtime runtime))))))
+
+(describe "Registry dependency inspection"
+  (it "retains registry metadata and leased owners across plans withdrawal reactivation and restart" []
+    (isolated this_mod/.path
+      "retains registry metadata and leased owners across plans withdrawal reactivation and restart"
+      (fn [root]
+        (let profile (Profile ^name "registry-metadata" ^plugins []))
+        (let runtime (open_runtime root "default" profile))
+        (try
+          (let consumer_source (quote (mod plugin @interfaces {^core "gene-harness/PluginHost:3"}
+            (import [Plugin PluginHost] ^from "src/plugin_api.gene")
+            (fn init [context]
+              (Plugin ^id "extension_consumer" ^requires [{^registry "extensions"}]
+                ^activate (fn [host]
+                  (host .PluginHost:contribute "extensions" {^name "entry"})))))))
+          (let pending (register_plugin runtime/workspace runtime/h "extension_consumer" consumer_source))
+          ($assert (== pending/status "pending") ($to_str pending))
+          (let owner_source (quote (mod plugin @interfaces {^core "gene-harness/PluginHost:3"}
+            (import [Plugin PluginHost] ^from "src/plugin_api.gene")
+            (fn init [context]
+              (Plugin ^id "extension_owner" ^activate (fn [host]
+                (host .PluginHost:create_registry {^name "extensions" ^^unique ^key "name"})))))))
+          (register_plugin runtime/workspace runtime/h "extension_owner" owner_source)
+          (let catalog (plugin_catalog runtime))
+          ($assert catalog/diagnostics/.empty? ($to_str catalog/diagnostics))
+          (let consumer (named catalog "extension_consumer"))
+          ($assert (== consumer/state "ready"))
+          ($assert consumer/metadata_known)
+          ($assert (== consumer/requires/0/provider "extension_owner"))
+          ($assert consumer/requires/0/satisfied)
+          (let owner (named catalog "extension_owner"))
+          ($assert (owner/required_by .contains? "extension_consumer"))
+          (let inspected (inspect_descriptor runtime "extension_consumer"))
+          ($assert inspected/ok ($to_str inspected))
+          ($assert (== inspected/descriptor/requires [["$registries" "extensions"]]))
+          (let plan (validate_plan runtime {^base_revision runtime/workspace/revision/.get ^changes []}))
+          ($assert plan/valid ($to_str plan/errors))
+          ($assert (== ($size ($filter plan/missing (fn [item] (== item/id "extension_consumer")))) 0))
+          (let disabled (validate_plan runtime {^base_revision runtime/workspace/revision/.get
+            ^changes [{^id "extension_owner" ^kind "set_enabled" ^!enabled}]}))
+          ($assert (== ($size ($filter disabled/missing (fn [item] (== item/id "extension_consumer")))) 1))
+          (let lease (acquire_snapshot runtime/h/snapshots))
+          (try
+            (set_plugin_enabled runtime/workspace runtime/h "extension_owner" false)
+            (let retired (named (plugin_catalog runtime) "extension_consumer"))
+            ($assert (== retired/state "pending"))
+            ($assert (! retired/requires/0/satisfied))
+            ($assert (/satisfied (requirement_status lease/snapshot ["$registries" "extensions"])))
+            ($assert (try (lease/snapshot/registry_owners .put "extensions" {}) false catch Any true))
+          ensure (release_snapshot runtime/h/snapshots lease))
+          (set_plugin_enabled runtime/workspace runtime/h "extension_owner" true)
+          ($assert (== (/state (named (plugin_catalog runtime) "extension_consumer")) "ready"))
+        ensure (close_runtime runtime))
+        (let restarted (open_runtime root "default" profile))
+        (try
+          (let reopened_catalog (plugin_catalog restarted))
+          ($assert reopened_catalog/diagnostics/.empty? ($to_str reopened_catalog/diagnostics))
+          (let reopened (named reopened_catalog "extension_consumer"))
+          ($assert (== reopened/requires/0/provider "extension_owner"))
+        ensure (close_runtime restarted))))))
 
 (fn main [args] : Int
   (run_spec args))

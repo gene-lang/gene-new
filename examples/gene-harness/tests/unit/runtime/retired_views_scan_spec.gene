@@ -1,0 +1,23 @@
+(import $test [describe it])
+(import [source_requirements literal_views? dynamic_requirements?] ^from "../../../tools/scan_retired_views")
+
+(describe "Passive retired-view audit"
+  (it "finds literal registry dependencies in source without executing init" []
+    (let findings [])
+    (source_requirements (quote (mod plugin
+      (fn init [context]
+        (fail "A passive scan must never execute this.")
+        (Plugin ^requires [{^registry "views"} ["views" "console"]])))) findings)
+    ($assert (== findings ["source requires views"]))
+    ($assert (literal_views? [{^registry "views"}]))
+    ($assert (literal_views? [["views" "console"]]))
+    ($assert (literal_views? [["$registries" "views"]]))
+    ($assert (! (literal_views? [["web_components" "view"]]))))
+  (it "flags computed requirements instead of claiming that an unevaluated source is clear" []
+    ($assert (dynamic_requirements? (quote requirements)))
+    ($assert (dynamic_requirements? [(quote (make_requirement))]))
+    ($assert (dynamic_requirements? [["views" (quote key)]]))
+    ($assert (! (dynamic_requirements? ["operator/host" ["functions" "ping"] {^registry "extensions"}])))
+    (let findings [])
+    (source_requirements (quote (Plugin ^requires (requirements))) findings)
+    ($assert (== findings ["dynamic source requirements need recorded descriptor review"]))))

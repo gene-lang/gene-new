@@ -6,12 +6,17 @@
 (type PluginMetadataError ^props {^message Str} ^impl [Error])
 (impl Error for PluginMetadataError)
 
-(fn capabilities [items]
+(fn capabilities [items, ^registry_requirements registry_requirements : Bool = false]
   (let values (?? items []))
   (if (!= ($head values) List)
     (fail (PluginMetadataError ^message "plugin capabilities must be a list")))
   (let result [])
   (for item in values
+    (if_yes (&& registry_requirements (== ($head item) Map))
+      (if_not (&& (== ($size item) 1) (== ($head item/registry) Str) (!= item/registry ""))
+        (fail (PluginMetadataError ^message "registry requirement must be {^registry NAME}")))
+      (result .push ["$registries" item/registry])
+      (continue))
     (if (== ($head item) Str)
       (result .push ["seams" item])
       (do
@@ -22,7 +27,8 @@
   result)
 
 (fn descriptor_data [plugin]
-  {^id plugin/id ^provides (capabilities plugin/provides) ^requires (capabilities plugin/requires)})
+  {^id plugin/id ^provides (capabilities plugin/provides)
+   ^requires (capabilities ^registry_requirements true plugin/requires)})
 
 (fn metadata_texts [value]
   (let result [])

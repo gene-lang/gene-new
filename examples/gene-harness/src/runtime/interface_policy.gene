@@ -1,26 +1,79 @@
-# Exact versions recorded by generated plugins. Additive messages keep these
-# versions; removal or changed semantics requires an explicit compatibility policy.
+# Exact source requirements and host-supported versions are different data.
 (mod interface_policy)
+(type InterfacePolicyError ^props {^message Str} ^impl [Error])
+(impl Error for InterfacePolicyError)
+
+(const legacy_core "gene-harness/PluginHost:2")
+(const public_core "gene-harness/PluginHost:3")
+(const plugin_interface "gene-harness/Plugin:2")
 
 (fn current_interfaces []
-  {^core "gene-harness/PluginHost:2"
-   ^plugin_api "gene-harness/Plugin:2"
-   ^harness_render "gene-harness/HarnessRender:1"})
+  {^core [legacy_core public_core] ^plugin_api [plugin_interface]})
 
-# This batch preserves exact-map admission. Name the difference instead of
-# describing every mismatch as an old v1 plugin. Compatibility is a later step.
-(fn interface_diagnostic [required, offered] : Str
-  (if (== required offered) (return ""))
+(fn latest_interfaces [] {^core public_core ^plugin_api plugin_interface})
+
+(fn registration_interfaces []
+  # Unannotated code may have been authored for 2. Re-registration must not
+  # silently claim its receiver/context code conforms to the stronger contract.
+  {^core legacy_core ^plugin_api plugin_interface})
+
+(fn effective_interfaces [required]
+  (if (!= ($head required) Map) (return required))
+  (let normalized {})
+  (for [key value] in required (normalized .put key value))
+  # This is the exact historical allowlist proof from 81093935. Preserve every
+  # other unknown requirement; absence of use cannot be inferred generally.
+  (if (&& (== required/core legacy_core) (== required/plugin_api plugin_interface)
+          (== required/harness_render "gene-harness/HarnessRender:1"))
+    (normalized .delete "harness_render"))
+  normalized)
+
+(fn requirements_diagnostic [required] : Str
   (if (!= ($head required) Map) (return "stored plugin interface requirements must be a map"))
-  (for [field version] in required
+  (for name in ["core" "plugin_api"]
+    (if_not (required .has_key? name) (return $"stored plugin interface requirements omit ${name}")))
+  (for [name version] in required
+    (if (|| (!= ($head version) Str) (== version ""))
+      (return $"interface ${name} requires one exact version string, not a supported-version set")))
+  "")
+
+(fn interface_diagnostic [required, offered] : Str
+  (let invalid (requirements_diagnostic required))
+  (if (!= invalid "") (return invalid))
+  (let normalized (effective_interfaces required))
+  (for [field version] in normalized
     (let name ($to_str field))
     (let available (offered .get name))
     (if ($absent? available)
       (return $"unsupported interface ${name}: requires ${version}; this host does not provide it"))
-    (if (!= version available)
-      (return $"unsupported interface ${name}: requires ${version}; this host provides ${available}")))
-  (for [field version] in offered
-    (let name ($to_str field))
-    (if_not ($has_key? required name)
-      (return $"stored plugin interface map omits ${name} (${version}); re-register it for this host")))
-  "stored plugin interfaces do not match this host")
+    (let supported (if (== ($head available) List) available [available]))
+    (if_not (supported .contains? version)
+      (return $"unsupported interface ${name}: requires ${version}; this host provides ${supported}")))
+  "")
+
+(fn source_interfaces [source]
+  (let meta ($meta source))
+  (let declared (?? (meta .get "interfaces") {}))
+  (if (!= ($head declared) Map)
+    (fail (InterfacePolicyError ^message "@interfaces must declare a map of exact required versions.")))
+  (let required (registration_interfaces))
+  (for [key version] in declared (required .put key version))
+  (let invalid (requirements_diagnostic required))
+  (if (!= invalid "") (fail (InterfacePolicyError ^message invalid)))
+  required)
+
+(fn entry_core_interface [entry]
+  (/core (effective_interfaces entry/interfaces)))
+
+(fn retired_requirement [descriptor, core : Str] : Str
+  (for requirement in (?? descriptor/requires [])
+    (let registry (if (== ($head requirement) List) requirement/0
+      (if (== ($head requirement) Map) requirement/registry nil)))
+    (if (|| (== registry "views")
+            (&& (== registry "$registries") (== requirement/1 "views")))
+      (return "unsupported interface registry/views: terminal views are retired; re-register without that requirement"))
+    (let seam (if (== ($head requirement) Str) requirement
+      (if (&& (== ($head requirement) List) (== registry "seams")) requirement/1 nil)))
+    (if (&& (== core public_core) (["loop" "voice/runtime"] .contains? seam))
+      (return $"unsupported interface ${seam}: PluginHost:3 requires a narrow host protocol")))
+  "")

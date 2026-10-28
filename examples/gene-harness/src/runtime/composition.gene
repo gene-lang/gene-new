@@ -1,6 +1,6 @@
 (mod composition)
 
-(type CompositionSnapshot ^props {^id Int ^registries Any ^instances Any ^plugins Any?})
+(type CompositionSnapshot ^props {^id Int ^registries Any ^instances Any ^plugins Any? ^registry_owners Any?})
 (type SnapshotLease ^props {^snapshot CompositionSnapshot ^counter Any ^closed Any})
 (type CompositionState ^props {^current Any ^next_id Any ^snapshots Any ^counts Any ^pending Any ^retiring Any ^retire Any ^closed Any ^closing Any ^publishing Any ^mutating Any ^on_publish Any?})
 (type CompositionClosed ^props {^message Str} ^impl [Error])
@@ -133,16 +133,20 @@
   (for change in kept (state/pending/.get .push change))
   nil)
 
-(fn publish_snapshot [state : CompositionState, registries, instances, ^plugins plugins = []] : CompositionSnapshot
+(fn publish_snapshot [state : CompositionState, registries, instances,
+  ^plugins plugins = [], ^registry_owners registry_owners = {}] : CompositionSnapshot
   (require_open state)
-  (state/publishing (fn [] (publish_snapshot_serial state registries instances ^plugins plugins))))
+  (state/publishing (fn [] (publish_snapshot_serial state registries instances
+    ^plugins plugins ^registry_owners registry_owners))))
 
-(fn publish_snapshot_serial [state : CompositionState, registries, instances, ^plugins plugins = []] : CompositionSnapshot
+(fn publish_snapshot_serial [state : CompositionState, registries, instances,
+  ^plugins plugins = [], ^registry_owners registry_owners = {}] : CompositionSnapshot
   (let previous state/current/.get)
   (let id (state/next_id .swap (+ state/next_id/.get 1)))
   (let snapshot ($freeze_shallow
     (CompositionSnapshot ^id id ^registries (immutable_view registries)
-      ^instances ($freeze_shallow instances) ^plugins (immutable_view plugins))))
+      ^instances ($freeze_shallow instances) ^plugins (immutable_view plugins)
+      ^registry_owners (immutable_view registry_owners))))
   (state/snapshots/.get .put ($to_str id) snapshot)
   (state/counts/.get .put ($to_str id) ($atomic_cell 0))
   # Publication itself is one native Cell operation and cannot yield.

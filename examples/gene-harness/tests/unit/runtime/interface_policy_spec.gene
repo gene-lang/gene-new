@@ -1,15 +1,36 @@
 (import $test [describe it])
-(import [current_interfaces interface_diagnostic] ^from "../../../src/runtime/interface_policy")
+(import [current_interfaces latest_interfaces registration_interfaces effective_interfaces
+  source_interfaces interface_diagnostic InterfacePolicyError]
+  ^from "../../../src/runtime/interface_policy")
 
-(describe "Plugin interface diagnostics"
-  (it "identifies unsupported, missing and unknown interfaces without changing admission" []
+(describe "Plugin interface compatibility"
+  (it "checks exact requirements against supported sets without claiming host-only interfaces" []
     (let current (current_interfaces))
-    ($assert (== (interface_diagnostic current current) ""))
-    (let obsolete (current .assoc "core" "gene-harness/PluginHost:1"))
+    (let required (registration_interfaces))
+    ($assert (== (interface_diagnostic required current) ""))
+    ($assert (== (interface_diagnostic (latest_interfaces) current) ""))
+    ($assert (== (interface_diagnostic required (current .assoc "host_only" ["host/Extra:1"])) ""))
+    ($assert (! (required .has_key? "host_only")))
+    (let obsolete (required .assoc "core" "gene-harness/PluginHost:1"))
     ($assert ($str/contains? (interface_diagnostic obsolete current) "core: requires gene-harness/PluginHost:1"))
-    (let future (current .assoc "plugin_api" "gene-harness/Plugin:99"))
+    (let future (required .assoc "plugin_api" "gene-harness/Plugin:99"))
     ($assert ($str/contains? (interface_diagnostic future current) "plugin_api: requires gene-harness/Plugin:99"))
-    (let unknown (current .assoc "unknown" "test:1"))
+    (let unknown (required .assoc "unknown" "test:1"))
     ($assert ($str/contains? (interface_diagnostic unknown current) "unsupported interface unknown"))
-    ($assert ($str/contains? (interface_diagnostic {} current) "omits"))
-    ($assert ($str/contains? (interface_diagnostic [] current) "must be a map"))))
+    ($assert ($str/contains? (interface_diagnostic {} current) "omit"))
+    ($assert ($str/contains? (interface_diagnostic [] current) "must be a map"))
+    ($assert ($str/contains? (interface_diagnostic current current) "exact version")))
+  (it "migrates only the proven legacy render requirement and keeps unknown requirements fail-closed" []
+    (let legacy ((registration_interfaces) .assoc "harness_render" "gene-harness/HarnessRender:1"))
+    ($assert (== (effective_interfaces legacy) (registration_interfaces)))
+    ($assert (== (interface_diagnostic legacy (current_interfaces)) ""))
+    ($assert (legacy .has_key? "harness_render") "Compatibility mutated the archived map.")
+    ($assert ($str/contains? (interface_diagnostic (legacy .assoc "future" "future:1") (current_interfaces)) "future"))
+    ($assert ($str/contains? (interface_diagnostic (legacy .assoc "harness_render" "render:99") (current_interfaces)) "harness_render")))
+  (it "uses existing source metadata for explicit opt-in and keeps conservative defaults otherwise" []
+    ($assert (== (source_interfaces (quote (mod plugin))) (registration_interfaces)))
+    ($assert (== (source_interfaces (quote (mod plugin @interfaces {^core "gene-harness/PluginHost:3"})))
+      (latest_interfaces)))
+    ($assert (try
+      (source_interfaces (quote (mod plugin @interfaces {^core ["gene-harness/PluginHost:2"]})))
+      false catch InterfacePolicyError true))))

@@ -4,21 +4,24 @@
 (import [HarnessError] ^from "../errors")
 (import [validate_seam_row validate_command_row validate_function_row validate_input_mode_row
   validate_provider_row validate_speech_row validate_image_generator_row validate_hook_row
-  validate_hook_point_row validate_trigger_row validate_interaction_row validate_view_row
+  validate_hook_point_row validate_trigger_row validate_interaction_row
   validate_prompt_row validate_docs_row validate_event_type_row validate_event_type_owner
   cancel_subscription_row] ^from "./contracts")
 (import [validate_web_component] ^from "../ui/components")
 (import [validate_browser_client] ^from "../ui/browser_clients")
 (import [own_speech_engine] ^from "./resources")
+(import [prepare_command_callback prepare_prompt_callback] ^from "../runtime/public_context")
 
-(fn builtin_registry_specs [h, guard_view, lookup]
+(fn builtin_registry_specs [h, lookup]
   (let discovery_reserved {^discover "" ^doc ""})
   [
     {^name "seams" ^^unique ^schema validate_seam_row ^callbacks ["value"]}
     {^name "commands" ^^unique ^schema validate_command_row ^callbacks ["run"]
+     ^prepare (fn [owner, candidate] (prepare_command_callback h owner candidate))
      ^reserved {^sh "shell" ^repl "repl" ^help "core_commands" ^run "core_commands"
                  ^view "core_commands" ^cancel "core" ^stop "core" ^restart "core"}}
-    {^name "input_modes" ^^unique ^schema validate_input_mode_row ^callbacks ["classify" "run" "close"]}
+    {^name "input_modes" ^^unique ^schema validate_input_mode_row ^callbacks ["classify" "run" "close"]
+     ^prepare (fn [owner, candidate] (prepare_command_callback h owner candidate))}
     {^name "functions" ^^unique ^schema validate_function_row ^callbacks ["fn"]
      ^signature "fn" ^reserved discovery_reserved}
     {^name "ui_actions" ^^unique ^schema validate_function_row ^callbacks ["fn"]
@@ -48,9 +51,9 @@
     {^name "triggers" ^^unique ^schema validate_trigger_row ^key "id"}
     {^name "interactions" ^^unique ^schema validate_interaction_row
      ^callbacks ["validate_request" "validate_reply" "render"]}
-    {^name "prompt" ^!unique ^^ordered ^schema validate_prompt_row ^callbacks ["render"]}
+    {^name "prompt" ^!unique ^^ordered ^schema validate_prompt_row ^callbacks ["render"]
+     ^prepare (fn [owner, candidate] (prepare_prompt_callback h owner candidate))}
     {^name "docs" ^^unique ^schema validate_docs_row}
-    {^name "views" ^^unique ^schema validate_view_row ^prepare guard_view}
     {^name "web_components" ^^unique ^^ordered ^schema validate_web_component ^callbacks ["render"]}
     {^name "browser_clients" ^^unique ^^ordered ^schema validate_browser_client}
     {^name "event_types" ^^unique ^schema validate_event_type_row

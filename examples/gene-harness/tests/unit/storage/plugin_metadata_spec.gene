@@ -1,7 +1,16 @@
 (import $test [describe it run])
 (import $store/fs [open : store_open Store])
 (import ^from "../../../src/storage/plugin_metadata"
-  [remember_descriptor remember_observation saved_metadata contribution_data])
+  [remember_descriptor remember_observation saved_metadata contribution_data descriptor_data PluginMetadataError])
+
+(describe "Registry requirement metadata"
+  (it "normalizes a registry dependency without treating it as a row or changing provided capabilities" []
+    (let data (descriptor_data {^id "consumer" ^provides [["functions" "marker"]]
+      ^requires ["operator/host" ["functions" "marker"] {^registry "extensions"}]}))
+    ($assert (== data/requires [["seams" "operator/host"] ["functions" "marker"] ["$registries" "extensions"]]))
+    ($assert (== data/provides [["functions" "marker"]]))
+    ($assert (try (descriptor_data {^id "invalid" ^requires [{^registry ""}]}) false
+      catch PluginMetadataError true))))
 
 (describe
   "Retained plugin metadata"

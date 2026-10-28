@@ -500,7 +500,7 @@ the host; a plugin keeps the host for later callbacks.
 
 The registries are `functions`, `commands`, `input_modes`, `prompt`, `docs`,
 `providers`, `image_generators`, `speech_recognizers`, `speech_synthesizers`,
-`hook_points`, `hooks`, `views`, `interactions`, `web_components`, `browser_clients`,
+`hook_points`, `hooks`, `interactions`, `web_components`, `browser_clients`,
 `ui_actions`, `ui_links`, `event_types`, `subscriptions`, `seams` and `triggers`.
 Normal runtime boot also installs `turn_participants`, `outcome_extensions`
 and `initiators`; their [transaction contract](turn-participants.md) defines
@@ -513,6 +513,11 @@ Contributions may add a summary, topic tags and docs chapter references. A
 names by owner: `core_commands` owns `/help`, `/run` and `/view`, `shell` owns
 `/sh` and its input mode, the loop owns `/cancel`, `/stop` and `/restart`, and
 `repl` owns `/repl`.
+The [versioned plugin contract](plugins.md#interface-versions-and-callback-contexts)
+keeps stored version-2 callbacks supported while version 3 uses opaque receivers
+and public command/prompt projections. Exact entry requirements are checked
+against host-supported version sets, including on historical reversion. The
+terminal-view contracts have been retired without rewriting archived source.
 `plugin_api` also exports
 `append_prompt`, which forwards to the current turn and labels the item
 `fn <name>`. Outside an open turn it raises TurnClosed.
@@ -531,8 +536,9 @@ Each row reports cheap availability, configures public model settings,
 prepares model-visible input as plain data, and sends one transport attempt.
 The loop retries one HTTP timeout. A missing or unavailable selected provider
 refuses round admission with `not_ready`; the same check runs before each
-turn. The `triggers` host plugin requires the loop's `loop` seam. It starts
-its scheduler only after the controller exists and stops when that seam goes.
+turn. The `triggers` plugin resolves `TriggerHost` through `triggers/host`.
+The host owns durable definitions and occurrences; plugin activation owns the
+scheduler. Disabling it stops scheduling, and its HTTP routes report unavailable.
 
 Long-lived background work belongs in a plugin's activation effect scope,
 not in a detached task from response code. Its console output goes to the

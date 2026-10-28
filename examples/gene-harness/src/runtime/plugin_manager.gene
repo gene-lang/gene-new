@@ -1,6 +1,7 @@
 # Host-owned management reads use inert metadata and registry snapshots.
 (mod plugin_manager)
 (import ^from "./composition" [acquire_snapshot release_snapshot run_composition_change])
+(import [entry_core_interface retired_requirement] ^from "./interface_policy")
 (import ^from "../storage/workspace"
   [composition_entries composition_revision verify_stored_entry digest_hex entry_limits plugin_history_page])
 (import ^from "../storage/plugin_history" [history_entry])
@@ -48,6 +49,10 @@
     page)))
 
 (fn requirement_status [snapshot, pair]
+  (if_yes (== pair/0 "$registries")
+    (let definition ((?? snapshot/registry_owners {}) .get pair/1))
+    (return {^registry pair/0 ^key pair/1 ^provider (?? definition/owner nil)
+      ^satisfied (! ($absent? definition))}))
   (let records (?? (snapshot/registries .get pair/0) []))
   (for record in records
     (if (== record/key pair/1)
@@ -271,10 +276,13 @@
             (let plugin
               (invoke_bounded
                 module/init
-                (DescriptorContext ^module_id id ^core_interface workspace/core_interface)
+                (DescriptorContext ^module_id id ^core_interface (entry_core_interface entry))
                 limits))
             (if (|| (!= ($head plugin) Plugin) (!= plugin/id id) (! ($runtime/callable? plugin/activate)))
               (fail "init must return the matching Plugin with a callable activate"))
+            (let retired (retired_requirement plugin (entry_core_interface entry)))
+            (if (!= retired "")
+              (return {^id id ^!ok ^code "unsupported_interface" ^message retired ^activation "unverified"}))
             (let data ($thaw ($freeze (descriptor_data plugin))))
             (remember_descriptor ^mode "restricted"
               workspace/store

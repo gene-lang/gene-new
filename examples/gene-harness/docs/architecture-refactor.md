@@ -12,7 +12,7 @@ trusted-code model and the existing Gene syntax remain invariants.
 | 3. Registries | Declarative owned specs/callbacks/keys/reservations, leased rows/row and extensible hook points/dispatch. Registry requirements move dependents pending and reactivate them. A/B/C replacement, supervision, immutable views and leased cleanup. | Complete |
 | 4. Feature services | Narrow feature host contracts, migrate built-ins off raw loop/command-context access, static host service dependencies with normal/recovery/partial-open cleanup, feature HTTP routes and browser handlers behind authenticated admission and the core stream coordinator. Failure injection and existing client/recovery coverage. | Complete |
 | 5. Turn participants | Explicit internal phase/transaction contract, delegation then a second consumer; one lease, unconditional core records/base Outcome rules, no replay, cancellation/panic cleanup, owned/schema-checked extension keys and initiators. | Complete |
-| 6. Compatibility | Separate exact entry requirements from supported versions; shared load/plan/revert checks, legacy migration and unsupported-version/history cases. Retire HarnessRender, views/HarnessView after checking stored descriptors; preserve archived history. | Pending |
+| 6. Compatibility | Separate exact entry requirements from supported versions; shared load/plan/revert checks, legacy migration and unsupported-version/history cases. Retire HarnessRender, views/HarnessView after checking stored descriptors; preserve archived history. | Complete |
 
 Each batch records its actual validation here before committing. The final
 audit must check every row against implementation and runtime/test evidence;
@@ -223,3 +223,116 @@ passing a narrow test is not evidence for the entire refactor.
   no synthetic final reply and an explicit continuation. All four turn-loop
   cases pass. Registry callbacks retain exact phase admission, and the native
   startup/unwind cases still release ownership last with the new service.
+
+## Batch 6 evidence
+
+- Entry requirements are exact strings, independently of the host's supported
+  version lists. Unannotated source retains PluginHost:2; existing module author
+  metadata explicitly selects PluginHost:3. Preflight, restricted inspection and
+  actual activation all receive the entry's selected version.
+- One interface diagnostic is used by descriptor loading and inert historical
+  verification, which also underpins plan validation and reversion. The stored
+  compatibility cases pass host-only additions, unsupported known versions,
+  unknown interfaces and unsupported render versions through all three paths.
+- The real stored-plugin loader passes whole-map legacy loading, typed raw
+  command callbacks, prompt rendering, restart, explicit version-3 replacement
+  and historical reversion. Normalization preserves archived requirements and
+  source bytes; it drops only HarnessRender:1 with the proven version-2 pair.
+- Stored version 3 receives an opaque receiver. Command and input-mode adapters
+  expose immutable revision data and no managers/runtime; prompt adapters expose
+  workspace/session data. Real command admission accepts public projections and
+  nested command delegation while rejecting fabricated and retained contexts.
+  Durable-record subscriptions use inert envelopes and opaque cancellation.
+- Replacement under an outstanding lease passes old/new selection, deferred
+  cleanup, owner removal callbacks, deactivation and receiver revocation. The
+  receiver stays usable through cleanup and becomes unavailable afterwards.
+  The compatibility/computer run reports 5 passed. The final focused registry,
+  cleanup and compatibility run reports 10 passed, including partial activation.
+  That new case exposed a retained registry definition after failed activation;
+  cleanup now retires each owned definition by exact revision, preserving a
+  replacement's registry and attempting both row and definition cleanup.
+- A passive pre-removal scan of actual ignored workspace roots found 169 source
+  files and 9,278 descriptor records with no views requirements or unreadable
+  files. It never opens or activates a workspace. The scanner now also flags
+  computed requirements; its two unit cases pass. The final quiescent scan
+  reports 181 source files, 9,390 descriptor records, zero findings and zero
+  unreadable files. A concurrent earlier scan reported disappearing fixture
+  files; that incomplete result is not used as qualification.
+- HarnessRender, HarnessView, GuardedView, their modules and the actual terminal
+  views registry are removed. Legacy metadata queries have an empty projection;
+  recorded descriptor requirements receive an explicit retirement diagnostic.
+  Version-3 raw-seam requirements are rejected before activation, and plans for
+  those descriptors are invalid.
+- The final broad unit run reports 199 passed, with the same pre-existing theme
+  failure and three missing-zdump errors. The generated event catalog is current.
+  The agent/runtime/storage run reports 235 passed and one fixture failure:
+  its synthetic entry copied the host's supported-version matrix instead of
+  exact requirements. That fixture now uses registration requirements; its
+  focused inventory/inspection rerun passes all 3 original cases (plus the new
+  registry dependency case below). The HTTP/UI/channel/builtin/profile remainder
+  reports 200 passed and one cross-process recovery failure, resolved below.
+  The original reports are retained rather than described as green full runs.
+- The emitted-client acceptance fixtures are now included in a standard Gene
+  integration case. It passes all eleven previously manual feature fixtures,
+  including stream sequencing, subscription disposal, background-session
+  isolation, notifications, output, menus, Slack identity and voice. The
+  existing Spotlight case covers the remaining three browser fixtures.
+- Final inspection found that registry requirements worked at activation but
+  were rejected by passive descriptor metadata. The same existing requirement
+  now retains its registry identity in metadata; snapshots capture immutable
+  registry owner/revision data, so catalogs and plans use the leased owner.
+  Plans count an observed definition only while its provider is unchanged and
+  enabled. A new integration case passes pending/ready metadata, inspection,
+  dependency impact, withdrawal, reactivation, old-lease selection and restart.
+  All 24 focused metadata/composition/registry/compatibility cases pass.
+- The cross-process failure's retained transcript records an instruction
+  renderer failing with "callback activation revision has retired". Callback
+  table retirement rebuilt an unsynchronized list and could discard a different
+  activation's newly added callbacks. Registration, lookup and retirement now
+  share one gate; plugin invocation runs outside it. A concurrent live-owner
+  regression and both cleanup cases pass (3), and all eleven authenticated
+  fake-peer crash checkpoints pass without replay. The seven responsiveness,
+  budget and leased-registry cases pass after this fix.
+- The final public participant/compatibility run passes 12 cases, and the
+  manager HTTP/recovery/reversion run passes 4. Reports are retained in
+  repository-root `tmp/harness-batch6-{unit-final,integration,http-ui,
+  cleanup-final,registry-metadata-final,public-final,supervision-final,
+  callback-race,manager-http,client,cross-process-final}.log`. The actual scan
+  is `tmp/harness-retired-views-scan-final.log`. No live Slack transport or model
+  service was used in these checks.
+
+## Final acceptance audit
+
+The final gate is the accepted review body and its compatibility addenda, not
+only the deliverable labels above. The completed audit maps the implementation
+and exercised acceptance cases below to every batch and review requirement.
+The broad reports and focused corrections are recorded above, including the
+unchanged theme failure and calendar environment limitation. They do not leave
+an unqualified architecture acceptance case.
+
+| Requirement | Implementation and acceptance source |
+| --- | --- |
+| Disabled trigger reads/writes, disabled boot and live withdrawal | `web/routes/triggers.gene`; `tests/integration/web/trigger_routes_spec.gene` |
+| Reference organization, inventories and private dead-code deletion | `docs/design.md`, `docs/plugins.md`, `docs/web-client.md`, `docs/proposals/`, `docs/verification/`; removed recording view/model client/profile helper |
+| Operator inbox preserves ownership, keyed revisions, foreign entries and restart | `notifications/host.gene`, `notifications/publisher.gene`; `tests/integration/notifications/host_spec.gene` |
+| Built-ins use public imports and cleanup rather than internal managers | `runtime/public_modules.gene`, `builtin/`; `tests/unit/builtin/import_policy_spec.gene`, `tests/integration/runtime/public_sdk_spec.gene`, `plugin_cleanup_spec.gene` |
+| Declarative registries, guarded contributor callbacks and owner policy | `registries/`, generic kernel registry machinery; `tests/integration/runtime/registry_extensions_spec.gene` |
+| A/B/C leased replacement, pending/reactivation and final-reader cleanup | `runtime/cordis_adapter.gene`, `runtime/composition.gene`; `registry_extensions_spec.gene` |
+| Narrow Media/Trigger/Channel/Session/Voice/UI/Workspace/Computer/Operator/Composition services | Opaque host modules under `runtime/`; API-only stored replacement tests for those services and SDK; empty private-import exception list |
+| Static host wiring in normal/recovery modes, partial-open unwind and workspace ownership last | `runtime/host_services.gene`, `runtime/runtime_services.gene`, `web/service_lifecycle.gene`; unit runner, real-runtime prefix and session-service prefix failure-injection tests |
+| HTTP feature extraction preserves shared admission and unavailable behavior | `web/routes/`, `web/server.gene`; feature admission, auth, trigger, voice, image, media, channel and plugin HTTP tests |
+| Client extraction preserves coordinator ordering and isolation | Feature client modules, `client/feature_events.gene`, stream coordinator; emitted-client/browser fixtures for sequence gaps, stale epochs, subscriptions, replacement, selected/background sessions and page-owned output |
+| Mandatory participant transaction, delegation then cards, one lease and no phase replay | `runtime/turn_participants.gene`, `turn_participant_registry.gene`, `docs/turn-participants.md`; engine, internal-consumer and production-loop failure/cancellation tests |
+| Unconditional protocol records and base Outcome rules; owned/schema-checked extensions | `agents/outcome.gene`, `agents/outcome_admission.gene`, `runtime/outcome_extensions.gene`; Outcome unit cases and public participant/schema integration cases |
+| Owned initiator rows replace controller source-prefix policy | `runtime/initiators.gene`; initiator policy and integration tests, channel admission and historical-receipt cases |
+| Exact requirements, shared compatibility check and immutable archives | `runtime/interface_policy.gene`, storage load/verify paths, plan validation; interface-policy unit cases and `interface_compatibility_spec.gene` |
+| Legacy command/prompt/receiver behavior versus explicit public opt-in | `runtime/public_context.gene`, `public_host.gene`, `command_scope.gene`; actual loader, command, input-mode, restart, lease, cleanup and historical-revert cases |
+| Stored descriptor scan and explicit public-contract retirement | `tools/scan_retired_views.gene`; scanner units, actual workspace scan, retired-descriptor admission and plan cases; deleted terminal view/render modules |
+| Six independently committed batches | Batches 1–5 are `ef7250dd`, `3407bd5a`, `db755a78`, `14fb61b7`, `2a5a383d`; compatibility and this final audit form the sixth separate commit. |
+
+Retained version-2 receivers, raw callbacks and runtime seams are the explicit
+compatibility interval, not an incomplete migration of built-ins. Native host
+state still belongs to the trusted host; the public version-3 API supplies
+projections and opaque handles. Shared shell/REPL resources retain their
+explicit counted ownership, as the accepted plan requires. No new Gene syntax
+or language semantics are introduced.

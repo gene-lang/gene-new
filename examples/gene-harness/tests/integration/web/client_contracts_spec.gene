@@ -1,0 +1,28 @@
+(import $test [describe it])
+(import [isolated run_spec package_path] ^from "../../support")
+
+(describe "Compiled feature client contracts"
+  (it "preserves stream coordination page-owned output subscriptions and feature UI after extraction" []
+    (isolated this_mod/.path
+      "preserves stream coordination page-owned output subscriptions and feature UI after extraction"
+      (fn [workspace]
+        (let output $"${workspace}/compiled")
+        (for entry in ["client/main.gene" "client/plugins/voice.gene"]
+          (let built (await ($os/exec_async ^timeout_ms 30000 ^max_bytes 1048576
+            ($os/executable_path) "build" "--target" "web" "--out-dir" output (package_path entry))))
+          ($assert (== built/status 0) $"${built/stdout}${built/stderr}"))
+        # Spotlight's separate case already covers first submission and media.
+        # Run the remaining emitted-module fixtures in independent Node globals.
+        (for pair in [["conversation" "main"] ["feature_events" "main"]
+                     ["history_start" "view"] ["host_audio" "host_audio"]
+                     ["live_output" "live_output"] ["notifications" "main"]
+                     ["session_menu" "session_menu"] ["sidebar_plugin" "sidebar"]
+                     ["slack_users" "main"] ["ui_form_success" "main"]]
+          (let checked (await ($os/exec_async ^timeout_ms 15000 ^max_bytes 1048576
+            "node" (package_path $"tests/${pair/0}.mjs") $"${output}/${pair/1}.mjs")))
+          ($assert (== checked/status 0) $"${pair/0}: ${checked/stdout}${checked/stderr}"))
+        (let voice (await ($os/exec_async ^timeout_ms 15000 ^max_bytes 1048576
+          "node" (package_path "tests/voice_client.mjs") $"${output}/voice.mjs" $"${output}/round_client.mjs")))
+        ($assert (== voice/status 0) $"voice: ${voice/stdout}${voice/stderr}")))))
+
+(fn main [args] : Int (run_spec args))

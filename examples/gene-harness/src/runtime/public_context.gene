@@ -1,0 +1,32 @@
+# Versioned adapters are installed by feature registry specs before supervision.
+# The selected row captures its contributor's contract, including under leases.
+(mod public_callback_context)
+(import [CommandContext] ^from "../plugin_api")
+(import [public_core] ^from "./interface_policy")
+(import [admit_command_alias original_command_context] ^from "./command_scope")
+(import [freeze_turn_data] ^from "./turn_data")
+
+(fn public_command_context [context : CommandContext]
+  (let original (original_command_context context))
+  (let projected ($freeze_shallow (CommandContext
+    ^manager nil ^runtime nil ^session original/session ^raw original/raw
+    ^id original/id ^output original/output
+    ^snapshot (freeze_turn_data {^composition_revision original/snapshot/id}))))
+  (admit_command_alias context projected))
+
+(fn public_contract? [h, owner : Str]
+  (let policy (h/plugin_policies/.get .get owner))
+  (&& (!= policy/host true) (== policy/core_interface public_core)))
+
+(fn prepare_command_callback [h, owner : Str, candidate]
+  (if_not (public_contract? h owner) (return candidate))
+  (let callback candidate/run)
+  (candidate .assoc "run" (fn [context : CommandContext]
+    (callback (public_command_context context)))))
+
+(fn prepare_prompt_callback [h, owner : Str, candidate]
+  (if (|| (! (public_contract? h owner)) ($absent? candidate/render)) (return candidate))
+  (let callback candidate/render)
+  (candidate .assoc "render" (fn [runtime, session]
+    (callback (freeze_turn_data {^workspace_root runtime/root})
+      (freeze_turn_data session)))))

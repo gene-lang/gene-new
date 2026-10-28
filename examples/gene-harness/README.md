@@ -636,7 +636,7 @@ a simple model-free reply. These are testing configurations of the same host.
 
 | Location | Responsibility |
 | --- | --- |
-| `src/plugin_api.gene`, `src/kernel.gene`, `src/seams.gene` | Plugin contract, registries, activation and host events |
+| `src/plugin_api.gene`, `src/kernel.gene`, `src/registries/` | Plugin contract, registries, activation and host events |
 | `src/agents/` | Model requests, response evaluation, instructions and history |
 | `src/runtime/` | Workspace ownership, sessions, commands, REPL, rounds, scheduling and composition lifetimes |
 | `src/storage/` | Durable events and stored plugin generations |
@@ -644,7 +644,7 @@ a simple model-free reply. These are testing configurations of the same host.
 | `src/notifications/` | Isolated producer inbox, source validation and frozen action admission |
 | `src/ui/` | Component validation, UI settings/descriptors, leased rendering, publication outlines and function actions |
 | `src/web/` | Shared session service, HTTP/WebSocket transport, owner authentication, connection discovery, page shell and styles |
-| `src/builtin/`, `src/profiles/`, `src/views/` | Built-in plugins, entry-point composition and operator views |
+| `src/builtin/`, `src/profiles/`, `src/ui/` | Built-in plugins, entry-point composition and workspace UI |
 | `client/` | Gene web-profile conversation client and display helpers |
 | `client/ui/` | Panel model/storage, keyed DOM reconciliation and request/action controller |
 | `src/website/`, `client/website.gene`, `website/` | Informational site and its runnable examples |

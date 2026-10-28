@@ -1,0 +1,134 @@
+# Version-3 receiver: one opaque token, with private activation-owned delegates.
+(mod public_plugin_host)
+(import [PluginHost DurableRecord ServiceError] ^from "../plugin_api")
+(import [freeze_turn_data] ^from "./turn_data")
+
+(var records ^^private ($cell []))
+(var gate ^^private ($sync/gate))
+
+(fn host_record [token, ^required required : Bool = true]
+  (let found (gate (fn []
+    (for record in records/.get (if (same? record/token token) (return record)))
+    nil)))
+  (if (&& required ($absent? found))
+    (fail (ServiceError ^code "unavailable" ^message "This plugin activation has retired.")))
+  found)
+
+(fn delegate [receiver] (/host (host_record receiver/token)))
+
+(fn retired_seam? [name] (["loop" "voice/runtime"] .contains? name))
+
+(fn require_public_seam [name]
+  (if (retired_seam? name)
+    (fail (ServiceError ^code "unsupported_interface"
+      ^message $"PluginHost:3 does not provide ${name}; resolve a narrow host protocol."))))
+
+(fn require_public_registry [name, payload = nil]
+  (if (== name "views")
+    (fail (ServiceError ^code "unsupported_interface" ^message "The terminal views registry is retired.")))
+  (if (== name "seams") (require_public_seam payload/name)))
+
+(fn public_row [host, registry : Str, row]
+  (if ($absent? row) (return nil))
+  # Subscription objects contain the private event bus. A reader may inspect
+  # the row's identity, while cancellation uses only its own opaque handle.
+  (if (== registry "subscriptions") (return ($freeze_shallow {^name row/name})))
+  (if (== registry "seams")
+    (return ($freeze_shallow (row .assoc "value" (host .PluginHost:resolve row/name)))))
+  row)
+
+(fn cancel_subscription [receiver]
+  (let record (host_record receiver/host_token ^required false))
+  (if ($absent? record) (return nil))
+  (let subscription (record/subscriptions .get receiver/token))
+  (if_not ($absent? subscription)
+    (record/subscriptions .delete receiver/token)
+    subscription/.cancel)
+  nil)
+
+(type PublicSubscription ^^private ^props {^host_token Any ^token Any}
+  (message cancel [] : Any (cancel_subscription self)))
+
+(type PublicPluginHost ^^private ^props {^token Any}
+  (impl PluginHost
+    (message execution_budget [] : Any
+      (let host (delegate self)) host/.PluginHost:execution_budget)
+    (message defer [cleanup] : Any
+      (let host (delegate self)) (host .PluginHost:defer cleanup))
+    (message registry_names [] : Any
+      (let host (delegate self))
+      ($freeze_shallow ($filter host/.PluginHost:registry_names (fn [name] (!= name "views")))))
+    (message row_keys [registry : Str] : Any
+      (require_public_registry registry)
+      (let host (delegate self))
+      (let keys (host .PluginHost:row_keys registry))
+      (if (== registry "seams")
+        ($freeze_shallow ($filter keys (fn [key] (! (retired_seam? key)))))
+        ($freeze_shallow keys)))
+    (message rows [registry : Str] : Any
+      (require_public_registry registry)
+      (let host (delegate self))
+      (let rows (host .PluginHost:rows registry))
+      (let selected (if (== registry "seams")
+        ($filter rows (fn [row] (! (retired_seam? row/name)))) rows))
+      ($freeze_shallow ($map selected (fn [row] (public_row host registry row)))))
+    (message row [registry : Str, key : Str] : Any
+      (require_public_registry registry)
+      (if (&& (== registry "seams") (retired_seam? key)) (return nil))
+      (let host (delegate self))
+      (public_row host registry (host .PluginHost:row registry key)))
+    (message run_hooks [point : Str, context] : Any
+      (let host (delegate self)) (host .PluginHost:run_hooks point context))
+    (message create_registry [spec] : Any
+      (require_public_registry spec/name)
+      (let host (delegate self)) (host .PluginHost:create_registry spec))
+    (message resolve [seam : Str] : Any
+      (require_public_seam seam)
+      (let host (delegate self)) (host .PluginHost:resolve seam))
+    (message provide [seam : Str, value] : Str
+      (require_public_seam seam)
+      (let host (delegate self)) (host .PluginHost:provide seam value))
+    (message replace [seam : Str, value] : Str
+      (require_public_seam seam)
+      (let host (delegate self)) (host .PluginHost:replace seam value))
+    (message contribute [registry : Str, payload] : Str
+      (require_public_registry registry payload)
+      (let host (delegate self)) (host .PluginHost:contribute registry payload))
+    (message replace_contribution [registry : Str, payload] : Str
+      (require_public_registry registry payload)
+      (let host (delegate self)) (host .PluginHost:replace_contribution registry payload))
+    (message subscribe [selector, handler] : Any
+      (if (!= selector DurableRecord)
+        (fail (ServiceError ^code "unsupported_interface"
+          ^message "PluginHost:3 subscriptions use DurableRecord; ephemeral host event objects are private.")))
+      (let record (host_record self/token))
+      (let subscription (record/host .PluginHost:subscribe selector (fn [event]
+        (handler ($freeze_shallow (DurableRecord ^scope event/scope ^stream event/stream
+          ^name event/name ^envelope (freeze_turn_data event/envelope)))))))
+      (let token ($crypto/random_hex 16))
+      (record/subscriptions .put token subscription)
+      ($freeze_shallow (PublicSubscription ^host_token self/token ^token token)))
+    (message emit_event [name : Str, payload] : Any
+      (let host (delegate self)) (host .PluginHost:emit_event name payload))
+    (message state [^session session = nil] : Any
+      (let host (delegate self)) (host .PluginHost:state ^session session))
+    (message update_state [value, ^session session = nil] : Any
+      (let host (delegate self)) (host .PluginHost:update_state value ^session session))
+    (message notify [message] : Any
+      (let host (delegate self)) (host .PluginHost:notify message))
+    (message notifications [] : Any
+      (let host (delegate self)) host/.PluginHost:notifications)
+    (message notification_update [id : Str, changes] : Any
+      (let host (delegate self)) (host .PluginHost:notification_update id changes))
+    (message notification_clear [id : Str, revision : Int] : Any
+      (let host (delegate self)) (host .PluginHost:notification_clear id revision))))
+
+(fn make_public_host [host]
+  (let token ($cell nil))
+  (gate (fn [] (records/.get .push {^token token ^host host ^subscriptions {}})))
+  ($freeze_shallow (PublicPluginHost ^token token)))
+
+(fn revoke_public_host [receiver]
+  (if (!= ($head receiver) PublicPluginHost) (return nil))
+  (gate (fn [] (records .set ($filter records/.get (fn [record] (! (same? record/token receiver/token)))))))
+  nil)

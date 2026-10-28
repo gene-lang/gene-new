@@ -1,7 +1,6 @@
 # Host feature row schemas; registry lifecycle belongs to the generic kernel.
 (mod registry_contracts)
 (import [HarnessError] ^from "../errors")
-(import [view_provider] ^from "../views/view_api")
 
 (fn validate_seam_row [candidate]
   (if (|| (== candidate/name void) (== candidate/value void))
@@ -84,12 +83,6 @@
   # An optional render draws the kind's question view (docs/cards.md).
   (if (&& (! ($absent? candidate/render)) (! ($runtime/callable? candidate/render)))
     (fail (HarnessError ^message "an interaction render must be callable")))
-  candidate)
-
-(fn validate_view_row [candidate]
-  (if (|| (== candidate/name void) (== candidate/value void))
-    (fail (HarnessError ^message "a view row requires name and value")))
-  (view_provider candidate/value)
   candidate)
 
 (fn validate_prompt_row [candidate]

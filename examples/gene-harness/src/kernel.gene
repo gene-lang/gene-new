@@ -33,12 +33,13 @@
     events_for
     flush_event_store])
 (import ^from "./storage/generated_event_catalog" [core_event_types])
-(import ^from "./views/view_api" [HarnessView view_provider])
 (import [HarnessError] ^from "./errors" ^^export)
 (import [validate_discovery_metadata] ^from "./registries/contracts")
 (import [builtin_registry_specs] ^from "./registries/builtins")
 (import [bind_service] ^from "./runtime/service_binding")
 (import [public_modules] ^from "./runtime/public_modules")
+(import [public_core] ^from "./runtime/interface_policy")
+(import [make_public_host revoke_public_host] ^from "./runtime/public_host")
 (import ^from "./notifications/publisher"
   [safe_publish update_notification list_source_messages clear_source_message])
 (import ^from "./runtime/call_supervision" [supervised_call])
@@ -73,37 +74,9 @@
 
 (type GuardedHandler ^^private ^props {^h Harness ^owner Str ^handler Any})
 
-(type GuardedView ^^private ^props {^h Harness ^owner Str ^view Any})
-
 (impl Callable for GuardedHandler
   (message apply [self call]
     (invoke_owned_callable self/h self/owner self/handler [((Path 0) call)])))
-
-# One `invoke_owned_callable` per message, so both halves of a turn get a fresh
-# deadline and a fresh memory guard under the owner's policy. A view that
-# owned its own loop drew one budget for the whole conversation; a view that
-# also owned the read drew one for the human's thinking time. Neither of these
-# two calls can block on a person, so a wall-clock deadline finally measures
-# something the plugin controls.
-(fn guarded_view_prompt [bundle]
-  (bundle/view .HarnessView:show_prompt bundle/receiver))
-
-(fn guarded_view_line [bundle]
-  (bundle/view .HarnessView:handle_line bundle/receiver bundle/line))
-
-(impl HarnessView for GuardedView
-  (message show_prompt [h] : Any
-    (invoke_owned_callable
-      self/h
-      self/owner
-      guarded_view_prompt
-      [{^view self/view ^receiver (callback_receiver self/h self/owner)}]))
-  (message handle_line [h, line] : Any
-    (invoke_owned_callable
-      self/h
-      self/owner
-      guarded_view_line
-      [{^view self/view ^receiver (callback_receiver self/h self/owner) ^line line}])))
 
 # --- registry kernel -------------------------------------------------------
 
@@ -172,6 +145,7 @@
       ^revision ($crypto/random_hex 16) ^effects policy/effects ^owner_context (callback_receiver h owner)))
   (registries .put name created)
   (registries_cell .set registries)
+  (if_not ($absent? policy/owned_registries) (policy/owned_registries/.get .push created))
   (if_not ($absent? h/registry_observer) (h/registry_observer "$registries" name))
   (publish_direct_registry_change h)
   created)
@@ -374,8 +348,11 @@
                         "error")
               ^module_digest entry/module_digest
               ^error (h/workspace/errors/.get .get entry/id)}))))
+    (let registry_owners {})
+    (for [name definition] in h/registries/.get
+      (registry_owners .put name {^owner definition/owner ^revision definition/revision}))
     (let snapshot
-      (publish_snapshot ^plugins plugins
+      (publish_snapshot ^plugins plugins ^registry_owners registry_owners
         h/snapshots
         (snapshot_registries h)
         h/composition/.instances))
@@ -563,6 +540,33 @@
   (if_not ($absent? failure) (fail failure))
   nil)
 
+(fn release_activation_registries [h : Harness, owned_registries]
+  (let owned (owned_registries .swap []))
+  (var failure nil)
+  (var at owned/.size)
+  (while (> at 0)
+    (set at (- at 1))
+    (let definition owned/%at)
+    (let current (h/registries/.get .get definition/name))
+    # A replacement may already have published a new registry with the same
+    # owner/name. Only this activation's exact definition belongs to cleanup.
+    (if (|| ($absent? current) (!= current/revision definition/revision)) (continue))
+    (try
+      (let errors (remove_registry h definition/name))
+      (if_not errors/.empty?
+        (fail (HarnessError ^message $"Registry ${definition/name} cleanup failed: ${errors}")))
+      catch Any (if ($absent? failure) (set failure $err))))
+  (if_not ($absent? failure) (fail failure))
+  nil)
+
+(fn release_activation_resources [h : Harness, effects, owned_rows, owned_registries]
+  (var failure nil)
+  (try (release_activation_rows h effects owned_rows) catch Any (set failure $err))
+  (try (release_activation_registries h owned_registries)
+    catch Any (if ($absent? failure) (set failure $err)))
+  (if_not ($absent? failure) (fail failure))
+  nil)
+
 (fn cleanup_owned_registry_row [h : Harness, record : RegistryRow, r : Registry]
   (if_not record/cleanup_state/.get (return nil))
   (record/cleanup_state .set false)
@@ -693,13 +697,13 @@
     (message enter_call [] : Nil (enter_plugin_execution self/h) nil)
     (message cleanup [thunk] : Any (cleanup_registry_context self/h thunk))
     (message leave_call [] : Nil (leave_plugin_execution self/h) nil)
-    (message describe [module, id : Str, limits, callback_limits] : Plugin
+    (message describe [module, id : Str, limits, callback_limits, core_interface] : Plugin
       (var h self/h)
       (var bounded (ExecutionLimits
         ^max_memory_mb limits/max_memory_mb ^timeout_ms limits/timeout_ms))
       (configure_plugin_module module callback_limits)
       (describe_plugin_module h module id
-        ^core_interface (if ($absent? h/workspace) "" h/workspace/core_interface)
+        ^core_interface (?? core_interface (if ($absent? h/workspace) "" h/workspace/core_interface))
         ^limits bounded))
     (message context [plugin, effects, observer, policy] : PluginHost
       (var h self/h)
@@ -710,22 +714,30 @@
          ^host_build_id (if ($absent? h/workspace) "unknown" h/workspace/history_build/.get)}))
       (var context (Host ^h h ^owner plugin/id ^effects effects ^notification_revision ($crypto/random_hex 16)
         ^state_writer writer))
+      (let receiver (if (&& (!= policy/host true) (== policy/core_interface public_core))
+        (make_public_host context) context))
       (var owned_rows ($cell (fresh_list)))
+      (let owned_registries ($cell []))
       (h/plugin_policies/.get .put plugin/id
         {^limits (ExecutionLimits
            ^max_memory_mb policy/limits/max_memory_mb ^timeout_ms policy/limits/timeout_ms)
          ^init_limits (if policy/host nil policy/init_limits)
+         ^core_interface policy/core_interface
          ^source_digest writer/digest ^host_build_id writer/host_build_id
          ^activation_revision context/notification_revision
-         ^host policy/host ^context context ^effects effects ^owned_rows owned_rows})
+         ^host policy/host ^context receiver ^effects effects
+         ^owned_rows owned_rows ^owned_registries owned_registries})
       # One deferred cleanup per activation revision. Cordis runs every deferred
       # cleanup as a bounded plugin invocation, so a cleanup per contributed row
       # and per callback made retiring a generation cost one invocation per row.
       (effects .defer (fn []
-        (cleanup_registry_context h (fn []
-          (try (release_activation_rows h effects owned_rows)
-          ensure (release_activation_policy h plugin/id context))))))
-      context)
+        (try
+          (cleanup_registry_context h (fn []
+            (try
+              (release_activation_resources h effects owned_rows owned_registries)
+            ensure (release_activation_policy h plugin/id receiver))))
+        ensure (revoke_public_host receiver))))
+      receiver)
     (message selected [registry_name : Str, key : Str] : Any
       (var h self/h)
       (if_yes (== registry_name "$registries")
@@ -751,7 +763,7 @@
 (fn make_cordis_registry_host [h : Harness] : RegistryHost
   (CordisRegistryHost ^h h))
 
-(fn release_activation_policy [h : Harness, owner : Str, context : Host]
+(fn release_activation_policy [h : Harness, owner : Str, context]
   (var policies h/plugin_policies/.get)
   (var current (policies .get owner))
   (if_yes (&& (!= current void) (== current/context context)) (policies .delete owner))
@@ -797,12 +809,6 @@
              ^plugin_depth ($cell 0) ^workspace workspace ^ui_epoch ($crypto/random_hex 12)))
 
   (for spec in (builtin_registry_specs h
-    (fn [owner, candidate]
-      (let guarded (fresh_map))
-      (for [field value] in candidate (guarded .put field value))
-      (guarded .put "value"
-        (view_provider (GuardedView ^h h ^owner owner ^view candidate/value)))
-      guarded)
     (fn [registry_name, key] (row h registry_name key)))
     (registry h spec/name ^spec spec))
   (for point in ["request/prepare" "history/compact"]
@@ -1357,13 +1363,20 @@
     (clear_source_message self/h self/owner id revision))
   (message registry_names [] : Any
     (var record self)
-    (registry_names record/h))
+    # Version 2 metadata readers retain the empty terminal-view projection.
+    # There is no registry, protocol or terminal implementation behind it.
+    (let names (registry_names record/h))
+    (names .push "views")
+    names)
   (message row_keys [registry_name : Str] : Any
+    (if (== registry_name "views") (return ($freeze_shallow [])))
     (var record self)
     (registry_row_keys record/h registry_name))
   (message rows [registry_name : Str] : Any
+    (if (== registry_name "views") (return ($freeze_shallow [])))
     (immutable_view (rows self/h registry_name)))
   (message row [registry_name : Str, key : Str] : Any
+    (if (== registry_name "views") (return nil))
     (immutable_view (row self/h registry_name key)))
   (message run_hooks [point : Str, context] : Any
     (run_hooks self/h point context))

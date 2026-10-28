@@ -1,0 +1,86 @@
+# Passive audit: parse stored source and already-recorded descriptor metadata.
+# It never opens a runtime/store, evaluates init, activates plugins or sends
+# external requests. Reads include ignored workspace state directories.
+(mod scan_retired_views)
+
+(fn literal_views? [requirements]
+  (if (!= ($head requirements) List) (return false))
+  (for requirement in requirements
+    (if (== requirement "views") (return true))
+    (if (&& (== ($head requirement) List) (== requirement/0 "views")) (return true))
+    (if (&& (== ($head requirement) List) (== requirement/0 "$registries") (== requirement/1 "views")) (return true))
+    (if (&& (== ($head requirement) Map) (== requirement/registry "views")) (return true)))
+  false)
+
+(fn dynamic_requirements? [requirements]
+  (if ($absent? requirements) (return false))
+  (if (!= ($head requirements) List) (return true))
+  (for requirement in requirements
+    (let kind ($head requirement))
+    (if (== kind Str) (continue))
+    (if_yes (== kind List)
+      (if (|| (!= requirement/.size 2) (!= ($head requirement/0) Str) (!= ($head requirement/1) Str))
+        (return true))
+      (continue))
+    (if (&& (== kind Map) (== ($head requirement/registry) Str)) (continue))
+    (return true))
+  false)
+
+(fn source_requirements [form, findings]
+  (if_yes (== ($head form) List)
+    (for item in form (source_requirements item findings))
+    (return nil))
+  (if_yes (== ($head form) Map)
+    (for [key value] in form (source_requirements value findings))
+    (return nil))
+  (match form
+    (when (node : Node)
+      (if_yes (== ($to_str ($head node)) "Plugin")
+        (let requirements (($node/props node) .get "requires"))
+        (if (literal_views? requirements) (findings .push "source requires views"))
+        (if (dynamic_requirements? requirements)
+          (findings .push "dynamic source requirements need recorded descriptor review")))
+      (for item in ($node/body node) (source_requirements item findings))
+      (for [key value] in ($node/props node) (source_requirements value findings)))
+    (else nil)))
+
+(fn main [argv] : Int
+  (let paths [])
+  (for arg in argv (paths .push ($to_str arg)))
+  (let roots (if paths/.empty? [($path/parent ($path/parent this_mod/.path))] paths))
+  (let seen {})
+  (var sources 0)
+  (var descriptors 0)
+  (var hits 0)
+  (var errors 0)
+  (for root in roots
+    (if_not ($fs/exists? root) (continue))
+    (for entry in (($fs/walk root) -> $into [])
+      (if (|| (!= entry/kind "file") (! ($str/ends_with? entry/path ".gene"))
+              (! ($str/contains? entry/path "/.gene-harness/")) (seen .has_key? entry/path)) (continue))
+      (let source ($str/contains? entry/path "/modules/source/"))
+      (let metadata (&& ($str/contains? entry/path "/composition/")
+        ($str/contains? ($path/name entry/path) "plugin_metadata%2Fversion%2F")))
+      (if_not (|| source metadata) (continue))
+      (seen .put entry/path true)
+      (try
+        (let text ($fs/read_text entry/path))
+        (let findings [])
+        (if source
+          (then
+            (set sources (+ sources 1))
+            (for form in ($parse/read_all text) (source_requirements form findings)))
+          (else
+            (let record ($serde/read_data text))
+            (set descriptors (+ descriptors 1))
+            (for declaration in [record/declared record/restricted/declared]
+              (if (literal_views? declaration/requires)
+                (findings .push $"recorded descriptor ${record/id} requires views")))))
+        (for finding in findings
+          (set hits (+ hits 1))
+          ($println $"${entry/path}: ${finding}"))
+      catch Any
+        (set errors (+ errors 1))
+        ($println $"${entry/path}: unreadable: ${$err/message}"))))
+  ($println $"retired views audit: ${sources} source files, ${descriptors} descriptor records, ${hits} findings, ${errors} unreadable")
+  (if (&& (== errors 0) (== hits 0)) 0 1))

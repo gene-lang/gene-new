@@ -116,11 +116,63 @@ plugin and is removed when the activation unloads. Common rows are:
 | `browser_clients` | Owned browser asset and optional stylesheet mounted through the host bridge |
 | `ui_actions`, `ui_links` | Named supervised functions used by workspace views and navigation |
 
-The host also maintains `seams`, `event_types`, `subscriptions`, `interactions`
-and the legacy `views` registry. Hook points are declared in `hook_points`.
-Additive PluginHost messages preserve
-`PluginHost:2`; removing or changing a contract requires an explicit version
-and compatibility policy. A stored-entry mismatch names the differing interface.
+The host also maintains `seams`, `event_types`, `subscriptions` and
+`interactions`. Hook points are declared in `hook_points`.
+
+### Interface versions and callback contexts
+
+New code can select the public receiver and callback contract explicitly:
+
+```gene
+(mod plugin @interfaces {^core "gene-harness/PluginHost:3"}
+  (import [Plugin PluginHost] ^from "src/plugin_api.gene")
+  (fn init [descriptor]
+    (Plugin ^id "example" ^activate (fn [host] ...))))
+```
+
+`@interfaces` is module author metadata using existing Gene syntax. Each value
+is one exact required version, never a list of supported versions. The host
+supports both `PluginHost:2` and `PluginHost:3`, with `Plugin:2` for the shared
+plugin API. An unannotated module keeps exact version-2 requirements, including
+on re-registration; opting into 3 is an explicit source change. Descriptor
+construction receives that entry's selected version in `core_interface` during
+both preflight and activation.
+
+Version 3 supplies an opaque activation receiver with no Harness or effect-scope
+properties. Resolve the narrow host protocols below. `loop` and `voice/runtime`
+are unavailable, including through seam-row queries. Command and input-mode
+`run` callbacks keep the nominal `CommandContext` type, with session, raw input,
+command id and output callable. Its legacy `runtime` and `manager` slots are nil;
+`snapshot` contains only `{^composition_revision Int}`. The exact context is
+authenticated only during that admitted call; copies and retained contexts do
+not authorize later operations. Prompt renderers receive
+`{^workspace_root Str}` and an immutable session record as their two arguments.
+These adapters retain the contributing row's version and execution budget.
+
+Version-3 subscriptions accept `DurableRecord` and return an opaque cancellation
+handle. Subscription-row inspection omits the underlying bus object. A public
+receiver remains valid through leased callbacks, deactivation and deferred
+cleanup, and is revoked when that activation finishes retiring.
+
+Version 2 remains supported for existing receivers, raw command/prompt contexts
+and legacy runtime seams until a separately announced retirement. Moving a
+built-in to a narrow protocol does not change old stored callbacks. The trusted
+host-code model is unchanged; these versions define supported application APIs.
+
+The terminal `views` registry, `HarnessView` and `HarnessRender` are retired.
+Version-2 metadata queries retain only an empty `views` projection; it cannot
+receive rows or satisfy descriptor requirements. Admission rejects a recorded
+requirement on the retired registry. The legacy whole-map
+`harness_render: HarnessRender:1` requirement is normalized away only alongside
+the proven `PluginHost:2`/`Plugin:2` pair. Other unknown or unsupported interface
+requirements are errors. Loading, plan validation and historical reversion
+share the same compatibility check; archived entries and source blobs are
+never rewritten by normalization. Host-only supported interfaces do not become
+plugin requirements.
+
+Additive messages retain their version. Removals or semantic changes require
+a new version and an explicit compatibility interval. Mismatch diagnostics
+name the unsupported interface and required version.
 
 ### Host services and activation cleanup
 
@@ -216,6 +268,10 @@ require a selected row with `^requires [["reviewers" "main"]]`. Both may be
 installed before the provider: they remain pending until their dependency
 exists, return to pending when it disappears, and reactivate when it returns.
 Old readers keep their old selection and cleanup until their lease ends.
+Passive descriptor metadata preserves registry dependencies too. Catalogs
+resolve their owners from the same leased snapshot, and plans predict the
+impact of disabling a registry owner. A new or edited provider remains
+unverified until candidate activation rather than borrowing an old definition.
 
 To define a generic hook point, contribute `{^name "review/finished"}` to
 `hook_points`, and require that row before contributing `hooks` rows at that
