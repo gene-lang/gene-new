@@ -4,7 +4,7 @@
 (import [new_harness install put_cordis_plugin shutdown_harness status_of row uninstall]
   ^from "../../../src/kernel")
 (import [acquire_snapshot release_snapshot] ^from "../../../src/runtime/composition")
-(import [retain_callback expire_scope_callbacks] ^from "../../../src/runtime/cordis_adapter")
+(import [retain_callback expire_scope_callbacks] ^from "../../../src/runtime/retained_callbacks")
 
 (describe "Public plugin cleanup"
   (it "defers cleanup through the final reader and unwinds failed activation once" []

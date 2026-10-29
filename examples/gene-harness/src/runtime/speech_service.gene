@@ -5,7 +5,7 @@
 (import [pcm_format] ^from "./audio" ^pkg "audio")
 (import [bounded_audio_call] ^from "../audio/call")
 (import [dispatch_json] ^from "./worker" ^pkg "audio")
-(import [retain_callback] ^from "./cordis_adapter")
+(import [retain_callback] ^from "./retained_callbacks")
 
 (type SpeechService ^props {^runtime Any ^resources Any ^gate Any ^cache Any ^cache_bytes Any ^closed Any ^dirty Any})
 

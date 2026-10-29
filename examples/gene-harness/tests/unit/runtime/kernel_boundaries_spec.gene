@@ -29,7 +29,7 @@
   ($map ($filter ($fs/list_dir (kernel_root)) (fn [name] ($str/ends_with? name ".gene")))
     (fn [name] ($path/join (kernel_root) name))))
 
-(fn callback_import_exception [] ["retain_callback" "retained_callback?" "expire_scope_callbacks"])
+(fn callback_import_exception [] [])
 (fn named_test_imports []
   (let cases {})
   (cases .put "tests/unit/runtime/kernel_status_spec.gene" ["plugin_states" "retry"])
@@ -37,7 +37,7 @@
 
 (fn allowed_imports []
   {^invoke ["../runtime/call_supervision" "../plugin_api" "../errors"]
-   ^registry ["./invoke" "../runtime/composition" "../runtime/cordis_adapter"
+   ^registry ["./invoke" "../runtime/composition" "../runtime/retained_callbacks"
      "../runtime/execution_budget" "../registries/contracts" "../storage/state" "../plugin_api" "../errors"]
    ^events ["./registry" "../storage/state" "../plugin_api" "../errors"]
    ^seams ["./registry" "../runtime/composition" "../errors"]

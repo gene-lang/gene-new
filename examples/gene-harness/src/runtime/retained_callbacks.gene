@@ -1,0 +1,53 @@
+# Callables retain the exact Cordis activation scope that contributed them.
+(mod retained_callbacks)
+(import [invoke_effect_owner PluginCallKind EffectDisposed] ^from "." ^pkg "cordis")
+
+(type RetainedCallback ^^private ^props {^token Any}
+  (impl Callable
+    (message apply [self, call] : Any
+      (invoke_retained self/token call))))
+
+(type CallbackRecord ^^private ^props {^token Any ^scope Any ^callable Any ^host_context Any ^inject_context Bool})
+
+(var ^^private callbacks ($cell ($thaw #[])))
+(var ^^private callback_gate ($sync/gate))
+
+(fn expire_callback [token] ^^private
+  (callback_gate (fn []
+    (callbacks .set ($filter callbacks/.get (fn [record] (! (same? record/token token)))))))
+  nil)
+
+(fn invoke_retained [token, call] ^^private
+  (let record (callback_gate (fn []
+    (for current in callbacks/.get (if (same? current/token token) (return current)))
+    nil)))
+  (if ($absent? record) (fail (EffectDisposed ^message "callback activation revision has retired")))
+  # Never hold the table gate while entering plugin code. Effect-owner admission
+  # still decides whether this captured generation can accept the invocation.
+  (var forwarded ($thaw #[]))
+  (for arg in call/body (forwarded .push arg))
+  (if (&& record/inject_context (> forwarded/.size 0)) (forwarded .set 0 record/host_context))
+  (let invoke ($runtime/bind_call ^named call/named record/callable forwarded))
+  (invoke_effect_owner record/scope PluginCallKind/operation invoke []))
+
+(fn retain_callback [owner, label : Str, callable,
+                     ^host_context host_context = nil, ^inject_context inject_context : Bool = false]
+  # `owner` is the EffectScope of the exact activation revision that
+  # contributed this callback, so a plugin ID or later ActivationContext lookup
+  # cannot rebind it to a replacement. Cordis drains admitted calls before that
+  # revision's single cleanup runs `expire_scope_callbacks`; acquiring a child
+  # effect per callback cost a bounded plugin invocation per contributed row.
+  (var token ($cell nil))
+  (callback_gate (fn []
+    (callbacks/.get .push
+      (CallbackRecord ^token token ^scope owner ^callable callable
+        ^host_context host_context ^inject_context inject_context))))
+  (RetainedCallback ^token token))
+
+(fn retained_callback? [value] : Bool
+  (== ($head value) RetainedCallback))
+
+(fn expire_scope_callbacks [scope]
+  (callback_gate (fn []
+    (callbacks .set ($filter callbacks/.get (fn [record] (! (same? record/scope scope)))))))
+  nil)

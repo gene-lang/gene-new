@@ -7,7 +7,7 @@
 (import [flush_event_store] ^from "../storage/state")
 (import [run_composition_change queue_composition_change current_snapshot immutable_view]
   ^from "../runtime/composition")
-(import [retain_callback retained_callback? expire_scope_callbacks] ^from "../runtime/cordis_adapter")
+(import [retain_callback retained_callback? expire_scope_callbacks] ^from "../runtime/retained_callbacks")
 (import [invoke_supervised apply_argument_list] ^from "./invoke")
 
 (protocol Composer
