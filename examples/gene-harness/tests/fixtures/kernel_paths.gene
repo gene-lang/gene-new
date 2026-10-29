@@ -1,0 +1,47 @@
+# Runs without --snapshot so the package's default generated directory is writable.
+(import [new_harness put_cordis_plugin shutdown_harness install row Plugin PluginHost] ^from "../../src/kernel")
+
+(fn main [args]
+  (let generated ($path/join this_pkg/root "plugins/generated"))
+  (let parent ($path/parent generated))
+  (let had_parent ($fs/exists? parent))
+  (let had_generated ($fs/exists? generated))
+  ($fs/make_dir generated)
+  (let filename ($to_str "kernel_paths_" ($crypto/random_hex 8) ".gene"))
+  (let path ($path/join generated filename))
+  (let text ($to_str (quote (mod plugin
+    (import [Plugin PluginHost] ^from "src/plugin_api.gene")
+    (fn init [descriptor]
+      ($assert (== descriptor/core_interface "gene-harness/PluginHost:3"))
+      (Plugin ^id "default_root_fixture" ^activate (fn [host]
+        ($assert ($absent? host/h))
+        (host .PluginHost:contribute "functions"
+          {^name "default_root_value" ^doc "Loaded from the default generated root."
+           ^fn (fn [] "default root")}))))))))
+  ($fs/write_text path text)
+  (let h (new_harness))
+  (try
+    (let digest ($to_str "sha256:" ($crypto/sha256 text)))
+    (let descriptor (Plugin ^id "default_root_fixture" ^activate (fn [host] nil)))
+    (let status (put_cordis_plugin h descriptor
+      {^module filename ^digest digest ^closure [digest] ^core_interface "gene-harness/PluginHost:3" ^!host}))
+    ($assert (== status "ready") ($to_str status))
+    (let callback (/fn (row h "functions" "default_root_value")))
+    ($assert (== (callback) "default root"))
+    # A host context retains the Harness, including its Composer back-reference.
+    # The Composer must retain it through an opaque handle so registry cloning
+    # and comparison do not traverse that graph.
+    (let state ($cell "host value"))
+    (install h (Plugin ^id "host_root_fixture" ^activate (fn [host]
+      (host .PluginHost:contribute "functions"
+        {^name "host_root_value" ^doc "Host activation cleanup." ^fn (fn [] state/.get)}))))
+    (let host_callback (/fn (row h "functions" "host_root_value")))
+    ($assert (== (host_callback) "host value"))
+    ($println "default generated root: loaded source from another working directory")
+    0
+  ensure
+    (let closed (shutdown_harness h))
+    ($assert (== closed/status "closed") ($to_str closed))
+    ($fs/remove path)
+    (if (&& (! had_generated) (== ($size ($fs/list_dir generated)) 0)) ($fs/remove_dir generated))
+    (if (&& (! had_parent) (== ($size ($fs/list_dir parent)) 0)) ($fs/remove_dir parent))))

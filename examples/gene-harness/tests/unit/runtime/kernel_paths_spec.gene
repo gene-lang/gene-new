@@ -1,0 +1,27 @@
+(import $test [describe it])
+(import [new_harness shutdown_harness registry contribute row] ^from "../../../src/kernel")
+
+(describe "Harness construction and composition hooks"
+  (it "loads source from the package default root even when launched in another directory" []
+    (let application ($pkg/application))
+    (let scratch ($path/join ($os/launch_dir) "tmp" ($to_str "kernel-paths-" ($crypto/random_hex 8))))
+    ($fs/make_dir scratch)
+    (try
+      (let checked (await ($os/exec_async ($os/executable_path) "run"
+        ($path/join application/source_root "tests/fixtures/kernel_paths.gene")
+        ^dir scratch ^timeout_ms 20000 ^max_bytes 1048576)))
+      ($assert (== checked/status 0) ($to_str checked/stdout checked/stderr))
+    ensure ($fs/remove_dir scratch)))
+
+  (it "keeps direct publication hooks local to the Harness that owns the registry" []
+    (let first (new_harness))
+    (let second (new_harness))
+    (try
+      (let before first/snapshots/current/.get/id)
+      (let other second/snapshots/current/.get/id)
+      (registry first "independent" ^^unique)
+      (contribute first "core" "independent" {^name "entry" ^value "first"})
+      ($assert (> first/snapshots/current/.get/id before))
+      ($assert (== second/snapshots/current/.get/id other))
+      ($assert (== (/value (row first "independent" "entry")) "first"))
+    ensure (shutdown_harness first) (shutdown_harness second))))

@@ -848,7 +848,7 @@
   # exact activation revision that made it. `^limits` is the ceiling every
   # plugin's limits narrow from.
   (set h/composition_entries ($cell (fresh_map)))
-  (var package_root (module_dir (module_dir this_mod/.path)))
+  (var package_root this_pkg/root)
   (set h/publishing ($cell false))
   (set h/publication_gate ($sync/gate))
   (set h/published_plugins ($cell {}))
@@ -1581,19 +1581,6 @@
   (h/plugin_errors .set (fresh_map))
   (flush_harness h)
   {^status (if (== errors/.size 0) "closed" "recovery_required") ^errors errors})
-
-
-(fn module_dir [path : Str] : Str
-  # The directory holding a module, from its own `this_mod/.path`. Plugin paths
-  # are resolved against the harness rather than the working directory, so
-  # `gene run` works from anywhere.
-  (var parts ($str/split path "/"))
-  (var out (fresh_list))
-  (var i 0)
-  (while (< i (- parts/.size 1))
-    (out .push parts/%i)
-    (set i (+ i 1)))
-  ($str/join out "/"))
 
 (fn installed [h : Harness] : Any
   (plugin_ids h))

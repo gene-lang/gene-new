@@ -2,11 +2,10 @@
 (mod harness_web_page)
 (import ^from "./style" [styles])
 (import ^from "./theme" [theme_mode])
-(import ^from "../kernel" [module_dir])
 (import $html [render])
 (import $web [script stylesheet])
 
-(var harness_ui ($web/load $"${(module_dir this_mod/.path)}/../../client/main.gene"))
+(var harness_ui ($web/load $"${($path/parent this_mod/.path)}/../../client/main.gene"))
 
 (fn page [^appearance appearance : Str = "light"] : Str
   (let mode (theme_mode appearance))

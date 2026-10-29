@@ -29,8 +29,7 @@
     row
     rows
     remove_owner
-    uninstall
-    module_dir])
+    uninstall])
 (import ^from "./state" [validate_event_catalog repair_interrupted_turns])
 (import ^from "../runtime/interface_policy"
   [current_interfaces latest_interfaces source_interfaces entry_core_interface retired_requirement
@@ -123,7 +122,7 @@
   workspace)
 
 (fn harness_package_root [] : Str
-  (module_dir (module_dir (module_dir this_mod/.path))))
+  this_pkg/root)
 
 (fn active_revision_path [workspace : Workspace] : Str
   $"${workspace/root}/ACTIVE")

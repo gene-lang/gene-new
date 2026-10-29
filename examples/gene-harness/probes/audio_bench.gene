@@ -5,12 +5,11 @@
 (import [Profile] ^from "../src/profiles/profile")
 (import [baseline_profile] ^from "../src/profiles/baseline")
 (import [provider_scripted] ^from "../src/builtin/provider_scripted")
-(import [module_dir] ^from "../src/kernel")
 (import [connect api connection_link] ^from "../src/cli/client")
 (import [audio_error] ^from "./audio" ^pkg "audio")
 
 (fn bench_profile [mode : Str, ^recognizer recognizer : Str = "whisper_local"]
-  (let root (module_dir this_mod/.path))
+  (let root ($path/parent this_mod/.path))
   (let entry (if (== mode "full") "audio_bench_full.gene"
     (if (== mode "handsfree") "audio_bench_handsfree.gene"
       (if (== mode "processed") "audio_bench_processed.gene" "audio_bench_smoke.gene"))))
