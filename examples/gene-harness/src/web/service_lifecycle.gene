@@ -15,7 +15,7 @@
 
 (fn stop_observers [ctx]
   (let service ctx/service)
-  (service/runtime/h/notifications/observer .set nil)
+  (service/runtime/h/services/notifications/observer .set nil)
   (service/runtime/actions/log/observer .set nil)
   (let subscriptions service/subscriptions)
   (set service/subscriptions [])
@@ -96,7 +96,7 @@
     ^open (fn [ctx]
       (let service ctx/service)
       (try
-        (service/runtime/h/notifications/observer .set (fn [kind, data]
+        (service/runtime/h/services/notifications/observer .set (fn [kind, data]
           (let copy ($thaw ($freeze data)))
           (copy .put "epoch" service/epoch)
           (publish service kind "" copy)))

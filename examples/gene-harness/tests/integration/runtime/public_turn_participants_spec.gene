@@ -232,7 +232,7 @@
         # Stored entry limits govern descriptor evaluation. Set an actual
         # callback policy here, below the wider response/coordinator policy.
         (let options {})
-        (for [key value] in (runtime/h/composition_entries/.get .get "notes")
+        (for [key value] in (/options (runtime/h/composition/.current_revisions .get "notes"))
           (options .put key value))
         (options .put "limits" (ExecutionLimits ^timeout_ms 250 ^max_memory_mb 64))
         (put_cordis_plugin runtime/h (runtime/h/plugins/.get .get "notes") options ^^replace)

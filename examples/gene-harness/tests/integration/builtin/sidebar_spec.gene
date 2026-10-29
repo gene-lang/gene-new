@@ -35,7 +35,7 @@
           (let session (create_session ^title "Retained conversation" service))
           (set_plugin_enabled service/runtime/workspace service/runtime/h "sidebar" false)
           ($assert ($absent? (sidebar_component service)))
-          ($assert ($absent? (service/runtime/h/readiness)))
+          ($assert ($absent? (service/runtime/h/services/readiness)))
           (let started (submit service session/id "without-sidebar" 1 "hello"))
           (service/controller/watchers
             .get

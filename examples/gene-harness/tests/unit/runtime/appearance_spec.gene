@@ -35,7 +35,7 @@
   (it "persists a change before publishing it" []
     (fixture (fn [root]
       (let h (new_harness))
-      (set h/appearance (open_appearance root))
+      (set h/services/appearance (open_appearance root))
       (let seen (observed h))
       ($assert (== (appearance_mode h) "light"))
       ($assert (== (set_appearance h "dark") "dark"))
@@ -48,7 +48,7 @@
   (it "rejects unknown modes and leaves the choice unchanged" []
     (fixture (fn [root]
       (let h (new_harness))
-      (set h/appearance (open_appearance root))
+      (set h/services/appearance (open_appearance root))
       (let seen (observed h))
       (var code "")
       (try (set_appearance h "sepia") catch AppearanceError (set code $err/code))
@@ -60,7 +60,7 @@
   (it "keeps the active mode when the write fails" []
     (fixture (fn [root]
       (let h (new_harness))
-      (set h/appearance (open_appearance root))
+      (set h/services/appearance (open_appearance root))
       (let seen (observed h))
       # A directory where the file belongs makes the atomic write fail.
       ($fs/make_dir $"${root}/appearance.gene")

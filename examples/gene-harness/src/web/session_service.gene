@@ -825,8 +825,8 @@
        ^effort metadata/model_settings/effort})
     ^profile service/runtime/profile/name
     ^appearance (appearance_mode service/runtime/h)
-    ^readiness (if ($absent? service/runtime/h/readiness)
-      nil (service/runtime/h/readiness))
+    ^readiness (if ($absent? service/runtime/h/services/readiness)
+      nil (service/runtime/h/services/readiness))
     ^plugins plugins
     ^web_components (if safe [] (web_components service session))
     ^browser_clients (if safe [] (browser_client_descriptors service/runtime/h composition))

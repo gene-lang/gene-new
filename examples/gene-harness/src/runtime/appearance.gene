@@ -26,16 +26,16 @@
     ^gate ($sync/gate)))
 
 (fn appearance_mode [h] : Str
-  (if ($absent? h/appearance) "light" h/appearance/mode/.get))
+  (if ($absent? h/services/appearance) "light" h/services/appearance/mode/.get))
 
 # Persist first, then update the live mode and announce it. A failed write
 # leaves both the file and the active mode as they were.
 (fn set_appearance [h, mode] : Str
   (if (|| (!= ($head mode) Str) (! (theme_modes .contains? mode)))
     (fail (AppearanceError ^code "invalid_request" ^message "Theme must be light or dark.")))
-  (if ($absent? h/appearance)
+  (if ($absent? h/services/appearance)
     (fail (AppearanceError ^code "unavailable" ^message "This host has no appearance setting.")))
-  (let appearance h/appearance)
+  (let appearance h/services/appearance)
   (appearance/gate (fn []
     ($fs/write_text_atomic appearance/path ($serde/write_data {^mode mode}))
     (appearance/mode .set mode)))

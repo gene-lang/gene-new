@@ -16,7 +16,7 @@
       (let h (/h (/runtime (require_service self))))
       (let snapshot (current_snapshot h/snapshots))
       (immutable_view {^plugins (?? snapshot/plugins [])
-        ^readiness (if ($absent? h/readiness) nil (h/readiness))}))
+        ^readiness (if ($absent? h/services/readiness) nil (h/services/readiness))}))
     (message inspect [id : Str] : Any
       (let h (/h (/runtime (require_service self))))
       (let snapshot (current_snapshot h/snapshots))

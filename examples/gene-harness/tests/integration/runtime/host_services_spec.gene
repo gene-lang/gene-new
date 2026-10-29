@@ -32,7 +32,7 @@
               ($assert ($absent? baseline/events))
               ($assert ($absent? baseline/sessions))
               ($assert ($absent? baseline/voice))
-              ($assert ($absent? baseline/h/notifications))))
+              ($assert ($absent? baseline/h/services/notifications))))
           (close_runtime baseline)
           (close_runtime baseline)
           (if_not is_recovery

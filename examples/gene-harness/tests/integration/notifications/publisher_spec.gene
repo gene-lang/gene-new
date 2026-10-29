@@ -99,7 +99,7 @@
             (== before (ui_data_revision h h/snapshots/current/.get))
             "notification invalidated board revision")
           ($assert
-            (== ((Path "source") (message_detail h/notifications posted/id)) "edition_notices"))
+            (== ((Path "source") (message_detail h/services/notifications posted/id)) "edition_notices"))
           ($assert (== frames/0/type "notifications/state"))
           (for frame in frames
             ($assert (!= frame/type "ui/state") "notification rerendered unrelated UI"))
@@ -172,14 +172,14 @@
           ($assert
             (== ((Path "status") (finished service/runtime session running/receipt/id)) "cancelled"))
           (put_cordis_plugin ^^replace h (plugin) {^^host ^limits service/runtime/profile/limits})
-          (let previous_message (message_detail h/notifications posted/id))
+          (let previous_message (message_detail h/services/notifications posted/id))
           (let cosmetic
             ($runtime/with_context
               {^session "another-session"}
               (fn []
                 (owner/.get .PluginHost:notification_update posted/id {^detail "More evidence"}))))
           ($assert cosmetic/ok (?? cosmetic/message ""))
-          (let updated_message (message_detail h/notifications posted/id))
+          (let updated_message (message_detail h/services/notifications posted/id))
           ($assert
             (== updated_message/actions previous_message/actions)
             "cosmetic update rebound old actions")
@@ -230,18 +230,18 @@
               (fn []
                 (safe_publish h "operator" {^title "Forbidden"}))))
           ($assert (! read_only/ok))
-          (let count ($size ((Path "messages") (inbox_snapshot h/notifications))))
+          (let count ($size ((Path "messages") (inbox_snapshot h/services/notifications))))
           (let invalid (safe_publish h "operator" {^title "Invalid" ^detail `(script "alert(1)")}))
           ($assert (! invalid/ok))
-          ($assert (== count ($size ((Path "messages") (inbox_snapshot h/notifications)))))
-          h/notifications/backend/.Store:close
+          ($assert (== count ($size ((Path "messages") (inbox_snapshot h/services/notifications)))))
+          h/services/notifications/backend/.Store:close
           ($fs/write_text $"${workspace}/business-save" "committed")
           (let failure (safe_publish h "operator" {^title "Storage unavailable"}))
-          (set h/notifications/backend
+          (set h/services/notifications/backend
             (store_open ^root $"${workspace}/.gene-harness/notifications"))
           ($assert (! failure/ok) "publisher reported success after storage failure")
           ($assert (== ($fs/read_text $"${workspace}/business-save") "committed"))
-          ($assert (== count ($size ((Path "messages") (inbox_snapshot h/notifications)))))
+          ($assert (== count ($size ((Path "messages") (inbox_snapshot h/services/notifications)))))
         catch Any
           ($println $"Notification test failed before cleanup: ${$err/message}")
           (fail $err)

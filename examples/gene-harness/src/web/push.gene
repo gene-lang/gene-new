@@ -74,7 +74,7 @@
     (if hub/host/runtime/restarted
       (send_frame hub peer {^type "restarted" ^session "" ^data {^message "Harness restarted."}}))
     (send_frame hub peer {^type "session/list" ^session "" ^data (list_sessions hub/host)})
-    (let notifications (inbox_snapshot hub/host/runtime/h/notifications))
+    (let notifications (inbox_snapshot hub/host/runtime/h/services/notifications))
     (notifications .put "epoch" hub/host/epoch)
     (send_frame hub peer {^type "notifications/state" ^session "" ^data notifications})
     (if peer/closed (return nil))

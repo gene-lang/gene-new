@@ -119,7 +119,7 @@
   result)
 
 (fn publish_notification [h, source : Str, input, ^revision revision = nil, ^frozen_actions frozen_actions = nil, ^preserve_origin preserve_origin : Bool = false]
-  (if ($absent? h/notifications)
+  (if ($absent? h/services/notifications)
     (notification_error "unavailable" "The notification inbox is unavailable."))
   (if (!= ($head input) Map)
     (notification_error "invalid_request" "Notification needs a data map."))
@@ -139,7 +139,7 @@
   (if_yes (== input/progress true)
     (if (== key "") (notification_error "invalid_request" "Progress requires a stable source key."))
     (let data {^origin origin ^summary (bounded_text input/summary "progress" 2048)})
-    (return (publish_progress h/notifications source key data)))
+    (return (publish_progress h/services/notifications source key data)))
   (let scope (?? input/scope (if ($absent? origin/session) "workspace" "session")))
   (if_not (["workspace" "session"] .contains? scope)
     (notification_error "invalid_request" "Scope must be workspace or session."))
@@ -171,7 +171,7 @@
       ^renew (== input/renew true)})
   (if (> ($str/byte_size ($json/stringify definition)) 32768)
     (notification_error "too_large" "A notification publication must fit in 32 KiB."))
-  (post_message h/notifications source definition))
+  (post_message h/services/notifications source definition))
 
 (fn safe_publish [h, source : Str, input, ^revision revision = nil, ^frozen_actions frozen_actions = nil, ^preserve_origin preserve_origin : Bool = false]
   (try
@@ -183,7 +183,7 @@
     {^!ok ^code (?? $err/code "notification_failed") ^message $err/message}))
 
 (fn source_message [h, source : Str, id : Str]
-  (let message (message_detail h/notifications id))
+  (let message (message_detail h/services/notifications id))
   (if (!= source message/source)
     (notification_error "forbidden" "Publisher does not own this notification."))
   message)
@@ -209,10 +209,10 @@
 
 (fn list_source_messages [h, source : Str]
   (let messages [])
-  (for item in ((Path "messages") (inbox_snapshot h/notifications))
+  (for item in ((Path "messages") (inbox_snapshot h/services/notifications))
     (if (== item/source source) (messages .push item)))
   messages)
 
 (fn clear_source_message [h, source : Str, id : Str, revision : Int]
   (source_message h source id)
-  (clear_messages h/notifications [{^id id ^revision revision}]))
+  (clear_messages h/services/notifications [{^id id ^revision revision}]))

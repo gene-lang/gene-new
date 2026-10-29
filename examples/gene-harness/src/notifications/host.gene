@@ -23,11 +23,11 @@
     (message update [id : Str, changes] : Any
       (immutable_view (update_notification (inbox_host self) "operator" id changes)))
     (message list [] : Any
-      (immutable_view (inbox_snapshot (/notifications (inbox_host self)))))
+      (immutable_view (inbox_snapshot (/services/notifications (inbox_host self)))))
     (message detail [id : Str] : Any
-      (immutable_view (message_detail (/notifications (inbox_host self)) id)))
+      (immutable_view (message_detail (/services/notifications (inbox_host self)) id)))
     (message clear [id : Str, revision : Int] : Any
-      (immutable_view (clear_messages (/notifications (inbox_host self)) [{^id id ^revision revision}])))))
+      (immutable_view (clear_messages (/services/notifications (inbox_host self)) [{^id id ^revision revision}])))))
 
 (fn open_notification_host [h]
   (let token ($cell nil))

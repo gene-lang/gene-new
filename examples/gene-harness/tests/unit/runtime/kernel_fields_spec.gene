@@ -1,6 +1,6 @@
 (import $test [describe it])
 
-(fn forbidden_fields [] ["plugin_errors"])
+(fn forbidden_fields [] ["plugin_errors" "bridge" "publishing" "publication_gate" "published_plugins" "composition_entries"])
 
 (fn private_segments? [segments, fields]
   (var at 0)

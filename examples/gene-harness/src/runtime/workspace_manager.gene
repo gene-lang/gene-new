@@ -225,7 +225,7 @@
   (let manager
     (WorkspaceManager ^runtime runtime ^root runtime/root ^workspaces workspaces ^archive $"${runtime/root}/archive" ^gate ($sync/gate) ^statuses ($cell {}) ^busy ($cell false) ^revision ($cell 0) ^confirmations ($cell {}) ^poller ($cell nil) ^closed ($cell false) ^entry ($path/join application/source_root "src/runtime/supervisor.gene") ^installation application/source_root))
   (set runtime/workspace_manager manager)
-  (set runtime/h/manager_revision manager/revision)
+  (set runtime/h/services/manager_revision manager/revision)
   manager)
 
 (fn start_manager_polling [manager]

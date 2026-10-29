@@ -30,7 +30,7 @@
           (if (!= previous/request_digest digest)
             (notification_error "submission_conflict" "Action retry changed its original payload."))
           (return {^kind "command" ^session session ^receipt previous})))
-      (let message (message_detail h/notifications request/notification))
+      (let message (message_detail h/services/notifications request/notification))
       (if (!= message/revision request/revision)
         (notification_error
           "revision_conflict"
