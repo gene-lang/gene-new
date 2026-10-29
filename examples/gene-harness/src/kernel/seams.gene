@@ -1,0 +1,88 @@
+# Explicit seam binding and documentation reads over leased registry rows.
+(mod kernel_seams)
+(import [Harness Composer queue_registry_change? contribute row row_record rows
+  remove_registry_row fresh_list] ^from "./registry")
+(import [queue_composition_change run_composition_change] ^from "../runtime/composition")
+(import [HarnessError] ^from "../errors")
+
+
+(fn ^^private mutate_seam [h : Harness, owner : Str, seam : Str, change]
+  (if (queue_registry_change? h)
+    (then
+      (queue_composition_change h/snapshots {^id owner ^kind "seam"
+        ^apply (fn [] (mutate_seam h owner seam change))})
+      (return true)))
+  (if h/composer/.Composer:publishing? (return (change)))
+  # Dependency projections belong to a staged generation. Disposing an old
+  # projection under the direct registry gate can deadlock its cleanup and
+  # would also bypass outstanding composition leases.
+  (run_composition_change h/snapshots (fn []
+    (let result ($cell nil))
+    (h/composer .Composer:recompose (fn [] (result .set (change))))
+    result/.get)))
+
+(fn provide [h : Harness, id : Str, seam : Str, value] : Str
+  # Binding is explicit: a seam already bound is refused rather than shadowed.
+  # There is no last-wins, so no registration order decides behaviour.
+  (if_yes (seam_bound h seam)
+    (fail (HarnessError ^message $"seam ${seam} already bound; replace it explicitly")))
+  (mutate_seam h id seam (fn [] (contribute h id "seams" {^name seam ^value value} ^key seam)))
+  seam)
+
+(fn replace [h : Harness, id : Str, seam : Str, value] : Str
+  # §3.3.3: a bound seam is never shadowed by a second `provide`, because then
+  # registration order would decide behaviour. Replacement is this — a named
+  # operation the operator asked for.
+  #
+  # The ledger moves with the binding. Without that, uninstalling the *previous*
+  # owner would unbind a seam it no longer provides, and the new provider would
+  # vanish for a reason nothing in the log explains.
+  #
+  # Note this is also why a dependent does not churn across a provider swap:
+  # the seam stays bound throughout, so `requires` never goes unmet and no
+  # dependent is deactivated for a substitution it was never meant to notice.
+  (if_not (seam_bound h seam)
+    (fail (HarnessError ^message $"seam ${seam} is not bound; provide it first")))
+  (mutate_seam h id seam (fn []
+    (contribute h id "seams" {^name seam ^value value} ^key seam ^^replace)))
+  seam)
+
+(fn resolve [h : Harness, seam : Str] : Any
+  (var found (row h "seams" seam))
+  (if_yes (== found void) (fail (HarnessError ^message $"no provider for seam ${seam}")))
+  found/value)
+
+(fn withdraw_seam [h : Harness, owner : Str, seam : Str] : Bool
+  (let record (row_record h "seams" seam))
+  (if ($absent? record) (return false))
+  (if_not (== record/owner owner)
+    (fail (HarnessError ^message $"seam ${seam} belongs to ${record/owner}")))
+  (mutate_seam h owner seam (fn [] (remove_registry_row h record/row_id)))
+  true)
+
+(fn ^^private seam_bound [h : Harness, seam : Str] : Bool
+  # Asking without committing. `resolve` raises, which is right for a consumer
+  # that cannot proceed without the seam and wrong for a caller deciding whether
+  # a deployment offers something at all.
+  (!= (row h "seams" seam) void))
+
+(fn ^^private bound_seams [h : Harness] : Any
+  (var out (fresh_list))
+  (for candidate in (rows h "seams")
+    (out .push ($to_str candidate/name)))
+  out)
+
+(fn doc [h : Harness, name : Str, ^snapshot snapshot = nil] : Str
+  (let chapters
+    (if ($absent? snapshot)
+      (rows h "docs")
+      ($map (?? (snapshot/registries .get "docs") []) (fn [record] record/payload))))
+  (let names [])
+  (for chapter in chapters
+    (if_yes (== chapter/name name)
+      (if_not ($absent? chapter/text) (return chapter/text))
+      (return ($fs/read_text chapter/path)))
+    (names .push chapter/name))
+  (let listed ($str/join names ", "))
+  (fail
+    (HarnessError ^message $"unknown documentation ${name}; valid chapters: ${listed}. Use (discover \"topic\" ^kind \"docs\") to find the relevant chapter.")))

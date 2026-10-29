@@ -18,7 +18,7 @@
 (type Registry ^props {^name Str ^unique Bool ^ordered Bool ^schema Any ^on_remove Any
   ^owner Str ^rows Any ^spec Any ^revision Str ^effects Any? ^owner_context Any? ^key Any? ^prepare Any?})
 
-(type RegistryRow ^props {^row_id Str ^owner Str ^registry Str ^key Str ^payload Any ^priority Int ^config_order Int ^acquired Int ^effects Any? ^cleanup_state Any?})
+(type ^^private RegistryRow ^props {^row_id Str ^owner Str ^registry Str ^key Str ^payload Any ^priority Int ^config_order Int ^acquired Int ^effects Any? ^cleanup_state Any?})
 
 (type Harness ^props {^plugins Any ^plugin_errors Any ^log Any ^log_hydrated Any ^bus Any ^registries Any ^ledger Any ^row_index Any ^next_row_id Any ^event_store Any ^event_scope Str ^event_stream Str ^plugin_policies Any ^plugin_depth Any ^workspace Any ^ui_epoch Str? ^readiness Any? ^registry_observer Any? ^composition Any? ^composition_entries Any? ^snapshots Any? ^publishing Any? ^publication_gate Any? ^published_plugins Any? ^notifications Any? ^ui_action_log Any? ^appearance Any? ^ui_defaults Any? ^manager_revision Any? ^composer Any?})
 
@@ -128,7 +128,7 @@
 # Definition callbacks retain the registry owner's budget and receiver, even
 # when a later generation of that owner has already published. These private
 # wrappers also permit the old on_remove to finish during retirement.
-(fn bind_registry_callback [h : Harness, owner : Str, callable]
+(fn ^^private bind_registry_callback [h : Harness, owner : Str, callable]
   (if ($absent? callable) (return nil))
   (let limits (/limits (policy_for_owner h owner)))
   (fn [args...]
@@ -143,14 +143,14 @@
     (== context/turn/state/.get "open")
     (! (&& (! ($absent? context/publication)) context/publication/.get))))
 
-(fn serialize_registry_change? [h : Harness] : Bool
+(fn ^^private serialize_registry_change? [h : Harness] : Bool
   (let context ($runtime/context))
   (&&
     (! ($absent? h/snapshots))
     (!= context/registry_step true)
     (! (&& (! ($absent? context/publication)) context/publication/.get))))
 
-(fn registry_change [h : Harness, thunk]
+(fn ^^private registry_change [h : Harness, thunk]
   (run_composition_change
     h/snapshots
     (fn []
@@ -170,12 +170,12 @@
     (out .push ($to_str name)))
   out)
 
-(fn next_registry_row_id [h : Harness, owner : Str, registry_name : Str] : Str
+(fn ^^private next_registry_row_id [h : Harness, owner : Str, registry_name : Str] : Str
   (var n h/next_row_id/.get)
   (h/next_row_id .set (+ n 1))
   $"${owner}:${registry_name}:${n}")
 
-(fn string_before? [left : Str, right : Str] : Bool
+(fn ^^private string_before? [left : Str, right : Str] : Bool
   (var a (($str/to_utf8 left) .to_list))
   (var b (($str/to_utf8 right) .to_list))
   (var limit (if (< a/.size b/.size) a/.size b/.size))
@@ -185,7 +185,7 @@
     (set i (+ i 1)))
   (< a/.size b/.size))
 
-(fn registry_row_before? [a : RegistryRow, b : RegistryRow] : Bool
+(fn ^^private registry_row_before? [a : RegistryRow, b : RegistryRow] : Bool
   (if (!= a/priority b/priority)
     (< a/priority b/priority)
     (if (!= a/config_order b/config_order)
@@ -201,7 +201,7 @@
 # Every rebuild runs under this gate. Nothing under it calls plugin code.
 (var ^^private row_gate ($sync/gate))
 
-(fn insert_registry_row [r : Registry, record : RegistryRow]
+(fn ^^private insert_registry_row [r : Registry, record : RegistryRow]
   (if_not r/ordered
     (r/rows
       .get
@@ -218,7 +218,7 @@
     (if_not inserted (next .push record))
     (r/rows .set next))))
 
-(fn registry_read_view [h : Harness]
+(fn ^^private registry_read_view [h : Harness]
   (let context ($runtime/context))
   (let candidate
     (&&
@@ -242,7 +242,7 @@
   (var r (registry_named h registry_name))
   r/rows/.get)
 
-(fn publish_direct_registry_change [h : Harness]
+(fn ^^private publish_direct_registry_change [h : Harness]
   (if_not ($absent? h/composer) h/composer/.Composer:changed)
   nil)
 
@@ -275,7 +275,7 @@
     void
     found/payload))
 
-(fn ledger_record [h : Harness, owner : Str, row_id : Str]
+(fn ^^private ledger_record [h : Harness, owner : Str, row_id : Str]
   (row_gate (fn []
     (var ledger_cell h/ledger)
     (var ledger ledger_cell/.get)
@@ -284,7 +284,7 @@
     (ledger .put owner owned)
     (ledger_cell .set ledger))))
 
-(fn ledger_forget [h : Harness, owner : Str, row_id : Str]
+(fn ^^private ledger_forget [h : Harness, owner : Str, row_id : Str]
   (row_gate (fn []
     (var ledger_cell h/ledger)
     (var ledger ledger_cell/.get)
@@ -403,7 +403,7 @@
   (publish_direct_registry_change h)
   row_id)
 
-(fn release_activation_rows [h : Harness, effects, owned_rows]
+(fn ^^private release_activation_rows [h : Harness, effects, owned_rows]
   # Rows leave in reverse acquisition order, then the revision's callbacks
   # expire. Every row is attempted; the first failure is reported afterwards.
   (var owned owned_rows/.get)
@@ -421,7 +421,7 @@
   (if_not ($absent? failure) (fail failure))
   nil)
 
-(fn release_activation_registries [h : Harness, owned_registries]
+(fn ^^private release_activation_registries [h : Harness, owned_registries]
   (let owned (owned_registries .swap []))
   (var failure nil)
   (var at owned/.size)
@@ -448,7 +448,7 @@
   (if_not ($absent? failure) (fail failure))
   nil)
 
-(fn cleanup_owned_registry_row [h : Harness, record : RegistryRow, r : Registry]
+(fn ^^private cleanup_owned_registry_row [h : Harness, record : RegistryRow, r : Registry]
   (if_not record/cleanup_state/.get (return nil))
   (record/cleanup_state .set false)
   (try
@@ -460,7 +460,7 @@
       (r/on_remove r/owner_context record/payload)))
   nil)
 
-(fn guard_callback [h : Harness, owner : Str, callable, inject_context : Bool]
+(fn ^^private guard_callback [h : Harness, owner : Str, callable, inject_context : Bool]
   (var policy (policy_for_owner h owner))
   # Rows contributed outside a Cordis activation are still bounded when
   # invoked; there is no activation revision to own them.
@@ -499,7 +499,7 @@
       (errors .push message)))
   errors)
 
-(fn remove_registry [h : Harness, name : Str]
+(fn ^^private remove_registry [h : Harness, name : Str]
   (var r (registry_named h name))
   (if (== r/owner "core") (fail (HarnessError ^message $"core registry ${name} cannot be removed")))
   (if (queue_registry_change? h)
@@ -539,13 +539,13 @@
       ensure (publication .set false)))
     (registry_change h thunk)))
 
-(fn policy_for_owner [h : Harness, owner : Str]
+(fn ^^private policy_for_owner [h : Harness, owner : Str]
   (var policy (h/plugin_policies .get; .get owner))
   (if (== policy void)
     {^limits (default_execution_limits) ^^host ^context nil}
     policy))
 
-(fn callback_receiver [h : Harness, owner : Str]
+(fn ^^private callback_receiver [h : Harness, owner : Str]
   (var policy (policy_for_owner h owner))
   (if policy/host
     h

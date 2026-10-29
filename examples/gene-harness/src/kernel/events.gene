@@ -1,0 +1,175 @@
+# Typed observations and durable Harness log records.
+(mod kernel_events)
+(import [Harness] ^from "./registry")
+(import [HarnessEvent] ^from "../plugin_api")
+(import [HarnessError] ^from "../errors")
+(import [events_for append_core_event core_event_size flush_event_store] ^from "../storage/state")
+
+# Harness events. A plugin observes the harness through the event bus rather
+# than by being called back, because observation is what the bus is for and
+# substitution is what the seams are for (design §2.2). The lifecycle is the
+# first thing worth observing: a plugin can watch its own dependencies come and
+# go without the kernel knowing anything about it.
+(type ^^private HarnessLog : HarnessEvent ^props {^kind Str ^text Str ^record Any?})
+
+(type ^^private HarnessFlushed : HarnessEvent ^props {^through Int})
+
+(type RoundChanged : HarnessEvent ^props {^session Str ^receipt Any})
+
+(type CommandChanged : HarnessEvent ^props {^session Str ^record Any})
+
+(type ModeChanged : HarnessEvent ^props {^session Str ^mode Any ^instance Any ^running Any ^reason Str})
+
+(type SessionChanged : HarnessEvent ^props {^record Any})
+
+(type CompositionChanged : HarnessEvent ^props {^revision Int})
+# A conversation card changed: a stored record, or live progress with ^transient.
+(type CardChanged : HarnessEvent ^props {^session Str ^card Any ^event Str})
+
+(fn hydrate_harness_log [h : Harness]
+  (if_yes h/log_hydrated/.get (return))
+  (if_not ($absent? h/event_store)
+    (for envelope in (events_for h/event_store h/event_scope h/event_stream)
+      (if_yes (["lifecycle" "message" "output" "trace"] .contains? ($to_str envelope/type))
+        (if_not (== envelope/payload/text void)
+          (var record {^kind envelope/type ^text envelope/payload/text ^seq envelope/seq})
+          (for name in ["truncated" "original_bytes"]
+            (if_not (== (envelope/payload .get name) void)
+              (record .put name (envelope/payload .get name))))
+          (h/log
+            .get
+            ; .push record)))))
+  (h/log_hydrated .set true)
+  h/log/.get)
+
+# The kernel log records lifecycle and plugin diagnostics. Session transcripts
+# and model history are owned by the round loop.
+
+(fn ^^private log_event_payload [record]
+  (var payload {^type record/kind ^text record/text})
+  (if_yes (== record/truncated true)
+    (payload .put "truncated" true)
+    (payload .put "original_bytes" record/original_bytes))
+  payload)
+
+(fn ^^private text_prefix [text : Str, maximum : Int] : Str
+  (if (<= ($str/byte_size text) maximum) (return text))
+  (var end maximum)
+  (while (> end 0)
+    (var prefix (try ($str/slice_bytes text 0 end) catch Any nil))
+    (if_not ($absent? prefix) (return prefix))
+    (set end (- end 1)))
+  "")
+
+(fn ^^private bounded_log_record [h : Harness, record]
+  (var original record/text)
+  (var size ($str/byte_size original))
+  (var limit 65536)
+  (while true
+    (if_yes (> size limit)
+      (var marker $"\n[truncated; original ${size} bytes]")
+      (record .put "text"
+        $"${(text_prefix original ($math/max 0 (- limit ($str/byte_size marker))))}${marker}")
+      (record .put "truncated" true)
+      (record .put "original_bytes" size))
+    # Check the serialized envelope too: escaping can exceed the byte cap.
+    (if (|| ($absent? h/event_store)
+            (<= (core_event_size h/event_scope h/event_stream (log_event_payload record))
+                h/event_store/max_event_bytes))
+      (return record))
+    (if (== limit 0)
+      (fail (HarnessError ^message "log metadata exceeds the event byte limit")))
+    (set limit (/ ($math/min limit size) 2))))
+
+(fn ^^private log_record [h : Harness, kind : Str, text : Str]
+  (bounded_log_record h {^kind kind ^text text}))
+
+(fn ^^private append_log_record [h : Harness, record] : Any
+  (var events h/log/.get)
+  (events .push record)
+  # Views observe the same typed feed core persists. Publication errors are
+  # collected by the bus and intentionally do not recursively append another
+  # log record.
+  (publish h (HarnessLog ^kind record/kind ^text record/text ^record record))
+  events)
+
+(fn ^^private append_log_only [h : Harness, kind : Str, text : Str] : Any
+  (append_log_record h {^kind kind ^text text}))
+
+(fn ^^private append_committed_record [h : Harness, record] : Any
+  (if_not ($absent? h/event_store)
+    (var payload (log_event_payload record))
+    (var envelope (append_core_event h/event_store h/event_scope h/event_stream payload))
+    (record .put "seq" envelope/seq))
+  (append_log_record h record))
+
+(fn ^^private append_committed_log [h : Harness, kind : Str, text : Str] : Any
+  (append_committed_record h (log_record h kind text)))
+
+(fn record_turn_start [h : Harness, id : Str]
+  (append_log_only h "turn" $"started ${id}")
+  (if_not ($absent? h/event_store)
+    (append_core_event h/event_store h/event_scope h/event_stream {^type "turn/start" ^turn id}))
+  nil)
+
+(fn record_turn_end [h : Harness, id : Str, reason : Str, ^synthetic synthetic : Bool = false]
+  (if_yes (&& (== reason "interrupted") (! synthetic))
+    (fail (HarnessError ^message "interrupted turn boundaries are reserved for cold repair")))
+  (append_log_only h "turn" $"${reason} ${id}")
+  (if_not ($absent? h/event_store)
+    (append_core_event
+      h/event_store
+      h/event_scope
+      h/event_stream
+      {^type "turn/end" ^turn id ^reason reason ^synthetic synthetic}))
+  nil)
+
+(fn record_composition_change [h : Harness, id : Str, previous_digest, new_digest, revision : Int, turn : Str, operation : Str]
+  (append_log_only h "composition" $"${operation} ${id} at revision ${revision}")
+  (if_not ($absent? h/event_store)
+    (append_core_event
+      h/event_store
+      h/event_scope
+      h/event_stream
+      {
+        ^type "composition/changed"
+        ^entry id
+        ^operation operation
+        ^previous_digest (?? previous_digest "")
+        ^new_digest (?? new_digest "")
+        ^revision revision
+        ^session h/event_stream
+        ^turn turn}))
+  nil)
+
+(fn log_append [h : Harness, kind : Str, text : Str] : Any
+  (var record (log_record h kind text))
+  (append_committed_record h record))
+
+(fn flush_harness [h : Harness]
+  (if_not ($absent? h/event_store)
+    (var flushed (flush_event_store h/event_store))
+    (var next (h/event_store/next_sequences .get; .get $"${h/event_scope}:${h/event_stream}"))
+    (publish h (HarnessFlushed ^through (- (?? next 1) 1)))
+    flushed))
+
+(fn publish [h : Harness, event] : Any
+  (h/bus .publish event))
+
+(fn notify [h : Harness, event] : Any
+  # Lifecycle events go out through the same bus, with one difference: a
+  # subscriber must not be able to stall the state machine. The kernel's bus is
+  # `event/collect` (docs/stdlib.md), so one raising observer cannot abort a
+  # publication and `publish` returns a `PublishResult` instead of raising. A
+  # plugin system whose dependency resolution can be halted by an unrelated
+  # observer is not one you can recompose at 3am.
+  #
+  # `collect` leaves reporting to the publisher, which makes the kernel the
+  # reporter. Not doing this is the other way the design goes wrong: an
+  # observer that fails silently is worse than one that stops the world,
+  # because nothing anywhere records that it happened.
+  (var r (publish h event))
+  (if_yes (> r/failed 0)
+    (for err in r/errors
+      (log_append h "lifecycle" $"observer failed: ${err/message}")))
+  nil)

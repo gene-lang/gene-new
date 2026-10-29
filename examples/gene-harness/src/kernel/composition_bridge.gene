@@ -1,0 +1,534 @@
+# Cordis reconciliation, snapshot publication and desired plugin state.
+(mod kernel_composition_bridge)
+(import [Harness Registry Composer registry contribute row row_record rows registry_names
+  registry_named registry_exists? copy_list fresh_list fresh_map remove_registry_row
+  cleanup_registry_context release_activation_resources enter_plugin_execution leave_plugin_execution]
+  ^from "./registry")
+(import [Host validate_plugin_descriptor describe_plugin_module] ^from "./host")
+(import [publish notify CompositionChanged log_append flush_harness] ^from "./events")
+(import [configure_plugin_module execution_limits_data] ^from "./invoke")
+(import [Plugin PluginHost DurableRecord ExecutionLimits response_execution_limits] ^from "../plugin_api")
+(import [HarnessError] ^from "../errors")
+(import [RegistryHost new_composition] ^from "../runtime/cordis_adapter")
+(import [LoaderOptions] ^from "." ^pkg "cordis")
+(import [new_composition_state current_snapshot publish_snapshot run_composition_change
+  queue_retirement begin_close_composition_state close_composition_state immutable_view]
+  ^from "../runtime/composition")
+(import [publication_metadata] ^from "../storage/plugin_metadata")
+(import [make_public_host revoke_public_host] ^from "../runtime/public_host")
+(import [public_modules] ^from "../runtime/public_modules")
+(import [builtin_registry_specs] ^from "../registries/builtins")
+(import [core_event_types] ^from "../storage/generated_event_catalog")
+(import [append_core_event] ^from "../storage/state")
+
+(fn ^^private snapshot_registries [h : Harness]
+  (let snapshot {})
+  (for [name registry] in h/registries/.get
+    (let records [])
+    (for record in registry/rows/.get
+      (records .push
+        {
+          ^row_id record/row_id
+          ^owner record/owner
+          ^plugin (?? (h/plugins/.get .get record/owner) nil)
+          ^cleanup_state (?? record/cleanup_state nil)
+          ^registry record/registry
+          ^key record/key
+          ^payload (immutable_view record/payload)
+          ^priority record/priority
+          ^config_order record/config_order
+          ^acquired record/acquired
+          ^effects record/effects}))
+    (snapshot .put name records))
+  snapshot)
+
+(fn ^^private publish_registry_snapshot [h : Harness]
+  (if_yes (&& (! ($absent? h/snapshots)) (! h/snapshots/closed/.get))
+    (let plugins [])
+    (let seen {})
+    (for [id plugin] in h/plugins/.get
+      (seen .put id true)
+      (let policy (h/plugin_policies/.get .get ($to_str id)))
+      (plugins .push
+        {
+          ^id ($to_str id)
+          ^status (status_of h ($to_str id))
+          ^callback_limits (execution_limits_data policy/limits)
+          ^descriptor_limits (execution_limits_data policy/init_limits)
+          ^source_digest policy/source_digest
+          ^host_build_id policy/host_build_id
+          ^activation_revision policy/activation_revision
+          ^provides plugin/provides
+          ^requires plugin/requires}))
+    (if_not ($absent? h/workspace)
+      (for entry in h/workspace/entries/.get
+        (if ($absent? (seen .get entry/id))
+          (plugins .push
+            {
+              ^id entry/id
+              ^status (if entry/disabled
+                        "disabled"
+                        "error")
+              ^module_digest entry/module_digest
+              ^error (h/workspace/errors/.get .get entry/id)}))))
+    (let registry_owners {})
+    (for [name definition] in h/registries/.get
+      (registry_owners .put name {^owner definition/owner ^revision definition/revision}))
+    (let snapshot
+      (publish_snapshot ^plugins plugins ^registry_owners registry_owners
+        h/snapshots
+        (snapshot_registries h)
+        h/composition/.instances))
+    (publication_metadata h snapshot)
+    (notify h (CompositionChanged ^revision snapshot/id)))
+  nil)
+
+(fn ^^private clone_registries [h : Harness]
+  (var out (fresh_map))
+  (for [name source] in h/registries/.get
+    (var cloned
+      (Registry ^name source/name ^unique source/unique ^ordered source/ordered
+        ^schema source/schema ^on_remove source/on_remove ^owner source/owner
+        ^rows ($cell (copy_list source/rows/.get)) ^spec source/spec ^revision source/revision
+        ^effects source/effects ^owner_context source/owner_context ^key source/key ^prepare source/prepare))
+    (out .put name cloned))
+  out)
+
+(fn ^^private clone_ledger [h : Harness]
+  (var out (fresh_map))
+  (for [owner row_ids] in h/ledger/.get
+    (out .put owner (copy_list row_ids)))
+  out)
+
+(fn ^^private clone_row_index [h : Harness]
+  (var out (fresh_map))
+  (for [row_id record] in h/row_index/.get
+    (out .put row_id record))
+  out)
+
+(type CordisComposer ^^private ^props {^h Cell}
+  (impl Composer
+    (message changed [] : Nil
+      (let h self/h/.get)
+      (if (&& (! h/publishing/.get) (! h/snapshots/closing/.get))
+        (publish_registry_snapshot h))
+      nil)
+    (message publishing? [] : Bool
+      (let h self/h/.get)
+      h/publishing/.get)
+    (message recompose [prepare] : Any
+      (reconcile_cordis_harness self/h/.get ^prepare prepare))))
+
+(type CordisRegistryHost ^^private
+  ^props {^h Harness}
+  (impl RegistryHost
+    (message activate [thunk] : Any
+      (let publication ($cell true))
+      (try
+        ($runtime/with_context {^composition self/h/snapshots ^publication publication
+          ^output (fn [text]
+            (if_not ($absent? self/h/event_store)
+              (append_core_event self/h/event_store "workspace" "workspace"
+                {^type "console" ^turn 0 ^text text ^!late ^^ignorable}))
+            ($runtime/with_context nil (fn [] ($print text))))} thunk)
+      ensure (publication .set false)))
+    (message enter_call [] : Nil (enter_plugin_execution self/h) nil)
+    (message cleanup [thunk] : Any (cleanup_registry_context self/h thunk))
+    (message leave_call [] : Nil (leave_plugin_execution self/h) nil)
+    (message describe [module, id : Str, limits, callback_limits, core_interface] : Plugin
+      (var h self/h)
+      (var bounded (ExecutionLimits
+        ^max_memory_mb limits/max_memory_mb ^timeout_ms limits/timeout_ms))
+      (configure_plugin_module module callback_limits)
+      (describe_plugin_module h module id
+        ^core_interface (?? core_interface (if ($absent? h/workspace) "" h/workspace/core_interface))
+        ^limits bounded))
+    (message context [plugin, effects, observer, policy] : PluginHost
+      (var h self/h)
+      (set h/registry_observer observer)
+      (let default (if ($absent? h/workspace) nil (h/workspace/profile_plugins/.get .get plugin/id)))
+      (let writer ($freeze
+        {^digest (?? policy/digest (if (same? default/plugin plugin) "builtin" "unknown"))
+         ^host_build_id (if ($absent? h/workspace) "unknown" h/workspace/history_build/.get)}))
+      (var context (Host ^h h ^owner plugin/id ^effects effects ^notification_revision ($crypto/random_hex 16)
+        ^state_writer writer))
+      (let receiver (if policy/host context (make_public_host context)))
+      (var owned_rows ($cell (fresh_list)))
+      (let owned_registries ($cell []))
+      (h/plugin_policies/.get .put plugin/id
+        {^limits (ExecutionLimits
+           ^max_memory_mb policy/limits/max_memory_mb ^timeout_ms policy/limits/timeout_ms)
+         ^init_limits (if policy/host nil policy/init_limits)
+         ^core_interface policy/core_interface
+         ^source_digest writer/digest ^host_build_id writer/host_build_id
+         ^activation_revision context/notification_revision
+         ^host policy/host ^context receiver ^effects effects
+         ^owned_rows owned_rows ^owned_registries owned_registries})
+      # One deferred cleanup per activation revision. Cordis runs every deferred
+      # cleanup as a bounded plugin invocation, so a cleanup per contributed row
+      # and per callback made retiring a generation cost one invocation per row.
+      (effects .defer (fn []
+        (try
+          (cleanup_registry_context h (fn []
+            (try
+              (release_activation_resources h effects owned_rows owned_registries)
+            ensure (release_activation_policy h plugin/id receiver))))
+        ensure (revoke_public_host receiver))))
+      receiver)
+    (message selected [registry_name : Str, key : Str] : Any
+      (var h self/h)
+      (if_yes (== registry_name "$registries")
+        (let definition (h/registries/.get .get key))
+        (if ($absent? definition) (return nil))
+        (return {^row_id definition/revision ^payload {^name key} ^effects definition/effects}))
+      (if_not (registry_exists? h registry_name) (return nil))
+      (var selected void)
+      # Cordis invokes selection callbacks outside RegistryHost.activate's
+      # dynamic publication context. During reconciliation they must still
+      # see candidate rows, otherwise newly provided dependencies remain
+      # pending against the old published snapshot. Ordinary leased reads
+      # continue through row_record and never enter this private bridge.
+      (if h/publishing/.get
+        (do
+          (let registry (registry_named h registry_name))
+          (for record in registry/rows/.get
+            (if (&& (== selected void) (== record/key key)) (set selected record))))
+        (set selected (row_record h registry_name key)))
+      (if (== selected void) (return nil))
+      {^row_id selected/row_id ^payload selected/payload ^effects selected/effects})))
+
+(fn ^^private make_cordis_registry_host [h : Harness] : RegistryHost
+  (CordisRegistryHost ^h h))
+
+(fn ^^private release_activation_policy [h : Harness, owner : Str, context]
+  (var policies h/plugin_policies/.get)
+  (var current (policies .get owner))
+  (if_yes (&& (!= current void) (== current/context context)) (policies .delete owner))
+  nil)
+
+(fn new_harness
+  [^event_store event_store = nil,
+   ^event_scope event_scope : Str = "session",
+   ^event_stream event_stream : Str = "default",
+   ^workspace workspace = nil,
+   ^limits limits = nil] : Harness
+  (var h
+    (Harness ^plugins ($cell (fresh_map))
+             ^plugin_errors ($cell (fresh_map))
+             ^log ($cell (fresh_list)) ^log_hydrated ($cell false)
+             ^bus ($event/Bus ^error_policy $event/collect)
+             ^registries ($cell (fresh_map)) ^ledger ($cell (fresh_map))
+             ^row_index ($cell (fresh_map)) ^next_row_id ($cell 1)
+             ^event_store event_store
+             ^event_scope event_scope ^event_stream event_stream
+             ^plugin_policies ($cell (fresh_map))
+             ^plugin_depth ($cell 0) ^workspace workspace ^ui_epoch ($crypto/random_hex 12)))
+
+  (for spec in (builtin_registry_specs h
+    (fn [registry_name, key] (row h registry_name key)))
+    (registry h spec/name ^spec spec))
+  (for point in ["request/prepare" "history/compact"]
+    (contribute h "core" "hook_points" {^name point ^dispatch "coordinator"}))
+
+  (for event in core_event_types
+    (contribute h "core" "event_types" event))
+  # Plugin lifecycle is a Cordis composition. Activation happens in a staged
+  # candidate that publishes as a whole, and every contribution belongs to the
+  # exact activation revision that made it. `^limits` is the ceiling every
+  # plugin's limits narrow from.
+  (set h/composition_entries ($cell (fresh_map)))
+  (var package_root this_pkg/root)
+  (set h/publishing ($cell false))
+  (set h/publication_gate ($sync/gate))
+  (set h/published_plugins ($cell {}))
+  (set h/snapshots (new_composition_state (snapshot_registries h) []
+    (fn [ticket] (h/composition .retire ticket))))
+  (set h/composition
+    (new_composition (make_cordis_registry_host h)
+      ^limits (if ($absent? limits)
+        (response_execution_limits)
+        limits)
+      ^options (LoaderOptions
+        ^plugin_root (if ($absent? workspace) $"${package_root}/plugins/generated" workspace/generated_dir)
+        ^shared (public_modules)
+        ^max_namespaces ($runtime/sandbox_namespaces)
+        ^default_limits nil ^reload_policy nil
+        ^retirement (fn [ticket]
+          (queue_retirement h/snapshots ticket ticket/.instances)))))
+  (set h/composer (CordisComposer ^h ($cell h)))
+  (publish_registry_snapshot h)
+  (if_not ($absent? event_store)
+    (set event_store/observer
+      (fn [envelope]
+        (publish h
+          (DurableRecord ^scope envelope/scope ^stream envelope/stream
+            ^name envelope/type ^envelope envelope)))))
+  h)
+
+(fn ^^private reconcile_cordis_harness [h : Harness, ^strict strict : Bool = false,
+  ^pending pending : Bool = false, ^accept accept = nil, ^commit commit = nil, ^committed committed = nil, ^prepare prepare = nil]
+  (h/publication_gate (fn []
+  (h/publishing .set true)
+  (let publication ($cell true))
+  (try
+    ($runtime/with_context
+      {^composition h/snapshots ^publication publication}
+      (fn []
+        (reconcile_cordis_harness_serial ^strict strict ^pending pending ^accept accept
+          ^commit commit ^committed committed ^prepare prepare h)))
+  ensure
+    (publication .set false)
+    (h/publishing .set false)))))
+
+(fn hide_owner_rows [h : Harness, owner : Str]
+  (let ids (copy_list (?? (h/ledger .get; .get owner) [])))
+  (for id in ids
+    (remove_registry_row ^!cleanup h id))
+  nil)
+
+(fn ^^private reconcile_cordis_harness_serial [h : Harness, ^strict strict : Bool = false,
+  ^pending pending : Bool = false, ^accept accept = nil, ^commit commit = nil, ^committed committed = nil, ^prepare prepare = nil]
+  (let baseline h/registries/.get)
+  (let baseline_ledger h/ledger/.get)
+  (let baseline_index h/row_index/.get)
+  (let baseline_policies h/plugin_policies/.get)
+  (let baseline_observer h/registry_observer)
+  (try
+    (reconcile_registry_candidate ^strict strict ^pending pending ^accept accept ^commit commit ^prepare prepare h)
+  catch Any
+    (if_yes (&& (! ($absent? committed)) committed/.get)
+      (h/published_plugins .set h/composition/.current_plugins)
+      (publish_registry_snapshot h)
+      (fail $err))
+    (h/registries .set baseline)
+    (h/ledger .set baseline_ledger)
+    (h/row_index .set baseline_index)
+    (h/plugin_policies .set baseline_policies)
+    (set h/registry_observer baseline_observer)
+    (fail $err)))
+
+(fn ^^private reconcile_registry_candidate [h : Harness, ^strict strict : Bool = false,
+  ^pending pending : Bool = false, ^accept accept = nil, ^commit commit = nil, ^prepare prepare = nil]
+  (let previous h/published_plugins/.get)
+  (h/registries .set (clone_registries h))
+  (h/ledger .set (clone_ledger h))
+  (h/row_index .set (clone_row_index h))
+  (h/plugin_policies .set ($thaw ($freeze_shallow h/plugin_policies/.get)))
+  (set h/registry_observer nil)
+  # Cordis stages every loader-owned activation revision. Remove their
+  # discoverable rows from the candidate while old snapshot rows and effects
+  # remain usable until their retirement tickets drain.
+  (for [id prior] in previous
+    (hide_owner_rows h ($to_str id)))
+  (let departed_registries [])
+  (for [name registry] in h/registries/.get
+    (if (!= (previous .get registry/owner) void)
+      (departed_registries .push ($to_str name))))
+  (for name in departed_registries
+    (let registry (registry_named h name))
+    (for record in (copy_list registry/rows/.get)
+      (remove_registry_row h record/row_id ^!cleanup))
+    (h/registries/.get .delete name))
+  (if_not ($absent? prepare) (prepare))
+  (var plugins (fresh_list))
+  (var failed (fresh_list))
+  (for [id plugin] in h/plugins/.get (plugins .push plugin))
+  (for [id message] in h/plugin_errors/.get (failed .push ($to_str id)))
+  # Reconcile the candidate before publishing its immutable registry view.
+  # A rejected candidate leaves the previous registry tables and leases live.
+  (var result
+    (if strict
+      {^snapshot (h/composition .reconcile_strict ^pending pending
+        plugins h/composition_entries/.get accept commit) ^failures []}
+      (h/composition .reconcile_available plugins h/composition_entries/.get failed)))
+  (for failure in result/failures
+    (h/plugin_errors/.get .put failure/id failure/message))
+  (let active h/composition/.current_plugins)
+  (h/published_plugins .set active)
+  (publish_registry_snapshot h)
+  result/snapshot)
+
+(fn apply_plugin_set [h : Harness, admissions, accept, commit, ^pending pending : Bool = false, ^prepare prepare = nil]
+  (run_composition_change h/snapshots (fn []
+    (let previous_plugins h/plugins/.get)
+    (let previous_options h/composition_entries/.get)
+    (let previous_errors h/plugin_errors/.get)
+    (let plugins {})
+    (let options {})
+    (for admission in admissions
+      (validate_plugin_descriptor h admission/plugin/id admission/plugin)
+      (if_not ($absent? (plugins .get admission/plugin/id))
+        (fail (HarnessError ^message "duplicate plugin in candidate composition")))
+      (plugins .put admission/plugin/id admission/plugin)
+      (options .put admission/plugin/id admission/options))
+    (let committed ($cell false))
+    (h/plugins .set plugins)
+    (h/composition_entries .set options)
+    (h/plugin_errors .set {})
+    (try
+      (reconcile_cordis_harness ^strict true ^pending pending ^accept accept
+        ^commit (fn [] (commit) (committed .set true)) ^committed committed ^prepare prepare h)
+      {^published true ^state "applied"}
+    catch Any
+      (if committed/.get
+        {^published true ^state "recovery_required" ^message $err/message}
+        (do
+          (h/plugins .set previous_plugins)
+          (h/composition_entries .set previous_options)
+          (h/plugin_errors .set previous_errors)
+          (fail $err)))))))
+
+(fn put_cordis_plugin [h : Harness, plugin : Plugin, entry_options, ^replace replace : Bool = false]
+  (if ($absent? h/composition) (fail (HarnessError ^message "Harness has no Cordis composition")))
+  (if_yes (&& (! replace) (!= (h/plugins .get; .get plugin/id) void))
+    (fail (HarnessError ^message $"plugin ${plugin/id} already installed")))
+  (validate_plugin_descriptor h plugin/id plugin)
+  (h/plugins
+    .get
+    ; .put plugin/id plugin)
+  (h/composition_entries
+    .get
+    ; .put plugin/id entry_options)
+  (h/plugin_errors
+    .get
+    ; .delete plugin/id)
+  (try
+    (reconcile_cordis_harness h)
+  catch Any
+    (h/plugin_errors
+      .get
+      ; .put plugin/id ($to_str $err)))
+  (status_of h plugin/id))
+
+(fn put_cordis_plugins [h : Harness, admissions]
+  # Boot stages every profile plugin and reconciles once. A plugin whose
+  # activation fails is recorded by the reconcile itself; only a failure of the
+  # reconcile as a whole marks every admission.
+  (if ($absent? h/composition)
+    (fail (HarnessError ^message "Harness has no Cordis composition")))
+
+  (for admission in admissions
+    (var plugin admission/plugin)
+    (if_yes (!= (h/plugins/.get .get plugin/id) void)
+      (fail (HarnessError ^message $"plugin ${plugin/id} already installed")))
+    (validate_plugin_descriptor h plugin/id plugin))
+  (for admission in admissions
+    (var plugin admission/plugin)
+    (h/plugins/.get .put plugin/id plugin)
+    (h/composition_entries/.get .put plugin/id admission/options)
+    (h/plugin_errors/.get .delete plugin/id))
+  (try
+    (reconcile_cordis_harness h)
+  catch Any
+    (var failure ($to_str $err))
+    (for admission in admissions
+      (h/plugin_errors/.get .put admission/plugin/id failure)))
+  (for admission in admissions
+    (var id admission/plugin/id)
+    (log_append h "lifecycle" $"installed ${id} (${(status_of h id)})"))
+  nil)
+
+#
+# A plugin is in exactly one of three states:
+#
+#   pending  installed, but at least one seam it `requires` is unbound.
+#   ready    activated; its contributions are in the tables.
+#   error    its `activate` raised. Effects unwound, plugin still installed,
+#            and *not* retried — see `retry`.
+#
+# `pending` is a state, not a failure. A dependency cycle therefore does not
+# hang or raise: the plugins involved simply stay pending and say so in
+# `plugin_states`, which is a far better 3am outcome than either alternative.
+
+(fn status_of [h : Harness, id : Str] : Str
+  (if (== (h/plugins .get; .get id) void) (return "absent"))
+  (if (!= (h/plugin_errors .get; .get id) void) (return "error"))
+  (var snapshot h/composition/.inspect)
+  (for entry in snapshot/entries
+    (if (== entry/id id)
+      (return
+        (if (== entry/state "active")
+          "ready"
+          (if (== entry/state "failed")
+            "error"
+            entry/state)))))
+  "pending")
+
+(fn plugin_error [h : Harness, id : Str]
+  (var found (h/plugin_errors .get; .get id))
+  (if_not (== found void) ($to_str found)))
+
+(fn ^^private plugin_ids [h : Harness] : Any
+  # Gene maps keep insertion order, so ids come back in install order.
+  (var out (fresh_list))
+  (for [k v] in h/plugins/.get
+    (out .push ($to_str k)))
+  out)
+
+(fn ^^private plugin_states [h : Harness] : Any
+  (var out (fresh_list))
+  (for id in (plugin_ids h)
+    (out .push $"${id}:${(status_of h id)}"))
+  out)
+
+(fn install [h : Harness, p : Plugin] : Str
+  # Installing registers the plugin and reconciles the composition. A failed
+  # activation is a state (`error`) the caller reads, not an exception.
+  (var state (put_cordis_plugin h p {^^host}))
+  (log_append h "lifecycle" $"installed ${p/id} (${state})")
+  $"installed ${p/id} (${state})")
+
+(fn uninstall [h : Harness, id : Str] : Str
+  (if (== (h/plugins .get; .get id) void)
+    (fail (HarnessError ^message $"plugin ${id} not installed")))
+  (h/plugins
+    .get
+    ; .delete id)
+  (h/composition_entries
+    .get
+    ; .delete id)
+  (h/plugin_errors
+    .get
+    ; .delete id)
+  (reconcile_cordis_harness h)
+  (log_append h "lifecycle" $"uninstalled ${id}")
+  $"uninstalled ${id}")
+
+(fn ^^private retry [h : Harness, id : Str] : Str
+  # A failed plugin is not retried automatically: an activation that raised
+  # raises again until something outside it changes.
+  (if_not (== (status_of h id) "error")
+    (fail (HarnessError ^message $"plugin ${id} is not in error")))
+  (var p (h/plugins/.get .get id))
+  (var options (h/composition_entries/.get .get id))
+  (var state (put_cordis_plugin h p options ^^replace))
+  $"retried ${id} (${state})")
+
+(fn shutdown_harness [h : Harness]
+  (var errors (fresh_list))
+  (try
+    (begin_close_composition_state h/snapshots)
+  catch Any
+    (errors .push ($to_str $err)))
+  (if (> errors/.size 0) (return {^status "recovery_required" ^errors errors}))
+  # Cordis is retiring the whole composition; cleanup must not install fresh
+  # selected-entry projections while its dependency graph is being closed.
+  (set h/registry_observer nil)
+  (try
+    h/composition/.close
+  catch Any
+    (errors .push ($to_str $err)))
+  (try (close_composition_state h/snapshots)
+    catch Any (errors .push ($to_str $err)))
+  (h/plugins .set (fresh_map))
+  (h/composition_entries .set (fresh_map))
+  (h/plugin_errors .set (fresh_map))
+  (flush_harness h)
+  {^status (if (== errors/.size 0) "closed" "recovery_required") ^errors errors})
+
+(fn ^^private installed [h : Harness] : Any
+  (plugin_ids h))
+
+(fn ^^private composition_info [h : Harness]
+  (let snapshot (current_snapshot h/snapshots))
+  {^snapshot snapshot/id ^registries (registry_names h) ^plugins h/composition/.inspect})

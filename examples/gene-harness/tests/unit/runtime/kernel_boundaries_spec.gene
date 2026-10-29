@@ -1,0 +1,121 @@
+# Copied into tests/unit/runtime when the kernel split lands.
+(import $test [describe it])
+
+(fn parsed [path : Str] ($into ($parse/read_all ($fs/read_text path)) []))
+(fn imports [forms]
+  ($filter forms (fn [form] (== ($to_str ($head form)) "import"))))
+
+(fn imported_names [form]
+  (let parts [])
+  (for part in ($body form)
+    (if (== ($head part) List)
+      (for name in part (parts .push name))
+      (parts .push part)))
+  (let names [])
+  (var alias false)
+  (for part in parts
+    (if (== ($to_str part) ":") (then (set alias true) (continue)))
+    (if alias (then (set alias false) (continue)))
+    (names .push ($to_str part)))
+  names)
+
+(fn without_extension [path : Str]
+  (if ($str/ends_with? path ".gene")
+    ($str/slice_bytes path 0 (- ($str/byte_size path) 5)) path))
+
+(fn kernel_root [] ($path/join this_pkg/root "src/kernel"))
+(fn facade_path [] ($path/join this_pkg/root "src/kernel.gene"))
+(fn module_files []
+  ($map ($filter ($fs/list_dir (kernel_root)) (fn [name] ($str/ends_with? name ".gene")))
+    (fn [name] ($path/join (kernel_root) name))))
+
+(fn callback_import_exception [] ["retain_callback" "retained_callback?" "expire_scope_callbacks"])
+(fn named_test_imports [] {})
+
+(fn allowed_imports []
+  {^invoke ["../runtime/call_supervision" "../plugin_api" "../errors"]
+   ^registry ["./invoke" "../runtime/composition" "../runtime/cordis_adapter"
+     "../runtime/execution_budget" "../registries/contracts" "../storage/state" "../plugin_api" "../errors"]
+   ^events ["./registry" "../storage/state" "../plugin_api" "../errors"]
+   ^seams ["./registry" "../runtime/composition" "../errors"]
+   ^observe ["./registry"]
+   ^host ["./registry" "./seams" "./observe" "./events" "./invoke" "../runtime/composition"
+     "../runtime/execution_budget" "../notifications/publisher" "../runtime/service_binding"
+     "../storage/state" "../plugin_api" "../errors"]
+   ^composition_bridge ["./registry" "./host" "./events" "./invoke" "../runtime/cordis_adapter"
+     "../runtime/composition" "../storage/plugin_metadata" "../runtime/public_host"
+     "../runtime/public_modules" "../registries/builtins" "../storage/generated_event_catalog"
+     "../storage/state" "../plugin_api" "../errors"]})
+
+(fn kernel_imports []
+  (let selected {})
+  (let consumers ($into (module_files) [(facade_path)]))
+  # Explicit acceptance-test consumers do not expand the stable facade. The
+  # exception is exact and stale-checked, just like the callback migration.
+  (for [relative expected] in (named_test_imports)
+    (let path ($path/join this_pkg/root ($to_str relative)))
+    (let observed [])
+    (for form in (imports (parsed path))
+      (if (|| (!= ($head form/from) Str) (! ($absent? form/pkg))) (continue))
+      (let target ($path/normalize ($path/join ($path/parent path)
+        ($to_str (without_extension form/from) ".gene"))))
+      (if_not ($str/starts_with? target ($to_str (kernel_root) "/")) (continue))
+      ($assert (== target ($path/join (kernel_root) "composition_bridge.gene")))
+      (for name in (imported_names form) (observed .push name)))
+    ($assert (== ($order/sort observed) ($order/sort expected))
+      "Remove or update the named test-import exception when its consumer changes.")
+    (consumers .push path))
+  (for path in consumers
+    (for form in (imports (parsed path))
+      (if (|| (!= ($head form/from) Str) (! ($absent? form/pkg))) (continue))
+      (let target ($path/normalize ($path/join ($path/parent path)
+        ($to_str (without_extension form/from) ".gene"))))
+      (let names (?? (selected .get target) []))
+      (for name in (imported_names form) (if_not (names .contains? name) (names .push name)))
+      (selected .put target names)))
+  selected)
+
+(describe "Harness kernel architecture"
+  (it "freezes the facade at its established 47 exported names" []
+    (let actual [])
+    (for form in (parsed (facade_path))
+      ($assert (["mod" "import"] .contains? ($to_str ($head form))) "The facade must contain imports only.")
+      (if (&& (== ($to_str ($head form)) "import") (== form/export true))
+        (for name in (imported_names form) (actual .push name))))
+    (let fixture (parsed ($path/join this_pkg/root "tests/fixtures/kernel_exports.gene")))
+    ($assert (== fixture/.size 1))
+    (let expected fixture/0)
+    ($assert (== expected/.size 47))
+    ($assert (== ($order/sort actual) ($order/sort expected)) ($to_str actual)))
+
+  (it "keeps imports within the acyclic kernel layers and removes stale migration exceptions" []
+    (let allowed (allowed_imports))
+    (let observed [])
+    (for path in (module_files)
+      (let name (without_extension ($path/name path)))
+      (let permitted (allowed .get name))
+      ($assert (! ($absent? permitted)) $"Declare the layer for ${name}.")
+      (for form in (imports (parsed path))
+        (if_not ($absent? form/pkg)
+          ($assert (&& (== name "composition_bridge") (== form/pkg "cordis"))
+            $"${name} imports package ${form/pkg}.")
+          (continue))
+        ($assert (== ($head form/from) Str) $"Unexpected namespace import in ${name}.")
+        (let from (without_extension form/from))
+        ($assert (permitted .contains? from) $"${name} imports forbidden layer ${from}.")
+        (if (&& (== from "../runtime/cordis_adapter") (!= name "composition_bridge"))
+          (then
+            ($assert (== name "registry"))
+            (for imported in (imported_names form) (observed .push imported))))))
+    ($assert (== ($order/sort observed) ($order/sort (callback_import_exception)))
+      "Remove the callback-trio exception in the extraction commit."))
+
+  (it "keeps unimported kernel definitions module-private" []
+    (let selected (kernel_imports))
+    (for path in (module_files)
+      (let consumers (?? (selected .get path) []))
+      (for form in (parsed path)
+        (if_not (["fn" "type" "var" "protocol"] .contains? ($to_str ($head form))) (continue))
+        (let name ($to_str form/0))
+        ($assert (|| (== form/private true) (consumers .contains? name))
+          $"${path}: ${name} must be private unless imported by the facade, a sibling or a named acceptance test.")))))

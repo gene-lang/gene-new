@@ -1,0 +1,144 @@
+# Private activation delegate behind the public PluginHost receiver.
+(mod kernel_host)
+(import [Harness registry_names registry_row_keys rows row run_hooks validate_registry_spec
+  registry contribute row_record invoke_owned_callable cleanup_registry_context fresh_list]
+  ^from "./registry")
+(import [resolve provide replace] ^from "./seams")
+(import [subscribe] ^from "./observe")
+(import [invoke_bounded] ^from "./invoke")
+(import [Plugin PluginHost DescriptorContext default_execution_limits] ^from "../plugin_api")
+(import [HarnessError] ^from "../errors")
+(import [immutable_view] ^from "../runtime/composition")
+(import [execution_budget] ^from "../runtime/execution_budget")
+(import [bind_service] ^from "../runtime/service_binding")
+(import [safe_publish update_notification list_source_messages clear_source_message]
+  ^from "../notifications/publisher")
+(import [append_plugin_event prepare_plugin_state plugin_state append_core_event]
+  ^from "../storage/state")
+
+(type Host ^props {^h Harness ^owner Str ^effects Any ^notification_revision Str ^state_writer Any})
+
+
+(fn validate_plugin_descriptor [h : Harness, expected_id : Str, p : Plugin]
+  (if_not (== p/id expected_id)
+    (fail (HarnessError
+      ^message $"plugin descriptor id ${p/id} does not match ${expected_id}")))
+  (if_not ($runtime/callable? p/activate)
+    (fail (HarnessError ^message "plugin activate must be callable")))
+  (for requirement in (?? p/requires (fresh_list))
+    # A registry can be supplied later by another plugin. Its absence, like a
+    # missing selected row or seam, is a dependency wait rather than bad syntax.
+    (if (== ($head requirement) List)
+      (then
+        (if_not (== requirement/.size 2)
+          (fail (HarnessError ^message "plugin requirement pair needs registry and key")))
+        (for value in requirement
+          (if (|| (!= ($head value) Str) (== value ""))
+            (fail (HarnessError ^message "plugin requirement names must be nonempty strings")))))
+      (elif (== ($head requirement) Map)
+        (if_not (&& (== ($size requirement) 1) (== ($head requirement/registry) Str)
+                    (!= requirement/registry ""))
+          (fail (HarnessError ^message "registry requirement must be {^registry NAME}"))))
+      (else
+        (if (|| (!= ($head requirement) Str) (== requirement ""))
+          (fail (HarnessError ^message "seam requirement must be a nonempty string"))))))
+  p)
+
+(fn describe_plugin_module [h : Harness, module, expected_id : Str, ^core_interface core_interface : Str = "", ^limits limits = nil] : Plugin
+  (var context (DescriptorContext ^module_id expected_id ^core_interface core_interface))
+  (var bounded (if ($absent? limits) (default_execution_limits) limits))
+  (var p (invoke_bounded module/init context bounded))
+  (validate_plugin_descriptor h expected_id p))
+
+(impl PluginHost for Host
+  (message execution_budget [] : Any (execution_budget))
+  (message defer [cleanup] : Any
+    (if_not ($runtime/callable? cleanup)
+      (fail (HarnessError ^message "defer requires a cleanup callback")))
+    (let h self/h)
+    (self/effects .defer (fn [] (cleanup_registry_context h cleanup)))
+    nil)
+  (message notify [message] : Any
+    (safe_publish ^revision self/notification_revision self/h self/owner message))
+  (message notifications [] : Any
+    (list_source_messages self/h self/owner))
+  (message notification_update [id : Str, changes] : Any
+    (update_notification ^revision self/notification_revision self/h self/owner id changes))
+  (message notification_clear [id : Str, revision : Int] : Any
+    (clear_source_message self/h self/owner id revision))
+  (message registry_names [] : Any
+    (registry_names self/h))
+  (message row_keys [registry_name : Str] : Any
+    (var record self)
+    (registry_row_keys record/h registry_name))
+  (message rows [registry_name : Str] : Any
+    (immutable_view (rows self/h registry_name)))
+  (message row [registry_name : Str, key : Str] : Any
+    (immutable_view (row self/h registry_name key)))
+  (message run_hooks [point : Str, context] : Any
+    (run_hooks self/h point context))
+  (message create_registry [spec] : Any
+    (var record self)
+    (validate_registry_spec spec)
+    (registry record/h spec/name ^spec spec ^owner record/owner)
+    (immutable_view {^name spec/name ^owner record/owner
+      ^unique (?? spec/unique false) ^ordered (?? spec/ordered false)}))
+  (message resolve [seam : Str] : Any
+    (var record self)
+    (bind_service (resolve record/h seam) record))
+  (message provide [seam : Str, value] : Str
+    (var record self)
+    (provide record/h record/owner seam value))
+  (message replace [seam : Str, value] : Str
+    (var record self)
+    (replace record/h record/owner seam value))
+  (message contribute [registry_name : Str, payload] : Str
+    (var record self)
+    (contribute record/h record/owner registry_name payload))
+  (message replace_contribution [registry_name : Str, payload] : Str
+    (var record self)
+    (contribute ^^replace record/h record/owner registry_name payload))
+  (message subscribe [selector, handler] : Any
+    (var record self)
+    (subscribe record/h record/owner selector handler))
+  (message emit_event [name : Str, payload] : Any
+    (var record self)
+    (if ($absent? record/h/event_store)
+      (fail (HarnessError ^message "plugin events require a durable event store")))
+    (var event_record (row_record record/h "event_types" name))
+    (if (== event_record void)
+      (fail (HarnessError ^message $"plugin event type ${name} is not registered")))
+    (var event_type event_record/payload)
+    (if (|| (!= event_type/origin "plugin") (!= event_type/owner record/owner))
+      (fail (HarnessError ^message $"plugin ${record/owner} does not own event type ${name}")))
+    (var checked
+      (if ($absent? event_type/schema)
+        payload
+        (invoke_owned_callable record/h record/owner event_type/schema [payload])))
+    (let context ($runtime/context))
+    (let session (if ($absent? context) nil (?? context/session nil)))
+    (let scope (if ($absent? session) "workspace" "session"))
+    (let stream (if ($absent? session) "workspace" ($to_str session)))
+    (append_plugin_event
+      record/h/event_store
+      scope
+      stream
+      record/owner
+      {^type name ^version event_type/version ^ignorable event_type/ignorable ^data checked}))
+  (message state [^session session = nil] : Any
+    (var record self)
+    (if ($absent? record/h/event_store) (return nil))
+    (let scope (if ($absent? session) "workspace" "session"))
+    (let stream (if ($absent? session) "workspace" ($to_str session)))
+    (plugin_state record/h/event_store scope stream record/owner))
+  (message update_state [value, ^session session = nil] : Any
+    (var record self)
+    (if ($absent? record/h/event_store)
+      (fail (HarnessError ^message "plugin state requires a durable event store")))
+    (let scope (if ($absent? session) "workspace" "session"))
+    (let stream (if ($absent? session) "workspace" ($to_str session)))
+    (let writer ($thaw record/state_writer))
+    (writer .put "at" ($to_str ($now)))
+    (var event (prepare_plugin_state ^writer writer record/h/event_store scope stream record/owner value))
+    (append_core_event ^projection record/owner record/h/event_store scope stream event)
+    value))
