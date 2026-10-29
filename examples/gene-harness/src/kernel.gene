@@ -72,12 +72,17 @@
     close_composition_state
     immutable_view])
 
+(protocol Composer
+  (message changed [] : Nil)
+  (message publishing? [] : Bool)
+  (message recompose [prepare] : Any))
+
 (type Registry ^props {^name Str ^unique Bool ^ordered Bool ^schema Any ^on_remove Any
   ^owner Str ^rows Any ^spec Any ^revision Str ^effects Any? ^owner_context Any? ^key Any? ^prepare Any?})
 
 (type RegistryRow ^props {^row_id Str ^owner Str ^registry Str ^key Str ^payload Any ^priority Int ^config_order Int ^acquired Int ^effects Any? ^cleanup_state Any?})
 
-(type Harness ^props {^plugins Any ^plugin_errors Any ^log Any ^log_hydrated Any ^bus Any ^registries Any ^ledger Any ^row_index Any ^next_row_id Any ^event_store Any ^event_scope Str ^event_stream Str ^plugin_policies Any ^plugin_depth Any ^workspace Any ^ui_epoch Str? ^readiness Any? ^registry_observer Any? ^composition Any? ^composition_entries Any? ^snapshots Any? ^publishing Any? ^publication_gate Any? ^published_plugins Any? ^notifications Any? ^ui_action_log Any? ^appearance Any? ^ui_defaults Any? ^manager_revision Any?})
+(type Harness ^props {^plugins Any ^plugin_errors Any ^log Any ^log_hydrated Any ^bus Any ^registries Any ^ledger Any ^row_index Any ^next_row_id Any ^event_store Any ^event_scope Str ^event_stream Str ^plugin_policies Any ^plugin_depth Any ^workspace Any ^ui_epoch Str? ^readiness Any? ^registry_observer Any? ^composition Any? ^composition_entries Any? ^snapshots Any? ^publishing Any? ^publication_gate Any? ^published_plugins Any? ^notifications Any? ^ui_action_log Any? ^appearance Any? ^ui_defaults Any? ^manager_revision Any? ^composer Any?})
 
 (type Host ^props {^h Harness ^owner Str ^effects Any ^notification_revision Str ^state_writer Any})
 
@@ -370,8 +375,7 @@
   nil)
 
 (fn publish_direct_registry_change [h : Harness]
-  (if (&& (! ($absent? h/snapshots)) (! h/publishing/.get) (! h/snapshots/closing/.get))
-    (publish_registry_snapshot h))
+  (if_not ($absent? h/composer) h/composer/.Composer:changed)
   nil)
 
 (fn rows [h : Harness, registry_name : Str]
@@ -682,13 +686,28 @@
 # single deferred cleanup removes exactly its rows and callbacks, so reconciles
 # need no registry draft and an unchanged plugin stays live across them.
 (fn cleanup_registry_context [h : Harness, thunk]
-  (if h/publishing/.get
+  (if h/composer/.Composer:publishing?
     (do
       (let publication ($cell true))
       (try
         ($runtime/with_context {^composition h/snapshots ^publication publication} thunk)
       ensure (publication .set false)))
     (registry_change h thunk)))
+
+# Keep the live Harness behind an identity handle. Registry table cloning
+# must not recursively thaw the Composer -> Harness back-reference.
+(type CordisComposer ^^private ^props {^h Cell}
+  (impl Composer
+    (message changed [] : Nil
+      (let h self/h/.get)
+      (if (&& (! h/publishing/.get) (! h/snapshots/closing/.get))
+        (publish_registry_snapshot h))
+      nil)
+    (message publishing? [] : Bool
+      (let h self/h/.get)
+      h/publishing/.get)
+    (message recompose [prepare] : Any
+      (reconcile_cordis_harness self/h/.get ^prepare prepare))))
 
 (type CordisRegistryHost ^^private
   ^props {^h Harness}
@@ -847,6 +866,7 @@
         ^default_limits nil ^reload_policy nil
         ^retirement (fn [ticket]
           (queue_retirement h/snapshots ticket ticket/.instances)))))
+  (set h/composer (CordisComposer ^h ($cell h)))
   (publish_registry_snapshot h)
   (if_not ($absent? event_store)
     (set event_store/observer
@@ -1153,13 +1173,13 @@
       (queue_composition_change h/snapshots {^id owner ^kind "seam"
         ^apply (fn [] (mutate_seam h owner seam change))})
       (return true)))
-  (if h/publishing/.get (return (change)))
+  (if h/composer/.Composer:publishing? (return (change)))
   # Dependency projections belong to a staged generation. Disposing an old
   # projection under the direct registry gate can deadlock its cleanup and
   # would also bypass outstanding composition leases.
   (run_composition_change h/snapshots (fn []
     (let result ($cell nil))
-    (reconcile_cordis_harness h ^prepare (fn [] (result .set (change))))
+    (h/composer .Composer:recompose (fn [] (result .set (change))))
     result/.get)))
 
 (fn provide [h : Harness, id : Str, seam : Str, value] : Str
