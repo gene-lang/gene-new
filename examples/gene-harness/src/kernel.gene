@@ -10,6 +10,7 @@
 # packages, `try`, and scoped impls.
 
 (mod kernel)
+
 (import ^from "./storage/plugin_metadata" [publication_metadata])
 
 (import ^from "./plugin_api" ^^export
@@ -22,45 +23,54 @@
     ExecutionLimits
     default_execution_limits
     response_execution_limits])
+
 (import ^from "./storage/state"
   [
     append_core_event
     append_plugin_event
     prepare_plugin_state
     plugin_state
-    copy_data
     core_event_size
     events_for
     flush_event_store])
+
 (import ^from "./storage/generated_event_catalog" [core_event_types])
+
 (import [HarnessError] ^from "./errors" ^^export)
+
 (import [validate_discovery_metadata] ^from "./registries/contracts")
+
 (import [builtin_registry_specs] ^from "./registries/builtins")
+
 (import [bind_service] ^from "./runtime/service_binding")
+
 (import [public_modules] ^from "./runtime/public_modules")
+
 (import [make_public_host revoke_public_host] ^from "./runtime/public_host")
+
 (import ^from "./notifications/publisher"
   [safe_publish update_notification list_source_messages clear_source_message])
+
 (import ^from "./runtime/call_supervision" [supervised_call])
+
 (import [execution_budget with_callback_budget] ^from "./runtime/execution_budget")
+
 (import ^from "./runtime/cordis_adapter"
   [RegistryHost retain_callback retained_callback? expire_scope_callbacks new_composition])
+
 (import ^from "." ^pkg "cordis" [LoaderOptions])
+
 (import ^from "./runtime/composition"
   [
     new_composition_state
     current_snapshot
     publish_snapshot
     queue_composition_change
-    take_composition_changes
     run_composition_change
     queue_retirement
     begin_close_composition_state
     close_composition_state
     immutable_view])
-
-(type CommandError ^props {^code Str ^message Str} ^impl [Error])
-(impl Error for CommandError)
 
 (type Registry ^props {^name Str ^unique Bool ^ordered Bool ^schema Any ^on_remove Any
   ^owner Str ^rows Any ^spec Any ^revision Str ^effects Any? ^owner_context Any? ^key Any? ^prepare Any?})
@@ -77,10 +87,10 @@
   (message apply [self call]
     (invoke_owned_callable self/h self/owner self/handler [((Path 0) call)])))
 
-# --- registry kernel -------------------------------------------------------
 
 (fn fresh_list []
   ($thaw #[]))
+
 (fn fresh_map []
   ($thaw #{}))
 
@@ -773,20 +783,20 @@
 # first thing worth observing: a plugin can watch its own dependencies come and
 # go without the kernel knowing anything about it.
 (type HarnessLog : HarnessEvent ^props {^kind Str ^text Str ^record Any?})
+
 (type HarnessFlushed : HarnessEvent ^props {^through Int})
+
 (type RoundChanged : HarnessEvent ^props {^session Str ^receipt Any})
+
 (type CommandChanged : HarnessEvent ^props {^session Str ^record Any})
+
 (type ModeChanged : HarnessEvent ^props {^session Str ^mode Any ^instance Any ^running Any ^reason Str})
+
 (type SessionChanged : HarnessEvent ^props {^record Any})
+
 (type CompositionChanged : HarnessEvent ^props {^revision Int})
 # A conversation card changed: a stored record, or live progress with ^transient.
 (type CardChanged : HarnessEvent ^props {^session Str ^card Any ^event Str})
-
-(type PluginInstalled : HarnessEvent ^props {^plugin Str})
-(type PluginActivated : HarnessEvent ^props {^plugin Str})
-(type PluginDeactivated : HarnessEvent ^props {^plugin Str ^reason Str})
-(type PluginFailed : HarnessEvent ^props {^plugin Str ^message Str})
-(type PluginUninstalled : HarnessEvent ^props {^plugin Str})
 
 (fn new_harness
   [^event_store event_store = nil,
@@ -1136,7 +1146,6 @@
     (publish h (HarnessFlushed ^through (- (?? next 1) 1)))
     flushed))
 
-# --- seams -----------------------------------------------------------------
 
 (fn mutate_seam [h : Harness, owner : Str, seam : Str, change]
   (if (queue_registry_change? h)
@@ -1219,7 +1228,6 @@
   (fail
     (HarnessError ^message $"unknown documentation ${name}; valid chapters: ${listed}. Use (discover \"topic\" ^kind \"docs\") to find the relevant chapter.")))
 
-# --- observation (design §2.2: the bus is for observing, seams for swapping) -
 
 (fn subscribe [h : Harness, id : Str, selector, handler] : Any
   # A plugin's subscription is an effect like any other: recorded against the
@@ -1231,7 +1239,6 @@
   (contribute h id "subscriptions" {^name "" ^sub sub})
   sub)
 
-# --- plugin descriptor -------------------------------------------------
 
 (fn validate_plugin_descriptor [h : Harness, expected_id : Str, p : Plugin]
   (if_not (== p/id expected_id)
@@ -1457,7 +1464,6 @@
       (log_append h "lifecycle" $"observer failed: ${err/message}")))
   nil)
 
-# --- lifecycle -------------------------------------------------------------
 #
 # A plugin is in exactly one of three states:
 #
@@ -1500,19 +1506,6 @@
   (for id in (plugin_ids h)
     (out .push $"${id}:${(status_of h id)}"))
   out)
-
-(fn requirements_of [p : Plugin] : Any
-  (?? p/requires (fresh_list)))
-
-(fn requirement_registry [requirement] : Str
-  (if (== ($head requirement) List)
-    ($to_str requirement/0)
-    "seams"))
-
-(fn requirement_key [requirement] : Str
-  (if (== ($head requirement) List)
-    ($to_str requirement/1)
-    ($to_str requirement)))
 
 (fn install [h : Harness, p : Plugin] : Str
   # Installing registers the plugin and reconciles the composition. A failed
@@ -1569,7 +1562,6 @@
   (flush_harness h)
   {^status (if (== errors/.size 0) "closed" "recovery_required") ^errors errors})
 
-# --- runtime install (design §4 item 4) ------------------------------------
 
 (fn module_dir [path : Str] : Str
   # The directory holding a module, from its own `this_mod/.path`. Plugin paths
