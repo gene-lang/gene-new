@@ -31,6 +31,10 @@ read_all read_one lex_all print println
 Arithmetic is prefix, and **`//` is remainder, not floor division**: `(/ 7 2)`
 is `3` (Int division truncates, `(/ 7.0 2)` is `3.5`) while `(// 7 2)` is `1`.
 
+`$absent?` is true only for `nil` and `void`; `$present?` is true for every
+other value, including `false`, zero, empty strings and empty collections.
+Prefer `($present? value)` to `(! ($absent? value))`.
+
 `map`, `filter` and `filter_map` accept eager collections and streams. A
 stream remains lazy; `into` collects it and `each` drains it for effects.
 

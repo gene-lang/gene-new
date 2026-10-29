@@ -6,6 +6,30 @@ Applications and examples are also opportunities to test the language itself. If
 
 ### Preferred Gene style
 
+Prefer `($present? x)` to `(! ($absent? x))`. Presence means neither `nil` nor
+`void`; `false`, zero, empty strings and empty collections are still present.
+
+Prefer an `elif` chain to nested `if` forms in successive else branches. Use
+parenthesized `then`, `elif` and `else` clauses, even for one-expression arms:
+
+```gene
+(if x
+  (then do_x)
+  (elif y do_y)
+  (elif z do_z)
+  (else do_something))
+```
+
+When the branches compare the same value against literals, prefer `match` with
+`when` arms and an explicit `else` instead of repeated equality tests:
+
+```gene
+(match x
+  (when 1 do_1)
+  (when 2 do_2)
+  (else do_3))
+```
+
 Prefer the path spelling for a zero-argument message send on a simple symbol or path receiver: `(a .x)` becomes `a/.x`. This also applies to protocol-qualified messages, such as `resource/.IoResource:close`.
 
 Keep sends with arguments parenthesized, such as `(a .x value)`. Keep the explicit send for literal or computed receivers, such as `([1 2] .size)` and `((make_a) .x)`, and for parent dispatch, such as `(super .x)`. Preserve quoted syntax as data rather than rewriting its structure for style.

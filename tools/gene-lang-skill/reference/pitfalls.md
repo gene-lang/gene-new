@@ -128,8 +128,9 @@ Bind the expression first.
 
 
 
-**`elif` is a clause, not an else-position form.** Once you use `elif`, every
-branch must be a clause — a compact `if` cannot take one as its third argument:
+**An `elif` chain starts with a `then` clause.** Every branch is parenthesized,
+including single-expression arms. A compact `if` cannot take an `elif` clause
+as its third argument:
 
 ```gene
 (if a (then x) (elif b y) (else z))   # right
@@ -173,7 +174,9 @@ way copies everything:
 Writing `(else nil)` there is idiomatic.
 
 **`nil` and `void` are different.** An unset prop-schema field reads `void`; an
-omitted named parameter binds `nil`. `$absent?` covers both.
+omitted named parameter binds `nil`. `$absent?` covers both; `$present?` is its
+direct opposite. Prefer `($present? x)` to `(! ($absent? x))`. Do not substitute
+a truthiness check: `false` is present.
 
 **Direct construction never runs `ctor`.** `(T ^n 5)` fills the schema;
 `(new T 5)` runs the constructor. Neither is a fallback for the other.
@@ -186,6 +189,8 @@ The transformations `fmt` will *not* make for you:
 
 - Replacing `(if cond (do …))` with `if_yes`, or `(if cond nil …)` with `if_not`.
 - Introducing `elif` instead of a nested `else (if …)`.
+- Using `match` instead of repeated equality branches on the same value.
+- Replacing `(! ($absent? x))` with `($present? x)`.
 - Dropping an explicit trailing `nil` arm from a one-sided `if`.
 - Choosing `receiver/.message` over `(receiver .message)` for an unqualified
   bare send. Qualified zero-argument sends restore the short spelling.

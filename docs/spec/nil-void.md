@@ -4,6 +4,18 @@
 with operation-specific normalization. `T?` means `T | Nil`; it excludes Void.
 Neither singleton type is `Never`.
 
+## Presence predicates
+
+`($absent? value)` is true exactly for `nil` and `void`.
+`($present? value)` is its opposite. Prefer the direct positive predicate to
+`(! ($absent? value))`; it is not a truthiness or emptiness check.
+
+```gene
+[($present? nil) ($present? void) ($present? false) ($present? 0)
+ ($present? "") ($present? [])]
+# [false false true true true true]
+```
+
 ## Fixed parameters
 
 `x : T?` and `^x : T?` have an implicit nil default. Explicit `(? T)`, unions

@@ -4,6 +4,21 @@ Standard libraries live under `gene`; `$str` is shorthand for `gene/str`.
 Import names when you use them repeatedly. These recipes show the common path;
 [examples](../examples/) contain larger programs.
 
+## Presence
+
+Use `($present? value)` to test for a value other than `nil` or `void`, and
+`($absent? value)` to test for either absence value. Prefer `$present?` to
+negating `$absent?`.
+
+```gene runnable
+[($present? nil) ($present? void) ($present? false) ($present? 0)
+ ($present? "") ($present? [])]
+# [false false true true true true]
+```
+
+Presence is separate from truthiness and emptiness: `false`, zero, empty
+strings and empty collections are all present.
+
 ## Numbers
 
 Int `/` truncates toward zero and `//` computes the matching remainder using

@@ -30,8 +30,18 @@ implicit sequences:
   value)
 ```
 
-Full clauses only when every branch does real work. Prefer `elif` over an `else`
-whose sole expression is another `if` — it keeps dispatch chains at one indent:
+Prefer `elif` over an else arm whose sole expression is another `if`. Keep the
+branches at one level, using parenthesized clauses even for single expressions:
+
+```gene
+(if x
+  (then do_x)
+  (elif y do_y)
+  (elif z do_z)
+  (else do_something))
+```
+
+Each clause can also contain several expressions, returning the last:
 
 ```gene
 (if ready
@@ -48,7 +58,23 @@ whose sole expression is another `if` — it keeps dispatch chains at one indent
 
 `&&`, `||`, `!`, and `??` (absent-default) round out the boolean surface.
 
+Use `($present? value)` rather than `(! ($absent? value))`. These predicates
+test absence, not truthiness: only `nil` and `void` are absent. `false`, zero,
+an empty string and an empty collection are present.
+
 ## Match
+
+Prefer `match` when branches compare the same value against literals, rather
+than nesting `if (== value ...)` tests. The matched value is evaluated once:
+
+```gene
+(match x
+  (when 1 do_1)
+  (when 2 do_2)
+  (else do_3))
+```
+
+Use `if`/`elif` for different predicates, such as ranges or unrelated conditions.
 
 `match` may keep an explicit `(else nil)` — unlike `if`, a missing `else` is not
 a nil default. Patterns destructure lists, maps, typed values, and enum payloads:

@@ -105,6 +105,19 @@ line two"""
 
 # Compact conditions, guard sequences, and full clauses.
 
+# Use the positive presence predicate instead of negating absence.
+(fn value_presence [value] : Str
+  (if ($present? value)
+    "present"
+    "absent"))
+
+# Match one value instead of nesting equality tests on that value.
+(fn number_label [value : Int] : Str
+  (match value
+    (when 1 "one")
+    (when 2 "two")
+    (else "other")))
+
 (fn status_text [status : Status] : Str
   (match ^!exhaustive status
     (when Status/pending "pending")
@@ -112,11 +125,14 @@ line two"""
     (when (Status/failed message)
       $"failed: ${message}")))
 
+# Keep alternative conditions at one level instead of nesting else branches.
 (fn clamp [value : Int, low : Int, high : Int] : Int
   (if (< value low)
-    low
-    (if (> value high)
-      high
+    (then
+      low)
+    (elif (> value high)
+      high)
+    (else
       value)))
 
 (fn note_activation [user : User, events]

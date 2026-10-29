@@ -261,11 +261,30 @@ selected for a receiver. Type queries describe direct data construction;
 
 Only false, nil, and void are falsy. Zero and an empty string are truthy.
 `if` returns a value; `do` groups expressions and returns the last one.
+For presence, prefer `($present? x)` to `(! ($absent? x))`. Only `nil` and
+`void` are absent; `false`, zero, empty strings and empty collections are present.
+
+Prefer an `elif` chain to nesting another `if` in each else branch:
 
 ```gene runnable
 (fn sign [n : Int] : Str
-  (if (< n 0) "negative" (if (== n 0) "zero" "positive")))
+  (if (< n 0)
+    (then "negative")
+    (elif (== n 0) "zero")
+    (else "positive")))
 (sign -3) # "negative"
+```
+
+When branches test the same value against literals, prefer `match` over a
+chain of equality tests. The matched value is evaluated once:
+
+```gene runnable
+(fn number_label [x : Int] : Str
+  (match x
+    (when 1 "one")
+    (when 2 "two")
+    (else "other")))
+(number_label 2) # "two"
 ```
 
 Use `if_yes` or `if_not` for a condition followed by several expressions.

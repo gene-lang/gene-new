@@ -125,6 +125,16 @@ drops only void. `to_stream` creates a cursor and `into` consumes it.
 for guards — their tails are implicit sequences, so a `do` wrapper is
 redundant. Reserve `then`/`elif`/`else` for branches that all do real work.
 
+**Prefer direct presence tests.** Write `($present? x)`, not
+`(! ($absent? x))`. Both `nil` and `void` are absent; `false`, zero, empty
+strings and empty collections are present.
+
+**Keep dispatch at one level.** Prefer `elif` to an else branch containing
+another `if`. Use parenthesized `(then ...)`, `(elif ...)` and `(else ...)`
+clauses, even for single expressions. When each branch compares the same value
+with a literal, use `match` with `when` arms and an explicit `else`; it evaluates
+the value once.
+
 **Only `nil`, `false`, and `void` are falsy.** `""`, `0`, and `[]` are truthy,
 so test emptiness explicitly: `(== s "")`, `xs/.empty?`, `($absent? v)`.
 
