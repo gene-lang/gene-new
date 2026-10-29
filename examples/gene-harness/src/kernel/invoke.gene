@@ -1,0 +1,40 @@
+# Bounded invocation, independent of registry and composition storage.
+(mod kernel_invoke)
+(import [ExecutionLimits] ^from "../plugin_api")
+(import [HarnessError] ^from "../errors")
+(import [supervised_call] ^from "../runtime/call_supervision")
+
+(fn invoke_bounded [callable, argument, limits : ExecutionLimits]
+  (var program (quote ($runtime/guard_call callable argument)))
+  (var guarded
+    (eval ^in (env ^bindings {^callable callable ^argument argument} ^imports [$runtime] ^policy {^max_memory_mb limits/max_memory_mb ^timeout_ms limits/timeout_ms})
+      program))
+  (if guarded/ok
+    guarded/value
+    (fail (HarnessError ^message $"plugin panic: ${guarded/message}"))))
+
+(fn apply_argument_list [bundle]
+  (bundle/callable bundle/args...))
+
+(fn invoke_supervised [callable, args, limits : ExecutionLimits]
+  (let outcome (supervised_call callable args limits))
+  (match ^!exhaustive outcome
+    (when (TaskOutcome/ok value)
+      value)
+    (when (TaskOutcome/error error)
+      (fail error))
+    (when (TaskOutcome/panic message)
+      (fail (HarnessError ^message $"plugin panic: ${message}")))
+    (when TaskOutcome/cancelled
+      (fail (HarnessError ^message "plugin invocation was cancelled or exceeded its deadline")))))
+
+(fn configure_plugin_module [module, limits : ExecutionLimits]
+  (var policy
+    {^max_memory_mb limits/max_memory_mb ^timeout_ms limits/timeout_ms})
+  (var program (quote ($runtime/configure_module module policy)))
+  (eval ^in (env ^bindings {^module module ^policy policy} ^imports [$runtime]) program))
+
+(fn execution_limits_data [limits]
+  (if ($absent? limits) (return nil))
+  {^max_memory_mb limits/max_memory_mb
+   ^timeout_ms limits/timeout_ms})
