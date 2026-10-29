@@ -1,20 +1,18 @@
 (import $test [describe it])
-(import $store/fs [Store])
 (import [isolated run_spec] ^from "../../support")
 (import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
 (import [Profile] ^from "../../../src/profiles/profile")
 (import [provider_offline] ^from "../../../src/builtin/provider_offline")
 (import [PluginHost] ^from "../../../src/plugin_api")
-(import [row provide registry_names] ^from "../../../src/kernel")
+(import [row registry_names] ^from "../../../src/kernel")
 (import [register_plugin composition_entries composition_revision commit_composition
-  load_entry_descriptor revert_plugin plugin_history verify_stored_entry stage_plugin_entry]
+  load_entry_descriptor revert_plugin verify_stored_entry stage_plugin_entry]
   ^from "../../../src/storage/workspace")
 (import [validate_plan apply_plan] ^from "../../../src/runtime/plugin_plans")
 (import [acquire_snapshot release_snapshot] ^from "../../../src/runtime/composition")
 (import [submit_command command_receipt] ^from "../../../src/runtime/commands")
 (import [mode_state submit_mode_input close_mode] ^from "../../../src/runtime/input_modes")
 (import [assemble_instructions] ^from "../../../src/agents/instructions")
-(import [archived_record] ^from "../../../src/storage/plugin_history")
 (import [host_build] ^from "../../../src/runtime/host_identity")
 
 (fn command [runtime, input]
@@ -183,9 +181,7 @@
           (try
             ($assert (! ($absent? (row final_runtime/h "functions" "compat_version"))) ($to_str mode ": after restart"))
             ($assert (== (invoke final_runtime "compat_version") 3))
-          ensure (close_runtime final_runtime))))))
-
-)
+          ensure (close_runtime final_runtime)))))))
 
 (describe "Versioned activation lifetimes"
   (it "keeps a stored public receiver alive through leased callbacks removal and cleanup then revokes it" []
@@ -198,6 +194,12 @@
         (try
           (let installed (register_plugin runtime/workspace runtime/h "compat" (public_source 3 marker)))
           ($assert (== installed/status "ready") ($to_str installed))
+          (let instructions (assemble_instructions runtime {^kind "interactive"}))
+          ($assert ($str/contains? instructions $"public:${root}:interactive") instructions)
+          (let nested (command runtime "/compat_nested (+ 21 21)"))
+          ($assert (== nested/item/value "42") ($to_str nested))
+          ($assert (try (invoke runtime "compat_retained") false
+            catch Any (== $err/code "command_required")))
           (let old_host (invoke runtime "compat_handle"))
           (let lease (acquire_snapshot runtime/h/snapshots))
           (let old_callback (/fn (row runtime/h "functions" "compat_version")))
