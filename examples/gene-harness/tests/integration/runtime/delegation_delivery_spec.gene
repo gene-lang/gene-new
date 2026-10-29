@@ -14,7 +14,7 @@
   (loop
     (let receipt (round_receipt controller "default" round/id))
     (if (! (["running" "waiting"] .contains? receipt/state)) (return receipt))
-    ($assert (< ($os/monotonic_ms) due) $"Round did not settle: ${receipt}; ${controller/runtime/delegations/last_error}")
+    ($assert (< ($os/monotonic_ms) due) $"Round did not settle: ${receipt}; ${controller/runtime/services/values/delegations/last_error}")
     ($sleep 10)))
 
 (describe "Delegation delivery boundaries"
@@ -44,15 +44,15 @@
           (let due (+ ($os/monotonic_ms) 15000))
           (while (! started/.get)
             ($assert (< ($os/monotonic_ms) due)) ($sleep 5))
-          (let worker runtime/delegations/worker)
+          (let worker runtime/services/values/delegations/worker)
           worker/.cancel worker/.join
-          (let before (delegation_blocks runtime/delegations "default"))
+          (let before (delegation_blocks runtime/services/values/delegations "default"))
           (let child (load_session runtime/sessions before/records/0/session))
           (release .set true)
           (while (!= child/round/.get/state "done")
             ($assert (< ($os/monotonic_ms) due)) ($sleep 5))
           (cancel_round controller "default" round/id)
-          (let settled (delegation_blocks runtime/delegations "default"))
+          (let settled (delegation_blocks runtime/services/values/delegations "default"))
           ($assert (== settled/records/0/state "done"))
           ($assert (! settled/records/0/seen))
           (let next (submit_round controller "default" "collect" 2 "Collect the conclusion."))
@@ -87,7 +87,7 @@
           (let round (submit_round controller "default" "inflight" 1 "Coordinate the audit."))
           ($assert (== (/state (finish controller round)) "done"))
           ($assert (== parent_calls/.get 3))
-          (let blocks (delegation_blocks runtime/delegations "default"))
+          (let blocks (delegation_blocks runtime/services/values/delegations "default"))
           ($assert blocks/records/0/seen)
         ensure (close_round_controller controller) (close_runtime runtime)))))
 
@@ -114,11 +114,11 @@
         (try
           (let round (submit_round controller "default" "first" 1 "Coordinate the audit."))
           ($assert (== (/state (finish controller round)) "failed"))
-          (let before (delegation_blocks runtime/delegations "default"))
+          (let before (delegation_blocks runtime/services/values/delegations "default"))
           ($assert (! before/records/0/seen))
           (let next (submit_round controller "default" "second" 2 "Continue."))
           ($assert (== (/state (finish controller next)) "done"))
-          (let after (delegation_blocks runtime/delegations "default"))
+          (let after (delegation_blocks runtime/services/values/delegations "default"))
           ($assert after/records/0/seen)
           ($assert (== child_calls/.get 1))
         ensure (close_round_controller controller) (close_runtime runtime)))))
@@ -142,7 +142,7 @@
         (try
           (let round (submit_round controller "default" "depth" 1 "Run the audit."))
           ($assert (== (/state (finish controller round)) "done"))
-          (let blocks (delegation_blocks runtime/delegations "default"))
+          (let blocks (delegation_blocks runtime/services/values/delegations "default"))
           ($assert (== blocks/records/.size 1))
           ($assert (== blocks/records/0/state "failed"))
           ($assert (== blocks/records/0/turns_used 1))

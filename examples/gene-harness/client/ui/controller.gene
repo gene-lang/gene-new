@@ -1,5 +1,7 @@
 # Workspace panel requests, actions and layout; independent of chat drafts.
 (mod harness_ui_controller ^profile web)
+(import [storage_get storage_remove] ^from "../workspace_storage.gene")
+(import [api_root] ^from "../../src/web/contract.gene")
 (import ^from "../notices.gene" [Notices])
 (import ^from "./model.gene"
   [
@@ -25,7 +27,7 @@
 (import ^from "./router.gene" [navigate update_views install_router capture_view restore_focus update_url layout])
 
 (fn action_notice [ui : UiClient, pending : Any, message : Str, severity : Str = "info", sticky : Bool = true] : Void
-  (notice ^key (text pending/request/input_id "legacy-action") ^severity severity ^sticky sticky ^action (if (&& sticky (! (flag pending/settled)) (! ($absent? ui/pending)) (== (text pending/format) "2")) (fn [] : Void (if_yes (== (text ui/pending/request/input_id) (text pending/request/input_id)) (resolve_action ui true))) nil) ^origin {^workspace ui/workspace ^component pending/request/component ^instance pending/request/instance ^arguments pending/request/named ^view_state pending/view_state ^action_id pending/request/input_id}
+  (notice ^key (text pending/request/input_id) ^severity severity ^sticky sticky ^action (if (&& sticky (! (flag pending/settled)) (! ($absent? ui/pending))) (fn [] : Void (if_yes (== (text ui/pending/request/input_id) (text pending/request/input_id)) (resolve_action ui true))) nil) ^origin {^workspace ui/workspace ^component pending/request/component ^instance pending/request/instance ^arguments pending/request/named ^view_state pending/view_state ^action_id pending/request/input_id}
     ui
     message))
 
@@ -60,7 +62,7 @@
           (clear_saved_drafts ui pending)
           (action_notice ui pending ""))
         (action_notice ui pending (text record/display status) "error"))
-      ($session_storage/remove (pending_key ui))
+      (storage_remove (pending_key ui))
       (set ui/pending nil)
       (set ui/last_data "")
       (refresh ui)))
@@ -84,7 +86,7 @@
   (sync_controls ui)
   (ui/api
     "POST"
-    "/api/v8/ui/actions"
+    $"${(api_root)}/ui/actions"
     pending/request
     (fn [code : Int, data : Any] : Void
       (if_yes (|| ($absent? ui/pending) (!= (text ui/pending/request/input_id) (text pending/request/input_id)))
@@ -93,7 +95,7 @@
         (accept_receipt ui data)
         (if (&& (>= code 400) (< code 500) (! uncertain) (== (text pending/command_id) ""))
           (do
-            ($session_storage/remove (pending_key ui))
+            (storage_remove (pending_key ui))
             (set ui/pending nil)
             (action_notice
               ui
@@ -119,7 +121,7 @@
   (set ui/resolving true)
   (ui/api
     "GET"
-    $"/api/v8/ui/actions/${($url/encode_component id)}"
+    $"${(api_root)}/ui/actions/${($url/encode_component id)}"
     nil
     (fn [code : Int, data : Any] : Void
       (set ui/resolving false)
@@ -212,7 +214,7 @@
   (sync_controls ui)
   (ui/api
     "POST"
-    "/api/v8/ui/render"
+    $"${(api_root)}/ui/render"
     {
       ^session ui/session
       ^component ui/descriptor/name
@@ -285,7 +287,7 @@
 (fn restore_pending [ui : UiClient, workspace : Str] : Void
   (if_yes (|| (== workspace "") (== workspace ui/workspace)) (return))
   (set ui/workspace workspace)
-  (var saved (?? ($session_storage/get (pending_key ui)) ""))
+  (var saved (?? (storage_get (pending_key ui)) ""))
   (if_yes (!= saved "")
     (set ui/pending (try ($json/parse saved) catch Any nil))
     (if_not ($absent? ui/pending)
@@ -293,7 +295,7 @@
         (do
           (set ui/pending/uncertain true)
           (action_notice ui ui/pending "A saved action needs receipt recovery." "error"))
-        (action_notice ui ui/pending "Outcome unknown — recorded before an upgrade. Dismiss acknowledges this notice without repeating the Save." "error"))))
+        (do (storage_remove (pending_key ui)) (set ui/pending nil)))))
   (sync_controls ui))
 
 (fn action_metadata [ui : UiClient, data : Any] : Void
@@ -410,7 +412,7 @@
       (if_yes (!= id "")
         (ui/api
           "POST"
-          $"/api/v8/ui/actions/${($url/encode_component id)}/cancel"
+          $"${(api_root)}/ui/actions/${($url/encode_component id)}/cancel"
           {}
           (fn [code : Int, data : Any] : Void
             (notice ui (if (== code 200) "Cancellation requested; effects may already have occurred."
@@ -418,9 +420,9 @@
   ($dom/add_event_listener ($dom/element "ui_dismiss_pending") "click"
     (fn [event : Any] : Void
       (if_yes ($absent? ui/pending) (return))
-      (notice ^key (text ui/pending/request/input_id "legacy-action")
+      (notice ^key (text ui/pending/request/input_id)
         ^origin {^workspace ui/workspace ^component ui/pending/request/component} ui "")
-      ($session_storage/remove (pending_key ui))
+      (storage_remove (pending_key ui))
       (set ui/pending nil)
       (sync_controls ui)))
   ui)

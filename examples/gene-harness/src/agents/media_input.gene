@@ -1,6 +1,6 @@
 (mod media_input)
 (import [open_media_store media_record media_bytes media_text MediaError] ^from "../storage/media")
-(import [byte_prefix] ^from "../text")
+(import [byte_prefix] ^from "../public/text")
 (import [media_document] ^from "../storage/documents")
 
 (fn image_part [store, id : Str, detail : Str, inventory]
@@ -17,7 +17,7 @@
   (let result [])
   (var store nil)
   (for message in messages
-    # Legacy/direct callers can supply already-expanded images. These have no
+    # Direct callers can supply already-expanded images. These have no
     # durable media identity, so the recorder must omit their prepared body.
     (if_not ($absent? inventory)
       (for image in (?? message/images [])

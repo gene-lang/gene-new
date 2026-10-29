@@ -6,7 +6,7 @@
 (import [gene_reference] ^from "../../../src/builtin/gene_reference")
 (import [budget_advisory] ^from "../../../src/builtin/budget_advisory")
 (import [create_session load_session unload_session require_record] ^from "../../../src/runtime/sessions")
-(import [new_round_controller submit_round continue_round round_receipt answer_round close_round_controller]
+(import [submit_round continue_round round_receipt answer_round close_round_controller]
   ^from "../../../src/runtime/round_controller")
 (import [events_for] ^from "../../../src/storage/state")
 (import [scripted_profile] ^from "../../../src/profiles/scripted")
@@ -90,10 +90,7 @@ END
         (let controller (test_controller runtime provider))
         (try
           (let receipt (submit_round controller "default" "first" 1 prompt))
-          (controller/watchers
-            .get
-            ; .get "default"
-            ; .join)
+          ((/watcher (controller/rounds/.get .get "default")) .join)
           (let finished (round_receipt controller "default" receipt/id))
           ($assert (== finished/state "paused") ($to_str finished))
           ($assert (== finished/reason "turn_limit"))
@@ -114,10 +111,7 @@ END
           (let retried_metadata (require_record runtime/sessions "default"))
           ($assert retried_metadata/attention "idempotent retry acknowledged failure")
           (let continued (continue_round controller "default" receipt/id "manual"))
-          (controller/watchers
-            .get
-            ; .get "default"
-            ; .join)
+          ((/watcher (controller/rounds/.get .get "default")) .join)
           (let completed (round_receipt controller "default" continued/id))
           ($assert (== completed/state "done") "continuation failed")
           (let completed_metadata (require_record runtime/sessions "default"))
@@ -164,10 +158,7 @@ END
         (let controller (test_controller runtime provider))
         (try
           (let receipt (submit_round controller "default" "attachment" 1 "write attachment"))
-          (controller/watchers
-            .get
-            ; .get "default"
-            ; .join)
+          ((/watcher (controller/rounds/.get .get "default")) .join)
           (let finished (round_receipt controller "default" receipt/id))
           ($assert (== finished/state "done") $"attachment round failed: ${finished}")
           ($assert (== ($fs/read_text path) body) "attachment execution wrote an elided stub")
@@ -218,8 +209,7 @@ END
           (let b (submit_round controller "b" "request-b" 1 "ask"))
           (let duplicate (submit_round controller "a" "request-a" 1 "calculate"))
           ($assert (== duplicate/id a/id) "submission retry changed its round")
-          (for [session watcher] in controller/watchers/.get
-            watcher/.join)
+          (for [session frame] in controller/rounds/.get frame/watcher/.join)
           (let a_done (round_receipt controller "a" a/id))
           (let b_waiting (round_receipt controller "b" b/id))
           ($assert (== a_done/state "done") $"a failed: ${a_done}")
@@ -227,10 +217,7 @@ END
           ($assert (unload_session runtime/sessions "b") "waiting session could not unload")
           (load_session runtime/sessions "b")
           (answer_round controller "b" b_waiting/questions/id {^name "Ada"})
-          (controller/watchers
-            .get
-            ; .get "b"
-            ; .join)
+          ((/watcher (controller/rounds/.get .get "b")) .join)
           (let b_done (round_receipt controller "b" b/id))
           ($assert (== b_done/state "done") $"question answer did not resume the round: ${b_done}")
           (let transcript (events_for runtime/events "session" "a"))
@@ -251,10 +238,10 @@ END
       (fn [workspace]
         (let runtime (open_runtime workspace "default"
           (scripted_profile ["(Outcome ^^done ^reply \"from row\")"])))
-        (let controller (new_round_controller runtime))
+        (let controller (test_controller runtime nil))
         (try
           (let accepted (submit_round controller "default" "scripted" 1 "go"))
-          (controller/watchers .get; .get "default"; .join)
+          ((/watcher (controller/rounds/.get .get "default")) .join)
           (let receipt (round_receipt controller "default" accepted/id))
           ($assert (== receipt/state "done")
             $"provider row did not complete the round: ${receipt/message}")

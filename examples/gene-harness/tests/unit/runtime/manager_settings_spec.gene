@@ -25,9 +25,8 @@
         ($assert (== ((Path "port") (read_workspace_settings root)) 0))
         (write_workspace_settings
           root
-          {^version 1 ^alias "  My project  " ^port 8091 ^role "manager"})
+          {^version 1 ^port 8091 ^role "manager"})
         (let saved (read_workspace_settings root))
-        ($assert ($absent? saved/alias) "A legacy alias was kept.")
         ($assert (== saved/port 8091))
         (for bad in [{^port 12} {^port -1} {^port 65536} {^port "8092"} {^alias "renamed"} {^role "other"}]
           (var failed false)

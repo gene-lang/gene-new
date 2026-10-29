@@ -10,6 +10,8 @@
 
 (fn validate_composition_changed_event [payload]
   (require_event_fields payload ["type" "entry" "operation" "previous_digest" "new_digest" "revision" "session" "turn"] "composition_changed")
+  (if (|| (!= ($head payload/turn) Int) (< payload/turn 0))
+    ($panic "composition/changed turn must be a nonnegative integer"))
   payload)
 
 (fn validate_console_event [payload]

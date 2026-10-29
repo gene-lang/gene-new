@@ -2,15 +2,15 @@
 (import [participant_quarantine quarantine_participant] ^from "../storage/participant_health")
 (import [CallbackCancelled] ^from "./execution_budget")
 (import [run_composition_change] ^from "./composition")
-(import [byte_prefix] ^from "../text")
+(import [byte_prefix] ^from "../public/text")
 
 (fn participant_excluded? [runtime, definition]
-  (if (|| (== definition/_host true) ($absent? definition/_owner)) (return false))
+  (if (|| (== definition/_host true) (== definition/_mandatory true) ($absent? definition/_owner)) (return false))
   (let saved (participant_quarantine runtime/workspace definition/_owner))
   (&& (! ($absent? saved)) (== saved/digest definition/_source_digest)))
 
 (fn record_participant_fault [runtime, definition, phase : Str, error]
-  (if (|| (== definition/_host true) ($absent? runtime/workspace)
+  (if (|| (== definition/_host true) (== definition/_mandatory true) ($absent? runtime/workspace)
           (! ($str/starts_with? (?? definition/_source_digest "") "sha256:"))) (return nil))
   # Operator cancellation is not evidence of a faulty participant. A callback
   # deadline is reported separately by its supervised contributor guard.

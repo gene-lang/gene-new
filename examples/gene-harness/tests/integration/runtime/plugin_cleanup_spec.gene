@@ -74,7 +74,8 @@
         (let h (new_harness))
         (let owner ($cell nil))
         (try
-          (install h (Plugin ^id "live" ^activate (fn [host] (owner .set host/effects))))
+          (install h (Plugin ^id "live" ^activate (fn [host] nil)))
+          (owner .set (/effects (h/plugin_policies/.get .get "live")))
           (fn marker [value] (fn [] value))
           (for batch in ($range 0 8)
             (let retired ($cell nil))

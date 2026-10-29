@@ -1,6 +1,7 @@
 (mod turn_loop)
 (import ^from "../runtime/composition" [acquire_snapshot release_snapshot])
 (import ^from "./harness_turn" [evaluate_harness_turn])
+(import [ui_publication_preview] ^from "../ui/views")
 (import ^from "./instructions" [assemble_instructions])
 (import ^from "./history"
   [
@@ -11,11 +12,11 @@
     bounded_request
     compact_history
     history_state
-    write_body
     read_body])
 (import [pending_request replace_pending_request] ^from "./history")
+(import [next_request admit_next_request] ^from "./next_request")
 (import [operator_round? collection_turns] ^from "../runtime/round_policy")
-(import ^from "../text" [byte_prefix])
+(import ^from "../public/text" [byte_prefix])
 (import ^from "./provider_selection" [readiness_report select_provider session_settings])
 (import ^from "./model_call" [call_model])
 (import ^from "./hooks" [history_policy request_prepare])
@@ -28,7 +29,7 @@
 (import [begin_turn_transaction run_turn_phase finish_turn_transaction ParticipantFailure]
   ^from "../runtime/turn_participants")
 (import [participant_inputs participant_bindings validate_participants commit_participants round_limit_participants
-  request_source request_sources] ^from "./turn_participation")
+  request_source request_sources finish_participant_outcome] ^from "./turn_participation")
 
 (type TurnReadinessFailure ^props {^message Str} ^impl [Error])
 (impl Error for TurnReadinessFailure)
@@ -137,8 +138,9 @@
       (update_session runtime/sessions session {^^has_registration})))
   (if (== outcome/attention true) (update_session runtime/sessions session {^^attention}))
   (if (&& reply (! ($absent? outcome/reply)) (!= outcome/reply ""))
-    (transcript runtime session {^type "reply" ^turn number ^round round/id
-      ^text outcome/reply ^audio_reply outcome/audio_reply ^final (== result/kind "done")}))
+    (transcript runtime session ((?? result/reply_fields {}) .assoc "type" "reply"
+      ; .assoc "turn" number ; .assoc "round" round/id ; .assoc "text" outcome/reply
+      ; .assoc "final" (== result/kind "done"))))
   nil)
 
 (fn suspension_result [suspension, round, request : Str, count : Int, number : Int]
@@ -360,7 +362,9 @@
       (let bindings (participant_bindings transaction))
       (set stage "response/evaluate")
       (set result
-        (evaluate_harness_turn ^session session ^round round/id ^reviewer selected ^lease lease
+        (evaluate_harness_turn ^session session ^round round/id ^reviewer selected ^lease lease ^^coordinated
+          ^publication_preview (fn [session changes] (ui_publication_preview runtime session changes))
+          ^turn_context {^count count ^limit limit ^collection collection}
           ^bindings bindings ^timeout_ms (?? config/response_budget/timeout_ms 600000) ^max_memory_mb (?? config/response_budget/max_memory_mb 1024) ^recall (fn [id] (recall_model_context runtime session id)) ^console_sink (fn [item] (console_output runtime session round/id number item)) ^record (fn [kind data] (if (== kind "turn/response") (record_response ^hint data/reply_hint data/patch_files) (do (record_core_state runtime/events "session" session "session/state" $"patch/${number}" {^state "completed" ^result data/result ^round round/id ^turn number}) (transcript runtime session {^type "turn/patch" ^round round/id ^turn number ^result data/result ^text data/result/text}))))
           runtime/h
           number
@@ -371,6 +375,7 @@
       (set result (validate_participants transaction result))
       (set stage "participants/commit")
       (set result (commit_participants transaction result))
+      (set result (finish_participant_outcome result))
       (let produced_media (?? result/media []))
       (if_not produced_media/.empty?
         (transcript runtime session {^type "reply" ^round round/id ^turn number
@@ -424,30 +429,15 @@
     (if (== result/kind "done")
       (then
         (flush_event_store runtime/events)
-        (return {^state "done" ^reply outcome/reply ^result (?? outcome/result nil) ^turn_count count ^last_turn number})))
+        (return {^state "done" ^reply outcome/reply ^result (?? result/result nil) ^turn_count count ^last_turn number})))
     (if (== result/kind "cancelled")
       (then
         (flush_event_store runtime/events)
         (return {^state "cancelled" ^turn_count count ^last_turn number})))
-    (let requests (bounded_request runtime session result/prepared_request_items))
+    (let requests (next_request runtime session round result/prepared_request_items
+      ^logical result/request_items ^media (?? result/media [])
+      ^record_fields {^at_limit (>= count ceiling)} ^!admit))
     (set last_request requests/full)
-    (round .put "request" last_request)
-    (round .put "request_settled" requests/settled)
-    (round .put "request_media" (?? result/media []))
-    (round .put "request_items_ref" (write_body runtime ($serde/write_data requests/items)))
-    (round .put "logical_items_ref" (write_body runtime ($serde/write_data result/request_items)))
-    (round .put "request_sources" (request_sources requests/items))
-    (transcript
-      runtime
-      session
-      {
-        ^type "turn/request"
-        ^turn number
-        ^for_turn (+ number 1) ^combine "replace"
-        ^at_limit (>= count ceiling)
-        ^round round/id
-        ^full last_request
-        ^settled requests/settled})
     (if_yes (! ($absent? result/suspension))
       (flush_event_store runtime/events)
       (return (suspension_result result/suspension round last_request count number)))
@@ -472,11 +462,7 @@
             ^request last_request
             ^turn_count count
             ^last_turn number})))
-    (append_message ^media (?? result/media []) ^settled requests/settled ^round round/id ^turn number
-      runtime
-      session
-      "user"
-      last_request)
+    (admit_next_request runtime session round)
     (flush_event_store runtime/events))
   (let boundary_turn (?? round/last_turn metadata/turns))
   (let parked (round_limit_participants runtime session round boundary_turn count limit collection))

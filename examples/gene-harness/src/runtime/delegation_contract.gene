@@ -1,6 +1,5 @@
 (mod delegation_contract)
-(type DelegationError ^props {^code Str ^message Str} ^impl [Error])
-(impl Error for DelegationError)
+(import [DelegationError] ^from "../plugin_api")
 
 (fn delegation_error [code : Str, message : Str]
   (fail (DelegationError ^code code ^message message)))

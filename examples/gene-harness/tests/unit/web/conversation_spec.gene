@@ -10,10 +10,10 @@
   (it "replaces resumed input, appends only delegation additions, and preserves provenance" []
     (let records [
       (record "turn/start" 1 "" 1)
-      (record "turn/request" 1 "base" 2)
-      (record "turn/request" 1 "base\nanswer" 3 ^props {^^answers})
-      (record "turn/request" 1 "base\nanswer\nchild" 4 ^props {^^delegation})
-      (record "turn/request" 2 "late child" 5 ^props {^^delegation})
+      (record "turn/request" 1 "base" 2 ^props {^for_turn 2 ^combine "replace"})
+      (record "turn/request" 1 "base\nanswer" 3 ^props {^for_turn 2 ^combine "replace" ^^answers})
+      (record "turn/request" 1 "base\nanswer\nchild" 4 ^props {^for_turn 2 ^combine "replace" ^^delegation})
+      (record "turn/request" 2 "late child" 5 ^props {^for_turn 2 ^combine "append" ^^delegation})
       (record "turn/start" 2 "" 6)
       (record "code" 2 "(+ 1 2)" 7)])
     (let projected (project_conversation records [{^id "r" ^state "done"}]))
@@ -26,13 +26,11 @@
     ($assert (== page/before_cursor "7"))
     ($assert (== ($size ($filter page/records (fn [item] (== item/phase "turn/request")))) 1))
     ($assert (== ($size ($filter page/records (fn [item] (== item/phase "turn/start")))) 1)))
-  (it "hides terminal unrun input and both legacy host limit artifacts" []
+  (it "hides input that was never admitted before the turn limit" []
     (let records [(record "turn/start" 1 "" 1)
       (record "turn/end" 1 "" 2 ^props {^reason "continue"})
-      (record "turn/request" 1 "unsent" 3)
-      (record "reply" 1 "host limit notice" 4 ^props {^^final})
-      (record "turn/error" 1 "turn limit reached" 5 ^props {^reason "error"})])
-    (let projected (project_conversation records [{^id "r" ^state "failed" ^message "turn limit reached"}]))
+      (record "turn/request" 1 "unsent" 3 ^props {^for_turn 2})])
+    (let projected (project_conversation records [{^id "r" ^state "paused" ^reason "turn_limit"}]))
     ($assert (== projected/.size 2))
     ($assert (== projected/1/reason "continue")))
   (it "keeps a stable request key during active replacement and isolates rounds" []
@@ -44,17 +42,17 @@
     ($assert (== after/0/text "updated"))))
 
 (describe "Indexed request ownership"
-  (it "uses durable next-start order across rounds rather than display order" []
+  (it "uses recorded receiving turns across rounds rather than inferring from starts" []
     (let records [
       (record "turn/start" 1 "" 1)
       (record "turn/start" 9 "" 6)
       (record "turn/start" 3 "" 4 ^props {^round_id "other"})
-      (record "turn/request" 1 "legacy" 2)
+      (record "turn/request" 1 "owned" 2 ^props {^for_turn 9 ^combine "replace"})
       (record "turn/start" 2 "" 5)
       (record "turn/request" 3 "explicit" 7 ^props {^round_id "other" ^for_turn 3 ^combine "replace"})])
     (let requests ($filter (project_conversation records [{^id "r" ^state "done"} {^id "other" ^state "done"}])
       (fn [item] (== item/phase "turn/request"))))
     ($assert (== requests/.size 2))
-    ($assert (== requests/0/turn 2))
+    ($assert (== requests/0/turn 9))
     ($assert (== requests/1/round_id "other"))
     ($assert (== requests/1/turn 3))))

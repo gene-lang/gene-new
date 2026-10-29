@@ -1,4 +1,5 @@
 (mod cli_client)
+(import [api_root] ^from "../web/contract.gene")
 (import ^from "./options" [CliError problem])
 (import ^from "../web/connection" [read_connection unavailable])
 (import $net/http_client [request])
@@ -11,7 +12,7 @@
     (headers .put "cookie" credentials/cookie)
     (headers .put "x-csrf-token" credentials/csrf))
   (let pending
-    (request ^method method ^url $"${connection/origin}/api/v8${path}" ^headers headers ^body (if ($absent? data) "" ($json/stringify data)) ^timeout_ms timeout ^max_bytes 16777216))
+    (request ^method method ^url $"${connection/origin}${(api_root)}${path}" ^headers headers ^body (if ($absent? data) "" ($json/stringify data)) ^timeout_ms timeout ^max_bytes 16777216))
   (let response (try (await pending) ensure pending/.cancel))
   (let body
     (try

@@ -30,7 +30,7 @@
   (close_session_service f/harness)
   (let restored (test_service ^workspace workspace ^without_plugins ["slack"]
     ^provider (fn [request] "(Outcome ^^done)")))
-  (try (body {^harness restored ^channels restored/runtime/channels ^route f/route})
+  (try (body {^harness restored ^channels restored/runtime/services/values/channels ^route f/route})
   ensure (close_session_service restored)))
 
 (fn deliver_progress [f, binding, api, text : Str]
@@ -110,9 +110,9 @@
           (receive f "EvRoot" "1.000001" "<@UBOT> Start with <https://example.com|docs>.")
           (handoff_inputs f/channels)
           ($assert (== ($size (pending_ingress f/channels/owner)) 0))
-          (let queues (snapshot f/harness/runtime/channel_queues))
+          (let queues (snapshot f/harness/runtime/services/values/channel_queues))
           (for [id queue] in queues/queues
-            (let parts (pending_parts f/harness/runtime/channel_queues ($to_str id)))
+            (let parts (pending_parts f/harness/runtime/services/values/channel_queues ($to_str id)))
             ($assert (== parts/.size 2))
             ($assert (== parts/0/message/text "Start with https://example.com."))
             ($assert (== parts/1/message/text "fix `a < b && c`")))
@@ -124,19 +124,19 @@
       (fn [workspace]
         (fixture workspace (fn [f]
           (let root (receive f "Ev1" "1.000001" "<@UBOT> Queued task."))
-          (let parts (pending_parts f/harness/runtime/channel_queues root/session))
+          (let parts (pending_parts f/harness/runtime/services/values/channel_queues root/session))
           (let decisions (authorize_parts f/channels/owner f/route/id parts ^workspace workspace))
-          (claim_batch f/harness/runtime/channel_queues root/session decisions 1)
+          (claim_batch f/harness/runtime/services/values/channel_queues root/session decisions 1)
           (submit f/harness root/session "browser-first" 1 "Browser wins during plugin retirement.")
           (wait_round f/harness root/session)
           ($assert (== (/kind (drain_session f/channels root/session)) "admitted"))
           (wait_round f/harness root/session)
           (repeat 3 (tick_channels f/channels))
-          ($assert (unload_session f/harness/sessions root/session))
+          ($assert (unload_session f/harness/runtime/sessions root/session))
           (f/channels/dirty/.get .put root/session true)
           (repeat 5 (tick_channels f/channels))
-          ($assert ($absent? (f/harness/sessions/loaded/.get .get root/session)))
-          ($assert (! ($has_key? f/harness/events/streams/.get ($to_str "session:" root/session)))))))))
+          ($assert ($absent? (f/harness/runtime/sessions/loaded/.get .get root/session)))
+          ($assert (! ($has_key? f/harness/runtime/events/streams/.get ($to_str "session:" root/session)))))))))
 
   (it "keeps uncertain effects held until revisioned owner resolution and backs off known delivery results" []
     (isolated this_mod/.path "keeps uncertain effects held until revisioned owner resolution and backs off known delivery results"
@@ -169,21 +169,21 @@
       (fn [workspace]
         (fixture workspace (fn [f]
           (let root (receive f "EvClaim" "1.000001" "<@UBOT> A queued task."))
-          (let parts (pending_parts f/harness/runtime/channel_queues root/session))
+          (let parts (pending_parts f/harness/runtime/services/values/channel_queues root/session))
           (let decisions (authorize_parts f/channels/owner f/route/id parts ^workspace workspace))
-          (let claimed (/batch (claim_batch f/harness/runtime/channel_queues root/session decisions 1)))
+          (let claimed (/batch (claim_batch f/harness/runtime/services/values/channel_queues root/session decisions 1)))
           (submit f/harness root/session "browser" 1 "Other work.")
           (wait_round f/harness root/session)
-          (let latest (/receipts (round_state f/harness/controller root/session)))
+          (let latest (/receipts (round_state f/harness/runtime/services/values/controller root/session)))
           (latest/0 .put "submission_seq" 130)
-          (record_core_state f/harness/events "session" root/session "round/state" "rounds"
+          (record_core_state f/harness/runtime/events "session" root/session "round/state" "rounds"
             {^next_seq 131 ^receipts latest})
-          (flush_event_store f/harness/events)
+          (flush_event_store f/harness/runtime/events)
           ($assert (== (/kind (drain_session f/channels root/session)) "uncertain"))
-          (let status (queue_status f/harness/runtime/channel_queues root/session))
-          (resolve_claim f/harness/runtime/channel_queues root/session status/revision claimed/id "discard" "Owner confirms effects must not be replayed.")
-          ($assert (/held (queue_status f/harness/runtime/channel_queues root/session)))
-          ($assert ($absent? (/batch (queue_status f/harness/runtime/channel_queues root/session))))
+          (let status (queue_status f/harness/runtime/services/values/channel_queues root/session))
+          (resolve_claim f/harness/runtime/services/values/channel_queues root/session status/revision claimed/id "discard" "Owner confirms effects must not be replayed.")
+          ($assert (/held (queue_status f/harness/runtime/services/values/channel_queues root/session)))
+          ($assert ($absent? (/batch (queue_status f/harness/runtime/services/values/channel_queues root/session))))
           ($assert (== f/calls/.get/.size 1)))))))
 
   (it "exposes a stuck delivery in the bound conversation browser snapshot" []
@@ -191,13 +191,13 @@
       (fn [workspace]
         (fixture workspace (fn [f]
           (let root (receive f "Ev1" "1.000001" "<@UBOT> Task."))
-          (let status (queue_status f/harness/runtime/channel_queues root/session))
+          (let status (queue_status f/harness/runtime/services/values/channel_queues root/session))
           (let output (output_intent f/channels status/binding "stuck" "test-round" "A reply."))
-          (queue_output f/harness/runtime/channel_queues output)
+          (queue_output f/harness/runtime/services/values/channel_queues output)
           (accept_output f/channels/owner output)
           (begin_part f/channels/owner "stuck" 0 0)
           (let unknown (finish_part f/channels/owner "stuck" 0 0 {^status "uncertain"}))
-          (reconcile_output f/harness/runtime/channel_queues unknown)
+          (reconcile_output f/harness/runtime/services/values/channel_queues unknown)
           ($assert (== (/channel_delivery (browser_snapshot f/harness root/session))
             [{^id "stuck" ^status "uncertain"}])))))))
 
@@ -223,7 +223,7 @@
           (let root ($path/join workspace ($str/join order "-")))
           (fixture root (fn [f]
             (let request (receive f "EvRoot" "1.000001" "<@UBOT> Start."))
-            (let binding (/binding (queue_status f/harness/runtime/channel_queues request/session)))
+            (let binding (/binding (queue_status f/harness/runtime/services/values/channel_queues request/session)))
             (let calls ($cell []))
             (let api (open_api "test" ^requester (fn [request]
               (calls/.get .push {^method request/method ^ts (?? request/params/ts nil)})
@@ -232,7 +232,7 @@
               (deliver_progress f binding api "Progress A")
               (deliver_progress f binding api "Progress B")
               (for side in order
-                (prune_later (if (== side "owner") f/channels/owner f/harness/runtime/channel_queues)))
+                (prune_later (if (== side "owner") f/channels/owner f/harness/runtime/services/values/channel_queues)))
               (queue_progress f/channels binding "retained-progress" "round-test" "Progress B")
               ($assert (== calls/.get/.size 2))
               (restored_fixture f root (fn [restored]
@@ -243,10 +243,10 @@
                 ($assert (== result/status "delivered"))
                 ($assert (== ($map calls/.get /method) ["chat.postMessage" "chat.update" "chat.update"]))
                 ($assert (== calls/.get/2/ts "3.000001"))
-                (prune_later restored/harness/runtime/channel_queues)
+                (prune_later restored/harness/runtime/services/values/channel_queues)
                 (prune_later restored/channels/owner)
                 (queue_progress restored/channels binding "retained-progress" "round-test" "Progress C")
-                ($assert (== ($size (due_output restored/harness/runtime/channel_queues)) 0))
+                ($assert (== ($size (due_output restored/harness/runtime/services/values/channel_queues)) 0))
                 ($assert (== calls/.get/.size 3))))
             ensure (close_api api))))))))
 
@@ -255,7 +255,7 @@
       (fn [workspace]
         (fixture workspace (fn [f]
           (let root (receive f "EvRoot" "1.000001" "<@UBOT> Start."))
-          (let binding (/binding (queue_status f/harness/runtime/channel_queues root/session)))
+          (let binding (/binding (queue_status f/harness/runtime/services/values/channel_queues root/session)))
           (let calls ($cell []))
           (let api (open_api "test" ^requester (fn [request]
             (calls/.get .push request/method)
@@ -267,12 +267,12 @@
               ^mode "progress" ^revision 2))
             # The first checkpoint of queue_progress committed; the outbox
             # handoff has not yet been recorded when maintenance runs.
-            (mutate f/harness/runtime/channel_queues (fn [state]
+            (mutate f/harness/runtime/services/values/channel_queues (fn [state]
               (state/progress .put "retained-progress"
                 {^fingerprint (key "Progress C") ^revision 2 ^intent saved}) nil)
               ^changes {^progress ["retained-progress"]})
-            (prune_later f/harness/runtime/channel_queues)
-            (let pending (read f/harness/runtime/channel_queues
+            (prune_later f/harness/runtime/services/values/channel_queues)
+            (let pending (read f/harness/runtime/services/values/channel_queues
               (fn [state] (state/progress .get "retained-progress"))))
             ($assert (== pending/intent/revision 2))
             (restored_fixture f workspace (fn [restored]
@@ -292,7 +292,7 @@
           (let revision (/revision (snapshot f/channels/owner)))
           (repeat 20 (handoff_inputs f/channels))
           ($assert (== (/revision (snapshot f/channels/owner)) revision))
-          ($assert (== ($size f/harness/sessions/index/.get) 0)))))))
+          ($assert (== ($size f/harness/runtime/sessions/index/.get) 0)))))))
 
   (it "persists missing-root backoff and wakes the waiting reply when its root arrives" []
     (isolated this_mod/.path "persists missing-root backoff and wakes the waiting reply when its root arrives"
@@ -316,9 +316,9 @@
             (handoff_inputs restored/channels)
             (handoff_inputs restored/channels)
             ($assert (== ($size (pending_ingress restored/channels/owner)) 0))
-            (let state (snapshot restored/harness/runtime/channel_queues))
+            (let state (snapshot restored/harness/runtime/services/values/channel_queues))
             (for [id queue] in state/queues
-              ($assert (== (/pending (queue_status restored/harness/runtime/channel_queues ($to_str id))) 2))))))))))
+              ($assert (== (/pending (queue_status restored/harness/runtime/services/values/channel_queues ($to_str id))) 2))))))))))
 
   (it "keeps later amendments behind a deferred handoff in the same thread" []
     (isolated this_mod/.path "keeps later amendments behind a deferred handoff in the same thread"
@@ -335,12 +335,12 @@
             ((state/ingress .get first/id) .put "next_handoff_at" (+ ($os/wall_ms) 60000)) nil)
             ^changes {^ingress [first/id]})
           (repeat 5 (handoff_inputs f/channels))
-          ($assert (== (/pending (queue_status f/harness/runtime/channel_queues root/session)) 1))
+          ($assert (== (/pending (queue_status f/harness/runtime/services/values/channel_queues root/session)) 1))
           ($assert (== ($size (pending_ingress f/channels/owner)) 2))
           (mutate f/channels/owner (fn [state]
             ((state/ingress .get first/id) .put "next_handoff_at" 0) nil) ^changes {^ingress [first/id]})
           (handoff_inputs f/channels)
-          ($assert (== ($map (pending_parts f/harness/runtime/channel_queues root/session)
+          ($assert (== ($map (pending_parts f/harness/runtime/services/values/channel_queues root/session)
             (fn [part] part/message/text)) ["Start." "First amendment." "Second amendment."])))))))
 
   (it "expires a missing-root reply at its bounded deadline without blocking another thread" []
@@ -359,7 +359,7 @@
           ($assert (== ($size (pending_ingress f/channels/owner)) 0))
           (let result (read f/channels/owner (fn [state] (/result (state/ingress .get waiting/id)))))
           ($assert (== result/status "ignored"))
-          ($assert (== ($size f/harness/sessions/index/.get) 1)))))))
+          ($assert (== ($size f/harness/runtime/sessions/index/.get) 1)))))))
 
   (it "detects a blackholed Socket Mode connection after hello and retires its socket" []
     (isolated this_mod/.path "detects a blackholed Socket Mode connection after hello and retires its socket"
@@ -371,9 +371,9 @@
               (if (received .swap true) nil {^type "hello" ^connection_info {^app_id "A123"} ^num_connections 1}))
             ^idle_ms (fn [native socket] 90001) ^ping (fn [native socket] nil)
             ^close (fn [socket] (closed .set true))})
-          (let transport (open_transport harness/runtime/channels ^driver driver ^start false))
+          (let transport (open_transport harness/runtime/services/values/channels ^driver driver ^start false))
           (try
-            (let account (/dobi (/accounts (snapshot harness/runtime/channels/owner))))
+            (let account (/dobi (/accounts (snapshot harness/runtime/services/values/channels/owner))))
             ($assert (try (socket_session transport "A123" account) false
               catch ChannelError (== $err/code "heartbeat_timeout")))
             ($assert closed/.get)

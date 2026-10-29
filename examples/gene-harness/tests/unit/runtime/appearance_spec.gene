@@ -35,11 +35,12 @@
   (it "persists a change before publishing it" []
     (fixture (fn [root]
       (let h (new_harness))
-      (set h/services/appearance (open_appearance root))
+      (let runtime {^h h ^services {^values {}}})
+      (set runtime/services/values/appearance (open_appearance root))
       (let seen (observed h))
-      ($assert (== (appearance_mode h) "light"))
-      ($assert (== (set_appearance h "dark") "dark"))
-      ($assert (== (appearance_mode h) "dark"))
+      ($assert (== (appearance_mode runtime) "light"))
+      ($assert (== (set_appearance runtime "dark") "dark"))
+      ($assert (== (appearance_mode runtime) "dark"))
       ($assert (== (read_appearance root) "dark"))
       ($assert (== seen ["dark"]))
       (let reopened (open_appearance root))
@@ -48,33 +49,36 @@
   (it "rejects unknown modes and leaves the choice unchanged" []
     (fixture (fn [root]
       (let h (new_harness))
-      (set h/services/appearance (open_appearance root))
+      (let runtime {^h h ^services {^values {}}})
+      (set runtime/services/values/appearance (open_appearance root))
       (let seen (observed h))
       (var code "")
-      (try (set_appearance h "sepia") catch AppearanceError (set code $err/code))
+      (try (set_appearance runtime "sepia") catch AppearanceError (set code $err/code))
       ($assert (== code "invalid_request"))
-      ($assert (== (appearance_mode h) "light"))
+      ($assert (== (appearance_mode runtime) "light"))
       ($assert seen/.empty?)
       ($assert (! ($fs/exists? $"${root}/appearance.gene"))))))
 
   (it "keeps the active mode when the write fails" []
     (fixture (fn [root]
       (let h (new_harness))
-      (set h/services/appearance (open_appearance root))
+      (let runtime {^h h ^services {^values {}}})
+      (set runtime/services/values/appearance (open_appearance root))
       (let seen (observed h))
       # A directory where the file belongs makes the atomic write fail.
       ($fs/make_dir $"${root}/appearance.gene")
       (var failed false)
-      (try (set_appearance h "dark") catch Any (set failed true))
+      (try (set_appearance runtime "dark") catch Any (set failed true))
       ($assert failed)
-      ($assert (== (appearance_mode h) "light"))
+      ($assert (== (appearance_mode runtime) "light"))
       ($assert seen/.empty?))))
 
   (it "reports light and refuses changes without a setting" []
     (let h (new_harness))
-    ($assert (== (appearance_mode h) "light"))
+      (let runtime {^h h ^services {^values {}}})
+    ($assert (== (appearance_mode runtime) "light"))
     (var code "")
-    (try (set_appearance h "dark") catch AppearanceError (set code $err/code))
+    (try (set_appearance runtime "dark") catch AppearanceError (set code $err/code))
     ($assert (== code "unavailable"))))
 
 (fn main [args] : Int (/exit_code (run ^name (?? args/0 ""))))

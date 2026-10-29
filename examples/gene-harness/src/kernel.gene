@@ -5,7 +5,7 @@
   ^from "./kernel/registry" ^^export)
 (import [invoke_bounded configure_plugin_module] ^from "./kernel/invoke" ^^export)
 (import [RoundChanged CardChanged CommandChanged ModeChanged SessionChanged CompositionChanged
-  publish hydrate_harness_log log_append record_turn_start record_turn_end
+  publish hydrate_harness_log log_append
   record_composition_change flush_harness] ^from "./kernel/events" ^^export)
 (import [doc provide resolve withdraw_seam replace] ^from "./kernel/seams" ^^export)
 (import [new_harness put_cordis_plugins apply_plugin_set hide_owner_rows plugin_error

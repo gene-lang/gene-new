@@ -1,4 +1,5 @@
 (mod harness_media_composer ^profile web)
+(import [storage_get storage_set] ^from "./workspace_storage.gene")
 (import [media_url] ^from "./media_reference.gene")
 
 (type MediaComposer ^props {^selected Str ^drafts PropMap ^enabled Bool ^working Bool
@@ -15,7 +16,7 @@
   (if (! ($absent? existing))
     (then (set saved existing))
     (else
-    (var source (?? ($session_storage/get (media_key session)) ""))
+    (var source (?? (storage_get (media_key session)) ""))
     (if_yes (!= source "")
       (try
         (var parsed : (List Any) ($json/parse source))
@@ -35,7 +36,7 @@
   (for item in (items_for media session)
     (var state : Str item/state)
     (saved .push {^key item/key ^name item/name ^state state ^asset item/asset}))
-  (if_not ($session_storage/set (media_key session) ($json/stringify saved))
+  (if_not (storage_set (media_key session) ($json/stringify saved))
     ($dom/set_text media/status "Browser storage is unavailable; keep this tab open to retain attachments.")))
 
 (fn attachment_view [asset : Any] : EventTarget

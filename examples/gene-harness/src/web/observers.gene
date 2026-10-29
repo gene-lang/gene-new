@@ -1,0 +1,61 @@
+# Browser observer lifetime. Execution construction belongs to the loop layer.
+(mod web_observers)
+(import [new_host_services start_host_services quiesce_host_services close_host_services]
+  ^from "../runtime/host_services")
+(import [close_runtime] ^from "../runtime/bootstrap")
+(import [open_loop_services] ^from "../runtime/loop_services")
+(import [HarnessEvent] ^from "../kernel")
+
+(fn stop_observers [ctx] ^^private
+  (let service ctx/service)
+  (service/runtime/services/values/inbox/observer .set nil)
+  (service/runtime/services/values/actions/log/observer .set nil)
+  (let subscriptions ctx/subscriptions)
+  (set ctx/subscriptions [])
+  (for subscription in subscriptions subscription/.cancel)
+  (let jobs (service/snapshot_jobs .swap {}))
+  (for [id slot] in jobs
+    (while ($absent? slot/.get) ($sleep 1))
+    (let job slot/.get)
+    job/.cancel)
+  (for [id slot] in jobs
+    (let job slot/.get)
+    job/.join)
+  nil)
+
+(fn session_service_specs [publish, on_event] ^^private
+  [{^name "runtime" ^layer "kernel" ^requires []
+    ^open (fn [ctx] ctx/service/runtime) ^recover nil
+    ^close (fn [ctx, runtime] (close_runtime runtime))}
+   {^name "loop" ^layer "loop" ^requires ["runtime"]
+    ^open (fn [ctx] (open_loop_services ctx/service/runtime
+      ^channel_options ctx/channel_options ^observe ctx/observe)) ^recover nil
+    ^quiesce (fn [ctx, owner] (quiesce_host_services owner))
+    ^close (fn [ctx, owner] (close_host_services owner))}
+   {^name "observers" ^layer "loop" ^requires ["loop"]
+    ^open (fn [ctx]
+      (let service ctx/service)
+      (try
+        (service/runtime/services/values/inbox/observer .set (fn [kind, data]
+          (let copy ($thaw ($freeze data)))
+          (copy .put "epoch" service/epoch)
+          (publish service kind "" copy)))
+        (service/runtime/services/values/actions/log/observer .set (fn [record, metadata]
+          (publish service "ui/action" "" {^record record ^actions metadata})))
+        (ctx/subscriptions .push
+          (service/runtime/h/bus .subscribe HarnessEvent (fn [event] (on_event service event))))
+        service
+      catch Any (stop_observers ctx) (fail $err)))
+    ^recover nil ^quiesce (fn [ctx, service] (stop_observers ctx))
+    ^close (fn [ctx, service] (stop_observers ctx))}])
+
+(fn open_session_lifecycle [service, publish, on_event, ^channel_options channel_options = nil, ^observe observe = nil]
+  (let ctx {^service service ^channel_options channel_options ^observe observe ^subscriptions []})
+  (let owner (new_host_services ctx (session_service_specs publish on_event)
+    ^observe (fn [phase name]
+      (if (&& (! ($absent? observe)) (!= name "loop")) (observe phase name)))))
+  (set service/lifecycle owner)
+  (start_host_services owner "normal"))
+
+(fn close_session_lifecycle [owner]
+  (close_host_services owner))

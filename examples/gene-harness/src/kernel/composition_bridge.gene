@@ -15,8 +15,8 @@
   queue_retirement begin_close_composition_state close_composition_state immutable_view]
   ^from "../runtime/composition")
 (import [publication_metadata] ^from "../storage/plugin_metadata")
-(import [make_public_host revoke_public_host] ^from "../runtime/public_host")
-(import [public_modules] ^from "../runtime/public_modules")
+(import [make_plugin_receiver revoke_plugin_receiver] ^from "../runtime/plugin_receiver")
+(import [sdk_modules] ^from "../runtime/plugin_sdk")
 (import [builtin_registry_specs] ^from "../registries/builtins")
 (import [core_event_types] ^from "../storage/generated_event_catalog")
 (import [append_core_event] ^from "../storage/state")
@@ -109,16 +109,16 @@
 
 (type BridgeState ^^private ^props {^entries Any ^reconciling Any ^gate Any ^published Any})
 
-(type CordisComposer ^^private ^props {^h Cell}
+(type CordisComposer ^^private ^props {^h Cell ^bridge Any}
   (impl Composer
     (message changed [] : Nil
       (let h self/h/.get)
-      (if (&& (! h/bridge/reconciling/.get) (! h/snapshots/closing/.get))
+      (if (&& (! h/composer/bridge/reconciling/.get) (! h/snapshots/closing/.get))
         (publish_registry_snapshot h))
       nil)
     (message publishing? [] : Bool
       (let h self/h/.get)
-      h/bridge/reconciling/.get)
+      h/composer/bridge/reconciling/.get)
     (message recompose [prepare] : Any
       (reconcile_cordis_harness self/h/.get ^prepare prepare))))
 
@@ -155,7 +155,7 @@
          ^host_build_id (if ($absent? h/workspace) "unknown" h/workspace/history_build/.get)}))
       (var context (Host ^h h ^owner plugin/id ^effects effects ^notification_revision ($crypto/random_hex 16)
         ^state_writer writer))
-      (let receiver (if policy/host context (make_public_host context)))
+      (let receiver (make_plugin_receiver context))
       (var owned_rows ($cell (fresh_list)))
       (let owned_registries ($cell []))
       (h/plugin_policies/.get .put plugin/id
@@ -176,7 +176,7 @@
             (try
               (release_activation_resources h effects owned_rows owned_registries)
             ensure (release_activation_policy h plugin/id receiver))))
-        ensure (revoke_public_host receiver))))
+        ensure (revoke_plugin_receiver receiver))))
       receiver)
     (message selected [registry_name : Str, key : Str] : Any
       (var h self/h)
@@ -191,7 +191,7 @@
       # see candidate rows, otherwise newly provided dependencies remain
       # pending against the old published snapshot. Ordinary leased reads
       # continue through row_record and never enter this private bridge.
-      (if h/bridge/reconciling/.get
+      (if h/composer/bridge/reconciling/.get
         (do
           (let registry (registry_named h registry_name))
           (for record in registry/rows/.get
@@ -214,9 +214,10 @@
    ^event_scope event_scope : Str = "session",
    ^event_stream event_stream : Str = "default",
    ^workspace workspace = nil,
+   ^plugin_services plugin_services = nil,
    ^limits limits = nil] : Harness
   (var h
-    (Harness ^services {} ^plugins ($cell (fresh_map))
+    (Harness ^plugin_services plugin_services ^plugins ($cell (fresh_map))
              ^plugin_errors ($cell (fresh_map))
              ^log ($cell (fresh_list)) ^log_hydrated ($cell false)
              ^bus ($event/Bus ^error_policy $event/collect)
@@ -239,8 +240,9 @@
   # candidate that publishes as a whole, and every contribution belongs to the
   # exact activation revision that made it. `^limits` is the ceiling every
   # plugin's limits narrow from.
-  (set h/bridge (BridgeState ^entries ($cell (fresh_map)) ^reconciling ($cell false)
-    ^gate ($sync/gate) ^published ($cell {})))
+  (set h/composer (CordisComposer ^h ($cell h)
+    ^bridge (BridgeState ^entries ($cell (fresh_map)) ^reconciling ($cell false)
+      ^gate ($sync/gate) ^published ($cell {}))))
   (var package_root this_pkg/root)
   (set h/snapshots (new_composition_state (snapshot_registries h) []
     (fn [ticket] (h/composition .retire ticket))))
@@ -251,12 +253,11 @@
         limits)
       ^options (LoaderOptions
         ^plugin_root (if ($absent? workspace) $"${package_root}/plugins/generated" workspace/generated_dir)
-        ^shared (public_modules)
+        ^shared (sdk_modules)
         ^max_namespaces ($runtime/sandbox_namespaces)
         ^default_limits nil ^reload_policy nil
         ^retirement (fn [ticket]
           (queue_retirement h/snapshots ticket ticket/.instances)))))
-  (set h/composer (CordisComposer ^h ($cell h)))
   (publish_registry_snapshot h)
   (if_not ($absent? event_store)
     (set event_store/observer
@@ -268,8 +269,8 @@
 
 (fn ^^private reconcile_cordis_harness [h : Harness, ^strict strict : Bool = false,
   ^pending pending : Bool = false, ^accept accept = nil, ^commit commit = nil, ^committed committed = nil, ^prepare prepare = nil]
-  (h/bridge/gate (fn []
-  (h/bridge/reconciling .set true)
+  (h/composer/bridge/gate (fn []
+  (h/composer/bridge/reconciling .set true)
   (let publication ($cell true))
   (try
     ($runtime/with_context
@@ -279,7 +280,7 @@
           ^commit commit ^committed committed ^prepare prepare h)))
   ensure
     (publication .set false)
-    (h/bridge/reconciling .set false)))))
+    (h/composer/bridge/reconciling .set false)))))
 
 (fn hide_owner_rows [h : Harness, owner : Str]
   (let ids (copy_list (?? (h/ledger .get; .get owner) [])))
@@ -298,7 +299,7 @@
     (reconcile_registry_candidate ^strict strict ^pending pending ^accept accept ^commit commit ^prepare prepare h)
   catch Any
     (if_yes (&& (! ($absent? committed)) committed/.get)
-      (h/bridge/published .set h/composition/.current_plugins)
+      (h/composer/bridge/published .set h/composition/.current_plugins)
       (publish_registry_snapshot h)
       (fail $err))
     (h/registries .set baseline)
@@ -310,7 +311,7 @@
 
 (fn ^^private reconcile_registry_candidate [h : Harness, ^strict strict : Bool = false,
   ^pending pending : Bool = false, ^accept accept = nil, ^commit commit = nil, ^prepare prepare = nil]
-  (let previous h/bridge/published/.get)
+  (let previous h/composer/bridge/published/.get)
   (h/registries .set (clone_registries h))
   (h/ledger .set (clone_ledger h))
   (h/row_index .set (clone_row_index h))
@@ -340,19 +341,19 @@
   (var result
     (if strict
       {^snapshot (h/composition .reconcile_strict ^pending pending
-        plugins h/bridge/entries/.get accept commit) ^failures []}
-      (h/composition .reconcile_available plugins h/bridge/entries/.get failed)))
+        plugins h/composer/bridge/entries/.get accept commit) ^failures []}
+      (h/composition .reconcile_available plugins h/composer/bridge/entries/.get failed)))
   (for failure in result/failures
     (h/plugin_errors/.get .put failure/id failure/message))
   (let active h/composition/.current_plugins)
-  (h/bridge/published .set active)
+  (h/composer/bridge/published .set active)
   (publish_registry_snapshot h)
   result/snapshot)
 
 (fn apply_plugin_set [h : Harness, admissions, accept, commit, ^pending pending : Bool = false, ^prepare prepare = nil]
   (run_composition_change h/snapshots (fn []
     (let previous_plugins h/plugins/.get)
-    (let previous_options h/bridge/entries/.get)
+    (let previous_options h/composer/bridge/entries/.get)
     (let previous_errors h/plugin_errors/.get)
     (let plugins {})
     (let options {})
@@ -364,7 +365,7 @@
       (options .put admission/plugin/id admission/options))
     (let committed ($cell false))
     (h/plugins .set plugins)
-    (h/bridge/entries .set options)
+    (h/composer/bridge/entries .set options)
     (h/plugin_errors .set {})
     (try
       (reconcile_cordis_harness ^strict true ^pending pending ^accept accept
@@ -375,7 +376,7 @@
         {^published true ^state "recovery_required" ^message $err/message}
         (do
           (h/plugins .set previous_plugins)
-          (h/bridge/entries .set previous_options)
+          (h/composer/bridge/entries .set previous_options)
           (h/plugin_errors .set previous_errors)
           (fail $err)))))))
 
@@ -387,7 +388,7 @@
   (h/plugins
     .get
     ; .put plugin/id plugin)
-  (h/bridge/entries
+  (h/composer/bridge/entries
     .get
     ; .put plugin/id entry_options)
   (h/plugin_errors
@@ -416,7 +417,7 @@
   (for admission in admissions
     (var plugin admission/plugin)
     (h/plugins/.get .put plugin/id plugin)
-    (h/bridge/entries/.get .put plugin/id admission/options)
+    (h/composer/bridge/entries/.get .put plugin/id admission/options)
     (h/plugin_errors/.get .delete plugin/id))
   (try
     (reconcile_cordis_harness h)
@@ -483,7 +484,7 @@
   (h/plugins
     .get
     ; .delete id)
-  (h/bridge/entries
+  (h/composer/bridge/entries
     .get
     ; .delete id)
   (h/plugin_errors
@@ -499,7 +500,7 @@
   (if_not (== (status_of h id) "error")
     (fail (HarnessError ^message $"plugin ${id} is not in error")))
   (var p (h/plugins/.get .get id))
-  (var options (h/bridge/entries/.get .get id))
+  (var options (h/composer/bridge/entries/.get .get id))
   (var state (put_cordis_plugin h p options ^^replace))
   $"retried ${id} (${state})")
 
@@ -520,7 +521,7 @@
   (try (close_composition_state h/snapshots)
     catch Any (errors .push ($to_str $err)))
   (h/plugins .set (fresh_map))
-  (h/bridge/entries .set (fresh_map))
+  (h/composer/bridge/entries .set (fresh_map))
   (h/plugin_errors .set (fresh_map))
   (flush_harness h)
   {^status (if (== errors/.size 0) "closed" "recovery_required") ^errors errors})

@@ -37,21 +37,21 @@
         (try
           (let session (create_session service))
           (let child (create_record ^kind "child" ^parent {^session session/id ^round "r" ^delegation "d"}
-            service/sessions))
+            service/runtime/sessions))
           (let edited (edit_session service session/id {^title "Renamed" ^^pinned} 0))
           ($assert (== edited/title "Renamed")) ($assert edited/pinned)
           (let listed ($first (/sessions (list_sessions service))))
           ($assert (== listed/revision "1"))
           ($assert (== (/revision ($first listed/children)) "0"))
-          ($assert (== (/revision (require_record service/sessions session/id)) 1))
-          (view_session service/sessions session/id) (view_session service/sessions child/id)
-          ($assert (! (delete_session service/sessions session/id)))
+          ($assert (== (/revision (require_record service/runtime/sessions session/id)) 1))
+          (view_session service/runtime/sessions session/id) (view_session service/runtime/sessions child/id)
+          ($assert (! (delete_session service/runtime/sessions session/id)))
           ($assert (try (remove_session service session/id 0) false
             catch SessionError (== $err/code "revision_conflict")))
           (let removed (remove_session service session/id 1))
           ($assert (== removed/deleted [session/id child/id]))
-          ($assert ($absent? (service/sessions/index/.get .get session/id)))
-          ($assert ($absent? (service/sessions/index/.get .get child/id)))
+          ($assert ($absent? (service/runtime/sessions/index/.get .get session/id)))
+          ($assert ($absent? (service/runtime/sessions/index/.get .get child/id)))
           ($assert (== ($size ($filter events (fn [event] (== event/type "session/deleted")))) 2))
         ensure (close_session_service service)))))
   (it "does not publish an error when deletion overtakes a queued snapshot" []
@@ -97,15 +97,15 @@
         (let service (test_service ^workspace workspace ^provider (fn [request] "")))
         (try
           (let session (create_session service))
-          (update_session service/sessions session/id {^status "waiting"})
+          (update_session service/runtime/sessions session/id {^status "waiting"})
           ($assert (try (remove_session service session/id 0) false catch RoundError (== $err/code "busy")))
-          (update_session service/sessions session/id {^status "done"})
-          (let busy (submit_command service/runtime/commands session/id "/run ($sleep 60000)"))
+          (update_session service/runtime/sessions session/id {^status "done"})
+          (let busy (submit_command service/runtime/services/values/commands session/id "/run ($sleep 60000)"))
           ($assert (try (remove_session service session/id 0) false catch RoundError (== $err/code "busy")))
-          (cancel_command service/runtime/commands session/id busy/id)
-          (service/runtime/commands/watchers/.get .get $"${session/id}:${busy/id}"; .join)
+          (cancel_command service/runtime/services/values/commands session/id busy/id)
+          (service/runtime/services/values/commands/watchers/.get .get $"${session/id}:${busy/id}"; .join)
           (remove_session service session/id 0)
-          ($assert (try (require_record service/sessions session/id) false
+          ($assert (try (require_record service/runtime/sessions session/id) false
             catch SessionError (== $err/code "not_found")))
         ensure (close_session_service service))))))
 

@@ -1,6 +1,6 @@
 # Compact publication feedback built only from validated component data.
 (mod ui_outline)
-(import [byte_prefix] ^from "../text")
+(import [byte_prefix] ^from "../public/text")
 
 (fn outline_text [value]
   (let text ($to_str value))

@@ -32,8 +32,13 @@ const elements = new Map();
 const stored = new Map();
 const requests = [];
 const timers=[];
+const workspaceId = 'fixture-workspace';
 const element = id => {
-  if (!elements.has(id)) elements.set(id, new Element());
+  if (!elements.has(id)) {
+    const value = new Element();
+    if (id === 'harness_document') value.dataset = {workspaceId};
+    elements.set(id, value);
+  }
   return elements.get(id);
 };
 Object.assign(globalThis, {
@@ -62,6 +67,8 @@ if (!globalThis.crypto) globalThis.crypto = webcrypto;
 globalThis.history = window.history;
 const mainURL = pathToFileURL(process.argv[2]);
 const harness = await import(mainURL.href);
+const {workspace_storage_key} = await import(new URL('workspace_storage.mjs', mainURL));
+const scoped = key => workspace_storage_key(workspaceId, key);
 
 const {create_media} = await import(new URL("media.mjs", mainURL));
 const {media_ids} = await import(new URL("media.mjs", mainURL));
@@ -93,7 +100,7 @@ const descendants = node => [node, ...node.children.flatMap(descendants)];
 // Replacing reviewed speech must restore ordinary typing, commands and media.
 const reviewClient = client();
 reviewClient.status={workspace:'review-workspace'};
-stored.set('gene-harness/voice-review/review-workspace/s', JSON.stringify({
+stored.set(scoped('gene-harness/voice-review/review-workspace/s'), JSON.stringify({
   text:'review these spoken words', input:{kind:'voice',recognizer:'fixture',audio_ms:500},
 }));
 assert.equal(harness.reviewed_voice_input(reviewClient,'s','prefix review these spoken words suffix').kind,'voice');
@@ -103,7 +110,7 @@ assert.equal(harness.reviewed_voice_input(reviewClient,'s',reviewClient.prompt.v
   'correcting reviewed speech must preserve literal voice input and leave attachments in the draft');
 reviewClient.prompt.value='';
 harness.remember_draft(reviewClient);
-assert.equal(stored.has('gene-harness/voice-review/review-workspace/s'),false);
+assert.equal(stored.has(scoped('gene-harness/voice-review/review-workspace/s')),false);
 assert.equal(harness.reviewed_voice_input(reviewClient,'s','/help'),null);
 assert.equal(harness.reviewed_voice_input(reviewClient,'s','ordinary text with attachments'),null);
 const bubbles = c => descendants(c.transcript).filter(node => node.tag === "article" && node.attributes.class?.includes("user"));
@@ -175,7 +182,7 @@ harness.stage_submission(c, c.prompt.value);
 requests[0].reply(503, {code: "temporarily_unavailable", message: "Try again"});
 await settled();
 assert.ok(c.pending);
-assert.ok(stored.has("gene-harness/pending"));
+assert.ok(stored.has(scoped("gene-harness/pending")));
 promptVisible(c, "Uncertain request");
 
 // Entering a prompt before any session exists stages it immediately after
@@ -530,10 +537,10 @@ const deletedSelected=client();
 deletedSelected.ui=create_ui(element('ui_root'),true,deletedSelected.notices,noop,noop,noop,noop,'light');
 harness.session_tab(deletedSelected,'s');harness.session_tab(deletedSelected,'survivor');
 deletedSelected.sending=true;deletedSelected.prompt.value='A draft in the deleted conversation';
-stored.set('gene-harness/draft/s',deletedSelected.prompt.value);
+stored.set(scoped('gene-harness/draft/s'),deletedSelected.prompt.value);
 harness.forget_session(deletedSelected,'s');
 assert.equal(deletedSelected.selected,'survivor','deletion must navigate away even during a pending admission');
-assert.equal(stored.has('gene-harness/draft/s'),false);
+assert.equal(stored.has(scoped('gene-harness/draft/s')),false);
 console.log("first submission: immediate prompts, delivery races, live output, receiving-request replacement and continuation controls passed");
 
 // A late share response must preserve a newer, already-linked live snapshot.

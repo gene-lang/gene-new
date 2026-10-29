@@ -3,7 +3,7 @@
 (import [start_host stop_host] ^from "../../web_support")
 (import [connect api wire] ^from "../../../src/cli/client")
 (import [open_session_service close_session_service] ^from "../../../src/web/session_service")
-(import [register_plugin] ^from "../../../src/storage/workspace")
+(import [register_plugin] ^from "../../../src/storage/workspace_activation")
 (import [row] ^from "../../../src/kernel")
 
 (fn wait_receipt [client, id]

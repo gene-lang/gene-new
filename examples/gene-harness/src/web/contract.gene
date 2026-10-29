@@ -1,9 +1,18 @@
 (mod harness_web_contract ^profile web)
 
 (const protocol_version 8)
+(fn api_version [] : Str $"v${protocol_version}")
+(fn api_root [] : Str $"/api/v${protocol_version}")
+(const voice_subprotocol "gene-harness-voice.1")
 (const prompt_limit 65536)
 (const receipt_limit 128)
 (const history_page_limit 200)
+(const client_record_limit 600)
+
+(fn api_path [segments : (List Str)] : Str
+  (let suffix ($str/join segments "/"))
+  (let root (api_root))
+  (if (== segments/.size 0) root $"${root}/${suffix}"))
 
 (fn terminal_round [status : Str] : Bool
   (|| (== status "done") (== status "failed") (== status "cancelled")

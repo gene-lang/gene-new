@@ -1,5 +1,7 @@
 # Producer inbox presentation and receipt recovery, independent of panel renders.
 (mod harness_producer_inbox ^profile web)
+(import [storage_set] ^from "./workspace_storage.gene")
+(import [api_root] ^from "../src/web/contract.gene")
 (import ^from "./question_editors.gene" [qtext qjson restored_map])
 (import ^from "./components.gene" [render_element])
 (import ^from "./notices.gene" [Notices put_notice remove_notice clear_notices])
@@ -30,7 +32,7 @@
   (var epoch inbox/epoch)
   (inbox/api
     "GET"
-    "/api/v8/notifications"
+    $"${(api_root)}/notifications"
     nil
     (fn [code : Int, data : Any] : Void
       (if_yes (!= epoch inbox/epoch) (return))
@@ -45,7 +47,7 @@
   (set inbox/clearing true) (message_controls inbox)
   (inbox/api
     "POST"
-    "/api/v8/notifications/clear"
+    $"${(api_root)}/notifications/clear"
     {^messages selected}
     (fn [code : Int, data : Any] : Void
       (if_yes (!= epoch inbox/epoch) (return))
@@ -58,7 +60,7 @@
   (if_not inbox/ready (return))
   # The snapshot observed at open is the boundary; later arrivals remain new.
   (var through : Int ($json/parse inbox/watermark))
-  (inbox/api "POST" "/api/v8/notifications/ack" {^through through}
+  (inbox/api "POST" $"${(api_root)}/notifications/ack" {^through through}
     (fn [code : Int, data : Any] : Void
       (if (== code 200) (refresh_inbox inbox)
         (producer_problem inbox "Opening acknowledgment was not confirmed.")))))
@@ -85,9 +87,9 @@
   (var session (qtext reference/session))
   (var path "")
   (if_not ($absent? reference/round)
-    (set path $"/api/v8/sessions/${session}/rounds/${(qtext reference/round)}"))
+    (set path $"${(api_root)}/sessions/${session}/rounds/${(qtext reference/round)}"))
   (if_not ($absent? reference/command)
-    (set path $"/api/v8/sessions/${session}/commands/${(qtext reference/command)}"))
+    (set path $"${(api_root)}/sessions/${session}/commands/${(qtext reference/command)}"))
   (if_yes (== path "")
     ($dom/set_text
       target
@@ -122,13 +124,13 @@
   (var pending : Any inbox/pending/%key)
   (if_yes ($absent? pending) (return))
   (set pending/command (qtext record/id))
-  ($session_storage/set "gene-harness/notification-actions" (qjson inbox/pending))
+  (storage_set "gene-harness/notification-actions" (qjson inbox/pending))
   (var status (qtext record/status))
   (if_yes (== status "running")
     ($time/after 500.0 (fn [] : Void (recover_action inbox key false)))
     (return))
   (set inbox/pending/%key void)
-  ($session_storage/set "gene-harness/notification-actions" (qjson inbox/pending))
+  (storage_set "gene-harness/notification-actions" (qjson inbox/pending))
   (remove_notice inbox/notices "notification-action" (qtext pending/request/session) key)
   (put_notice
     inbox/notices
@@ -149,7 +151,7 @@
   (set inbox/sending/%key true)
   (inbox/api
     "POST"
-    "/api/v8/notifications/action"
+    $"${(api_root)}/notifications/action"
     request
     (fn [code : Int, data : Any] : Void
       (set inbox/sending/%key void)
@@ -166,7 +168,7 @@
           (do
             (if_yes (|| (== code 400) (== code 404) (== code 409) (== code 410))
               (set inbox/pending/%key void)
-              ($session_storage/set "gene-harness/notification-actions" (qjson inbox/pending)))
+              (storage_set "gene-harness/notification-actions" (qjson inbox/pending)))
             (put_notice ^action (if ($absent? inbox/pending/%key) nil (fn [] : Void (recover_action inbox key true)))
               inbox/notices
               ($dom/element "notice")
@@ -186,7 +188,7 @@
   (set inbox/sending/%key true)
   (inbox/api
     "GET"
-    $"/api/v8/sessions/${session}/requests/${($url/encode_component id)}?kind=command"
+    $"${(api_root)}/sessions/${session}/requests/${($url/encode_component id)}?kind=command"
     nil
     (fn [code : Int, data : Any] : Void
       (set inbox/sending/%key void)
@@ -226,7 +228,7 @@
   (set inbox/sending/%admission true)
   (inbox/api
     "GET"
-    $"/api/v8/sessions/${session}/snapshot"
+    $"${(api_root)}/sessions/${session}/snapshot"
     nil
     (fn [code : Int, data : Any] : Void
       (set inbox/sending/%admission void)
@@ -238,7 +240,7 @@
       (var sequence : Int ($json/parse (qtext data/next_command_seq)))
       (set request/sequence sequence)
       (set inbox/pending/%key {^request request ^command ""})
-      (if_not ($session_storage/set "gene-harness/notification-actions" (qjson inbox/pending))
+      (if_not (storage_set "gene-harness/notification-actions" (qjson inbox/pending))
         (producer_problem inbox "Browser storage is required to recover this action.")
         (return))
       (put_notice ^action (fn [] : Void (recover_action inbox key true))

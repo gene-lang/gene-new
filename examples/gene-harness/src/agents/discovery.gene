@@ -2,7 +2,7 @@
 # or documentation bodies. Registry reads retain the caller's composition lease.
 (mod discovery)
 (import ^from "../kernel" [Harness HarnessError registry_row_records])
-(import ^from "../text" [byte_prefix])
+(import ^from "../public/text" [byte_prefix])
 
 (fn parameter_shape [parameter]
   {

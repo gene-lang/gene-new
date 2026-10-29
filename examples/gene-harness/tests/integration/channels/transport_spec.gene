@@ -20,7 +20,7 @@
   (try
     (let filename ($path/join workspace "fake-slack-credentials"))
     ($fs/write_text filename "Bot user oauth token: xoxb-test\nApp token: xapp-test\nChannel id: C12345678\n")
-    (configure_account harness/runtime/channels/owner "dobi" filename "/test-adapter"
+    (configure_account harness/runtime/services/values/channels/owner "dobi" filename "/test-adapter"
       {^team "T123" ^app "A123" ^bot "B123" ^bot_user "UBOT" ^operator "UOWNER"})
     (body harness)
   ensure (close_session_service harness)))
@@ -30,7 +30,7 @@
     (isolated this_mod/.path "acknowledges only after durable ingress and deduplicates envelopes before any workspace execution"
       (fn [workspace]
         (fixture workspace (fn [harness]
-          (configure_route harness/runtime/channels/owner "dobi" "C123" workspace)
+          (configure_route harness/runtime/services/values/channels/owner "dobi" "C123" workspace)
           (let event {^type "events_api" ^envelope_id "one" ^payload {^type "event_callback"
             ^api_app_id "A123" ^team_id "T123" ^event_id "Ev1"
             ^event {^type "message" ^user "UOWNER" ^channel "C123" ^ts "1.000001" ^text "<@UBOT> Build it"}}})
@@ -40,18 +40,18 @@
           (let driver {^load (fn [filename] nil) ^connect (fn [api native app] 1)
             ^receive (fn [native socket] (let at position/.get) (position .set (+ at 1)) frames/%at)
             ^ack (fn [native socket id]
-              (let state (snapshot harness/runtime/channels/owner))
+              (let state (snapshot harness/runtime/services/values/channels/owner))
               ($assert (== ($size state/ingress) 1))
               (let durable (state/ingress .get (key ["dobi" "T123" "Ev1"])))
               ($assert (== durable/status "pending"))
               ($assert (== durable/payload/event/text "<@UBOT> Build it"))
-              ($assert (== ($size harness/sessions/index/.get) 0))
+              ($assert (== ($size harness/runtime/sessions/index/.get) 0))
               (acknowledgments/.get .push id))
             ^close (fn [socket] (closed .set (+ closed/.get 1)))})
-          (let transport (open_transport harness/runtime/channels ^driver driver ^start false
+          (let transport (open_transport harness/runtime/services/values/channels ^driver driver ^start false
             ^requester (fn [request] ($assert false "unexpected API request"))))
           (try
-            (socket_session transport "A123" (/accounts (snapshot harness/runtime/channels/owner); .get "dobi"))
+            (socket_session transport "A123" (/accounts (snapshot harness/runtime/services/values/channels/owner); .get "dobi"))
             ($assert (== acknowledgments/.get ["one" "retry"]))
             ($assert (== closed/.get 1))
           ensure (close_transport transport)))))))
@@ -66,10 +66,10 @@
             ^receive (fn [native socket] frame/.get)
             ^ack (fn [native socket id] ($assert false "unqualified socket acknowledged input"))
             ^close (fn [socket] (closed .set (+ closed/.get 1)))})
-          (let transport (open_transport harness/runtime/channels ^driver driver ^start false
+          (let transport (open_transport harness/runtime/services/values/channels ^driver driver ^start false
             ^requester (fn [request] ($assert false "unexpected API request"))))
           (try
-            (let account (/accounts (snapshot harness/runtime/channels/owner); .get "dobi"))
+            (let account (/accounts (snapshot harness/runtime/services/values/channels/owner); .get "dobi"))
             ($assert (try (socket_session transport "A123" account) false
               catch ChannelError (== $err/code "invalid_hello")))
             (frame .set {^type "hello" ^connection_info {^app_id "A123"} ^num_connections 2})
@@ -82,8 +82,8 @@
     (isolated this_mod/.path "owns one app socket, reconnects refreshed connections and releases all resources on retirement"
       (fn [workspace]
         (fixture workspace (fn [harness]
-          (let primary (/accounts (snapshot harness/runtime/channels/owner); .get "dobi"))
-          (configure_account harness/runtime/channels/owner "second-team" primary/secret_file "/test-adapter"
+          (let primary (/accounts (snapshot harness/runtime/services/values/channels/owner); .get "dobi"))
+          (configure_account harness/runtime/services/values/channels/owner "second-team" primary/secret_file "/test-adapter"
             {^team "T456" ^app "A123" ^bot "B456" ^bot_user "UBOT2" ^operator "UOWNER2"})
           (let opened ($cell 0)) (let closed ($cell 0)) (let reads ($cell 0))
           (let driver {^load (fn [filename] nil)
@@ -94,7 +94,7 @@
                 (if (&& (== socket 1) (== at 1)) {^type "disconnect" ^reason "refresh_requested"} nil)))
             ^ack (fn [native socket id] nil)
             ^close (fn [socket] (closed .set (+ closed/.get 1)))})
-          (let transport (open_transport harness/runtime/channels ^driver driver
+          (let transport (open_transport harness/runtime/services/values/channels ^driver driver
             ^requester (fn [request] ($assert false "unexpected API request"))))
           (try
             (let due (+ ($os/monotonic_ms) 5000))
@@ -112,7 +112,7 @@
     (isolated this_mod/.path "paces ordered parts per channel and applies Retry-After to other threads too"
       (fn [workspace]
         (fixture workspace (fn [harness]
-          (let route (configure_route harness/runtime/channels/owner "dobi" "C123" workspace))
+          (let route (configure_route harness/runtime/services/values/channels/owner "dobi" "C123" workspace))
           (let calls ($cell [])) (let limited ($cell false))
           (let requester (fn [request]
             (calls/.get .push {^text request/params/text ^at ($os/monotonic_ms)})
@@ -120,13 +120,13 @@
               {^status 429 ^headers [["Retry-After" "60"]] ^body ($binary/from_str "{}")}
               {^status 200 ^headers [] ^body ($binary/from_str ($json/stringify
                 {^^ok ^ts ($to_str calls/.get/.size ".000002")}))})))
-          (let transport (open_transport harness/runtime/channels ^start false ^requester requester))
+          (let transport (open_transport harness/runtime/services/values/channels ^start false ^requester requester))
           (try
             (let base {^id "ordered" ^owner route/owner ^route route/id ^workspace workspace
               ^account "dobi" ^team "T123" ^channel "C123" ^thread "1.000001"
               ^session "pace-session" ^round "pace-round" ^parts [{^text "First"} {^text "Second"}]})
-            (accept_output harness/runtime/channels/owner base)
-            (accept_output harness/runtime/channels/owner
+            (accept_output harness/runtime/services/values/channels/owner base)
+            (accept_output harness/runtime/services/values/channels/owner
               (base .assoc "id" "another-thread"; .assoc "thread" "2.000001"; .assoc "parts" [{^text "Third"}]))
             (deliver_pending transport) (deliver_pending transport)
             ($assert (== calls/.get/.size 1))
@@ -137,27 +137,27 @@
             ($assert (== ($map calls/.get /text) ["First" "Second" "Third"]))
             ($sleep 1120)
             (limited .set true)
-            (accept_output harness/runtime/channels/owner
+            (accept_output harness/runtime/services/values/channels/owner
               (base .assoc "id" "limited"; .assoc "mode" "progress"; .assoc "parts" [{^text "Rate limited"}]))
-            (accept_output harness/runtime/channels/owner
+            (accept_output harness/runtime/services/values/channels/owner
               (base .assoc "id" "limited-other"; .assoc "thread" "3.000001"; .assoc "parts" [{^text "Must wait"}]))
-            (let other (configure_route harness/runtime/channels/owner "dobi" "C456" ($path/join workspace "other")))
-            (accept_output harness/runtime/channels/owner
+            (let other (configure_route harness/runtime/services/values/channels/owner "dobi" "C456" ($path/join workspace "other")))
+            (accept_output harness/runtime/services/values/channels/owner
               (base .assoc "id" "other-channel"; .assoc "channel" "C456"; .assoc "route" other/id
                     ; .assoc "workspace" other/workspace; .assoc "parts" [{^text "Another channel must wait"}]))
             (deliver_pending transport)
             ($assert (== calls/.get/.size 4))
             # Replacing the progress payload must not erase the app/team quota.
-            (accept_output harness/runtime/channels/owner
+            (accept_output harness/runtime/services/values/channels/owner
               (base .assoc "id" "limited"; .assoc "mode" "progress"; .assoc "revision" 1
                     ; .assoc "parts" [{^text "Latest progress"}]))
             ($assert (> (transport/next_send/.get .get "T123/C123") (+ ($os/monotonic_ms) 58000)))
             (deliver_pending transport)
             ($assert (== calls/.get/.size 4))
             (close_transport transport)
-            (close_channel_store harness/runtime/channels/owner)
-            (set harness/runtime/channels/owner (open_authority ($path/join harness/runtime/state_root "channels" "owner")))
-            (let restored (open_transport harness/runtime/channels ^start false ^requester requester))
+            (close_channel_store harness/runtime/services/values/channels/owner)
+            (set harness/runtime/services/values/channels/owner (open_authority ($path/join harness/runtime/state_root "channels" "owner")))
+            (let restored (open_transport harness/runtime/services/values/channels ^start false ^requester requester))
             (try
               (deliver_pending restored)
               ($assert (== calls/.get/.size 4) "owner restart lost the workspace-wide Retry-After")
@@ -168,28 +168,28 @@
     (isolated this_mod/.path "persists and shares read reconciliation backoffs across channels and owner restarts"
       (fn [workspace]
         (fixture workspace (fn [harness]
-          (let first (configure_route harness/runtime/channels/owner "dobi" "C123" workspace))
-          (let second (configure_route harness/runtime/channels/owner "dobi" "C456" ($path/join workspace "other")))
+          (let first (configure_route harness/runtime/services/values/channels/owner "dobi" "C123" workspace))
+          (let second (configure_route harness/runtime/services/values/channels/owner "dobi" "C456" ($path/join workspace "other")))
           (for route in [first second]
             (let intent {^id route/channel ^owner route/owner ^route route/id ^workspace route/workspace
               ^account "dobi" ^team "T123" ^channel route/channel ^thread "1.000001"
               ^session "reconcile-session" ^round "reconcile-round" ^parts [{^text "Unknown post"}]})
-            (accept_output harness/runtime/channels/owner intent)
-            (begin_part harness/runtime/channels/owner intent/id 0 0))
-          (recover_deliveries harness/runtime/channels/owner)
+            (accept_output harness/runtime/services/values/channels/owner intent)
+            (begin_part harness/runtime/services/values/channels/owner intent/id 0 0))
+          (recover_deliveries harness/runtime/services/values/channels/owner)
           (let calls ($cell 0))
           (let requester (fn [request]
             ($assert (== request/method "conversations.replies"))
             (calls .set (+ calls/.get 1))
             {^status 429 ^headers [["Retry-After" "60"]] ^body ($binary/from_str "{}")}))
-          (let transport (open_transport harness/runtime/channels ^start false ^requester requester))
+          (let transport (open_transport harness/runtime/services/values/channels ^start false ^requester requester))
           (try
             (deliver_pending transport)
             ($assert (== calls/.get 1))
             (close_transport transport)
-            (close_channel_store harness/runtime/channels/owner)
-            (set harness/runtime/channels/owner (open_authority ($path/join harness/runtime/state_root "channels" "owner")))
-            (let restored (open_transport harness/runtime/channels ^start false ^requester requester))
+            (close_channel_store harness/runtime/services/values/channels/owner)
+            (set harness/runtime/services/values/channels/owner (open_authority ($path/join harness/runtime/state_root "channels" "owner")))
+            (let restored (open_transport harness/runtime/services/values/channels ^start false ^requester requester))
             (try
               (deliver_pending restored)
               ($assert (== calls/.get 1))
@@ -229,27 +229,27 @@
           ($assert (withdraw_seam harness/runtime/h "core" "channels/host"))
           ($assert (== opened/.get closed/.get))
           (for client in clients/.get ($assert client/closed/.get))
-          (let route (configure_route harness/runtime/channels/owner "dobi" "C123" workspace))
-          (bind_workspace harness/runtime/channels workspace route/id)
-          (let incoming (receive_envelope harness/runtime/channels/owner "dobi"
+          (let route (configure_route harness/runtime/services/values/channels/owner "dobi" "C123" workspace))
+          (bind_workspace harness/runtime/services/values/channels workspace route/id)
+          (let incoming (receive_envelope harness/runtime/services/values/channels/owner "dobi"
             {^type "events_api" ^envelope_id "one" ^payload {^type "event_callback"
               ^api_app_id "A123" ^team_id "T123" ^event_id "Ev1"
               ^event {^type "message" ^user "UOWNER" ^channel "C123" ^ts "1.000001" ^text "<@UBOT> Queued request"}}}))
-          (let accepted (receive_handoff harness/runtime/channels incoming))
-          (hold_queue harness/runtime/channel_queues accepted/session "stop" "operator-choice")
+          (let accepted (receive_handoff harness/runtime/services/values/channels incoming))
+          (hold_queue harness/runtime/services/values/channel_queues accepted/session "stop" "operator-choice")
           (submit harness accepted/session "browser" 1 "Unrelated browser work.")
-          (let watcher (harness/controller/watchers/.get .get accepted/session))
+          (let watcher (/watcher (harness/runtime/services/values/controller/rounds/.get .get accepted/session)))
           watcher/.join
-          ($assert (/held (queue_status harness/runtime/channel_queues accepted/session)))
-          ($assert (== (/pending (queue_status harness/runtime/channel_queues accepted/session)) 1))
+          ($assert (/held (queue_status harness/runtime/services/values/channel_queues accepted/session)))
+          ($assert (== (/pending (queue_status harness/runtime/services/values/channel_queues accepted/session)) 1))
           (provide harness/runtime/h "core" "channels/host"
             (channel_host_binding harness/runtime ^options {^driver driver ^requester requester}))
           (wait_open 2)
           (install)
           (wait_open 3)
           ($assert (== closed/.get 2))
-          ($assert (/held (queue_status harness/runtime/channel_queues accepted/session)))
-          ($assert (== (/pending (queue_status harness/runtime/channel_queues accepted/session)) 1))
+          ($assert (/held (queue_status harness/runtime/services/values/channel_queues accepted/session)))
+          ($assert (== (/pending (queue_status harness/runtime/services/values/channel_queues accepted/session)) 1))
           (close_session_service harness)
           ($assert (== opened/.get closed/.get))
           (for client in clients/.get ($assert client/closed/.get)))))))

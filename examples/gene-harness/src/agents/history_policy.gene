@@ -1,3 +1,0 @@
-# Host compatibility import; implementation is a declared public library.
-(mod history_policy)
-(import [HistoryPolicyError default_summary_instructions normalize_history_policy] ^from "../public/history_policy" ^^export)

@@ -37,11 +37,13 @@ class Element extends EventTarget {
   querySelectorAll() { return all(this).filter(x=>["button","input","select","textarea","a"].includes(x.tag)||x.hasAttribute("tabindex")); }
 }
 function all(root = document.body) { return [root, ...root.children.flatMap(x => all(x))]; }
+const workspaceId = 'fixture-workspace';
+const harnessDocument = Object.assign(new Element('html'), {dataset: {workspaceId}});
 globalThis.document = {
   body: new Element(), activeElement: null,
   createElement: tag => new Element(tag), createTextNode: text => new Element("#text", text),
   createDocumentFragment: () => new Element("#fragment"),
-  getElementById: id => all().find(x => x.getAttribute("id") === id),
+  getElementById: id => id === 'harness_document' ? harnessDocument : all().find(x => x.getAttribute("id") === id),
 };
 globalThis.HTMLElement = Element;
 globalThis.window = new EventTarget();
@@ -58,6 +60,7 @@ const spotlight = await import(pathToFileURL(process.argv[2]).href);
 const commands = await import(pathToFileURL(process.argv[3]).href);
 const browserClients = await import(pathToFileURL(process.argv[4]).href);
 const overlays = await import(new URL("./overlays.mjs",pathToFileURL(process.argv[4])));
+const {workspace_storage_key} = await import(new URL('./workspace_storage.mjs',pathToFileURL(process.argv[4])));
 const keyEvent = (code, extra = {}) => ({code, key: code, metaKey:false, altKey:false,
   ctrlKey:false, shiftKey:false, repeat:false, isComposing:false, ...extra});
 const options = () => all().filter(x => x.getAttribute("role") === "option");
@@ -232,7 +235,7 @@ assert.equal(client.pending,null);
 assert.equal(storage.size,0);
 assert.equal(settled[0].envelope.session,"original");
 assert.equal(settled[0].envelope.clear_composer,true);
-storage.set("gene-harness/command-pending/corrupt","not JSON");
+storage.set(workspace_storage_key(workspaceId,"gene-harness/command-pending/corrupt"),"not JSON");
 const corrupt=commands.create_commands(api,()=>{});
 commands.configure_commands(corrupt,"corrupt");
 assert.equal(corrupt.pending.invalid,true);

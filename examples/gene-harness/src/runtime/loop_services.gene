@@ -1,0 +1,78 @@
+# Execution lifecycle, independent of browser observers. The caller owns the
+# supplied runtime and controller; this graph owns their execution lifetime
+# with the channel service and drains the controller before channels close.
+(mod loop_services)
+(import [new_host_services start_host_services HostServiceError] ^from "./host_services")
+(import [close_round_controller resume_answered_rounds resume_continuations]
+  ^from "./round_controller")
+(import [start_delegation_host] ^from "./delegations")
+(import [open_channel_service close_channel_service] ^from "../channels/service")
+(import [trigger_host_binding close_trigger_host] ^from "./trigger_host")
+(import [channel_host_binding] ^from "../channels/host")
+(import [start_manager_polling] ^from "./workspace_manager")
+(import [provide withdraw_seam] ^from "../kernel")
+
+(fn close_bindings [ctx] ^^private
+  (if (== ctx/bindings_closed true) (return nil))
+  (set ctx/bindings_closed true)
+  (let errors [])
+  (for name in ["triggers/host" "channels/host"]
+    (try (withdraw_seam ctx/runtime/h "core" name) catch Any (errors .push $err/message)))
+  (try (close_trigger_host ctx/runtime/services/values/trigger_host) catch Any (errors .push $err/message))
+  (if_not errors/.empty? (fail (HostServiceError ^message $"Loop binding cleanup failed: ${errors}")))
+  nil)
+
+(fn drain_controller [ctx, controller] ^^private
+  (if (== ctx/controller_closed true) (return nil))
+  (set ctx/controller_closed true)
+  (close_round_controller controller))
+
+(fn loop_service_specs [] ^^private
+  [{^name "runtime" ^layer "kernel" ^^borrowed ^requires []
+    ^open (fn [ctx] ctx/runtime) ^recover nil}
+   {^name "controller" ^layer "loop" ^^borrowed ^requires ["runtime"]
+    ^open (fn [ctx] ctx/runtime/services/values/controller) ^recover nil}
+   {^name "channels" ^layer "feature_host" ^requires ["controller"]
+    ^open (fn [ctx]
+      (if ($absent? ctx/runtime/services/values/channel_queues) (return nil))
+      (let channels (open_channel_service ctx/runtime ctx/services/values/controller))
+      channels)
+    ^recover nil ^close (fn [ctx, channels] (close_channel_service channels))}
+   {^name "controller_lifetime" ^layer "loop" ^requires ["channels"]
+    ^open (fn [ctx] true) ^recover nil
+    ^quiesce (fn [ctx, value] (drain_controller ctx ctx/services/values/controller))}
+   {^name "resumption" ^layer "loop" ^requires ["controller_lifetime"]
+    ^open (fn [ctx]
+      (start_delegation_host ctx/runtime/services/values/delegations)
+      (resume_answered_rounds ctx/services/values/controller)
+      (resume_continuations ctx/services/values/controller)
+      nil) ^recover nil}
+   {^name "manager_polling" ^layer "feature_host" ^requires ["controller_lifetime"]
+    ^open (fn [ctx]
+      (if_not ($absent? ctx/runtime/services/values/manager)
+        (start_manager_polling ctx/runtime/services/values/manager))
+      nil) ^recover nil}
+   {^name "bindings" ^layer "loop" ^requires ["resumption" "manager_polling"]
+    ^open (fn [ctx]
+      (try
+        (provide ctx/runtime/h "core" "triggers/host"
+          (trigger_host_binding ctx/runtime))
+        (if_not ($absent? ctx/runtime/services/values/channels)
+          (provide ctx/runtime/h "core" "channels/host"
+            (channel_host_binding ctx/runtime ^options ctx/channel_options)))
+        true
+      catch Any
+        (let original $err)
+        (close_bindings ctx)
+        (fail original)))
+    ^recover nil ^quiesce (fn [ctx, value] (close_bindings ctx))
+    ^close (fn [ctx, value] (close_bindings ctx))}])
+
+(fn open_loop_services [runtime, ^channel_options channel_options = nil, ^observe observe = nil]
+  (let ctx {^runtime runtime ^services nil ^channel_options channel_options
+    ^controller_closed false ^bindings_closed false})
+  (let owner (new_host_services ctx (loop_service_specs) ^values runtime/services/values
+    ^observe (fn [phase name]
+      (if (&& (! ($absent? observe)) (!= name "runtime")) (observe phase name)))))
+  (set ctx/services owner)
+  (start_host_services owner "normal"))

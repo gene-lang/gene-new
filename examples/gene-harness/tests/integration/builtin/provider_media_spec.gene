@@ -4,7 +4,7 @@
 (import [row] ^from "../../../src/kernel")
 (import [ProviderError] ^from "../../../src/plugin_api")
 (import [responses_content anthropic_content chat_messages require_text_messages]
-  ^from "../../../src/agents/content")
+  ^from "../../../src/public/model_content")
 
 (describe "Harness provider image content"
   (it "uses native image blocks in actual provider preparation" []

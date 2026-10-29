@@ -1,5 +1,6 @@
 # Workflow projections. Session metadata is a hint; only snapshots own questions.
 (mod harness_notification_center ^profile web)
+(import [api_root] ^from "../src/web/contract.gene")
 (import ^from "./notices.gene" [Notices Notice remove_notice])
 (import ^from "./question_editors.gene" [QuestionEditors QuestionEditor mount_question qtext qjson])
 (import ^from "./question_state.gene" [current_fetch waiting_batch])
@@ -101,7 +102,7 @@
   (paint_card center card)
   (center/api
     "GET"
-    $"/api/v8/sessions/${session}/snapshot"
+    $"${(api_root)}/sessions/${session}/snapshot"
     nil
     (fn [code : Int, data : Any] : Void
       (set card/loading false)

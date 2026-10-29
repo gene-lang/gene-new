@@ -1,3 +1,0 @@
-# Host compatibility import; implementation is a declared public library.
-(mod documentation)
-(import [reference_path contribute_doc contribute_text_doc] ^from "../public/documentation" ^^export)

@@ -25,28 +25,29 @@
   (Appearance ^path (appearance_path state_root) ^mode ($cell (read_appearance state_root))
     ^gate ($sync/gate)))
 
-(fn appearance_mode [h] : Str
-  (if ($absent? h/services/appearance) "light" h/services/appearance/mode/.get))
+(fn appearance_mode [runtime] : Str
+  (if ($absent? runtime/services/values/appearance) "light" runtime/services/values/appearance/mode/.get))
 
 # Persist first, then update the live mode and announce it. A failed write
 # leaves both the file and the active mode as they were.
-(fn set_appearance [h, mode] : Str
+(fn set_appearance [runtime, mode] : Str
   (if (|| (!= ($head mode) Str) (! (theme_modes .contains? mode)))
     (fail (AppearanceError ^code "invalid_request" ^message "Theme must be light or dark.")))
-  (if ($absent? h/services/appearance)
+  (if ($absent? runtime/services/values/appearance)
     (fail (AppearanceError ^code "unavailable" ^message "This host has no appearance setting.")))
-  (let appearance h/services/appearance)
+  (let appearance runtime/services/values/appearance)
   (appearance/gate (fn []
     ($fs/write_text_atomic appearance/path ($serde/write_data {^mode mode}))
     (appearance/mode .set mode)))
-  (publish h (AppearanceChanged ^mode mode))
+  (publish runtime/h (AppearanceChanged ^mode mode))
   mode)
 
 # Host-owned rows: removing or disabling plugins never strands the setting.
-(fn install_appearance_rows [h]
+(fn install_appearance_rows [runtime]
+  (let h runtime/h)
   (if ($absent? (row h "functions" "set_appearance"))
     (contribute h "core" "functions"
       {^name "set_appearance" ^doc "Switch the Harness web UI theme to \"light\" or \"dark\" for this workspace."
        ^tags ["ui" "theme" "appearance"] ^docs ["harness/ui/configuration"]
-       ^fn (fn [mode] (set_appearance h mode))}))
+       ^fn (fn [mode] (set_appearance runtime mode))}))
   nil)

@@ -11,13 +11,13 @@
 (import [immutable_view] ^from "../runtime/composition")
 (import [execution_budget] ^from "../runtime/execution_budget")
 (import [bind_service] ^from "../runtime/service_binding")
-(import [safe_publish update_notification list_source_messages clear_source_message]
-  ^from "../notifications/publisher")
-(import [append_plugin_event prepare_plugin_state plugin_state append_core_event]
-  ^from "../storage/state")
 
 (type Host ^props {^h Harness ^owner Str ^effects Any ^notification_revision Str ^state_writer Any})
 
+(fn ^^private require_plugin_services [h]
+  (if ($absent? h/plugin_services)
+    (fail (HarnessError ^message "plugin services are unavailable on this kernel")))
+  h/plugin_services)
 
 (fn validate_plugin_descriptor [h : Harness, expected_id : Str, p : Plugin]
   (if_not (== p/id expected_id)
@@ -59,13 +59,17 @@
     (self/effects .defer (fn [] (cleanup_registry_context h cleanup)))
     nil)
   (message notify [message] : Any
-    (safe_publish ^revision self/notification_revision self/h self/owner message))
+    (let services (require_plugin_services self/h))
+    (services/notify self/h self/owner self/notification_revision message))
   (message notifications [] : Any
-    (list_source_messages self/h self/owner))
+    (let services (require_plugin_services self/h))
+    (services/notifications self/owner))
   (message notification_update [id : Str, changes] : Any
-    (update_notification ^revision self/notification_revision self/h self/owner id changes))
+    (let services (require_plugin_services self/h))
+    (services/notification_update self/h self/owner self/notification_revision id changes))
   (message notification_clear [id : Str, revision : Int] : Any
-    (clear_source_message self/h self/owner id revision))
+    (let services (require_plugin_services self/h))
+    (services/notification_clear self/owner id revision))
   (message registry_names [] : Any
     (registry_names self/h))
   (message row_keys [registry_name : Str] : Any
@@ -103,8 +107,7 @@
     (subscribe record/h record/owner selector handler))
   (message emit_event [name : Str, payload] : Any
     (var record self)
-    (if ($absent? record/h/event_store)
-      (fail (HarnessError ^message "plugin events require a durable event store")))
+    (let services (require_plugin_services record/h))
     (var event_record (row_record record/h "event_types" name))
     (if (== event_record void)
       (fail (HarnessError ^message $"plugin event type ${name} is not registered")))
@@ -119,26 +122,17 @@
     (let session (if ($absent? context) nil (?? context/session nil)))
     (let scope (if ($absent? session) "workspace" "session"))
     (let stream (if ($absent? session) "workspace" ($to_str session)))
-    (append_plugin_event
-      record/h/event_store
-      scope
-      stream
-      record/owner
+    (services/emit_event record/owner scope stream
       {^type name ^version event_type/version ^ignorable event_type/ignorable ^data checked}))
   (message state [^session session = nil] : Any
     (var record self)
-    (if ($absent? record/h/event_store) (return nil))
+    (if ($absent? record/h/plugin_services) (return nil))
     (let scope (if ($absent? session) "workspace" "session"))
     (let stream (if ($absent? session) "workspace" ($to_str session)))
-    (plugin_state record/h/event_store scope stream record/owner))
+    (record/h/plugin_services/state record/owner scope stream))
   (message update_state [value, ^session session = nil] : Any
     (var record self)
-    (if ($absent? record/h/event_store)
-      (fail (HarnessError ^message "plugin state requires a durable event store")))
+    (let services (require_plugin_services record/h))
     (let scope (if ($absent? session) "workspace" "session"))
     (let stream (if ($absent? session) "workspace" ($to_str session)))
-    (let writer ($thaw record/state_writer))
-    (writer .put "at" ($to_str ($now)))
-    (var event (prepare_plugin_state ^writer writer record/h/event_store scope stream record/owner value))
-    (append_core_event ^projection record/owner record/h/event_store scope stream event)
-    value))
+    (services/update_state record/owner scope stream record/state_writer value)))

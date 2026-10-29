@@ -1,4 +1,5 @@
 (mod harness_client_state ^profile web)
+(import [client_record_limit] ^from "../src/web/contract.gene")
 
 (import ^from "../src/web/contract.gene" ^^export [terminal_round : terminal])
 
@@ -117,14 +118,14 @@
   (if_yes (== count 0)
     (var at 0)
     (for block in blocks
-      (if_yes (&& (>= at (- blocks/.size 600)) (< out/.size 600)) (out .push block))
+      (if_yes (&& (>= at (- blocks/.size client_record_limit)) (< out/.size client_record_limit)) (out .push block))
       (set at (+ at 1)))
     (return out))
-  (var start (if (&& latest (> count 600)) (- count 600) 0))
+  (var start (if (&& latest (> count client_record_limit)) (- count client_record_limit) 0))
   (var i 0) (var owners : PropMap {})
   (for block in blocks
     (if_yes (structural_block block) (continue))
-    (if_yes (&& (>= i start) (< i (+ start 600)))
+    (if_yes (&& (>= i start) (< i (+ start client_record_limit)))
       (var owner (record_owner block))
       (if_yes (!= owner "") (set owners/%owner true)))
     (set i (+ i 1)))
@@ -134,7 +135,7 @@
       (do (var owner (record_owner block))
         (if_yes (status_flag owners/%owner) (out .push block)))
       (do
-        (if_yes (&& (>= i start) (< i (+ start 600))) (out .push block))
+        (if_yes (&& (>= i start) (< i (+ start client_record_limit))) (out .push block))
         (set i (+ i 1)))))
   out)
 

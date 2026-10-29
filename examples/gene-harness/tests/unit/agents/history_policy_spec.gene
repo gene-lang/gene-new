@@ -1,6 +1,6 @@
 (import $test [describe it])
 (import [normalize_history_policy default_summary_instructions]
-  ^from "../../../src/agents/history_policy")
+  ^from "../../../src/public/history_policy")
 
 (describe "History policy data"
   (it "preserves threshold-only defaults and freezes the returned policy" []

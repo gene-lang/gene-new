@@ -2,44 +2,35 @@
 (mod service_handles)
 (import [ServiceError] ^from "../plugin_api")
 (import [HostServiceBinding] ^from "./service_binding")
-(var handles ^^private ($cell []))
-(var gate ^^private ($sync/gate))
+(import [new_handle_table lookup_handle find_handle intern_handle revoke_handle] ^from "./handle_table")
+(var handles ^^private (new_handle_table))
 
 (fn require_service [handle]
-  (let selected (gate (fn []
-    (for record in handles/.get
-      (if (same? record/token handle/token)
-        (if_not record/runtime/closed/.get (return record))))
-    nil)))
-  (if_not ($absent? selected) (return selected))
+  (let selected (lookup_handle handles handle/token))
+  (if (&& (! ($absent? selected)) (! selected/runtime/closed/.get)) (return selected))
   (fail (ServiceError ^code "unavailable" ^message "This host service handle has retired or closed.")))
 
 (fn revoke_service_handle [token]
-  (gate (fn [] (handles .set ($filter handles/.get (fn [record] (! (same? record/token token)))))))
+  (revoke_handle handles token)
   nil)
 
 (fn matching_service [runtime, host, name : Str]
-  (for record in handles/.get
-    (if (&& (same? record/runtime runtime) (same? record/host host) (== record/name name))
-      (return record)))
-  nil)
+  (find_handle handles (fn [record]
+    (&& (same? record/runtime runtime) (same? record/host host) (== record/name name)))))
 
 (fn service_binding [runtime, name : Str, constructor, ^config config = nil]
   (HostServiceBinding ^factory (fn [host]
     (if (|| runtime/closed/.get (! (same? host/h runtime/h)))
       (fail (ServiceError ^code "unavailable" ^message "Host service belongs to a closed or different workspace.")))
-    (let existing (gate (fn [] (matching_service runtime host name))))
+    (let existing (matching_service runtime host name))
     (if_not ($absent? existing) (return existing/handle))
     (let token ($cell nil))
     (let handle ($freeze_shallow (constructor token)))
     (let record {^token token ^name name ^runtime runtime ^host host ^handle handle
       ^config config ^values ($cell {})})
     # Construction and effect registration remain outside the table gate.
-    (let selected (gate (fn []
-      (let current (matching_service runtime host name))
-      (if_not ($absent? current) (return current))
-      (handles/.get .push record)
-      record)))
+    (let selected (intern_handle handles record (fn [current]
+      (&& (same? current/runtime runtime) (same? current/host host) (== current/name name)))))
     (if_not (same? selected/token token) (return selected/handle))
     (try
       (host/effects .defer (fn [] (revoke_service_handle token)))

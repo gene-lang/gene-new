@@ -2,7 +2,6 @@
 # that most recently enabled, disabled or reverted it. No plugin code is read
 # or executed here, and no conversation store is needed.
 (mod plugin_source_attribution)
-(import ^from "./plugin_history" [archived_record history_revision history_entry])
 
 (fn session_reference [value]
   (if (|| (!= ($head value/session) Str) (== value/session "")) (return nil))
@@ -22,87 +21,26 @@
   (if_not ($absent? turn/turn) (result .put "turn" ($to_str turn/turn)))
   result)
 
-(fn source_entry [entries, id : Str]
-  (for entry in entries
-    (if (== entry/id id)
-      (return (if ($absent? entry/module_digest) nil entry))))
-  nil)
-
-(fn source_origin_at [workspace, entry, revision : Int]
-  (if ($absent? entry/module_digest) (return nil))
-  (var candidate entry)
-  (var before revision)
-  (let visited [])
-  (loop
-    (if (== ($head candidate/source_origin) Map) (return candidate/source_origin))
-    (let origin candidate/origin)
-    (if (&& (["register" "replace"] .contains? origin/operation)
-            (["model" "command"] .contains? origin/kind)
-            (== origin/plugin entry/id))
-      (then
-        (let reference (session_reference origin))
-        (if ($absent? reference) (return nil))
-        (reference .put "kind" origin/kind)
-        (return reference)))
-    (if (!= origin/operation "revert") (return nil))
-    (let target origin/source_revision)
-    (if (|| (!= ($head target) Int) (< target 0) (>= target before)
-            (visited .contains? target)) (return nil))
-    (visited .push target)
-    (set candidate
-      (try (history_entry workspace/store workspace/history_head/.get entry/id target)
-        catch Any nil))
-    (if ($absent? candidate/module_digest) (return nil))
-    (set before target)))
-
-(fn creation_at [workspace, entry, revision : Int]
-  (if ($absent? entry/module_digest) (return nil))
-  (let recorded (session_reference entry/created_in))
-  (if_not ($absent? recorded) (return recorded))
-  # A modern entry with missing/nil creation is deliberately unknown.
-  (if (== ($head entry/source_origin) Map) (return nil))
-  (try
-    (var record (history_revision workspace/store workspace/history_head/.get revision))
-    (loop
-      (let current (source_entry record/entries entry/id))
-      (if ($absent? current) (return nil))
-      (let known (session_reference current/created_in))
-      (if_not ($absent? known) (return known))
-      (if (== ($head current/source_origin) Map) (return nil))
-      # An imported baseline is not evidence of creation.
-      (if ($absent? record/parent) (return nil))
-      (let parent (archived_record workspace/store record/parent))
-      (if (!= parent/revision (- record/revision 1)) (return nil))
-      (if ($absent? (source_entry parent/entries entry/id))
-        (then
-          (let origin record/origin)
-          (if (&& (== origin/plugin entry/id)
-                  (["register" "replace"] .contains? origin/operation)
-                  (["model" "command"] .contains? origin/kind))
-            (return (session_reference origin)))
-          (return nil)))
-      (set record parent))
-  catch Any nil))
-
-(fn source_attribution [workspace, entry, ^revision revision = nil]
-  (let at (?? revision workspace/revision/.get))
-  {^created_in (creation_at workspace entry at)
-   ^source_origin (source_origin_at workspace entry at)})
+(fn source_attribution [entry]
+  (if ($absent? entry/module_digest)
+    (return {^created_in nil ^source_origin nil}))
+  {^created_in (session_reference entry/created_in)
+   ^source_origin (if (== ($head entry/source_origin) Map) entry/source_origin nil)})
 
 # Called with the entry that actually exists at publication (or at a plan's
 # validated base). A later replacement must not become the original creation.
-(fn assign_creation [workspace, entry, previous, ^revision revision = nil]
+(fn assign_creation [entry, previous]
   (entry .delete "created_in")
   (let creation
     (if ($absent? previous/module_digest)
       (session_reference entry/source_origin)
-      (creation_at workspace previous (?? revision workspace/revision/.get))))
+      (session_reference previous/created_in)))
   (if_not ($absent? creation) (entry .put "created_in" creation))
   entry)
 
-(fn preserve_creation_on_revert [workspace, saved, previous, ^revision revision = nil]
+(fn preserve_creation_on_revert [saved, previous]
   (if_not ($absent? previous/module_digest)
-    (let creation (creation_at workspace previous (?? revision workspace/revision/.get)))
+    (let creation (session_reference previous/created_in))
     (saved .delete "created_in")
     (if_not ($absent? creation) (saved .put "created_in" creation)))
   saved)

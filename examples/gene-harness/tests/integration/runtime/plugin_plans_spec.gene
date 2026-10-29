@@ -9,8 +9,9 @@
 (import ^from "../../../src/builtin/plugin_admin" [plugin_admin])
 (import ^from "../../../src/agents/harness_turn" [evaluate_harness_turn])
 (import ^from "../../../src/runtime/plugin_plans" [validate_plan apply_plan plan_result])
-(import ^from "../../../src/storage/workspace"
-  [composition_revision set_plugin_enabled register_plugin])
+(import [composition_revision] ^from "../../../src/storage/composition_store")
+(import [set_plugin_enabled] ^from "../../../src/storage/workspace_repair")
+(import [register_plugin] ^from "../../../src/storage/workspace_activation")
 (import ^from "../../../src/storage/plugin_history" [history_results])
 (import ^from "../../../src/runtime/composition"
   [current_snapshot acquire_snapshot release_snapshot])
@@ -333,7 +334,7 @@
               root
               "crash_apply")))
         ($assert (== child/status 92) ($to_str child))
-        (let runtime (open_runtime ^^recovery root "default" (Profile ^name "crash" ^plugins [])))
+        (let runtime (open_runtime ^mode "recovery" root "default" (Profile ^name "crash" ^plugins [])))
         (try
           (let id ($fs/read_text $"${root}/plan-id"))
           (let result (plan_result runtime id))
@@ -390,7 +391,7 @@
             (runtime/workspace/blob_store .Store:put key source))
         ensure
           (close_runtime runtime))
-        (let reopened (open_runtime ^^recovery root "default" profile))
+        (let reopened (open_runtime ^mode "recovery" root "default" profile))
         (try
           (let retained (history_results ^kind "attempt" reopened/workspace/store baseline))
           ($assert (== retained/0/result/request/changes/0/source "(mod plugin (fn"))

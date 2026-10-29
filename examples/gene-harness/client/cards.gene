@@ -3,6 +3,7 @@
 # defined live, or after the user clicks Enable. A reload disables every card
 # that has code or command buttons; nothing here survives a reload on purpose.
 (mod harness_cards ^profile web)
+(import [api_root] ^from "../src/web/contract.gene")
 (import [author_line] ^from "./slack_users.gene")
 
 (type CardHost ^props {^enabled PropMap ^pending PropMap ^errors PropMap ^drafts PropMap
@@ -82,7 +83,7 @@
   (var id (ctext card/id))
   (host/api
     "POST"
-    $"/api/v8/sessions/${session}/cards/${id}/actions"
+    $"${(api_root)}/sessions/${session}/cards/${id}/actions"
     request
     (fn [code : Int, data : Any] : Void
       (if (== code 200)

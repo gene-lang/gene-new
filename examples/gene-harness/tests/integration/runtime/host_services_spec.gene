@@ -25,14 +25,14 @@
           (let is_recovery (== mode "recovery"))
           (let names [])
           (let baseline (open_runtime ($path/join root mode "baseline") "default" profile
-            ^recovery is_recovery ^service_event (fn [phase, name]
+            ^mode mode ^service_event (fn [phase, name]
               (if (== phase "after") (names .push name)))))
           (if is_recovery
             (then
               ($assert ($absent? baseline/events))
               ($assert ($absent? baseline/sessions))
-              ($assert ($absent? baseline/voice))
-              ($assert ($absent? baseline/h/services/notifications))))
+              ($assert ($absent? baseline/services/values/voice))
+              ($assert ($absent? baseline/services/values/inbox))))
           (close_runtime baseline)
           (close_runtime baseline)
           (if_not is_recovery
@@ -46,7 +46,7 @@
             (let workspace ($path/join root mode target))
             (let closed [])
             ($assert (try
-              (open_runtime workspace "default" profile ^recovery is_recovery
+              (open_runtime workspace "default" profile ^mode mode
                 ^service_event (fn [phase, name]
                   (if (== phase "close")
                     (then

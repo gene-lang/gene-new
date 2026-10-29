@@ -31,8 +31,10 @@ class FileReader extends EventTarget {
 }
 const storage = new Map();
 const elements = new Map();
+const workspaceId = 'fixture-workspace';
 function freshDOM() {
   elements.clear();
+  elements.set('harness_document', Object.assign(new Element('html'), {dataset: {workspaceId}}));
   for (const id of ["media_drafts", "media_status", "composer", "prompt"]) elements.set(id, new Element("div"));
   elements.set("media_files", new HTMLInputElement());
 }
@@ -52,6 +54,8 @@ Object.assign(globalThis, {
 });
 if (!globalThis.crypto) globalThis.crypto = webcrypto;
 const media = await import(pathToFileURL(process.argv[2]).href);
+const {workspace_storage_key} = await import(new URL('workspace_storage.mjs', pathToFileURL(process.argv[2])));
+const scoped = key => workspace_storage_key(workspaceId, key);
 let sequence = 0;
 const posts = [];
 const post = (name, data, done) => {
@@ -90,7 +94,7 @@ assert.equal(media.media_ids(composer).length, 2);
 assert.equal(posts[0].data, "/wCAKg==");
 assert.deepEqual(posts.slice(0, 2).map(p => p.name), ["binary.png", "notes.txt"]);
 assert.equal(elements.get("media_files").value, "");
-const saved = JSON.parse(storage.get("gene-harness/media-draft/new"));
+const saved = JSON.parse(storage.get(scoped("gene-harness/media-draft/new")));
 assert.equal(saved.length, 2);
 assert.equal("file" in saved[0], false);
 assert.equal("data" in saved[0], false);
@@ -149,6 +153,6 @@ media.media_move(composer, "move-source", "move-target");
 media.media_select(composer, "move-target");
 resume(); await settled(composer);
 assert.equal(media.media_ids(composer).length, 1);
-assert.equal(JSON.parse(storage.get("gene-harness/media-draft/move-source")).length, 0);
-assert.equal(JSON.parse(storage.get("gene-harness/media-draft/move-target"))[0].state, "ready");
+assert.equal(JSON.parse(storage.get(scoped("gene-harness/media-draft/move-source"))).length, 0);
+assert.equal(JSON.parse(storage.get(scoped("gene-harness/media-draft/move-target")))[0].state, "ready");
 console.log("media composer: picker/drop/paste, ordered uploads, drafts, removal, limits, errors, cancellation and session transfer passed");

@@ -1,13 +1,14 @@
 (mod instructions)
+(import [api_root] ^from "../web/contract.gene")
 (import ^from "../kernel" [rows contribute])
 
 (const discovery_instructions """
 (discover "topic") searches active documentation and capabilities by names, summaries and tags; results include owners, callable signatures and chapter references. All query words must match: use one focused topic or exact name per call, and batch separate queries when needed. Narrow with ^kind "docs" or "functions", or ^owner "plugin_id". Results are paged: pass next_offset as ^offset to continue. (doc "chapter/name") loads one chapter. These helpers, session_id and workspace_root are always available; discovered functions are already callable in response code, /run and the REPL.
 """)
 
-(const response_format """
+(let response_format $"""
 Return Gene code, optionally followed by raw attachment and patch blocks. Do not wrap code in Markdown or return a JSON envelope.
-Present the complete result in the final Outcome reply. When delivering a generated image, include a Markdown image embed using the saved image descriptor's url, for example ![Logo](/api/v8/media/IMAGE_ID) with the actual returned ID. Earlier turn previews are collapsed. Select the final deliverable from history or recall; do not regenerate or media_show it merely to display it in the final reply.
+Present the complete result in the final Outcome reply. When delivering a generated image, include a Markdown image embed using the saved image descriptor's url, for example ![Logo](${(api_root)}/media/IMAGE_ID) with the actual returned ID. Earlier turn previews are collapsed. Select the final deliverable from history or recall; do not regenerate or media_show it merely to display it in the final reply.
 The last value is the outcome. (Outcome ^^done ^reply "...") finishes with a non-empty reply; done rejects prompt and questions.
 Active plugins may declare optional Outcome fields under ^extensions, using keys such as {^plugin_name/field data}. Read the owner's contract before supplying a field; unknown keys are rejected. Omitted fields are optional. Keep the complete user-facing answer in reply.
 (Outcome ^prompt value ^reply "concise progress reply") continues. A normal value becomes a prompt. Empty prompt with no append_prompt items is an error.

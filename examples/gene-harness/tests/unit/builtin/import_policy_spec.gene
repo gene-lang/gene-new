@@ -1,14 +1,14 @@
 # A ratchet for the migration: new built-ins use the public contract and shared
 # helpers. Existing private dependencies are explicit, and stale exceptions fail.
 (import $test [describe it])
-(import [public_modules] ^from "../../../src/runtime/public_modules")
+(import [sdk_modules] ^from "../../../src/runtime/plugin_sdk")
 
 (fn private_imports [] {})
 
 (describe "Built-in import boundary"
   (it "admits public dependencies and only the remaining named private exceptions" []
     (let exceptions (private_imports))
-    (let shared (public_modules))
+    (let shared (sdk_modules))
     (let observed {})
     (let root ($path/join this_pkg/root "src" "builtin"))
     (for name in ($fs/list_dir root)
@@ -31,9 +31,8 @@
           $"Remove the retired import exception ${name}: ${path}"))))
 
   (it "keeps public helpers independent of private host implementation modules" []
-    (let shared (public_modules))
+    (let shared (sdk_modules))
     (for path in shared
-      (if (== path "src/plugin_api.gene") (continue))
       (let file ($path/join this_pkg/root path))
       ($assert ($fs/exists? file) $"Missing declared public module ${path}")
       (for form in ($parse/read_all ($fs/read_text file))

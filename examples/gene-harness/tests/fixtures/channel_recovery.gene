@@ -45,7 +45,7 @@
   (test_service ^workspace root ^without_plugins ["slack"] ^provider (model_callback root ^point point)))
 
 (fn configure_fixture [service]
-  (let channels service/runtime/channels)
+  (let channels service/runtime/services/values/channels)
   (configure_account channels/owner "dobi" "/unused-reference" "/unused-library"
     {^team "T123" ^app "A123" ^bot "B123" ^bot_user "UBOT" ^operator "UOWNER"})
   (let route (configure_route channels/owner "dobi" "C123" service/runtime/root
@@ -60,19 +60,19 @@
     ^api_app_id "A123" ^team_id "T123" ^event message}})
 
 (fn intake [service, supplied]
-  (receive_envelope service/runtime/channels/owner "dobi" supplied))
+  (receive_envelope service/runtime/services/values/channels/owner "dobi" supplied))
 
 (fn session_id [service]
-  (let state (snapshot service/runtime/channel_queues))
+  (let state (snapshot service/runtime/services/values/channel_queues))
   (for [id binding] in state/bindings (return binding/session))
   (fail "No channel binding survived the crash"))
 
 (fn wait_round [service, session : Str]
   (loop
-    (let watcher (service/controller/watchers/.get .get session))
+    (let watcher (/watcher (service/runtime/services/values/controller/rounds/.get .get session)))
     (if ($absent? watcher) (return nil))
     watcher/.join
-    (if (same? watcher (service/controller/watchers/.get .get session)) (return nil))))
+    (if (same? watcher (/watcher (service/runtime/services/values/controller/rounds/.get .get session))) (return nil))))
 
 (fn remote_messages [root : Str]
   (let filename ($path/join root "remote-messages.gene"))
@@ -112,7 +112,7 @@
 
 (fn install_channel_crash [service, point : Str, ^reply_only reply_only : Bool = false]
   (let root service/runtime/root)
-  (set service/runtime/channels/owner/checkpoint (fn [side state result]
+  (set service/runtime/services/values/channels/owner/checkpoint (fn [side state result]
     (for [id record] in state/ingress
       (if (|| (&& (== point "ingress") (== side "after") (== record/status "pending"))
               (&& (== point "handoff") (== side "before") (== record/status "handed_off")))
@@ -122,7 +122,7 @@
       (if (|| (&& (== point "owner_accept") (== side "after") (== record/status "accepted"))
               (&& (== point "owner_result") (== side "after") (== record/status "delivered")))
         (crash root point)))))
-  (set service/runtime/channel_queues/checkpoint (fn [side state result]
+  (set service/runtime/services/values/channel_queues/checkpoint (fn [side state result]
     (for [id binding] in state/bindings
       (if (|| (&& (== point "queued") (== side "after") (== binding/status "pending"))
               (&& (== point "binding") (== side "after") (== binding/status "active")))
@@ -145,8 +145,8 @@
       (if (|| (&& (== point "intent") (== side "after") (== record/status "pending"))
               (&& (== point "workspace_result") (== side "after") (== record/status "delivered")))
         (crash root point)))))
-  (set service/events/checkpoint (fn [generation]
-    (for [stream states] in service/events/core_projections/.get
+  (set service/runtime/events/checkpoint (fn [generation]
+    (for [stream states] in service/runtime/events/core_projections/.get
       (for [name record] in states
         (if (&& (== point "question_answered") (== record/status "answered")
                  (== record/answer_source/author "UOTHER"))
@@ -173,50 +173,50 @@
   (let original (event "root" "1.000001"
     (if (== point "batch") "<@UBOT> REVOKED_BEFORE_ADMISSION" "<@UBOT> Build once.")))
   (intake service original)
-  (handoff_inputs service/runtime/channels)
+  (handoff_inputs service/runtime/services/values/channels)
   (let session (session_id service))
   (if_yes (== point "oversized_hold")
     (let pieces []) (repeat 4000 (pieces .push "abcdefghij"))
     (let text ($str/join pieces ""))
     (intake service (event "large-1" "2.000001" text ^thread "1.000001"))
     (intake service (event "large-2" "3.000001" text ^thread "1.000001"))
-    (handoff_inputs service/runtime/channels))
-  (let admitted (drain_session service/runtime/channels session))
+    (handoff_inputs service/runtime/services/values/channels))
+  (let admitted (drain_session service/runtime/services/values/channels session))
   (wait_round service session)
   (if_yes (== point "superseded_boundary")
     (intake service (event "amendment" "2.000001" "QUEUED_AMENDMENT" ^thread "1.000001"))
-    (handoff_inputs service/runtime/channels)
-    (with_session_gate service/sessions ($to_str "round/" session) (fn []
-      (resume_queue service/runtime/channel_queues session (/revision (queue_status service/runtime/channel_queues session)))
-      (let paused (round_receipt service/controller session admitted/receipt/id))
+    (handoff_inputs service/runtime/services/values/channels)
+    (with_session_gate service/runtime/sessions ($to_str "round/" session) (fn []
+      (resume_queue service/runtime/services/values/channel_queues session (/revision (queue_status service/runtime/services/values/channel_queues session)))
+      (let paused (round_receipt service/runtime/services/values/controller session admitted/receipt/id))
       (paused .put "continuation_mode" "automatic")
-      (save_round service/controller session paused)))
+      (save_round service/runtime/services/values/controller session paused)))
     (submit service session "superseding" 2 "Explicitly replace the paused task."))
   (if_yes (== point "question_answered")
-    (hold_queue service/runtime/channel_queues session "stop" "previous-operator-hold")
-    (let loaded (load_session service/sessions session))
+    (hold_queue service/runtime/services/values/channel_queues session "stop" "previous-operator-hold")
+    (let loaded (load_session service/runtime/sessions session))
     (intake service (event "answer" "2.000001" ($to_str "!answer " loaded/round/.get/questions/id
       " {\"color\":\"blue\"}") ^thread "1.000001" ^author "UOTHER"))
-    (handoff_inputs service/runtime/channels))
+    (handoff_inputs service/runtime/services/values/channels))
   (if (["continuation_claim" "replacement_saved" "stop_hold"] .contains? point)
     (then
       (intake service (event "amendment" "2.000001" "QUEUED_AMENDMENT" ^thread "1.000001"))
-      (handoff_inputs service/runtime/channels)
-      (let status (queue_status service/runtime/channel_queues session))
+      (handoff_inputs service/runtime/services/values/channels)
+      (let status (queue_status service/runtime/services/values/channel_queues session))
       (let command (if (== point "continuation_claim")
         ($to_str "!continue " admitted/receipt/id)
         (if (== point "replacement_saved")
           ($to_str "!replace-paused " admitted/receipt/id " " status/revision) "!stop")))
       (intake service (event "control" "3.000001" command ^thread "1.000001"))
-      (handoff_inputs service/runtime/channels)))
+      (handoff_inputs service/runtime/services/values/channels)))
   (if (["intent" "owner_accept" "remote_unknown" "owner_result" "workspace_result"] .contains? point)
     (then
-      (let binding (/binding (queue_status service/runtime/channel_queues session)))
-      (let outgoing (output_intent service/runtime/channels binding "test-reply" admitted/receipt/id "Complete."))
+      (let binding (/binding (queue_status service/runtime/services/values/channel_queues session)))
+      (let outgoing (output_intent service/runtime/services/values/channels binding "test-reply" admitted/receipt/id "Complete."))
       (outgoing .put "parts" [{^text "First"} {^text "Second"} {^text "Third"}])
-      (queue_output service/runtime/channel_queues outgoing)
-      (handoff_outputs service/runtime/channels ^^force)
+      (queue_output service/runtime/services/values/channel_queues outgoing)
+      (handoff_outputs service/runtime/services/values/channels ^^force)
       (let api (remote_api root ^crash_part (if (== point "remote_unknown") 1 nil)))
-      (deliver_output service/runtime/channels/owner api outgoing/id)
-      (handoff_outputs service/runtime/channels ^^force)))
+      (deliver_output service/runtime/services/values/channels/owner api outgoing/id)
+      (handoff_outputs service/runtime/services/values/channels ^^force)))
   ($assert false ($to_str "Crash checkpoint was not reached: " point)))

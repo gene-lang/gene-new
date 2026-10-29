@@ -4,9 +4,9 @@
 (import [doc row] ^from "../../../src/kernel")
 (import [discover] ^from "../../../src/agents/discovery")
 (import [evaluate_harness_turn] ^from "../../../src/agents/harness_turn")
-(import [ui_preview] ^from "../../../src/ui/views")
+(import [ui_preview ui_publication_preview] ^from "../../../src/ui/views")
 (import [ui_settings] ^from "../../../src/ui/state")
-(import [register_plugin] ^from "../../../src/storage/workspace")
+(import [register_plugin] ^from "../../../src/storage/workspace_activation")
 
 # Execute the actual documentation blocks, so source and publication examples
 # cannot drift from the plugin contract or teach an untested startup sequence.
@@ -35,9 +35,10 @@
           (source .set blocks/0)
           # An existing workspace UI must survive the starter's partial configure calls.
           ((/fn (row runtime/h "functions" "ui_configure"))
-            {^^enabled ^layout "panel" ^side "right" ^width 60 ^theme {^accent "#335577"}})
+            {^^enabled ^layout "panel" ^side "right" ^width 60 ^theme {^light {^accent "#335577"}}})
           (let save ($to_str `($fs/write_text "counter.gene" %blocks/0)))
           (let published (evaluate_harness_turn ^session session/id
+            ^publication_preview (fn [session changes] (ui_publication_preview runtime session changes))
             runtime/h 1 workspace ($to_str save "\n" blocks/1)))
           ($assert (== published/kind "continue") ($to_str published/error))
           ($assert ($fs/exists? $"${workspace}/counter.gene"))
@@ -46,9 +47,9 @@
           ($assert (! ($absent? (row runtime/h "web_components" "counter"))))
           (let checked (evaluate_harness_turn ^session session/id runtime/h 2 workspace blocks/2))
           ($assert (== checked/kind "done") ($to_str checked/error))
-          (let settings (ui_settings runtime/h))
+          (let settings (ui_settings runtime))
           ($assert (&& (== settings/layout "panel") (== settings/side "right") (== settings/width 60)
-                       (== settings/theme/accent "#335577") (== settings/default_view "counter"))
+                       (== settings/theme/light/accent "#335577") (== settings/default_view "counter"))
             ($to_str settings))
           (let get (/fn (row runtime/h "functions" "counter_get")))
           (let add (/fn (row runtime/h "functions" "counter_add")))
@@ -81,7 +82,7 @@
             (for task in tasks (await task)))
           ($assert (== (get) 8))
           (save_value ^value "23")
-          (let preview (ui_preview runtime/h "counter"))
+          (let preview (ui_preview runtime "counter"))
           ($assert ($absent? preview/error) ($to_str preview))
           ($assert ($str/contains? ($json/stringify preview/view) "23"))
           ($assert (== preview/view/children/4/props/action "counter_set"))
@@ -94,7 +95,7 @@
           (let replacement (register_plugin ^^replace restarted/workspace restarted/h "counter" source/.get))
           ($assert (== replacement/state "active") ($to_str replacement))
           ($assert (== ((/fn (row restarted/h "functions" "counter_get"))) 23))
-          ($assert ($absent? (/error (ui_preview restarted/h "counter"))))
+          ($assert ($absent? (/error (ui_preview restarted "counter"))))
         ensure (close_session_service reopened))))))
 
 (fn main [args] : Int (run_spec args))

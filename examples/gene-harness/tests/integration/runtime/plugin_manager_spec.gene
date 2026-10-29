@@ -6,15 +6,11 @@
 (import ^from "../../../src/runtime/plugin_manager" [plugin_catalog inspect_descriptor requirement_status])
 (import ^from "../../../src/runtime/composition" [current_snapshot acquire_snapshot release_snapshot])
 (import [validate_plan] ^from "../../../src/runtime/plugin_plans")
-(import [registration_interfaces] ^from "../../../src/runtime/interface_policy")
-(import ^from "../../../src/storage/workspace"
-  [
-    register_plugin
-    set_plugin_enabled
-    canonical_module_source
-    write_module_blob
-    commit_composition
-    default_limits_data])
+(import [latest_interfaces] ^from "../../../src/runtime/interface_policy")
+(import [register_plugin] ^from "../../../src/storage/workspace_activation")
+(import [set_plugin_enabled] ^from "../../../src/storage/workspace_repair")
+(import [canonical_module_source write_module_blob] ^from "../../../src/storage/module_registry")
+(import [commit_composition default_limits_data] ^from "../../../src/storage/composition_store")
 
 (fn named [catalog, id]
   (for item in catalog/plugins
@@ -59,7 +55,7 @@
           ($assert disabled/metadata_known)
         ensure
           (close_runtime runtime))
-        (let recovery (open_runtime ^!activate root "default" profile))
+        (let recovery (open_runtime ^mode "recovery" root "default" profile))
         (try
           (let reopened (named (plugin_catalog recovery) "producer"))
           ($assert (== reopened/state "disabled"))
@@ -89,7 +85,7 @@
         ensure
           (close_runtime runtime))
         ($fs/remove ($path/join root "init-marker"))
-        (let recovery (open_runtime ^!activate root "default" profile))
+        (let recovery (open_runtime ^mode "recovery" root "default" profile))
         (try
           (let catalog (plugin_catalog recovery))
           (let plugin (named catalog "observed"))
@@ -142,7 +138,7 @@
           (write_module_blob runtime/workspace digest source)
           (commit_composition runtime/workspace
             [{^id "spin" ^module_digest digest ^closure [digest]
-              ^interfaces (registration_interfaces) ^limits (default_limits_data) ^^disabled}])
+              ^interfaces (latest_interfaces) ^limits (default_limits_data) ^^disabled}])
           (let rejected (inspect_descriptor runtime "spin"))
           ($assert (! rejected/ok))
           ($assert (|| ($str/contains? rejected/message "steps")

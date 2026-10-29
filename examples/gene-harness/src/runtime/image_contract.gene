@@ -1,3 +1,0 @@
-# Host compatibility import; implementation is a declared public library.
-(mod image_contract)
-(import [image_error nonempty input_fields normalize_image_request image_limits pixel_dimensions capability require_capability invalid_review image_usage parse_image_review] ^from "../public/image_contract" ^^export)

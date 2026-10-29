@@ -3,7 +3,7 @@
 (import [create_session submit receipt snapshot answer command close_session_service] ^from "../../../src/web/session_service")
 (import [continue_round cancel_round save_round resume_continuations round_receipt RoundError] ^from "../../../src/runtime/round_controller")
 (import [transcript] ^from "../../../src/agents/turn_loop")
-(import [set_plugin_enabled] ^from "../../../src/storage/workspace")
+(import [set_plugin_enabled] ^from "../../../src/storage/workspace_repair")
 (import [history_state] ^from "../../../src/agents/history")
 (import [png] ^from "../../fixtures/png")
 
@@ -15,10 +15,10 @@
 
 (fn wait_task [service, session]
   (loop
-    (let watcher (service/controller/watchers/.get .get session))
+    (let watcher (/watcher (service/runtime/services/values/controller/rounds/.get .get session)))
     (if ($absent? watcher) (return nil))
     watcher/.join
-    (let next (service/controller/watchers/.get .get session))
+    (let next (/watcher (service/runtime/services/values/controller/rounds/.get .get session)))
     (if (same? watcher next) (return nil))))
 
 (describe "Turn-limit continuation"
@@ -45,9 +45,9 @@
           ($assert (== tail/role "user"))
           ($fs/write_text $"${service/runtime/root}/STAGED_FOR_NEXT_USER_PROMPT.txt" "Staged file.")
           (let staged (command service session/id "/view STAGED_FOR_NEXT_USER_PROMPT.txt"))
-          (service/runtime/commands/watchers/.get .get $"${session/id}:${staged/id}"; .join)
-          (let second (continue_round service/controller session/id first/id "manual"))
-          (let retried (continue_round service/controller session/id first/id "automatic"))
+          (service/runtime/services/values/commands/watchers/.get .get $"${session/id}:${staged/id}"; .join)
+          (let second (continue_round service/runtime/services/values/controller session/id first/id "manual"))
+          (let retried (continue_round service/runtime/services/values/controller session/id first/id "automatic"))
           ($assert (== second/id retried/id))
           ($assert (!= first/id second/id))
           ($assert ($absent? second/deadline_ms))
@@ -82,7 +82,7 @@
           (let session (create_session service))
           (let first (submit service session/id "auto" 1 "Work"))
           (wait_task service session/id)
-          (let second (continue_round service/controller session/id first/id "automatic"))
+          (let second (continue_round service/runtime/services/values/controller session/id first/id "automatic"))
           (wait_task service session/id)
           (let view (snapshot ^!console service session/id))
           ($assert (== view/round/state "done"))
@@ -91,7 +91,7 @@
           (let last_request ($last calls/.get/3/messages))
           ($assert ($str/contains? last_request/content "Continuation across round boundaries is automatic."))
           ($assert (! ($str/contains? last_request/content "0 turns remain")))
-          ($assert (== (/id (continue_round service/controller session/id first/id "manual")) second/id)
+          ($assert (== (/id (continue_round service/runtime/services/values/controller session/id first/id "manual")) second/id)
             "A paused successor lost its immutable admission ancestry.")
         ensure (close_session_service service))))))
 
@@ -114,7 +114,7 @@
           (let paused (receipt service session/id first/id))
           ($assert (== paused/state "paused"))
           ($assert (== paused/continuation/media/.size 1))
-          (let resumed (continue_round service/controller session/id first/id "manual"))
+          (let resumed (continue_round service/runtime/services/values/controller session/id first/id "manual"))
           (wait_task service session/id)
           ($assert (== (/state (receipt service session/id resumed/id)) "done"))
           (let input ($last calls/.get/1/messages))
@@ -137,7 +137,7 @@
         (try
           ($assert (== calls/.get/.size 0))
           ($assert (== (/state (receipt after session/id first/id)) "paused"))
-          (let resumed (continue_round after/controller session/id first/id "manual"))
+          (let resumed (continue_round after/lifecycle/values/loop/values/controller session/id first/id "manual"))
           (wait_task after session/id)
           ($assert (== (/state (receipt after session/id resumed/id)) "done"))
           ($assert (== calls/.get/.size 1))
@@ -157,10 +157,10 @@
           (let second (submit service session/id "new" 2 "New task"))
           (wait_task service session/id)
           (let history (history_state service/runtime session/id))
-          ($assert (try (continue_round service/controller session/id first/id "manual") false
+          ($assert (try (continue_round service/runtime/services/values/controller session/id first/id "manual") false
             catch RoundError (== $err/code "stale")))
           ($assert (== history (history_state service/runtime session/id)))
-          (cancel_round service/controller session/id second/id)
+          (cancel_round service/runtime/services/values/controller session/id second/id)
           ($assert (== (/state (receipt service session/id second/id)) "cancelled"))
         ensure (close_session_service service)))))
   (it "retains answered questions when the answer reaches a turn-limit boundary" []
@@ -182,7 +182,7 @@
           (answer service session/id waiting/questions/id {^color "violet"})
           (wait_task service session/id)
           ($assert (== (/state (receipt service session/id first/id)) "paused"))
-          (continue_round service/controller session/id first/id "manual")
+          (continue_round service/runtime/services/values/controller session/id first/id "manual")
           (wait_task service session/id)
           ($assert (== calls/.get/.size 2))
           (let input ($last calls/.get/1/messages))
@@ -201,48 +201,20 @@
           (let first (submit service session/id "refuse" 1 "Start"))
           (wait_task service session/id)
           (set_plugin_enabled service/runtime/workspace service/runtime/h "history_basic" false)
-          ($assert (try (continue_round service/controller session/id first/id "automatic") false
+          ($assert (try (continue_round service/runtime/services/values/controller session/id first/id "automatic") false
             catch RoundError (== $err/code "not_ready")))
-          (let stopped (round_receipt service/controller session/id first/id))
+          (let stopped (round_receipt service/runtime/services/values/controller session/id first/id))
           ($assert (== stopped/continuation_stop "failed"))
           ($assert (!= stopped/continuation_error ""))
-          (resume_continuations service/controller)
-          ($assert (== (/continuation_stop (round_receipt service/controller session/id first/id)) "failed"))
+          (resume_continuations service/runtime/services/values/controller)
+          ($assert (== (/continuation_stop (round_receipt service/runtime/services/values/controller session/id first/id)) "failed"))
           (set_plugin_enabled service/runtime/workspace service/runtime/h "history_basic" true)
           (let fresh (submit service session/id "fresh-after-failure" 2 "Resume the remaining work."))
           (wait_task service session/id)
-          (let superseded (round_receipt service/controller session/id first/id))
+          (let superseded (round_receipt service/runtime/services/values/controller session/id first/id))
           ($assert (== superseded/continuation_stop "superseded"))
           ($assert ($absent? superseded/continuation_error))
           ($assert (!= fresh/id first/id))
-        ensure (close_session_service service)))))
-  (it "projects a resumable legacy limit without rewriting its failure receipt or host artifacts" []
-    (isolated this_mod/.path "projects a resumable legacy limit without rewriting its failure receipt or host artifacts"
-      (fn [workspace]
-        (let calls ($cell 0))
-        (let service (test_service ^workspace workspace ^provider (fn [request]
-          (calls .set (+ calls/.get 1))
-          (if (== calls/.get 1) "(Outcome ^prompt \"Legacy input.\" ^reply \"Working.\")"
-            "(Outcome ^^done ^reply \"Legacy input resumed.\")"))))
-        (try
-          (one_turn_rounds service)
-          (let session (create_session service))
-          (let first (submit service session/id "legacy" 1 "Start"))
-          (wait_task service session/id)
-          (let old (round_receipt service/controller session/id first/id))
-          (old .put "state" "failed") (old .put "reason" nil) (old .put "continuation" nil)
-          (save_round service/controller session/id old)
-          (transcript service/runtime session/id {^type "reply" ^round first/id ^turn 1 ^text "Host limit notice." ^^final})
-          (transcript service/runtime session/id {^type "turn/end" ^round first/id ^turn 1
-            ^reason "error" ^text "turn limit reached" ^!synthetic})
-          (let view (snapshot ^!console service session/id))
-          ($assert (== view/round/state "paused")) ($assert view/round/resumable)
-          ($assert (== (/state (round_receipt service/controller session/id first/id)) "failed"))
-          ($assert (== ($size ($filter view/records (fn [item] (== item/phase "turn/error")))) 0))
-          ($assert (== ($size ($filter view/records (fn [item] (== item/text "Host limit notice.")))) 0))
-          (let next (continue_round service/controller session/id first/id "manual"))
-          (wait_task service session/id)
-          ($assert (== (/state (receipt service session/id next/id)) "done"))
         ensure (close_session_service service)))))
   (it "finishes a recorded admission intent once after restart" []
     (isolated this_mod/.path "finishes a recorded admission intent once after restart"
@@ -258,7 +230,7 @@
         (paused .put "continuation_mode" "automatic")
         (paused .put "continued_by" target)
         (paused .put "continuation_intent" {^sequence 2 ^mode "automatic" ^request_id $"continue/${first/id}"})
-        (save_round before/controller session/id paused)
+        (save_round before/lifecycle/values/loop/values/controller session/id paused)
         (close_session_service before)
         (let calls ($cell 0))
         (let after (test_service ^workspace workspace ^provider (fn [request]
@@ -266,9 +238,9 @@
         (try
           (wait_task after session/id)
           ($assert (== (/state (receipt after session/id target)) "done"))
-          (resume_continuations after/controller)
+          (resume_continuations after/lifecycle/values/loop/values/controller)
           ($assert (== calls/.get 1))
-          ($assert (== (/id (continue_round after/controller session/id first/id "manual")) target))
+          ($assert (== (/id (continue_round after/lifecycle/values/loop/values/controller session/id first/id "manual")) target))
         ensure (close_session_service after)))))
   (it "stops the active automatic successor when Stop carries an earlier round id" []
     (isolated this_mod/.path "stops the active automatic successor when Stop carries an earlier round id"
@@ -283,9 +255,9 @@
           (let session (create_session service))
           (let first (submit service session/id "stop" 1 "Start"))
           (wait_task service session/id)
-          (let next (continue_round service/controller session/id first/id "automatic"))
+          (let next (continue_round service/runtime/services/values/controller session/id first/id "automatic"))
           (while (! entered/.get) ($sleep 1))
-          (cancel_round service/controller session/id first/id)
+          (cancel_round service/runtime/services/values/controller session/id first/id)
           (wait_task service session/id)
           ($assert (== (/state (receipt service session/id next/id)) "cancelled"))
           ($assert (== calls/.get 2))

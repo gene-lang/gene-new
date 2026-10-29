@@ -1,7 +1,7 @@
 (mod session_service)
-(import [open_session_lifecycle close_session_lifecycle] ^from "./service_lifecycle")
+(import [open_session_lifecycle close_session_lifecycle] ^from "./observers")
 (import [command_descriptors] ^from "../runtime/command_identity")
-(import [browser_client_descriptors] ^from "../ui/browser_clients")
+(import [browser_client_descriptors] ^from "../ui/browser_assets")
 (import [speech_text speech_needs_audio_reply?] ^from "../runtime/speech_text")
 (import [project_conversation project_request conversation_page initiating_label] ^from "./conversation")
 (import [VoiceChanged voice_snapshot public_voice_state claim_voice release_voice] ^from "../runtime/voice_state")
@@ -16,7 +16,6 @@
 (import ^from "../runtime/workspace_manager" [WorkspaceManagerChanged])
 (import ^from "../runtime/round_controller" ^^export
   [
-    new_round_controller
     resume_answered_rounds
     resume_continuations
     continue_round
@@ -80,50 +79,43 @@
     delete_trigger
     list_occurrences])
 
-(type WorkspaceService ^props {^runtime Any ^events Any ^sessions Any ^controller Any ^epoch Str ^publisher Any ^revision Any ^closed Any ^model_info Any ^offline Bool ^subscriptions Any ^snapshot_jobs Any ^snapshot_versions Any ^browser_requests Any ^ui_audience Any? ^snapshot_audience Any? ^lifecycle Any?})
+(type WorkspaceService ^props {^runtime Any ^epoch Str ^publisher Any ^revision Any ^closed Any ^model_info Any ^offline Bool ^snapshot_jobs Any ^snapshot_versions Any ^browser_requests Any ^ui_audience Any? ^snapshot_audience Any? ^lifecycle Any?})
 
 (fn public_session [service, record]
   (let copy ($thaw ($freeze record)))
-  (copy .put "slack_available" (&& (! ($absent? service/runtime/channels)) (sharing_available? service/runtime)))
+  (copy .put "slack_available" (&& (! ($absent? service/runtime/services/values/channels)) (sharing_available? service/runtime)))
   (copy .put "revision" ($to_str (?? record/revision 0)))
   # Match the sequence-1 round, not prompt text: later prompts may be identical.
   (copy .put "first_request_round"
     $"round-${($str/slice_bytes ($crypto/sha256 record/id) 0 16)}-1")
-  (let loaded (load_session service/sessions record/id))
+  (let loaded (load_session service/runtime/sessions record/id))
   (copy .put "first_request_speaker" "Request")
-  (for round in (/receipts (round_state service/controller record/id))
+  (for round in (/receipts (round_state service/runtime/services/values/controller record/id))
     (if (== round/id copy/first_request_round)
       (copy .put "first_request_speaker" (initiating_label round {}))))
-  # Older sessions have the prompt label but not its media in the index.
-  (if_yes (&& (!= record/first_request "") ($absent? record/first_request_media))
-    (for event in (events_for service/events "session" record/id)
-      (if_yes (&& (== event/type "turn/request") (== event/payload/initial true)
-        (== event/payload/round copy/first_request_round))
-        (copy .put "first_request_media" (?? event/payload/media []))
-        (break))))
   (let shown (public_round service record/id loaded/round/.get))
   (copy .put "last_round" shown)
   (if (== shown/state "paused") (copy .put "status" "paused"))
   (if_not ($absent? record/parent)
-    (let owner (service/sessions/index/.get .get record/parent/session))
+    (let owner (service/runtime/sessions/index/.get .get record/parent/session))
     (copy .put "parent_title" (?? owner/title record/parent/session)))
   copy)
 
 (fn session_slack_thread [service, id : Str] : Str
-  (let record (require_record service/sessions id))
-  (if ($absent? service/runtime/channels)
+  (let record (require_record service/runtime/sessions id))
+  (if ($absent? service/runtime/services/values/channels)
     (fail (RoundError ^code "unavailable" ^message "Slack is unavailable in recovery mode.")))
   (if (|| ($absent? record/channel) (!= record/channel/transport "slack"))
     (fail (RoundError ^code "not_found" ^message "This session is not linked to Slack.")))
-  (let result (thread_link service/runtime/channels record/channel))
+  (let result (thread_link service/runtime/services/values/channels record/channel))
   (if (== result/url "")
     (fail (RoundError ^code "unavailable" ^message "The Slack thread link is temporarily unavailable.")))
   result/url)
 
 (fn session_add_to_slack [service, id : Str, revision : Int]
-  (if ($absent? service/runtime/channels)
+  (if ($absent? service/runtime/services/values/channels)
     (fail (RoundError ^code "unavailable" ^message "Slack is unavailable in recovery mode.")))
-  (public_session service (share_session service/runtime/channels id revision)))
+  (public_session service (share_session service/runtime/services/values/channels id revision)))
 
 (fn publish_message [service, kind : Str, session : Str, data, ^reason reason = nil]
   (let publisher service/publisher/.get)
@@ -193,7 +185,7 @@
     (let same_owner (&& (== prior/round_id record/round_id) (== prior/turn receiver)
       (== prior/role "assistant")))
     # Current writers declare their receiving turn and combination. Keep only
-    # the latest live request per active session; cold/legacy appends rebuild
+    # the latest live request per active session; cold appends rebuild
     # provenance once from the durable stream.
     (if_yes (&& (! ($absent? prior)) (== prior/round_id record/round_id)
       (> event/seq ($parse/parse_int prior/seq))
@@ -202,10 +194,10 @@
       (cache .put session projected)
       (return projected)))
   (let records [])
-  (for source in (events_for service/events "session" session)
+  (for source in (events_for service/runtime/events "session" session)
     (if (["turn/request" "turn/start" "turn/end"] .contains? source/type)
       (records .push (event_record session source))))
-  (let rounds (round_state service/controller session))
+  (let rounds (round_state service/runtime/services/values/controller session))
   (let projected (project_conversation records rounds/receipts))
   (let id $"${session}/${event/seq}")
   (for record in projected
@@ -233,10 +225,10 @@
     (publish_message service kind session (event_record session event)))
   (if_yes (&& (== kind "reply") (== event/payload/final true)
               ($absent? event/payload/audio_reply)
-              (voice_output? service/runtime/voice session)
+              (voice_output? service/runtime/services/values/voice session)
               (speech_needs_audio_reply? (?? event/payload/text "")))
     (try
-      (append_core_event service/events "session" session
+      (append_core_event service/runtime/events "session" session
         {^type "trace" ^kind "voice/audio_reply_missing"
          ^text "voice/audio_reply_missing" ^round event/payload/round ^^ignorable})
     catch Any nil))
@@ -270,7 +262,7 @@
 (fn snapshot_job_current? [service, session : Str, version : Int] : Bool
   (&& (! service/closed/.get)
       (== (service/snapshot_versions/.get .get session) version)
-      (! ($absent? (service/sessions/index/.get .get session)))))
+      (! ($absent? (service/runtime/sessions/index/.get .get session)))))
 
 (fn queue_snapshot [service, session : Str]
   (if service/closed/.get (return nil))
@@ -306,11 +298,11 @@
     (when (changed : ModeChanged)
       (publish_message ^reason changed/reason service "mode/state" changed/session changed/mode))
     (when (changed : CompositionChanged)
-      (publish_message service "ui/state" "" (ui_status service/runtime/h)))
+      (publish_message service "ui/state" "" (ui_status service/runtime)))
     (when (changed : CardChanged)
       (publish_message service "card" changed/session {^card changed/card ^event changed/event}))
     (when (changed : WorkspaceManagerChanged)
-      (publish_message service "ui/state" "" (ui_status service/runtime/h)))
+      (publish_message service "ui/state" "" (ui_status service/runtime)))
     (when (changed : AppearanceChanged)
       (publish_message service "appearance" "" {^mode changed/mode}))
     (when (record : DurableRecord)
@@ -318,7 +310,7 @@
         (queue_snapshot service record/stream))
       (if (&& (== record/scope "workspace")
               (|| (== record/name "plugin/state") (== record/envelope/origin "plugin")))
-        (publish_message service "ui/state" "" (ui_status service/runtime/h)))
+        (publish_message service "ui/state" "" (ui_status service/runtime)))
       (if (== record/scope "session") (publish_transcript service record/stream record/envelope)))
     (when (changed : RoundChanged)
       (if (["done" "failed" "paused" "cancelled" "interrupted" "recovery_required"] .contains? changed/receipt/state)
@@ -338,7 +330,7 @@
         service
         "attention"
         ""
-        {^sessions (session_records ^^attention service/sessions)}))
+        {^sessions (session_records ^^attention service/runtime/sessions)}))
     (when (changed : CommandChanged)
       (let record changed/record)
       (let session changed/session)
@@ -394,7 +386,7 @@
       (let choice (provider_choice runtime settings))
       {^provider choice/name ^model "Unavailable" ^effort ""}))
   (set service
-    (WorkspaceService ^runtime runtime ^events runtime/events ^sessions runtime/sessions ^controller nil ^epoch ($crypto/random_hex 16) ^publisher ($cell nil) ^revision ($atomic_cell 0) ^closed ($cell false) ^model_info model_info ^offline offline ^subscriptions [] ^snapshot_jobs ($cell {}) ^snapshot_versions ($cell {}) ^browser_requests ($cell {})))
+    (WorkspaceService ^runtime runtime ^epoch ($crypto/random_hex 16) ^publisher ($cell nil) ^revision ($atomic_cell 0) ^closed ($cell false) ^model_info model_info ^offline offline ^snapshot_jobs ($cell {}) ^snapshot_versions ($cell {}) ^browser_requests ($cell {})))
   (set service/lifecycle (open_session_lifecycle service publish_message handle_harness_event
     ^channel_options channel_options ^observe service_event))
   service
@@ -413,16 +405,16 @@
   nil)
 
 (fn session_voice_state [service, session : Str]
-  (let metadata (require_record service/sessions session))
-  (let rounds (round_state service/controller session))
-  (let loaded (load_session service/sessions session))
+  (let metadata (require_record service/runtime/sessions session))
+  (let rounds (round_state service/runtime/services/values/controller session))
+  (let loaded (load_session service/runtime/sessions session))
   (let round loaded/round/.get)
-  {^voice (public_voice_state (voice_snapshot service/runtime/voice)) ^title metadata/title
+  {^voice (public_voice_state (voice_snapshot service/runtime/services/values/voice)) ^title metadata/title
    ^next_submission_seq ($to_str rounds/next_seq)
    ^state (?? round/state "done") ^round_id (?? round/id "")})
 
 (fn session_voice_claim [service, session : Str, request]
-  (require_record service/sessions session)
+  (require_record service/runtime/sessions session)
   (if (!= ($head request/client_id) Str)
     (fail (RoundError ^code "invalid_request" ^message "Voice needs a browser client identity.")))
   (if (|| (&& (! ($absent? request/token))
@@ -431,10 +423,10 @@
           (&& (! ($absent? request/enabled)) (!= ($head request/enabled) Bool)))
     (fail (RoundError ^code "invalid_request" ^message "Voice expects a text token and boolean enabled/output values.")))
   (if (== request/enabled false)
-    (return (public_voice_state (release_voice service/runtime/voice request/client_id (?? request/token "")))))
+    (return (public_voice_state (release_voice service/runtime/services/values/voice request/client_id (?? request/token "")))))
   (if ($absent? (row_voice service))
     (fail (RoundError ^code "unavailable" ^message "The voice plugin is disabled or unavailable.")))
-  (let claim (claim_voice ^token (?? request/token "") service/runtime/voice session
+  (let claim (claim_voice ^token (?? request/token "") service/runtime/services/values/voice session
     request/client_id (!= request/output false)))
   (if (&& (== claim/owner request/client_id) (== claim/session session))
     claim (public_voice_state claim)))
@@ -446,8 +438,8 @@
 
 (fn list_sessions [service, ^after after : Str = "", ^limit limit : Int = 100, ^kind kind = nil, ^status status = nil, ^attention attention = nil, ^trigger trigger = nil, ^q q : Str = "", ^since since : Str = "", ^until until : Str = ""]
   (let results [])
-  (let slack_available (&& (! ($absent? service/runtime/channels)) (sharing_available? service/runtime)))
-  (for record in (session_records ^kind kind ^status status ^attention attention ^trigger trigger ^q q ^since since ^until until service/sessions)
+  (let slack_available (&& (! ($absent? service/runtime/services/values/channels)) (sharing_available? service/runtime)))
+  (for record in (session_records ^kind kind ^status status ^attention attention ^trigger trigger ^q q ^since since ^until until service/runtime/sessions)
     (if (&& (!= after "") (<= ($order/compare record/id after) 0)) (continue))
     (if (>= results/.size limit) (break))
     (let shown (public_session_index record))
@@ -455,25 +447,25 @@
     (if_yes (&& (== q "") ($absent? kind) ($absent? status) ($absent? attention)
                 ($absent? trigger) (== since "") (== until ""))
       (let children [])
-      (for child in (session_records ^kind "child" service/sessions)
+      (for child in (session_records ^kind "child" service/runtime/sessions)
         (if (== child/parent/session record/id) (children .push (public_session_index child))))
       (shown .put "children" children))
     (results .push shown))
-  {^sessions results ^needs_attention ($map (session_records ^^attention service/sessions) public_session_index) ^next ""})
+  {^sessions results ^needs_attention ($map (session_records ^^attention service/runtime/sessions) public_session_index) ^next ""})
 
 (fn create_session [service, ^title title : Str = "New conversation"]
-  (let record (create_record ^title title service/sessions))
+  (let record (create_record ^title title service/runtime/sessions))
   (public_session service record))
 
 (fn rename_session [service, id : Str, title : Str, revision : Int]
   (edit_session service id {^title title} revision))
 
 (fn edit_session [service, id : Str, changes, revision : Int]
-  (with_session_gate service/sessions $"round/${id}"
+  (with_session_gate service/runtime/sessions $"round/${id}"
     (fn [] (edit_session_locked service id changes revision))))
 
 (fn edit_session_locked [service, id : Str, changes, revision : Int]
-  (let record (require_record service/sessions id))
+  (let record (require_record service/runtime/sessions id))
   (if (!= (?? record/revision 0) revision)
     (fail
       (RoundError ^code "revision_conflict" ^message "Session changed; refresh before editing it.")))
@@ -486,20 +478,20 @@
     (if (!= ($head changes/pinned) Bool)
       (fail (RoundError ^code "invalid_request" ^message "Pinned must be boolean")))
     (update .put "pinned" changes/pinned))
-  (let next (update_session service/sessions id update))
+  (let next (update_session service/runtime/sessions id update))
   (public_session service next))
 
 (fn acknowledge_attention [service, id : Str]
-  (let record (require_record service/sessions id))
-  (if record/attention (update_session service/sessions id {^!attention}))
+  (let record (require_record service/runtime/sessions id))
+  (if record/attention (update_session service/runtime/sessions id {^!attention}))
   {^^ok})
 
 (fn remove_session [service, id : Str, revision : Int]
-  (require_record service/sessions id)
+  (require_record service/runtime/sessions id)
   (let ids [id])
-  (for [key record] in service/sessions/index/.get
+  (for [key record] in service/runtime/sessions/index/.get
     (if (== record/parent/session id) (ids .push ($to_str key))))
-  (if_not (delete_session ^^explicit ^revision revision service/sessions id)
+  (if_not (delete_session ^^explicit ^revision revision service/runtime/sessions id)
     (fail (RoundError ^code "busy" ^message "Stop running work and answer or dismiss pending questions before deleting this conversation.")))
   {^deleted ids})
 
@@ -508,16 +500,16 @@
     (fail (RoundError ^code "invalid_request" ^message "Attachments must be a list of media IDs.")))
   # A card send is always a chat message, never a slash command.
   (if_not ($absent? card)
-    (return (submit_round ^media media ^card card service/controller session request_id sequence text)))
+    (return (submit_round ^media media ^card card service/runtime/services/values/controller session request_id sequence text)))
   (let parsed (parse_submission service/runtime/h text))
   (if (&& (== parsed/kind "command") (! media/.empty?))
     (fail (RoundError ^code "invalid_request" ^message "Attachments accompany chat messages, not slash commands.")))
   (if (== parsed/kind "command")
-    (submit_command service/runtime/commands session text)
-    (submit_round ^media media service/controller session request_id sequence parsed/text)))
+    (submit_command service/runtime/services/values/commands session text)
+    (submit_round ^media media service/runtime/services/values/controller session request_id sequence parsed/text)))
 (fn command [service, session : Str, text : Str, ^request_id request_id : Str = "", ^sequence sequence = nil, ^expected expected = nil, ^card card = nil]
   (if ($absent? card)
-    (return (submit_command ^request_id request_id ^sequence sequence ^expected expected service/runtime/commands session text)))
+    (return (submit_command ^request_id request_id ^sequence sequence ^expected expected service/runtime/services/values/commands session text)))
   # A card's command button names the card revisions behind the clicked tree.
   # It registers with the round-resume barrier until the command ends, so
   # answering the card's round never resumes the model while it runs.
@@ -529,7 +521,7 @@
   (try
     (let record (submit_command ^request_id request_id ^sequence sequence ^expected expected
       ^on_admit (fn [admitted] (started .set true)) ^on_finish release
-      service/runtime/commands session text))
+      service/runtime/services/values/commands session text))
     # A retried request returns its earlier receipt and starts nothing.
     (if_not started/.get (release))
     record
@@ -538,7 +530,7 @@
     (fail $err)))
 
 (fn session_card_action [service, session : Str, card : Str, request]
-  (require_record service/sessions session)
+  (require_record service/runtime/sessions session)
   (let copy ($thaw ($freeze request)))
   (copy .put "card" card)
   (card_action service/runtime session copy))
@@ -558,36 +550,33 @@
   false)
 
 (fn operator_receipt [service, session : Str, id : Str]
-  (require_record service/sessions session)
-  (let result (command_receipt service/runtime/commands session id))
+  (require_record service/runtime/sessions session)
+  (let result (command_receipt service/runtime/services/values/commands session id))
   (if ($absent? result)
     (fail (RoundError ^code "not_found" ^message "Command receipt is not retained.")))
   result)
 
 (fn command_sequence [service, session : Str]
-  (require_record service/sessions session)
+  (require_record service/runtime/sessions session)
   {^next_command_seq ($to_str (/next_id (command_state service/runtime session)))})
 
 (fn request_receipt [service, session : Str, request_id : Str, kind : Str]
-  (require_record service/sessions session)
+  (require_record service/runtime/sessions session)
   (if_yes (== kind "command")
-    (let result (command_request_receipt service/runtime/commands session request_id))
+    (let result (command_request_receipt service/runtime/services/values/commands session request_id))
     (if_not ($absent? result) (return result)))
   (if (== kind "round")
-    (for record in ((Path "receipts") (round_state service/controller session))
+    (for record in ((Path "receipts") (round_state service/runtime/services/values/controller session))
       (if (== record/request_id request_id) (return (public_round service session record)))))
   (fail
     (RoundError ^code "not_found" ^message "Request receipt is not retained; do not replay an uncertain operation.")))
 (fn cancel_operator_command [service, session : Str, id : Str]
-  (cancel_command service/runtime/commands session id))
+  (cancel_command service/runtime/services/values/commands session id))
 (fn public_round [service, session : Str, source]
   (if ($absent? source) (return nil))
   (let result ($thaw ($freeze source)))
-  (if_yes (&& (operator_round? source) (== source/state "failed") (== source/message "turn limit reached"))
-    (result .put "state" "paused")
-    (result .put "reason" "turn_limit"))
   (if_yes (== result/state "paused")
-    (let current (/round (load_session service/sessions session)))
+    (let current (/round (load_session service/runtime/sessions session)))
     (var available (&& (== (/id current/.get) source/id)
       ($absent? source/continued_by) ($absent? source/continuation_stop)))
     (if_yes available
@@ -600,25 +589,25 @@
   result)
 
 (fn receipt [service, session : Str, id : Str]
-  (require_record service/sessions session)
-  (let result (round_receipt service/controller session id))
+  (require_record service/runtime/sessions session)
+  (let result (round_receipt service/runtime/services/values/controller session id))
   (if ($absent? result)
     (fail (RoundError ^code "not_found" ^message "Round receipt is not retained.")))
   (public_round service session result))
 (fn answer [service, session : Str, batch_id : Str, values, ^dismiss dismiss : Bool = false]
-  (answer_round ^dismiss dismiss ^^operator_input service/controller session batch_id values))
+  (answer_round ^dismiss dismiss ^^operator_input service/runtime/services/values/controller session batch_id values))
 (fn cancel [service, session : Str, id : Str]
-  (cancel_round service/controller session id))
+  (cancel_round service/runtime/services/values/controller session id))
 
 (fn cancel_child [service, session : Str, id : Str, admission : Int]
   (if (<= admission 0)
     (fail (RoundError ^code "invalid_request" ^message "Admission must be positive.")))
-  (require_record service/sessions session)
-  (cancel_delegation_admission service/runtime/delegations session id admission))
+  (require_record service/runtime/sessions session)
+  (cancel_delegation_admission service/runtime/services/values/delegations session id admission))
 
 (fn recover_children [service, session : Str, round : Str, action : Str]
-  (require_record service/sessions session)
-  (let result (delegation_recovery service/runtime/delegations session round action))
+  (require_record service/runtime/sessions session)
+  (let result (delegation_recovery service/runtime/services/values/delegations session round action))
   (queue_snapshot service session)
   result)
 
@@ -628,11 +617,11 @@
    ^phase "delegation" ^order data/queued_at_ms ^text "" ^delegation data ^^durable})
 
 (fn snapshot [service, id : Str, ^after after : Int = -1, ^before before : Int = -1, ^safe safe : Bool = false, ^console console : Bool = true]
-  (let metadata (require_record service/sessions id))
-  (let loaded (load_session service/sessions id))
+  (let metadata (require_record service/runtime/sessions id))
+  (let loaded (load_session service/runtime/sessions id))
   (let records [])
   (var cursor 0)
-  (for event in (events_for service/events "session" id)
+  (for event in (events_for service/runtime/events "session" id)
     (set cursor event/seq)
     (if (&& console (>= after 0) (<= event/seq after)) (continue))
     (if (&& console (>= before 0) (>= event/seq before)) (continue))
@@ -672,7 +661,7 @@
     (if (&& (>= before 0) (>= seq before)) (continue))
     (records .push (card_block service/runtime id card)))
   (let commands (command_state service/runtime id))
-  (let delegations (delegation_blocks service/runtime/delegations id))
+  (let delegations (delegation_blocks service/runtime/services/values/delegations id))
   (for data in delegations/records
     (let seq data/created_seq)
     (if (&& (>= after 0) (<= seq after)) (continue))
@@ -718,7 +707,7 @@
         ^view (?? record/view nil)
         ^order (?? record/started_ms 0)
         ^^durable}))
-  (let rounds (round_state service/controller id))
+  (let rounds (round_state service/runtime/services/values/controller id))
   (let ordered ($order/sort_by records (fn [record] (?? record/order 0))))
   (let page [])
   (var start ($math/max 0 (- ordered/.size history_page_limit)))
@@ -747,16 +736,16 @@
     ^next_submission_seq ($to_str rounds/next_seq)
     ^round (public_round service id loaded/round/.get)
     ^delegation_recovery delegations/recovery
-    ^channel_delivery (delivery_status service/runtime/channels id)
-    ^mode (mode_state service/runtime/modes id)
+    ^channel_delivery (delivery_status service/runtime/services/values/channels id)
+    ^mode (mode_state service/runtime/services/values/commands/modes id)
     ^status (host_status ^session id ^safe safe service)
     ^questions (if (== metadata/status "waiting")
                  ((Path "questions") loaded/round/.get)
                  nil)})
 
 (fn web_components [service, session : Str]
-  (let metadata (if (== session "") nil (require_record service/sessions session)))
-  (let loaded (if (== session "") nil (load_session service/sessions session)))
+  (let metadata (if (== session "") nil (require_record service/runtime/sessions session)))
+  (let loaded (if (== session "") nil (load_session service/runtime/sessions session)))
   (let context
     ($freeze
       {
@@ -767,7 +756,7 @@
                  loaded/round/.get)
         ^workspace service/runtime/root
         ^model service/model_info
-        ^sessions (session_records service/sessions)}))
+        ^sessions (session_records service/runtime/sessions)}))
   (let components [])
   (for candidate in (rows service/runtime/h "web_components")
     (if_not ($absent? candidate/view_state) (continue))
@@ -806,14 +795,16 @@
   # Capture freshness before callbacks can park. A render begun before a state
   # change must not be stamped with the revision current at its completion.
   (let composition (current_snapshot service/runtime/h/snapshots))
-  (let status_revision (ui_data_revision service/runtime/h composition))
+  (let status_revision (ui_data_revision service/runtime composition))
   (let status_sequence (next_status_sequence service))
-  (let active service/controller/active/.get)
+  (var running 0)
+  (for [id frame] in service/runtime/services/values/controller/rounds/.get
+    (if_not ($absent? frame/task) (set running (+ running 1))))
   (let commands (command_descriptors service/runtime/h composition))
   (let plugins [])
   (for plugin in composition/plugins
     (plugins .push {^id plugin/id ^state plugin/status}))
-  (let metadata (if (== session "") nil (require_record service/sessions session)))
+  (let metadata (if (== session "") nil (require_record service/runtime/sessions session)))
   {
     ^protocol protocol_version
     ^epoch service/epoch
@@ -824,17 +815,17 @@
       {^provider metadata/model_settings/provider ^model metadata/model_settings/model
        ^effort metadata/model_settings/effort})
     ^profile service/runtime/profile/name
-    ^appearance (appearance_mode service/runtime/h)
-    ^readiness (if ($absent? service/runtime/h/services/readiness)
-      nil (service/runtime/h/services/readiness))
+    ^appearance (appearance_mode service/runtime)
+    ^readiness (if ($absent? service/runtime/services/values/readiness)
+      nil (service/runtime/services/values/readiness))
     ^plugins plugins
     ^web_components (if safe [] (web_components service session))
     ^browser_clients (if safe [] (browser_client_descriptors service/runtime/h composition))
-    ^ui (if safe nil (ui_status service/runtime/h))
+    ^ui (if safe nil (ui_status service/runtime))
     ^commands commands
     ^offline service/offline
     ^workspace service/runtime/root
-    ^running ($size active)})
+    ^running running})
 
 (fn close_session_service [service]
   (if (service/closed .swap true) (return nil))

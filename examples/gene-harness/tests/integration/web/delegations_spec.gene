@@ -3,7 +3,7 @@
 (import [close_session_service submit receipt snapshot list_sessions cancel_child]
   ^from "../../../src/web/session_service")
 (import [require_record create_session] ^from "../../../src/runtime/sessions")
-(import [DelegationError] ^from "../../../src/runtime/delegation_contract")
+(import [DelegationError] ^from "../../../src/plugin_api")
 
 (fn wait_for [predicate]
   (let due (+ ($os/monotonic_ms) 15000))
@@ -20,7 +20,7 @@
         (let messages ($cell []))
         (let service (test_service ^workspace workspace ^provider (fn [call]
           (let host holder/.get)
-          (let metadata (require_record host/sessions call/session))
+          (let metadata (require_record host/runtime/sessions call/session))
           (if (== metadata/kind "child")
             (then ($sleep 10000) "(Outcome ^^done ^reply \"finished\")")
             (else
@@ -29,7 +29,7 @@
                 "(delegate \"audit\" ^title \"Audit\" ^brief \"Inspect the module.\") (Outcome ^wait \"all\")"
                 "(Outcome ^^done ^reply \"Cancellation collected\")"))))))
         (holder .set service)
-        (create_session service/sessions ^id "default")
+        (create_session service/runtime/sessions ^id "default")
         (service/publisher .set (fn [message] (messages/.get .push message)))
         (try
           (let round (submit service "default" "web-child" 1 "Audit the module."))

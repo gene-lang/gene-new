@@ -60,7 +60,7 @@
             revision
             {
               ^composition {
-                             ^format 1
+                             ^format 2
                              ^revision revision
                              ^entries [(entry revision)]
                              ^history_head next}})
@@ -88,7 +88,7 @@
         ($assert (!= retry orphan))
         (store .Store:checkpoint
           6
-          {^composition {^format 1 ^revision 6 ^entries [(entry 6)] ^history_head retry}})
+          {^composition {^format 2 ^revision 6 ^entries [(entry 6)] ^history_head retry}})
         (let reopened (store_open ^root root))
         (try
           (let restored reopened/.Store:load_checkpoint)
@@ -107,7 +107,7 @@
         (let head (archive_baseline store {^revision 4 ^entries [(entry 4)]} host {^name "test"}))
         ($assert
           (== head (archive_baseline store {^revision 4 ^entries [(entry 4)]} host {^name "test"}))
-          "reopening an unchanged legacy baseline must retain its history identity")
+          "reopening an unchanged baseline must retain its history identity")
         (let original (archived_record store head))
         (pin_history store head 4 true)
         (let pinned (history_revision store head 4))

@@ -5,9 +5,10 @@
 (import [provider_offline] ^from "../../../src/builtin/provider_offline")
 (import [PluginHost] ^from "../../../src/plugin_api")
 (import [row registry_names] ^from "../../../src/kernel")
-(import [register_plugin composition_entries composition_revision commit_composition
-  load_entry_descriptor revert_plugin verify_stored_entry stage_plugin_entry]
-  ^from "../../../src/storage/workspace")
+(import [register_plugin stage_plugin_entry] ^from "../../../src/storage/workspace_activation")
+(import [composition_entries composition_revision commit_composition] ^from "../../../src/storage/composition_store")
+(import [load_entry_descriptor] ^from "../../../src/storage/module_registry")
+(import [revert_plugin verify_stored_entry] ^from "../../../src/storage/workspace_repair")
 (import [validate_plan apply_plan] ^from "../../../src/runtime/plugin_plans")
 (import [acquire_snapshot release_snapshot] ^from "../../../src/runtime/composition")
 (import [submit_command command_receipt] ^from "../../../src/runtime/commands")
@@ -16,10 +17,10 @@
 (import [host_build] ^from "../../../src/runtime/host_identity")
 
 (fn command [runtime, input]
-  (let receipt (submit_command runtime/commands "default" input))
-  (let outcome (runtime/commands/watchers/.get .get $"default:${receipt/id}"; .join))
+  (let receipt (submit_command runtime/services/values/commands "default" input))
+  (let outcome (runtime/services/values/commands/watchers/.get .get $"default:${receipt/id}"; .join))
   ($assert (== ($head outcome) TaskOutcome/ok) ($to_str outcome))
-  (command_receipt runtime/commands "default" receipt/id))
+  (command_receipt runtime/services/values/commands "default" receipt/id))
 
 (fn invoke [runtime, name]
   (let callback (/fn (row runtime/h "functions" name)))
@@ -46,9 +47,11 @@
         ($assert (! ((host .PluginHost:registry_names) .contains? "views")))
         (for seam in ["loop" "voice/runtime"]
           ($assert (try (host .PluginHost:resolve seam) false
-            catch Any (== $err/code "unsupported_interface")))
+            catch Any ($str/contains? $err/message "no provider for seam")))
           ($assert ($absent? (host .PluginHost:row "seams" seam)))
-          ($assert (! ((host .PluginHost:row_keys "seams") .contains? seam))))
+          ($assert (! ((host .PluginHost:row_keys "seams") .contains? seam)))
+          ($assert (($filter (host .PluginHost:rows "seams")
+            (fn [row] (== row/name seam))) .empty?)))
         (let service (host .PluginHost:resolve "operator/host"))
         (let retained ($cell nil))
         (host .PluginHost:defer (fn []
@@ -112,7 +115,7 @@
           ($assert ($absent? host/h))
           ($assert (! ($absent? host/.PluginHost:execution_budget))))))))
 
-(describe "Stored interface compatibility"
+(describe "Stored interface requirements"
   (it "rejects stored version-two entries without blocking peers and repairs them only with current source" []
     (isolated this_mod/.path
       "rejects stored version-two entries without blocking peers and repairs them only with current source"
@@ -129,7 +132,7 @@
         (let runtime (open_runtime root "default" profile))
         (try
           ($assert (== (/interfaces (host_build))
-            {^core ["gene-harness/PluginHost:3"] ^plugin_api ["gene-harness/Plugin:2"]}))
+            {^core ["gene-harness/PluginHost:3"] ^plugin_api ["gene-harness/Plugin:3"]}))
           ($assert ($str/contains? (runtime/workspace/errors/.get .get "retired")
             "core: requires gene-harness/PluginHost:2"))
           ($assert ($absent? (row runtime/h "functions" "retired_version")))
@@ -175,7 +178,7 @@
             ($assert (! ($absent? (row restarted/h "functions" "compat_version"))) mode)
             ($assert (== (invoke restarted "compat_version") 3))
             ($assert (== (/interfaces ($first (composition_entries restarted/workspace)))
-              {^core "gene-harness/PluginHost:3" ^plugin_api "gene-harness/Plugin:2"}))
+              {^core "gene-harness/PluginHost:3" ^plugin_api "gene-harness/Plugin:3"}))
           ensure (close_runtime restarted))
           (let final_runtime (open_runtime workspace "default" profile))
           (try
@@ -225,15 +228,15 @@
           ($assert (== receipt/item/value "3") ($to_str receipt))
           ($assert (> (invoke restarted "compat_events") 0))
           (command restarted "/compat_mode")
-          (let mode (mode_state restarted/modes "default"))
-          (let admitted (submit_mode_input restarted/modes "default" mode/instance "public-input" "(+ 7 8)"))
-          (restarted/commands/watchers/.get .get $"default:${admitted/id}"; .join)
-          (let mode_receipt (command_receipt restarted/commands "default" admitted/id))
+          (let mode (mode_state restarted/services/values/commands/modes "default"))
+          (let admitted (submit_mode_input restarted/services/values/commands/modes "default" mode/instance "public-input" "(+ 7 8)"))
+          (restarted/services/values/commands/watchers/.get .get $"default:${admitted/id}"; .join)
+          (let mode_receipt (command_receipt restarted/services/values/commands "default" admitted/id))
           ($assert (== mode_receipt/item/value "15") ($to_str mode_receipt))
-          (close_mode restarted/modes "default" "test-finished")
+          (close_mode restarted/services/values/commands/modes "default" "test-finished")
         ensure (close_runtime restarted))))))
 
-(describe "Shared compatibility admission"
+(describe "Shared interface admission"
   (it "uses the same precise requirement check for load plan and historical revert without copying host-only support" []
     (isolated this_mod/.path
       "uses the same precise requirement check for load plan and historical revert without copying host-only support"
@@ -246,6 +249,7 @@
           ($assert (! (good/0/interfaces .has_key? "host_only")))
           ($assert (== ($head good/0/interfaces/core) Str))
           (for extra in [{^core "gene-harness/PluginHost:99"}
+                        {^plugin_api "gene-harness/Plugin:2"}
                         {^unknown "unknown/Contract:1"}
                         {^harness_render "gene-harness/HarnessRender:99"}]
             (let bad ($thaw ($freeze good/0)))
@@ -264,30 +268,6 @@
             (let reverted (try (revert_plugin runtime/workspace runtime/h "compat" revision) ""
               catch Any $err/message))
             ($assert (== direct reverted)))
-        ensure (close_runtime runtime))))))
-
-(describe "Retired descriptor contracts"
-  (it "rejects views and version-3 raw seams before activation and marks their plans invalid" []
-    (isolated this_mod/.path
-      "rejects views and version-3 raw seams before activation and marks their plans invalid"
-      (fn [root]
-        (let runtime (open_runtime root "default" (Profile ^name "compatibility" ^plugins [])))
-        (try
-          (for requirement in ["loop" "voice/runtime" ["seams" "loop"]
-                               {^registry "views"} ["views" "entry"] ["$registries" "views"]]
-            (let source `(mod plugin @interfaces {^core "gene-harness/PluginHost:3"}
-              (import [Plugin] ^from "src/plugin_api.gene")
-              (fn init [descriptor]
-                (Plugin ^id "retired" ^requires [%requirement]
-                  ^activate (fn [host] ($fs/write_text "retired-activated" "bad"))))))
-            (let entry (stage_plugin_entry runtime/workspace "retired" source))
-            (let failure (try (load_entry_descriptor runtime/workspace runtime/h entry) ""
-              catch Any $err/message))
-            ($assert ($str/contains? failure "unsupported interface") failure)
-            (commit_composition runtime/workspace [entry])
-            (let plan (validate_plan runtime {^base_revision (composition_revision runtime/workspace) ^changes []}))
-            ($assert (! plan/valid) ($to_str plan))
-            ($assert (! ($fs/exists? $"${root}/retired-activated"))))
         ensure (close_runtime runtime))))))
 
 (describe "Failed public activation cleanup"

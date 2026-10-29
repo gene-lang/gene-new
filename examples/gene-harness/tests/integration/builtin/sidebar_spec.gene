@@ -2,7 +2,8 @@
 (import ^from "../../support" [isolated run_spec])
 (import ^from "../../../src/web/session_service"
   [open_session_service close_session_service host_status create_session submit receipt])
-(import ^from "../../../src/storage/workspace" [register_plugin set_plugin_enabled restore_plugin])
+(import [register_plugin] ^from "../../../src/storage/workspace_activation")
+(import [set_plugin_enabled restore_plugin] ^from "../../../src/storage/workspace_repair")
 
 (fn sidebar_component [service, ^safe safe : Bool = false]
   (let status (host_status ^safe safe service))
@@ -35,12 +36,9 @@
           (let session (create_session ^title "Retained conversation" service))
           (set_plugin_enabled service/runtime/workspace service/runtime/h "sidebar" false)
           ($assert ($absent? (sidebar_component service)))
-          ($assert ($absent? (service/runtime/h/services/readiness)))
+          ($assert ($absent? (service/runtime/services/values/readiness)))
           (let started (submit service session/id "without-sidebar" 1 "hello"))
-          (service/controller/watchers
-            .get
-            ; .get session/id
-            ; .join)
+          ((/watcher (service/runtime/services/values/controller/rounds/.get .get session/id)) .join)
           ($assert
             (== ((Path "state") (receipt service session/id started/id)) "done")
             "sidebar removal blocked an existing session")

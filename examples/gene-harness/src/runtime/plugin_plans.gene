@@ -9,26 +9,10 @@
 (import ^from "../storage/plugin_history" [history_revision append_history_result])
 (import ^from "../storage/plugin_source" [assign_creation preserve_creation_on_revert])
 (import [reset_participant_quarantine] ^from "../storage/participant_health")
-(import ^from "../storage/workspace"
-  [
-    CompositionError
-    CompositionConflict
-    composition_entries
-    composition_revision
-    validate_entries
-    data_copy
-    find_entry_index
-    entries_with
-    stage_plugin_entry
-    verify_stored_entry
-    load_entry_descriptor
-    descriptor_entry_options
-    register_descriptor_events
-    validate_descriptor_events
-    commit_composition
-    composition_history_result
-    update_active_revision
-    check_reversion_base])
+(import [CompositionError CompositionConflict composition_entries composition_revision validate_entries data_copy find_entry_index entries_with commit_composition composition_history_result] ^from "../storage/composition_store")
+(import [stage_plugin_entry update_active_revision] ^from "../storage/workspace_activation")
+(import [verify_stored_entry check_reversion_base] ^from "../storage/workspace_repair")
+(import [load_entry_descriptor descriptor_entry_options register_descriptor_events validate_descriptor_events] ^from "../storage/module_registry")
 (import ^from "../kernel" [apply_plugin_set hide_owner_rows])
 
 (fn plan_error [message : Str]
@@ -124,7 +108,7 @@
         (if (|| (== found -1) ($absent? old/entries/%found/module_digest))
           (plan_error "no stored plugin version in that revision; restore defaults separately"))
         (set updated (data_copy old/entries/%found))
-        (preserve_creation_on_revert ^revision revision workspace updated existing))
+        (preserve_creation_on_revert updated existing))
       (do
         (let dependencies
           (if (&& (== ($head operation/dependency_source) Str) (!= ($str/trim operation/dependency_source) ""))
@@ -132,7 +116,7 @@
             (?? operation/dependencies [])))
         (set updated (stage_plugin_entry ^dependencies dependencies workspace id operation/source))
         (updated .put "source_origin" {^kind "operator"})
-        (assign_creation ^revision revision workspace updated existing)))
+        (assign_creation updated existing)))
     (if (&& (! ($absent? operation/enabled)) (!= ($head operation/enabled) Bool))
       (plan_error "enabled must be a boolean"))
     (updated .put "disabled" (! (?? operation/enabled enabled)))

@@ -1,8 +1,6 @@
-# Core initiator spellings are data. This module also reads old receipts that
-# predate explicit initiator-kind/operator metadata; it activates no plugins.
+# Core initiator spellings and admission policy; this activates no plugins.
 (mod initiator_specs)
 (import [normalize_round_input] ^from "./input_metadata")
-(import [legacy_channel_operator?] ^from "../channels/initiators")
 
 (const core_source_owner "$host/initiators")
 
@@ -17,11 +15,3 @@
 
 (fn initiator_matches? [policy, value : Str]
   (if (== policy/exact true) (== policy/prefix value) ($str/starts_with? value policy/prefix)))
-
-(fn legacy_operator_round? [round]
-  (let value (?? round/initiator ""))
-  (for policy in (core_initiators)
-    (if (initiator_matches? policy value)
-      (return (&& policy/operator
-        (|| (!= policy/requires_continuation true) (! ($absent? round/continuation)))))))
-  (legacy_channel_operator? round))

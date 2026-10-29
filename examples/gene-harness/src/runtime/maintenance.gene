@@ -5,9 +5,8 @@
 (import ^from "./plugin_manager" [plugin_catalog])
 (import ^from "../profiles/baseline" [baseline_profile])
 (import ^from "../profiles/registry" [workspace_profile])
-(import ^from "../storage/workspace"
-  [doctor prepare_workspace disable_entry enable_entry restore_entry composition_revision
-   revert_entry plugin_history_page])
+(import [doctor disable_entry enable_entry restore_entry revert_entry plugin_history_page] ^from "../storage/workspace_repair")
+(import [composition_revision] ^from "../storage/composition_store")
 (import ^from "./workspace_lock" [acquire_workspace_lock close_workspace_lock])
 (import ^from "../web/auth" [reset_auth_at])
 (import ^from "../web/connection" [clear_connection])
@@ -16,14 +15,13 @@
             ^expected expected = nil, ^before before = nil, ^limit limit : Int = 50,
             ^query query : Str = "", ^state state : Str = ""]
   (let runtime
-    (open_runtime ^entry "offline maintenance" ^!activate ^recovery (!= action "doctor")
+    (open_runtime ^entry "offline maintenance" ^!activate ^mode (if (== action "doctor") "doctor" "recovery")
       (prepare_workspace_root ^root root)
       "default"
       (workspace_profile root)))
   (try
     (if (== action "plugins") (return (plugin_catalog ^query query ^state state runtime)))
     (if_yes (== action "doctor")
-      (prepare_workspace runtime/workspace runtime/h)
       (return {^findings (doctor runtime/workspace)}))
     (if (== action "history")
       (return (plugin_history_page ^limit limit ^before before runtime/workspace id)))

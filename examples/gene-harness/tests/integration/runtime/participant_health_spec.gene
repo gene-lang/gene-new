@@ -4,7 +4,8 @@
 (import [Profile] ^from "../../../src/profiles/profile")
 (import [plugin_admin] ^from "../../../src/builtin/plugin_admin")
 (import [Plugin PluginHost ExecutionLimits] ^from "../../../src/plugin_api")
-(import [register_plugin set_plugin_enabled restore_plugin] ^from "../../../src/storage/workspace")
+(import [register_plugin] ^from "../../../src/storage/workspace_activation")
+(import [set_plugin_enabled restore_plugin] ^from "../../../src/storage/workspace_repair")
 (import [participant_quarantine] ^from "../../../src/storage/participant_health")
 (import [plugin_catalog] ^from "../../../src/runtime/plugin_manager")
 (import [validate_plan apply_plan] ^from "../../../src/runtime/plugin_plans")
@@ -48,7 +49,7 @@
               nil)}))))))
 
 (fn wait_round [controller, receipt]
-  (let watcher (controller/watchers/.get .get "default"))
+  (let watcher (/watcher (controller/rounds/.get .get "default")))
   watcher/.join
   (round_receipt controller "default" receipt/id))
 

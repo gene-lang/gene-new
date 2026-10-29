@@ -1,12 +1,12 @@
 (mod input_modes)
 (import [ModeChanged publish] ^from "../kernel")
-(import [retain_snapshot release_snapshot] ^from "./composition")
+(import [retain_snapshot release_snapshot subscribe_publications] ^from "./composition")
 (import [with_session_gate require_record] ^from "./sessions")
 
 (type ModeError ^props {^code Str ^message Str ^mode Any?} ^impl [Error])
 (impl Error for ModeError)
 (type InputModes ^props {^runtime Any ^states Any ^jobs Any ^closed Any
-                        ^submit Any ^cancel Any ^records Any})
+                        ^submit Any ^cancel Any ^records Any ^publication Any?})
 
 (fn mode_record [snapshot, name : Str]
   (for record in (?? (snapshot/registries .get "input_modes") [])
@@ -196,13 +196,13 @@
 (fn new_input_modes [runtime, submit, cancel, records]
   (let manager (InputModes ^runtime runtime ^states ($cell {}) ^jobs ($cell [])
     ^closed ($cell false) ^submit submit ^cancel cancel ^records records))
-  (set runtime/h/snapshots/on_publish
-    (fn [previous snapshot] (publication_changed manager previous snapshot)))
+  (set manager/publication (subscribe_publications runtime/h/snapshots
+    (fn [previous snapshot] (publication_changed manager previous snapshot))))
   manager)
 
 (fn close_input_modes [manager]
   (if (manager/closed .swap true) (return nil))
-  (set manager/runtime/h/snapshots/on_publish nil)
+  manager/publication/.cancel
   (let sessions [])
   (for [session state] in manager/states/.get (sessions .push ($to_str session)))
   (for session in sessions (close_mode manager session "shutdown"))

@@ -1,4 +1,5 @@
 (mod slack_ui ^profile web)
+(import [api_root] ^from "../src/web/contract.gene")
 (import [Client] ^from "./workspace_model.gene")
 (import [SlackUserLabels create_user_labels user_label] ^from "./slack_users.gene")
 (import [SlackSessionTitle create_session_title update_session_title] ^from "./slack_session_title.gene")
@@ -24,7 +25,7 @@
   (if_yes ($absent? state/users)
     (set state/users (create_user_labels
       (fn [data : Any, done : (Fn [Int Any] Void)] : Void
-        (api client "POST" "/api/v8/channels/user" data done)))))
+        (api client "POST" $"${(api_root)}/channels/user" data done)))))
   (var raw : Any state/users) (var users : SlackUserLabels raw)
   (user_label users source target))
 
@@ -34,7 +35,7 @@
   (if_yes (|| (== session "") (!= (string_or state/pending "") "")) (return))
   (set state/pending session)
   (update_controls client)
-  (api client "POST" $"/api/v8/sessions/${($url/encode_component session)}/slack"
+  (api client "POST" $"${(api_root)}/sessions/${($url/encode_component session)}/slack"
     {^revision client/session_revision}
     (fn [code : Int, data : Any] : Void
       (set state/pending "")

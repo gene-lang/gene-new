@@ -1,13 +1,13 @@
 (import $test [describe it])
 (describe "Harness state shape"
-  (it "keeps 22 core fields with runtime services and bridge state grouped by owner" []
+  (it "keeps product state outside the kernel with only injected plugin callbacks" []
     (var fields nil)
     (for form in ($parse/read_all ($fs/read_text ($path/join this_pkg/root "src/kernel/registry.gene")))
       (if (&& (== ($to_str ($head form)) "type") (== ($to_str form/0) "Harness"))
         (set fields form/props)))
-    ($assert (== ($size fields) 22))
-    (for field in ["composer" "services" "bridge" "snapshots" "composition" "plugin_policies" "plugin_depth"]
+    ($assert (== ($size fields) 21))
+    (for field in ["composer" "plugin_services" "snapshots" "composition" "plugin_policies" "plugin_depth"]
       ($assert (fields .has_key? field) field))
-    (for field in ["readiness" "notifications" "ui_action_log" "appearance" "ui_defaults" "manager_revision"
+    (for field in ["services" "bridge" "readiness" "notifications" "ui_action_log" "appearance" "ui_defaults" "manager_revision"
                   "publishing" "publication_gate" "published_plugins" "composition_entries"]
       ($assert (! (fields .has_key? field)) field))))

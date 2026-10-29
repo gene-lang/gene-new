@@ -173,13 +173,11 @@ name.txt"""
         (put_media restarted "after.txt" ($binary/from_str "room is available"))
         ($assert (== (/records (media_usage restarted)) 2)))))
 
-  (it "migrates format 1 and releases failed generation reservations idempotently" []
+  (it "releases failed generation reservations idempotently" []
     (isolated this_mod/.path
-      "migrates format 1 and releases failed generation reservations idempotently"
+      "releases failed generation reservations idempotently"
       (fn [workspace]
         (let store (open_media_store ($path/join workspace ".gene-harness")))
-        ($fs/write_text_atomic ($path/join store/root "index.gene")
-          ($serde/write_data {^format 1 ^assets {}}))
         (let reserved (reserve_media store "run" 1 "session" "round"))
         (let index ($serde/read_data ($fs/read_text ($path/join store/root "index.gene"))))
         ($assert (== index/format 2))

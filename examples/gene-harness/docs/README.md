@@ -6,8 +6,8 @@ available feature.
 
 ## Reference
 
-- [Design and module responsibilities](design.md)
-- [Plugin contract](plugins.md), [plugin manager](plugin-manager.md) and [source/history](plugin-source.md)
+- [Design and ownership](design.md), [protocol](protocol.md) and [contributor guide](../CONTRIBUTING.md)
+- [Plugin contract, manager and source history](plugins.md), [operator guide](plugin-manager-guide.md)
 - [Turn participants, Outcome schemas and initiators](turn-participants.md)
 - [Browser client](web-client.md), [workspace views](workspace-views.md) and [components](web-components.md)
 - [Workspace manager](manager.md), [commands](commands.md), [shell](shell.md) and [REPL](repl.md)
@@ -26,6 +26,11 @@ available feature.
 These are dated evidence and progress records, not alternate API contracts.
 
 - [Architecture refactor batches](verification/architecture-refactor.md)
+- [Kernel tidy](verification/kernel-tidy.md)
+- [Harness design review 3 implementation](verification/harness-review3.md)
+- [Workspace manager implementation history](verification/workspace-manager-history.md)
+- [Sub-agent design and verification history](verification/sub-agent-history.md)
+- [Theming implementation evidence](verification/theming-history.md)
 - [Notifications](verification/notification-verification.md)
 - [Plugin manager verification](verification/plugin-manager-verification.md) and [progress](verification/plugin-manager-progress.md)
 - [Workspace views](verification/workspace-views-verification.md)

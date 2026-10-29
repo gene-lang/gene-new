@@ -6,8 +6,7 @@
 (import [put_cordis_plugin] ^from "../src/kernel")
 (import [Profile] ^from "../src/profiles/profile")
 (import [baseline_profile] ^from "../src/profiles/baseline")
-(import [new_round_controller : production_controller]
-  ^from "../src/runtime/round_controller")
+(import [start_delegation_host] ^from "../src/runtime/delegations")
 (import [open_session_service] ^from "../src/web/session_service")
 
 (let package_root ($path/parent ($path/parent this_mod/.path)))
@@ -41,7 +40,8 @@
       {^^host ^limits runtime/profile/limits})
     (callback_cells/.get .put runtime/root cell)
     (set runtime/profile/provider "test"))
-  (production_controller runtime))
+  (start_delegation_host runtime/services/values/delegations)
+  runtime/services/values/controller)
 
 (fn test_service [^workspace workspace : Str = "", ^provider provider, ^without_plugins without_plugins = [],
   ^channel_options channel_options = nil]

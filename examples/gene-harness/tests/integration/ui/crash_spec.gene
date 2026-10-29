@@ -17,9 +17,9 @@
           (let service (open_session_service ^workspace root ^^offline))
           (try
             (let request ($serde/read_data ($fs/read_text $"${root}/original-request.gene")))
-            (let record (ui_action_receipt service/runtime/actions request/input_id))
+            (let record (ui_action_receipt service/runtime/services/values/actions request/input_id))
             ($assert (== record/status (if (== phase "saved") "done" "interrupted")))
-            ($assert (== (/status (ui_action service/runtime/actions request)) record/status))
+            ($assert (== (/status (ui_action service/runtime/services/values/actions request)) record/status))
             ($assert (== (list_sessions service/runtime/sessions) []))
             (if (== phase "saved")
               (do

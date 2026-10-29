@@ -21,7 +21,7 @@
     (fail (ServiceError ^code "forbidden" ^message "UI settings belong to the ui_experiment plugin.")))
   (if (!= ($head settings) Map) (validate_ui_settings settings))
   (let merged {})
-  (for [key value] in (ui_settings service/runtime/h) (merged .put key value))
+  (for [key value] in (ui_settings service/runtime) (merged .put key value))
   (for [key value] in settings (merged .put key value))
   (let checked (validate_ui_settings merged))
   (service/host .PluginHost:update_state checked)
@@ -29,14 +29,14 @@
 
 (type HostedUi ^^private ^props {^token Any}
   (impl UiHost
-    (message settings [] : Any (immutable_view (ui_settings (/h (/runtime (require_service self))))))
+    (message settings [] : Any (immutable_view (ui_settings (/runtime (require_service self)))))
     (message configure [settings] : Any (configure_ui self settings))
     (message preview [name : Str, state = {}] : Any
-      (immutable_view (ui_preview (/h (/runtime (require_service self))) name state)))
+      (immutable_view (ui_preview (/runtime (require_service self)) name state)))
     (message receipts [^view view : Str = "", ^status status : Str = "", ^input_id input_id : Str = "",
                        ^before before : Int = 0, ^limit limit : Int = 25] : Any
       (let runtime (/runtime (require_service self)))
-      (immutable_view (list_action_receipts runtime/actions/log
+      (immutable_view (list_action_receipts runtime/services/values/actions/log
         ^view view ^status status ^input_id input_id ^before before ^limit limit)))))
 
 (fn ui_host_binding [runtime]

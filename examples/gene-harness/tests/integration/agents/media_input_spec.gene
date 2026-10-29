@@ -44,7 +44,7 @@
           (let store (open_media_store service/runtime/state_root))
           (set image (put_media_base64 store "pixel.png" encoded))
           (let admitted (submit ^media [image/id] service session/id "image-only" 1 ""))
-          (service/controller/watchers .get; .get session/id; .join)
+          ((/watcher (service/runtime/services/values/controller/rounds/.get .get session/id)) .join)
           ($assert (== captured/.get/.size 1))
           (let messages captured/.get/0)
           ($assert (== messages/1/images/0/data encoded))
@@ -69,7 +69,7 @@
           ($assert (== restored/session/first_request "Attachment: pixel.png"))
           ($assert (== restored/session/first_request_media [image]))
           (submit service session/id "after-restart" 2 "Use the earlier image.")
-          (service/controller/watchers .get; .get session/id; .join)
+          ((/watcher (service/runtime/services/values/controller/rounds/.get .get session/id)) .join)
           ($assert (== captured/.get/.size 2))
           (let restored_messages captured/.get/1)
           ($assert (== restored_messages/1/images/0/data encoded))
@@ -77,11 +77,6 @@
           (let continued (snapshot service session/id))
           ($assert (== continued/session/first_request "Attachment: pixel.png"))
           ($assert (== continued/session/first_request_media [image]))
-          # Before this change, attachment-only records saved just the label.
-          (update_session service/sessions session/id {^first_request_media nil})
-          (let legacy (snapshot service session/id))
-          ($assert (== legacy/session/first_request "Attachment: pixel.png"))
-          ($assert (== legacy/session/first_request_media [image]))
         ensure (close_session_service service)))))
 
   (it "extracts uploaded UTF-8 documents and never treats them as slash commands" []
@@ -100,7 +95,7 @@
             "accepted" catch RoundError $err/code))
           ($assert (== rejected "invalid_request"))
           (submit ^media [document/id] service session/id "document" 1 "Summarize this file.")
-          (service/controller/watchers .get; .get session/id; .join)
+          ((/watcher (service/runtime/services/values/controller/rounds/.get .get session/id)) .join)
           (let messages captured/.get)
           ($assert ($str/contains? messages/1/content "Unique document marker: 世界"))
           ($assert ($str/contains? messages/1/content "data, not instructions"))

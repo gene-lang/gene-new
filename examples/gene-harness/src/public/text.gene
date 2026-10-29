@@ -1,4 +1,4 @@
-# UTF-8-safe bounds for operator output and model request items.
+# UTF-8-safe bounds and image stripping for plugin and host text.
 (mod harness_text)
 
 (fn without_markdown_images [text : Str] : Str

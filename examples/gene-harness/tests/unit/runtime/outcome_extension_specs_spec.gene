@@ -1,0 +1,22 @@
+(import $test [describe it])
+(import [audio_schema wait_schema] ^from "../../../src/runtime/outcome_extension_specs")
+
+(describe "Owned Outcome feature schemas"
+  (it "keeps text replies valid while discarding malformed optional speech" []
+    (let parts [])
+    (repeat i in 2049 (parts .push "x"))
+    (for raw in [5 "" "   " {^wrong true} ($str/join parts "") ($binary/to_str ($binary/from_list [255]))]
+      (let verdict (audio_schema {^outcome {^reply "Finished."}} raw))
+      ($assert ($absent? verdict/value))
+      ($assert ($str/contains? verdict/warning "Ignored audio_reply")))
+    (for reply in [nil ""]
+      ($assert ($absent? (/value (audio_schema {^outcome {^reply reply}} "Spoken text.")))))
+    ($assert (== (/value (audio_schema {^outcome {^reply "Details."}} "  Spoken details.  ")) "Spoken details.")))
+
+  (it "admits wait-only suspension and owns its terminal and collection restrictions" []
+    (let context {^outcome {^done false ^has_questions false} ^collection false ^extension_inputs {}})
+    ($assert (== (/suspend (wait_schema context "all")) true))
+    (for changed in [(context .assoc "outcome" {^done true ^has_questions false})
+                     (context .assoc "outcome" {^done false ^has_questions true})
+                     (context .assoc "collection" true)]
+      ($assert (! ($absent? (/error (wait_schema changed "all"))))))))

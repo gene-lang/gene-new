@@ -12,7 +12,7 @@
 (type HarnessEvent : $event/Event)
 (type DurableRecord : HarnessEvent ^props {^scope Str ^stream Str ^name Str ^envelope Any})
 
-# Shared nominal identity for command callbacks. For non-host rows,
+# Shared nominal identity for command callbacks. For all plugin rows,
 # manager/runtime are nil and snapshot is public revision data.
 (type CommandContext ^props {^manager Any ^runtime Any ^session Str ^raw Str ^id Str ^output Any ^snapshot Any})
 (type CommandResult ^props {^display Any? ^status Str? ^attached Bool? ^exit Int? ^view Any? ^selected Str? ^stop Int? ^mode Str?})
@@ -39,6 +39,12 @@
 
 (type ServiceError ^props {^code Str ^message Str} ^impl [Error])
 (impl Error for ServiceError)
+
+(type DelegationError ^props {^code Str ^message Str} ^impl [Error])
+(impl Error for DelegationError)
+
+(type TurnClosed ^props {^message Str ^turn Int?} ^impl [Error])
+(impl Error for TurnClosed)
 
 (protocol MediaHost
   (message list [] : Any)
@@ -109,8 +115,6 @@
   (message history [id : Str = "", ^limit limit : Int = 50, ^before before = nil, ^page page : Bool = false] : Any)
   (message revert [id : Str, revision : Int, ^expected expected = nil] : Any))
 
-(import [DelegationError] ^from "./runtime/delegation_contract" ^^export)
-
 (protocol DelegationHost
   (message stage [request] : Any)
   (message inspect [id : Str] : Any)
@@ -159,15 +163,3 @@
   (message list [] : Any)
   (message detail [id : Str] : Any)
   (message clear [id : Str, revision : Int] : Any))
-
-(import ^from "./agents/outcome" [append_plugin_prompt TurnClosed])
-(fn append_prompt [label : Str, value]
-  (append_plugin_prompt label value))
-
-# A plugin function called from response code can place a card in the calling
-# conversation (docs/cards.md). It passes ^view and ^update as quoted fn forms.
-(fn show_card [id, tree = nil, ^title title = nil, ^state state = nil, ^view view = nil, ^update update = nil]
-  (let api (/cards ($runtime/context)))
-  (if ($absent? api)
-    (fail (TurnClosed ^message "show_card requires an open turn in a conversation")))
-  (api/card_from_plugin id tree ^title title ^state state ^view view ^update update))

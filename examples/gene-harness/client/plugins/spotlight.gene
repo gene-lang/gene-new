@@ -1,4 +1,5 @@
 (mod harness_spotlight ^profile web)
+(import [api_root] ^from "../../src/web/contract.gene")
 (import [text flag items match_rank insert_ranked merge_results moved] ^from "../../src/common/launcher.gene")
 
 (type Spotlight ^props {^root EventTarget ^bridge Any ^owner Str ^button EventTarget
@@ -211,7 +212,7 @@
   (var local (local_results spot query))
   ($dom/set_text spot/message (if (== spot/feedback "") "Searching…" spot/feedback))
   (var api : (Fn [Str Str Any (Fn [Int Any] Void)] Void) spot/bridge/api)
-  (api "GET" $"/api/v8/search/sessions?q=${($url/encode_component query)}&limit=50" nil
+  (api "GET" $"${(api_root)}/search/sessions?q=${($url/encode_component query)}&limit=50" nil
     (fn [code : Int, data : Any] : Void
       (var merged (if (== code 200) (merge_results local (items data/results)) local))
       (publish_results spot opening generation step_generation merged (|| (!= code 200) (flag data/partial)))))

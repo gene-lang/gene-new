@@ -1734,6 +1734,14 @@ suite "vm — literals and self-evaluation":
     ck "(var xs ($into (#\"\\d+\" .find_all \"a12b3\") [])) " &
        "[xs/0/text xs/0/start xs/0/end xs/1/text xs/1/start xs/1/end]",
        "[\"12\" 1 3 \"3\" 4 5]"
+  test "regex omitted captures stay nil while matched empty captures stay empty":
+    ck "(var m (#\"(?<first>a)(?<last>b)?\" .match \"a\")) " &
+       "[m/groups (m/named .get \"last\")]",
+       "[#[\"a\" nil] nil]"
+    ck "(var m (#\"()(b)?\" .match \"a\")) m/groups", "#[\"\" nil]"
+    ck "(var xs ($into (#\"(a)(b)?\" .find_all \"a ab\") [])) " &
+       "[xs/0/groups xs/1/groups]", "[#[\"a\" nil] #[\"a\" \"b\"]]"
+    ck "(#\"(a)(b)?\" .replace_all \"a ab\" \"\\\\2\")", "\" b\""
   test "regex replace and split":
     ck "(#\"(\\w+)=(\\d+)\" .replace \"a=1 b=22\" \"\\\\2/\\\\1\")",
        "\"1/a b=22\""

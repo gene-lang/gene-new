@@ -5,17 +5,9 @@
 (import ^from "../../../src/profiles/profile" [Profile])
 (import ^from "../../../src/builtin/plugin_admin" [plugin_admin])
 (import ^from "../../../src/agents/harness_turn" [evaluate_harness_turn])
-(import ^from "../../../src/storage/workspace"
-  [
-    register_plugin
-    composition_history
-    composition_revision
-    commit_composition
-    verify_stored_entry
-    set_plugin_enabled
-    disable_entry
-    revert_entry
-    revert_plugin])
+(import [register_plugin] ^from "../../../src/storage/workspace_activation")
+(import [composition_history composition_revision commit_composition] ^from "../../../src/storage/composition_store")
+(import [verify_stored_entry set_plugin_enabled disable_entry revert_entry revert_plugin] ^from "../../../src/storage/workspace_repair")
 (import ^from "../../../src/storage/state" [record_plugin_state plugin_state])
 
 (fn sample []
@@ -259,7 +251,7 @@
     (isolated this_mod/.path "distinguishes uncommitted archives, lost acknowledgements, and unreadable outcomes"
       (fn [root]
         (let profile (Profile ^name "commit_fault" ^plugins [(plugin_admin)]))
-        (let runtime (open_runtime ^^recovery root "default" profile))
+        (let runtime (open_runtime ^mode "recovery" root "default" profile))
         (let original runtime/workspace/store)
         (let disabled [{^id "plugin_admin" ^builtin true ^disabled true}])
         (try
@@ -277,7 +269,7 @@
         ensure
           (set runtime/workspace/store original)
           (close_runtime runtime))
-        (let reopened (open_runtime ^^recovery root "default" profile))
+        (let reopened (open_runtime ^mode "recovery" root "default" profile))
         (try
           ($assert (== (composition_revision reopened/workspace) 2))
           (let history (composition_history reopened/workspace))

@@ -19,11 +19,11 @@
   (try
     (let filename ($path/join workspace "fake-slack-credentials"))
     ($fs/write_text filename "Bot user oauth token: xoxb-test\nApp token: xapp-test\nChannel id: C12345678\n")
-    (configure_account service/runtime/channels/owner "dobi" filename "/fake-adapter"
+    (configure_account service/runtime/services/values/channels/owner "dobi" filename "/fake-adapter"
       {^team "T123" ^app "A123" ^bot "B123" ^bot_user "UBOT" ^operator "UOWNER"})
-    (let route (configure_route service/runtime/channels/owner "dobi" "C123" workspace))
-    (bind_workspace service/runtime/channels workspace route/id)
-    (body service/runtime/channels)
+    (let route (configure_route service/runtime/services/values/channels/owner "dobi" "C123" workspace))
+    (bind_workspace service/runtime/services/values/channels workspace route/id)
+    (body service/runtime/services/values/channels)
   ensure (close_session_service service)))
 
 (describe "Slack user names"

@@ -16,18 +16,22 @@
 (fn schema_verdict [name : Str, value]
   (if (!= ($head value) Map) (schema_failure name "An Outcome schema must return {^value DATA} or {^error TEXT}."))
   (for [key field] in value
-    (if_not (["value" "error" "warning"] .contains? ($to_str key))
+    (if_not (["value" "error" "warning" "suspend"] .contains? ($to_str key))
       (schema_failure name $"Unknown Outcome schema verdict field ${key}.")))
   (let accepted (value .has_key? "value"))
   (let rejected (value .has_key? "error"))
   (if (== accepted rejected) (schema_failure name "An Outcome schema must accept or reject exactly once."))
   (if_yes rejected
-    (if (|| (!= ($head value/error) Str) (== ($str/trim value/error) "") (value .has_key? "warning"))
+    (if (|| (!= ($head value/error) Str) (== ($str/trim value/error) "")
+            (value .has_key? "warning") (value .has_key? "suspend"))
       (schema_failure name "A schema rejection requires nonempty error text."))
     (return {^error value/error}))
   (if (&& (! ($absent? value/warning)) (!= ($head value/warning) Str))
     (schema_failure name "Schema warning must be text."))
-  {^value (freeze_turn_data value/value) ^warning (?? value/warning nil)})
+  (if (&& (value .has_key? "suspend") (!= ($head value/suspend) Bool))
+    (schema_failure name "Schema suspension must be a boolean."))
+  {^value (freeze_turn_data value/value) ^warning (?? value/warning nil)
+   ^suspend (== value/suspend true)})
 
 (fn validate_schema_definition [candidate]
   (if (|| (!= ($head candidate) Map) (!= ($head candidate/name) Str) (== candidate/name "")
@@ -44,7 +48,7 @@
   (if_not native
     (if (|| (! ($str/starts_with? candidate/name $"${owner}/"))
             (== candidate/name $"${owner}/") (candidate .has_key? "alias"))
-      (schema_failure candidate/name "Outcome extension keys belong to their contributor's namespace; legacy aliases belong to the host.")))
+      (schema_failure candidate/name "Outcome extension keys belong to their contributor's namespace; short spellings belong to the host.")))
   (let schema candidate/schema)
   (let prepared {})
   (for [key value] in candidate (prepared .put key value))
@@ -72,7 +76,7 @@
   (for definition in definitions (contribute runtime/h native_owner "outcome_extensions" definition))
   nil)
 
-(fn normalize_extension_fields [snapshot, context, fields, raw]
+(fn normalize_extension_fields [snapshot, context, raw]
   (let input (if ($absent? raw) {} raw))
   (if (!= ($head input) Map) (return {^error "Outcome extensions must be a map of registered keys."}))
   (let definitions [])
@@ -84,16 +88,12 @@
     (if_not (&& ([Str Sym] .contains? ($head key)) (known .has_key? ($to_str key)))
       (return {^error $"Unknown Outcome extension ${key}; use an active owner's declared field."})))
   (let values {})
-  (let aliases {})
   (let warnings [])
+  (var suspension nil)
   (for definition in definitions
-    (let canonical (input .has_key? definition/name))
-    (let alias (&& (! ($absent? definition/alias)) (! ($absent? (fields .get definition/alias)))))
-    (if (&& canonical alias)
-      (return {^error $"Outcome supplies both ${definition/name} and its legacy spelling ${definition/alias}."}))
-    (if_not (|| canonical alias) (continue))
-    (let value (if canonical (input .get definition/name) (fields .get definition/alias)))
-    (let scoped (context .assoc "legacy" fields ; .assoc "extension_inputs" input))
+    (if_not (input .has_key? definition/name) (continue))
+    (let value (input .get definition/name))
+    (let scoped (context .assoc "extension_inputs" input))
     (let limits (if definition/_host (default_execution_limits) (response_execution_limits)))
     (let outcome (supervised_call definition/schema [scoped value] limits))
     (let verdict (match outcome ^!exhaustive
@@ -106,6 +106,9 @@
     (if (verdict .has_key? "error")
       (return {^error $"Outcome extension ${definition/name}: ${verdict/error}"}))
     (values .put definition/name verdict/value)
-    (if_not ($absent? definition/alias) (aliases .put definition/alias verdict/value))
+    (if_yes (== verdict/suspend true)
+      (if_not ($absent? suspension)
+        (return {^error "Only one Outcome extension can request suspension."}))
+      (set suspension definition/name))
     (if_not ($absent? verdict/warning) (warnings .push verdict/warning)))
-  {^values (freeze_turn_data values) ^aliases aliases ^warnings warnings})
+  {^values (freeze_turn_data values) ^warnings warnings ^suspension suspension})

@@ -30,7 +30,7 @@
       (elif (== number 1)
         "(delegate \"a\" ^title \"First\" ^brief \"Complete the first task.\") (delegate \"b\" ^title \"Second\" ^brief \"Complete the second task.\") (Outcome ^wait \"all\")")
       (else
-        (let blocks (delegation_blocks runtime/delegations call/session))
+        (let blocks (delegation_blocks runtime/services/values/delegations call/session))
         (var unfinished false)
         (for child in blocks/records
           (if_not (terminal_delegation? child/state) (set unfinished true)))
@@ -46,7 +46,7 @@
   ($fs/write_text_atomic path ($serde/write_data config))
   (let controller (recovery_controller runtime ^slow_children (== point "child_admitted")))
   (let crashed ($cell false))
-  (runtime/delegations .put "checkpoint" (fn [at parent]
+  (runtime/services/values/delegations .put "checkpoint" (fn [at parent]
     (if (|| (!= at point) (!= parent "default") (crashed .swap true)) (return nil))
     (let rounds (round_state controller "default"))
     (let current ($last rounds/receipts))

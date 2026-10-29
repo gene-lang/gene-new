@@ -1,3 +1,0 @@
-# Host compatibility import; implementation is a declared public library.
-(mod provider_common)
-(import [nonempty configure_model http_json_attempt] ^from "../public/provider" ^^export)

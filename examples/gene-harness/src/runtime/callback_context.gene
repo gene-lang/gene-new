@@ -1,6 +1,6 @@
 # Public adapters are installed by feature registry specs before supervision.
-# Host-owned rows retain raw contexts, including under leases.
-(mod public_callback_context)
+# Direct kernel rows retain raw contexts, including under leases.
+(mod callback_context)
 (import [CommandContext] ^from "../plugin_api")
 (import [admit_command_alias original_command_context] ^from "./command_scope")
 (import [freeze_turn_data] ^from "./turn_data")
@@ -15,9 +15,9 @@
 
 (fn public_contract? [h, owner : Str]
   (let policy (h/plugin_policies/.get .get owner))
-  # Direct host contributions have no activation policy. Match the registry's
-  # host default; only an actual non-host activation needs public projection.
-  (&& (! ($absent? policy)) (!= policy/host true)))
+  # Host policy sets budgets and mandatory-participant behavior, never the
+  # callback contract. Every actual activation uses the public projection.
+  (! ($absent? policy)))
 
 (fn prepare_command_callback [h, owner : Str, candidate]
   (if_not (public_contract? h owner) (return candidate))

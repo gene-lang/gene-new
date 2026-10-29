@@ -9,15 +9,13 @@
 (fn settings_error [message : Str]
   (fail (WorkspaceSettingsError ^code "invalid_workspace_settings" ^message message)))
 
-# Versions before the single-root manager layout also saved an alias. A
-# workspace is now named by its directory, so a legacy alias is accepted and
-# dropped on the next write.
 (fn validate_settings [value]
   (if (!= ($head value) Map) (settings_error "Workspace settings must be an inert map."))
   (if (!= (?? value/version 1) 1) (settings_error "Unsupported workspace settings version."))
   (let port (?? value/port 0))
-  (if (&& (! ($absent? value/alias)) (!= ($head value/alias) Str))
-    (settings_error "A legacy workspace alias must be a string."))
+  (for [key field] in value
+    (if_not (["version" "port" "role"] .contains? ($to_str key))
+      (settings_error $"Unknown workspace setting ${key}.")))
   (if (|| (!= ($head port) Int) (&& (!= port 0) (|| (< port 1024) (> port 65535))))
     (settings_error "Workspace port must be 0 or 1024–65535."))
   (if (&& (! ($absent? value/role)) (!= value/role "manager"))

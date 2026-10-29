@@ -5,7 +5,7 @@
 (import [notifications] ^from "../../../src/builtin/notifications")
 (import [Plugin PluginHost NotificationHost] ^from "../../../src/plugin_api")
 (import [row resolve] ^from "../../../src/kernel")
-(import [register_plugin] ^from "../../../src/storage/workspace")
+(import [register_plugin] ^from "../../../src/storage/workspace_activation")
 
 (fn stored_notifications []
   (quote

@@ -1,7 +1,7 @@
 # Install the board in a workspace whose Harness process is stopped.
 (mod install_ui_experiment)
 (import [open_session_service close_session_service] ^from "../../src/web/session_service")
-(import [register_plugin] ^from "../../src/storage/workspace")
+(import [register_plugin] ^from "../../src/storage/workspace_activation")
 (import [row] ^from "../../src/kernel")
 
 (fn main [args] : Int

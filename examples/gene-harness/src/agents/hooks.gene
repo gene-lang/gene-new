@@ -1,6 +1,6 @@
 (mod hooks)
 (import ^from "../storage/state" [append_core_event])
-(import ^from "./history_policy" [normalize_history_policy])
+(import ^from "../public/history_policy" [normalize_history_policy])
 
 (type HookDispatchError ^props {^message Str} ^impl [Error])
 (impl Error for HookDispatchError)

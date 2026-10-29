@@ -1,5 +1,5 @@
 (import $test [describe it])
-(import ^from "../../../src/storage/workspace" [canonical_module_source])
+(import [canonical_module_source] ^from "../../../src/storage/module_registry")
 
 (describe
   "Canonical plugin sources"

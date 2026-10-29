@@ -2,7 +2,7 @@
 (import [isolated run_spec] ^from "../../support")
 (import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
 (import [Profile] ^from "../../../src/profiles/profile")
-(import [register_plugin] ^from "../../../src/storage/workspace")
+(import [register_plugin] ^from "../../../src/storage/workspace_activation")
 (import [row doc] ^from "../../../src/kernel")
 
 (fn sdk_plugin []
@@ -17,7 +17,8 @@
     (import [whisper_row] ^from "src/public/speech_engines.gene")
     (import [mac_recognizer_row] ^from "src/public/mac_recognition.gene")
     (import [encode_audio_frame] ^from "src/public/voice_frames.gene")
-    (import [byte_prefix] ^from "src/text.gene")
+    (import [byte_prefix] ^from "src/public/text.gene")
+    (import [api_path] ^from "src/web/contract.gene")
     (fn init [descriptor]
       (Plugin ^id "public_sdk" ^provides [["functions" "sdk_probe"]]
         ^activate (fn [host]
@@ -32,11 +33,12 @@
                 ^error (safe_error "payload-secret" [{^base64 "payload-secret" ^data_url "data:image/png;base64,payload-secret"}])
                 ^recognizer (/name (whisper_row)) ^mac (/name (mac_recognizer_row))
                 ^frame_bytes ($binary/size (encode_audio_frame 1 1 0 ($binary/from_list [0 0])))
-                ^text (byte_prefix "héllo" 3)})})))))))
+                ^text (byte_prefix "héllo" 3) ^path (api_path ["media" "example"])})})))))))
 
 (fn check_sdk [runtime]
   (let probe (/fn (row runtime/h "functions" "sdk_probe")))
   (let result (probe))
+  ($assert ($str/ends_with? result/path "/media/example"))
   ($assert (== result/model "test-model"))
   ($assert (== result/policy/trigger_bytes 20))
   ($assert (== result/content/0/text "text"))

@@ -7408,6 +7408,10 @@ proc regexFindBounds(reVal: Value, s: string, start: int):
   else:
     let captureCount = reVal.regexGroupCount
     result.captures = newSeq[tuple[first, last: int]](captureCount)
+    # re.findBounds only fills captures participating in the match. Leaving
+    # omitted trailing groups at (0, 0) would report the input's first byte.
+    for capture in result.captures.mitems:
+      capture = (-1, -1)
     if start > s.len:
       return (false, -1, 0, result.captures)
     let bounds = nre.findBounds(s, reVal.regexCompiled, result.captures, start)

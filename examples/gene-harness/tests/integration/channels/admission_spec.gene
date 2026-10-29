@@ -14,10 +14,10 @@
 
 (fn wait_round [service, session]
   (loop
-    (let watcher (service/controller/watchers/.get .get session))
+    (let watcher (/watcher (service/runtime/services/values/controller/rounds/.get .get session)))
     (if ($absent? watcher) (return nil))
     watcher/.join
-    (if (same? watcher (service/controller/watchers/.get .get session)) (return nil))))
+    (if (same? watcher (/watcher (service/runtime/services/values/controller/rounds/.get .get session))) (return nil))))
 
 (fn fixture [workspace, provider, body]
   (let service (test_service ^workspace workspace ^provider provider ^without_plugins ["slack"]))
@@ -26,7 +26,7 @@
     (configure_account owner "dobi" "/credential-reference" "/adapter.so"
       {^team "T123" ^app "A123" ^bot "B123" ^bot_user "UBOT" ^operator "UOWNER"})
     (let route (configure_route owner "dobi" "C123" workspace))
-    (let queues service/runtime/channel_queues)
+    (let queues service/runtime/services/values/channel_queues)
     (configure_queues queues route)
     (let input (enqueue queues {^transport "slack" ^account "dobi" ^team "T123" ^channel "C123"
       ^thread "1.000001" ^message "1.000001" ^author "UOWNER" ^text "Build the requested feature."}
@@ -42,7 +42,7 @@
     (close_session_service service)))
 
 (fn drain [fixture]
-  (admit_channel_queue fixture/service/controller fixture/session
+  (admit_channel_queue fixture/service/runtime/services/values/controller fixture/session
     (fn [parts] (authorize_parts fixture/owner fixture/route/id parts ^workspace fixture/service/runtime/root))))
 
 (fn amendment [fixture]
@@ -64,11 +64,11 @@
             (config .put "turn_limit" 1) ($fs/write_text filename ($serde/write_data config))
             (let admitted (drain f)) (wait_round f/service f/session)
             (amendment f)
-            (with_session_gate f/service/sessions ($to_str "round/" f/session) (fn []
+            (with_session_gate f/service/runtime/sessions ($to_str "round/" f/session) (fn []
               (resume_queue f/queues f/session (/revision (queue_status f/queues f/session)))
-              (let paused (round_receipt f/service/controller f/session admitted/receipt/id))
+              (let paused (round_receipt f/service/runtime/services/values/controller f/session admitted/receipt/id))
               (paused .put "continuation_mode" "automatic")
-              (save_round f/service/controller f/session paused)))
+              (save_round f/service/runtime/services/values/controller f/session paused)))
             (submit f/service f/session "explicit-new-work" 2 "Replace the paused task.")
             (wait_round f/service f/session)
             ($assert (! (/held (queue_status f/queues f/session))))
@@ -87,12 +87,12 @@
             (fn [f]
               (let browser (fn [blocked]
                 (try
-                  {^kind "admitted" ^receipt (submit_round f/service/controller f/session "browser-forced" 1 "Unsent browser draft"
+                  {^kind "admitted" ^receipt (submit_round f/service/runtime/services/values/controller f/session "browser-forced" 1 "Unsent browser draft"
                     ^on_admit (fn [receipt]
                       (if blocked (then (entered .set true) (admission .recv)))))}
                 catch RoundError {^kind $err/code})))
               (let channel (fn [blocked]
-                (admit_channel_queue f/service/controller f/session (fn [parts]
+                (admit_channel_queue f/service/runtime/services/values/controller f/session (fn [parts]
                   (if blocked (then (entered .set true) (admission .recv)))
                   (authorize_parts f/owner f/route/id parts ^workspace root)))))
               (scope
@@ -108,7 +108,7 @@
                 (admission .send nil)
                 ($assert (== (/kind (await first)) "admitted"))
                 ($assert (== (/kind (await second)) "busy")))
-              ($assert (== ($size (/receipts (round_state f/service/controller f/session))) 1))
+              ($assert (== ($size (/receipts (round_state f/service/runtime/services/values/controller f/session))) 1))
               ($assert (== (/pending (queue_status f/queues f/session)) (if (== winner "browser") 1 0)))
               (model .send nil) (wait_round f/service f/session)
               (if_yes (== winner "browser")
@@ -127,7 +127,7 @@
           (fn [f]
             (scope
               (let draining (spawn ^lane root
-                (admit_channel_queue f/service/controller f/session (fn [parts]
+                (admit_channel_queue f/service/runtime/services/values/controller f/session (fn [parts]
                   (let decisions (authorize_parts f/owner f/route/id parts ^workspace workspace))
                   (entered .set true) (release .recv)
                   decisions))))
@@ -156,13 +156,13 @@
           (fn [f]
             ($fs/write_text ($path/join workspace "STAGED_FOR_BROWSER.txt") "browser-only attachment")
             (let staged (command f/service f/session "/view STAGED_FOR_BROWSER.txt"))
-            (f/service/runtime/commands/watchers/.get .get $"${f/session}:${staged/id}"; .join)
+            (f/service/runtime/services/values/commands/watchers/.get .get $"${f/session}:${staged/id}"; .join)
             (let admitted (drain f))
             ($assert (== admitted/kind "admitted"))
             ($assert (== admitted/receipt/initiator "channel:slack/dobi"))
             ($assert ($absent? admitted/receipt/deadline_ms))
             (wait_round f/service f/session)
-            ($assert (== (/state (round_receipt f/service/controller f/session admitted/receipt/id)) "done"))
+            ($assert (== (/state (round_receipt f/service/runtime/services/values/controller f/session admitted/receipt/id)) "done"))
             ($assert ($fs/exists? ($path/join workspace "channel-proof.txt")))
             ($assert ($str/contains? ($to_str requests/.get/0/messages) "Build the requested feature."))
             ($assert (! ($str/contains? ($to_str requests/.get/0/messages) "browser-only attachment")))
@@ -173,12 +173,12 @@
             ($assert (== initial/speaker "User"))
             ($assert (== initial/input/messages/0/author "UOWNER") "Channel author metadata missing")
             ($assert (! (/held (queue_status f/queues f/session))))
-            ($assert (try (submit_round f/service/controller f/session "forged-user-origin" 2 admitted/receipt/prompt
+            ($assert (try (submit_round f/service/runtime/services/values/controller f/session "forged-user-origin" 2 admitted/receipt/prompt
               ^input admitted/receipt/input) false catch ChannelError (== $err/code "forbidden")))
-            ($assert (try (submit_round f/service/controller f/session "wrong-channel-origin" 2 "different text"
+            ($assert (try (submit_round f/service/runtime/services/values/controller f/session "wrong-channel-origin" 2 "different text"
               ^initiator "channel:slack/dobi" ^input admitted/receipt/input) false
               catch RoundError (== $err/code "invalid_request")))
-            ($assert (try (submit_round f/service/controller f/session "channel-card" 2 admitted/receipt/prompt
+            ($assert (try (submit_round f/service/runtime/services/values/controller f/session "channel-card" 2 admitted/receipt/prompt
               ^initiator "channel:slack/dobi" ^input admitted/receipt/input
               ^card {^id "card" ^revision 1 ^definition_revision 1}) false
               catch RoundError (== $err/code "invalid_request")))
@@ -202,11 +202,11 @@
             ($fs/write_text file ($serde/write_data config))
             (let first (drain f))
             (wait_round f/service f/session)
-            (let paused (round_receipt f/service/controller f/session first/receipt/id))
+            (let paused (round_receipt f/service/runtime/services/values/controller f/session first/receipt/id))
             ($assert (== paused/state "paused"))
             (amendment f)
             ($assert (== (/kind (drain f)) "held"))
-            (let continued (continue_round f/service/controller f/session paused/id "manual"))
+            (let continued (continue_round f/service/runtime/services/values/controller f/session paused/id "manual"))
             ($assert ($absent? continued/deadline_ms))
             ($assert (== continued/input paused/input))
             (wait_round f/service f/session)
@@ -235,7 +235,7 @@
                 catch RoundError {^kind $err/code})))
               [(await a) (await b)]))
             ($assert (== ($size ($filter results (fn [result] (== result/kind "admitted")))) 1))
-            ($assert (== ($size (/receipts (round_state f/service/controller f/session))) 1))
+            ($assert (== ($size (/receipts (round_state f/service/runtime/services/values/controller f/session))) 1))
             (blocker .send nil)
             (wait_round f/service f/session))))))
 

@@ -46,15 +46,15 @@
 (fn completed_qualification [service, thread]
   (if ($absent? thread) (return nil))
   (let root service/runtime/root)
-  (let queues (snapshot service/runtime/channel_queues))
+  (let queues (snapshot service/runtime/services/values/channel_queues))
   (for [id binding] in queues/bindings
     (if (!= binding/thread thread) (continue))
-    (let rounds (round_state service/controller binding/session))
+    (let rounds (round_state service/runtime/services/values/controller binding/session))
     (if rounds/receipts/.empty? (continue))
     (let receipt ($last rounds/receipts))
     (if (["failed" "interrupted" "cancelled"] .contains? receipt/state)
       (fail "The live Gene request did not finish"))
-    (let outgoing (pending_output service/runtime/channel_queues))
+    (let outgoing (pending_output service/runtime/services/values/channel_queues))
     (for output in outgoing
       (if (== output/result/status "failed") (fail "Slack rejected an outgoing test message; inspect its delivery record")))
     (var delivered false)
@@ -75,7 +75,7 @@
 
 (fn retire_qualification [service, native = nil]
   (try
-    (mutate service/runtime/channels/owner (fn [state]
+    (mutate service/runtime/services/values/channels/owner (fn [state]
       (let account (state/accounts .get "qualification"))
       (if_not ($absent? account) (account .put "enabled" false))
       (for [id route] in state/routes
@@ -104,15 +104,15 @@
   (let service (open_session_service ^workspace root ^profile profile))
   (let native ($cell nil))
   (try
-    (let configured (setup_account service/runtime/channels
+    (let configured (setup_account service/runtime/services/values/channels
       {^id "qualification" ^secret_file args/0 ^library args/1}))
-    (let account (/accounts (snapshot service/runtime/channels/owner); .get "qualification"))
+    (let account (/accounts (snapshot service/runtime/services/values/channels/owner); .get "qualification"))
     (allowed .set {^team account/team ^channel configured/channel ^operator account/operator ^bot_user account/bot_user})
-    (setup_route service/runtime/channels
+    (setup_route service/runtime/services/values/channels
       {^account "qualification" ^channel configured/channel ^workspace root ^^enabled})
     (native .set (load_socket_library args/1))
     (let connected (+ ($os/monotonic_ms) 20000))
-    (while (!= (/connected (service/runtime/channels/health/.get .get account/app)) true)
+    (while (!= (/connected (service/runtime/services/values/channels/health/.get .get account/app)) true)
       ($assert (< ($os/monotonic_ms) connected) "Socket Mode did not become ready; inspect the app receiver and subscriptions")
       ($sleep 20))
     (let client (open_api (/bot (read_slack_credentials args/0))))

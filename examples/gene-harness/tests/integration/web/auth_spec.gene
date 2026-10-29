@@ -55,17 +55,19 @@
         ($assert (try (authenticate reopened first/cookie) false catch Any true) "old cookies revived after crash")
         (let fresh (exchange reopened auth/secret))
         ($assert (== (/csrf (authenticate (open_auth root) fresh/cookie)) fresh/csrf) "new credentials did not survive restart"))))
-  (it "upgrades still-valid legacy cookies without reviving expired ones" []
-    (isolated this_mod/.path "upgrades still-valid legacy cookies without reviving expired ones"
+  (it "accepts only cookies from the current owner generation" []
+    (isolated this_mod/.path "accepts only cookies from the current owner generation"
       (fn [workspace]
         (let root ($fs/real_path workspace))
-        (open_auth root)
+        (let first (open_auth root))
         ($fs/write_text_atomic ^^owner_only $"${root}/web_sessions"
-          ($serde/write_data {^valid {^csrf "keep" ^expires (+ ($os/wall_ms) 60000)}
-                             ^expired {^csrf "drop" ^expires 1}}))
+          ($serde/write_data {^current {^csrf "keep" ^generation ($crypto/sha256 first/secret)}
+                             ^stale {^csrf "drop" ^generation "another-owner"}
+                             ^untagged {^csrf "drop"}}))
         (let auth (open_auth root))
-        ($assert (== (/csrf (authenticate auth "valid")) "keep") "valid legacy cookie was lost")
-        ($assert (try (authenticate auth "expired") false catch Any true) "expired legacy cookie revived")))))
+        ($assert (== (/csrf (authenticate auth "current")) "keep"))
+        (for cookie in ["stale" "untagged"]
+          ($assert (try (authenticate auth cookie) false catch Any true) cookie))))))
 
 (fn main [args] : Int
   (run_spec args))

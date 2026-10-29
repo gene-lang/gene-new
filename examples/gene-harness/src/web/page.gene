@@ -7,13 +7,14 @@
 
 (var harness_ui ($web/load $"${($path/parent this_mod/.path)}/../../client/main.gene"))
 
-(fn page [^appearance appearance : Str = "light"] : Str
+(fn page [^appearance appearance : Str = "light", ^workspace workspace : Str = ""] : Str
   (let mode (theme_mode appearance))
+  (let workspace_id (if (== workspace "") "" ($crypto/sha256 workspace)))
   (let toggle_label (if (== mode "dark") "Light" "Dark"))
   ($to_str
     "<!doctype html>"
     (render
-      `(html ^lang "en" ^id "harness_document" ^data-theme %mode
+      `(html ^lang "en" ^id "harness_document" ^data-theme %mode ^data-workspace-id %workspace_id
          (head
            (meta ^charset "utf-8")
            (meta ^name "viewport" ^content "width=device-width, initial-scale=1")

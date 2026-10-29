@@ -1,5 +1,6 @@
 # Host-only feature routes. Called only after common HTTP admission.
 (mod voice_routes)
+(import [api_root voice_subprotocol] ^from "../contract.gene")
 (import [response fail_request field request_data session_path?] ^from "../request")
 (import [row] ^from "../../kernel")
 (import [speech_catalog] ^from "../../runtime/speech_service")
@@ -17,13 +18,13 @@
   (let auth context/auth)
   (let origin context/origin)
   (let request_origin context/request_origin)
-  (if_yes (&& (== request/method "GET") (== request/path "/api/v8/voice/status"))
+  (if_yes (&& (== request/method "GET") (== request/path $"${(api_root)}/voice/status"))
     (if safe (fail_request "unavailable" "Voice is off in the recovery UI."))
     (return (response 200 (speech_catalog voice_hub/speech))))
-  (if_yes (&& (== request/method "GET") (== request/path "/api/v8/voice"))
+  (if_yes (&& (== request/method "GET") (== request/path $"${(api_root)}/voice"))
     (if (|| safe (!= request_origin origin) ($absent? (row host/runtime/h "browser_clients" "voice")))
       (fail_request "forbidden" "The active voice plugin and a same-origin socket are required."))
-    (return (ws_accept request ^subprotocol "gene-harness-voice.1"
+    (return (ws_accept request ^subprotocol voice_subprotocol
       ^on_open (fn [connection]
         (add_voice_peer voice_hub connection browser/csrf
           (fn [] (== browser/generation ($crypto/sha256 auth/secret)))))
@@ -46,9 +47,9 @@
       (append_core_event host/runtime/events "session" id
         {^type "trace" ^kind "voice/latency" ^text "voice/latency"
          ^timing (record_voice_timing ^identity identity ^input_kind input_kind
-           host/runtime/voice id data/kind data/elapsed_ms) ^^ignorable})
+           host/runtime/services/values/voice id data/kind data/elapsed_ms) ^^ignorable})
       (return (response 200 {^^ok})))
     (if_yes (&& (== parts/.size 7) (== parts/5 "voice") (== parts/6 "latency") (== request/method "GET"))
-      (return (response 200 {^timings (voice_timings host/runtime/voice id)})))
+      (return (response 200 {^timings (voice_timings host/runtime/services/values/voice id)})))
   )
   nil)

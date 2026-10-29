@@ -7,7 +7,8 @@
 (import [workspace_bindings] ^from "../../../src/agents/harness_turn")
 (import [acquire_snapshot release_snapshot] ^from "../../../src/runtime/composition")
 (import [contribute doc] ^from "../../../src/kernel")
-(import [register_plugin set_plugin_enabled restore_plugin] ^from "../../../src/storage/workspace")
+(import [register_plugin] ^from "../../../src/storage/workspace_activation")
+(import [set_plugin_enabled restore_plugin] ^from "../../../src/storage/workspace_repair")
 
 (describe "Registry-backed instructions"
   (it "renders concise orientation and dynamic context while loading manuals on demand" []

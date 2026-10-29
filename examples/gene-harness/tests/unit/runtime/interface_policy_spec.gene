@@ -1,12 +1,12 @@
 (import $test [describe it])
-(import [current_interfaces latest_interfaces registration_interfaces
+(import [current_interfaces latest_interfaces
   source_interfaces interface_diagnostic InterfacePolicyError]
   ^from "../../../src/runtime/interface_policy")
 
-(describe "Plugin interface compatibility"
+(describe "Plugin interface requirements"
   (it "checks exact requirements against supported sets without claiming host-only interfaces" []
     (let current (current_interfaces))
-    (let required (registration_interfaces))
+    (let required (latest_interfaces))
     ($assert (== (interface_diagnostic required current) ""))
     ($assert (== (interface_diagnostic (latest_interfaces) current) ""))
     ($assert (== (interface_diagnostic required (current .assoc "host_only" ["host/Extra:1"])) ""))

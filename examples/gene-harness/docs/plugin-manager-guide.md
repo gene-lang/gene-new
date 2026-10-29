@@ -31,8 +31,8 @@ sessions becomes available after normal startup resumes.
 Source replacements preserve the original creation session. A manager source
 edit records no source conversation, while source reversion restores the chosen
 version's association. Restoring a built-in default ends its workspace override;
-a later new override starts a new creation. See [session attribution](plugin-source.md)
-for storage and legacy behavior.
+a later new override starts a new creation. See [session attribution](plugins.md#development-sessions)
+for storage and navigation behavior.
 
 ## Review and apply
 

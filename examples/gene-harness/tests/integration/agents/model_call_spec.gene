@@ -1,3 +1,4 @@
+(import [test_controller] ^from "../../support.gene")
 # Tests src/agents/model_call.gene.
 (import $test [describe it assert_equal])
 (import [isolated run_spec] ^from "../../support")
@@ -8,12 +9,12 @@
 (import [append_message collect_unreferenced_bodies] ^from "../../../src/agents/history")
 (import [scripted_profile] ^from "../../../src/profiles/scripted")
 (import [history_basic] ^from "../../../src/builtin/history_basic")
-(import [new_round_controller submit_round round_receipt close_round_controller cancel_round]
+(import [submit_round round_receipt close_round_controller cancel_round]
   ^from "../../../src/runtime/round_controller")
 (import [events_for append_core_event flush_event_store repair_interrupted_turns
          append_turn_end_once]
   ^from "../../../src/storage/state")
-(import [configure_model] ^from "../../../src/builtin/provider_common")
+(import [configure_model] ^from "../../../src/public/provider")
 (import [new_harness shutdown_harness contribute] ^from "../../../src/kernel")
 (import $net/http_client [request])
 
@@ -170,7 +171,7 @@
         (let runtime (open_runtime workspace "default"
           (scripted_profile ["Earlier work summarized."
             "(Outcome ^^done ^reply \"done\")"])))
-        (let controller (new_round_controller runtime))
+        (let controller (test_controller runtime nil))
         (try
           (let settings ($serde/read_data
             ($fs/read_text $"${runtime/state_root}/config.gene")))
@@ -184,7 +185,7 @@
           (append_message ^round "old" ^turn 1 runtime "default"
             "assistant" "# prior work")
           (let accepted (submit_round controller "default" "summary" 1 "go"))
-          (controller/watchers .get; .get "default"; .join)
+          ((/watcher (controller/rounds/.get .get "default")) .join)
           (let receipt (round_receipt controller "default" accepted/id))
           ($assert (== receipt/state "done")
             $"scripted summary round failed: ${receipt/message}")
@@ -238,7 +239,7 @@
                    {^text "(Outcome ^^done ^reply \"wrong provider\")"})}))))
         (let runtime (open_runtime workspace "default"
           (Profile ^name "test" ^plugins [provider (history_basic)])))
-        (let controller (new_round_controller runtime))
+        (let controller (test_controller runtime nil))
         (try
           (let settings ($serde/read_data
             ($fs/read_text $"${runtime/state_root}/config.gene")))
@@ -252,7 +253,7 @@
           (append_message ^round "old" ^turn 1 runtime "default"
             "assistant" "# prior work")
           (let accepted (submit_round controller "default" "same-provider" 1 "go"))
-          (controller/watchers .get; .get "default"; .join)
+          ((/watcher (controller/rounds/.get .get "default")) .join)
           (let receipt (round_receipt controller "default" accepted/id))
           ($assert (== receipt/state "done")
             $"summary round failed: ${receipt/message}")
@@ -354,10 +355,10 @@
       (fn [workspace]
         (let runtime (open_runtime workspace "default"
           (probe_profile ($cell "prepare") ($cell 0) ($cell false))))
-        (let controller (new_round_controller runtime))
+        (let controller (test_controller runtime nil))
         (try
           (let accepted (submit_round controller "default" "first" 1 "go"))
-          (controller/watchers .get; .get "default"; .join)
+          ((/watcher (controller/rounds/.get .get "default")) .join)
           (let receipt (round_receipt controller "default" accepted/id))
           ($assert (== receipt/state "failed") "prepare error did not fail the round")
           ($assert (== (event_payloads runtime "model/request") [])
@@ -377,10 +378,10 @@
         (let attempts ($cell 0))
         (let runtime (open_runtime workspace "default"
           (probe_profile mode attempts ($cell false))))
-        (let controller (new_round_controller runtime))
+        (let controller (test_controller runtime nil))
         (try
           (let first (submit_round controller "default" "first" 1 "go"))
-          (controller/watchers .get; .get "default"; .join)
+          ((/watcher (controller/rounds/.get .get "default")) .join)
           (let first_receipt (round_receipt controller "default" first/id))
           ($assert (== first_receipt/state "failed")
             "provider error did not fail the round")
@@ -391,7 +392,7 @@
             "provider failure result was not final")
           (mode .set "timeout")
           (let second (submit_round controller "default" "second" 2 "retry"))
-          (controller/watchers .get; .get "default"; .join)
+          ((/watcher (controller/rounds/.get .get "default")) .join)
           (let second_receipt (round_receipt controller "default" second/id))
           ($assert (== second_receipt/state "failed")
             "two timeouts did not fail the round")
@@ -416,7 +417,7 @@
         (let entered ($cell false))
         (let runtime (open_runtime workspace "default"
           (probe_profile ($cell "cancel") ($cell 0) entered)))
-        (let controller (new_round_controller runtime))
+        (let controller (test_controller runtime nil))
         (try
           (let accepted (submit_round controller "default" "first" 1 "go"))
           (let deadline (+ ($os/monotonic_ms) 5000))
@@ -424,7 +425,7 @@
             ($sleep 1))
           ($assert entered/.get "provider attempt never started")
           (cancel_round controller "default" accepted/id)
-          (controller/watchers .get; .get "default"; .join)
+          ((/watcher (controller/rounds/.get .get "default")) .join)
           (let results (event_payloads runtime "model/result"))
           ($assert (== results/.size 1)
             "cancelled provider attempt lacked a result")
@@ -441,7 +442,7 @@
     (isolated this_mod/.path "ends a turn at the summary stage when its provider fails"
       (fn [workspace]
         (let runtime (open_runtime workspace "default" (scripted_profile [])))
-        (let controller (new_round_controller runtime))
+        (let controller (test_controller runtime nil))
         (try
           (let config ($serde/read_data
             ($fs/read_text $"${runtime/state_root}/config.gene")))
@@ -455,7 +456,7 @@
           (append_message ^round "old" ^turn 1 runtime "default"
             "assistant" "# previous work")
           (let accepted (submit_round controller "default" "first" 1 "go"))
-          (controller/watchers .get; .get "default"; .join)
+          ((/watcher (controller/rounds/.get .get "default")) .join)
           (let receipt (round_receipt controller "default" accepted/id))
           ($assert (== receipt/state "failed")
             "summary provider failure did not fail the round")

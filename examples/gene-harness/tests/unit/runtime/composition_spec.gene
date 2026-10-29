@@ -2,7 +2,7 @@
 (import $test [describe it run])
 (import [new_composition_state current_snapshot acquire_snapshot release_snapshot publish_snapshot
          queue_composition_change take_composition_changes queue_retirement
-         close_composition_state]
+         close_composition_state subscribe_publications]
   ^from "../../../src/runtime/composition")
 
 (describe "Harness composition"
@@ -49,6 +49,26 @@
     ($assert (== retired/.get ["v1-ticket" "v2-ticket"]) "publication did not retire the unleased old view")
     (close_composition_state state)
     ($println "composition: immutable views, turn leases, deferred retirement and queue passed")))
+
+(describe "Composition publication subscriptions"
+  (it "keeps independent observers and their cancellation scoped to each subscriber" []
+    (let state (new_composition_state {} [] (fn [ticket] nil)))
+    (let first ($cell []))
+    (let second ($cell []))
+    (let a (subscribe_publications state (fn [previous current]
+      (first/.get .push [previous/id current/id]))))
+    (let b (subscribe_publications state (fn [previous current]
+      (second/.get .push [previous/id current/id]))))
+    (publish_snapshot state {} [])
+    a/.cancel
+    a/.cancel
+    (publish_snapshot state {} [])
+    ($assert (== first/.get [[0 1]]))
+    ($assert (== second/.get [[0 1] [1 2]]))
+    (close_composition_state state)
+    b/.cancel
+    ($assert (try (subscribe_publications state (fn [old next] nil)) false
+      catch Any true))))
 
 (fn main [args] : Int
   (let result (run ^name (?? args/0 "")))

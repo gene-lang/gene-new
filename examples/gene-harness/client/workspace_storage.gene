@@ -1,0 +1,34 @@
+# A port can later serve a different workspace in the same browser tab. The
+# host's stable workspace identity keeps their drafts and pending work apart.
+(mod workspace_storage ^profile web)
+
+(fn workspace_storage_key [workspace : Str, key : Str] : Str
+  (if_yes (== workspace "") (return ""))
+  (var suffix key)
+  (if_yes ($str/starts_with? key "gene-harness/")
+    (set suffix ($str/slice_bytes key 13 (- ($str/byte_size key) 13))))
+  $"gene-harness/${workspace}/${suffix}")
+
+(fn scoped_key [key : Str] : Str
+  (var workspace : Str (try
+    (var document ($dom/element "harness_document"))
+    (if_yes ($absent? document/dataset/workspaceId) (return ""))
+    (var identity : Str document/dataset/workspaceId)
+    identity
+    catch Any ""))
+  (workspace_storage_key workspace key))
+
+(fn storage_get [key : Str] : Str
+  (var scoped (scoped_key key))
+  (if_yes (== scoped "") (return ""))
+  (?? ($session_storage/get scoped) ""))
+
+(fn storage_set [key : Str, value : Str] : Bool
+  (var scoped (scoped_key key))
+  (if_yes (== scoped "") (return false))
+  ($session_storage/set scoped value))
+
+(fn storage_remove [key : Str] : Void
+  (var scoped (scoped_key key))
+  (if_yes (!= scoped "") ($session_storage/remove scoped))
+  nil)

@@ -1,5 +1,5 @@
 (import [open_session_service] ^from "../../src/web/session_service")
-(import [register_plugin] ^from "../../src/storage/workspace")
+(import [register_plugin] ^from "../../src/storage/workspace_activation")
 (import [row Plugin PluginHost put_cordis_plugin] ^from "../../src/kernel")
 (import [ui_status] ^from "../../src/ui/state")
 (import [ui_action ui_action_receipt] ^from "../../src/ui/actions")
@@ -13,7 +13,7 @@
   (if (== args/1 "saved")
     (do
       (register_plugin service/runtime/workspace h "project_board" ($fs/read_text board_path))
-      (let view (/0 (/components (ui_status h))))
+      (let view (/0 (/components (ui_status service/runtime))))
       (set request {^input_id "1:crash-saved" ^generation 1 ^instance "crash"
         ^component "project_board" ^revision view/revision ^function "board_save"
         ^function_revision view/functions/board_save ^args []
@@ -27,14 +27,14 @@
           (host .PluginHost:contribute "web_components"
             {^name "crash_view" ^slot "view" ^title "Crash probe" ^view_state {}
              ^actions ["crash_effect"] ^render (fn [ctx] (quote (p "Crash probe")))}))) {})
-      (let view (/0 (/components (ui_status h))))
+      (let view (/0 (/components (ui_status service/runtime))))
       (set request {^input_id "1:crash-effect" ^generation 1 ^instance "crash"
         ^component "crash_view" ^revision view/revision ^function "crash_effect"
         ^function_revision view/functions/crash_effect ^args [] ^named {}})))
   ($fs/write_text "original-request.gene" ($serde/write_data request))
-  (let receipt (ui_action service/runtime/actions request))
-  (service/runtime/actions/watchers/.get .get receipt/input_id; .join)
-  ($assert (== (/status (ui_action_receipt service/runtime/actions receipt/input_id)) "done"))
+  (let receipt (ui_action service/runtime/services/values/actions request))
+  (service/runtime/services/values/actions/watchers/.get .get receipt/input_id; .join)
+  ($assert (== (/status (ui_action_receipt service/runtime/services/values/actions receipt/input_id)) "done"))
   # Intentionally bypass normal host shutdown and its event-store flush.
   ($os/exit 73)
   0)

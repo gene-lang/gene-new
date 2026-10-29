@@ -1,6 +1,6 @@
 (mod image_preflight)
 (import [image_error normalize_image_request image_limits pixel_dimensions
-         capability require_capability] ^from "./image_contract")
+         capability require_capability] ^from "../public/image_contract")
 (import [validate_media_refs media_bytes] ^from "../storage/media")
 (import [prepare_image_inspection ImageInspectionError] ^from "../storage/image_inspection")
 

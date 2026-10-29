@@ -28,7 +28,7 @@
     (var checksum 0)
     (repeat i in turns
       (let admitted (submit service session/id $"profile-${i}" (+ i 1) "write the next result"))
-      (let watcher ((service/controller/watchers .get) .get session/id))
+      (let watcher (/watcher (service/runtime/services/values/controller/rounds/.get .get session/id)))
       watcher/.join
       (let completed (receipt service session/id admitted/id))
       ($assert (== completed/state "done") "profile round did not complete successfully")

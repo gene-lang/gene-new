@@ -1,4 +1,6 @@
 (mod plugin_manager_client ^profile web)
+(import [storage_get storage_set storage_remove] ^from "./workspace_storage.gene")
+(import [api_root] ^from "../src/web/contract.gene")
 (import ^from "./state.gene" [query_value])
 (import ^from "./plugin_sessions.gene" [plugin_sessions_view])
 
@@ -103,7 +105,7 @@
   nil)
 
 (fn save_draft [manager : Manager] : Void
-  ($session_storage/set
+  (storage_set
     "gene-harness/plugin-draft"
     ($json/stringify
       {
@@ -173,7 +175,7 @@
   (request
     manager
     "GET"
-    $"/api/v8/plugins/jobs/${id}"
+    $"${(api_root)}/plugins/jobs/${id}"
     nil
     (fn [code : Int, data : Any] : Void
       (if (!= code 200)
@@ -209,7 +211,7 @@
   (request
     manager
     "GET"
-    "/api/v8/plugins"
+    $"${(api_root)}/plugins"
     nil
     (fn [code : Int, data : Any] : Void
       (if_yes (!= sequence manager/fetch_seq) (return))
@@ -232,7 +234,7 @@
       (set manager/recovery (== (text data/mode) "recovery"))
       (set manager/plugins data/plugins)
       (if_not manager/ready
-        (var saved : Str (?? ($session_storage/get "gene-harness/plugin-draft") ""))
+        (var saved : Str (?? (storage_get "gene-harness/plugin-draft") ""))
         (if_yes (!= saved "")
           (try
             (var draft : Any ($json/parse saved))
@@ -282,7 +284,7 @@
         (notice manager (str/join messages " · ") true))
       (render manager)
       (if_yes (== manager/pending "")
-        (set manager/pending (?? ($session_storage/get "gene-harness/plugin-apply") ""))
+        (set manager/pending (?? (storage_get "gene-harness/plugin-apply") ""))
         (if_yes (!= manager/pending "") (check_pending manager))))))
 
 (fn check_pending [manager : Manager] : Void
@@ -291,7 +293,7 @@
   (request
     manager
     "GET"
-    $"/api/v8/plugins/plans/result?id=${($url/encode_component id)}"
+    $"${(api_root)}/plugins/plans/result?id=${($url/encode_component id)}"
     nil
     (fn [code : Int, data : Any] : Void
       (if_yes (!= manager/pending id) (return))
@@ -305,7 +307,7 @@
         (return))
       (set manager/busy false)
       (set manager/pending "")
-      ($session_storage/remove "gene-harness/plugin-apply")
+      (storage_remove "gene-harness/plugin-apply")
       (set manager/plan nil)
       (if (|| (== state "applied") (== state "saved"))
         (do
@@ -326,7 +328,7 @@
   (request
     manager
     "GET"
-    "/api/v8/plugins"
+    $"${(api_root)}/plugins"
     nil
     (fn [code : Int, data : Any] : Void
       (if (&& (== code 200) (!= (text data/epoch) manager/epoch))
@@ -408,7 +410,7 @@
     manager
     "GET"
     ($to_str
-      "/api/v8/plugins/history?id="
+      $"${(api_root)}/plugins/history?id="
       ($url/encode_component id)
       (if (< before 0)
         ""
@@ -477,7 +479,7 @@
         ($dom/append
           row
           ($dom/render
-            `(button ^type "button" ^aria_label %($to_str (if pinned "Unpin revision " "Pin revision ") ($to_str revision)) ^on_click %(fn [event : Any] : Void (var button : EventTarget event/current_target) (set button/disabled true) (request manager "POST" "/api/v8/plugins/history/pin" {^revision revision ^pinned (! pinned)} (fn [code : Int, data : Any] : Void (set button/disabled false) (if (== code 200) (do (set pinned (flag data/pinned)) (set button/text_content (if pinned "Unpin known-good" "Pin as known-good")) ($dom/set_attribute button "aria-label" ($to_str (if pinned "Unpin revision " "Pin revision ") ($to_str revision)))) (notice manager (text data/message) true)))))
+            `(button ^type "button" ^aria_label %($to_str (if pinned "Unpin revision " "Pin revision ") ($to_str revision)) ^on_click %(fn [event : Any] : Void (var button : EventTarget event/current_target) (set button/disabled true) (request manager "POST" $"${(api_root)}/plugins/history/pin" {^revision revision ^pinned (! pinned)} (fn [code : Int, data : Any] : Void (set button/disabled false) (if (== code 200) (do (set pinned (flag data/pinned)) (set button/text_content (if pinned "Unpin known-good" "Pin as known-good")) ($dom/set_attribute button "aria-label" ($to_str (if pinned "Unpin revision " "Pin revision ") ($to_str revision)))) (notice manager (text data/message) true)))))
                %(if pinned "Unpin known-good" "Pin as known-good"))))
         (if (== id "")
           ($dom/append
@@ -545,7 +547,7 @@
     ($dom/append
       actions
       ($dom/render
-        `(button ^type "button" ^disabled %manager/busy ^on_click %(fn [event : Any] : Void (set manager/busy true) (render_draft manager) (request manager "POST" "/api/v8/plugins/inspect" {^id id} (fn [code : Int, data : Any] : Void (set manager/busy false) (notice manager (if (flag data/ok) "Restricted descriptor read passed. Activation remains unverified." (text data/message)) (! (flag data/ok))) (render_draft manager)))) "Read descriptor safely"))))
+        `(button ^type "button" ^disabled %manager/busy ^on_click %(fn [event : Any] : Void (set manager/busy true) (render_draft manager) (request manager "POST" $"${(api_root)}/plugins/inspect" {^id id} (fn [code : Int, data : Any] : Void (set manager/busy false) (notice manager (if (flag data/ok) "Restricted descriptor read passed. Activation remains unverified." (text data/message)) (! (flag data/ok))) (render_draft manager)))) "Read descriptor safely"))))
   ($dom/append target actions)
   (var source_details ($dom/render `(details (summary "Source dependencies and limits"))))
   (var closure : (List Any) selected/closure)
@@ -756,7 +758,7 @@
   (notice manager "Validating source and predicted composition…")
   (job
     manager
-    "/api/v8/plugins/plans/validate"
+    $"${(api_root)}/plugins/plans/validate"
     {
       ^base_revision manager/base
       ^host_build_id manager/host
@@ -790,16 +792,16 @@
   (if_yes ($absent? manager/plan) (return))
   (var id (text manager/plan/id))
   (set manager/pending id)
-  ($session_storage/set "gene-harness/plugin-apply" id)
+  (storage_set "gene-harness/plugin-apply" id)
   (notice manager "Applying the reviewed composition…")
   (job
     manager
-    "/api/v8/plugins/plans/apply"
+    $"${(api_root)}/plugins/plans/apply"
     {^id id}
     (fn [result : Any] : Void
       (var state (text result/state))
       (set manager/pending "")
-      ($session_storage/remove "gene-harness/plugin-apply")
+      (storage_remove "gene-harness/plugin-apply")
       (if (|| (== state "applied") (== state "saved"))
         (do
           (set manager/changes [])
@@ -828,7 +830,7 @@
     "click"
     (fn [event : Any] : Void
       (var next (if (== (current_appearance) "dark") "light" "dark"))
-      (request manager "POST" "/api/v8/appearance" {^mode next}
+      (request manager "POST" $"${(api_root)}/appearance" {^mode next}
         (fn [code : Int, data : Any] : Void
           (if (== code 200)
             (apply_appearance (text data/mode))
@@ -915,7 +917,7 @@
       (request
         manager
         "POST"
-        "/api/v8/control"
+        $"${(api_root)}/control"
         {^action "restart" ^^confirm}
         (fn [code : Int, data : Any] : Void
           (notice manager (text data/message) (!= code 200))
@@ -927,7 +929,7 @@
     (request
       manager
       "POST"
-      "/api/v8/auth/exchange"
+      $"${(api_root)}/auth/exchange"
       {^token token}
       (fn [code : Int, data : Any] : Void
         (if (== code 200)

@@ -1,6 +1,7 @@
 # Recovery serves only host-owned management APIs. It never opens event or
 # application-state streams and never constructs normal execution controllers.
 (mod recovery_server)
+(import [api_root] ^from "./contract.gene")
 (import $net/http [serve stop html])
 (import ^from "./request" [response secure_response cookie_value field number request_data])
 (import ^from "./auth" [open_auth authenticate exchange reset_auth AuthError])
@@ -15,13 +16,14 @@
 (import ^from "../profiles/registry" [workspace_profile])
 (import ^from "../runtime/workspace_settings" [read_workspace_settings update_workspace_settings])
 (import ^from "../runtime/plugin_manager" [plugin_catalog inspect_descriptor plugin_history_catalog])
-(import ^from "../storage/workspace" [composition_revision revert_entry])
+(import [composition_revision] ^from "../storage/composition_store")
+(import [revert_entry] ^from "../storage/workspace_repair")
 (import ^from "../storage/plugin_history" [pin_history])
 
 (fn main [options] : Int
   (manager_client)
   (let runtime
-    (open_runtime ^^recovery ^lock_wait_ms 250 (?? options/workspace ($os/launch_dir)) "default"
+    (open_runtime ^mode "recovery" ^lock_wait_ms 250 (?? options/workspace ($os/launch_dir)) "default"
       (workspace_profile (?? options/workspace ($os/launch_dir)))))
   (var server nil)
   (let control (new_plugin_control runtime))
@@ -43,10 +45,10 @@
       (if (|| (&& (!= request_origin "") (!= request_origin origin)) (&& (!= request/method "GET") (!= request_origin origin)))
         (return (response 403 {^code "forbidden" ^message "A same-origin request is required."})))
       (if (&& (== request/method "GET") (["/" "/plugins" "/plugins/" "/ui/default"] .contains? request/path))
-        (return (html (plugin_page ^appearance (appearance_mode runtime/h)))))
-      (if (&& (== request/method "GET") (== request/path "/api/v8/connection"))
+        (return (html (plugin_page ^appearance (appearance_mode runtime) ^workspace runtime/root))))
+      (if (&& (== request/method "GET") (== request/path $"${(api_root)}/connection"))
         (return (response 200 connection)))
-      (if_yes (&& (== request/method "POST") (== request/path "/api/v8/auth/exchange"))
+      (if_yes (&& (== request/method "POST") (== request/path $"${(api_root)}/auth/exchange"))
         (let data (request_data request))
         (let session
           (exchange ^cookie (cookie_value (?? request/headers/cookie "") cookie)
@@ -64,14 +66,14 @@
         (return (response 503 {^code "stopped" ^message "Recovery host is stopping."})))
       (let managed (plugin_control_request control request))
       (if_not ($absent? managed) (return (response managed/status managed/body)))
-      (if_yes (== request/path "/api/v8/workspace/settings")
+      (if_yes (== request/path $"${(api_root)}/workspace/settings")
         (if (== request/method "GET")
           (return (response 200 (read_workspace_settings runtime/root))))
         (if_yes (== request/method "POST")
           (let data (request_data request))
           (return (response 200 (update_workspace_settings ^expected (?? data/expected "")
             runtime/root (?? data/changes data))))))
-      (if_yes (&& (== request/method "GET") (== request/path "/api/v8/status"))
+      (if_yes (&& (== request/method "GET") (== request/path $"${(api_root)}/status"))
         (return
           (response
             200
@@ -84,32 +86,32 @@
               ^running 0
               ^plugins []
               ^mode "recovery"
-              ^appearance (appearance_mode runtime/h)
+              ^appearance (appearance_mode runtime)
               ^readiness "Recovery mode; normal execution is disabled."})))
-      (if_yes (&& (== request/method "GET") (== request/path "/api/v8/plugins"))
+      (if_yes (&& (== request/method "GET") (== request/path $"${(api_root)}/plugins"))
         (let result
           (plugin_catalog ^query (field ^default "" request/params "q") ^state (field ^default "" request/params "state")
             runtime))
         (result .put "csrf" browser/csrf)
         (result .put "epoch" runtime/epoch)
-        (result .put "appearance" (appearance_mode runtime/h))
+        (result .put "appearance" (appearance_mode runtime))
         (let failure_path $"${runtime/state_root}/startup_failure")
         (if ($fs/exists? failure_path) (result .put "startup_failure" ($fs/read_text failure_path)))
         (return (response 200 result)))
-      (if (&& (== request/method "GET") (== request/path "/api/v8/plugins/history"))
+      (if (&& (== request/method "GET") (== request/path $"${(api_root)}/plugins/history"))
         (return
           (response
             200
             (plugin_history_catalog ^limit (if ($absent? request/params/limit) 50 (number request/params "limit")) ^before (if ($absent? request/params/before) nil (number request/params "before"))
               runtime
               (field ^default "" request/params "id")))))
-      (if_yes (&& (== request/method "POST") (== request/path "/api/v8/plugins/inspect"))
+      (if_yes (&& (== request/method "POST") (== request/path $"${(api_root)}/plugins/inspect"))
         (let data (request_data request))
         (return
           (response
             200
             (inspect_descriptor ^revision (?? data/revision nil) runtime (field data "id")))))
-      (if_yes (&& (== request/method "POST") (== request/path "/api/v8/plugins/history/pin"))
+      (if_yes (&& (== request/method "POST") (== request/path $"${(api_root)}/plugins/history/pin"))
         (let data (request_data request))
         (if (|| (!= ($head data/revision) Int) (!= ($head data/pinned) Bool))
           (return
@@ -124,7 +126,7 @@
               runtime/workspace/history_head/.get
               data/revision
               data/pinned))))
-      (if_yes (&& (== request/method "POST") (== request/path "/api/v8/plugins/revert"))
+      (if_yes (&& (== request/method "POST") (== request/path $"${(api_root)}/plugins/revert"))
         (let data (request_data request))
         (if (|| (!= ($head data/revision) Int) (!= ($head data/expected) Int))
           (return
@@ -133,14 +135,14 @@
           (response
             200
             (revert_entry ^expected data/expected runtime/workspace (field data "id") data/revision))))
-      (if_yes (&& (== request/method "POST") (== request/path "/api/v8/appearance"))
+      (if_yes (&& (== request/method "POST") (== request/path $"${(api_root)}/appearance"))
         (let data (request_data request))
-        (return (response 200 {^mode (set_appearance runtime/h data/mode)})))
-      (if_yes (&& (== request/method "POST") (== request/path "/api/v8/auth/reset"))
+        (return (response 200 {^mode (set_appearance runtime data/mode)})))
+      (if_yes (&& (== request/method "POST") (== request/path $"${(api_root)}/auth/reset"))
         (reset_auth auth)
         (publish_link runtime/state_root origin auth/secret)
         (return (response 200 {^^ok ^message "Owner credential reset. Use the new owner link."})))
-      (if_yes (&& (== request/method "POST") (== request/path "/api/v8/control"))
+      (if_yes (&& (== request/method "POST") (== request/path $"${(api_root)}/control"))
         (let data (request_data request))
         (if_not (["stop" "restart"] .contains? data/action)
           (return (response 400 {^code "invalid_request" ^message "Use stop or restart."})))

@@ -3,7 +3,7 @@
 (import [isolated run_spec test_controller fixture_path package_path] ^from "../../support")
 (import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
 (import [baseline_profile] ^from "../../../src/profiles/baseline")
-(import [new_round_controller close_round_controller RoundError]
+(import [close_round_controller RoundError]
   ^from "../../../src/runtime/round_controller")
 (import [open_trigger_manager close_trigger_manager create_trigger tick_triggers list_occurrences
          apply_retention record_due save_occurrence prune_occurrences]
@@ -15,7 +15,7 @@
 (import [append_message store_body recall_body history_state] ^from "../../../src/agents/history")
 (import [flush_event_store core_states] ^from "../../../src/storage/state")
 (import [scripted_profile] ^from "../../../src/profiles/scripted")
-(import [set_plugin_enabled] ^from "../../../src/storage/workspace")
+(import [set_plugin_enabled] ^from "../../../src/storage/workspace_repair")
 (import [start_host stop_host cli] ^from "../../web_support")
 (import [discover] ^from "../../../src/cli/client")
 
@@ -32,7 +32,7 @@
         (try
           (create_trigger manager {^id "beat" ^kind "heartbeat" ^every_ms 100 ^request "inspect\nFull trigger prompt 世界"} ^now 1000)
           (tick_triggers manager ^now 1100)
-          (for [id watcher] in controller/watchers/.get watcher/.join)
+          (for [id frame] in controller/rounds/.get frame/watcher/.join)
           (tick_triggers manager ^now 1100)
           (let occurrences (list_occurrences manager))
           ($assert (== occurrences/.size 1) $"expected one occurrence: ${occurrences}")
@@ -54,7 +54,7 @@ Full trigger prompt 世界") "trigger rename changed the initial request")
           ($assert (== (calls .get; .size) 1) "same scheduled time repeated")
           (create_trigger manager {^id "nightly" ^kind "cron" ^cron "*/5 * * * *" ^timezone "UTC" ^request "audit"} ^now 1000)
           (tick_triggers manager ^now 300000)
-          (for [id watcher] in controller/watchers/.get watcher/.join)
+          (for [id frame] in controller/rounds/.get frame/watcher/.join)
           (tick_triggers manager ^now 300000)
           (let cron_occurrences (list_occurrences manager ^trigger "nightly"))
           ($assert (== cron_occurrences/0/state "finished") "cron did not run")
@@ -89,9 +89,9 @@ Full trigger prompt 世界") "trigger rename changed the initial request")
           ($assert (== pending/2/state "skipped") "queue_one did not coalesce")
           ($assert (== pending/2/reason "coalesced") "wrong skipped reason")
           (release .set true)
-          (for [id watcher] in controller/watchers/.get watcher/.join)
+          (for [id frame] in controller/rounds/.get frame/watcher/.join)
           (tick_triggers manager ^now 1300)
-          (for [id watcher] in controller/watchers/.get watcher/.join)
+          (for [id frame] in controller/rounds/.get frame/watcher/.join)
           (tick_triggers manager ^now 1300)
           (let finished (list_occurrences manager ^trigger "queue"))
           ($assert (== finished/1/state "finished") "queued occurrence did not start when slot freed")
@@ -181,7 +181,7 @@ Full trigger prompt 世界") "trigger rename changed the initial request")
             "(Outcome ^^done ^reply \"recovered\")")))
           (let manager (open_trigger_manager runtime controller ^!start ^now 2000))
           (try
-            (for [id watcher] in controller/watchers/.get watcher/.join)
+            (for [id frame] in controller/rounds/.get frame/watcher/.join)
             (tick_triggers manager ^now 2000)
             (let records (list_occurrences manager))
             ($assert (== records/.size 1) $"Duplicate occurrence after ${point}: ${records}")
@@ -229,9 +229,9 @@ Full trigger prompt 世界") "trigger rename changed the initial request")
           ($assert (! ($absent? receipt/questions/deadline)) "trigger questions have no deadline")
           # The scheduler resumes an expired question batch without a user.
           (tick_triggers manager ^now receipt/questions/deadline)
-          (for [id watcher] in controller/watchers/.get watcher/.join)
+          (for [id frame] in controller/rounds/.get frame/watcher/.join)
           (tick_triggers manager ^now 1300)
-          (for [id watcher] in controller/watchers/.get watcher/.join)
+          (for [id frame] in controller/rounds/.get frame/watcher/.join)
           (tick_triggers manager ^now 1300)
           (let settled (list_occurrences manager))
           ($assert (== settled/1/state "finished") "durable queued occurrence did not run when slot freed")
@@ -301,7 +301,7 @@ Full trigger prompt 世界") "trigger rename changed the initial request")
       (fn [workspace]
         (let runtime (open_runtime workspace "default"
           (scripted_profile ["(Outcome ^^done ^reply \"unused\")"])))
-        (let controller (new_round_controller runtime))
+        (let controller (test_controller runtime nil))
         (let manager (open_trigger_manager runtime controller
           ^!start ^!boot ^now 0))
         (try

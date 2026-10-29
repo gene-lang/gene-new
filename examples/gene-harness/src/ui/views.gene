@@ -64,15 +64,16 @@
   (for child in tree/children (validate_view_actions child candidate snapshot))
   nil)
 
-(fn ui_render [h, session : Str, name : Str, revision : Str, state, ^instance instance : Str = "preview", ^sequence sequence : Str = "0"]
-  (if_not (/enabled (ui_settings h)) (ui_error "unavailable" "The UI experiment is disabled."))
+(fn ui_render [runtime, session : Str, name : Str, revision : Str, state, ^instance instance : Str = "preview", ^sequence sequence : Str = "0"]
+  (let h runtime/h)
+  (if_not (/enabled (ui_settings runtime)) (ui_error "unavailable" "The UI experiment is disabled."))
   (let lease (acquire_snapshot h/snapshots))
   (try
     (let record (ui_record lease/snapshot "web_components" name))
     (if (|| ($absent? record) ($absent? record/payload/view_state)) (ui_error "not_found" "View not found."))
     (if (&& (!= revision "") (!= revision (ui_revision h record))) (ui_error "revision_conflict" "This view was replaced. Refresh before trying again."))
-    (let data_revision (ui_data_revision h lease/snapshot))
-    (let result (ui_descriptor h lease/snapshot record))
+    (let data_revision (ui_data_revision runtime lease/snapshot))
+    (let result (ui_descriptor runtime lease/snapshot record))
     (result .put "instance" instance)
     (result .put "sequence" sequence)
     (result .put "data_revision" data_revision)
@@ -89,12 +90,13 @@
     result
   ensure (release_snapshot h/snapshots lease)))
 
-(fn ui_preview [h, name : Str, state = {}, ^session session : Str = ""]
+(fn ui_preview [runtime, name : Str, state = {}, ^session session : Str = ""]
   (let chosen (if (== session "") (?? (/session ($runtime/context)) "") session))
-  (ui_render h chosen name "" state))
+  (ui_render runtime chosen name "" state))
 
-(fn ui_publication_preview [h, session : Str, changes]
-  (if_not (/enabled (ui_settings h)) (return nil))
+(fn ui_publication_preview [runtime, session : Str, changes]
+  (let h runtime/h)
+  (if_not (/enabled (ui_settings runtime)) (return nil))
   (let owners [])
   (for change in changes
     (if (== change/state "active") (owners .push change/id)))
@@ -105,7 +107,7 @@
   (for record in (?? (snapshot/registries .get "web_components") [])
     (if (|| (! (owners .contains? record/owner)) ($absent? record/payload/view_state)) (continue))
     (if (>= results/.size 8) (do (summary .put "truncated" true) (break)))
-    (let preview (ui_render h session record/key (ui_revision h record) {}))
+    (let preview (ui_render runtime session record/key (ui_revision h record) {}))
     (let item {^name preview/name ^slot preview/slot ^revision preview/revision})
     (if ($absent? preview/error)
       (do

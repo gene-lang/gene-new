@@ -2,10 +2,11 @@
 (mod plugin_manager)
 (import [plugin_error] ^from "../kernel")
 (import ^from "./composition" [acquire_snapshot release_snapshot run_composition_change])
-(import [entry_core_interface retired_requirement] ^from "./interface_policy")
+(import [entry_core_interface] ^from "./interface_policy")
 (import [participant_quarantine] ^from "../storage/participant_health")
-(import ^from "../storage/workspace"
-  [composition_entries composition_revision verify_stored_entry digest_hex entry_limits plugin_history_page])
+(import [composition_entries composition_revision entry_limits] ^from "../storage/composition_store")
+(import [verify_stored_entry plugin_history_page] ^from "../storage/workspace_repair")
+(import [digest_hex] ^from "../storage/module_registry")
 (import ^from "../storage/plugin_history" [history_entry])
 (import ^from "../storage/plugin_source" [source_attribution session_reference])
 (import ^from "./sessions" [require_record SessionError])
@@ -37,7 +38,7 @@
   result)
 
 (fn development_sessions [runtime, entry, ^revision revision = nil]
-  (let attribution (source_attribution ^revision revision runtime/workspace entry))
+  (let attribution (source_attribution entry))
   {^created_in (source_session runtime attribution/created_in)
    ^source_from (source_session runtime attribution/source_origin)})
 
@@ -287,9 +288,6 @@
                 limits))
             (if (|| (!= ($head plugin) Plugin) (!= plugin/id id) (! ($runtime/callable? plugin/activate)))
               (fail "init must return the matching Plugin with a callable activate"))
-            (let retired (retired_requirement plugin))
-            (if (!= retired "")
-              (return {^id id ^!ok ^code "unsupported_interface" ^message retired ^activation "unverified"}))
             (let data ($thaw ($freeze (descriptor_data plugin))))
             (remember_descriptor ^mode "restricted"
               workspace/store

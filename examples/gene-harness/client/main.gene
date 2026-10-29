@@ -1,4 +1,6 @@
 (mod harness_client ^profile web)
+(import [storage_get storage_set storage_remove] ^from "./workspace_storage.gene")
+(import [api_root client_record_limit] ^from "../src/web/contract.gene")
 
 (import [initialize_delegation begin_delegation_render delegation_recovery set_delegation_recovery
   render_delegation render_delegation_recovery] ^from "./delegation_ui.gene")
@@ -232,7 +234,7 @@
     (done 409 {^^not_sent ^message "Inspect your conversations and acknowledge the unresolved creation in the host controls first."})
     (return))
   (set client/sending true) (update_controls client)
-  (api client "POST" "/api/v8/sessions" {^title title}
+  (api client "POST" $"${(api_root)}/sessions" {^title title}
     (fn [code : Int, data : Any] : Void
       (set client/sending false)
       (creation_outcome client code)
@@ -274,7 +276,7 @@
     (return))
   (if_yes (== kind "conversation")
     (var target (string_or item/session ""))
-    (api client "GET" $"/api/v8/sessions/${target}/snapshot" nil
+    (api client "GET" $"${(api_root)}/sessions/${target}/snapshot" nil
       (fn [code : Int, data : Any] : Void
         (if_yes (|| (!= code 200) client/sending)
           (done 409 {^message "This conversation is unavailable or a submission is resolving."}) (return))
@@ -293,7 +295,7 @@
     ($dom/focus ($dom/element "close_triggers"))
     (return))
   (var draft (if (== client/selected "") ($dom/input_value client/prompt)
-    (?? ($session_storage/get (draft_key "new")) "")))
+    (?? (storage_get (draft_key "new")) "")))
   (request_session client "New conversation"
     (fn [code : Int, data : Any] : Void
       (if (== code 201)
@@ -303,7 +305,7 @@
           (media_move attachments "" target)
           (select_session client target) (navigate ui "harness")
           (if_yes (!= draft "") ($dom/set_input_value client/prompt draft) (remember_draft client))
-          ($session_storage/remove (draft_key "new"))
+          (storage_remove (draft_key "new"))
           (done code data) ($dom/focus client/prompt))
         (done code data)))))
 
@@ -493,7 +495,7 @@
   (if_yes (&& (!= client/selected "") (== client/generation 0)) (return))
   (reviewed_voice_input client client/selected ($dom/input_value client/prompt))
   (var key (draft_key (if (== client/selected "") "new" client/selected)))
-  (if ($session_storage/set key ($dom/input_value client/prompt))
+  (if (storage_set key ($dom/input_value client/prompt))
     (notice ^key "draft-storage" ^scope client/selected client "")
     (notice ^key "draft-storage" ^scope client/selected ^^sticky ^severity "error"
       client
@@ -714,8 +716,8 @@
       (if_yes (&& (! candidate/closed) (!= candidate/id "")) (set next candidate/id) (break)))
     (select_session ^force true client next))
   (for removed in ids
-    ($session_storage/remove (draft_key removed))
-    ($session_storage/remove (mode_pending_key removed)))
+    (storage_remove (draft_key removed))
+    (storage_remove (mode_pending_key removed)))
   (render_sessions client) (render_tabs client))
 
 (fn refresh_sessions [client : Client] : Void
@@ -731,7 +733,7 @@
   (api
     client
     "GET"
-    $"/api/v8/sessions${query}"
+    $"${(api_root)}/sessions${query}"
     nil
     (fn [code : Int, data : Any] : Void
       (if_yes (!= epoch client/filter_epoch) (return))
@@ -843,7 +845,7 @@
     ($dom/append
       target
       ($dom/render
-        `(button ^type "button" ^on_click %(fn [event : Any] : Void (api client "POST" $"/api/v8/sessions/${client/selected}/commands/${command_id}/cancel" {} (fn [code : Int, data : Any] : Void (if_yes (!= code 200) (show_error client data))))) "Cancel command"))))
+        `(button ^type "button" ^on_click %(fn [event : Any] : Void (api client "POST" $"${(api_root)}/sessions/${client/selected}/commands/${command_id}/cancel" {} (fn [code : Int, data : Any] : Void (if_yes (!= code 200) (show_error client data))))) "Cancel command"))))
   (var view : Any block/view)
   (if_yes (! ($absent? view))
     (var next : Any view/next)
@@ -885,7 +887,7 @@
     (if_yes (== (string_or run/id "") (string_or client/round/id ""))
       (var session client/selected) (var source : Str run/id)
       (set on_continue (fn [mode : Str] : Void
-        (api client "POST" $"/api/v8/sessions/${session}/rounds/${source}/continue" {^mode mode}
+        (api client "POST" $"${(api_root)}/sessions/${session}/rounds/${source}/continue" {^mode mode}
           (fn [code : Int, data : Any] : Void
             (if (== code 202) (apply_run client session data)
               (do (show_error ^session session client data)
@@ -1031,7 +1033,7 @@
   # switch or another workspace update. This is event-driven, not polling.
   ($time/after 25.0 (fn [] : Void
     (if_yes (!= generation client/status_generation) (return))
-    (api client "GET" $"/api/v8/status?session=${($url/encode_component session)}" nil
+    (api client "GET" $"${(api_root)}/status?session=${($url/encode_component session)}" nil
       (fn [code : Int, data : Any] : Void
         (if_yes (|| (!= generation client/status_generation) (!= session client/selected)) (return))
         (if (== code 200) (apply_status client data) (show_error client data)))))))
@@ -1181,7 +1183,7 @@
 
 (fn sessions_page [client : Client, after : Str] : Void
   (var epoch client/socket_epoch)
-  (api client "GET" $"/api/v8/sessions?after=${after}" nil
+  (api client "GET" $"${(api_root)}/sessions?after=${after}" nil
     (fn [code : Int, data : Any] : Void
       (if_yes (!= epoch client/socket_epoch) (return))
       (if (== code 200)
@@ -1210,7 +1212,7 @@
   (api
     client
     "GET"
-    $"/api/v8/sessions/${client/selected}/snapshot?before=${before}"
+    $"${(api_root)}/sessions/${client/selected}/snapshot?before=${before}"
     nil
     (fn [code : Int, data : Any] : Void
       (if_yes (!= generation client/generation) (return))
@@ -1313,7 +1315,7 @@
 (fn apply_records [client : Client, incoming : (List Any), cursor : Str] : Void
   (if_not client/viewing_history
     (var merged (merge_blocks client/records (historical_records incoming)))
-    (if_yes (> ($size merged) 600) (set client/has_older true))
+    (if_yes (> ($size merged) client_record_limit) (set client/has_older true))
     (set client/records (bounded_blocks merged true))
     (var preview : (List Any) [])
     (for block in client/preview
@@ -1391,7 +1393,7 @@
   (set client/viewing_history false)
   (set client/autoscroll true)
   (set client/generation (+ client/generation 1))
-  ($dom/set_input_value client/prompt (?? ($session_storage/get (draft_key id)) ""))
+  ($dom/set_input_value client/prompt (?? (storage_get (draft_key id)) ""))
   ($browser/replace_url
     (view_url id ((Path "navigation" "active") client/ui)
       ((Path "navigation" "presentation") client/ui) client/safe_ui))
@@ -1415,7 +1417,7 @@
     (api
       client
       "GET"
-      $"/api/v8/sessions/${id}/snapshot"
+      $"${(api_root)}/sessions/${id}/snapshot"
       nil
       (fn [code : Int, data : Any] : Void
         (if_yes (== id client/selected)
@@ -1426,7 +1428,7 @@
     (api
       client
       "POST"
-      $"/api/v8/sessions/${id}/open"
+      $"${(api_root)}/sessions/${id}/open"
       {}
       (fn [code : Int, data : Any] : Void
         (if_yes (!= code 200) (show_error client data))))))
@@ -1441,7 +1443,7 @@
   (api
     client
     "PATCH"
-    $"/api/v8/sessions/${id}"
+    $"${(api_root)}/sessions/${id}"
     {^pinned (! pinned) ^revision client/session_revision}
     (fn [code : Int, data : Any] : Void
       (if (== code 200)
@@ -1457,7 +1459,7 @@
   (var draft
     (if (== client/selected "")
       ($dom/input_value client/prompt)
-      (?? ($session_storage/get (draft_key "new")) "")))
+      (?? (storage_get (draft_key "new")) "")))
   (request_session client "New conversation"
     (fn [code : Int, data : Any] : Void
       (if (== code 201)
@@ -1469,7 +1471,7 @@
           (if_yes (!= draft "")
             ($dom/set_input_value client/prompt draft)
             (remember_draft client))
-          ($session_storage/remove (draft_key "new")))
+          (storage_remove (draft_key "new")))
         (else
           (show_error client data))))))
 
@@ -1486,7 +1488,7 @@
     (set client/awaiting request_id) (set client/awaiting_session session))
   (set client/sending true)
   (update_controls client)
-  (api client "POST" $"/api/v8/sessions/${session}/rounds" pending
+  (api client "POST" $"${(api_root)}/sessions/${session}/rounds" pending
     (fn [code : Int, data : Any] : Void
       (set client/sending false)
       (if (== code 202)
@@ -1502,7 +1504,7 @@
               (var accepted_seq : Int data/submission_seq)
               (set install (< current_seq accepted_seq)))
             (if_yes install (apply_run client session data)))
-          ($session_storage/remove "gene-harness/pending")
+          (storage_remove "gene-harness/pending")
           (var submitted : Str pending/text)
           (var attachments : MediaComposer client/media)
           (var submitted_media : (List Any) [])
@@ -1512,11 +1514,11 @@
             (then
               (if (== ($dom/input_value client/prompt) submitted)
                 (then ($dom/set_input_value client/prompt "")
-                  ($session_storage/remove (draft_key session)))
+                  (storage_remove (draft_key session)))
                 (else (remember_draft client))))
             (else
-              (if_yes (== (?? ($session_storage/get (draft_key session)) "") submitted)
-                ($session_storage/remove (draft_key session)))))
+              (if_yes (== (?? (storage_get (draft_key session)) "") submitted)
+                (storage_remove (draft_key session)))))
           (set client/pending nil)
           (set_hidden "commands" true)
           (notice client ""))
@@ -1527,7 +1529,7 @@
           (if_yes (|| (== code 400) (== code 404) (== code 409) (== code 410) (== code 413)
                       (&& (== code 503)
                         (|| (== error_code "recovery_required") (== error_code "unavailable"))))
-            ($session_storage/remove "gene-harness/pending")
+            (storage_remove "gene-harness/pending")
             (set client/pending nil))
           (show_error client data)
           (if (== code 401)
@@ -1557,7 +1559,7 @@
       ^request_id ($browser/request_id)
       ^submission_seq client/next_seq
       ^text text ^media (media_ids attachments)})
-  (if_not ($session_storage/set "gene-harness/pending" ($json/stringify client/pending))
+  (if_not (storage_set "gene-harness/pending" ($json/stringify client/pending))
     (set client/pending nil)
     (notice
       client
@@ -1579,7 +1581,7 @@
       ^request_id ($browser/request_id)
       ^submission_seq client/next_seq
       ^text text ^media no_media ^card card})
-  (if_not ($session_storage/set "gene-harness/pending" ($json/stringify client/pending))
+  (if_not (storage_set "gene-harness/pending" ($json/stringify client/pending))
     (set client/pending nil)
     (notice
       client
@@ -1702,13 +1704,13 @@
 (fn resolve_mode_receipt [client : Client, records : (List Any)] : Void
   (if_yes (== client/selected "") (return))
   (if_yes ($absent? client/mode_pending)
-    (var saved : Str (?? ($session_storage/get (mode_pending_key client/selected)) ""))
+    (var saved : Str (?? (storage_get (mode_pending_key client/selected)) ""))
     (if_yes (!= saved "") (set client/mode_pending (try ($json/parse saved) catch Any nil))))
   (if_yes ($absent? client/mode_pending) (return))
   (var pending : Any client/mode_pending)
   (for record in records
     (if_yes (&& (== record/input_id pending/input_id) (== record/mode_instance pending/instance))
-      ($session_storage/remove (mode_pending_key client/selected))
+      (storage_remove (mode_pending_key client/selected))
       (if_yes (== ($dom/input_value client/prompt) (string_or pending/text ""))
         ($dom/set_input_value client/prompt "")
         (remember_draft client))
@@ -1739,7 +1741,7 @@
       (if_yes (!= previous_text text)
         (notice client "Resolve the pending input before submitting another one.")
         (return))))
-  (if_not ($session_storage/set (mode_pending_key client/selected) ($json/stringify pending))
+  (if_not (storage_set (mode_pending_key client/selected) ($json/stringify pending))
     (notice client "Browser storage is required to recover an input receipt.")
     (return))
   (set client/mode_pending pending)
@@ -1750,7 +1752,7 @@
   (api
     client
     "POST"
-    $"/api/v8/sessions/${session}/mode/input"
+    $"${(api_root)}/sessions/${session}/mode/input"
     pending
     (fn [code : Int, data : Any] : Void
       (set client/sending false)
@@ -1760,7 +1762,7 @@
       (if_not ($absent? data/closed) (set closed data/closed))
       (if (|| (== code 202) (== code 200))
         (then
-          ($session_storage/remove (mode_pending_key session))
+          (storage_remove (mode_pending_key session))
           (set client/mode_pending nil)
           (if incomplete
             (notice client "Incomplete form. Add the remaining code.")
@@ -1772,7 +1774,7 @@
               (notice client ""))))
         (else
           (if_yes (&& (>= code 400) (< code 500))
-            ($session_storage/remove (mode_pending_key session))
+            (storage_remove (mode_pending_key session))
             (set client/mode_pending nil)
             (if_yes (== (string_or data/code "") "mode_closed")
               (set client/mode (?? data/mode nil))))
@@ -1788,7 +1790,7 @@
   (api
     client
     "POST"
-    $"/api/v8/sessions/${session}/mode/leave"
+    $"${(api_root)}/sessions/${session}/mode/leave"
     {^instance instance}
     (fn [code : Int, data : Any] : Void
       (set client/sending false)
@@ -1821,7 +1823,7 @@
       (fn [code : Int, data : Any] : Void
         (if (== code 202)
           (do
-            ($session_storage/remove (voice_review_key client session))
+            (storage_remove (voice_review_key client session))
             (if_yes (&& (== session client/selected) (== raw ($dom/input_value client/prompt)))
               ($dom/set_input_value client/prompt "") (remember_draft client)))
           (show_error client data))))
@@ -1856,7 +1858,7 @@
             (select_session client id)
             ($dom/set_input_value client/prompt text)
             (remember_draft client)
-            ($session_storage/remove (draft_key "new"))
+            (storage_remove (draft_key "new"))
             (if (&& (str/starts_with? text "/") (! (str/starts_with? text "//")))
               (do (set client/queued_prompt text) (set client/queued_submit true))
               (stage_submission client text)))
@@ -1873,7 +1875,7 @@
     (api
       client
       "POST"
-      $"/api/v8/sessions/${client/selected}/commands/${command_id}/cancel"
+      $"${(api_root)}/sessions/${client/selected}/commands/${command_id}/cancel"
       {}
       (fn [code : Int, data : Any] : Void
         (if (== code 200)
@@ -1885,7 +1887,7 @@
   (api
     client
     "POST"
-    $"/api/v8/sessions/${client/selected}/rounds/${id}/cancel"
+    $"${(api_root)}/sessions/${client/selected}/rounds/${id}/cancel"
     {}
     (fn [code : Int, data : Any] : Void
       (if (== code 200)
@@ -1992,7 +1994,7 @@
     (if_yes (|| (! client/ready) (!= epoch client/socket_epoch)) (return))
     # Reconnection checks cookie expiry. Connected streams refresh status only
     # on workspace invalidation or tab selection, without timer polling.
-    (api client "GET" "/api/v8/status" nil
+    (api client "GET" $"${(api_root)}/status" nil
       (fn [code : Int, data : Any] : Void
         (if_yes (!= epoch client/socket_epoch) (return))
         (if (== code 200)
@@ -2025,7 +2027,7 @@
   (var socket
     ($ws/connect
       ($to_str
-        $"${scheme}://${parts/1}/api/v8/events?session=${($url/encode_component tab/id)}&client_id=${(client_page_id client)}"
+        $"${scheme}://${parts/1}${(api_root)}/events?session=${($url/encode_component tab/id)}&client_id=${(client_page_id client)}"
         (if client/safe_ui
           "&ui=default"
           ""))))
@@ -2062,7 +2064,7 @@
       (api
         client
         "GET"
-        "/api/v8/status"
+        $"${(api_root)}/status"
         nil
         (fn [code : Int, data : Any] : Void
           (if_yes (|| tab/closed (!= epoch tab/socket_epoch)) (return))
@@ -2190,7 +2192,7 @@
   (set client/csrf data/csrf)
   (set client/ready true)
   (set_hidden "auth_notice" true)
-  (var saved : Str (?? ($session_storage/get "gene-harness/pending") ""))
+  (var saved : Str (?? (storage_get "gene-harness/pending") ""))
   (if_yes (!= saved "")
     (set client/pending (try ($json/parse saved) catch Any nil)))
   (if_not ($absent? client/pending)
@@ -2202,7 +2204,7 @@
   (if_yes (== client/generation 0)
     (set client/generation 1)
     (var key (draft_key (if (== client/selected "") "new" client/selected)))
-    ($dom/set_input_value client/prompt (?? ($session_storage/get key) "")))
+    ($dom/set_input_value client/prompt (?? (storage_get key) "")))
   (connect_socket client))
 
 (fn authenticate [client : Client] : Void
@@ -2213,7 +2215,7 @@
     (api
       client
       "POST"
-      "/api/v8/auth/exchange"
+      $"${(api_root)}/auth/exchange"
       {^token token}
       (fn [code : Int, data : Any] : Void
         (if (== code 200)
@@ -2225,7 +2227,7 @@
     (api
       client
       "GET"
-      "/api/v8/status"
+      $"${(api_root)}/status"
       nil
       (fn [code : Int, data : Any] : Void
         (if (== code 200)
@@ -2275,7 +2277,7 @@
   (set client/media
     (create_media client/selected
       (fn [name : Str, data : Str, done : (Fn [Int Any] Void)] : Void
-        (api client "POST" "/api/v8/media" {^name name ^data data} done))
+        (api client "POST" $"${(api_root)}/media" {^name name ^data data} done))
       (fn [] : Void (update_controls client))))
   (set client/questions
     (create_question_editors
@@ -2362,7 +2364,7 @@
   ($dom/add_event_listener ($dom/element "theme_toggle") "click"
     (fn [event : Any] : Void
       (var next (if (== client/appearance "dark") "light" "dark"))
-      (api client "POST" "/api/v8/appearance" {^mode next}
+      (api client "POST" $"${(api_root)}/appearance" {^mode next}
         (fn [code : Int, data : Any] : Void
           (if (== code 200)
             (apply_appearance client (string_or data/mode next))
@@ -2497,7 +2499,7 @@
       (api
         client
         "PATCH"
-        $"/api/v8/sessions/${client/selected}"
+        $"${(api_root)}/sessions/${client/selected}"
         {^title ($dom/input_value ($dom/element "rename_title")) ^revision client/session_revision}
         (fn [code : Int, data : Any] : Void
           (if (== code 200)
@@ -2525,6 +2527,6 @@
       (if_yes (!= (query_value ($browser/hash) "token") "") (authenticate client))))
   (render_transcript client)
   (if_yes (== client/selected "")
-    ($dom/set_input_value client/prompt (?? ($session_storage/get (draft_key "new")) "")))
+    ($dom/set_input_value client/prompt (?? (storage_get (draft_key "new")) "")))
   (controls client)
   (authenticate client))

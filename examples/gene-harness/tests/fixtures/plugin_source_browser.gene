@@ -3,7 +3,8 @@
 (import ^from "../../src/web/session_service" [open_session_service close_session_service])
 (import ^from "../../src/runtime/sessions" [create_session delete_session])
 (import ^from "../../src/runtime/commands" [submit_command command_receipt])
-(import ^from "../../src/storage/workspace" [register_plugin composition_entries commit_composition])
+(import [register_plugin] ^from "../../src/storage/workspace_activation")
+(import [composition_entries commit_composition] ^from "../../src/storage/composition_store")
 (import ^from "../../src/kernel" [row])
 
 (fn source [id : Str, version : Int]
@@ -24,10 +25,10 @@
 (fn register_in [runtime, session : Str, id : Str, version : Int, replace : Bool = false]
   (let code ($to_str "/run (register_plugin \"" id "\" (quote " (source id version)
     ")" (if replace " ^^replace" "") ")"))
-  (let admitted (submit_command runtime/commands session code))
-  (let task (runtime/commands/watchers/.get .get $"${session}:${admitted/id}"))
+  (let admitted (submit_command runtime/services/values/commands session code))
+  (let task (runtime/services/values/commands/watchers/.get .get $"${session}:${admitted/id}"))
   task/.join
-  (let receipt (command_receipt runtime/commands session admitted/id))
+  (let receipt (command_receipt runtime/services/values/commands session admitted/id))
   ($assert (== receipt/status "done") ($to_str receipt)))
 
 (fn main [args] : Int

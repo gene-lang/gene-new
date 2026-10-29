@@ -4,19 +4,20 @@
 (import [CompositionHost] ^from "../plugin_api")
 (import [service_binding require_service] ^from "./service_handles")
 (import [current_snapshot immutable_view] ^from "./composition")
-(import [register_plugin set_plugin_enabled restore_plugin plugin_history plugin_history_page revert_plugin]
-  ^from "../storage/workspace")
+(import [register_plugin] ^from "../storage/workspace_activation")
+(import [set_plugin_enabled restore_plugin plugin_history plugin_history_page revert_plugin] ^from "../storage/workspace_repair")
 
 (type HostedComposition ^^private ^props {^token Any}
   (impl CompositionHost
     (message register [id : Str, source, ^dependencies dependencies = [], ^replace replace : Bool = false] : Any
       (let runtime (/runtime (require_service self)))
-      (immutable_view (register_plugin runtime/workspace runtime/h id source ^dependencies dependencies ^replace replace)))
+      (immutable_view (register_plugin ^readiness runtime/services/values/readiness runtime/workspace runtime/h id source ^dependencies dependencies ^replace replace)))
     (message states [] : Any
-      (let h (/h (/runtime (require_service self))))
+      (let runtime (/runtime (require_service self)))
+      (let h runtime/h)
       (let snapshot (current_snapshot h/snapshots))
       (immutable_view {^plugins (?? snapshot/plugins [])
-        ^readiness (if ($absent? h/services/readiness) nil (h/services/readiness))}))
+        ^readiness (if ($absent? runtime/services/values/readiness) nil (runtime/services/values/readiness))}))
     (message inspect [id : Str] : Any
       (let h (/h (/runtime (require_service self))))
       (let snapshot (current_snapshot h/snapshots))
@@ -25,10 +26,10 @@
       nil)
     (message enable [id : Str, enabled : Bool] : Any
       (let runtime (/runtime (require_service self)))
-      (immutable_view (set_plugin_enabled runtime/workspace runtime/h id enabled)))
+      (immutable_view (set_plugin_enabled ^readiness runtime/services/values/readiness runtime/workspace runtime/h id enabled)))
     (message restore [id : Str] : Any
       (let runtime (/runtime (require_service self)))
-      (immutable_view (restore_plugin runtime/workspace runtime/h id)))
+      (immutable_view (restore_plugin ^readiness runtime/services/values/readiness runtime/workspace runtime/h id)))
     (message history [id : Str = "", ^limit limit : Int = 50, ^before before = nil, ^page page : Bool = false] : Any
       (let runtime (/runtime (require_service self)))
       (immutable_view (if page
@@ -36,7 +37,7 @@
         (plugin_history runtime/workspace id ^limit limit ^before before))))
     (message revert [id : Str, revision : Int, ^expected expected = nil] : Any
       (let runtime (/runtime (require_service self)))
-      (immutable_view (revert_plugin runtime/workspace runtime/h id revision ^expected expected)))))
+      (immutable_view (revert_plugin ^readiness runtime/services/values/readiness runtime/workspace runtime/h id revision ^expected expected)))))
 
 (fn composition_host_binding [runtime]
   (service_binding runtime "composition" (fn [token] (HostedComposition ^token token))))

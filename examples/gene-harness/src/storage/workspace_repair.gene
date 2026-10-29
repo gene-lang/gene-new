@@ -1,0 +1,270 @@
+# Workspace ownership: workspace_repair.
+(mod workspace_repair)
+
+(import $store/fs [open : store_open Store StoreError])
+(import $fs [make_dir real_path read_text write_text_atomic exists?])
+(import $crypto [sha256])
+(import ^from "../kernel" [Harness status_of plugin_error record_composition_change flush_harness row uninstall])
+(import ^from "../runtime/interface_policy" [interface_diagnostic])
+(import ^from "./participant_health" [reset_participant_quarantine])
+(import ^from "./plugin_history" [history_entry history_results])
+(import ^from "./plugin_source" [preserve_creation_on_revert])
+(import ^from "../runtime/composition" [queue_composition_change run_composition_change])
+(import [CompositionError CompositionConflict Workspace fresh_list fresh_map data_copy require_open validate_entry composition_revision composition_entries composition_history composition_history_result commit_composition find_entry_index previous_module_digest entries_with entry_enabled? record_quarantine] ^from "./composition_store")
+(import [digest_hex ensure_module_blob load_entry_descriptor register_descriptor_events] ^from "./module_registry")
+(import [record_application_result activate_descriptor update_active_revision change_origin activate_desired_plugin] ^from "./workspace_activation")
+
+(fn doctor [workspace : Workspace]
+  (var out (fresh_list))
+  (var active workspace/active_revision/.get)
+  (var desired (composition_revision workspace))
+  (for entry in (composition_entries workspace)
+    (if (== entry/builtin true)
+      (out .push $"${entry/id}: built-in disabled")
+      (out .push
+        ($to_str entry/id ": stored "
+          (if (entry_enabled? entry) "enabled" "disabled")
+          (if (== entry/replaces_builtin true) " (replaces built-in)" "")))))
+  (for [id message] in workspace/errors/.get
+    (out .push
+      (if ($absent? active)
+        $"${id}: ${message}"
+        $"${id}: ${message} (desired ${desired}, active ${active})")))
+  (if (&& (== workspace/errors/.get #{}) ($absent? active) (> desired 0))
+    (out .push $"composition desired ${desired}: no successful activation revision recorded"))
+  (if (&& (== workspace/errors/.get #{}) (! ($absent? active)) (!= desired active))
+    (out .push $"composition desired ${desired}, active ${active}: reconciliation pending"))
+  out)
+
+(fn set_entry_disabled [workspace : Workspace, id : Str, disabled : Bool, ^h h = nil, ^origin origin = nil]
+  (var entries (composition_entries workspace))
+  (var found false)
+  (var next_entries (fresh_list))
+  (for entry in entries
+    (if (== entry/id id)
+      (then
+        (set found true)
+        (if (== entry/builtin true)
+          (then
+            (if disabled (next_entries .push entry)))
+          (else
+            (let next_entry (data_copy entry))
+            (if_not (== (entry_enabled? entry) (! disabled))
+              (next_entry .put "disabled" disabled))
+            (next_entries .push next_entry))))
+      (else (next_entries .push entry))))
+  (if_not found
+    (if ($absent? (workspace/profile_plugins/.get .get id))
+      (fail (CompositionError ^message $"composition entry ${id} does not exist"))
+      (if disabled
+        (next_entries .push {^id id ^^builtin ^^disabled})
+        (do
+          (reset_participant_quarantine workspace id)
+          (return (composition_revision workspace))))))
+  (if_not disabled (reset_participant_quarantine workspace id))
+  (if (== next_entries entries) (return (composition_revision workspace)))
+  (var revision (commit_composition ^origin (?? origin
+    {^kind (if ($absent? h) "direct" "offline") ^operation (if disabled "disable" "enable") ^plugin id})
+    workspace next_entries))
+  (if_not ($absent? h)
+    (var digest (previous_module_digest next_entries id))
+    (record_composition_change
+      h
+      id
+      digest
+      digest
+      revision
+      0
+      (if disabled
+        "disabled"
+        "enabled"))
+    (flush_harness h)
+    (composition_history_result workspace {^plugin id ^status "unverified" ^operation "offline_repair"}))
+  revision)
+
+(fn disable_entry [workspace : Workspace, id : Str, ^h h = nil]
+  (set_entry_disabled ^h h workspace id true))
+
+(fn restore_entry [workspace : Workspace, id : Str, ^h h = nil, ^origin origin = nil]
+  (if ($absent? (workspace/profile_plugins/.get .get id))
+    (fail (CompositionError ^message $"plugin ${id} has no profile default to restore")))
+  (reset_participant_quarantine workspace id)
+  (let entries (composition_entries workspace))
+  (let kept (fresh_list))
+  (var removed false)
+  (for entry in entries
+    (if (== entry/id id)
+      (set removed true)
+      (kept .push entry)))
+  (if_not removed (return (composition_revision workspace)))
+  (let revision (commit_composition ^origin (?? origin
+    {^kind (if ($absent? h) "direct" "offline") ^operation "restore_default" ^plugin id}) workspace kept))
+  (if_not ($absent? h)
+    (record_composition_change h id (previous_module_digest entries id) nil
+      revision 0 "restored")
+    (flush_harness h)
+    (composition_history_result workspace {^plugin id ^status "unverified" ^operation "offline_repair"}))
+  revision)
+
+(fn set_plugin_enabled [workspace, h, id : Str, enabled : Bool, ^readiness readiness = nil]
+  (let context ($runtime/context))
+  (let origin (change_origin h (if enabled "enable" "disable") id))
+  (let apply (fn [] (run_composition_change h/snapshots (fn []
+    (let revision (set_entry_disabled ^origin origin workspace id (! enabled)))
+    (activate_desired_plugin workspace h id)
+    (let digest (previous_module_digest (composition_entries workspace) id))
+    (record_composition_change h id digest digest revision (?? origin/turn 0) (if enabled "enabled" "disabled"))
+    (flush_harness h)
+    (update_active_revision workspace h)
+    (record_application_result ^readiness readiness workspace h {^plugin id ^status (if enabled (status_of h id) "disabled")})
+    {^id id ^revision revision ^status (if enabled (status_of h id) "disabled")}))))
+  (if (&& (! ($absent? context/turn)) (== context/turn/state/.get "open"))
+    (then (queue_composition_change h/snapshots {^id id ^kind "enabled" ^apply apply}) "queued")
+    (else (apply))))
+
+(fn restore_plugin [workspace : Workspace, h : Harness, id : Str, ^readiness readiness = nil]
+  (let context ($runtime/context))
+  (let origin (change_origin h "restore_default" id))
+  (let apply (fn [] (run_composition_change h/snapshots (fn []
+    (let revision (restore_entry ^origin origin workspace id))
+    (activate_desired_plugin workspace h id)
+    (record_composition_change h id nil nil revision (?? origin/turn 0) "restored")
+    (flush_harness h)
+    (update_active_revision workspace h)
+    (record_application_result ^readiness readiness workspace h {^plugin id ^status (status_of h id)})
+    {^id id ^revision revision ^status (status_of h id)}))))
+  (if (&& (! ($absent? context/turn)) (== context/turn/state/.get "open"))
+    (then (queue_composition_change h/snapshots {^id id ^kind "restored" ^apply apply}) "queued")
+    (else (apply))))
+
+(fn enable_entry [workspace : Workspace, id : Str, ^h h = nil]
+  (set_entry_disabled ^h h workspace id false))
+
+(fn plugin_history [workspace : Workspace, id : Str = "", ^limit limit : Int = 50, ^before before = nil]
+  (let records (composition_history ^limit limit ^before before workspace))
+  (for record in records
+    (record .put "outcomes" (history_results workspace/store record/id))
+    (record .put "attempts" (history_results ^kind "attempt" workspace/store record/id))
+    (if_not ($absent? record/origin/plan)
+      (let key $"plugin_plan/${record/origin/plan}")
+      (if_yes (workspace/store .Store:has? key)
+        (let plan (workspace/store .Store:get key))
+        (if (!= ($pkg/canonical_digest plan) record/origin/plan)
+          (fail (CompositionError ^message "archived validation plan digest mismatch")))
+        (record .put "validation" {^plan record/origin/plan ^warnings plan/warnings ^errors plan/errors}))))
+  (if (== id "") (return records))
+  (let selected [])
+  (for record in records
+    (for item in record/entries
+      (if_yes (== item/id id)
+        (let row (data_copy record))
+        (row .put "entry" item)
+        (row .delete "entries")
+        (selected .push row)
+        (break))))
+  selected)
+
+(fn plugin_history_page [workspace : Workspace, id : Str = "", ^limit limit : Int = 50, ^before before = nil]
+  (let records (composition_history ^limit limit ^before before workspace))
+  (let history (plugin_history ^limit limit ^before before workspace id))
+  (var next nil)
+  (if_yes (&& (== records/.size limit) (> records/.size 0))
+    (let index (- records/.size 1))
+    (let last records/%index)
+    (if (> last/revision 0) (set next last/revision)))
+  {^revision (composition_revision workspace) ^history history ^next_before next})
+
+(fn verify_stored_entry [workspace : Workspace, saved]
+  (require_open workspace)
+  (validate_entry saved (fresh_map))
+  (if (|| (== saved/builtin true) ($absent? saved/module_digest))
+    (fail (CompositionError ^message "revert requires a stored plugin version; use restore for a built-in default")))
+  (let mismatch (interface_diagnostic saved/interfaces workspace/interfaces))
+  (if (!= mismatch "") (fail (CompositionError ^message mismatch)))
+  # Verify inert source bytes without loading or invoking the historical code.
+  (for digest in saved/closure
+    (digest_hex digest)
+    (let key $"blob/${digest}")
+    (if_not (workspace/blob_store .Store:has? key)
+      (fail (CompositionError ^message $"historical plugin blob is missing: ${digest}")))
+    (let source (workspace/blob_store .Store:get key))
+    (if (|| (!= ($head source) Str) (!= $"sha256:${(sha256 source)}" digest))
+      (fail (CompositionError ^message $"historical plugin blob digest mismatch: ${digest}")))
+    (let path (ensure_module_blob workspace digest))
+    (if (!= $"sha256:${(sha256 (read_text path))}" digest)
+      (fail (CompositionError ^message $"historical plugin blob digest mismatch: ${digest}"))))
+  saved)
+
+(fn prepare_reversion [workspace : Workspace, id : Str, revision : Int]
+  (let saved (history_entry workspace/store workspace/history_head/.get id revision))
+  (verify_stored_entry workspace saved)
+  (let current (composition_entries workspace))
+  (let index (find_entry_index current id))
+  (preserve_creation_on_revert saved (if (== index -1) nil current/%index))
+  (saved .put "disabled" (if (== index -1) false (== current/%index/disabled true)))
+  (if_not ($absent? (workspace/profile_plugins/.get .get id))
+    (saved .put "replaces_builtin" true))
+  saved)
+
+(fn check_reversion_base [workspace : Workspace, expected : Int]
+  (let actual (composition_revision workspace))
+  (if (!= expected actual)
+    (fail (CompositionConflict ^code "stale_composition" ^expected expected ^actual actual
+      ^message $"composition changed: expected revision ${expected}, current ${actual}; inspect history again"))))
+
+(fn revert_entry [workspace : Workspace, id : Str, revision : Int, ^expected expected = nil]
+  (let base (?? expected (composition_revision workspace)))
+  (check_reversion_base workspace base)
+  (let saved (prepare_reversion workspace id revision))
+  (check_reversion_base workspace base)
+  (let origin {^kind "offline" ^operation "revert" ^plugin id ^source_revision revision})
+  (saved .put "origin" origin)
+  (let next (entries_with (composition_entries workspace) saved true))
+  (let committed (commit_composition ^origin origin workspace next))
+  (reset_participant_quarantine workspace id)
+  (composition_history_result workspace {^plugin id ^status "unverified" ^operation "revert"})
+  {^id id ^revision committed ^source_revision revision ^status "unverified"})
+
+(fn revert_plugin [workspace : Workspace, h : Harness, id : Str, revision : Int, ^expected expected = nil, ^readiness readiness = nil]
+  (let context ($runtime/context))
+  (let base (?? expected (composition_revision workspace)))
+  (check_reversion_base workspace base)
+  (let saved (prepare_reversion workspace id revision))
+  (let origin (change_origin h "revert" id))
+  (origin .put "source_revision" revision)
+  (saved .put "origin" origin)
+  (let descriptor (if (entry_enabled? saved) (load_entry_descriptor workspace h saved) nil))
+  (let apply (fn []
+    (run_composition_change h/snapshots (fn []
+      (check_reversion_base workspace base)
+      (let previous (previous_module_digest (composition_entries workspace) id))
+      (let committed (commit_composition ^origin origin workspace
+        (entries_with (composition_entries workspace) saved true)))
+      (var status "disabled")
+      (try
+        (if (entry_enabled? saved)
+          (do
+            (register_descriptor_events h descriptor)
+            (set status (activate_descriptor workspace h descriptor saved))
+            (if (== status "error")
+              (record_quarantine workspace id (plugin_error h id))
+              (workspace/errors/.get .delete id)))
+          (do
+            (if_not ($absent? (h/plugins/.get .get id)) (uninstall h id))
+            (workspace/errors/.get .delete id)))
+      catch Any
+        (set status "error")
+        (record_quarantine workspace id $err/message))
+      (if (== status "ready") (reset_participant_quarantine workspace id))
+      (record_composition_change h id previous saved/module_digest committed
+        (?? origin/turn 0) "reverted")
+      (flush_harness h)
+      (update_active_revision workspace h)
+      (record_application_result ^readiness readiness workspace h
+        {^plugin id ^status status ^message (?? (workspace/errors/.get .get id) nil)})
+      {^id id ^revision committed ^source_revision revision ^digest saved/module_digest ^status status}))))
+  (if (&& (! ($absent? context/turn)) (== context/turn/state/.get "open"))
+    (do
+      (queue_composition_change h/snapshots {^id id ^kind "revert" ^apply apply})
+      {^id id ^source_revision revision ^status "queued"})
+    (apply)))

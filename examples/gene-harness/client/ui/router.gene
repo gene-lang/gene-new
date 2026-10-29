@@ -1,5 +1,6 @@
 # Local navigation never writes shared workspace settings or admits work.
 (mod harness_ui_router ^profile web)
+(import [storage_get storage_set] ^from "../workspace_storage.gene")
 (import [keyboard_owned?] ^from "../overlays.gene")
 (import [UiClient UiNode UiNavigation text flag copy_map notice persist_view sync_controls] ^from "./model.gene")
 (import [find_view initial_view presentation_for return_view view_url] ^from "./navigation.gene")
@@ -17,7 +18,7 @@
 (fn persist_navigation [ui : UiClient] : Void
   (if_yes (|| ui/safe (== ui/workspace "")) (return))
   (var nav ui/navigation)
-  (if ($session_storage/set (navigation_key ui)
+  (if (storage_set (navigation_key ui)
     ($json/stringify {^active nav/active ^last_view nav/last_view ^presentations nav/remembered ^versions nav/versions
       ^side nav/side ^width nav/width ^bar_hidden nav/bar_hidden}))
     (notice ^key "navigation-storage" ^origin {^workspace ui/workspace} ui "")
@@ -163,7 +164,7 @@
   (var fresh (!= nav/workspace ui/workspace))
   (if_yes fresh
     (set nav/workspace ui/workspace)
-    (var saved : Any (try ($json/parse (?? ($session_storage/get (navigation_key ui)) "{}")) catch Any nil))
+    (var saved : Any (try ($json/parse (?? (storage_get (navigation_key ui)) "{}")) catch Any nil))
     (set nav/remembered (copy_map saved/presentations))
     (set nav/versions (copy_map saved/versions))
     (set nav/last_view (text saved/last_view))

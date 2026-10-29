@@ -1,8 +1,8 @@
 (mod harness_media_reference ^profile web)
-(import [protocol_version] ^from "../src/web/contract.gene")
+(import [api_path] ^from "../src/web/contract.gene")
 
 (fn media_url [id : Str] : Str
-  $"/api/v${protocol_version}/media/${($url/encode_component id)}")
+  (api_path ["media" ($url/encode_component id)]))
 
 # Persisted descriptor URLs identify an asset, not a historical HTTP endpoint.
 (fn referenced_media_id [url : Str] : Str

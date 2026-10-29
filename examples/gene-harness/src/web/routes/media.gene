@@ -1,12 +1,13 @@
 # Host-only feature routes. Called only after common HTTP admission.
 (mod media_routes)
+(import [api_root api_version] ^from "../contract.gene")
 (import [response fail_request field] ^from "../request")
 (import [put_media_base64 media_descriptor media_bytes] ^from "../../storage/media")
 (import $net/http [bytes : http_bytes])
 
 (fn media_request [context, request, parts]
   (let media_store context/media)
-  (if_yes (== request/path "/api/v8/media")
+  (if_yes (== request/path $"${(api_root)}/media")
     (if (== request/method "GET")
       (return (response 200 {^max_file_bytes media_store/max_file_bytes
         ^max_files 16 ^max_message_bytes 41943040})))
@@ -15,7 +16,7 @@
         catch Any (fail_request "invalid_request" "The upload must contain a JSON object.")))
       (return (response 201 (put_media_base64 media_store
         (field data "name") (field data "data"))))))
-  (if_yes (&& (== parts/.size 5) (== parts/1 "api") (== parts/2 "v8")
+  (if_yes (&& (== parts/.size 5) (== parts/1 "api") (== parts/2 (api_version))
               (== parts/3 "media") (== request/method "GET"))
     (let descriptor (media_descriptor media_store parts/4))
     (let result (http_bytes 200 (media_bytes media_store parts/4)))

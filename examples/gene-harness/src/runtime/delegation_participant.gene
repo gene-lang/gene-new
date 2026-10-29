@@ -5,6 +5,7 @@
   mark_delegation_results_seen commit_delegation_turn release_delegation_turn
   has_owned_work?] ^from "./delegations")
 (import [new_turn_items] ^from "../agents/outcome")
+(import [ParticipantValidation] ^from "./participant_contract")
 
 (fn sourced_items [items]
   ($map items (fn [item]
@@ -13,12 +14,12 @@
 
 (fn waiting_result [context, result]
   {^state "waiting" ^questions nil ^delegation_wait result/delegation_wait
-   ^delegation_collection (== result/delegation_collection true)
-   ^collection_turns (if (== result/delegation_collection true) 1 0)})
+   ^collection_turns (?? result/collection_turns 0)})
 
 (fn commit_result [service, context, state, result]
   (let committed (commit_delegation_turn service context/session context/round/id context/turn result
-    ^limit context/limit ^count context/count ^collection context/collection))
+    ^limit context/limit ^count context/count ^collection context/collection
+    ^staged (?? state/staged/.get [])))
   (committed .put "request_items" (sourced_items committed/request_items))
   (if (== committed/kind "delegation_wait")
     (committed .put "suspension" (waiting_result context committed)))
@@ -38,8 +39,10 @@
      (begin_delegation_request service context/session context/round/id context/turn
        (?? context/round/request_sources [])))
    ^bindings (fn [context state value]
+     (let staged ($cell []))
+     (state .put "staged" staged)
      {^delegation_context (delegation_context service context/session context/round/id
-       context/count context/limit context/collection)})
+       context/count context/limit context/collection ^staged staged)})
    ^response_recorded (fn [context state value]
      (let sources (?? context/round/request_sources []))
      (if sources/.empty? (return nil))
@@ -49,9 +52,16 @@
      (if_not ($absent? service/checkpoint)
        (service/checkpoint "parent_response" context/session))
      nil)
+   ^validate_outcome (fn [context state result]
+     (if (!= result/kind "done") (return nil))
+     (if (&& (== ($size (?? state/staged/.get [])) 0)
+             (! (has_owned_work? service context/session context/round/id))) (return nil))
+     (ParticipantValidation ^error nil ^^defer_done
+       ^items [{^id $"${context/turn}.delegation_notice" ^header $"[${context/turn}.delegation_notice]"
+         ^value "Done was deferred because this round has unfinished children or unseen results. Use Outcome ^wait all to collect them."}]))
    ^commit (fn [context state result] (commit_result service context state result))
    ^finalize (fn [context state result]
-     (if_not ($absent? result/turn) (result/turn/delegation_staged .set []))
+     (if_not ($absent? state/staged) (state/staged .set []))
      nil)
    ^release (fn [context state completion]
      (let errors (?? completion/finalization_errors []))

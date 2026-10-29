@@ -47,7 +47,7 @@
         (try
           (let session (create_session service))
           (submit service session/id "prefix" 1 "start")
-          (service/controller/watchers .get; .get session/id; .join)
+          ((/watcher (service/runtime/services/values/controller/rounds/.get .get session/id)) .join)
           (let bodies wire/.get)
           ($assert (== bodies/.size 10) "provider did not record ten serialized requests")
           (var k 2)

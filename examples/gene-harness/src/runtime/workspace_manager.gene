@@ -9,7 +9,7 @@
   [read_workspace_settings write_workspace_settings update_workspace_settings validate_settings])
 (import ^from "./workspace_lock" [acquire_workspace_lock close_workspace_lock WorkspaceInUse])
 (import ^from "../cli/client" [connect api connection_link])
-(import ^from "../text" [byte_prefix byte_suffix])
+(import ^from "../public/text" [byte_prefix byte_suffix])
 (import ^from "../plugin_api" [HarnessEvent])
 (import ^from "../kernel" [publish])
 
@@ -218,14 +218,12 @@
    ^archived (child_directories manager/archive)})
 
 (fn open_workspace_manager [runtime]
-  (if_not ($absent? runtime/workspace_manager) (return runtime/workspace_manager))
+  (if_not ($absent? runtime/services/values/manager) (return runtime/services/values/manager))
   (let workspaces $"${runtime/root}/workspaces")
   ($fs/make_dir workspaces)
   (let application ($pkg/application))
   (let manager
     (WorkspaceManager ^runtime runtime ^root runtime/root ^workspaces workspaces ^archive $"${runtime/root}/archive" ^gate ($sync/gate) ^statuses ($cell {}) ^busy ($cell false) ^revision ($cell 0) ^confirmations ($cell {}) ^poller ($cell nil) ^closed ($cell false) ^entry ($path/join application/source_root "src/runtime/supervisor.gene") ^installation application/source_root))
-  (set runtime/workspace_manager manager)
-  (set runtime/h/services/manager_revision manager/revision)
   manager)
 
 (fn start_manager_polling [manager]

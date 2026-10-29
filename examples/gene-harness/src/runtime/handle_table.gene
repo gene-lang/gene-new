@@ -1,0 +1,26 @@
+# Internal activation-owned lookup. Tokens compare by identity; callers keep
+# construction, effect registration and user callbacks outside this gate.
+(mod handle_table)
+(type HandleTable ^^private ^props {^rows Any ^gate Any})
+
+(fn new_handle_table []
+  (HandleTable ^rows ($cell []) ^gate ($sync/gate)))
+
+(fn find_handle [table, matches]
+  (table/gate (fn []
+    (for record in table/rows/.get (if (matches record) (return record)))
+    nil)))
+
+(fn lookup_handle [table, token]
+  (find_handle table (fn [record] (same? record/token token))))
+
+(fn intern_handle [table, record, matches]
+  (table/gate (fn []
+    (for current in table/rows/.get (if (matches current) (return current)))
+    (table/rows/.get .push record)
+    record)))
+
+(fn revoke_handle [table, token]
+  (table/gate (fn []
+    (table/rows .set ($filter table/rows/.get (fn [record] (! (same? record/token token)))))))
+  nil)

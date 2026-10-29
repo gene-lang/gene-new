@@ -10,7 +10,7 @@
       (voice_output? (/voice (/runtime (require_service self))) session))
     (message reset_if_unused [] : Any
       (let runtime (/runtime (require_service self)))
-      (if ($absent? (row runtime/h "browser_clients" "voice")) (reset_voice runtime/voice))
+      (if ($absent? (row runtime/h "browser_clients" "voice")) (reset_voice runtime/services/values/voice))
       nil)))
 
 (fn voice_host_binding [runtime]

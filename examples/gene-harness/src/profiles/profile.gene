@@ -33,8 +33,8 @@
   #
   # `^limits` is the one deployment-wide knob a profile carries. A callback
   # budget states what callbacks do in this deployment, and it is also the
-  # ceiling every plugin's limits narrow from. Every plugin a profile lists is a
-  # host plugin (`^^host`) and receives the Harness itself.
+  # ceiling every plugin's limits narrow from. The host flag keeps profile
+  # participants mandatory; all plugins receive the public PluginHost contract.
   (let limits (?? supplied p/limits))
   (var admissions [])
   (for plugin in p/plugins

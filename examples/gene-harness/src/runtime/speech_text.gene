@@ -1,6 +1,6 @@
 # Deterministic spoken rendering; never evaluates reply text or invokes a model.
 (mod speech_text)
-(import [without_markdown_images] ^from "../text")
+(import [without_markdown_images] ^from "../public/text")
 
 (fn replace_matches [pattern, source : Str, render]
   (var rest source)

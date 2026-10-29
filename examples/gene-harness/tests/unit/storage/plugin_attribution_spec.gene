@@ -1,39 +1,6 @@
 (import $test [describe it run])
-(import $store/fs [open : store_open Store])
-(import ^from "../../support" [remove_tree])
-(import ^from "../../../src/storage/plugin_history"
-  [archive_host_build archive_baseline archive_candidate])
 (import ^from "../../../src/storage/plugin_source"
   [capture_source_origin source_attribution assign_creation preserve_creation_on_revert])
-
-(fn fixture [body, ^baseline baseline = []]
-  (let root ($path/join ($os/launch_dir) $"tmp/plugin-source-${($crypto/random_hex 12)}"))
-  ($fs/make_dir root)
-  (let store (store_open ^root root))
-  (try
-    (let build (archive_host_build store
-      {^format 1 ^runtime_digest "sha256:test" ^host_inputs {} ^interfaces {}}))
-    (let head (archive_baseline store {^revision 0 ^entries baseline} build {}))
-    (body {^store store ^build build ^history_head ($cell head) ^revision ($cell 0)})
-  ensure
-    store/.Store:close
-    (remove_tree root)))
-
-(fn save [workspace, entries, origin]
-  (let revision (+ workspace/revision/.get 1))
-  (let head (archive_candidate workspace/store workspace/history_head/.get revision
-    entries workspace/build {} origin))
-  (workspace/history_head .set head)
-  (workspace/revision .set revision))
-
-(fn legacy [session : Str, kind : Str, operation : Str]
-  {^id "probe" ^module_digest "same-code" ^session session ^turn "direct"
-   ^origin {^plugin "probe" ^kind kind ^operation operation ^session session}})
-
-(fn reverted [revision : Int]
-  {^id "probe" ^module_digest "same-code" ^session "do-not-use"
-   ^origin {^plugin "probe" ^kind "model" ^operation "revert"
-     ^session "reverting-session" ^source_revision revision}})
 
 (describe "Plugin source attribution"
   (it "captures only the actual calling session and optional model turn" []
@@ -46,65 +13,44 @@
     ($assert (== (capture_source_origin {^session "b" ^turn {^turn 7}})
       {^kind "model" ^session "b" ^turn "7"})))
 
-  (it "treats modern unknown attribution as authoritative and preserves creation" []
-    (let workspace {^store nil ^history_head ($cell nil) ^revision ($cell 0)})
+  (it "preserves creation while keeping unknown attribution explicit" []
     (let first {^id "probe" ^module_digest "one"
       ^source_origin {^kind "model" ^session "a" ^turn "1"}})
-    (assign_creation workspace first nil)
+    (assign_creation first nil)
     ($assert (== first/created_in {^session "a" ^turn "1"}))
     (let next {^id "probe" ^module_digest "two" ^source_origin {^kind "operator"}})
-    (assign_creation workspace next first)
+    (assign_creation next first)
     ($assert (== next/created_in first/created_in))
-    ($assert ($absent? (/session (/source_origin (source_attribution workspace next)))))
+    ($assert ($absent? (/session (/source_origin (source_attribution next)))))
     (for created in [nil void]
       (let unknown {^id "probe" ^module_digest "old" ^source_origin {^kind "direct"}
         ^session "default" ^created_in created})
-      ($assert ($absent? (/created_in (source_attribution workspace unknown))))
+      ($assert ($absent? (/created_in (source_attribution unknown))))
       (let replacement {^id "probe" ^module_digest "new" ^source_origin {^kind "command" ^session "b"}})
-      (assign_creation workspace replacement unknown)
+      (assign_creation replacement unknown)
       ($assert ($absent? replacement/created_in))
       (let restored ($thaw ($freeze first)))
-      (preserve_creation_on_revert workspace restored unknown)
-      ($assert ($absent? (/created_in (source_attribution workspace restored))))
+      (preserve_creation_on_revert restored unknown)
+      ($assert ($absent? (/created_in (source_attribution restored))))
       ($assert (== restored/source_origin first/source_origin))))
 
-  (it "resolves chained legacy reverts without confusing identical code or the revert actor" []
-    (fixture (fn [workspace]
-      (let first (legacy "a" "model" "register"))
-      (save workspace [first] first/origin)
-      (let second (legacy "b" "command" "replace"))
-      (save workspace [second] second/origin)
-      (let third (reverted 2))
-      (save workspace [third] third/origin)
-      (let fourth (reverted 3))
-      (fourth/origin .put "kind" "offline")
-      (save workspace [fourth] fourth/origin)
-      (let resolved (source_attribution workspace fourth))
-      ($assert (== resolved/created_in/session "a"))
-      ($assert (== resolved/source_origin/session "b"))
-      ($assert (== resolved/source_origin/kind "command"))
-      (let manager {^id "probe" ^module_digest "same-code"})
-      (save workspace [manager] {^kind "operator" ^operation "plan"})
-      ($assert ($absent? (/source_origin (source_attribution workspace manager))))
-      (let back (reverted 5))
-      (save workspace [back] back/origin)
-      ($assert ($absent? (/source_origin (source_attribution workspace back))))
-      ($assert ($absent? (/source_origin (source_attribution workspace (reverted 99))))))))
-
-  (it "does not assign fallback sessions or borrow creation from a previous override lifetime" []
-    (fixture (fn [workspace]
-      (let direct (legacy "default" "direct" "register"))
-      (save workspace [direct] direct/origin)
-      (let unknown (source_attribution workspace direct))
-      ($assert ($absent? unknown/source_origin))
-      ($assert ($absent? unknown/created_in))
-      (save workspace [] {^kind "operator" ^operation "restore_default"})
-      (let fresh (legacy "new-session" "command" "replace"))
-      (save workspace [fresh] fresh/origin)
-      ($assert (== (/session (/created_in (source_attribution workspace fresh))) "new-session"))
-      ($assert ($absent? (/created_in (source_attribution ^revision 1 workspace direct))))))
-    (let imported (legacy "imported-session" "model" "register"))
-    (fixture ^baseline [imported] (fn [workspace]
-      ($assert ($absent? (/created_in (source_attribution workspace imported))))))))
+  (it "keeps source attribution distinct from the reverting actor and override lifetime" []
+    (let first {^id "probe" ^module_digest "same-code"
+      ^source_origin {^kind "model" ^session "a"} ^created_in {^session "a"}})
+    (let next {^id "probe" ^module_digest "same-code"
+      ^source_origin {^kind "command" ^session "b"}})
+    (assign_creation next first)
+    (let reverted ($thaw ($freeze next)))
+    (reverted .put "origin" {^kind "operator" ^operation "revert" ^session "c"})
+    (preserve_creation_on_revert reverted first)
+    ($assert (== (source_attribution reverted)
+      {^created_in {^session "a"} ^source_origin {^kind "command" ^session "b"}}))
+    (let fresh {^id "probe" ^module_digest "same-code"
+      ^source_origin {^kind "model" ^session "new-session"}})
+    (assign_creation fresh nil)
+    ($assert (== fresh/created_in {^session "new-session"}))
+    ($assert (== (source_attribution {^id "probe" ^module_digest "same-code"
+      ^session "do-not-infer" ^origin {^kind "model" ^session "do-not-infer"}})
+      {^created_in nil ^source_origin nil}))))
 
 (fn main [args] : Int (/exit_code (run ^name (?? args/0 ""))))

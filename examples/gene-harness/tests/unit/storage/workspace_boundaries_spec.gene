@@ -1,0 +1,18 @@
+(import $test [describe it])
+
+(describe "Workspace ownership boundaries"
+  (it "keeps checkpoint module activation and repair dependencies in one direction" []
+    (let layers ["composition_store" "module_registry" "workspace_activation" "workspace_repair"])
+    (let lower [])
+    (let directory ($path/join this_pkg/root "src/storage"))
+    ($assert (! ($fs/exists? ($path/join directory "workspace.gene"))) "The workspace facade must not return.")
+    (for layer in layers
+      (let path ($path/join directory $"${layer}.gene"))
+      (for form in ($parse/read_all ($fs/read_text path))
+        (if (|| (!= ($head form) (quote import)) (!= ($head form/from) Str)) (continue))
+        (var target ($path/name form/from))
+        (if ($str/ends_with? target ".gene")
+          (set target ($str/slice_bytes target 0 (- ($str/byte_size target) 5))))
+        (if (layers .contains? target)
+          ($assert (lower .contains? target) $"${layer} depends on higher workspace owner ${target}.")))
+      (lower .push layer))))

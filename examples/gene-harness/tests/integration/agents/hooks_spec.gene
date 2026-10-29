@@ -1,3 +1,4 @@
+(import [test_controller] ^from "../../support.gene")
 # Tests src/agents/hooks.gene.
 (import $test [describe it])
 (import [isolated run_spec] ^from "../../support")
@@ -6,7 +7,7 @@
 (import [contribute put_cordis_plugin plugin_error] ^from "../../../src/kernel")
 (import [Plugin PluginHost ExecutionLimits] ^from "../../../src/plugin_api")
 (import [acquire_snapshot release_snapshot] ^from "../../../src/runtime/composition")
-(import [new_round_controller submit_round round_receipt close_round_controller]
+(import [submit_round round_receipt close_round_controller]
   ^from "../../../src/runtime/round_controller")
 (import [request_prepare history_policy hook_rows] ^from "../../../src/agents/hooks")
 (import [events_for] ^from "../../../src/storage/state")
@@ -31,7 +32,7 @@
         (let runtime (open_runtime workspace "default"
           (scripted_profile ["(Outcome ^^done ^reply \"done\")"
                              "(Outcome ^^done ^reply \"done again\")"])))
-        (let controller (new_round_controller runtime))
+        (let controller (test_controller runtime nil))
         (try
           (let old_lease (acquire_snapshot runtime/h/snapshots))
           (contribute ^priority -10 runtime/h "core" "hooks"
@@ -44,7 +45,7 @@
             "old lease lost its budget listener")
           (release_snapshot runtime/h/snapshots old_lease)
           (let accepted (submit_round controller "default" "first" 1 "go"))
-          (controller/watchers .get; .get "default"; .join)
+          ((/watcher (controller/rounds/.get .get "default")) .join)
           (let receipt (round_receipt controller "default" accepted/id))
           ($assert (== receipt/state "done")
             "failing hook suppressed the provider call")
@@ -77,7 +78,7 @@
           ensure
             (release_snapshot runtime/h/snapshots new_lease))
           (let next_round (submit_round controller "default" "second" 2 "again"))
-          (controller/watchers .get; .get "default"; .join)
+          ((/watcher (controller/rounds/.get .get "default")) .join)
           (let next_receipt (round_receipt controller "default" next_round/id))
           ($assert (== next_receipt/state "done")
             "early hook suppressed the second provider call")
@@ -137,10 +138,10 @@
               $"timed-out hook suppressed the budget listener: ${prepared}; ${traces}")
           ensure
             (release_snapshot runtime/h/snapshots lease))
-          (let controller (new_round_controller runtime))
+          (let controller (test_controller runtime nil))
           (try
             (let accepted (submit_round controller "default" "slow" 1 "go"))
-            (controller/watchers .get; .get "default"; .join)
+            ((/watcher (controller/rounds/.get .get "default")) .join)
             (let receipt (round_receipt controller "default" accepted/id))
             ($assert (== receipt/state "done")
               "timed-out hook prevented the provider call")

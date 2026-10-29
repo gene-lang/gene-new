@@ -4,14 +4,12 @@
 (impl Error for InterfacePolicyError)
 
 (const public_core "gene-harness/PluginHost:3")
-(const plugin_interface "gene-harness/Plugin:2")
+(const plugin_interface "gene-harness/Plugin:3")
 
 (fn current_interfaces []
   {^core [public_core] ^plugin_api [plugin_interface]})
 
 (fn latest_interfaces [] {^core public_core ^plugin_api plugin_interface})
-
-(fn registration_interfaces [] (latest_interfaces))
 
 (fn requirements_diagnostic [required] : Str
   (if (!= ($head required) Map) (return "stored plugin interface requirements must be a map"))
@@ -40,23 +38,10 @@
   (let declared (?? (meta .get "interfaces") {}))
   (if (!= ($head declared) Map)
     (fail (InterfacePolicyError ^message "@interfaces must declare a map of exact required versions.")))
-  (let required (registration_interfaces))
+  (let required (latest_interfaces))
   (for [key version] in declared (required .put key version))
   (let invalid (requirements_diagnostic required))
   (if (!= invalid "") (fail (InterfacePolicyError ^message invalid)))
   required)
 
 (fn entry_core_interface [entry] entry/interfaces/core)
-
-(fn retired_requirement [descriptor] : Str
-  (for requirement in (?? descriptor/requires [])
-    (let registry (if (== ($head requirement) List) requirement/0
-      (if (== ($head requirement) Map) requirement/registry nil)))
-    (if (|| (== registry "views")
-            (&& (== registry "$registries") (== requirement/1 "views")))
-      (return "unsupported interface registry/views: terminal views are retired; re-register without that requirement"))
-    (let seam (if (== ($head requirement) Str) requirement
-      (if (&& (== ($head requirement) List) (== registry "seams")) requirement/1 nil)))
-    (if (["loop" "voice/runtime"] .contains? seam)
-      (return $"unsupported interface ${seam}: PluginHost:3 requires a narrow host protocol")))
-  "")

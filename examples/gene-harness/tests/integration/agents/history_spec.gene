@@ -77,6 +77,8 @@
           ($assert (!= context1/3/content context2/3/content) "last full request did not settle")
           ($assert (== context2/3/content requests/settled) "older request settled more than once")
           (let saved (history_state runtime "default"))
+          ($assert (== saved/messages/2/content requests/settled))
+          ($assert ($absent? saved/messages/2/settled) "Settled history stored a second copy of its content.")
           ($assert
             (== saved/messages/1/content "response1")
             "assistant history changed during settlement")

@@ -53,12 +53,13 @@
 @media (max-width: 760px) { .manager { padding: 16px; } .manager_grid { grid-template-columns: 1fr; } .plugin_list { max-height: 40vh; } }
 """)
 
-(fn plugin_page [^appearance appearance : Str = "light"] : Str
+(fn plugin_page [^appearance appearance : Str = "light", ^workspace workspace : Str = ""] : Str
   (let mode (theme_mode appearance))
+  (let workspace_id (if (== workspace "") "" ($crypto/sha256 workspace)))
   ($to_str
     "<!doctype html>"
     (render
-      `(html ^lang "en" ^id "harness_document" ^data-theme %mode
+      `(html ^lang "en" ^id "harness_document" ^data-theme %mode ^data-workspace-id %workspace_id
          (head
            (meta ^charset "utf-8")
            (meta ^name "viewport" ^content "width=device-width,initial-scale=1")

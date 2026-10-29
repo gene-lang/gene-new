@@ -8,10 +8,11 @@
 
 (fn ui_error [code : Str, message : Str] (fail (UiError ^code code ^message message)))
 
-(fn ui_settings [h]
+(fn ui_settings [runtime]
+  (let h runtime/h)
   (let saved (if ($absent? h/event_store) nil
     (plugin_state h/event_store "workspace" "workspace" "ui_experiment")))
-  (?? saved h/services/ui_defaults {^enabled false ^layout "chat" ^panel "" ^side "left" ^width 50 ^theme {}}))
+  (?? saved runtime/services/values/ui_defaults {^enabled false ^layout "chat" ^panel "" ^side "left" ^width 50 ^theme {}}))
 
 (fn validate_theme_colors [colors]
   (if (!= ($head colors) Map) (ui_error "invalid_request" "Theme overrides must be a map of tokens."))
@@ -21,18 +22,12 @@
     (if (|| (!= ($head color) Str) ($absent? (#"^#[0-9a-fA-F]{6}$" .match color)))
       (ui_error "invalid_request" "Theme colors must be six-digit hex colors."))))
 
-# A theme is either per mode, {^light {...} ^dark {...}}, or a legacy flat token
-# map, which applies to light mode only.
+# Theme overrides belong to an explicit mode: {^light {...} ^dark {...}}.
 (fn validate_theme [theme]
-  (var per_mode false)
-  (var flat false)
-  (for [key value] in theme
-    (if (theme_modes .contains? ($to_str key)) (set per_mode true) (set flat true)))
-  (if (&& per_mode flat)
-    (ui_error "invalid_request" "Use either light/dark theme maps or one token map, not both."))
-  (if per_mode
-    (for [key colors] in theme (validate_theme_colors colors))
-    (validate_theme_colors theme)))
+  (for [key colors] in theme
+    (if_not (theme_modes .contains? ($to_str key))
+      (ui_error "invalid_request" "Theme overrides require light/dark mode maps."))
+    (validate_theme_colors colors)))
 
 (fn validate_ui_settings [value]
   (if (!= ($head value) Map) (ui_error "invalid_request" "UI settings must be a map."))
@@ -59,12 +54,15 @@
 
 (fn ui_revision [h, record] ($to_str h/ui_epoch ":" record/row_id))
 
-(fn ui_data_revision [h, snapshot]
+(fn ui_data_revision [runtime, snapshot]
+  (let h runtime/h)
+  (let manager runtime/services/values/manager)
   ($to_str snapshot/id ":" (if ($absent? h/event_store) 0
     (next_sequence h/event_store (stream_key "workspace" "workspace")))
-    (if ($absent? h/services/manager_revision) "" ($to_str ":manager:" h/services/manager_revision/.get))))
+    (if ($absent? manager) "" ($to_str ":manager:" manager/revision/.get))))
 
-(fn ui_descriptor [h, snapshot, record]
+(fn ui_descriptor [runtime, snapshot, record]
+  (let h runtime/h)
   (let candidate record/payload)
   (let functions {})
   (for name in (?? candidate/actions [])
@@ -73,21 +71,22 @@
   {^name candidate/name ^title (?? candidate/title candidate/name) ^owner record/owner
    ^default_presentation (?? candidate/default_presentation "docked")
    ^slot candidate/slot ^revision (ui_revision h record)
-   ^data_revision (ui_data_revision h snapshot) ^view_state candidate/view_state
+   ^data_revision (ui_data_revision runtime snapshot) ^view_state candidate/view_state
    ^state_version ($to_str (?? candidate/state_version "1")) ^functions functions
    ^style candidate/style_css ^style_class candidate/style_class})
 
-(fn ui_status [h]
-  (let settings (ui_settings h))
+(fn ui_status [runtime]
+  (let h runtime/h)
+  (let settings (ui_settings runtime))
   (let components [])
   (let snapshot h/snapshots/current/.get)
   (if_yes settings/enabled
     (for record in (?? (snapshot/registries .get "web_components") [])
       (if_not ($absent? record/payload/view_state)
-        (components .push (ui_descriptor h snapshot record)))))
-  (let actions (if ($absent? h/services/ui_action_log) nil h/services/ui_action_log/state/.get))
+        (components .push (ui_descriptor runtime snapshot record)))))
+  (let actions (if ($absent? runtime/services/values/actions) nil runtime/services/values/actions/log/state/.get))
   {^settings settings ^components ($order/sort_by components (fn [item] item/name))
-   ^data_revision (ui_data_revision h snapshot) ^epoch h/ui_epoch
+   ^data_revision (ui_data_revision runtime snapshot) ^epoch h/ui_epoch
    ^actions (if ($absent? actions) nil
      {^generation actions/generation ^floor actions/floor ^revision ($to_str actions/revision)})
    ^workspace (?? h/workspace/workspace_root "")})

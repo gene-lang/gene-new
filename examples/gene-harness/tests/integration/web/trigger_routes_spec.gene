@@ -4,7 +4,7 @@
 (import [connect api wire] ^from "../../../src/cli/client")
 (import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
 (import [offline_profile] ^from "../../../src/profiles/offline")
-(import [set_entry_disabled] ^from "../../../src/storage/workspace")
+(import [set_entry_disabled] ^from "../../../src/storage/workspace_repair")
 
 (fn unavailable_routes [client]
   (for route in [["GET" "/triggers" nil]

@@ -106,25 +106,7 @@
 (fn ^^private append_committed_log [h : Harness, kind : Str, text : Str] : Any
   (append_committed_record h (log_record h kind text)))
 
-(fn record_turn_start [h : Harness, id : Str]
-  (append_log_only h "turn" $"started ${id}")
-  (if_not ($absent? h/event_store)
-    (append_core_event h/event_store h/event_scope h/event_stream {^type "turn/start" ^turn id}))
-  nil)
-
-(fn record_turn_end [h : Harness, id : Str, reason : Str, ^synthetic synthetic : Bool = false]
-  (if_yes (&& (== reason "interrupted") (! synthetic))
-    (fail (HarnessError ^message "interrupted turn boundaries are reserved for cold repair")))
-  (append_log_only h "turn" $"${reason} ${id}")
-  (if_not ($absent? h/event_store)
-    (append_core_event
-      h/event_store
-      h/event_scope
-      h/event_stream
-      {^type "turn/end" ^turn id ^reason reason ^synthetic synthetic}))
-  nil)
-
-(fn record_composition_change [h : Harness, id : Str, previous_digest, new_digest, revision : Int, turn : Str, operation : Str]
+(fn record_composition_change [h : Harness, id : Str, previous_digest, new_digest, revision : Int, turn : Int, operation : Str]
   (append_log_only h "composition" $"${operation} ${id} at revision ${revision}")
   (if_not ($absent? h/event_store)
     (append_core_event

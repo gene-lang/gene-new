@@ -1,0 +1,31 @@
+# The loop owns request projection, receipt fields and the matching protocol
+# record. Question and delegation resumptions use exactly the same preparation.
+(mod next_request)
+(import [bounded_request append_message write_body] ^from "./history")
+(import [request_sources] ^from "./turn_participation")
+(import [append_core_event] ^from "../storage/state")
+
+(fn admit_next_request [runtime, session : Str, round]
+  (append_message ^media (?? round/request_media []) ^settled round/request_settled
+    ^round round/id ^turn round/last_turn runtime session "user" round/request))
+
+(fn next_request [runtime, session : Str, round, items,
+                  ^logical logical = nil, ^media media = nil,
+                  ^record_fields record_fields = {}, ^admit admit : Bool = true]
+  (let rendered (bounded_request runtime session items))
+  (let retained (?? logical ($filter items (fn [item] (!= item/settled false)))))
+  (round .put "request" rendered/full)
+  (round .put "request_settled" rendered/settled)
+  (round .put "request_media" (?? media (?? round/request_media [])))
+  (round .put "request_items_ref" (write_body runtime ($serde/write_data rendered/items)))
+  (round .put "logical_items_ref" (write_body runtime ($serde/write_data retained)))
+  (round .put "request_sources" (request_sources rendered/items))
+  (let payload {})
+  (for [key value] in record_fields (payload .put key value))
+  (for [key value] in {^type "turn/request" ^turn round/last_turn
+    ^for_turn (+ round/last_turn 1) ^combine "replace" ^round round/id
+    ^full rendered/full ^settled rendered/settled ^at_ms ($os/wall_ms)}
+    (payload .put key value))
+  (append_core_event runtime/events "session" session payload)
+  (if admit (admit_next_request runtime session round))
+  rendered)

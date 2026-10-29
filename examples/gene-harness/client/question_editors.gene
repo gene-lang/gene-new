@@ -1,5 +1,7 @@
 # One reply controller per original session/batch, shared by every visible form.
 (mod harness_question_editors ^profile web)
+(import [storage_get storage_set] ^from "./workspace_storage.gene")
+(import [api_root] ^from "../src/web/contract.gene")
 (import ^from "./question_state.gene" [question_key definitive_reply])
 (import ^from "./notices.gene" [Notices put_notice remove_notice])
 (import ^from "./cards.gene" [question_tree])
@@ -23,7 +25,7 @@
   encoded)
 
 (fn restored_map [key : Str] : PropMap
-  (var saved (?? ($session_storage/get key) ""))
+  (var saved (?? (storage_get key) ""))
   (if_yes (== saved "") (return {}))
   (try
     (var value : PropMap ($json/parse saved))
@@ -38,17 +40,6 @@
     ^pending (restored_map "gene-harness/question-replies")
     ^drafts (restored_map "gene-harness/question-drafts") ^!ready
     ^notices notices ^api api ^changed changed ^stage stage))
-  # Upgrade the earlier selected-session slot without dropping an uncertain reply.
-  (var old (?? ($session_storage/get "gene-harness/input-reply") ""))
-  (if_yes (!= old "")
-    (try
-      (var payload : Any ($json/parse old))
-      (var key (question_key (qtext payload/session) (qtext payload/batch_id)))
-      (if_yes ($absent? controller/pending/%key)
-        (set controller/pending/%key payload))
-      (if_yes ($session_storage/set "gene-harness/question-replies" (qjson controller/pending))
-        ($session_storage/remove "gene-harness/input-reply"))
-    catch Any nil))
   controller)
 
 (fn editor_for [controller : QuestionEditors, session : Str, batch : Any] : QuestionEditor
@@ -171,7 +162,7 @@
 (fn store_draft [controller : QuestionEditors, editor : QuestionEditor] : Void
   (var key editor/key)
   (set controller/drafts/%key {^answers editor/answers ^skips editor/skips})
-  (if_not ($session_storage/set "gene-harness/question-drafts" (qjson controller/drafts))
+  (if_not (storage_set "gene-harness/question-drafts" (qjson controller/drafts))
     (set editor/error "Draft could not be saved in browser storage. Keep this tab open."))
   (sync_question controller editor))
 
@@ -196,7 +187,7 @@
             ^answers answers
             ^dismiss dismiss})))
     (set controller/pending/%key payload))
-  (if_not ($session_storage/set "gene-harness/question-replies" (qjson controller/pending))
+  (if_not (storage_set "gene-harness/question-replies" (qjson controller/pending))
     (set editor/error "Browser storage is required before answering. Resolve will retry this exact reply.")
     (sync_question controller editor)
     (return))
@@ -206,19 +197,19 @@
   (var session editor/session)
   (controller/api
     "POST"
-    $"/api/v8/sessions/${session}/answers"
+    $"${(api_root)}/sessions/${session}/answers"
     payload
     (fn [code : Int, data : Any] : Void
       (set editor/sending false)
       (if (definitive_reply code)
         (do
           (set controller/pending/%key void)
-          ($session_storage/set "gene-harness/question-replies" (qjson controller/pending))
+          (storage_set "gene-harness/question-replies" (qjson controller/pending))
           (if (< code 300)
             (do
               (set editor/error "Answer accepted.")
               (set controller/drafts/%key void)
-              ($session_storage/set "gene-harness/question-drafts" (qjson controller/drafts)))
+              (storage_set "gene-harness/question-drafts" (qjson controller/drafts)))
             (set editor/error (qtext data/message "This batch cannot accept the reply.")))
           (remove_notice controller/notices "questions" session key))
         (put_notice
@@ -249,7 +240,7 @@
       (var session (qtext payload/session))
       (controller/api
         "GET"
-        $"/api/v8/sessions/${session}/snapshot?ui=default"
+        $"${(api_root)}/sessions/${session}/snapshot?ui=default"
         nil
         (fn [code : Int, data : Any] : Void
           (set editor/sending false)
@@ -274,7 +265,7 @@
   (sync_question controller editor)
   (controller/api
     "POST"
-    $"/api/v8/sessions/${session}/cancel"
+    $"${(api_root)}/sessions/${session}/cancel"
     {^round_id round}
     (fn [code : Int, data : Any] : Void
       (set editor/sending false)
@@ -282,7 +273,7 @@
         (do
           (var key editor/key)
           (set controller/pending/%key void)
-          ($session_storage/set "gene-harness/question-replies" (qjson controller/pending))
+          (storage_set "gene-harness/question-replies" (qjson controller/pending))
           (remove_notice controller/notices "questions" session key)
           (set editor/error "Cancellation requested."))
         (set editor/error "Cancellation was not confirmed. The original question remains available."))

@@ -1,0 +1,21 @@
+# Verify the host HTML -> compiled browser module -> sessionStorage boundary.
+# Node executes the emitted JavaScript; Gene owns fixture/build orchestration.
+(import [page] ^from "../src/web/page")
+(import [plugin_page] ^from "../src/web/plugin_page")
+
+(fn main [args] : Int
+  (let root this_pkg/root)
+  ($os/set_cwd root)
+  (let output ($path/join root "tmp/workspace-storage-check"))
+  ($fs/make_dir output)
+  ($fs/write_text ($path/join output "a.html") (page ^workspace "/workspace/a"))
+  ($fs/write_text ($path/join output "b.html") (page ^workspace "/workspace/b"))
+  ($fs/write_text ($path/join output "plugins.html") (plugin_page ^workspace "/workspace/a"))
+  (let built ($os/exec ^timeout_ms 120000 ^max_bytes 1048576 ($os/executable_path)
+    "build" "--target" "web" "--out-dir" output "client/main.gene"))
+  ($assert (== built/status 0) built/stderr)
+  (let verified ($os/exec ^timeout_ms 30000 ^max_bytes 1048576
+    "node" ($path/join root "tests/fixtures/workspace_storage.mjs") output))
+  ($assert (== verified/status 0) ($to_str verified/stdout verified/stderr))
+  ($print verified/stdout)
+  0)

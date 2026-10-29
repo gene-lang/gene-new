@@ -1,4 +1,5 @@
 (mod channel_http)
+(import [api_root api_path] ^from "../web/contract")
 (import [public_authority authorize authorize_parts] ^from "./authority")
 (import [snapshot mutate] ^from "./store")
 (import [queue_status resume_queue pending_parts discard_inputs resolve_claim] ^from "./queue")
@@ -19,62 +20,64 @@
   (if (&& (! ($absent? url)) (== (transcript_reference "check" url) "Harness session check"))
     (channel_error "invalid_request" "Use a reachable browser URL without credentials, query or fragment, or leave it unset."))
   (let settings {^surface surface ^public_url url})
-  (mutate service/runtime/channel_queues (fn [state] (state .put "settings" settings) settings))
+  (mutate service/runtime/services/values/channel_queues (fn [state] (state .put "settings" settings) settings))
   (service/settings .set settings)
   settings)
 
 # The server calls this only after owner authentication, Origin and CSRF checks.
 # No unauthenticated endpoint is exposed for external sender assertions.
 (fn channel_request [service, method : Str, endpoint : Str, data = {}]
-  (if (! (endpoint .starts_with? "/api/v8/channels")) (return nil))
+  (if (! (endpoint .starts_with? (api_path ["channels"]))) (return nil))
+  (let prefix ($str/byte_size (api_root)))
+  (let route ($str/slice_bytes endpoint prefix (- ($str/byte_size endpoint) prefix)))
   (if ($absent? service) (channel_error "unavailable" "Channels are unavailable in recovery mode."))
-  (if (&& (== method "GET") (== endpoint "/api/v8/channels"))
-    (return {^status 200 ^body {^source (/source (snapshot service/runtime/channel_queues))
+  (if (&& (== method "GET") (== route "/channels"))
+    (return {^status 200 ^body {^source (/source (snapshot service/runtime/services/values/channel_queues))
       ^health service/health/.get ^owner (public_authority service/owner)
       ^incoming ($map (pending_ingress service/owner) (fn [record]
         {^id record/id ^workspace record/workspace ^account record/account
          ^channel record/message/channel ^thread record/message/thread ^author record/message/author
          ^status "queued" ^last_error (?? (service/health/.get .get record/id) nil)}))
-      ^outgoing ($map (pending_output service/runtime/channel_queues) (fn [record]
+      ^outgoing ($map (pending_output service/runtime/services/values/channel_queues) (fn [record]
         {^id record/intent/id ^session record/intent/session ^round record/intent/round
          ^status record/status ^parts (?? record/result/parts [])}))}}))
-  (if (&& (== method "GET") (== endpoint "/api/v8/channels/owner/policy"))
+  (if (&& (== method "GET") (== route "/channels/owner/policy"))
     (return {^status 200 ^body (public_authority service/owner)}))
   (if (!= method "POST") (return nil))
   (let body
-    (match endpoint ^!exhaustive
-      (when "/api/v8/channels/owner/accounts" (setup_account service data))
-      (when "/api/v8/channels/owner/routes" (setup_route service data))
-      (when "/api/v8/channels/owner/user" (lookup_user service/users service/owner data))
-      (when "/api/v8/channels/user" (user_name service data))
-      (when "/api/v8/channels/owner/channel" (lookup_channel service/users service/owner data))
-      (when "/api/v8/channels/channel" (channel_name service data))
-      (when "/api/v8/channels/owner/thread" (lookup_thread service/users service/owner data))
-      (when "/api/v8/channels/thread" (thread_link service data))
-      (when "/api/v8/channels/owner/authorize"
+    (match route ^!exhaustive
+      (when "/channels/owner/accounts" (setup_account service data))
+      (when "/channels/owner/routes" (setup_route service data))
+      (when "/channels/owner/user" (lookup_user service/users service/owner data))
+      (when "/channels/user" (user_name service data))
+      (when "/channels/owner/channel" (lookup_channel service/users service/owner data))
+      (when "/channels/channel" (channel_name service data))
+      (when "/channels/owner/thread" (lookup_thread service/users service/owner data))
+      (when "/channels/thread" (thread_link service data))
+      (when "/channels/owner/authorize"
         (authorize service/owner data/route data/author ^workspace data/workspace))
-      (when "/api/v8/channels/owner/authorize-parts"
+      (when "/channels/owner/authorize-parts"
         (authorize_parts service/owner data/route data/parts ^workspace data/workspace))
-      (when "/api/v8/channels/owner/deliver" (accept_output service/owner data))
-      (when "/api/v8/channels/owner/result" (output_result service/owner data/id))
-      (when "/api/v8/channels/owner/resolve"
+      (when "/channels/owner/deliver" (accept_output service/owner data))
+      (when "/channels/owner/result" (output_result service/owner data/id))
+      (when "/channels/owner/resolve"
         (resolve_output service/owner data/id data/revision data/part data/decision data/reason
           ^ts (?? data/ts nil) ^review_revision (?? data/review_revision 0)))
-      (when "/api/v8/channels/input" (receive_handoff service data))
-      (when "/api/v8/channels/bind" (bind_workspace service data/owner_root data/route))
-      (when "/api/v8/channels/settings" (channel_settings service data))
-      (when "/api/v8/channels/queue/status"
-        ((queue_status service/runtime/channel_queues data/session) .assoc "parts"
-          (pending_parts service/runtime/channel_queues data/session)))
-      (when "/api/v8/channels/queue/discard"
+      (when "/channels/input" (receive_handoff service data))
+      (when "/channels/bind" (bind_workspace service data/owner_root data/route))
+      (when "/channels/settings" (channel_settings service data))
+      (when "/channels/queue/status"
+        ((queue_status service/runtime/services/values/channel_queues data/session) .assoc "parts"
+          (pending_parts service/runtime/services/values/channel_queues data/session)))
+      (when "/channels/queue/discard"
         (with_session_gate service/runtime/sessions ($to_str "round/" data/session)
-          (fn [] (discard_inputs service/runtime/channel_queues data/session data/revision data/ids data/reason))))
-      (when "/api/v8/channels/queue/resume"
+          (fn [] (discard_inputs service/runtime/services/values/channel_queues data/session data/revision data/ids data/reason))))
+      (when "/channels/queue/resume"
         (with_session_gate service/runtime/sessions ($to_str "round/" data/session)
-          (fn [] (resume_queue service/runtime/channel_queues data/session data/revision))))
-      (when "/api/v8/channels/queue/resolve"
+          (fn [] (resume_queue service/runtime/services/values/channel_queues data/session data/revision))))
+      (when "/channels/queue/resolve"
         (with_session_gate service/runtime/sessions ($to_str "round/" data/session)
-          (fn [] (resolve_claim service/runtime/channel_queues data/session data/revision
+          (fn [] (resolve_claim service/runtime/services/values/channel_queues data/session data/revision
             data/batch data/decision data/reason))))
       (when _ (return nil))))
   {^status 200 ^body body})

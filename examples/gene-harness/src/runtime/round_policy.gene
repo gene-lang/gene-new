@@ -1,10 +1,7 @@
 (mod round_policy)
-(import [legacy_operator_round?] ^from "./initiator_specs")
 
 (fn collection_turns [round] : Int
-  # Old waiting receipts used a feature-specific marker. New receipts carry
-  # the coordinator's bounded collection allowance explicitly.
-  (?? round/collection_turns (if (== round/delegation_collection true) 1 0)))
+  (?? round/collection_turns 0))
 
 (fn operator_round? [round]
-  (if (== ($head round/operator) Bool) round/operator (legacy_operator_round? round)))
+  (== round/operator true))

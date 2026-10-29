@@ -3,7 +3,7 @@
 (import [create_session command submit receipt close_session_service] ^from "../../../src/web/session_service")
 (import [command_receipt] ^from "../../../src/runtime/commands")
 (import [open_computer_host close_computer_host computer_host_binding] ^from "../../../src/runtime/computer_host")
-(import [register_plugin] ^from "../../../src/storage/workspace")
+(import [register_plugin] ^from "../../../src/storage/workspace_activation")
 (import [replace : replace_seam row] ^from "../../../src/kernel")
 (import [CommandContext ServiceError] ^from "../../../src/plugin_api")
 (import [open_driver normalize_result targets] ^from "." ^pkg "computer")
@@ -35,7 +35,7 @@
 (fn finished [service, session : Str, id : Str]
   (let due (+ ($os/monotonic_ms) 5000))
   (loop
-    (let result (command_receipt service/runtime/commands session id))
+    (let result (command_receipt service/runtime/services/values/commands session id))
     (if (!= result/status "running") (return result))
     ($assert (< ($os/monotonic_ms) due))
     ($sleep 10)))
@@ -88,7 +88,7 @@
           ($assert (try (probe fake) false catch ServiceError (== $err/code "command_required")))
           ($assert (== ($size (targets driver session/id)) 1))
           (let round (submit service session/id "computer" 1 "Inspect the target and click once."))
-          (service/controller/watchers .get; .get session/id; .join)
+          ((/watcher (service/runtime/services/values/controller/rounds/.get .get session/id)) .join)
           (let round_result (receipt service session/id round/id))
           ($assert (== round_result/state "done") ($to_str round_result))
           ($assert (== actions/.get 1))
@@ -102,7 +102,7 @@
         (try
           (replace_seam restarted/runtime/h "core" "computer/host" (computer_host_binding next_state))
           (let next_round (submit restarted session/id "receipt" 2 "Read the previous receipt."))
-          (restarted/controller/watchers .get; .get session/id; .join)
+          ((/watcher (restarted/lifecycle/values/loop/values/controller/rounds/.get .get session/id)) .join)
           (let next_result (receipt restarted session/id next_round/id))
           ($assert (== next_result/state "done") ($to_str next_result))
           ($assert (== actions/.get 1) "Receipt recovery replayed a computer action.")

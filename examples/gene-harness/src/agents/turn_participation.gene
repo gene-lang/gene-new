@@ -1,12 +1,12 @@
 # Turn coordination knows phase contracts, never a feature's service object.
 (mod turn_participation)
-(import [run_turn_phase reduce_turn_phase begin_turn_transaction release_turn_transaction fail_turn_participant]
+(import [run_turn_phase reduce_turn_phase begin_turn_transaction release_turn_transaction fail_turn_participant ParticipantFailure]
   ^from "../runtime/turn_participants")
 (import [new_runtime_turn_transaction] ^from "../runtime/turn_participant_registry")
 (import [acquire_snapshot release_snapshot] ^from "../runtime/composition")
 (import [ParticipantBindings ParticipantCommit ParticipantValidation] ^from "../runtime/participant_contract")
 (import [freeze_turn_data] ^from "../runtime/turn_data")
-(import [request_items] ^from "./outcome")
+(import [request_items discard_done_items] ^from "./outcome")
 
 (fn bad_phase_result [transaction, name : Str, phase : Str, message : Str]
   (fail_turn_participant transaction name phase "invalid_result" message))
@@ -106,6 +106,24 @@
     (result .put "request_items" items))
   (for item in additions (result/request_items .push item))
   (if (&& (|| deferred (! additions/.empty?)) (== result/kind "done")) (result .put "kind" "continue"))
+  result)
+
+# A participant may add the context that admits an otherwise empty continuation,
+# or defer completion. Only the coordinator can settle that final decision.
+(fn finish_participant_outcome [result]
+  (if (== result/kind "suspend")
+    (fail (ParticipantFailure ^participant result/validated/suspension ^phase "commit"
+      ^code "unhandled_suspension" ^message "No participant handled the checked Outcome suspension.")))
+  (if_yes (== result/kind "done")
+    (discard_done_items result/turn)
+    (result .put "request_items" [])
+    (return result))
+  (if_yes (&& (== result/kind "continue") result/request_items/.empty?)
+    (let message "continuing Outcome requires a prompt or append_prompt items")
+    (result .put "kind" "error")
+    (result .put "validated" nil)
+    (result .put "error" message)
+    (result .put "request_items" (request_items result/turn nil ^patch result/patch/text ^error message)))
   result)
 
 (fn round_limit_participants [runtime, session : Str, round, turn : Int, count : Int, limit : Int, collection : Bool]

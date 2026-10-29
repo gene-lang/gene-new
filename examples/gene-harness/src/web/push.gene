@@ -66,25 +66,25 @@
   (var peer {^connection connection ^session session ^expires expires
     ^sequence 0 ^!closed ^!viewing ^safe safe ^client_id client_id})
   (hub/peers/.get .push peer)
-  (voice_connected hub/host/runtime/voice client_id)
+  (voice_connected hub/host/runtime/services/values/voice client_id)
   (try
     (send_frame hub peer {^type "status" ^session "" ^data (host_status ^safe safe hub/host)})
     (if_not safe
-      (send_frame hub peer {^type "voice/state" ^session "" ^data (public_voice_state (voice_snapshot hub/host/runtime/voice))}))
+      (send_frame hub peer {^type "voice/state" ^session "" ^data (public_voice_state (voice_snapshot hub/host/runtime/services/values/voice))}))
     (if hub/host/runtime/restarted
       (send_frame hub peer {^type "restarted" ^session "" ^data {^message "Harness restarted."}}))
     (send_frame hub peer {^type "session/list" ^session "" ^data (list_sessions hub/host)})
-    (let notifications (inbox_snapshot hub/host/runtime/h/services/notifications))
+    (let notifications (inbox_snapshot hub/host/runtime/services/values/inbox))
     (notifications .put "epoch" hub/host/epoch)
     (send_frame hub peer {^type "notifications/state" ^session "" ^data notifications})
     (if peer/closed (return nil))
     (if_yes (!= session "")
       (try
-        (view_session hub/host/sessions session)
+        (view_session hub/host/runtime/sessions session)
         (peer .put "viewing" true)
         # A reset/disconnect can happen while view_session waits for loading.
         (if_yes peer/closed
-          (leave_session hub/host/sessions session)
+          (leave_session hub/host/runtime/sessions session)
           (peer .put "viewing" false)
           (return nil))
         (send_frame hub peer {^type "snapshot" ^session session ^data (snapshot ^!console ^safe safe hub/host session)})
@@ -102,10 +102,10 @@
   (for peer in hub/peers/.get
     (if (same? peer/connection connection)
       (then
-        (voice_disconnected hub/host/runtime/voice (?? peer/client_id ""))
+        (voice_disconnected hub/host/runtime/services/values/voice (?? peer/client_id ""))
         (peer .put "closed" true)
         (if_yes peer/viewing
-          (leave_session hub/host/sessions peer/session)
+          (leave_session hub/host/runtime/sessions peer/session)
           (peer .put "viewing" false)))
       (else
         (kept .push peer))))

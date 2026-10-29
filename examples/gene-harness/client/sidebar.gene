@@ -1,5 +1,6 @@
 # Conversation navigation visibility belongs to this browser tab.
 (mod harness_sidebar ^profile web)
+(import [storage_get storage_set] ^from "./workspace_storage.gene")
 (import ^from "./components.gene" [render_element])
 
 (type Sidebar ^props {^root EventTarget ^desktop_open Bool ^mobile_open Bool ^full_view Bool ^available Bool ^safe Bool ^signature Str ^widgets PropMap ^target EventTarget ^pool EventTarget ^buttons (List Any)})
@@ -80,7 +81,7 @@
     (set element/disabled (|| disabled (! enabled)))))
 
 (fn create_sidebar [root : EventTarget, safe : Bool] : Sidebar
-  (var preference : Str (?? ($session_storage/get "gene-harness/sidebar") "open"))
+  (var preference : Str (?? (storage_get "gene-harness/sidebar") "open"))
   (var widgets : PropMap {})
   (for pair in [["brand" "sidebar_brand"] ["new_conversation" "create_session"]
                ["filters" "sidebar_filters"] ["attention" "attention_section"]
@@ -104,7 +105,7 @@
         (set state/mobile_open (! state/mobile_open))
         (do
           (set state/desktop_open (! state/desktop_open))
-          ($session_storage/set "gene-harness/sidebar" (if state/desktop_open "open" "closed"))))
+          (storage_set "gene-harness/sidebar" (if state/desktop_open "open" "closed"))))
       (render_sidebar state)))
   ($dom/add_event_listener
     ($dom/element "close_menu")

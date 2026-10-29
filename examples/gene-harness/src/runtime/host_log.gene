@@ -1,5 +1,5 @@
 (mod host_log)
-(import ^from "../text" [byte_prefix])
+(import ^from "../public/text" [byte_prefix])
 (let IoResource $io/IoResource)
 (type HostLog ^props {^path Str ^limit Int ^size Int ^writer Any})
 

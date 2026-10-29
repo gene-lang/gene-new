@@ -1,8 +1,9 @@
 # Tests src/agents/outcome.gene.
 (import $test [describe it before_each assert_equal assert_raises run])
-(import [Outcome OutcomeError TurnClosed new_turn_items append_prompt_at append_plugin_prompt
+(import [Outcome OutcomeError new_turn_items append_prompt_at append_plugin_prompt
          validate_outcome render_request rewrite_prompt_calls checked_outcome_extensions]
   ^from "../../../src/agents/outcome")
+(import [TurnClosed] ^from "../../../src/plugin_api")
 (import [split_response] ^from "../../../src/agents/response")
 (import [evaluate_response] ^from "../../../src/agents/eval_site")
 
@@ -78,32 +79,6 @@ next"""))
     []
     (assert_raises (fn [] (validate_outcome (new_turn_items 3) (Outcome))) OutcomeError))
 
-  (it "keeps valid final replies when optional audio data is invalid" [t]
-    (let parts [])
-    (repeat i in 2049 (parts .push "x"))
-    (for raw in [5 "" "   " {^wrong true} ($str/join parts "") ($binary/to_str ($binary/from_list [255]))]
-      (let environment (env ^bindings {^Outcome Outcome ^raw raw}))
-      (let value (evaluate_response (quote (Outcome ^^done ^reply "Finished." ^audio_reply raw)) environment))
-      (let validated (validate_outcome t/turn value))
-      ($assert (== validated/kind "done"))
-      ($assert (== validated/outcome/reply "Finished."))
-      ($assert ($absent? validated/outcome/audio_reply)))
-    ($assert (== t/console/.get/.size 6))
-    (for reply in [nil ""]
-      (let value (validate_outcome t/turn (Outcome ^prompt "Continue." ^reply reply ^audio_reply "No textual reply.")))
-      ($assert ($absent? value/outcome/audio_reply)))
-    ($assert (== t/console/.get/.size 8)))
-
-  (it "preserves validated spoken text through every deferred completion" []
-    (for reason in ["composition" "delegation" "media"]
-      (let turn (new_turn_items 1))
-      (if (== reason "composition") (turn/composition_queued .set true))
-      (if (== reason "delegation") (turn/delegation_staged/.get .push {}))
-      (if (== reason "media") (turn/media/.get .push {}))
-      (let value (validate_outcome turn (Outcome ^^done ^reply "Details." ^audio_reply "  Spoken details.  ")))
-      ($assert (== value/kind "continue"))
-      ($assert (== value/outcome/audio_reply "Spoken details."))))
-
   (it
     "finishes and reports discarded appended items"
     [t]
@@ -159,11 +134,10 @@ next"""))
   (it "keeps an empty optional extension map compatible with a plain final reply" []
     ($assert (== (/kind (validate_outcome (new_turn_items 1)
       (Outcome ^^done ^reply "Done." ^extensions {}))) "done")))
-  (it "keeps checked fields through publication, work and media completion deferral" []
-    (for reason in ["publication" "work" "media"]
+  (it "keeps checked fields through publication and media completion deferral" []
+    (for reason in ["publication" "media"]
       (let turn (new_turn_items 1))
       (if (== reason "publication") (turn/composition_queued .set true))
-      (if (== reason "work") (turn/delegation_staged/.get .push {}))
       (if (== reason "media") (turn/media/.get .push {^id "image"}))
       (let fields {^notes/facts ["checked"]})
       (let value (checked_outcome_extensions (Outcome ^^done ^reply "Candidate." ^extensions fields)))

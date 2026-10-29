@@ -1,5 +1,7 @@
 # Decisions are independent of feedback, captured under their original command.
 (mod harness_confirmations ^profile web)
+(import [storage_get storage_set] ^from "./workspace_storage.gene")
+(import [api_root] ^from "../src/web/contract.gene")
 (import [handoff_modal] ^from "./overlays.gene")
 (import [flag] ^from "../src/common/launcher.gene")
 (import ^from "./notices.gene" [Notices put_notice remove_notice])
@@ -7,7 +9,7 @@
 
 (fn create_confirmations [target : EventTarget, notices : Notices, api : (Fn [Str Str Any (Fn [Int Any] Void)] Void)] : Confirmations
   (var controller (Confirmations ^target target ^items {} ^saved {} ^notices notices ^api api))
-  (var saved (?? ($session_storage/get "gene-harness/confirmations") ""))
+  (var saved (?? (storage_get "gene-harness/confirmations") ""))
   (if_yes (!= saved "")
     (try
       (set controller/saved ($json/parse saved))
@@ -25,7 +27,7 @@
   (set record/handled true)
   (var session : Str record/session)
   (remove_notice controller/notices "confirmation" session key)
-  ($session_storage/set "gene-harness/confirmations" ($json/stringify controller/saved))
+  (storage_set "gene-harness/confirmations" ($json/stringify controller/saved))
   ($dom/remove target))
 
 (fn command_confirmation [controller : Confirmations, session : Str, command : Any] : Void
@@ -45,7 +47,7 @@
   (var keep ($dom/render `(button ^type "button" "Keep running")))
   (set controller/items/%key target)
   (set controller/saved/%key {^session session ^command command ^!handled})
-  ($session_storage/set "gene-harness/confirmations" ($json/stringify controller/saved))
+  (storage_set "gene-harness/confirmations" ($json/stringify controller/saved))
   ($dom/append target ($dom/render `(p %text)))
   ($dom/append target ($dom/render `(small %$"Conversation ${session}")))
   ($dom/append target confirm)
@@ -76,7 +78,7 @@
       (set keep/disabled true)
       (controller/api
         "POST"
-        $"/api/v8/sessions/${session}/commands"
+        $"${(api_root)}/sessions/${session}/commands"
         {^text $"/${name} --confirm" ^expected_command command/expected_command}
         (fn [code : Int, data : Any] : Void
           (if (== code 202)

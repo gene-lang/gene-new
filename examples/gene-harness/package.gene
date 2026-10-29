@@ -2,7 +2,7 @@
  ^name "gene/harness"
  ^description "A living plugin harness: seams, an effect ledger, and atomic activation"
  ^version "0.1.0"
- ^files {^include ["package.gene" "README.md" "src/**" "client/**" "docs/**"
+ ^files {^include ["package.gene" "README.md" "CONTRIBUTING.md" "src/**" "client/**" "docs/**"
                    "tests/**" "tools/**" "website/**" "experiments/**" "bin/**" "probes/**"]
          ^exclude ["**/.gene-harness/**" "**/tmp/**"]}
  ^applications [

@@ -1,6 +1,6 @@
 (mod launcher_search)
 (import [match_rank insert_ranked] ^from "../common/launcher")
-(import [byte_prefix] ^from "../text")
+(import [byte_prefix] ^from "../public/text")
 
 (fn search_sessions [manager, query : Str, ^limit limit : Int = 50]
   (if (> ($str/byte_size query) 256) (fail "Search query exceeds 256 bytes."))

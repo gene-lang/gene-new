@@ -4,6 +4,7 @@
   [
     Outcome
     new_turn_items
+    append_plugin_prompt
     append_prompt_at
     validate_outcome
     render_request
@@ -13,7 +14,7 @@
     recall])
 (import ^from "./eval_site" [evaluate_response])
 (import ^from "../runtime/patch" [prepare_patch commit_patch with_patch_gate])
-(import ^from "../text" [byte_prefix without_markdown_images])
+(import ^from "../public/text" [byte_prefix without_markdown_images])
 (import [open_execution_scope close_execution_scope] ^from "../runtime/execution_budget")
 (import [ParticipantFailure] ^from "../runtime/turn_participants")
 
@@ -35,6 +36,8 @@
                    ^console_sink console_sink = nil, ^recall recall_function = nil,
                    ^record record = nil, ^context inherited = nil,
                    ^normalize_outcome normalize_outcome = nil,
+                   ^outcome_binding outcome_binding = nil,
+                   ^coordinated coordinated : Bool = false,
                    ^turn_sink turn_sink = nil,
                    ^validators validators = {},
                    ^renderers renderers = {},
@@ -46,12 +49,10 @@
   (let turn (new_turn_items number ^recall recall_function))
   (fn validate_value [value]
     (let prepared (if ($absent? normalize_outcome) value (normalize_outcome turn value)))
-    (validate_outcome turn prepared ^validators validators ^renderers renderers))
-  (if_not ($absent? inherited/delegations)
-    (turn .put "delegation_guard" inherited/delegations/guard)
-    (turn .put "delegation_collection" (== inherited/delegations/collection true)))
+    (validate_outcome turn prepared ^validators validators ^renderers renderers ^coordinated coordinated))
   (if_not ($absent? turn_sink) (turn_sink .set turn))
   (var context ((?? inherited {}) .assoc "turn" turn))
+  (set context (context .assoc "append_prompt" append_plugin_prompt))
   (set context (context .assoc "output" (fn [text]
     (let late (!= turn/state/.get "open"))
     (if truncated/.get (return nil))
@@ -99,7 +100,7 @@
     (if (|| ($absent? patch_result) (== patch_result/status "applied"))
       (then
         (let values ($thaw ($freeze_shallow bindings)))
-        (values .put "Outcome" Outcome)
+        (values .put "Outcome" (?? outcome_binding Outcome))
         (values .put "workspace_root" workspace_root)
         (values .put "append_prompt_at" (fn [label line form value]
           (append_prompt_at turn label line form value)))
@@ -162,5 +163,5 @@
   {^kind kind ^validated validated ^request request ^patch patch_result ^error error
    ^media turn/media/.get
    ^console console/.get ^turn turn
-   ^request_items (if (== request "") [] (request_items turn validated ^patch patch_text
+   ^request_items (if (&& (== request "") (! coordinated)) [] (request_items turn validated ^patch patch_text
      ^error error ^error_line error_line ^result_line last_line))})

@@ -1,7 +1,7 @@
 (mod speech_service)
 (import [rows row_record] ^from "../kernel")
 (import [voice_error] ^from "./voice_state")
-(import [speech_segments nonempty] ^from "../audio/engines")
+(import [speech_segments nonempty] ^from "../public/speech_engines")
 (import [pcm_format] ^from "./audio" ^pkg "audio")
 (import [bounded_audio_call] ^from "../audio/call")
 (import [dispatch_json] ^from "./worker" ^pkg "audio")

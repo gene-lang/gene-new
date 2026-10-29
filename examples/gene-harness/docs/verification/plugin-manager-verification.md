@@ -1,6 +1,7 @@
 # Plugin manager acceptance audit
 
-Status: **verified** against [plugin-manager.md](../plugin-manager.md).
+Status: **verified** against the manager contract, now consolidated in
+[plugins.md](../plugins.md#plugin-manager).
 
 The full objective is implemented, including managed-state writer provenance.
 The contract's explicitly separate designs remain outside this implementation:

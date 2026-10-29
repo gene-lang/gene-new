@@ -1,5 +1,6 @@
 # Immutable binary media is separate from the text-history blob collector.
 (mod media)
+(import [api_root] ^from "../web/contract.gene")
 (import ^from "." ^pkg "documents" [inspect_bytes DocumentError])
 
 (type MediaError ^props {^code Str ^message Str} ^impl [Error])
@@ -30,11 +31,8 @@
       ($serde/read_data ($fs/read_text path))
     catch Any
       (media_error "unavailable" "The media index could not be read.")))
-  (if_not (&& ([1 2] .contains? value/format) (== ($head value/assets) Map))
+  (if_not (&& (== value/format 2) (== ($head value/assets) Map))
     (media_error "unavailable" "Unsupported or damaged media index."))
-  (if_yes (== value/format 1)
-    (value .put "format" 2)
-    (value .put "reservations" {}))
   (if_not (== ($head value/reservations) Map)
     (media_error "unavailable" "Damaged media reservations."))
   value)
@@ -153,7 +151,7 @@
     ^kind record/kind
     ^size record/size
     ^source record/source
-    ^url $"/api/v8/media/${record/id}"})
+    ^url $"${(api_root)}/media/${record/id}"})
   (for key in ["width" "height" "bit_depth" "color_type" "has_alpha"
               "has_transparent_pixels" "animated" "generation"]
     (if ($has_key? record key) (descriptor .put key (record .get key))))

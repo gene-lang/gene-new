@@ -22,7 +22,7 @@
 
 (type SessionState ^props {^id Str ^runtime Any ^history Any ^round Any ^outputs Any ^console Any ^last_access Any ^viewers Any})
 
-(type SessionManager ^props {^runtime Any ^events Any ^state_root Str ^index Any ^loaded Any ^idle_timeout_ms Int ^closed Any ^mutating Any ^index_writing Any ^gates Any ^gate_mutex Any ^before_remove Any? ^resumes Any? ^metadata_revision Int?})
+(type SessionManager ^props {^runtime Any ^events Any ^state_root Str ^index Any ^loaded Any ^idle_timeout_ms Int ^closed Any ^mutating Any ^index_writing Any ^gates Any ^gate_mutex Any ^unload_policy Any? ^resumes Any? ^metadata_revision Int?})
 
 (fn with_session_gate [manager, key : Str, thunk]
   (let gate (manager/gate_mutex (fn []
@@ -74,7 +74,7 @@
       ($serde/write_data {^format 1 ^sessions manager/index/.get})))))
 
 (fn open_session_manager [runtime, events, state_root : Str,
-                          ^idle_timeout_ms idle_timeout_ms : Int = 600000] : SessionManager
+                          ^idle_timeout_ms idle_timeout_ms : Int = 600000, ^recover recover : Bool = true] : SessionManager
   (if (< idle_timeout_ms 0)
     (fail (SessionError ^code "invalid_request" ^message "idle timeout must be non-negative")))
   ($fs/make_dir $"${state_root}/sessions")
@@ -91,7 +91,7 @@
     ^mutating ($sync/gate) ^index_writing ($sync/gate)
     ^gates ($cell {}) ^gate_mutex ($sync/gate) ^resumes ($cell [])))
   (write_index manager)
-  (recover_sessions manager)
+  (if recover (recover_sessions manager))
   manager)
 
 # A crash between finalizing a question batch and updating its round leaves
@@ -107,9 +107,15 @@
   (let cancelled (if ($fs/exists? marker) ($serde/read_data ($fs/read_text marker)) {}))
   (let interrupted [])
   (let reasons {})
+  (let corrections [])
   (for [id record] in manager/index/.get
-    (if (["running" "cancelled"] .contains? record/status) (interrupted .push ($to_str id)))
-    (if_yes (== record/status "waiting")
+    # The workspace index is a listing projection. The round projection is
+    # available without loading transcript segments or the full receipt blob.
+    (let saved (core_state manager/events "session" ($to_str id) "round"))
+    (let status (?? saved/state "done"))
+    (if (!= record/status status) (corrections .push {^id ($to_str id) ^status status}))
+    (if (["running" "cancelled"] .contains? status) (interrupted .push ($to_str id)))
+    (if_yes (== status "waiting")
       (let batch (answered_waiting_batch manager ($to_str id)))
       (if_not ($absent? batch)
         # Only a recorded continuation resumes, once rounds can run again. A
@@ -120,10 +126,12 @@
           (else
             (interrupted .push ($to_str id))
             (reasons .put ($to_str id) (if (== batch/intent "cancel") "cancelled" "interrupted")))))))
+  (for correction in corrections
+    (if_not (interrupted .contains? correction/id)
+      (update_session manager correction/id {^status correction/status})))
   (for id in interrupted
-    (let previous (require_record manager id))
     (let round (restore_round manager id))
-    (let reason (?? (reasons .get id) (if (|| (== previous/status "cancelled")
+    (let reason (?? (reasons .get id) (if (|| (== round/state "cancelled")
       (&& (! ($absent? round)) (== (cancelled .get round/id) true))) "cancelled" "interrupted")))
     (let warnings [])
     (for [key patch] in (core_states manager/events "session" id)
@@ -369,13 +377,9 @@
   (if ($absent? state) (return false))
   (if (|| (session_running? state) (> state/viewers/.get 0)) (return false))
   # Client departure and idle collection must not cancel admitted commands.
-  (if_not ($absent? manager/runtime/commands)
-    (for [key task] in manager/runtime/commands/active/.get
-      (if ($str/starts_with? ($to_str key) $"${id}:") (return false))))
-  (if_not ($absent? manager/runtime/modes)
-    (let mode (manager/runtime/modes/states/.get .get id))
-    (if_not ($absent? mode/running) (return false)))
-  (if_not ($absent? manager/before_remove) (manager/before_remove id "unloaded"))
+  (if_not ($absent? manager/unload_policy)
+    (if (manager/unload_policy/busy? id) (return false))
+    (manager/unload_policy/on_unload id "unloaded"))
   (flush_event_store manager/events)
   (unload_event_stream manager/events "session" id)
   (manager/loaded
@@ -407,7 +411,7 @@
         (if (&& (! ($absent? revision)) (!= revision (?? (/revision (require_record manager id)) 0)))
           (fail (SessionError ^code "revision_conflict" ^message "Conversation changed; refresh before deleting it.")))
         (delete_session_locked ^explicit explicit manager id ids)))
-      (if ($absent? manager/runtime/commands) (remove) (manager/runtime/commands/gate remove)))))))
+      (if ($absent? manager/runtime/services/values/commands) (remove) (manager/runtime/services/values/commands/gate remove)))))))
 
 (fn with_delete_gates [manager, ids, offset : Int, root : Str, body]
   (if (>= offset ids/.size) (return (body)))
@@ -442,24 +446,17 @@
               (&& (! explicit) (|| record/pinned record/attention
                 (&& (! ($absent? loaded)) (> loaded/viewers/.get 0)))))
         (return false))
-      (if_not ($absent? manager/runtime/commands)
-        (for [key task] in manager/runtime/commands/active/.get
-          (if ($str/starts_with? ($to_str key) $"${candidate}:") (return false)))
-        # Admission persists a running receipt before its task is installed.
-        (let commands (core_state manager/events "session" candidate "commands"))
-        (if_not ($absent? commands/digest)
-          (for command in (/records ($serde/read_data (read_body manager/runtime commands/digest)))
-            (if (&& (== command/status "running") (== command/runtime_epoch manager/runtime/epoch))
-              (return false)))))
+      (if (&& (! ($absent? manager/unload_policy)) (manager/unload_policy/busy? candidate))
+        (return false))
       (records .push record))
     (for candidate in ids
-      (if_not ($absent? manager/before_remove) (manager/before_remove candidate "deleted")))
+      (if_not ($absent? manager/unload_policy) (manager/unload_policy/on_unload candidate "deleted")))
     (let key $"session_delete/${id}")
     (let intent {^records records ^done false})
     (record_core_state manager/events "workspace" "workspace" "session/state" key intent)
     (flush_event_store manager/events)
-    (if_not ($absent? manager/runtime/channel_queues)
-      (for candidate in ids (tombstone_channel_session manager/runtime/channel_queues candidate)))
+    (if_not ($absent? manager/runtime/services/values/channel_queues)
+      (for candidate in ids (tombstone_channel_session manager/runtime/services/values/channel_queues candidate)))
     (finish_session_deletion manager/events key intent)
     (for candidate in ids
       (manager/index/.get .delete candidate)

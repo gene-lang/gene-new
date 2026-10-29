@@ -1,7 +1,8 @@
 # Runtime-owned computer grants and durable driver receipts. The replaceable
 # plugin sees IDs/records and retains a counted lease through its last reader.
 (mod computer_host)
-(import [ComputerHost CommandContext CommandResult ServiceError append_prompt] ^from "../plugin_api")
+(import [ComputerHost CommandContext CommandResult ServiceError] ^from "../plugin_api")
+(import [append_prompt] ^from "../public/response")
 (import [service_binding require_service] ^from "./service_handles")
 (import [require_command_scope] ^from "./command_scope")
 (import [execution_origin] ^from "./execution_budget")

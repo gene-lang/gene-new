@@ -1,5 +1,7 @@
 # Host-owned voice admissions. Optional plugins never own pending HTTP receipts.
 (mod harness_round_client ^profile web)
+(import [storage_get storage_set storage_remove] ^from "./workspace_storage.gene")
+(import [api_root] ^from "../src/web/contract.gene")
 (import [text flag integer] ^from "../src/common/launcher.gene")
 (import [voice_draft_key] ^from "../src/common/voice_transitions.gene")
 
@@ -11,17 +13,17 @@
   $"gene-harness/voice-pending/${client/workspace}")
 
 (fn clear_pending [client : RoundClient] : Void
-  ($session_storage/remove (storage_key client))
+  (storage_remove (storage_key client))
   (set client/pending nil))
 
 (fn hold_draft [client : RoundClient, session : Str] : Void
   (var key (voice_draft_key client/workspace session))
-  (var saved (?? ($session_storage/get key) ""))
+  (var saved (?? (storage_get key) ""))
   (if_yes (== saved "") (return))
   (try
     (var draft : PropMap ($json/parse saved))
     (set draft/held true)
-    (if_yes (! ($session_storage/set key ($json/stringify draft)))
+    (if_yes (! (storage_set key ($json/stringify draft)))
       (client/changed "The refused voice draft could not be marked for review. Inspect it before sending more."))
   catch Any (client/changed "The saved voice draft needs inspection before another submission.")))
 
@@ -30,14 +32,14 @@
   # Clearing an admitted prefix belongs to the host too: disabling the plugin
   # while POST is in flight must not leave accepted speech queued for resending.
   (var key (voice_draft_key client/workspace (text envelope/session)))
-  (var saved (?? ($session_storage/get key) ""))
+  (var saved (?? (storage_get key) ""))
   (if_yes (!= saved "")
     (try
       (var draft : PropMap ($json/parse saved))
       (var current (text draft/text))
       (var submitted (text envelope/text))
       (if (== current submitted)
-        ($session_storage/remove key)
+        (storage_remove key)
         (if_yes (str/starts_with? current ($to_str submitted " "))
           (var pieces (str/split current submitted))
           (var rest : (List Str) [])
@@ -49,7 +51,7 @@
           # A later timed-out utterance may have made the remaining suffix a
           # review draft while this admission was still unresolved.
           (set draft/held (flag draft/review_required))
-          ($session_storage/set key ($json/stringify draft))))
+          (storage_set key ($json/stringify draft))))
     catch Any (client/changed "The admitted voice draft could not be updated; inspect it before sending more.")))
   (clear_pending client)
   (client/settled envelope receipt))
@@ -64,7 +66,7 @@
   (set client/resolving true)
   (client/changed "Looking up the voice submission…")
   (client/api "GET"
-    $"/api/v8/sessions/${(text envelope/session)}/requests/${(text envelope/request_id)}?kind=round"
+    $"${(api_root)}/sessions/${(text envelope/session)}/requests/${(text envelope/request_id)}?kind=round"
     nil
     (fn [code : Int, data : Any] : Void
       (if_yes (!= workspace client/workspace) (return))
@@ -75,7 +77,7 @@
 
 (fn forget_round [client : RoundClient] : Bool
   (if_yes (|| client/resolving ($absent? client/pending)) (return false))
-  (if_yes (! ($session_storage/set (storage_key client) "")) (return false))
+  (if_yes (! (storage_set (storage_key client) "")) (return false))
   (clear_pending client)
   (client/changed "Voice request forgotten after inspection. This does not cancel or repeat earlier work.")
   true)
@@ -83,7 +85,7 @@
 (fn configure_rounds [client : RoundClient, workspace : Str] : Void
   (if_yes (== client/workspace workspace) (return))
   (set client/workspace workspace) (set client/pending nil) (set client/resolving false)
-  (var saved (?? ($session_storage/get (storage_key client)) ""))
+  (var saved (?? (storage_get (storage_key client)) ""))
   (if_yes (!= saved "")
     (try
       (var envelope : Any ($json/parse saved))
@@ -108,7 +110,7 @@
       (hold_draft client session)
       (done 400 {^^not_sent ^message "Voice input metadata could not be encoded."}) (return))
   (set client/resolving true)
-  (client/api "GET" $"/api/v8/sessions/${session}/voice" nil
+  (client/api "GET" $"${(api_root)}/sessions/${session}/voice" nil
     (fn [code : Int, state : Any] : Void
       (if_yes (!= code 200)
         (set client/resolving false) (hold_draft client session)
@@ -121,11 +123,11 @@
         (return))
       (var envelope : Any {^session session ^text value ^input input_copy ^^literal
         ^request_id ($browser/request_id) ^submission_seq (text state/next_submission_seq)})
-      (if_yes (! ($session_storage/set (storage_key client) ($json/stringify envelope)))
+      (if_yes (! (storage_set (storage_key client) ($json/stringify envelope)))
         (set client/resolving false)
         (done 409 {^^not_sent ^message "Browser storage is required to recover a voice submission."}) (return))
       (set client/pending envelope)
-      (client/api "POST" $"/api/v8/sessions/${session}/rounds" envelope
+      (client/api "POST" $"${(api_root)}/sessions/${session}/rounds" envelope
         (fn [accepted : Int, receipt : Any] : Void
           (set client/resolving false)
           (if (== accepted 202)

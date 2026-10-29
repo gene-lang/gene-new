@@ -1,10 +1,10 @@
 (import $test [describe it])
 (import [new_harness shutdown_harness contribute row] ^from "../../../src/kernel")
-(import [public_contract?] ^from "../../../src/runtime/public_context")
+(import [public_contract?] ^from "../../../src/runtime/callback_context")
 (import [CommandContext] ^from "../../../src/plugin_api")
 
 (describe "Host and public callback contexts"
-  (it "keeps direct host rows raw and projects every non-host activation" []
+  (it "keeps direct kernel rows raw and projects activations regardless of host policy" []
     (let h (new_harness))
     (try
       ($assert (! (public_contract? h "core")))
@@ -17,5 +17,5 @@
       (h/plugin_policies/.get .put "public" {^host false})
       ($assert (public_contract? h "public"))
       (h/plugin_policies/.get .put "host" {^host true})
-      ($assert (! (public_contract? h "host")))
+      ($assert (public_contract? h "host"))
     ensure (shutdown_harness h))))

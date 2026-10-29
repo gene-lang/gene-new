@@ -2,11 +2,6 @@
 (import [theme_overrides theme_tokens] ^from "../../../client/ui/theme")
 
 (describe "Plugin theme overrides in the browser"
-  (it "applies a legacy map to light mode only" []
-    (let legacy {^accent "#335577" ^ink "#203038"})
-    ($assert (== (theme_overrides legacy "light") legacy))
-    ($assert (== (theme_overrides legacy "dark") {})))
-
   (it "selects the active mode's map and nothing for a missing mode" []
     (let theme {^light {^accent "#335577"} ^dark {^accent "#9db4d6"}})
     ($assert (== (theme_overrides theme "light") {^accent "#335577"}))

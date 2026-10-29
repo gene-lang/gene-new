@@ -231,7 +231,7 @@
   card)
 
 (fn drop_transient [runtime, session : Str, id : Str]
-  (runtime/cards/transient/.get .delete (transient_key session id)))
+  (runtime/services/values/cards/transient/.get .delete (transient_key session id)))
 
 # The model defines or redefines a card. Every check runs before anything is
 # stored: a failed call leaves a new card absent and an old one intact.
@@ -301,12 +301,12 @@
     (if (== card/round round)
       (then
         (let key (transient_key session id))
-        (let pending (runtime/cards/transient/.get .get key))
+        (let pending (runtime/services/values/cards/transient/.get .get key))
         (let lease (acquire_snapshot runtime/h/snapshots))
         (let tree (try (render_live runtime lease session card/source checked)
           ensure (release_snapshot runtime/h/snapshots lease)))
         (let revision (+ ($math/max card/revision (?? pending/revision 0)) 1))
-        (runtime/cards/transient/.get .put key
+        (runtime/services/values/cards/transient/.get .put key
           {^session session ^id id ^definition_revision card/definition_revision
            ^state checked ^tree tree ^revision revision})
         (let shown (copy_data card))
@@ -326,9 +326,9 @@
 
 # Live progress becomes durable at each turn end, round end, wait or cancel.
 (fn flush_card_progress [runtime, session : Str]
-  (if ($absent? runtime/cards) (return 0))
+  (if ($absent? runtime/services/values/cards) (return 0))
   (let pending [])
-  (for [key entry] in runtime/cards/transient/.get
+  (for [key entry] in runtime/services/values/cards/transient/.get
     (if (== entry/session session) (pending .push entry)))
   (for entry in pending
     (with_card_gate runtime session entry/id (fn []
@@ -347,7 +347,7 @@
   (validate_card_id id)
   (let card (card_record runtime session id))
   (if ($absent? card) (card_fail "not_found" $"no card ${id} in this session"))
-  (let pending (runtime/cards/transient/.get .get (transient_key session id)))
+  (let pending (runtime/services/values/cards/transient/.get .get (transient_key session id)))
   {^id card/id ^title card/title ^kind card/kind
    ^state (?? pending/state card/state)
    ^definition_revision card/definition_revision
@@ -422,12 +422,12 @@
 # Every admission left by an earlier process is resolved before this process
 # commits a click in the session, while the card still names its input.
 (fn resolve_earlier_admissions [runtime, session : Str]
-  (if (== (runtime/cards/resolved/.get .get session) true) (return nil))
+  (if (== (runtime/services/values/cards/resolved/.get .get session) true) (return nil))
   (for [key state] in (core_states runtime/events "session" session)
     (if (&& ($str/starts_with? ($to_str key) "card_action/") (! ($absent? state))
             (== state/status "admitted") (!= state/epoch runtime/epoch))
       (resolved_receipt runtime session state)))
-  (runtime/cards/resolved/.get .put session true)
+  (runtime/services/values/cards/resolved/.get .put session true)
   nil)
 
 (fn card_action_receipt [runtime, session : Str, input_id : Str]
@@ -457,14 +457,14 @@
   request)
 
 (fn register_inflight [runtime, session : Str, delta : Int]
-  (let counts runtime/cards/inflight/.get)
+  (let counts runtime/services/values/cards/inflight/.get)
   (counts .put session ($math/max 0 (+ (?? (counts .get session) 0) delta))))
 
 # Resuming a round waits for card operations admitted before it, so the model
 # never runs while a click on a card it owns is still in flight.
 (fn wait_for_card_actions [runtime, session : Str]
-  (if ($absent? runtime/cards) (return nil))
-  (while (> (?? (runtime/cards/inflight/.get .get session) 0) 0)
+  (if ($absent? runtime/services/values/cards) (return nil))
+  (while (> (?? (runtime/services/values/cards/inflight/.get .get session) 0) 0)
     ($sleep 5))
   nil)
 

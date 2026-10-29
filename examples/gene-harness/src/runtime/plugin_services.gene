@@ -1,0 +1,34 @@
+# Runtime-owned persistence and publisher adapters. The kernel retains only
+# callbacks; it neither imports these subsystems nor holds their live objects.
+(mod plugin_services)
+(import [append_plugin_event prepare_plugin_state plugin_state append_core_event] ^from "../storage/state")
+(import [safe_publish update_notification list_source_messages clear_source_message] ^from "../notifications/publisher")
+(import [HarnessError] ^from "../errors")
+
+(type PluginServices ^^private ^props {^notify Fn ^notifications Fn
+  ^notification_update Fn ^notification_clear Fn ^emit_event Fn ^state Fn ^update_state Fn})
+
+(fn require_events [events]
+  (if ($absent? events)
+    (fail (HarnessError ^message "plugin persistence requires a durable event store"))))
+
+(fn new_plugin_services [events, inbox = nil]
+  ($freeze_shallow (PluginServices
+    ^notify (fn [h, owner, revision, message]
+      (safe_publish ^revision revision h inbox owner message))
+    ^notifications (fn [owner] (list_source_messages inbox owner))
+    ^notification_update (fn [h, owner, revision, id, changes]
+      (update_notification ^revision revision h inbox owner id changes))
+    ^notification_clear (fn [owner, id, revision] (clear_source_message inbox owner id revision))
+    ^emit_event (fn [owner, scope, stream, event]
+      (require_events events)
+      (append_plugin_event events scope stream owner event))
+    ^state (fn [owner, scope, stream]
+      (if ($absent? events) nil (plugin_state events scope stream owner)))
+    ^update_state (fn [owner, scope, stream, state_writer, value]
+      (require_events events)
+      (let writer ($thaw state_writer))
+      (writer .put "at" ($to_str ($now)))
+      (let event (prepare_plugin_state ^writer writer events scope stream owner value))
+      (append_core_event ^projection owner events scope stream event)
+      value))))

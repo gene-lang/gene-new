@@ -1,12 +1,12 @@
 (mod commands)
 (import [with_command_scope] ^from "./command_scope")
-(import [byte_prefix] ^from "../text")
+(import [byte_prefix] ^from "../public/text")
 (import [command_identity same_command_identity?] ^from "./command_identity")
 (import [ui_record] ^from "../ui/state")
 (import ^from "../kernel" [rows row contribute CommandChanged publish])
 (import ^from "../plugin_api" ^^export [CommandContext CommandResult])
 (import ^from "./composition" [acquire_snapshot release_snapshot take_composition_changes discard_composition_changes])
-(import [drain_workspace_changes] ^from "../storage/workspace")
+(import [drain_workspace_changes] ^from "../storage/workspace_activation")
 (import ^from "../agents/harness_turn" [workspace_bindings])
 (import ^from "../agents/eval_site" [evaluate_response])
 (import [close_execution_scope] ^from "./execution_budget")
@@ -23,13 +23,13 @@
 
 (type CommandError ^props {^code Str ^message Str} ^impl [Error])
 (impl Error for CommandError)
-(type CommandManager ^props {^runtime Any ^active Any ^watchers Any ^gate Any ^cancel Any ^stop Any ^accepting Any ^closed Any ^modes Any?})
+(type CommandManager ^props {^runtime Any ^active Any ^watchers Any ^gate Any ^accepting Any ^closed Any ^modes Any?})
 
 (fn command_state [runtime, session : Str]
   (with_body_use runtime (fn [] (command_state_impl runtime session))))
 
 (fn command_state_impl [runtime, session : Str]
-  (let manager runtime/commands)
+  (let manager runtime/services/values/commands)
   (if ($absent? manager) (return (read_command_state runtime session)))
   (manager/gate (fn [] (read_command_state runtime session))))
 
@@ -128,7 +128,7 @@
   (let bindings
     (workspace_bindings ctx/runtime/h ctx/snapshot ctx/session ctx/runtime/root))
   (let turn (operator_turn ctx))
-  (let environment (env ^bindings (operator_bindings bindings ctx/runtime/root turn)))
+  (let environment (env ^bindings (operator_bindings bindings ctx/runtime/root turn ctx/snapshot)))
   (let context (operator_context ctx turn))
   (let rewritten (operator_forms forms))
   (let scope (operator_scope ctx context))
@@ -201,31 +201,9 @@
      ^doc "View a file or directory, up to 400 lines."
      ^run view_command ^^raw_input}])
 
-(fn install_control_commands [runtime]
+(fn install_theme_command [runtime]
   (let definitions
     [
-      [
-        "cancel"
-        "/cancel"
-        "Cancel this session's round or pending questions."
-        (fn [ctx]
-          (let cancelled (if ($absent? ctx/manager/cancel) false (ctx/manager/cancel ctx/session)))
-          (CommandResult ^display (if cancelled "Stopped." "No round is running.")))]
-      [
-        "stop"
-        "/stop"
-        "Stop the workspace process."
-        (fn [ctx]
-          (ctx/manager/stop ctx/session 0 (== ($str/trim ctx/raw) "--confirm"))
-          (CommandResult ^display "Stopped." ^stop 0))]
-      [
-        "restart"
-        "/restart"
-        "Stop and restart under the launcher."
-        (fn [ctx]
-          (ctx/manager/stop ctx/session 75 (== ($str/trim ctx/raw) "--confirm"))
-          (let supervised (|| (== ctx/runtime/supervised true) (== ($os/env? "GENE_HARNESS_SUPERVISED") "1")))
-          (CommandResult ^display (if supervised "Restarting." "Stopped. Direct gene run cannot restart this process; start it again from the terminal.") ^stop (if supervised 75 0)))]
       [
         "theme"
         "/theme [light|dark]"
@@ -233,10 +211,10 @@
         (fn [ctx]
           (let requested ($str/trim ctx/raw))
           (if (== requested "")
-            (return (CommandResult ^display $"Theme: ${(appearance_mode ctx/runtime/h)}." ^!attached)))
+            (return (CommandResult ^display $"Theme: ${(appearance_mode ctx/runtime)}." ^!attached)))
           (if_not (theme_modes .contains? requested)
             (return (CommandResult ^display "Use /theme light or /theme dark." ^!attached)))
-          (CommandResult ^display $"Theme set to ${(set_appearance ctx/runtime/h requested)}." ^!attached))]])
+          (CommandResult ^display $"Theme set to ${(set_appearance ctx/runtime requested)}." ^!attached))]])
   (for entry in definitions
     (if ($absent? (row runtime/h "commands" entry/0))
       (contribute
@@ -245,17 +223,31 @@
         "commands"
         {^name entry/0 ^usage entry/1 ^doc entry/2 ^run entry/3 ^^raw_input}))))
 
-(fn new_command_manager [runtime, ^cancel cancel = nil, ^stop stop = nil]
-  (install_control_commands runtime)
-  (let manager (CommandManager ^runtime runtime ^active ($cell {}) ^watchers ($cell {}) ^gate ($sync/gate) ^cancel cancel ^stop stop ^accepting ($cell true) ^closed ($cell false)))
+(fn command_session_busy? [manager, session : Str]
+  (for [key task] in manager/active/.get
+    (if ($str/starts_with? ($to_str key) $"${session}:") (return true)))
+  (let mode (manager/modes/states/.get .get session))
+  (if_not ($absent? mode/running) (return true))
+  # Admission saves its receipt before installing the task. Read the durable
+  # projection too, without acquiring the command gate under a session gate.
+  (let ref (core_state manager/runtime/events "session" session "commands"))
+  (if_not ($absent? ref/digest)
+    (for command in (/records ($serde/read_data (read_body manager/runtime ref/digest)))
+      (if (&& (== command/status "running") (== command/runtime_epoch manager/runtime/epoch))
+        (return true))))
+  false)
+
+(fn new_command_manager [runtime]
+  (install_theme_command runtime)
+  (let manager (CommandManager ^runtime runtime ^active ($cell {}) ^watchers ($cell {}) ^gate ($sync/gate) ^accepting ($cell true) ^closed ($cell false)))
   (set manager/modes (new_input_modes runtime
     (fn [session parsed]
       (with_body_use runtime (fn [] (submit_routed_command manager session parsed))))
     (fn [session id] (cancel_command manager session id))
     (fn [session] (/records (command_state runtime session)))))
-  (set runtime/modes manager/modes)
-  (set runtime/sessions/before_remove
-    (fn [session reason] (close_mode_locked manager/modes session reason)))
+  (set runtime/sessions/unload_policy
+    {^busy? (fn [session] (command_session_busy? manager session))
+     ^on_unload (fn [session reason] (close_mode_locked manager/modes session reason))})
   manager)
 
 (fn command_changed [manager, session : Str, record]
@@ -547,15 +539,10 @@ Stopped."""))))
   receipt)
 
 (fn take_command_attachments [runtime, session : Str]
-  (let manager runtime/commands)
+  (let manager runtime/services/values/commands)
   (manager/gate (fn []
     (let state (read_command_state runtime session))
-    # Older hosts queued these operator results automatically. Discard any
-    # still pending after an upgrade, including items whose receipts expired.
-    (let items ($filter state/attached (fn [item]
-      (let id (?? item/id ""))
-      (! (|| ($str/ends_with? id ".run") ($str/ends_with? id ".sh")
-             ($str/ends_with? id ".repl"))))))
+    (let items state/attached)
     (state .put "attached" [])
     (save_command_state runtime session state)
     items)))
@@ -571,4 +558,5 @@ Stopped."""))))
 
 (fn close_command_manager [manager]
   (if (manager/closed .swap true) (return nil))
-  (quiesce_command_manager manager))
+  (try (quiesce_command_manager manager)
+    ensure (set manager/runtime/sessions/unload_policy nil)))

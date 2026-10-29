@@ -6,6 +6,7 @@
   ^from "./turn_participants")
 (import [delegation_participant] ^from "./delegation_participant")
 (import [cards_participant] ^from "./cards_participant")
+(import [voice_participant] ^from "./voice_participant")
 (import [response_execution_limits] ^from "../plugin_api")
 (import [public_turn_context public_phase_value public_phase_result] ^from "./participant_contract")
 (import [participant_excluded? record_participant_fault health_participant] ^from "./participant_health")
@@ -67,6 +68,7 @@
   (prepared .put "_host" native)
   (prepared .put "_owner" owner)
   (let policy (runtime/h/plugin_policies/.get .get owner))
+  (prepared .put "_mandatory" (|| native (== policy/host true)))
   (prepared .put "_source_digest" policy/source_digest)
   (prepared .put "_activation_revision" policy/activation_revision)
   (for field in (callback_fields)
@@ -80,12 +82,14 @@
   (registry runtime/h "turn_participants" ^owner native_owner
     ^spec {^name "turn_participants" ^^unique ^^ordered ^schema validate_participant
       ^prepare (fn [owner candidate] (prepare_participant runtime owner candidate)) ^callbacks (callback_fields)
-      ^reserved {^core/delegation native_owner ^core/cards native_owner ^core/plugin_recovery native_owner} ^^same_owner})
+      ^reserved {^core/delegation native_owner ^core/cards native_owner ^core/voice native_owner ^core/plugin_recovery native_owner} ^^same_owner})
   (contribute runtime/h native_owner "turn_participants" (health_participant runtime))
-  (if_not ($absent? runtime/delegations)
-    (contribute runtime/h native_owner "turn_participants" (delegation_participant runtime/delegations)))
-  (if_not ($absent? runtime/cards)
+  (if_not ($absent? runtime/services/values/delegations)
+    (contribute runtime/h native_owner "turn_participants" (delegation_participant runtime/services/values/delegations)))
+  (if_not ($absent? runtime/services/values/cards)
     (contribute runtime/h native_owner "turn_participants" (cards_participant runtime)))
+  (if_not ($absent? runtime/services/values/voice)
+    (contribute runtime/h native_owner "turn_participants" (voice_participant)))
   nil)
 
 (fn new_runtime_turn_transaction [runtime, lease, context]

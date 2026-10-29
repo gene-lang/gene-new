@@ -9,7 +9,7 @@
 (import [pending_ingress handoff_schedule defer_handoff wake_root_waiters finish_handoff] ^from "./ingress")
 (import [render_reply] ^from "./render")
 (import [parse_control apply_control] ^from "./controls")
-(import [byte_prefix] ^from "../text")
+(import [byte_prefix] ^from "../public/text")
 (import [connect api] ^from "../cli/client")
 (import [create_session_unlocked] ^from "../runtime/sessions")
 (import [admit_channel_queue round_state] ^from "../runtime/round_controller")
@@ -23,14 +23,14 @@
 (fn open_channel_service [runtime, controller]
   (let owner (open_authority ($path/join runtime/state_root "channels" "owner")))
   (recover_deliveries owner)
-  (let dirty (read runtime/channel_queues (fn [state]
+  (let dirty (read runtime/services/values/channel_queues (fn [state]
     (let ids {}) (for [id queue] in state/queues (ids .put ($to_str id) true)) ids)))
   (let service (ChannelService ^runtime runtime ^controller controller ^owner owner ^gate ($sync/gate)
-    ^closed ($cell false) ^settings ($cell (?? (/settings (snapshot runtime/channel_queues)) {}))
+    ^closed ($cell false) ^settings ($cell (?? (/settings (snapshot runtime/services/values/channel_queues)) {}))
     ^health ($cell {}) ^dirty ($cell dirty) ^retry_at ($cell {}) ^subscriptions [] ^users (open_users)))
   (finish_shares service)
   (let mark (fn [id]
-    (if (has_queue? runtime/channel_queues id) (service/dirty/.get .put id true))))
+    (if (has_queue? runtime/services/values/channel_queues id) (service/dirty/.get .put id true))))
   (service/subscriptions .push (runtime/h/bus .subscribe RoundChanged
     (fn [event] (mark event/session))))
   (service/subscriptions .push (runtime/h/bus .subscribe DurableRecord
@@ -44,14 +44,14 @@
 
 (fn source_state [service]
   (if service/closed/.get (channel_error "unavailable" "The channel service is closed."))
-  (snapshot service/runtime/channel_queues))
+  (snapshot service/runtime/services/values/channel_queues))
 
 (fn source_header [service]
-  (read service/runtime/channel_queues (fn [state]
+  (read service/runtime/services/values/channel_queues (fn [state]
     {^source state/source ^owner_root state/owner_root ^workspace state/workspace})))
 
 (fn session_state [service, session : Str]
-  (read service/runtime/channel_queues (fn [state]
+  (read service/runtime/services/values/channel_queues (fn [state]
     (let queue (state/queues .get session))
     {^queues ({} .assoc session queue)
      ^bindings ({} .assoc queue/binding (state/bindings .get queue/binding))
@@ -102,7 +102,7 @@
   (if (|| ($absent? source) (!= source/account data/account) (!= source/team data/team)
           (!= source/channel data/channel))
     (channel_error "forbidden" "The Slack thread does not match this workspace's channel source."))
-  (let target (read service/runtime/channel_queues (fn [state]
+  (let target (read service/runtime/services/values/channel_queues (fn [state]
     (let binding (state/bindings .get (binding_key (data .assoc "transport" "slack"))))
     (last_thread_message state (data .assoc "last_message" binding/last_message)))))
   (let request (data .assoc "message" target))
@@ -133,13 +133,13 @@
   (let route (policy/routes .get route_id))
   (if (|| ($absent? route) (!= route/owner policy/owner) (!= route/workspace service/runtime/root))
     (channel_error "forbidden" "The owner has no matching route to this workspace."))
-  (configure_queues service/runtime/channel_queues route ^owner_root canonical)
+  (configure_queues service/runtime/services/values/channel_queues route ^owner_root canonical)
   {^source (/source (source_state service))})
 
 (fn ensure_session [service, session : Str]
   (let manager service/runtime/sessions)
   (manager/mutating (fn []
-    (let state (read service/runtime/channel_queues (fn [state]
+    (let state (read service/runtime/services/values/channel_queues (fn [state]
       (let queue (state/queues .get session))
       (let binding (state/bindings .get queue/binding))
       {^source state/source ^queues ({} .assoc session queue) ^bindings ({} .assoc binding/id binding)
@@ -152,19 +152,19 @@
     (if_yes ($absent? existing)
       (if (|| (== binding/status "active")
               (! ($absent? (core_state service/runtime/events "workspace" "workspace" ($to_str "session_delete/" session)))))
-        (then (tombstone_session service/runtime/channel_queues session) (return nil)))
+        (then (tombstone_session service/runtime/services/values/channel_queues session) (return nil)))
       (let root (state/messages .get binding/root_input))
       (let title (byte_prefix ($str/join (root/message/text .split "\n") " ") 160))
       (create_session_unlocked manager ^id session ^title title ^first_request root/message/text
         ^channel {^transport "slack" ^account binding/account ^team binding/team
           ^channel binding/channel ^thread binding/thread ^binding binding/id
           ^owner state/source/owner ^route state/source/id}))
-    (activate_binding service/runtime/channel_queues binding/id))))
+    (activate_binding service/runtime/services/values/channel_queues binding/id))))
 
 (fn deleted_notice [service, disposition, message]
   (if (!= disposition/status "deleted") (return nil))
-  (let status (queue_status service/runtime/channel_queues disposition/session))
-  (queue_output service/runtime/channel_queues
+  (let status (queue_status service/runtime/services/values/channel_queues disposition/session))
+  (queue_output service/runtime/services/values/channel_queues
     (output_intent service status/binding ($to_str "deleted-" (key [message/account message/channel message/message]))
       "channel-binding" "This Harness conversation was deleted. Start a new top-level request in a new Slack thread."))
   nil)
@@ -183,13 +183,13 @@
       (let result (apply_control service supplied/message
         (fn [] (authorize_input service supplied/message/author))))
       (if_yes (== result/status "control")
-        (let status (queue_status service/runtime/channel_queues result/session))
-        (queue_output service/runtime/channel_queues
+        (let status (queue_status service/runtime/services/values/channel_queues result/session))
+        (queue_output service/runtime/services/values/channel_queues
           (output_intent service status/binding ($to_str "control-" result/id)
             (?? result/result/round (?? result/target "channel-control")) result/result/text)))
       (deleted_notice service result supplied/message)
       (return result))
-    (let disposition (enqueue service/runtime/channel_queues supplied/message decision
+    (let disposition (enqueue service/runtime/services/values/channel_queues supplied/message decision
       ^start_allowed (== supplied/start_allowed true)))
     (if (== disposition/status "queued") (ensure_session service disposition/session))
     (deleted_notice service disposition supplied/message)
@@ -223,23 +223,23 @@
     (if (<= event/seq cursor) (continue))
     (let payload event/payload)
     (let id ($to_str "event-" (key [session event/seq])))
-    (if_yes (! (read service/runtime/channel_queues (fn [state] ($has_key? state/outbox id))))
+    (if_yes (! (read service/runtime/services/values/channel_queues (fn [state] ($has_key? state/outbox id))))
       (if (&& (== event/type "reply") (== payload/final true) (!= payload/synthetic true))
-        (queue_output service/runtime/channel_queues
+        (queue_output service/runtime/services/values/channel_queues
           (output_intent service binding id payload/round
             ($to_str "Agent:\n" (?? payload/text "(Empty reply)")))))
       (if (&& (== event/type "turn/request") (== payload/initial true) (== payload/initiator "user"))
-        (queue_output service/runtime/channel_queues (output_intent service binding id payload/round
+        (queue_output service/runtime/services/values/channel_queues (output_intent service binding id payload/round
           ($to_str "User (Harness browser):\n" (?? payload/text payload/settled)))))
       (if_yes (&& (== event/type "question/answered") (== payload/state/answer_source/kind "harness"))
         (let lines ["User (Harness) answered questions:"])
         (for question in payload/state/questions
           (lines .push ($to_str question/prompt ": " (payload/state/answers .get question/id))))
-        (queue_output service/runtime/channel_queues (output_intent service binding id payload/state/round
+        (queue_output service/runtime/services/values/channel_queues (output_intent service binding id payload/state/round
           ($str/join lines "\n")))))
     (set through event/seq))
   (if (> through cursor)
-    (mutate service/runtime/channel_queues (fn [latest]
+    (mutate service/runtime/services/values/channel_queues (fn [latest]
       (if ($absent? latest/cursors) (latest .put "cursors" {}))
       (latest/cursors .put session through)) ^changes {^cursors [session]}))
   nil)
@@ -249,7 +249,7 @@
   (let fingerprint (key (if remove ["remove"] text)))
   (let candidate (output_intent service binding id round text ^mode "progress"))
   (if remove (candidate .put "remove" true))
-  (let record (mutate service/runtime/channel_queues (fn [latest]
+  (let record (mutate service/runtime/services/values/channel_queues (fn [latest]
     (if ($absent? latest/progress) (latest .put "progress" {}))
     (let existing (latest/progress .get id))
     (if (== existing/fingerprint fingerprint) (return existing))
@@ -261,14 +261,14 @@
     (latest/progress .put id next)
     next) ^changes {^progress [id]}))
   (if (== record/retired true) nil
-    (queue_output service/runtime/channel_queues record/intent)))
+    (queue_output service/runtime/services/values/channel_queues record/intent)))
 
 (fn project_queue [service, session : Str]
-  (let status (queue_status service/runtime/channel_queues session))
+  (let status (queue_status service/runtime/services/values/channel_queues session))
   (if (!= status/binding/status "active") (return nil))
   (let holds ($filter status/holds (fn [hold] (== hold/kind "operator"))))
   (let id ($to_str "queue-" (key session)))
-  (if (&& holds/.empty? (read service/runtime/channel_queues
+  (if (&& holds/.empty? (read service/runtime/services/values/channel_queues
         (fn [state] ($absent? ((?? state/progress {}) .get id))))) (return nil))
   (let names [])
   (for hold in holds
@@ -296,7 +296,7 @@
   (for receipt in (/receipts (round_state service/controller session))
     (if ((?? binding/archived_rounds []) .contains? receipt/id) (continue))
     (let id ($to_str "progress-" (key [session receipt/id])))
-    (let prior (read service/runtime/channel_queues (fn [state] ((?? state/progress {}) .get id))))
+    (let prior (read service/runtime/services/values/channel_queues (fn [state] ((?? state/progress {}) .get id))))
     (let display_state (if (&& (== receipt/state "paused") (! ($absent? receipt/continuation_stop)))
       (if (== receipt/continuation_stop "superseded") "superseded" "failed") receipt/state))
     (let active (["running" "waiting" "paused"] .contains? display_state))
@@ -316,7 +316,7 @@
     (queue_progress service binding id receipt/id text)
     (if_yes (&& (== receipt/state "waiting") (! ($absent? receipt/questions)))
       (let question_id ($to_str "questions-" (key [session receipt/questions/id])))
-      (if_not (read service/runtime/channel_queues (fn [state] ($has_key? state/outbox question_id)))
+      (if_not (read service/runtime/services/values/channel_queues (fn [state] ($has_key? state/outbox question_id)))
         (let lines ["Agent needs answers:"])
         (let example {})
         (for question in receipt/questions/questions
@@ -326,7 +326,7 @@
           (example .put question/id (if (== question/multi true) []
             (?? question/recommended (if ($absent? question/choices) "your answer" question/choices/0)))))
         (lines .push ($to_str "Reply using !answer " receipt/questions/id " " ($json/stringify example)))
-        (queue_output service/runtime/channel_queues
+        (queue_output service/runtime/services/values/channel_queues
           (output_intent service binding question_id receipt/id ($str/join lines "\n"))))))
   nil)
 
@@ -356,8 +356,8 @@
 (fn handoff_outputs [service, ^force force : Bool = false]
   (let source (/source (source_header service)))
   (if ($absent? source) (return nil))
-  (for outgoing in (if force (pending_output service/runtime/channel_queues)
-                    (due_output service/runtime/channel_queues))
+  (for outgoing in (if force (pending_output service/runtime/services/values/channel_queues)
+                    (due_output service/runtime/services/values/channel_queues))
     (try
       (let result (if (== outgoing/status "pending")
         (if (local_owner? service source)
@@ -366,7 +366,7 @@
         (if (local_owner? service source)
           (output_result service/owner outgoing/intent/id)
           (owner_call service "POST" "result" {^id outgoing/intent/id}))))
-      (reconcile_output service/runtime/channel_queues result)
+      (reconcile_output service/runtime/services/values/channel_queues result)
       (if (== result/intent/mode "thread") (finish_shares service))
       (if (&& (!= outgoing/result/status result/status)
               (["uncertain" "failed" "delivered"] .contains? result/status))
@@ -377,7 +377,7 @@
           (flush_event_store service/runtime/events)))
       (service/health/.get .delete outgoing/intent/id)
     catch Error
-      (defer_output service/runtime/channel_queues outgoing/intent/id ^error (?? $err/code "handoff_unavailable"))
+      (defer_output service/runtime/services/values/channel_queues outgoing/intent/id ^error (?? $err/code "handoff_unavailable"))
       (if (&& (== $err/code "uncertain") (!= outgoing/last_error "uncertain"))
         (then
           (append_core_event service/runtime/events "session" outgoing/intent/session
@@ -389,7 +389,7 @@
 
 (fn delivery_status [service, session : Str]
   (if ($absent? service) (return []))
-  (read service/runtime/channel_queues (fn [state]
+  (read service/runtime/services/values/channel_queues (fn [state]
     (let result [])
     (for [id record] in state/outbox
       (if (&& (== record/intent/session session)
@@ -408,13 +408,13 @@
 (fn tick_channels [service]
   (if service/closed/.get (return nil))
   (finish_shares service)
-  (for [id changed] in (take_changes service/runtime/channel_queues)
+  (for [id changed] in (take_changes service/runtime/services/values/channel_queues)
     (if (!= ($to_str id) "revision") (service/dirty/.get .put ($to_str id) true)))
   (for [id due] in service/retry_at/.get
     (if (<= due ($os/wall_ms)) (service/dirty/.get .put ($to_str id) true)))
   (for [session ignored] in (service/dirty .swap {})
     (let id ($to_str session))
-    (let status (queue_status service/runtime/channel_queues id))
+    (let status (queue_status service/runtime/services/values/channel_queues id))
     (let binding status/binding)
     (if (== binding/status "deleted") (continue))
     (try

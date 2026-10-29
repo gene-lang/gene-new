@@ -32,10 +32,10 @@
     (put_cordis_plugin service/runtime/h (qualification_provider calls)
       {^^host ^limits service/runtime/profile/limits})
     (set service/runtime/profile/provider "qualification")
-    (configure_account service/runtime/channels/owner "qualification" "/unused" "/unused"
+    (configure_account service/runtime/services/values/channels/owner "qualification" "/unused" "/unused"
       {^team "T123" ^app "A123" ^bot "B123" ^bot_user "UBOT" ^operator "UOWNER"})
-    (let route (configure_route service/runtime/channels/owner "qualification" "C123" workspace))
-    (bind_workspace service/runtime/channels workspace route/id)
+    (let route (configure_route service/runtime/services/values/channels/owner "qualification" "C123" workspace))
+    (bind_workspace service/runtime/services/values/channels workspace route/id)
     (body service calls route)
   ensure (close_session_service service)))
 
@@ -79,25 +79,25 @@
     (isolated this_mod/.path "requires a reconciled final delivery rather than an empty outbox before projection"
       (fn [workspace]
         (fixture workspace (fn [service calls route]
-          (let incoming (receive_envelope service/runtime/channels/owner "qualification"
+          (let incoming (receive_envelope service/runtime/services/values/channels/owner "qualification"
             (frame "1.000001" "<@UBOT> nonce")))
-          (let accepted (receive_handoff service/runtime/channels incoming))
+          (let accepted (receive_handoff service/runtime/services/values/channels incoming))
           ($assert ($absent? (completed_qualification service "1.000001")))
-          (drain_session service/runtime/channels accepted/session)
-          (let watcher (service/controller/watchers/.get .get accepted/session))
+          (drain_session service/runtime/services/values/channels accepted/session)
+          (let watcher (/watcher (service/runtime/services/values/controller/rounds/.get .get accepted/session)))
           watcher/.join
           ($assert (== calls/.get 1))
           ($assert ($absent? (completed_qualification service "1.000001")))
-          (project_events service/runtime/channels accepted/session)
-          (handoff_outputs service/runtime/channels)
+          (project_events service/runtime/services/values/channels accepted/session)
+          (handoff_outputs service/runtime/services/values/channels)
           ($assert ($absent? (completed_qualification service "1.000001")))
           (let api (open_api "test" ^requester (fn [request]
             {^status 200 ^headers [] ^body ($binary/from_str ($json/stringify {^^ok ^ts "2.000001"}))})))
           (try
-            (for outgoing in (pending_output service/runtime/channel_queues)
-              (deliver_output service/runtime/channels/owner api outgoing/intent/id))
+            (for outgoing in (pending_output service/runtime/services/values/channel_queues)
+              (deliver_output service/runtime/services/values/channels/owner api outgoing/intent/id))
             ($assert ($absent? (completed_qualification service "1.000001")))
-            (handoff_outputs service/runtime/channels ^^force)
+            (handoff_outputs service/runtime/services/values/channels ^^force)
             ($assert (== (/session (completed_qualification service "1.000001")) accepted/session))
           ensure (close_api api)))))))
 
@@ -107,10 +107,10 @@
         (for fail_retirement in [false true]
           (let root ($path/join workspace (if fail_retirement "failure" "ordinary")))
           (fixture root (fn [service calls route]
-            (configure_account service/runtime/channels/owner "other" "/unused" "/unused"
+            (configure_account service/runtime/services/values/channels/owner "other" "/unused" "/unused"
               {^team "T456" ^app "A456" ^bot "B456" ^bot_user "UBOT2" ^operator "UOTHER"})
-            (let other (configure_route service/runtime/channels/owner "other" "C456" ($path/join root "other")))
-            (if fail_retirement (close_channel_store service/runtime/channels/owner))
+            (let other (configure_route service/runtime/services/values/channels/owner "other" "C456" ($path/join root "other")))
+            (if fail_retirement (close_channel_store service/runtime/services/values/channels/owner))
             (let checked ($cell false))
             (let native {^open_count (fn [] (checked .set true) 0)})
             (let failed (try (retire_qualification service native) false

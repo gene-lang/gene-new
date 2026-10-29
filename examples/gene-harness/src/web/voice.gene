@@ -9,7 +9,7 @@
 (import [new_speech_service speech_settings speech_catalog warm_engine synthesize_speech
   speech_resources_current? cool_speech close_speech_service choose_speech_engine] ^from "../runtime/speech_service")
 (import [decode_audio_frame encode_audio_frame new_capture capture_frame new_credit
-  playback_ack playback_credit charge_playback] ^from "../runtime/voice_protocol")
+  playback_ack playback_credit charge_playback] ^from "../public/voice_frames")
 (import [recognition_timeout_ms] ^from "../common/voice_transitions")
 
 (type VoiceHub ^props {^host Any ^speech Any ^peers Any ^jobs Any ^closed Any ^send Any ^maintenance Any ^clock Any})
@@ -37,9 +37,9 @@
   nil)
 
 (fn latency_trace [hub : VoiceHub, peer, phase : Str, id : Str, timing]
-  (if ($absent? hub/host/events) (return nil))
+  (if ($absent? hub/host/runtime/events) (return nil))
   (try
-    (append_core_event hub/host/events "session" peer/session
+    (append_core_event hub/host/runtime/events "session" peer/session
       {^type "trace" ^kind "voice/latency" ^text "voice/latency" ^phase phase ^identity id
        ^timing timing ^^ignorable})
     catch Any nil)
@@ -53,7 +53,7 @@
   result)
 
 (fn owns_voice? [hub : VoiceHub, peer] : Bool
-  (let claim (voice_snapshot hub/host/runtime/voice))
+  (let claim (voice_snapshot hub/host/runtime/services/values/voice))
   (&& (! peer/closed) peer/hello (== claim/enabled true)
     (== claim/owner peer/owner) (== claim/token peer/token) (== claim/session peer/session)))
 
@@ -79,7 +79,7 @@
   (if ($absent? peer) (return nil))
   (peer .put "closed" true)
   (cancel_peer_streams hub peer)
-  (if peer/hello (voice_disconnected ^transport "voice" hub/host/runtime/voice peer/owner))
+  (if peer/hello (voice_disconnected ^transport "voice" hub/host/runtime/services/values/voice peer/owner))
   (hub/peers/.get .delete key)
   nil)
 
@@ -240,7 +240,7 @@
   nil)
 
 (fn reply_speech [hub : VoiceHub, session : Str, id : Str] : Str
-  (for event in (events_for hub/host/events "session" session)
+  (for event in (events_for hub/host/runtime/events "session" session)
     (if (&& (== event/type "reply") (== id $"${session}/${event/seq}"))
       (return (/speech (event_record session event)))))
   (voice_error "not_found" "Reply is unavailable in this conversation."))
@@ -353,7 +353,7 @@
                   (!= ($head data/formats) List) (! (data/formats .contains? "s16le")))
             (voice_error "forbidden" "A voice hello needs the page CSRF value and identity."))
           (peer .put "hello" true) (peer .put "owner" data/client_id)
-          (voice_connected ^transport "voice" hub/host/runtime/voice peer/owner)
+          (voice_connected ^transport "voice" hub/host/runtime/services/values/voice peer/owner)
           (control peer {^type "ready" ^engines (speech_catalog hub/speech)})
           (return nil))
         (if_yes (== data/type "claim")
@@ -361,7 +361,7 @@
           (let state (session_voice_claim hub/host data/session
             {^client_id peer/owner ^token data/token ^output (== data/output true)}))
           (peer .put "session" data/session) (peer .put "token" state/token)
-          (voice_use_transport hub/host/runtime/voice peer/owner state/token)
+          (voice_use_transport hub/host/runtime/services/values/voice peer/owner state/token)
           (peer .put "settings" (speech_settings hub/speech))
           (control peer {^type "claimed" ^session peer/session ^token peer/token ^engines (speech_catalog hub/speech)})
           (if (== data/input_host true) (warm_for_claim hub peer "recognizer"))
@@ -451,7 +451,7 @@
                     (recognition_timeout_ms (/ (* capture/bytes 1000) 32000)))))
         (control peer {^type "capture/error" ^id capture/id ^text capture/text ^message "Recording or recognition timed out."})
         (cancel_stream hub capture))))
-  (if (!= (/enabled (voice_snapshot hub/host/runtime/voice)) true) (cool_speech hub/speech))
+  (if (!= (/enabled (voice_snapshot hub/host/runtime/services/values/voice)) true) (cool_speech hub/speech))
   nil)
 
 # http/serve invokes its tick inline. Only schedule work here: a gate, worker

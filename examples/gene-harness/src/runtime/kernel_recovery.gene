@@ -1,0 +1,19 @@
+# Startup repair runs after catalog admission and before any execution host.
+# Reasoned session recovery precedes the broader sweep: a turn ends only once.
+(mod kernel_recovery)
+(import [recover_sessions] ^from "./sessions")
+(import [repair_interrupted_turns unload_event_stream] ^from "../storage/state")
+(import [recover_image_runs] ^from "../storage/image_recovery")
+
+(fn recover_runtime_state [runtime]
+  (recover_sessions runtime/sessions)
+  # Catalog admission loaded every stream, including the boot stream and
+  # operator calls that do not have a session-index entry. Sweep that full set.
+  (repair_interrupted_turns runtime/events)
+  (recover_image_runs runtime)
+  # Recovery does not make every conversation a live session or keep its
+  # transcript resident after the all-session validation/repair pass.
+  (for [id record] in runtime/sessions/index/.get
+    (if ($absent? (runtime/sessions/loaded/.get .get id))
+      (unload_event_stream runtime/events "session" ($to_str id))))
+  nil)

@@ -4,7 +4,7 @@
 (import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
 (import [baseline_profile] ^from "../../../src/profiles/baseline")
 (import [row doc] ^from "../../../src/kernel")
-(import [set_plugin_enabled] ^from "../../../src/storage/workspace")
+(import [set_plugin_enabled] ^from "../../../src/storage/workspace_repair")
 (import [assemble_instructions] ^from "../../../src/agents/instructions")
 (import [open_session_service close_session_service] ^from "../../../src/web/session_service")
 

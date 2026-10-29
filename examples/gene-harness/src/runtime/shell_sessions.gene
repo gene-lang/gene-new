@@ -1,6 +1,6 @@
 (mod shell_sessions)
 (import [CommandResult] ^from "../plugin_api")
-(import [byte_prefix] ^from "../text")
+(import [byte_prefix] ^from "../public/text")
 
 (let IoResource $io/IoResource)
 

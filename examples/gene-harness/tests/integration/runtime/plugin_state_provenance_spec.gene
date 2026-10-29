@@ -4,7 +4,7 @@
 (import ^from "../../../src/profiles/profile" [Profile])
 (import ^from "../../../src/runtime/bootstrap" [open_runtime close_runtime])
 (import ^from "../../../src/kernel" [row])
-(import ^from "../../../src/storage/workspace" [register_plugin])
+(import [register_plugin] ^from "../../../src/storage/workspace_activation")
 (import ^from "../../../src/storage/state"
   [flush_event_store saved_state_writers plugin_state record_plugin_state])
 (import ^from "../../../src/runtime/plugin_manager" [plugin_catalog])
@@ -41,7 +41,7 @@
         ensure
           (release_snapshot runtime/h/snapshots lease)
           (close_runtime runtime))
-        (let recovery (open_runtime ^^recovery root "default" profile))
+        (let recovery (open_runtime ^mode "recovery" root "default" profile))
         (try
           (let catalog (plugin_catalog recovery))
           ($assert (== catalog/plugins/0/state_writers/.size 2))

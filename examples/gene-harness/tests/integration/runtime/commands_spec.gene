@@ -8,7 +8,7 @@
 (import [submit_round round_receipt close_round_controller] ^from "../../../src/runtime/round_controller")
 (import [Plugin PluginHost contribute] ^from "../../../src/kernel")
 (import [recall_body] ^from "../../../src/agents/history")
-(import [register_plugin] ^from "../../../src/storage/workspace")
+(import [register_plugin] ^from "../../../src/storage/workspace_activation")
 
 (fn wait_command [manager, id]
   (let joined (manager/watchers .get; .get $"default:${id}"; .join))
@@ -16,9 +16,9 @@
   (command_receipt manager "default" id))
 
 (fn command [runtime, text]
-  (let receipt (submit_command runtime/commands "default" text))
-  (runtime/commands/watchers .get; .get $"default:${receipt/id}"; .join)
-  (command_receipt runtime/commands "default" receipt/id))
+  (let receipt (submit_command runtime/services/values/commands "default" text))
+  (runtime/services/values/commands/watchers .get; .get $"default:${receipt/id}"; .join)
+  (command_receipt runtime/services/values/commands "default" receipt/id))
 
 (describe "Harness commands"
   (it
@@ -29,7 +29,7 @@
       "parses raw commands and preserves run isolation, streamed shell output and attachments"
       (fn [workspace]
         (let runtime (open_runtime workspace "default" (baseline_profile)))
-        (let manager runtime/commands)
+        (let manager runtime/services/values/commands)
         (let seen ($cell nil))
         (let controller
           (test_controller
@@ -71,7 +71,7 @@
             ; .get $"default:${hidden/id}"
             ; .join)
           (let failure (command_receipt manager "default" hidden/id))
-          ($assert (== failure/status "done") "run did not expose Outcome")
+          ($assert (== failure/status "done") ($to_str failure))
           (let prompted (command runtime "/run (append_prompt \"generated_image\" (+ 1 2))"))
           ($assert (== prompted/status "done") $"run append_prompt failed: ${prompted}")
           ($assert ($str/contains? prompted/display "generated_image") prompted/display)
@@ -104,10 +104,7 @@ three
 three""")
             $"view failed: ${viewed}")
           (let round (submit_round controller "default" "u1" 1 "prompt"))
-          (controller/watchers
-            .get
-            ; .get "default"
-            ; .join)
+          ((/watcher (controller/rounds/.get .get "default")) .join)
           (let messages seen/.get)
           (let round_status (round_receipt controller "default" round/id))
           ($assert (! ($absent? messages))
@@ -142,7 +139,7 @@ three""")
     (isolated this_mod/.path "caps output, retains recall and cancels process groups while viewing directories and binaries"
       (fn [workspace]
         (let runtime (open_runtime workspace "default" (baseline_profile)))
-        (let manager runtime/commands)
+        (let manager runtime/services/values/commands)
         (try
           (let large (submit_command manager "default" "/sh head -c 2097152 /dev/zero | tr '\\0' x"))
           (let capped (wait_command manager large/id))
@@ -204,25 +201,6 @@ three""")
           ($println "command I/O: empty stdin, shell-neutral execution, colon paths and merged stderr")
         ensure (close_runtime runtime))))))
 
-(describe "Legacy operator attachments"
-  (it "drops pending run, shell and REPL output while retaining explicit attachments" []
-    (isolated this_mod/.path "drops pending run, shell and REPL output while retaining explicit attachments"
-      (fn [workspace]
-        (let runtime (open_runtime workspace "default" (baseline_profile)))
-        (try
-          (let state (read_command_state runtime "default"))
-          # No retained receipts: attachment policy must also cover old queues.
-          (state .put "records" [])
-          (let viewed {^id "c4.view" ^value "user viewed sample.txt"})
-          (let explicit {^id "c5.echo" ^value "Explicit plugin attachment."})
-          (state .put "attached" [{^id "c1.run" ^value "old run result"}
-            {^id "c2.sh" ^value "old shell result"} {^id "c3.repl" ^value "old REPL result"}
-            viewed explicit])
-          (save_command_state runtime "default" state)
-          ($assert (== (take_command_attachments runtime "default") [viewed explicit]))
-          ($assert (== (take_command_attachments runtime "default") []))
-        ensure (close_runtime runtime))))))
-
 (describe "Harness plugin commands"
   (it "shares context and result identity and delivers raw input, output and attachments" []
     (isolated this_mod/.path "shares context and result identity and delivers raw input, output and attachments"
@@ -239,9 +217,9 @@ three""")
                      (ctx/output "plugin console\n")
                      (CommandResult ^display ctx/raw ^status "done" ^^attached))})))))))
           (register_plugin runtime/workspace runtime/h "echo" ($to_str source))
-          (let command (submit_command runtime/commands "default" "/echo  a\nb"))
-          (runtime/commands/watchers .get; .get $"default:${command/id}"; .join)
-          (let result (command_receipt runtime/commands "default" command/id))
+          (let command (submit_command runtime/services/values/commands "default" "/echo  a\nb"))
+          (runtime/services/values/commands/watchers .get; .get $"default:${command/id}"; .join)
+          (let result (command_receipt runtime/services/values/commands "default" command/id))
           ($assert (== result/status "done") $"generated command failed: ${result}")
           ($assert result/attached "shared CommandResult lost attachment behavior")
           ($assert ($str/contains? result/display " a\nb") "raw arguments changed")
@@ -259,26 +237,26 @@ three""")
           (contribute runtime/h "core" "functions"
             {^name "mark" ^doc "Count actual evaluations."
              ^fn (fn [] (count .set (+ count/.get 1)) count/.get)})
-          (let one (spawn ^lane root (submit_command runtime/commands "default" "/run (mark)" ^request_id "same" ^sequence 1)))
-          (let two (spawn ^lane root (submit_command runtime/commands "default" "/run (mark)" ^request_id "same" ^sequence 1)))
+          (let one (spawn ^lane root (submit_command runtime/services/values/commands "default" "/run (mark)" ^request_id "same" ^sequence 1)))
+          (let two (spawn ^lane root (submit_command runtime/services/values/commands "default" "/run (mark)" ^request_id "same" ^sequence 1)))
           (let first (await one))
           (let second (await two))
           ($assert (== first/id second/id) "concurrent retry allocated another command")
-          (wait_command runtime/commands first/id)
+          (wait_command runtime/services/values/commands first/id)
           ($assert (== count/.get 1) "concurrent retry evaluated twice")
-          (let running (submit_command runtime/commands "default" "/run ($sleep 60000) 7"))
+          (let running (submit_command runtime/services/values/commands "default" "/run ($sleep 60000) 7"))
           (repeat index in 130
-            (let receipt (submit_command runtime/commands "default" "/run 0"))
-            (wait_command runtime/commands receipt/id))
-          ($assert ($absent? (command_receipt runtime/commands "default" first/id)) "terminal receipt window did not prune")
-          ($assert (== (/status (command_receipt runtime/commands "default" running/id)) "running") "retention removed running work")
+            (let receipt (submit_command runtime/services/values/commands "default" "/run 0"))
+            (wait_command runtime/services/values/commands receipt/id))
+          ($assert ($absent? (command_receipt runtime/services/values/commands "default" first/id)) "terminal receipt window did not prune")
+          ($assert (== (/status (command_receipt runtime/services/values/commands "default" running/id)) "running") "retention removed running work")
           ($assert
-            (try (submit_command runtime/commands "default" "/run (mark)" ^request_id "same" ^sequence 1) false
+            (try (submit_command runtime/services/values/commands "default" "/run (mark)" ^request_id "same" ^sequence 1) false
               catch Any (== $err/code "submission_conflict"))
             "an expired request sequence was re-executed")
           ($assert (== count/.get 1) "expired identity repeated its side effect")
-          (cancel_command runtime/commands "default" running/id)
-          (wait_command runtime/commands running/id)
+          (cancel_command runtime/services/values/commands "default" running/id)
+          (wait_command runtime/services/values/commands running/id)
         ensure (close_runtime runtime))))))
 
 (fn main [args] : Int (run_spec args))

@@ -1,7 +1,7 @@
 (import ^from "../../src/runtime/bootstrap" [open_runtime close_runtime])
 (import [test_controller] ^from "../support")
 (import ^from "../../src/profiles/baseline" [baseline_profile])
-(import ^from "../../src/runtime/round_controller" [new_round_controller close_round_controller])
+(import ^from "../../src/runtime/round_controller" [close_round_controller])
 (import ^from "../../src/runtime/triggers"
   [open_trigger_manager close_trigger_manager create_trigger tick_triggers list_occurrences])
 (import ^from "../../src/runtime/sessions" [require_record])
@@ -18,6 +18,6 @@
     ^hook (fn [boundary occurrence] (if (== boundary point) (crash)))))
   (create_trigger manager {^id "once" ^kind "scheduled" ^at 2000 ^request "inspect"} ^now 1000)
   (tick_triggers manager ^now 2000)
-  (for [id watcher] in controller/watchers/.get watcher/.join)
+  (for [id frame] in controller/rounds/.get frame/watcher/.join)
   ($assert false "Crash hook did not terminate the child"))
 (fn main [args] (child args/0 args/1))

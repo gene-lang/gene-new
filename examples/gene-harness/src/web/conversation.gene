@@ -1,10 +1,6 @@
 # Browser projection. Original transcript events and CLI diagnostics stay intact.
 (mod conversation)
 
-(fn limit_round? [round]
-  (|| (== round/reason "turn_limit")
-      (&& (== round/state "failed") (== round/message "turn limit reached"))))
-
 (fn initiating_label [round, record]
   (if_not ($absent? round/card) (return "Card action"))
   (if_not ($absent? record/card) (return "Card action"))
@@ -19,45 +15,23 @@
 (fn project_conversation [records, rounds]
   (let out []) (let requests {}) (let request_order [])
   (let round_index {}) (let started_turns {})
-  (let legacy []) (let starts []) (let receivers {})
   (for round in rounds (round_index .put round/id round))
   (for record in records
     (if_yes (== record/phase "turn/start")
-      (started_turns .put $"${record/round_id}/${record/turn}" true)
-      (starts .push record))
-    (if (&& (== record/phase "turn/request") (<= (?? record/for_turn 0) 0))
-      (legacy .push record)))
-  # Legacy ownership follows durable sequence, even when display timestamps
-  # disagree. Resolve each pending request once at its next start in that round.
-  (if_not legacy/.empty?
-    (let pending {})
-    (for record in starts (legacy .push record))
-    (for record in ($order/sort_by legacy
-      (fn [item] ($parse/parse_int item/seq)))
-      (if (== record/phase "turn/start")
-        (do
-          (for id in (?? (pending .get record/round_id) []) (receivers .put id record/turn))
-          (pending .put record/round_id []))
-        (do
-          (let ids (?? (pending .get record/round_id) []))
-          (ids .push record/id) (pending .put record/round_id ids)))))
+      (started_turns .put $"${record/round_id}/${record/turn}" true)))
   (for original in records
     (let record ($thaw ($freeze_shallow original)))
     (let round (round_index .get record/round_id))
     (let phase record/phase)
-    (if_yes (limit_round? round)
-      (if (|| (&& (== phase "reply") (== record/final true))
-              (&& (== phase "turn/error") (== record/text "turn limit reached"))) (continue)))
     (if (&& (== record/synthetic true) (== phase "reply")) (continue))
     (if (&& (== record/role "user") (== phase "turn/request"))
       (record .put "speaker" (initiating_label round record)))
     (if (|| (!= phase "turn/request")
             (&& (== record/role "user") (! ($str/starts_with? (?? round/initiator "") "continue:"))))
       (do (out .push record) (continue)))
-    (var receiver (?? record/for_turn 0))
-    (if (== receiver 0) (set receiver (?? (receivers .get record/id) 0)))
+    (let receiver record/for_turn)
+    (if (|| (!= ($head receiver) Int) (< receiver 1)) (continue))
     (let started ($has_key? started_turns $"${record/round_id}/${receiver}"))
-    (if (== receiver 0) (set receiver (+ record/turn 1)))
     (if (&& (! started) (|| (== record/at_limit true)
          (["done" "failed" "paused" "cancelled" "interrupted" "recovery_required"] .contains? round/state))) (continue))
     (let key $"${record/round_id}/request-${receiver}")
@@ -68,8 +42,7 @@
   ($order/sort_by out (fn [record] record/order)))
 
 (fn project_request [record, receiver : Int, prior = nil]
-  (let combine (?? record/combine
-    (if (&& (== record/delegation true) (== record/turn receiver)) "append" "replace")))
+  (let combine (?? record/combine "replace"))
   (let body (if (&& (== combine "append") (! ($absent? prior)))
     $"${prior/text}\n${record/text}" record/text))
   (let sources (if ($absent? prior) [] ($into prior/source_ids [])))

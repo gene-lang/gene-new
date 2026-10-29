@@ -1,9 +1,11 @@
 # Host-only feature routes. Called only after common HTTP admission.
 (mod plugins_routes)
+(import [api_root] ^from "../contract.gene")
 (import [response fail_request field number request_data] ^from "../request")
 (import [plugin_control_request] ^from "../plugin_control")
 (import [plugin_catalog inspect_descriptor plugin_history_catalog] ^from "../../runtime/plugin_manager")
-(import [revert_plugin CompositionConflict] ^from "../../storage/workspace")
+(import [revert_plugin] ^from "../../storage/workspace_repair")
+(import [CompositionConflict] ^from "../../storage/composition_store")
 (import [pin_history] ^from "../../storage/plugin_history")
 (import [appearance_mode] ^from "../../runtime/appearance")
 
@@ -13,36 +15,36 @@
   (let plugin_control context/plugin_control)
   (let management (plugin_control_request plugin_control request))
   (if_not ($absent? management) (return (response management/status management/body)))
-  (if_yes (&& (== request/method "GET") (== request/path "/api/v8/plugins/history"))
+  (if_yes (&& (== request/method "GET") (== request/path $"${(api_root)}/plugins/history"))
     (return (response 200
       (plugin_history_catalog
          ^limit (if ($absent? request/params/limit) 50 (number request/params "limit"))
          ^before (if ($absent? request/params/before) nil (number request/params "before"))
          host/runtime (field request/params "id" ^default "")))))
-  (if_yes (&& (== request/method "GET") (== request/path "/api/v8/plugins"))
+  (if_yes (&& (== request/method "GET") (== request/path $"${(api_root)}/plugins"))
     (let result (plugin_catalog
       ^query (field request/params "q" ^default "")
       ^state (field request/params "state" ^default "") host/runtime))
     (result .put "csrf" browser/csrf)
     (result .put "epoch" host/runtime/epoch)
-    (result .put "appearance" (appearance_mode host/runtime/h))
+    (result .put "appearance" (appearance_mode host/runtime))
     (return (response 200 result)))
-  (if_yes (&& (== request/method "POST") (== request/path "/api/v8/plugins/revert"))
+  (if_yes (&& (== request/method "POST") (== request/path $"${(api_root)}/plugins/revert"))
     (let data (request_data request))
     (if (|| (!= ($head data/revision) Int) (!= ($head data/expected) Int))
       (fail_request "invalid_request" "Revert requires integer revision and expected revision."))
     (try
-      (return (response 200 (revert_plugin ^expected data/expected
+      (return (response 200 (revert_plugin ^readiness host/runtime/services/values/readiness ^expected data/expected
         host/runtime/workspace host/runtime/h (field data "id") data/revision)))
     catch CompositionConflict
       (return (response 409 {^code $err/code ^message $err/message}))))
-  (if_yes (&& (== request/method "POST") (== request/path "/api/v8/plugins/inspect"))
+  (if_yes (&& (== request/method "POST") (== request/path $"${(api_root)}/plugins/inspect"))
     (let data (request_data request))
     (if (&& (! ($absent? data/revision)) (!= ($head data/revision) Int))
       (fail_request "invalid_request" "Historical revision must be an integer."))
     (return (response 200 (inspect_descriptor ^revision (?? data/revision nil)
       host/runtime (field data "id")))))
-  (if_yes (&& (== request/method "POST") (== request/path "/api/v8/plugins/history/pin"))
+  (if_yes (&& (== request/method "POST") (== request/path $"${(api_root)}/plugins/history/pin"))
     (let data (request_data request))
     (if (|| (!= ($head data/revision) Int) (!= ($head data/pinned) Bool))
       (fail_request "invalid_request" "Pin requires an integer revision and boolean pinned value."))

@@ -1,0 +1,360 @@
+# Workspace ownership: workspace_activation.
+(mod workspace_activation)
+
+(import $serde [write_data read_data])
+(import $fs [make_dir real_path read_text write_text_atomic exists?])
+(import $crypto [sha256])
+(import $str [slice_bytes byte_size contains? starts_with? ends_with? split])
+(import ^from "../kernel" [Harness put_cordis_plugin put_cordis_plugins status_of plugin_error record_composition_change flush_harness hydrate_harness_log uninstall])
+(import ^from "./state" [validate_event_catalog])
+(import ^from "./participant_health" [reset_participant_quarantine])
+(import ^from "./plugin_source" [capture_source_origin assign_creation])
+(import ^from "../runtime/composition" [queue_composition_change take_composition_changes run_composition_change])
+(import [CompositionError CompositionConflict Workspace fresh_list fresh_map data_copy require_open active_revision_path composition_revision composition_entries composition_history_result commit_composition find_entry_index previous_module_digest entries_with default_limits_data entry_enabled? record_quarantine] ^from "./composition_store")
+(import [safe_module_id? parse_plugin_source canonical_module_source dependency_module_texts validate_source_imports materialize_module_blob write_module_blob load_entry_descriptor descriptor_entry_options source_entry_interfaces register_descriptor_events known_event_types] ^from "./module_registry")
+
+(type WorkspaceRestorePlan ^props {^workspace Workspace ^entries Any ^descriptors Any ^session Str})
+
+(fn record_application_result [workspace : Workspace, h : Harness, result, ^readiness readiness = nil]
+  (let expected {})
+  (for [id default] in workspace/profile_plugins/.get
+    (expected .put ($to_str id) {^id ($to_str id) ^!disabled}))
+  (for entry in (composition_entries workspace) (expected .put entry/id entry))
+  (let active h/composition/.current_revisions)
+  (var reason nil)
+  (for [id entry] in expected
+    (if (== entry/disabled true) (continue))
+    (let live (active .get id))
+    (if (|| (!= live/active true) (!= (status_of h ($to_str id)) "ready")
+            (&& (! ($absent? entry/module_digest)) (!= entry/module_digest live/options/digest)))
+      (set reason $"${id} is not active at its requested revision")))
+  (if (&& ($absent? reason) (> ($size workspace/errors/.get) 0))
+    (set reason "The desired composition contains quarantined entries"))
+  (if_yes (&& ($absent? reason) (! ($absent? readiness)))
+    (set reason (try (readiness) catch Any $err/message)))
+  (let observation (data_copy result))
+  (observation .put "readiness" (if ($absent? readiness) "unverified" (if ($absent? reason) "ready" "degraded")))
+  (observation .put "readiness_reason" reason)
+  (observation .put "host_build_id" workspace/history_build/.get)
+  (observation .put "accepted_revision" workspace/active_revision/.get)
+  (composition_history_result workspace observation))
+
+(fn activate_descriptor [workspace : Workspace, h : Harness, descriptor, entry]
+  (put_cordis_plugin ^^replace h descriptor (descriptor_entry_options workspace entry)))
+
+(fn update_active_revision [workspace : Workspace, h : Harness]
+  (if_not (== workspace/errors/.get #{}) (return nil))
+  (var snapshot h/composition/.inspect)
+  (for desired in (composition_entries workspace)
+    (if_yes (entry_enabled? desired)
+      (var matched false)
+      (for live in snapshot/entries
+        (if_yes (&& (== live/id desired/id) (! ($absent? live/graph)) (["active" "pending"] .contains? live/state))
+          (for node in live/graph/nodes
+            (if (&& (== node/identity live/graph/root) (== node/source_digest desired/module_digest))
+              (set matched true)))))
+      (if_not matched (return nil))))
+  # Desired state is committed before admission. Advance ACTIVE only after
+  # reconciliation accepts the desired set, including valid pending entries.
+  (let desired (composition_revision workspace))
+  (if (!= workspace/active_revision/.get desired)
+    (write_text_atomic (active_revision_path workspace) (write_data desired)))
+  (workspace/active_revision .set desired)
+  nil)
+
+(fn change_origin [h : Harness, operation : Str, id : Str]
+  (let context ($runtime/context))
+  (let source (capture_source_origin context))
+  {^kind source/kind
+   ^operation operation ^plugin id ^session (?? context/session nil)
+   ^turn (if (== source/kind "model") context/turn/turn nil)
+   ^command (?? context/command nil)})
+
+(fn stage_plugin_entry [workspace : Workspace, id : Str, source, ^dependencies dependencies = []]
+  (require_open workspace)
+  (if_not (safe_module_id? id) (fail (CompositionError ^message "unsafe plugin id")))
+  (if (!= ($head dependencies) List) (fail (CompositionError ^message "dependencies must be a list of modules")))
+  (let parsed (parse_plugin_source source))
+  (let required (source_entry_interfaces workspace parsed))
+  (let text (canonical_module_source parsed))
+  (let digest $"sha256:${(sha256 text)}")
+  (let closure [digest])
+  (let blobs [{^digest digest ^text text ^parsed parsed}])
+  (for dependency in dependencies
+    (let module (parse_plugin_source dependency))
+    (let encoded (canonical_module_source ^!require_init module))
+    (let hash $"sha256:${(sha256 encoded)}")
+    (if_not (closure .contains? hash)
+      (closure .push hash)
+      (blobs .push {^digest hash ^text encoded ^parsed module})))
+  (for blob in blobs (validate_source_imports blob/parsed closure))
+  (for blob in blobs
+    (write_module_blob workspace blob/digest blob/text)
+    (materialize_module_blob workspace blob/digest blob/text))
+  (let entry {^id id ^module_digest digest ^closure closure
+    ^interfaces required ^limits (default_limits_data) ^!disabled})
+  (if_not ($absent? (workspace/profile_plugins/.get .get id))
+    (entry .put "replaces_builtin" true))
+  entry)
+
+(fn register_plugin
+  [workspace : Workspace, h : Harness, id : Str, source,
+   ^limits limits = nil,
+   ^dependencies dependencies = nil,
+   ^by by : Str = "",
+   ^model model : Str = "",
+   ^at at : Str = "",
+   ^readiness readiness = nil,
+   ^replace replace : Bool = false]
+  (require_open workspace)
+  (if_not (safe_module_id? id)
+    (fail (CompositionError ^message $"unsafe module id ${id}")))
+  # Refuse a claimed id before anything is written. `entries_with` below also
+  # refuses, but only after every dependency blob and the module itself have
+  # been materialized and the descriptor loaded — so a refused rebuild left an
+  # unreferenced blob in the generated directory and in the loader cache, and
+  # the caller had no way to tell it apart from a blob a live entry needs.
+  # That check stays where it is: it is the invariant on the entry list, and
+  # this one is the early answer to a question already decided.
+  (if_not replace
+    (if_not ($absent? (workspace/profile_plugins/.get .get id))
+      (fail (CompositionError
+        ^message $"profile plugin ${id} already exists; use ^^replace")))
+    (var claimed (composition_entries workspace))
+    (if_not (== (find_entry_index claimed id) -1)
+      (fail (CompositionError
+        ^message $"composition entry ${id} already exists"))))
+  (set source (parse_plugin_source source))
+  (let required (source_entry_interfaces workspace source))
+  (var bounded
+    (if ($absent? limits)
+      (default_limits_data)
+      (data_copy limits)))
+  (var text (canonical_module_source source))
+  (var digest $"sha256:${(sha256 text)}")
+  (var closure [digest])
+  (var dependency_blobs (fresh_list))
+  (var dependency_sources
+    (if ($absent? dependencies) (fresh_list) dependencies))
+  (for dependency_text in (dependency_module_texts source dependency_sources)
+    (var dependency_digest $"sha256:${(sha256 dependency_text)}")
+    (if_yes (! (closure .contains? dependency_digest))
+      (closure .push dependency_digest)
+      (dependency_blobs .push
+        {^digest dependency_digest ^source dependency_text})
+      (materialize_module_blob workspace dependency_digest dependency_text)))
+  (validate_source_imports source closure)
+  (for dependency in dependency_sources
+    (validate_source_imports (parse_plugin_source dependency) closure))
+  (materialize_module_blob workspace digest text)
+  (let caller ($runtime/context))
+  (let source_origin (capture_source_origin caller))
+  (var authenticated_turn (if (== source_origin/kind "model") caller/turn/turn 0))
+  (var entry
+    {^id id ^module_digest digest ^closure closure
+     ^interfaces required
+     ^limits bounded ^!disabled
+     ^by by ^model model ^at at
+     ^session (?? caller/session nil) ^turn authenticated_turn
+     ^source_origin source_origin})
+  (entry .put "origin" (change_origin h (if replace "replace" "register") id))
+  (if_not ($absent? (workspace/profile_plugins/.get .get id))
+    (entry .put "replaces_builtin" true))
+
+  # Descriptor-only preflight: load and run `init`, but do not install or
+  # activate anything until the generation is authoritative.
+  (var descriptor (load_entry_descriptor workspace h entry))
+  (entry/origin .put "validation"
+    {^kind "bounded_descriptor" ^status "passed" ^source_digest digest
+     ^host_build_id workspace/history_build/.get})
+  # Only a valid descriptor enters the durable blob store. Materializations
+  # used by a failed preflight are unreferenced content-addressed cache files.
+  (for dependency in dependency_blobs
+    (write_module_blob workspace dependency/digest dependency/source))
+  (write_module_blob workspace digest text)
+  (let context ($runtime/context))
+  (if_yes (&& (! ($absent? context)) (! ($absent? context/turn)))
+    (queue_composition_change h/snapshots
+      {^kind "registration" ^id id
+       ^apply (fn [] (publish_registration ^readiness readiness workspace h descriptor entry replace authenticated_turn))})
+    (return {^id id ^digest digest ^status "queued"}))
+  (publish_registration ^readiness readiness workspace h descriptor entry replace authenticated_turn))
+
+(fn publish_registration [workspace : Workspace, h : Harness, descriptor, entry, replace : Bool, authenticated_turn : Int, ^readiness readiness = nil]
+  (run_composition_change
+    h/snapshots
+    (fn []
+      (publish_registration_serial ^readiness readiness workspace h descriptor entry replace authenticated_turn))))
+
+(fn publish_registration_serial [workspace : Workspace, h : Harness, descriptor, entry, replace : Bool, authenticated_turn : Int, ^readiness readiness = nil]
+  (let id ($to_str entry/id))
+  (let digest entry/module_digest)
+  (var before (composition_entries workspace))
+  (var previous_digest (previous_module_digest before id))
+  (let previous_index (find_entry_index before id))
+  (assign_creation entry (if (== previous_index -1) nil before/%previous_index))
+  (var next_entries (entries_with before entry replace))
+  (var revision (commit_composition ^origin entry/origin workspace next_entries))
+  (var status "error")
+  (try
+    (register_descriptor_events h descriptor)
+    (set status (activate_descriptor workspace h descriptor entry))
+    (if (== status "error")
+      (record_quarantine workspace id (plugin_error h id))
+      (workspace/errors
+        .get
+        ; .delete id))
+  catch Any
+    (record_quarantine workspace id ($to_str $err)))
+  (if (== status "ready") (reset_participant_quarantine workspace id))
+  (record_composition_change
+    h
+    id
+    previous_digest
+    digest
+    revision
+    authenticated_turn
+    (if (== previous_digest nil)
+      "registered"
+      "replaced"))
+  (flush_harness h)
+  (update_active_revision workspace h)
+  (record_application_result ^readiness readiness workspace h
+    {^plugin id ^status status ^message (workspace/errors/.get .get id)})
+  {^id id ^revision revision ^digest digest ^status status
+   ^state (if (== status "ready") "active"
+     (if (== status "error") "quarantined" status))
+   ^message (if (== status "error") (workspace/errors/.get .get id) nil)
+   ^entry entry})
+
+(fn drain_workspace_changes [workspace : Workspace, h : Harness, ^origin origin = nil]
+  (let results [])
+  ($runtime/with_context
+    nil
+    (fn []
+      (for change in (take_composition_changes ^origin origin h/snapshots)
+        (try
+          (results .push (change/apply))
+        catch CompositionConflict
+          (results .push {^status "stale" ^state "unchanged"
+            ^id change/id ^message $err/message ^code $err/code})
+        catch Any
+          (record_quarantine workspace change/id ($to_str $err/message))
+          (results .push {^status "error" ^state "quarantined"
+            ^id change/id ^message $err/message})))))
+  results)
+
+(fn prepare_workspace
+  [workspace : Workspace, h : Harness, ^session session : Str = "default",
+   ^all_streams all_streams : Bool = false]
+  (require_open workspace)
+  (workspace/errors .set (fresh_map))
+  (var entries (composition_entries workspace))
+  (var descriptors (fresh_map))
+
+  # Phase 1: bounded descriptor load only. This is what makes plugin event
+  # schemas available before state reconstruction or activation.
+  (for entry in entries
+    (if (== entry/builtin true)
+      (then
+        (if ($absent? (workspace/profile_plugins/.get .get entry/id))
+          (record_quarantine workspace ($to_str entry/id)
+            $"built-in default ${entry/id} is missing from this profile")))
+      (else
+        (if (&& (! ($absent? (workspace/profile_plugins/.get .get entry/id)))
+                (!= entry/replaces_builtin true))
+          (then
+            (record_quarantine workspace ($to_str entry/id)
+              $"stored plugin ${entry/id} collides with a profile plugin; replace it explicitly"))
+          (else
+            (if_yes (entry_enabled? entry)
+              (try
+                (var descriptor (load_entry_descriptor workspace h entry))
+                (descriptors .put entry/id descriptor)
+                (register_descriptor_events h descriptor)
+              catch Any
+                (record_quarantine workspace ($to_str entry/id) ($to_str $err/message)))))))))
+
+  # Phase 2: validate the already-decoded generic envelopes against the core +
+  # descriptor catalog. Missing plugin vocabulary quarantines that projection;
+  # an unknown required core event refuses reconstruction in state.gene.
+  (if_not ($absent? h/event_store)
+    (for plugin in (validate_event_catalog h/event_store (known_event_types h) ^all_streams all_streams)
+      (record_quarantine workspace ($to_str plugin)
+        "required plugin event schema is unavailable"))
+    # Durable turn/call repair belongs to kernel startup after this admission.
+    (hydrate_harness_log h))
+
+  (WorkspaceRestorePlan ^workspace workspace ^entries entries
+    ^descriptors descriptors ^session session))
+
+(fn activate_workspace_plan [plan : WorkspaceRestorePlan, h : Harness, ^profile_admissions profile_admissions = []]
+  (var workspace plan/workspace)
+  (var ready (fresh_list))
+  (var pending (fresh_list))
+  # A stored replacement takes the profile default's id before admission.
+  # A stored entry with the same id must explicitly replace the default;
+  # quarantine a conflicting entry without blocking peers.
+  (var blocked_defaults (fresh_map))
+  (for entry in plan/entries
+    (if_yes (&& (! ($absent? (workspace/profile_plugins/.get .get entry/id)))
+                (|| (== entry/replaces_builtin true) (== entry/builtin true)))
+      (blocked_defaults .put entry/id true)))
+  (var admissions (fresh_list))
+  (for item in profile_admissions
+    (if ($absent? (blocked_defaults .get item/plugin/id))
+      (admissions .push item)))
+  (for entry in plan/entries
+    (if (== entry/builtin true)
+      (then nil)
+      (else
+        (if (&& (! ($absent? (workspace/profile_plugins/.get .get entry/id)))
+                (!= entry/replaces_builtin true))
+          (then
+            (record_quarantine workspace ($to_str entry/id)
+              $"stored plugin ${entry/id} collides with a profile plugin; replace it explicitly"))
+          (else
+            (var descriptor (plan/descriptors .get entry/id))
+            (if_yes (&& (!= descriptor void) (== (workspace/errors/.get .get entry/id) void))
+              (try
+                (admissions .push
+                  {^plugin descriptor ^options (descriptor_entry_options workspace entry)})
+              catch Any
+                (record_quarantine workspace ($to_str entry/id) ($to_str $err/message)))))))))
+  (if (> admissions/.size 0)
+    (try
+      (put_cordis_plugins h admissions)
+    catch Any
+      (for entry in plan/entries
+        (if (== (workspace/errors/.get .get entry/id) void)
+          (record_quarantine workspace ($to_str entry/id) ($to_str $err/message))))))
+  (for item in admissions
+    (var id ($to_str item/plugin/id))
+    (var status (status_of h id))
+    (if (== status "ready")
+      (then (ready .push id))
+      (elif (== status "error")
+        (record_quarantine workspace id (plugin_error h id)))
+      (else (pending .push id))))
+  (update_active_revision workspace h)
+  {^ready ready ^pending pending ^errors (data_copy workspace/errors/.get)
+   ^session plan/session})
+
+(fn activate_desired_plugin [workspace : Workspace, h : Harness, id : Str]
+  (let entries (composition_entries workspace))
+  (let index (find_entry_index entries id))
+  (if (== index -1)
+    (then
+      (let default (workspace/profile_plugins/.get .get id))
+      (if ($absent? default)
+        (if_not ($absent? (h/plugins/.get .get id)) (uninstall h id))
+        (put_cordis_plugin ^^replace h default/plugin default/options)))
+    (else
+      (let entry entries/%index)
+      (if (entry_enabled? entry)
+        (then
+          (let descriptor (load_entry_descriptor workspace h entry))
+          (register_descriptor_events h descriptor)
+          (activate_descriptor workspace h descriptor entry))
+        (else
+          (if_not ($absent? (h/plugins/.get .get id)) (uninstall h id)))))))

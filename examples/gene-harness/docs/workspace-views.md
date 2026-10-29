@@ -1,5 +1,8 @@
 # Workspace views
 
+This chapter covers navigation and view state. [Theming](theming.md) covers
+palettes, shared visual defaults and plugin styling.
+
 Classic Harness and plugin views use the same workspace host. A plugin view
 can fill the application area or sit beside the conversation. Switching does
 not start a round, submit a command, save a draft, or change another tab.
@@ -36,8 +39,8 @@ defaults; changes to those defaults do not move tabs already in use.
 Register a `web_components` row with `slot: view`, a title, `view_state`,
 `state_version`, declared function `actions`, and a `render` callback. See
 [web components](web-components.md) for the supported data-tree vocabulary.
-Legacy `panel` registrations use the same renderer and default to docked mode.
-Canonical views default to full-screen mode. The name `harness` is reserved.
+The distinct `panel` slot uses the same renderer with docked defaults and a
+title fallback. `view` rows default to full-screen mode. The name `harness` is reserved.
 
 Navigation buttons use existing Gene data syntax:
 
@@ -58,7 +61,7 @@ scoped to plugin content. Classic Harness and host recovery controls follow the
 workspace theme ([theming](theming.md)). Ordinary views need no CSS: the host
 styles supported elements and shared classes. A view may add a scoped `style`
 contribution (`$css` data) for presentation the host does not provide. No
-arbitrary HTML or JavaScript is accepted.
+raw HTML or JavaScript is accepted in these component trees.
 
 ## State and concurrent tabs
 
@@ -134,8 +137,6 @@ without naming a conversation. Opening it changes only this tab's selected view
 and supported view state. References to conversation rounds, commands, and
 artifacts still require their originating session.
 
-Protocol 8 replaces the old session-bound UI action endpoints. Old pages must
-reload. An old pending action shows **Outcome unknown — recorded before an
-upgrade** with Dismiss. Dismiss clears that obsolete browser record, preserves
-the draft, and never repeats or cancels the old operation. Historical
-conversation records are left intact.
+Workspace actions use the session-independent protocol-8 endpoints. Pending
+browser actions use format 2. Unsupported pending formats are discarded while
+drafts remain; discarding a record never repeats or cancels an operation.

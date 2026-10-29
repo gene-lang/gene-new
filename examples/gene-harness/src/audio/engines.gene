@@ -1,3 +1,0 @@
-# Host compatibility import; implementation is a declared public library.
-(mod engines)
-(import [nonempty close_http whisper_url local_whisper_url whisper_transcribe whisper_row piper_model piper_open framed_synthesize piper_row elevenlabs_synthesize elevenlabs_row mac_helper mac_reason mac_synthesizer_row speech_segments] ^from "../public/speech_engines" ^^export)

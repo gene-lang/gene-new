@@ -1,0 +1,277 @@
+# Workspace ownership: composition_store.
+(mod composition_store)
+
+(import $store/fs [open : store_open Store StoreError])
+(import $serde [write_data read_data])
+(import $fs [make_dir real_path read_text write_text_atomic exists?])
+(import $str [slice_bytes byte_size contains? starts_with? ends_with? split])
+(import ^from "../kernel" [ExecutionLimits default_execution_limits])
+(import ^from "../runtime/interface_policy" [current_interfaces latest_interfaces])
+(import ^from "../runtime/plugin_sdk" [sdk_modules])
+(import ^from "./plugin_history" [archive_host_build archive_baseline archive_candidate archived_record history_list append_history_result])
+(import ^from "./plugin_metadata" [remember_descriptor remember_failure])
+
+(type CompositionError ^props {^message Str} ^impl [Error])
+
+(impl Error for CompositionError)
+
+(type CompositionConflict ^props {^message Str ^code Str ^expected Int ^actual Int} ^impl [Error])
+
+(impl Error for CompositionConflict)
+
+(type CompositionCommitUncertain ^props {^message Str ^code Str} ^impl [Error])
+
+(impl Error for CompositionCommitUncertain)
+
+(type Workspace ^props {^root Str ^state_root Str ^workspace_root Str ^store Any ^blob_store Any ^revision Any ^entries Any ^busy Any ^closed Any ^generated_dir Str ^shared Any ^interfaces Any ^core_interface Str ^errors Any ^active_revision Any ^profile_plugins Any ^history_head Any ^history_build Any ^history_profile Any ^metadata_errors Any})
+
+(fn fresh_list []
+  ($thaw #[]))
+
+(fn fresh_map []
+  ($thaw #{}))
+
+(fn data_copy [value]
+  (read_data (write_data value)))
+
+(fn require_open [workspace : Workspace]
+  (if workspace/closed/.get
+    (fail (CompositionError ^message "workspace composition store is closed")))
+  workspace)
+
+(fn validate_entry [entry, ids]
+  (if (== entry/id void)
+    (fail (CompositionError ^message "composition entry requires id")))
+  (var id ($to_str entry/id))
+  (if (== id "") (fail (CompositionError ^message "composition entry id is empty")))
+  (if_not (== (ids .get id) void)
+    (fail (CompositionError ^message $"duplicate composition entry ${id}")))
+  (ids .put id true)
+  (if (== entry/builtin true)
+    (then
+      (if_not (== entry/disabled true)
+        (fail (CompositionError ^message $"built-in record ${id} must be disabled")))
+      (if (|| (!= entry/module_digest void) (!= entry/closure void))
+        (fail (CompositionError ^message $"built-in record ${id} cannot name a stored module"))))
+    (else
+      (if (|| (== entry/module_digest void) (== entry/closure void) (== entry/interfaces void))
+        (fail
+          (CompositionError ^message "composition entry requires module_digest closure interfaces")))
+      (if_not (entry/closure .contains? entry/module_digest)
+        (fail (CompositionError ^message $"composition entry ${id} closure omits its root digest")))))
+  entry)
+
+(fn validate_entries [entries]
+  (var ids (fresh_map))
+  (var checked (fresh_list))
+  (for entry in entries
+    (checked .push (validate_entry entry ids)))
+  checked)
+
+(fn load_composition [workspace : Workspace]
+  (var loaded workspace/store/.Store:load_checkpoint)
+  (if ($absent? loaded)
+    (then
+      (workspace/revision .set 0)
+      (workspace/entries .set (fresh_list)))
+    (else
+      (var manifest (loaded/records .get "composition"))
+      (if (== manifest void)
+        (fail (CompositionError ^message "composition generation has no composition record")))
+      (if_not (== manifest/format 2)
+        (fail
+          (CompositionError ^message $"unsupported composition format ${manifest/format}; expected 2")))
+      (if (!= ($head manifest/history_head) Str)
+        (fail (CompositionError ^message "composition format 2 requires an archive head")))
+      (var checked (validate_entries manifest/entries))
+      (workspace/revision .set manifest/revision)
+      (workspace/history_head .set (?? manifest/history_head nil))
+      (workspace/entries .set checked)))
+  workspace)
+
+(fn harness_package_root [] : Str
+  this_pkg/root)
+
+(fn active_revision_path [workspace : Workspace] : Str
+  $"${workspace/root}/ACTIVE")
+
+(fn open_workspace [root : Str, ^blob_root blob_root : Str = "", ^state_root state_root : Str = "", ^workspace_root workspace_root : Str = "", ^generated_dir generated_dir : Str = ""] : Workspace
+  (var canonical_root (real_path root))
+  (var canonical_blob_root
+    (if (== blob_root "")
+      (then
+        (var default_blob_root $"${canonical_root}/blobs")
+        (make_dir default_blob_root)
+        (real_path default_blob_root))
+      (else
+        (make_dir blob_root)
+        (real_path blob_root))))
+  (var package_root (harness_package_root))
+  (var canonical_state_root (real_path (if (== state_root "") canonical_root state_root)))
+  (var canonical_workspace_root (real_path (if (== workspace_root "") package_root workspace_root)))
+  (var generated
+    (if (== generated_dir "")
+      (then
+        (var scoped $"${canonical_blob_root}/source")
+        (make_dir scoped)
+        (real_path scoped))
+      (else
+        (make_dir generated_dir)
+        (real_path generated_dir))))
+  (var interfaces (current_interfaces))
+  (var workspace
+    (Workspace ^root canonical_root ^state_root canonical_state_root ^workspace_root canonical_workspace_root ^store (store_open ^root canonical_root) ^blob_store (store_open ^root canonical_blob_root) ^revision ($cell 0) ^entries ($cell (fresh_list)) ^busy ($cell false) ^closed ($cell false) ^generated_dir generated ^shared (sdk_modules) ^interfaces interfaces ^core_interface (/core (latest_interfaces)) ^active_revision ($cell nil) ^errors ($cell (fresh_map)) ^profile_plugins ($cell (fresh_map)) ^history_head ($cell nil) ^history_build ($cell nil) ^history_profile ($cell nil) ^metadata_errors ($cell [])))
+  (load_composition workspace)
+  (let marker (active_revision_path workspace))
+  (if ($fs/exists? marker)
+    (then
+      (let recorded (read_data (read_text marker)))
+      (if (|| (!= ($head recorded) Int) (< recorded 0))
+        (fail (CompositionError ^message
+          "composition ACTIVE marker must hold a non-negative revision")))
+      (workspace/active_revision .set recorded)))
+  workspace)
+
+(fn set_profile_plugins [workspace : Workspace, admissions]
+  (let defaults (fresh_map))
+  (for item in admissions
+    (let id item/plugin/id)
+    (if_not ($absent? (defaults .get id))
+      (fail (CompositionError ^message $"duplicate profile plugin ${id}")))
+    (defaults .put id item))
+  (workspace/profile_plugins .set defaults)
+  nil)
+
+(fn composition_revision [workspace : Workspace] : Int
+  (require_open workspace)
+  workspace/revision/.get)
+
+(fn composition_entries [workspace : Workspace]
+  (require_open workspace)
+  (data_copy workspace/entries/.get))
+
+(fn attach_history [workspace : Workspace, build, profile]
+  (require_open workspace)
+  (let identity (archive_host_build workspace/store build))
+  (workspace/history_build .set identity)
+  (workspace/history_profile .set (data_copy profile))
+  (for builtin in (?? profile/builtins [])
+    (try (remember_descriptor ^mode "host" workspace/store identity "builtin" builtin)
+      catch Any (workspace/metadata_errors/.get .push {^id builtin/id ^message $err/message})))
+  (if ($absent? workspace/history_head/.get)
+    (workspace/history_head .set
+      (archive_baseline workspace/store
+        {^revision workspace/revision/.get ^entries workspace/entries/.get}
+        identity profile))
+    (do
+      (let saved (archived_record workspace/store workspace/history_head/.get))
+      (if (|| (!= saved/revision workspace/revision/.get) (!= saved/entries workspace/entries/.get))
+        (fail (CompositionError ^message "composition checkpoint disagrees with its history record")))))
+  identity)
+
+(fn composition_history [workspace : Workspace, ^limit limit : Int = 100, ^before before = nil]
+  (require_open workspace)
+  (history_list ^limit limit ^before before workspace/store workspace/history_head/.get))
+
+(fn composition_history_result [workspace : Workspace, result]
+  (if_not ($absent? workspace/history_head/.get)
+    (append_history_result workspace/store workspace/history_head/.get result)))
+
+(fn commit_composition [workspace : Workspace, entries, ^origin origin = nil]
+  (require_open workspace)
+  (if ($absent? workspace/history_build/.get)
+    (fail (CompositionError ^message "attach the executing host identity before changing archived composition")))
+  (if workspace/busy/.get
+    (fail (CompositionError ^message "composition mutation is already active")))
+  (var actual workspace/revision/.get)
+  (var checked (validate_entries (data_copy entries)))
+  (if (== checked workspace/entries/.get) (return actual))
+  (var next (+ actual 1))
+  # Older hosts must refuse this format instead of silently dropping history
+  # when committing a revision with their pre-archive writer.
+  (var manifest {^format 2 ^revision next ^entries checked})
+  (workspace/busy .set true)
+  (try
+    (let history (archive_candidate workspace/store workspace/history_head/.get next checked
+      workspace/history_build/.get workspace/history_profile/.get
+      (?? origin {^kind "direct" ^operation "composition"})))
+    (manifest .put "history_head" history)
+    (try
+      (workspace/store .Store:checkpoint next {^composition manifest})
+    catch Any
+      (let original $err)
+      # A backend may report a maintenance/acknowledgment error after CURRENT
+      # advanced. Resolve that outcome before treating an accepted plan as a
+      # rejection. Unreadable authority is explicitly uncertain, never retried.
+      (let recovered (try workspace/store/.Store:load_checkpoint
+        catch Any (fail (CompositionCommitUncertain ^code "commit_uncertain"
+          ^message "Composition commit outcome is unreadable. Restart and inspect the authoritative checkpoint before another change."))))
+      (if (|| ($absent? recovered) (!= recovered/records/composition/history_head history))
+        (fail original)))
+    (workspace/revision .set next)
+    (workspace/entries .set checked)
+    (workspace/history_head .set history)
+    next
+  ensure
+    (workspace/busy .set false)))
+
+(fn find_entry_index [entries, id : Str] : Int
+  (var found -1)
+  (var i 0)
+  (for entry in entries
+    (if (&& (== found -1) (== entry/id id)) (set found i))
+    (set i (+ i 1)))
+  found)
+
+(fn previous_module_digest [entries, id : Str]
+  (var index (find_entry_index entries id))
+  (if_not (== index -1) entries/%index/module_digest))
+
+(fn entries_with [entries, replacement, replace : Bool]
+  (var out (fresh_list))
+  (var found false)
+  (for entry in entries
+    (if (== entry/id replacement/id)
+      (then
+        (set found true)
+        (if replace
+          (out .push replacement)
+          (fail (CompositionError ^message $"composition entry ${replacement/id} already exists"))))
+      (else
+        (out .push entry))))
+  (if_not found (out .push replacement))
+  out)
+
+(fn entry_limits [entry]
+  (if (== entry/limits void)
+    (default_limits_data)
+    entry/limits))
+
+(fn default_limits_data []
+  (var limits (default_execution_limits))
+  {^max_memory_mb limits/max_memory_mb ^timeout_ms limits/timeout_ms})
+
+(fn runtime_limits [entry] : ExecutionLimits
+  (var limits (entry_limits entry))
+  (ExecutionLimits ^max_memory_mb limits/max_memory_mb ^timeout_ms limits/timeout_ms))
+
+(fn entry_enabled? [entry]
+  (! (== entry/disabled true)))
+
+(fn record_quarantine [workspace : Workspace, id : Str, message : Str]
+  (var errors workspace/errors/.get)
+  (errors .put id message)
+  (workspace/errors .set errors)
+  (if_not ($absent? workspace/history_build/.get)
+    (try
+      (remember_failure workspace/store workspace/history_build/.get
+        (?? (previous_module_digest (composition_entries workspace) id) "builtin") id message)
+    catch Any
+      (workspace/metadata_errors/.get .push {^id id ^message $err/message}))))
+
+(fn close_workspace [workspace : Workspace]
+  (if workspace/closed/.get (return))
+  workspace/store/.Store:close
+  workspace/blob_store/.Store:close
+  (workspace/closed .set true)
+  nil)

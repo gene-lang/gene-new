@@ -4,7 +4,7 @@
 (import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
 (import [baseline_profile] ^from "../../../src/profiles/baseline")
 (import [create_session load_session] ^from "../../../src/runtime/sessions")
-(import [new_round_controller submit_round round_receipt cancel_round close_round_controller
+(import [submit_round round_receipt cancel_round close_round_controller
          save_round RoundError answer_round request_stop resume_answered_rounds]
   ^from "../../../src/runtime/round_controller")
 (import [events_for append_core_event flush_event_store core_state record_core_state] ^from "../../../src/storage/state")
@@ -12,7 +12,7 @@
 (import [append_message] ^from "../../../src/agents/history")
 (import [RoundChanged] ^from "../../../src/kernel")
 (import [scripted_profile] ^from "../../../src/profiles/scripted")
-(import [set_plugin_enabled] ^from "../../../src/storage/workspace")
+(import [set_plugin_enabled] ^from "../../../src/storage/workspace_repair")
 
 (fn attempt [controller, id]
   (try {^^accepted ^receipt (submit_round controller "race" id 1 "ask")}
@@ -27,7 +27,7 @@
           "(Outcome ^questions [{^id \"q\" ^prompt \"Continue?\"}])")))
         (try
           (let admitted (submit_round controller "default" "cancelled-question" 1 "ask"))
-          (controller/watchers/.get .get "default"; .join)
+          ((/watcher (controller/rounds/.get .get "default")) .join)
           (let receipt (round_receipt controller "default" admitted/id))
           (let batch receipt/questions/id)
           (cancel_round controller "default" admitted/id)
@@ -71,18 +71,12 @@
           (while (! entered/.get)
             ($sleep 1))
           (let fast (submit_round controller "fast" "fast" 1 "finish"))
-          (controller/watchers
-            .get
-            ; .get "fast"
-            ; .join)
+          ((/watcher (controller/rounds/.get .get "fast")) .join)
           (let fast_done (round_receipt controller "fast" fast/id))
           ($assert (== fast_done/state "done") "slow session blocked another session")
           (let before ($os/monotonic_ms))
           (cancel_round controller "slow" slow/id)
-          (controller/watchers
-            .get
-            ; .get "slow"
-            ; .join)
+          ((/watcher (controller/rounds/.get .get "slow")) .join)
           ($assert (< (- ($os/monotonic_ms) before) 100) "cancellation exceeded 100 ms")
           (let cancelled (round_receipt controller "slow" slow/id))
           ($assert (== cancelled/state "cancelled") "cancel did not settle the receipt")
@@ -125,7 +119,7 @@
           (var count 0)
           (for result in admitted (if result/accepted (set count (+ count 1))))
           ($assert (== count 1) "parallel submissions both entered the same session")
-          (controller/watchers .get; .get "race"; .join)
+          ((/watcher (controller/rounds/.get .get "race")) .join)
           (let session (load_session runtime/sessions "race"))
           (let current session/round/.get)
           ($assert (== current/state "waiting") "admitted round did not wait")
@@ -134,7 +128,7 @@
             (let b (spawn ^lane root (answer_round controller "race" current/questions/id {^q "yes"})))
             [(await a) (await b)]))
           ($assert (== answered/0/id answered/1/id) "identical concurrent answers were not idempotent")
-          (controller/watchers .get; .get "race"; .join)
+          ((/watcher (controller/rounds/.get .get "race")) .join)
           ($assert (== calls/.get 2) "concurrent answer resumed the provider twice")
           (var starts 0)
           (for event in (events_for runtime/events "session" "race")
@@ -144,7 +138,7 @@
           (set_test_provider runtime (fn [request] ($sleep 5000) "(Outcome ^^done ^reply \"late\")"))
           (let slow (submit_round controller "stop" "stop" 1 "wait"))
           (request_stop controller "stop" 0 true)
-          (controller/watchers .get; .get "stop"; .join)
+          ((/watcher (controller/rounds/.get .get "stop")) .join)
           ($assert (== ($size stopped/.get) 1) "workspace stop published cancellation twice")
           (let receipt (round_receipt controller "stop" slow/id))
           ($assert (== receipt/message "Workspace stopped.") "watcher overwrote the stop receipt")
@@ -197,7 +191,7 @@
         (for session in ["cont" "cancel" "legacy"]
           (create_session runtime/sessions ^id session)
           (let admitted (submit_round controller session $"r-${session}" 1 "ask"))
-          (controller/watchers/.get .get session; .join)
+          ((/watcher (controller/rounds/.get .get session)) .join)
           (let waiting (round_receipt controller session admitted/id))
           ($assert (== waiting/state "waiting") $"${session} did not wait")
           (batches .put session waiting/questions/id))
@@ -218,7 +212,7 @@
             (calls/.get .push request/session)
             "(Outcome ^^done ^reply \"continued\")")))
           ($assert (== (resume_answered_rounds fresh) 1) "the recorded continuation was not pending")
-          (fresh/watchers/.get .get "cont"; .join)
+          ((/watcher (fresh/rounds/.get .get "cont")) .join)
           ($assert (== (resume_answered_rounds fresh) 0) "a continuation resumed twice")
           (let done_session (load_session reopened/sessions "cont"))
           (let done done_session/round/.get)
@@ -244,12 +238,12 @@
             "(Outcome ^^done ^reply \"done\")"))))
         (try
           (let first (submit_round controller "default" "u1" 1 "ask"))
-          (controller/watchers/.get .get "default"; .join)
+          ((/watcher (controller/rounds/.get .get "default")) .join)
           (let batch (/id (/questions (round_receipt controller "default" first/id))))
           (answer_round controller "default" batch {^q "yes"})
-          (controller/watchers/.get .get "default"; .join)
+          ((/watcher (controller/rounds/.get .get "default")) .join)
           (let second (submit_round controller "default" "u2" 2 "again"))
-          (controller/watchers/.get .get "default"; .join)
+          ((/watcher (controller/rounds/.get .get "default")) .join)
           (let before calls/.get)
           (let retried (answer_round controller "default" batch {^q "yes"}))
           ($assert (== retried/id first/id) "an identical retry did not return its own round")
@@ -290,7 +284,7 @@
       (fn [workspace]
         (let runtime (open_runtime workspace "default"
           (scripted_profile ["(Outcome ^^done ^reply \"ready\")"])))
-        (let controller (new_round_controller runtime))
+        (let controller (test_controller runtime nil))
         (try
           (set_plugin_enabled runtime/workspace runtime/h "gene_reference" false)
           ($assert
@@ -323,7 +317,7 @@
             "missing selected provider did not refuse admission")
           (set_plugin_enabled runtime/workspace runtime/h "provider_scripted" true)
           (let accepted (submit_round controller "default" "first" 1 "go"))
-          (controller/watchers .get; .get "default"; .join)
+          ((/watcher (controller/rounds/.get .get "default")) .join)
           (let receipt (round_receipt controller "default" accepted/id))
           ($assert (== receipt/state "done")
             "repaired profile could not run")
@@ -338,10 +332,10 @@
           (scripted_profile [
             "(disable_plugin \"provider_scripted\") (Outcome ^prompt \"continue\")"
             "(Outcome ^^done ^reply \"should not run\")"])))
-        (let controller (new_round_controller runtime))
+        (let controller (test_controller runtime nil))
         (try
           (let accepted (submit_round controller "default" "first" 1 "go"))
-          (controller/watchers .get; .get "default"; .join)
+          ((/watcher (controller/rounds/.get .get "default")) .join)
           (let receipt (round_receipt controller "default" accepted/id))
           ($assert (== receipt/state "failed")
             "round continued after losing its provider")

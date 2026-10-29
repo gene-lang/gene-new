@@ -1,4 +1,5 @@
 (mod session_menu ^profile web)
+(import [api_root] ^from "../src/web/contract.gene")
 (import [text flag] ^from "../src/common/launcher.gene")
 (import [can_share_session? session_share_label session_share_busy?] ^from "./slack_channels.gene")
 
@@ -39,7 +40,7 @@
   ($dom/set_text menu/error "")
   (var controls ($dom/focusables menu/panel))
   (for control in controls (set control/disabled true))
-  (menu/api method $"/api/v8/sessions/${($url/encode_component id)}${suffix}" changes
+  (menu/api method $"${(api_root)}/sessions/${($url/encode_component id)}${suffix}" changes
     (fn [code : Int, data : Any] : Void
       (set menu/pending false)
       (if (== code accepted)

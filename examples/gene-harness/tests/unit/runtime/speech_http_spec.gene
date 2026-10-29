@@ -1,7 +1,7 @@
 (import $test [describe it run])
 (import $io [AsyncReader IoResource])
 (import [AudioError wav_encode] ^from "./audio" ^pkg "audio")
-(import [elevenlabs_synthesize whisper_transcribe] ^from "../../../src/audio/engines")
+(import [elevenlabs_synthesize whisper_transcribe] ^from "../../../src/public/speech_engines")
 
 (type FixtureBody ^props {^chunks Any ^cursor Any ^closed Any})
 (impl AsyncReader for FixtureBody

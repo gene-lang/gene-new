@@ -25,11 +25,14 @@ class Element extends EventTarget {
   focus() { document.activeElement = this; }
 }
 const stored = new Map(), timers = [], recognizers = [], spoken = [];
+const workspaceId = 'fixture-workspace';
+const harnessDocument = Object.assign(new Element('html'), {dataset: {workspaceId}});
 let now = 0, cancelled = 0;
 const windowTarget = Object.assign(new EventTarget(), {location: {origin: "http://fixture"}});
 Object.assign(globalThis, {
   HTMLElement: Element,
   document: {
+    getElementById: id => id === 'harness_document' ? harnessDocument : null,
     createElement: tag => new Element(tag),
     createTextNode: text => new Element("#text", text),
     createDocumentFragment: () => new Element("#fragment"),
@@ -66,6 +69,8 @@ Object.defineProperty(globalThis, "performance", {value: {now: () => now}, confi
 if (!globalThis.crypto) globalThis.crypto = webcrypto;
 const plugin = await import(pathToFileURL(process.argv[2]).href);
 const round = await import(pathToFileURL(process.argv[3]).href);
+const {workspace_storage_key} = await import(new URL('workspace_storage.mjs', pathToFileURL(process.argv[3])));
+const scoped = key => workspace_storage_key(workspaceId, key);
 const descendants = node => [node, ...node.children.flatMap(descendants)];
 const textButton = (node, prefix) => descendants(node).find(x => x.tag === "button" && x.textContent.startsWith(prefix));
 const click = node => node.dispatchEvent(new Event("click"));
@@ -89,7 +94,7 @@ root.harness_bridge = {
   },
   capabilities: {voice: {pending: () => false, submit: (session, text, input, done) => {
     submissions.push({session, text, input});
-    stored.delete("gene-harness/voice-draft/fixture/" + session);
+    stored.delete(scoped("gene-harness/voice-draft/fixture/" + session));
     listener("voice/admitted", session, {state: "running"});
     done(202n, {state: "running"});
   },
@@ -159,7 +164,7 @@ assert.equal(spoken.length, 3, "disposed speech callback cannot resume the queue
 // A released browser utterance that times out keeps its own partial as held text.
 const timeoutRoot = new Element();
 currentSession='a';
-stored.delete('gene-harness/voice-draft/fixture/a');
+stored.delete(scoped('gene-harness/voice-draft/fixture/a'));
 timeoutRoot.harness_bridge = root.harness_bridge;
 plugin.main(timeoutRoot);
 click(descendants(toolbar).filter(x => x.tag === 'button' && x.textContent.startsWith('Voice')).at(-1));
@@ -168,9 +173,9 @@ const timedRecognition = recognizers.at(-1);
 timedRecognition.onresult({resultIndex:0, results:[Object.assign([{transcript:'recover this partial'}],{isFinal:false})]});
 windowTarget.dispatchEvent(new Event('pointerup'));
 timers.filter(item => item.ms === 5000).at(-1).callback();
-assert.equal(JSON.parse(stored.get('gene-harness/voice-draft/fixture/a')).text,'recover this partial');
-assert.equal(JSON.parse(stored.get('gene-harness/voice-draft/fixture/a')).held,true);
-assert.equal(JSON.parse(stored.get('gene-harness/voice-draft/fixture/a')).review_required,true);
+assert.equal(JSON.parse(stored.get(scoped('gene-harness/voice-draft/fixture/a'))).text,'recover this partial');
+assert.equal(JSON.parse(stored.get(scoped('gene-harness/voice-draft/fixture/a'))).held,true);
+assert.equal(JSON.parse(stored.get(scoped('gene-harness/voice-draft/fixture/a'))).review_required,true);
 assert.equal(submissions.length,1, 'a timed-out partial must never auto-submit');
 // Pause as soon as the fourth host utterance is pending, before the next VAD frame.
 timeoutRoot.harnessController.dispose();
@@ -204,7 +209,7 @@ const wire = [], notices = [], settled = [];
 const api = (method, path, payload, done) => { wire.push({method, path, payload, done}); };
 const client = round.create_rounds(api, text => { notices.push(text); }, (envelope, receipt) => { settled.push({envelope, receipt}); });
 round.configure_rounds(client, "durable");
-stored.set("gene-harness/voice-draft/durable/original", JSON.stringify({text: "words more", audio_ms: 200}));
+stored.set(scoped("gene-harness/voice-draft/durable/original"), JSON.stringify({text: "words more", audio_ms: 200}));
 let outcome;
 const inputMetadata = {kind: "voice", recognizer: "fixture", audio_ms: 200n};
 round.dispatch_round(client, "original", "words", inputMetadata,
@@ -230,23 +235,23 @@ round.recover_round(client);
 wire.shift().done(200n, {id: "round", request_id: id, state: "done"});
 assert.equal(client.pending, null);
 assert.equal(settled.length, 1);
-assert.equal(JSON.parse(stored.get("gene-harness/voice-draft/durable/original")).text, "more",
+assert.equal(JSON.parse(stored.get(scoped("gene-harness/voice-draft/durable/original"))).text, "more",
   "host receipt recovery clears admitted words while preserving a later unsent suffix after plugin disposal");
-assert.equal(JSON.parse(stored.get("gene-harness/voice-draft/durable/original")).held, false);
-stored.set("gene-harness/voice-draft/durable/refused", JSON.stringify({text:"inspect me", audio_ms:200}));
+assert.equal(JSON.parse(stored.get(scoped("gene-harness/voice-draft/durable/original"))).held, false);
+stored.set(scoped("gene-harness/voice-draft/durable/refused"), JSON.stringify({text:"inspect me", audio_ms:200}));
 round.dispatch_round(client, "refused", "inspect me", {kind:"voice", recognizer:"fixture", audio_ms:200n}, () => {});
 wire.shift().done(200n, {next_submission_seq:"1", state:"done"});
 wire.shift().done(409n, {code:"sequence_conflict"});
 assert.equal(client.pending, null);
-assert.equal(JSON.parse(stored.get("gene-harness/voice-draft/durable/refused")).held, true,
+assert.equal(JSON.parse(stored.get(scoped("gene-harness/voice-draft/durable/refused"))).held, true,
   "a definite refusal remains held after the optional plugin is replaced or the page reloads");
 assert.equal(wire.length, 0, 'a held refusal must not allocate another request identity automatically');
-stored.set('gene-harness/voice-draft/durable/partial-review',JSON.stringify({
+stored.set(scoped('gene-harness/voice-draft/durable/partial-review'),JSON.stringify({
   text:'accepted recovered partial',audio_ms:500,held:true,review_required:true,
 }));
 client.pending={session:'partial-review',text:'accepted',input:{audio_ms:100n}};
 round.admitted(client,{id:'admitted'});
-const heldSuffix=JSON.parse(stored.get('gene-harness/voice-draft/durable/partial-review'));
+const heldSuffix=JSON.parse(stored.get(scoped('gene-harness/voice-draft/durable/partial-review')));
 assert.equal(heldSuffix.text,'recovered partial');
 assert.equal(heldSuffix.held,true,'receipt recovery must not auto-release a later partial transcript');
 console.log("voice client: pinned input, delayed finals, non-overlap, ordered/deduplicated speech, barge-in, disposal and durable unknown-outcome recovery passed");

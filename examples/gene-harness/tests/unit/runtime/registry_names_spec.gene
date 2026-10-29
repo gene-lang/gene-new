@@ -1,0 +1,59 @@
+(import $test [describe it])
+(import [builtin_registry_specs] ^from "../../../src/registries/builtins")
+
+(fn source_files [directory : Str]
+  (let files [])
+  (for name in ($fs/list_dir directory)
+    (let path ($path/join directory name))
+    (let info ($fs/info path))
+    (if (== info/kind "directory")
+      (for child in (source_files path) (files .push child))
+      (if ($str/ends_with? path ".gene") (files .push path))))
+  files)
+
+(fn visit [value, callback]
+  (if (== ($head value) List)
+    (then (for item in value (visit item callback)) (return nil)))
+  (if (== ($head value) Map)
+    (then (for [key item] in value (visit item callback)) (return nil)))
+  (match value
+    (when (node : Node)
+      (if (["quote" "quasiquote"] .contains? ($to_str ($head value))) (return nil))
+      (callback value)
+      (visit ($head value) callback)
+      (visit ($props value) callback)
+      (visit ($body value) callback))
+    (else nil)))
+
+(fn registry_reference [form]
+  (let head ($to_str ($head form)))
+  (let body ($body form))
+  (if (&& (["row" "rows" "row_record" "registry_row_keys" "registry_row_records" "registry"] .contains? head)
+          (> body/.size 1) (== ($head body/1) Str)) (return body/1))
+  (if (&& (== head "contribute") (> body/.size 2) (== ($head body/2) Str)) (return body/2))
+  (if (&& (> body/.size 1) (== ($head body/0) Sym) (== ($head body/1) Str)
+          ([".PluginHost:row" ".PluginHost:rows" ".PluginHost:row_keys"
+            ".PluginHost:contribute" ".PluginHost:replace_contribution"] .contains? ($to_str body/0)))
+    (return body/1))
+  nil)
+
+(describe "Host registry names"
+  (it "checks literal consumers against the host catalog and explicitly declared registries" []
+    (let known {})
+    (for spec in (builtin_registry_specs nil (fn [name] nil)) (known .put spec/name true))
+    (let files (source_files ($path/join this_pkg/root "src")))
+    (for path in files
+      (for form in ($parse/read_all ($fs/read_text path))
+        (visit form (fn [node]
+          (if_yes (== ($head node) (quote registry))
+            (let name (registry_reference node))
+            (if_not ($absent? name) (known .put name true)))))))
+    (var checked 0)
+    (for path in files
+      (for form in ($parse/read_all ($fs/read_text path))
+        (visit form (fn [node]
+          (let name (registry_reference node))
+          (if_not ($absent? name)
+            (set checked (+ checked 1))
+            ($assert (known .has_key? name) $"Unknown registry ${name} referenced by ${path}."))))))
+    ($assert (> checked 30) "The registry scan did not reach the real consumers.")))

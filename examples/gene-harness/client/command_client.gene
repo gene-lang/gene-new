@@ -1,5 +1,7 @@
 # Durable per-tab submission identity, independent of optional browser plugins.
 (mod harness_command_client ^profile web)
+(import [storage_get storage_set storage_remove] ^from "./workspace_storage.gene")
+(import [api_root] ^from "../src/web/contract.gene")
 (import [text flag] ^from "../src/common/launcher.gene")
 
 (type CommandClient ^props {^workspace Str ^pending Any ^resolving Bool
@@ -9,14 +11,14 @@
   $"gene-harness/command-pending/${client/workspace}")
 
 (fn clear_pending [client : CommandClient] : Void
-  ($session_storage/remove (storage_key client))
+  (storage_remove (storage_key client))
   (set client/pending nil))
 
 (fn forget_command [client : CommandClient] : Bool
   (if_yes (|| client/resolving ($absent? client/pending)) (return false))
   # This is an explicit acknowledgement after inspection, not a retry or a
   # claim that the old command did not run. Persist the discard before unlock.
-  (if_yes (! ($session_storage/set (storage_key client) ""))
+  (if_yes (! (storage_set (storage_key client) ""))
     (client/changed "The saved request could not be forgotten. Restore browser storage and try again.")
     (return false))
   (clear_pending client)
@@ -44,7 +46,7 @@
   (set client/resolving true)
   (client/changed "Looking up the saved command receipt…")
   (client/api "GET"
-    $"/api/v8/sessions/${(text envelope/session)}/requests/${(text envelope/request_id)}?kind=command"
+    $"${(api_root)}/sessions/${(text envelope/session)}/requests/${(text envelope/request_id)}?kind=command"
     nil
     (fn [code : Int, data : Any] : Void
       (if_yes (!= workspace client/workspace) (return))
@@ -58,7 +60,7 @@
   (set client/workspace workspace)
   (set client/pending nil)
   (set client/resolving false)
-  (var saved (?? ($session_storage/get (storage_key client)) ""))
+  (var saved (?? (storage_get (storage_key client)) ""))
   (if_yes (!= saved "")
     (try
       (var envelope : Any ($json/parse saved))
@@ -80,18 +82,18 @@
   (if_yes client/resolving
     (done 409 (not_sent {^code "busy" ^message "A command is being prepared. Try again when it finishes."})) (return))
   (set client/resolving true)
-  (client/api "GET" $"/api/v8/sessions/${session}/commands" nil
+  (client/api "GET" $"${(api_root)}/sessions/${session}/commands" nil
     (fn [code : Int, state : Any] : Void
       (if_yes (!= code 200) (set client/resolving false) (done code (not_sent state)) (return))
       (var envelope : Any {^session session ^text value ^request_id ($browser/request_id)
         ^submission_seq (text state/next_command_seq) ^expected_command expected ^card card
         ^clear_composer clear_composer})
-      (if_yes (! ($session_storage/set (storage_key client) ($json/stringify envelope)))
+      (if_yes (! (storage_set (storage_key client) ($json/stringify envelope)))
         (set client/resolving false)
         (done 409 (not_sent {^code "storage_unavailable" ^message "Command recovery could not be saved. Restore browser storage before submitting."}))
         (return))
       (set client/pending envelope)
-      (client/api "POST" $"/api/v8/sessions/${session}/commands" envelope
+      (client/api "POST" $"${(api_root)}/sessions/${session}/commands" envelope
         (fn [accepted : Int, receipt : Any] : Void
           (set client/resolving false)
           (if (== accepted 202)

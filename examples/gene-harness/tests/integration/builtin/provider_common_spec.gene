@@ -1,6 +1,6 @@
-# Tests src/builtin/provider_common.gene.
+# Tests the shared provider library.
 (import $test [describe it])
-(import [configure_model http_json_attempt] ^from "../../../src/builtin/provider_common")
+(import [configure_model http_json_attempt] ^from "../../../src/public/provider")
 (import [call_model] ^from "../../../src/agents/model_call")
 (import [new_harness shutdown_harness contribute] ^from "../../../src/kernel")
 (import [Profile] ^from "../../../src/profiles/profile")

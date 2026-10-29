@@ -106,9 +106,9 @@
         (var selected nil)
         (for policy in (policy_rows lease/snapshot)
           (if (initiator_matches? policy initiator) (set selected policy)))
-        # Unknown legacy automation spellings remain non-operator inputs.
+        # Unrecognized automation sources remain non-operator inputs.
         (if ($absent? selected)
-          (return {^kind "legacy" ^name "legacy/unknown" ^operator false ^channel false
+          (return {^kind "unknown" ^name "unknown/source" ^operator false ^channel false
             ^input (normalize_round_input input)}))
         (let continued (&& (== selected/kind "continue") (! ($absent? continuation))))
         (let carried_plugin (&& continued (== input/kind "plugin")))

@@ -381,12 +381,19 @@
         ^message $"invalid core event ${envelope/type}: ${schema_error}"))
       (quarantine_projection quarantined seen envelope))))
 
-(fn validate_event_catalog [events : EventStore, known_types]
+(fn validate_event_catalog [events : EventStore, known_types, ^all_streams all_streams : Bool = false]
   (require_open events)
   (events/catalog .set known_types)
   (events/quarantined .set (fresh_list))
   (for [stream values] in events/streams/.get
     (for envelope in values (validate_loaded_envelope events envelope)))
+  # A startup repair must validate cold streams too before it can append to
+  # any stream. Newly loaded envelopes use the installed catalog exactly once.
+  (if_yes all_streams
+    (let manifest events/last_manifest/.get)
+    (for [stream descriptor] in (?? manifest/streams {})
+      (if ($absent? (events/streams/.get .get stream))
+        (current_events events ($to_str stream)))))
   (copy_data events/quarantined/.get))
 
 (fn validate_envelope_formats [events : EventStore]

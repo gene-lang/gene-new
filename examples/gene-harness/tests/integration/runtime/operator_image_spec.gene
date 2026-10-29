@@ -16,10 +16,10 @@
         (let fixture (image_fixture workspace [(review 95)] ^extra_plugins [(core_commands)]))
         (let runtime fixture/runtime)
         (try
-          (let submitted (submit_command runtime/commands "default"
+          (let submitted (submit_command runtime/services/values/commands "default"
             "/run (append_prompt \"generated_image\" (image_generate \"Two playful cats.\" ^generator \"mock\" ^generation_model \"fixture-image\" ^max_attempts 2))"))
-          (runtime/commands/watchers/.get .get $"default:${submitted/id}"; .join)
-          (let receipt (command_receipt runtime/commands "default" submitted/id))
+          (runtime/services/values/commands/watchers/.get .get $"default:${submitted/id}"; .join)
+          (let receipt (command_receipt runtime/services/values/commands "default" submitted/id))
           ($assert (== receipt/status "done") $"image command failed: ${receipt}")
           ($assert ($str/contains? receipt/display "generated_image") receipt/display)
           ($assert ($str/contains? receipt/display "attempts_used 1") receipt/display)
@@ -37,13 +37,13 @@
         (let fixture (image_fixture workspace [(review 95)] ^extra_plugins [(repl)]))
         (let runtime fixture/runtime)
         (try
-          (let opened (submit_command runtime/commands "default" "/repl"))
-          (runtime/commands/watchers/.get .get $"default:${opened/id}"; .join)
-          (let mode (mode_state runtime/modes "default"))
-          (let submitted (submit_mode_input runtime/modes "default" mode/instance "image-repl"
+          (let opened (submit_command runtime/services/values/commands "default" "/repl"))
+          (runtime/services/values/commands/watchers/.get .get $"default:${opened/id}"; .join)
+          (let mode (mode_state runtime/services/values/commands/modes "default"))
+          (let submitted (submit_mode_input runtime/services/values/commands/modes "default" mode/instance "image-repl"
             "(append_prompt \"generated_image\" (image_generate \"Two playful cats.\" ^generator \"mock\" ^generation_model \"fixture-image\" ^max_attempts 2))"))
-          (runtime/commands/watchers/.get .get $"default:${submitted/id}"; .join)
-          (let receipt (command_receipt runtime/commands "default" submitted/id))
+          (runtime/services/values/commands/watchers/.get .get $"default:${submitted/id}"; .join)
+          (let receipt (command_receipt runtime/services/values/commands "default" submitted/id))
           ($assert (== receipt/status "done") $"repl image failed: ${receipt}")
           ($assert ($str/contains? receipt/display "generated_image") receipt/display)
           (let saved (read_image_run runtime "default" $"command:${submitted/id}"))

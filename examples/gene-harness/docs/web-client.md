@@ -209,7 +209,7 @@ Return to workspace UI leaves recovery without changing shared settings.
 ## Wire protocol 8
 
 The native host and Gene web-profile client share web/contract.gene.
-The current version is 7. A version mismatch stops interaction and asks for a
+The current version is 8. A version mismatch stops interaction and asks for a
 reload.
 
 Every WebSocket frame has protocol, epoch, decimal-text sequence, type,
@@ -451,4 +451,4 @@ This DOM-fixture check is not a live-browser acceptance check.
 
 The server compiles and publishes these assets at startup; this command is a
 development check. The web builder currently requires unique source basenames
-across imported modules. See the [design notes](design.md#development-constraints).
+across imported modules. See the [tooling constraints](../CONTRIBUTING.md#tooling-constraints).

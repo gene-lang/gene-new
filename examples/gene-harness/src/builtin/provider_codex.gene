@@ -4,7 +4,7 @@
 (import ^from "../plugin_api" [ProviderError])
 (import ^from "../public/provider" [nonempty configure_model http_json_attempt])
 (import [responses_content] ^from "../public/model_content")
-(import [byte_prefix] ^from "../text")
+(import [byte_prefix] ^from "../public/text")
 
 (fn auth_file []
   (let explicit (nonempty ($os/env? "CODEX_AUTH_FILE")))

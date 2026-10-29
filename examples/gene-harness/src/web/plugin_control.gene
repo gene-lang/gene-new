@@ -1,4 +1,5 @@
 (mod plugin_control)
+(import [api_root] ^from "./contract.gene")
 (import ^from "../runtime/plugin_plans" [validate_plan apply_plan plan_result])
 
 (type PluginControl ^props {^runtime Any ^jobs Any ^tasks Any ^closed Any})
@@ -27,17 +28,18 @@
 
 (fn plugin_control_request [control : PluginControl, request]
   (let path request/path)
-  (if_yes (&& (== request/method "POST") (["/api/v8/plugins/plans/validate" "/api/v8/plugins/plans/apply"] .contains? path))
+  (if_yes (&& (== request/method "POST") ([$"${(api_root)}/plugins/plans/validate" $"${(api_root)}/plugins/plans/apply"] .contains? path))
     (let body (try ($json/parse ^^strict ^max_depth 32 request/body) catch Any nil))
     (if (!= ($head body) Map)
       (return {^status 400 ^body {^code "invalid_request" ^message "A JSON object is required."}}))
-    (let kind (if (== path "/api/v8/plugins/plans/validate") "validate" "apply"))
+    (let kind (if (== path $"${(api_root)}/plugins/plans/validate") "validate" "apply"))
     (if (&& (== kind "apply") (!= ($head body/id) Str))
       (return
         {^status 400 ^body {^code "invalid_request" ^message "Validated plan id is required."}}))
     (return {^status 202 ^body (start_plugin_job control kind body)}))
-  (if_yes (&& (== request/method "GET") ($str/starts_with? path "/api/v8/plugins/jobs/"))
-    (let id ($str/slice_bytes path 21 (- ($str/byte_size path) 21)))
+  (if_yes (&& (== request/method "GET") ($str/starts_with? path $"${(api_root)}/plugins/jobs/"))
+    (let prefix ($str/byte_size $"${(api_root)}/plugins/jobs/"))
+    (let id ($str/slice_bytes path prefix (- ($str/byte_size path) prefix)))
     (let job (plugin_job control id))
     (return
       (if ($absent? job)
@@ -47,7 +49,7 @@
                   ^code "not_found"
                   ^message "This operation is unavailable after restart. Inspect its plan result."}}
         {^status 200 ^body job})))
-  (if_yes (&& (== request/method "GET") (== path "/api/v8/plugins/plans/result"))
+  (if_yes (&& (== request/method "GET") (== path $"${(api_root)}/plugins/plans/result"))
     (let result (plan_result control/runtime (?? request/params/id "")))
     (return {^status 200 ^body {^result result}}))
   nil)

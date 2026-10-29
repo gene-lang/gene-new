@@ -1,8 +1,8 @@
 (mod history)
-(import [byte_prefix byte_suffix] ^from "../text")
+(import [byte_prefix byte_suffix] ^from "../public/text")
 (import ^from "../storage/state" [core_state core_states record_core_state append_core_event events_for flush_event_store])
 (import ^from "./response" [split_response])
-(import ^from "./history_policy" [normalize_history_policy])
+(import ^from "../public/history_policy" [normalize_history_policy])
 (import $store/fs [Store])
 
 (var ^^private history_gate ($sync/gate))
@@ -114,7 +114,8 @@
     (if_not (keep_full_message? state/messages index)
       (message .put
         "content"
-        (?? message/settled message/content)))
+        (?? message/settled message/content))
+      (message .delete "settled"))
     (set index (+ index 1)))
   (let text ($serde/write_data state))
   (let digest ($crypto/sha256 text))
@@ -315,17 +316,13 @@ ELIDED
 
 (fn context_from_state [state, instructions : Str]
   (let messages [{^role "system" ^content instructions}])
-  (var index 0)
   (for message in state/messages
     (let prepared
       {
         ^role message/role
-        ^content (if (keep_full_message? state/messages index)
-                   message/content
-                   message/settled)})
+        ^content message/content})
     (if_not ($absent? message/media) (prepared .put "media" message/media))
-    (messages .push prepared)
-    (set index (+ index 1)))
+    (messages .push prepared))
   messages)
 
 (fn provider_context [runtime, session : Str, instructions : Str]
@@ -406,7 +403,7 @@ ELIDED
           (then
             (selected .push message)
             (if_not (rounds .contains? message/round) (rounds .push message/round))
-            (set removed (+ removed ($str/byte_size message/settled)
+            (set removed (+ removed ($str/byte_size message/content)
               (media_context_bytes (?? message/media [])))))
           (else (retained .push message))))
       # Summarize whole rounds: extend selection to all messages belonging to

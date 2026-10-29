@@ -25,12 +25,12 @@
     $"notification-action/${session}"
     (fn []
       (if_yes (&& (!= session "") (!= request_id ""))
-        (let previous (command_request_receipt runtime/commands session request_id))
+        (let previous (command_request_receipt runtime/services/values/commands session request_id))
         (if_not ($absent? previous)
           (if (!= previous/request_digest digest)
             (notification_error "submission_conflict" "Action retry changed its original payload."))
           (return {^kind "command" ^session session ^receipt previous})))
-      (let message (message_detail h/services/notifications request/notification))
+      (let message (message_detail runtime/services/values/inbox request/notification))
       (if (!= message/revision request/revision)
         (notification_error
           "revision_conflict"
@@ -123,7 +123,7 @@
           (with_body_use
             runtime
             (fn []
-              (submit_routed_command ^lease lease runtime/commands session parsed))))
+              (submit_routed_command ^lease lease runtime/services/values/commands session parsed))))
         (set transferred true)
         {^kind "command" ^session session ^receipt receipt}
       ensure

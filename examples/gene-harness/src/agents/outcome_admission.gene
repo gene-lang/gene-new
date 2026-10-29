@@ -3,23 +3,53 @@
 (import [Outcome OutcomeError checked_outcome_extensions] ^from "./outcome")
 (import [normalize_extension_fields] ^from "../runtime/outcome_extensions")
 
-(fn normalize_harness_outcome [h, snapshot, session : Str, round, turn, bindings, value]
+# The response spelling belongs to the leased schema rows, not to the core
+# nominal type. This constructor translates names without executing schemas;
+# the returned value is admitted once, after response evaluation completes.
+(type LeasedOutcomeConstructor ^^private ^props {^aliases Any}
+  (impl Callable
+    (message apply [self call] : Any
+      (let fields ($thaw ($freeze_shallow call/named)))
+      (let raw (?? fields/extensions {}))
+      (if (!= ($head raw) Map)
+        (fail (OutcomeError ^message "Outcome extensions must be a map of registered keys.")))
+      (let extensions {})
+      (for [key value] in raw (extensions .put key value))
+      (for [alias key] in self/aliases
+        (if_not (fields .has_key? alias) (continue))
+        (if (extensions .has_key? key)
+          (fail (OutcomeError ^message $"Outcome supplies both ${key} and its short spelling ${alias}.")))
+        (extensions .put key (fields .get alias))
+        (fields .delete alias))
+      (if (|| (fields .has_key? "extensions") (> ($size extensions) 0))
+        (fields .put "extensions" extensions))
+      (let construct ($runtime/bind_call ^named fields Outcome call/body))
+      (construct))))
+
+(fn outcome_constructor [snapshot]
+  # Keep only inert spelling metadata. Returning the constructor from /run must
+  # not retain or try to freeze activation handles from the full snapshot.
+  (let aliases {})
+  (for record in (?? (snapshot/registries .get "outcome_extensions") [])
+    (let definition record/payload)
+    (if_not ($absent? definition/alias) (aliases .put definition/alias definition/name)))
+  (LeasedOutcomeConstructor ^aliases ($freeze aliases)))
+
+(fn normalize_harness_outcome [h, snapshot, session : Str, round, turn, turn_context, value]
   (if (!= ($head value) Outcome) (return value))
   (let fields {^done value/done ^prompt value/prompt ^reply value/reply
-    ^audio_reply value/audio_reply ^questions value/questions ^attention value/attention
-    ^wait value/wait ^result value/result ^wake_on_questions value/wake_on_questions})
+    ^questions value/questions ^attention value/attention})
   (let context {^session session ^round round ^turn turn/turn
     ^workspace_root h/workspace/workspace_root ^composition_revision snapshot/id
-    ^count bindings/delegation_context/round_turn ^limit bindings/delegation_context/turn_limit
-    ^collection (== turn/delegation_collection true)
+    ^count turn_context/count ^limit turn_context/limit
+    ^collection (== turn_context/collection true)
     ^outcome {^done (== value/done true) ^reply (?? value/reply nil)
       ^attention (== value/attention true) ^has_questions (! ($absent? value/questions))
       ^has_prompt (!= value/prompt void)}})
-  (let result (normalize_extension_fields snapshot context fields value/extensions))
+  (let result (normalize_extension_fields snapshot context value/extensions))
   (if_not ($absent? result/error) (fail (OutcomeError ^message result/error)))
-  (for [key normalized] in result/aliases (fields .put key normalized))
   (if (|| (! ($absent? value/extensions)) (> ($size result/values) 0))
     (fields .put "extensions" result/values))
   (for warning in result/warnings
     (if_not ($absent? turn/console) (turn/console warning)))
-  (checked_outcome_extensions (Outcome fields...)))
+  (checked_outcome_extensions (Outcome fields...) ^suspension result/suspension))

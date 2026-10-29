@@ -3,7 +3,7 @@
 (import [new_voice_state claim_voice release_voice] ^from "../../../src/runtime/voice_state")
 (import [open_event_store close_event_store append_core_event] ^from "../../../src/storage/state")
 (import [new_voice_hub add_voice_peer voice_message tick_voice close_voice_hub] ^from "../../../src/web/voice")
-(import [decode_audio_frame] ^from "../../../src/runtime/voice_protocol")
+(import [decode_audio_frame] ^from "../../../src/public/voice_frames")
 
 (fn until [predicate]
   (let deadline (+ ($os/monotonic_ms) 3000))
@@ -18,11 +18,11 @@
   (let h (new_harness ^event_store events))
   (install h (Plugin ^id "speech_fixture" ^provides [["speech_synthesizers" "fixed"]]
     ^activate (fn [host] (host .PluginHost:contribute "speech_synthesizers" engine))))
-  (let runtime {^h h ^state_root root ^profile {^voice {^synthesizer "fixed"}}})
-  (set runtime/voice (new_voice_state runtime))
+  (let runtime {^h h ^events events ^services {^values {}} ^state_root root ^profile {^voice {^synthesizer "fixed"}}})
+  (set runtime/services/values/voice (new_voice_state runtime))
   (let messages []) (let sent {})
   (let peer_cell ($cell nil))
-  (let hub (new_voice_hub ^clock clock {^runtime runtime ^events events} ^send (fn [connection value]
+  (let hub (new_voice_hub ^clock clock {^runtime runtime} ^send (fn [connection value]
     (if (&& (! ($absent? full)) full/.get) (return 0))
     (match value
       (when (text : Str) (messages .push ($json/parse text)))
@@ -37,7 +37,7 @@
   (let connection {^server_id -10 ^fd 1})
   (add_voice_peer hub connection "csrf" (fn [] true))
   (voice_message hub connection ($json/stringify {^type "hello" ^csrf "csrf" ^client_id "page" ^formats ["s16le"]}))
-  (let claim (claim_voice runtime/voice "session" "page" true))
+  (let claim (claim_voice runtime/services/values/voice "session" "page" true))
   (let peer (hub/peers/.get .get "-10/1"))
   (peer_cell .set peer)
   (peer .put "session" "session") (peer .put "token" claim/token)
@@ -157,7 +157,7 @@
     (try
       (until (fn [] entered/.get))
       (f/hub/speech/dirty .set true) (full .set true)
-      (release_voice f/runtime/voice "page" f/claim/token)
+      (release_voice f/runtime/services/values/voice "page" f/claim/token)
       (let started ($os/monotonic_ms))
       (tick_voice f/hub) (tick_voice f/hub)
       ($assert (< (- ($os/monotonic_ms) started) 80) "tick blocked the HTTP serve loop")

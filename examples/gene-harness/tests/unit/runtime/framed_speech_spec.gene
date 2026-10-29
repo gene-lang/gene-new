@@ -1,6 +1,6 @@
 (import $test [describe it run])
 (import $io [IoResource])
-(import [framed_synthesize] ^from "../../../src/audio/engines")
+(import [framed_synthesize] ^from "../../../src/public/speech_engines")
 (import [bounded_audio_call] ^from "../../../src/audio/call")
 (import [read_json write_json write_packet close_worker] ^from "./worker" ^pkg "audio")
 (import [AudioError audio_error] ^from "./audio" ^pkg "audio")

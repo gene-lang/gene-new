@@ -1,13 +1,14 @@
 (mod operator_eval)
-(import [Outcome new_turn_items append_prompt_at attachment recall rewrite_prompt_calls render_request] ^from "../agents/outcome")
+(import [new_turn_items append_prompt_at append_plugin_prompt attachment recall rewrite_prompt_calls render_request] ^from "../agents/outcome")
+(import [outcome_constructor] ^from "../agents/outcome_admission")
 (import [open_execution_scope close_execution_scope] ^from "./execution_budget")
 (import [select_provider] ^from "../agents/provider_selection")
 
 (fn operator_turn [ctx]
   (new_turn_items ($parse/parse_int ($str/slice_bytes ctx/id 1 (- ($str/byte_size ctx/id) 1)))))
 
-(fn operator_bindings [bindings, root : Str, turn]
-  (bindings .put "Outcome" Outcome)
+(fn operator_bindings [bindings, root : Str, turn, snapshot]
+  (bindings .put "Outcome" (outcome_constructor snapshot))
   (bindings .put "workspace_root" root)
   (bindings .put "append_prompt_at" (fn [label line form value]
     (append_prompt_at turn label line form value)))
@@ -23,6 +24,7 @@
       ^row ($freeze_shallow reviewer/row)})))
   (let source ($runtime/context))
   (source .assoc "turn" turn
+    ; .assoc "append_prompt" append_plugin_prompt
     ; .assoc "round" $"command:${ctx/id}"
     ; .assoc "reviewer" pinned))
 

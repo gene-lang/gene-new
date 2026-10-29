@@ -1,7 +1,7 @@
 (import $test [describe it run])
 (import [wav_encode wav_decode pcm_duration_ms AudioError] ^from "./audio" ^pkg "audio")
 (import [encode_audio_frame decode_audio_frame new_capture capture_frame
-  new_credit playback_ack playback_credit charge_playback] ^from "../../../src/runtime/voice_protocol")
+  new_credit playback_ack playback_credit charge_playback] ^from "../../../src/public/voice_frames")
 
 (describe "PCM and voice framing"
   (it "round-trips PCM including NUL and high bytes through WAV and audio frames" []

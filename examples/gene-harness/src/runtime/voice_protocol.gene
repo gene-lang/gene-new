@@ -1,3 +1,0 @@
-# Host compatibility import; implementation is a declared public library.
-(mod voice_protocol)
-(import [protocol_error encode_audio_frame decode_audio_frame new_capture capture_frame new_credit playback_ack playback_credit charge_playback] ^from "../public/voice_frames" ^^export)

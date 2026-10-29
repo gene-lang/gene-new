@@ -9,7 +9,7 @@
 
 (fn channel_service [handle]
   (let record (require_service handle))
-  (let service record/runtime/channels)
+  (let service record/runtime/services/values/channels)
   (if (|| ($absent? service) service/closed/.get)
     (fail (ServiceError ^code "unavailable" ^message "The channel service is unavailable.")))
   service)

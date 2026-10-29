@@ -1,3 +1,0 @@
-# Host compatibility import; implementation is a declared public library.
-(mod content)
-(import [message_images image_url responses_content anthropic_content chat_messages require_text_messages] ^from "../public/model_content" ^^export)

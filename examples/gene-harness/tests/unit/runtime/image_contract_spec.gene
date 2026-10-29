@@ -1,6 +1,6 @@
 (import $test [describe it run])
 (import [normalize_image_request image_limits parse_image_review pixel_dimensions]
-  ^from "../../../src/runtime/image_contract")
+  ^from "../../../src/public/image_contract")
 (import [ImageError] ^from "../../../src/plugin_api")
 
 (describe "Image workflow contracts"

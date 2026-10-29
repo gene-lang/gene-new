@@ -20,7 +20,7 @@
 
 (type ^^private RegistryRow ^props {^row_id Str ^owner Str ^registry Str ^key Str ^payload Any ^priority Int ^config_order Int ^acquired Int ^effects Any? ^cleanup_state Any?})
 
-(type Harness ^props {^plugins Any ^plugin_errors Any ^log Any ^log_hydrated Any ^bus Any ^registries Any ^ledger Any ^row_index Any ^next_row_id Any ^event_store Any ^event_scope Str ^event_stream Str ^plugin_policies Any ^plugin_depth Any ^workspace Any ^ui_epoch Str? ^registry_observer Any? ^composition Any? ^snapshots Any? ^composer Any? ^services Any? ^bridge Any?})
+(type Harness ^props {^plugins Any ^plugin_errors Any ^log Any ^log_hydrated Any ^bus Any ^registries Any ^ledger Any ^row_index Any ^next_row_id Any ^event_store Any ^event_scope Str ^event_stream Str ^plugin_policies Any ^plugin_depth Any ^workspace Any ^ui_epoch Str? ^registry_observer Any? ^composition Any? ^snapshots Any? ^composer Any? ^plugin_services Any?})
 
 
 (fn fresh_list []
@@ -465,10 +465,10 @@
   # Rows contributed outside a Cordis activation are still bounded when
   # invoked; there is no activation revision to own them.
   (if ($absent? policy/effects) (return callable))
-  # Same receiver rule as `callback_receiver`: host plugins receive the
-  # Harness, generated plugins their context.
+  # Every activation retains its public receiver. Direct kernel rows have no
+  # activation scope and returned above.
   (retain_callback policy/effects $"${owner}/callback" callable
-    ^host_context (if policy/host h policy/context)
+    ^host_context policy/context
     ^inject_context inject_context))
 
 (fn remove_owner [h : Harness, owner : Str]
@@ -547,7 +547,7 @@
 
 (fn ^^private callback_receiver [h : Harness, owner : Str]
   (var policy (policy_for_owner h owner))
-  (if policy/host
+  (if ($absent? policy/effects)
     h
     (if ($absent? policy/context)
       (fail (HarnessError ^message $"plugin ${owner} callback context is unavailable"))

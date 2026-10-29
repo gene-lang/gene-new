@@ -1,5 +1,6 @@
 
 (mod workspace_manager_plugin)
+(import [api_root] ^from "../web/contract.gene")
 (import [Plugin PluginHost WorkspaceHost] ^from "../plugin_api")
 (import [contribute_text_doc] ^from "../public/documentation")
 
@@ -17,7 +18,7 @@
     (let controls [])
     (if (["running" "recovery"] .contains? item/status)
       (controls .push
-        `(a ^href %$"/api/v8/ui/open?name=workspace_open&id=${($url/encode_component item/id)}" ^target "_blank" "Open"))
+        `(a ^href %$"${(api_root)}/ui/open?name=workspace_open&id=${($url/encode_component item/id)}" ^target "_blank" "Open"))
       (controls .push
         `(button ^key %$"start/${item/id}" ^action "manager_workspace_action" ^args %{^operation "start" ^id item/id} "Start")))
     (if (["running" "recovery" "starting" "unavailable"] .contains? item/status)

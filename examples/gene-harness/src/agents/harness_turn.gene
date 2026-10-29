@@ -3,10 +3,10 @@
 (import ^from "../runtime/composition" [acquire_snapshot release_snapshot take_composition_changes discard_composition_changes])
 (import ^from "./turn_eval" [evaluate_turn])
 (import ^from "./discovery" [discovery_bindings])
-(import ^from "../storage/workspace" [drain_workspace_changes])
-(import ^from "../text" [byte_prefix])
-(import [ui_publication_preview bounded_render_call] ^from "../ui/views")
-(import [normalize_harness_outcome] ^from "./outcome_admission")
+(import [drain_workspace_changes] ^from "../storage/workspace_activation")
+(import ^from "../public/text" [byte_prefix])
+(import [bounded_render_call] ^from "../ui/views")
+(import [normalize_harness_outcome outcome_constructor] ^from "./outcome_admission")
 
 (fn plugin_change_summary [changes]
   (let lines [])
@@ -98,7 +98,7 @@
 
 """))
 
-(fn evaluate_harness_turn [h : Harness, number : Int, workspace_root : Str, text : Str, ^session session : Str = "default", ^round round = nil, ^reviewer reviewer = nil, ^timeout_ms timeout_ms : Int = 600000, ^max_memory_mb max_memory_mb : Int = 1024, ^console_sink console_sink = nil, ^recall recall_function = nil, ^record record = nil, ^bindings extra_bindings = {}, ^lease supplied_lease = nil, ^after_patch_rename after_patch_rename = nil]
+(fn evaluate_harness_turn [h : Harness, number : Int, workspace_root : Str, text : Str, ^session session : Str = "default", ^round round = nil, ^reviewer reviewer = nil, ^timeout_ms timeout_ms : Int = 600000, ^max_memory_mb max_memory_mb : Int = 1024, ^console_sink console_sink = nil, ^recall recall_function = nil, ^record record = nil, ^bindings extra_bindings = {}, ^lease supplied_lease = nil, ^after_patch_rename after_patch_rename = nil, ^coordinated coordinated : Bool = false, ^turn_context turn_context = {}, ^publication_preview publication_preview = nil]
   (let lease (if ($absent? supplied_lease) (acquire_snapshot h/snapshots) supplied_lease))
   (let turn_ref ($cell nil))
   (let drained ($cell false))
@@ -110,8 +110,9 @@
       (workspace_bindings ^extra extra_bindings h lease/snapshot session workspace_root))
     (let result
       (evaluate_turn ^validators (question_validators lease/snapshot) ^renderers (question_renderers h lease/snapshot) ^bindings bindings ^timeout_ms timeout_ms ^max_memory_mb max_memory_mb ^console_sink console_sink ^recall recall_function ^record record ^after_patch_rename after_patch_rename ^turn_sink turn_ref
+        ^outcome_binding (outcome_constructor lease/snapshot) ^coordinated coordinated
         ^normalize_outcome (fn [turn value]
-          (normalize_harness_outcome h lease/snapshot session round turn extra_bindings value))
+          (normalize_harness_outcome h lease/snapshot session round turn turn_context value))
         ^context {^composition h/snapshots ^snapshot lease/snapshot ^session session ^round round ^reviewer pinned_reviewer ^cards (?? (extra_bindings .get "card_api") nil) ^delegations (?? (extra_bindings .get "delegation_context") nil)}
         number
         workspace_root
@@ -125,7 +126,8 @@
     (let changes (?? result/composition_changes []))
     (if_not changes/.empty?
       (append_boundary_item result number "plugins" (plugin_change_summary changes))
-      (let preview (try (ui_publication_preview h session changes) catch Any (byte_prefix $err/message 512)))
+      (let preview (if ($absent? publication_preview) nil
+        (try (publication_preview session changes) catch Any (byte_prefix $err/message 512))))
       (if_not ($absent? preview)
         (append_boundary_item result number "ui" preview)))
     (if (== result/validated/rejected_done true)

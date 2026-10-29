@@ -4,7 +4,6 @@
   [core_states record_core_state flush_event_store copy_data])
 (import ^from "./sessions" [create_session require_record list_sessions unload_idle_sessions update_session delete_session load_session session_busy?])
 (import ^from "../kernel" [rows])
-(import [composition_entries] ^from "../storage/workspace")
 (import ^from "../agents/history" [collect_unreferenced_bodies])
 (import [spawn_effect_call] ^from "." ^pkg "cordis")
 (import ^from "./round_controller" [submit_round round_state round_receipt answer_round])
@@ -96,17 +95,6 @@
       (definition .put "rules" rules)
       (definition .put "next_ms" (cron/next pattern rules now))))
   definition)
-
-(fn require_trigger_manager [runtime]
-  # A retired scheduler can still be retained by an admitted command/round.
-  # Its lease permits that work to finish, not new HTTP operations after disable.
-  (for entry in (composition_entries runtime/workspace)
-    (if (&& (== entry/id "triggers") (== entry/disabled true))
-      (fail (TriggerError ^code "unavailable" ^message "The trigger scheduler is disabled or unavailable."))))
-  (let manager runtime/triggers)
-  (if (|| ($absent? manager) manager/closed/.get)
-    (fail (TriggerError ^code "unavailable" ^message "The trigger scheduler is disabled or unavailable.")))
-  manager)
 
 (fn require_accepting [manager]
   (if (|| manager/closed/.get manager/runtime/stopping/.get)
@@ -423,7 +411,6 @@
     ^pending ($cell pending) ^watermarks ($cell watermarks) ^last_finished ($cell finished) ^occurrence_keep keep
     ^last_gc ($cell 0) ^gc_interval gc_interval
     ^mutating ($sync/gate) ^hook hook ^last_retention ($cell 0)))
-  (set runtime/triggers manager)
   (if boot (tick_triggers manager ^^boot ^now now))
   (if start
     # Plugin-owned background work must outlive its activation call's budget.

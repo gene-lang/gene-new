@@ -1,4 +1,5 @@
 (mod delegation_ui ^profile web)
+(import [api_root] ^from "../src/web/contract.gene")
 (import [Client] ^from "./workspace_model.gene")
 (import [features client_events api show_error select_session session_tab render_transcript string_or]
   ^from "./feature_helpers.gene")
@@ -49,7 +50,7 @@
     (fn [id : Str] : Void (select_session client id))
     (fn [] : Void
       (var id : Str data/id)
-      (api client "POST" $"/api/v8/sessions/${session}/delegations/${id}/cancel" {^admission data/admission}
+      (api client "POST" $"${(api_root)}/sessions/${session}/delegations/${id}/cancel" {^admission data/admission}
         (fn [code : Int, result : Any] : Void
           (if_yes (!= code 200) (show_error client result ^session session)))))
     (fn [] : Bool (&& (== session client/selected) (== epoch feature/epoch)))))
@@ -61,7 +62,7 @@
   (var recovery : Any feature/recovery)
   (var session client/selected)
   ($dom/append target (recovery_view recovery (fn [action : Str] : Void
-    (api client "POST" $"/api/v8/sessions/${session}/delegations/recovery"
+    (api client "POST" $"${(api_root)}/sessions/${session}/delegations/recovery"
       {^round_id recovery/round ^action action}
       (fn [code : Int, result : Any] : Void
         (if_yes (!= code 200) (show_error client result ^session session))))))))

@@ -42,8 +42,8 @@
         (let round (submit_round controller "default" "drain-stop" 1 "Coordinate the tasks."))
         (wait_for (fn []
           (let receipt (round_receipt controller "default" round/id))
-          (let blocks (delegation_blocks runtime/delegations "default"))
-          (&& (== receipt/state "waiting") (== receipt/delegation_collection true)
+          (let blocks (delegation_blocks runtime/services/values/delegations "default"))
+          (&& (== receipt/state "waiting") (== receipt/collection_turns 1)
               (== blocks/records/.size 2) (== blocks/records/0/state "running"))) "Parent did not enter its final drain.")
         (close_round_controller controller)
         (close_runtime runtime)
@@ -58,9 +58,9 @@
               ($assert ($str/contains? ($to_str call/messages) "QUEUED_AFTER_RECOVERY"))
               "(Outcome ^^done ^reply \"Drain recovered and collected\")")))))
         (try
-          (let held (delegation_blocks restored/delegations "default"))
+          (let held (delegation_blocks restored/services/values/delegations "default"))
           ($assert (! ($absent? held/recovery)))
-          (delegation_recovery restored/delegations "default" round/id "continue")
+          (delegation_recovery restored/services/values/delegations "default" round/id "continue")
           (wait_for (fn [] (== (/state (round_receipt resumed "default" round/id)) "done")) "Recovered collection ran before the queued child settled.")
           ($assert (== collections/.get 1))
           ($assert (== (/turn_count (round_receipt resumed "default" round/id)) 3))
@@ -86,7 +86,7 @@
           (let round (submit_round controller "default" "disabled" 1 "Run an audit."))
           (wait_for (fn [] (== (/state (round_receipt controller "default" round/id)) "done")) "Disabled plugin orphaned work.")
           ($assert ($absent? (row runtime/h "functions" "delegate")))
-          (let blocks (delegation_blocks runtime/delegations "default"))
+          (let blocks (delegation_blocks runtime/services/values/delegations "default"))
           ($assert (== blocks/records/0/state "failed"))
           ($assert blocks/records/0/seen)
           ($assert (/attention (require_record runtime/sessions "default")))
@@ -119,12 +119,12 @@
             "(Outcome ^^done ^reply \"Queued child completed\")"
             "(Outcome ^^done ^reply \"Result collected\")"))))
         (try
-          (let held (delegation_blocks restored/delegations "default"))
+          (let held (delegation_blocks restored/services/values/delegations "default"))
           ($assert (! ($absent? held/recovery)))
           ($assert (== held/records/0/state "cancelled"))
           (wait_for (fn [] (== (/state (round_receipt resumed "queued" second/id)) "done")) "Queued-only parent did not resume.")
           ($assert (== root_calls/.get 0))
-          (delegation_recovery restored/delegations "default" first/id "continue")
+          (delegation_recovery restored/services/values/delegations "default" first/id "continue")
           (wait_for (fn [] (== (/state (round_receipt resumed "default" first/id)) "done")) "Continue did not release Stop recovery.")
           ($assert (== root_calls/.get 1))
         ensure (close_round_controller resumed) (close_runtime restored)))))
@@ -153,7 +153,7 @@
                   (else ($sleep 60000) "(Outcome ^^done)")))))))
           (let round (submit_round controller "default" "stop" 1 "Coordinate tasks."))
           (wait_for (fn []
-            (let blocks (delegation_blocks runtime/delegations "default"))
+            (let blocks (delegation_blocks runtime/services/values/delegations "default"))
             (if (== mode "running")
               (&& (>= calls/.get 2) (== blocks/records/.size 2) (== blocks/records/0/state "running"))
               (&& (== blocks/records/.size 1) (== blocks/records/0/state "waiting")))) "Stop case was not ready.")
@@ -162,7 +162,7 @@
           (let restored (open_runtime root "default" (baseline_profile)))
           (let resumed (test_controller restored (fn [call] "(Outcome ^^done ^reply \"Continued\")")))
           (try
-            (let blocks (delegation_blocks restored/delegations "default"))
+            (let blocks (delegation_blocks restored/services/values/delegations "default"))
             (if (== mode "running")
               (then
                 ($assert (== (/state (round_receipt resumed "default" round/id)) "cancelled"))

@@ -1,7 +1,8 @@
 # Media IDs and attachment admission are host operations, independent of the
 # replaceable function/documentation plugin.
 (mod media_host)
-(import [MediaHost append_prompt] ^from "../plugin_api")
+(import [MediaHost] ^from "../plugin_api")
+(import [append_prompt] ^from "../public/response")
 (import [service_binding require_service] ^from "./service_handles")
 (import [immutable_view] ^from "./composition")
 (import [execution_origin] ^from "./execution_budget")

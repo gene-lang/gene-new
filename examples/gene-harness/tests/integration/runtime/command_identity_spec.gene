@@ -23,8 +23,8 @@
              ^run (fn [ctx] (calls .set (+ calls/.get 1)) "original")})
           (let original (descriptor runtime))
           (let admitted (submit_command ^expected original ^request_id "first" ^sequence 1
-            runtime/commands "default" "/launch_probe"))
-          (runtime/commands/watchers/.get .get $"default:${admitted/id}"; .join)
+            runtime/services/values/commands "default" "/launch_probe"))
+          (runtime/services/values/commands/watchers/.get .get $"default:${admitted/id}"; .join)
           ($assert (== calls/.get 1))
           ($assert (== admitted/admitted_command/revision original/revision))
           (contribute ^^replace runtime/h "probe" "commands"
@@ -33,22 +33,22 @@
           (let replacement (descriptor runtime))
           ($assert (!= replacement/revision original/revision))
           (let recovered (submit_command ^expected original ^request_id "first" ^sequence 1
-            runtime/commands "default" "/launch_probe"))
+            runtime/services/values/commands "default" "/launch_probe"))
           ($assert (== recovered/id admitted/id))
           ($assert (== calls/.get 1))
           ($assert (try
             (submit_command ^expected original ^request_id "stale" ^sequence 2
-              runtime/commands "default" "/launch_probe") false
+              runtime/services/values/commands "default" "/launch_probe") false
             catch Any (== $err/code "revision_conflict")))
           ($assert (try
             (submit_command ^expected replacement ^request_id "first" ^sequence 1
-              runtime/commands "default" "/launch_probe") false
+              runtime/services/values/commands "default" "/launch_probe") false
             catch Any (== $err/code "submission_conflict")))
           ($assert (== (/next_id (command_state runtime "default")) 2))
           ($assert (== calls/.get 1))
           (remove_owner runtime/h "probe")
           (let disabled_receipt (submit_command ^expected original ^request_id "first" ^sequence 1
-            runtime/commands "default" "/launch_probe"))
+            runtime/services/values/commands "default" "/launch_probe"))
           ($assert (== disabled_receipt/id admitted/id))
           ($assert (== calls/.get 1))
         ensure (close_runtime runtime)))))
@@ -69,11 +69,11 @@
               (contribute ^^replace runtime/h "probe" "commands"
                 {^name "launch_probe" ^usage "/launch_probe" ^doc "Replacement"
                  ^run (fn [ctx] (seen .set "wrong handler") "replacement")}))
-            runtime/commands "default" "/launch_probe"))
-          (runtime/commands/watchers/.get .get $"default:${admitted/id}"; .join)
+            runtime/services/values/commands "default" "/launch_probe"))
+          (runtime/services/values/commands/watchers/.get .get $"default:${admitted/id}"; .join)
           ($assert (!= (/revision (descriptor runtime)) original/revision))
           ($assert (== (/revision seen/.get) original/revision))
-          (let finished (command_receipt runtime/commands "default" admitted/id))
+          (let finished (command_receipt runtime/services/values/commands "default" admitted/id))
           ($assert (== finished/status "done") ($to_str finished))
           ($assert ($str/contains? finished/display "original"))
         ensure (close_runtime runtime))))))

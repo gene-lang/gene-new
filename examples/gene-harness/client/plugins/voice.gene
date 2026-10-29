@@ -1,4 +1,6 @@
 (mod harness_voice ^profile web)
+(import [storage_get storage_set storage_remove] ^from "../workspace_storage.gene")
+(import [api_root] ^from "../../src/web/contract.gene")
 (import [text flag integer items] ^from "../../src/common/launcher.gene")
 (import [VoiceDrafts new_voice_drafts start_utterance release_utterance finish_utterance
   dispose_drafts voice_draft_key find_utterance partial_utterance recognition_timeout_ms] ^from "../../src/common/voice_transitions.gene")
@@ -31,13 +33,13 @@
   (&& host/ready (! host/closed)))
 
 (fn save_settings [voice : Voice] : Void
-  ($session_storage/set ($to_str "gene-harness/voice-settings/" voice/workspace)
+  (storage_set ($to_str "gene-harness/voice-settings/" voice/workspace)
     ($json/stringify {^output voice/output ^autosend voice/autosend ^progress voice/progress
       ^mode voice/mode ^voice voice/voice ^language voice/language
       ^recognizer voice/recognizer ^synthesizer voice/synthesizer ^duplex voice/duplex})))
 
 (fn load_settings [voice : Voice] : Void
-  (var saved (?? ($session_storage/get ($to_str "gene-harness/voice-settings/" voice/workspace)) ""))
+  (var saved (?? (storage_get ($to_str "gene-harness/voice-settings/" voice/workspace)) ""))
   (if_yes (== saved "") (return))
   (try
     (var value : Any ($json/parse saved))
@@ -78,15 +80,15 @@
   (if_yes (== voice/session "") (return false))
   (var key (voice_draft_key voice/workspace voice/session))
   (var value : Any (draft voice))
-  (if_yes (== (text value/text) "") ($session_storage/remove key) (return true))
+  (if_yes (== (text value/text) "") (storage_remove key) (return true))
   (if_yes (flag value/held) (set voice/held true))
   (if_yes (== (text value/recognizer) "") (set value/recognizer voice/recognizer))
   (set value/held voice/held)
-  ($session_storage/set key ($json/stringify value)))
+  (storage_set key ($json/stringify value)))
 
 (fn load_draft [voice : Voice] : Void
   (var session voice/session)
-  (var saved (?? ($session_storage/get (voice_draft_key voice/workspace session)) ""))
+  (var saved (?? (storage_get (voice_draft_key voice/workspace session)) ""))
   (if (== saved "")
     (do (set voice/drafts/drafts/%session nil) (set voice/held false))
     (try
@@ -189,7 +191,7 @@
   ($speech/speak (text next/speech) voice/voice (if (> voice/queue/.size 1) 1.15 1.0)
     (fn [] : Void
       (if_yes (|| voice/disposed (!= generation voice/speech_generation)) (return))
-      (api voice "POST" $"/api/v8/sessions/${voice/session}/voice/latency"
+      (api voice "POST" $"${(api_root)}/sessions/${voice/session}/voice/latency"
         {^kind "output" ^identity (text next/id) ^elapsed_ms ($to_int (- ($time/now) began))} (fn [code : Int, data : Any] : Void nil)))
     (fn [error : Str] : Void
       (if_yes (|| voice/disposed (!= generation voice/speech_generation)) (return))
@@ -244,7 +246,7 @@
       (if (== code 202)
         (do
           (if_yes (> released 0.0)
-            (api voice "POST" $"/api/v8/sessions/${voice/session}/voice/latency"
+            (api voice "POST" $"${(api_root)}/sessions/${voice/session}/voice/latency"
               {^kind "input" ^identity (text data/id) ^input_kind "voice" ^elapsed_ms ($to_int (- ($time/now) released))}
               (fn [status : Int, value : Any] : Void nil)))
           (load_draft voice) (set voice/feedback "Voice prompt sent.") (earcon voice 880.0))
@@ -400,7 +402,7 @@
   (set voice/pending {})
   (if_yes (!= voice/session "") (store_draft voice))
   (if_yes (&& release (!= voice/token ""))
-    (api voice "POST" $"/api/v8/sessions/${voice/session}/voice"
+    (api voice "POST" $"${(api_root)}/sessions/${voice/session}/voice"
       {^client_id voice/client_id ^token voice/token ^enabled false} (fn [code : Int, data : Any] : Void nil)))
   (set voice/token "")
   (if_not ($absent? voice/context)
@@ -460,7 +462,7 @@
     (set voice/feedback (text data/message "The configured speech engine is unavailable. Check host configuration or select browser speech."))
     (paint voice) (return))
   (if_yes (== kind "speak/started")
-    (api voice "POST" $"/api/v8/sessions/${voice/session}/voice/latency"
+    (api voice "POST" $"${(api_root)}/sessions/${voice/session}/voice/latency"
       {^kind "output" ^identity voice/speaking_record ^elapsed_ms ($to_int (- ($time/now) voice/speech_began))}
       (fn [code : Int, value : Any] : Void nil)) (return))
   (if_yes (|| (== kind "speak/end") (== kind "speak/error"))
@@ -545,12 +547,12 @@
   (var generation voice/generation)
   (var claim (fn [id : Str] : Void
     (set voice/session id)
-    (api voice "POST" $"/api/v8/sessions/${id}/voice"
+    (api voice "POST" $"${(api_root)}/sessions/${id}/voice"
       {^client_id voice/client_id ^output voice/output}
       (fn [code : Int, data : Any] : Void
         (if_yes (|| voice/disposed (!= generation voice/generation))
           (if_yes (== code 200)
-            (api voice "POST" $"/api/v8/sessions/${id}/voice"
+            (api voice "POST" $"${(api_root)}/sessions/${id}/voice"
               {^client_id voice/client_id ^token (text data/token) ^enabled false}
               (fn [released : Int, result : Any] : Void nil)))
           (return))
@@ -559,7 +561,7 @@
             (set voice/token (text data/token))
             (set voice/claim_revision (text data/revision))
             (load_draft voice)
-            (api voice "GET" $"/api/v8/sessions/${id}/voice" nil
+            (api voice "GET" $"${(api_root)}/sessions/${id}/voice" nil
               (fn [status : Int, current : Any] : Void
                 (if_yes (|| voice/disposed (!= generation voice/generation)) (return))
                 (set voice/claiming false)
@@ -697,7 +699,7 @@
       (save_settings voice)
       (if_yes (! voice/output) (cancel_speech voice))
       (if_yes voice/enabled
-        (api voice "POST" $"/api/v8/sessions/${voice/session}/voice"
+        (api voice "POST" $"${(api_root)}/sessions/${voice/session}/voice"
           {^client_id voice/client_id ^token voice/token ^output voice/output}
           (fn [code : Int, data : Any] : Void (if_yes (!= code 200) (disable_voice voice false))))))) " Speak replies")
     (label (input ^type "checkbox" ^checked %voice/autosend ^on_change %(fn [e : Any] : Void (set voice/autosend (flag e/current_target/checked)) (save_settings voice))) " Send on release; turn off to review")

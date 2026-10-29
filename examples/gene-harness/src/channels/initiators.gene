@@ -21,8 +21,3 @@
 (fn register_channel_initiators [h, contribute]
   (contribute h channel_source_owner "initiators" (slack_initiator))
   nil)
-
-(fn legacy_channel_operator? [round]
-  (let policy (slack_initiator))
-  (&& (== round/input/kind policy/kind) (== round/input/transport policy/transport)
-      (== round/initiator ($to_str policy/prefix round/input/account))))

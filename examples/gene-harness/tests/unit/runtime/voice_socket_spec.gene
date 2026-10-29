@@ -3,7 +3,7 @@
 (import [new_voice_state claim_voice voice_snapshot] ^from "../../../src/runtime/voice_state")
 (import [open_event_store close_event_store append_core_event events_for] ^from "../../../src/storage/state")
 (import [new_voice_hub add_voice_peer voice_message tick_voice close_voice_hub] ^from "../../../src/web/voice")
-(import [encode_audio_frame decode_audio_frame] ^from "../../../src/runtime/voice_protocol")
+(import [encode_audio_frame decode_audio_frame] ^from "../../../src/public/voice_frames")
 
 (fn until [condition, detail]
   (let due (+ ($os/monotonic_ms) 3000))
@@ -18,8 +18,8 @@
     ($fs/write_text $"${root}/config.gene" ($serde/write_data {}))
     (let events (open_event_store $"${root}/events"))
     (let h (new_harness ^event_store events))
-    (let runtime {^h h ^state_root root ^profile {^voice {^recognizer "fixed" ^synthesizer "fixed"}}})
-    (set runtime/voice (new_voice_state runtime))
+    (let runtime {^h h ^events events ^services {^values {}} ^state_root root ^profile {^voice {^recognizer "fixed" ^synthesizer "fixed"}}})
+    (set runtime/services/values/voice (new_voice_state runtime))
     (let spoken ($cell 0))
     (let samples [255 127])
     (while (< samples/.size 320) (samples .push 0))
@@ -37,7 +37,7 @@
            (emit pcm)
            (set i (+ i 1))))})
     (let messages [])
-    (let hub (new_voice_hub {^runtime runtime ^events events}
+    (let hub (new_voice_hub {^runtime runtime}
       ^send (fn [connection value]
         (match value
           (when (text : Str) (messages .push ($json/parse text)))
@@ -49,7 +49,7 @@
       (add_voice_peer hub connection "csrf" (fn [] true))
       (voice_message hub connection "{\"type\":\"hello\",\"csrf\":\"csrf\",\"client_id\":\"page\",\"formats\":[\"s16le\"]}")
       ($assert (== messages/0/type "ready") ($to_str messages))
-      (let claim (claim_voice runtime/voice "session" "page" true))
+      (let claim (claim_voice runtime/services/values/voice "session" "page" true))
       (let peer (hub/peers/.get .get "-1/1"))
       (let detail (fn [] ($to_str messages " spoken=" spoken/.get " captures=" peer/captures " speaks=" peer/speaks)))
       (peer .put "session" "session") (peer .put "token" claim/token)
@@ -88,8 +88,8 @@
       (tick_voice hub)
       (until (fn [] (! hub/maintenance/.get)) detail)
       ($assert (== messages/.last/type "engines/changed"))
-      ($assert (== (/token (voice_snapshot runtime/voice)) claim/token) "Retiring an engine must not release a fresh page claim.")
-      (claim_voice runtime/voice "other" "other-page" true)
+      ($assert (== (/token (voice_snapshot runtime/services/values/voice)) claim/token) "Retiring an engine must not release a fresh page claim.")
+      (claim_voice runtime/services/values/voice "other" "other-page" true)
       (tick_voice hub)
       (until (fn [] (! hub/maintenance/.get)) detail)
       ($assert (== messages/.last/type "released"))
@@ -99,8 +99,8 @@
     (let root $"/private/tmp/gene-streaming-speech-${($crypto/random_hex 8)}")
     ($fs/make_dir root) ($fs/write_text $"${root}/config.gene" ($serde/write_data {}))
     (let h (new_harness))
-    (let runtime {^h h ^state_root root ^profile {^voice {^recognizer "streaming"}}})
-    (set runtime/voice (new_voice_state runtime))
+    (let runtime {^h h ^events nil ^services {^values {}} ^state_root root ^profile {^voice {^recognizer "streaming"}}})
+    (set runtime/services/values/voice (new_voice_state runtime))
     (let callbacks ($cell {})) (let next ($cell 0)) (let ends ($cell 0)) (let closed ($cell []))
     (contribute h "core" "speech_recognizers"
       {^name "streaming" ^auto 1 ^mode "stream" ^available (fn [] ($sleep 10) true)
@@ -114,13 +114,13 @@
           ^finish (fn [] (ends .set (+ ends/.get 1)))
           ^close (fn [] (closed/.get .push key))})})
     (let messages [])
-    (let hub (new_voice_hub {^runtime runtime ^events nil}
+    (let hub (new_voice_hub {^runtime runtime}
       ^send (fn [connection value] (messages .push ($json/parse value)) 1)))
     (let connection {^server_id -2 ^fd 1})
     (try
       (add_voice_peer hub connection "csrf" (fn [] true))
       (voice_message hub connection "{\"type\":\"hello\",\"csrf\":\"csrf\",\"client_id\":\"page\",\"formats\":[\"s16le\"]}")
-      (let claim (claim_voice runtime/voice "session" "page" true))
+      (let claim (claim_voice runtime/services/values/voice "session" "page" true))
       (let peer (hub/peers/.get .get "-2/1"))
       (peer .put "session" "session") (peer .put "token" claim/token)
       (let detail (fn [] ($to_str messages)))

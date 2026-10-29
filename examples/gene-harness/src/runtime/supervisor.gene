@@ -1,6 +1,6 @@
 (mod supervisor)
 (import ^from "../cli/options" [parse_options])
-(import ^from "../text" [byte_suffix])
+(import ^from "../public/text" [byte_suffix])
 (import ^from "./workspace_settings" [initialize_manager_workspace])
 (import ^from "./workspace_lock" [try_lock_wait])
 (import ^from "./host_log" [open_host_log write_host_log close_host_log])

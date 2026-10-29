@@ -15,12 +15,12 @@
 (import ^from "../../web_support" [cli start_host stop_host])
 
 (fn browser_action [service, named]
-  (let state (ui_status service/runtime/h))
+  (let state (ui_status service/runtime))
   (let view ((Path 0) ($filter state/components (fn [item] (== item/name "workspaces")))))
   (let id $"${state/actions/generation}:${($crypto/random_hex 10)}")
   (let receipt
     (ui_action
-      service/runtime/actions
+      service/runtime/services/values/actions
       {
         ^input_id id
         ^generation state/actions/generation
@@ -31,10 +31,10 @@
         ^function_revision view/functions/manager_workspace_action
         ^args []
         ^named named}))
-  (service/runtime/actions/watchers/.get
+  (service/runtime/services/values/actions/watchers/.get
     .get id
     ; .join)
-  (ui_action_receipt service/runtime/actions id))
+  (ui_action_receipt service/runtime/services/values/actions id))
 
 (fn stop_project [root]
   (if (&& (! (lock_held? $"${root}/.gene-harness/lock"))
@@ -68,7 +68,7 @@
         (let service (manager_service root))
         (try
           (let h service/runtime/h)
-          (let manager service/runtime/workspace_manager)
+          (let manager service/runtime/services/values/manager)
           (let base $"${service/runtime/root}/workspaces")
           (fn manager_fn [name : Str] (/fn (row h "functions" name)))
           ($assert (== service/runtime/profile/name "manager"))
@@ -78,8 +78,8 @@
           (for name in ["workspace_delete" "workspace_open" "workspace_add" "workspace_remove"
                         "workspace_set_alias" "workspace_update_directory"]
             ($assert ($absent? (row h "functions" name)) name))
-          ($assert (== ((Path "settings" "default_view") (ui_status h)) "workspaces"))
-          (let preview (ui_preview h "workspaces"))
+          ($assert (== ((Path "settings" "default_view") (ui_status service/runtime)) "workspaces"))
+          (let preview (ui_preview service/runtime "workspaces"))
           ($assert ($absent? preview/error) ($to_str preview))
           (let project ((manager_fn "workspace_create") ^port 8123 "todo-app"))
           ($assert (== project/status "stopped") ($to_str project))
@@ -102,9 +102,9 @@
             ((manager_fn "workspace_create") name))
           (for id in [project/id "create" "x" "select-x" "name-y" "y"]
             (for selection in ["" "create" $"edit/${id}" $"rename/${id}" $"archive/${id}" $"delete/${id}"]
-              (let rendered (ui_preview h "workspaces" {^selected selection}))
+              (let rendered (ui_preview service/runtime "workspaces" {^selected selection}))
               ($assert ($absent? rendered/error) ($to_str selection " " rendered))))
-          (let edit_create (ui_preview h "workspaces" {^selected "edit/create"}))
+          (let edit_create (ui_preview service/runtime "workspaces" {^selected "edit/create"}))
           ($assert ($str/contains? ($to_str edit_create) "Edit create") "Edit opened another panel.")
           (for name in ["create" "x" "select-x" "name-y" "y"]
             ($fs/remove $"${base}/${name}/.gene-harness/workspace.gene")
@@ -130,7 +130,7 @@
           (let listed ((manager_fn "workspace_list")))
           ($assert (== ($map listed/workspaces /id) ["manual"]))
           ($assert (== listed/archived ["todo" "todo-2"]))
-          (let with_archive (ui_preview h "workspaces"))
+          (let with_archive (ui_preview service/runtime "workspaces"))
           ($assert ($absent? with_archive/error) ($to_str with_archive))
           ((manager_fn "workspace_create") "todo")
           (var conflicted false)
@@ -154,7 +154,7 @@
       (fn [root]
         (let service (manager_service root))
         (try
-          (let manager service/runtime/workspace_manager)
+          (let manager service/runtime/services/values/manager)
           (let base $"${service/runtime/root}/workspaces")
           (let archive $"${service/runtime/root}/archive")
           (fn refused? [operation, values]
@@ -209,7 +209,7 @@
       "controls detached hosts and requires browser confirmation before interrupting commands"
       (fn [root]
         (let service (manager_service root))
-        (let manager service/runtime/workspace_manager)
+        (let manager service/runtime/services/values/manager)
         (var first nil)
         (var second nil)
         (try
@@ -274,7 +274,7 @@
       (fn [root]
         (let service (manager_service root))
         (try
-          (let manager service/runtime/workspace_manager)
+          (let manager service/runtime/services/values/manager)
           (let project (manager_operation manager "create" {^name "project"}))
           (manager_operation manager "port" {^id project/id ^port 9123})
           (let stale
@@ -326,7 +326,7 @@
       "bounds unavailable-host control without signalling or automatically continuing"
       (fn [root]
         (let service (manager_service root))
-        (let manager service/runtime/workspace_manager)
+        (let manager service/runtime/services/values/manager)
         (let project (manager_operation manager "create" {^name "unavailable"}))
         (let process
           ($os/exec_async ^timeout_ms 120000
@@ -377,7 +377,7 @@
     (isolated this_mod/.path "keeps a workspace listed after a partial deletion error and permits a later retry"
       (fn [root]
         (let service (manager_service root))
-        (let manager service/runtime/workspace_manager)
+        (let manager service/runtime/services/values/manager)
         (let project (manager_operation manager "create" {^name "partial"}))
         (let directories [])
         (var path project/dir)
@@ -437,7 +437,7 @@
     (isolated this_mod/.path "adopts a host started directly in its workspaces directory and replaces it on explicit Restart"
       (fn [root]
         (let service (manager_service root))
-        (let manager service/runtime/workspace_manager)
+        (let manager service/runtime/services/values/manager)
         (let project $"${service/runtime/root}/workspaces/external&co")
         (var original nil)
         (try
@@ -450,7 +450,7 @@
           ($assert (== listed/status "running") ($to_str listed))
           ($assert (== listed/epoch original/connection/epoch))
           # Open carries the name as an encoded query component.
-          (let rendered ($to_str (ui_preview service/runtime/h "workspaces")))
+          (let rendered ($to_str (ui_preview service/runtime "workspaces")))
           ($assert ($str/contains? rendered "id=external%26co") rendered)
           ($assert (! ($str/contains? rendered "id=external&co")) rendered)
           (let reused (manager_operation manager "start" {^id "external&co"}))

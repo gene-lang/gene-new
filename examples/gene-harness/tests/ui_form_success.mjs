@@ -9,7 +9,15 @@ class Element extends EventTarget {
   set textContent(value){this.text=value;}
 }
 const elements=new Map(),stored=new Map(),timers=[];
-const element=id=>{if(!elements.has(id))elements.set(id,new Element());return elements.get(id);};
+const workspaceId='fixture-workspace';
+const element=id=>{
+  if(!elements.has(id)){
+    const value=new Element();
+    if(id==='harness_document')value.dataset={workspaceId};
+    elements.set(id,value);
+  }
+  return elements.get(id);
+};
 Object.assign(globalThis,{HTMLElement:Element,document:{getElementById:element,
   createElement:()=>new Element(),createTextNode:text=>Object.assign(new Element(),{text})},
   sessionStorage:{getItem:key=>stored.get(key)??null,setItem:(key,value)=>stored.set(key,value),removeItem:key=>stored.delete(key)},
@@ -19,6 +27,8 @@ const model=await import(new URL('model.mjs',base));
 const controller=await import(new URL('controller.mjs',base));
 const {Sidebar}=await import(new URL('sidebar.mjs',base));
 const {create_notices}=await import(new URL('notices.mjs',base));
+const {workspace_storage_key}=await import(new URL('workspace_storage.mjs',base));
+const scoped=key=>workspace_storage_key(workspaceId,key);
 const noop=()=>{};
 function setup(){
   stored.clear();elements.clear();timers.length=0;
@@ -56,7 +66,7 @@ const notices=ui=>Object.values(ui.notices.items);
   assert.equal(ui.drafts.name,undefined);
   assert.equal(ui.forms.create,undefined);
   assert.equal(requests.at(-1).data.state.selected,'','the next render closes the creation form');
-  assert.equal(JSON.parse(stored.get(model.state_key(ui))).state.selected,'','reload must not reopen it');
+  assert.equal(JSON.parse(stored.get(scoped(model.state_key(ui)))).state.selected,'','reload must not reopen it');
   progress();
   assert.equal(notices(ui).length,0,'fast successes stay quiet even after their delayed timers run');
 }
@@ -98,7 +108,7 @@ const notices=ui=>Object.values(ui.notices.items);
   ui.descriptor={name:'another',revision:'r2',data_revision:'d2'};ui.version='1';ui.state={selected:'other'};
   finish();
   assert.equal(ui.state.selected,'other');
-  assert.equal(JSON.parse(stored.get(original)).state.selected,'','recovery updates the saved originating view');
+  assert.equal(JSON.parse(stored.get(scoped(original))).state.selected,'','recovery updates the saved originating view');
 }
 {
   const {ui,pending,finish}=setup();

@@ -5,15 +5,18 @@
 (import [open_event_store close_event_store flush_event_store] ^from "../storage/state")
 (import [open_inbox close_inbox] ^from "../notifications/inbox")
 (import [open_notification_host close_notification_host] ^from "../notifications/host")
-(import [open_workspace close_workspace set_profile_plugins attach_history prepare_workspace
-  activate_workspace_plan record_application_result] ^from "../storage/workspace")
+(import [open_workspace close_workspace set_profile_plugins attach_history] ^from "../storage/composition_store")
+(import [prepare_workspace activate_workspace_plan record_application_result] ^from "../storage/workspace_activation")
 (import [acquire_workspace_lock close_workspace_lock] ^from "./workspace_lock")
 (import [open_appearance install_appearance_rows] ^from "./appearance")
 (import [open_session_manager close_session_manager create_session load_session with_session_gate] ^from "./sessions")
 (import [new_command_manager close_command_manager quiesce_command_manager] ^from "./commands")
+(import [new_round_controller close_round_controller delegation_callbacks] ^from "./round_controller")
 (import [open_card_service] ^from "./cards")
 (import [open_delegation_host close_delegation_host] ^from "./delegations")
-(import [open_image_host recover_image_host close_image_host] ^from "./image_service")
+(import [new_trigger_host close_trigger_host] ^from "./trigger_host")
+(import [open_image_host close_image_host] ^from "./image_service")
+(import [recover_runtime_state] ^from "./kernel_recovery")
 (import [new_voice_state close_voice_state] ^from "./voice_state")
 (import [open_queues close_channel_store] ^from "../channels/queue")
 (import [open_ui_actions close_ui_actions quiesce_ui_actions] ^from "../ui/actions")
@@ -34,10 +37,7 @@
 (import [install_turn_participants] ^from "./turn_participant_registry")
 (import [install_outcome_extensions] ^from "./outcome_extensions")
 (import [install_initiators] ^from "./initiators")
-
-# Product state belongs to the runtime service graph, never registry dispatch.
-(type HarnessServices ^props {^readiness Any? ^notifications Any? ^ui_action_log Any?
-  ^appearance Any? ^ui_defaults Any? ^manager_revision Any?})
+(import [new_plugin_services] ^from "./plugin_services")
 
 (fn close_kernel [ctx, h]
   (if (== ctx/harness_closed true) (return nil))
@@ -48,12 +48,12 @@
   nil)
 
 (fn configuration [ctx]
-  (let settings (if ctx/recovery {} ($serde/read_data ($fs/read_text $"${ctx/state_root}/config.gene"))))
+  (let settings (if (== ctx/mode "normal") ($serde/read_data ($fs/read_text $"${ctx/state_root}/config.gene")) {}))
   (let requested (?? settings/response_budget {}))
   (let base (?? ctx/profile/limits (response_execution_limits)))
   (set ctx/limits (ExecutionLimits ^max_memory_mb (?? requested/max_memory_mb base/max_memory_mb)
     ^timeout_ms (?? requested/timeout_ms base/timeout_ms)))
-  (set ctx/restarted ($fs/exists? $"${ctx/state_root}/restart_notice"))
+  (set ctx/restarted (&& (== ctx/mode "normal") ($fs/exists? $"${ctx/state_root}/restart_notice")))
   (if ctx/restarted ($fs/remove $"${ctx/state_root}/restart_notice"))
   ($os/set_cwd ctx/root)
   nil)
@@ -74,42 +74,26 @@
   catch Any (close_workspace workspace) (fail $err)))
 
 (fn kernel_service [ctx]
-  (let h (new_harness ^event_store ctx/events ^event_scope ctx/event_scope ^event_stream ctx/session
+  (let h (new_harness ^plugin_services ctx/services/values/plugin_services ^event_store ctx/events ^event_scope ctx/event_scope ^event_stream ctx/session
     ^workspace ctx/workspace ^limits ctx/limits))
-  (set h/services (HarnessServices))
   (set ctx/h h)
-  (try
-    (set h/services/appearance (open_appearance ctx/state_root))
-    (if (== ctx/profile/name "manager")
-      (set h/services/ui_defaults {^^enabled ^layout "chat" ^default_view "workspaces"
-        ^panel "" ^side "left" ^width 50 ^theme {}}))
-    (set h/services/notifications ctx/inbox)
-    (if_not ctx/recovery (provide h "core" "notifications/host" (open_notification_host h)))
-    (install_core_prompt_rows h)
-    h
-  catch Any
-    (let original $err)
-    (try (close_kernel ctx h) ensure (close_notification_host h))
-    (fail original)))
+  h)
 
 (fn image_service [ctx]
   (let images (open_image_host ctx/runtime))
-  (set ctx/runtime/images images)
   (try
-    (recover_image_host images)
     (provide ctx/h "core" "image/runtime" images)
     images
   catch Any (close_image_host images) (fail $err)))
 
 (fn activate_services [ctx]
   (if_yes (&& ctx/activate (! ctx/recovery))
-    (let prepared (prepare_workspace ^session ctx/session ctx/workspace ctx/h))
-    (activate_workspace_plan ^profile_admissions (profile_admissions ^limits ctx/limits ctx/profile) prepared ctx/h))
+    (activate_workspace_plan ^profile_admissions (profile_admissions ^limits ctx/limits ctx/profile) ctx/prepared ctx/h))
   ctx/h)
 
 (fn runtime_service_specs [layout, make_runtime]
   [
-    {^name "ownership" ^requires []
+    {^name "ownership" ^layer "kernel" ^requires []
      ^open (fn [ctx]
        (let lock (if ctx/owns_ownership
          (acquire_workspace_lock ^wait_ms ctx/lock_wait_ms ctx/root ctx/entry) ctx/supplied_ownership))
@@ -119,91 +103,122 @@
          (acquire_workspace_lock ^wait_ms ctx/lock_wait_ms ctx/root ctx/entry) ctx/supplied_ownership))
        (set ctx/ownership lock) lock)
      ^close (fn [ctx, lock] (if ctx/owns_ownership (close_workspace_lock lock)))}
-    {^name "layout" ^requires ["ownership"]
+    {^name "layout" ^layer "kernel" ^requires ["ownership"]
      ^open (fn [ctx] (set ctx/state_root (layout ctx/root)) nil)
      ^recover (fn [ctx] (set ctx/state_root (layout ctx/root)) nil)}
-    {^name "configuration" ^requires ["layout"] ^open configuration ^recover configuration}
-    {^name "events" ^requires ["configuration"]
+    {^name "configuration" ^layer "kernel" ^requires ["layout"] ^open configuration ^recover configuration}
+    {^name "appearance" ^layer "kernel" ^requires ["layout"]
+     ^open (fn [ctx] (open_appearance ctx/state_root))
+     ^recover (fn [ctx] (open_appearance ctx/state_root))}
+    {^name "events" ^layer "kernel" ^requires ["configuration"]
      ^open (fn [ctx]
        (let events (if ctx/owns_events (open_event_store $"${ctx/state_root}/events") ctx/supplied_events))
        (set ctx/events events) events)
      ^recover nil
      ^close (fn [ctx, events]
        (if ctx/owns_events (close_event_store events) (flush_event_store events)))}
-    {^name "workspace" ^requires {^normal ["events"] ^recovery ["configuration"]}
+    {^name "workspace" ^layer "kernel" ^requires {^normal ["events"] ^recovery ["configuration"]}
      ^open workspace_service ^recover workspace_service
      ^close (fn [ctx, workspace] (close_workspace workspace))}
-    {^name "inbox" ^requires ["workspace"]
+    {^name "inbox" ^layer "feature_host" ^requires ["workspace"]
      ^open (fn [ctx] (let inbox (open_inbox $"${ctx/state_root}/notifications")) (set ctx/inbox inbox) inbox)
      ^recover nil ^close (fn [ctx, inbox] (close_inbox inbox))}
-    {^name "kernel" ^requires {^normal ["inbox"] ^recovery ["workspace"]}
+    {^name "plugin_services" ^layer "kernel" ^requires {^normal ["inbox"] ^recovery ["workspace"] ^doctor ["workspace"]}
+     ^open (fn [ctx] (new_plugin_services ctx/events ctx/inbox))
+     ^recover (fn [ctx] (new_plugin_services nil))}
+    {^name "kernel" ^layer "kernel" ^requires ["plugin_services"]
      ^open kernel_service ^recover kernel_service
-     ^close (fn [ctx, h] (try (close_kernel ctx h) ensure (close_notification_host h)))}
-    {^name "runtime" ^requires ["kernel"]
+     ^close close_kernel}
+    {^name "runtime" ^layer "kernel" ^requires ["kernel"]
      ^open (fn [ctx] (set ctx/runtime (make_runtime ctx)) ctx/runtime)
      ^recover (fn [ctx] (set ctx/runtime (make_runtime ctx)) ctx/runtime)
      ^close (fn [ctx, runtime]
        (if runtime/body_gc_pending/.get (collect_unreferenced_bodies runtime)))}
-    {^name "voice" ^requires ["runtime"]
+    {^name "catalog" ^layer "kernel" ^requires ["runtime"]
+     ^open (fn [ctx]
+       (set ctx/prepared (prepare_workspace ctx/workspace ctx/h ^session ctx/session ^^all_streams))
+       nil) ^recover nil}
+    {^name "readiness" ^layer "feature_host" ^requires ["runtime"]
+     ^open (fn [ctx] (runtime_readiness ctx/runtime))
+     ^recover (fn [ctx] (fn [] "Recovery mode: repair composition, then retry normal startup."))}
+    {^name "ui_defaults" ^layer "feature_host" ^requires ["runtime"]
+     ^open (fn [ctx]
+       (if (== ctx/profile/name "manager")
+         {^^enabled ^layout "chat" ^default_view "workspaces" ^panel "" ^side "left" ^width 50 ^theme {}}
+         nil)) ^recover nil}
+    {^name "notification_host" ^layer "feature_host" ^requires ["runtime" "inbox"]
+     ^open (fn [ctx]
+       (let handle (open_notification_host ctx/runtime))
+       (try (provide ctx/h "core" "notifications/host" handle) handle
+         catch Any (close_notification_host ctx/runtime) (fail $err)))
+     ^recover nil ^close (fn [ctx, handle] (close_notification_host ctx/runtime))}
+    {^name "voice" ^layer "feature_host" ^requires ["runtime" "repair"]
      ^open (fn [ctx]
        (let voice (new_voice_state ctx/runtime))
-       (set ctx/runtime/voice voice)
        (try
-         (provide ctx/h "core" "voice/runtime" voice)
          (provide ctx/h "core" "voice/host" (voice_host_binding ctx/runtime))
          voice
          catch Any (close_voice_state voice) (fail $err)))
      ^recover nil ^close (fn [ctx, voice] (close_voice_state voice))}
-    {^name "plugin_api" ^requires ["runtime"]
+    {^name "plugin_api" ^layer "feature_host" ^requires ["runtime" "repair"]
      ^open (fn [ctx] (provide ctx/h "core" "plugins/host" (composition_host_binding ctx/runtime)) nil)
      ^recover nil}
-    {^name "sessions" ^requires ["runtime" "events"]
+    {^name "sessions" ^layer "kernel" ^requires ["catalog" "events"]
      ^open (fn [ctx]
-       (let sessions (open_session_manager ctx/runtime ctx/events ctx/state_root))
+       (let sessions (open_session_manager ctx/runtime ctx/events ctx/state_root ^!recover))
        (set ctx/runtime/sessions sessions)
        (try
          (provide ctx/h "core" "sessions/host" (session_host_binding ctx/runtime))
          sessions
        catch Any (close_session_manager sessions) (fail $err)))
      ^recover nil ^close (fn [ctx, sessions] (close_session_manager sessions))}
-    {^name "channel_queues" ^requires ["runtime" "events"]
+    {^name "repair" ^layer "kernel" ^requires ["sessions"]
+     ^open (fn [ctx] (recover_runtime_state ctx/runtime)) ^recover nil}
+    {^name "core_prompt" ^layer "loop" ^requires ["runtime" "repair"]
+     ^open (fn [ctx] (install_core_prompt_rows ctx/h)) ^recover nil}
+    {^name "channel_queues" ^layer "feature_host" ^requires ["runtime" "events" "repair"]
      ^open (fn [ctx]
        (let queues (open_queues ($path/join ctx/state_root "channels" "queues") ctx/root))
-       (set ctx/runtime/channel_queues queues) queues)
+       queues)
      ^recover nil ^close (fn [ctx, queues] (close_channel_store queues))}
-    {^name "cards" ^requires ["sessions"]
-     ^open (fn [ctx] (set ctx/runtime/cards (open_card_service ctx/runtime)) nil) ^recover nil}
-    {^name "media" ^requires ["sessions"]
+    {^name "cards" ^layer "feature_host" ^requires ["sessions" "repair"]
+     ^open (fn [ctx] (open_card_service ctx/runtime)) ^recover nil}
+    {^name "media" ^layer "feature_host" ^requires ["sessions" "repair"]
      ^open (fn [ctx] (provide ctx/h "core" "media/host" (media_host_binding ctx/runtime)) nil) ^recover nil}
-    {^name "delegations" ^requires ["cards"]
+    {^name "controller" ^layer "loop" ^requires ["commands" "channel_queues"]
+     ^open (fn [ctx] (new_round_controller ctx/runtime)) ^recover nil
+     ^quiesce (fn [ctx controller] (close_round_controller controller))
+     ^close (fn [ctx controller] (close_round_controller controller))}
+    {^name "delegations" ^layer "feature_host" ^requires ["cards" "controller"]
      ^open (fn [ctx]
-       (let service (open_delegation_host ctx/runtime))
-       (set ctx/runtime/delegations service)
+       (let service (open_delegation_host ctx/runtime (delegation_callbacks ctx/services/values/controller)))
        (try (provide ctx/h "core" "delegations/runtime" service/handle) service
          catch Any (close_delegation_host service) (fail $err)))
      ^recover nil ^close (fn [ctx, service] (close_delegation_host service))}
-    {^name "images" ^requires ["delegations"] ^open image_service ^recover nil
+    {^name "trigger_host" ^layer "feature_host" ^requires ["controller"]
+     ^open (fn [ctx] (new_trigger_host ctx/runtime ctx/services/values/controller)) ^recover nil
+     ^quiesce (fn [ctx host] (close_trigger_host host))
+     ^close (fn [ctx host] (close_trigger_host host))}
+    {^name "images" ^layer "feature_host" ^requires ["cards"] ^open image_service ^recover nil
      ^close (fn [ctx, service] (close_image_host service))}
-    {^name "participants" ^requires ["delegations" "cards"]
+    {^name "participants" ^layer "loop" ^requires ["delegations" "cards" "voice"]
      ^open (fn [ctx]
        (install_initiators ctx/runtime)
        (install_outcome_extensions ctx/runtime)
        (install_turn_participants ctx/runtime)
        nil) ^recover nil}
-    {^name "commands" ^requires ["images"]
+    {^name "commands" ^layer "feature_host" ^requires ["images" "appearance"]
      ^open (fn [ctx]
        (provide ctx/h "core" "ui/state_lock"
          (fn [key : Str, body] (with_session_gate ctx/runtime/sessions $"ui-state/${key}" body)))
        (let commands (new_command_manager ctx/runtime))
-       (set ctx/runtime/commands commands)
        commands)
      ^recover nil ^quiesce (fn [ctx, commands] (quiesce_command_manager commands))
      ^close (fn [ctx, commands] (close_command_manager commands))}
-    {^name "actions" ^requires ["commands"]
+    {^name "actions" ^layer "feature_host" ^requires ["commands" "ui_defaults"]
      ^open (fn [ctx]
-       (install_appearance_rows ctx/h)
+       (install_appearance_rows ctx/runtime)
        (let actions (open_ui_actions ctx/runtime))
-       (set ctx/runtime/actions actions) (set ctx/h/services/ui_action_log actions/log)
        (try
          (provide ctx/h "core" "ui/context" (fn [session, state] (ui_context_data ctx/runtime session state)))
          (provide ctx/h "core" "ui/host" (ui_host_binding ctx/runtime))
@@ -211,7 +226,7 @@
        catch Any (close_ui_actions actions) (fail $err)))
      ^recover nil ^quiesce (fn [ctx, actions] (quiesce_ui_actions actions))
      ^close (fn [ctx, actions] (close_ui_actions actions))}
-    {^name "operator" ^requires ["commands"]
+    {^name "operator" ^layer "feature_host" ^requires ["commands"]
      ^open (fn [ctx]
        (let operator (open_operator_host ctx/runtime))
        (try
@@ -219,7 +234,7 @@
          operator
        catch Any (close_operator_host operator) (fail $err)))
      ^recover nil ^close (fn [ctx, operator] (close_operator_host operator))}
-    {^name "computer" ^requires ["commands" "media"]
+    {^name "computer" ^layer "feature_host" ^requires ["commands" "media"]
      ^open (fn [ctx]
        (let computer (open_computer_host ctx/runtime))
        (try
@@ -227,7 +242,7 @@
          computer
        catch Any (close_computer_host computer) (fail $err)))
      ^recover nil ^close (fn [ctx, computer] (close_computer_host computer))}
-    {^name "manager" ^requires ["actions"]
+    {^name "manager" ^layer "feature_host" ^requires ["actions"]
      ^open (fn [ctx]
        (if (!= ctx/profile/name "manager") (return nil))
        (let manager (open_workspace_manager ctx/runtime))
@@ -236,20 +251,18 @@
          manager
        catch Any (close_workspace_manager manager) (fail $err)))
      ^recover nil ^close (fn [ctx, manager] (close_workspace_manager manager))}
-    {^name "plugins" ^requires {^normal ["actions" "voice" "channel_queues" "manager" "media" "computer" "operator" "plugin_api" "participants"] ^recovery ["runtime"]}
+    {^name "plugins" ^layer "loop" ^requires {^normal ["actions" "voice" "channel_queues" "manager" "media" "computer" "operator" "plugin_api" "participants" "core_prompt" "trigger_host" "notification_host" "readiness"] ^recovery ["runtime"] ^doctor []}
      ^open activate_services ^recover activate_services ^close close_kernel}
-    {^name "initial_session" ^requires ["plugins" "sessions"]
+    {^name "initial_session" ^layer "loop" ^requires ["plugins" "sessions"]
      ^open (fn [ctx]
        (if_yes (&& ctx/activate (== ctx/event_scope "session"))
          (create_session ^id ctx/session ctx/runtime/sessions)
          (load_session ctx/runtime/sessions ctx/session))
-       (if ctx/activate (record_application_result ctx/workspace ctx/h {^status "runtime_open"}))
+       (if ctx/activate (record_application_result ^readiness ctx/services/values/readiness ctx/workspace ctx/h {^status "runtime_open"}))
        nil)
      ^recover nil}])
 
-(fn configure_runtime_readiness [runtime]
-  (if runtime/recovery
-    (set runtime/h/services/readiness (fn [] "Recovery mode: repair composition, then retry normal startup."))
-    (set runtime/h/services/readiness (fn []
-      (let current ($serde/read_data ($fs/read_text $"${runtime/state_root}/config.gene")))
-      (readiness_report runtime current)))))
+(fn runtime_readiness [runtime]
+  (fn []
+    (let current ($serde/read_data ($fs/read_text $"${runtime/state_root}/config.gene")))
+    (readiness_report runtime current)))

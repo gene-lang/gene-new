@@ -12,7 +12,8 @@
 (import [contribute put_cordis_plugin] ^from "../../../src/kernel")
 (import [card_record] ^from "../../../src/runtime/cards")
 (import [Plugin PluginHost] ^from "../../../src/plugin_api")
-(import [register_plugin set_plugin_enabled] ^from "../../../src/storage/workspace")
+(import [register_plugin] ^from "../../../src/storage/workspace_activation")
+(import [set_plugin_enabled] ^from "../../../src/storage/workspace_repair")
 
 (fn named_component [components, name : Str]
   ($first ($filter components (fn [item] (== item/name name)))))
@@ -88,10 +89,7 @@
         (try
           (let session (create_session ^title "Failure" service))
           (let round (submit service session/id "failed" 1 "start"))
-          (service/controller/watchers
-            .get
-            ; .get session/id
-            ; .join)
+          ((/watcher (service/runtime/services/values/controller/rounds/.get .get session/id)) .join)
           (let failed (receipt service session/id round/id))
           ($assert (== failed/state "failed") "provider failure did not fail the round")
           (let view (snapshot service session/id))
@@ -123,10 +121,7 @@
         (try
           (let session (create_session ^title "Web scripted" service))
           (let round (submit service session/id "web-1" 1 "start"))
-          (service/controller/watchers
-            .get
-            ; .get session/id
-            ; .join)
+          ((/watcher (service/runtime/services/values/controller/rounds/.get .get session/id)) .join)
           (let waiting (receipt service session/id round/id))
           ($assert (== waiting/state "waiting") $"web round failed: ${waiting}")
           (let view (snapshot service session/id))
@@ -141,10 +136,7 @@
           ($assert (== live/.size 1) "intermediate reply was not published live")
           ($assert (== live/0/data/id progress/0/id) "live and saved replies have different identities")
           (answer service session/id waiting/questions/id {^^ok})
-          (service/controller/watchers
-            .get
-            ; .get session/id
-            ; .join)
+          ((/watcher (service/runtime/services/values/controller/rounds/.get .get session/id)) .join)
           (let done (receipt service session/id round/id))
           ($assert (== done/reply "web done") "web answer did not execute a code response")
           (let completed (snapshot service session/id))
@@ -177,7 +169,7 @@
           ($assert (== pinned/title "Changed") "metadata edit lost title")
           ($assert (try (edit_session service record/id {^title "stale"} 0) false catch Any true)
             "stale metadata edit was accepted")
-          (update_session service/sessions record/id {^^attention})
+          (update_session service/runtime/sessions record/id {^^attention})
           (let before (list_sessions service))
           ($assert (== before/needs_attention/.size 1) "attention list did not include the session")
           (acknowledge_attention service record/id)
@@ -203,32 +195,32 @@
         (try
           (let admitted (submit service session/id "first" 1 prompt))
           (set round_id admitted/id)
-          (service/controller/watchers .get; .get session/id; .join)
+          ((/watcher (service/runtime/services/values/controller/rounds/.get .get session/id)) .join)
           (let initial (snapshot service session/id))
           ($assert (== initial/session/first_request prompt) "first_request truncated the prompt")
-          ($assert (== (/first_request_media (service/sessions/index/.get .get session/id)) [])
+          ($assert (== (/first_request_media (service/runtime/sessions/index/.get .get session/id)) [])
             "text-only first submission omitted stored empty media")
           ($assert (== initial/session/first_request_round round_id))
           ($assert (== initial/round/state "done"))
           (let first_request ($first ($filter initial/records (fn [record]
             (&& (== record/role "user") (== record/phase "turn/request"))))))
           ($assert (== first_request/text prompt))
-          ($assert (unload_session service/sessions session/id))
+          ($assert (unload_session service/runtime/sessions session/id))
           (let renamed (edit_session service session/id {^title "A different title"}
             ($parse/parse_int initial/session/revision)))
           ($assert (== renamed/first_request prompt) "rename changed the saved prompt")
           ($assert (== renamed/first_request_media []))
-          ($assert (== (service/events/streams/.get .get $"session:${session/id}") void)
+          ($assert (== (service/runtime/events/streams/.get .get $"session:${session/id}") void)
             "rename loaded the text-only session event stream")
-          ($assert (unload_session service/sessions session/id))
+          ($assert (unload_session service/runtime/sessions session/id))
           (let pinned (edit_session service session/id {^^pinned}
             ($parse/parse_int renamed/revision)))
           ($assert (== pinned/first_request_media []))
-          ($assert (== (service/events/streams/.get .get $"session:${session/id}") void)
+          ($assert (== (service/runtime/events/streams/.get .get $"session:${session/id}") void)
             "pin loaded the text-only session event stream")
           # A later identical prompt must not stand in for the first round.
           (submit service session/id "same-again" 2 prompt)
-          (service/controller/watchers .get; .get session/id; .join)
+          ((/watcher (service/runtime/services/values/controller/rounds/.get .get session/id)) .join)
           (repeat number in 230
             (transcript service/runtime session/id
               {^type "reply" ^round "tail" ^turn number ^text ($to_str number) ^^final}))
@@ -250,7 +242,7 @@
         (set service (test_service ^workspace workspace
           ^provider (fn [request] "(Outcome ^^done ^reply \"ok\")")))
         (try
-          ($assert (== (/first_request_media (service/sessions/index/.get .get session/id)) [])
+          ($assert (== (/first_request_media (service/runtime/sessions/index/.get .get session/id)) [])
             "restart lost stored empty first-request media")
           (let restored (snapshot service session/id))
           ($assert restored/has_older)
@@ -287,25 +279,25 @@
           ^provider (fn [request] $"(Outcome ^^done ^reply \"${request/session}\")")))
         (try
           (let runtime service/runtime)
-          (let before (events_for service/events "workspace" "workspace"))
+          (let before (events_for service/runtime/events "workspace" "workspace"))
           (let a (create_session service ^title "Alpha"))
           (let b (create_session service ^title "Beta"))
-          (let state_a (load_session service/sessions a/id))
-          (let state_b (load_session service/sessions b/id))
+          (let state_a (load_session service/runtime/sessions a/id))
+          (let state_b (load_session service/runtime/sessions b/id))
           ($assert (same? state_a/runtime state_b/runtime) "sessions replaced the workspace runtime")
           (let ra (submit service a/id "a" 1 "Alpha"))
           (let rb (submit service b/id "b" 1 "Beta"))
-          (for [session watcher] in service/controller/watchers/.get watcher/.join)
+          (for [session frame] in service/runtime/services/values/controller/rounds/.get frame/watcher/.join)
           (let done_a (receipt service a/id ra/id))
           (let done_b (receipt service b/id rb/id))
           ($assert (== done_a/reply a/id) "a used b's session context")
           ($assert (== done_b/reply b/id) "b used a's session context")
-          ($assert (unload_session service/sessions a/id) "a could not unload")
-          ($assert (unload_session service/sessions b/id) "b could not unload")
-          (runtime_list_sessions service/sessions)
-          ($assert (== (service/events/streams/.get .get $"session:${a/id}") void) "listing loaded a's stream")
-          ($assert (== (service/events/streams/.get .get $"session:${b/id}") void) "listing loaded b's stream")
-          (let reloaded (load_session service/sessions a/id))
+          ($assert (unload_session service/runtime/sessions a/id) "a could not unload")
+          ($assert (unload_session service/runtime/sessions b/id) "b could not unload")
+          (runtime_list_sessions service/runtime/sessions)
+          ($assert (== (service/runtime/events/streams/.get .get $"session:${a/id}") void) "listing loaded a's stream")
+          ($assert (== (service/runtime/events/streams/.get .get $"session:${b/id}") void) "listing loaded b's stream")
+          (let reloaded (load_session service/runtime/sessions a/id))
           ($assert (same? reloaded/runtime runtime) "session reload reactivated the runtime")
           ($println "shared runtime: concurrent sessions, isolated rounds and lazy index listing")
           ensure (close_session_service service))))))
@@ -322,7 +314,7 @@
           (for sample in [{^code "nil" ^expected "nil"} {^code "false" ^expected "false"}
             {^code "0" ^expected "0"} {^code "\"\"" ^expected ""}]
             (let submitted (command service session/id $"/run ${sample/code}"))
-            (service/runtime/commands/watchers/.get .get $"${session/id}:${submitted/id}"; .join)
+            (service/runtime/services/values/commands/watchers/.get .get $"${session/id}:${submitted/id}"; .join)
             (let records (/records (snapshot ^!console service session/id)))
             (let result ($first ($filter records (fn [record] (== record/id $"${session/id}/${submitted/id}")))))
             ($assert (== result/status "done"))
@@ -343,7 +335,7 @@
         (try
           (for text in inputs
             (let submitted (command service session/id text))
-            (let joined (service/runtime/commands/watchers/.get .get $"${session/id}:${submitted/id}"; .join))
+            (let joined (service/runtime/services/values/commands/watchers/.get .get $"${session/id}:${submitted/id}"; .join))
             ($assert (== ($head joined) TaskOutcome/ok))
             (let state (snapshot service session/id))
             (let input_id $"${session/id}/${submitted/id}/input")
@@ -427,7 +419,7 @@
           ($assert (== user_messages/0/data/text "original prompt")
             "live user bubble includes model-only guidance")
           (release .set true)
-          (service/controller/watchers .get; .get record/id; .join)
+          ((/watcher (service/runtime/services/values/controller/rounds/.get .get record/id)) .join)
           ($assert (== (/state (receipt service record/id round/id)) "done") "streamed round did not complete")
           (let validations ($cell 0))
           (let answers ($cell []))
@@ -436,13 +428,13 @@
               (answers/.get .push value) value)})
           (set_test_provider service/runtime (fn [request] "(append_prompt \"answers\" \"reserved label\") (Outcome ^questions [{^id \"choice\" ^kind \"custom\" ^prompt \"Choose a value.\"}])"))
           (let custom (submit service record/id "custom" 2 "ask"))
-          (service/controller/watchers .get; .get record/id; .join)
+          ((/watcher (service/runtime/services/values/controller/rounds/.get .get record/id)) .join)
           ($assert (== (/state (receipt service record/id custom/id)) "waiting") "custom interaction did not wait")
           ($assert (== validations/.get 1) "custom question was not validated under its turn lease")
           (set_test_provider service/runtime (fn [request] "(Outcome ^^done ^reply \"answered\")"))
           (let waiting (receipt service record/id custom/id))
           (answer service record/id waiting/questions/id {^choice "ok"})
-          (service/controller/watchers .get; .get record/id; .join)
+          ((/watcher (service/runtime/services/values/controller/rounds/.get .get record/id)) .join)
           ($assert (== answers/.get ["ok"]) "custom answer bypassed its validator")
           (let answered (snapshot service record/id))
           (var recorded false)
@@ -457,11 +449,11 @@
              ^fn (fn [] ($print huge/.get))})
           (set_test_provider service/runtime (fn [request] "(noise) (Outcome ^^done ^reply \"bounded console\")"))
           (let noisy (submit service record/id "noisy" 3 "print"))
-          (service/controller/watchers .get; .get record/id; .join)
+          ((/watcher (service/runtime/services/values/controller/rounds/.get .get record/id)) .join)
           ($assert (== (/state (receipt service record/id noisy/id)) "done") "large console output exceeded an event envelope")
           (var noisy_bytes 0)
           (var truncated false)
-          (for event in (events_for service/events "session" record/id)
+          (for event in (events_for service/runtime/events "session" record/id)
             (if_yes (&& (== event/type "console") (== event/payload/round noisy/id))
               (set noisy_bytes (+ noisy_bytes ($str/byte_size event/payload/text)))
               (if ($str/contains? event/payload/text "[console truncated]") (set truncated true))))
@@ -491,7 +483,7 @@
           (let record (create_session service))
           (let id record/id)
           (let made (submit service id "card-1" 1 "make a card"))
-          (service/controller/watchers .get; .get id; .join)
+          ((/watcher (service/runtime/services/values/controller/rounds/.get .get id)) .join)
           (let cards ($filter messages/.get (fn [message] (== message/type "card"))))
           ($assert (== ($size cards) 1) "the card definition was not pushed once")
           ($assert (== cards/0/data/event "defined"))
@@ -516,18 +508,18 @@
           (set_test_provider service/runtime (fn [request] "(Outcome ^^done ^reply \"got it\")"))
           (let sent (submit ^card ref service id "send-1" 2 "Count sent."))
           ($assert ($str/contains? sent/request "[card.count] Counter"))
-          (service/controller/watchers .get; .get id; .join)
+          ((/watcher (service/runtime/services/values/controller/rounds/.get .get id)) .join)
           (set_test_provider service/runtime (fn [request]
             (if (== request/turn 3)
               ($to_str card_code "\n(Outcome ^questions [{^id \"pick\" ^prompt \"Pick\" ^choices [\"a\" \"b\"] ^view `(div (button ^key \"a\" ^answer \"a\" \"A\") (button ^key \"b\" ^answer \"b\" \"B\"))}])")
               "(Outcome ^^done ^reply \"picked\")")))
           (let asked (submit service id "ask-1" 3 "ask"))
-          (service/controller/watchers .get; .get id; .join)
+          ((/watcher (service/runtime/services/values/controller/rounds/.get .get id)) .join)
           (let waiting (receipt service id asked/id))
           ($assert (== waiting/state "waiting"))
           ($assert (! ($absent? waiting/questions/questions/0/view)) "the question view was dropped")
           (answer service id waiting/questions/id {^pick "b"})
-          (service/controller/watchers .get; .get id; .join)
+          ((/watcher (service/runtime/services/values/controller/rounds/.get .get id)) .join)
           (let after (snapshot service id))
           # A card command holds the resume barrier until it finishes.
           (let finished ($cell false))
@@ -540,13 +532,13 @@
               "(card \"slowcard\" ^title \"Slow\" `(button ^command \"/slow\" \"Slow\"))\n(Outcome ^questions [{^id \"go\" ^prompt \"Go?\"}])"
               (do (resumed_after_command .set finished/.get) "(Outcome ^^done ^reply \"resumed\")"))))
           (let slow_round (submit service id "slow-1" 4 "slow"))
-          (service/controller/watchers .get; .get id; .join)
+          ((/watcher (service/runtime/services/values/controller/rounds/.get .get id)) .join)
           (let slow_card (card_record service/runtime id "slowcard"))
           (command service id "/slow" ^card {^id "slowcard" ^definition_revision slow_card/definition_revision
             ^revision slow_card/revision})
           ($sleep 30)
           (answer service id (/id (/questions (receipt service id slow_round/id))) {^go "yes"})
-          (service/controller/watchers .get; .get id; .join)
+          ((/watcher (service/runtime/services/values/controller/rounds/.get .get id)) .join)
           ($assert (== resumed_after_command/.get true) "the round resumed while the card command still ran")
           # A command that fails to start after admission releases the barrier.
           (let config_path $"${service/runtime/state_root}/config.gene")
@@ -556,7 +548,7 @@
               ^definition_revision slow_card/definition_revision ^revision slow_card/revision}) false
             catch Any true) "a command started with an unreadable configuration")
           ($fs/write_text config_path saved_config)
-          ($assert (== (?? (service/runtime/cards/inflight/.get .get id) 0) 0)
+          ($assert (== (?? (service/runtime/services/values/cards/inflight/.get .get id) 0) 0)
             "a failed command start left the resume barrier held")
           (let answered ($filter after/records (fn [block] (== block/kind "questions"))))
           ($assert (== ($size answered) 1) "the answered question view is not in the transcript")
@@ -597,12 +589,12 @@ child/.detach
         (try
           (let first (create_session service))
           (submit service first/id "one" 1 "go")
-          (service/controller/watchers .get; .get first/id; .join)
+          ((/watcher (service/runtime/services/values/controller/rounds/.get .get first/id)) .join)
           (release .set true)
           (let result (child .get; .join))
           ($assert (== ($head result) TaskOutcome/ok) $"detached task failed: ${result}; ${stages/.get}")
           (let late [])
-          (for event in (events_for service/events "session" first/id)
+          (for event in (events_for service/runtime/events "session" first/id)
             (if (== event/type "console") (late .push event/payload)))
           ($assert (== late/.size 2) $"late console was lost: ${late}")
           ($assert late/0/late "detached output was not marked late")
@@ -610,12 +602,12 @@ child/.detach
           (let second (create_session service))
           (release .set false)
           (submit service second/id "two" 1 "go")
-          (service/controller/watchers .get; .get second/id; .join)
-          ($assert (unload_session service/sessions second/id) "finished session could not unload")
+          ((/watcher (service/runtime/services/values/controller/rounds/.get .get second/id)) .join)
+          ($assert (unload_session service/runtime/sessions second/id) "finished session could not unload")
           (release .set true)
           (child .get; .join)
           (let workspace [])
-          (for event in (events_for service/events "workspace" "workspace")
+          (for event in (events_for service/runtime/events "workspace" "workspace")
             (if (== event/type "console") (workspace .push event/payload)))
           ($assert (== workspace/.size 2) "unloaded session did not route detached output to workspace log")
           ($assert (== workspace/0/session second/id) "workspace console lost the source session")
@@ -638,7 +630,7 @@ child/.detach
         (try
           (let session (create_session service))
           (submit service session/id "patch" 1 "edit")
-          (service/controller/watchers .get; .get session/id; .join)
+          ((/watcher (service/runtime/services/values/controller/rounds/.get .get session/id)) .join)
           (let page (snapshot service session/id))
           (let patches [])
           (for record in page/records
@@ -650,7 +642,7 @@ child/.detach
               "(Outcome ^^done ^reply \"unreachable\")\n*** Begin Patch\n*** Update File: added.txt\n@@\n-missing\n+new\n*** End Patch\n"
               "(Outcome ^^done ^reply \"Failure received.\")")))
           (submit service session/id "bad" 2 "edit")
-          (service/controller/watchers .get; .get session/id; .join)
+          ((/watcher (service/runtime/services/values/controller/rounds/.get .get session/id)) .join)
           (let failed (snapshot service session/id))
           (let failures [])
           (for record in failed/records
@@ -804,7 +796,7 @@ child/.detach
             (== initial_counter/view/children/0/children/0 "0")
             $"initial counter was incorrect: ${initial/web_components}")
           (let submitted (command service session/id "/counter"))
-          (service/runtime/commands/watchers
+          (service/runtime/services/values/commands/watchers
             .get
             ; .get $"${session/id}:${submitted/id}"
             ; .join)
@@ -829,19 +821,19 @@ child/.detach
             (== updated_counter/view/children/0/children/0 "1")
             "snapshot did not refresh plugin state")
           (let failed_disable (command service session/id "/run (disable_plugin \"counter\") (missing_operator_function)"))
-          (service/runtime/commands/watchers/.get .get $"${session/id}:${failed_disable/id}"; .join)
+          (service/runtime/services/values/commands/watchers/.get .get $"${session/id}:${failed_disable/id}"; .join)
           (let unchanged (host_status service))
           ($assert (== (fixture_component_count unchanged/web_components) 2)
             "failed operator evaluation published its staged plugin change")
           (let disable (command service session/id "/run (disable_plugin \"counter\")"))
-          (service/runtime/commands/watchers
+          (service/runtime/services/values/commands/watchers
             .get
             ; .get $"${session/id}:${disable/id}"
             ; .join)
           (let disabled (host_status service))
           ($assert (== (fixture_component_count disabled/web_components) 0) "disabled plugin left stale components")
           (let enable (command service session/id "/run (enable_plugin \"counter\")"))
-          (service/runtime/commands/watchers
+          (service/runtime/services/values/commands/watchers
             .get
             ; .get $"${session/id}:${enable/id}"
             ; .join)
@@ -886,7 +878,7 @@ child/.detach
             ^for_turn 2 ^combine "append" ^full "cold" ^^delegation})
           ($assert (== (/text ($last published)) "base\nwarm\ncold"))
           ($assert (== warm/source_ids/.size 2) "Later projection mutated an already published request.")
-          (let event ($last (events_for service/events "session" session/id)))
+          (let event ($last (events_for service/runtime/events "session" session/id)))
           ($assert (== (/text (browser_request service session/id event)) "base\nwarm\ncold"))
           (transcript service/runtime session/id {^type "turn/request" ^round "r" ^turn 2
             ^for_turn 2 ^combine "replace" ^full "replaced"})
@@ -904,7 +896,7 @@ child/.detach
         (try
           (let session (create_session service))
           (let round (submit service session/id "live-test" 1 "check"))
-          (service/controller/watchers/.get .get session/id ; .join)
+          ((/watcher (service/runtime/services/values/controller/rounds/.get .get session/id)) .join)
           ($assert ($absent? (service/browser_requests/.get .get session/id)))
           (repeat line in 200
             (transcript service/runtime session/id {^type "console" ^round round/id ^turn 1 ^text "noise\n" ^!late ^^ignorable}))
@@ -915,7 +907,7 @@ child/.detach
           ($assert (> ($size ($filter (/records (snapshot service session/id)) (fn [record] (== record/phase "console")))) 0)
             "Diagnostic transcript access was lost.")
           (let help (command service session/id "/help"))
-          (service/runtime/commands/watchers/.get .get $"${session/id}:${help/id}" ; .join)
+          (service/runtime/services/values/commands/watchers/.get .get $"${session/id}:${help/id}" ; .join)
           ($assert (> ($size ($filter (/records (snapshot ^!console service session/id))
             (fn [record] (&& (== record/phase "command") (!= record/text ""))))) 0))
         ensure (close_session_service service))))))

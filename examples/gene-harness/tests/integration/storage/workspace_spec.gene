@@ -1,4 +1,4 @@
-# Tests src/storage/workspace.gene.
+# Exercises checkpointing, module loading, activation and workspace repair.
 (import $test [describe it])
 (import [isolated run_spec] ^from "../../support")
 (import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
@@ -6,9 +6,9 @@
 (import [plugin_admin] ^from "../../../src/builtin/plugin_admin")
 (import [Plugin PluginHost] ^from "../../../src/plugin_api")
 (import [row] ^from "../../../src/kernel")
-(import [set_plugin_enabled restore_plugin register_plugin doctor enable_entry composition_entries
-         composition_revision commit_composition prepare_workspace]
-  ^from "../../../src/storage/workspace")
+(import [set_plugin_enabled restore_plugin doctor enable_entry] ^from "../../../src/storage/workspace_repair")
+(import [register_plugin prepare_workspace] ^from "../../../src/storage/workspace_activation")
+(import [composition_entries composition_revision commit_composition] ^from "../../../src/storage/composition_store")
 (import [evaluate_harness_turn] ^from "../../../src/agents/harness_turn")
 
 (fn ping_source []
@@ -209,7 +209,8 @@
           (let source
             (quote
               (mod plugin
-                (import ^from "src/plugin_api.gene" [Plugin PluginHost append_prompt])
+                (import [Plugin PluginHost] ^from "src/plugin_api.gene")
+(import [append_prompt] ^from "src/public/response.gene")
                 (fn init [descriptor]
                   (Plugin ^id "io_plugin" ^provides [["functions" "write_marker"]] ^activate (fn [host] (host .PluginHost:contribute "functions" {^name "write_marker" ^doc "Write a marker through the standard library." ^fn (fn [path : Str text : Str] ($fs/write_text path text) (append_prompt "written" text) (host ^session "s1" .PluginHost:update_state {^last text}))})))))))
           (let registered (register_plugin runtime/workspace runtime/h "io_plugin" ($to_str source)))

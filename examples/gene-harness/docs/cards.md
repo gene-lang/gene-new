@@ -147,7 +147,7 @@ conversation with `show_card` from `plugin_api`, which takes the same
 arguments as `card` but needs `^view` and `^update` as quoted `fn` forms:
 
 ```gene
-(import ^from "src/plugin_api.gene" [show_card])
+(import [show_card] ^from "src/public/response.gene")
 (show_card "board" ^title "Board" ^state {^n 1}
   ^view (quote (fn [state] `(p %($to_str state/n)))))
 ```

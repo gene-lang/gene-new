@@ -1,4 +1,5 @@
 (mod host_audio ^profile web)
+(import [api_root voice_subprotocol] ^from "../../src/web/contract.gene")
 (import [text integer] ^from "../../src/common/launcher.gene")
 (import [pack_pcm read_u32 frame_pcm] ^from "../pcm_frames.gene")
 (import [Vad new_vad reset_vad vad_step] ^from "../../src/common/vad.gene")
@@ -164,8 +165,8 @@
 
 (fn voice_socket [] : EventTarget
   (var parts : (List Str) (str/split ($browser/origin) "://"))
-  (var url ($to_str (if (== parts/0 "https") "wss" "ws") "://" parts/1 "/api/v8/voice"))
-  ($ws/connect_protocol url "gene-harness-voice.1"))
+  (var url ($to_str (if (== parts/0 "https") "wss" "ws") "://" parts/1 $"${(api_root)}/voice"))
+  ($ws/connect_protocol url voice_subprotocol))
 
 (fn attach_socket [host : HostAudio] : Void
   (var socket host/socket)

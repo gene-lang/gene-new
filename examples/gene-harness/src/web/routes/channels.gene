@@ -1,5 +1,6 @@
 # Host-only feature routes. Called only after common HTTP admission.
 (mod channels_routes)
+(import [api_root] ^from "../contract.gene")
 (import [response number request_data session_path?] ^from "../request")
 (import [channel_request] ^from "../../channels/http")
 (import [session_slack_thread session_add_to_slack] ^from "../session_service")
@@ -7,8 +8,8 @@
 
 (fn channels_request [context, request, parts]
   (let host context/host)
-  (let channel_result (channel_request host/runtime/channels request/method request/path
-    (if (&& (== request/method "POST") (request/path .starts_with? "/api/v8/channels"))
+  (let channel_result (channel_request host/runtime/services/values/channels request/method request/path
+    (if (&& (== request/method "POST") (request/path .starts_with? $"${(api_root)}/channels"))
       (request_data request) {})))
   (if_not ($absent? channel_result) (return (response channel_result/status channel_result/body)))
   (if_yes (session_path? parts)

@@ -108,7 +108,7 @@
         (try
           (let h service/runtime/h)
           ($assert (== (/appearance (host_status service)) "light"))
-          (set_appearance h "dark")
+          (set_appearance service/runtime "dark")
           (let announced ($filter messages (fn [message] (== message/type "appearance"))))
           ($assert (== ($size announced) 1))
           ($assert (== (/mode (/data (/0 announced))) "dark"))
@@ -122,7 +122,7 @@
           (let safe_components (/web_components (host_status ^^safe service)))
           ($assert safe_components/.empty?)
           ((/fn (row h "functions" "ui_configure")) {^^enabled ^layout "panel" ^panel "styled_view"})
-          (let view (named (/components (ui_status h)) "styled_view"))
+          (let view (named (/components (ui_status service/runtime)) "styled_view"))
           ($assert ($str/contains? view/style $".${view/style_class} .board {"))
 
           (put_cordis_plugin ^^replace h (styled_plugin "#9db4d6") {^^host ^limits service/runtime/profile/limits})
@@ -132,7 +132,7 @@
 
           (uninstall h "styled")
           ($assert ($absent? (named (/web_components (host_status service)) "styled_board")))
-          ($assert ($absent? (named (/components (ui_status h)) "styled_view")))
+          ($assert ($absent? (named (/components (ui_status service/runtime)) "styled_view")))
         ensure
           (close_session_service service))))))
 

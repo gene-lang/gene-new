@@ -340,7 +340,8 @@ file pointer to the next user-initiated request. Unknown commands report a close
 `//text` sends the literal `/text` to the model.
 
 Pass complete code to CLI `run`, or use `run --file FILE` for multiline code.
-Outcome and append_prompt are response-only bindings. Shell commands
+`Outcome` and `append_prompt` are available in model responses, `/run` and the
+REPL. Shell commands
 have empty stdin and no terminal. Stored output is capped at 1 MiB and can be
 recalled. File views use 400-line pages.
 
@@ -634,28 +635,11 @@ a simple model-free reply. These are testing configurations of the same host.
 
 ## Code organization
 
-| Location | Responsibility |
-| --- | --- |
-| `src/plugin_api.gene`, `src/kernel.gene`, `src/kernel/`, `src/registries/` | Shared plugin contract, stable kernel facade, registry ownership, activation and host events |
-| `src/agents/` | Model requests, response evaluation, instructions and history |
-| `src/runtime/` | Workspace ownership, sessions, commands, REPL, rounds, scheduling and composition lifetimes |
-| `src/storage/` | Durable events and stored plugin generations |
-| `src/cli/` | HTTP client, command-line operations, credentials and receipt polling |
-| `src/notifications/` | Isolated producer inbox, source validation and frozen action admission |
-| `src/ui/` | Component validation, UI settings/descriptors, leased rendering, publication outlines and function actions |
-| `src/web/` | Shared session service, HTTP/WebSocket transport, owner authentication, connection discovery, page shell and styles |
-| `src/builtin/`, `src/profiles/`, `src/ui/` | Built-in plugins, entry-point composition and workspace UI |
-| `client/` | Gene web-profile conversation client and display helpers |
-| `client/ui/` | Panel model/storage, keyed DOM reconciliation and request/action controller |
-| `src/website/`, `client/website.gene`, `website/` | Informational site and its runnable examples |
-| `experiments/ui/` | Optional board plugin, installer and evaluation record |
-| `tests/unit/`, `tests/integration/` | Specs mirroring the native source modules |
-
-The plugin import contract stays `src/plugin_api.gene`; plugins do not import
-implementation modules from these directories. The browser controller consumes
-`src/web/contract.gene`, while `src/ui/` owns the component and action rules.
-See the [implementation map](docs/design.md#implementation-map) for individual
-modules and development constraints.
+[Design](docs/design.md) describes owners and lifetimes; the
+[protocol](docs/protocol.md) specifies response and record contracts.
+[CONTRIBUTING](CONTRIBUTING.md) covers source ownership, checks and tooling
+constraints. Plugins import the shared contract and declared SDK helpers;
+implementation modules remain private.
 
 The built-in [delegation plugin](docs/sub-agent.md) starts independent child
 sessions for concrete tasks, collects their results, and supports follow-ups

@@ -14,8 +14,8 @@ inert; `init` is preflighted under a bounded budget. Allowed top-level forms are
 import, import_impl, fn, type, impl, protocol, alias and enum. Top-level `const`
 is currently rejected, even for literal lists; use a zero-argument function.
 Generated imports are
-limited to `src/plugin_api.gene` and the supplied content-addressed
-dependency closure.
+limited to the declared SDK (`src/plugin_api.gene`, its public helpers and
+shared wire contract) and the supplied content-addressed dependency closure.
 
 ```gene
 (append_prompt "plugin"
@@ -39,7 +39,7 @@ source. Creation is established when registration is committed, preserved across
 replacements, and shown with the current source session in the plugin manager.
 Authors do not need to embed session IDs in their modules. Direct scripts and
 manager edits without a conversation do not acquire a fabricated `default`
-session. See [development sessions](plugin-source.md).
+session. See [development sessions](#development-sessions).
 
 Use `PluginHost:notify` for operator-facing milestones. The host stamps the
 publisher, scopes keys by source, and stores messages outside ordinary plugin
@@ -65,8 +65,8 @@ the exact dependency node passed to `register_plugin`. Its import path is
 `./<64-character SHA-256 hex>.gene`. Hashing the original source file's bytes
 does not produce that path, because the reader expands source shorthand.
 Harness normalizes reader location metadata in newly stored module sources.
-For compatibility it also retains an exact-node dependency spelling when a
-supplied module explicitly imports that digest. Other metadata and frozen
+When a supplied module explicitly imports its dependency's exact-node digest,
+that declared import spelling is retained. Other authored metadata and frozen
 data literals are preserved.
 
 ```gene
@@ -132,7 +132,7 @@ New code can select the public receiver and callback contract explicitly:
 
 `@interfaces` is module author metadata using existing Gene syntax. Each value
 is one exact required version, never a list of supported versions. The host
-supports only `PluginHost:3`, with `Plugin:2` for the shared plugin API.
+supports only `PluginHost:3`, with `Plugin:3` for the shared plugin API.
 New and replacement source defaults to that contract. Explicit requirements
 remain exact; a stored entry requiring a retired version is reported as an
 error until re-registered with current source. Descriptor construction receives
@@ -142,7 +142,7 @@ Version 3 supplies an opaque activation receiver with no Harness or effect-scope
 properties. Resolve the narrow host protocols below. `loop` and `voice/runtime`
 are unavailable, including through seam-row queries. Command and input-mode
 `run` callbacks keep the nominal `CommandContext` type, with session, raw input,
-command id and output callable. Its legacy `runtime` and `manager` slots are nil;
+command id and output callable. Its native-only `runtime` and `manager` slots are nil;
 `snapshot` contains only `{^composition_revision Int}`. The exact context is
 authenticated only during that admitted call; copies and retained contexts do
 not authorize later operations. Prompt renderers receive
@@ -164,8 +164,10 @@ Loading, plan validation and historical reversion share the same admission
 check; host-only interfaces do not become plugin requirements.
 
 Additive messages retain their version. Removals or semantic changes require
-a new version and an explicit compatibility interval. Mismatch diagnostics
-name the unsupported interface and required version.
+a new version and an explicit retirement decision. There is no compatibility
+execution path. Mismatch diagnostics name the unsupported interface and
+required version. Response helpers `append_prompt` and `show_card` are declared
+in `src/public/response.gene`; `plugin_api` contains contracts only.
 
 ### Host services and activation cleanup
 
@@ -219,10 +221,10 @@ ordinary string-valued `ui_links` remain supported.
 
 Public helper imports have explicit paths: `src/public/documentation.gene`,
 `provider.gene`, `history_policy.gene`, `model_content.gene`, `image_contract.gene`,
-`model_text.gene`, `speech_engines.gene`, `mac_recognition.gene` and
-`voice_frames.gene` (each remaining name is under `src/public/`).
-`src/text.gene` supplies bounded text helpers. The loader and source validator
-share the exact manifest in `runtime/public_modules.gene`; other paths under
+`model_text.gene`, `speech_engines.gene`, `mac_recognition.gene`,
+`voice_frames.gene`, `response.gene` and `text.gene` (each remaining name is
+under `src/public/`). The loader and source validator share the exact manifest
+in `runtime/plugin_sdk.gene`; other paths under
 `src/public/` receive no implicit permission. Helpers cannot import private host
 implementation modules. Stored-plugin acceptance covers all helper families
 and restart, alongside rejection of private, undeclared and traversal paths.
@@ -578,6 +580,178 @@ and source digests without invoking plugin code; activation remains unverified
 until normal startup. Online direct reversion retains the existing
 commit-before-activation and quarantine behavior.
 
-New history-enabled checkpoints use composition format 2. Existing format-1
-workspaces import their current baseline with unknown historical host identity;
-older Harness builds refuse format 2 rather than silently dropping history.
+Composition checkpoints require format 2 and an archive head. Unsupported
+formats are refused. Managed state and media have their own versioned formats;
+changing plugin code never implicitly rewinds their contents.
+
+## Plugin manager
+
+The host-owned manager is available at `/plugins` and in Recovery UI even when
+`plugin_admin`, the sidebar or a workspace view is disabled. The registered
+[operator guide](plugin-manager-guide.md) describes its controls. CLI and
+browser operations use the same host services.
+
+The inventory distinguishes built-ins, stored plugins and overrides, including
+disabled, pending and failed entries. It exposes desired state, runtime state,
+source/dependency digests, execution limits, diagnostics and development
+sessions. Declared capabilities and observed contributions are separate;
+an absent declaration does not establish that a plugin contributes nothing.
+Requirement inspection resolves actual providers and direct/transitive
+dependents, rather than assuming every requirement names a plugin.
+
+Descriptor metadata and observed contributions are retained with their exact
+source digest and host build. Passive recovery uses those records without
+running workspace code. Missing metadata remains unknown, and evidence from
+another build is labeled historical.
+
+### Drafts and validation
+
+Operator changes form a reviewable browser-tab draft:
+
+```text
+Edit draft → inspect impact → validate → apply → inspect result
+```
+
+A draft can contain several changes, including replacing one provider with
+another. Impact preview reports affected dependencies and readiness. It does
+not silently disable dependents. Plans capture their base composition, exact
+candidate digests, profile and host identity. Editing the draft or changing
+those inputs requires revalidation. Apply checks the base under the mutation
+gate; a model publication cannot be silently overwritten by a stale draft.
+
+Checks have distinct meanings:
+
+| Check | Evidence |
+| --- | --- |
+| Structure | Source shape, digests, closure and exact interface requirements |
+| Restricted descriptor read | Bounded load and `init` under empty outward namespace grants |
+| Composition prediction | Declared dependencies, retained observations and expected readiness |
+| Application | Full-grant descriptor revalidation, activation, contributions and readiness |
+
+Restricted reads are explicit operations. They use a disposable generation,
+extract inert metadata and retain no candidate callbacks or live host handles.
+They never call `activate` or silently widen grants after a failure. A pure
+descriptor may contain an activation callback that uses I/O; inspecting it does
+not run that callback. A withheld capability or timeout leaves metadata unknown
+and does not establish that normal activation would fail.
+
+Normal activation loads and checks the descriptor again. It rejects a
+descriptor that contradicts the reviewed contract. Full-grant code can affect
+files, processes and services; neither budgets nor candidate disposal undo
+those effects. Restricted inspection is not an isolated activation trial or a
+security boundary. Passing validation does not verify application data,
+rendering or external services.
+
+### Apply and publication
+
+Reviewed live Apply stages the complete candidate set. Every enabled entry
+must be accepted at its requested revision, and the plan's readiness policy
+must pass before the desired revision is committed and the set is published.
+Failure publishes none of the candidate set, disposes acquired candidate
+instances, preserves the old desired/published revisions and archives the
+attempt. Disposal failures remain explicit; external effects are not rolled
+back by replacing code.
+
+Model changes retain automatic turn-boundary publication without another
+operator approval. Direct registration and online single-plugin reversion
+retain commit-before-activation and quarantine behavior. Their desired
+revision and actual application result are both recorded. These are different
+commit orders from reviewed live Apply.
+
+Offline and recovery repairs commit desired state without claiming activation
+or readiness. An explicit repair plan may leave required entries disabled or
+pending so a broken workspace can be repaired. Normal Apply protects profile
+and configured-provider readiness.
+
+### History, identity and data
+
+Every composition commit uses the shared archive boundary, including model,
+operator, REPL and offline origins. The authoritative checkpoint contains its
+archive head. Complete entries outlive short crash-recovery checkpoint
+retention; an uncommitted candidate cannot become current merely because its
+archive object exists. Later outcomes and observations append separately from
+immutable revision records.
+
+A host build fingerprint covers the executing runtime and selected immutable
+package/dependency inputs. Source edits and local dependencies affect it;
+checkout location, timestamps, mutable workspace data and credentials do not.
+The running host's captured inputs establish identity, rather than whatever
+files happen to be on disk later. New commits require a complete build record.
+Unknown historical identities remain unknown.
+
+Desired revision, accepted revision and readiness observation are distinct.
+Ready at application means requested entries match, none is pending or
+quarantined, and profile/provider checks pass at that time. Observations record
+time and host build. `ACTIVE` may advance for accepted pending entries, so it
+does not by itself prove readiness or application correctness.
+
+Restoring a default selects the built-in bundled with the current host.
+Single-plugin reversion selects a complete retained entry and creates a new
+revision. Whole-composition reversion uses a reviewed plan. None rewinds the
+revision counter, conversations, files, workbooks or undo history.
+
+Managed plugin state records its last executing writer's source digest and
+host build, including writes by an older leased activation. That provenance
+does not prove data compatibility. Free-form state, custom projections and
+direct files may have unknown provenance. The plugin contract supplies no
+implicit schema migration callback; data restoration is a separate operation.
+Referenced source/dependency blobs remain retained by the archive.
+
+### Recovery
+
+`gene-harness --workspace DIR --recovery` opens metadata-only repair without
+configuration, application streams, execution controllers or activation. It
+serves host-owned inspection/planning/history and refuses new rounds, scheduled
+work, plugin actions and arbitrary code execution. Retry normal startup returns
+control to the supervised normal host.
+
+The supervisor attempts one recovery fallback after a normal startup failure,
+preserving diagnostics. Intentional stop/restart does not trigger a crash loop.
+Failure to open required metadata or bind a listener remains a startup error.
+Recovery holds the exclusive workspace lock. Offline doctor performs bounded
+descriptor reads and kernel repair; it is a different operation from passive
+metadata inspection.
+
+## Development sessions
+
+Saved source entries carry `created_in` (original creation session and optional
+turn) and `source_origin` (the current source's origin kind and actual calling
+session/turn). Kinds are `model`, `command`, `operator` and `direct`. A manager
+edit without a conversation records operator origin; a direct script without
+session context records direct origin. Neither invents a workspace-stream or
+default conversation.
+
+```gene
+{^id "project_board"
+ ^created_in {^session "session-a" ^turn "3"}
+ ^source_origin {^kind "command" ^session "session-b"}}
+```
+
+Missing attribution stays unknown. It is not inferred from operation history
+or a matching code digest. The separate `origin` describes administrative
+actions, so a reverting actor does not become the author of the restored source.
+
+Registration captures its caller before queuing. Creation is assigned against
+the entry present at serialized publication. Replacements preserve creation
+and record their own source origin. Enable, disable and retries preserve both.
+Reverts copy the selected source origin and preserve the current creation
+association. Restore default ends the override; a new override starts a new
+creation. Failed preflight or an uncommitted mutation leaves attribution
+unchanged; activation failure after commit retains the new quarantined source.
+
+Inventory and history expose `development` with `created_in` and `source_from`.
+Known references include session identity, optional turn, current title, kind
+and availability. Normal mode resolves the session index without loading its
+conversation. Recovery displays saved IDs without navigation links.
+
+Identical source/creation sessions appear once. Missing sessions retain their
+ID with Session unavailable. Bundled code without an override has no workspace
+source-session action. Trigger sessions keep their kind when opened.
+
+Navigation uses the existing same-tab route with `view=harness`, retaining
+per-session drafts. It does not prepare a prompt, submit work or create a new
+session. The user chooses the next action.
+
+Implementation evidence is in the [manager audit](verification/plugin-manager-verification.md),
+[manager ledger](verification/plugin-manager-progress.md) and
+[Harness review implementation](verification/harness-review3.md).

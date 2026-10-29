@@ -1,0 +1,249 @@
+# Workspace ownership: module_registry.
+(mod module_registry)
+
+(import $store/fs [open : store_open Store StoreError])
+(import $serde [write_data read_data])
+(import $fs [make_dir real_path read_text write_text_atomic exists?])
+(import $crypto [sha256])
+(import $str [slice_bytes byte_size contains? starts_with? ends_with? split])
+(import ^from "../kernel" [Harness describe_plugin_module configure_plugin_module contribute row rows remove_owner])
+(import ^from "../runtime/interface_policy" [source_interfaces entry_core_interface interface_diagnostic InterfacePolicyError])
+(import ^from "../runtime/plugin_sdk" [sdk_import?])
+(import ^from "./plugin_metadata" [remember_descriptor])
+(import [CompositionError Workspace fresh_list fresh_map entry_limits runtime_limits] ^from "./composition_store")
+
+(fn safe_module_id? [id : Str] : Bool
+  (var safe (&& (> (byte_size id) 0) (<= (byte_size id) 64)))
+  (for forbidden in ["/" "\\" ".." ":" "\0"]
+    (if (contains? id forbidden) (set safe false)))
+  safe)
+
+(fn digest_hex [digest : Str]
+  (if ($absent? (#"^sha256:[0-9a-f]{64}$" .match digest))
+    (fail (CompositionError ^message $"unsupported module digest ${digest}")))
+  (slice_bytes digest 7 (- (byte_size digest) 7)))
+
+(fn module_path [workspace : Workspace, digest : Str]
+  $"${workspace/generated_dir}/${(digest_hex digest)}.gene")
+
+(fn parse_plugin_source [source]
+  (if_not (== ($head source) Str) (return source))
+  (let forms [])
+  (for form in ($parse/read_all source)
+    (forms .push form))
+  (if_not (== forms/.size 1)
+    (fail (CompositionError ^message "plugin source must contain exactly one mod form")))
+  forms/0)
+
+(fn source_without_locations [form]
+  (if (== ($head form) List) (return ($map form source_without_locations)))
+  (if (== ($head form) Map) (return ($map form source_without_locations)))
+  (match form
+    (when (node : Node)
+      (let meta ($meta form))
+      (for key in ["source" "line" "col"] (meta .delete key))
+      ($node/rebuild form
+        ^head (source_without_locations ($head form))
+        ^body ($map ($body form) source_without_locations)
+        ^props ($map ($props form) source_without_locations)
+        ^meta ($map meta source_without_locations)))
+    (else form)))
+
+(fn canonical_module_source
+  [source, ^require_init require_init : Bool = true]
+  (if_not (== ($head source) (quote mod))
+    (fail (CompositionError
+      ^message "module source must be a quoted mod node")))
+  (if_yes (&& require_init (!= source/0 (quote plugin)))
+    (fail (CompositionError
+      ^message "register_plugin root source must name (mod plugin ...)")))
+  # Module top level is structurally inert. The untrusted executable bodies
+  # live inside functions and are bounded when called; allowing arbitrary
+  # top-level expressions would let a loop hang before the limiter exists.
+  (var allowed ["import" "import_impl" "fn" "type" "impl" "protocol"
+                "alias" "enum"])
+  (var saw_init false)
+  (var i 1)
+  (while (< i source/body/.size)
+    (var form source/body/%i)
+    (var kind ($to_str ($head form)))
+    (if_not (allowed .contains? kind)
+      (fail (CompositionError
+        ^message $"generated module top level may not contain ${kind}; read (doc \"harness/plugins\") for inert declarations and imports")))
+    (if_yes (&& (== kind "fn") (== ($to_str form/0) "init"))
+      (set saw_init true))
+    (set i (+ i 1)))
+  (if_yes (&& require_init (! saw_init))
+    (fail (CompositionError ^message "generated module must define init")))
+  # Model response readers attach diagnostic locations to quoted nodes.
+  # Those locations are not module content and must not change import hashes.
+  # Keep other metadata, literal container immutability, and syntax intact.
+  (var text ($to_str (source_without_locations source)))
+  (if (> (byte_size text) 262144)
+    (fail (CompositionError ^message "generated module exceeds 262144 bytes")))
+  text)
+
+(fn module_digest [source] : Str
+  $"sha256:${(sha256 (canonical_module_source ^!require_init source))}")
+
+(fn dependency_module_texts [source, dependencies]
+  (let modules [source])
+  (for dependency in dependencies (modules .push (parse_plugin_source dependency)))
+  (let requested [])
+  (for module in modules
+    (for form in module/body
+      (if (&& (["import" "import_impl"] .contains? ($to_str ($head form)))
+              (== ($head form/from) Str))
+        (requested .push form/from))))
+  (let texts [])
+  (for dependency in dependencies
+    (let parsed (parse_plugin_source dependency))
+    (let canonical (canonical_module_source ^!require_init parsed))
+    (texts .push canonical)
+    # Existing authors may hash the exact quoted node inside a model response,
+    # including its reader locations. Keep such explicitly referenced spellings
+    # valid while also accepting location-independent canonical imports.
+    (let original ($to_str parsed))
+    (if_yes (&& (!= original canonical)
+                (requested .contains? $"./${(sha256 original)}.gene"))
+      (if (> (byte_size original) 262144)
+        (fail (CompositionError ^message "generated module exceeds 262144 bytes")))
+      (texts .push original)))
+  texts)
+
+(fn relative_import_digest [path : Str]
+  (if_yes (&& (starts_with? path "./") (ends_with? path ".gene"))
+    (var hex (slice_bytes path 2 (- (byte_size path) 7)))
+    (if_yes (== (byte_size hex) 64) $"sha256:${hex}")))
+
+(fn validate_source_imports [source, closure]
+  (var i 1)
+  (while (< i source/body/.size)
+    (var form source/body/%i)
+    (var kind ($to_str ($head form)))
+    (if_yes (["import" "import_impl"] .contains? kind)
+      (var path form/from)
+      (if_yes (== ($head path) Str)
+        (if_not (sdk_import? path)
+          (var digest (relative_import_digest path))
+          (if (|| ($absent? digest) (! (closure .contains? digest)))
+            (fail
+              (CompositionError ^message $"generated import is outside its dependency closure: ${path}"))))))
+    (set i (+ i 1)))
+  source)
+
+(fn materialize_module_blob [workspace : Workspace, digest : Str, source : Str]
+  (var path (module_path workspace digest))
+  (var present (exists? path))
+  (if_yes present
+    (if_not (== (read_text path) source)
+      (fail (CompositionError ^message $"module blob collision for ${digest}"))))
+  (if_not present (write_text_atomic path source))
+  path)
+
+(fn write_module_blob [workspace : Workspace, digest : Str, source : Str]
+  (var path (materialize_module_blob workspace digest source))
+  (var key $"blob/${digest}")
+  (if_not (workspace/blob_store .Store:has? key) (workspace/blob_store .Store:put key source))
+  path)
+
+(fn ensure_module_blob [workspace : Workspace, digest : Str]
+  (var path (module_path workspace digest))
+  (var key $"blob/${digest}")
+  (if_not (exists? path)
+    (if_not (workspace/blob_store .Store:has? key)
+      (fail (CompositionError ^message $"module blob is missing: ${digest}")))
+    (var source (workspace/blob_store .Store:get key))
+    (if_not (== $"sha256:${(sha256 source)}" digest)
+      (fail (CompositionError ^message $"stored module blob digest mismatch: ${digest}")))
+    (write_text_atomic path source))
+  path)
+
+(fn load_entry_descriptor [workspace : Workspace, h : Harness, entry, ^events events : Bool = true]
+  (let mismatch (interface_diagnostic entry/interfaces workspace/interfaces))
+  (if (!= mismatch "") (fail (CompositionError ^message mismatch)))
+  (if_not (entry/closure .contains? entry/module_digest)
+    (fail (CompositionError ^message $"plugin ${entry/id} dependency closure omits its root")))
+  (for digest in entry/closure
+    (var path (ensure_module_blob workspace ($to_str digest)))
+    (var actual $"sha256:${(sha256 (read_text path))}")
+    (if_not (== actual digest)
+      (fail (CompositionError ^message $"plugin ${entry/id} blob digest mismatch: ${digest}"))))
+  (var root_file $"${(digest_hex entry/module_digest)}.gene")
+  (var isolation_key
+    ($to_str
+      entry/id
+      ":"
+      (sha256 (write_data {^digest entry/module_digest ^limits (entry_limits entry)}))))
+  (var loaded
+    ($runtime/load_sandboxed
+      workspace/generated_dir
+      root_file
+      ($runtime/sandbox_namespaces)
+      workspace/shared
+      isolation_key))
+  (configure_plugin_module loaded (runtime_limits entry))
+  (var descriptor
+    (describe_plugin_module ^core_interface (entry_core_interface entry) ^limits (runtime_limits entry)
+      h
+      loaded
+      ($to_str entry/id)))
+  (if events (validate_descriptor_events h descriptor))
+  (if_not ($absent? workspace/history_build/.get)
+    (try (remember_descriptor workspace/store workspace/history_build/.get entry/module_digest descriptor)
+      catch Any (workspace/metadata_errors/.get .push {^id entry/id ^message $err/message})))
+  descriptor)
+
+(fn validate_descriptor_events [h : Harness, descriptor]
+  (var seen (fresh_map))
+  (for event in (if ($absent? descriptor/events) (fresh_list) descriptor/events)
+    (if (|| (== event/name void) (== event/version void) (== event/ignorable void) (== event/schema void))
+      (fail
+        (CompositionError ^message $"plugin ${descriptor/id} event descriptor requires name version ignorable schema")))
+    (if_not ($runtime/callable? event/schema)
+      (fail (CompositionError ^message $"plugin ${descriptor/id} event schema must be callable")))
+    (var name ($to_str event/name))
+    (if_not (== (seen .get name) void)
+      (fail (CompositionError ^message $"plugin ${descriptor/id} duplicates event type ${name}")))
+    (seen .put name true)
+    (var existing (row h "event_types" name))
+    (if_yes (&& (!= existing void) (|| (!= existing/origin "plugin") (!= existing/owner descriptor/id)))
+      (fail (CompositionError ^message $"event type ${name} is already owned by ${existing/owner}"))))
+  descriptor)
+
+(fn descriptor_entry_options [workspace : Workspace, entry]
+  {
+    ^module $"${(digest_hex entry/module_digest)}.gene"
+    ^digest entry/module_digest
+    ^closure entry/closure
+    ^init_limits (runtime_limits entry)
+    ^core_interface (entry_core_interface entry)
+    ^!host})
+
+(fn source_entry_interfaces [workspace : Workspace, source]
+  (let required (try (source_interfaces source)
+    catch InterfacePolicyError (fail (CompositionError ^message $err/message))))
+  (let diagnostic (interface_diagnostic required workspace/interfaces))
+  (if (!= diagnostic "") (fail (CompositionError ^message diagnostic)))
+  required)
+
+(fn register_descriptor_events [h : Harness, descriptor]
+  (var descriptor_owner $"descriptor:${descriptor/id}")
+  (remove_owner h descriptor_owner)
+  (for event in (if ($absent? descriptor/events) (fresh_list) descriptor/events)
+    (if (|| (== event/name void) (== event/version void) (== event/ignorable void) (== event/schema void))
+      (fail
+        (CompositionError ^message $"plugin ${descriptor/id} event descriptor requires name version ignorable schema")))
+    (var catalog_row (fresh_map))
+    (for [name value] in event
+      (catalog_row .put name value))
+    (catalog_row .put "origin" "plugin")
+    (catalog_row .put "owner" ($to_str descriptor/id))
+    (contribute h descriptor_owner "event_types" catalog_row))
+  nil)
+
+(fn known_event_types [h : Harness]
+  (var known (fresh_map))
+  (for event in (rows h "event_types")
+    (known .put event/name event))
+  known)

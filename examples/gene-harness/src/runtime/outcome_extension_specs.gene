@@ -1,5 +1,5 @@
-# Existing optional fields are host-owned schemas. Their legacy spellings stay
-# accepted during the additive migration; canonical values live under extensions.
+# Optional feature data has one schema owner. Declared short spellings are
+# translated by the leased Outcome constructor before schema admission.
 (mod outcome_extension_specs)
 (import [normalize_delegation_wait delegation_result_data] ^from "./delegation_contract")
 (import [DelegationError] ^from "../plugin_api")
@@ -19,11 +19,10 @@
     (return {^error "wait cannot be combined with done or questions."}))
   (if context/collection
     (return {^error "The collection turn cannot wait or start more work; finish with done."}))
-  (let wake (if (context/extension_inputs .has_key? "delegation/wake_on_questions")
-    (context/extension_inputs .get "delegation/wake_on_questions") context/legacy/wake_on_questions))
+  (let wake (context/extension_inputs .get "delegation/wake_on_questions"))
   (try
     (normalize_delegation_wait value ^wake_on_questions (== wake true))
-    {^value value}
+    {^value value ^^suspend}
   catch DelegationError {^error $err/message}))
 
 (fn result_schema [context, value]

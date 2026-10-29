@@ -2,20 +2,12 @@
 (import [operator_round? collection_turns] ^from "../../../src/runtime/round_policy")
 
 (describe "Persisted round policy"
-  (it "preserves historical user, channel, continuation and automated meanings" []
-    (for sample in
-      [{^round {^initiator "user"} ^^expected}
-       {^round {^initiator "trigger:heartbeat"} ^!expected}
-       {^round {^initiator "parent:session/task"} ^!expected}
-       {^round {^initiator "channel:slack/demo" ^input {^kind "channel" ^transport "slack" ^account "demo"}} ^^expected}
-       {^round {^initiator "channel:slack/demo" ^input {^kind "channel" ^transport "other" ^account "demo"}} ^!expected}
-       {^round {^initiator "continue:round" ^continuation {^source_round "round"}} ^^expected}
-       {^round {^initiator "continue:round"} ^!expected}
-       {^round {^initiator "legacy:work"} ^!expected}]
-      ($assert (== (operator_round? sample/round) sample/expected) ($to_str sample))))
+  (it "requires explicit operator admission independently of initiator spelling" []
+    (for initiator in ["user" "trigger:heartbeat" "parent:session/task"
+                       "channel:slack/demo" "continue:round" "custom:work"]
+      ($assert (! (operator_round? {^initiator initiator})) initiator)))
   (it "uses an admitted explicit policy independently of the current route configuration" []
     ($assert (operator_round? {^initiator "custom:work" ^^operator}))
     ($assert (! (operator_round? {^initiator "user" ^!operator})))
     ($assert (== (collection_turns {^collection_turns 1}) 1))
-    ($assert (== (collection_turns {^^delegation_collection}) 1))
     ($assert (== (collection_turns {}) 0))))

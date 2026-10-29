@@ -18,10 +18,10 @@
           {^name "extra" ^doc "A new function." ^fn (fn [] 99)})))))
 
 (fn run_input [service session id text]
-  (let mode (mode_state service/runtime/modes session))
-  (let record (submit_mode_input service/runtime/modes session mode/instance id text))
-  (service/runtime/commands/watchers/.get .get $"${session}:${record/id}"; .join)
-  (command_receipt service/runtime/commands session record/id))
+  (let mode (mode_state service/runtime/services/values/commands/modes session))
+  (let record (submit_mode_input service/runtime/services/values/commands/modes session mode/instance id text))
+  (service/runtime/services/values/commands/watchers/.get .get $"${session}:${record/id}"; .join)
+  (command_receipt service/runtime/services/values/commands session record/id))
 
 (describe "Harness REPL plugin"
   (it "refreshes saved function forwarders and new names while keeping user shadowing" []
@@ -33,8 +33,8 @@
           (put_cordis_plugin service/runtime/h (provider_functions 1)
             {^^host ^limits service/runtime/profile/limits})
           (let session (create_session service))
-          (let opened (submit_command service/runtime/commands session/id "/repl"))
-          (service/runtime/commands/watchers/.get .get $"${session/id}:${opened/id}"; .join)
+          (let opened (submit_command service/runtime/services/values/commands session/id "/repl"))
+          (service/runtime/services/values/commands/watchers/.get .get $"${session/id}:${opened/id}"; .join)
           (let saved (run_input service session/id "save" "(var saved calc) (saved ^increment 3)"))
           ($assert (&& (== saved/status "done") ($str/contains? saved/display "4")) saved/display)
           (let prompted (run_input service session/id "prompt" "(append_prompt \"generated_image\" (+ 1 2))"))

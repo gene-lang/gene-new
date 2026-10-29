@@ -52,7 +52,7 @@
           (configure {^^enabled})
           (let session (create_session service))
           (let round (submit service session/id "test-ui" 1 "Build and check the view."))
-          (service/controller/watchers/.get .get session/id; .join)
+          ((/watcher (service/runtime/services/values/controller/rounds/.get .get session/id)) .join)
           (let result (receipt service session/id round/id))
           ($assert (== result/state "done") ($to_str result))
           ($assert (== result/reply "saved test") ($to_str result))

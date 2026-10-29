@@ -1,0 +1,84 @@
+# Durable image reconstruction. It needs records and media, never a live
+# ImageHost, provider, controller or plugin activation.
+(mod image_recovery)
+(import [image_usage parse_image_review] ^from "../public/image_contract")
+(import [open_media_store generated_media recover_media_reservations] ^from "./media")
+(import [image_runs save_image_run] ^from "./image_runs")
+(import [events_for append_core_event flush_event_store] ^from "./state")
+(import [load_part] ^from "../agents/model_recording")
+
+(fn record_image_usage [state, purpose : Str, call_id, usage, ^attempt attempt = nil]
+  (for item in state/usage
+    (if (== item/call_id call_id)
+      (then
+        (if_not ($absent? usage) (item .put "usage" (image_usage usage)))
+        (return nil))))
+  (state/usage .push {^purpose purpose ^call_id call_id
+    ^attempt (?? attempt state/attempts/.size) ^usage (image_usage usage)}))
+
+(fn reconcile_image_candidates [store, state]
+  (for image in (generated_media store ^run state/id)
+    (var attempt nil)
+    (for entry in state/attempts
+      (if (== entry/number image/generation/attempt) (set attempt entry)))
+    (if ($absent? attempt)
+      (then
+        (set attempt {^number image/generation/attempt ^state "interrupted"
+          ^image_id nil ^review nil ^review_status "unreviewed" ^repair_used false})
+        (state/attempts .push attempt)))
+    (if (|| ($absent? attempt/image_id) (!= attempt/image_id image/id))
+      (then
+        (attempt .put "image_id" image/id)
+        (attempt .put "review" nil)
+        (attempt .put "review_status" "unreviewed"))))
+  state)
+
+(fn reconcile_image_calls [runtime, state]
+  (let calls {})
+  (for attempt in state/attempts
+    (for [field role] in {^generation_call "generation" ^review_call "review" ^repair_call "repair"}
+      (let id (attempt .get field))
+      (if_not ($absent? id) (calls .put id {^attempt attempt ^role role}))))
+  (for event in (events_for runtime/events "session" state/session)
+    (let payload event/payload)
+    (if (|| (!= event/type "model/result") (!= payload/final true)) (continue))
+    (let known (calls .get payload/call))
+    (if ($absent? known) (continue))
+    (record_image_usage state known/role payload/call
+      (load_part runtime payload/usage) ^attempt known/attempt/number)
+    (known/attempt .put $"${known/role}_outcome" payload/outcome)
+    (if_yes (&& (!= known/role "generation") (== payload/outcome "ok")
+            (! ($absent? known/attempt/image_id)) ($absent? known/attempt/review))
+      (let output (load_part runtime payload/output))
+      (if_yes (== ($head output) Str)
+        (let parsed (parse_image_review output))
+        (if parsed/valid
+          (then
+            (known/attempt .put "review" parsed/review)
+            (known/attempt .put "review_status" "reviewed")
+            (known/attempt .put "state" "reviewed"))))))
+  state)
+
+(fn recover_image_runs [runtime]
+  (let store (open_media_store runtime/state_root))
+  (recover_media_reservations store)
+  (for [session record] in runtime/sessions/index/.get
+    (for state in (image_runs runtime ($to_str session))
+      (if (!= state/state "running") (continue))
+      (reconcile_image_candidates store state)
+      (reconcile_image_calls runtime state)
+      (state .put "state" "finished")
+      (state .put "stop_reason" "cancelled")
+      (state .put "error" {^stage "execution" ^code "interrupted"
+        ^message "Host stopped before the image run completed; no calls were replayed."})
+      (state .put "finished_at_ms" ($os/wall_ms))
+      (for attempt in state/attempts
+        (if (["generating" "reviewing" "repairing"] .contains? attempt/state)
+          (attempt .put "state" "interrupted")))
+      (save_image_run runtime state)
+      (append_core_event runtime/events "session" ($to_str session)
+        {^type "console" ^session ($to_str session) ^round state/round ^turn state/turn
+         ^at_ms ($os/wall_ms) ^^late ^^ignorable
+         ^text $"Image ${state/id}: interrupted image execution recovered; no calls were replayed.\n"})))
+  (flush_event_store runtime/events)
+  nil)

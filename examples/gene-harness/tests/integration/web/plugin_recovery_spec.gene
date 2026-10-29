@@ -5,7 +5,7 @@
 (import ^from "../../../src/runtime/bootstrap" [open_runtime close_runtime])
 (import ^from "../../../src/profiles/profile" [Profile])
 (import ^from "../../../src/profiles/baseline" [baseline_profile])
-(import ^from "../../../src/storage/workspace" [register_plugin])
+(import [register_plugin] ^from "../../../src/storage/workspace_activation")
 (import $net/http [listen stop])
 
 (fn wait_job [client, started]
@@ -23,12 +23,12 @@
         ($fs/make_dir $"${root}/.gene-harness/events")
         ($fs/write_text $"${root}/.gene-harness/events/CURRENT" "not-a-checkpoint")
         ($fs/write_text $"${root}/.gene-harness/config.gene" "(not valid configuration")
-        (let runtime (open_runtime ^^recovery root "default" (baseline_profile)))
+        (let runtime (open_runtime ^mode "recovery" root "default" (baseline_profile)))
         (try
           ($assert runtime/recovery)
           ($assert ($absent? runtime/events))
           ($assert ($absent? runtime/sessions))
-          ($assert ($absent? runtime/commands))
+          ($assert ($absent? runtime/services/values/commands))
           ($assert (== ($size runtime/h/plugins/.get) 0))
           ($assert (== ($fs/read_text $"${root}/.gene-harness/events/CURRENT") "not-a-checkpoint"))
         ensure (close_runtime runtime)))))

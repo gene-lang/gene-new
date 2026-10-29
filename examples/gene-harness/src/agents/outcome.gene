@@ -1,27 +1,22 @@
 (mod outcome)
 (import ^from "../runtime/questions" [validate_questions])
-(import [normalize_delegation_wait delegation_result_data] ^from "../runtime/delegation_contract")
+(import [TurnClosed] ^from "../plugin_api")
 
-(type Outcome ^props {^done Bool? ^prompt Any? ^reply Str? ^audio_reply Any? ^questions Any? ^attention Bool?
-  ^wait Any? ^result Any? ^wake_on_questions Bool? ^extensions Any?})
-(type CheckedOutcome ^^private ^props {^value Outcome})
+(type Outcome ^props {^done Bool? ^prompt Any? ^reply Str? ^questions Any? ^attention Bool? ^extensions Any?})
+(type CheckedOutcome ^^private ^props {^value Outcome ^suspension Str?})
 (type OutcomeError ^props {^message Str ^response_line Int?} ^impl [Error])
 (impl Error for OutcomeError)
-(type TurnClosed ^props {^message Str ^turn Int?} ^impl [Error])
-(impl Error for TurnClosed)
 
 # Only the harness's leased schema admission creates this private envelope.
 # A plain Outcome carrying unverified extension data is rejected below.
-(fn checked_outcome_extensions [value : Outcome] (CheckedOutcome ^value value))
+(fn checked_outcome_extensions [value : Outcome, ^suspension suspension = nil]
+  (CheckedOutcome ^value value ^suspension suspension))
 
 (fn new_turn_items [turn : Int, ^attachments attachments = {}, ^recall recall = nil, ^console console = nil]
   {
     ^turn turn
     ^queue_token ($crypto/random_hex 16)
     ^composition_queued ($cell false)
-    ^delegation_staged ($cell [])
-    ^delegation_guard nil
-    ^delegation_collection false
     ^state ($cell "open")
     ^items ($cell [])
     ^media ($cell [])
@@ -92,22 +87,14 @@
     (!= value "")
     true))
 
-(fn normalize_audio_reply [turn, value]
-  (let raw value/audio_reply)
-  (if ($absent? raw) (return value))
-  (var audio nil)
-  (if (&& (== ($head raw) Str) (<= ($str/byte_size raw) 2048)
-          (try ($binary/decode_utf8 ($binary/from_str raw)) true catch Any false)
-          (! ($absent? value/reply)) (!= ($str/trim value/reply) "") (!= ($str/trim raw) ""))
-    (set audio ($str/trim raw))
-    (if_not ($absent? turn/console)
-      (turn/console "Ignored audio_reply: use at most 2 KiB of nonempty text alongside reply.\n")))
-  # Copy rather than mutate: a model may return a frozen Outcome.
-  (Outcome ^done value/done ^prompt value/prompt ^reply value/reply ^audio_reply audio
-    ^questions value/questions ^attention value/attention ^wait value/wait
-    ^result value/result ^wake_on_questions value/wake_on_questions ^extensions value/extensions))
+(fn discard_done_items [turn]
+  (if_yes (> ($size turn/items/.get) 0)
+    (if_not ($absent? turn/console) (turn/console "done Outcome dropped appended prompt items\n"))
+    (turn/items .set []))
+  nil)
 
-(fn validate_outcome [turn, value, ^validators validators = {}, ^renderers renderers = {}]
+(fn validate_outcome [turn, value, ^validators validators = {}, ^renderers renderers = {},
+                      ^coordinated coordinated : Bool = false]
   (let checked (== ($head value) CheckedOutcome))
   (let raw (if checked value/value value))
   (let candidate (if (== ($head raw) Outcome) raw (Outcome ^prompt raw)))
@@ -116,17 +103,11 @@
       (fail (OutcomeError ^message "Outcome extensions must be a map of registered keys.")))
     (if (&& (! checked) (> ($size candidate/extensions) 0))
       (fail (OutcomeError ^message "Outcome extension data requires leased schema validation."))))
-  (let outcome (normalize_audio_reply turn candidate))
-  (if_not ($absent? outcome/result)
-    (if (!= outcome/done true) (fail (OutcomeError ^message "result requires a done Outcome.")))
-    (delegation_result_data outcome/result))
-  (if_not ($absent? outcome/wait)
+  (let outcome candidate)
+  (if_yes (&& checked (! ($absent? value/suspension)))
     (if (|| outcome/done (! ($absent? outcome/questions)))
-      (fail (OutcomeError ^message "wait cannot be combined with done or questions.")))
-    (if turn/delegation_collection
-      (fail (OutcomeError ^message "The collection turn cannot wait or start more work; finish with done.")))
-    (normalize_delegation_wait outcome/wait ^wake_on_questions (== outcome/wake_on_questions true))
-    (return {^kind "wait" ^outcome outcome ^questions nil}))
+      (fail (OutcomeError ^message "A suspended Outcome cannot finish or ask questions.")))
+    (return {^kind "suspend" ^suspension value/suspension ^outcome outcome ^questions nil}))
   (if (== outcome/done true)
     (then
       (if (|| ($absent? outcome/reply) (== ($str/trim outcome/reply) ""))
@@ -134,21 +115,14 @@
       (if (|| (!= outcome/prompt void) (!= outcome/questions void))
         (fail (OutcomeError ^message "done Outcome rejects prompt and questions")))
       (if turn/composition_queued/.get
-        (return {^kind "continue" ^outcome (Outcome ^reply outcome/reply ^audio_reply outcome/audio_reply ^extensions outcome/extensions)
+        (return {^kind "continue" ^outcome (Outcome ^reply outcome/reply ^extensions outcome/extensions)
           ^questions nil ^^rejected_done}))
-      (if (|| (! turn/delegation_staged/.get/.empty?)
-              (&& (! ($absent? turn/delegation_guard)) (turn/delegation_guard)))
-        (return {^kind "continue" ^outcome (Outcome ^reply outcome/reply ^audio_reply outcome/audio_reply ^extensions outcome/extensions)
-          ^questions nil ^^rejected_delegation_done}))
       (if_not turn/media/.get/.empty?
-        (return {^kind "continue" ^outcome (Outcome ^reply outcome/reply ^audio_reply outcome/audio_reply ^extensions outcome/extensions)
+        (return {^kind "continue" ^outcome (Outcome ^reply outcome/reply ^extensions outcome/extensions)
           ^questions nil ^^rejected_done}))
-      (if (> ($size turn/items/.get) 0)
-        (then
-          (if_not ($absent? turn/console)
-            (turn/console """done Outcome dropped appended prompt items
-"""))
-          (turn/items .set [])))
+      # The coordinator decides completion after its participants. Preserve
+      # appended context until they have had their chance to defer done.
+      (if_not coordinated (discard_done_items turn))
       (return {^kind "done" ^outcome outcome ^questions nil})))
   (if_not ($absent? outcome/questions)
     (return
@@ -156,8 +130,7 @@
         ^kind "questions"
         ^outcome outcome
         ^questions (validate_questions ^validators validators ^renderers renderers outcome/questions)}))
-  (if (&& (! (nonempty_prompt? outcome/prompt)) (== ($size turn/items/.get) 0)
-          turn/delegation_staged/.get/.empty?)
+  (if (&& (! coordinated) (! (nonempty_prompt? outcome/prompt)) (== ($size turn/items/.get) 0))
     (fail (OutcomeError ^message "continuing Outcome requires a prompt or append_prompt items")))
   {^kind "continue" ^outcome outcome ^questions nil})
 

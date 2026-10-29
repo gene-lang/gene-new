@@ -1,0 +1,123 @@
+(import $test [describe it])
+(import [isolated run_spec] ^from "../../support")
+(import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
+(import [Profile] ^from "../../../src/profiles/profile")
+(import [Plugin] ^from "../../../src/plugin_api")
+(import [create_session update_session] ^from "../../../src/runtime/sessions")
+(import [append_core_event record_core_state events_for open_event_store close_event_store]
+  ^from "../../../src/storage/state")
+
+(describe "Recovery kernel startup"
+  (it "runs doctor with kernel specs only and ignores execution configuration and activation" []
+    (isolated this_mod/.path
+      "runs doctor with kernel specs only and ignores execution configuration and activation"
+      (fn [root]
+        ($fs/make_dir $"${root}/.gene-harness")
+        ($fs/write_text $"${root}/.gene-harness/config.gene" "(invalid configuration")
+        (let activated ($cell false))
+        (let profile (Profile ^name "doctor" ^plugins
+          [(Plugin ^id "never" ^activate (fn [host] (activated .set true)))]))
+        (let runtime (open_runtime root "default" profile ^mode "doctor"))
+        (try
+          ($assert (! activated/.get))
+          (for acquired in runtime/services/opened/.get
+            ($assert (== acquired/spec/layer "kernel") acquired/spec/name))
+          (for name in ["voice" "cards" "delegations" "images" "commands" "actions" "operator" "computer" "manager"]
+            ($assert ($absent? (runtime/services/values .get name)) name))
+          ($assert (! ($absent? runtime/events)))
+          ($assert (! ($absent? runtime/sessions)))
+          ($assert ($absent? runtime/services/values/images))
+          ($assert (== ($fs/read_text $"${root}/.gene-harness/config.gene") "(invalid configuration"))
+        ensure (close_runtime runtime)))))
+
+  (it "validates a cold refused stream before repairing any accepted session" []
+    (isolated this_mod/.path
+      "validates a cold refused stream before repairing any accepted session"
+      (fn [root]
+        (let profile (Profile ^name "catalog" ^plugins []))
+        (let first (open_runtime root "default" profile))
+        (try
+          (create_session first/sessions ^id "a")
+          (record_core_state first/events "session" "a" "round/state" "round"
+            {^id "running" ^state "running"})
+          (update_session first/sessions "a" {^status "running"})
+          (append_core_event first/events "session" "a" {^type "turn/start" ^turn 1})
+          (append_core_event first/events "session" "z-future" {^type "future/core" ^!ignorable})
+        ensure (close_runtime first))
+        (let pointer $"${root}/.gene-harness/events/CURRENT")
+        (let before ($fs/read_text pointer))
+        (let error (try (open_runtime root "default" profile ^mode "doctor") "accepted" catch Any $err/message))
+        ($assert ($str/contains? error "unknown required core event") error)
+        ($assert (== ($fs/read_text pointer) before) "Refused catalog startup changed the event checkpoint.")
+        (let events (open_event_store $"${root}/.gene-harness/events"))
+        (try
+          ($assert (== ($size ($filter (events_for events "session" "a")
+            (fn [event] (== event/type "turn/end")))) 0))
+        ensure (close_event_store events)))))
+
+  (it "keeps cancellation reasons and repairs calls outside rounds without opening an image host" []
+    (isolated this_mod/.path
+      "keeps cancellation reasons and repairs calls outside rounds without opening an image host"
+      (fn [root]
+        (let profile (Profile ^name "repair" ^plugins []))
+        (let first (open_runtime root "default" profile))
+        (try
+          (create_session first/sessions ^id "cancelled")
+          (record_core_state first/events "session" "cancelled" "round/state" "round"
+            {^id "cancelled-round" ^state "cancelled"})
+          (update_session first/sessions "cancelled" {^status "running"})
+          (append_core_event first/events "session" "cancelled"
+            {^type "turn/start" ^turn 1 ^round "cancelled-round"})
+          (append_core_event first/events "session" "default"
+            {^type "model/request" ^call "operator-review" ^turn 1 ^round "command:c1"
+             ^purpose "image/review" ^provider "unused" ^prepared {}})
+          (append_core_event first/events "session" "unindexed-boot"
+            {^type "model/request" ^call "boot-review" ^turn 1 ^round "command:c2"
+             ^purpose "image/review" ^provider "unused" ^prepared {}})
+        ensure (close_runtime first))
+        (let runtime (open_runtime root "unindexed-boot" profile ^mode "doctor"))
+        (try
+          ($assert ($absent? runtime/services/values/images))
+          (let endings ($filter (events_for runtime/events "session" "cancelled")
+            (fn [event] (== event/type "turn/end"))))
+          ($assert (== endings/.size 1))
+          ($assert (== endings/0/payload/reason "cancelled"))
+          (let outcomes ($filter (events_for runtime/events "session" "default")
+            (fn [event] (&& (== event/type "model/result") (== event/payload/call "operator-review")))))
+          ($assert (== outcomes/.size 1))
+          ($assert (== outcomes/0/payload/outcome "interrupted"))
+          ($assert (== outcomes/0/payload/final true))
+          ($assert ($absent? (runtime/sessions/index/.get .get "unindexed-boot")))
+          (let boot_results ($filter (events_for runtime/events "session" "unindexed-boot")
+            (fn [event] (&& (== event/type "model/result") (== event/payload/call "boot-review")))))
+          ($assert (== boot_results/.size 1))
+          ($assert (== boot_results/0/payload/outcome "interrupted"))
+          ($assert (== boot_results/0/payload/final true))
+        ensure (close_runtime runtime))))))
+
+(describe "Receipt authority during kernel recovery"
+  (it "repairs stale listing status in both directions without interrupting a completed receipt" []
+    (isolated this_mod/.path
+      "repairs stale listing status in both directions without interrupting a completed receipt"
+      (fn [root]
+        (let profile (Profile ^name "receipt-authority" ^plugins []))
+        (let first (open_runtime root "default" profile))
+        (try
+          (for id in ["running" "completed"] (create_session first/sessions ^id id))
+          (record_core_state first/events "session" "running" "round/state" "round"
+            {^id "active-receipt" ^state "running"})
+          (append_core_event first/events "session" "running"
+            {^type "turn/start" ^round "active-receipt" ^turn 1})
+          (record_core_state first/events "session" "completed" "round/state" "round"
+            {^id "done-receipt" ^state "done"})
+          (update_session first/sessions "completed" {^status "running"})
+        ensure (close_runtime first))
+        (let runtime (open_runtime root "default" profile ^mode "doctor"))
+        (try
+          ($assert (== (runtime/sessions/index/.get .get "running"; .get "status") "interrupted"))
+          ($assert (== (runtime/sessions/index/.get .get "completed"; .get "status") "done"))
+          ($assert (== ($size ($filter (events_for runtime/events "session" "completed")
+            (fn [event] (== event/type "turn/end")))) 0))
+        ensure (close_runtime runtime))))))
+
+(fn main [args] : Int (run_spec args))

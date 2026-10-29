@@ -74,7 +74,7 @@ the selected participant, phase, context and private state. That frame admits
 one invocation and expires after the callback joins. Reading a callable through
 registry introspection does not admit another phase or extend its lifetime.
 
-## Failure and compatibility rules
+## Failure policy
 
 A mandatory callback error, timeout or panic aborts the round. It does not
 become an optional-hook warning or another model iteration. Expected rejection
@@ -106,10 +106,11 @@ reported as a failure with its participant and phase, with no automatic retry.
 Every allocated turn has an unambiguous terminal record, and cleanup failures
 must not be presented as an ordinary successful round.
 
-Existing model-visible `audio_reply`, `wait`, `result` and `wake_on_questions`
-remain accepted during this additive batch. Their eventual retirement follows
-batch 6's interface policy. New fields use `Outcome ^extensions {...}` with
-owned, schema-checked keys; no unvalidated property bag is accepted.
+The model-visible `audio_reply`, `wait`, `result` and `wake_on_questions` are
+declared short spellings of host-owned extension rows. The leased `Outcome`
+constructor translates them into owned keys before validation; the core type
+has no feature-specific fields. Other extensions use `Outcome ^extensions
+{...}` with owned, schema-checked keys.
 
 ## Ownership
 
@@ -121,8 +122,8 @@ never passed to a different participant.
 
 Initiator kinds are owned rows with matching/validation policy and explicit
 operator-versus-automated behavior. The round controller keeps admission,
-sequence handling, cancellation and durable round identity. Slack's existing
-initiator spelling remains readable, including continuations and old receipts.
+sequence handling, cancellation and durable round identity. Slack's initiator
+row owns its route spelling and continuation policy.
 
 ## Public registration
 
@@ -130,7 +131,7 @@ Require the registries used by a plugin, for example
 `^requires [{^registry "turn_participants"} {^registry "outcome_extensions"}]`.
 Contribute through the ordinary PluginHost API. Every name is `OWNER/NAME`;
 `OWNER` is the contributing plugin's id. Duplicates and namespace claims for
-another owner fail registration. Host aliases, record annotations and the
+another owner fail registration. Declared short spellings, record annotations and the
 round-limit boundary are reserved to native adapters.
 
 All participant callbacks take `[context state value]`. `state` is a mutable
@@ -189,7 +190,14 @@ The participant's commit callback can persist it with PluginHost state or an
 owned durable receipt. Omitted fields require no write. Plugins should explain
 their optional fields in their prompt/docs contributions so the model knows
 when to supply them. Unknown keys, malformed containers and unvalidated bags
-are refused. Checked extension data survives optional audio normalization.
+are refused.
+
+A schema may return `{^value value ^suspend true}` to admit suspension without a
+continuation prompt. The checked Outcome records the owning extension key;
+exactly one key may request suspension. Its participant must handle that
+suspension during commit. The schema owns feature-specific restrictions, such
+as delegation wait refusing `done`, questions or a collection turn. Construction,
+schema validation and participant dispatch all use the same composition lease.
 
 For example, inside the same plugin activation:
 
@@ -209,9 +217,11 @@ doing external work keeps its own durable intent/result receipt rather than
 relying on replay of this callback after a crash.
 
 The host currently owns `voice/audio_reply`, `delegation/wait`,
-`delegation/result` and `delegation/wake_on_questions`. Their older top-level
-spellings remain accepted under the compatibility interval. Supplying both a
-canonical field and its older spelling in one Outcome is rejected.
+`delegation/result` and `delegation/wake_on_questions`. Each row declares its
+top-level spelling with `alias`: `audio_reply`, `wait`, `result` or
+`wake_on_questions`. These are permanent row features reserved to host-owned
+rows. Supplying both a canonical key and its declared short spelling in one
+Outcome is rejected.
 
 ## Initiator policies
 
@@ -227,14 +237,10 @@ adapter registers `slack/channel` independently of transport activation so
 already queued work retains its validation path. The round controller uses the
 selected row and stores `initiator_kind` and `operator` in the admitted receipt.
 An existing round retains that policy through source disable/replacement;
-claimed continuations retain their already-admitted plugin metadata. Old
-receipts without explicit policy use the historical reader.
+claimed continuations retain their already-admitted plugin metadata. Receipts
+without an explicit operator flag are non-operator.
 
-## Implementation and qualification order
-
-Delegation migrated first, followed by card bindings/progress. Both passed the
-new internal interface and production integration checks before public
-participant and extension registration was enabled.
+## Qualification
 
 Qualification covers phase ordering, one leased selection through replacement,
 mandatory failure at each phase, invalid Outcome staging, partial begin,

@@ -2,7 +2,7 @@
 
 (type CompositionSnapshot ^props {^id Int ^registries Any ^instances Any ^plugins Any? ^registry_owners Any?})
 (type SnapshotLease ^props {^snapshot CompositionSnapshot ^counter Any ^closed Any})
-(type CompositionState ^props {^current Any ^next_id Any ^snapshots Any ^counts Any ^pending Any ^retiring Any ^retire Any ^closed Any ^closing Any ^publishing Any ^mutating Any ^on_publish Any?})
+(type CompositionState ^props {^current Any ^next_id Any ^snapshots Any ^counts Any ^pending Any ^retiring Any ^retire Any ^closed Any ^closing Any ^publishing Any ^mutating Any ^publications Any ^publication_gate Any})
 (type CompositionClosed ^props {^message Str} ^impl [Error])
 (impl Error for CompositionClosed)
 
@@ -35,7 +35,25 @@
   (snapshots .put "0" snapshot)
   (let counts {})
   (counts .put "0" ($atomic_cell 0))
-  (CompositionState ^current ($cell snapshot) ^next_id ($cell 1) ^snapshots ($cell snapshots) ^counts ($cell counts) ^pending ($cell []) ^retiring ($cell []) ^retire retire ^closed ($cell false) ^closing ($cell false) ^publishing ($sync/gate) ^mutating ($sync/gate)))
+  (CompositionState ^current ($cell snapshot) ^next_id ($cell 1) ^snapshots ($cell snapshots) ^counts ($cell counts) ^pending ($cell []) ^retiring ($cell []) ^retire retire ^closed ($cell false) ^closing ($cell false) ^publishing ($sync/gate) ^mutating ($sync/gate)
+    ^publications ($cell []) ^publication_gate ($sync/gate)))
+
+(type PublicationSubscription ^^private ^props {^rows Any ^gate Any ^token Any ^active Any}
+  (message cancel [] : Nil
+    (self/active .set false)
+    (self/gate (fn []
+      (self/rows .set ($filter self/rows/.get (fn [row] (! (same? row/token self/token)))))))
+    nil))
+
+(fn subscribe_publications [state : CompositionState, callback]
+  (require_open state)
+  (let token ($cell nil))
+  (let active ($cell true))
+  (state/publication_gate (fn []
+    (require_open state)
+    (state/publications/.get .push {^token token ^active active ^callback callback})))
+  (PublicationSubscription ^rows state/publications ^gate state/publication_gate
+    ^token token ^active active))
 
 (fn run_composition_change [state : CompositionState, change]
   (require_open state)
@@ -151,8 +169,13 @@
   (state/counts/.get .put ($to_str id) ($atomic_cell 0))
   # Publication itself is one native Cell operation and cannot yield.
   (state/current .set snapshot)
-  (if_not ($absent? state/on_publish) (state/on_publish previous snapshot))
+  (let listeners (state/publication_gate (fn [] ($into state/publications/.get []))))
+  (let failures [])
+  (for listener in listeners
+    (if_not listener/active/.get (continue))
+    (try (listener/callback previous snapshot) catch Any (failures .push $err)))
   (drain_retirements state)
+  (if_not failures/.empty? (fail failures/0))
   snapshot)
 
 (fn instance_is_leased? [state : CompositionState, instance] : Bool
@@ -215,4 +238,7 @@
   (state/snapshots .set {})
   (state/counts .set {})
   (state/closed .set true)
+  (state/publication_gate (fn []
+    (for listener in state/publications/.get (listener/active .set false))
+    (state/publications .set [])))
   nil)

@@ -11,7 +11,7 @@
 
 (fn inbox_host [handle]
   (let selected (gate (fn []
-    (for record in hosts/.get (if (same? record/token handle/token) (return record/h)))
+    (for record in hosts/.get (if (same? record/token handle/token) (return record/runtime)))
     nil)))
   (if_not ($absent? selected) (return selected))
   (notification_error "unavailable" "The operator inbox is closed."))
@@ -19,21 +19,23 @@
 (type HostedNotifications ^^private ^props {^token Any}
   (impl NotificationHost
     (message post [message] : Any
-      (immutable_view (safe_publish (inbox_host self) "operator" message)))
+      (let runtime (inbox_host self))
+      (immutable_view (safe_publish runtime/h runtime/services/values/inbox "operator" message)))
     (message update [id : Str, changes] : Any
-      (immutable_view (update_notification (inbox_host self) "operator" id changes)))
+      (let runtime (inbox_host self))
+      (immutable_view (update_notification runtime/h runtime/services/values/inbox "operator" id changes)))
     (message list [] : Any
-      (immutable_view (inbox_snapshot (/services/notifications (inbox_host self)))))
+      (immutable_view (inbox_snapshot (/services/values/inbox (inbox_host self)))))
     (message detail [id : Str] : Any
-      (immutable_view (message_detail (/services/notifications (inbox_host self)) id)))
+      (immutable_view (message_detail (/services/values/inbox (inbox_host self)) id)))
     (message clear [id : Str, revision : Int] : Any
-      (immutable_view (clear_messages (/services/notifications (inbox_host self)) [{^id id ^revision revision}])))))
+      (immutable_view (clear_messages (/services/values/inbox (inbox_host self)) [{^id id ^revision revision}])))))
 
-(fn open_notification_host [h]
+(fn open_notification_host [runtime]
   (let token ($cell nil))
-  (gate (fn [] (hosts/.get .push {^token token ^h h})))
+  (gate (fn [] (hosts/.get .push {^token token ^runtime runtime})))
   ($freeze_shallow (HostedNotifications ^token token)))
 
-(fn close_notification_host [h]
-  (gate (fn [] (hosts .set ($filter hosts/.get (fn [record] (! (same? record/h h)))))))
+(fn close_notification_host [runtime]
+  (gate (fn [] (hosts .set ($filter hosts/.get (fn [record] (! (same? record/runtime runtime)))))))
   nil)

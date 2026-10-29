@@ -1,9 +1,10 @@
+(import [test_controller] ^from "../../support.gene")
 (import $test [describe it])
 (import [isolated run_spec] ^from "../../support")
 (import [image_fixture review] ^from "../../fixtures/image")
 (import [png] ^from "../../fixtures/png")
 (import [close_runtime] ^from "../../../src/runtime/bootstrap")
-(import [new_round_controller submit_round round_receipt close_round_controller]
+(import [submit_round round_receipt close_round_controller]
   ^from "../../../src/runtime/round_controller")
 (import [events_for] ^from "../../../src/storage/state")
 (import [read_image_run image_catalog recall_image_run] ^from "../../../src/storage/image_runs")
@@ -23,12 +24,12 @@
             "(image_generate \"A Gene logo.\") (Outcome ^^done ^reply \"Premature.\")"
             "(image_generate \"A Gene logo.\") (Outcome ^^done ^reply \"Here is the finished image.\")")))
         (var fixture (image_fixture workspace [(review 72) (review 86)] ^main_reply main))
-        (let controller (new_round_controller fixture/runtime))
+        (let controller (test_controller fixture/runtime nil))
         (var saved nil)
         (var round nil)
         (try
           (set round (submit_round controller "default" "image-e2e" 1 "Create a Gene logo."))
-          (controller/watchers .get; .get "default"; .join)
+          ((/watcher (controller/rounds/.get .get "default")) .join)
           (let receipt (round_receipt controller "default" round/id))
           ($assert (== receipt/state "done") $"Image round failed: ${receipt}")
           ($assert (== calls/.get/.size 2) "Final preview did not reach the main model exactly once.")

@@ -1,4 +1,5 @@
 (mod voice_glue ^profile web)
+(import [storage_get storage_set storage_remove] ^from "./workspace_storage.gene")
 (import [Client] ^from "./workspace_model.gene")
 (import [RoundClient create_rounds dispatch_round recover_round forget_round configure_rounds] ^from "./round_client.gene")
 (import [items : launcher_items] ^from "../src/common/launcher.gene")
@@ -66,24 +67,24 @@
 
 (fn reviewed_voice_input [client : Client, session : Str, value : Str] : Any
   (var key (voice_review_key client session))
-  (var saved (?? ($session_storage/get key) ""))
+  (var saved (?? (storage_get key) ""))
   (if_yes (== saved "") (return nil))
   (try
     (var review : Any ($json/parse saved))
     (if_yes (&& (!= (string_or review/text "") "") (!= (str/trim value) ""))
       (return review/input))
     catch Any nil)
-  ($session_storage/remove key)
+  (storage_remove key)
   nil)
 
 (fn voice_review [client : Client, session : Str, value : Str, input : Any] : Bool
   (if_yes (|| (== session "") client/sending (! ($absent? client/pending))) (return false))
   (var previous (if (== session client/selected) ($dom/input_value client/prompt)
-    (?? ($session_storage/get (draft_key session)) "")))
+    (?? (storage_get (draft_key session)) "")))
   (var combined ($to_str previous (if (== previous "") "" "\n\n") value))
-  (if_yes (! ($session_storage/set (voice_review_key client session)
+  (if_yes (! (storage_set (voice_review_key client session)
     ($json/stringify {^text value ^input input}))) (return false))
-  (if_yes (! ($session_storage/set (draft_key session) combined)) (return false))
+  (if_yes (! (storage_set (draft_key session) combined)) (return false))
   (if_yes (== session client/selected)
     ($dom/set_input_value client/prompt combined)
     (notice client "Voice text appended for review. Edit freely; Enter sends text only. Clear the composer to return to typed input. Attachments stay in your draft.")
@@ -109,13 +110,13 @@
         (var session (string_or envelope/session ""))
         (apply_run client session receipt)
         (var key (voice_review_key client session))
-        (if_yes (!= (?? ($session_storage/get key) "") "")
-          ($session_storage/remove key)
+        (if_yes (!= (?? (storage_get key) "") "")
+          (storage_remove key)
           (if (== session client/selected)
             (if_yes (== (string_or envelope/text "") ($dom/input_value client/prompt))
               ($dom/set_input_value client/prompt "") (remember_draft client))
-            (if_yes (== (?? ($session_storage/get (draft_key session)) "") (string_or envelope/text ""))
-              ($session_storage/remove (draft_key session)))))
+            (if_yes (== (?? (storage_get (draft_key session)) "") (string_or envelope/text ""))
+              (storage_remove (draft_key session)))))
         (browser_event client "voice/admitted" session receipt))))
   ($dom/add_event_listener ($dom/element "voice_receipt_recover") "click"
     (fn [event : Any] : Void

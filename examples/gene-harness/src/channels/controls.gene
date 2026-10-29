@@ -62,7 +62,7 @@
     control)))
 
 (fn apply_control [service, message, authorize]
-  (let queues service/runtime/channel_queues)
+  (let queues service/runtime/services/values/channel_queues)
   (let initial (snapshot queues))
   (let binding (initial/bindings .get (binding_key message)))
   (if ($absent? binding) (return {^status "ignored" ^reason "unbound_thread"}))
@@ -159,6 +159,6 @@
   (if (&& (["stop" "replace-paused"] .contains? outcome/command/name)
           (["ok" "replaced"] .contains? outcome/result/code)
           (! ($absent? outcome/target)))
-    (close_delegation_owner service/runtime/delegations binding/session
+    (close_delegation_owner service/runtime/services/values/delegations binding/session
       (?? outcome/result/round outcome/target) "The parent round was cancelled."))
   outcome)

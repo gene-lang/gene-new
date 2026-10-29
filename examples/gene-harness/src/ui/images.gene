@@ -1,5 +1,6 @@
 # Workspace-only image URLs and inert, bounded image delivery.
 (mod workspace_images)
+(import [api_root] ^from "../web/contract.gene")
 (import $io [AsyncReader IoResource])
 (import ^from "." ^pkg "documents" [inspect_bytes])
 
@@ -19,7 +20,7 @@
   path)
 
 (fn image_source [path]
-  $"/api/v8/ui/image?path=${($url/encode_component (image_path path))}")
+  $"${(api_root)}/ui/image?path=${($url/encode_component (image_path path))}")
 
 (fn safe_svg [text]
   # A small inert SVG subset. No entities, namespaces beyond SVG, CSS, event

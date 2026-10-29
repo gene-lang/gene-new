@@ -43,7 +43,7 @@
           (let runtime (open_runtime root "default" (baseline_profile)))
           (let controller (recovery_controller runtime))
           (try
-            (let blocks (delegation_blocks runtime/delegations "default"))
+            (let blocks (delegation_blocks runtime/services/values/delegations "default"))
             ($assert (== blocks/records/.size 2))
             ($assert (!= blocks/records/0/source blocks/records/1/source))
             (for child in blocks/records
@@ -69,14 +69,14 @@
                     ($sleep 75)
                     ($assert (== (model_counts root) before) "A recovery hold admitted new model work.")
                     (let owner (owner_receipt controller))
-                    (delegation_recovery runtime/delegations "default" owner/id "continue"))
+                    (delegation_recovery runtime/services/values/delegations "default" owner/id "continue"))
                   (else ($assert ($absent? blocks/recovery) $"${point}: a never-started queue was held.")))))
             (wait_for (fn [] (let current (owner_receipt controller)) (== current/state "done"))
-              $"${point}: parent did not collect results; ${runtime/delegations/last_error}")
+              $"${point}: parent did not collect results; ${runtime/services/values/delegations/last_error}")
             (let counts (model_counts root))
             ($assert (<= counts/a 1) $"${point}: first child replayed.")
             ($assert (<= counts/b 1) $"${point}: second child replayed.")
-            (let final (delegation_blocks runtime/delegations "default"))
+            (let final (delegation_blocks runtime/services/values/delegations "default"))
             (for child in final/records ($assert child/seen $"${point}: result was not delivered."))
           ensure
             (close_round_controller controller)
@@ -92,12 +92,12 @@
         (let controller (recovery_controller runtime))
         (try
           (let owner (owner_receipt controller))
-          (delegation_recovery runtime/delegations "default" owner/id "cancel")
+          (delegation_recovery runtime/services/values/delegations "default" owner/id "cancel")
           ($sleep 75)
           (let cancelled (owner_receipt controller))
           ($assert (== cancelled/state "cancelled"))
           ($assert (== (model_counts workspace) before))
-          (let blocks (delegation_blocks runtime/delegations "default"))
+          (let blocks (delegation_blocks runtime/services/values/delegations "default"))
           ($assert ($absent? blocks/recovery))
           (for child in blocks/records
             ($assert (["interrupted" "cancelled"] .contains? child/state)))

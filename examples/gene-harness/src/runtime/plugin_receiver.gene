@@ -1,32 +1,18 @@
 # Version-3 receiver: one opaque token, with private activation-owned delegates.
-(mod public_plugin_host)
+(mod plugin_receiver)
 (import [PluginHost DurableRecord ServiceError] ^from "../plugin_api")
 (import [freeze_turn_data] ^from "./turn_data")
+(import [new_handle_table lookup_handle intern_handle revoke_handle] ^from "./handle_table")
 
-(var records ^^private ($cell []))
-(var gate ^^private ($sync/gate))
+(var records ^^private (new_handle_table))
 
 (fn host_record [token, ^required required : Bool = true]
-  (let found (gate (fn []
-    (for record in records/.get (if (same? record/token token) (return record)))
-    nil)))
+  (let found (lookup_handle records token))
   (if (&& required ($absent? found))
     (fail (ServiceError ^code "unavailable" ^message "This plugin activation has retired.")))
   found)
 
 (fn delegate [receiver] (/host (host_record receiver/token)))
-
-(fn retired_seam? [name] (["loop" "voice/runtime"] .contains? name))
-
-(fn require_public_seam [name]
-  (if (retired_seam? name)
-    (fail (ServiceError ^code "unsupported_interface"
-      ^message $"PluginHost:3 does not provide ${name}; resolve a narrow host protocol."))))
-
-(fn require_public_registry [name, payload = nil]
-  (if (== name "views")
-    (fail (ServiceError ^code "unsupported_interface" ^message "The terminal views registry is retired.")))
-  (if (== name "seams") (require_public_seam payload/name)))
 
 (fn public_row [host, registry : Str, row]
   (if ($absent? row) (return nil))
@@ -57,45 +43,31 @@
       (let host (delegate self)) (host .PluginHost:defer cleanup))
     (message registry_names [] : Any
       (let host (delegate self))
-      ($freeze_shallow ($filter host/.PluginHost:registry_names (fn [name] (!= name "views")))))
+      ($freeze_shallow host/.PluginHost:registry_names))
     (message row_keys [registry : Str] : Any
-      (require_public_registry registry)
       (let host (delegate self))
       (let keys (host .PluginHost:row_keys registry))
-      (if (== registry "seams")
-        ($freeze_shallow ($filter keys (fn [key] (! (retired_seam? key)))))
-        ($freeze_shallow keys)))
+      ($freeze_shallow keys))
     (message rows [registry : Str] : Any
-      (require_public_registry registry)
       (let host (delegate self))
       (let rows (host .PluginHost:rows registry))
-      (let selected (if (== registry "seams")
-        ($filter rows (fn [row] (! (retired_seam? row/name)))) rows))
-      ($freeze_shallow ($map selected (fn [row] (public_row host registry row)))))
+      ($freeze_shallow ($map rows (fn [row] (public_row host registry row)))))
     (message row [registry : Str, key : Str] : Any
-      (require_public_registry registry)
-      (if (&& (== registry "seams") (retired_seam? key)) (return nil))
       (let host (delegate self))
       (public_row host registry (host .PluginHost:row registry key)))
     (message run_hooks [point : Str, context] : Any
       (let host (delegate self)) (host .PluginHost:run_hooks point context))
     (message create_registry [spec] : Any
-      (require_public_registry spec/name)
       (let host (delegate self)) (host .PluginHost:create_registry spec))
     (message resolve [seam : Str] : Any
-      (require_public_seam seam)
       (let host (delegate self)) (host .PluginHost:resolve seam))
     (message provide [seam : Str, value] : Str
-      (require_public_seam seam)
       (let host (delegate self)) (host .PluginHost:provide seam value))
     (message replace [seam : Str, value] : Str
-      (require_public_seam seam)
       (let host (delegate self)) (host .PluginHost:replace seam value))
     (message contribute [registry : Str, payload] : Str
-      (require_public_registry registry payload)
       (let host (delegate self)) (host .PluginHost:contribute registry payload))
     (message replace_contribution [registry : Str, payload] : Str
-      (require_public_registry registry payload)
       (let host (delegate self)) (host .PluginHost:replace_contribution registry payload))
     (message subscribe [selector, handler] : Any
       (if (!= selector DurableRecord)
@@ -123,12 +95,13 @@
     (message notification_clear [id : Str, revision : Int] : Any
       (let host (delegate self)) (host .PluginHost:notification_clear id revision))))
 
-(fn make_public_host [host]
+(fn make_plugin_receiver [host]
   (let token ($cell nil))
-  (gate (fn [] (records/.get .push {^token token ^host host ^subscriptions {}})))
+  (intern_handle records {^token token ^host host ^subscriptions {}}
+    (fn [record] (same? record/token token)))
   ($freeze_shallow (PublicPluginHost ^token token)))
 
-(fn revoke_public_host [receiver]
+(fn revoke_plugin_receiver [receiver]
   (if (!= ($head receiver) PublicPluginHost) (return nil))
-  (gate (fn [] (records .set ($filter records/.get (fn [record] (! (same? record/token receiver/token)))))))
+  (revoke_handle records receiver/token)
   nil)

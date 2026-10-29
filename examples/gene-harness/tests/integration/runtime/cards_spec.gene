@@ -10,7 +10,7 @@
   ^from "../../../src/runtime/cards")
 (import [core_state record_core_state flush_event_store] ^from "../../../src/storage/state")
 (import [contribute] ^from "../../../src/kernel")
-(import [show_card] ^from "../../../src/plugin_api")
+(import [show_card] ^from "../../../src/public/response")
 (import [define_card action_meta] ^from "../../../src/runtime/cards")
 (import [CommandResult] ^from "../../../src/plugin_api")
 (import [record_text] ^from "../../../src/cli/main")
@@ -24,7 +24,7 @@
     responses/%index))
 
 (fn finish [controller, id : Str]
-  (controller/watchers/.get .get "default"; .join)
+  ((/watcher (controller/rounds/.get .get "default")) .join)
   (round_receipt controller "default" id))
 
 (let renames_card """(card "renames" ^title "Proposed renames"

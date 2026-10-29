@@ -1,5 +1,6 @@
 # Panel state, browser storage and control availability.
 (mod harness_ui_model ^profile web)
+(import [storage_get storage_set] ^from "../workspace_storage.gene")
 (import ^from "../notices.gene" [Notices put_notice])
 (import [Sidebar] ^from "../sidebar.gene")
 
@@ -61,7 +62,7 @@
     (var saved {^state ui/state ^drafts ui/drafts ^forms ui/forms
       ^focus ui/navigation/focus ^scroll ($to_int ui/navigation/scroll)})
     (set ui/navigation/snapshots/%key (copy_map saved))
-    (if ($session_storage/set key ($json/stringify saved))
+    (if (storage_set key ($json/stringify saved))
       (notice ^key "storage" ^origin origin ui "")
       (notice ^key "storage" ^origin origin ^^sticky ^severity "error"
         ui
@@ -70,12 +71,12 @@
 (fn saved_view [ui : UiClient, key : Str] : PropMap
   (var memory : Any ui/navigation/snapshots/%key)
   (if_not ($absent? memory) (return (copy_map memory)))
-  (var raw (?? ($session_storage/get key) ""))
+  (var raw (?? (storage_get key) ""))
   (if_yes (== raw "") (return {}))
   (try (copy_map ($json/parse raw)) catch Any {}))
 
 (fn persist_pending [ui : UiClient] : Bool
-  ($session_storage/set (pending_key ui) ($json/stringify ui/pending)))
+  (storage_set (pending_key ui) ($json/stringify ui/pending)))
 
 (fn field_value [node : UiNode] : Any
   (if_yes (== (text node/props/type) "checkbox")
@@ -105,13 +106,12 @@
   (var retry_button ($dom/element "ui_retry"))
   (set retry_button/hidden (! ui/render_error))
   (set retry_button/disabled (|| (! ui/ready) ui/loading))
-  (var legacy (&& (! ($absent? ui/pending)) (!= (text ui/pending/format) "2")))
-  (set resolve_button/hidden (|| ($absent? ui/pending) legacy))
+  (set resolve_button/hidden ($absent? ui/pending))
   (set resolve_button/disabled (|| (! ui/ready) ui/resolving))
-  (set cancel_button/hidden (|| ($absent? ui/pending) legacy (== (text ui/pending/command_id) "")))
+  (set cancel_button/hidden (|| ($absent? ui/pending) (== (text ui/pending/command_id) "")))
   (set cancel_button/disabled (! ui/ready))
   (var dismiss ($dom/element "ui_dismiss_pending"))
-  (set dismiss/hidden (|| ($absent? ui/pending) (! (|| legacy (flag ui/pending/unknown)))))
+  (set dismiss/hidden (|| ($absent? ui/pending) (! (flag ui/pending/unknown))))
   (var owner (text ui/pending/request/component "previous view"))
   ($dom/set_text ($dom/element "ui_pending_owner")
     (if ($absent? ui/pending) "" $"Pending action · ${owner}")))
@@ -153,7 +153,7 @@
   (set saved/drafts drafts)
   (set saved/forms forms)
   (set ui/navigation/snapshots/%key saved)
-  (if_not ($session_storage/set key ($json/stringify saved))
+  (if_not (storage_set key ($json/stringify saved))
     (notice ^key "storage" ^^sticky ^severity "error" ui "Saved, but draft recovery storage could not be updated. Keep this page open."))
   (if_yes active
     (set ui/state state)

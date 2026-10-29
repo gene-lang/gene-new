@@ -1,18 +1,20 @@
 (mod image_service)
-(import [ImageHost ImageError ExecutionLimits append_prompt] ^from "../plugin_api")
+(import [ImageHost ImageError ExecutionLimits] ^from "../plugin_api")
+(import [append_prompt] ^from "../public/response")
 (import [execution_origin execution_owner execution_budget register_execution_finalizer] ^from "./execution_budget")
 (import [supervised_call] ^from "./call_supervision")
-(import [image_error normalize_image_request image_usage parse_image_review] ^from "./image_contract")
+(import [image_error normalize_image_request image_usage parse_image_review] ^from "../public/image_contract")
 (import [prepare_image_run plugin_identity] ^from "./image_preflight")
-(import [read_image_run save_image_run image_runs] ^from "../storage/image_runs")
-(import [open_media_store reserve_media release_media_reservation recover_media_reservations
-         generated_media media_descriptor media_record media_bytes put_media MediaError] ^from "../storage/media")
+(import [read_image_run save_image_run] ^from "../storage/image_runs")
+(import [reconcile_image_candidates reconcile_image_calls record_image_usage] ^from "../storage/image_recovery")
+(import [open_media_store reserve_media release_media_reservation
+         media_descriptor media_record media_bytes put_media MediaError] ^from "../storage/media")
 (import [inspect_generated_png ImageInspectionError] ^from "../storage/image_inspection")
-(import [append_core_event flush_event_store events_for repair_interrupted_turns] ^from "../storage/state")
-(import [call_model record_request record_result load_part] ^from "../agents/model_call")
+(import [append_core_event flush_event_store events_for] ^from "../storage/state")
+(import [call_model record_request record_result] ^from "../agents/model_call")
 (import [safe_error] ^from "../agents/model_recording")
 (import [attach_media] ^from "./media_host")
-(import [byte_prefix] ^from "../text")
+(import [byte_prefix] ^from "../public/text")
 
 (var ^^private services ($cell []))
 
@@ -86,23 +88,6 @@
   (flush_event_store service/runtime/events)
   nil)
 
-(fn reconcile_images [service, state] ^^private
-  (for image in (generated_media service/store ^run state/id)
-    (var attempt nil)
-    (for entry in state/attempts
-      (if (== entry/number image/generation/attempt) (set attempt entry)))
-    (if ($absent? attempt)
-      (then
-        (set attempt {^number image/generation/attempt ^state "interrupted"
-          ^image_id nil ^review nil ^review_status "unreviewed" ^repair_used false})
-        (state/attempts .push attempt)))
-    (if (|| ($absent? attempt/image_id) (!= attempt/image_id image/id))
-      (then
-        (attempt .put "image_id" image/id)
-        (attempt .put "review" nil)
-        (attempt .put "review_status" "unreviewed"))))
-  state)
-
 (fn publish_result [service, live] ^^private
   (if live/published (return nil))
   (live .put "published" true)
@@ -115,34 +100,6 @@
     (attach_media service/runtime result/image_id))
   (append_prompt "image" result)
   nil)
-
-(fn reconcile_calls [service, state] ^^private
-  # An outcome may have been flushed just before its run checkpoint was lost.
-  # Restore only calls whose IDs were admitted durably for this attempt.
-  (let calls {})
-  (for attempt in state/attempts
-    (for [field role] in {^generation_call "generation" ^review_call "review" ^repair_call "repair"}
-      (let id (attempt .get field))
-      (if_not ($absent? id) (calls .put id {^attempt attempt ^role role}))))
-  (for event in (events_for service/runtime/events "session" state/session)
-    (let payload event/payload)
-    (if (|| (!= event/type "model/result") (!= payload/final true)) (continue))
-    (let known (calls .get payload/call))
-    (if ($absent? known) (continue))
-    (record_usage {^state state} known/role payload/call
-      (load_part service/runtime payload/usage) ^attempt known/attempt/number)
-    (known/attempt .put $"${known/role}_outcome" payload/outcome)
-    (if_yes (&& (!= known/role "generation") (== payload/outcome "ok")
-            (! ($absent? known/attempt/image_id)) ($absent? known/attempt/review))
-      (let output (load_part service/runtime payload/output))
-      (if_yes (== ($head output) Str)
-        (let parsed (parse_image_review output))
-        (if parsed/valid
-          (then
-            (known/attempt .put "review" parsed/review)
-            (known/attempt .put "review_status" "reviewed")
-            (known/attempt .put "state" "reviewed"))))))
-  state)
 
 (fn settle_open_calls [service, live] ^^private
   (let pending {})
@@ -164,9 +121,9 @@
     (then
       (if publish (publish_result service live))
       (return (image_result service live/state))))
-  (reconcile_images service live/state)
+  (reconcile_image_candidates service/store live/state)
   (settle_open_calls service live)
-  (reconcile_calls service live/state)
+  (reconcile_image_calls service/runtime live/state)
   (if_not ($absent? live/reservation)
     (release_media_reservation service/store live/reservation)
     (live .put "reservation" nil))
@@ -325,15 +282,6 @@
     (if live/busy (image_error "run_busy" "An image operation is already in progress."))
     (live .put "busy" true))))
 
-(fn record_usage [live, purpose : Str, call_id, usage, ^attempt attempt = nil] ^^private
-  (for item in live/state/usage
-    (if (== item/call_id call_id)
-      (then
-        (if_not ($absent? usage) (item .put "usage" (image_usage usage)))
-        (return nil))))
-  (live/state/usage .push {^purpose purpose ^call_id call_id
-    ^attempt (?? attempt live/state/attempts/.size) ^usage (image_usage usage)}))
-
 (fn generate_image [service, id : Str, instructions : Str] ^^private
   (let live (current_run service id))
   (if (== live/state/state "finished") (return (image_result service live/state ^reused true)))
@@ -439,7 +387,7 @@
         ^usage live/pending_usage
         ^error (if outcome/ok nil
           (?? outcome/message $"Image ${live/stage} failed (${outcome/code})."))))
-    (record_usage live "generation" call_id live/pending_usage)
+    (record_image_usage live/state "generation" call_id live/pending_usage)
     (if_not outcome/ok
       (return (phase_failure service live outcome
         (if (== live/stage "storage") "storage_failed" "generation_failed"))))
@@ -513,7 +461,7 @@
         ^selected selected ^call_id call_id ^!retry_timeouts))))
     (if_not outcome/ok (return (phase_failure service live outcome "review_failed")))
     (let response outcome/value)
-    (record_usage live (if repair "repair" "review") response/call_id response/usage)
+    (record_image_usage live/state (if repair "repair" "review") response/call_id response/usage)
     (let parsed (parse_image_review response/safe_text))
     (if_not parsed/valid
       (live .put "invalid_review" response/safe_text)
@@ -543,18 +491,6 @@
     ^store (if ($absent? media_store) (open_media_store runtime/state_root) media_store)})
   (services/.get .push service)
   (HostedImages ^token service/token))
-
-(fn recover_image_host [handle]
-  (let service (service_record handle))
-  (recover_media_reservations service/store)
-  (for [session record] in service/runtime/sessions/index/.get
-    (repair_interrupted_turns service/runtime/events ^session ($to_str session))
-    (for state in (image_runs service/runtime ($to_str session))
-      (if (== state/state "running")
-        (finish_run service {^state state ^reservation nil ^published false}
-          "cancelled" ^!publish ^detail {^stage "execution" ^code "interrupted"
-            ^message "Host stopped before the image run completed; no calls were replayed."}))))
-  nil)
 
 (fn close_image_host [handle]
   (let service (service_record handle))

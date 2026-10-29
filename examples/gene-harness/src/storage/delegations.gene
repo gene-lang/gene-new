@@ -2,7 +2,7 @@
 (import [core_state core_states record_core_state flush_event_store copy_data] ^from "./state")
 (import [write_body read_body] ^from "../agents/history")
 (import [delegation_descriptor terminal_delegation?] ^from "../runtime/delegation_contract")
-(import [byte_prefix] ^from "../text")
+(import [byte_prefix] ^from "../public/text")
 
 (fn empty_delegation_parent [session : Str]
   {^version 1 ^session session ^records {} ^rounds {} ^outbox {}})

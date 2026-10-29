@@ -5,22 +5,22 @@
 (import [submit_command command_receipt command_state take_command_attachments cancel_command]
   ^from "../../../src/runtime/commands")
 (import [mode_state submit_mode_input close_mode ModeError] ^from "../../../src/runtime/input_modes")
-(import [set_plugin_enabled] ^from "../../../src/storage/workspace")
+(import [set_plugin_enabled] ^from "../../../src/storage/workspace_repair")
 (import [recall_body] ^from "../../../src/agents/history")
 (import [row doc put_cordis_plugin] ^from "../../../src/kernel")
 (import [shell : shell_plugin] ^from "../../../src/builtin/shell")
 
 (fn command [service, session, text]
-  (let record (submit_command service/runtime/commands session text))
-  (service/runtime/commands/watchers/.get .get $"${session}:${record/id}"; .join)
-  (command_receipt service/runtime/commands session record/id))
+  (let record (submit_command service/runtime/services/values/commands session text))
+  (service/runtime/services/values/commands/watchers/.get .get $"${session}:${record/id}"; .join)
+  (command_receipt service/runtime/services/values/commands session record/id))
 
 (fn input [service, session, id, text]
-  (let mode (mode_state service/runtime/modes session))
-  (let record (submit_mode_input service/runtime/modes session mode/instance id text))
+  (let mode (mode_state service/runtime/services/values/commands/modes session))
+  (let record (submit_mode_input service/runtime/services/values/commands/modes session mode/instance id text))
   (if_not ($absent? record/id)
-    (service/runtime/commands/watchers/.get .get $"${session}:${record/id}"; .join)
-    (return (command_receipt service/runtime/commands session record/id)))
+    (service/runtime/services/values/commands/watchers/.get .get $"${session}:${record/id}"; .join)
+    (return (command_receipt service/runtime/services/values/commands session record/id)))
   record)
 
 (fn require_gone [pid]
@@ -43,10 +43,10 @@
           (let once (command service session/id "/sh printf 'one shot\\n'"))
           ($assert (&& (== once/status "done") (== once/exit 0)) once/display)
           ($assert ($str/contains? once/display "one shot\n"))
-          ($assert ($absent? (mode_state service/runtime/modes session/id)))
+          ($assert ($absent? (mode_state service/runtime/services/values/commands/modes session/id)))
           ($assert (== (take_command_attachments service/runtime session/id) []))
           ($assert (== (/status (command service session/id "/sh")) "done"))
-          ($assert (== (/name (mode_state service/runtime/modes session/id)) "sh"))
+          ($assert (== (/name (mode_state service/runtime/services/values/commands/modes session/id)) "sh"))
           (let setup (input service session/id "setup"
             "mkdir -p shell-work; cd shell-work; saved=41; export GENE_HARNESS_SHELL_TEST='hello world'"))
           ($assert (== setup/status "done") setup/display)
@@ -76,7 +76,7 @@
           ($assert (try (submit service session/id "blocked" 1 "chat") false
             catch ModeError (== $err/code "mode_open")))
           ($assert (/closed (input service session/id "exit" "exit")))
-          ($assert ($absent? (mode_state service/runtime/modes session/id)))
+          ($assert ($absent? (mode_state service/runtime/services/values/commands/modes session/id)))
           (command service session/id "/sh   ")
           ($assert ($str/contains? (/display (input service session/id "fresh" "pwd")) service/runtime/root))
           (let exited (input service session/id "explicit-exit" "exit 7"))
@@ -84,7 +84,7 @@
           ($assert ($str/contains? (/display (input service session/id "restart-shell" "printf fresh")) "fresh"))
           ($assert (/closed (input service session/id "quit" " quit ")))
           (submit service session/id "chat" 1 "hello")
-          (service/controller/watchers/.get .get session/id; .join)
+          ((/watcher (service/runtime/services/values/controller/rounds/.get .get session/id)) .join)
           ($assert (== calls/.get 1))
         ensure (close_session_service service)))))
 
@@ -109,14 +109,14 @@
           ($assert (/closed (input service a/id "leave" "quit")))
           (require_gone a_pid)
           (set_plugin_enabled service/runtime/workspace service/runtime/h "core_commands" false)
-          (for job in service/runtime/modes/jobs/.get job/.join)
-          ($assert (== (/name (mode_state service/runtime/modes b/id)) "sh")
+          (for job in service/runtime/services/values/commands/modes/jobs/.get job/.join)
+          ($assert (== (/name (mode_state service/runtime/services/values/commands/modes b/id)) "sh")
             "disabling core commands closed the independent shell")
           ($assert ($str/contains? (/display (input service b/id "after-core-disable" "printf '%s' \"$saved\"")) "right"))
           ($assert ($str/contains? (doc service/runtime/h "harness/shell") "Shell mode"))
           (set_plugin_enabled service/runtime/workspace service/runtime/h "shell" false)
-          (for job in service/runtime/modes/jobs/.get job/.join)
-          ($assert ($absent? (mode_state service/runtime/modes b/id)))
+          (for job in service/runtime/services/values/commands/modes/jobs/.get job/.join)
+          ($assert ($absent? (mode_state service/runtime/services/values/commands/modes b/id)))
           ($assert ($absent? (row service/runtime/h "commands" "sh")))
           ($assert ($absent? (row service/runtime/h "input_modes" "sh")))
           ($assert (try (doc service/runtime/h "harness/shell") false catch Any true))
@@ -137,8 +137,8 @@
         (try
           (let session (create_session service))
           (command service session/id "/sh")
-          (let previous (mode_state service/runtime/modes session/id))
-          (let busy (submit_mode_input service/runtime/modes session/id previous/instance "busy"
+          (let previous (mode_state service/runtime/services/values/commands/modes session/id))
+          (let busy (submit_mode_input service/runtime/services/values/commands/modes session/id previous/instance "busy"
             "saved=old; printf '%s' \"$$\" > replacing.pid; sleep 30"))
           (let deadline (+ ($os/monotonic_ms) 5000))
           (while (! ($fs/exists? $"${service/runtime/root}/replacing.pid"))
@@ -147,17 +147,17 @@
           (let pid ($fs/read_text $"${service/runtime/root}/replacing.pid"))
           (put_cordis_plugin ^^replace service/runtime/h (shell_plugin)
             {^^host ^limits service/runtime/profile/limits})
-          (for job in service/runtime/modes/jobs/.get job/.join)
-          (service/runtime/commands/watchers/.get .get $"${session/id}:${busy/id}"; .join)
-          ($assert (== (/status (command_receipt service/runtime/commands session/id busy/id)) "cancelled"))
-          ($assert ($absent? (mode_state service/runtime/modes session/id)))
+          (for job in service/runtime/services/values/commands/modes/jobs/.get job/.join)
+          (service/runtime/services/values/commands/watchers/.get .get $"${session/id}:${busy/id}"; .join)
+          ($assert (== (/status (command_receipt service/runtime/services/values/commands session/id busy/id)) "cancelled"))
+          ($assert ($absent? (mode_state service/runtime/services/values/commands/modes session/id)))
           (require_gone pid)
           ($assert (try
-            (submit_mode_input service/runtime/modes session/id previous/instance "stale" "printf never")
+            (submit_mode_input service/runtime/services/values/commands/modes session/id previous/instance "stale" "printf never")
             false
           catch ModeError (== $err/code "mode_closed")))
           (command service session/id "/sh")
-          ($assert (!= (/instance (mode_state service/runtime/modes session/id)) previous/instance))
+          ($assert (!= (/instance (mode_state service/runtime/services/values/commands/modes session/id)) previous/instance))
           ($assert ($str/contains? (/display (input service session/id "fresh" "printf '%s' \"${saved-unset}\"")) "unset"))
         ensure (close_session_service service)))))
 
@@ -168,17 +168,17 @@
         (try
           (let session (create_session service))
           (command service session/id "/sh")
-          (let mode (mode_state service/runtime/modes session/id))
-          (let busy (submit_mode_input service/runtime/modes session/id mode/instance "busy"
+          (let mode (mode_state service/runtime/services/values/commands/modes session/id))
+          (let busy (submit_mode_input service/runtime/services/values/commands/modes session/id mode/instance "busy"
             "printf '%s' \"$$\" > busy.pid; sleep 30"))
           (let deadline (+ ($os/monotonic_ms) 5000))
           (while (! ($fs/exists? $"${service/runtime/root}/busy.pid"))
             ($assert (< ($os/monotonic_ms) deadline) "shell did not start")
             ($sleep 1))
           (let pid ($fs/read_text $"${service/runtime/root}/busy.pid"))
-          (cancel_command service/runtime/commands session/id busy/id)
-          (service/runtime/commands/watchers/.get .get $"${session/id}:${busy/id}"; .join)
-          ($assert (== (/status (command_receipt service/runtime/commands session/id busy/id)) "cancelled"))
+          (cancel_command service/runtime/services/values/commands session/id busy/id)
+          (service/runtime/services/values/commands/watchers/.get .get $"${session/id}:${busy/id}"; .join)
+          ($assert (== (/status (command_receipt service/runtime/services/values/commands session/id busy/id)) "cancelled"))
           (require_gone pid)
           ($assert ($str/contains? (/display (input service session/id "after" "printf recovered")) "recovered"))
           (input service session/id "timeout-pid" "printf '%s' \"$$\" > timeout.pid")
@@ -194,7 +194,7 @@
           (config .put "response_budget" {^timeout_ms 600000 ^max_memory_mb 1024})
           ($fs/write_text_atomic config_path ($serde/write_data config))
           ($assert ($str/contains? (/display (input service session/id "after-timeout" "printf recovered")) "recovered"))
-          (close_mode service/runtime/modes session/id "left")
+          (close_mode service/runtime/services/values/commands/modes session/id "left")
         ensure (close_session_service service))))))
 
 (fn main [args] : Int (run_spec args))

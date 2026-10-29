@@ -1,7 +1,7 @@
 # Theming
 
-Status: implemented (2026-10-17). This document is the design of record; the
-[Verification](#verification) section names the specs that hold it.
+This reference describes the implemented theme contract. Dated checks and
+rollout evidence are in the [verification record](verification/theming-history.md).
 
 The web UI has square geometry, two minimalist neutral palettes, and a
 host-owned light/dark setting. Light is the default; dark is an equal peer, not
@@ -44,21 +44,6 @@ Owner decisions, 2026-10-17:
 Non-goals: user-authored CSS, theming the terminal client, following
 `prefers-color-scheme`, animated theme transitions, and defensive restrictions
 intended to contain malicious plugin CSS. Plugin customization is in scope.
-
-## Before this change
-
-Measured in `src/web/style.gene`, `src/web/plugin_page.gene` and
-`src/website/style.gene` before the theming work:
-
-| Area | Today |
-| --- | --- |
-| Tokens | 7 color tokens on `:root` (`ink muted line surface sidebar soft accent`), light only, `color-scheme: light`. Five aliases (`input-surface`, `selected-surface`, `code-surface`, `notice-surface`, `action-ink`) are declared on `.app` and repeated on `.ui_panel`. |
-| Radii | 38 `border-radius` declarations in the app and plugin manager, with 13 distinct non-zero values: 3–12px, 18px (user bubble), 2rem and 99px (pills), and 50% (status dot, image-grid points). `/about/` adds 20 more. |
-| Hard-coded colors | User bubble `#163a63` on `#e6f1ff`. Shadows and scrims use `#292b27` with alpha (4 places). Five syntax hues. Plugin manager status uses `#982c25`, `#285b36` and `#a9b7a3`, plus `color: white`. Image-point hover uses `rgb(255 255 255 / .22)`. |
-| Errors | `.run_error` and error notices use `--accent` (green). There is no danger color. |
-| Field borders | `--line` `#e5e5de` on `#fcfcf9` measures 1.23:1. The composer and inputs rely on that border alone, so they fail WCAG 1.4.11 (3:1 for control boundaries). |
-| Plugin themes | `ui_configure ^theme {...}`: a flat map over the 7 keys with six-digit hex values, applied to the plugin panel only (`client/ui/router.gene`). Validated in `src/ui/state.gene`. |
-| `/about/` | Its own 16-token palette (warm paper, navy ink, blue links, teal highlights), hero shadows and 20 radii, written with the `$css` DSL and scoped to `harness_site`. Rendered once per server lifetime (`about_page` in `src/web/server.gene`). Also exported statically by `src/website/export.gene`. |
 
 ## Principles
 
@@ -326,12 +311,12 @@ match the theme.
 
 The choice lives in a small host-owned file, `<state_root>/appearance.gene`,
 holding serde data `{^mode "dark"}`. `src/runtime/appearance.gene` owns it:
-`open_runtime` attaches `open_appearance` to the harness as `h/appearance` for
-both the normal and the recovery runtime, and `appearance_mode` /
-`set_appearance` read and change it. It deliberately depends on nothing else:
+the runtime service graph owns it under `services/values/appearance` in both
+normal and metadata-recovery startup. `appearance_mode` and `set_appearance`
+receive that runtime and read or change its owned setting. It deliberately depends on nothing else:
 
 - **Not the event store, `config.gene`, or plugin state.** Recovery startup
-  (`open_runtime ^recovery true` in `src/runtime/bootstrap.gene`) leaves the
+  (`open_runtime ^mode "recovery"` in `src/runtime/bootstrap.gene`) leaves the
   event store unopened and skips the configuration read. The recovery server
   must still find the mode, so the record cannot live in any of those.
 - **Not `ui_experiment` state.** That plugin is disabled by default and owns
@@ -347,7 +332,7 @@ both the normal and the recovery runtime, and `appearance_mode` /
 The mode is stored per workspace for now. This has three advantages:
 
 - **No flash.** `page` runs per request, so the server passes
-  `(appearance_mode h)` and the response already carries
+  `(appearance_mode runtime)` and the response already carries
   `<html id="harness_document" data-theme="dark">`; the first paint is right.
 - **No new primitive.** The web profile has `$session_storage` but no
   `$local_storage`. Per-browser persistence would need a new web-profile
@@ -410,8 +395,7 @@ DOM primitive and no reload are needed.
 **Accepted limitation (owner decision, 2026-10-17).** Use the existing message
 flow without a separate appearance revision or cross-transport ordering
 protocol. An older response may restore the previous mode in a tab until its
-next update or reload; it does not change the persisted choice. Handling this
-race is outside this milestone.
+next update or reload; it does not change the persisted choice. The current contract accepts this race.
 
 Pages without a push connection update on load:
 
@@ -427,7 +411,7 @@ Pages without a push connection update on load:
 | --- | --- |
 | `/` | Mode from the request, live updates. |
 | `/ui/default` (normal server) | Redirects to `/?ui=default`: honors the mode with live updates, still ignores plugin overrides. |
-| Plugin manager page | Honors the mode on load and Refresh. Its `#982c25`, `#285b36` and `#a9b7a3` literals become `danger`, `success` and `edge`. |
+| Plugin manager page | Honors the mode on load and Refresh and uses the shared `danger`, `success` and `edge` tokens. |
 | Recovery server (`--recovery`) | Serves the plugin manager page for `/`, `/plugins` and `/ui/default` (`src/web/recovery.gene`). Reads `appearance.gene` directly and passes the mode to `plugin_page`. Offers the toggle through the same endpoint. |
 | `/about/` (embedded) | Honors the mode on each load; see below. |
 | Static website export | Always light. There is no workspace to read. |
@@ -486,78 +470,34 @@ stylesheet (`gene-harness-theme`), which the static export publishes too.
 
 ## Content-Security-Policy
 
-Status: done (2026-10-17), ahead of the rest of this proposal.
+Harness pages send no Content-Security-Policy. Inline styles, external
+resources, connections and framing follow the browser's ordinary rules.
+The host retains cache-control: no-store, nosniff and no-referrer headers.
+This reflects the owner's decision to trust the Harness and its plugin code.
+Deliberately loaded page libraries share that page's access.
 
-Harness pages send no Content-Security-Policy. `secure_response` in
-`src/web/server.gene` used to add a strict default to every response from both
-the normal and the recovery server:
+Mutations still use same-origin and CSRF admission. The workspace image route
+keeps its own sandbox policy and rejects scripted SVG content; an image opened
+directly must not gain the Harness page's script access. This route-specific
+policy does not restrict plugin style contributions.
 
-```
-default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self';
-base-uri 'none'; frame-ancestors 'none'; form-action 'self'
-```
-
-That default is gone. Inline styles, `data:` images, external scripts, styles,
-fonts and connections, framing and form targets are all unrestricted.
-`secure_response` still sets `cache-control: no-store`, `nosniff` and
-`no-referrer`.
-
-**Why the default was removed.** The owner prefers flexibility for the Harness
-and its trusted plugins. Libraries deliberately loaded into the page are also
-trusted with that page's access. This is an accepted tradeoff; existing request
-checks are not a replacement for every restriction the policy imposed.
-
-The client builds component DOM node by node, and mutations retain their
-same-origin and CSRF checks. `SameSite=Strict` restricts cross-site cookies but
-does not isolate local applications on different ports of the same host.
-[Site and origin definitions](https://web.dev/articles/same-site-same-origin).
-`HttpOnly` prevents reading the cookie, while page scripts can still make
-authenticated requests. [HttpOnly behavior](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Set-Cookie#httponly).
-
-**What it unblocks.**
-
-- **Plugin style contributions** can be `<style>` elements that the client
-  mounts, replaces and removes with their owning view.
-- **Small icons inline in CSS**, such as the `select` chevron, can be `data:`
-  SVG backgrounds.
-- **Experiments** can pull a library, font or stylesheet from a CDN without a
-  policy change.
-
-**What stays.**
-
-- **The image route sandbox.** `/api/v8/ui/image` serves workspace files and
-  keeps its own `sandbox; default-src 'none'; script-src 'none'; …` policy.
-  This route-specific policy restricts nothing the Harness builds. Without it,
-  an SVG in a workspace, which may come from a cloned repository or a model,
-  could run script at the Harness origin with the owner's cookie when opened
-  directly. The route also rejects SVGs containing `<script>`; the policy is
-  the second layer.
-- **No new style prop.** Component trees do not gain a `^style` prop: what the
-  component validator accepts is a separate contract from what the browser
-  allows.
-- **Plugin styling remains a contribution API.** Check its descriptor and
-  report generation errors normally. Use the existing CSS helpers without
-  adding selector or property restrictions to contain trusted plugins.
-
-**Coverage.** `tests/integration/web/images_transport_spec.gene` asserts that
-`GET /` carries no CSP header and that the image route keeps its sandbox
-policy.
+Component validation is a separate contract: removing page CSP does not add a
+style prop to quoted component trees. Plugin CSS uses the declared styling API
+and its normal generation diagnostics, without a CSS security sandbox.
 
 ## Plugin color overrides
 
-`ui_configure ^theme` used to be one flat map applied to the plugin panel. A
-light color like `#335577` would be unreadable on a dark surface, so overrides
-are per mode:
+`ui_configure ^theme` accepts explicit light/dark token maps:
 
 ```gene
 (ui_configure {^^enabled ^layout "panel" ^panel "project_board"
   ^theme {^light {^accent "#335577"} ^dark {^accent "#9db4d6"}}})
 ```
 
-- **A flat map is read as `^light`**, so existing configurations keep their
-  meaning. In dark mode a panel with no `^dark` map uses the host dark palette.
-  That is safer than applying light colors to a dark surface.
-- **Validation per entry is unchanged**: the seven public keys, six-digit hex
+- **Maps are per mode.** A flat map is refused when configuring the UI.
+  A mode without overrides uses the host palette. Previously stored flat maps
+  are ignored by the browser and must be reapplied with explicit mode keys.
+- **Validation per entry**: the seven public keys, six-digit hex
   values. `validate_theme` in `src/ui/state.gene` also rejects a map that mixes
   mode keys with token keys.
 - **Application.** `theme_overrides` (`client/ui/theme.gene`) picks the map for
@@ -667,74 +607,3 @@ mounts no styles in `/ui/default`).
 Keep this boundary in the plugin author documentation so authors can tell
 whether to use a host primitive, add a small scoped style contribution, or
 propose a reusable addition to the shared UI layer.
-
-## Verification
-
-Specs (all model-free):
-
-| Check | Where |
-| --- | --- |
-| Every `border-radius` in `base_styles` and the plugin manager CSS is `0` or `var(--radius-button)`, which appears only on `button`; in the rendered `/about/` CSS only the four site controls use it. The scan must find exactly those rules, so it cannot pass vacuously. | `tests/unit/web/theme_spec.gene` |
-| No hex color literal in the app, plugin manager or website stylesheets outside `theme.gene`. | same |
-| Both palettes meet the contrast table: text ≥ 4.5:1 on surface/sidebar/soft/user, `edge` ≥ 3:1, Send text on its `ink` fill and `muted` hover fill ≥ 4.5:1, and a visible hover change. | same |
-| `page`, `plugin_page` and `website_page` render the requested mode, default to light, and the static (`standalone`) site is light. | same |
-| Missing, unreadable, non-map and unknown-mode files read as light; a change is written before the event is published; an unknown mode and a failed write leave the mode, the file and the bus unchanged; a harness without a setting refuses changes. | `tests/unit/runtime/appearance_spec.gene` |
-| Per-mode and legacy theme maps validate; mixed, unknown, malformed and host-only keys are rejected. | `tests/unit/ui/state_spec.gene` |
-| The browser picks the active mode's overrides and gives dark nothing from a legacy map. | `tests/unit/client/theme_spec.gene` |
-| Style contributions: scoped by default with a `plugin_<name>__…` class, page-wide with `^!style_scoped`, absent without a style, and malformed or >64 KiB styles are rejected. | `tests/unit/ui/components_spec.gene` |
-| A real host serves `/`, `/plugins`, `/about/` and `/?ui=default` in the saved mode; the endpoint, `/theme` and `set_appearance` all switch it with `sidebar` and `ui_experiment` disabled; a bad mode is a 400 and changes nothing. | `tests/integration/web/appearance_spec.gene` |
-| A recovery host with a corrupt `config.gene` and event store serves `/`, `/plugins` and `/ui/default` in the saved dark mode and switches it through its own endpoint. | same |
-| The session service broadcasts `appearance` once per change; a style contribution reaches the status payload and the view descriptor, is replaced with its plugin, disappears on uninstall, and is absent from safe status. | same |
-| Pages send no CSP; the image route keeps its sandbox policy. | `tests/integration/web/images_transport_spec.gene` |
-
-Browser pass (Chrome, 2026-10-17, offline host with the project board and a
-styled demo plugin; the OS color preference was not consulted):
-
-- **Both modes at desktop width and at 390 px** (rendered in same-origin
-  frames) for the conversation view, composer, sidebar, plugin manager and
-  `/about/`.
-- **Computed values.** `button` radius 5px; composer, cards, rows, selects and
-  the drawer 0px. The drawer has an `edge` border and no shadow. The
-  user-message block is `--user`, square. Selects use `appearance: none` with
-  the chevron. A native radio still renders as a circle.
-- **Plugin colors.** Overrides land on `#ui_panel`, and `--syntax-string`
-  recomputes from the panel's overridden `ink`.
-- **Overrides across a switch.** Light → dark → light with a legacy flat map
-  (dark shows host colors, light restores them) and with a partial per-mode
-  map (only `accent` changes).
-- **Plugin styles.** The demo plugin's scoped rule is mounted in
-  `#plugin_styles` and applies inside its component. `/ui/default` mounts no
-  plugin styles.
-- **Live updates.** A `/ui/default` tab followed a `/theme` change made from
-  the CLI. A tab followed a change made from the plugin manager's toggle. After
-  a host restart, reloaded pages painted dark on first load from the saved
-  file.
-- **Reconnect.** A tab whose stream reconnected re-applied the host's mode from
-  the handshake status, even after its `data-theme` had been changed by hand.
-- **`/about/`.** Inline links take `accent` and are underlined; the primary
-  button is `ink` with `action-ink` text and the 5px radius.
-
-Not covered: Safari and Firefox were not exercised; forced-colors mode was not
-re-checked (its block is unchanged and uses system colors).
-
-## Rollout
-
-All five steps landed together on 2026-10-17:
-
-1. **Geometry**: the reset, the button rule and the square exceptions in the
-   app, the plugin manager and `/about/`.
-2. **Neutral light palette**: `theme.gene`, the new host tokens, no hex
-   literals outside it, no shadows, `danger` for errors, and `/about/` on the
-   host tokens.
-3. **Dark mode**: the dark palette, `data-theme` rendering on every page and
-   the recovery server, `appearance.gene` with its setter and endpoint, the
-   toggles, `/theme`, `set_appearance`, the status field and the `appearance`
-   broadcast, and the flat-map-as-light rule.
-4. **Per-mode plugin overrides**, documented in `docs/web-components.md` and
-   `docs/recipes/ui-configuration.md`.
-5. **Plugin styling**: the content defaults and shared classes, and the `style`
-   contribution, documented in the [Styling section](web-components.md#styling).
-
-The CSP removal shipped earlier the same day. Related docs updated:
-`docs/commands.md`, `docs/recipes/ui.md`, `docs/workspace-views.md`,
-`docs/web-client.md`, `README.md` and `experiments/ui` (per-mode board colors).

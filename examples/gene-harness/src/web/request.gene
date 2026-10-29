@@ -1,5 +1,6 @@
 # Parsing and responses shared by authenticated host route modules.
 (mod web_request)
+(import [api_version] ^from "./contract")
 (import [RoundError] ^from "../runtime/round_controller")
 (import $net/http [json])
 
@@ -47,7 +48,7 @@
   parts)
 
 (fn session_path? [parts] : Bool
-  (&& (>= parts/.size 5) (== parts/1 "api") (== parts/2 "v8") (== parts/3 "sessions")))
+  (&& (>= parts/.size 5) (== parts/1 "api") (== parts/2 (api_version)) (== parts/3 "sessions")))
 
 (fn cookie_value [header : Str, name : Str] : Str
   (for part in ($str/split header ";")

@@ -16,7 +16,7 @@
 (import [parse_control] ^from "../../../src/channels/controls")
 
 (fn wait_round [service, session]
-  (let watcher (service/controller/watchers/.get .get session))
+  (let watcher (/watcher (service/runtime/services/values/controller/rounds/.get .get session)))
   (if_not ($absent? watcher) watcher/.join))
 
 (fn fixture [workspace, body]
@@ -24,7 +24,7 @@
   (let harness (test_service ^workspace workspace ^without_plugins ["slack"] ^provider (fn [request]
     (calls/.get .push request)
     "($fs/write_text \"channel-service-proof.txt\" \"executed\") (Outcome ^^done ^reply \"Task completed.\")")))
-  (let channels harness/runtime/channels)
+  (let channels harness/runtime/services/values/channels)
   (try
     (configure_account channels/owner "dobi" "/reference" "/adapter.so"
       {^team "T123" ^app "A123" ^bot "B123" ^bot_user "UBOT" ^operator "UOWNER"})
@@ -80,14 +80,14 @@
       (fn [workspace]
         (fixture workspace (fn [f]
           (channel_settings f/channels {^surface "markdown" ^public_url "https://harness.example.com"})
-          (let original (snapshot f/harness/runtime/channel_queues))
+          (let original (snapshot f/harness/runtime/services/values/channel_queues))
           (close_session_service f/harness)
           (let restored (test_service ^workspace workspace ^without_plugins ["slack"]
             ^provider (fn [request] "(Outcome ^^done)")))
           (try
-            ($assert (== restored/runtime/channels/settings/.get
+            ($assert (== restored/runtime/services/values/channels/settings/.get
               {^surface "markdown" ^public_url "https://harness.example.com"}))
-            (let state (snapshot restored/runtime/channel_queues))
+            (let state (snapshot restored/runtime/services/values/channel_queues))
             ($assert (== state/source original/source))
             ($assert (== state/owner_root original/owner_root))
           ensure (close_session_service restored)))))))
@@ -103,7 +103,7 @@
           (let root (receive f "Ev1" "1.000001" "<@UBOT> Gene Harness live test"))
           (let admitted (drain_session f/channels root/session))
           (wait_round f/harness root/session)
-          ($assert (== (/state (round_receipt f/harness/controller root/session admitted/receipt/id)) "done"))
+          ($assert (== (/state (round_receipt f/harness/runtime/services/values/controller root/session admitted/receipt/id)) "done"))
           ($assert (== ($fs/read_text ($path/join workspace "slack-live-proof.txt")) "executed"))
           ($assert (== calls/.get 1)))))))
 
@@ -118,8 +118,8 @@
           ($assert (== (/kind (drain_session f/channels root/session)) "held"))
           (project_queue f/channels root/session)
           ($assert (== f/calls/.get/.size 0))
-          ($assert (== (/pending (queue_status f/harness/runtime/channel_queues root/session)) 1))
-          (let pending (pending_output f/harness/runtime/channel_queues))
+          ($assert (== (/pending (queue_status f/harness/runtime/services/values/channel_queues root/session)) 1))
+          (let pending (pending_output f/harness/runtime/services/values/channel_queues))
           ($assert (== pending/.size 1))
           ($assert (pending/0/intent/parts/0/text .contains? "whole batch exceeds")))))))
 
@@ -135,7 +135,7 @@
           (let state (snapshot f/channels/owner))
           (let handoff (state/ingress .get incoming/id))
           (let session handoff/result/session)
-          (let metadata (f/harness/sessions/index/.get .get session))
+          (let metadata (f/harness/runtime/sessions/index/.get .get session))
           ($assert (== metadata/kind "interactive"))
           ($assert (== metadata/title "Build it."))
           ($assert (== metadata/channel/thread "1.000001"))
@@ -143,7 +143,7 @@
           (wait_round f/harness session)
           ($assert ($fs/exists? ($path/join workspace "channel-service-proof.txt")))
           (project_events f/channels session)
-          (let outputs (pending_output f/harness/runtime/channel_queues))
+          (let outputs (pending_output f/harness/runtime/services/values/channel_queues))
           ($assert (== outputs/.size 1))
           ($assert (== outputs/0/intent/parts/0/text "Agent:\nTask completed."))
           # message and app_mention subscriptions describe the same logical input.
@@ -160,13 +160,13 @@
           (let browser_round (submit f/harness session "browser-followup" 3 "From the shared browser."))
           (wait_round f/harness session)
           (project_events f/channels session)
-          (let all (pending_output f/harness/runtime/channel_queues))
+          (let all (pending_output f/harness/runtime/services/values/channel_queues))
           ($assert (> ($size ($filter all (fn [out]
             (out/intent/parts/0/text .contains? "User (Harness browser):\nFrom the shared browser.")))) 0))
           ($assert (== ($size ($filter all (fn [out]
             (&& (== out/intent/round browser_round/id)
                 (== out/intent/parts/0/text "Agent:\nTask completed."))))) 1))
-          ($assert (== ($size f/harness/sessions/index/.get) 1))
+          ($assert (== ($size f/harness/runtime/sessions/index/.get) 1))
           (handoff_outputs f/channels)
           (let posted ($cell []))
           (let api (open_api "test-token" ^requester (fn [request]
@@ -175,14 +175,14 @@
               {^^ok ^ts ($to_str posted/.get/.size ".000002")}))})))
           (try
             (for output in all
-              (reconcile_output f/harness/runtime/channel_queues
+              (reconcile_output f/harness/runtime/services/values/channel_queues
                 (deliver_output f/channels/owner api output/intent/id)))
-            ($assert (== ($size (pending_output f/harness/runtime/channel_queues)) 0))
+            ($assert (== ($size (pending_output f/harness/runtime/services/values/channel_queues)) 0))
             ($assert (== posted/.get/.size all/.size))
           ensure (close_api api))
           (let separate (receive f "separate-root" "7.000001" "<@UBOT> Another task."))
           ($assert (!= separate/session session))
-          ($assert (== ($size f/harness/sessions/index/.get) 2))
+          ($assert (== ($size f/harness/runtime/sessions/index/.get) 2))
           (drain_session f/channels separate/session)
           (wait_round f/harness separate/session)
           (let first_request ($to_str f/calls/.get/3/messages))
@@ -197,17 +197,17 @@
           ($assert (== (/status (receive_handoff f/channels ordinary)) "ignored"))
           (let unknown (receive_envelope f/channels/owner "dobi" (event "Ev2" "2.000001" "Follow up." ^thread "1.000001")))
           ($assert (== (/status (receive_handoff f/channels unknown)) "ignored"))
-          ($assert (== ($size f/harness/sessions/index/.get) 0))
+          ($assert (== ($size f/harness/runtime/sessions/index/.get) 0))
           (let root (receive_envelope f/channels/owner "dobi" (event "Ev3" "3.000001" "<@UBOT> First task.")))
           (let received (receive_handoff f/channels root))
-          ($assert (== ($size f/harness/sessions/index/.get) 1))
-          (delete_session f/harness/sessions received/session ^^explicit)
+          ($assert (== ($size f/harness/runtime/sessions/index/.get) 1))
+          (delete_session f/harness/runtime/sessions received/session ^^explicit)
           (let later (receive_envelope f/channels/owner "dobi" (event "Ev4" "4.000001" "Next task." ^thread "3.000001")))
           ($assert (== (/status (receive_handoff f/channels later)) "deleted"))
-          (let replies (pending_output f/harness/runtime/channel_queues))
+          (let replies (pending_output f/harness/runtime/services/values/channel_queues))
           ($assert (> ($size ($filter replies (fn [out]
             (out/intent/parts/0/text .contains? "conversation was deleted")))) 0))
-          ($assert (== ($size f/harness/sessions/index/.get) 0)))))))
+          ($assert (== ($size f/harness/runtime/sessions/index/.get) 0)))))))
 
   (it "separates idempotent Stop and revisioned queue resume from prompts and rejects stale controls" []
     (isolated this_mod/.path "separates idempotent Stop and revisioned queue resume from prompts and rejects stale controls"
@@ -220,29 +220,29 @@
           (let stopped (receive f "Ev3" "3.000001" "!stop" ^thread "1.000001"))
           ($assert (== stopped/status "control"))
           ($assert (== stopped/result/code "ok") ($serde/write_data stopped))
-          (let held (queue_status f/harness/runtime/channel_queues root/session))
+          (let held (queue_status f/harness/runtime/services/values/channel_queues root/session))
           ($assert held/held)
           ($assert (== held/pending 1))
           (submit f/harness root/session "browser-unrelated" 2 "Other browser work.")
           (wait_round f/harness root/session)
-          ($assert (/held (queue_status f/harness/runtime/channel_queues root/session)))
+          ($assert (/held (queue_status f/harness/runtime/services/values/channel_queues root/session)))
           (let stale (receive f "Ev4" "4.000001" ($to_str "!resume-queue " held/revision) ^thread "1.000001"))
           ($assert (== stale/result/code "stale") ($serde/write_data
-            {^control stale ^held held ^current (queue_status f/harness/runtime/channel_queues root/session)
-             ^channel (/channel (f/harness/sessions/index/.get .get root/session))
-             ^observed (/observed (/queues (snapshot f/harness/runtime/channel_queues); .get root/session))}))
-          (let current (queue_status f/harness/runtime/channel_queues root/session))
+            {^control stale ^held held ^current (queue_status f/harness/runtime/services/values/channel_queues root/session)
+             ^channel (/channel (f/harness/runtime/sessions/index/.get .get root/session))
+             ^observed (/observed (/queues (snapshot f/harness/runtime/services/values/channel_queues); .get root/session))}))
+          (let current (queue_status f/harness/runtime/services/values/channel_queues root/session))
           (let command ($to_str "!resume-queue " current/revision))
           (let resumed (receive f "Ev5" "5.000001" command ^thread "1.000001"))
           ($assert (== resumed/result/code "resumed") ($serde/write_data resumed))
-          ($assert (! (/held (queue_status f/harness/runtime/channel_queues root/session))))
+          ($assert (! (/held (queue_status f/harness/runtime/services/values/channel_queues root/session))))
           (drain_session f/channels root/session)
           (wait_round f/harness root/session)
           ($assert (== resumed (receive f "Ev5" "5.000001" command ^thread "1.000001")))
-          (let before (queue_status f/harness/runtime/channel_queues root/session))
+          (let before (queue_status f/harness/runtime/services/values/channel_queues root/session))
           (let old (receive f "Ev6" "6.000001" ($to_str "!stop " admitted/receipt/id) ^thread "1.000001"))
           ($assert (!= old/result/code "ok"))
-          ($assert (== before/revision (/revision (queue_status f/harness/runtime/channel_queues root/session))))
+          ($assert (== before/revision (/revision (queue_status f/harness/runtime/services/values/channel_queues root/session))))
           ($assert (== f/calls/.get/.size 3)))))))
 
   (it "shows questions and answers them without treating ordinary follow-ups or denied authors as answers" []
@@ -261,10 +261,10 @@
           (drain_session f/channels root/session)
           (wait_round f/harness root/session)
           (project_rounds f/channels root/session)
-          (let current (f/harness/sessions/loaded/.get .get root/session))
+          (let current (f/harness/runtime/sessions/loaded/.get .get root/session))
           (let batch current/round/.get/questions/id)
           ($assert (! ($absent? batch)))
-          (let outgoing (pending_output f/harness/runtime/channel_queues))
+          (let outgoing (pending_output f/harness/runtime/services/values/channel_queues))
           ($assert (> ($size ($filter outgoing (fn [out] (out/intent/parts/0/text .contains? "!answer ")))) 0))
           (receive f "Ev2" "2.000001" "Also add a footer." ^thread "1.000001")
           ($assert (== (/kind (drain_session f/channels root/session)) "busy"))
@@ -278,7 +278,7 @@
           ($assert (== current/round/.get/state "done"))
           (let resumed ($last requests/.get/1/messages))
           ($assert (resumed/content .contains? "Slack message 4.000001 from UOTHER"))
-          ($assert (== (/pending (queue_status f/harness/runtime/channel_queues root/session)) 1))
+          ($assert (== (/pending (queue_status f/harness/runtime/services/values/channel_queues root/session)) 1))
           ($assert (== calls/.get 2)))))))
 
   (it "requires an explicit current revision to replace paused work with a queued batch" []
@@ -297,19 +297,19 @@
           (let root (receive f "Ev1" "1.000001" "<@UBOT> Original work."))
           (let first (drain_session f/channels root/session))
           (wait_round f/harness root/session)
-          ($assert (== (/state (round_receipt f/harness/controller root/session first/receipt/id)) "paused"))
+          ($assert (== (/state (round_receipt f/harness/runtime/services/values/controller root/session first/receipt/id)) "paused"))
           (receive f "Ev2" "2.000001" "REPLACEMENT_QUEUED_REQUEST" ^thread "1.000001")
-          (let held (queue_status f/harness/runtime/channel_queues root/session))
+          (let held (queue_status f/harness/runtime/services/values/channel_queues root/session))
           (receive f "Ev3" "3.000001" ($to_str "!resume-queue " held/revision) ^thread "1.000001")
           ($assert (== (/kind (drain_session f/channels root/session)) "held"))
           (let stale (receive f "Ev4" "4.000001" ($to_str "!replace-paused " first/receipt/id " " held/revision) ^thread "1.000001"))
           ($assert (== stale/result/code "stale"))
-          (let status (queue_status f/harness/runtime/channel_queues root/session))
+          (let status (queue_status f/harness/runtime/services/values/channel_queues root/session))
           (let text ($to_str "!replace-paused " first/receipt/id " " status/revision))
           (let replaced (receive f "Ev5" "5.000001" text ^thread "1.000001"))
           ($assert (== replaced/result/code "replaced") ($serde/write_data replaced))
-          ($assert (! (/held (queue_status f/harness/runtime/channel_queues root/session))))
-          ($assert (== (/continuation_stop (round_receipt f/harness/controller root/session first/receipt/id)) "superseded"))
+          ($assert (! (/held (queue_status f/harness/runtime/services/values/channel_queues root/session))))
+          ($assert (== (/continuation_stop (round_receipt f/harness/runtime/services/values/controller root/session first/receipt/id)) "superseded"))
           (let next (drain_session f/channels root/session))
           ($assert (== next/kind "admitted"))
           (wait_round f/harness root/session)
@@ -336,23 +336,23 @@
             (let root (receive f "Ev1" "1.000001" "<@UBOT> hi three"))
             (drain_session f/channels root/session)
             (project_rounds f/channels root/session)
-            (let working ($first (pending_output f/harness/runtime/channel_queues)))
+            (let working ($first (pending_output f/harness/runtime/services/values/channel_queues)))
             (handoff_outputs f/channels)
-            (reconcile_output f/harness/runtime/channel_queues
+            (reconcile_output f/harness/runtime/services/values/channel_queues
               (deliver_output f/channels/owner api working/intent/id))
             (ready .set true) (wait_round f/harness root/session)
             (project_events f/channels root/session)
             (project_rounds f/channels root/session)
             (handoff_outputs f/channels)
-            (for outgoing in (pending_output f/harness/runtime/channel_queues)
-              (reconcile_output f/harness/runtime/channel_queues
+            (for outgoing in (pending_output f/harness/runtime/services/values/channel_queues)
+              (reconcile_output f/harness/runtime/services/values/channel_queues
                 (deliver_output f/channels/owner api outgoing/intent/id)))
             ($assert (== ($map calls/.get /method) ["chat.postMessage" "chat.delete" "chat.postMessage"]))
             ($assert (== calls/.get/1/data {^channel "C123" ^ts "1.000002"}))
             ($assert (== calls/.get/2/data/text "Agent:\nHi three!"))
-            ($assert (== ($size (pending_output f/harness/runtime/channel_queues)) 0))
+            ($assert (== ($size (pending_output f/harness/runtime/services/values/channel_queues)) 0))
             (project_rounds f/channels root/session)
-            ($assert (== ($size (pending_output f/harness/runtime/channel_queues)) 0))
+            ($assert (== ($size (pending_output f/harness/runtime/services/values/channel_queues)) 0))
           ensure
             (ready .set true)
             (close_api api)))))))
@@ -369,17 +369,17 @@
               "(Outcome ^^done ^reply \"Answer received.\")")))
           (let root (receive f "Ev1" "1.000001" "<@UBOT> Ask a question."))
           (drain_session f/channels root/session) (wait_round f/harness root/session)
-          (let loaded (f/harness/sessions/loaded/.get .get root/session))
+          (let loaded (f/harness/runtime/sessions/loaded/.get .get root/session))
           (answer f/harness root/session loaded/round/.get/questions/id {^color "blue"})
           (wait_round f/harness root/session)
           (project_events f/channels root/session)
-          (let outgoing (pending_output f/harness/runtime/channel_queues))
+          (let outgoing (pending_output f/harness/runtime/services/values/channel_queues))
           (let replies ($filter outgoing (fn [out]
             (out/intent/parts/0/text .contains? "User (Harness) answered questions:"))))
           ($assert (== replies/.size 1))
           ($assert (replies/0/intent/parts/0/text .contains? "Choose a color: blue"))
           (project_events f/channels root/session)
-          ($assert (== ($size (pending_output f/harness/runtime/channel_queues)) outgoing/.size)))))))
+          ($assert (== ($size (pending_output f/harness/runtime/services/values/channel_queues)) outgoing/.size)))))))
 )
 
 (fn main [args] : Int (run_spec args))

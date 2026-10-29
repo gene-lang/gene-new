@@ -7,7 +7,7 @@
 (import [history_policy] ^from "../../../src/agents/hooks")
 (import [contribute] ^from "../../../src/kernel")
 (import [acquire_snapshot release_snapshot] ^from "../../../src/runtime/composition")
-(import [register_plugin] ^from "../../../src/storage/workspace")
+(import [register_plugin] ^from "../../../src/storage/workspace_activation")
 (import [events_for] ^from "../../../src/storage/state")
 (import [load_part] ^from "../../../src/agents/model_call")
 (import [submit_round round_receipt close_round_controller]
@@ -141,7 +141,7 @@
           (append_message ^round "old" runtime "default" "user" ($to_str (large_text) (large_text)))
           (append_message ^round "pinned" runtime "default" "user" "Pinned decision.")
           (let accepted (submit_round controller "default" "custom-history" 1 "Finish."))
-          (controller/watchers .get; .get "default"; .join)
+          ((/watcher (controller/rounds/.get .get "default")) .join)
           (let receipt (round_receipt controller "default" accepted/id))
           ($assert (== receipt/state "done") $"replacement failed: ${receipt/message}")
           (let requests [])

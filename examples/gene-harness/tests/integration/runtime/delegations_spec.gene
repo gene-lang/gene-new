@@ -15,7 +15,7 @@
     (let receipt (round_receipt controller session id))
     (if (! (["running" "waiting"] .contains? receipt/state)) (return receipt))
     (if (>= ($os/monotonic_ms) deadline)
-      ($assert false $"Round did not finish: ${receipt}; scheduler: ${controller/runtime/delegations/last_error}"))
+      ($assert false $"Round did not finish: ${receipt}; scheduler: ${controller/runtime/services/values/delegations/last_error}"))
     ($sleep 10)))
 
 (fn in_runtime [workspace, body]
@@ -81,7 +81,7 @@
           ($assert (== result/reply "Both audits collected."))
           ($assert (== parent_calls/.get 2))
           ($assert (== child_calls/.get/.size 2))
-          (let blocks (delegation_blocks runtime/delegations "default"))
+          (let blocks (delegation_blocks runtime/services/values/delegations "default"))
           ($assert (== blocks/records/.size 2))
           (for child in blocks/records
             ($assert (== child/state "done"))
@@ -118,7 +118,7 @@
             (let final (await_round controller "default" receipt/id))
             ($assert (== final/state (if (== mode "cancel") "cancelled" "done")))
             ($assert (== children/.get 0))
-            (let blocks (delegation_blocks runtime/delegations "default"))
+            (let blocks (delegation_blocks runtime/services/values/delegations "default"))
             ($assert (== blocks/records/.size 0))))))))
 
   (it "consumes any results once while a slower child continues independently" []
@@ -174,7 +174,7 @@
           (create_session runtime/sessions ^id "second")
           (let second (submit_round controller "second" "cap-second" 1 "Start another task."))
           (wait_for (fn []
-            (let blocks (delegation_blocks runtime/delegations "second"))
+            (let blocks (delegation_blocks runtime/services/values/delegations "second"))
             (&& (== blocks/records/.size 1) (== blocks/records/0/state "queued"))) "Second parent did not queue.")
           ($assert (== started/.get ["default"]))
           (cancel_round controller "default" first/id)
@@ -183,7 +183,7 @@
           (let final (await_round controller "second" second/id))
           ($assert (== final/state "done") $"${final}")
           ($assert (== started/.get ["default" "second"]))
-          (let cancelled_children (delegation_blocks runtime/delegations "default"))
+          (let cancelled_children (delegation_blocks runtime/services/values/delegations "default"))
           (for child in cancelled_children/records
             ($assert (== child/state "cancelled"))))))))
 
@@ -253,7 +253,7 @@
           ($assert (== parent_calls/.get 3))
           ($assert (== child_calls/.get 2))
           ($assert (== child_sessions/.get/0 child_sessions/.get/1))
-          (let blocks (delegation_blocks runtime/delegations "default"))
+          (let blocks (delegation_blocks runtime/services/values/delegations "default"))
           ($assert (== blocks/records/.size 2))
           ($assert (== blocks/records/0/source "audit@1"))
           ($assert (== blocks/records/1/source "audit@2"))
@@ -290,7 +290,7 @@
           ($assert (== final/state "done") $"${final}")
           ($assert (== parents/.get 3))
           ($assert (== children/.get 2))
-          (let blocks (delegation_blocks runtime/delegations "default"))
+          (let blocks (delegation_blocks runtime/services/values/delegations "default"))
           (let child blocks/records/0)
           (answer_round controller child/session child/questions/id {^scope "web"})
           ($assert (try (answer_round controller child/session child/questions/id {^scope "all"})
@@ -327,16 +327,16 @@
                   "(Outcome ^^done ^reply \"Child budget survived queueing\")")))))
           (let receipt (submit_round controller "default" "queued-answer" 1 "Coordinate an audit."))
           (wait_for (fn []
-            (let blocks (delegation_blocks runtime/delegations "default"))
+            (let blocks (delegation_blocks runtime/services/values/delegations "default"))
             (&& (== blocks/records/.size 1) (== blocks/records/0/state "waiting"))) "Child did not ask its question.")
           (create_session runtime/sessions ^id "blocker")
           (let blocking (submit_round controller "blocker" "block" 1 "Hold the shared slot."))
           (wait_for (fn [] blocker/.get) "The other parent did not occupy the slot.")
-          (let blocks (delegation_blocks runtime/delegations "default"))
+          (let blocks (delegation_blocks runtime/services/values/delegations "default"))
           (let child blocks/records/0)
           (answer_round controller child/session child/questions/id {^scope "web"})
           (wait_for (fn []
-            (let current (delegation_blocks runtime/delegations "default"))
+            (let current (delegation_blocks runtime/services/values/delegations "default"))
             (== current/records/0/state "queued")) "Answered child did not queue.")
           ($sleep 1200)
           ($assert (== children/.get 1))

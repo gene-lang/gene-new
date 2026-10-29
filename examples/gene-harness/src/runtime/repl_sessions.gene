@@ -43,7 +43,7 @@
       ($repl/bind state/handle name forwarder)
       (state/names .put name true)))
   (let turn (operator_turn ctx))
-  (let helper_bindings (operator_bindings {} ctx/runtime/root turn))
+  (let helper_bindings (operator_bindings {} ctx/runtime/root turn ctx/snapshot))
   (for [name value] in helper_bindings ($repl/bind state/handle ($to_str name) value))
   (let context (operator_context ctx turn))
   (let scope (operator_scope ctx context))

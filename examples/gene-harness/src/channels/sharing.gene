@@ -8,8 +8,8 @@
 (import [round_state] ^from "../runtime/round_controller")
 
 (fn sharing_available? [runtime] : Bool
-  (&& (! ($absent? runtime/channel_queues))
-    (read runtime/channel_queues (fn [state] (! ($absent? state/source))))))
+  (&& (! ($absent? runtime/services/values/channel_queues))
+    (read runtime/services/values/channel_queues (fn [state] (! ($absent? state/source))))))
 
 # Copy only the public conversation, never evaluation code, console output or
 # model-generated follow-up requests. The cursor separates this frozen archive
@@ -31,7 +31,7 @@
     (let manager service/runtime/sessions)
     (let record (require_record manager session))
     (let id ($to_str "share-" (key session)))
-    (let previous (read service/runtime/channel_queues (fn [state] (state/outbox .get id))))
+    (let previous (read service/runtime/services/values/channel_queues (fn [state] (state/outbox .get id))))
     (if_not ($absent? previous) (return record))
     (if (|| (!= record/kind "interactive") (! ($absent? record/channel)) (! ($absent? record/parent)))
       (channel_error "conflict" "Only browser-only conversations can be added to Slack."))
@@ -39,7 +39,7 @@
       (channel_error "revision_conflict" "The conversation changed; refresh before adding it to Slack."))
     (if (["running" "waiting"] .contains? record/status)
       (channel_error "busy" "Wait for the Agent to finish before adding this conversation to Slack."))
-    (let source (read service/runtime/channel_queues (fn [state] state/source)))
+    (let source (read service/runtime/services/values/channel_queues (fn [state] state/source)))
     (if ($absent? source) (channel_error "unavailable" "Configure a Slack channel for this workspace first."))
     (let archive (conversation_archive (events_for service/runtime/events "session" session)))
     (let rounds (/receipts (round_state service/controller session)))
@@ -62,7 +62,7 @@
       ^archived_rounds archived_rounds ^parts parts}))
     # A deterministic, durable intent exists before any external effect. A
     # retry, lost HTTP response or host restart cannot create a second root.
-    (mutate service/runtime/channel_queues (fn [state]
+    (mutate service/runtime/services/values/channel_queues (fn [state]
       (state .put "outbox_sequence" (+ (?? state/outbox_sequence 0) 1))
       (state/outbox .put id {^intent intent ^digest (intent_digest intent) ^status "pending"
         ^sequence state/outbox_sequence}) nil) ^changes {^outbox [id]})
@@ -81,7 +81,7 @@
   {^intent intent ^status record/status ^result {^parts record/result/parts} ^signature signature})
 
 (fn finish_shares [service]
-  (let candidates (read service/runtime/channel_queues (fn [state]
+  (let candidates (read service/runtime/services/values/channel_queues (fn [state]
     (let found [])
     (for [id record] in state/outbox
       (if (&& (== record/intent/mode "thread") (!= record/linked true))
@@ -90,7 +90,7 @@
   (for candidate in candidates
     (let session candidate/session)
     (with_session_gate service/runtime/sessions ($to_str "round/" session) (fn []
-      (let outgoing (read service/runtime/channel_queues (fn [state]
+      (let outgoing (read service/runtime/services/values/channel_queues (fn [state]
         (share_projection (state/outbox .get candidate/id)))))
       (if ($absent? outgoing) (return nil))
       (let record (service/runtime/sessions/index/.get .get session))
@@ -108,7 +108,7 @@
           ; .assoc "archived_rounds" (?? intent/archived_rounds [])))
         (for part in outgoing/result/parts
           (if (== part/status "sent") (remember_message binding part/ts)))
-        (mutate service/runtime/channel_queues (fn [state]
+        (mutate service/runtime/services/values/channel_queues (fn [state]
           (let existing (state/queues .get session))
           (if ($absent? existing)
             (then
@@ -133,7 +133,7 @@
             {^type "trace" ^kind "channel/status" ^text "Slack conversation sharing status changed."
              ^delivery intent/id ^status status ^^ignorable})
           (flush_event_store service/runtime/events)))
-      (mutate service/runtime/channel_queues (fn [state]
+      (mutate service/runtime/services/values/channel_queues (fn [state]
         (let current (state/outbox .get intent/id))
         (current .put "share_observed" outgoing/signature)
         (if (&& (== status "delivered") (! ($absent? changes/channel))) (current .put "linked" true))

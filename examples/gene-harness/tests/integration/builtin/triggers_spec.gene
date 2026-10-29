@@ -1,16 +1,17 @@
+(import [test_controller] ^from "../../support.gene")
 # Tests src/builtin/triggers.gene.
 (import $test [describe it])
 (import [isolated run_spec test_service] ^from "../../support")
 (import [close_session_service] ^from "../../../src/web/session_service")
 (import [create_trigger delete_trigger list_occurrences] ^from "../../../src/runtime/triggers")
 (import [triggers : trigger_plugin] ^from "../../../src/builtin/triggers")
-(import [trigger_host_binding] ^from "../../../src/runtime/trigger_host")
+(import [trigger_host_binding trigger_manager] ^from "../../../src/runtime/trigger_host")
 (import [put_cordis_plugin] ^from "../../../src/kernel")
 (import [ExecutionLimits] ^from "../../../src/plugin_api")
 (import [start_host stop_host cli] ^from "../../web_support")
 (import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
 (import [baseline_profile] ^from "../../../src/profiles/baseline")
-(import [new_round_controller close_round_controller] ^from "../../../src/runtime/round_controller")
+(import [close_round_controller] ^from "../../../src/runtime/round_controller")
 (import [evaluate_harness_turn] ^from "../../../src/agents/harness_turn")
 (import [assemble_instructions] ^from "../../../src/agents/instructions")
 (import [provide withdraw_seam status_of row doc] ^from "../../../src/kernel")
@@ -72,7 +73,7 @@
         (let activated (put_cordis_plugin ^^replace service/runtime/h (trigger_plugin)
           {^^host ^limits (ExecutionLimits
             ^max_memory_mb 1024 ^timeout_ms 5000)}))
-        (let manager service/runtime/triggers)
+        (let manager (trigger_manager service/runtime))
         (try
           ($assert (== activated "ready")
             $"trigger replacement failed: ${service/runtime/h/plugin_errors/.get}")
@@ -107,8 +108,8 @@
           # finish. Wait for their actual completion, not a timing assumption.
           ($assert (== (status_of service/runtime/h "triggers") "pending"))
           (let watchers [])
-          (for [session watcher] in service/controller/watchers/.get
-            (watchers .push watcher))
+          (for [session frame] in service/runtime/services/values/controller/rounds/.get
+            (watchers .push frame/watcher))
           (for watcher in watchers watcher/.join)
           ($assert manager/closed/.get "seam loss did not close the retired scheduler after its rounds finished")
           ($assert scheduler/.done? "scheduler task survived plugin deactivation")
@@ -118,18 +119,18 @@
     (isolated this_mod/.path "waits for the trigger host and stops when it is withdrawn"
       (fn [workspace]
         (let runtime (open_runtime workspace "default" (baseline_profile)))
-        (let controller (new_round_controller runtime))
+        (let controller (test_controller runtime nil))
         (try
           ($assert (== (status_of runtime/h "triggers") "pending")
             "trigger plugin activated before its host existed")
           ($assert (== (row runtime/h "functions" "create_trigger") void)
             "pending trigger callable was visible")
           (provide runtime/h "core" "triggers/host"
-            (trigger_host_binding runtime controller ^!start ^!boot))
+            (trigger_host_binding runtime ^!start ^!boot))
           (let active_status (status_of runtime/h "triggers"))
           ($assert (== active_status "ready")
             $"trigger host did not activate its plugin: ${active_status}; ${runtime/h/plugin_errors/.get}")
-          ($assert (! ($absent? runtime/triggers)) "trigger manager did not start")
+          ($assert (! ($absent? (trigger_manager runtime))) "trigger manager did not start")
           ($assert (! ($absent? (row runtime/h "functions" "list_triggers")))
             "trigger functions were not contributed")
           ($assert (! ($str/contains?
@@ -142,10 +143,10 @@
             "(append_prompt \"triggers\" (list_triggers)) (Outcome ^prompt \"continue\")"))
           ($assert (== result/kind "continue")
             "response code could not call the trigger plugin")
-          (let manager runtime/triggers)
+          (let manager (trigger_manager runtime))
           (withdraw_seam runtime/h "core" "triggers/host")
           ($assert manager/closed/.get "trigger scheduler did not close on seam loss")
-          ($assert (== runtime/triggers nil) "closed manager stayed on runtime")
+          ($assert ($absent? (trigger_manager runtime)) "closed manager stayed active")
           ($assert (== (row runtime/h "functions" "list_triggers") void)
             "trigger callable survived seam loss")
           ($assert (== (/total (discover runtime/h ^owner "triggers")) 0)

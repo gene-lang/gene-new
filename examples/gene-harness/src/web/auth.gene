@@ -13,15 +13,10 @@
     (if ($fs/exists? $"${root}/web_sessions")
       ($serde/read_data ($fs/read_text $"${root}/web_sessions"))
       {}))
-  # Upgrade still-valid browser credentials. Generation tags reject stale
-  # cookie snapshots after an explicit owner reset.
+  # Generation tags reject stale cookie snapshots after an owner reset.
   (let generation ($crypto/sha256 secret))
   (let retained {})
   (for [cookie record] in sessions
-    (if ($absent? record/generation)
-      (if_yes (> (?? record/expires 0) ($os/wall_ms))
-        (record .put "generation" generation)
-        (record .delete "expires")))
     (if (== record/generation generation) (retained .put cookie record)))
   ($fs/write_text_atomic ^^owner_only $"${root}/web_sessions" ($serde/write_data retained))
   (BrowserAuth ^root root ^secret secret ^sessions ($cell retained) ^gate ($sync/gate)))
@@ -58,7 +53,7 @@
 (fn reset_auth [auth : BrowserAuth]
   (auth/gate (fn []
     (let secret ($crypto/random_hex 32))
-    # Clear first, including legacy records without generation tags. If reset
+    # Clear first. If reset
     # is interrupted, publishing the new secret can never revive those cookies.
     ($fs/write_text_atomic ^^owner_only $"${auth/root}/web_sessions" ($serde/write_data {}))
     ($fs/write_text_atomic ^^owner_only $"${auth/root}/web_secret" secret)

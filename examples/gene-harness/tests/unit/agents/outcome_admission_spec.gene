@@ -1,0 +1,55 @@
+(import $test [describe it])
+(import [outcome_constructor] ^from "../../../src/agents/outcome_admission")
+(import [Outcome OutcomeError checked_outcome_extensions new_turn_items validate_outcome]
+  ^from "../../../src/agents/outcome")
+(import [schema_verdict] ^from "../../../src/runtime/outcome_extensions")
+(import [ParticipantFailure] ^from "../../../src/runtime/turn_participants")
+
+(fn snapshot [key : Str]
+  {^registries {^outcome_extensions [{^payload {^name key ^alias "wait"}}]}})
+
+(describe "Leased Outcome construction"
+  (it "translates declared spellings to their leased owner without changing core fields" []
+    (let first (outcome_constructor (snapshot "delegation/wait")))
+    (let next (outcome_constructor (snapshot "other/wait")))
+    (let value (first ^reply "Waiting." ^wait "all"))
+    ($assert (== ($head value) Outcome))
+    ($assert (== value/reply "Waiting."))
+    ($assert (== value/extensions {^delegation/wait "all"}))
+    (let properties {^wait "all" ^reply "From data."})
+    ($assert (== (/extensions (first properties...)) {^delegation/wait "all"}))
+    ($assert (== (/extensions (next ^wait "all")) {^other/wait "all"}))
+    ($assert (== (/extensions (first ^wait "all")) {^delegation/wait "all"})))
+
+  (it "rejects duplicate spellings and leaves immutable caller data intact" []
+    (let make (outcome_constructor (snapshot "delegation/wait")))
+    (let extensions ($freeze {^notes/facts ["known"]}))
+    (let value (make ^wait "all" ^extensions extensions))
+    ($assert (== extensions {^notes/facts ["known"]}))
+    ($assert (== value/extensions {^notes/facts ["known"] ^delegation/wait "all"}))
+    ($assert (try (make ^wait "all" ^extensions {^delegation/wait "any"}) false
+      catch OutcomeError ($str/contains? $err/message "both")))
+    (let inactive (outcome_constructor {^registries {}}))
+    ($assert (try (inactive ^wait "all") false
+      catch Any ($str/contains? $err/message "wait")))))
+
+(describe "Checked Outcome suspension"
+  (it "admits an owned suspension before the core continuation check" []
+    (let value (checked_outcome_extensions
+      (Outcome ^extensions {^notes/hold "ready"}) ^suspension "notes/hold"))
+    (let admitted (validate_outcome (new_turn_items 1) value))
+    ($assert (== admitted/kind "suspend"))
+    ($assert (== admitted/suspension "notes/hold"))
+    ($assert (== admitted/outcome/extensions {^notes/hold "ready"})))
+
+  (it "rejects suspension with terminal grammar and malformed schema verdicts" []
+    (for value in [(Outcome ^^done ^reply "Done.") (Outcome ^questions [{^id "q" ^prompt "Choose."}])]
+      ($assert (try
+        (validate_outcome (new_turn_items 1) (checked_outcome_extensions value ^suspension "notes/hold"))
+        false
+      catch OutcomeError true)))
+    ($assert (== (/suspend (schema_verdict "notes/hold" {^value "ready" ^^suspend})) true))
+    ($assert (try (schema_verdict "notes/hold" {^value "ready" ^suspend "yes"}) false
+      catch ParticipantFailure true))
+    ($assert (try (schema_verdict "notes/hold" {^error "Rejected." ^^suspend}) false
+      catch ParticipantFailure true))))

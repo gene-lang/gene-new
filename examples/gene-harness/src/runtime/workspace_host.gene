@@ -7,7 +7,7 @@
 
 (fn workspace_manager [handle]
   (let runtime (/runtime (require_service handle)))
-  (let manager runtime/workspace_manager)
+  (let manager runtime/services/values/manager)
   (if (|| ($absent? manager) manager/closed/.get)
     (fail (ServiceError ^code "unavailable" ^message "This workspace is not an available manager.")))
   manager)
@@ -43,7 +43,7 @@
   (if (== ($head target) Str) (return target))
   (if (&& (== ($head target) BrowserTarget) (== target/kind "workspace"))
     (then
-      (if ($absent? runtime/workspace_manager)
+      (if ($absent? runtime/services/values/manager)
         (fail (ServiceError ^code "unavailable" ^message "Workspace manager is unavailable.")))
-      (return (manager_open_link runtime/workspace_manager target/id))))
+      (return (manager_open_link runtime/services/values/manager target/id))))
   (fail (ServiceError ^code "invalid_request" ^message "Unknown browser link target.")))

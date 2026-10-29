@@ -8,7 +8,7 @@
 (import ^from "../../../src/agents/harness_turn" [evaluate_harness_turn])
 (import ^from "../../../src/runtime/bootstrap" [open_runtime close_runtime])
 (import ^from "../../../src/profiles/baseline" [baseline_profile])
-(import ^from "../../../src/storage/workspace" [set_plugin_enabled])
+(import [set_plugin_enabled] ^from "../../../src/storage/workspace_repair")
 (import ^from "../../../src/agents/instructions" [assemble_instructions])
 
 (fn widget [version : Str]

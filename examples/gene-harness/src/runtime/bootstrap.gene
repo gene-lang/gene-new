@@ -1,10 +1,10 @@
 (mod bootstrap)
 (import [new_host_services start_host_services close_host_services HostServiceError] ^from "./host_services")
-(import [runtime_service_specs configure_runtime_readiness] ^from "./runtime_services")
+(import [runtime_service_specs] ^from "./runtime_services")
 (import [host_build] ^from "./host_identity")
 (import [acquire_workspace_lock close_workspace_lock WorkspaceInUse] ^from "./workspace_lock" ^^export)
 
-(type HarnessRuntime ^props {^root Str ^state_root Str ^epoch Str ^h Any ^workspace Any ^profile Any ^events Any ^sessions Any ^commands Any ^triggers Any ^body_users Any ^body_collecting Any ^body_gc_pending Any ^stopping Any ^exit_code Any ^ownership Any ^owns_ownership Bool ^owns_events Bool ^closed Any ^restarted Bool ^shutdown_watchdog Any ^modes Any? ^listen_port Any? ^supervised Bool? ^actions Any? ^images Any? ^recovery Bool? ^managed Bool? ^workspace_manager Any? ^cards Any? ^delegations Any? ^voice Any? ^channel_queues Any? ^channels Any? ^services Any?})
+(type HarnessRuntime ^props {^root Str ^state_root Str ^epoch Str ^h Any ^workspace Any ^profile Any ^events Any ^sessions Any ^body_users Any ^body_collecting Any ^body_gc_pending Any ^stopping Any ^exit_code Any ^ownership Any ^owns_ownership Bool ^owns_events Bool ^closed Any ^restarted Bool ^shutdown_watchdog Any ^listen_port Any? ^supervised Bool? ^recovery Bool? ^managed Bool? ^services Any?})
 (type RuntimeCleanupError ^props {^message Str} ^impl [Error])
 (impl Error for RuntimeCleanupError)
 
@@ -48,9 +48,12 @@
 
 (fn open_runtime [root : Str, session : Str, profile, ^events supplied_events = nil,
   ^ownership supplied_ownership = nil, ^entry entry : Str = "", ^event_scope event_scope : Str = "session",
-  ^activate activate : Bool = true, ^recovery recovery : Bool = false, ^managed managed : Bool = false,
+  ^activate activate : Bool = true, ^mode mode : Str = "normal", ^managed managed : Bool = false,
   ^lock_wait_ms lock_wait_ms : Int = 0, ^service_event service_event = nil] : HarnessRuntime
   # Identify the mutation host before acquiring ownership or writing state.
+  (if_not (["normal" "doctor" "recovery"] .contains? mode)
+    (fail (HostServiceError ^message $"Unknown runtime startup mode ${mode}.")))
+  (let recovery (== mode "recovery"))
   (let build (host_build))
   (let canonical (prepare_workspace_root ^root root))
   (let context
@@ -59,23 +62,22 @@
      ^events nil ^workspace nil ^h nil ^runtime nil ^inbox nil ^harness_closed false
      ^owns_ownership ($absent? supplied_ownership) ^supplied_ownership supplied_ownership
      ^entry (if (== entry "") this_mod/.path entry) ^event_scope event_scope ^activate activate
-     ^recovery recovery ^managed managed ^lock_wait_ms lock_wait_ms})
+     ^mode mode ^recovery recovery ^managed managed ^lock_wait_ms lock_wait_ms})
   (let services (new_host_services context
     (runtime_service_specs prepare_layout
       (fn [ctx]
         (let runtime (HarnessRuntime ^root ctx/root ^state_root ctx/state_root
-          ^epoch ($crypto/random_hex 16) ^sessions nil ^commands nil ^triggers nil
+          ^epoch ($crypto/random_hex 16) ^sessions nil
           ^body_users ($atomic_cell 0) ^body_collecting ($cell false) ^body_gc_pending ($cell false)
           ^stopping ($cell false) ^exit_code ($cell 0) ^restarted ctx/restarted ^shutdown_watchdog ($cell nil)
           ^h ctx/h ^workspace ctx/workspace ^profile ctx/profile ^events ctx/events
           ^ownership ctx/ownership ^owns_ownership ctx/owns_ownership ^owns_events ctx/owns_events
           ^closed ($cell false) ^recovery ctx/recovery ^managed ctx/managed ^services ctx/services))
-        (configure_runtime_readiness runtime)
         runtime))
     ^observe service_event))
   (set context/services services)
   (try
-    (start_host_services services (if recovery "recovery" "normal"))
+    (start_host_services services mode)
     context/runtime
   catch Any
     (if_not ($absent? context/runtime) (context/runtime/closed .set true))

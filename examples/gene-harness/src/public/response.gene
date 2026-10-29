@@ -1,0 +1,17 @@
+# Response helpers consume the calling loop's live callbacks. The shared
+# plugin contract itself imports no loop or feature implementation.
+(mod response_helpers)
+(import [TurnClosed] ^from "../plugin_api")
+
+(fn append_prompt [label : Str, value]
+  (let callback (/append_prompt ($runtime/context)))
+  (if ($absent? callback)
+    (fail (TurnClosed ^message "append_prompt requires an open turn")))
+  (callback label value))
+
+# View and update functions are quoted source, as in the response card form.
+(fn show_card [id, tree = nil, ^title title = nil, ^state state = nil, ^view view = nil, ^update update = nil]
+  (let api (/cards ($runtime/context)))
+  (if ($absent? api)
+    (fail (TurnClosed ^message "show_card requires an open turn in a conversation")))
+  (api/card_from_plugin id tree ^title title ^state state ^view view ^update update))

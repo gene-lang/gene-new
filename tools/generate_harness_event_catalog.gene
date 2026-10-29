@@ -59,7 +59,9 @@
         (if (== name "turn_response")
           "\n  (if_not ($absent? payload/reply_hint)\n    (if (|| (!= ($head payload/reply_hint) Str) (> ($str/byte_size payload/reply_hint) 1024))\n      ($panic \"turn/response reply_hint must be a string of at most 1 KiB\")))"
           "")))
-    (lines .push $"(fn validate_${name}_event [payload]\n  (require_event_fields payload [${joined}] ${label})${optional_reply}${projection_fields}\n  payload)")
+    (let attribution_fields (if (== name "composition_changed")
+      "\n  (if (|| (!= ($head payload/turn) Int) (< payload/turn 0))\n    ($panic \"composition/changed turn must be a nonnegative integer\"))" ""))
+    (lines .push $"(fn validate_${name}_event [payload]\n  (require_event_fields payload [${joined}] ${label})${optional_reply}${projection_fields}${attribution_fields}\n  payload)")
     (lines .push ""))
   (lines .push "(var core_event_types")
   (var index 0)

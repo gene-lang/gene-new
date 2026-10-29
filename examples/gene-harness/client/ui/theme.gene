@@ -4,12 +4,9 @@
 # The seven tokens `ui_configure ^theme` may override.
 (const theme_tokens ["ink" "muted" "line" "surface" "sidebar" "soft" "accent"])
 
-# A theme is per mode, {^light {...} ^dark {...}}, or a legacy flat token map
-# that applies to light mode only. Dark mode never receives light colors.
+# A theme selects only the active mode's explicit token map.
 (fn theme_overrides [theme : Any, mode : Str] : Any
   (var empty : Any {})
   (if_yes ($absent? theme) (return empty))
-  (if_yes (|| (! ($absent? theme/light)) (! ($absent? theme/dark)))
-    (var selected : Any (if (== mode "dark") theme/dark theme/light))
-    (return (?? selected empty)))
-  (if (== mode "dark") empty theme))
+  (var selected : Any (if (== mode "dark") theme/dark theme/light))
+  (?? selected empty))

@@ -8,9 +8,9 @@
   validate_prompt_row validate_docs_row validate_event_type_row validate_event_type_owner
   cancel_subscription_row] ^from "./contracts")
 (import [validate_web_component] ^from "../ui/components")
-(import [validate_browser_client] ^from "../ui/browser_clients")
+(import [validate_browser_client] ^from "../ui/browser_assets")
 (import [own_speech_engine] ^from "./resources")
-(import [prepare_command_callback prepare_prompt_callback] ^from "../runtime/public_context")
+(import [prepare_command_callback prepare_prompt_callback] ^from "../runtime/callback_context")
 
 (fn builtin_registry_specs [h, lookup]
   (let discovery_reserved {^discover "" ^doc ""})

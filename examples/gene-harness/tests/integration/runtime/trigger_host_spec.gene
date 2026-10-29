@@ -1,12 +1,13 @@
+(import [test_controller] ^from "../../support.gene")
 (import $test [describe it])
 (import [isolated run_spec] ^from "../../support")
 (import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
-(import [new_round_controller close_round_controller] ^from "../../../src/runtime/round_controller")
-(import [trigger_host_binding] ^from "../../../src/runtime/trigger_host")
+(import [close_round_controller] ^from "../../../src/runtime/round_controller")
+(import [trigger_host_binding trigger_manager] ^from "../../../src/runtime/trigger_host")
 (import [triggers] ^from "../../../src/builtin/triggers")
 (import [Profile] ^from "../../../src/profiles/profile")
 (import [provide row] ^from "../../../src/kernel")
-(import [register_plugin] ^from "../../../src/storage/workspace")
+(import [register_plugin] ^from "../../../src/storage/workspace_activation")
 (import [acquire_snapshot release_snapshot] ^from "../../../src/runtime/composition")
 
 (fn stored_triggers []
@@ -38,12 +39,12 @@
       (fn [root]
         (let profile (Profile ^name "trigger-api" ^plugins [(triggers)]))
         (let runtime (open_runtime root "default" profile))
-        (let controller (new_round_controller runtime))
+        (let controller (test_controller runtime nil))
         (try
-          (provide runtime/h "core" "triggers/host" (trigger_host_binding runtime controller ^!start ^!boot))
+          (provide runtime/h "core" "triggers/host" (trigger_host_binding runtime ^!start ^!boot))
           (invoke runtime/h "create_trigger" {^id "retained" ^kind "scheduled"
             ^at (+ ($os/wall_ms) 86400000) ^request "Retained work."})
-          (let old_manager runtime/triggers)
+          (let old_manager (trigger_manager runtime))
           (let lease (acquire_snapshot runtime/h/snapshots))
           (try
             (let result (register_plugin ^^replace runtime/workspace runtime/h "triggers" (stored_triggers)))
@@ -53,7 +54,8 @@
               (fn [] ($assert (== (/id (/0 (invoke runtime/h "list_triggers"))) "retained"))))
           ensure (release_snapshot runtime/h/snapshots lease))
           ($assert old_manager/closed/.get)
-          ($assert (! runtime/triggers/closed/.get) "old cleanup closed the new scheduler")
+          (let current (trigger_manager runtime))
+          ($assert (! current/closed/.get) "old cleanup closed the new scheduler")
           (let definitions (invoke runtime/h "list_triggers"))
           ($assert (== definitions/.size 1))
           ($assert (try (definitions .push {}) false catch Any true))
@@ -61,10 +63,10 @@
           (close_round_controller controller)
           (close_runtime runtime))
         (let restarted (open_runtime root "default" profile))
-        (let next_controller (new_round_controller restarted))
+        (let next_controller (test_controller restarted nil))
         (try
           (provide restarted/h "core" "triggers/host"
-            (trigger_host_binding restarted next_controller ^!start ^!boot))
+            (trigger_host_binding restarted ^!start ^!boot))
           ($assert (== (/id (/0 (invoke restarted/h "list_triggers"))) "retained"))
           (invoke restarted/h "delete_trigger" "retained")
           ($assert (== (invoke restarted/h "list_triggers") []))

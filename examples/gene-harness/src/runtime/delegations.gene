@@ -105,7 +105,7 @@
 (fn inspect_delegation [service, id : Str]
   (valid_inspection_id id)
   (let origin (delegation_turn service))
-  (for staged in origin/turn/delegation_staged/.get
+  (for staged in origin/context/staged/.get
     (if (== staged/id id) (return {^id id ^title staged/title ^state "staged"})))
   (service/gate (fn []
     (let record (current_delegation (delegation_parent service origin/session) id))
@@ -122,7 +122,7 @@
     (let owner (parent_round_record parent origin/round))
     (if owner/closed (delegation_error "round_closed" "This round no longer admits children."))
     (let limits (delegation_limits ($serde/read_data ($fs/read_text $"${service/runtime/state_root}/config.gene"))))
-    (let staged origin/turn/delegation_staged/.get)
+    (let staged origin/context/staged/.get)
     (let admitted (parent_admissions parent ^round origin/round))
     (if (>= (+ admitted/.size staged/.size) limits/max_per_round)
       (delegation_error "admission_limit" $"A round admits at most ${limits/max_per_round} child rounds."))
@@ -168,9 +168,10 @@
       (if (|| (! (terminal_delegation? admission/state)) (!= admission/seen true)) (return true)))
     false)))
 
-(fn delegation_context [service, session : Str, round : Str, count : Int, limit : Int, collection : Bool]
+(fn delegation_context [service, session : Str, round : Str, count : Int, limit : Int, collection : Bool,
+                        ^staged staged]
   {^token service/token ^round_turn count ^turn_limit limit ^collection collection
-   ^guard (fn [] (has_owned_work? service session round))})
+   ^staged staged})
 
 (fn admission_result_item [service, record, admission, turn : Int, ^question question : Bool = false]
   (let source (if question (delegation_question_source admission) admission/source))
@@ -228,14 +229,18 @@
   nil)
 
 (fn commit_delegation_turn [service, session : Str, round : Str, turn : Int, result,
-                            ^limit limit : Int, ^count count : Int, ^collection collection : Bool = false]
-  (if (&& result/turn/delegation_staged/.get/.empty?
-          ($absent? (service/parents .get session)) (!= result/kind "wait")) (return result))
+                            ^limit limit : Int, ^count count : Int, ^collection collection : Bool = false,
+                            ^staged staged = []]
+  (let extensions (?? result/validated/outcome/extensions {}))
+  (if (extensions .has_key? "delegation/result")
+    (result .put "result" (extensions .get "delegation/result")))
+  (let suspended (&& (== result/kind "suspend") (== result/validated/suspension "delegation/wait")))
+  (if (&& staged/.empty? ($absent? (service/parents .get session)) (! suspended)) (return result))
   (service/gate (fn []
     (with_session_gate service/runtime/sessions $"round/${session}" (fn []
       (let parent (copy_data (delegation_parent service session)))
       (let owner (parent_round_record parent round))
-      (var pending (?? result/turn/delegation_staged/.get []))
+      (var pending staged)
       (if (["error" "cancelled"] .contains? result/kind) (set pending []))
       (if (&& owner/closed (! pending/.empty?))
         (delegation_error "round_closed" "The parent no longer admits children."))
@@ -268,9 +273,9 @@
       (let work ($filter admissions (fn [admission]
         (|| (! (terminal_delegation? admission/state)) (!= admission/seen true)))))
       (var wait nil)
-      (if (== result/kind "wait")
-        (set wait (normalize_delegation_wait result/validated/outcome/wait
-          ^wake_on_questions (== result/validated/outcome/wake_on_questions true))))
+      (if suspended
+        (set wait (normalize_delegation_wait (extensions .get "delegation/wait")
+          ^wake_on_questions (== (extensions .get "delegation/wake_on_questions") true))))
       (if_yes (&& (>= count limit) (! collection) (! work/.empty?) (!= result/kind "questions"))
         (set wait {^mode "all" ^ids [] ^internal true ^wake_on_questions false})
         (owner .put "collection" true))
@@ -283,22 +288,16 @@
         (wait .put "ready" false)
         (owner .put "wait_generation" wait/generation)
         (owner .put "wait" wait))
-      (if_yes (&& (== result/kind "done") (! work/.empty?))
-        (result .put "kind" "continue")
-        (result .put "delegation_deferred" true))
       (if_not ($absent? wait) (result .put "kind" "delegation_wait"))
       (if_yes (|| (! changed/.empty?) (! ($absent? wait)))
         (checkpoint_delegations service parent ^changed changed)
         (service/parents .put session parent)
         (if_not ($absent? service/checkpoint) (service/checkpoint "admission_intent" session)))
       (result .put "delegation_wait" wait)
-      (result .put "delegation_collection" owner/collection)
+      (result .put "collection_turns" (if owner/collection 1 0))
       (if_not changed/.empty?
         (result/request_items .push {^id $"${turn}.delegations" ^header $"[${turn}.delegations]"
           ^value ($to_str "Committed child admissions: " ($str/join changed ", ") ". They dispatch within workspace caps.")}))
-      (if (== result/delegation_deferred true)
-        (result/request_items .push {^id $"${turn}.delegation_notice" ^header $"[${turn}.delegation_notice]"
-          ^value "Done was deferred because this round has unfinished children or unseen results. Use Outcome ^wait all to collect them."}))
       (let existing ($map result/request_items (fn [item] (?? item/delegation_source ""))))
       (for item in (pending_items_unlocked service parent round (+ turn 1))
         (if_not (existing .contains? item/delegation_source) (result/request_items .push item)))
@@ -670,12 +669,12 @@
     (if_not ($absent? service/checkpoint) (service/checkpoint "parent_request" session))))
   nil)
 
-(fn open_delegation_host [runtime]
+(fn open_delegation_host [runtime, callbacks]
   (let coordinating ($sync/gate))
   (let service {^runtime runtime ^token ($cell nil) ^parents {} ^children {}
     ^gate (fn [body] (with_body_use runtime (fn [] (coordinating body))))
     ^dirty ($cell true) ^inbox ($cell []) ^closed ($cell false) ^stopping ($cell false)
-    ^callbacks nil ^worker nil ^subscription nil ^checkpoint nil ^last_error nil})
+    ^callbacks callbacks ^worker nil ^subscription nil ^checkpoint nil ^last_error nil})
   (service .put "handle" (HostedDelegations ^token service/token))
   (for session in (delegation_parent_sessions runtime)
     (if_not ($absent? (runtime/sessions/index/.get .get session))
@@ -685,9 +684,8 @@
   (hosts/.get .push service)
   service)
 
-(fn connect_delegation_host [service, callbacks]
-  (if_not ($absent? service/callbacks) (return service))
-  (service .put "callbacks" callbacks)
+(fn start_delegation_host [service]
+  (if_not ($absent? service/worker) (return service))
   (service .put "subscription"
     (service/runtime/h/bus .subscribe DurableRecord (fn [event]
       (if (&& (== event/scope "session")

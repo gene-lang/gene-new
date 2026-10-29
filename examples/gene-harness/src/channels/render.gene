@@ -1,5 +1,5 @@
 (mod slack_render)
-(import [byte_prefix] ^from "../text")
+(import [byte_prefix] ^from "../public/text")
 (import [channel_error] ^from "./model")
 
 (fn replace_literal [text : Str, needle : Str, replacement : Str]

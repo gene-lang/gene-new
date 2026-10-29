@@ -10,6 +10,7 @@
 (import [new_runtime_turn_transaction native_owner] ^from "../../../src/runtime/turn_participant_registry")
 (import [contribute] ^from "../../../src/kernel")
 (import [evaluate_harness_turn] ^from "../../../src/agents/harness_turn")
+(import [validate_participants] ^from "../../../src/agents/turn_participation")
 (import [append_core_event append_turn_end_once flush_event_store events_for]
   ^from "../../../src/storage/state")
 (import [card_record] ^from "../../../src/runtime/cards")
@@ -38,7 +39,7 @@
     (if_not ($absent? packet/value)
       (for [name value] in packet/value (bindings .put name value))))
   (let result (evaluate_harness_turn runtime/h ctx/turn runtime/root source
-    ^session ctx/session ^round ctx/round/id ^lease lease ^bindings bindings
+    ^session ctx/session ^round ctx/round/id ^lease lease ^bindings bindings ^^coordinated ^turn_context ctx
     ^reviewer {^name "scripted" ^settings {^model "test" ^effort "none"} ^row {}}
     ^record (fn [kind data]
       (if (== kind "turn/response")
@@ -48,8 +49,7 @@
              ^blobs {} ^patch_files data/patch_files ^reply_hint data/reply_hint})
           (flush_event_store runtime/events)
           (run_turn_phase transaction "response_recorded" data))))))
-  (run_turn_phase transaction "validate_outcome" result)
-  result)
+  (validate_participants transaction result))
 
 (fn seal [runtime, ctx, result, errors]
   (let ended (append_turn_end_once runtime/events ctx/session
@@ -59,7 +59,7 @@
   ended/event)
 
 (fn staged_record [runtime, id : Str]
-  (let parent (runtime/delegations/parents .get "default"))
+  (let parent (runtime/services/values/delegations/parents .get "default"))
   (parent/records .get id))
 
 (fn close_fixture [runtime]
@@ -79,14 +79,14 @@
       (fn [root]
         (let runtime (open_runtime root "default" (baseline_profile)))
         # Admission is exercised without starting a scheduler or model call.
-        (set runtime/delegations/callbacks {})
         (let lease (acquire_snapshot runtime/h/snapshots))
         (let ctx (context runtime "parent"))
         (let transaction (new_runtime_turn_transaction runtime lease ctx))
         (try
           (let result (evaluate_transaction runtime lease transaction ctx
             "(delegate \"audit\" ^title \"Audit\" ^brief \"Inspect assigned files.\") (Outcome ^wait \"all\")"))
-          ($assert (== result/kind "wait") ($to_str result))
+          ($assert (== result/kind "suspend") ($to_str result))
+          ($assert (== result/validated/suspension "delegation/wait"))
           ($assert ($absent? (staged_record runtime "audit")))
           (let packets (run_turn_phase transaction "commit" result))
           (let committed (packet_value packets "core/delegation"))
@@ -98,7 +98,7 @@
             ($assert (== child/admissions/0/ready false))
             (seal runtime ctx result errors)))
           ($assert (== child/admissions/0/ready true))
-          ($assert (== committed/turn/delegation_staged/.get []))
+          ($assert ($absent? committed/turn/delegation_staged))
           ($assert (try (run_turn_phase transaction "commit" result) false catch ParticipantFailure true))
           ($assert (== child/admissions/.size 1))
         ensure
@@ -111,9 +111,8 @@
       "keeps durable admission fenced when a commit result is lost and never retries that phase"
       (fn [root]
         (let runtime (open_runtime root "default" (baseline_profile)))
-        (set runtime/delegations/callbacks {})
         (let attempts ($cell 0))
-        (set runtime/delegations/checkpoint (fn [point session]
+        (set runtime/services/values/delegations/checkpoint (fn [point session]
           (if_yes (== point "admission_intent")
             (attempts .set (+ attempts/.get 1))
             (fail (InjectedFailure ^message "lost commit result")))))
@@ -134,7 +133,7 @@
           ($assert (== child/admissions/0/ready false))
           ($assert (== attempts/.get 1))
         ensure
-          (set runtime/delegations/checkpoint nil)
+          (set runtime/services/values/delegations/checkpoint nil)
           (release_turn_transaction transaction)
           (release_snapshot runtime/h/snapshots lease)
           (close_fixture runtime)))))
@@ -144,7 +143,6 @@
       "discards invalid-Outcome child staging and still durably finalizes card progress"
       (fn [root]
         (let runtime (open_runtime root "default" (baseline_profile)))
-        (set runtime/delegations/callbacks {})
         (let lease (acquire_snapshot runtime/h/snapshots))
         (let ctx (context runtime "invalid"))
         (let transaction (new_runtime_turn_transaction runtime lease ctx))
@@ -163,8 +161,8 @@
           (finish_turn_transaction transaction result (fn [result errors]
             ($assert (== (/state (card_record runtime "default" "tests")) {^done 2}))
             (seal runtime ctx result errors)))
-          ($assert (== runtime/cards/transient/.get {}))
-          ($assert (== result/turn/delegation_staged/.get []))
+          ($assert (== runtime/services/values/cards/transient/.get {}))
+          ($assert ($absent? result/turn/delegation_staged))
           ($assert (== (/tree/children/0 (card_record runtime "default" "tests")) "2 done"))
         ensure
           (release_turn_transaction transaction)
@@ -176,7 +174,6 @@
       "acknowledges request sources only after durable response recording and preserves the checkpoint through restart"
       (fn [root]
         (let runtime (open_runtime root "default" (baseline_profile)))
-        (set runtime/delegations/callbacks {})
         (let lease (acquire_snapshot runtime/h/snapshots))
         (let ctx (context runtime "sources"))
         (let transaction (new_runtime_turn_transaction runtime lease ctx))
@@ -190,9 +187,9 @@
           (let admission child/admissions/0)
           (admission .put "state" "done")
           (admission .put "reply_ref" (write_body runtime "Child complete."))
-          (checkpoint_delegations runtime/delegations (runtime/delegations/parents .get "default"))
+          (checkpoint_delegations runtime/services/values/delegations (runtime/services/values/delegations/parents .get "default"))
           (let points [])
-          (set runtime/delegations/checkpoint (fn [point session]
+          (set runtime/services/values/delegations/checkpoint (fn [point session]
             (if (== point "parent_response_recorded")
               (then
                 ($assert (! runtime/events/dirty/.get) "Response acknowledgment preceded durable flush.")
@@ -318,7 +315,7 @@
             "($fs/write_text \"executed\" \"once\") (Outcome ^^done ^reply \"Finished.\")")))
           (try
             (let admitted (submit_round controller "default" "fault" 1 "Exercise a mandatory phase."))
-            (let watcher (controller/watchers/.get .get "default"))
+            (let watcher (/watcher (controller/rounds/.get .get "default")))
             watcher/.join
             (let finished (round_receipt controller "default" admitted/id))
             ($assert (== finished/state "failed") ($to_str target ": " finished))
@@ -373,7 +370,7 @@
           (let staged (/0 (/admissions (staged_record runtime "audit"))))
           ($assert (== staged/ready false))
           (cancel_round controller "default" receipt/id)
-          (let watcher (controller/watchers/.get .get "default"))
+          (let watcher (/watcher (controller/rounds/.get .get "default")))
           watcher/.join
           ($assert (== (/state (round_receipt controller "default" receipt/id)) "cancelled"))
           ($assert (== child_calls/.get 0))

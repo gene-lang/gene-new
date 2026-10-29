@@ -1,4 +1,5 @@
 (mod trigger_ui ^profile web)
+(import [api_root] ^from "../src/web/contract.gene")
 (import [Client] ^from "./workspace_model.gene")
 (import [api string_or set_hidden show_error notice refresh_sessions select_session features] ^from "./feature_helpers.gene")
 
@@ -27,7 +28,7 @@
   (api
     client
     "GET"
-    $"/api/v8/triggers/${($url/encode_component id)}/occurrences"
+    $"${(api_root)}/triggers/${($url/encode_component id)}/occurrences"
     nil
     (fn [code : Int, data : Any] : Void
       (if_yes (!= state/selected id) (return))
@@ -52,7 +53,7 @@
   (api
     client
     "GET"
-    "/api/v8/triggers"
+    $"${(api_root)}/triggers"
     nil
     (fn [code : Int, data : Any] : Void
       (if (!= code 200)
@@ -74,7 +75,7 @@
                    (button ^type "button" ^on_click %(fn [event : Any] : Void (trigger_occurrences client id))
                      %id
                      (small %kind))
-                   (button ^type "button" ^on_click %(fn [event : Any] : Void (api client "DELETE" $"/api/v8/triggers/${($url/encode_component id)}" nil (fn [status : Int, result : Any] : Void (if (== status 200) (load_triggers client) (show_error client result))))) "Delete"))))))))))
+                   (button ^type "button" ^on_click %(fn [event : Any] : Void (api client "DELETE" $"${(api_root)}/triggers/${($url/encode_component id)}" nil (fn [status : Int, result : Any] : Void (if (== status 200) (load_triggers client) (show_error client result))))) "Delete"))))))))))
 
 (fn create_trigger [client : Client] : Void
   (try
@@ -104,7 +105,7 @@
     (api
       client
       "POST"
-      "/api/v8/triggers"
+      $"${(api_root)}/triggers"
       data
       (fn [code : Int, result : Any] : Void
         (if (== code 201)

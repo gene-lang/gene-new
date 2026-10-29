@@ -11,9 +11,9 @@
 (import ^from "../../../src/runtime/sessions" [create_session update_session delete_session])
 (import ^from "../../../src/runtime/plugin_manager" [plugin_catalog plugin_history_catalog])
 (import ^from "../../../src/runtime/plugin_plans" [validate_plan apply_plan])
-(import ^from "../../../src/storage/workspace"
-  [register_plugin composition_entries composition_revision set_plugin_enabled
-   restore_plugin revert_plugin revert_entry])
+(import [register_plugin] ^from "../../../src/storage/workspace_activation")
+(import [composition_entries composition_revision] ^from "../../../src/storage/composition_store")
+(import [set_plugin_enabled restore_plugin revert_plugin revert_entry] ^from "../../../src/storage/workspace_repair")
 
 (fn profile [^builtin builtin : Bool = false]
   (let plugins [(plugin_admin) (core_commands) (provider_offline)])
@@ -44,10 +44,10 @@
   (fail $"missing catalog plugin ${id}"))
 
 (fn run_command [runtime, session : Str, text : Str]
-  (let admitted (submit_command runtime/commands session text))
-  (let watcher (runtime/commands/watchers/.get .get $"${session}:${admitted/id}"))
+  (let admitted (submit_command runtime/services/values/commands session text))
+  (let watcher (runtime/services/values/commands/watchers/.get .get $"${session}:${admitted/id}"))
   watcher/.join
-  (let result (command_receipt runtime/commands session admitted/id))
+  (let result (command_receipt runtime/services/values/commands session admitted/id))
   ($assert (== result/status "done") ($to_str result))
   result)
 
@@ -79,7 +79,7 @@
     (let second (stored runtime))
     ($assert (== second/created_in first/created_in))
     ($assert (== second/source_origin {^kind "command" ^session "b"}))
-    ($assert (== second/turn "direct"))
+    ($assert (== second/turn 0))
     (update_session runtime/sessions "a" {^title "Renamed creation"})
     (let current (catalog_entry runtime))
     ($assert (== current/development/created_in/title "Renamed creation"))
@@ -211,7 +211,7 @@
     (close_runtime runtime))
   ($fs/write_text $"${root}/.gene-harness/config.gene" "(invalid configuration")
   ($fs/write_text $"${root}/.gene-harness/events/CURRENT" "unreadable application history")
-  (let recovery (open_runtime ^^recovery root "default" selected))
+  (let recovery (open_runtime ^mode "recovery" root "default" selected))
   (try
     ($assert ($absent? recovery/events))
     ($assert ($absent? recovery/sessions))

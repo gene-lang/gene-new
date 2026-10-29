@@ -1,0 +1,28 @@
+(import $test [describe it])
+(import [protocol_version api_version api_root api_path voice_subprotocol
+  history_page_limit client_record_limit] ^from "../../../src/web/contract")
+
+(fn check_wire_literals [directory : Str]
+  (for name in ($fs/list_dir directory)
+    (let path ($path/join directory name))
+    (let info ($fs/info path))
+    (if (== info/kind "directory")
+      (check_wire_literals path)
+      (if (&& ($str/ends_with? name ".gene") (!= path ($path/join this_pkg/root "src/web/contract.gene")))
+        (then
+          (let source ($fs/read_text path))
+          (for version in ($regex/find_all #"(?:https?://[^/\" ]+)?/api/v[0-9]+" source)
+            (let url version/text)
+            ($assert (|| ($str/starts_with? url "https://") ($str/starts_with? url "http://"))
+              $"API version literal outside contract: ${path}"))
+          ($assert (! ($str/contains? source "gene-harness-voice.")) $"Voice protocol literal outside contract: ${path}"))))))
+
+(describe "Shared wire contract"
+  (it "keeps paths and protocol spellings together across both module graphs" []
+    ($assert (== (api_version) $"v${protocol_version}"))
+    ($assert (== (api_path []) (api_root)))
+    ($assert (== (api_path ["sessions" "session-id" "rounds"]) $"${(api_root)}/sessions/session-id/rounds"))
+    ($assert (> ($str/byte_size voice_subprotocol) 0))
+    ($assert (> client_record_limit history_page_limit))
+    (check_wire_literals ($path/join this_pkg/root "src"))
+    (check_wire_literals ($path/join this_pkg/root "client"))))

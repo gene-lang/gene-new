@@ -2,8 +2,8 @@
 (import [isolated run_spec test_service] ^from "../../support")
 (import [close_session_service] ^from "../../../src/web/session_service")
 (import [configure_account] ^from "../../../src/channels/authority")
-(import [register_plugin] ^from "../../../src/storage/workspace")
-(import [row withdraw_seam] ^from "../../../src/kernel")
+(import [register_plugin] ^from "../../../src/storage/workspace_activation")
+(import [row] ^from "../../../src/kernel")
 
 (fn stored_slack []
   (quote (mod plugin
@@ -46,10 +46,9 @@
         (let service (test_service ^workspace root ^channel_options options
           ^provider (fn [request] "(Outcome ^^done ^reply \"unused\")")))
         (try
-          (withdraw_seam service/runtime/h "core" "loop")
           (let credentials ($path/join root "fake-slack-credentials"))
           ($fs/write_text credentials "Bot user oauth token: xoxb-test\nApp token: xapp-test\nChannel id: C12345678\n")
-          (configure_account service/runtime/channels/owner "test" credentials "/fixture"
+          (configure_account service/runtime/services/values/channels/owner "test" credentials "/fixture"
             {^team "T123" ^app "A123" ^bot "B123" ^bot_user "UBOT" ^operator "UOWNER"})
           (let registered (register_plugin ^^replace service/runtime/workspace service/runtime/h "slack" (stored_slack)))
           ($assert (== registered/status "ready") ($to_str registered))
@@ -66,7 +65,6 @@
         (let restarted (test_service ^workspace root ^channel_options options
           ^provider (fn [request] "(Outcome ^^done ^reply \"unused\")")))
         (try
-          (withdraw_seam restarted/runtime/h "core" "loop")
           (wait_open opened (+ before 1))
           (let next_fn (/fn (row restarted/runtime/h "functions" "slack_status")))
           ($assert (== (/id (/0 (/accounts (/owner (next_fn))))) "test"))

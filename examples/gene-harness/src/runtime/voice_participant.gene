@@ -1,0 +1,12 @@
+# Voice owns checked speech data. The loop's generic reply adapter keeps the
+# existing transcript and browser payload without knowing the Outcome schema.
+(mod voice_participant)
+
+(fn voice_participant []
+  {^name "core/voice" ^priority 100
+   ^commit (fn [context state result]
+     (let fields (?? result/validated/outcome/extensions {}))
+     (if (fields .has_key? "voice/audio_reply")
+       (result .put "reply_fields" ((?? result/reply_fields {})
+         .assoc "audio_reply" (fields .get "voice/audio_reply"))))
+     result)})

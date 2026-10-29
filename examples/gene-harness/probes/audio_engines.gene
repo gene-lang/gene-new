@@ -1,9 +1,9 @@
 # Opt-in actual-engine smoke/latency probe. PCM stays in memory; only metrics
 # are printed. Supply the engine's normal host environment before running.
-(import [piper_row whisper_row mac_synthesizer_row mac_helper] ^from "../src/audio/engines")
+(import [piper_row whisper_row mac_synthesizer_row mac_helper] ^from "../src/public/speech_engines")
 (import [wav_decode wav_encode pcm_duration_ms audio_error] ^from "./audio" ^pkg "audio")
 (import [bounded_audio_call] ^from "../src/audio/call")
-(import [mac_recognizer_row] ^from "../src/audio/mac_recognition")
+(import [mac_recognizer_row] ^from "../src/public/mac_recognition")
 (import [open_worker close_worker read_json dispatch_json] ^from "./worker" ^pkg "audio")
 (import [connect api] ^from "../src/cli/client")
 

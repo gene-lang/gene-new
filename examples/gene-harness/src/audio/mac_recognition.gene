@@ -1,3 +1,0 @@
-# Host compatibility import; implementation is a declared public library.
-(mod mac_recognition)
-(import [mac_open mac_stream mac_recognizer_row] ^from "../public/mac_recognition" ^^export)
