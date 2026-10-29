@@ -475,7 +475,7 @@
       h
       loaded
       ($to_str entry/id)))
-  (let retired (retired_requirement descriptor (entry_core_interface entry)))
+  (let retired (retired_requirement descriptor))
   (if (!= retired "") (fail (CompositionError ^message retired)))
   (if events (validate_descriptor_events h descriptor))
   (if_not ($absent? workspace/history_build/.get)
@@ -559,24 +559,19 @@
    ^turn (if (== source/kind "model") context/turn/turn nil)
    ^command (?? context/command nil)})
 
-(fn source_entry_interfaces [workspace : Workspace, id : Str, source, ^previous previous = void]
-  (var inherited previous)
-  (if_yes (== inherited void)
-    (set inherited nil)
-    (for entry in (composition_entries workspace)
-      (if (== entry/id id) (set inherited entry))))
-  (let required (try (source_interfaces source ^previous inherited/interfaces)
+(fn source_entry_interfaces [workspace : Workspace, source]
+  (let required (try (source_interfaces source)
     catch InterfacePolicyError (fail (CompositionError ^message $err/message))))
   (let diagnostic (interface_diagnostic required workspace/interfaces))
   (if (!= diagnostic "") (fail (CompositionError ^message diagnostic)))
   required)
 
-(fn stage_plugin_entry [workspace : Workspace, id : Str, source, ^dependencies dependencies = [], ^previous previous = void]
+(fn stage_plugin_entry [workspace : Workspace, id : Str, source, ^dependencies dependencies = []]
   (require_open workspace)
   (if_not (safe_module_id? id) (fail (CompositionError ^message "unsafe plugin id")))
   (if (!= ($head dependencies) List) (fail (CompositionError ^message "dependencies must be a list of modules")))
   (let parsed (parse_plugin_source source))
-  (let required (source_entry_interfaces workspace id parsed ^previous previous))
+  (let required (source_entry_interfaces workspace parsed))
   (let text (canonical_module_source parsed))
   (let digest $"sha256:${(sha256 text)}")
   (let closure [digest])
@@ -625,7 +620,7 @@
       (fail (CompositionError
         ^message $"composition entry ${id} already exists"))))
   (set source (parse_plugin_source source))
-  (let required (source_entry_interfaces workspace id source))
+  (let required (source_entry_interfaces workspace source))
   (var bounded
     (if ($absent? limits)
       (default_limits_data)

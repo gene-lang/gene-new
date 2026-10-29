@@ -3,34 +3,15 @@
 (type InterfacePolicyError ^props {^message Str} ^impl [Error])
 (impl Error for InterfacePolicyError)
 
-(const legacy_core "gene-harness/PluginHost:2")
 (const public_core "gene-harness/PluginHost:3")
 (const plugin_interface "gene-harness/Plugin:2")
 
 (fn current_interfaces []
-  {^core [legacy_core public_core] ^plugin_api [plugin_interface]})
+  {^core [public_core] ^plugin_api [plugin_interface]})
 
 (fn latest_interfaces [] {^core public_core ^plugin_api plugin_interface})
 
-(fn registration_interfaces [^previous previous = nil]
-  # New ids use the public contract. A replacement keeps its recorded core
-  # version while supported; retired entries can be re-authored as legacy v2.
-  # Explicit source requirements are applied separately and remain exact.
-  (let current (current_interfaces))
-  (let core (if ($absent? previous) public_core
-    (if (current/core .contains? previous/core) previous/core legacy_core)))
-  {^core core ^plugin_api plugin_interface})
-
-(fn effective_interfaces [required]
-  (if (!= ($head required) Map) (return required))
-  (let normalized {})
-  (for [key value] in required (normalized .put key value))
-  # This is the exact historical allowlist proof from 81093935. Preserve every
-  # other unknown requirement; absence of use cannot be inferred generally.
-  (if (&& (== required/core legacy_core) (== required/plugin_api plugin_interface)
-          (== required/harness_render "gene-harness/HarnessRender:1"))
-    (normalized .delete "harness_render"))
-  normalized)
+(fn registration_interfaces [] (latest_interfaces))
 
 (fn requirements_diagnostic [required] : Str
   (if (!= ($head required) Map) (return "stored plugin interface requirements must be a map"))
@@ -44,8 +25,7 @@
 (fn interface_diagnostic [required, offered] : Str
   (let invalid (requirements_diagnostic required))
   (if (!= invalid "") (return invalid))
-  (let normalized (effective_interfaces required))
-  (for [field version] in normalized
+  (for [field version] in required
     (let name ($to_str field))
     (let available (offered .get name))
     (if ($absent? available)
@@ -55,21 +35,20 @@
       (return $"unsupported interface ${name}: requires ${version}; this host provides ${supported}")))
   "")
 
-(fn source_interfaces [source, ^previous previous = nil]
+(fn source_interfaces [source]
   (let meta ($meta source))
   (let declared (?? (meta .get "interfaces") {}))
   (if (!= ($head declared) Map)
     (fail (InterfacePolicyError ^message "@interfaces must declare a map of exact required versions.")))
-  (let required (registration_interfaces ^previous previous))
+  (let required (registration_interfaces))
   (for [key version] in declared (required .put key version))
   (let invalid (requirements_diagnostic required))
   (if (!= invalid "") (fail (InterfacePolicyError ^message invalid)))
   required)
 
-(fn entry_core_interface [entry]
-  (/core (effective_interfaces entry/interfaces)))
+(fn entry_core_interface [entry] entry/interfaces/core)
 
-(fn retired_requirement [descriptor, core : Str] : Str
+(fn retired_requirement [descriptor] : Str
   (for requirement in (?? descriptor/requires [])
     (let registry (if (== ($head requirement) List) requirement/0
       (if (== ($head requirement) Map) requirement/registry nil)))
@@ -78,6 +57,6 @@
       (return "unsupported interface registry/views: terminal views are retired; re-register without that requirement"))
     (let seam (if (== ($head requirement) Str) requirement
       (if (&& (== ($head requirement) List) (== registry "seams")) requirement/1 nil)))
-    (if (&& (== core public_core) (["loop" "voice/runtime"] .contains? seam))
+    (if (["loop" "voice/runtime"] .contains? seam)
       (return $"unsupported interface ${seam}: PluginHost:3 requires a narrow host protocol")))
   "")

@@ -1,5 +1,5 @@
 # Host-only Cordis integration. Generated plugins import the stable PluginHost
-# protocol. The selected interface version determines the activation receiver.
+# protocol. The host flag determines the activation receiver.
 (mod cordis_adapter)
 
 (import ^from "." ^pkg "cordis"

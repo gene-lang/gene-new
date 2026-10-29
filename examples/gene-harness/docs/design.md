@@ -514,8 +514,8 @@ names by owner: `core_commands` owns `/help`, `/run` and `/view`, `shell` owns
 `/sh` and its input mode, the loop owns `/cancel`, `/stop` and `/restart`, and
 `repl` owns `/repl`.
 The [versioned plugin contract](plugins.md#interface-versions-and-callback-contexts)
-keeps stored version-2 callbacks supported while version 3 uses opaque receivers
-and public command/prompt projections. Exact entry requirements are checked
+uses version-3 opaque receivers and public command/prompt projections, and
+rejects retired stored interface versions. Exact entry requirements are checked
 against host-supported version sets, including on historical reversion. The
 terminal-view contracts have been retired without rewriting archived source.
 `plugin_api` also exports

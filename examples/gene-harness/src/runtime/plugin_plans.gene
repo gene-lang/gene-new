@@ -130,7 +130,7 @@
           (if (&& (== ($head operation/dependency_source) Str) (!= ($str/trim operation/dependency_source) ""))
             ($into ($parse/read_all operation/dependency_source) [])
             (?? operation/dependencies [])))
-        (set updated (stage_plugin_entry ^dependencies dependencies ^previous existing workspace id operation/source))
+        (set updated (stage_plugin_entry ^dependencies dependencies workspace id operation/source))
         (updated .put "source_origin" {^kind "operator"})
         (assign_creation ^revision revision workspace updated existing)))
     (if (&& (! ($absent? operation/enabled)) (!= ($head operation/enabled) Bool))

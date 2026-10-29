@@ -132,15 +132,11 @@ New code can select the public receiver and callback contract explicitly:
 
 `@interfaces` is module author metadata using existing Gene syntax. Each value
 is one exact required version, never a list of supported versions. The host
-supports both `PluginHost:2` and `PluginHost:3`, with `Plugin:2` for the shared
-plugin API. A new plugin id defaults to version 3. An unannotated replacement
-inherits the existing entry's recorded core version while supported, including
-historical plan bases. Re-registering an entry with a retired version defaults
-to version 2; explicit source requirements still apply exactly. Use an explicit
-`@interfaces {^core "gene-harness/PluginHost:2"}` annotation when new code needs
-the legacy contract, or select version 3 to migrate an existing entry. Descriptor
-construction receives that entry's selected version in `core_interface` during
-both preflight and activation.
+supports only `PluginHost:3`, with `Plugin:2` for the shared plugin API.
+New and replacement source defaults to that contract. Explicit requirements
+remain exact; a stored entry requiring a retired version is reported as an
+error until re-registered with current source. Descriptor construction receives
+the selected version in `core_interface` during preflight and activation.
 
 Version 3 supplies an opaque activation receiver with no Harness or effect-scope
 properties. Resolve the narrow host protocols below. `loop` and `voice/runtime`
@@ -158,21 +154,14 @@ handle. Subscription-row inspection omits the underlying bus object. A public
 receiver remains valid through leased callbacks, deactivation and deferred
 cleanup, and is revoked when that activation finishes retiring.
 
-Version 2 remains supported for existing receivers, raw command/prompt contexts
-and legacy runtime seams until a separately announced retirement. Moving a
-built-in to a narrow protocol does not change old stored callbacks. The trusted
-host-code model is unchanged; these versions define supported application APIs.
+Version 2 is retired. Stored entries and historical revisions requiring it
+fail admission; archived entries and source blobs are not rewritten. Re-register
+current source to use version 3. Unknown requirements remain errors.
 
 The terminal `views` registry, `HarnessView` and `HarnessRender` are retired.
-Version-2 metadata queries retain only an empty `views` projection; it cannot
-receive rows or satisfy descriptor requirements. Admission rejects a recorded
-requirement on the retired registry. The legacy whole-map
-`harness_render: HarnessRender:1` requirement is normalized away only alongside
-the proven `PluginHost:2`/`Plugin:2` pair. Other unknown or unsupported interface
-requirements are errors. Loading, plan validation and historical reversion
-share the same compatibility check; archived entries and source blobs are
-never rewritten by normalization. Host-only supported interfaces do not become
-plugin requirements.
+They have no metadata projection and cannot satisfy descriptor requirements.
+Loading, plan validation and historical reversion share the same admission
+check; host-only interfaces do not become plugin requirements.
 
 Additive messages retain their version. Removals or semantic changes require
 a new version and an explicit compatibility interval. Mismatch diagnostics

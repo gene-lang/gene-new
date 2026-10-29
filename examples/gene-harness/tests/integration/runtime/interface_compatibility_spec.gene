@@ -15,6 +15,7 @@
 (import [mode_state submit_mode_input close_mode] ^from "../../../src/runtime/input_modes")
 (import [assemble_instructions] ^from "../../../src/agents/instructions")
 (import [archived_record] ^from "../../../src/storage/plugin_history")
+(import [host_build] ^from "../../../src/runtime/host_identity")
 
 (fn command [runtime, input]
   (let receipt (submit_command runtime/commands "default" input))
@@ -26,32 +27,15 @@
   (let callback (/fn (row runtime/h "functions" name)))
   (callback))
 
-(fn legacy_module []
-  (quote (mod plugin
-    (import [Plugin PluginHost CommandContext CommandResult] ^from "src/plugin_api.gene")
+(fn simple_source [id : Str]
+  `(mod plugin
+    (import [Plugin PluginHost] ^from "src/plugin_api.gene")
     (fn init [descriptor]
-      ($assert (== descriptor/core_interface "gene-harness/PluginHost:2"))
-      (Plugin ^id "compat" ^activate (fn [host]
-        ($assert (! ($absent? host/h)))
-        ($assert (! ($absent? host/effects)))
-        ($assert ((host .PluginHost:registry_names) .contains? "views"))
-        ($assert (== (host .PluginHost:rows "views") []))
-        (host .PluginHost:contribute "functions" {^name "compat_version" ^doc "Legacy receiver."
-          ^fn (fn [] ($assert (! ($absent? host/h))) 2)})
-        (host .PluginHost:contribute "commands" {^name "compat" ^doc "Legacy typed command."
-          ^run (fn [ctx : CommandContext]
-            ($assert (same? ctx/manager/runtime ctx/runtime))
-            ($assert (! ($absent? ctx/snapshot/registries)))
-            (CommandResult ^display ctx/runtime/root))})
-        (host .PluginHost:contribute "prompt" {^name "compat_prompt"
-          ^render (fn [runtime, session]
-            ($assert (! ($absent? runtime/h)))
-            $"legacy:${runtime/root}:${session/kind}")})))))))
-
-(fn legacy_source []
-  (let source (legacy_module))
-  ($node/rebuild source ^head ($head source) ^body ($body source) ^props ($props source)
-    ^meta {^interfaces {^core "gene-harness/PluginHost:2"}}))
+      ($assert (== descriptor/core_interface "gene-harness/PluginHost:3"))
+      (Plugin ^id %id ^activate (fn [host]
+        ($assert ($absent? host/h))
+        (host .PluginHost:contribute "functions"
+          {^name ($to_str %id "_version") ^doc "Public source contract." ^fn (fn [] 3)}))))))
 
 (fn public_source [n, marker]
   `(mod plugin @interfaces {^core "gene-harness/PluginHost:3"}
@@ -131,6 +115,39 @@
           ($assert (! ($absent? host/.PluginHost:execution_budget))))))))
 
 (describe "Stored interface compatibility"
+  (it "rejects stored version-two entries without blocking peers and repairs them only with current source" []
+    (isolated this_mod/.path
+      "rejects stored version-two entries without blocking peers and repairs them only with current source"
+      (fn [root]
+        (let profile (Profile ^name "retirement" ^plugins [(provider_offline)] ^provider "offline"))
+        (let first (open_runtime root "default" profile))
+        (let old_revision ($cell nil))
+        (try
+          (let retired (stage_plugin_entry first/workspace "retired" (simple_source "retired")))
+          (set retired/interfaces {^core "gene-harness/PluginHost:2" ^plugin_api "gene-harness/Plugin:2"})
+          (let peer (stage_plugin_entry first/workspace "peer" (simple_source "peer")))
+          (old_revision .set (commit_composition first/workspace [retired peer]))
+        ensure (close_runtime first))
+        (let runtime (open_runtime root "default" profile))
+        (try
+          ($assert (== (/interfaces (host_build))
+            {^core ["gene-harness/PluginHost:3"] ^plugin_api ["gene-harness/Plugin:2"]}))
+          ($assert ($str/contains? (runtime/workspace/errors/.get .get "retired")
+            "core: requires gene-harness/PluginHost:2"))
+          ($assert ($absent? (row runtime/h "functions" "retired_version")))
+          ($assert (== (invoke runtime "peer_version") 3))
+          (let fixed (register_plugin ^^replace runtime/workspace runtime/h "retired" (simple_source "retired")))
+          ($assert (== fixed/status "ready") ($to_str fixed))
+          ($assert (== (invoke runtime "retired_version") 3))
+          (let before (composition_revision runtime/workspace))
+          (let plan (validate_plan runtime {^base_revision before ^restore_revision old_revision/.get ^changes []}))
+          ($assert (! plan/valid) ($to_str plan))
+          ($assert ($str/contains? ($str/join plan/errors "\n") "gene-harness/PluginHost:2"))
+          ($assert (try (revert_plugin runtime/workspace runtime/h "retired" old_revision/.get) false
+            catch Any ($str/contains? $err/message "gene-harness/PluginHost:2")))
+          ($assert (== (composition_revision runtime/workspace) before))
+        ensure (close_runtime runtime)))))
+
   (it "re-registers retired version-one entries directly and through plans using unannotated source" []
     (isolated this_mod/.path
       "re-registers retired version-one entries directly and through plans using unannotated source"
@@ -140,7 +157,7 @@
           (let workspace ($path/join root mode))
           (let first (open_runtime workspace "default" profile))
           (try
-            (let entry (stage_plugin_entry first/workspace "compat" (legacy_module)))
+            (let entry (stage_plugin_entry first/workspace "compat" (simple_source "compat")))
             (set entry/interfaces {^core "gene-harness/PluginHost:1" ^plugin_api "gene-harness/Plugin:1"})
             (commit_composition first/workspace [entry])
           ensure (close_runtime first))
@@ -149,78 +166,26 @@
             ($assert ($absent? (row restarted/h "functions" "compat_version")))
             (if (== mode "direct")
               (then
-                (let registered (register_plugin ^^replace restarted/workspace restarted/h "compat" (legacy_module)))
+                (let registered (register_plugin ^^replace restarted/workspace restarted/h "compat" (simple_source "compat")))
                 ($assert (== registered/status "ready") ($to_str registered)))
               (else
                 (let plan (validate_plan restarted {^base_revision (composition_revision restarted/workspace)
-                  ^changes [{^id "compat" ^kind "replace" ^source (legacy_module)}]}))
+                  ^changes [{^id "compat" ^kind "replace" ^source (simple_source "compat")}]}))
                 ($assert plan/valid ($to_str plan/errors))
                 (let applied (apply_plan restarted plan/id))
                 ($assert (== applied/state "applied") ($to_str applied))))
             ($assert (! ($absent? (row restarted/h "functions" "compat_version"))) mode)
-            ($assert (== (invoke restarted "compat_version") 2))
+            ($assert (== (invoke restarted "compat_version") 3))
             ($assert (== (/interfaces ($first (composition_entries restarted/workspace)))
-              {^core "gene-harness/PluginHost:2" ^plugin_api "gene-harness/Plugin:2"}))
+              {^core "gene-harness/PluginHost:3" ^plugin_api "gene-harness/Plugin:2"}))
           ensure (close_runtime restarted))
           (let final_runtime (open_runtime workspace "default" profile))
           (try
             ($assert (! ($absent? (row final_runtime/h "functions" "compat_version"))) ($to_str mode ": after restart"))
-            ($assert (== (invoke final_runtime "compat_version") 2))
+            ($assert (== (invoke final_runtime "compat_version") 3))
           ensure (close_runtime final_runtime))))))
 
-  (it "preserves actual whole-map entries and typed legacy callbacks across upgrade restart and historical revert" []
-    (isolated this_mod/.path
-      "preserves actual whole-map entries and typed legacy callbacks across upgrade restart and historical revert"
-      (fn [root]
-        (let profile (Profile ^name "compatibility" ^plugins []))
-        (let legacy_revision ($cell nil))
-        (let archived ($cell nil))
-        (let first (open_runtime root "default" profile))
-        (try
-          # Model an existing entry written before public-by-default authoring.
-          # Its original unannotated source must continue to load as version 2.
-          (let entry (stage_plugin_entry first/workspace "compat" (legacy_module)))
-          (set entry/interfaces {^core "gene-harness/PluginHost:2" ^plugin_api "gene-harness/Plugin:2"
-            ^harness_render "gene-harness/HarnessRender:1"})
-          (let entries [entry])
-          (legacy_revision .set (commit_composition first/workspace entries))
-          (archived .set {^head first/workspace/history_head/.get
-            ^record (archived_record first/workspace/store first/workspace/history_head/.get)
-            ^source (first/workspace/blob_store .Store:get $"blob/${entries/0/module_digest}")})
-        ensure (close_runtime first))
-        (let restarted (open_runtime root "default" profile))
-        (try
-          ($assert (== (invoke restarted "compat_version") 2))
-          (let legacy_command (command restarted "/compat"))
-          ($assert (== legacy_command/item/value root) ($to_str legacy_command))
-          ($assert ($str/contains? (assemble_instructions restarted {^kind "interactive"}) $"legacy:${root}"))
-          (let plan (validate_plan restarted {^base_revision (composition_revision restarted/workspace) ^changes []}))
-          ($assert plan/valid ($to_str plan/errors))
-          (let marker $"${root}/public-cleanup")
-          (let upgraded (register_plugin ^^replace restarted/workspace restarted/h "compat" (public_source 3 marker)))
-          ($assert (== upgraded/status "ready") ($to_str upgraded))
-          ($assert (== (invoke restarted "compat_version") 3))
-          (let public_command (command restarted "/compat (+ 20 22)"))
-          ($assert (== public_command/item/value "42") ($to_str public_command))
-          (let nested_command (command restarted "/compat_nested (+ 21 21)"))
-          ($assert (== nested_command/item/value "42") ($to_str nested_command))
-          ($assert ($str/contains? (assemble_instructions restarted {^kind "interactive"}) $"public:${root}"))
-          ($assert (try (invoke restarted "compat_retained") false catch Any (== $err/code "command_required")))
-          ($assert (! ((registry_names restarted/h) .contains? "views")))
-          (let reverted (revert_plugin restarted/workspace restarted/h "compat" legacy_revision/.get))
-          ($assert (== reverted/status "ready") ($to_str reverted))
-          ($assert (== (invoke restarted "compat_version") 2))
-          ($assert (== (/item/value (command restarted "/compat")) root))
-          ($assert (== ($fs/read_text marker) "3"))
-          (let history (plugin_history restarted/workspace "compat"))
-          (let originals ($filter history (fn [record] (== record/revision legacy_revision/.get))))
-          ($assert (== originals/0/entry/interfaces/harness_render "gene-harness/HarnessRender:1"))
-          ($assert (== (archived_record restarted/workspace/store archived/.get/head) archived/.get/record))
-          ($assert (== (restarted/workspace/blob_store .Store:get $"blob/${originals/0/entry/module_digest}") archived/.get/source))
-        ensure (close_runtime restarted))
-        (let final_runtime (open_runtime root "default" profile))
-        (try ($assert (== (invoke final_runtime "compat_version") 2))
-          ensure (close_runtime final_runtime))))))
+)
 
 (describe "Versioned activation lifetimes"
   (it "keeps a stored public receiver alive through leased callbacks removal and cleanup then revokes it" []
@@ -274,7 +239,7 @@
         (let runtime (open_runtime root "default" (Profile ^name "compatibility" ^plugins [])))
         (try
           (set runtime/workspace/interfaces (runtime/workspace/interfaces .assoc "host_only" ["host/Extra:1"]))
-          (register_plugin runtime/workspace runtime/h "compat" (legacy_source))
+          (register_plugin runtime/workspace runtime/h "compat" (simple_source "compat"))
           (let good (composition_entries runtime/workspace))
           ($assert (! (good/0/interfaces .has_key? "host_only")))
           ($assert (== ($head good/0/interfaces/core) Str))
@@ -354,9 +319,9 @@
         ensure (close_runtime runtime))))))
 
 (describe "Default source contracts"
-  (it "uses version 3 for new ids while replacements and historical plan bases inherit their recorded version" []
+  (it "uses the public contract for new ids replacements and plans" []
     (isolated this_mod/.path
-      "uses version 3 for new ids while replacements and historical plan bases inherit their recorded version"
+      "uses the public contract for new ids replacements and plans"
       (fn [root]
         (let runtime (open_runtime root "default" (Profile ^name "source-contracts" ^plugins [])))
         (let source (quote (mod plugin
@@ -365,24 +330,15 @@
             (Plugin ^id "versioned" ^activate (fn [host]
               (host .PluginHost:contribute "functions" {^name "versioned" ^doc "Selected interface."
                 ^fn (fn [] {^core descriptor/core_interface ^opaque ($absent? host/h)})})))))))
-        (fn annotated [core]
-          ($node/rebuild source ^head ($head source) ^body ($body source) ^props ($props source)
-            ^meta {^interfaces {^core core}}))
         (try
           (register_plugin runtime/workspace runtime/h "versioned" source)
           ($assert (== (invoke runtime "versioned") {^core "gene-harness/PluginHost:3" ^opaque true}))
-          (let legacy (register_plugin ^^replace runtime/workspace runtime/h "versioned"
-            (annotated "gene-harness/PluginHost:2")))
-          ($assert (== (invoke runtime "versioned") {^core "gene-harness/PluginHost:2" ^opaque false}))
           (register_plugin ^^replace runtime/workspace runtime/h "versioned" source)
-          ($assert (== (/core (invoke runtime "versioned")) "gene-harness/PluginHost:2"))
-          (register_plugin ^^replace runtime/workspace runtime/h "versioned" (annotated "gene-harness/PluginHost:3"))
-          (register_plugin ^^replace runtime/workspace runtime/h "versioned" source)
-          ($assert (/opaque (invoke runtime "versioned")))
+          ($assert (== (invoke runtime "versioned") {^core "gene-harness/PluginHost:3" ^opaque true}))
           (let plan (validate_plan runtime {^base_revision (composition_revision runtime/workspace)
-            ^restore_revision legacy/revision ^changes [{^id "versioned" ^kind "replace" ^source ($to_str source)}]}))
+            ^changes [{^id "versioned" ^kind "replace" ^source ($to_str source)}]}))
           ($assert plan/valid ($to_str plan/errors))
-          ($assert (== plan/entries/0/interfaces/core "gene-harness/PluginHost:2"))
+          ($assert (== plan/entries/0/interfaces/core "gene-harness/PluginHost:3"))
         ensure (close_runtime runtime))))))
 
 (fn main [args] : Int (run_spec args))

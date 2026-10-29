@@ -286,7 +286,7 @@
                 limits))
             (if (|| (!= ($head plugin) Plugin) (!= plugin/id id) (! ($runtime/callable? plugin/activate)))
               (fail "init must return the matching Plugin with a callable activate"))
-            (let retired (retired_requirement plugin (entry_core_interface entry)))
+            (let retired (retired_requirement plugin))
             (if (!= retired "")
               (return {^id id ^!ok ^code "unsupported_interface" ^message retired ^activation "unverified"}))
             (let data ($thaw ($freeze (descriptor_data plugin))))

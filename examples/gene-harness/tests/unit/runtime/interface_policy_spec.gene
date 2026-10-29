@@ -1,5 +1,5 @@
 (import $test [describe it])
-(import [current_interfaces latest_interfaces registration_interfaces effective_interfaces
+(import [current_interfaces latest_interfaces registration_interfaces
   source_interfaces interface_diagnostic InterfacePolicyError]
   ^from "../../../src/runtime/interface_policy")
 
@@ -20,35 +20,12 @@
     ($assert ($str/contains? (interface_diagnostic {} current) "omit"))
     ($assert ($str/contains? (interface_diagnostic [] current) "must be a map"))
     ($assert ($str/contains? (interface_diagnostic current current) "exact version")))
-  (it "migrates only the proven legacy render requirement and keeps unknown requirements fail-closed" []
-    (let old {^core "gene-harness/PluginHost:2" ^plugin_api "gene-harness/Plugin:2"})
-    (let legacy (old .assoc "harness_render" "gene-harness/HarnessRender:1"))
-    ($assert (== (effective_interfaces legacy) old))
-    ($assert (== (interface_diagnostic legacy (current_interfaces)) ""))
-    ($assert (legacy .has_key? "harness_render") "Compatibility mutated the archived map.")
-    ($assert ($str/contains? (interface_diagnostic (legacy .assoc "future" "future:1") (current_interfaces)) "future"))
-    ($assert ($str/contains? (interface_diagnostic (legacy .assoc "harness_render" "render:99") (current_interfaces)) "harness_render")))
-  (it "defaults new ids to the public contract and inherits a replacement's recorded version unless explicitly changed" []
+  (it "defaults source to the public contract and rejects explicit retired or malformed requirements" []
+    ($assert (== (/core (current_interfaces)) ["gene-harness/PluginHost:3"]))
     ($assert (== (source_interfaces (quote (mod plugin))) (latest_interfaces)))
-    (let old {^core "gene-harness/PluginHost:2" ^plugin_api "gene-harness/Plugin:2"})
-    ($assert (== (source_interfaces ^previous old (quote (mod plugin))) old))
-    ($assert (== (source_interfaces ^previous old (quote (mod plugin @interfaces {^core "gene-harness/PluginHost:3"})))
-      (latest_interfaces)))
-    ($assert (== (source_interfaces (quote (mod plugin @interfaces {^core "gene-harness/PluginHost:2"}))) old))
-    ($assert (== (source_interfaces (quote (mod plugin @interfaces {^core "gene-harness/PluginHost:3"})))
-      (latest_interfaces)))
+    (for core in ["gene-harness/PluginHost:1" "gene-harness/PluginHost:2"]
+      (let required (source_interfaces `(mod plugin @interfaces {^core %core})))
+      ($assert ($str/contains? (interface_diagnostic required (current_interfaces)) core)))
     ($assert (try
-      (source_interfaces (quote (mod plugin @interfaces {^core ["gene-harness/PluginHost:2"]})))
-      false catch InterfacePolicyError true)))
-  (it "re-registers retired entries with the legacy contract while preserving explicit requirements" []
-    (let retired {^core "gene-harness/PluginHost:1" ^plugin_api "gene-harness/Plugin:1"})
-    (let legacy {^core "gene-harness/PluginHost:2" ^plugin_api "gene-harness/Plugin:2"})
-    ($assert (== (registration_interfaces ^previous retired) legacy))
-    ($assert (== (source_interfaces ^previous retired (quote (mod plugin))) legacy))
-    ($assert (== (source_interfaces ^previous (latest_interfaces) (quote (mod plugin))) (latest_interfaces)))
-    ($assert (== (source_interfaces ^previous retired
-      (quote (mod plugin @interfaces {^core "gene-harness/PluginHost:3"}))) (latest_interfaces)))
-    (let explicit (source_interfaces ^previous retired
-      (quote (mod plugin @interfaces {^core "gene-harness/PluginHost:1"}))))
-    ($assert ($str/contains? (interface_diagnostic explicit (current_interfaces))
-      "core: requires gene-harness/PluginHost:1"))))
+      (source_interfaces (quote (mod plugin @interfaces {^core ["gene-harness/PluginHost:3"]})))
+      false catch InterfacePolicyError true))))

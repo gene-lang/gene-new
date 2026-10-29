@@ -1,0 +1,21 @@
+(import $test [describe it])
+(import [new_harness shutdown_harness contribute row] ^from "../../../src/kernel")
+(import [public_contract?] ^from "../../../src/runtime/public_context")
+(import [CommandContext] ^from "../../../src/plugin_api")
+
+(describe "Host and public callback contexts"
+  (it "keeps direct host rows raw and projects every non-host activation" []
+    (let h (new_harness))
+    (try
+      ($assert (! (public_contract? h "core")))
+      (let context (CommandContext ^manager "host-manager" ^runtime "host-runtime"
+        ^session "default" ^raw "probe" ^id "probe" ^output nil ^snapshot nil))
+      (contribute h "core" "commands"
+        {^name "host_probe" ^doc "Direct host context." ^run (fn [ctx] ctx)})
+      (let callback (/run (row h "commands" "host_probe")))
+      ($assert (same? (callback context) context))
+      (h/plugin_policies/.get .put "public" {^host false})
+      ($assert (public_contract? h "public"))
+      (h/plugin_policies/.get .put "host" {^host true})
+      ($assert (! (public_contract? h "host")))
+    ensure (shutdown_harness h))))

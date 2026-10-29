@@ -38,7 +38,6 @@
 (import [builtin_registry_specs] ^from "./registries/builtins")
 (import [bind_service] ^from "./runtime/service_binding")
 (import [public_modules] ^from "./runtime/public_modules")
-(import [public_core] ^from "./runtime/interface_policy")
 (import [make_public_host revoke_public_host] ^from "./runtime/public_host")
 (import ^from "./notifications/publisher"
   [safe_publish update_notification list_source_messages clear_source_message])
@@ -714,8 +713,7 @@
          ^host_build_id (if ($absent? h/workspace) "unknown" h/workspace/history_build/.get)}))
       (var context (Host ^h h ^owner plugin/id ^effects effects ^notification_revision ($crypto/random_hex 16)
         ^state_writer writer))
-      (let receiver (if (&& (!= policy/host true) (== policy/core_interface public_core))
-        (make_public_host context) context))
+      (let receiver (if policy/host context (make_public_host context)))
       (var owned_rows ($cell (fresh_list)))
       (let owned_registries ($cell []))
       (h/plugin_policies/.get .put plugin/id
@@ -1362,21 +1360,13 @@
   (message notification_clear [id : Str, revision : Int] : Any
     (clear_source_message self/h self/owner id revision))
   (message registry_names [] : Any
-    (var record self)
-    # Version 2 metadata readers retain the empty terminal-view projection.
-    # There is no registry, protocol or terminal implementation behind it.
-    (let names (registry_names record/h))
-    (names .push "views")
-    names)
+    (registry_names self/h))
   (message row_keys [registry_name : Str] : Any
-    (if (== registry_name "views") (return ($freeze_shallow [])))
     (var record self)
     (registry_row_keys record/h registry_name))
   (message rows [registry_name : Str] : Any
-    (if (== registry_name "views") (return ($freeze_shallow [])))
     (immutable_view (rows self/h registry_name)))
   (message row [registry_name : Str, key : Str] : Any
-    (if (== registry_name "views") (return nil))
     (immutable_view (row self/h registry_name key)))
   (message run_hooks [point : Str, context] : Any
     (run_hooks self/h point context))
