@@ -636,7 +636,7 @@ a simple model-free reply. These are testing configurations of the same host.
 
 | Location | Responsibility |
 | --- | --- |
-| `src/plugin_api.gene`, `src/kernel.gene`, `src/registries/` | Plugin contract, registries, activation and host events |
+| `src/plugin_api.gene`, `src/kernel.gene`, `src/kernel/`, `src/registries/` | Shared plugin contract, stable kernel facade, registry ownership, activation and host events |
 | `src/agents/` | Model requests, response evaluation, instructions and history |
 | `src/runtime/` | Workspace ownership, sessions, commands, REPL, rounds, scheduling and composition lifetimes |
 | `src/storage/` | Durable events and stored plugin generations |
