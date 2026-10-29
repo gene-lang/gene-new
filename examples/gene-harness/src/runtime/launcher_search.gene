@@ -21,7 +21,10 @@
     (var rank (match_rank title "" q))
     (if_yes (&& (< rank 0) ($str/contains? ($str/lower snippet) q)) (set rank 5))
     (if_yes (== q "")
-      (set rank (if record/pinned 5 (if (== record/kind "interactive") 6 7))))
+      (set rank (if record/pinned
+        (then 5)
+        (elif (== record/kind "interactive") 6)
+        (else 7))))
     (if (< rank 0) (continue))
     (let origin (if ($absent? record/parent/session) "" $" · from ${record/parent/session}"))
     (set found (insert_ranked found

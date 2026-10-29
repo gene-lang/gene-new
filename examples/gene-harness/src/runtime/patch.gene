@@ -49,10 +49,14 @@
           (set index (+ index 1)))
         (return operations)))
     (if_not (file_header? line) (patch_error $"expected file header at patch line ${(+ index 1)}"))
-    (let kind (if ($str/starts_with? line "*** Add File: ") "add"
-      (if ($str/starts_with? line "*** Update File: ") "update" "delete")))
-    (let prefix (if (== kind "add") "*** Add File: "
-      (if (== kind "update") "*** Update File: " "*** Delete File: ")))
+    (let kind (if ($str/starts_with? line "*** Add File: ")
+      (then "add")
+      (elif ($str/starts_with? line "*** Update File: ") "update")
+      (else "delete")))
+    (let prefix (match kind
+      (when "add" "*** Add File: ")
+      (when "update" "*** Update File: ")
+      (else "*** Delete File: ")))
     (let path (checked_path (suffix line prefix)))
     (let operation {^kind kind ^path path ^target path ^hunks [] ^lines [] ^added 0 ^removed 0})
     (set index (+ index 1))
@@ -106,7 +110,10 @@
   ($str/slice_bytes text 0 count))
 
 (fn normalize_line [text : Str, tier : Int]
-  (if (== tier 0) text (if (== tier 1) (trailing_trim text) ($str/trim text))))
+  (match tier
+    (when 0 text)
+    (when 1 (trailing_trim text))
+    (else ($str/trim text))))
 
 (fn hunk_position [path : Str, number : Int, lines, hunk, start : Int]
   (var lower start)
@@ -121,7 +128,10 @@
       (if (!= anchors/.size 1) (patch_error $"${path} hunk ${number}: anchor not unique"))
       (set lower anchors/0)))
   (if hunk/old/.empty?
-    (return (if (!= hunk/anchor "") (+ lower 1) (if hunk/eof lines/.size start))))
+    (return (if (!= hunk/anchor "")
+      (then (+ lower 1))
+      (elif hunk/eof lines/.size)
+      (else start))))
   (for tier in [0 1 2]
     (let matches [])
     (var position lower)
@@ -227,9 +237,10 @@
   (let summaries [])
   (for operation in plan/operations
     (let note (if (== operation/kind "add") " (new)" ""))
-    (summaries .push (if (== operation/kind "delete") $"${operation/path} (deleted)"
-      (if (!= operation/path operation/target) $"${operation/path} -> ${operation/target} +${operation/added} -${operation/removed}"
-        $"${operation/target} +${operation/added} -${operation/removed}${note}"))))
+    (summaries .push (if (== operation/kind "delete")
+      (then $"${operation/path} (deleted)")
+      (elif (!= operation/path operation/target) $"${operation/path} -> ${operation/target} +${operation/added} -${operation/removed}")
+      (else $"${operation/target} +${operation/added} -${operation/removed}${note}"))))
   ($str/join summaries ", "))
 
 (fn commit_patch [plan, ^fail_after_renames fail_after_renames : Int = -1, ^after_rename after_rename = nil]

@@ -30,11 +30,11 @@
     (replace_matches #"`([^`]+)`" text (fn [match]
       (let content match/groups/0)
       (if (&& (<= ($str/byte_size content) 40)
-              (! ($absent? (#"^[A-Za-z_][A-Za-z0-9_:?.-]*$" .match content))))
+              ($present? (#"^[A-Za-z_][A-Za-z0-9_:?.-]*$" .match content)))
         content "code"))))
   (set text ($regex/replace_all #"<[^>]*>" text ""))
   (set text ($regex/replace_all #"(*UTF8)[\x{1F000}-\x{1FAFF}\x{2600}-\x{27BF}\x{FE0F}\x{200D}]" text ""))
-  (let item (! ($absent? (#"^\s*(?:#{1,6}\s+|[-*+]\s+|[0-9]+[.)]\s+)" .match text))))
+  (let item ($present? (#"^\s*(?:#{1,6}\s+|[-*+]\s+|[0-9]+[.)]\s+)" .match text)))
   (set text ($regex/replace_all #"^\s*(?:#{1,6}\s+|[-*+]\s+|[0-9]+[.)]\s+)" text ""))
   (set text ($regex/replace_all #"\*\*|__|~~" text ""))
   (set text ($str/trim ($regex/replace_all #"\s+" text " ")))
@@ -43,7 +43,7 @@
   text)
 
 (fn speech_needs_audio_reply? [text : Str] : Bool
-  (! ($absent? (#"(?m)^\s*(?:`{3}|~{3}|\|)" .match text))))
+  ($present? (#"(?m)^\s*(?:`{3}|~{3}|\|)" .match text)))
 
 (fn speech_text [text : Str] : Str
   (let lines [])
@@ -61,7 +61,7 @@
       (set table false)
       (continue))
     (if (!= fence "") (continue))
-    (if_yes (! ($absent? (#"^\|.*\|$" .match line)))
+    (if_yes ($present? (#"^\|.*\|$" .match line))
       (if_not table (lines .push "Table on screen."))
       (set table true)
       (continue))

@@ -10,9 +10,11 @@
 
 (fn bench_profile [mode : Str, ^recognizer recognizer : Str = "whisper_local"]
   (let root ($path/parent this_mod/.path))
-  (let entry (if (== mode "full") "audio_bench_full.gene"
-    (if (== mode "handsfree") "audio_bench_handsfree.gene"
-      (if (== mode "processed") "audio_bench_processed.gene" "audio_bench_smoke.gene"))))
+  (let entry (match mode
+    (when "full" "audio_bench_full.gene")
+    (when "handsfree" "audio_bench_handsfree.gene")
+    (when "processed" "audio_bench_processed.gene")
+    (else "audio_bench_smoke.gene")))
   (let asset ($web/load $"${root}/../tests/fixtures/${entry}"))
   (let probe (Plugin ^id "audio_bench" ^provides [["browser_clients" "audio_bench"]]
     ^activate (fn [host]

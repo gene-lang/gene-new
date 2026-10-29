@@ -80,7 +80,7 @@
 
 
 (fn ensure_feature_host [client : Client] : Void
-  (if_yes (! ($absent? client/services)) (return))
+  (if_yes ($present? client/services) (return))
   (set client/services (FeatureHost
     ^api (fn [method : Str, path : Str, payload : Any, done : (Fn [Int Any] Void)] : Void (api client method path payload done))
     ^error (fn [data : Any, session : Str] : Void (show_error client data ^session session))
@@ -126,7 +126,7 @@
     (var value (if ($absent? command) (output_text entry) (command_output_text entry command)))
     (if_yes (!= value (string_or mount/text ""))
       ($dom/set_text pre value) (set mount/text value))
-    (if_yes (! ($absent? command)) (continue))
+    (if_yes ($present? command) (continue))
     (var panel : EventTarget mount/panel) (var summary : EventTarget mount/summary)
     (if_yes (! (same? entry mount/entry))
       (set panel/open (output_open entry (launcher_flag mount/default_open))) (set mount/entry entry))
@@ -158,9 +158,9 @@
 (fn begin_output_render [client : Client] : Void
   (var store (live_store client))
   (for mount in store/mounts
-    (if_yes (! ($absent? mount/command)) (continue))
+    (if_yes ($present? mount/command) (continue))
     (var entry : Any (output_entry store (string_or mount/key "")))
-    (if_yes (&& (! ($absent? entry)) (same? entry mount/entry))
+    (if_yes (&& ($present? entry) (same? entry mount/entry))
       (var panel : EventTarget mount/panel) (set entry/open panel/open)))
   (set store/mounts []))
 
@@ -168,7 +168,7 @@
   ^command command : Any = nil] : EventTarget
   (var store (live_store client))
   (var entry : Any (output_entry store key))
-  (if_yes (! ($absent? command))
+  (if_yes ($present? command)
     (var combined_pre ($dom/render `(pre ^class_name "command_output")))
     (var value (command_output_text entry command))
     ($dom/set_text combined_pre value)
@@ -512,8 +512,8 @@
     (var center : NotificationCenter client/center)
     (center_ready center (&& client/ready client/connected)))
   (var send ($dom/element "send"))
-  (var in_mode (! ($absent? client/mode)))
-  (var executing (if in_mode (! ($absent? client/mode/running)) client/server_busy))
+  (var in_mode ($present? client/mode))
+  (var executing (if in_mode ($present? client/mode/running) client/server_busy))
   (var attachments : MediaComposer client/media)
   (media_controls attachments (&& client/ready client/connected (! client/sending)
     ($absent? client/pending) (! in_mode)))
@@ -566,21 +566,18 @@
       "Shift+Enter for a new line · / for commands"))
   (set send/text_content
     (if client/sending
-      "Sending…"
-      (if executing
-        "Stop"
-        (if in_mode
-          client/mode/submit_label
-          (if ($absent? client/pending)
-            "Send"
-            "Resolve")))))
+      (then "Sending…")
+      (elif executing "Stop")
+      (elif in_mode client/mode/submit_label)
+      (elif ($absent? client/pending) "Send")
+      (else "Resolve")))
   ($dom/set_class send "stop" executing)
   (var mode "Local workspace")
   (if_not ($absent? client/status)
     (var model : Str client/status/model/model)
     (var provider : Str client/status/model/provider)
     (set mode (if client/status/offline "Command demo · no model" $"${model} · ${provider}"))
-    (if_yes (&& (! client/status/offline) (! ($absent? client/status/model/effort)))
+    (if_yes (&& (! client/status/offline) ($present? client/status/model/effort))
       (var effort : Str client/status/model/effort)
       (set mode $"${mode} · ${effort}")))
   (set_hidden "offline_notice" (|| ($absent? client/status) (! client/status/offline)))
@@ -676,7 +673,7 @@
   (for existing in client/sessions
     (if (== (string_or existing/id "") id)
       (do
-        (if_yes (&& ($absent? record/children) (! ($absent? existing/children)))
+        (if_yes (&& ($absent? record/children) ($present? existing/children))
           (set record/children existing/children))
         (roots .push record))
       (do
@@ -764,7 +761,7 @@
       (notice client (if copied "Copied." "Select the text to copy it.")))))
 
 (fn edit_prompt [client : Client, text : Str] : Void
-  (if_yes (! ($absent? client/pending))
+  (if_yes ($present? client/pending)
     (notice client "Resolve the pending submission before editing another prompt.")
     (return))
   ($dom/set_input_value client/prompt text)
@@ -847,9 +844,9 @@
       ($dom/render
         `(button ^type "button" ^on_click %(fn [event : Any] : Void (api client "POST" $"${(api_root)}/sessions/${client/selected}/commands/${command_id}/cancel" {} (fn [code : Int, data : Any] : Void (if_yes (!= code 200) (show_error client data))))) "Cancel command"))))
   (var view : Any block/view)
-  (if_yes (! ($absent? view))
+  (if_yes ($present? view)
     (var next : Any view/next)
-    (if_yes (! ($absent? next))
+    (if_yes ($present? next)
       (var path : Str view/path)
       (var first : Int next)
       ($dom/append
@@ -872,7 +869,7 @@
         (var step : (List Any) group/blocks)
         (var block : Any step/0)
         (var key : Str group/key)
-        (var active (&& (! ($absent? run)) (! (terminal (string_or run/state "")))))
+        (var active (&& ($present? run) (! (terminal (string_or run/state "")))))
         ($dom/append target
           (step_view step (expanded_block client key) active
             (fn [text : Str] : Void (copy_text client text))
@@ -882,7 +879,7 @@
             ^on_speak (voice_replay_handler client)
             ^output_view (live_output_view client (turn_output_key client/selected (string_or block/round_id "") (dint block/turn)))
             ^render_extra (fn [content : EventTarget, item : Any] : Void (render_block client content item)))))))
-  (if_yes (&& (! ($absent? run)) (!= (run_label run) "Completed"))
+  (if_yes (&& ($present? run) (!= (run_label run) "Completed"))
     (var on_continue : Any nil)
     (if_yes (== (string_or run/id "") (string_or client/round/id ""))
       (var session client/selected) (var source : Str run/id)
@@ -984,7 +981,7 @@
       (var current_id : Str client/round/id)
       (if_yes (== current_id id) (set run client/round) (set current_shown true)))
     (render_run client blocks run))
-  (if_yes (&& (! ($absent? client/round)) (! current_shown))
+  (if_yes (&& ($present? client/round) (! current_shown))
     (var status : Str client/round/state)
     (if_not (terminal status) (render_run client [] client/round)))
   (render_delegation_recovery client client/transcript)
@@ -1005,7 +1002,7 @@
 (fn update_controls [client : Client] : Void
   (var state : Str (if ($absent? client/round) "" client/round/state))
   (set client/server_busy (|| (== state "running")
-    (&& (== state "waiting") (! ($absent? client/round/delegation_wait)))
+    (&& (== state "waiting") ($present? client/round/delegation_wait))
     (&& (== state "paused") (== (string_or client/round/continuation_mode "") "automatic")
       ($absent? client/round/continuation_stop))))
   (if ($absent? client/mode)
@@ -1014,7 +1011,7 @@
   (set client/busy
     (if ($absent? client/mode)
       (|| client/server_busy (!= client/awaiting ""))
-      (! ($absent? client/mode/running))))
+      ($present? client/mode/running)))
   (controls client))
 
 (fn acknowledge_run [client : Client, run : Any, session : Str] : Void
@@ -1137,7 +1134,7 @@
 
 (fn render_commands [client : Client] : Void
   (var picker ($dom/element "commands"))
-  (if_yes (! ($absent? client/mode))
+  (if_yes ($present? client/mode)
     (set picker/hidden true)
     (return))
   ($dom/clear picker)
@@ -1240,7 +1237,7 @@
     (if_not ($absent? client/round/submission_seq) (set before_sequence client/round/submission_seq))
     (if_not ($absent? data/round/submission_seq) (set next_sequence data/round/submission_seq))
     (if_yes (|| (> before_sequence next_sequence)
-      (&& (== before_sequence next_sequence) (! ($absent? client/round))
+      (&& (== before_sequence next_sequence) ($present? client/round)
         (terminal (string_or client/round/state "")) (== (string_or data/round/state "") "running")))
       (set data/round client/round)))
   (if_yes client/viewing_history
@@ -1307,7 +1304,7 @@
   (var pinned : Bool false)
   (if_not ($absent? data/session/pinned) (set pinned data/session/pinned))
   ($dom/set_text ($dom/element "pin_session") (if pinned "Unpin" "Pin"))
-  (set_hidden "pin_session" (! ($absent? data/session/parent)))
+  (set_hidden "pin_session" ($present? data/session/parent))
   (render_transcript client)
   (render_tabs client)
   (update_controls client))
@@ -1571,7 +1568,7 @@
 # A card's Send submits a chat message with the card revisions the user saw;
 # the host attaches that exact state, or refuses a changed card.
 (fn stage_card_send [client : Client, text : Str, card : Any] : Void
-  (if_yes (|| (! ($absent? client/pending)) client/sending)
+  (if_yes (|| ($present? client/pending) client/sending)
     (notice client "Resolve the pending submission before sending a card.")
     (return))
   (var no_media : (List Any) [])
@@ -1669,7 +1666,7 @@
   (var status : Str data/status)
   (var block_id $"${session}/${id}")
   (var text : Str (string_or data/display (string_or data/text "")))
-  (if_yes (&& (! (execution_command data)) (== text "") (! ($absent? data/raw)))
+  (if_yes (&& (! (execution_command data)) (== text "") ($present? data/raw))
     (var command_name : Str (string_or data/name "command"))
     (var command_raw : Str (string_or data/raw ""))
     (set text $"/${command_name} ${command_raw}"))
@@ -1723,7 +1720,7 @@
     "Input outcome is unknown. Check the transcript; submit again to resolve the same input id."))
 
 (fn send_mode_input [client : Client] : Void
-  (if_yes (|| (! client/ready) (! client/connected) client/sending (! ($absent? client/mode/running)))
+  (if_yes (|| (! client/ready) (! client/connected) client/sending ($present? client/mode/running))
     (return))
   (var text ($dom/input_value client/prompt))
   (if_yes (== (str/trim text) "") (return))
@@ -1803,7 +1800,7 @@
 
 (fn action [client : Client] : Void
   (if_yes (|| client/sending client/action_cooldown) (return))
-  (var executing (if ($absent? client/mode) client/server_busy (! ($absent? client/mode/running))))
+  (var executing (if ($absent? client/mode) client/server_busy ($present? client/mode/running)))
   (if executing
     (stop client)
     (send client)))
@@ -1812,12 +1809,12 @@
   (if_yes (|| (! client/ready) (! client/connected) client/sending) (return))
   (if_yes (voice_pending? client)
     (notice client "Resolve the pending voice submission before sending another prompt.") (return))
-  (if_yes (! ($absent? client/mode))
+  (if_yes ($present? client/mode)
     (send_mode_input client)
     (return))
   (var raw ($dom/input_value client/prompt))
   (var input : Any (reviewed_voice_input client client/selected raw))
-  (if_yes (&& (! ($absent? input)) (!= (str/trim raw) ""))
+  (if_yes (&& ($present? input) (!= (str/trim raw) ""))
     (var session client/selected)
     (voice_submit client session raw input
       (fn [code : Int, data : Any] : Void
@@ -1839,7 +1836,7 @@
     (notice client "Answer or cancel the pending question first.")
     (return))
   (if_yes (|| (! client/ready) (! client/connected) client/sending client/busy) (return))
-  (if_yes (! ($absent? client/pending))
+  (if_yes ($present? client/pending)
     (send_pending client)
     (return))
   (var text ($dom/input_value client/prompt))
@@ -1869,7 +1866,7 @@
   (stage_submission client text))
 
 (fn stop [client : Client] : Void
-  (if_yes (! ($absent? client/mode))
+  (if_yes ($present? client/mode)
     (if_yes ($absent? client/mode/running) (return))
     (var command_id : Str client/mode/running)
     (api
@@ -1997,9 +1994,9 @@
     (api client "GET" $"${(api_root)}/status" nil
       (fn [code : Int, data : Any] : Void
         (if_yes (!= epoch client/socket_epoch) (return))
-        (if (== code 200)
-          (then (set client/csrf data/csrf) (connect_socket client))
-          (elif (== code 401)
+        (match code
+          (when 200 (set client/csrf data/csrf) (connect_socket client))
+          (when 401
             (set client/ready false)
             (set_hidden "auth_notice" false)
             (show_error client data)
@@ -2068,11 +2065,11 @@
         nil
         (fn [code : Int, data : Any] : Void
           (if_yes (|| tab/closed (!= epoch tab/socket_epoch)) (return))
-          (if (== code 200)
-            (then
+          (match code
+            (when 200
               (set client/csrf data/csrf)
               (connect_stream client tab))
-            (elif (== code 401)
+            (when 401
               (set client/ready false)
               (set_hidden "auth_notice" false)
               (show_error client data))
@@ -2257,8 +2254,8 @@
           (var discard ($dom/element "command_receipt_discard")) (set discard/open false))
         (var forget ($dom/element "command_receipt_forget"))
         (set forget/disabled commands/resolving)
-        (notice ^key "command-recovery" ^sticky (! ($absent? commands/pending)) client message)
-        (if_yes (&& (! ($absent? client/browser_clients)) (! ($absent? client/status)))
+        (notice ^key "command-recovery" ^sticky ($present? commands/pending) client message)
+        (if_yes (&& ($present? client/browser_clients) ($present? client/status))
           (var browsers : BrowserClients client/browser_clients)
           (update_clients browsers (launcher_items client/status/browser_clients) client/status)))))
   (ensure_feature_host client)

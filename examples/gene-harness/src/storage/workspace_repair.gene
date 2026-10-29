@@ -32,7 +32,7 @@
         $"${id}: ${message} (desired ${desired}, active ${active})")))
   (if (&& (== workspace/errors/.get #{}) ($absent? active) (> desired 0))
     (out .push $"composition desired ${desired}: no successful activation revision recorded"))
-  (if (&& (== workspace/errors/.get #{}) (! ($absent? active)) (!= desired active))
+  (if (&& (== workspace/errors/.get #{}) ($present? active) (!= desired active))
     (out .push $"composition desired ${desired}, active ${active}: reconciliation pending"))
   out)
 
@@ -55,12 +55,11 @@
       (else (next_entries .push entry))))
   (if_not found
     (if ($absent? (workspace/profile_plugins/.get .get id))
-      (fail (CompositionError ^message $"composition entry ${id} does not exist"))
-      (if disabled
-        (next_entries .push {^id id ^^builtin ^^disabled})
-        (do
-          (reset_participant_quarantine workspace id)
-          (return (composition_revision workspace))))))
+      (then (fail (CompositionError ^message $"composition entry ${id} does not exist")))
+      (elif disabled (next_entries .push {^id id ^^builtin ^^disabled}))
+      (else
+        (reset_participant_quarantine workspace id)
+        (return (composition_revision workspace)))))
   (if_not disabled (reset_participant_quarantine workspace id))
   (if (== next_entries entries) (return (composition_revision workspace)))
   (var revision (commit_composition ^origin (?? origin
@@ -118,7 +117,7 @@
     (update_active_revision workspace h)
     (record_application_result ^readiness readiness workspace h {^plugin id ^status (if enabled (status_of h id) "disabled")})
     {^id id ^revision revision ^status (if enabled (status_of h id) "disabled")}))))
-  (if (&& (! ($absent? context/turn)) (== context/turn/state/.get "open"))
+  (if (&& ($present? context/turn) (== context/turn/state/.get "open"))
     (then (queue_composition_change h/snapshots {^id id ^kind "enabled" ^apply apply}) "queued")
     (else (apply))))
 
@@ -133,7 +132,7 @@
     (update_active_revision workspace h)
     (record_application_result ^readiness readiness workspace h {^plugin id ^status (status_of h id)})
     {^id id ^revision revision ^status (status_of h id)}))))
-  (if (&& (! ($absent? context/turn)) (== context/turn/state/.get "open"))
+  (if (&& ($present? context/turn) (== context/turn/state/.get "open"))
     (then (queue_composition_change h/snapshots {^id id ^kind "restored" ^apply apply}) "queued")
     (else (apply))))
 
@@ -263,7 +262,7 @@
       (record_application_result ^readiness readiness workspace h
         {^plugin id ^status status ^message (?? (workspace/errors/.get .get id) nil)})
       {^id id ^revision committed ^source_revision revision ^digest saved/module_digest ^status status}))))
-  (if (&& (! ($absent? context/turn)) (== context/turn/state/.get "open"))
+  (if (&& ($present? context/turn) (== context/turn/state/.get "open"))
     (do
       (queue_composition_change h/snapshots {^id id ^kind "revert" ^apply apply})
       {^id id ^source_revision revision ^status "queued"})

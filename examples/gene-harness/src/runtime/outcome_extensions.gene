@@ -26,7 +26,7 @@
             (value .has_key? "warning") (value .has_key? "suspend"))
       (schema_failure name "A schema rejection requires nonempty error text."))
     (return {^error value/error}))
-  (if (&& (! ($absent? value/warning)) (!= ($head value/warning) Str))
+  (if (&& ($present? value/warning) (!= ($head value/warning) Str))
     (schema_failure name "Schema warning must be text."))
   (if (&& (value .has_key? "suspend") (!= ($head value/suspend) Bool))
     (schema_failure name "Schema suspension must be a boolean."))

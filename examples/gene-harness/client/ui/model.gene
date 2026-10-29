@@ -56,7 +56,7 @@
   $"gene-harness/ui-pending/${ui/workspace}")
 
 (fn persist_view [ui : UiClient] : Void
-  (if_yes (&& (!= ui/workspace "") (! ($absent? ui/descriptor)))
+  (if_yes (&& (!= ui/workspace "") ($present? ui/descriptor))
     (var origin {^session "" ^component ui/descriptor/name ^workspace ui/workspace})
     (var key (state_key ui))
     (var saved {^state ui/state ^drafts ui/drafts ^forms ui/forms
@@ -99,8 +99,8 @@
       (set node/element/disabled
         (||
           (&& (! enabled) ($absent? node/props/switch-view))
-          (! ($absent? node/props/disabled))
-          (&& (! ($absent? ui/pending)) ($absent? node/props/state) ($absent? node/props/switch-view) ($absent? node/props/prompt))))))
+          ($present? node/props/disabled)
+          (&& ($present? ui/pending) ($absent? node/props/state) ($absent? node/props/switch-view) ($absent? node/props/prompt))))))
   (var resolve_button ($dom/element "ui_resolve"))
   (var cancel_button ($dom/element "ui_cancel"))
   (var retry_button ($dom/element "ui_retry"))

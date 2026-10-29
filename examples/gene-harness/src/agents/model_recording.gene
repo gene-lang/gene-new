@@ -36,8 +36,10 @@
                   (MediaToken ^reference (media_reference image) ^encoding form/0))))
               (set index (+ index 1))))))
       (set parts next)))
-  (if (== parts/.size 0) ""
-    (if (== parts/.size 1) parts/0 (TextTokens ^parts parts))))
+  (if (== parts/.size 0)
+    (then "")
+    (elif (== parts/.size 1) parts/0)
+    (else (TextTokens ^parts parts))))
 
 (fn replace_media [value, inventory, matched]
   (if (== ($head value) Str) (return (split_media_text value inventory matched)))

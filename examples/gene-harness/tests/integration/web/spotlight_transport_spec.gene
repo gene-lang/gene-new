@@ -32,7 +32,7 @@
           (var expected nil)
           (for descriptor in status/commands
             (if (== descriptor/name "help") (set expected descriptor)))
-          ($assert (! ($absent? expected/revision)))
+          ($assert ($present? expected/revision))
           (let path $"/sessions/${target/id}/commands")
           (let sequence (api client "GET" path))
           ($assert (== sequence/next_command_seq "1"))

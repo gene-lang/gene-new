@@ -62,7 +62,7 @@
           (if (== calls/.get 1)
             (return $"(computer_observe \"${target/.get}\") (Outcome ^prompt \"Inspect the observation.\")"))
           (if_yes (== calls/.get 2)
-            ($assert (! ($absent? (/images ($last request/messages)))))
+            ($assert ($present? (/images ($last request/messages))))
             (let active_driver driver_cell/.get)
             (let observed active_driver/observations/.get)
             (let observation (/id (observed .get target/.get)))

@@ -50,7 +50,7 @@
         ")]) (Outcome ^prompt \"Use the published plugin.\")")
       ^round "publication" ^timeout_ms timeout))
     (if_not ($absent? published/error) (fail published/error))
-    ($assert (! ($absent? (row runtime/h "functions" "budget_probe")))
+    ($assert ($present? (row runtime/h "functions" "budget_probe"))
       "The stored budget probe did not activate.")
     runtime
   catch Any
@@ -101,7 +101,7 @@
         (let runtime (open_probe workspace 5000))
         (try
           (let result (evaluate_harness_turn runtime/h 1 workspace
-            "(let first (budget_probe)) ($assert (> first/remaining_ms 0)) ($assert (<= first/remaining_ms 500)) ($assert (! ($absent? first/response_deadline_ms))) (let context ($runtime/context)) (context .put \"response_deadline_ms\" 9223372036854775807) (context .put \"callback_deadline_ms\" 9223372036854775807) ($sleep 10) (let second (budget_probe)) ($assert (<= second/effective_deadline_ms first/effective_deadline_ms)) ($assert (< second/remaining_ms first/remaining_ms)) (Outcome ^^done ^reply \"bounded\")"
+            "(let first (budget_probe)) ($assert (> first/remaining_ms 0)) ($assert (<= first/remaining_ms 500)) ($assert ($present? first/response_deadline_ms)) (let context ($runtime/context)) (context .put \"response_deadline_ms\" 9223372036854775807) (context .put \"callback_deadline_ms\" 9223372036854775807) ($sleep 10) (let second (budget_probe)) ($assert (<= second/effective_deadline_ms first/effective_deadline_ms)) ($assert (< second/remaining_ms first/remaining_ms)) (Outcome ^^done ^reply \"bounded\")"
             ^round "round-one" ^timeout_ms 500))
           ($assert (== result/kind "done") $"Budget query failed: ${result/error}")
         ensure (close_runtime runtime))))))

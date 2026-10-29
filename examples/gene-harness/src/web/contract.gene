@@ -19,12 +19,14 @@
       (== status "interrupted") (== status "recovery_required") (== status "paused")))
 
 (fn error_status [code : Str] : Int
-  (if (== code "unauthorized") 401
-    (if (== code "forbidden") 403
-      (if (== code "not_found") 404
-        (if (== code "receipt_expired") 410
-          (if (== code "too_large") 413
-            (if (|| (== code "busy") (== code "session_busy")
+  (if (== code "unauthorized")
+    (then 401)
+    (elif (== code "forbidden") 403)
+    (elif (== code "not_found") 404)
+    (elif (== code "receipt_expired") 410)
+    (elif (== code "too_large") 413)
+    (elif (|| (== code "busy") (== code "session_busy")
                     (== code "revision_conflict") (== code "submission_conflict")
-                    (== code "mode_open") (== code "mode_closed") (== code "voice_claim_lost")) 409
-              (if (|| (== code "unavailable") (== code "recovery_required")) 503 400))))))))
+                    (== code "mode_open") (== code "mode_closed") (== code "voice_claim_lost")) 409)
+    (elif (|| (== code "unavailable") (== code "recovery_required")) 503)
+    (else 400)))

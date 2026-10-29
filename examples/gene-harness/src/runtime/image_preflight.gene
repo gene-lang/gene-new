@@ -102,7 +102,7 @@
   (check_image_limits generator_caps generation_images generation_images/.size
     (+ bytes (if (> request/max_attempts 1) store/max_file_bytes 0)) "The image generator")
   (let dimensions (?? settings/dimensions (pixel_dimensions request/size)))
-  (if (&& (== request/background "transparent") (! ($absent? dimensions))
+  (if (&& (== request/background "transparent") ($present? dimensions)
           (|| (> dimensions/width 2048) (> dimensions/height 2048)))
     (image_error "unsupported_dimensions" "Transparent PNG inspection supports at most 2048 pixels on each axis."))
   (let decoder (try

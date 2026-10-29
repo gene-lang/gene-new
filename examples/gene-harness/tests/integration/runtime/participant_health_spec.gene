@@ -101,7 +101,7 @@
             "(Outcome ^^done ^reply (faulty_marker))")))
           (try
             ($assert (== (/state (wait_round resumed (submit_round resumed "default" "restart" 3 "Continue."))) "done"))
-            ($assert (! ($absent? (participant_quarantine restarted/workspace "faulty"))))
+            ($assert ($present? (participant_quarantine restarted/workspace "faulty")))
           ensure (close_round_controller resumed) (close_runtime restarted))))))
 
   (it "fails the first round then lets the model see the exclusion and publish its own repair" []
@@ -126,7 +126,7 @@
           ($assert (== failed/state "failed") ($to_str failed))
           ($assert ($str/contains? failed/message "faulty/memory"))
           ($assert (== calls/.get 0))
-          ($assert (! ($absent? (participant_quarantine runtime/workspace "faulty"))))
+          ($assert ($present? (participant_quarantine runtime/workspace "faulty")))
           (let catalog (plugin_catalog runtime))
           (let faulty ($filter catalog/plugins (fn [item] (== item/id "faulty"))))
           ($assert (== faulty/0/participant_quarantine/phase "begin"))
@@ -192,7 +192,7 @@
             (let failed (wait_round controller (submit_round controller "default" "fail" 1 "Start.")))
             ($assert (== failed/state "failed") ($to_str failed))
             ($assert (== calls/.get 0))
-            ($assert (! ($absent? (participant_quarantine runtime/workspace "faulty"))) mode)
+            ($assert ($present? (participant_quarantine runtime/workspace "faulty")) mode)
             ($assert (== (/state (wait_round controller (submit_round controller "default" "next" 2 "Continue."))) "done"))
           ensure (close_round_controller controller) (close_runtime runtime))))))
 

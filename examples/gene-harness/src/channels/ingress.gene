@@ -22,7 +22,7 @@
     (let id (key [account_id account/team event_id]))
     (let digest (key payload/event))
     (let previous (state/ingress .get id))
-    (if_yes (! ($absent? previous))
+    (if_yes ($present? previous)
       (if (!= previous/digest digest)
         (channel_error "submission_conflict" "Slack event ID has different content."))
       (return previous))

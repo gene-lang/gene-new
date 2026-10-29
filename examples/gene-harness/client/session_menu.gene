@@ -116,7 +116,7 @@
   ($dom/append menu/panel ($dom/render `(button ^type "button" ^role "menuitem" ^class_name "danger"
     ^on_click %(fn [event : Any] : Void (confirm_session_delete menu)) "Delete")))
   (var pin ($dom/render `(button ^type "button" ^role "menuitem"
-    ^disabled %(! ($absent? session/parent))
+    ^disabled %($present? session/parent)
     ^title %(if ($absent? session/parent) "" "Child conversations inherit their parent's pin.")
     ^on_click %(fn [event : Any] : Void (mutate_session menu "PATCH" {^pinned (! (flag menu/session/pinned))}))
     %(if (flag session/pinned) "Unpin" "Pin"))))

@@ -53,7 +53,7 @@
   (let ctx {^service service ^channel_options channel_options ^observe observe ^subscriptions []})
   (let owner (new_host_services ctx (session_service_specs publish on_event)
     ^observe (fn [phase name]
-      (if (&& (! ($absent? observe)) (!= name "loop")) (observe phase name)))))
+      (if (&& ($present? observe) (!= name "loop")) (observe phase name)))))
   (set service/lifecycle owner)
   (start_host_services owner "normal"))
 

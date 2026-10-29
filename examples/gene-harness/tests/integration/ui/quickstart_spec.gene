@@ -44,7 +44,7 @@
           ($assert ($fs/exists? $"${workspace}/counter.gene"))
           ($assert ($str/contains? published/request "counter: active") published/request)
           ($assert ($str/contains? published/request "[1.ui]") published/request)
-          ($assert (! ($absent? (row runtime/h "web_components" "counter"))))
+          ($assert ($present? (row runtime/h "web_components" "counter")))
           (let checked (evaluate_harness_turn ^session session/id runtime/h 2 workspace blocks/2))
           ($assert (== checked/kind "done") ($to_str checked/error))
           (let settings (ui_settings runtime))

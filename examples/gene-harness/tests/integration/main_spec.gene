@@ -437,7 +437,7 @@
           (var response "")
           (while (! ($str/ends_with? response "\r\n\r\n"))
             (let byte (await (socket .AsyncReader:read 1)))
-            ($assert (! ($absent? byte)) "socket closed before upgrade")
+            ($assert ($present? byte) "socket closed before upgrade")
             (set response ($to_str response ($binary/to_str byte))))
           ($assert ($str/starts_with? response "HTTP/1.1 101") "browser socket did not upgrade")
           (set reader

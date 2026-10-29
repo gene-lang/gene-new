@@ -107,7 +107,7 @@ three""")
           ((/watcher (controller/rounds/.get .get "default")) .join)
           (let messages seen/.get)
           (let round_status (round_receipt controller "default" round/id))
-          ($assert (! ($absent? messages))
+          ($assert ($present? messages)
             $"provider callback was not called: ${round_status}")
           (let last (- messages/.size 1))
           ($assert

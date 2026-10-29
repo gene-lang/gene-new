@@ -53,7 +53,7 @@
   (var nav ui/navigation)
   (var bar ($dom/element "ui_host"))
   (set bar/hidden (&& (! ui/safe) nav/bar_hidden))
-  (var active (&& (! ui/safe) (!= nav/active "harness") (! ($absent? ui/descriptor))))
+  (var active (&& (! ui/safe) (!= nav/active "harness") ($present? ui/descriptor)))
   (var full (&& active (== nav/presentation "full")))
   (var docked (&& active (! full)))
   (var panel ($dom/element "ui_panel"))
@@ -112,7 +112,7 @@
   (var chosen (if (== target "harness") "classic"
     (presentation_for view ui/settings nav/remembered presentation)))
   (var changed (|| (!= target nav/active) (!= chosen nav/presentation)))
-  (if_yes (&& (! changed) (! ($absent? ui/descriptor))) (return true))
+  (if_yes (&& (! changed) ($present? ui/descriptor)) (return true))
   (capture_view ui)
   (set nav/active target)
   (set nav/presentation chosen)

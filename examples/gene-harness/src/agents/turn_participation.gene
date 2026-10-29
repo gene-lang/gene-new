@@ -18,7 +18,7 @@
   (let sources [])
   (for item in items
     (let source (request_source item))
-    (if (&& (! ($absent? source)) (! (sources .contains? source))) (sources .push source)))
+    (if (&& ($present? source) (! (sources .contains? source))) (sources .push source)))
   sources)
 
 (fn definition_for [transaction, name : Str]
@@ -137,7 +137,7 @@
     (begin_turn_transaction transaction)
     (for packet in (run_turn_phase transaction "limit")
       (if ($absent? packet/value) (continue))
-      (if (|| (!= ($head packet/value) Map) ($absent? packet/value/state) (! ($absent? selected)))
+      (if (|| (!= ($head packet/value) Map) ($absent? packet/value/state) ($present? selected))
         (bad_phase_result transaction packet/name "limit" "A round limit may have one owned suspension result."))
       (set selected packet/value))
     selected

@@ -16,7 +16,7 @@
       (for form in ($parse/read_all ($fs/read_text ($path/join root name)))
         (if_not (["import" "import_impl"] .contains? ($to_str ($head form))) (continue))
         # Native libraries and explicitly named Gene/genex packages are public.
-        (if (|| (!= ($head form/from) Str) (! ($absent? form/pkg))) (continue))
+        (if (|| (!= ($head form/from) Str) ($present? form/pkg)) (continue))
         (let path form/from)
         (let file_path ($path/join root name))
         (let resolved ($path/normalize ($path/join ($path/parent file_path)
@@ -37,7 +37,7 @@
       ($assert ($fs/exists? file) $"Missing declared public module ${path}")
       (for form in ($parse/read_all ($fs/read_text file))
         (if_not (["import" "import_impl"] .contains? ($to_str ($head form))) (continue))
-        (if (|| (!= ($head form/from) Str) (! ($absent? form/pkg))) (continue))
+        (if (|| (!= ($head form/from) Str) ($present? form/pkg)) (continue))
         (let from form/from)
         (let resolved ($path/normalize ($path/join ($path/parent file)
           (if ($str/ends_with? from ".gene") from ($to_str from ".gene")))))

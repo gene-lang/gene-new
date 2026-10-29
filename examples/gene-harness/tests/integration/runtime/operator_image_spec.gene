@@ -26,7 +26,7 @@
           ($assert ($str/contains? receipt/display "score 95") receipt/display)
           (let saved (read_image_run runtime "default" $"command:${submitted/id}"))
           ($assert (== saved/attempts/.size 1) "image attempt was not saved")
-          ($assert (! ($absent? saved/attempts/0/image_id)) "image media was not saved")
+          ($assert ($present? saved/attempts/0/image_id) "image media was not saved")
         ensure (close_runtime runtime))))))
 
 
@@ -48,7 +48,7 @@
           ($assert ($str/contains? receipt/display "generated_image") receipt/display)
           (let saved (read_image_run runtime "default" $"command:${submitted/id}"))
           ($assert (== saved/attempts/.size 1) "repl image attempt was not saved")
-          ($assert (! ($absent? saved/attempts/0/image_id)) "repl image media was not saved")
+          ($assert ($present? saved/attempts/0/image_id) "repl image media was not saved")
         ensure (close_runtime runtime))))))
 
 (fn main [args] (run_spec args))

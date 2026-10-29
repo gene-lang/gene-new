@@ -23,7 +23,7 @@
           (host .PluginHost:create_registry {^name "profile_rows" ^^unique ^key "name"
             ^on_remove (fn [receiver value]
               ($assert ($absent? receiver/h))
-              ($assert (! ($absent? receiver/.PluginHost:execution_budget)))
+              ($assert ($present? receiver/.PluginHost:execution_budget))
               (removed .set true))})
           (host .PluginHost:contribute "profile_rows" {^name "owned"})
           (host .PluginHost:contribute "prompt" {^name "profile_prompt"
@@ -40,7 +40,7 @@
               (operator .OperatorHost:command "run" context))}))
           ^deactivate (fn [host]
             ($assert ($absent? host/h))
-            ($assert (! ($absent? host/.PluginHost:execution_budget)))
+            ($assert ($present? host/.PluginHost:execution_budget))
             (deactivated .set true))))
         (let runtime (open_runtime root "default" (Profile ^name "contract" ^plugins [plugin])))
         (try

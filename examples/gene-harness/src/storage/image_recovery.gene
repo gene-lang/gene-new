@@ -48,7 +48,7 @@
       (load_part runtime payload/usage) ^attempt known/attempt/number)
     (known/attempt .put $"${known/role}_outcome" payload/outcome)
     (if_yes (&& (!= known/role "generation") (== payload/outcome "ok")
-            (! ($absent? known/attempt/image_id)) ($absent? known/attempt/review))
+            ($present? known/attempt/image_id) ($absent? known/attempt/review))
       (let output (load_part runtime payload/output))
       (if_yes (== ($head output) Str)
         (let parsed (parse_image_review output))

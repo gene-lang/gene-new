@@ -61,7 +61,7 @@
   (for executable in ["/usr/sbin/zdump" "/usr/bin/zdump"]
     (let response (try ($os/exec executable "-i" "-c" range name
       ^timeout_ms 2000 ^max_bytes 262144) catch Any nil))
-    (if_yes (&& (! ($absent? response)) (== response/status 0) (! response/timed_out))
+    (if_yes (&& ($present? response) (== response/status 0) (! response/timed_out))
       (set text response/stdout)
       (break)))
   (if ($absent? text) (problem "The timezone adapter requires zdump with interval output"))

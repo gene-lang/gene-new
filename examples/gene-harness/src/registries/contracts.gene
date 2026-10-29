@@ -25,23 +25,23 @@
   (for field in ["classify" "run" "close"]
     (if_not ($runtime/callable? (candidate .get field))
       (fail (HarnessError ^message $"an input mode needs a callable ${field}"))))
-  (if (&& (! ($absent? candidate/reset_on_interrupt)) (!= ($head candidate/reset_on_interrupt) Bool))
+  (if (&& ($present? candidate/reset_on_interrupt) (!= ($head candidate/reset_on_interrupt) Bool))
     (fail (HarnessError ^message "input mode reset_on_interrupt must be Bool")))
   candidate)
 
 (fn validate_provider_row [candidate]
-  (if (|| ($absent? candidate/name) (== candidate/name "") ($absent? candidate/doc) (! ($runtime/callable? candidate/configure)) (! ($runtime/callable? candidate/prepare)) (! ($runtime/callable? candidate/send)) (&& (! ($absent? candidate/available)) (! ($runtime/callable? candidate/available))) (&& (! ($absent? candidate/auto)) (!= ($head candidate/auto) Int)))
+  (if (|| ($absent? candidate/name) (== candidate/name "") ($absent? candidate/doc) (! ($runtime/callable? candidate/configure)) (! ($runtime/callable? candidate/prepare)) (! ($runtime/callable? candidate/send)) (&& ($present? candidate/available) (! ($runtime/callable? candidate/available))) (&& ($present? candidate/auto) (!= ($head candidate/auto) Int)))
     (fail (HarnessError ^message "a provider row needs name, doc, configure, prepare and send")))
-  (if (&& (! ($absent? candidate/capabilities)) (! ($runtime/callable? candidate/capabilities)))
+  (if (&& ($present? candidate/capabilities) (! ($runtime/callable? candidate/capabilities)))
     (fail (HarnessError ^message "provider capabilities must be callable")))
-  (if (&& (! ($absent? candidate/media_recording))
+  (if (&& ($present? candidate/media_recording)
           (! (["inventory" "omit"] .contains? candidate/media_recording)))
     (fail (HarnessError ^message "provider media_recording must be inventory or omit")))
   candidate)
 
 (fn validate_speech_row [candidate, kind : Str]
   (if (|| (!= ($head candidate/name) Str) (== candidate/name "")
-          (&& (! ($absent? candidate/auto)) (!= ($head candidate/auto) Int)))
+          (&& ($present? candidate/auto) (!= ($head candidate/auto) Int)))
     (fail (HarnessError ^message "A speech engine needs a name and optional integer auto rank.")))
   (for field in ["available" "open" "close"
     (if (== kind "recognizer") (if (== candidate/mode "stream") "stream" "transcribe") "synthesize")]
@@ -81,18 +81,18 @@
   (if (|| ($absent? candidate/name) (! ($runtime/callable? candidate/validate_request)) (! ($runtime/callable? candidate/validate_reply)))
     (fail (HarnessError ^message "an interaction needs a name and request/reply validators")))
   # An optional render draws the kind's question view (docs/cards.md).
-  (if (&& (! ($absent? candidate/render)) (! ($runtime/callable? candidate/render)))
+  (if (&& ($present? candidate/render) (! ($runtime/callable? candidate/render)))
     (fail (HarnessError ^message "an interaction render must be callable")))
   candidate)
 
 (fn validate_prompt_row [candidate]
-  (if (|| (== candidate/name void) (== ($absent? candidate/text) ($absent? candidate/render)) (&& (! ($absent? candidate/render)) (! ($runtime/callable? candidate/render))))
+  (if (|| (== candidate/name void) (== ($absent? candidate/text) ($absent? candidate/render)) (&& ($present? candidate/render) (! ($runtime/callable? candidate/render))))
     (fail
       (HarnessError ^message "a prompt row requires name and exactly one of text or callable render")))
   candidate)
 
 (fn validate_discovery_metadata [candidate]
-  (if (&& (! ($absent? candidate/summary)) (!= ($head candidate/summary) Str))
+  (if (&& ($present? candidate/summary) (!= ($head candidate/summary) Str))
     (fail (HarnessError ^message "a discovery summary must be a string")))
   (for field in ["tags" "docs"]
     (let values (candidate .get field))
@@ -105,7 +105,7 @@
   candidate)
 
 (fn validate_docs_row [candidate]
-  (if (|| (== candidate/name void) (== ($absent? candidate/text) ($absent? candidate/path)) (&& (! ($absent? candidate/text)) (!= ($head candidate/text) Str)) (&& (! ($absent? candidate/path)) (!= ($head candidate/path) Str)))
+  (if (|| (== candidate/name void) (== ($absent? candidate/text) ($absent? candidate/path)) (&& ($present? candidate/text) (!= ($head candidate/text) Str)) (&& ($present? candidate/path) (!= ($head candidate/path) Str)))
     (fail (HarnessError ^message "a docs row requires name and exactly one of text or path")))
   candidate)
 

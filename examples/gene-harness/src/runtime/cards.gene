@@ -45,7 +45,7 @@
 (fn card_records [runtime, session : Str]
   (let found [])
   (for [key state] in (core_states runtime/events "session" session)
-    (if (&& ($str/starts_with? ($to_str key) "card/") (! ($absent? state)))
+    (if (&& ($str/starts_with? ($to_str key) "card/") ($present? state))
       (found .push state)))
   ($order/sort_by found (fn [card] (?? card/created_ms 0))))
 
@@ -88,7 +88,7 @@
 (fn owned? [runtime, session : Str, card] : Bool
   (let loaded (load_session runtime/sessions session))
   (let receipt loaded/round/.get)
-  (&& (! ($absent? receipt)) (== receipt/id card/round) (== receipt/state "running")))
+  (&& ($present? receipt) (== receipt/id card/round) (== receipt/state "running")))
 
 (fn card_context [runtime, session : Str]
   (let loaded (load_session runtime/sessions session))
@@ -164,8 +164,8 @@
   (let missing [])
   (let environment (env ^bindings bindings))
   (for name in (free_names form false [])
-    (if (|| (card_special_forms .contains? name) (! ($absent? (bound .get name)))
-            (! ($absent? (bindings .get name))) (missing .contains? name)
+    (if (|| (card_special_forms .contains? name) ($present? (bound .get name))
+            ($present? (bindings .get name)) (missing .contains? name)
             ($str/starts_with? name ".") ($str/starts_with? name "$") ($str/starts_with? name "^"))
       (continue))
     (if_not (try (do (eval ($to_sym name) ^in environment) true) catch Any false)
@@ -238,12 +238,12 @@
 (fn define_card [runtime, session : Str, round : Str, turn : Int, id, spec]
   (validate_card_id id)
   (let title (validate_title spec/title))
-  (let live (! ($absent? spec/view)))
-  (if (&& live (! ($absent? spec/tree)))
+  (let live ($present? spec/view))
+  (if (&& live ($present? spec/tree))
     (card_fail "invalid_request" "a live card takes view and update functions, not a tree"))
   (if (&& (! live) ($absent? spec/tree))
     (card_fail "invalid_request" "a card needs a tree, or a ^view function with ^state"))
-  (if (&& (! live) (|| (! ($absent? spec/update)) (! ($absent? spec/state))))
+  (if (&& (! live) (|| ($present? spec/update) ($present? spec/state)))
     (card_fail "invalid_request" "^state and ^update require a ^view function"))
   (let source (if live
     {^view (fn_source spec/view "view")
@@ -334,7 +334,7 @@
     (with_card_gate runtime session entry/id (fn []
       (drop_transient runtime session entry/id)
       (let card (card_record runtime session entry/id))
-      (if_yes (&& (! ($absent? card)) (== card/definition_revision entry/definition_revision))
+      (if_yes (&& ($present? card) (== card/definition_revision entry/definition_revision))
         (card .put "state" entry/state)
         (card .put "tree" entry/tree)
         (card .put "revision" ($math/max entry/revision (+ card/revision 1)))
@@ -384,7 +384,7 @@
 (fn prune_receipts [runtime, session : Str]
   (let receipts [])
   (for [key state] in (core_states runtime/events "session" session)
-    (if (&& ($str/starts_with? ($to_str key) "card_action/") (! ($absent? state)))
+    (if (&& ($str/starts_with? ($to_str key) "card_action/") ($present? state))
       (receipts .push state)))
   (if (<= receipts/.size action_retention) (return nil))
   (let ordered ($order/sort_by receipts (fn [receipt] (?? receipt/admitted_ms 0))))
@@ -411,7 +411,7 @@
   (if (|| ($absent? receipt) (!= receipt/status "admitted") (== receipt/epoch runtime/epoch))
     (return receipt))
   (let card (card_record runtime session receipt/card))
-  (let committed (&& (! ($absent? card)) ((?? card/inputs []) .contains? receipt/input_id)))
+  (let committed (&& ($present? card) ((?? card/inputs []) .contains? receipt/input_id)))
   (receipt .put "status" (if committed "done" "interrupted"))
   (receipt .put "message"
     (if committed "Applied before the host restarted."
@@ -424,7 +424,7 @@
 (fn resolve_earlier_admissions [runtime, session : Str]
   (if (== (runtime/services/values/cards/resolved/.get .get session) true) (return nil))
   (for [key state] in (core_states runtime/events "session" session)
-    (if (&& ($str/starts_with? ($to_str key) "card_action/") (! ($absent? state))
+    (if (&& ($str/starts_with? ($to_str key) "card_action/") ($present? state)
             (== state/status "admitted") (!= state/epoch runtime/epoch))
       (resolved_receipt runtime session state)))
   (runtime/services/values/cards/resolved/.get .put session true)
@@ -450,7 +450,7 @@
       (card_fail "invalid_request" "an update action needs a name")))
   (for key in ["args" "fields"]
     (let value (request .get key))
-    (if (&& (! ($absent? value)) (!= ($head value) Map))
+    (if (&& ($present? value) (!= ($head value) Map))
       (card_fail "invalid_request" $"card action ${key} must be a map")))
   (if (> ($str/byte_size ($serde/write_data request)) 65536)
     (card_fail "too_large" "card action arguments are too large"))

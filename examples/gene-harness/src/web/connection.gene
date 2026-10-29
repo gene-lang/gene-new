@@ -44,7 +44,7 @@
   (if_not ($absent? restart_port)
     (set selected (valid_port restart_port))
     (set strict true))
-  (if_yes (&& (! strict) (! ($absent? requested)))
+  (if_yes (&& (! strict) ($present? requested))
     (set selected (valid_port ^^zero requested))
     (set strict (!= selected 0)))
   (if (&& ($absent? requested) ($absent? restart_port) ($fs/exists? $"${state_root}/web_port"))
@@ -86,7 +86,7 @@
 (fn clear_connection [root : Str, epoch : Str]
   (let state_root $"${root}/.gene-harness")
   (let record (try (read_connection root) catch Any nil))
-  (if (&& (!= epoch "") (! ($absent? record)) (!= record/epoch epoch)) (return nil))
+  (if (&& (!= epoch "") ($present? record) (!= record/epoch epoch)) (return nil))
   (for name in ["connection" "link"]
     (let path $"${state_root}/${name}")
     (if ($fs/exists? path) ($fs/remove path)))

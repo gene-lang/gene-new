@@ -147,7 +147,7 @@
           ($assert (== result/kind "continue") "done completed before its plugin change was published")
           ($assert ($str/contains? result/request "plugin_notice")
             "rejected done did not explain the continuation")
-          ($assert (! ($absent? (row runtime/h "functions" "later")))
+          ($assert ($present? (row runtime/h "functions" "later"))
             $"turn boundary did not publish contribution: ${result/composition_changes}; pending ${($size runtime/h/snapshots/pending/.get)}")
           (let next (evaluate_harness_turn runtime/h 2 runtime/root "(Outcome ^^done ^reply (later))"))
           ($assert (== next/validated/outcome/reply "later") "next turn could not call new function")

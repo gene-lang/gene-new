@@ -33,7 +33,7 @@
   (mutate queues (fn [state]
     (let queue (state/queues .get session))
     (let control (state/controls .get id))
-    (if_yes (! ($absent? control/replacement))
+    (if_yes ($present? control/replacement)
       (if (!= queue/holds control/replacement/holds)
         (channel_error "stale" "Queue holds changed after the replacement choice; review them again."))
       (return control))
@@ -80,7 +80,7 @@
       (let control (mutate queues (fn [state]
         (if ($absent? state/controls) (state .put "controls" {}))
         (let previous (state/controls .get id))
-        (if_yes (! ($absent? previous))
+        (if_yes ($present? previous)
           (if (!= previous/digest digest)
             (channel_error "submission_conflict" "Control message has different content."))
           (return previous))
@@ -158,7 +158,7 @@
       (complete_control queues id result))))))
   (if (&& (["stop" "replace-paused"] .contains? outcome/command/name)
           (["ok" "replaced"] .contains? outcome/result/code)
-          (! ($absent? outcome/target)))
+          ($present? outcome/target))
     (close_delegation_owner service/runtime/services/values/delegations binding/session
       (?? outcome/result/round outcome/target) "The parent round was cancelled."))
   outcome)

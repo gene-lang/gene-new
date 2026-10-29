@@ -31,7 +31,7 @@
           ($assert (== listed/new_messages 1))
           (let detail (cli host/root ["notifications" "show" posted/id]))
           ($assert (== detail/source "operator"))
-          ($assert (! ($absent? detail/detail)))
+          ($assert ($present? detail/detail))
           ($assert
             ($absent?
               ((Path "detail") (api client "GET" $"/notifications/${posted/id}?ui=default"))))

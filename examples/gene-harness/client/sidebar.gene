@@ -52,10 +52,10 @@
       ($dom/append state/pool widget))
     ($dom/clear state/target)
     (set state/buttons [])
-    (set state/available (! ($absent? chosen)))
+    (set state/available ($present? chosen))
     # A style contribution is scoped to the sidebar component's class.
     (var style_class : Str "")
-    (if_yes (&& state/available (! ($absent? chosen/style_class))) (set style_class chosen/style_class))
+    (if_yes (&& state/available ($present? chosen/style_class)) (set style_class chosen/style_class))
     ($dom/set_attribute state/target "class" (if (== style_class "") "sidebar_content" $"sidebar_content ${style_class}"))
     (if_yes state/available
       (if ($absent? chosen/view)

@@ -71,7 +71,7 @@
               "first changed content message was not the previous full request")
             (let previous_cache [])
             (for message in old/messages
-              (if (! ($absent? message/content/0/cache_control))
+              (if ($present? message/content/0/cache_control)
                 (previous_cache .push message/content/0/text)))
             ($assert (== previous_cache/.size ($math/min 2 before)) "provider did not retain the two latest cache checkpoints")
             (let last_cache (- previous_cache/.size 1))

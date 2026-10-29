@@ -147,7 +147,7 @@
 
 (fn post_action [inbox : ProducerInbox, request : Any] : Void
   (var key (action_key request))
-  (if_yes (|| (! inbox/ready) (! ($absent? inbox/sending/%key))) (return))
+  (if_yes (|| (! inbox/ready) ($present? inbox/sending/%key)) (return))
   (set inbox/sending/%key true)
   (inbox/api
     "POST"
@@ -155,34 +155,33 @@
     request
     (fn [code : Int, data : Any] : Void
       (set inbox/sending/%key void)
-      (if (== code 202)
-        (finish_action inbox key data/receipt)
-        (if (== code 200)
-          (do
+      (match code
+        (when 202 (finish_action inbox key data/receipt))
+        (when 200 (do
             (remove_notice inbox/notices "notification-action" (qtext request/session) key)
             (if_yes (== (qtext data/kind) "reference")
               (open_evidence inbox data/reference)
               (inbox/navigate data/reference))
             (if_yes (== (qtext data/kind) "prompt")
-              (inbox/draft (qtext data/session) (qtext data/text))))
-          (do
-            (if_yes (|| (== code 400) (== code 404) (== code 409) (== code 410))
-              (set inbox/pending/%key void)
-              (storage_set "gene-harness/notification-actions" (qjson inbox/pending)))
-            (put_notice ^action (if ($absent? inbox/pending/%key) nil (fn [] : Void (recover_action inbox key true)))
-              inbox/notices
-              ($dom/element "notice")
-              "notification-action"
-              (qtext request/session)
-              key
-              (qtext data/message "Action outcome unknown. Resolve the original operation.")
-              "error"
-              true
-              {^session request/session ^notification request/notification})))))))
+              (inbox/draft (qtext data/session) (qtext data/text)))))
+        (else
+          (if_yes (|| (== code 400) (== code 404) (== code 409) (== code 410))
+            (set inbox/pending/%key void)
+            (storage_set "gene-harness/notification-actions" (qjson inbox/pending)))
+          (put_notice ^action (if ($absent? inbox/pending/%key) nil (fn [] : Void (recover_action inbox key true)))
+            inbox/notices
+            ($dom/element "notice")
+            "notification-action"
+            (qtext request/session)
+            key
+            (qtext data/message "Action outcome unknown. Resolve the original operation.")
+            "error"
+            true
+            {^session request/session ^notification request/notification}))))))
 
 (fn recover_action [inbox : ProducerInbox, key : Str, retry : Bool] : Void
   (var pending : Any inbox/pending/%key)
-  (if_yes (|| (! inbox/ready) ($absent? pending) (! ($absent? inbox/sending/%key))) (return))
+  (if_yes (|| (! inbox/ready) ($absent? pending) ($present? inbox/sending/%key)) (return))
   (var session (qtext pending/request/session))
   (var id (qtext pending/request/request_id))
   (set inbox/sending/%key true)
@@ -194,10 +193,9 @@
       (set inbox/sending/%key void)
       (if_yes ($absent? inbox/pending/%key) (return))
       (if (== code 200)
-        (finish_action inbox key data)
-        (if (&& (== code 404) retry)
-          (post_action inbox pending/request)
-          (put_notice ^action (fn [] : Void (recover_action inbox key true))
+        (then (finish_action inbox key data))
+        (elif (&& (== code 404) retry) (post_action inbox pending/request))
+        (else (put_notice ^action (fn [] : Void (recover_action inbox key true))
             inbox/notices
             ($dom/element "notice")
             "notification-action"
@@ -296,7 +294,7 @@
   ($dom/set_text card/source $"${(qtext message/severity)} · ${(qtext message/source)}")
   ($dom/clear card/content)
   (set card/details/hidden (|| inbox/safe ($absent? message/detail)))
-  (if_yes (&& (! inbox/safe) (! ($absent? message/detail)))
+  (if_yes (&& (! inbox/safe) ($present? message/detail))
     (try
       (var buttons : (List Any) [])
       ($dom/append
@@ -321,7 +319,7 @@
     (var key (qtext action/id))
     (set action_ids/%key true)
     (var saved : Any card/buttons/%key)
-    (if_yes (&& (! ($absent? saved)) (!= (qjson saved/action) (qjson action)))
+    (if_yes (&& ($present? saved) (!= (qjson saved/action) (qjson action)))
       (var old : EventTarget saved/element)
       ($dom/remove old)
       (set saved nil))

@@ -8,8 +8,8 @@
 (import [round_state] ^from "../runtime/round_controller")
 
 (fn sharing_available? [runtime] : Bool
-  (&& (! ($absent? runtime/services/values/channel_queues))
-    (read runtime/services/values/channel_queues (fn [state] (! ($absent? state/source))))))
+  (&& ($present? runtime/services/values/channel_queues)
+    (read runtime/services/values/channel_queues (fn [state] ($present? state/source)))))
 
 # Copy only the public conversation, never evaluation code, console output or
 # model-generated follow-up requests. The cursor separates this frozen archive
@@ -33,7 +33,7 @@
     (let id ($to_str "share-" (key session)))
     (let previous (read service/runtime/services/values/channel_queues (fn [state] (state/outbox .get id))))
     (if_not ($absent? previous) (return record))
-    (if (|| (!= record/kind "interactive") (! ($absent? record/channel)) (! ($absent? record/parent)))
+    (if (|| (!= record/kind "interactive") ($present? record/channel) ($present? record/parent))
       (channel_error "conflict" "Only browser-only conversations can be added to Slack."))
     (if (!= (?? record/revision 0) revision)
       (channel_error "revision_conflict" "The conversation changed; refresh before adding it to Slack."))
@@ -100,7 +100,7 @@
       (let status outgoing/status)
       (let share {^id intent/id ^status status})
       (let changes {^slack_share share})
-      (if_yes (&& (== root/status "sent") (! ($absent? root/ts)))
+      (if_yes (&& (== root/status "sent") ($present? root/ts))
         (let destination {^transport "slack" ^account intent/account ^team intent/team
           ^channel intent/channel ^thread root/ts})
         (let id (binding_key destination))
@@ -125,7 +125,7 @@
           nil) ^changes {^bindings [id] ^queues [session] ^cursors [session]})
         (changes .put "channel" (destination .assoc "binding" id; .assoc "owner" intent/owner; .assoc "route" intent/route)))
       (if (|| (!= record/slack_share share)
-              (&& (! ($absent? changes/channel)) (!= record/channel changes/channel)))
+              (&& ($present? changes/channel) (!= record/channel changes/channel)))
         (then
           (changes .put "revision" (+ (?? record/revision 0) 1))
           (update_session service/runtime/sessions session changes)
@@ -136,6 +136,6 @@
       (mutate service/runtime/services/values/channel_queues (fn [state]
         (let current (state/outbox .get intent/id))
         (current .put "share_observed" outgoing/signature)
-        (if (&& (== status "delivered") (! ($absent? changes/channel))) (current .put "linked" true))
+        (if (&& (== status "delivered") ($present? changes/channel)) (current .put "linked" true))
         nil) ^changes {^outbox [intent/id]}))))
   nil)

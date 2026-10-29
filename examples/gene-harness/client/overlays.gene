@@ -4,11 +4,11 @@
 
 (fn keyboard_owned? [] : Bool
   (var root ($dom/element "harness_root"))
-  (! ($absent? root/harness_modal)))
+  ($present? root/harness_modal))
 
 (fn claim_modal [owner : Str, root : EventTarget, panel : EventTarget,
                  close : (Fn [Bool] Void), fallback : EventTarget] : Bool
-  (if_yes (! ($absent? root/harness_modal)) (return false))
+  (if_yes ($present? root/harness_modal) (return false))
   (var confirmations ($dom/focusables ($dom/element "confirmations")))
   (if_yes (> confirmations/.size 0) ($dom/focus confirmations/0) (return false))
   (for names in [["notification_center" "close_notifications"]

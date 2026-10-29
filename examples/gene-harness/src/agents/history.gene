@@ -37,7 +37,7 @@
 (fn mark_body_references [runtime, value, live]
   (if (== ($head value) Str)
     (then
-      (if (|| (!= ($str/byte_size value) 64) (! ($absent? (live .get value)))) (return nil))
+      (if (|| (!= ($str/byte_size value) 64) ($present? (live .get value))) (return nil))
       (let path $"${runtime/state_root}/blobs/${value}")
       (if_not ($fs/exists? path) (return nil))
       (live .put value true)
@@ -64,12 +64,11 @@
       (mark_body_references runtime (core_states runtime/events "session" ($to_str id)) live)
       (for event in (events_for runtime/events "session" ($to_str id))
         (if (== event/type "model/request")
-          (mark_body_references runtime event/payload/prepared live)
-          (if (== event/type "model/result")
-            (then
-              (mark_body_references runtime event/payload/output live)
-              (mark_body_references runtime event/payload/usage live)
-              (mark_body_references runtime event/payload/error live))))))
+          (then (mark_body_references runtime event/payload/prepared live))
+          (elif (== event/type "model/result")
+            (mark_body_references runtime event/payload/output live)
+            (mark_body_references runtime event/payload/usage live)
+            (mark_body_references runtime event/payload/error live)))))
     # Retained event generations can still be selected after a damaged newest
     # checkpoint. Their projection blobs must remain readable too.
     (let manifest runtime/events/last_manifest/.get)

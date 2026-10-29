@@ -430,7 +430,7 @@
   (var start 0)
   # Complete segments never change. Only the previous open tail and newly
   # appended events need serialization; older digests are carried forward.
-  (if (&& (! ($absent? previous)) (== previous/segment_events events/segment_events))
+  (if (&& ($present? previous) (== previous/segment_events events/segment_events))
     (then
     (var sealed (if ($absent? previous/event_count)
       ($math/max 0 (- previous/segments/.size 1))
@@ -610,7 +610,7 @@
   (var repairs (fresh_list))
   (var interrupted_calls (fresh_list))
   (for [key values] in events/streams/.get
-    (if_yes (&& (! ($absent? session)) (!= ($to_str key) (stream_key "session" session)))
+    (if_yes (&& ($present? session) (!= ($to_str key) (stream_key "session" session)))
       (continue))
     (var open_turns (fresh_map))
     (var open_calls (fresh_map))
@@ -692,7 +692,7 @@
                 ^max_state_bytes max_state_bytes
                 ^gc_interval gc_interval ^gc_countdown ($cell 1)))
   (var loaded backend/.Store:load_checkpoint)
-  (if_yes (! ($absent? loaded))
+  (if_yes ($present? loaded)
     (var manifest (loaded/records .get "event_manifest"))
     (restore_manifest events manifest))
   (validate_envelope_formats events)

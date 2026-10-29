@@ -7,7 +7,7 @@
 
 (fn require_service [handle]
   (let selected (lookup_handle handles handle/token))
-  (if (&& (! ($absent? selected)) (! selected/runtime/closed/.get)) (return selected))
+  (if (&& ($present? selected) (! selected/runtime/closed/.get)) (return selected))
   (fail (ServiceError ^code "unavailable" ^message "This host service handle has retired or closed.")))
 
 (fn revoke_service_handle [token]

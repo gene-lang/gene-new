@@ -66,7 +66,7 @@
           (let answered (answer_questions events "s" "q" {^pick "b"}))
           ($assert (== answered/intent "continue"))
           ($assert (== answered/round "round-1"))
-          ($assert (! ($absent? answered/answered_ms)))
+          ($assert ($present? answered/answered_ms))
           # A validator that now refuses everything cannot refuse an identical retry.
           (let refusing {^select (fn [value] (fail (QuestionError ^message "changed validator")))})
           ($assert (== (answer_questions ^validators refusing events "s" "q" {^pick "b"}) answered)

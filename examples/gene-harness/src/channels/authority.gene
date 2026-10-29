@@ -27,7 +27,7 @@
       (if (&& (!= ($to_str name) id) (== existing/app record/app) (== existing/team record/team))
         (channel_error "conflict" "This Slack app/team already has a configured account.")))
     (let previous (state/accounts .get id))
-    (if (&& (! ($absent? previous))
+    (if (&& ($present? previous)
             (|| (!= previous/app record/app) (!= previous/team record/team)
                 (!= previous/bot_user record/bot_user)))
       (channel_error "conflict" "An account's Slack identity cannot be replaced in place."))
@@ -55,7 +55,7 @@
       (if_not (normalized .contains? user) (normalized .push user)))
     (let id (route_key account selected/team channel))
     (let previous (state/routes .get id))
-    (if (&& (! ($absent? previous)) (!= previous/workspace canonical))
+    (if (&& ($present? previous) (!= previous/workspace canonical))
       (channel_error "conflict" "Moving a Slack channel to another workspace requires an explicit migration."))
     (for [other candidate] in state/routes
       (if (&& enabled candidate/enabled (!= ($to_str other) id) (== candidate/workspace canonical))
@@ -72,7 +72,7 @@
 (fn authorize_state [state, id : Str, user : Str, workspace]
   (let selected (state/routes .get id))
   (let account (if ($absent? selected) nil (state/accounts .get selected/account)))
-  (let allowed (&& (! ($absent? selected)) selected/enabled (! ($absent? account)) account/enabled
+  (let allowed (&& ($present? selected) selected/enabled ($present? account) account/enabled
     (|| ($absent? workspace) (== selected/workspace workspace))
     (selected/approved .contains? user)))
   {^allowed allowed ^owner state/id ^policy_revision state/policy_revision

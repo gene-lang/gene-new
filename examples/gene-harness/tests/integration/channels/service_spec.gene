@@ -263,7 +263,7 @@
           (project_rounds f/channels root/session)
           (let current (f/harness/runtime/sessions/loaded/.get .get root/session))
           (let batch current/round/.get/questions/id)
-          ($assert (! ($absent? batch)))
+          ($assert ($present? batch))
           (let outgoing (pending_output f/harness/runtime/services/values/channel_queues))
           ($assert (> ($size ($filter outgoing (fn [out] (out/intent/parts/0/text .contains? "!answer ")))) 0))
           (receive f "Ev2" "2.000001" "Also add a footer." ^thread "1.000001")

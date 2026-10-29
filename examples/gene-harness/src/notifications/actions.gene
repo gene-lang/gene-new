@@ -48,7 +48,7 @@
       (try
         (if_not ($absent? action/reference)
           (let reference ($thaw ($freeze action/reference)))
-          (if (&& (! ($absent? reference/session)) (!= reference/session ""))
+          (if (&& ($present? reference/session) (!= reference/session ""))
             (require_record runtime/sessions reference/session))
           (if_not ($absent? reference/artifact)
             (let view (view_command {^runtime runtime ^raw reference/artifact}))
@@ -84,7 +84,7 @@
           (notification_error
             "invalid_request"
             "Choose a conversation and provide the original request id and command sequence."))
-        (if (&& (! ($absent? message/origin/session)) (!= session message/origin/session))
+        (if (&& ($present? message/origin/session) (!= session message/origin/session))
           (notification_error "invalid_request" "This action belongs to its original conversation."))
         (var parsed nil)
         (if ($absent? action/function)

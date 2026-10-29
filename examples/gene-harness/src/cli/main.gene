@@ -93,7 +93,7 @@ Use --file FILE for send/run text, --no-wait for operator commands,
       (present_message message false))
     (return nil))
   (if (== ($head result) Str) (return ($println result)))
-  (if_yes (&& (! ($absent? result/plugins)) (! ($absent? result/revision)))
+  (if_yes (&& ($present? result/plugins) ($present? result/revision))
     ($println $"Composition ${result/revision}")
     (for plugin in result/plugins
       ($println $"${plugin/id}  ${plugin/state}  ${plugin/source}"))
@@ -139,7 +139,7 @@ Profile: """
   (var displayed false)
   (for key in ["reply" "display" "message"]
     (let value (result .get key))
-    (if_yes (&& (! ($absent? value)) (!= value ""))
+    (if_yes (&& ($present? value) (!= value ""))
       ($println value)
       (set displayed true)))
   (if_not ($absent? result/questions)
@@ -154,10 +154,9 @@ Profile: """
   (if (&& (== ($head result/exit) Int) (!= result/exit 0)) (return 1))
   (let state (?? result/state result/status))
   (if (|| (== state "waiting") (== state "paused"))
-    2
-    (if (["failed" "error" "stale" "quarantined" "cancelled" "interrupted" "recovery_required"] .contains? state)
-      1
-      0)))
+    (then 2)
+    (elif (["failed" "error" "stale" "quarantined" "cancelled" "interrupted" "recovery_required"] .contains? state) 1)
+    (else 0)))
 
 (fn execute [parsed]
   (let options parsed/options)
@@ -301,12 +300,10 @@ Profile: """
     (if ($absent? options/batch) (problem "Answering requires --batch ID."))
     (let values
       (if (== action "dismiss")
-        {}
-        (if (! ($absent? options/file))
-          (read_data_file options/file)
-          (if ($absent? options/answers)
-            (problem "Use --answers JSON or --file FILE.")
-            ($json/parse options/answers)))))
+        (then {})
+        (elif ($present? options/file) (read_data_file options/file))
+        (elif ($absent? options/answers) (problem "Use --answers JSON or --file FILE."))
+        (else ($json/parse options/answers))))
     (return
       (api
         client
@@ -336,7 +333,7 @@ Profile: """
     (let request_id (?? (options .get "request-id") $"cli-${($crypto/random_hex 16)}"))
     (let sequence
       (?? options/sequence (if (== kind "round") state/next_submission_seq state/next_command_seq)))
-    (if (&& (! ($absent? (options .get "request-id"))) ($absent? options/sequence))
+    (if (&& ($present? (options .get "request-id")) ($absent? options/sequence))
       (problem "An explicit --request-id requires its original --sequence. Use receipt --request-id to resolve an uncertain submission."))
     (let result
       (try

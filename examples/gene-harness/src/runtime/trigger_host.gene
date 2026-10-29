@@ -49,7 +49,7 @@
     (fail (ServiceError ^code "unavailable" ^message "The scheduler host is closing.")))
   (let revision service/host/notification_revision)
   (let previous (state/managers .get revision))
-  (if (&& (! ($absent? previous)) (! previous/closed/.get)) (return {^^available}))
+  (if (&& ($present? previous) (! previous/closed/.get)) (return {^^available}))
   (let manager (open_trigger_manager service/runtime state/controller
     ^owner service/host/effects ^start service/config/start ^boot service/config/boot))
   (fn close []

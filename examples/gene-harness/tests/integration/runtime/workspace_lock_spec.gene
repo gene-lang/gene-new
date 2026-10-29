@@ -26,7 +26,7 @@
       (fn [root]
         ($fs/make_dir $"${root}/.gene-harness")
         (let probe ($fs/try_lock $"${root}/.gene-harness/lock"))
-        ($assert (! ($absent? probe)))
+        ($assert ($present? probe))
         (let process ($os/exec_async ^timeout_ms 10000 ($os/executable_path)
           "run" "--snapshot" (source_path "tests/fixtures/workspace_lock_wait.gene") root))
         (try

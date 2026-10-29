@@ -67,12 +67,12 @@
     (if_not ($absent? item/reference)
       (let ref item/reference)
       (if (!= ($head ref) Map) (notification_error "invalid_request" "A reference must be a map."))
-      (if (&& (! ($absent? ref/session)) (!= ($head ref/session) Str))
+      (if (&& ($present? ref/session) (!= ($head ref/session) Str))
         (notification_error "invalid_request" "Reference session must be text."))
-      (let has_session (&& (! ($absent? ref/session)) (!= ref/session "")))
+      (let has_session (&& ($present? ref/session) (!= ref/session "")))
       (if (&& (! has_session)
-               (|| ($absent? ref/component) (! ($absent? ref/round))
-                   (! ($absent? ref/command)) (! ($absent? ref/artifact))))
+               (|| ($absent? ref/component) ($present? ref/round)
+                   ($present? ref/command) ($present? ref/artifact)))
         (notification_error "invalid_request" "Conversation references need an originating session; a workspace view reference needs a component."))
       (for [key value] in ref
         (if_not (["session" "round" "command" "artifact" "entity" "component" "view_state"] .contains? ($to_str key))
@@ -131,7 +131,7 @@
   (if (!= ($head origin) Map) (notification_error "invalid_request" "Origin must be a data map."))
   (if (> ($str/byte_size ($json/stringify origin)) 4096)
     (notification_error "too_large" "Notification origin is too large."))
-  (if (&& (! preserve_origin) (! ($absent? context/session)))
+  (if (&& (! preserve_origin) ($present? context/session))
     (origin .put "session" context/session))
   (for key in ["session" "round" "command" "component" "entity" "revision"]
     (if_not ($absent? (origin .get key)) (bounded_text ($to_str (origin .get key)) "origin" 1024)))
@@ -192,7 +192,7 @@
 (fn update_notification [h, inbox, source : Str, id : Str, changes, ^revision revision = nil]
   (try
     (let message (source_message inbox source id))
-    (if (&& (! ($absent? changes/key)) (!= changes/key message/key))
+    (if (&& ($present? changes/key) (!= changes/key message/key))
       (notification_error "invalid_request" "An existing notification key cannot be changed."))
     (if (== message/key "")
       (notification_error "invalid_request" "Updates require a keyed publication."))

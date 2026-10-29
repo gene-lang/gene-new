@@ -44,11 +44,11 @@
     ^count turn_context/count ^limit turn_context/limit
     ^collection (== turn_context/collection true)
     ^outcome {^done (== value/done true) ^reply (?? value/reply nil)
-      ^attention (== value/attention true) ^has_questions (! ($absent? value/questions))
+      ^attention (== value/attention true) ^has_questions ($present? value/questions)
       ^has_prompt (!= value/prompt void)}})
   (let result (normalize_extension_fields snapshot context value/extensions))
   (if_not ($absent? result/error) (fail (OutcomeError ^message result/error)))
-  (if (|| (! ($absent? value/extensions)) (> ($size result/values) 0))
+  (if (|| ($present? value/extensions) (> ($size result/values) 0))
     (fields .put "extensions" result/values))
   (for warning in result/warnings
     (if_not ($absent? turn/console) (turn/console warning)))

@@ -38,11 +38,11 @@
   (var i 0)
   (while (< i args/.size)
     (var arg args/%i)
-    (if (== arg "--out")
-      (then (set out (option_value args i arg)) (set i (+ i 1)))
-      (elif (== arg "--base")
+    (match arg
+      (when "--out" (set out (option_value args i arg)) (set i (+ i 1)))
+      (when "--base"
         (set base (option_value args i arg)) (set i (+ i 1)))
-      (elif (== arg "--app_url")
+      (when "--app_url"
         (set app_url (option_value args i arg)) (set i (+ i 1)))
       (else
         (fail (WebsiteError ^message $"Unknown option ${arg}. Use --out, --base, or --app_url."))))

@@ -171,7 +171,7 @@
   (let selected (record/host .RegistryHost:selected registry key))
   (let previous (record/projections .get id))
   (if_yes (!= previous void)
-    (if (&& (! ($absent? selected)) (== previous/row_id selected/row_id)) (return nil))
+    (if (&& ($present? selected) (== previous/row_id selected/row_id)) (return nil))
     previous/instance/.dispose
     # dispose queues retirement while a provider validation is admitted. Wait
     # for Cordis to release that reservation before installing its successor.

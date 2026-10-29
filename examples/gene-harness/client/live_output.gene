@@ -147,8 +147,10 @@
 (fn output_text [entry : Any] : Str
   (if_yes ($absent? entry) (return ""))
   ($to_str (text entry/text)
-    (if (flag entry/evicted) "\n[Live output evicted from this page.]"
-      (if (flag entry/truncated) "\n[Output truncated for display.]" ""))
+    (if (flag entry/evicted)
+      (then "\n[Live output evicted from this page.]")
+      (elif (flag entry/truncated) "\n[Output truncated for display.]")
+      (else ""))
     (if (flag entry/incomplete) "\n[Live output interrupted; some text may be missing.]" "")))
 
 (fn command_output_text [entry : Any, command : Any] : Str
@@ -156,7 +158,7 @@
   (var result (if (== (text command/status) "running") "" (text command/text)))
   # A shell's returned value is its captured stream. Gene expressions have
   # an independent return value, even when it happens to equal printed text.
-  (if_yes (&& (== (text command/name) "sh") (! ($absent? command/exit)))
+  (if_yes (&& (== (text command/name) "sh") ($present? command/exit))
     (if_not ($absent? entry) (set result ""))
     (var code : Int command/exit)
     (if_yes (!= code 0)

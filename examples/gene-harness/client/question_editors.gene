@@ -70,18 +70,16 @@
 
 (fn sync_question [controller : QuestionEditors, editor : QuestionEditor] : Void
   (var key editor/key)
-  (var pending (! ($absent? controller/pending/%key)))
+  (var pending ($present? controller/pending/%key))
   (for view in editor/views
     (var status : EventTarget view/status)
     ($dom/set_text
       status
       (if editor/sending
-        "Sending answer…"
-        (if (!= editor/error "")
-          editor/error
-          (if pending
-            "Answer outcome unknown. Resolve reuses the original reply."
-            ""))))
+        (then "Sending answer…")
+        (elif (!= editor/error "") editor/error)
+        (elif pending "Answer outcome unknown. Resolve reuses the original reply.")
+        (else "")))
     (var submit : EventTarget view/submit)
     (var dismiss : EventTarget view/dismiss)
     (var cancel : EventTarget view/cancel)
@@ -99,25 +97,24 @@
         (render_question_view controller editor field (&& controller/ready (! editor/sending) (! pending)))
         (continue))
       (set element/disabled (|| editor/sending pending))
-      (if (== kind "skip")
-        (set element/checked (== (qjson editor/skips/%id) "true"))
-        (if (== kind "multi")
-          (do
+      (match kind
+        (when "skip" (set element/checked (== (qjson editor/skips/%id) "true")))
+        (when "multi" (do
             (var checked false)
             (if_not ($absent? editor/answers/%id)
               (var picked : (List Any) editor/answers/%id)
               (for value in picked
                 (if_yes (== (qjson value) (qjson field/choice)) (set checked true))))
-            (set element/checked checked))
-          (do
-            (var value (if (== kind "text") (qtext editor/answers/%id) "-1"))
-            (if_yes (== kind "select")
-              (var choices : (List Any) field/choices)
-              (var index 0)
-              (for choice in choices
-                (if_yes (== (qjson choice) (qjson editor/answers/%id)) (set value ($to_str index)))
-                (set index (+ index 1))))
-            (if_yes (!= ($dom/input_value element) value) ($dom/set_input_value element value))))))))
+            (set element/checked checked)))
+        (else
+          (var value (if (== kind "text") (qtext editor/answers/%id) "-1"))
+          (if_yes (== kind "select")
+            (var choices : (List Any) field/choices)
+            (var index 0)
+            (for choice in choices
+              (if_yes (== (qjson choice) (qjson editor/answers/%id)) (set value ($to_str index)))
+              (set index (+ index 1))))
+          (if_yes (!= ($dom/input_value element) value) ($dom/set_input_value element value)))))))
 
 # A question view's answer buttons select draft values; Answer still submits
 # the whole batch (docs/cards.md).
@@ -175,7 +172,7 @@
     (if_not dismiss
       (for [raw_id value] in editor/answers
         (var id ($to_str raw_id))
-        (if_yes (&& (! ($absent? value)) (!= (qjson editor/skips/%id) "true") (!= (qjson value) "\"\""))
+        (if_yes (&& ($present? value) (!= (qjson editor/skips/%id) "true") (!= (qjson value) "\"\""))
           (set answers/%id value))))
     (set payload
       ($json/parse
@@ -303,14 +300,13 @@
     (var id (qtext question/id))
     (var group ($dom/render `(fieldset (legend %(qtext question/prompt)))))
     (var choices : Any question/choices)
-    (if_yes (! ($absent? question/view))
+    (if_yes ($present? question/view)
       (var view_container ($dom/render `(div ^class_name "question_view")))
       (fields .push {^element view_container ^kind "view" ^id id ^question question})
       ($dom/append group view_container))
-    (if (! ($absent? question/view))
-      nil
-    (if ($absent? choices)
-      (do
+    (if ($present? question/view)
+      (then nil)
+      (elif ($absent? choices)
         (var input ($dom/render `(textarea ^rows "2" ^aria-label %(qtext question/prompt))))
         (fields .push {^element input ^kind "text" ^id id})
         ($dom/add_event_listener
@@ -320,47 +316,46 @@
             (set editor/answers/%id ($dom/input_value input))
             (store_draft controller editor)))
         ($dom/append group input))
-      (if (== (qjson question/multi) "true")
-        (do
-          (var values : (List Any) choices)
-          (for choice in values
-            (var input ($dom/render `(input ^type "checkbox")))
-            (var label ($dom/render `(label)))
-            ($dom/append label input)
-            ($dom/append label ($dom/create_text (choice_label choice)))
-            (fields .push {^element input ^kind "multi" ^id id ^choice choice})
-            ($dom/add_event_listener
-              input
-              "change"
-              (fn [event : Any] : Void
-                (var picked : (List Any) [])
-                (if_not ($absent? editor/answers/%id)
-                  (var saved : (List Any) editor/answers/%id)
-                  (for value in saved
-                    (if_yes (!= (qjson value) (qjson choice)) (picked .push value))))
-                (if_yes input/checked (picked .push choice))
-                (set editor/answers/%id picked)
-                (store_draft controller editor)))
-            ($dom/append group label)))
-        (do
-          (var select
-            ($dom/render `(select ^aria-label %(qtext question/prompt) (option ^value "-1" "Skip"))))
-          (var values : (List Any) choices)
-          (var index 0)
-          (for choice in values
-            ($dom/append
-              select
-              ($dom/render `(option ^value %($to_str index) %(choice_label choice))))
-            (set index (+ index 1)))
-          (fields .push {^element select ^kind "select" ^id id ^choices choices})
+      (elif (== (qjson question/multi) "true")
+        (var values : (List Any) choices)
+        (for choice in values
+          (var input ($dom/render `(input ^type "checkbox")))
+          (var label ($dom/render `(label)))
+          ($dom/append label input)
+          ($dom/append label ($dom/create_text (choice_label choice)))
+          (fields .push {^element input ^kind "multi" ^id id ^choice choice})
           ($dom/add_event_listener
-            select
+            input
             "change"
             (fn [event : Any] : Void
-              (var selected : Int ($json/parse ($dom/input_value select)))
-              (set editor/answers/%id (if (< selected 0) void values/%selected))
+              (var picked : (List Any) [])
+              (if_not ($absent? editor/answers/%id)
+                (var saved : (List Any) editor/answers/%id)
+                (for value in saved
+                  (if_yes (!= (qjson value) (qjson choice)) (picked .push value))))
+              (if_yes input/checked (picked .push choice))
+              (set editor/answers/%id picked)
               (store_draft controller editor)))
-          ($dom/append group select)))))
+          ($dom/append group label)))
+      (else
+        (var select
+          ($dom/render `(select ^aria-label %(qtext question/prompt) (option ^value "-1" "Skip"))))
+        (var values : (List Any) choices)
+        (var index 0)
+        (for choice in values
+          ($dom/append
+            select
+            ($dom/render `(option ^value %($to_str index) %(choice_label choice))))
+          (set index (+ index 1)))
+        (fields .push {^element select ^kind "select" ^id id ^choices choices})
+        ($dom/add_event_listener
+          select
+          "change"
+          (fn [event : Any] : Void
+            (var selected : Int ($json/parse ($dom/input_value select)))
+            (set editor/answers/%id (if (< selected 0) void values/%selected))
+            (store_draft controller editor)))
+        ($dom/append group select)))
     (var skip ($dom/render `(input ^type "checkbox")))
     (var label ($dom/render `(label ^class_name "question_skip")))
     ($dom/append label skip)

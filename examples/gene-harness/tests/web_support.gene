@@ -30,7 +30,7 @@
       (let result (await host/process))
       ($assert false $"Host exited before ready: ${result/stdout}${result/stderr}"))
     (let connection (try (discover host/root) catch Any nil))
-    (if (&& (! ($absent? connection)) (!= connection/epoch previous)) (return connection))
+    (if (&& ($present? connection) (!= connection/epoch previous)) (return connection))
     ($assert (< ($os/monotonic_ms) due) "Host did not publish a ready connection")
     ($sleep 20)))
 

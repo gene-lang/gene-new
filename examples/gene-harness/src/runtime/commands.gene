@@ -188,7 +188,10 @@
         """
 [page truncated at byte limit]""")
       page/text))
-  (CommandResult ^display text ^^attached ^view {^path relative ^kind (if ($str/ends_with? relative ".gene") "gene" (if ($str/ends_with? relative ".md") "markdown" "text")) ^from first ^to page/to ^next page/next ^truncated page/truncated}))
+  (CommandResult ^display text ^^attached ^view {^path relative ^kind (if ($str/ends_with? relative ".gene")
+    (then "gene")
+    (elif ($str/ends_with? relative ".md") "markdown")
+    (else "text")) ^from first ^to page/to ^next page/next ^truncated page/truncated}))
 
 (fn shared_command_rows []
   [
@@ -302,10 +305,9 @@
             (record .put "error_code" (?? $err/code "mode_closed"))))
         (let text
           (if ($absent? result/display)
-            ""
-            (if (== ($head result/display) Str)
-              result/display
-              ($to_str result/display))))
+            (then "")
+            (elif (== ($head result/display) Str) result/display)
+            (else ($to_str result/display))))
         (let id $"${record/id}.${record/name}")
         (let pointer (if (== record/name "view") $"user viewed ${record/raw}" text))
         (let exit_label (if ($absent? result/exit) "" $" (exit ${result/exit})"))
@@ -313,9 +315,10 @@
         (let bounded
           (bounded_request manager/runtime session [{^id id ^header header ^value pointer}]))
         (record .put "status" (?? result/status "done"))
-        (record .put "display" (if (== record/name "view") text
-          (if (&& (== record/name "repl") (! ($absent? record/mode_instance)))
-            bounded/items/0/value bounded/full)))
+        (record .put "display" (if (== record/name "view")
+          (then text)
+          (elif (&& (== record/name "repl") ($present? record/mode_instance)) bounded/items/0/value)
+          (else bounded/full)))
         (record .put "attached" (== result/attached true))
         (record .put "item" bounded/items/0)
         (let properties ($props result))
@@ -412,7 +415,7 @@ Stopped."""))))
   (try
     (submit_routed_command ^lease lease manager session parsed)
   ensure
-    (if (&& (! ($absent? lease)) (!= parsed/lease_transferred true))
+    (if (&& ($present? lease) (!= parsed/lease_transferred true))
       (release_snapshot manager/runtime/h/snapshots lease))))
 
 (fn submit_routed_command [manager, session : Str, parsed, ^lease supplied_lease = nil]
@@ -514,7 +517,7 @@ Stopped."""))))
   ensure
     (if_yes (! watched)
       # The watcher owns the lease once it exists; before that, release it here.
-      (if (&& ($absent? supplied_lease) (! ($absent? lease)))
+      (if (&& ($absent? supplied_lease) ($present? lease))
         (release_snapshot manager/runtime/h/snapshots lease))
       (if_not ($absent? parsed/on_finish)
         (try (parsed/on_finish) catch Any nil)))))

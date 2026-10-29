@@ -72,7 +72,7 @@
         (let name ($str/slice_bytes header/0 3 (- ($str/byte_size header/0) 3)))
         (let terminator header/1)
         (if (|| ($absent? (#"^[A-Za-z0-9_.-]+$" .match name))
-                (== terminator "") (! ($absent? (#"\s" .match terminator))))
+                (== terminator "") ($present? (#"\s" .match terminator)))
           (read_error (+ index 1) "invalid attachment name or terminator"))
         (if_not (== (attachments .get name) void)
           (read_error (+ index 1) $"duplicate attachment ${name}"))

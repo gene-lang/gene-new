@@ -33,8 +33,8 @@
   (let access tokens/access_token)
   (let account tokens/account_id)
   (if_not (&& (== ($head access) Str) (== ($head account) Str)
-              (! ($absent? (nonempty access)))
-              (! ($absent? (nonempty account))))
+              ($present? (nonempty access))
+              ($present? (nonempty account)))
     (fail (ProviderError ^message
       "Codex auth.json requires tokens.access_token and tokens.account_id; run codex login")))
   {^access_token access ^account_id account})
@@ -45,7 +45,7 @@
   (let texts [])
   (var phased false)
   (for item in (?? response/output [])
-    (if (&& (== item/type "message") (! ($absent? item/phase)))
+    (if (&& (== item/type "message") ($present? item/phase))
       (set phased true)))
   (for item in (?? response/output [])
     (if_yes (&& (== item/type "message") (== item/role "assistant"))
@@ -125,7 +125,7 @@
          ^capabilities (fn [settings] {^image_input "unknown" ^image_output "no"})
          ^available (fn []
            (let path (auth_file))
-           (if (&& (! ($absent? path)) ($fs/exists? path))
+           (if (&& ($present? path) ($fs/exists? path))
              nil
              "Codex auth.json is unavailable; run codex login"))
          ^configure (fn [model, effort, timeout]

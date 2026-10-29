@@ -45,8 +45,10 @@
     (var value : Any ($json/parse saved))
     (set voice/output (flag (?? value/output true))) (set voice/autosend (flag (?? value/autosend true)))
     (set voice/progress (flag (?? value/progress true)))
-    (set voice/mode (if (== (text value/mode) "toggle") "toggle"
-      (if (== (text value/mode) "handsfree") "handsfree" "hold")))
+    (set voice/mode (if (== (text value/mode) "toggle")
+      (then "toggle")
+      (elif (== (text value/mode) "handsfree") "handsfree")
+      (else "hold")))
     (set voice/recognizer (if (== (text value/recognizer) "host") "host" "browser"))
     (set voice/synthesizer (if (== (text value/synthesizer) "host") "host" "browser"))
     (if_yes (&& (== voice/mode "handsfree") (!= voice/recognizer "host")) (set voice/mode "hold"))
@@ -120,12 +122,15 @@
   (set voice/mic/disabled (|| (! voice/enabled) voice/claiming
     (if (== voice/recognizer "host") (! (host_ready? voice)) (! ($speech/recognizer_available?)))))
   ($dom/set_text voice/mic
-    (if voice/finalizing "Finishing…"
-      (if voice/recording
-        (if (== voice/mode "toggle") "Recording… click to finish"
-          (if (&& (== voice/mode "handsfree") (! voice/manual_capture)) "Recording… silence sends" "Recording… release to finish"))
-        (if (== voice/mode "hold") "Hold to talk · Space"
-          (if (== voice/mode "handsfree") "Hands-free · hold or Space to interrupt" "Start / stop recording")))))
+    (if voice/finalizing
+      (then "Finishing…")
+      (elif voice/recording (if (== voice/mode "toggle")
+          (then "Recording… click to finish")
+          (elif (&& (== voice/mode "handsfree") (! voice/manual_capture)) "Recording… silence sends")
+          (else "Recording… release to finish")))
+      (elif (== voice/mode "hold") "Hold to talk · Space")
+      (elif (== voice/mode "handsfree") "Hands-free · hold or Space to interrupt")
+      (else "Start / stop recording")))
   (var value : Any (draft voice))
   (if (|| voice/recording voice/finalizing)
     ($dom/set_attribute voice/transcript "readonly" "")
@@ -137,12 +142,12 @@
   (set voice/send_button/disabled (|| voice/submitting pending (== (text value/text) "")))
   (set voice/discard_button/disabled (|| voice/submitting pending (== (text value/text) "")))
   (var feedback
-    (if voice/claiming "Enabling voice…"
-      (if pending "Voice submission outcome is unknown. Use Resolve voice submission in the host controls."
-        (if voice/held voice/feedback
-          (if (&& (!= (text value/text) "") (|| (== voice/round_state "running") (== voice/round_state "waiting")))
-            "Voice draft queued for this conversation. You can edit or cancel it."
-            voice/feedback)))))
+    (if voice/claiming
+      (then "Enabling voice…")
+      (elif pending "Voice submission outcome is unknown. Use Resolve voice submission in the host controls.")
+      (elif voice/held voice/feedback)
+      (elif (&& (!= (text value/text) "") (|| (== voice/round_state "running") (== voice/round_state "waiting"))) "Voice draft queued for this conversation. You can edit or cancel it.")
+      (else voice/feedback)))
   ($dom/set_text voice/message ($to_str (if (== voice/title "") "" ($to_str "Voicing " voice/title " · "))
     feedback (if voice/speaking " · Speaking replies." ""))))
 
@@ -205,7 +210,7 @@
 (fn enqueue [voice : Voice, id : Str, spoken : Str, replay : Bool = false,
              announcement : Str = "", count : Int = 0] : Void
   (if_yes (|| (== (str/trim spoken) "") voice/disposed (! voice/enabled)) (return))
-  (if_yes (&& (! replay) (! ($absent? voice/seen/%id))) (return))
+  (if_yes (&& (! replay) ($present? voice/seen/%id)) (return))
   (set voice/seen/%id true)
   (voice/queue .push {^id id ^speech spoken ^replay replay ^received ($time/now) ^announcement announcement ^count count})
   (prefetch_next voice)
@@ -258,13 +263,13 @@
 
 (fn pending_count [voice : Voice] : Int
   (var count 0)
-  (for [id value] in voice/pending (if_yes (! ($absent? value)) (set count (+ count 1))))
+  (for [id value] in voice/pending (if_yes ($present? value) (set count (+ count 1))))
   count)
 
 (fn drop_pending [voice : Voice, id : Str] : Void
   (var keep : PropMap {})
   (for [key value] in voice/pending
-    (if_yes (&& (!= ($to_str key) id) (! ($absent? value)))
+    (if_yes (&& (!= ($to_str key) id) ($present? value))
       (var name ($to_str key)) (set keep/%name value)))
   (set voice/pending keep)
   (if_not ($absent? voice/host)
@@ -359,7 +364,7 @@
           (if_yes voice/recording
             (release_utterance voice/drafts id ($to_int (- ($time/now) voice/capture_started))))
           (finish_utterance voice/drafts id value "done")
-          (if_yes (! ($absent? (draft voice)))
+          (if_yes ($present? (draft voice))
             (var session voice/session)
             (set voice/drafts/drafts/%session/recognizer "browser"))
           (if_yes (! (store_draft voice))
@@ -486,7 +491,7 @@
     (if_yes ($absent? voice/pending/%id) (return))
     (set voice/release_at voice/pending/%id/released)
     (drop_pending voice id)
-    (if_yes (&& (== kind "transcript/final") (! ($absent? data/audio_ms)))
+    (if_yes (&& (== kind "transcript/final") ($present? data/audio_ms))
       (var utterance : Any (find_utterance voice/drafts id))
       (if_not ($absent? utterance) (set utterance/audio_ms (integer data/audio_ms))))
     (finish_utterance voice/drafts id (text data/text) (if (== kind "transcript/final") "done" "failed"))

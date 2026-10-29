@@ -19,4 +19,4 @@
     (for changed in [(context .assoc "outcome" {^done true ^has_questions false})
                      (context .assoc "outcome" {^done false ^has_questions true})
                      (context .assoc "collection" true)]
-      ($assert (! ($absent? (/error (wait_schema changed "all"))))))))
+      ($assert ($present? (/error (wait_schema changed "all")))))))

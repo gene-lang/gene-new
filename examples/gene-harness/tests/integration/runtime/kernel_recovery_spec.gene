@@ -24,8 +24,8 @@
             ($assert (== acquired/spec/layer "kernel") acquired/spec/name))
           (for name in ["voice" "cards" "delegations" "images" "commands" "actions" "operator" "computer" "manager"]
             ($assert ($absent? (runtime/services/values .get name)) name))
-          ($assert (! ($absent? runtime/events)))
-          ($assert (! ($absent? runtime/sessions)))
+          ($assert ($present? runtime/events))
+          ($assert ($present? runtime/sessions))
           ($assert ($absent? runtime/services/values/images))
           ($assert (== ($fs/read_text $"${root}/.gene-harness/config.gene") "(invalid configuration"))
         ensure (close_runtime runtime)))))

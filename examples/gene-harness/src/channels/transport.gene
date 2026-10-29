@@ -36,7 +36,7 @@
         (if (&& (! initialized) (>= ($os/monotonic_ms) deadline))
           (channel_error "hello_timeout" "Slack did not send a connection hello."))
         (let message (transport/driver/receive native socket))
-        (if (&& initialized (! ($absent? transport/driver/idle_ms)))
+        (if (&& initialized ($present? transport/driver/idle_ms))
           (then
             (if (> (transport/driver/idle_ms native socket) 90000)
               (channel_error "heartbeat_timeout" "No WebSocket frame received before the heartbeat deadline."))
@@ -52,7 +52,7 @@
           (transport_health transport app true "connected")
           (continue))
         (if (== message/type "disconnect") (return nil))
-        (if_yes (! ($absent? message/envelope_id))
+        (if_yes ($present? message/envelope_id)
           (let state (read transport/service/owner (fn [state] {^accounts state/accounts})))
           (var selected nil)
           (for [id candidate] in state/accounts

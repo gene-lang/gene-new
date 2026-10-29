@@ -73,6 +73,6 @@
     ^controller_closed false ^bindings_closed false})
   (let owner (new_host_services ctx (loop_service_specs) ^values runtime/services/values
     ^observe (fn [phase name]
-      (if (&& (! ($absent? observe)) (!= name "runtime")) (observe phase name)))))
+      (if (&& ($present? observe) (!= name "runtime")) (observe phase name)))))
   (set ctx/services owner)
   (start_host_services owner "normal"))

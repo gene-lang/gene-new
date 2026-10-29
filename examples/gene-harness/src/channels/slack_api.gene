@@ -11,9 +11,9 @@
 
 (fn secret_path [filename : Str] : Str
   (if (filename .starts_with? "~/")
-    ($path/join ($os/get_env "HOME") ($str/slice_bytes filename 2 (- filename/.byte_size 2)))
-    (if (filename .starts_with? "/") ($path/normalize filename)
-      ($path/join ($os/launch_dir) filename))))
+    (then ($path/join ($os/get_env "HOME") ($str/slice_bytes filename 2 (- filename/.byte_size 2))))
+    (elif (filename .starts_with? "/") ($path/normalize filename))
+    (else ($path/join ($os/launch_dir) filename))))
 
 (fn unquote_secret [text : Str] : Str
   (let value text/.trim)
@@ -101,7 +101,7 @@
   (if_yes (|| (< response/status 200) (>= response/status 300) (!= result/ok true))
     (let candidate (?? result/error "api_error"))
     (let code (if (&& (== ($head candidate) Str) (< candidate/.byte_size 81)
-      (! ($absent? (#"^[a-z_]+$" .match candidate)))) candidate "api_error"))
+      ($present? (#"^[a-z_]+$" .match candidate))) candidate "api_error"))
     (slack_error code ($to_str "Slack " method " failed: " code ".")))
   result)
 
@@ -110,8 +110,8 @@
   (let user (if (== credentials/user "") nil (api_call api "auth.test" ^token credentials/user)))
   (if (|| ($absent? bot/team_id) ($absent? bot/user_id) ($absent? bot/bot_id))
     (slack_error "invalid_identity" "The configured bot token did not identify a Slack bot."))
-  (if (&& (! ($absent? user))
-          (|| (!= user/team_id bot/team_id) ($absent? user/user_id) (! ($absent? user/bot_id))))
+  (if (&& ($present? user)
+          (|| (!= user/team_id bot/team_id) ($absent? user/user_id) ($present? user/bot_id)))
     (slack_error "invalid_identity" "The operator token must identify a human in the bot's Slack team."))
   (let details (/bot (api_call api "bots.info" {^bot bot/bot_id} ^http_method "GET")))
   (if (|| (!= details/id bot/bot_id) ($absent? details/app_id))

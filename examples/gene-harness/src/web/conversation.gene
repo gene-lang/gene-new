@@ -43,7 +43,7 @@
 
 (fn project_request [record, receiver : Int, prior = nil]
   (let combine (?? record/combine "replace"))
-  (let body (if (&& (== combine "append") (! ($absent? prior)))
+  (let body (if (&& (== combine "append") ($present? prior))
     $"${prior/text}\n${record/text}" record/text))
   (let sources (if ($absent? prior) [] ($into prior/source_ids [])))
   (if_not (sources .contains? record/id) (sources .push record/id))

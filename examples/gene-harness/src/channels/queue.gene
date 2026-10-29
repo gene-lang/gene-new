@@ -21,7 +21,7 @@
       ^owner (required_text route/owner "connection owner")
       ^account (required_text route/account "account ID") ^team route/team
       ^channel route/channel ^workspace state/workspace})
-    (if (&& (! ($absent? state/source)) (!= state/source source))
+    (if (&& ($present? state/source) (!= state/source source))
       (channel_error "conflict" "Changing a workspace's channel source requires an explicit migration."))
     (state .put "source" source)
     (if_not ($absent? owner_root)
@@ -75,7 +75,7 @@
   (mutate store (fn [state]
     (check_decision state message decision)
     (let existing (state/messages .get id))
-    (if_yes (! ($absent? existing))
+    (if_yes ($present? existing)
       (if (!= existing/digest digest)
         (channel_error "submission_conflict" "The external message identity has different content."))
       (return existing))
@@ -86,7 +86,7 @@
       (return record))
     (let thread (binding_key message))
     (var binding (state/bindings .get thread))
-    (if (&& (! ($absent? binding)) (== binding/root_input id))
+    (if (&& ($present? binding) (== binding/root_input id))
       (return {^id id ^status "ignored" ^reason "existing_root" ^session binding/session}))
     (if_yes (&& ($absent? binding)
                 (|| (! start_allowed) (!= message/thread message/message)))
@@ -100,7 +100,7 @@
       (record .put "reason" "unbound_thread")
       (state/messages .put id record)
       (return record))
-    (if_yes (&& (! ($absent? binding)) (== binding/status "deleted"))
+    (if_yes (&& ($present? binding) (== binding/status "deleted"))
       (record .put "status" "deleted")
       (record .put "session" binding/session)
       (state/messages .put id record)
@@ -285,7 +285,7 @@
       (add_hold queue "operator" receipt/state ($to_str receipt/id)))
     (if (|| (["done" "failed" "interrupted" "cancelled"] .contains? receipt/state)
             (&& (== receipt/state "paused")
-                (|| (!= receipt/continuation_mode "automatic") (! ($absent? receipt/continuation_stop)))))
+                (|| (!= receipt/continuation_mode "automatic") ($present? receipt/continuation_stop))))
       (clear_temporary queue source))
     nil)
 
@@ -307,7 +307,7 @@
     (if_not ($absent? queue/batch)
       (return {^kind "recover" ^batch (state/batches .get queue/batch)}))
     (if (> ($size queue/holds) 0) (return {^kind "held"}))
-    (if_yes (! ($absent? members))
+    (if_yes ($present? members)
       (if (!= ($head members) List) (channel_error "invalid_request" "Batch members must be an ordered ID list."))
       (let seen {})
       (for id in members
@@ -320,7 +320,7 @@
     (let parts [])
     (let authorizations {})
     (for id in queue/order
-      (if (&& (! ($absent? members)) (! (members .contains? id))) (continue))
+      (if (&& ($present? members) (! (members .contains? id))) (continue))
       (let entry (state/messages .get id))
       (if (!= entry/status "queued") (continue))
       (let decision (decisions .get id))

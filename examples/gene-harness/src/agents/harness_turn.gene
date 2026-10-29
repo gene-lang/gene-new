@@ -15,10 +15,10 @@
     (let state (?? change/state change/status "unknown"))
     (let digest (?? change/digest change/entry/module_digest nil))
     (let brief_digest
-      (if ($absent? digest) ""
-        (if (> ($str/byte_size digest) 24)
-          ($str/slice_bytes digest 0 24)
-          digest)))
+      (if ($absent? digest)
+        (then "")
+        (elif (> ($str/byte_size digest) 24) ($str/slice_bytes digest 0 24))
+        (else digest)))
     (let message (?? change/message ""))
     (lines .push
       ($to_str id ": " state " (revision " (?? change/revision "?") ")"
@@ -135,7 +135,7 @@
         "Done was deferred because this turn produced new context. Read the attached media or publication result before finishing."))
     result
   ensure
-    (if (&& (! drained/.get) (! ($absent? turn_ref/.get)))
+    (if (&& (! drained/.get) ($present? turn_ref/.get))
       (discard_composition_changes h/snapshots turn_ref/.get))
     (if ($absent? supplied_lease) (release_snapshot h/snapshots lease))))
 

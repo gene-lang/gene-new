@@ -41,7 +41,7 @@
     (if_not (candidate/view_state .has_key? key) (ui_error "invalid_request" $"Unknown view-state field ${key}."))
     (if_not ([Str Bool Int Float Nil] .contains? ($head value)) (ui_error "invalid_request" "View state must contain scalar values."))
     (let initial (candidate/view_state .get key))
-    (if (&& (! ($absent? initial)) (!= ($head initial) ($head value))
+    (if (&& ($present? initial) (!= ($head initial) ($head value))
             (! (&& ([Int Float] .contains? ($head initial)) ([Int Float] .contains? ($head value)))))
       (ui_error "invalid_request" $"Wrong type for view-state field ${key}."))
     (state .put key value))

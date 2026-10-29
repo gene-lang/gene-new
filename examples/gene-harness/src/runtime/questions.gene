@@ -40,7 +40,7 @@
       (copy .put "view" (question_view question/id question/view (?? copy/choices nil) kind)))
     # A plugin question kind may draw its own view from the question's data.
     (let renderer (renderers .get kind))
-    (if_yes (&& ($absent? (?? question/view nil)) (! ($absent? renderer)))
+    (if_yes (&& ($absent? (?? question/view nil)) ($present? renderer))
       (let drawn (try (renderer ($freeze copy))
         catch Any (fail (QuestionError ^message $"question ${question/id} ${kind} render: ${$err/message}"))))
       (copy .put "view" (question_view question/id drawn (?? copy/choices nil) kind)))
@@ -138,7 +138,7 @@
   (let batch (core_state events "session" session $"questions/${id}"))
   (if ($absent? batch) (fail (QuestionError ^message $"unknown question batch ${id}")))
   (let submitted (submitted_digest values dismiss))
-  (if (&& (== batch/status "answered") (! ($absent? batch/submitted_digest)))
+  (if (&& (== batch/status "answered") ($present? batch/submitted_digest))
     (then
       (if (&& (== batch/submitted_digest submitted) (== (?? batch/intent "continue") intent))
         (return batch))

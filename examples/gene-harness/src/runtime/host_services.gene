@@ -21,7 +21,7 @@
 (fn service_order [specs, mode : Str]
   (let names {})
   (for spec in specs
-    (if (&& (! ($absent? spec/layer)) (! (["kernel" "loop" "feature_host"] .contains? spec/layer)))
+    (if (&& ($present? spec/layer) (! (["kernel" "loop" "feature_host"] .contains? spec/layer)))
       (fail (HostServiceError ^message $"Unknown host service layer ${spec/layer}.")))
     (if (|| (!= ($head spec/name) Str) (== spec/name "") (names .has_key? spec/name))
       (fail (HostServiceError ^message "Host service names must be nonempty and unique.")))

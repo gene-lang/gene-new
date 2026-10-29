@@ -130,7 +130,7 @@
           (publish fixture "(disable_plugin \"image\")")
           ($assert ($absent? (row fixture/runtime/h "functions" "image_generate")))
           (let disabled (evaluate_image fixture "Disabled logo." ^round "disabled-round"))
-          ($assert (! ($absent? disabled/error)))
+          ($assert ($present? disabled/error))
           (publish fixture "(restore_plugin \"image\") (restore_plugin \"mock_image\")")
           (let restored (evaluate_image fixture "Restored logo." ^round "restored-round"))
           ($assert ($absent? restored/error))

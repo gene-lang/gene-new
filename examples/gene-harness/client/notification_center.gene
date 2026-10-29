@@ -33,7 +33,7 @@
 
 (fn pending_for [center : NotificationCenter, session : Str] : Bool
   (for [key payload] in center/questions/pending
-    (if_yes (&& (! ($absent? payload)) (== (qtext payload/session) session)) (return true)))
+    (if_yes (&& ($present? payload) (== (qtext payload/session) session)) (return true)))
   false)
 
 (fn paint_card [center : NotificationCenter, card : QuestionCard] : Void
@@ -43,16 +43,12 @@
   ($dom/set_text
     card/status
     (if card/loading
-      "Checking current questions…"
-      (if (!= card/error "")
-        card/error
-        (if card/stale
-          "Details need checking."
-          (if pending
-            "Reply needs confirmation."
-            (if card/waiting
-              "Needs response"
-              "Needs attention"))))))
+      (then "Checking current questions…")
+      (elif (!= card/error "") card/error)
+      (elif card/stale "Details need checking.")
+      (elif pending "Reply needs confirmation.")
+      (elif card/waiting "Needs response")
+      (else "Needs attention")))
   (set card/details/hidden (! card/expanded))
   (set card/fields/disabled (|| card/stale card/loading (! center/ready)))
   ($dom/set_text card/toggle (if card/expanded "Collapse details" "Details"))
@@ -81,7 +77,7 @@
   (if_yes card/expanded
     (var current_batch (waiting_batch card/snapshot))
     (for [key payload] in center/questions/pending
-      (if_yes (&& (! ($absent? payload)) (== (qtext payload/session) card/session) (!= (qtext payload/batch_id) (qtext current_batch/id)))
+      (if_yes (&& ($present? payload) (== (qtext payload/session) card/session) (!= (qtext payload/batch_id) (qtext current_batch/id)))
         (var identity ($to_str key))
         (var editor : QuestionEditor center/questions/editors/%identity)
         (if_not ($absent? editor)
@@ -114,7 +110,7 @@
           (set card/snapshot data)
           (set card/title (qtext data/session/title card/title))
           (set card/attention (== (qjson data/session/attention) "true"))
-          (set card/waiting (! ($absent? (waiting_batch data))))
+          (set card/waiting ($present? (waiting_batch data)))
           (set card/stale false)
           (set card/error ""))
         (set card/error "Details unavailable. Retry details or open the conversation."))
@@ -176,7 +172,7 @@
   (for session in sessions
     (var id (qtext session/id))
     (var waiting (== (qtext session/status) "waiting"))
-    (if_yes (|| waiting (! ($absent? center/cards/%id)))
+    (if_yes (|| waiting ($present? center/cards/%id))
       (var card (card_for center id))
       (set card/title (qtext session/title))
       (if_yes (|| card/stale ($absent? card/snapshot)) (set card/waiting waiting))))
@@ -199,7 +195,7 @@
   (set card/snapshot snapshot)
   (set card/title (qtext snapshot/session/title card/title))
   (set card/attention (== (qjson snapshot/session/attention) "true"))
-  (set card/waiting (! ($absent? (waiting_batch snapshot))))
+  (set card/waiting ($present? (waiting_batch snapshot)))
   (set card/stale false)
   (set card/error "")
   (paint_card center card))

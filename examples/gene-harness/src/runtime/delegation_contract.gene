@@ -20,8 +20,11 @@
   (for [raw_key fallback] in limits
     (let key ($to_str raw_key))
     (let value (?? (input .get key) fallback))
-    (let maximum (if (["timeout_ms" "max_timeout_ms"] .contains? key) 86400000
-      (if (== key "max_per_round") 16 (if (["turn_limit" "max_turns"] .contains? key) 24 64))))
+    (let maximum (if (["timeout_ms" "max_timeout_ms"] .contains? key)
+      (then 86400000)
+      (elif (== key "max_per_round") 16)
+      (elif (["turn_limit" "max_turns"] .contains? key) 24)
+      (else 64)))
     (if (|| (!= ($head value) Int) (< value 1) (> value maximum))
       (delegation_error "invalid_configuration" $"delegation/${key} must be an integer from 1 through ${maximum}."))
     (limits .put key value))
@@ -43,7 +46,7 @@
   (if (|| (!= ($head timeout) Int) (< timeout 1) (> timeout limits/max_timeout_ms))
     (delegation_error "invalid_request" $"Delegation timeout_ms must be from 1 through ${limits/max_timeout_ms}."))
   (let model (?? input/model nil))
-  (if (&& (! ($absent? model))
+  (if (&& ($present? model)
           (|| (!= ($head model) Str) (== ($str/trim model) "") (> ($str/byte_size model) 256)))
     (delegation_error "invalid_request" "Delegation model must be a nonempty model name."))
   {^id id ^title ($str/trim input/title) ^brief input/brief ^turn_limit turns
@@ -111,7 +114,7 @@
     (if (terminal_delegation? admission/state)
       (then (if (!= admission/seen true) (set any_terminal true)))
       (else (set all_terminal false)))
-    (if (&& (== admission/state "waiting") (! ($absent? admission/questions))
+    (if (&& (== admission/state "waiting") ($present? admission/questions)
             (! ((?? admission/seen_questions []) .contains? admission/questions/id)))
       (set question true)))
   (if (&& question (|| (== wait/mode "any") wait/wake_on_questions)) (return true))

@@ -94,7 +94,7 @@
           (let status (api client "GET" "/status"))
           ($assert (== status/profile "manager"))
           ($assert (== status/ui/settings/default_view "workspaces"))
-          ($assert (! ($absent? status/readiness)))
+          ($assert ($present? status/readiness))
           (let view
             ((Path 0) ($filter status/ui/components (fn [item] (== item/name "workspaces")))))
           (let rendered

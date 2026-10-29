@@ -40,7 +40,7 @@
       (return (response 409 {^code $err/code ^message $err/message}))))
   (if_yes (&& (== request/method "POST") (== request/path $"${(api_root)}/plugins/inspect"))
     (let data (request_data request))
-    (if (&& (! ($absent? data/revision)) (!= ($head data/revision) Int))
+    (if (&& ($present? data/revision) (!= ($head data/revision) Int))
       (fail_request "invalid_request" "Historical revision must be an integer."))
     (return (response 200 (inspect_descriptor ^revision (?? data/revision nil)
       host/runtime (field data "id")))))

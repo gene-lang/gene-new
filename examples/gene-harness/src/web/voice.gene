@@ -63,7 +63,7 @@
   (let task (hub/jobs/.get .get stream/job))
   # Framed helpers finish the current bounded segment before observing this
   # flag. Interrupting their reader mid-packet would destroy the warm stream.
-  (if (&& (! ($absent? task)) (!= stream/drain_on_cancel true)) task/.cancel)
+  (if (&& ($present? task) (!= stream/drain_on_cancel true)) task/.cancel)
   nil)
 
 (fn cancel_peer_streams [hub : VoiceHub, peer]
@@ -167,7 +167,7 @@
       (stream_recognition hub peer capture opened)
       (while (&& (! capture/cancelled) (owns_voice? hub peer))
       (if (< capture/cursor capture/segments/.size)
-        (do
+        (then
           (let cursor capture/cursor)
           (let segment capture/segments/%cursor)
           (capture .put "cursor" (+ capture/cursor 1))
@@ -178,7 +178,8 @@
             (capture .put "text" ($str/trim ($to_str capture/text " " text))))
           (if (&& (! capture/cancelled) (owns_voice? hub peer))
             (control peer {^type "transcript/partial" ^id capture/id ^text capture/text ^recognizer opened/row/name})))
-        (if (== capture/state "finalizing") (break) ($sleep 10)))))
+        (elif (== capture/state "finalizing") (break))
+        (else ($sleep 10)))))
     (if_yes (&& (! capture/cancelled) (owns_voice? hub peer))
       (set outcome "done")
       (let timing {^clock "host-monotonic" ^started_ms capture/started ^first_frame_ms capture/first_frame_ms
@@ -382,7 +383,7 @@
               (if (|| ($absent? data/id) (== speak/id data/id)) (cancel_stream hub speak))))
           (elif (== data/type "player")
             (let speak (peer/speaks .get data/id))
-            (if_yes (&& (! ($absent? speak/credit)) (== ($head data/played_bytes) Int))
+            (if_yes (&& ($present? speak/credit) (== ($head data/played_bytes) Int))
               (let previous speak/credit/played)
               (let waiting (== data/waiting true))
               (if (&& waiting (!= data/played_bytes 0)) (voice_error "invalid_request" "Queued speech cannot acknowledge playback."))

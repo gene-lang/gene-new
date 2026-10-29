@@ -27,7 +27,7 @@
         {^bot_authenticated true ^operator_authenticated (!= identity/operator "")
          ^same_team true ^channel_accessible true ^channel_member identity/member
          ^socket_hello true ^connections hello/num_connections
-         ^app_identified (! ($absent? hello/connection_info/app_id))}))
+         ^app_identified ($present? hello/connection_info/app_id)}))
     ensure ($C/close socket))
     ($assert (== (native/open_count) 0))
   ensure (close_api api))

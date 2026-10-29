@@ -248,11 +248,11 @@
     (if definition/continue_session
       (then
         (let prior (manager/last_finished/.get .get definition/id))
-        (if_yes (&& (! ($absent? prior)) (! ($absent? (manager/runtime/sessions/index/.get .get prior/session))))
+        (if_yes (&& ($present? prior) ($present? (manager/runtime/sessions/index/.get .get prior/session)))
           (occurrence .put "session" prior/session)
           (save_occurrence manager occurrence))))
     (let existing (manager/runtime/sessions/index/.get .get occurrence/session))
-    (if (&& (! ($absent? existing)) (session_busy? (load_session manager/runtime/sessions occurrence/session))) (continue))
+    (if (&& ($present? existing) (session_busy? (load_session manager/runtime/sessions occurrence/session))) (continue))
     (let local (local_stamp definition occurrence/at_ms))
     (if ($absent? (manager/runtime/sessions/index/.get .get occurrence/session))
       (create_session manager/runtime/sessions ^id occurrence/session ^kind definition/kind
@@ -278,7 +278,7 @@
     (for occurrence in (list_occurrences manager ^trigger ($to_str id))
       (if_not (["finished" "skipped"] .contains? occurrence/state) (continue))
       (let session (manager/runtime/sessions/index/.get .get occurrence/session))
-      (if (&& (! ($absent? session)) (|| session/pinned session/attention)) (continue))
+      (if (&& ($present? session) (|| session/pinned session/attention)) (continue))
       (candidates .push occurrence))
     (let excess (- candidates/.size manager/occurrence_keep))
     (if (<= excess 0) (continue))
@@ -321,7 +321,7 @@
     (let loaded (load_session manager/runtime/sessions record/id))
     (let receipt loaded/round/.get)
     (let deadline receipt/questions/deadline)
-    (if (&& (! ($absent? deadline)) (<= deadline now))
+    (if (&& ($present? deadline) (<= deadline now))
       (then
         (update_session manager/runtime/sessions record/id {^^attention})
         (answer_round manager/controller record/id receipt/questions/id {} ^^dismiss)))))
@@ -332,14 +332,14 @@
     (let fingerprint ($crypto/sha256 ($serde/write_data input)))
     (live .put input/id true)
     (let previous (manager/definitions/.get .get input/id))
-    (if (&& (! ($absent? previous)) ($absent? previous/plugin_fingerprint))
+    (if (&& ($present? previous) ($absent? previous/plugin_fingerprint))
       (fail (TriggerError ^code "conflict" ^message $"Plugin trigger conflicts with operator trigger ${input/id}")))
     (if_yes (|| ($absent? previous) (!= previous/plugin_fingerprint fingerprint))
       (let definition (validate_definition input now))
       (definition .put "plugin_fingerprint" fingerprint)
       (save_definition manager definition)))
   (for [id definition] in manager/definitions/.get
-    (if_yes (&& (! ($absent? definition/plugin_fingerprint)) ($absent? (live .get id)) (!= definition/deleted true))
+    (if_yes (&& ($present? definition/plugin_fingerprint) ($absent? (live .get id)) (!= definition/deleted true))
       (let removed (copy_data definition))
       (removed .put "deleted" true)
       (removed .put "enabled" false)
@@ -367,7 +367,7 @@
       candidates (fn [record] record)))
     (var excess ($math/max 0 (- all/.size (?? definition/retention/keep all/.size))))
     (for record in ordered
-      (let expired (&& (! ($absent? definition/retention/days))
+      (let expired (&& ($present? definition/retention/days)
         (< (?? record/last_active_ms 0) (- instant (* definition/retention/days 86400000)))))
       (if (&& (<= excess 0) (! expired)) (continue))
       (if_yes (delete_session manager/runtime/sessions record/id)

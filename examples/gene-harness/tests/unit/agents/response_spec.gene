@@ -40,13 +40,13 @@
     (for suffix in ["\n" ""]
       (let response (split_response ($to_str "*** Begin Patch\n*** Add File: a.txt\n+hello\n*** End Patch" suffix)))
       (assert_equal response/forms/.size 0)
-      ($assert (! ($absent? response/patch)))))
+      ($assert ($present? response/patch))))
 
   (it "recognizes CRLF delimiters without changing attachment bytes" []
     (let response (split_response "(+ 1 2)\r\n<<<raw END\r\nbody\r\nEND"))
     (assert_equal response/attachments/raw "body\r\n")
     (let patch (split_response "*** Begin Patch\r\n*** Add File: crlf.txt\r\n+ok\r\n*** End Patch"))
-    ($assert (! ($absent? patch/patch))))
+    ($assert ($present? patch/patch)))
 
   (it "preserves authored source locations" []
     (let response (split_response "\n\n(+ 1 2)"))

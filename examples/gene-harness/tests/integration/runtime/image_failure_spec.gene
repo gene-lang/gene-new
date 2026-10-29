@@ -47,7 +47,7 @@
             (if (["generation_failed" "generation_usage_error" "invalid_png"] .contains? mode)
               (then ($assert ($absent? result/image_id)) ($assert evaluated/media/.empty?))
               (else
-                ($assert (! ($absent? result/image_id)))
+                ($assert ($present? result/image_id))
                 ($assert (== result/score (if (== mode "generation_failed2") 72 nil)))))
             (if (== mode "generation_usage_error")
               ($assert (== result/usage/0/usage/cost 0.02)))
@@ -94,7 +94,7 @@
             ($assert fixture/generated/.get/.empty?)
             ($assert fixture/reviewed/.get/.empty?)
             (if (["reviewer" "generator"] .contains? scenario)
-              ($assert (! ($absent? evaluated/error)))
+              ($assert ($present? evaluated/error))
               ($assert (== fixture/captured/.get/stop_reason
                 (if (== scenario "capacity") "storage_limit" "cancelled"))))
           ensure (close_runtime fixture/runtime))))))
@@ -107,8 +107,10 @@
           (let fixture (image_fixture ($path/join workspace scenario) [(review 72)]
             ^config {^generation_timeout_ms 120 ^review_timeout_ms 120}))
           (try
-            (fixture/mode .set (if (== scenario "cancel") "review_wait"
-              (if (== scenario "cancel_generation") "generation_wait2" scenario)))
+            (fixture/mode .set (match scenario
+              (when "cancel" "review_wait")
+              (when "cancel_generation" "generation_wait2")
+              (else scenario)))
             (if ($str/starts_with? scenario "cancel")
               (scope
                 (let pending (spawn ^lane root
@@ -121,8 +123,10 @@
             (let state (run_state fixture))
             ($assert (== state/state "finished") $"Unfinished ${scenario}: ${state}")
             ($assert (== state/stop_reason
-              (if ($str/starts_with? scenario "cancel") "cancelled"
-                (if (== scenario "generation_wait2") "generation_failed" "review_failed"))))
+              (if ($str/starts_with? scenario "cancel")
+                (then "cancelled")
+                (elif (== scenario "generation_wait2") "generation_failed")
+                (else "review_failed"))))
             ($assert (! ((image_catalog fixture/runtime "default") .empty?)))
             ($assert (== (/reservations (media_usage (open_media_store fixture/runtime/state_root))) 0))
             (let records (events_for fixture/runtime/events "session" "default"))
@@ -156,12 +160,12 @@
           ($assert fixture/captured/.get/further_attempts_require_new_request)
           ($assert fixture/generated/.get/.empty?)
           (let changed (evaluate_image fixture "Different requirements."))
-          ($assert (! ($absent? changed/error)))
+          ($assert ($present? changed/error))
           (for options in [{^generator "other"} {^generation_model "other"}
                           {^size "2048x2048"} {^background "opaque"}
                           {^max_attempts 4} {^reference_images ["other-image"]}]
             (let conflict (evaluate_image fixture "Original requirements." ^options options))
-            ($assert (! ($absent? conflict/error)) $"Repeated run accepted changed ${options}."))
+            ($assert ($present? conflict/error) $"Repeated run accepted changed ${options}."))
           ($assert fixture/generated/.get/.empty?)
         ensure (close_runtime fixture/runtime)))))
 

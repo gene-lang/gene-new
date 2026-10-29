@@ -47,7 +47,7 @@
             (fn []
               (hook_failure runtime context/session "request/prepare"
                 listener/name "listener returned no request context")))
-          (if (&& called/.get (! ($absent? delegated/.get)))
+          (if (&& called/.get ($present? delegated/.get))
             delegated/.get
             ($runtime/with_context caller_context
               (fn [] (run_at (+ index 1) value))))))
@@ -56,7 +56,7 @@
         (fn []
           (hook_failure runtime context/session "request/prepare"
             listener/name ($to_str $err/message))))
-      (if (&& called/.get (! ($absent? delegated/.get)))
+      (if (&& called/.get ($present? delegated/.get))
         delegated/.get
         ($runtime/with_context caller_context
           (fn [] (run_at (+ index 1) value))))))

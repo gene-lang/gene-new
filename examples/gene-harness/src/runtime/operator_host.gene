@@ -29,7 +29,10 @@
   record)
 
 (fn require_mode [record, mode : Str]
-  (let expected (if (== mode "sh") "shell" (if (== mode "repl") "repl" "")))
+  (let expected (match mode
+    (when "sh" "shell")
+    (when "repl" "repl")
+    (else "")))
   (if (|| (== expected "") (!= record/host/owner expected))
     (fail (ServiceError ^code "forbidden" ^message "This input mode belongs to its shell or REPL plugin."))))
 

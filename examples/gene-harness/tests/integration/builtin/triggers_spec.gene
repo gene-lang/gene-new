@@ -130,8 +130,8 @@
           (let active_status (status_of runtime/h "triggers"))
           ($assert (== active_status "ready")
             $"trigger host did not activate its plugin: ${active_status}; ${runtime/h/plugin_errors/.get}")
-          ($assert (! ($absent? (trigger_manager runtime))) "trigger manager did not start")
-          ($assert (! ($absent? (row runtime/h "functions" "list_triggers")))
+          ($assert ($present? (trigger_manager runtime)) "trigger manager did not start")
+          ($assert ($present? (row runtime/h "functions" "list_triggers"))
             "trigger functions were not contributed")
           ($assert (! ($str/contains?
             (assemble_instructions runtime {^kind "interactive"})

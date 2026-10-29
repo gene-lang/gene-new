@@ -19,7 +19,7 @@
   (if (!= record/host/owner "slack")
     (fail (ServiceError ^code "forbidden" ^message "Slack transport activation belongs to the slack plugin.")))
   (let previous (record/values/.get .get "transport"))
-  (if (&& (! ($absent? previous)) (! previous/closed/.get)) (return {^^started}))
+  (if (&& ($present? previous) (! previous/closed/.get)) (return {^^started}))
   (let service (channel_service handle))
   (let options (?? record/config {}))
   (if_not ($absent? options/requester) (set service/users/requester options/requester))

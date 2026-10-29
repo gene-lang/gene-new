@@ -56,7 +56,7 @@
     (p %$"${used} / ${limit} turns"))))
   (var clock ($dom/render `(p %(elapsed_text elapsed))))
   ($dom/append body clock)
-  (if_yes (&& (! ($absent? data/started_at_ms))
+  (if_yes (&& ($present? data/started_at_ms)
              (|| (== state "running") (== state "waiting") (== state "queued")))
     (tick_elapsed clock elapsed alive))
   (if_not ($absent? data/usage/total_tokens)

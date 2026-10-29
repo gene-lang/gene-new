@@ -35,7 +35,7 @@
     (let paint ($regex/replace_all #"url[(]#[A-Za-z0-9_-]+[)]" token ""))
     (if ($str/contains? paint "url(") (image_error)))
   (let remaining ($regex/replace_all #"<[^>]*>" text ""))
-  (if (! ($absent? (#"[<>&]" .match remaining))) (image_error))
+  (if ($present? (#"[<>&]" .match remaining)) (image_error))
   text)
 
 (fn read_bounded [file]

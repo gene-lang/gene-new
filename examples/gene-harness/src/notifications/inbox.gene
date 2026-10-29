@@ -125,10 +125,9 @@
                           (+ now 2592000000)
                           previous/expires_at))
           ^cleared_revision (if ($absent? previous)
-                              0
-                              (if (&& (! meaningful) (>= previous/cleared_revision previous/revision))
-                                revision
-                                previous/cleared_revision))})
+            (then 0)
+            (elif (&& (! meaningful) (>= previous/cleared_revision previous/revision)) revision)
+            (else previous/cleared_revision))})
       (if (&& (! meaningful) (== previous/detail record/detail) (== previous/expires_at record/expires_at))
         (return
           {^^ok ^id previous/id ^revision previous/revision ^sequence previous/sequence ^^unchanged}))
@@ -174,7 +173,7 @@
   (writable)
   (let identity ($json/stringify [source key]))
   (let previous (inbox/progress/.get .get identity))
-  (if (&& (! ($absent? previous)) (< (- ($os/monotonic_ms) previous) 100))
+  (if (&& ($present? previous) (< (- ($os/monotonic_ms) previous) 100))
     (return {^^ok ^^coalesced}))
   (inbox/progress/.get .put identity ($os/monotonic_ms))
   (let observer inbox/observer/.get)

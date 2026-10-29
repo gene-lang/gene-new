@@ -98,7 +98,7 @@
 
 (fn dispatch_round [client : RoundClient, session : Str, value : Str, input : Any,
                     done : (Fn [Int Any] Void)] : Void
-  (if_yes (|| client/resolving (! ($absent? client/pending)))
+  (if_yes (|| client/resolving ($present? client/pending))
     (done 409 {^code "pending_voice" ^^not_sent ^message "Resolve the earlier voice submission first."})
     (return))
   (if_yes (|| (== session "") (== (str/trim value) ""))

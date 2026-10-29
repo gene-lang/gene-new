@@ -35,10 +35,10 @@
       (if (&& (== event/user route/operator) (== (?? event/thread_ts event/ts) event/ts)
                (== ($head event/text) Str) (event/text .contains? marker))
         (thread .set event/ts)))
-    (if (&& (! ($absent? thread/.get))
+    (if (&& ($present? thread/.get)
             (== (?? event/thread_ts event/message/thread_ts) thread/.get)
             (|| (== event/user route/bot_user) (== event/message/user route/bot_user))) (return envelope))
-    (if (&& (! ($absent? thread/.get)) (== event/ts thread/.get)) (return envelope))
+    (if (&& ($present? thread/.get) (== event/ts thread/.get)) (return envelope))
     # Unrelated events are left unacknowledged for Slack retry. This temporary
     # qualifier must never execute or reply to another human conversation.
     nil)))

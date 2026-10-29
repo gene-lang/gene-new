@@ -103,12 +103,12 @@
               "on_remove" "prepare" "signature" "same_owner"] .contains? ($to_str field))
       (fail (HarnessError ^message $"unknown registry spec field ${field}"))))
   (for field in ["unique" "ordered" "same_owner"]
-    (if (&& (! ($absent? (spec .get field))) (!= ($head (spec .get field)) Bool))
+    (if (&& ($present? (spec .get field)) (!= ($head (spec .get field)) Bool))
       (fail (HarnessError ^message $"registry ${field} must be Bool"))))
   (for field in ["schema" "on_remove" "prepare"]
-    (if (&& (! ($absent? (spec .get field))) (! ($runtime/callable? (spec .get field))))
+    (if (&& ($present? (spec .get field)) (! ($runtime/callable? (spec .get field))))
       (fail (HarnessError ^message $"registry ${field} must be callable"))))
-  (if (&& (! ($absent? spec/key)) (!= ($head spec/key) Str) (! ($runtime/callable? spec/key)))
+  (if (&& ($present? spec/key) (!= ($head spec/key) Str) (! ($runtime/callable? spec/key)))
     (fail (HarnessError ^message "registry key must be a field name or callable")))
   (let fields (?? spec/callbacks []))
   (if (!= ($head fields) List) (fail (HarnessError ^message "registry callbacks must be a list")))
@@ -117,7 +117,7 @@
     (if (|| (!= ($head field) Str) (== field "") (== (seen .get field) true))
       (fail (HarnessError ^message "registry callback fields must be unique nonempty strings")))
     (seen .put field true))
-  (if (&& (! ($absent? spec/signature)) (! (fields .contains? spec/signature)))
+  (if (&& ($present? spec/signature) (! (fields .contains? spec/signature)))
     (fail (HarnessError ^message "registry signature must name a declared callback field")))
   (if (!= ($head (?? spec/reserved {})) Map)
     (fail (HarnessError ^message "registry reserved names must map to their owners")))
@@ -137,18 +137,18 @@
 (fn queue_registry_change? [h : Harness] : Bool
   (let context ($runtime/context))
   (&&
-    (! ($absent? h/snapshots))
-    (! ($absent? context))
-    (! ($absent? context/turn))
+    ($present? h/snapshots)
+    ($present? context)
+    ($present? context/turn)
     (== context/turn/state/.get "open")
-    (! (&& (! ($absent? context/publication)) context/publication/.get))))
+    (! (&& ($present? context/publication) context/publication/.get))))
 
 (fn ^^private serialize_registry_change? [h : Harness] : Bool
   (let context ($runtime/context))
   (&&
-    (! ($absent? h/snapshots))
+    ($present? h/snapshots)
     (!= context/registry_step true)
-    (! (&& (! ($absent? context/publication)) context/publication/.get))))
+    (! (&& ($present? context/publication) context/publication/.get))))
 
 (fn ^^private registry_change [h : Harness, thunk]
   (run_composition_change
@@ -187,12 +187,10 @@
 
 (fn ^^private registry_row_before? [a : RegistryRow, b : RegistryRow] : Bool
   (if (!= a/priority b/priority)
-    (< a/priority b/priority)
-    (if (!= a/config_order b/config_order)
-      (< a/config_order b/config_order)
-      (if (!= a/owner b/owner)
-        (string_before? a/owner b/owner)
-        (string_before? a/row_id b/row_id)))))
+    (then (< a/priority b/priority))
+    (elif (!= a/config_order b/config_order) (< a/config_order b/config_order))
+    (elif (!= a/owner b/owner) (string_before? a/owner b/owner))
+    (else (string_before? a/row_id b/row_id))))
 
 # Cordis runs the activations of one reconcile as concurrent tasks, and they
 # share the registry rows and the ledger. Rebuilding one of those tables calls
@@ -222,11 +220,11 @@
   (let context ($runtime/context))
   (let candidate
     (&&
-      (! ($absent? context))
+      ($present? context)
       (same? context/composition h/snapshots)
-      (! ($absent? context/publication))
+      ($present? context/publication)
       context/publication/.get))
-  (if (&& (! ($absent? h/snapshots)) (! candidate))
+  (if (&& ($present? h/snapshots) (! candidate))
     (then
       (let snapshot (current_snapshot h/snapshots))
       (return snapshot/registries)))
@@ -354,7 +352,7 @@
       ($to_str key)))
   (let reserved_owner ((?? r/spec/reserved {}) .get logical_key))
   (let reserved_label (if (== reserved_owner "") "the host" reserved_owner))
-  (if (&& (! ($absent? reserved_owner)) (!= owner reserved_owner))
+  (if (&& ($present? reserved_owner) (!= owner reserved_owner))
     (fail (HarnessError ^message
       $"registry ${registry_name} key ${logical_key} is reserved by ${reserved_label}")))
   (let guarded (fresh_map))
@@ -548,10 +546,10 @@
 (fn ^^private callback_receiver [h : Harness, owner : Str]
   (var policy (policy_for_owner h owner))
   (if ($absent? policy/effects)
-    h
-    (if ($absent? policy/context)
-      (fail (HarnessError ^message $"plugin ${owner} callback context is unavailable"))
-      policy/context)))
+    (then h)
+    (elif ($absent? policy/context)
+      (fail (HarnessError ^message $"plugin ${owner} callback context is unavailable")))
+    (else policy/context)))
 
 (fn enter_plugin_execution [h : Harness]
   (h/plugin_depth .set (+ h/plugin_depth/.get 1)))
@@ -559,7 +557,7 @@
 (fn leave_plugin_execution [h : Harness]
   (var depth (- h/plugin_depth/.get 1))
   (h/plugin_depth .set depth)
-  (if_yes (&& (== depth 0) (! ($absent? h/event_store))) (flush_event_store h/event_store)))
+  (if_yes (&& (== depth 0) ($present? h/event_store)) (flush_event_store h/event_store)))
 
 (fn invoke_owned_callable [h : Harness, owner : Str, callable, args]
   (var policy (policy_for_owner h owner))

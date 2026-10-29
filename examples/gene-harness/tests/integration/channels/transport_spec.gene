@@ -90,8 +90,10 @@
             ^connect (fn [api native app] (opened .set (+ opened/.get 1)) (reads .set 0) opened/.get)
             ^receive (fn [native socket]
               (let at reads/.get) (reads .set (+ at 1))
-              (if (== at 0) {^type "hello" ^connection_info {^app_id "A123"} ^num_connections 1}
-                (if (&& (== socket 1) (== at 1)) {^type "disconnect" ^reason "refresh_requested"} nil)))
+              (if (== at 0)
+                (then {^type "hello" ^connection_info {^app_id "A123"} ^num_connections 1})
+                (elif (&& (== socket 1) (== at 1)) {^type "disconnect" ^reason "refresh_requested"})
+                (else nil)))
             ^ack (fn [native socket id] nil)
             ^close (fn [socket] (closed .set (+ closed/.get 1)))})
           (let transport (open_transport harness/runtime/services/values/channels ^driver driver

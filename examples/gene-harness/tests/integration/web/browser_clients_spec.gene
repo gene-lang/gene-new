@@ -44,9 +44,9 @@
         (set base/plugins plugins)
         (let runtime (open_runtime workspace "default" base))
         (try
-          ($assert (! ($absent? (plugin_error runtime/h "spotlight"))))
+          ($assert ($present? (plugin_error runtime/h "spotlight")))
           ($assert ($absent? (row runtime/h "browser_clients" "spotlight")))
-          ($assert (! ($absent? (row runtime/h "commands" "help"))))
+          ($assert ($present? (row runtime/h "commands" "help")))
         ensure (close_runtime runtime))))))
 
 (fn main [args] : Int (run_spec args))

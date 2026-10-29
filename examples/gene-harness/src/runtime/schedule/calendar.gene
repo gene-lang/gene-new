@@ -2,8 +2,10 @@
 (import [problem] ^from "./errors")
 (fn floor_div [value, divisor]
   (let truncated ($to_int (/ value divisor)))
-  (if (< (* truncated divisor) value) truncated
-    (if (== (* truncated divisor) value) truncated (- truncated 1))))
+  (if (< (* truncated divisor) value)
+    (then truncated)
+    (elif (== (* truncated divisor) value) truncated)
+    (else (- truncated 1))))
 (fn modulo [value, divisor] (- value (* divisor (floor_div value divisor))))
 (fn leap? [year] (&& (== (modulo year 4) 0) (|| (!= (modulo year 100) 0) (== (modulo year 400) 0))))
 (fn days_in_month [year, month]

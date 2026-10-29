@@ -27,7 +27,7 @@
 (import ^from "./router.gene" [navigate update_views install_router capture_view restore_focus update_url layout])
 
 (fn action_notice [ui : UiClient, pending : Any, message : Str, severity : Str = "info", sticky : Bool = true] : Void
-  (notice ^key (text pending/request/input_id) ^severity severity ^sticky sticky ^action (if (&& sticky (! (flag pending/settled)) (! ($absent? ui/pending))) (fn [] : Void (if_yes (== (text ui/pending/request/input_id) (text pending/request/input_id)) (resolve_action ui true))) nil) ^origin {^workspace ui/workspace ^component pending/request/component ^instance pending/request/instance ^arguments pending/request/named ^view_state pending/view_state ^action_id pending/request/input_id}
+  (notice ^key (text pending/request/input_id) ^severity severity ^sticky sticky ^action (if (&& sticky (! (flag pending/settled)) ($present? ui/pending)) (fn [] : Void (if_yes (== (text ui/pending/request/input_id) (text pending/request/input_id)) (resolve_action ui true))) nil) ^origin {^workspace ui/workspace ^component pending/request/component ^instance pending/request/instance ^arguments pending/request/named ^view_state pending/view_state ^action_id pending/request/input_id}
     ui
     message))
 
@@ -92,25 +92,24 @@
       (if_yes (|| ($absent? ui/pending) (!= (text ui/pending/request/input_id) (text pending/request/input_id)))
         (return))
       (if (== code 202)
-        (accept_receipt ui data)
-        (if (&& (>= code 400) (< code 500) (! uncertain) (== (text pending/command_id) ""))
-          (do
-            (storage_remove (pending_key ui))
-            (set ui/pending nil)
-            (action_notice
-              ui
-              pending
-              (text data/message "Action refused. Refresh the view.")
-              "error")
-            (set ui/last_data "")
-            (refresh ui))
-          (do
-            (set pending/uncertain true)
-            (set pending/unknown (&& (>= code 400) (< code 500)))
-            (persist_pending ui)
-            (action_notice ui pending
-              (if (== code 410) "Outcome unknown / receipt expired. Inspect the saved data before starting a new action."
-                "Save outcome is unknown. Resolve the action before trying again.") "error"))))
+        (then (accept_receipt ui data))
+        (elif (&& (>= code 400) (< code 500) (! uncertain) (== (text pending/command_id) ""))
+          (storage_remove (pending_key ui))
+          (set ui/pending nil)
+          (action_notice
+            ui
+            pending
+            (text data/message "Action refused. Refresh the view.")
+            "error")
+          (set ui/last_data "")
+          (refresh ui))
+        (else
+          (set pending/uncertain true)
+          (set pending/unknown (&& (>= code 400) (< code 500)))
+          (persist_pending ui)
+          (action_notice ui pending
+            (if (== code 410) "Outcome unknown / receipt expired. Inspect the saved data before starting a new action."
+              "Save outcome is unknown. Resolve the action before trying again.") "error")))
       (sync_controls ui))))
 
 (fn resolve_action [ui : UiClient, retry : Bool] : Void
@@ -127,18 +126,17 @@
       (set ui/resolving false)
       (if_yes (|| ($absent? ui/pending) (!= id (text ui/pending/request/input_id))) (return))
       (if (== code 200)
-        (accept_receipt ui data)
-        (if (&& (|| (== code 404) (== code 410)) retry)
-          (post_action ui)
-          (do
-            (if_yes (|| (== code 404) (== code 410)) (set pending/unknown true))
-            (persist_pending ui)
-            (action_notice ui pending
-              "No receipt was recovered. Resolve checks the original identity; Dismiss only acknowledges the unknown outcome." "error"))))
+        (then (accept_receipt ui data))
+        (elif (&& (|| (== code 404) (== code 410)) retry) (post_action ui))
+        (else
+          (if_yes (|| (== code 404) (== code 410)) (set pending/unknown true))
+          (persist_pending ui)
+          (action_notice ui pending
+            "No receipt was recovered. Resolve checks the original identity; Dismiss only acknowledges the unknown outcome." "error")))
       (sync_controls ui))))
 
 (fn submit_action [ui : UiClient, node : UiNode] : Void
-  (if_yes (|| ui/safe (! ui/ready) ui/loading ui/render_error (<= ui/navigation/action_generation 0) (!= ui/rendered_revision (text ui/descriptor/revision)) (! ($absent? ui/pending)))
+  (if_yes (|| ui/safe (! ui/ready) ui/loading ui/render_error (<= ui/navigation/action_generation 0) (!= ui/rendered_revision (text ui/descriptor/revision)) ($present? ui/pending))
     (return))
   (var name (text node/props/action))
   (var form (if (== node/tag "form") node/key node/form))
@@ -153,7 +151,7 @@
         (set args (body_args saved/positional)))))
   (for [key raw] in ui/nodes
     (var input : UiNode raw)
-    (if_yes (&& (== input/form form) (! ($absent? input/props/field)))
+    (if_yes (&& (== input/form form) ($present? input/props/field))
       (var field : Str input/props/field)
       (set named/%field (field_value input))))
   (var request

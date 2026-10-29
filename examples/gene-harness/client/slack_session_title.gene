@@ -8,7 +8,7 @@
   (SlackSessionTitle ^text "" ^target target))
 
 (fn paint_title [state : SlackSessionTitle, url : Str] : Void
-  (if_yes (&& (! ($absent? state/rendered_text))
+  (if_yes (&& ($present? state/rendered_text)
     (== (string_value state/rendered_text) state/text) (== (string_value state/rendered_url) url)) (return))
   (set state/rendered_text state/text) (set state/rendered_url url)
   (if_yes (== url "") ($dom/set_text state/target state/text) (return))

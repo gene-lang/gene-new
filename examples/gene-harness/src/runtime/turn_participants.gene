@@ -52,7 +52,7 @@
       (fail (participant_failure name "select" "invalid_definition" "Priority must be an integer.")))
     (for phase in ($into phases ["begin" "finalize" "release" "limit"])
       (let callback (participant .get phase))
-      (if (&& (! ($absent? callback)) (! ($runtime/callable? callback)))
+      (if (&& ($present? callback) (! ($runtime/callable? callback)))
         (fail (participant_failure name "select" "invalid_definition" $"${phase} must be callable."))))
     (names .put name true)
     # Capture the definition now. Later mutations cannot change this turn.

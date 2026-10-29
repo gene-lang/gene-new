@@ -56,7 +56,7 @@
         (let retained ($cell nil))
         (host .PluginHost:defer (fn []
           ($assert ($absent? host/h))
-          ($assert (! ($absent? host/.PluginHost:execution_budget)))
+          ($assert ($present? host/.PluginHost:execution_budget))
           ($fs/write_text %marker ($to_str %n))))
         (let subscription (host .PluginHost:subscribe DurableRecord (fn [event] nil)))
         ($assert ($absent? subscription/bus))
@@ -113,7 +113,7 @@
             $"public:${context/workspace_root}:${session/kind}")}))
         ^deactivate (fn [host]
           ($assert ($absent? host/h))
-          ($assert (! ($absent? host/.PluginHost:execution_budget))))))))
+          ($assert ($present? host/.PluginHost:execution_budget)))))))
 
 (describe "Stored interface requirements"
   (it "rejects stored version-two entries without blocking peers and repairs them only with current source" []
@@ -175,14 +175,14 @@
                 ($assert plan/valid ($to_str plan/errors))
                 (let applied (apply_plan restarted plan/id))
                 ($assert (== applied/state "applied") ($to_str applied))))
-            ($assert (! ($absent? (row restarted/h "functions" "compat_version"))) mode)
+            ($assert ($present? (row restarted/h "functions" "compat_version")) mode)
             ($assert (== (invoke restarted "compat_version") 3))
             ($assert (== (/interfaces ($first (composition_entries restarted/workspace)))
               {^core "gene-harness/PluginHost:3" ^plugin_api "gene-harness/Plugin:3"}))
           ensure (close_runtime restarted))
           (let final_runtime (open_runtime workspace "default" profile))
           (try
-            ($assert (! ($absent? (row final_runtime/h "functions" "compat_version"))) ($to_str mode ": after restart"))
+            ($assert ($present? (row final_runtime/h "functions" "compat_version")) ($to_str mode ": after restart"))
             ($assert (== (invoke final_runtime "compat_version") 3))
           ensure (close_runtime final_runtime)))))))
 

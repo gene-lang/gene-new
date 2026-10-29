@@ -19,8 +19,10 @@
   (if (== operation "refresh") (return (immutable_view (manager_list manager))))
   (if (== operation "inspect") (return (immutable_view (manager_inspect manager values/id))))
   (let port values/port)
-  (let selected_port (if (|| ($absent? port) (== port "")) nil
-    (if (== ($head port) Int) port ($parse/parse_int port))))
+  (let selected_port (if (|| ($absent? port) (== port ""))
+    (then nil)
+    (elif (== ($head port) Int) port)
+    (else ($parse/parse_int port))))
   (let checked (values .assoc "port" selected_port))
   (immutable_view (manager_operation manager operation checked ^confirmed (== values/confirm_busy true))))
 

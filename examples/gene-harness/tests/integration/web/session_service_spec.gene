@@ -517,7 +517,7 @@
           ((/watcher (service/runtime/services/values/controller/rounds/.get .get id)) .join)
           (let waiting (receipt service id asked/id))
           ($assert (== waiting/state "waiting"))
-          ($assert (! ($absent? waiting/questions/questions/0/view)) "the question view was dropped")
+          ($assert ($present? waiting/questions/questions/0/view) "the question view was dropped")
           (answer service id waiting/questions/id {^pick "b"})
           ((/watcher (service/runtime/services/values/controller/rounds/.get .get id)) .join)
           (let after (snapshot service id))
@@ -679,7 +679,7 @@ child/.detach
           ($assert (== (fixture_component_count status/web_components) 3) "ready renderer contribution was dropped")
           (let pulse
             ($first ($filter status/web_components (fn [item] (== item/name "workspace_pulse")))))
-          ($assert (! ($absent? pulse/view)) "named renderer did not render")
+          ($assert ($present? pulse/view) "named renderer did not render")
           ($assert ($absent? pulse/error) "named renderer failed")
           (set_plugin_enabled service/runtime/workspace service/runtime/h "workspace_pulse" false)
           (let disabled (host_status service))
@@ -717,7 +717,7 @@ child/.detach
           (for name in ["welcome" "slow"]
             (let item (named_component status/web_components name))
             ($assert ($absent? item/view) "failed renderer returned a view")
-            ($assert (! ($absent? item/error)) "failed renderer was not reported"))
+            ($assert ($present? item/error) "failed renderer was not reported"))
         ensure
           (close_session_service service)))))
 
@@ -755,7 +755,7 @@ child/.detach
             $"render panic was lost: ${status/web_components}")
           ($assert ($absent? child/view) "timed-out render child returned a view")
           ($assert
-            (! ($absent? child/error))
+            ($present? child/error)
             "render child timeout was not reported")
           ($assert
             (== healthy/view/children/0 "Still rendering")
@@ -809,7 +809,7 @@ child/.detach
                 (then
                   (let component
                     (named_component message/data/status/web_components "counter"))
-                  (if (&& (! ($absent? component))
+                  (if (&& ($present? component)
                            (== component/view/children/0/children/0 "1"))
                     (refreshed .set true)))))
             (if_not refreshed/.get ($sleep 1)))

@@ -20,4 +20,4 @@
   (var status (text session/status))
   # A failed or uncertain delivery still needs owner reconciliation. A second
   # share request cannot retry the durable intent or safely create a new one.
-  (|| (! ($absent? session/slack_share)) (== status "running") (== status "waiting")))
+  (|| ($present? session/slack_share) (== status "running") (== status "waiting")))

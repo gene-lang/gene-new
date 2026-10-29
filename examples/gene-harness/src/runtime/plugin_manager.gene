@@ -55,7 +55,7 @@
   (if_yes (== pair/0 "$registries")
     (let definition ((?? snapshot/registry_owners {}) .get pair/1))
     (return {^registry pair/0 ^key pair/1 ^provider (?? definition/owner nil)
-      ^satisfied (! ($absent? definition))}))
+      ^satisfied ($present? definition)}))
   (let records (?? (snapshot/registries .get pair/0) []))
   (for record in records
     (if (== record/key pair/1)
@@ -96,7 +96,7 @@
   (for id in ids
     (let entry (stored .get id))
     (let budgets (execution .get id))
-    (let builtin (! ($absent? (defaults .get id))))
+    (let builtin ($present? (defaults .get id)))
     (let digest (?? entry/module_digest "builtin"))
     (let enabled (!= entry/disabled true))
     (let active (revisions .get id))
@@ -127,21 +127,18 @@
     (let error (?? (workspace/errors/.get .get id) (plugin_error runtime/h id) nil))
     (let status
       (if (! enabled)
-        "disabled"
-        (if (! ($absent? error))
-          "error"
-          (if ($absent? (runtime/h/plugins/.get .get id))
-            "not_loaded"
-            (?? (states .get id) "pending")))))
+        (then "disabled")
+        (elif ($present? error) "error")
+        (elif ($absent? (runtime/h/plugins/.get .get id)) "not_loaded")
+        (else (?? (states .get id) "pending"))))
     (let row
       {
         ^id id
         ^description description
         ^source (if (== digest "builtin")
-                  "built_in"
-                  (if builtin
-                    "override"
-                    "workspace"))
+          (then "built_in")
+          (elif builtin "override")
+          (else "workspace"))
         ^builtin builtin
         ^enabled enabled
         ^state status
@@ -158,7 +155,7 @@
         ^development (development_sessions runtime entry)
         ^provides provides
         ^requires requirements
-        ^metadata_known (! ($absent? metadata/declared))
+        ^metadata_known ($present? metadata/declared)
         ^metadata_host (?? metadata/host_build_id nil)
         ^metadata_mode (?? metadata/read_mode nil)
         ^restricted (?? metadata/restricted nil)
@@ -176,7 +173,7 @@
         ^transitive_required_by []
         ^!required_by_profile
         ^error error})
-    (if_yes (&& (! ($absent? health)) (== health/digest active_digest))
+    (if_yes (&& ($present? health) (== health/digest active_digest))
       (row .put "participant_quarantine" health)
       (diagnostics .push {^id id ^kind "participant_quarantine"
         ^message $"Turn participants quarantined after ${health/phase}: ${health/message}"}))
@@ -189,7 +186,7 @@
   (for consumer in rows
     (for requirement in consumer/requires
       (let provider (if ($absent? requirement/provider) nil (by_id .get requirement/provider)))
-      (if_yes (! ($absent? provider))
+      (if_yes ($present? provider)
         (if_not (provider/required_by .contains? consumer/id)
           (provider/required_by .push consumer/id)))))
   (let profile_requirements [])

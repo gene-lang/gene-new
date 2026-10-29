@@ -10,7 +10,7 @@
     (channel_error "invalid_request" "Channel output needs 1–512 rendered parts."))
   (for part in parts
     (required_text part/text "output text" ^max_bytes 12000)
-    (if (&& (! ($absent? part/blocks)) (!= ($head part/blocks) List))
+    (if (&& ($present? part/blocks) (!= ($head part/blocks) List))
       (channel_error "invalid_request" "Channel output blocks must be a list.")))
   (let revision (?? supplied/revision 0))
   (if (|| (!= ($head revision) Int) (< revision 0))
@@ -20,7 +20,7 @@
     (channel_error "invalid_request" "Invalid channel output mode."))
   (if (&& (== mode "progress") (!= parts/.size 1))
     (channel_error "invalid_request" "Progress uses one updatable message."))
-  (if (&& (! ($absent? supplied/remove))
+  (if (&& ($present? supplied/remove)
           (|| (!= ($head supplied/remove) Bool) (!= mode "progress")))
     (channel_error "invalid_request" "Only progress messages can be removed."))
   (let intent {^id (required_text supplied/id "delivery ID" ^max_bytes 128)
@@ -71,7 +71,7 @@
             (!= intent/thread binding/thread))
       (channel_error "forbidden" "Output does not match the session's shared destination."))
     (let previous (state/outbox .get intent/id))
-    (if_yes (! ($absent? previous))
+    (if_yes ($present? previous)
       (if (!= (delivery_identity previous/intent) (delivery_identity intent))
         (channel_error "submission_conflict" "Delivery destination changed."))
       (if (< intent/revision previous/intent/revision) (return previous))
@@ -124,7 +124,7 @@
     (if (&& (== intent/mode "thread") ($absent? previous)
             (|| (!= route/enabled true) (!= (/enabled (state/accounts .get intent/account)) true)))
       (channel_error "unavailable" "The Slack channel connection is disabled."))
-    (if_yes (! ($absent? previous))
+    (if_yes ($present? previous)
       (if (!= (delivery_identity previous/intent) (delivery_identity intent))
         (channel_error "submission_conflict" "Delivery destination changed."))
       (if (< intent/revision previous/intent/revision) (return previous))
@@ -171,8 +171,10 @@
     (record .put "result" (copy result))
     (record .put "last_error" nil)
     (record .put "status" status)
-    (let delay (if (== status "failed") 30000
-      (if (== status "uncertain") ($math/min 30000 (* 2 (?? record/check_delay 500))) 1000)))
+    (let delay (match status
+      (when "failed" 30000)
+      (when "uncertain" ($math/min 30000 (* 2 (?? record/check_delay 500))))
+      (else 1000)))
     (record .put "next_check_at" (+ ($os/wall_ms) delay))
     (record .put "check_delay" (if (== status "uncertain") delay 500))
     (if_yes (== result/intent/mode "post")
@@ -181,7 +183,7 @@
       (if ($absent? binding/last_message)
         (binding .put "last_message" (last_thread_message state binding)))
       (for part in result/parts
-        (if (&& (== part/status "sent") (! ($absent? part/ts)))
+        (if (&& (== part/status "sent") ($present? part/ts))
           (remember_message binding part/ts))))
     record) ^changes (fn [state]
       (let queue (state/queues .get result/intent/session))
@@ -288,12 +290,11 @@
     {^status "sent" ^ts part/ts}
   catch SlackError
     (if (== $err/code "message_not_found")
-      {^status "sent" ^ts part/ts}
-      (if (["rate_limited" "transport_unknown" "server_unknown" "invalid_response" "internal_error"
-            "fatal_error" "request_timeout" "service_unavailable"] .contains? $err/code)
-        {^status "pending" ^error $err/code
-         ^retry_at (+ ($os/wall_ms) (?? $err/retry_after_ms 1000))}
-        {^status "failed" ^error $err/code}))
+      (then {^status "sent" ^ts part/ts})
+      (elif (["rate_limited" "transport_unknown" "server_unknown" "invalid_response" "internal_error"
+            "fatal_error" "request_timeout" "service_unavailable"] .contains? $err/code) {^status "pending" ^error $err/code
+         ^retry_at (+ ($os/wall_ms) (?? $err/retry_after_ms 1000))})
+      (else {^status "failed" ^error $err/code}))
   catch Error {^status "pending" ^error "unconfirmed_removal" ^retry_at (+ ($os/wall_ms) 1000)}))
 
 (fn deliver_output [owner, api, id : Str, ^max_parts maximum : Int = 512]
@@ -303,7 +304,7 @@
   (var sent 0)
   (while (< index original/parts/.size)
     (let claimed (begin_part owner id revision index))
-    (if_yes (! ($absent? claimed))
+    (if_yes ($present? claimed)
       (let intent claimed/intent)
       (if_yes (== intent/remove true)
         (let removed (remove_progress api intent claimed/part))
@@ -314,7 +315,7 @@
         ^metadata {^event_type "gene_harness_delivery"
           ^event_payload {^delivery id ^part index ^revision revision ^body_digest (key rendered)}}})
       (if_not ($absent? rendered/blocks) (data .put "blocks" rendered/blocks))
-      (let update (! ($absent? claimed/part/ts)))
+      (let update ($present? claimed/part/ts))
       (if update (then (data .put "ts" claimed/part/ts))
         (else
           (data .put "unfurl_links" false) (data .put "unfurl_media" false)
@@ -326,11 +327,10 @@
         {^status "sent" ^ts (slack_ts response/ts)}
         catch SlackError
           (if (== $err/code "rate_limited")
-            {^status "pending" ^error "rate_limited" ^retry_at (+ ($os/wall_ms) (?? $err/retry_after_ms 1000))}
-            (if (["transport_unknown" "server_unknown" "invalid_response" "internal_error"
-                  "fatal_error" "request_timeout" "service_unavailable"] .contains? $err/code)
-              {^status "uncertain" ^error $err/code}
-              {^status "failed" ^error $err/code}))
+            (then {^status "pending" ^error "rate_limited" ^retry_at (+ ($os/wall_ms) (?? $err/retry_after_ms 1000))})
+            (elif (["transport_unknown" "server_unknown" "invalid_response" "internal_error"
+                  "fatal_error" "request_timeout" "service_unavailable"] .contains? $err/code) {^status "uncertain" ^error $err/code})
+            (else {^status "failed" ^error $err/code}))
         catch Error {^status "uncertain" ^error "unconfirmed_response"}))
       (finish_part owner id revision index outcome)
       (set sent (+ sent 1))

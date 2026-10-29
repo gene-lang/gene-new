@@ -15,8 +15,10 @@
     nil)))
 
 (fn earlier [left, right] ^^private
-  (if ($absent? left) (?? right nil)
-    (if ($absent? right) left ($math/min left right))))
+  (if ($absent? left)
+    (then (?? right nil))
+    (elif ($absent? right) left)
+    (else ($math/min left right))))
 
 (fn open_execution_scope [kind : Str, limits, context, ^owner owner = nil]
   (let source (if ($absent? context) {} context))

@@ -31,7 +31,7 @@
         ($dom/prevent_default event)
         (if_yes ($absent? props/disabled) (on_navigate destination presentation)))))
   (if_not ($absent? props/command)
-    (buttons .push {^element element ^disabled (! ($absent? props/disabled))})
+    (buttons .push {^element element ^disabled ($present? props/disabled)})
     (var command : Str props/command)
     ($dom/set_attribute element "type" "button")
     (if_not enabled ($dom/set_attribute element "disabled" ""))
@@ -41,7 +41,7 @@
       (fn [event : Any] : Void
         (if_yes ($absent? props/disabled) (on_command command)))))
   (if_not ($absent? props/prompt)
-    (buttons .push {^element element ^disabled (! ($absent? props/disabled))})
+    (buttons .push {^element element ^disabled ($present? props/disabled)})
     (var prompt : Str props/prompt)
     ($dom/set_attribute element "type" "button")
     (if_not enabled ($dom/set_attribute element "disabled" ""))

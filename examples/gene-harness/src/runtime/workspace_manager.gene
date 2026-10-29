@@ -379,7 +379,7 @@
     (let status (manager_probe ^^starting manager entry))
     (manager/statuses/.get .put entry/id status)
     (if (["running" "recovery"] .contains? status/status) (return status))
-    (if (&& (! ($absent? launched_pid)) (! ($os/process_alive? launched_pid)) (! (workspace_busy? entry/dir)))
+    (if (&& ($present? launched_pid) (! ($os/process_alive? launched_pid)) (! (workspace_busy? entry/dir)))
       (manager_error
         "startup_failed"
         ($to_str
@@ -507,7 +507,7 @@
           observed)
       catch Any
         (let error $err)
-        (if_yes (&& (! ($absent? entry)) (["unavailable" "control_timeout" "startup_timeout" "startup_failed"] .contains? error/code))
+        (if_yes (&& ($present? entry) (["unavailable" "control_timeout" "startup_timeout" "startup_failed"] .contains? error/code))
           (let status
             (data_copy
               (??

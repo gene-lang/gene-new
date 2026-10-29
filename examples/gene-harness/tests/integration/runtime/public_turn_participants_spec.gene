@@ -47,7 +47,7 @@
                 ($assert ($absent? value/turn))
                 ($assert (try (value .put "forged" true) false catch Any true))
                 (let facts (value/outcome/extensions .get "notes/facts"))
-                (if (&& (== value/kind "done") (! ($absent? facts)))
+                (if (&& (== value/kind "done") ($present? facts))
                   (host .PluginHost:update_state {^generation %version ^facts facts
                     ^schema_calls schemas/.get ^context context ^private_turn state/turn}))
                 nil)

@@ -7,7 +7,7 @@
 (fn participant_excluded? [runtime, definition]
   (if (|| (== definition/_host true) (== definition/_mandatory true) ($absent? definition/_owner)) (return false))
   (let saved (participant_quarantine runtime/workspace definition/_owner))
-  (&& (! ($absent? saved)) (== saved/digest definition/_source_digest)))
+  (&& ($present? saved) (== saved/digest definition/_source_digest)))
 
 (fn record_participant_fault [runtime, definition, phase : Str, error]
   (if (|| (== definition/_host true) (== definition/_mandatory true) ($absent? runtime/workspace)
@@ -20,7 +20,7 @@
     (let current (runtime/h/plugin_policies/.get .get definition/_owner))
     (if (!= current/activation_revision definition/_activation_revision) (return nil))
     (let existing (participant_quarantine runtime/workspace definition/_owner))
-    (if (&& (! ($absent? existing)) (== existing/digest definition/_source_digest)) (return nil))
+    (if (&& ($present? existing) (== existing/digest definition/_source_digest)) (return nil))
     (quarantine_participant runtime/workspace definition/_owner
       {^format 1 ^id definition/_owner ^digest definition/_source_digest
        ^participant definition/name ^phase phase ^message (byte_prefix error/message 1024)

@@ -78,10 +78,10 @@
       (returned .set true)
     catch Any
       (returned .set true)
-      (let message (if inventory/.empty? ($to_str $err/message)
-        (if (|| ($absent? recorded_request) (! ($absent? recorded_request/harness_prepared_omitted)))
-          $"${selected/name} image-input request failed; opaque provider detail was omitted."
-          (safe_error ($to_str $err/message) inventory))))
+      (let message (if inventory/.empty?
+        (then ($to_str $err/message))
+        (elif (|| ($absent? recorded_request) ($present? recorded_request/harness_prepared_omitted)) $"${selected/name} image-input request failed; opaque provider detail was omitted.")
+        (else (safe_error ($to_str $err/message) inventory))))
       (record_result runtime request call_id number "error" true
         (- ($os/monotonic_ms) started) ^error message ^inventory inventory)
       (if_not inventory/.empty? (fail (HarnessError ^message message)))

@@ -23,7 +23,7 @@
               "requires_continuation" "summary" "tags" "docs"] .contains? ($to_str key))
       (initiator_error $"Unknown initiator field ${key}.")))
   (for key in ["exact" "requires_continuation"]
-    (if (&& (! ($absent? (candidate .get key))) (!= ($head (candidate .get key)) Bool))
+    (if (&& ($present? (candidate .get key)) (!= ($head (candidate .get key)) Bool))
       (initiator_error $"Initiator ${key} must be a boolean.")))
   candidate)
 
@@ -110,7 +110,7 @@
         (if ($absent? selected)
           (return {^kind "unknown" ^name "unknown/source" ^operator false ^channel false
             ^input (normalize_round_input input)}))
-        (let continued (&& (== selected/kind "continue") (! ($absent? continuation))))
+        (let continued (&& (== selected/kind "continue") ($present? continuation)))
         (let carried_plugin (&& continued (== input/kind "plugin")))
         (if (&& carried_plugin (!= input continuation/input))
           (initiator_error "Continuation input differs from its recorded source metadata."))

@@ -17,7 +17,7 @@
   (if (! (["mrkdwn" "markdown"] .contains? surface))
     (channel_error "invalid_request" "Choose mrkdwn or markdown for Slack rendering."))
   (let url (?? data/public_url nil))
-  (if (&& (! ($absent? url)) (== (transcript_reference "check" url) "Harness session check"))
+  (if (&& ($present? url) (== (transcript_reference "check" url) "Harness session check"))
     (channel_error "invalid_request" "Use a reachable browser URL without credentials, query or fragment, or leave it unset."))
   (let settings {^surface surface ^public_url url})
   (mutate service/runtime/services/values/channel_queues (fn [state] (state .put "settings" settings) settings))

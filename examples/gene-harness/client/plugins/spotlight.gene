@@ -46,7 +46,7 @@
   (if_yes (< spot/active 0) ($dom/remove_attribute spot/input "aria-activedescendant")))
 
 (fn unavailable [spot : Spotlight, item : Any] : Str
-  (if_yes (&& (! ($absent? item/available)) (! (flag item/available))) (return (text item/reason "This destination is unavailable.")))
+  (if_yes (&& ($present? item/available) (! (flag item/available))) (return (text item/reason "This destination is unavailable.")))
   (var current (state spot))
   (var kind (text item/kind))
   (if_yes (|| (== kind "command") (== kind "theme_choice"))
@@ -55,7 +55,7 @@
     (for candidate in commands
       (if_yes (&& (== (text candidate/name) (text expected/name)) (== (text candidate/owner) (text expected/owner))
                   (== (text candidate/revision) (text expected/revision)))
-        (if_yes (! ($absent? current/pending_command)) (return "Resolve the pending command receipt first."))
+        (if_yes ($present? current/pending_command) (return "Resolve the pending command receipt first."))
         (return "")))
     (return "This command was replaced or disabled. Refresh and select it again."))
   (if_yes (&& (== kind "view") (!= (text item/view) "harness"))
@@ -100,7 +100,7 @@
       (close spot false)
       (do
         (set spot/awaiting_receipt (&& (|| (== code 0) (>= code 500))
-          (! ($absent? (/pending_command (state spot))))))
+          ($present? (/pending_command (state spot)))))
         (set spot/busy spot/awaiting_receipt)
         (set spot/feedback (text result/message "The action could not be verified. Inspect its conversation."))
         ($dom/set_text spot/message spot/feedback)))))
@@ -141,9 +141,11 @@
          (kbd %badge))))
     (set at (+ at 1)))
   (var count (if (== spot/items/.size 1) "1 result" $"${spot/items/.size} results"))
-  ($dom/set_text spot/message (if (!= spot/feedback "") spot/feedback (if spot/partial
-    $"${count} · Search is incomplete. Refresh to try again."
-    (if (== spot/items/.size 0) "No matches." count))))
+  ($dom/set_text spot/message (if (!= spot/feedback "")
+    (then spot/feedback)
+    (elif spot/partial $"${count} · Search is incomplete. Refresh to try again.")
+    (elif (== spot/items/.size 0) "No matches.")
+    (else count)))
   ($dom/set_attribute spot/input "aria-expanded" (if (> spot/items/.size 0) "true" "false"))
   (paint_selection spot))
 
@@ -201,7 +203,7 @@
   (if_yes (== spot/step "theme")
     (var step_key spot/step_key)
     (var saved : Any spot/steps/%step_key)
-    (if_yes (! ($absent? saved)) (set saved/query query))
+    (if_yes ($present? saved) (set saved/query query))
     (var options : (List Any) [])
     (for value in ["light" "dark"]
       (var rank (match_rank value "theme" query))

@@ -56,7 +56,7 @@
           ((/watcher (service/runtime/services/values/controller/rounds/.get .get session/id)) .join)
           (let result (receipt service session/id pending/id))
           ($assert (== result/state "done") ($to_str result))
-          ($assert (! ($absent? imported/.get)))
+          ($assert ($present? imported/.get))
           ($assert ($str/contains? result/reply imported/.get) result/reply)
         ensure (close_session_service service))
         (let restarted (test_service ^workspace root ^provider provider))

@@ -34,7 +34,7 @@
     (invalid_definition candidate/name "Native request annotations must be a map."))
   (for field in (callback_fields)
     (let callback (candidate .get field))
-    (if (&& (! ($absent? callback)) (! ($runtime/callable? callback)))
+    (if (&& ($present? callback) (! ($runtime/callable? callback)))
       (invalid_definition candidate/name $"Turn participant ${field} must be callable.")))
   candidate)
 
@@ -61,7 +61,7 @@
       (if (|| (!= parsed/.size 1) (!= ($head parsed/0) Sym) (!= ($to_str parsed/0) owner)
               (["Outcome" "session_id" "workspace_root" "doc" "discover" "append_prompt_at"
                 "attachment" "recall"] .contains? owner)
-              (! ($absent? (row runtime/h "functions" owner))))
+              ($present? (row runtime/h "functions" owner)))
         (invalid_definition candidate/name "The public data binding namespace conflicts with an existing or reserved binding."))))
   (let prepared {})
   (for [key value] in candidate (prepared .put key value))

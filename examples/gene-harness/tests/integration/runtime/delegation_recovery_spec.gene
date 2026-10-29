@@ -65,7 +65,7 @@
               (else
                 (if (== point "child_admitted")
                   (then
-                    ($assert (! ($absent? blocks/recovery)) "Interrupted work did not hold the parent.")
+                    ($assert ($present? blocks/recovery) "Interrupted work did not hold the parent.")
                     ($sleep 75)
                     ($assert (== (model_counts root) before) "A recovery hold admitted new model work.")
                     (let owner (owner_receipt controller))

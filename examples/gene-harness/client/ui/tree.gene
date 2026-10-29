@@ -16,7 +16,7 @@
   (var props (if (== tag "#text") {} (copy_map tree/props)))
   (var key (text props/key path))
   (var found : Any ui/nodes/%key)
-  (if_yes (! ($absent? found))
+  (if_yes ($present? found)
     (var previous : UiNode found)
     (if_yes (!= previous/tag tag)
       ($dom/remove previous/element)
@@ -75,7 +75,7 @@
       (if_yes (input_tag tag)
         (var draft : Any ui/drafts/%key)
         (if (== (text props/type) "checkbox")
-          (set node/element/checked (if ($absent? draft) (! ($absent? props/checked)) (flag draft/value)))
+          (set node/element/checked (if ($absent? draft) ($present? props/checked) (flag draft/value)))
           (do
             (var value (if ($absent? draft) (text props/value) (text draft/value)))
             (if_yes (!= value ($dom/input_value node/element)) ($dom/set_input_value node/element value)))))))

@@ -23,7 +23,7 @@
   (let messages []) (let sent {})
   (let peer_cell ($cell nil))
   (let hub (new_voice_hub ^clock clock {^runtime runtime} ^send (fn [connection value]
-    (if (&& (! ($absent? full)) full/.get) (return 0))
+    (if (&& ($present? full) full/.get) (return 0))
     (match value
       (when (text : Str) (messages .push ($json/parse text)))
       (when (bytes : Bytes)

@@ -100,7 +100,7 @@ END
               (fn [event]
                 (== event/type "reply"))))
           ($assert replies/.empty? "an operator pause emitted a synthetic final reply")
-          ($assert (! ($absent? finished/continuation/history)))
+          ($assert ($present? finished/continuation/history))
           ($assert ($str/contains? (read_body runtime finished/continuation/items_ref) "RAW_PENDING_REQUEST")
             "pause did not durably retain its pending request")
           (let metadata (require_record runtime/sessions "default"))

@@ -59,7 +59,7 @@
             (let bindings (workspace_bindings runtime/h lease/snapshot "default" runtime/root))
             (for name in ["doc" "discover" "register_plugin" "enable_plugin" "disable_plugin"
                           "restore_plugin" "plugin_states" "inspect_plugin" "session_id"]
-              ($assert (! ($absent? (bindings .get name)))
+              ($assert ($present? (bindings .get name))
                 $"shared workspace binding ${name} is absent"))
           ensure
             (release_snapshot runtime/h/snapshots lease))

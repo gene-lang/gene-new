@@ -9,7 +9,7 @@
   (let reply context/outcome/reply)
   (if (&& (== ($head value) Str) (<= ($str/byte_size value) 2048)
           (try ($binary/decode_utf8 ($binary/from_str value)) true catch Any false)
-          (! ($absent? reply)) (!= ($str/trim reply) "") (!= ($str/trim value) ""))
+          ($present? reply) (!= ($str/trim reply) "") (!= ($str/trim value) ""))
     (return {^value ($str/trim value)}))
   {^value nil ^warning "Ignored audio_reply: use at most 2 KiB of nonempty text alongside reply.\n"})
 

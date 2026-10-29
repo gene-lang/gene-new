@@ -61,7 +61,7 @@
     ^score (?? review/score nil) ^comments (?? review/comments nil) ^revision (?? review/revision nil)
     ^attempts_used state/attempts/.size ^max_attempts state/request/max_attempts
     ^review_calls state/review_calls ^repair_calls state/repair_calls
-    ^target_reached (&& (! ($absent? review)) (>= review/score 85))
+    ^target_reached (&& ($present? review) (>= review/score 85))
     ^stop_reason (?? state/stop_reason nil) ^error (?? state/error nil)
     ^generator state/generator ^reviewer state/reviewer
     ^output {^format "png" ^size state/request/size ^background state/request/background}
@@ -96,7 +96,7 @@
           (!= origin/round live/state/round))
     (return nil))
   (let result (image_result service live/state))
-  (if (&& (!= live/state/stop_reason "cancelled") (! ($absent? result/image_id)))
+  (if (&& (!= live/state/stop_reason "cancelled") ($present? result/image_id))
     (attach_media service/runtime result/image_id))
   (append_prompt "image" result)
   nil)
@@ -261,9 +261,9 @@
       {^ok false ^code code
        ^usage (image_usage error/usage)
        ^message (if (== ($head error/diagnostic) Str)
-         (safe_error error/diagnostic [])
-         (if (["validation" "storage"] .contains? live/stage)
-           (safe_error ($to_str error/message) []) "Provider operation failed."))
+         (then (safe_error error/diagnostic []))
+         (elif (["validation" "storage"] .contains? live/stage) (safe_error ($to_str error/message) []))
+         (else "Provider operation failed."))
        ^status (if (&& (== ($head error/status) Int) (>= error/status 100) (<= error/status 599))
          error/status nil)})
     (when (TaskOutcome/panic message) {^ok false ^code "provider_panic"})
@@ -381,7 +381,10 @@
       (live .put "pending_usage" (?? outcome/usage nil)))
     (if dispatched/.get
       (record_result service/runtime request call_id 1
-        (if outcome/ok "ok" (if (== outcome/code "timeout") "timeout" "error")) true
+        (if outcome/ok
+          (then "ok")
+          (elif (== outcome/code "timeout") "timeout")
+          (else "error")) true
         (- ($os/monotonic_ms) started)
         ^output (if outcome/ok {^images [outcome/value]} nil)
         ^usage live/pending_usage

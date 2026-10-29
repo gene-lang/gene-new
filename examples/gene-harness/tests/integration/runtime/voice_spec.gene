@@ -13,10 +13,9 @@
         (let service (test_service ^workspace workspace ^provider (fn [request]
           (calls/.get .push request)
           (if (== calls/.get/.size 1)
-            "(Outcome ^reply \"Checking the files.\" ^prompt \"finish\")"
-            (if (== calls/.get/.size 2)
-              "(Outcome ^^done ^reply \"Details are on screen.\" ^audio_reply \"The change is ready.\")"
-              "(Outcome ^^done ^reply \"A valid typed reply.\" ^audio_reply 5)")))))
+            (then "(Outcome ^reply \"Checking the files.\" ^prompt \"finish\")")
+            (elif (== calls/.get/.size 2) "(Outcome ^^done ^reply \"Details are on screen.\" ^audio_reply \"The change is ready.\")")
+            (else "(Outcome ^^done ^reply \"A valid typed reply.\" ^audio_reply 5)")))))
         (try
           (let session (create_session service))
           (let claim (claim_voice service/runtime/services/values/voice session/id "page" true))
@@ -54,7 +53,7 @@
           (let session (create_session service))
           (let first (session_voice_claim service session/id {^client_id "a" ^^output}))
           (let second (session_voice_claim service session/id {^client_id "b" ^^output}))
-          ($assert (! ($absent? second/token)))
+          ($assert ($present? second/token))
           (let released (session_voice_claim service session/id {^client_id "a" ^token first/token ^enabled false}))
           ($assert (== released/owner "b"))
           ($assert ($absent? released/token))

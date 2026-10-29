@@ -132,7 +132,7 @@
   (for id in interrupted
     (let round (restore_round manager id))
     (let reason (?? (reasons .get id) (if (|| (== round/state "cancelled")
-      (&& (! ($absent? round)) (== (cancelled .get round/id) true))) "cancelled" "interrupted")))
+      (&& ($present? round) (== (cancelled .get round/id) true))) "cancelled" "interrupted")))
     (let warnings [])
     (for [key patch] in (core_states manager/events "session" id)
       (if_yes (&& ($str/starts_with? ($to_str key) "patch/") (== patch/state "started"))
@@ -220,9 +220,9 @@
                   (&& (!= previous/status record/status)
                       (["waiting" "failed" "interrupted"] .contains? record/status))))
     (let parent (manager/index/.get .get record/parent/session))
-    (if (&& (! ($absent? parent)) (! parent/attention))
+    (if (&& ($present? parent) (! parent/attention))
       (update_session_unlocked manager parent/id {^^attention})))
-  (if_yes (&& (!= record/kind "child") (! ($absent? changes/pinned)))
+  (if_yes (&& (!= record/kind "child") ($present? changes/pinned))
     (let children [])
     (for [child_id child] in manager/index/.get
       (if (== child/parent/session id) (children .push ($to_str child_id))))
@@ -242,7 +242,7 @@
     (fail (SessionError ^code "invalid_request" ^message "invalid session id")))
   (let previous (manager/index .get; .get chosen))
   (if_not ($absent? previous)
-    (if (&& (! ($absent? channel)) (!= previous/channel channel))
+    (if (&& ($present? channel) (!= previous/channel channel))
       (fail (SessionError ^code "conflict" ^message "Session has another channel origin.")))
     (if (&& (== previous/kind kind) (== previous/trigger trigger) (== previous/occurrence occurrence)
             (|| (!= kind "child")
@@ -304,10 +304,10 @@
   (let filtered
     (||
       all
-      (! ($absent? kind))
-      (! ($absent? status))
-      (! ($absent? attention))
-      (! ($absent? trigger))
+      ($present? kind)
+      ($present? status)
+      ($present? attention)
+      ($present? trigger)
       (!= q "")
       (!= since "")
       (!= until "")))
@@ -316,10 +316,10 @@
   (for [id record] in manager/index/.get
     (if (&& (! filtered) (== record/kind "child")) (continue))
     (if (&& (! filtered) (!= record/kind "interactive") (! record/pinned)) (continue))
-    (if (&& (! ($absent? kind)) (!= record/kind kind)) (continue))
-    (if (&& (! ($absent? status)) (!= record/status status)) (continue))
-    (if (&& (! ($absent? attention)) (!= record/attention attention)) (continue))
-    (if (&& (! ($absent? trigger)) (!= record/trigger trigger)) (continue))
+    (if (&& ($present? kind) (!= record/kind kind)) (continue))
+    (if (&& ($present? status) (!= record/status status)) (continue))
+    (if (&& ($present? attention) (!= record/attention attention)) (continue))
+    (if (&& ($present? trigger) (!= record/trigger trigger)) (continue))
     (if (&& (!= since "") (< ($order/compare record/last_active since) 0)) (continue))
     (if (&& (!= until "") (> ($order/compare record/last_active until) 0)) (continue))
     (if (&& (!= query "") (! ($str/contains? ($str/lower record/title) query)) (! ($str/contains? ($str/lower record/first_request) query)))
@@ -329,11 +329,11 @@
 
 (fn session_busy? [state : SessionState] : Bool
   (let round state/round/.get)
-  (&& (! ($absent? round)) (["running" "waiting"] .contains? round/state)))
+  (&& ($present? round) (["running" "waiting"] .contains? round/state)))
 
 (fn session_running? [state : SessionState] : Bool
   (let round state/round/.get)
-  (&& (! ($absent? round)) (== round/state "running")))
+  (&& ($present? round) (== round/state "running")))
 
 (fn load_session [manager : SessionManager, id : Str] : SessionState
   (with_session_gate manager $"load/${id}" (fn [] (load_session_unlocked manager id))))
@@ -408,7 +408,7 @@
         (if (== child/parent/session id) (ids .push ($to_str child_id)))))
     (with_delete_gates manager ids 0 root (fn []
       (let remove (fn []
-        (if (&& (! ($absent? revision)) (!= revision (?? (/revision (require_record manager id)) 0)))
+        (if (&& ($present? revision) (!= revision (?? (/revision (require_record manager id)) 0)))
           (fail (SessionError ^code "revision_conflict" ^message "Conversation changed; refresh before deleting it.")))
         (delete_session_locked ^explicit explicit manager id ids)))
       (if ($absent? manager/runtime/services/values/commands) (remove) (manager/runtime/services/values/commands/gate remove)))))))
@@ -437,16 +437,16 @@
     (for candidate in ids
       (let record (require_record manager candidate))
       (let loaded (manager/loaded/.get .get candidate))
-      (if (&& (! ($absent? record/slack_share))
+      (if (&& ($present? record/slack_share)
               (! (["delivered" "failed"] .contains? record/slack_share/status)))
         (if explicit
           (fail (SessionError ^code "busy" ^message "Finish or resolve the Slack share before deleting this conversation."))
           (return false)))
       (if (|| (["running" "waiting"] .contains? record/status)
               (&& (! explicit) (|| record/pinned record/attention
-                (&& (! ($absent? loaded)) (> loaded/viewers/.get 0)))))
+                (&& ($present? loaded) (> loaded/viewers/.get 0)))))
         (return false))
-      (if (&& (! ($absent? manager/unload_policy)) (manager/unload_policy/busy? candidate))
+      (if (&& ($present? manager/unload_policy) (manager/unload_policy/busy? candidate))
         (return false))
       (records .push record))
     (for candidate in ids

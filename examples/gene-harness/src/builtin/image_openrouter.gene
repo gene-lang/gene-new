@@ -40,12 +40,14 @@
   # not require a literal `size` descriptor when those controls are present.
   (let dimensions (normalized_dimensions size))
   (if ($absent? dimensions)
-    (return (if ($absent? parameters/resolution) "no"
-      (if (allows parameters "resolution" size) "yes" "no"))))
+    (return (if ($absent? parameters/resolution)
+      (then "no")
+      (elif (allows parameters "resolution" size) "yes")
+      (else "no"))))
   (var a dimensions/width) (var b dimensions/height)
   (while (> b 0) (let rest (// a b)) (set a b) (set b rest))
   (let ratio $"${(/ dimensions/width a)}:${(/ dimensions/height a)}")
-  (if (&& (! ($absent? parameters/aspect_ratio)) (! (allows parameters "aspect_ratio" ratio)))
+  (if (&& ($present? parameters/aspect_ratio) (! (allows parameters "aspect_ratio" ratio)))
     (return "no"))
   # Some image endpoints advertise aspect ratios without a resolution knob.
   # Preserve the API's pixel-size request and let the provider validate it;
@@ -85,12 +87,12 @@
   # A missing format selector says nothing about the provider's default bytes.
   # Omit that control and validate the actual PNG, but reject an explicit
   # format allowlist that excludes PNG.
-  (if (&& (! ($absent? parameters/output_format))
+  (if (&& ($present? parameters/output_format)
           (! (allows parameters "output_format" "png"))) (return false))
   (if (== (size_support parameters input/size) "no") (return false))
   (if (&& (!= input/background "auto") (! (allows parameters "background" input/background)))
     (return false))
-  (if (&& (! ($absent? parameters/n)) (! (allows parameters "n" 1))) (return false))
+  (if (&& ($present? parameters/n) (! (allows parameters "n" 1))) (return false))
   (let count (+ input/reference_count (if (> input/max_attempts 1) 1 0)))
   (if (&& (> count 0) (! (allows parameters "input_references" count))) (return false))
   true)
@@ -147,7 +149,7 @@
     (let tags [])
     (for endpoint in compatible
       # A shared tag must not also permit an incompatible endpoint.
-      (if (&& (! ($absent? endpoint/provider_tag))
+      (if (&& ($present? endpoint/provider_tag)
               (! (incompatible_tags .contains? endpoint/provider_tag)))
         (if_not (tags .contains? endpoint/provider_tag) (tags .push endpoint/provider_tag))))
     (if (< compatible/.size eligible/.size)
@@ -166,7 +168,7 @@
   (var requested_size_support "unknown")
   (var size_parameters {^size input/size})
   (let normalized_size (normalized_size_parameters input/size))
-  (var normalized_supported (! ($absent? normalized_size)))
+  (var normalized_supported ($present? normalized_size))
   (if_yes known
     (set output_support "yes")
     (set input_support "yes")

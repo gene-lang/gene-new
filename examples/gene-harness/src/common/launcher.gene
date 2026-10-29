@@ -17,7 +17,7 @@
 
 (fn items [value : Any] : (List Any)
   (var result : (List Any) [])
-  (if_yes (! ($absent? value)) (set result value))
+  (if_yes ($present? value) (set result value))
   result)
 
 (fn distance [left : Str, right : Str] : Int

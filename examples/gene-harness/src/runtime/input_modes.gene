@@ -15,12 +15,12 @@
 
 (fn same_mode_row? [previous, current]
   (if ($absent? current) (return false))
-  (if (&& (! ($absent? previous/cleanup_state)) (! previous/cleanup_state/.get))
+  (if (&& ($present? previous/cleanup_state) (! previous/cleanup_state/.get))
     (return false))
   (if (== previous/row_id current/row_id) (return true))
   # Reconciliation can stage a fresh activation of an unchanged descriptor.
   # A true replacement has a different Plugin identity and closes the mode.
-  (&& (! ($absent? previous/plugin)) (! ($absent? current/plugin))
+  (&& ($present? previous/plugin) ($present? current/plugin)
       (== previous/owner current/owner) (== previous/key current/key)
       (same? previous/plugin current/plugin)))
 
@@ -98,7 +98,7 @@
   (if ($absent? manager) (return nil))
   (with_session_gate manager/runtime/sessions $"round/${session}" (fn []
     (let state (manager/states/.get .get session))
-    (if (&& (! ($absent? instance))
+    (if (&& ($present? instance)
              (|| ($absent? state) (!= state/instance instance)))
       (problem manager session "mode_closed" "This input mode has already closed."))
     (close_mode_locked manager session reason)))
@@ -169,8 +169,8 @@
       (let state (manager/states/.get .get entry/0))
       (let loaded (manager/runtime/sessions/loaded/.get .get entry/0))
       (if (|| ($absent? state) (!= state/instance entry/1)
-              (! ($absent? state/running))
-              (&& (! ($absent? loaded)) (> loaded/viewers/.get 0))) (return nil))
+              ($present? state/running)
+              (&& ($present? loaded) (> loaded/viewers/.get 0))) (return nil))
       (close_mode_locked manager entry/0 "viewers_left"))))
   nil)
 

@@ -106,7 +106,7 @@
           (let h service/runtime/h)
           (let session (create_session service))
           ($assert (== (/components (ui_status service/runtime)) []))
-          ($assert (! ($absent? (row h "seams" "ui/state_lock"))) "shared state lock was not provided")
+          ($assert ($present? (row h "seams" "ui/state_lock")) "shared state lock was not provided")
           (let installed (register_plugin service/runtime/workspace h "project_board" ($fs/read_text (package_path "experiments/ui/project_board.gene"))))
           ($assert (== installed/state "active") ($to_str installed))
           (let configure (/fn (row h "functions" "ui_configure")))

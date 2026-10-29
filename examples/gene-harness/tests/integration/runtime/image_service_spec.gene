@@ -18,7 +18,7 @@
         (try
           (let too_large (evaluate_image fixture "A transparent logo."
             ^options {^size "4096x4096"}))
-          ($assert (! ($absent? too_large/error)))
+          ($assert ($present? too_large/error))
           ($assert fixture/generated/.get/.empty?)
           (let evaluated (evaluate_image fixture "A transparent logo."
             ^options {^max_attempts 1 ^generation_model "main-image-model"}))

@@ -137,7 +137,7 @@
     (if_not result/composition_changes/.empty?
       (update_session runtime/sessions session {^^has_registration})))
   (if (== outcome/attention true) (update_session runtime/sessions session {^^attention}))
-  (if (&& reply (! ($absent? outcome/reply)) (!= outcome/reply ""))
+  (if (&& reply ($present? outcome/reply) (!= outcome/reply ""))
     (transcript runtime session ((?? result/reply_fields {}) .assoc "type" "reply"
       ; .assoc "turn" number ; .assoc "round" round/id ; .assoc "text" outcome/reply
       ; .assoc "final" (== result/kind "done"))))
@@ -164,7 +164,7 @@
   (var last_request (?? round/request round/prompt))
   (if_not resume
     (let recovery (core_state runtime/events "session" session "recovery"))
-    (if_yes (&& (! ($absent? recovery)) (!= recovery/delivered true))
+    (if_yes (&& ($present? recovery) (!= recovery/delivered true))
       (let warning_text
         ($str/join
           recovery/warnings
@@ -217,7 +217,7 @@
       (flush_event_store runtime/events)
       record)
     (try
-      (let continuing (&& (! resume) (== count 1) (! ($absent? round/continuation))))
+      (let continuing (&& (! resume) (== count 1) ($present? round/continuation)))
       (set transaction (new_runtime_turn_transaction runtime lease
         {^session session ^round round ^turn number ^count count ^limit limit ^collection collection
          ^carry (|| continuing (&& (! resume) (== count 1) (operator_round? round)))}))
@@ -438,7 +438,7 @@
       ^logical result/request_items ^media (?? result/media [])
       ^record_fields {^at_limit (>= count ceiling)} ^!admit))
     (set last_request requests/full)
-    (if_yes (! ($absent? result/suspension))
+    (if_yes ($present? result/suspension)
       (flush_event_store runtime/events)
       (return (suspension_result result/suspension round last_request count number)))
     (if (== result/kind "questions")

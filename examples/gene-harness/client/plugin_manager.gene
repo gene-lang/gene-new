@@ -38,35 +38,29 @@
 
 (fn source_label [value : Any] : Str
   (var name (text value))
-  (if (== name "built_in")
-    "Built-in"
-    (if (== name "override")
-      "Workspace override"
-      "Workspace")))
+  (match name
+    (when "built_in" "Built-in")
+    (when "override" "Workspace override")
+    (else "Workspace")))
 
 (fn state_label [value : Any] : Str
   (var name (text value))
-  (if (== name "ready")
-    "Active"
-    (if (== name "error")
-      "Failed"
-      (if (== name "not_loaded")
-        "Not loaded"
-        (if (== name "pending")
-          "Pending"
-          "Disabled")))))
+  (match name
+    (when "ready" "Active")
+    (when "error" "Failed")
+    (when "not_loaded" "Not loaded")
+    (when "pending" "Pending")
+    (else "Disabled")))
 
 (fn change_label [change : Any] : Str
   (var kind (text change/kind))
-  (if (== kind "set_enabled")
-    (if (flag change/enabled)
-      "Enable"
-      "Disable")
-    (if (== kind "restore")
-      "Restore built-in default"
-      (if (== kind "revert")
-        $"Revert to revision ${(number_text change/revision)}"
-        "Replace source"))))
+  (match kind
+    (when "set_enabled" (if (flag change/enabled)
+        "Enable"
+        "Disable"))
+    (when "restore" "Restore built-in default")
+    (when "revert" $"Revert to revision ${(number_text change/revision)}")
+    (else "Replace source")))
 
 (fn notice [manager : Manager, value : Str, error : Bool = false] : Void
   (set manager/notice/text_content value)
@@ -118,7 +112,7 @@
         ^repair manager/repair})))
 
 (fn has_draft [manager : Manager] : Bool
-  (|| (> ($size manager/changes) 0) (! ($absent? manager/restore))))
+  (|| (> ($size manager/changes) 0) ($present? manager/restore)))
 
 (fn catalog_entries [plugins : (List Any)] : (List Any)
   (var entries : (List Any) [])
@@ -179,15 +173,14 @@
     nil
     (fn [code : Int, data : Any] : Void
       (if (!= code 200)
-        (do
+        (then
           (set manager/busy false)
           (notice manager (text data/message) true)
           (render manager))
-        (if (== (text data/state) "running")
-          ($time/after 350.0 (fn [] : Void (poll manager id done)))
-          (do
-            (set manager/busy false)
-            (done data/result)))))))
+        (elif (== (text data/state) "running") ($time/after 350.0 (fn [] : Void (poll manager id done))))
+        (else
+          (set manager/busy false)
+          (done data/result))))))
 
 (fn job [manager : Manager, path : Str, payload : Any, done : (Fn [Any] Void)] : Void
   (set manager/busy true)
@@ -332,10 +325,9 @@
     nil
     (fn [code : Int, data : Any] : Void
       (if (&& (== code 200) (!= (text data/epoch) manager/epoch))
-        (load_catalog manager)
-        (if (> attempts 0)
-          ($time/after 500.0 (fn [] : Void (wait_startup manager (- attempts 1))))
-          (notice
+        (then (load_catalog manager))
+        (elif (> attempts 0) ($time/after 500.0 (fn [] : Void (wait_startup manager (- attempts 1)))))
+        (else (notice
             manager
             "Startup has not become ready. Use Refresh to inspect its current state."
             true))))))
@@ -516,7 +508,7 @@
   (add_line target $"Runtime: ${(state_label selected/state)} · ${(source_label selected/source)}")
   ($dom/append target ($dom/render
     (plugin_sessions_view selected/development (== (text selected/source) "built_in"))))
-  (if_yes (&& (! ($absent? selected/active_digest)) (!= (text selected/active_digest) (if ($absent? selected/digest) "builtin" (text selected/digest))))
+  (if_yes (&& ($present? selected/active_digest) (!= (text selected/active_digest) (if ($absent? selected/digest) "builtin" (text selected/digest))))
     (add_line target $"Still running the previous code: ${(text selected/active_digest)}"))
   (if_not ($absent? selected/changed_at)
     (add_line target $"Source recorded: ${(text selected/changed_at)}"))
@@ -574,7 +566,7 @@
       target
       ($dom/render
         `(p ^class_name "muted"
-           %(if (&& (! ($absent? selected/observed_host)) (!= (text selected/observed_host) manager/host))
+           %(if (&& ($present? selected/observed_host) (!= (text selected/observed_host) manager/host))
               "Historical observations from another host build; these contributions are not currently active."
               "Last recorded observations; these contributions are not currently active.")))))
   (for item in observed

@@ -28,7 +28,7 @@
     (let latest ($last record/admissions))
     (latest .put "revision" (+ (?? latest/revision 0) 1))
     (let descriptor (delegation_descriptor record latest))
-    (descriptor .put "session_exists" (! ($absent? (runtime/sessions/index/.get .get record/session))))
+    (descriptor .put "session_exists" ($present? (runtime/sessions/index/.get .get record/session)))
     (let owner (parent/rounds .get latest/owner_round))
     (descriptor .put "can_cancel" (&& (! (terminal_delegation? latest/state)) (!= owner/closed true)))
     (if_not ($absent? latest/reply_ref)

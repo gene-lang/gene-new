@@ -18,7 +18,7 @@
       (settings_error $"Unknown workspace setting ${key}.")))
   (if (|| (!= ($head port) Int) (&& (!= port 0) (|| (< port 1024) (> port 65535))))
     (settings_error "Workspace port must be 0 or 1024–65535."))
-  (if (&& (! ($absent? value/role)) (!= value/role "manager"))
+  (if (&& ($present? value/role) (!= value/role "manager"))
     (settings_error "Unknown workspace role."))
   (let result {^version 1 ^port port})
   (if_not ($absent? value/role) (result .put "role" value/role))
@@ -52,7 +52,7 @@
 # directory, like --workspace.
 (fn manager_root_path [^explicit explicit = nil, ^environment environment = nil] : Str
   (let configured (?? environment ($os/get_env "GENE_HARNESS_ROOT" "")))
-  (var selected (if (&& (! ($absent? explicit)) (!= explicit "")) explicit configured))
+  (var selected (if (&& ($present? explicit) (!= explicit "")) explicit configured))
   (if_yes (== selected "")
     (let home ($os/get_env "HOME" ""))
     (if (== home "") (settings_error "HOME is required to locate the manager root; use --root DIR."))

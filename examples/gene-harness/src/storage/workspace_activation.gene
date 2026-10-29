@@ -26,14 +26,17 @@
     (if (== entry/disabled true) (continue))
     (let live (active .get id))
     (if (|| (!= live/active true) (!= (status_of h ($to_str id)) "ready")
-            (&& (! ($absent? entry/module_digest)) (!= entry/module_digest live/options/digest)))
+            (&& ($present? entry/module_digest) (!= entry/module_digest live/options/digest)))
       (set reason $"${id} is not active at its requested revision")))
   (if (&& ($absent? reason) (> ($size workspace/errors/.get) 0))
     (set reason "The desired composition contains quarantined entries"))
-  (if_yes (&& ($absent? reason) (! ($absent? readiness)))
+  (if_yes (&& ($absent? reason) ($present? readiness))
     (set reason (try (readiness) catch Any $err/message)))
   (let observation (data_copy result))
-  (observation .put "readiness" (if ($absent? readiness) "unverified" (if ($absent? reason) "ready" "degraded")))
+  (observation .put "readiness" (if ($absent? readiness)
+    (then "unverified")
+    (elif ($absent? reason) "ready")
+    (else "degraded")))
   (observation .put "readiness_reason" reason)
   (observation .put "host_build_id" workspace/history_build/.get)
   (observation .put "accepted_revision" workspace/active_revision/.get)
@@ -49,7 +52,7 @@
     (if_yes (entry_enabled? desired)
       (var matched false)
       (for live in snapshot/entries
-        (if_yes (&& (== live/id desired/id) (! ($absent? live/graph)) (["active" "pending"] .contains? live/state))
+        (if_yes (&& (== live/id desired/id) ($present? live/graph) (["active" "pending"] .contains? live/state))
           (for node in live/graph/nodes
             (if (&& (== node/identity live/graph/root) (== node/source_digest desired/module_digest))
               (set matched true)))))
@@ -173,7 +176,7 @@
     (write_module_blob workspace dependency/digest dependency/source))
   (write_module_blob workspace digest text)
   (let context ($runtime/context))
-  (if_yes (&& (! ($absent? context)) (! ($absent? context/turn)))
+  (if_yes (&& ($present? context) ($present? context/turn))
     (queue_composition_change h/snapshots
       {^kind "registration" ^id id
        ^apply (fn [] (publish_registration ^readiness readiness workspace h descriptor entry replace authenticated_turn))})
@@ -222,8 +225,10 @@
   (record_application_result ^readiness readiness workspace h
     {^plugin id ^status status ^message (workspace/errors/.get .get id)})
   {^id id ^revision revision ^digest digest ^status status
-   ^state (if (== status "ready") "active"
-     (if (== status "error") "quarantined" status))
+   ^state (match status
+     (when "ready" "active")
+     (when "error" "quarantined")
+     (else status))
    ^message (if (== status "error") (workspace/errors/.get .get id) nil)
    ^entry entry})
 
@@ -261,7 +266,7 @@
           (record_quarantine workspace ($to_str entry/id)
             $"built-in default ${entry/id} is missing from this profile")))
       (else
-        (if (&& (! ($absent? (workspace/profile_plugins/.get .get entry/id)))
+        (if (&& ($present? (workspace/profile_plugins/.get .get entry/id))
                 (!= entry/replaces_builtin true))
           (then
             (record_quarantine workspace ($to_str entry/id)
@@ -297,7 +302,7 @@
   # quarantine a conflicting entry without blocking peers.
   (var blocked_defaults (fresh_map))
   (for entry in plan/entries
-    (if_yes (&& (! ($absent? (workspace/profile_plugins/.get .get entry/id)))
+    (if_yes (&& ($present? (workspace/profile_plugins/.get .get entry/id))
                 (|| (== entry/replaces_builtin true) (== entry/builtin true)))
       (blocked_defaults .put entry/id true)))
   (var admissions (fresh_list))
@@ -308,7 +313,7 @@
     (if (== entry/builtin true)
       (then nil)
       (else
-        (if (&& (! ($absent? (workspace/profile_plugins/.get .get entry/id)))
+        (if (&& ($present? (workspace/profile_plugins/.get .get entry/id))
                 (!= entry/replaces_builtin true))
           (then
             (record_quarantine workspace ($to_str entry/id)
@@ -331,9 +336,9 @@
   (for item in admissions
     (var id ($to_str item/plugin/id))
     (var status (status_of h id))
-    (if (== status "ready")
-      (then (ready .push id))
-      (elif (== status "error")
+    (match status
+      (when "ready" (ready .push id))
+      (when "error"
         (record_quarantine workspace id (plugin_error h id)))
       (else (pending .push id))))
   (update_active_revision workspace h)

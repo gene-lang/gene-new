@@ -21,7 +21,7 @@
 
 (fn public_outcome [outcome]
   (freeze_turn_data {^done (== outcome/done true) ^reply (?? outcome/reply nil)
-    ^attention (== outcome/attention true) ^has_questions (! ($absent? outcome/questions))
+    ^attention (== outcome/attention true) ^has_questions ($present? outcome/questions)
     ^has_prompt (!= outcome/prompt void) ^extensions (?? outcome/extensions {})}))
 
 (fn public_turn_result [result]
@@ -67,7 +67,7 @@
             ($absent? (#"^[a-z0-9][a-z0-9_-]{0,63}$" .match item/id))
             (seen .has_key? item/id) (!= ($head item/value) Str))
       (contract_error name phase "Request items need distinct local ids and string values."))
-    (if (&& (! ($absent? item/settled)) (!= ($head item/settled) Bool))
+    (if (&& ($present? item/settled) (!= ($head item/settled) Bool))
       (contract_error name phase "Request item settled must be a boolean."))
     (let id $"${context/turn}.${name}/${item/id}")
     (let admitted {^id id ^header $"[${id}]" ^value item/value ^settled (!= item/settled false)})
@@ -95,10 +95,10 @@
       (for [key field] in value
         (if_not (["error" "request_items" "defer_done"] .contains? ($to_str key))
           (contract_error name phase $"Unknown validation verdict field ${key}.")))
-      (if (&& (! ($absent? value/error))
+      (if (&& ($present? value/error)
                (|| (!= ($head value/error) Str) (== ($str/trim value/error) "")))
         (contract_error name phase "A validation error must be nonempty text."))
-      (if (&& (! ($absent? value/defer_done)) (!= ($head value/defer_done) Bool))
+      (if (&& ($present? value/defer_done) (!= ($head value/defer_done) Bool))
         (contract_error name phase "defer_done must be a boolean."))
       (let items (public_request_items name context phase value/request_items))
       (if (&& (== value/defer_done true) items/.empty?)

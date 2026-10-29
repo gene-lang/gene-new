@@ -43,7 +43,7 @@
   snapshot)
 
 (fn ^^private publish_registry_snapshot [h : Harness]
-  (if_yes (&& (! ($absent? h/snapshots)) (! h/snapshots/closed/.get))
+  (if_yes (&& ($present? h/snapshots) (! h/snapshots/closed/.get))
     (let plugins [])
     (let states ($cell nil))
     (let seen {})
@@ -298,7 +298,7 @@
   (try
     (reconcile_registry_candidate ^strict strict ^pending pending ^accept accept ^commit commit ^prepare prepare h)
   catch Any
-    (if_yes (&& (! ($absent? committed)) committed/.get)
+    (if_yes (&& ($present? committed) committed/.get)
       (h/composer/bridge/published .set h/composition/.current_plugins)
       (publish_registry_snapshot h)
       (fail $err))
@@ -448,7 +448,10 @@
   (if ($absent? states/.get) (states .set h/composition/.entry_states))
   (let state (states/.get .get id))
   (if (== state void) (return "pending"))
-  (if (== state "active") "ready" (if (== state "failed") "error" state)))
+  (match state
+    (when "active" "ready")
+    (when "failed" "error")
+    (else state)))
 
 (fn status_of [h : Harness, id : Str] : Str
   (status_in h ($cell nil) id))

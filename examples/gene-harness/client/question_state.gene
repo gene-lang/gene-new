@@ -14,7 +14,7 @@
 (fn waiting_batch [snapshot : Any] : Any
   (var state "")
   (if_not ($absent? snapshot/round/state) (set state snapshot/round/state))
-  (if_yes (&& (== state "waiting") (! ($absent? snapshot/round/questions)))
+  (if_yes (&& (== state "waiting") ($present? snapshot/round/questions))
     (var batch : Any ($json/parse ($json/stringify snapshot/round/questions)))
     (var round "")
     (if_not ($absent? snapshot/round/id) (set round snapshot/round/id))

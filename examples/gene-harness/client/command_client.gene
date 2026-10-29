@@ -32,7 +32,7 @@
 (fn admitted [client : CommandClient, receipt : Any] : Void
   (var envelope : Any client/pending)
   (clear_pending client)
-  (if_yes (! ($absent? client/settled))
+  (if_yes ($present? client/settled)
     (var settled : (Fn [Any Any] Void) client/settled)
     (settled envelope receipt)))
 
@@ -75,7 +75,7 @@
 (fn dispatch_command [client : CommandClient, session : Str, value : Str,
                       expected : Any, done : (Fn [Int Any] Void), ^card card : Any = nil,
                       ^clear_composer clear_composer : Bool = false] : Void
-  (if_yes (! ($absent? client/pending))
+  (if_yes ($present? client/pending)
     (done 409 (not_sent {^code "pending_command" ^message "Resolve or explicitly forget the pending command after inspection before submitting another command."}))
     (recover_command client)
     (return))
@@ -97,10 +97,9 @@
         (fn [accepted : Int, receipt : Any] : Void
           (set client/resolving false)
           (if (== accepted 202)
-            (admitted client receipt)
-            (if (&& (>= accepted 400) (< accepted 500))
-              (clear_pending client)
-              (client/changed "Command acceptance is unknown. Its request is saved for receipt recovery.")))
+            (then (admitted client receipt))
+            (elif (&& (>= accepted 400) (< accepted 500)) (clear_pending client))
+            (else (client/changed "Command acceptance is unknown. Its request is saved for receipt recovery.")))
           (done accepted receipt)
           (if_yes (|| (== accepted 0) (>= accepted 500)) (recover_command client)))))))
 

@@ -43,7 +43,7 @@
             (== ((Path "state") (receipt service session/id started/id)) "done")
             "sidebar removal blocked an existing session")
           (set_plugin_enabled service/runtime/workspace service/runtime/h "sidebar" true)
-          ($assert (! ($absent? (sidebar_component service))))
+          ($assert ($present? (sidebar_component service)))
           (register_plugin ^^replace
             service/runtime/workspace
             service/runtime/h
@@ -91,7 +91,7 @@
           ($assert recovery/web_components/.empty?)
           ($assert ($absent? recovery/readiness))
           (restore_plugin service/runtime/workspace service/runtime/h "sidebar")
-          ($assert (! ($absent? (sidebar_component service))))
+          ($assert ($present? (sidebar_component service)))
         ensure
           (close_session_service service))))))
 

@@ -76,7 +76,7 @@
     (seen .push id)
     (let index (find_entry_index next id))
     (let existing (if (== index -1) nil next/%index))
-    (let builtin (! ($absent? (workspace/profile_plugins/.get .get id))))
+    (let builtin ($present? (workspace/profile_plugins/.get .get id)))
     (let enabled (!= existing/disabled true))
     (let kind operation/kind)
     (if (! (["set_enabled" "restore" "revert" "replace"] .contains? kind))
@@ -117,7 +117,7 @@
         (set updated (stage_plugin_entry ^dependencies dependencies workspace id operation/source))
         (updated .put "source_origin" {^kind "operator"})
         (assign_creation updated existing)))
-    (if (&& (! ($absent? operation/enabled)) (!= ($head operation/enabled) Bool))
+    (if (&& ($present? operation/enabled) (!= ($head operation/enabled) Bool))
       (plan_error "enabled must be a boolean"))
     (updated .put "disabled" (! (?? operation/enabled enabled)))
     (if builtin (updated .put "replaces_builtin" true))
@@ -148,7 +148,7 @@
     (if (!= ($head request/base_revision) Int) (plan_error "base_revision is required"))
     (check_reversion_base workspace request/base_revision)
     (let stamp (fingerprint runtime))
-    (if (&& (! ($absent? request/host_build_id)) (!= request/host_build_id stamp/host_build_id))
+    (if (&& ($present? request/host_build_id) (!= request/host_build_id stamp/host_build_id))
       (plan_error "host build changed; reload the plugin manager"))
     (let changes (?? request/changes []))
     (if (|| (!= ($head changes) List) (> changes/.size 100)) (plan_error "changes must be a list of at most 100 operations"))
@@ -187,7 +187,7 @@
       (var data nil)
       (if ($absent? entry/module_digest)
         (do
-          (if (&& (! ($absent? historical_build)) (!= historical_build stamp/host_build_id))
+          (if (&& ($present? historical_build) (!= historical_build stamp/host_build_id))
             (current_defaults .push {^id id ^host_build_id stamp/host_build_id ^historical_host_build_id historical_build}))
           (let default (workspace/profile_plugins/.get .get id))
           (if ($absent? default) (errors .push $"profile default ${id} is unavailable")
@@ -196,10 +196,9 @@
           (verify_stored_entry workspace entry)
           (let inspected (inspect_descriptor ^candidate entry runtime id))
           (if inspected/ok
-            (do (set data inspected/descriptor) (checked .put id inspected/descriptor))
-            (if (== inspected/code "unsupported_interface")
-              (errors .push $"${id}: ${inspected/message}")
-              (warnings .push $"${id}: restricted inspection unavailable: ${inspected/message}")))
+            (then (set data inspected/descriptor) (checked .put id inspected/descriptor))
+            (elif (== inspected/code "unsupported_interface") (errors .push $"${id}: ${inspected/message}"))
+            (else (warnings .push $"${id}: restricted inspection unavailable: ${inspected/message}")))
         catch Any
           (if repair
             (warnings .push $"${id}: unavailable during repair: ${$err/message}")
@@ -224,7 +223,7 @@
       (let desired (effective .get owner))
       (let live (current .get owner))
       (if (|| (== owner "core") ($str/starts_with? owner "$host/")
-              (&& (! ($absent? desired)) (!= desired/disabled true)
+              (&& ($present? desired) (!= desired/disabled true)
                   (== live/active_digest (?? desired/module_digest "builtin"))))
         (claim_capability providers claims ["$registries" ($to_str name)] owner)))
     (for [key claim] in claims
@@ -247,9 +246,9 @@
         (missing .push {^id "profile" ^registry pair/0 ^key pair/1})))
     (if_not missing/.empty?
       (warnings .push (if (== runtime/recovery true)
-        "Some requirements are unavailable while recovery is active. Normal startup will reconcile the saved composition."
-        (if repair "Unmet requirements are permitted by this repair plan. Activation failures still reject the whole candidate."
-          "Some requirements are predicted to be unavailable. Apply will verify the complete candidate before committing."))))
+        (then "Some requirements are unavailable while recovery is active. Normal startup will reconcile the saved composition.")
+        (elif repair "Unmet requirements are permitted by this repair plan. Activation failures still reject the whole candidate.")
+        (else "Some requirements are predicted to be unavailable. Apply will verify the complete candidate before committing."))))
     (let impact [])
     (for changed in diff
       (let prior (current .get changed/id))
@@ -359,7 +358,7 @@
               (verify_stored_entry workspace entry)
               (let descriptor (load_entry_descriptor ^!events workspace runtime/h entry))
               (let expected (plan/checked .get plugin_id))
-              (if (&& (! ($absent? expected)) (!= expected (descriptor_data descriptor)))
+              (if (&& ($present? expected) (!= expected (descriptor_data descriptor)))
                 (plan_error
                   $"${plugin_id}: full-grant descriptor differs from the reviewed descriptor"))
               (admissions .push

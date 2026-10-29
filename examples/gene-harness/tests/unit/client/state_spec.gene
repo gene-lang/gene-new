@@ -48,10 +48,10 @@ Full second paragraph: 世界 <script>not HTML</script>")
     (let session {^first_request "initial" ^first_request_round "round-a-1"})
     (let first {^role "user" ^phase "turn/request" ^round_id "round-a-1" ^text "settled request"})
     (let command {^role "user" ^phase "command/input" ^round_id "" ^text "initial"})
-    ($assert (! ($absent? (first_prompt_block session [command] []))))
+    ($assert ($present? (first_prompt_block session [command] [])))
     ($assert ($absent? (first_prompt_block session [first] [])))
     ($assert ($absent? (first_prompt_block session [] [first])))
-    ($assert (! ($absent? (first_prompt_block session [] [])))))
+    ($assert ($present? (first_prompt_block session [] []))))
 
   (it "retains attachment-only descriptors and uses a trigger's saved request" []
     (let media [{^id "image" ^name "pixel.png" ^url "/api/v8/media/image"}])

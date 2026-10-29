@@ -17,7 +17,7 @@
   (let policy (h/plugin_policies/.get .get owner))
   # Host policy sets budgets and mandatory-participant behavior, never the
   # callback contract. Every actual activation uses the public projection.
-  (! ($absent? policy)))
+  ($present? policy))
 
 (fn prepare_command_callback [h, owner : Str, candidate]
   (if_not (public_contract? h owner) (return candidate))

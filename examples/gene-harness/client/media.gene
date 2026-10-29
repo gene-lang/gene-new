@@ -13,7 +13,7 @@
 (fn items_for [media : MediaComposer, session : Str] : (List Any)
   (var existing : Any media/drafts/%session)
   (var saved : (List Any) [])
-  (if (! ($absent? existing))
+  (if ($present? existing)
     (then (set saved existing))
     (else
     (var source (?? (storage_get (media_key session)) ""))
@@ -61,8 +61,11 @@
     (if (== state "ready")
       ($dom/append card (attachment_view item/asset))
       ($dom/append card ($dom/render `(span %name))))
-    (var status (if (== state "ready") "Ready"
-      (if (== state "queued") "Queued…" (if (== state "error") item/error "Uploading…"))))
+    (var status (match state
+      (when "ready" "Ready")
+      (when "queued" "Queued…")
+      (when "error" item/error)
+      (else "Uploading…")))
     ($dom/append card ($dom/render `(small ^role "status" %status)))
     ($dom/append card ($dom/render `(button ^type "button" ^disabled %(! media/enabled)
       ^aria_label %$"Remove ${name}" ^on_click %(fn [event : Any] : Void (remove_media media key)) "Remove")))

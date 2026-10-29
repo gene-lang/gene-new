@@ -89,11 +89,11 @@
 (fn public_delegation [service, record, admission]
   (let terminal (terminal_delegation? admission/state))
   (let result (delegation_descriptor record admission))
-  (result .put "session_exists" (! ($absent? (service/runtime/sessions/index/.get .get record/session))))
+  (result .put "session_exists" ($present? (service/runtime/sessions/index/.get .get record/session)))
   (let link (service/children .get record/session))
   (let parent (if ($absent? link) nil (service/parents .get link/parent)))
   (let owner (if ($absent? parent) nil (parent/rounds .get admission/owner_round)))
-  (result .put "can_cancel" (&& (! terminal) (! ($absent? owner)) (!= owner/closed true)))
+  (result .put "can_cancel" (&& (! terminal) ($present? owner) (!= owner/closed true)))
   (if_yes terminal
     (result .put "reply" (if ($absent? admission/reply_ref) "" (read_body service/runtime admission/reply_ref)))
     (result .put "result" (if ($absent? admission/result_ref) nil
@@ -203,7 +203,7 @@
         (if (&& (!= admission/owner_round round) (! (&& carry (== admission/carry true)))) (continue))
         (if (&& (terminal_delegation? admission/state) (!= admission/seen true))
           (items .push (admission_result_item service record admission turn)))
-        (if (&& (== admission/state "waiting") (! ($absent? admission/questions))
+        (if (&& (== admission/state "waiting") ($present? admission/questions)
                 (! ((?? admission/seen_questions []) .contains? admission/questions/id)))
           (items .push (admission_result_item service record admission turn ^^question)))))
     items)))
@@ -219,7 +219,7 @@
         (admission .put "seen_turn" turn)
         (admission .put "carry" false)
         (set changed true))
-      (if_yes (&& (! ($absent? admission/questions))
+      (if_yes (&& ($present? admission/questions)
               (sources .contains? (delegation_question_source admission)))
         (let seen (?? admission/seen_questions []))
         (if_not (seen .contains? admission/questions/id) (seen .push admission/questions/id))
@@ -289,7 +289,7 @@
         (owner .put "wait_generation" wait/generation)
         (owner .put "wait" wait))
       (if_not ($absent? wait) (result .put "kind" "delegation_wait"))
-      (if_yes (|| (! changed/.empty?) (! ($absent? wait)))
+      (if_yes (|| (! changed/.empty?) ($present? wait))
         (checkpoint_delegations service parent ^changed changed)
         (service/parents .put session parent)
         (if_not ($absent? service/checkpoint) (service/checkpoint "admission_intent" session)))
@@ -373,7 +373,7 @@
     (admission .put "turns_used" (?? receipt/turn_count 0))
     (admission .put "message" (?? receipt/message ""))
     (admission .put "reply_ref" reply_ref)
-    (if (&& (!= receipt/state "done") (! ($absent? receipt/request)))
+    (if (&& (!= receipt/state "done") ($present? receipt/request))
       (admission .put "last_request_ref" (write_body service/runtime receipt/request)))
     (if_not ($absent? result_ref) (admission .put "result_ref" result_ref))
     (admission .put "usage" usage)
@@ -385,7 +385,7 @@
 
 (fn owner_is_live? [service, parent, owner]
   (let receipt (service/callbacks/owner parent/session owner/id))
-  (&& (! ($absent? receipt)) (["running" "waiting"] .contains? receipt/state)))
+  (&& ($present? receipt) (["running" "waiting"] .contains? receipt/state)))
 
 (fn close_owner_unlocked [service, parent, round : Str, reason : Str]
   (let owner (parent_round_record parent round))
@@ -426,7 +426,7 @@
       (let admission ($last record/admissions))
       (if (&& (> number 0) (!= admission/number number))
         (delegation_error "conflict" "This delegation has a newer admission; refresh before cancelling it."))
-      (if (&& (! ($absent? round)) (!= admission/owner_round round))
+      (if (&& ($present? round) (!= admission/owner_round round))
         (delegation_error "not_owned" "This round does not own that child admission."))
       (let owner (parent_round_record parent admission/owner_round))
       (if (|| owner/closed (! (owner_is_live? service parent owner)))
@@ -497,7 +497,7 @@
       (if (!= admission/owner_round round) (continue))
       (if (&& (terminal_delegation? admission/state) (!= admission/seen true))
         (items .push (admission_result_item service record admission turn)))
-      (if (&& (== admission/state "waiting") (! ($absent? admission/questions))
+      (if (&& (== admission/state "waiting") ($present? admission/questions)
               (! ((?? admission/seen_questions []) .contains? admission/questions/id)))
         (items .push (admission_result_item service record admission turn ^^question)))))
   items)
@@ -531,12 +531,12 @@
       (if_not (== (responded .get ($to_str turn)) true) (continue))
       (for source in sources
         (let admission (by_source .get source))
-        (if_yes (&& (! ($absent? admission)) (!= admission/seen true))
+        (if_yes (&& ($present? admission) (!= admission/seen true))
           (admission .put "seen" true)
           (admission .put "carry" false)
           (set changed true))
         (for candidate in (parent_admissions parent)
-          (if_yes (&& (! ($absent? candidate/questions))
+          (if_yes (&& ($present? candidate/questions)
                       (== source (delegation_question_source candidate)))
             (let seen (?? candidate/seen_questions []))
             (if_not (seen .contains? candidate/questions/id)
@@ -689,7 +689,7 @@
   (service .put "subscription"
     (service/runtime/h/bus .subscribe DurableRecord (fn [event]
       (if (&& (== event/scope "session")
-              (! ($absent? (service/children .get event/stream)))
+              ($present? (service/children .get event/stream))
               (["turn/start" "model/result" "question/answered"] .contains? event/name))
         (service/dirty .set true)))))
   (process_delegations service ^^recovering)
@@ -709,7 +709,7 @@
   (if (service/closed .swap true) (return nil))
   (if_not ($absent? service/subscription) service/subscription/.cancel)
   (let worker service/worker)
-  (if_yes (&& (! ($absent? worker)) (! worker/.done?)) worker/.cancel worker/.join)
+  (if_yes (&& ($present? worker) (! worker/.done?)) worker/.cancel worker/.join)
   (hosts .set ($filter hosts/.get (fn [current] (! (same? current/token service/token)))))
   nil)
 
@@ -730,7 +730,7 @@
               (for admission in (parent_admissions parent ^round ($to_str round))
                 (if (!= admission/state "running") (continue))
                 (let child (service/callbacks/find admission/session admission/request_id))
-                (if_yes (&& (! ($absent? child)) (== child/state "running"))
+                (if_yes (&& ($present? child) (== child/state "running"))
                   (admission .put "stop_cutoff" true)
                   (cutoff .push admission/source)))
               (if_not cutoff/.empty?
@@ -746,14 +746,14 @@
       (let parent (delegation_parent service session))
       (let owner (parent_round_record parent round))
       (if (!= owner/hold true) (delegation_error "not_held" "This round is not awaiting delegation recovery."))
-      (if (== action "cancel")
-        (then
+      (match action
+        (when "cancel"
           (close_owner_unlocked service parent round "The parent recovery was cancelled.")
           (cancelled .set true))
-        (elif (== action "continue")
+        (when "continue"
           (owner .put "hold" false)
           (for admission in (parent_admissions parent ^round round) (admission .put "stop_cutoff" false))
-          (if (&& (! ($absent? owner/wait)) (!= owner/collection true))
+          (if (&& ($present? owner/wait) (!= owner/collection true))
             (owner/wait .put "forced" true))
           (checkpoint_delegations service parent)
           (service/dirty .set true))

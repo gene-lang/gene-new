@@ -59,7 +59,7 @@
               "(Outcome ^^done ^reply \"Drain recovered and collected\")")))))
         (try
           (let held (delegation_blocks restored/services/values/delegations "default"))
-          ($assert (! ($absent? held/recovery)))
+          ($assert ($present? held/recovery))
           (delegation_recovery restored/services/values/delegations "default" round/id "continue")
           (wait_for (fn [] (== (/state (round_receipt resumed "default" round/id)) "done")) "Recovered collection ran before the queued child settled.")
           ($assert (== collections/.get 1))
@@ -120,7 +120,7 @@
             "(Outcome ^^done ^reply \"Result collected\")"))))
         (try
           (let held (delegation_blocks restored/services/values/delegations "default"))
-          ($assert (! ($absent? held/recovery)))
+          ($assert ($present? held/recovery))
           ($assert (== held/records/0/state "cancelled"))
           (wait_for (fn [] (== (/state (round_receipt resumed "queued" second/id)) "done")) "Queued-only parent did not resume.")
           ($assert (== root_calls/.get 0))

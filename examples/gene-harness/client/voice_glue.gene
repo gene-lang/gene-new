@@ -25,7 +25,7 @@
   (var state (voice_state client))
   (if_yes ($absent? state/rounds) (return false))
   (var voice (voice_rounds client))
-  (! ($absent? voice/pending)))
+  ($present? voice/pending))
 
 (fn browser_capabilities [client : Client, name : Str] : Any
   (if_yes (!= name "voice") (return {}))
@@ -52,7 +52,7 @@
 
 (fn voice_submit [client : Client, session : Str, value : Str, input : Any,
                   done : (Fn [Int Any] Void)] : Void
-  (if_yes (|| (! client/ready) client/sending (! ($absent? client/pending)))
+  (if_yes (|| (! client/ready) client/sending ($present? client/pending))
     (done 409 {^^not_sent ^message "Resolve the current submission before sending voice."}) (return))
   (set client/sending true) (update_controls client)
   (var voice (voice_rounds client))
@@ -78,7 +78,7 @@
   nil)
 
 (fn voice_review [client : Client, session : Str, value : Str, input : Any] : Bool
-  (if_yes (|| (== session "") client/sending (! ($absent? client/pending))) (return false))
+  (if_yes (|| (== session "") client/sending ($present? client/pending)) (return false))
   (var previous (if (== session client/selected) ($dom/input_value client/prompt)
     (?? (storage_get (draft_key session)) "")))
   (var combined ($to_str previous (if (== previous "") "" "\n\n") value))
@@ -99,7 +99,7 @@
         (api client method path payload done))
       (fn [message : Str] : Void
         (var voice (voice_rounds client))
-        (var pending (! ($absent? voice/pending)))
+        (var pending ($present? voice/pending))
         (set_hidden "voice_receipt_recover" (! pending))
         (set_hidden "voice_receipt_discard" (! pending))
         (var forget ($dom/element "voice_receipt_forget"))

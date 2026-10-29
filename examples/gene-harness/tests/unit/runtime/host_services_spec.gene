@@ -85,8 +85,10 @@
           ^open (fn [ctx] (events .push "feature") "feature") ^recover nil}])
       (let owner (new_host_services {} definitions))
       (start_host_services owner mode)
-      ($assert (== events (if (== mode "normal") ["kernel" "events" "controller" "feature"]
-        (if (== mode "doctor") ["kernel" "events"] ["metadata"]))))
+      ($assert (== events (match mode
+        (when "normal" ["kernel" "events" "controller" "feature"])
+        (when "doctor" ["kernel" "events"])
+        (else ["metadata"]))))
       ($assert (== owner/values/kernel (if (== mode "recovery") "metadata" "kernel")))
       ($assert (== ($absent? owner/values/events) (== mode "recovery")))
       ($assert (== ($absent? owner/values/controller) (!= mode "normal")))
@@ -126,12 +128,12 @@
       [{^name "store" ^layer "kernel" ^^borrowed ^requires []
         ^open (fn [ctx] parent/values/store)}
        {^name "worker" ^layer "loop" ^requires ["store"] ^open (fn [ctx] {^name "worker"})
-        ^close (fn [ctx value] ($assert (! ($absent? parent/values/store))) (closed .push "worker"))}]))
+        ^close (fn [ctx value] ($assert ($present? parent/values/store)) (closed .push "worker"))}]))
     (start_host_services child "normal")
     ($assert (same? child/values/worker parent/values/worker))
     (close_host_services child)
     ($assert ($absent? parent/values/worker))
-    ($assert (! ($absent? parent/values/store)))
+    ($assert ($present? parent/values/store))
     ($assert (== closed ["worker"]))
     (close_host_services parent)
     ($assert (== closed ["worker" "store"]))

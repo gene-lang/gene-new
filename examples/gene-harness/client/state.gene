@@ -42,7 +42,7 @@
 # binds the pending request to its round; the real user record then replaces it.
 (fn submission_blocks [session : Str, pending : Any, rounds : (List Any), blocks : (List Any),
   ^shown_round shown_round : Str = ""] : (List Any)
-  (var submitting (&& (! ($absent? pending)) (== (status_text pending/session) session)))
+  (var submitting (&& ($present? pending) (== (status_text pending/session) session)))
   (var receipt : Any nil)
   (var sequence : Int 0)
   (for run in rounds
@@ -77,7 +77,7 @@
     ^round_id (if (== round_id "") $"submission/${request_id}" round_id)
     ^turn 0 ^role "user" ^phase "turn/request" ^text text ^media media
     ^speaker (if submitting "User" (input_speaker receipt))
-    ^durable (! ($absent? receipt))})
+    ^durable ($present? receipt)})
   (var out : (List Any) [])
   (var inserted false)
   (for block in blocks
@@ -260,19 +260,12 @@
   (if (== status "waiting")
     (return (if ($absent? run/delegation_wait) "Waiting for your answer" "Waiting for children")))
   (if (== outcome "code_error")
-    "Code error"
-    (if (== status "done")
-      "Completed"
-      (if (== status "cancelled")
-        "Stopped"
-        (if (== status "failed")
-          "Failed"
-          (if (== status "interrupted")
-            "Interrupted"
-            (if (== status "running")
-              "Generating response…"
-              (if (== status "accepted")
-                "Starting…"
-                (if (== status "stopping")
-                  "Stopping…"
-                  "Recovery required")))))))))
+    (then "Code error")
+    (elif (== status "done") "Completed")
+    (elif (== status "cancelled") "Stopped")
+    (elif (== status "failed") "Failed")
+    (elif (== status "interrupted") "Interrupted")
+    (elif (== status "running") "Generating response…")
+    (elif (== status "accepted") "Starting…")
+    (elif (== status "stopping") "Stopping…")
+    (else "Recovery required")))

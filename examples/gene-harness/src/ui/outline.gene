@@ -25,8 +25,10 @@
       (if_not ($absent? tree/props/checked) (node .put "checked" true))
       (if (&& (== tree/children/.size 1) (== ($head tree/children/0) Str))
         (do (node .put "text" (outline_text tree/children/0)) (set folded true)))
-      (set item_tag (if (== tree/tag "tbody") "tr"
-        (if (["ul" "ol"] .contains? tree/tag) "li" nil)))
+      (set item_tag (if (== tree/tag "tbody")
+        (then "tr")
+        (elif (["ul" "ol"] .contains? tree/tag) "li")
+        (else nil)))
       (if_not ($absent? item_tag)
         (let count ($size ($filter tree/children (fn [child] (== child/tag item_tag)))))
         (if (> count 3)
@@ -43,7 +45,7 @@
     (do
       (var kept 0)
       (for child in tree/children
-        (if (&& (! ($absent? item_tag)) (== child/tag item_tag))
+        (if (&& ($present? item_tag) (== child/tag item_tag))
           (do
             (if (>= kept 3) (continue))
             (set kept (+ kept 1))))

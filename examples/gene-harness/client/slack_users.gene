@@ -22,7 +22,7 @@
   (users/lookup {^account account ^team team ^author author}
     (fn [code : Int, data : Any] : Void
       (var name : Str "")
-      (if_yes (&& (== code 200) (! ($absent? data/name))) (set name data/name))
+      (if_yes (&& (== code 200) ($present? data/name)) (set name data/name))
       (set entry/text (if (== name "") author $"${name}(${author})"))
       (set entry/ready true)
       (var waiting : (List Any) entry/nodes)

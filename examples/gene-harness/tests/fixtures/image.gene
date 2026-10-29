@@ -58,7 +58,7 @@
          ^capabilities (fn [settings] reviewer_caps/.get)
          ^prepare (fn [call] call)
          ^send (fn [prepared]
-           (if (&& (== prepared/purpose "turn") (! ($absent? main_reply)))
+           (if (&& (== prepared/purpose "turn") ($present? main_reply))
              (return {^text (main_reply prepared)}))
            (reviewed/.get .push prepared)
            (if (== mode/.get "review_failed") (fail "review failed"))

@@ -14,7 +14,7 @@
   (for name in ["messages" "ingress"]
     (for [id record] in (?? (state .get name) {})
       (let message record/message)
-      (if (&& (! ($absent? message)) (same_thread? message source))
+      (if (&& ($present? message) (same_thread? message source))
         (remember_message result message/message))))
   (for name in ["outbox" "deliveries"]
     (for [id record] in (?? (state .get name) {})
@@ -23,6 +23,6 @@
         (record/intent .assoc "thread" (/ts (/0 parts))) record/intent))
       (if (|| (! (["post" "thread"] .contains? record/intent/mode)) (! (same_thread? destination source))) (continue))
       (for part in parts
-        (if (&& (== part/status "sent") (! ($absent? part/ts)))
+        (if (&& (== part/status "sent") ($present? part/ts))
           (remember_message result part/ts)))))
   result/last_message)

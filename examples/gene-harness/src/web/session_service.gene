@@ -83,7 +83,7 @@
 
 (fn public_session [service, record]
   (let copy ($thaw ($freeze record)))
-  (copy .put "slack_available" (&& (! ($absent? service/runtime/services/values/channels)) (sharing_available? service/runtime)))
+  (copy .put "slack_available" (&& ($present? service/runtime/services/values/channels) (sharing_available? service/runtime)))
   (copy .put "revision" ($to_str (?? record/revision 0)))
   # Match the sequence-1 round, not prompt text: later prompts may be identical.
   (copy .put "first_request_round"
@@ -136,16 +136,14 @@
     ^round_id (?? payload/round "")
     ^turn (?? payload/turn 0)
     ^role (if (== payload/initial true)
-            "user"
-            (if (== event/type "console")
-              "log"
-              "assistant"))
+      (then "user")
+      (elif (== event/type "console") "log")
+      (else "assistant"))
     ^kind event/type
     ^phase (if (== event/type "turn/response")
-             "code"
-             (if (&& (== event/type "turn/end") (! ($absent? payload/text)))
-               "turn/error"
-               event/type))
+      (then "code")
+      (elif (&& (== event/type "turn/end") ($present? payload/text)) "turn/error")
+      (else event/type))
     ^order (?? payload/at_ms event/seq)
     ^text (if (== payload/initial true) (?? payload/settled text) text)
     ^audio_reply (?? payload/audio_reply nil)
@@ -174,7 +172,7 @@
   (let cache service/browser_requests/.get)
   (let prior (cache .get session))
   (if_yes (&& (== record/role "user")
-    (> (?? record/for_turn 0) 0) (! ($absent? record/initiator))
+    (> (?? record/for_turn 0) 0) ($present? record/initiator)
     (! ($str/starts_with? (?? record/initiator "") "continue:")))
     (record .put "speaker" (initiating_label nil record))
     (cache .put session record)
@@ -187,7 +185,7 @@
     # Current writers declare their receiving turn and combination. Keep only
     # the latest live request per active session; cold appends rebuild
     # provenance once from the durable stream.
-    (if_yes (&& (! ($absent? prior)) (== prior/round_id record/round_id)
+    (if_yes (&& ($present? prior) (== prior/round_id record/round_id)
       (> event/seq ($parse/parse_int prior/seq))
       (|| (== record/combine "replace") (&& (== record/combine "append") same_owner)))
       (let projected (project_request record receiver (if same_owner prior nil)))
@@ -202,7 +200,7 @@
   (let id $"${session}/${event/seq}")
   (for record in projected
     (if_yes (|| (== record/id id)
-      (&& (! ($absent? record/source_ids)) (record/source_ids .contains? id)))
+      (&& ($present? record/source_ids) (record/source_ids .contains? id)))
       (cache .put session record) (return record)))
   nil)
 
@@ -236,7 +234,7 @@
 
 (fn command_input_record [session : Str, record]
   # Older receipts retain the parsed command, but not its original spelling.
-  (let mode_input (! ($absent? record/mode_instance)))
+  (let mode_input ($present? record/mode_instance))
   (let text (if mode_input record/raw (?? record/input_text
     ($to_str "/" record/name (if (== record/raw "") "" ($to_str " " record/raw))))))
   {^id $"${session}/${record/id}/input"
@@ -262,12 +260,12 @@
 (fn snapshot_job_current? [service, session : Str, version : Int] : Bool
   (&& (! service/closed/.get)
       (== (service/snapshot_versions/.get .get session) version)
-      (! ($absent? (service/runtime/sessions/index/.get .get session)))))
+      ($present? (service/runtime/sessions/index/.get .get session))))
 
 (fn queue_snapshot [service, session : Str]
   (if service/closed/.get (return nil))
   (if ($absent? service/publisher/.get) (return nil))
-  (if (&& (! ($absent? service/snapshot_audience)) (! (service/snapshot_audience session)))
+  (if (&& ($present? service/snapshot_audience) (! (service/snapshot_audience session)))
     (return nil))
   (let id ($crypto/random_hex 8))
   (let versions service/snapshot_versions/.get)
@@ -337,9 +335,9 @@
       (if_yes (== record/ui_action true)
         (publish_message service "ui/action" "" {^session session ^record record})
         (return nil))
-      (if (! ($absent? record/raw))
+      (if ($present? record/raw)
         (publish_message service "turn" session (command_input_record session record)))
-      (if (! ($absent? record/text))
+      (if ($present? record/text)
         (publish_message
           service
           "console"
@@ -417,10 +415,10 @@
   (require_record service/runtime/sessions session)
   (if (!= ($head request/client_id) Str)
     (fail (RoundError ^code "invalid_request" ^message "Voice needs a browser client identity.")))
-  (if (|| (&& (! ($absent? request/token))
+  (if (|| (&& ($present? request/token)
               (|| (!= ($head request/token) Str) (> ($str/byte_size request/token) 128)))
-          (&& (! ($absent? request/output)) (!= ($head request/output) Bool))
-          (&& (! ($absent? request/enabled)) (!= ($head request/enabled) Bool)))
+          (&& ($present? request/output) (!= ($head request/output) Bool))
+          (&& ($present? request/enabled) (!= ($head request/enabled) Bool)))
     (fail (RoundError ^code "invalid_request" ^message "Voice expects a text token and boolean enabled/output values.")))
   (if (== request/enabled false)
     (return (public_voice_state (release_voice service/runtime/services/values/voice request/client_id (?? request/token "")))))
@@ -438,7 +436,7 @@
 
 (fn list_sessions [service, ^after after : Str = "", ^limit limit : Int = 100, ^kind kind = nil, ^status status = nil, ^attention attention = nil, ^trigger trigger = nil, ^q q : Str = "", ^since since : Str = "", ^until until : Str = ""]
   (let results [])
-  (let slack_available (&& (! ($absent? service/runtime/services/values/channels)) (sharing_available? service/runtime)))
+  (let slack_available (&& ($present? service/runtime/services/values/channels) (sharing_available? service/runtime)))
   (for record in (session_records ^kind kind ^status status ^attention attention ^trigger trigger ^q q ^since since ^until until service/runtime/sessions)
     (if (&& (!= after "") (<= ($order/compare record/id after) 0)) (continue))
     (if (>= results/.size limit) (break))
@@ -582,7 +580,7 @@
     (if_yes available
       (let tail (pending_request service/runtime session))
       (let reference (?? source/continuation/items_ref source/request_items_ref))
-      (set available (&& (! ($absent? reference)) (== tail/round source/id)
+      (set available (&& ($present? reference) (== tail/round source/id)
         (== tail/turn source/last_turn)
         (try (== ($head ($serde/read_data (read_body service/runtime reference))) List) catch Any false))))
     (result .put "resumable" available))
@@ -625,19 +623,19 @@
     (set cursor event/seq)
     (if (&& console (>= after 0) (<= event/seq after)) (continue))
     (if (&& console (>= before 0) (>= event/seq before)) (continue))
-    (if_yes (&& (== event/type "delegation/state") (! ($absent? event/payload/state/summary)))
+    (if_yes (&& (== event/type "delegation/state") ($present? event/payload/state/summary))
       (let state event/payload/state)
       (records .push
         {^id $"${id}/delegation-update/${event/seq}" ^seq ($to_str event/seq)
          ^round_id state/round ^turn state/turn ^role "assistant"
          ^phase "delegation/update" ^kind "delegation/update" ^text state/summary
          ^order state/at_ms ^^durable}))
-    (if (|| (["turn/response" "turn/request" "turn/patch" "reply"] .contains? event/type) (&& console (== event/type "console")) (&& (! console) (["turn/start" "turn/end"] .contains? event/type)) (&& (== event/type "turn/end") (! ($absent? event/payload/text))))
+    (if (|| (["turn/response" "turn/request" "turn/patch" "reply"] .contains? event/type) (&& console (== event/type "console")) (&& (! console) (["turn/start" "turn/end"] .contains? event/type)) (&& (== event/type "turn/end") ($present? event/payload/text)))
       (records .push (event_record id event)))
     # A later definition of a card shows a short line where it happened.
     (if_yes (== event/type "card/state")
       (let card event/payload/state)
-      (if (&& (! ($absent? card)) (== card/origin "model") (!= card/updated_turn card/turn))
+      (if (&& ($present? card) (== card/origin "model") (!= card/updated_turn card/turn))
         (records .push
           {^id $"${id}/card-update/${card/id}/${card/definition_revision}" ^seq ($to_str event/seq)
            ^round_id (?? card/round "") ^turn card/updated_turn ^role "assistant"
@@ -646,7 +644,7 @@
     # Answered questions with views stay in the transcript, read-only.
     (if_yes (== event/type "question/answered")
       (let batch event/payload/state)
-      (if (&& (! ($absent? batch)) (question_view? batch))
+      (if (&& ($present? batch) (question_view? batch))
         (records .push
           {^id $"${id}/questions/${batch/id}" ^seq ($to_str event/seq)
            ^round_id (?? batch/round "") ^turn (?? batch/turn 0) ^role "assistant"
