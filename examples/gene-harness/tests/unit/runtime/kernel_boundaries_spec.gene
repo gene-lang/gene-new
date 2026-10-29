@@ -30,7 +30,10 @@
     (fn [name] ($path/join (kernel_root) name))))
 
 (fn callback_import_exception [] ["retain_callback" "retained_callback?" "expire_scope_callbacks"])
-(fn named_test_imports [] {})
+(fn named_test_imports []
+  (let cases {})
+  (cases .put "tests/unit/runtime/kernel_status_spec.gene" ["plugin_states" "retry"])
+  cases)
 
 (fn allowed_imports []
   {^invoke ["../runtime/call_supervision" "../plugin_api" "../errors"]

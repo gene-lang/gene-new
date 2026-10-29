@@ -1,0 +1,64 @@
+(import $test [describe it])
+(import [new_harness shutdown_harness install put_cordis_plugin put_cordis_plugins
+  status_of contribute row Plugin PluginHost] ^from "../../../src/kernel")
+# Internal behavior is verified without widening the stable facade.
+(import [plugin_states retry] ^from "../../../src/kernel/composition_bridge")
+
+(type CountingComposition ^^private ^props {^delegate Any ^calls Cell}
+  (message entry_states []
+    (self/calls .set (+ self/calls/.get 1))
+    self/delegate/.entry_states)
+  (message instances [] self/delegate/.instances)
+  (message retire [ticket] (self/delegate .retire ticket)))
+
+(describe "Harness plugin status"
+  (it "keeps a failed replacement sticky through unrelated reconciliation until explicit retry" []
+    (let h (new_harness))
+    (let healthy ($cell false))
+    (try
+      (install h (Plugin ^id "version" ^activate (fn [host]
+        (host .PluginHost:contribute "functions" {^name "version" ^doc "Version." ^fn (fn [] 1)}))))
+      (let replacement (Plugin ^id "version" ^activate (fn [host]
+        (if_not healthy/.get (fail "replacement failed"))
+        (host .PluginHost:contribute "functions" {^name "version" ^doc "Version." ^fn (fn [] 2)}))))
+      (put_cordis_plugin ^^replace h replacement {^^host})
+      ($assert (== (status_of h "version") "error"))
+      ($assert ((plugin_states h) .contains? "version:error"))
+      (install h (Plugin ^id "unrelated" ^activate (fn [host] nil)))
+      ($assert (== (status_of h "version") "error"))
+      ($assert ((plugin_states h) .contains? "version:error"))
+      (let old (/fn (row h "functions" "version")))
+      ($assert (== (old) 1))
+      (healthy .set true)
+      ($assert (== (retry h "version") "retried version (ready)"))
+      ($assert (== (status_of h "version") "ready"))
+      ($assert ((plugin_states h) .contains? "version:ready"))
+      (let current (/fn (row h "functions" "version")))
+      ($assert (== (current) 2))
+    ensure (shutdown_harness h)))
+
+  (it "shares at most one entry-state snapshot per publication and batch status query" []
+    (let h (new_harness))
+    (let admissions [])
+    (for id in ["a" "b" "c" "d" "e"]
+      (admissions .push {^plugin (Plugin ^id id ^activate (fn [host] nil)) ^options {^^host}}))
+    (let calls ($cell 0))
+    (let original h/composition)
+    (try
+      (put_cordis_plugins h admissions)
+      (set h/composition (CountingComposition ^delegate original ^calls calls))
+      (contribute h "core" "docs" {^name "counter" ^text "Publish a direct registry change."})
+      ($assert (== calls/.get 1) "Publication rebuilt entry states more than once.")
+      ($assert (== (plugin_states h) ["a:ready" "b:ready" "c:ready" "d:ready" "e:ready"]))
+      ($assert (== calls/.get 2) "Batch status rebuilt entry states more than once.")
+      ($assert (== (status_of h "missing") "absent"))
+      ($assert (== calls/.get 2) "An absent id inspected the composition.")
+    ensure
+      (set h/composition original)
+      (shutdown_harness h)))
+
+  (it "returns absent and an empty batch after shutdown without inspecting the retired composition" []
+    (let h (new_harness))
+    (shutdown_harness h)
+    ($assert (== (status_of h "missing") "absent"))
+    ($assert (== (plugin_states h) []))))

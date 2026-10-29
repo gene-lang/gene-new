@@ -1,0 +1,63 @@
+(import $test [describe it])
+
+(fn forbidden_fields [] ["plugin_errors"])
+
+(fn private_segments? [segments, fields]
+  (var at 0)
+  (while (< (+ at 1) segments/.size)
+    (let next (+ at 1))
+    (if (&& (== ($to_str segments/%at) "h")
+            (fields .contains? ($to_str segments/%next))) (return true))
+    (set at (+ at 1)))
+  false)
+
+(fn private_harness_path? [value, fields]
+  (if ($absent? value) (return false))
+  (let head ($head value))
+  (if (== head Sym) (return (private_segments? ($str/split ($to_str value) "/") fields)))
+  (if ([Str Int Float Bool] .contains? head) (return false))
+  (if (== head List)
+    (then
+      (for child in value (if (private_harness_path? child fields) (return true)))
+      (return false)))
+  (if (== head Map)
+    (then
+      (for [name child] in value (if (private_harness_path? child fields) (return true)))
+      (return false)))
+  (if (== ($to_str head) "path")
+    (if (private_segments? ($body value) fields) (return true)))
+  (if (same? head value)
+    (then
+      # PipelineSyntax has no public child accessor yet. Its canonical spelling
+      # can be parsed as ordinary data by replacing the arrow with a tag. This
+      # never executes code or rewrites source; quoted strings remain strings.
+      (let text ($to_str value))
+      (if ($str/contains? text " -> ")
+        (for form in ($parse/read_all ($str/join ($str/split text " -> ") " __pipeline__ "))
+          (if (private_harness_path? form fields) (return true))))
+      (return false)))
+  (if (private_harness_path? head fields) (return true))
+  (for child in ($body value)
+    (if (&& (! (same? child value)) (private_harness_path? child fields)) (return true)))
+  (for [name child] in ($props value)
+    (if (&& (! (same? child value)) (private_harness_path? child fields)) (return true)))
+  false)
+
+(describe "Harness field ownership"
+  (it "finds nested reads writes and pipeline references while ignoring literal text" []
+    (for source in ["h/plugin_errors" "(runtime/h/plugin_errors .set {})"
+                   "{^nested [h/plugin_errors]}" "(h/plugin_errors -> $into [])"]
+      (let forms ($into ($parse/read_all source) []))
+      ($assert (private_harness_path? forms ["plugin_errors"]) source))
+    (for source in ["\"h/plugin_errors\"" "#\"h/plugin_errors -> pattern\"" "state/publishing" "{^plugin_errors true}"]
+      (let forms ($into ($parse/read_all source) []))
+      ($assert (! (private_harness_path? forms ["plugin_errors" "publishing"])) source)))
+
+  (it "confines sticky failure state to the composition bridge" []
+    (let root ($path/join this_pkg/root "src"))
+    (let owner ($path/join root "kernel/composition_bridge.gene"))
+    (for entry in ($fs/walk root)
+      (if (|| (!= entry/kind "file") (! ($str/ends_with? entry/path ".gene")) (== entry/path owner)) (continue))
+      (for form in ($parse/read_all ($fs/read_text entry/path))
+        ($assert (! (private_harness_path? form (forbidden_fields)))
+          $"Private composition state escaped into ${entry/path}.")))))

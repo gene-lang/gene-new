@@ -45,6 +45,7 @@
 (fn ^^private publish_registry_snapshot [h : Harness]
   (if_yes (&& (! ($absent? h/snapshots)) (! h/snapshots/closed/.get))
     (let plugins [])
+    (let states ($cell nil))
     (let seen {})
     (for [id plugin] in h/plugins/.get
       (seen .put id true)
@@ -52,7 +53,7 @@
       (plugins .push
         {
           ^id ($to_str id)
-          ^status (status_of h ($to_str id))
+          ^status (status_in h states ($to_str id))
           ^callback_limits (execution_limits_data policy/limits)
           ^descriptor_limits (execution_limits_data policy/init_limits)
           ^source_digest policy/source_digest
@@ -440,19 +441,16 @@
 # hang or raise: the plugins involved simply stay pending and say so in
 # `plugin_states`, which is a far better 3am outcome than either alternative.
 
-(fn status_of [h : Harness, id : Str] : Str
+(fn ^^private status_in [h : Harness, states, id : Str] : Str
   (if (== (h/plugins .get; .get id) void) (return "absent"))
   (if (!= (h/plugin_errors .get; .get id) void) (return "error"))
-  (var snapshot h/composition/.inspect)
-  (for entry in snapshot/entries
-    (if (== entry/id id)
-      (return
-        (if (== entry/state "active")
-          "ready"
-          (if (== entry/state "failed")
-            "error"
-            entry/state)))))
-  "pending")
+  (if ($absent? states/.get) (states .set h/composition/.entry_states))
+  (let state (states/.get .get id))
+  (if (== state void) (return "pending"))
+  (if (== state "active") "ready" (if (== state "failed") "error" state)))
+
+(fn status_of [h : Harness, id : Str] : Str
+  (status_in h ($cell nil) id))
 
 (fn plugin_error [h : Harness, id : Str]
   (var found (h/plugin_errors .get; .get id))
@@ -465,11 +463,12 @@
     (out .push ($to_str k)))
   out)
 
-(fn ^^private plugin_states [h : Harness] : Any
-  (var out (fresh_list))
+(fn plugin_states [h : Harness] : Any
+  (let states ($cell nil))
+  (let result (fresh_list))
   (for id in (plugin_ids h)
-    (out .push $"${id}:${(status_of h id)}"))
-  out)
+    (result .push $"${id}:${(status_in h states id)}"))
+  result)
 
 (fn install [h : Harness, p : Plugin] : Str
   # Installing registers the plugin and reconciles the composition. A failed
@@ -494,7 +493,7 @@
   (log_append h "lifecycle" $"uninstalled ${id}")
   $"uninstalled ${id}")
 
-(fn ^^private retry [h : Harness, id : Str] : Str
+(fn retry [h : Harness, id : Str] : Str
   # A failed plugin is not retried automatically: an activation that raised
   # raises again until something outside it changes.
   (if_not (== (status_of h id) "error")

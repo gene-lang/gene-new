@@ -1,5 +1,6 @@
 # Host-owned management reads use inert metadata and registry snapshots.
 (mod plugin_manager)
+(import [plugin_error] ^from "../kernel")
 (import ^from "./composition" [acquire_snapshot release_snapshot run_composition_change])
 (import [entry_core_interface retired_requirement] ^from "./interface_policy")
 (import [participant_quarantine] ^from "../storage/participant_health")
@@ -122,7 +123,7 @@
       (if_yes (== item/registry "docs")
         (documentation .push {^name item/key ^summary item/summary})
         (if (== description "") (set description item/summary))))
-    (let error (?? (workspace/errors/.get .get id) (runtime/h/plugin_errors/.get .get id) nil))
+    (let error (?? (workspace/errors/.get .get id) (plugin_error runtime/h id) nil))
     (let status
       (if (! enabled)
         "disabled"

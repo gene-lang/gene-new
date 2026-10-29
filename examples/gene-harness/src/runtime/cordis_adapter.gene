@@ -78,6 +78,13 @@
     (for [id revision] in record/current/.get
       (plugins .put id revision/plugin))
     plugins)
+  # Status consumers need entry states only, without the binding projection.
+  (message entry_states []
+    (let record (composition_record self))
+    (let snapshot record/loader/.inspect)
+    (let states {})
+    (for entry in snapshot/entries (states .put entry/id entry/state))
+    states)
   (message current_revisions []
     (let record (composition_record self))
     (let revisions {})
