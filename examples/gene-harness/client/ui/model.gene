@@ -130,12 +130,12 @@
   (var forms (copy_map saved/forms))
   # Form args capture the original record revision. A newly edited form with
   # another revision must not be cleared by an earlier receipt.
-  (if_yes (!= ($json/stringify forms/%form) ($json/stringify pending/form_context)) (return))
+  (if_yes (!= ($json/stringify (?? forms/%form nil)) ($json/stringify (?? pending/form_context nil))) (return))
   (for [field_key raw] in drafts
     (var item : Any raw)
     (if_yes (== (text item/form) form)
       (var name : Str item/name)
-      (if_yes (== ($json/stringify item/value) ($json/stringify pending/request/named/%name))
+      (if_yes (== ($json/stringify (?? item/value nil)) ($json/stringify (?? pending/request/named/%name nil)))
         (set drafts/%field_key void))))
   (var still_dirty false)
   (for [field_key raw] in drafts
@@ -147,7 +147,7 @@
   # navigation, including when recovering its receipt from another view.
   (if_not still_dirty
     (for [name value] in (copy_map pending/success_state)
-      (if_yes (== ($json/stringify state/%name) ($json/stringify pending/view_state/%name))
+      (if_yes (== ($json/stringify (?? state/%name nil)) ($json/stringify (?? pending/view_state/%name nil)))
         (set state/%name value))))
   (set saved/state state)
   (set saved/drafts drafts)

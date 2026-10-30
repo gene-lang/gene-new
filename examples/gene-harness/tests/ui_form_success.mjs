@@ -30,7 +30,7 @@ const {create_notices}=await import(new URL('notices.mjs',base));
 const {workspace_storage_key}=await import(new URL('workspace_storage.mjs',base));
 const scoped=key=>workspace_storage_key(workspaceId,key);
 const noop=()=>{};
-function setup(){
+function setup({submit=true}={}){
   stored.clear();elements.clear();timers.length=0;
   const requests=[],root=new Element();
   const sidebar=new Sidebar({root,desktop_open:true,mobile_open:false,full_view:false,available:true,safe:false,
@@ -49,6 +49,7 @@ function setup(){
     props:{action:'save',args:{operation:'create'},'success-state':{selected:''}},form:'',seen:0n});
   const input=new Element();input.value='calculator';
   ui.nodes={create:form,name:new model.UiNode({key:'name',tag:'input',element:input,props:{field:'name'},form:'create',seen:0n})};
+  if(!submit)return {ui,requests,form};
   controller.submit_action(ui,form);
   assert.deepEqual(ui.pending.success_state,{selected:''},'submission captures its form success patch');
   const pending=ui.pending;
@@ -60,6 +61,57 @@ const progress=()=>{
   for(const timer of ready){timers.splice(timers.indexOf(timer),1);timer.fn();}
 };
 const notices=ui=>Object.values(ui.notices.items);
+{
+  const {ui,requests,form}=setup({submit:false});
+  ui.descriptor.functions.press='p1';
+  form.props.args={record:'new-record',revision:'new'};
+  ui.forms.create={named:{record:'original-record',revision:'old'},positional:['saved']};
+  ui.nodes.name.props.field='expression';ui.nodes.name.element.value='12';
+  const button=new model.UiNode({key:'plus',tag:'button',element:new Element(),
+    props:{action:'press',args:{key:'+'}},form:'create',seen:0n});
+  controller.submit_action(ui,button);
+  assert.deepEqual(requests[0].data.named,
+    {record:'original-record',revision:'old',key:'+',expression:'12'},
+    'a button retains its arguments beside the edited form context and live fields');
+  assert.deepEqual(requests[0].data.args,['saved'],'a button inherits saved form positionals');
+  assert.deepEqual(ui.forms.create.named,{record:'original-record',revision:'old'},
+    'assembling a button request must not mutate its frozen draft context');
+}
+{
+  const {ui,requests,form}=setup({submit:false});
+  ui.descriptor.functions.press='p1';ui.forms={};ui.drafts={};
+  form.props.args={record:'current-record',mode:'form'};form.props.positional=['form'];
+  ui.nodes.name.props.field='expression';ui.nodes.name.element.value='12';
+  const button=new model.UiNode({key:'digit',tag:'button',element:new Element(),
+    props:{action:'press',args:{key:'7',mode:'button',expression:'static'},positional:['button']},
+    form:'create',seen:0n});
+  controller.submit_action(ui,button);
+  assert.deepEqual(requests[0].data.named,
+    {record:'current-record',mode:'button',key:'7',expression:'12'},
+    'an untouched form supplies defaults, button args override them, and live fields win');
+  assert.deepEqual(requests[0].data.args,['button'],'explicit button positionals override the form');
+  const inputId=ui.pending.request.input_id;
+  assert.doesNotThrow(()=>controller.accept_receipt(ui,{id:inputId,input_id:inputId,status:'done'}),
+    'a clean form action settles without serializing an absent draft context');
+  assert.equal(ui.pending,null,'a clean keypad action must not leave the UI blocked');
+}
+{
+  const {ui,requests,form}=setup({submit:false});
+  ui.forms.create={named:{revision:'old'},positional:['saved']};
+  form.props.args={revision:'new'};form.props.positional=['new'];
+  controller.submit_action(ui,form);
+  assert.deepEqual(requests[0].data.named,{revision:'old',name:'calculator'},
+    'form submission preserves the revision captured when editing began');
+  assert.deepEqual(requests[0].data.args,['saved']);
+}
+{
+  const {ui,requests}=setup({submit:false});
+  ui.descriptor.functions.press='p1';
+  const button=new model.UiNode({key:'standalone',tag:'button',element:new Element(),
+    props:{action:'press',args:{key:'clear'}},form:'',seen:0n});
+  controller.submit_action(ui,button);
+  assert.deepEqual(requests[0].data.named,{key:'clear'},'standalone buttons inherit no unrelated form');
+}
 {
   const {ui,requests,finish}=setup();finish();
   assert.equal(ui.state.selected,'');

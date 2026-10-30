@@ -305,6 +305,14 @@ Input types are text, search, checkbox, number and hidden. Field values are
 strings except checkboxes, which produce Bool; parse numbers in the function
 when needed. Nested forms, duplicate fields and duplicate keys are rejected.
 Use Str view-state defaults for value-based controls and Bool for checkboxes.
+
+A button inside a form combines the form's static named arguments with its
+own `args`, then collects current field values. Button arguments override form
+defaults; field values override both. Editing captures the form's argument
+context, including record revisions, so later renders do not silently replace
+it. A form submission uses that captured context. Explicit button `positional`
+arguments override the form's; otherwise the button inherits them.
+
 Textareas accept an explicit `value` or plain text children for their initial
 value. Text children are normalized into the value property for draft binding;
 an explicit value takes precedence. Markup children are not an initial text value.

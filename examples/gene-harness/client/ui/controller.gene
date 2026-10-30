@@ -140,8 +140,12 @@
     (return))
   (var name (text node/props/action))
   (var form (if (== node/tag "form") node/key node/form))
-  (var named (copy_map node/props/args))
-  (var args (body_args node/props/positional))
+  (var owner : UiNode node)
+  (if_yes (&& (!= node/tag "form") ($present? ui/nodes/%form))
+    (var parent_form : UiNode ui/nodes/%form)
+    (set owner parent_form))
+  (var named (copy_map owner/props/args))
+  (var args (body_args owner/props/positional))
   (if_not ($absent? ui/forms/%form)
     (var saved : Any ui/forms/%form)
     (if ($absent? saved/named)
@@ -149,6 +153,13 @@
       (do
         (set named (copy_map saved/named))
         (set args (body_args saved/positional)))))
+  # Keep the form's captured revision while retaining the clicked button's
+  # action arguments. Current field values are collected last below.
+  (if_not (== node/tag "form")
+    (for [key value] in (copy_map node/props/args)
+      (set named/%key value))
+    (if ($present? node/props/positional)
+      (set args (body_args node/props/positional))))
   (for [key raw] in ui/nodes
     (var input : UiNode raw)
     (if_yes (&& (== input/form form) ($present? input/props/field))
