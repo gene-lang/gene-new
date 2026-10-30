@@ -111,10 +111,12 @@
   (var progress "")
   (var reply "")
   (var has_code false)
+  (var delegated false)
   (var ended false) (var failed false) (var answered false) (var hint "")
   (var final_reply false)
   (for block in blocks
     (var phase : Str block/phase)
+    (if_yes (== phase "delegation") (set delegated true))
     (if_yes (== phase "code")
       (set has_code true) (set hint (status_text block/reply_hint)))
     (if_yes (|| (== phase "turn/end") (== phase "turn/error"))
@@ -134,7 +136,8 @@
     (set progress (if has_code " · Evaluating code…" " · Generating response…")))
   (if_yes failed (set progress " · Code error"))
   (if_yes answered (set progress " · Questions"))
-  (var title ($to_str $"Turn ${round}" (if (== reply "") "" $": ${reply}") progress))
+  (var title ($to_str $"Turn ${round}" (if delegated " (sub-agent started)" "")
+    (if (== reply "") "" $": ${reply}") progress))
   (var responses : (List Any) [])
   (var was_open opened)
   (var details ($dom/render
