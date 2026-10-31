@@ -63,7 +63,7 @@ const post = (name, data, done) => {
   queueMicrotask(() => {
     if (name === "reject.txt") { done(400n, {message: "Rejected by fixture"}); return; }
     const id = (++sequence).toString(16).padStart(32, "0");
-    done(201n, {id, name, kind: name.endsWith(".png") ? "image" : "text", mime: "text/plain", size: 4n, url: `/api/v8/media/${id}`});
+    done(201n, {id, name, kind: name.endsWith(".png") ? "image" : "text", mime: "text/plain", size: 4n, url: `/api/v9/media/${id}`});
   });
 };
 async function settled(composer) {

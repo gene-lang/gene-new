@@ -177,7 +177,7 @@ history automatically. Render callbacks remain read-only.
 
 ## Browser and CLI delivery
 
-Web protocol 8 carries workspace notification snapshots and progress through
+Web protocol 9 carries workspace notification snapshots and progress through
 the ordinary authenticated connection. Browser clients merge by identity,
 revision and epoch. Reconnect hydrates producer messages and workflow
 projections from their separate authoritative snapshots; it does not replay

@@ -1,11 +1,13 @@
 (mod provider_anthropic)
-(import [anthropic_content] ^from "../public/model_content")
 (import ^from "../plugin_api" [Plugin PluginHost])
 (import ^from "../public/documentation" [contribute_text_doc])
 (import ^from "../plugin_api" [ProviderError])
 (import ^from "../public/provider" [nonempty configure_model http_json_attempt])
-
-(fn api_key [] (nonempty ($os/env? "ANTHROPIC_API_KEY")))
+(import [anthropic_models] ^from "../public/model_defaults")
+(import [model_capabilities] ^from "../public/models")
+(import [anthropic_model_list] ^from "../public/provider_discovery")
+(import [prepare_messages messages_stream_result] ^from "../public/provider_payloads")
+(import [anthropic_auth_source anthropic_headers anthropic_connection] ^from "../public/anthropic_auth")
 
 (fn anthropic_text [response] : Str
   (if_not (== response/status 200)
@@ -13,7 +15,7 @@
       (when 401 "check ANTHROPIC_API_KEY")
       (when 429 "rate or usage limit reached; try again later")
       (else "check model access, thinking support, and request limits")))
-    (fail (ProviderError ^message $"anthropic ${response/status}: ${help}")))
+    (fail (ProviderError ^status response/status ^message $"anthropic ${response/status}: ${help}")))
   (let parsed (try ($json/parse response/body)
     catch Any (fail (ProviderError ^message "anthropic returned invalid JSON"))))
   (if_not (== ($head parsed) Map)
@@ -43,68 +45,39 @@
   text)
 
 (fn prepare_anthropic [call]
-  (let settings call/settings)
-  (let messages call/messages)
-  (let conversation
-    (messages .filter (fn [message] (!= message/role "system"))))
-  (let assistant_indices [])
-  (var index 0)
-  (for message in conversation
-    (if (== message/role "assistant")
-      (assistant_indices .push index))
-    (set index (+ index 1)))
-  (let cached ($into ($take assistant_indices/.reverse 2) []))
-  (let wire [])
-  (set index 0)
-  (for message in conversation
-    (let blocks (anthropic_content message))
-    (let block blocks/0)
-    (if (cached .contains? index)
-      (block .put "cache_control" {^type "ephemeral"}))
-    (wire .push {^role message/role ^content blocks})
-    (set index (+ index 1)))
-  (let body
-    {^model settings/model ^system messages/0/content
-     ^max_tokens (?? call/max_tokens 8192) ^messages wire})
-  (if (== settings/effort "none")
-    (body .put "thinking" {^type "disabled"})
-    (do
-      (body .put "thinking" {^type "adaptive"})
-      (body .put "output_config" {^effort settings/effort})))
-  {^body body ^timeout_ms settings/timeout_ms})
+  (prepare_messages call))
 
 (fn provider_anthropic [] : Plugin
   (Plugin ^id "provider_anthropic" ^provides [["providers" "anthropic"]]
     ^activate (fn [host]
       (host .PluginHost:contribute "providers"
-        {^name "anthropic" ^tags ["provider" "model" "anthropic"] ^docs ["harness/providers/anthropic"] ^doc "Use the Anthropic Messages API." ^auto 1
+        {^name "anthropic" ^tags ["provider" "model" "anthropic"] ^docs ["harness/providers/anthropic"] ^doc "Use the Anthropic Messages API." ^auto 3
          ^media_recording "inventory"
-         ^capabilities (fn [settings] {^image_input "unknown" ^image_output "no"})
-         ^available (fn []
-           (let key (api_key))
-           (if ($absent? key)
-             (return "ANTHROPIC_API_KEY is unavailable"))
-           (if ($str/starts_with? key "sk-ant-oat")
-             "ANTHROPIC_API_KEY must be an API key, not a Claude Code token"
-             nil))
+         ^builtin_models (anthropic_models)
+         ^models (fn []
+           (let deadline (+ ($os/monotonic_ms) 5000))
+           (let headers (anthropic_headers (anthropic_auth_source)))
+           (let remaining (- deadline ($os/monotonic_ms)))
+           (if (<= remaining 0) (fail (ProviderError ^message "Anthropic discovery timed out")))
+           (anthropic_model_list ^headers headers ^timeout_ms remaining nil))
+         ^connection anthropic_connection
+         ^transport {^adapter "anthropic_messages" ^base_url "https://api.anthropic.com/v1"
+           ^credential (/credential (anthropic_auth_source)) ^billing "metered"}
+         ^capabilities model_capabilities
          ^configure (fn [model, effort, timeout]
-           (configure_model ^^minimal_is_low model effort timeout
-             "claude-sonnet-5"))
+           (configure_model ^catalog (anthropic_models) model effort timeout
+             "claude-sonnet-5-5"))
          ^prepare prepare_anthropic
          ^send (fn [prepared]
-           (let key (api_key))
-           (if ($absent? key)
-             (fail (ProviderError ^message
-               "no Anthropic API key; set ANTHROPIC_API_KEY")))
-           (http_json_attempt "https://api.anthropic.com/v1/messages"
-             {^content-type "application/json" ^x-api-key key
-              ^anthropic-version "2023-06-01"}
-             prepared/body prepared/timeout_ms
-             (fn [response]
-               (let text (anthropic_text response))
-               (let parsed ($json/parse response/body))
-               {^text text ^usage parsed/usage})))})
+           (let deadline (+ ($os/monotonic_ms) prepared/timeout_ms))
+           (let headers (anthropic_headers ^timeout_ms ($math/min 5000 prepared/timeout_ms) (anthropic_auth_source)))
+           (headers .put "content-type" "application/json") (headers .put "accept" "text/event-stream")
+           (let remaining (- deadline ($os/monotonic_ms)))
+           (if (<= remaining 0) (return {^^timeout}))
+           (http_json_attempt ^max_bytes 8388608 "https://api.anthropic.com/v1/messages"
+             headers prepared/body remaining
+             (fn [response] (messages_stream_result response "anthropic"))))})
       (contribute_text_doc host "harness/providers/anthropic"
         "Anthropic Messages preparation, effort and credential boundary."
-        "The anthropic provider separates system instructions from role-preserving conversation messages, prepares the output budget and adapts reasoning effort to the selected model. Minimal effort maps to low. Send reads ANTHROPIC_API_KEY; Claude Code OAuth tokens are not accepted as API keys. Preparation and discovery never expose credentials."
+        "The anthropic provider separates system instructions from role-preserving conversation messages, prepares an effort-dependent output budget and buffers streamed Messages through completion. ANTHROPIC_API_KEY wins over ant's Console OAuth profile. Otherwise transport operations call ant auth print-credentials --access-token, which refreshes its own login. Console requests are metered. Claude Code's subscription credentials are never read or accepted as API keys. Preparation and discovery never expose credentials."
         ^tags ["provider" "model" "anthropic"]))))

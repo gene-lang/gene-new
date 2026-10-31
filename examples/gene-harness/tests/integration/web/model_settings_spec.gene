@@ -1,0 +1,112 @@
+(import $test [describe it])
+(import [isolated run_spec test_service] ^from "../../support")
+(import [create_session submit receipt host_status model_catalog close_session_service command]
+  ^from "../../../src/web/session_service")
+(import [Plugin PluginHost] ^from "../../../src/plugin_api")
+(import [put_cordis_plugin row] ^from "../../../src/kernel")
+(import [require_record] ^from "../../../src/runtime/sessions")
+(import [RoundError] ^from "../../../src/runtime/round_controller")
+(import [command_receipt] ^from "../../../src/runtime/commands")
+
+(fn run_model_command [service, session, text]
+  (let record (command service session text))
+  (service/runtime/services/values/commands/watchers/.get .get $"${session}:${record/id}"; .join)
+  (let result (command_receipt service/runtime/services/values/commands session record/id))
+  ($assert (== result/status "done") result/display)
+  result)
+
+(describe "Session model settings"
+  (it "updates status from the resolved selection and admits picker choices atomically" []
+    (isolated this_mod/.path "updates status from the resolved selection and admits picker choices atomically"
+      (fn [workspace]
+        (let service (test_service ^workspace workspace ^provider (fn [request] "(Outcome ^^done)")))
+        (let entered ($cell false))
+        (let released ($cell false))
+        (let calls ($cell []))
+        (try
+          (put_cordis_plugin service/runtime/h
+            (Plugin ^id "choice_models" ^provides [["providers" "choice"]]
+              ^activate (fn [host]
+                (host .PluginHost:contribute "providers"
+                  {^name "choice" ^doc "Picker fixture."
+                   ^builtin_models [{^id "large" ^label "Large" ^window 500000 ^efforts ["low" "high"] ^default_effort "high"}
+                                    {^id "small" ^label "Small" ^window 64000 ^efforts ["low" "high"] ^default_effort "low"}]
+                   ^configure (fn [model effort timeout] {^model (?? model "large") ^effort effort ^timeout_ms timeout})
+                   ^prepare (fn [call] call)
+                   ^send (fn [call]
+                     (calls/.get .push call/settings)
+                     (if (== calls/.get/.size 1)
+                       (then
+                         (entered .set true)
+                         (while (! released/.get) ($sleep 1))))
+                     {^text "(Outcome ^^done ^reply \"done\")"})})))
+            {^^host ^limits service/runtime/profile/limits})
+          (set service/runtime/profile/provider nil)
+          (let catalog (/value (row service/runtime/h "seams" "models/catalog")))
+          (let state (model_catalog service))
+          (catalog/save {^version 1 ^default {^provider "choice" ^model "large" ^effort "high"}} state/digest)
+          (let session (create_session service))
+          (let initial (host_status ^session session/id service))
+          ($assert (== initial/model/model "large"))
+          ($assert (== initial/model/source "default"))
+          ($assert (== initial/model/effective_effort "high"))
+          (let admitted (submit ^model_settings {^effort "low"} service session/id "first" 1 "work"))
+          (let deadline (+ ($os/monotonic_ms) 5000))
+          (while (! entered/.get)
+            ($assert (< ($os/monotonic_ms) deadline) "picker round did not start")
+            ($sleep 1))
+          (let current (model_catalog service))
+          (catalog/save {^version 1 ^default {^provider "choice" ^model "small" ^effort "high"}} current/digest)
+          (let active (host_status ^session session/id service))
+          ($assert (== active/model/model "large") "status advertised the next default during a running round")
+          ($assert (== active/model/requested_effort "low"))
+          ($assert (== active/model/effective_effort "low"))
+          (let refused (try
+            (submit ^model_settings {^provider "choice" ^model "small"} service session/id "busy" 2 "later")
+            false catch RoundError (== $err/code "busy")))
+          ($assert refused)
+          (let metadata (require_record service/runtime/sessions session/id))
+          ($assert ($absent? metadata/model_settings/provider) "rejected admission persisted its model choice")
+          (released .set true)
+          (let watcher (/watcher (service/runtime/services/values/controller/rounds/.get .get session/id)))
+          watcher/.join
+          ($assert (== (/state (receipt service session/id admitted/id)) "done"))
+          (let next (host_status ^session session/id service))
+          ($assert (== next/model/model "small"))
+          ($assert (== next/model/requested_effort "low"))
+          (let cleared (submit ^model_settings {} service session/id "default" 2 "work"))
+          ((/watcher (service/runtime/services/values/controller/rounds/.get .get session/id)) .join)
+          ($assert (== cleared/selection/model "small"))
+          ($assert (== cleared/selection/requested_effort "high"))
+          ($assert ($absent? (/model_settings (require_record service/runtime/sessions session/id))))
+          ((/watcher (service/runtime/services/values/controller/rounds/.get .get session/id)) .join)
+          # A previously shown preview is informational. The backend uses the
+          # current session choice when a send carries no new picker choice.
+          (let shown (host_status ^session session/id service))
+          ($assert (== shown/model/model "small"))
+          (run_model_command service session/id "/model choice/large")
+          (run_model_command service session/id "/effort low")
+          (let changed_session (submit service session/id "current-session" 3 "work"))
+          ($assert (== changed_session/selection/model "large"))
+          ($assert (== changed_session/selection/requested_effort "low"))
+          ((/watcher (service/runtime/services/values/controller/rounds/.get .get session/id)) .join)
+          (run_model_command service session/id "/model default")
+          (let older (model_catalog service))
+          (catalog/set_default {^provider "choice" ^model "large" ^effort "high"} older/digest)
+          (let older_status (host_status ^session session/id service))
+          ($assert (== older_status/model/model "large"))
+          (let newer (model_catalog service))
+          (catalog/set_default {^provider "choice" ^model "small" ^effort "low"} newer/digest)
+          (let changed_default (submit service session/id "current-default" 4 "work"))
+          ($assert (== changed_default/selection/model "small"))
+          ($assert (== changed_default/selection/requested_effort "low"))
+          ((/watcher (service/runtime/services/values/controller/rounds/.get .get session/id)) .join)
+          (let unlisted (run_model_command service session/id "/model choice/new-model"))
+          ($assert ($str/contains? unlisted/display "Unverified model id"))
+          (let unlisted_status (host_status ^session session/id service))
+          ($assert (== unlisted_status/model/unverified_model true))
+        ensure
+          (released .set true)
+          (close_session_service service))))))
+
+(fn main [args] : Int (run_spec args))

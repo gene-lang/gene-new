@@ -8,7 +8,7 @@
 (import [voice_output?] ^from "../runtime/voice_state")
 (import [append_core_event] ^from "../storage/state")
 (import [pending_request read_body] ^from "../agents/history")
-(import [operator_round?] ^from "../runtime/round_policy")
+(import [operator_round? continuable_round?] ^from "../runtime/round_policy")
 (import [delivery_status thread_link share_session] ^from "../channels/service")
 (import [sharing_available?] ^from "../channels/sharing")
 (import ^from "../runtime/bootstrap" [open_runtime close_runtime prepare_workspace_root])
@@ -38,7 +38,8 @@
     update_session
     load_session])
 (import [delete_session with_session_gate] ^from "../runtime/sessions")
-(import ^from "../agents/provider_selection" [provider_choice select_provider])
+(import ^from "../agents/provider_selection" [provider_choice select_provider selection_view session_settings catalog_snapshot readiness_report])
+(import [ModelCatalogChanged] ^from "../runtime/models_host")
 (import ^from "../storage/state" [events_for])
 (import ^from "./contract" [protocol_version history_page_limit])
 (import ^from "../runtime/commands"
@@ -59,7 +60,8 @@
     DurableRecord])
 (import ^from "../runtime/composition" [acquire_snapshot release_snapshot current_snapshot])
 (import ^from "../runtime/input_modes" [mode_state])
-(import ^from "../kernel" [ModeChanged CompositionChanged CardChanged])
+(import ^from "../kernel" [ModeChanged CompositionChanged CardChanged row])
+(import [ServiceError] ^from "../plugin_api")
 (import ^from "../runtime/cards" ^^export
   [card_records shown_card card_action card_action_receipt check_card_command
    admit_card_command release_card_command CardError])
@@ -76,10 +78,91 @@
     close_trigger_manager
     list_triggers
     create_trigger
+    update_trigger
     delete_trigger
     list_occurrences])
 
-(type WorkspaceService ^props {^runtime Any ^epoch Str ^publisher Any ^revision Any ^closed Any ^model_info Any ^offline Bool ^snapshot_jobs Any ^snapshot_versions Any ^browser_requests Any ^ui_audience Any? ^snapshot_audience Any? ^lifecycle Any?})
+(type WorkspaceService ^props {^runtime Any ^epoch Str ^publisher Any ^revision Any ^closed Any ^offline Bool ^snapshot_jobs Any ^snapshot_versions Any ^browser_requests Any ^ui_audience Any? ^snapshot_audience Any? ^lifecycle Any?})
+
+(fn current_model_info [service, session : Str = ""]
+  (let metadata (if (== session "") (then nil) (else (require_record service/runtime/sessions session))))
+  (let loaded (if (== session "") (then nil) (else (load_session service/runtime/sessions session))))
+  (let round (if ($present? loaded) (then loaded/round/.get) (else nil)))
+  (let config ($serde/read_data ($fs/read_text $"${service/runtime/state_root}/config.gene")))
+  (selection_view ^metadata metadata ^round round service/runtime config))
+
+(fn model_catalog [service]
+  (let contribution (row service/runtime/h "seams" "models/catalog"))
+  (if ($absent? contribution)
+    (fail (ServiceError ^code "unavailable" ^message "The Models contribution is disabled or unavailable.")))
+  (contribution/value/snapshot))
+
+(fn refresh_models [service]
+  (let contribution (row service/runtime/h "seams" "models/catalog"))
+  (if ($absent? contribution)
+    (fail (ServiceError ^code "unavailable" ^message "The Models contribution is disabled or unavailable.")))
+  (contribution/value/refresh))
+
+(fn model_configuration [service]
+  (let contribution (row service/runtime/h "seams" "models/catalog"))
+  (if ($absent? contribution)
+    (fail (ServiceError ^code "unavailable" ^message "The Models contribution is disabled or unavailable.")))
+  (contribution/value/configuration))
+
+(fn save_model_configuration [service, config, expected : Str]
+  (let contribution (row service/runtime/h "seams" "models/catalog"))
+  (if ($absent? contribution)
+    (fail (ServiceError ^code "unavailable" ^message "The Models contribution is disabled or unavailable.")))
+  (contribution/value/save config expected)
+  (model_configuration service))
+
+(fn model_login [service, action : Str, value : Str, ^account account = nil]
+  (let contribution (row service/runtime/h "seams" "models/catalog"))
+  (if ($absent? contribution)
+    (fail (ServiceError ^code "unavailable" ^message "The Models contribution is disabled or unavailable.")))
+  (match action
+    (when "connect" (contribution/value/connect value account))
+    (when "status" (contribution/value/login_status value))
+    (when "cancel" (contribution/value/cancel_login value))
+    (else (fail (ServiceError ^code "invalid_request" ^message "Unknown sign-in action.")))))
+
+(fn model_accounts [service, ^action action = nil, ^id id = nil]
+  (let contribution (row service/runtime/h "seams" "models/catalog"))
+  (if ($absent? contribution)
+    (fail (ServiceError ^code "unavailable" ^message "The Models contribution is disabled or unavailable.")))
+  (if ($absent? action)
+    (then (contribution/value/accounts))
+    (else (contribution/value/account_action id action))))
+
+(fn model_login_callback [service, params]
+  (let contribution (row service/runtime/h "seams" "models/catalog"))
+  (if ($absent? contribution)
+    (return {^status 400 ^message "The Models contribution is unavailable. Return to Gene Harness."}))
+  (contribution/value/login_callback params))
+
+(fn model_page [service, appearance : Str, styles : Str]
+  (let lease (acquire_snapshot ^label "web/models page" service/runtime/h/snapshots))
+  (try
+    ($runtime/with_context {^composition service/runtime/h/snapshots ^snapshot lease/snapshot}
+      (fn []
+        (let contribution (row service/runtime/h "seams" "models/page"))
+        (if ($absent? contribution)
+          (fail (ServiceError ^code "unavailable" ^message "The Models contribution is disabled or unavailable.")))
+        (contribution/value appearance service/runtime/root styles)))
+  ensure (release_snapshot service/runtime/h/snapshots lease)))
+
+(fn preview_model_settings [service, session : Str, selection]
+  (let contribution (row service/runtime/h "seams" "models/catalog"))
+  (if ($absent? contribution)
+    (fail (ServiceError ^code "unavailable" ^message "The Models contribution is disabled or unavailable.")))
+  (contribution/value/preview session selection))
+
+(fn set_model_default [service, selection, expected : Str]
+  (let contribution (row service/runtime/h "seams" "models/catalog"))
+  (if ($absent? contribution)
+    (fail (ServiceError ^code "unavailable" ^message "The Models contribution is disabled or unavailable.")))
+  (let state (contribution/value/set_default selection expected))
+  {^^ok ^revision state/id ^digest state/digest ^default state/default})
 
 (fn public_session [service, record]
   (let copy ($thaw ($freeze record)))
@@ -293,6 +376,12 @@
   (match ^!exhaustive event
     (when (changed : VoiceChanged)
       (publish_message service "voice/state" "" (public_voice_state changed/state)))
+    (when (changed : ModelCatalogChanged)
+      (try
+        (let active (model_catalog service))
+        (if (== active/id changed/revision)
+          (publish_message service "models/catalog" "" {^revision changed/revision}))
+      catch Any nil))
     (when (changed : ModeChanged)
       (publish_message ^reason changed/reason service "mode/state" changed/session changed/mode))
     (when (changed : CompositionChanged)
@@ -358,11 +447,11 @@
       (if ($absent? record/text) (queue_snapshot service session))))
   nil)
 
-(fn open_session_service [^workspace workspace : Str = "", ^offline offline : Bool = false, ^profile supplied_profile = nil, ^ownership ownership = nil, ^managed managed : Bool = false, ^channel_options channel_options = nil, ^service_event service_event = nil]
+(fn open_session_service [^workspace workspace : Str = "", ^offline offline : Bool = false, ^profile supplied_profile = nil, ^ownership ownership = nil, ^managed managed : Bool = false, ^channel_options channel_options = nil, ^service_event service_event = nil, ^launch launch = nil]
   (let canonical (prepare_workspace_root ^root workspace))
-  (let profile (workspace_profile ^base supplied_profile ^offline offline canonical))
+  (let profile (workspace_profile ^base supplied_profile ^offline offline ^models_root launch/root canonical))
   (let runtime
-    (open_runtime ^ownership ownership ^managed managed ^event_scope "workspace" ^entry ($path/join ($path/parent this_mod/.path) "server.gene")
+    (open_runtime ^ownership ownership ^managed managed ^launch launch ^event_scope "workspace" ^entry ($path/join ($path/parent this_mod/.path) "server.gene")
       canonical
       "default"
       profile))
@@ -375,16 +464,8 @@
     {
       ^name "web_components"
       ^text "This session has a browser frontend. Discover UI capabilities and start with (doc \"harness/ui\") to customize its workspace. Verify the browser as well as server previews."})
-  (let settings ($serde/read_data ($fs/read_text $"${runtime/state_root}/config.gene")))
-  (let model_info
-    (try
-      (let selected (select_provider runtime settings))
-      {^provider selected/name ^model selected/settings/model ^effort selected/settings/effort}
-    catch Any
-      (let choice (provider_choice runtime settings))
-      {^provider choice/name ^model "Unavailable" ^effort ""}))
   (set service
-    (WorkspaceService ^runtime runtime ^epoch ($crypto/random_hex 16) ^publisher ($cell nil) ^revision ($atomic_cell 0) ^closed ($cell false) ^model_info model_info ^offline offline ^snapshot_jobs ($cell {}) ^snapshot_versions ($cell {}) ^browser_requests ($cell {})))
+    (WorkspaceService ^runtime runtime ^epoch ($crypto/random_hex 16) ^publisher ($cell nil) ^revision ($atomic_cell 0) ^closed ($cell false) ^offline offline ^snapshot_jobs ($cell {}) ^snapshot_versions ($cell {}) ^browser_requests ($cell {})))
   (set service/lifecycle (open_session_lifecycle service publish_message handle_harness_event
     ^channel_options channel_options ^observe service_event))
   service
@@ -493,18 +574,18 @@
     (fail (RoundError ^code "busy" ^message "Stop running work and answer or dismiss pending questions before deleting this conversation.")))
   {^deleted ids})
 
-(fn submit [service, session : Str, request_id : Str, sequence : Int, text : Str, ^media media = [], ^card card = nil]
+(fn submit [service, session : Str, request_id : Str, sequence : Int, text : Str, ^media media = [], ^card card = nil, ^model_settings model_settings = nil]
   (if_not (== ($head media) List)
     (fail (RoundError ^code "invalid_request" ^message "Attachments must be a list of media IDs.")))
   # A card send is always a chat message, never a slash command.
   (if_not ($absent? card)
-    (return (submit_round ^media media ^card card service/runtime/services/values/controller session request_id sequence text)))
+    (return (submit_round ^model_settings model_settings ^media media ^card card service/runtime/services/values/controller session request_id sequence text)))
   (let parsed (parse_submission service/runtime/h text))
   (if (&& (== parsed/kind "command") (! media/.empty?))
     (fail (RoundError ^code "invalid_request" ^message "Attachments accompany chat messages, not slash commands.")))
   (if (== parsed/kind "command")
     (submit_command service/runtime/services/values/commands session text)
-    (submit_round ^media media service/runtime/services/values/controller session request_id sequence parsed/text)))
+    (submit_round ^model_settings model_settings ^media media service/runtime/services/values/controller session request_id sequence parsed/text)))
 (fn command [service, session : Str, text : Str, ^request_id request_id : Str = "", ^sequence sequence = nil, ^expected expected = nil, ^card card = nil]
   (if ($absent? card)
     (return (submit_command ^request_id request_id ^sequence sequence ^expected expected service/runtime/services/values/commands session text)))
@@ -573,10 +654,15 @@
 (fn public_round [service, session : Str, source]
   (if ($absent? source) (return nil))
   (let result ($thaw ($freeze source)))
-  (if_yes (== result/state "paused")
+  (if_yes (continuable_round? result)
     (let current (/round (load_session service/runtime/sessions session)))
+    (let successor (if ($present? source/continued_by)
+      (then (round_receipt service/runtime/services/values/controller session source/continued_by))
+      (else nil)))
     (var available (&& (== (/id current/.get) source/id)
-      ($absent? source/continued_by) ($absent? source/continuation_stop)))
+      (|| ($absent? source/continued_by)
+          (&& (== source/continuation_stop "failed") ($absent? successor)))
+      (|| ($absent? source/continuation_stop) (== source/continuation_stop "failed"))))
     (if_yes available
       (let tail (pending_request service/runtime session))
       (let reference (?? source/continuation/items_ref source/request_items_ref))
@@ -753,7 +839,7 @@
                  nil
                  loaded/round/.get)
         ^workspace service/runtime/root
-        ^model service/model_info
+        ^model (current_model_info service session)
         ^sessions (session_records service/runtime/sessions)}))
   (let components [])
   (for candidate in (rows service/runtime/h "web_components")
@@ -775,7 +861,7 @@
   components)
 
 (fn host_status [service, ^session session : Str = "", ^safe safe : Bool = false]
-  (let lease (acquire_snapshot service/runtime/h/snapshots))
+  (let lease (acquire_snapshot ^label "web/status" service/runtime/h/snapshots))
   (try
     ($runtime/with_context
       {^composition service/runtime/h/snapshots ^snapshot lease/snapshot ^session session}
@@ -795,6 +881,7 @@
   (let composition (current_snapshot service/runtime/h/snapshots))
   (let status_revision (ui_data_revision service/runtime composition))
   (let status_sequence (next_status_sequence service))
+  (let catalog_revision (?? (/id (catalog_snapshot service/runtime)) nil))
   (var running 0)
   (for [id frame] in service/runtime/services/values/controller/rounds/.get
     (if_not ($absent? frame/task) (set running (+ running 1))))
@@ -803,19 +890,21 @@
   (for plugin in composition/plugins
     (plugins .push {^id plugin/id ^state plugin/status}))
   (let metadata (if (== session "") nil (require_record service/runtime/sessions session)))
+  (let config ($serde/read_data ($fs/read_text $"${service/runtime/state_root}/config.gene")))
+  (let current (if (== session "") (then nil) (else (load_session service/runtime/sessions session))))
+  (let round (if ($present? current) (then current/round/.get) (else nil)))
+  (let selection (if (["running" "waiting"] .contains? round/state) (then round/selection) (else nil)))
   {
     ^protocol protocol_version
     ^epoch service/epoch
     ^status_session session
     ^status_revision status_revision
     ^status_sequence ($to_str status_sequence)
-    ^model (if ($absent? metadata/model_settings) service/model_info
-      {^provider metadata/model_settings/provider ^model metadata/model_settings/model
-       ^effort metadata/model_settings/effort})
+    ^model (selection_view ^metadata metadata ^round round service/runtime config)
+    ^catalog_revision catalog_revision
     ^profile service/runtime/profile/name
     ^appearance (appearance_mode service/runtime)
-    ^readiness (if ($absent? service/runtime/services/values/readiness)
-      nil (service/runtime/services/values/readiness))
+    ^readiness (readiness_report ^selection selection service/runtime (session_settings metadata config))
     ^plugins plugins
     ^web_components (if safe [] (web_components service session))
     ^browser_clients (if safe [] (browser_client_descriptors service/runtime/h composition))

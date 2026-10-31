@@ -19,12 +19,23 @@
     request_receipt
     cancel_operator_command
     host_status
+    model_catalog
+    refresh_models
+    preview_model_settings
+    set_model_default
+    model_login
+    model_login_callback
+    model_accounts
+    model_configuration
+    save_model_configuration
+    model_page
     edit_session
     remove_session
     acknowledge_attention
     CardError
     RoundError])
 (import ^from "./page" [page])
+(import [styles] ^from "./style")
 (import ^from "./plugin_page" [plugin_page manager_client])
 (import ^from "./startup" [mark_ready browser_connection_message])
 (import ^from "../ui/images" [WorkspaceImageError])
@@ -39,6 +50,7 @@
 (import ^from "../runtime/commands" [CommandError])
 (import ^from "../runtime/round_controller" [request_stop submit_round])
 (import [continue_round] ^from "../runtime/round_controller")
+(import [ModelsFileError] ^from "../public/models_file")
 (import [VoiceError] ^from "../runtime/voice_state")
 (import [new_voice_hub tick_voice close_voice_hub] ^from "./voice")
 (import ^from "../runtime/bootstrap" [prepare_workspace_root])
@@ -55,7 +67,7 @@
 (import ^from "../runtime/triggers" [TriggerError])
 (import ^from "../profiles/scripted" [scripted_profile])
 (import ^from "../profiles/offline" [offline_profile])
-(import $net/http [serve stop html redirect ws_accept ws_close])
+(import $net/http [serve stop html redirect ws_accept ws_close Response])
 (import ^from "./auth" [open_auth exchange authenticate reset_auth AuthError])
 (import [open_media_store MediaError]
   ^from "../storage/media")
@@ -82,6 +94,7 @@
   (var startup_id "")
   (var workspace (get_env "GENE_HARNESS_WORKSPACE" ""))
   (var script_file "")
+  (let launch {})
   (var i 0)
   (while (< i args/.size)
     (var arg args/%i)
@@ -89,6 +102,10 @@
       (then (set offline true))
       (elif (== arg "--supervised") (set supervised true))
       (elif (== arg "--managed") (set managed true))
+      (elif (&& (["--provider" "--model" "--effort" "--root"] .contains? arg) (< (+ i 1) args/.size))
+        (let key ($str/slice_bytes arg 2 (- ($str/byte_size arg) 2)))
+        (set i (+ i 1))
+        (launch .put key args/%i))
       (elif (&& (== arg "--startup-id") (< (+ i 1) args/.size))
         (set i (+ i 1))
         (set startup_id args/%i))
@@ -125,7 +142,7 @@
   (set server (bind_workspace $"${root}/.gene-harness" ^port port ^restart_port restart_port))
   (set port server/port)
   (set host (open_session_service ^workspace root ^offline offline
-    ^profile selected_profile ^ownership ownership ^managed managed ^channel_options channel_options))
+    ^profile selected_profile ^ownership ownership ^managed managed ^channel_options channel_options ^launch launch))
   (if_not ($absent? on_open) (on_open host))
   (set plugin_control (new_plugin_control host/runtime))
   (set voice_hub (new_voice_hub host))
@@ -147,6 +164,13 @@
   (fn handle [request]
     (if (!= (?? request/headers/host "") authority)
       (fail_request "forbidden" "Use the local address printed by the server."))
+    # OAuth authenticates its own one-shot state. This loopback GET must work
+    # even when the vendor opens a browser without the Harness owner cookie.
+    (if (&& (== request/method "GET") (== request/path "/auth/callback"))
+      (then
+        (let result (model_login_callback host request/params))
+        (return (Response ^status result/status ^headers {^content-type "text/plain; charset=utf-8"
+          ^cache-control "no-store" ^referrer-policy "no-referrer"} ^body result/message))))
     (var request_origin (?? request/headers/origin ""))
     (if_yes (&& (!= request_origin "") (!= request_origin origin))
       (fail_request "forbidden" "This origin is not allowed."))
@@ -160,6 +184,8 @@
       (return (html (page ^appearance (appearance_mode host/runtime) ^workspace host/runtime/root))))
     (if (&& (== request/method "GET") (["/plugins" "/plugins/"] .contains? request/path))
       (return (html (plugin_page ^appearance (appearance_mode host/runtime) ^workspace host/runtime/root))))
+    (if (&& (== request/method "GET") (["/models" "/models/"] .contains? request/path))
+      (return (html (model_page host (appearance_mode host/runtime) styles))))
     # The website needs no session: it reads only the workspace theme and makes
     # no model call, so it is answered before authentication.
     (if_yes (&& (== request/method "GET") (== request/path "/about"))
@@ -218,6 +244,43 @@
       (var result (host_status ^safe safe ^session (field request/params "session" ^default "") host))
       (result .put "csrf" browser/csrf)
       (return (response 200 result)))
+    (if (&& (== request/method "GET") (== request/path $"${(api_root)}/models"))
+      (return (response 200 (model_catalog host))))
+    (if (&& (== request/method "POST") (== request/path $"${(api_root)}/models/refresh"))
+      (return (response 202 (refresh_models host))))
+    (if (&& (== request/method "POST") (== request/path $"${(api_root)}/models/connect"))
+      (then
+        (let data (request_data request))
+        (let account (field data "account" ^default ""))
+        (return (response 202 (model_login ^account (if (== account "") (then nil) (else account))
+          host "connect" (field data "provider"))))))
+    (if (== request/path $"${(api_root)}/models/accounts")
+      (then
+        (if (== request/method "GET") (return (response 200 (model_accounts host))))
+        (if (== request/method "POST")
+          (then
+            (let data (request_data request))
+            (return (response 200 (model_accounts ^action (field data "action") ^id (field data "id") host)))))))
+    (if (== request/path $"${(api_root)}/models/login")
+      (then
+        (if (== request/method "GET")
+          (return (response 200 (model_login host "status" (field request/params "id")))))
+        (if (== request/method "DELETE")
+          (return (response 200 (model_login host "cancel" (field request/params "id")))))))
+    (if_yes (== request/path $"${(api_root)}/models/settings")
+      (if (== request/method "GET") (return (response 200 (model_configuration host))))
+      (if (== request/method "POST")
+        (then
+          (let data (request_data request))
+          (return (response 200 (save_model_configuration host data/config (field data "expected_digest")))))))
+    (if (&& (== request/method "POST") (== request/path $"${(api_root)}/models/preview"))
+      (then
+        (let data (request_data request))
+        (return (response 200 (preview_model_settings host (field data "session" ^default "") (?? data/model_settings {}))))))
+    (if (&& (== request/method "POST") (== request/path $"${(api_root)}/models/default"))
+      (then
+        (let data (request_data request))
+        (return (response 200 (set_model_default host data/model_settings (field data "expected_digest"))))))
     (if_yes (&& (== request/method "GET") (== request/path $"${(api_root)}/search/sessions"))
       (let q (field request/params "q" ^default ""))
       (if (> ($str/byte_size q) 256) (fail_request "invalid_request" "Search query exceeds 256 bytes."))
@@ -268,11 +331,11 @@
       (if_yes (&& (== parts/.size 6) (== parts/5 "rounds") (== request/method "POST"))
         (var data (request_data request))
         (if (== data/literal true)
-          (return (response 202 (submit_round ^media (?? data/media []) ^input (?? data/input nil) host/runtime/services/values/controller id (field data "request_id")
+          (return (response 202 (submit_round ^model_settings (?? data/model_settings nil) ^media (?? data/media []) ^input (?? data/input nil) host/runtime/services/values/controller id (field data "request_id")
             (number data "submission_seq") (field data "text")))))
         (if_not ($absent? data/input)
           (fail_request "invalid_request" "Voice input must be submitted literally."))
-        (return (response 202 (submit ^media (?? data/media []) ^card (?? data/card nil) host id (field data "request_id")
+        (return (response 202 (submit ^model_settings (?? data/model_settings nil) ^media (?? data/media []) ^card (?? data/card nil) host id (field data "request_id")
           (number data "submission_seq") (field data "text")))))
       (if_yes (&& (== parts/.size 6) (["questions" "answers"] .contains? parts/5) (== request/method "POST"))
         (var data (request_data request))
@@ -312,7 +375,7 @@
         (return (response 200 (receipt host id parts/6))))
       (if_yes (&& (== parts/.size 8) (== parts/5 "rounds") (== parts/7 "continue") (== request/method "POST"))
         (let data (request_data request))
-        (return (response 202 (continue_round host/runtime/services/values/controller id parts/6 (field data "mode" ^default "manual")))))
+        (return (response 202 (continue_round ^model_settings (?? data/model_settings nil) host/runtime/services/values/controller id parts/6 (field data "mode" ^default "manual")))))
       (if_yes (&& (== parts/.size 8) (== parts/5 "rounds") (== parts/7 "cancel")
                   (== request/method "POST"))
         (return (response 200 (cancel host id parts/6)))))
@@ -336,6 +399,7 @@
         catch SlackError (response (error_status $err/code) {^code $err/code ^message $err/message})
         catch TriggerError (response (error_status $err/code) {^code $err/code ^message $err/message})
         catch ServiceError (response (error_status $err/code) {^code $err/code ^message $err/message})
+        catch ModelsFileError (response (error_status $err/code) {^code $err/code ^message $err/message})
         catch CommandError (response (error_status $err/code) {^code $err/code ^message $err/message})
         catch SessionError (response (error_status $err/code) {^code $err/code ^message $err/message})
         catch QuestionError (response 400 {^code "invalid_request" ^message $err/message})

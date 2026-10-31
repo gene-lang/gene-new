@@ -1,0 +1,60 @@
+(import $test [describe it])
+(import [isolated run_spec fixture_path] ^from "../../support")
+(import [account_id account_path chatgpt_root chatgpt_host_id save_chatgpt_account
+  list_chatgpt_accounts select_chatgpt_account read_chatgpt_record with_chatgpt_account acknowledge_chatgpt_plan] ^from "../../../src/public/chatgpt_store")
+
+(fn record [client : Str, subject : Str]
+  {^version 1 ^issuer "https://auth.openai.com" ^client_id client ^subject subject
+   ^email "same@example.invalid" ^scopes ["resource.invoke" "chatgpt.tokens.use.direct"]
+   ^expires_at (+ (/ ($os/wall_ms) 1000) 3600) ^nonce "SECRET_NONCE"
+   ^access_token "SECRET_ACCESS" ^refresh_token "SECRET_REFRESH" ^id_token "SECRET_ID"})
+
+(describe "ChatGPT account storage"
+  (it "keeps registrations separate, protects credentials and exposes only public metadata" []
+    (isolated this_mod/.path "keeps registrations separate, protects credentials and exposes only public metadata"
+      (fn [workspace]
+        (let root ($path/join workspace "accounts-test"))
+        (let first (record "oaiapp_first" "subject")) (let second (record "oaiapp_second" "subject"))
+        (let one (save_chatgpt_account root first))
+        (let two (save_chatgpt_account root second))
+        ($assert (!= one/id two/id))
+        ($assert (!= one/label two/label) "same-email registrations have indistinguishable labels")
+        ($assert (== (/mode ($fs/info (account_path root one/id))) 384))
+        ($assert (== (/mode ($fs/info ($path/join (chatgpt_root root) "accounts"))) 448))
+        (let listing (list_chatgpt_accounts root))
+        ($assert (== listing/active two/id)) ($assert (== listing/accounts/.size 2))
+        ($assert (! ($str/contains? ($json/stringify listing) "SECRET")))
+        ($assert (== one/welcome_pending true))
+        (acknowledge_chatgpt_plan root one/id)
+        (let returning (save_chatgpt_account ^activate false root first))
+        ($assert (== returning/welcome_pending false) "reauthorization repeated the first-time plan notice")
+        (select_chatgpt_account root one/id)
+        ($assert (== (/active (list_chatgpt_accounts root)) one/id))
+        (with_chatgpt_account root one/id (fn [current]
+          (for key in ["access_token" "refresh_token" "id_token"] (current .delete key))
+          (current .put "signed_out" true)
+          {^record current}))
+        ($assert ($absent? (/access_token (read_chatgpt_record root one/id))))
+        ($assert (== (/access_token (read_chatgpt_record root two/id)) "SECRET_ACCESS"))
+        (let signed_out (list_chatgpt_accounts root))
+        ($assert (== signed_out/active one/id) "sign-out silently selected another account")
+        (for account in signed_out/accounts
+          (if (== account/id one/id) ($assert (== account/state "sign_in_required"))))
+        ($assert (try (select_chatgpt_account root "../../outside") false catch Any true))
+        ($assert (try (select_chatgpt_account root ($crypto/sha256 "missing")) false catch Any true)))))
+
+  (it "persists one host UUID across independent processes" []
+    (isolated this_mod/.path "persists one host UUID across independent processes"
+      (fn [workspace]
+        (let root ($path/join workspace "host-test"))
+        (let first ($os/exec_async ($os/executable_path) "run" (fixture_path "chatgpt_store") root ^timeout_ms 30000))
+        (let second ($os/exec_async ($os/executable_path) "run" (fixture_path "chatgpt_store") root ^timeout_ms 30000))
+        (let a (await first)) (let b (await second))
+        ($assert (== a/status 0) a/stderr) ($assert (== b/status 0) b/stderr)
+        (let one ($json/parse ($str/trim a/stdout))) (let two ($json/parse ($str/trim b/stdout)))
+        ($assert (== one/host_id two/host_id))
+        ($assert (== one/host_id (chatgpt_host_id root)))
+        ($assert ($present? (#"^urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" .match one/host_id)))
+        ($assert (== (/mode ($fs/info ($path/join (chatgpt_root root) "host.json"))) 384))))))
+
+(fn main [args] : Int (run_spec args))

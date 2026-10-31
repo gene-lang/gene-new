@@ -5,7 +5,9 @@
 (import [transcript] ^from "../../../src/agents/turn_loop")
 (import [set_plugin_enabled] ^from "../../../src/storage/workspace_repair")
 (import [history_state] ^from "../../../src/agents/history")
+(import [require_record] ^from "../../../src/runtime/sessions")
 (import [png] ^from "../../fixtures/png")
+(import [provide] ^from "../../../src/kernel")
 
 (fn one_turn_rounds [service]
   (let path $"${service/runtime/state_root}/config.gene")
@@ -255,12 +257,70 @@
           (let session (create_session service))
           (let first (submit service session/id "stop" 1 "Start"))
           (wait_task service session/id)
-          (let next (continue_round service/runtime/services/values/controller session/id first/id "automatic"))
+          (let next (continue_round ^model_settings {^effort "low"}
+            service/runtime/services/values/controller session/id first/id "automatic"))
           (while (! entered/.get) ($sleep 1))
           (cancel_round service/runtime/services/values/controller session/id first/id)
           (wait_task service session/id)
           ($assert (== (/state (receipt service session/id next/id)) "cancelled"))
           ($assert (== calls/.get 2))
+          ($assert (== (/model_settings (require_record service/runtime/sessions session/id)) {^effort "low"}))
+        ensure (close_session_service service))))))
+
+(describe "Continuation model selections"
+  (it "lets an operator deliberately continue on a new connection in automatic mode" []
+    (isolated this_mod/.path "lets an operator deliberately continue on a new connection in automatic mode"
+      (fn [workspace]
+        (let calls ($cell 0))
+        (let service (test_service ^workspace workspace ^without_plugins ["models"] ^provider (fn [request]
+          (calls .set (+ calls/.get 1))
+          (if (== calls/.get 1)
+            (then "(Outcome ^prompt \"continue\")")
+            (else "(Outcome ^^done ^reply \"done\")")))))
+        (let connection ($cell {^providers {^test {^connection
+          {^state "ready" ^billing "plan" ^transport "first"}}}}))
+        (try
+          (provide service/runtime/h "core" "models/catalog" {^snapshot (fn [] connection/.get)})
+          (one_turn_rounds service)
+          (let session (create_session service))
+          (let first (submit service session/id "pause" 1 "work"))
+          (wait_task service session/id)
+          (connection .set {^providers {^test {^connection
+            {^state "ready" ^billing "metered" ^transport "second"}}}})
+          (let next (continue_round service/runtime/services/values/controller session/id first/id "automatic"))
+          (wait_task service session/id)
+          ($assert (== next/selection/transport "second"))
+          ($assert (== (/state (receipt service session/id next/id)) "done"))
+          ($assert (== calls/.get 2))
+        ensure (close_session_service service)))))
+
+  (it "stops an automatic admission after the source connection changes" []
+    (isolated this_mod/.path "stops an automatic admission after the source connection changes"
+      (fn [workspace]
+        (let calls ($cell 0))
+        (let service (test_service ^workspace workspace ^without_plugins ["models"] ^provider (fn [request]
+          (calls .set (+ calls/.get 1)) "(Outcome ^prompt \"continue\")")))
+        (let connection ($cell {^providers {^test {^connection
+          {^state "ready" ^billing "plan" ^transport "first"}}}}))
+        (try
+          (provide service/runtime/h "core" "models/catalog" {^snapshot (fn [] connection/.get)})
+          (one_turn_rounds service)
+          (let session (create_session service))
+          (let first (submit service session/id "pause" 1 "work"))
+          (wait_task service session/id)
+          (connection .set {^providers {^test {^connection
+            {^state "ready" ^billing "metered" ^transport "second"}}}})
+          (let rejected (try
+            (continue_round ^operator false service/runtime/services/values/controller session/id first/id "automatic")
+            false catch RoundError (== $err/code "not_ready")))
+          ($assert rejected "automatic continuation changed the connection")
+          ($assert (== calls/.get 1))
+          ($assert ($present? (/continuation_stop (receipt service session/id first/id))))
+          (let resumed (continue_round service/runtime/services/values/controller session/id first/id "manual"))
+          (wait_task service session/id)
+          ($assert (== resumed/selection/transport "second"))
+          ($assert (== resumed/continuation_mode "manual"))
+          ($assert (== calls/.get 2) "deliberate retry restarted automatic continuation")
         ensure (close_session_service service))))))
 
 (fn main [args] : Int (run_spec args))

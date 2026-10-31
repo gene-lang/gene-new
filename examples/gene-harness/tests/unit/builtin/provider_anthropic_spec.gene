@@ -2,6 +2,8 @@
 (import $test [describe it before_each assert_equal run])
 (import [prepare_anthropic anthropic_text] ^from "../../../src/builtin/provider_anthropic")
 (import [raw_blocks] ^from "./support")
+(import [configure_model] ^from "../../../src/public/provider")
+(import [anthropic_models] ^from "../../../src/public/model_defaults")
 
 (describe "Harness provider requests"
   (before_each [t]
@@ -42,6 +44,26 @@
                       ^role "assistant"
                       ^stop_reason "end_turn"
                       ^content [{^type "text" ^text text}]})})))))
+
+(describe "Anthropic model effort"
+  (it "uses per-model defaults and supported forms for thinking off" []
+    (let opus (configure_model ^catalog (anthropic_models) "claude-opus-5-5" "none" 600000 "unused"))
+    (let sonnet (configure_model ^catalog (anthropic_models) "claude-sonnet-5-5" "none" 600000 "unused"))
+    ($assert (== opus/effort "low"))
+    ($assert (== sonnet/effort "none"))
+    (let messages [{^role "system" ^content "instructions"} {^role "user" ^content "go"}])
+    (let adaptive (prepare_anthropic {^settings opus ^messages messages}))
+    ($assert (== adaptive/body/thinking/type "adaptive"))
+    ($assert (== adaptive/body/output_config/effort "low"))
+    (let off (prepare_anthropic {^settings sonnet ^messages messages}))
+    ($assert (== off/body/thinking/type "between_tools"))
+    ($assert ($absent? off/body/output_config))
+    ($assert (== (/effort (configure_model ^catalog (anthropic_models)
+      "claude-sonnet-5-5" "auto" 600000 "unused")) "high"))
+    (let unknown (configure_model "custom" "auto" 600000 "unused"))
+    (let omitted (prepare_anthropic {^settings unknown ^messages messages}))
+    ($assert ($absent? omitted/body/output_config))
+    ($assert ($absent? omitted/body/thinking))))
 
 (fn main [args] : Int
   (let result (run ^name (?? args/0 "")))

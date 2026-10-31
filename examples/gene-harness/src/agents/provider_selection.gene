@@ -1,89 +1,234 @@
 (mod provider_selection)
-(import ^from "../kernel" [row rows HarnessError])
+(import [row rows HarnessError] ^from "../kernel")
+(import [nonempty] ^from "../public/provider")
+(import [resolve_effort model_entry model_window transport_identity provider_transport] ^from "../public/models")
 
-(fn nonempty [value]
-  (if ($absent? value) (return nil))
-  (let text ($str/trim ($to_str value)))
-  (if (== text "") nil text))
+# The optional contribution returns cached data; selection never probes.
+(fn catalog_snapshot [runtime]
+  (let catalog (row runtime/h "seams" "models/catalog"))
+  (if ($absent? catalog) (then {}) (else (catalog/value/snapshot))))
 
-(fn provider_reason [candidate]
-  (if ($absent? candidate/available) (return nil))
-  (try
-    (candidate/available)
-  catch Any
-    ($to_str $err/message)))
+(fn cached_connection [runtime, candidate]
+  (let state (catalog_snapshot runtime))
+  (let name candidate/name)
+  (let found state/providers/%name/connection)
+  (if ($present? found) (return found))
+  (if (&& ($present? candidate/connection) ($present? (row runtime/h "seams" "models/catalog")))
+    (return {^state "unavailable" ^reason "Checking connection…"}))
+  {})
 
-(fn choose_auto [h]
+(fn provider_reason [candidate, ^connection connection = nil]
+  (if ($present? connection/state)
+    (return (if (== connection/state "ready")
+      (then nil)
+      (else (?? connection/reason $"${candidate/name}: ${connection/state}")))))
+  nil)
+
+(fn billing_rank [connection, candidate]
+  (match (?? connection/billing candidate/transport/billing "unknown")
+    (when "plan" 0)
+    (when "local" 0)
+    (when "metered" 2)
+    (else 1)))
+
+(fn choose_auto [runtime]
   (var selected nil)
-  (for candidate in (rows h "providers")
+  (var rank nil)
+  (for candidate in (rows runtime/h "providers")
     (if ($absent? candidate/auto) (continue))
-    (if_not ($absent? (provider_reason candidate)) (continue))
-    (if (|| ($absent? selected)
-            (< candidate/auto selected/auto)
-            (&& (== candidate/auto selected/auto)
-                (< ($order/compare candidate/name selected/name) 0)))
-      (set selected candidate)))
+    (let connection (cached_connection runtime candidate))
+    (if (&& ($present? candidate/connection) ($absent? connection/state)) (continue))
+    (if ($present? (provider_reason ^connection connection candidate)) (continue))
+    (let billing (billing_rank connection candidate))
+    (if (|| ($absent? selected) (< billing rank)
+            (&& (== billing rank) (< candidate/auto selected/auto))
+            (&& (== billing rank) (== candidate/auto selected/auto)
+              (< ($order/compare candidate/name selected/name) 0)))
+      (then (set selected candidate) (set rank billing))))
   selected)
 
-(fn provider_choice [runtime, settings, ^environment supplied = nil]
-  (let pinned (nonempty runtime/profile/provider))
-  (let environment
-    (nonempty (if ($absent? supplied)
-      ($os/env? "GENE_HARNESS_PROVIDER")
-      supplied/GENE_HARNESS_PROVIDER)))
-  (let configured (nonempty settings/provider))
-  (let name (if (|| (== runtime/managed true) (== settings/session_override true))
-    (?? pinned configured environment) (?? pinned environment configured)))
-  (let candidate
-    (if ($absent? name)
-      (choose_auto runtime/h)
-      (row runtime/h "providers" name)))
-  (if ($absent? candidate)
-    (return {^name (?? name "")
-      ^reason (if ($absent? name)
-        "no provider is available"
-        $"providers/${name} is missing")}))
-  (let reason (provider_reason candidate))
-  (if_not ($absent? reason)
-    (return {^name candidate/name ^reason reason ^row candidate}))
-  {^name candidate/name ^reason nil ^row candidate})
+(fn environment_values [supplied]
+  (if ($present? supplied) (return supplied))
+  {^GENE_HARNESS_PROVIDER ($os/env? "GENE_HARNESS_PROVIDER")
+   ^GENE_HARNESS_MODEL ($os/env? "GENE_HARNESS_MODEL")
+   ^GENE_HARNESS_THINKING_EFFORT ($os/env? "GENE_HARNESS_THINKING_EFFORT")})
 
-(fn readiness_report [runtime, settings]
+(fn provider_choice [runtime, settings, ^environment supplied = nil, ^selection selection = nil]
+  (let environment (environment_values supplied))
+  (let catalog (catalog_snapshot runtime))
+  (let defaults catalog/default)
+  (let pinned (?? (nonempty runtime/profile/provider) (nonempty runtime/launch/provider)
+    (nonempty settings/provider)))
+  (if (&& ($absent? selection) ($absent? pinned) ($present? catalog/default_error))
+    (return {^name "" ^reason catalog/default_error}))
+  (let name (if ($present? selection)
+    (then selection/provider)
+    (else (?? pinned (nonempty defaults/provider)
+      (nonempty environment/GENE_HARNESS_PROVIDER)))))
+  (let candidate (if ($absent? name)
+    (then (choose_auto runtime))
+    (else (row runtime/h "providers" name))))
+  (if ($absent? candidate)
+    (return {^name (?? name "") ^reason (if ($absent? name)
+      (then "no provider is available")
+      (else $"providers/${name} is missing"))}))
+  (let connection (cached_connection runtime candidate))
+  (let source_changed (&& ($present? selection/provider_transport)
+    (!= selection/provider_transport (provider_transport candidate))))
+  (let reason (provider_reason ^connection connection candidate))
+  (if (&& ($present? reason) (! source_changed))
+    (return {^name candidate/name ^reason reason ^row candidate ^connection connection}))
+  (let connection_changed (&& ($present? connection/state) ($present? selection/transport)
+    (!= selection/transport (transport_identity candidate connection))))
+  (if (|| source_changed connection_changed)
+    (return {^name candidate/name ^row candidate
+      ^code "connection_changed"
+      ^reason $"${candidate/name} connection changed; start a new round to use it"}))
+  {^name candidate/name ^reason nil ^row candidate ^connection connection ^automatic ($absent? name)})
+
+(fn readiness_info [runtime, settings, ^selection selection = nil]
   (for requirement in (?? runtime/profile/requires [])
     (let registry ($to_str requirement/0))
     (let key ($to_str requirement/1))
     (if ($absent? (row runtime/h registry key))
-      (return $"${runtime/profile/name} cannot run: ${registry}/${key} is missing")))
-  (let choice (provider_choice runtime settings))
-  (if_not ($absent? choice/reason)
-    (return $"${runtime/profile/name} cannot run: ${choice/reason}"))
+      (return {^code "not_ready" ^reason $"${runtime/profile/name} cannot run: ${registry}/${key} is missing"})))
+  (let choice (provider_choice ^selection selection runtime settings))
+  (if ($present? choice/reason)
+    (return {^code (?? choice/code "not_ready") ^reason $"${runtime/profile/name} cannot run: ${choice/reason}"}))
+  {^reason nil ^code nil})
+
+(fn readiness_report [runtime, settings, ^selection selection = nil]
+  (/reason (readiness_info ^selection selection runtime settings)))
+
+(fn selection_metadata [runtime, candidate, id]
+  (let state (catalog_snapshot runtime))
+  (let name candidate/name)
+  (let discovered (model_entry state/providers/%name/models id))
+  (let result ($thaw ($freeze (model_entry candidate/builtin_models id))))
+  (if (&& ($absent? result/efforts) ($present? candidate/default_efforts))
+    (result .put "efforts" ($thaw ($freeze candidate/default_efforts))))
+  (for [key value] in discovered (result .put key value))
+  result)
+
+(fn model_listed? [runtime, candidate, id]
+  (let catalog (catalog_snapshot runtime))
+  (let provider candidate/name)
+  (for list in [(?? catalog/providers/%provider/models []) (?? candidate/builtin_models [])]
+    (for model in list (if (== model/id id) (return true))))
+  false)
+
+(fn catalog_default_model [runtime, provider : Str]
+  (let catalog (catalog_snapshot runtime))
+  (for model in (?? catalog/providers/%provider/models [])
+    (if (!= model/hidden true) (return model/id)))
   nil)
 
-(fn select_provider [runtime, settings, ^environment supplied = nil]
-  (let choice (provider_choice ^environment supplied runtime settings))
-  (if_not ($absent? choice/reason)
-    (fail (HarnessError ^message choice/reason)))
-  (let inherited_provider (nonempty (if ($absent? supplied)
-    ($os/env? "GENE_HARNESS_PROVIDER") supplied/GENE_HARNESS_PROVIDER)))
-  (let applicable (|| (!= runtime/managed true) ($absent? inherited_provider)
-    (== inherited_provider choice/name)))
-  (let inherited_model (if applicable (nonempty (if ($absent? supplied)
-    ($os/env? "GENE_HARNESS_MODEL") supplied/GENE_HARNESS_MODEL)) nil))
-  (let inherited_effort (if applicable (nonempty (if ($absent? supplied)
-    ($os/env? "GENE_HARNESS_THINKING_EFFORT") supplied/GENE_HARNESS_THINKING_EFFORT)) nil))
-  (let model (if (|| (== runtime/managed true) (== settings/session_override true)) (?? (nonempty settings/model) inherited_model)
-    (?? inherited_model (nonempty settings/model))))
-  (let effort (if (|| (== runtime/managed true) (== settings/session_override true)) (?? (nonempty settings/effort) inherited_effort)
-    (?? inherited_effort (nonempty settings/effort))))
-  (let timeout (?? settings/provider_timeout_ms 600000))
-  (let effective (choice/row/configure model effort timeout))
-  {^name choice/name ^row choice/row ^settings effective})
+(fn selection_source [runtime, settings, defaults, environment]
+  (if ($present? (nonempty runtime/profile/provider)) (return "profile"))
+  (if ($present? (nonempty runtime/launch/provider)) (return "launch"))
+  (if ($present? settings/selection_source) (return settings/selection_source))
+  (for key in ["provider" "model" "effort"]
+    (if ($present? (nonempty (settings .get key))) (return "workspace")))
+  (if ($present? (nonempty defaults/provider)) (return "default"))
+  (if ($present? (nonempty environment/GENE_HARNESS_PROVIDER)) (return "environment"))
+  "automatic")
+
+(fn selection_pins [runtime]
+  (let pins {})
+  (let launch (?? runtime/launch {}))
+  (let provider (?? (nonempty runtime/profile/provider) (nonempty runtime/launch/provider)))
+  (if ($present? provider) (pins .put "provider" provider))
+  (if (|| ($absent? (nonempty runtime/launch/provider)) (== runtime/launch/provider provider))
+    (then
+      (for key in ["model" "effort"]
+        (let value (nonempty (launch .get key)))
+        (if ($present? value) (pins .put key value)))))
+  pins)
+
+(fn select_provider [runtime, settings, ^environment supplied = nil, ^selection selection = nil,
+  ^allow_unready allow_unready : Bool = false]
+  (let choice (provider_choice ^environment supplied ^selection selection runtime settings))
+  (if (&& ($present? choice/reason) (|| (! allow_unready) ($absent? choice/row)))
+    (fail (HarnessError ^code (?? choice/code "not_ready") ^message choice/reason)))
+  (let timeout (?? selection/timeout_ms settings/provider_timeout_ms 600000))
+  (var snapshot selection)
+  (var configured nil)
+  (if ($present? snapshot)
+    (then (set configured (choice/row/configure snapshot/model nil timeout)))
+    (else
+      (let environment (environment_values supplied))
+      (let defaults (/default (catalog_snapshot runtime)))
+      (let env_provider (nonempty environment/GENE_HARNESS_PROVIDER))
+      (let applicable (|| ($absent? env_provider) (== env_provider choice/name)))
+      (let from_workspace (|| ($absent? (nonempty settings/provider)) (== settings/provider choice/name)))
+      (let from_default (== defaults/provider choice/name))
+      (let from_launch (|| ($absent? (nonempty runtime/launch/provider)) (== runtime/launch/provider choice/name)))
+      (let model (?? (if from_launch (then (nonempty runtime/launch/model)) (else nil))
+        (if from_workspace (then (nonempty settings/model)) (else nil))
+        (if from_default (then (nonempty defaults/model)) (else nil))
+        (if applicable (then (nonempty environment/GENE_HARNESS_MODEL)) (else nil))
+        (if (== choice/row/catalog_default true) (then (catalog_default_model runtime choice/name)) (else nil))))
+      (let requested (?? (if from_launch (then (nonempty runtime/launch/effort)) (else nil)) (nonempty settings/effort)
+        (if from_default (then (nonempty defaults/effort)) (else nil))
+        (if applicable (then (nonempty environment/GENE_HARNESS_THINKING_EFFORT)) (else nil)) "auto"))
+      (set configured (choice/row/configure model nil timeout))
+      (let metadata (selection_metadata runtime choice/row configured/model))
+      (set snapshot {^provider choice/name ^model configured/model
+        ^unverified_model (! (model_listed? runtime choice/row configured/model))
+        ^automatic_provider (== choice/automatic true)
+        ^requested_effort requested ^effective_effort (resolve_effort requested metadata)
+        ^source (selection_source runtime settings defaults environment)
+        ^transport (transport_identity choice/row choice/connection)
+        ^provider_transport (provider_transport choice/row)
+        ^account choice/connection/account
+        ^billing (?? choice/connection/billing choice/row/transport/billing "unknown")
+        ^timeout_ms timeout ^context_window (model_window metadata settings/context_window)})
+      (for key in ["label" "efforts" "window" "effective_percent" "max_output" "input" "prompt_limit_bytes"]
+        (if ($present? (metadata .get key)) (snapshot .put key ($thaw ($freeze (metadata .get key))))))))
+  (configured .put "model" snapshot/model)
+  (configured .put "effort" snapshot/effective_effort)
+  (configured .put "requested_effort" snapshot/requested_effort)
+  (for key in ["window" "effective_percent" "max_output" "input" "prompt_limit_bytes"]
+    (if ($present? (snapshot .get key)) (configured .put key ($thaw ($freeze (snapshot .get key))))))
+  {^name choice/name ^row choice/row ^settings configured ^selection snapshot ^reason choice/reason})
+
+(fn resolve_selection [runtime, settings, ^environment supplied = nil]
+  (/selection (select_provider ^environment supplied runtime settings)))
 
 (fn session_settings [metadata, settings]
   (if ($absent? metadata/model_settings) (return settings))
+  (if (== ($size metadata/model_settings) 0) (return settings))
   (let effective ($thaw ($freeze settings)))
+  (let chosen metadata/model_settings)
+  (if (&& ($present? chosen/provider) (!= chosen/provider settings/provider))
+    (effective .put "model" nil))
   (for key in ["provider" "model" "effort"]
-    (let value (metadata/model_settings .get key))
-    (if_not ($absent? value) (effective .put key value)))
-  (effective .put "session_override" true)
+    (let value (chosen .get key))
+    (if ($present? value) (effective .put key value)))
+  (effective .put "selection_source" "session")
   effective)
+
+(fn selection_view [runtime, settings, ^metadata metadata = nil, ^round round = nil]
+  (var selected nil)
+  (var reason nil)
+  (if (&& ($present? round/selection) (["running" "waiting"] .contains? round/state))
+    (then (set selected round/selection))
+    (else
+      (try
+        (let preview (select_provider ^allow_unready true runtime (session_settings metadata settings)))
+        (set selected preview/selection)
+        (set reason preview/reason)
+      catch Any
+        (let effective (session_settings metadata settings))
+        (let choice (provider_choice runtime effective))
+        (set selected {^provider choice/name ^model (?? (nonempty effective/model) "Unavailable")
+          ^requested_effort (?? (nonempty effective/effort) "auto") ^source "unavailable" ^billing "unknown"})
+        (set reason $err/message))))
+  {^provider selected/provider ^model selected/model ^label (?? selected/label selected/model)
+   ^effort (?? selected/effective_effort "auto")
+   ^requested_effort (?? selected/requested_effort "auto")
+   ^effective_effort (?? selected/effective_effort nil)
+   ^source selected/source ^billing selected/billing ^reason reason ^pins (selection_pins runtime)
+   ^automatic_provider (== selected/automatic_provider true)
+   ^efforts (?? selected/efforts nil)
+   ^unverified_model (== selected/unverified_model true)})

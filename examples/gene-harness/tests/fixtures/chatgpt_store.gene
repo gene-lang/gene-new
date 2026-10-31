@@ -1,0 +1,5 @@
+(import [chatgpt_host_id list_chatgpt_accounts] ^from "../../src/public/chatgpt_store")
+
+(fn main [args] : Int
+  ($println ($json/stringify {^host_id (chatgpt_host_id args/0) ^public (list_chatgpt_accounts args/0)}))
+  0)

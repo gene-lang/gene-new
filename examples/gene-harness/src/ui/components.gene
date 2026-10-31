@@ -5,7 +5,7 @@
 (type WebComponentError ^props {^message Str} ^impl [Error])
 (impl Error for WebComponentError)
 
-(const component_slots ["sidebar" "conversation_sidebar" "toolbar" "composer" "status" "welcome" "status_summary" "panel" "view"])
+(const component_slots ["sidebar" "conversation_sidebar" "toolbar" "composer" "composer_actions" "status" "welcome" "status_summary" "panel" "view"])
 (const sidebar_widgets ["brand" "new_conversation" "filters" "attention" "extensions" "conversations" "workspace_tools"])
 (const interactive_tags ["form" "label" "input" "textarea" "select" "option" "table" "thead" "tbody" "tr" "th" "td"])
 (const interactive_attributes ["key" "field" "state" "action" "args" "positional" "success_state" "name" "placeholder" "checked" "selected" "for" "rows" "required"])

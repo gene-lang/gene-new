@@ -29,7 +29,7 @@
         (try
           (var client (connect root))
           (let status (api client "GET" "/status"))
-          ($assert (== status/protocol 8))
+          ($assert (== status/protocol 9))
           (let view status/ui/components/0)
           (let request {^input_id "1:wire" ^generation status/ui/actions/generation
             ^component view/name ^revision view/revision ^function "board_save"

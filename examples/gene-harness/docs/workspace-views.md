@@ -137,6 +137,6 @@ without naming a conversation. Opening it changes only this tab's selected view
 and supported view state. References to conversation rounds, commands, and
 artifacts still require their originating session.
 
-Workspace actions use the session-independent protocol-8 endpoints. Pending
+Workspace actions use the session-independent protocol-9 endpoints. Pending
 browser actions use format 2. Unsupported pending formats are discarded while
 drafts remain; discarding a record never repeats or cancels an operation.

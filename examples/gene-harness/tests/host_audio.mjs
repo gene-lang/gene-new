@@ -40,7 +40,7 @@ const host = module.open_host_audio(context, 'session-a', 'page', 'csrf', 'claim
   (kind, data) => { events.push({kind, data}); });
 const socket = sockets[0];
 assert.equal(socket.protocol, 'gene-harness-voice.1');
-assert.equal(socket.url, 'ws://fixture/api/v8/voice');
+assert.equal(socket.url, 'ws://fixture/api/v9/voice');
 socket.open();
 const hello = JSON.parse(socket.sent[0]);
 assert.deepEqual(hello, {type: 'hello', csrf: 'csrf', client_id: 'page', formats: ['s16le']});

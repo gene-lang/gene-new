@@ -1,8 +1,8 @@
 (mod composition)
 
 (type CompositionSnapshot ^props {^id Int ^registries Any ^instances Any ^plugins Any? ^registry_owners Any?})
-(type SnapshotLease ^props {^snapshot CompositionSnapshot ^counter Any ^closed Any})
-(type CompositionState ^props {^current Any ^next_id Any ^snapshots Any ^counts Any ^pending Any ^retiring Any ^retire Any ^closed Any ^closing Any ^publishing Any ^mutating Any ^publications Any ^publication_gate Any})
+(type SnapshotLease ^props {^snapshot CompositionSnapshot ^counter Any ^closed Any ^label Str?})
+(type CompositionState ^props {^current Any ^next_id Any ^snapshots Any ^counts Any ^pending Any ^retiring Any ^retire Any ^closed Any ^closing Any ^publishing Any ^mutating Any ^publications Any ^publication_gate Any ^leases Any})
 (type CompositionClosed ^props {^message Str} ^impl [Error])
 (impl Error for CompositionClosed)
 
@@ -36,7 +36,7 @@
   (let counts {})
   (counts .put "0" ($atomic_cell 0))
   (CompositionState ^current ($cell snapshot) ^next_id ($cell 1) ^snapshots ($cell snapshots) ^counts ($cell counts) ^pending ($cell []) ^retiring ($cell []) ^retire retire ^closed ($cell false) ^closing ($cell false) ^publishing ($sync/gate) ^mutating ($sync/gate)
-    ^publications ($cell []) ^publication_gate ($sync/gate)))
+    ^publications ($cell []) ^publication_gate ($sync/gate) ^leases ($cell [])))
 
 (type PublicationSubscription ^^private ^props {^rows Any ^gate Any ^token Any ^active Any}
   (message cancel [] : Nil
@@ -60,6 +60,7 @@
   (let context (?? ($runtime/context) {}))
   (if (same? context/composition_step state) (return (change)))
   (state/mutating (fn []
+    (require_open state)
     (let scoped (context .assoc "composition_step" state))
     ($runtime/with_context scoped change))))
 
@@ -77,7 +78,7 @@
     (return context/snapshot))
   state/current/.get)
 
-(fn acquire_snapshot [state : CompositionState] : SnapshotLease
+(fn acquire_snapshot [state : CompositionState, ^label label : Str = "unlabelled"] : SnapshotLease
   (require_open state)
   (if state/closing/.get (fail (CompositionClosed ^message "workspace composition is closing")))
   (while true
@@ -88,7 +89,10 @@
     # Publication can occur at any VM safepoint. Recheck after incrementing so
     # a reader never acquires a revision whose retirement already started.
     (if (same? snapshot state/current/.get)
-      (return (SnapshotLease ^snapshot snapshot ^counter counter ^closed ($cell false))))
+      (then
+        (let lease (SnapshotLease ^snapshot snapshot ^counter counter ^closed ($cell false) ^label label))
+        (state/leases/.get .push lease)
+        (return lease)))
     (adjust_count counter -1)
     (drain_retirements state))
   nil)
@@ -96,6 +100,7 @@
 (fn release_snapshot [state : CompositionState, lease : SnapshotLease]
   (if (lease/closed .swap true) (return nil))
   (adjust_count lease/counter -1)
+  (state/leases .set ($filter state/leases/.get (fn [held] (! (same? held/closed lease/closed)))))
   (drain_retirements state)
   nil)
 
@@ -108,7 +113,9 @@
   (if ($absent? counter)
     (fail (CompositionClosed ^message "snapshot has already retired")))
   (adjust_count counter 1)
-  (SnapshotLease ^snapshot snapshot ^counter counter ^closed ($cell false)))
+  (let lease (SnapshotLease ^snapshot snapshot ^counter counter ^closed ($cell false) ^label "publication observer"))
+  (state/leases/.get .push lease)
+  lease)
 
 (fn queue_composition_change [state : CompositionState, change]
   (require_open state)
@@ -222,8 +229,11 @@
   (if state/closed/.get (return nil))
   (for [id counter] in state/counts/.get
     (if (> counter/.load 0)
-      (fail (CompositionClosed ^message
-        $"composition still has active turn leases at snapshot ${id}: ${counter/.load}"))))
+      (then
+        (let held ($map ($filter state/leases/.get
+          (fn [lease] (== ($to_str lease/snapshot/id) ($to_str id)))) (fn [lease] lease/label)))
+        (fail (CompositionClosed ^message
+          $"composition still has active turn leases at snapshot ${id}: ${counter/.load}; holders ${held}")))))
   (state/closing .set true)
   (drain_retirements state)
   nil)

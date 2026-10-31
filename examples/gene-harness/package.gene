@@ -9,6 +9,7 @@
    (application "harness" ^entry "src/main.gene")
  ]
  ^dependencies {
+   ^crypto (dep "genex/crypto" "0.1.0" ^path "../../src/genex/crypto")
    ^audio (dep "genex/audio" "0.1.0" ^path "../../src/genex/audio")
    ^gene_reference (dep "gene/reference" "0.1.0" ^path "../../tools/gene-lang-skill")
    ^cordis (dep "genex/cordis" "0.1.0" ^path "../cordis")

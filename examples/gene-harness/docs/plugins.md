@@ -107,7 +107,7 @@ plugin and is removed when the activation unloads. Common rows are:
 | `input_modes` | `{^name ^label ^hint ^submit_label ^prompt ^classify ^run ^close}`; a transient operator input mode |
 | `prompt` | `{^name ^text}` or `{^name ^render}`; an instruction section |
 | `docs` | `{^name ^summary ^tags ^text}` or `{^name ^summary ^tags ^path}`; body read with `(doc name)` |
-| `providers` | `{^name ^doc ^available ^configure ^prepare ^send}`; a text model adapter, optionally declaring `capabilities` and `media_recording` |
+| `providers` | `{^name ^doc ^configure ^prepare ^send}`; optional `connection`, `models`, `capabilities` and `media_recording` |
 | `image_generators` | `{^name ^doc ^available ^configure ^capabilities ^prepare ^send}`; a separately selected image adapter returning exactly one PNG |
 | `speech_recognizers`, `speech_synthesizers` | Owned speech engines with availability, open/close and recognition/synthesis callbacks; see [Voice](audio.md) |
 | `hooks` | `{^point ^name ^run}`; an ordered listener at a published shaping point |
@@ -190,6 +190,15 @@ generations; `defer` does not supply a shared-resource lifetime policy.
 
 Provider adapters can raise the public `ProviderError` from `plugin_api`.
 Transport and content helpers remain separate modules.
+
+The optional `models` contribution starts its catalog through `models/host`
+and the public `ModelsHost` protocol. The host factory starts the contribution's
+worker outside the activation deadline and binds its lifetime to that activation.
+The contribution publishes `models/catalog`; its `snapshot` operation returns
+cached, immutable metadata. Connection and model-list callbacks run only during
+bounded discovery. Removing the contribution closes its worker and leaves
+provider turns usable without catalog metadata. `ProviderError` may include an
+HTTP `status`, allowing a transport 401 to expire that cached connection.
 
 The [built-in import check](../tests/unit/builtin/import_policy_spec.gene)
 allows `plugin_api`, declared shared helpers and public Gene/genex libraries.
@@ -330,7 +339,10 @@ See [sidebar plugins](sidebar.md).
 
 `prepare` on a provider row returns plain model-visible data
 without credentials; `send` adds transport authentication and makes one
-attempt. A provider row is inert until selected. Callback limits apply to
+attempt. Optional `connection` and `models` callbacks run during bounded
+discovery; the turn path reads their cached metadata. `available` has been
+replaced by `connection` for text providers; image and speech adapters retain
+their own availability contracts. Callback limits apply to
 generated provider and hook rows just as to other plugin callbacks.
 
 Stored descriptor evaluation has its own limits (normally two seconds and

@@ -296,7 +296,6 @@
 
 (fn run_section [] : Node
   (var build run_commands/build)
-  (var codex_login run_commands/codex_login)
   (var start run_commands/start)
   (var openrouter run_commands/openrouter)
   (var anthropic run_commands/anthropic)
@@ -313,8 +312,7 @@
            (h3 "Before you start")
            (ul
              (li "A clone of the Gene repository and Nim 2 or later.")
-             (li "A model provider. The start command uses Codex; sign in once with file credential storage: "
-                 (code %codex_login))
+             (li "A model provider. Open Models and choose Continue with ChatGPT to connect your plan.")
              (li "Or an OpenRouter key, an Anthropic API key, or the Claude Code CLI; see "
                  (a ^href %claude "Claude setup") ".")
              (li "No provider yet? " (code "--offline")
@@ -325,7 +323,7 @@
              %(code_block "run_build" "Shell" build))
            (li ^class "run_step"
              (h3 "Start the Harness")
-             (p "Run from the repository root. This command uses your Codex login.")
+             (p "Run from the repository root, then choose a connection in Models.")
              %(code_block "run_start" "Shell" start)
              (details ^class "disclosure"
                (summary "Other providers and the offline demo")

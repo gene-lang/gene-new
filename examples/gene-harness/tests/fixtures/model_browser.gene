@@ -1,0 +1,38 @@
+# Manual browser acceptance host. Every model is local and returns fixed text;
+# vendor plugins are removed before activation, so it never probes real logins.
+(import [main : serve] ^from "../../src/web/server")
+(import [baseline_profile] ^from "../../src/profiles/baseline")
+(import [Profile] ^from "../../src/profiles/profile")
+(import [Plugin PluginHost] ^from "../../src/plugin_api")
+(import [model_capabilities] ^from "../../src/public/models")
+
+(fn demo_providers []
+  (let models [{^id "demo-large" ^label "Demo Large" ^window 500000 ^max_output 32000
+                ^input ["text" "image"] ^efforts ["low" "medium" "high"] ^default_effort "medium"}
+               {^id "demo-small" ^label "Demo Small" ^window 128000 ^max_output 16000
+                ^input ["text"] ^efforts ["low"] ^default_effort "low"}])
+  (Plugin ^id "demo_models" ^provides [["providers" "demo_plan"] ["providers" "demo_metered"]]
+    ^activate (fn [host]
+      (for name in ["demo_plan" "demo_metered"]
+        (let billing (if (== name "demo_plan") "plan" "metered"))
+        (host .PluginHost:contribute "providers"
+          {^name name ^doc "Fixed local browser fixture; no inference or charges." ^auto 0
+           ^builtin_models models ^models (fn [] models)
+           ^connection (fn [] {^state "ready" ^label (if (== billing "plan") "Demo plan" "Demo API")
+             ^billing billing ^account "Example account"})
+           ^transport {^adapter "fixture" ^base_url name ^billing billing}
+           ^capabilities model_capabilities
+           ^configure (fn [model effort timeout] {^model (?? model "demo-large") ^effort effort ^timeout_ms timeout})
+           ^prepare (fn [call] {})
+           ^send (fn [prepared] {^text "(Outcome ^^done ^reply \"The selected demo model ran locally.\")"})})))))
+
+(fn main [args] : Int
+  (let root (?? args/1 "/tmp/gene-model-browser-root"))
+  (let base (baseline_profile ^models_root root))
+  (let plugins [])
+  (for plugin in base/plugins
+    (if_not (["provider_chatgpt" "provider_claude" "provider_anthropic" "provider_openrouter" "voice" "image_openrouter"] .contains? plugin/id)
+      (plugins .push plugin)))
+  (plugins .push (demo_providers))
+  (serve ^profile (Profile ^name "models-browser" ^plugins plugins ^requires base/requires ^limits base/limits)
+    ["--workspace" (?? args/0 "/tmp/gene-model-browser-workspace") "--root" root "--port" (?? args/2 "0")]))

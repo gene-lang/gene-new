@@ -10,7 +10,21 @@
     (raw_blocks
       (fn [text]
         (openrouter_text
-          {^status 200 ^body ($json/stringify {^choices [{^message {^content text}}]})})))))
+          {^status 200 ^body ($json/stringify {^choices [{^finish_reason "stop" ^message {^content text}}]})}))))
+
+  (it "rejects incomplete, errored and empty output before evaluation" []
+    (for body in
+      [{^choices [{^finish_reason "length" ^message {^content "(dangerous_partial_form)"}}]}
+       {^choices [{^finish_reason "error" ^message {^content "(Outcome \"bad\")"}}]}
+       {^choices [{^finish_reason "stop" ^error {^message "failed"} ^message {^content "bad"}}]}
+       {^error {^message "failed"} ^choices [{^finish_reason "stop" ^message {^content "bad"}}]}
+       {^choices [{^finish_reason "stop" ^message {^content "   "}}]}
+       {^choices [{^message {^content "missing finish reason"}}]}
+       {^choices []} {^choices "SECRET_SENTINEL"} "SECRET_SENTINEL"]
+      (let rejected (try
+        (openrouter_text {^status 200 ^body ($json/stringify body)})
+        false catch Any true))
+      ($assert rejected "unsafe OpenRouter output was accepted"))))
 
 (fn main [args] : Int
   (let result (run ^name (?? args/0 "")))

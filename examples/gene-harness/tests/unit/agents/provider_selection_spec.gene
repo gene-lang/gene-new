@@ -1,0 +1,147 @@
+(import $test [describe it run])
+(import [new_harness shutdown_harness contribute provide withdraw_seam] ^from "../../../src/kernel")
+(import [Profile] ^from "../../../src/profiles/profile")
+(import [select_provider resolve_selection readiness_report session_settings provider_choice]
+  ^from "../../../src/agents/provider_selection")
+(import [endpoint_provider] ^from "../../../src/public/provider")
+
+(fn candidate [url]
+  {^name "example" ^doc "Model snapshot fixture." ^auto 0
+   ^transport {^adapter "openai_chat" ^base_url url ^credential {^env "EXAMPLE_KEY"}}
+   ^connection (fn [] (fail "connection probed in selection"))
+   ^models (fn [] (fail "models probed in selection"))
+   ^configure (fn [model effort timeout]
+     {^model (?? model "large") ^effort effort ^timeout_ms timeout})
+   ^prepare (fn [call] call) ^send (fn [request] {^text "done"})})
+
+(fn catalog [default_model, billing = "plan"]
+  {^default {^provider "example" ^model default_model ^effort "high"}
+   ^providers {^example {^connection {^state "ready" ^billing billing ^account "account-1" ^transport "cached-identity"}
+     ^models [{^id "large" ^window 1000000 ^max_output 128000 ^input ["text" "image"]
+               ^efforts ["low"] ^default_effort "low"}
+              {^id "small" ^window 64000 ^max_output 8192 ^input ["text"]
+               ^efforts ["low" "high"] ^default_effort "high"}]}}})
+
+(describe "Provider selection snapshots"
+  (it "chooses a discovered model for a lone configured endpoint without inventing effort support" []
+    (let h (new_harness))
+    (try
+      (let cache ($cell {^providers {^local {^connection {^state "ready" ^billing "local"}
+        ^models [{^id "discovered" ^efforts []}]}}}))
+      (provide h "core" "models/catalog" {^snapshot (fn [] cache/.get)})
+      (contribute h "core" "providers" (endpoint_provider {^name "local" ^adapter "openai_chat" ^base_url "http://127.0.0.1:1/v1" ^^discover}))
+      (let runtime {^h h ^profile (Profile ^name "test" ^plugins [])})
+      (let selected (resolve_selection ^environment {} runtime {^effort "high"}))
+      ($assert (== selected/provider "local"))
+      ($assert (== selected/model "discovered"))
+      ($assert ($absent? selected/effective_effort))
+    ensure (shutdown_harness h)))
+
+  (it "keeps resolved metadata through refresh and accepts code reloads on the same transport" []
+    (let h (new_harness))
+    (try
+      (let cache ($cell (catalog "large")))
+      (provide h "core" "models/catalog" {^snapshot (fn [] cache/.get)})
+      (contribute h "core" "providers" (candidate "https://one.example/v1"))
+      (let runtime {^h h ^profile (Profile ^name "test" ^plugins [])})
+      (let first (resolve_selection ^environment {} runtime {}))
+      ($assert (== first/requested_effort "high"))
+      ($assert (== first/effective_effort "low"))
+      ($assert (== first/context_window 1000000))
+      (cache .set (catalog "small"))
+      (contribute h "core" "providers" (candidate "https://one.example/v1") ^^replace)
+      (let next (select_provider ^selection first ^environment {} runtime {}))
+      ($assert (== next/settings/model "large") "catalog refresh changed the running model")
+      ($assert (== next/settings/effort "low") "refresh re-resolved effective effort")
+      ($assert (== next/settings/window 1000000) "refresh replaced round metadata")
+      ($assert (== (/model (resolve_selection ^environment {} runtime {})) "small")
+        "new round did not see the new default")
+      (contribute h "core" "providers" (candidate "https://two.example/v1") ^^replace)
+      ($assert ($present? (readiness_report ^selection first runtime {}))
+        "endpoint edit silently changed the running connection")
+    ensure (shutdown_harness h)))
+
+  (it "stops on a billing change and resolves a child's complete model selection" []
+    (let h (new_harness))
+    (try
+      (let cache ($cell (catalog "large")))
+      (provide h "core" "models/catalog" {^snapshot (fn [] cache/.get)})
+      (contribute h "core" "providers" (candidate "https://one.example/v1"))
+      (let runtime {^h h ^profile (Profile ^name "test" ^plugins [])})
+      (let parent (resolve_selection ^environment {} runtime {}))
+      (let settings (session_settings {^model_settings
+        {^provider parent/provider ^model "small" ^effort parent/requested_effort}} {}))
+      (let child (resolve_selection ^environment {} runtime settings))
+      ($assert (== child/context_window 64000) "child inherited the parent window")
+      ($assert (== child/max_output 8192) "child inherited the parent output budget")
+      ($assert (== child/input ["text"]) "child inherited the parent image capability")
+      ($assert (== child/effective_effort "high") "child inherited rounded parent effort")
+      (settings .put "model" "unknown")
+      (let unknown (resolve_selection ^environment {} runtime settings))
+      ($assert (== unknown/context_window 128000))
+      ($assert ($absent? unknown/input))
+      ($assert ($absent? unknown/max_output))
+      (cache .set (catalog "large" "metered"))
+      ($assert ($present? (readiness_report ^selection parent runtime {}))
+        "billing change silently continued the round")
+    ensure (shutdown_harness h))))
+
+(describe "Optional model catalog"
+  (it "does not replace an unreadable saved default with an ambient provider" []
+    (let h (new_harness))
+    (try
+      (contribute h "core" "providers" (candidate "https://one.example/v1"))
+      (provide h "core" "models/catalog" {^snapshot (fn []
+        {^default_error "Shared settings need repair"
+         ^providers {^example {^connection {^state "ready"}}}})})
+      (let runtime {^h h ^profile (Profile ^name "test" ^plugins [])})
+      (let blocked (provider_choice ^environment {^GENE_HARNESS_PROVIDER "example"} runtime {}))
+      ($assert (== blocked/reason "Shared settings need repair"))
+      (let explicit (select_provider ^environment {} runtime {^provider "example" ^model "chosen"}))
+      ($assert (== explicit/settings/model "chosen"))
+    ensure (shutdown_harness h)))
+
+  (it "keeps a round usable after catalog removal without accepting a changed endpoint" []
+    (let h (new_harness))
+    (try
+      (let cache ($cell (catalog "large")))
+      (provide h "core" "models/catalog" {^snapshot (fn [] cache/.get)})
+      (contribute h "core" "providers" (candidate "https://one.example/v1"))
+      (let runtime {^h h ^profile (Profile ^name "test" ^plugins [])})
+      (let first (resolve_selection ^environment {} runtime {}))
+      (withdraw_seam h "core" "models/catalog")
+      ($assert ($present? (/reason (provider_choice ^environment {} runtime {})))
+        "automatic selection guessed readiness without discovery")
+      ($assert ($absent? (readiness_report ^selection first runtime {}))
+        "removing the optional catalog stopped the provider")
+      (let selected (select_provider ^selection first ^environment {} runtime {}))
+      ($assert (== selected/settings/model "large"))
+      ($assert (== selected/settings/window 1000000))
+      ($assert (== selected/settings/effort "low"))
+      (contribute h "core" "providers" (candidate "https://two.example/v1") ^^replace)
+      ($assert ($present? (readiness_report ^selection first runtime {}))
+        "losing the catalog disabled the endpoint identity check")
+    ensure (shutdown_harness h))))
+
+(describe "Launch model selection"
+  (it "pins a direct launch above saved settings and scopes its model to its provider" []
+    (let h (new_harness))
+    (try
+      (contribute h "core" "providers" (candidate "https://one.example/v1"))
+      (contribute h "core" "providers"
+        ((candidate "https://two.example/v1") .assoc "name" "other"))
+      (let runtime {^h h ^profile (Profile ^name "test" ^plugins [])
+        ^launch {^provider "other" ^model "launch-model" ^effort "high"}})
+      (let settings {^provider "example" ^model "saved-model" ^effort "low"})
+      (let selected (select_provider ^environment {} runtime settings))
+      ($assert (== selected/name "other"))
+      ($assert (== selected/settings/model "launch-model"))
+      ($assert (== selected/settings/effort "high"))
+      (set runtime/profile/provider "example")
+      (let pinned (select_provider ^environment {} runtime settings))
+      ($assert (== pinned/name "example"))
+      ($assert (== pinned/settings/model "saved-model"))
+      ($assert (== pinned/settings/effort "low"))
+    ensure (shutdown_harness h))))
+
+(fn main [args] : Int (/exit_code (run ^name (?? args/0 ""))))

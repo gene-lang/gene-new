@@ -11,7 +11,9 @@
 (import [voice_pending? : pending_voice voice_replay_handler : replay_voice voice_rounds : rounds_voice
   voice_submit : submit_voice voice_review_key : review_key_voice reviewed_voice_input : input_voice
   initialize_voice : initialize_voice_feature configure_voice
-  browser_capabilities : feature_capabilities] ^from "./voice_glue.gene")
+  browser_capabilities : voice_capabilities] ^from "./voice_glue.gene")
+(import [model_capabilities model_allows_submit attach_model_draft model_draft_admitted transfer_model_draft]
+  ^from "./model_glue.gene")
 
 (import [LiveOutput create_output output_entry receive_output output_text historical_records
   turn_output_key command_output_key clear_session_output output_epoch interrupt_output observe_output output_open command_output_text]
@@ -238,6 +240,7 @@
     (fn [code : Int, data : Any] : Void
       (set client/sending false)
       (creation_outcome client code)
+      (if_yes (== code 201) (transfer_model_draft client (string_or data/id "")))
       (update_controls client)
       (done code data))))
 
@@ -311,14 +314,19 @@
 
 (fn browser_bridge [client : Client] : Any
   {^toolbar ($dom/element "browser_client_toolbar")
+   ^composer_actions ($dom/element "browser_client_composer_actions")
+   ^trigger_model_actions ($dom/element "trigger_model_actions")
    ^state (fn [] : Any
      (var ui : UiClient client/ui)
      (var commands : CommandClient client/command_client)
+     (var tab : Any (if (== client/selected "") (then nil) (else (session_tab client client/selected))))
      {^session client/selected ^title ($dom/text client/title)
       ^ready client/ready ^connected client/connected ^sending client/sending
       ^commands (launcher_items client/status/commands) ^views (launcher_items ui/navigation/views)
       ^pending_command commands/pending ^client_id (client_page_id client) ^csrf client/csrf
       ^busy client/busy ^round client/round
+      ^model client/status/model ^catalog_revision client/status/catalog_revision
+      ^model_settings tab/cache/session/model_settings
       ^workspace (string_or client/status/workspace "")})
    ^api (fn [method : Str, path : Str, payload : Any, done : (Fn [Int Any] Void)] : Void
      (api client method path payload done))
@@ -333,7 +341,10 @@
          (fn [code : Int, data : Any] : Void
            (if_yes (== code 201) (select_session client (string_or data/id "")))
            (done code data)))))
-   ^capabilities_for (fn [name : Str] : Any (feature_capabilities client name))
+   ^capabilities_for (fn [name : Str] : Any
+     (if (== name "models")
+       (then (model_capabilities client (fn [] : Void (send client))))
+       (else (voice_capabilities client name))))
    ^subscribe (fn [callback : (Fn [Str Str Any] Void)] : (Fn [] Void)
      (subscribe_browser client "" callback))
    ^subscribe_owned (fn [owner : Str, callback : (Fn [Str Str Any] Void)] : (Fn [] Void)
@@ -370,7 +381,7 @@
         (if_yes (&& client/ready client/connected (! client/sending)) (stage_prompt client text)))
       (fn [target : Str, presentation : Str] : Void (navigate sidebar_ui target presentation))
       (&& client/ready client/connected (! client/sending))))
-  (for slot in ["sidebar" "toolbar" "composer" "status"]
+  (for slot in ["sidebar" "toolbar" "composer" "composer_actions" "status"]
     (var target ($dom/element $"web_${slot}"))
     ($dom/clear target)
     (render_plugin_slot client target slot))
@@ -884,10 +895,13 @@
     (if_yes (== (string_or run/id "") (string_or client/round/id ""))
       (var session client/selected) (var source : Str run/id)
       (set on_continue (fn [mode : Str] : Void
-        (api client "POST" $"${(api_root)}/sessions/${session}/rounds/${source}/continue" {^mode mode}
+        (var payload : Any {^mode mode})
+        (attach_model_draft client payload session)
+        (api client "POST" $"${(api_root)}/sessions/${session}/rounds/${source}/continue" payload
           (fn [code : Int, data : Any] : Void
-            (if (== code 202) (apply_run client session data)
-              (do (show_error ^session session client data)
+            (if (== code 202)
+              (then (model_draft_admitted client session payload) (apply_run client session data))
+              (else (show_error ^session session client data)
                 (if_yes (== session client/selected) (render_transcript client)))))))))
     ($dom/append target (run_status_view run prompt (fn [text : Str] : Void (edit_prompt client text)) ^on_continue on_continue)))
   ($dom/append client/transcript target))
@@ -1502,6 +1516,7 @@
               (set install (< current_seq accepted_seq)))
             (if_yes install (apply_run client session data)))
           (storage_remove "gene-harness/pending")
+          (model_draft_admitted client session pending)
           (var submitted : Str pending/text)
           (var attachments : MediaComposer client/media)
           (var submitted_media : (List Any) [])
@@ -1556,6 +1571,7 @@
       ^request_id ($browser/request_id)
       ^submission_seq client/next_seq
       ^text text ^media (media_ids attachments)})
+  (attach_model_draft client client/pending client/selected)
   (if_not (storage_set "gene-harness/pending" ($json/stringify client/pending))
     (set client/pending nil)
     (notice
@@ -1578,6 +1594,7 @@
       ^request_id ($browser/request_id)
       ^submission_seq client/next_seq
       ^text text ^media no_media ^card card})
+  (attach_model_draft client client/pending client/selected)
   (if_not (storage_set "gene-harness/pending" ($json/stringify client/pending))
     (set client/pending nil)
     (notice
@@ -1844,6 +1861,7 @@
     (notice client "Wait for uploads to finish, or remove any failed attachment.")
     (return))
   (if_yes (&& (== (str/trim text) "") (! (media_has attachments))) (return))
+  (if_yes (! (model_allows_submit client)) (return))
   (remember_draft client)
   (if_yes (== client/selected "")
     (request_session client "New conversation"
@@ -1915,6 +1933,8 @@
     (var kind : Str message/type)
     (var session : Str message/session)
     (var data : Any message/data)
+    (if_yes (== kind "models/catalog")
+      (invalidate_status client client/epoch ""))
     (if (== kind "status")
       (then
         (apply_status client data))

@@ -139,7 +139,7 @@
   [{^question "What persists?"
     ^answer "The workspace keeps conversations, plugin composition, source modules and durable plugin state in .gene-harness/. Plugins are shared across conversations. A crash marks running rounds interrupted without replaying them; pending questions remain available. REPL bindings and live resources are not restored."}
    {^question "Where does the model run?"
-    ^answer "The Harness runs on your machine and listens on 127.0.0.1. Model requests go to the provider you configure: Codex, OpenRouter, the Claude Code CLI, or the Anthropic API. Credentials stay in the native process and are never written to conversation history."}
+    ^answer "The Harness runs on your machine and listens on 127.0.0.1. Model requests go to the provider you configure: ChatGPT, OpenRouter, the Claude Code CLI, or the Anthropic API. Credentials stay in the native process and are never written to conversation history."}
    {^question "What can plugins access?"
     ^answer "Plugins and response code have the full Gene standard library and the host process’s permissions. The workspace is the working directory. Execution budgets protect against runaway callbacks; use an OS sandbox when isolation is needed."}
    {^question "What happens when a run fails?"
@@ -185,8 +185,7 @@
 
 (var run_commands
   {^build "git clone https://github.com/gene-lang/gene-new.git\ncd gene-new\nnimble build"
-   ^codex_login "codex -c cli_auth_credentials_store='\"file\"' login"
-   ^start "bin/gene run examples/gene-harness/src/web/server.gene"
+   ^start "examples/gene-harness/bin/gene-harness web --workspace /path/to/project"
    ^openrouter "GENE_HARNESS_PROVIDER=openrouter OPENROUTER_API_KEY=... \\\n  bin/gene run examples/gene-harness/src/web/server.gene"
    ^anthropic "GENE_HARNESS_PROVIDER=anthropic ANTHROPIC_API_KEY=... \\\n  bin/gene run examples/gene-harness/src/web/server.gene"
    ^offline "bin/gene run examples/gene-harness/src/web/server.gene --offline"

@@ -1,0 +1,80 @@
+# Pure catalog operations shared by the loop and model contributions.
+(mod models)
+(import [ProviderError] ^from "../plugin_api")
+
+(const effort_ladder ["none" "minimal" "low" "medium" "high" "xhigh" "max"])
+
+(fn transport_identity [candidate, connection]
+  (if (&& ($absent? candidate/transport) ($present? connection/transport))
+    (return connection/transport))
+  (if (&& ($absent? candidate/transport) ($absent? candidate/connection))
+    (return ($pkg/canonical_digest {^provider candidate/name})))
+  (let descriptor ($thaw ($freeze (?? candidate/transport {}))))
+  (descriptor .put "provider" candidate/name)
+  (descriptor .put "billing" (?? connection/billing descriptor/billing "unknown"))
+  (descriptor .put "account" (?? connection/account nil))
+  (descriptor .put "reported_transport" (?? connection/transport nil))
+  ($pkg/canonical_digest descriptor))
+
+(fn provider_transport [candidate]
+  ($pkg/canonical_digest {^provider candidate/name ^transport (?? candidate/transport nil)}))
+
+(fn validate_model_settings [value]
+  (if (!= ($head value) Map)
+    (fail (ProviderError ^message "model_settings must be an inert map")))
+  (for [key field] in value
+    (if_not (["provider" "model" "effort"] .contains? ($to_str key))
+      (fail (ProviderError ^message $"Unknown model setting ${key}")))
+    (if (|| (!= ($head field) Str) (== ($str/trim field) ""))
+      (fail (ProviderError ^message $"Model setting ${key} must be a nonempty string"))))
+  (if (&& ($present? value/model) ($absent? value/provider))
+    (fail (ProviderError ^message "A model id requires its provider")))
+  ($thaw ($freeze value)))
+
+(fn resolve_effort [requested, model]
+  (if (|| ($absent? requested) (== requested "auto"))
+    (return (?? model/default_effort nil)))
+  (if ($absent? model/efforts)
+    (then
+      (if_not (effort_ladder .contains? requested)
+        (fail (ProviderError ^message $"${requested} is not an effort level for this model")))
+      (return requested)))
+  (if (model/efforts .contains? requested) (return requested))
+  (if_not (effort_ladder .contains? requested)
+    (fail (ProviderError ^message $"${requested} is not an effort level for this model")))
+  (var below nil)
+  (var lowest nil)
+  (var passed false)
+  (for level in effort_ladder
+    (if (== level requested) (set passed true))
+    (if (model/efforts .contains? level)
+      (then
+        (if ($absent? lowest) (set lowest level))
+        (if_not passed (set below level)))))
+  (?? below lowest))
+
+(fn model_entry [models, id]
+  (for model in (?? models [])
+    (if (== model/id id) (return model)))
+  {^id id})
+
+(fn model_window [model, cap = nil]
+  (let window (if ($absent? model/window)
+    (then 128000)
+    (else ($to_int (* model/window (/ (?? model/effective_percent 100) 100.0))))))
+  (if ($absent? cap) (then window) (else ($math/min window cap))))
+
+(fn model_capabilities [model]
+  {^image_input (if ($absent? model/input)
+    (then "unknown")
+    (elif (model/input .contains? "image") "yes")
+    (else "no")) ^image_output "no"})
+
+(fn require_model_input [model, messages]
+  (if ($absent? model/input) (return nil))
+  (if (model/input .contains? "image") (return nil))
+  (for message in messages
+    (let images (?? message/images []))
+    (if (! images/.empty?)
+      (fail (ProviderError ^message "Selected model does not support image input; choose a model with image support."))))
+  nil)

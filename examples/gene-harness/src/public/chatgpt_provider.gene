@@ -1,0 +1,82 @@
+(mod chatgpt_provider)
+(import [ProviderError] ^from "../plugin_api")
+(import [configure_model nonempty http_json_attempt probe_json endpoint_url] ^from "./provider")
+(import [chatgpt_access] ^from "./chatgpt_auth")
+(import [chatgpt_root] ^from "./chatgpt_store")
+(import [login_root] ^from "./provider_login")
+(import [normalize_chatgpt_models] ^from "./model_discovery")
+(import [model_capabilities transport_identity] ^from "./models")
+(import [prepare_responses responses_stream_result chatgpt_failure] ^from "./provider_payloads")
+
+(fn chatgpt_result [response]
+  (if (!= response/status 200)
+    (then
+      (let data (try ($json/parse response/body) catch Any nil))
+      (let shape (if (== ($head data/error) Map) (then "error")
+        (elif ($present? data/detail) "detail") (else "other")))
+      (chatgpt_failure ^status response/status ^shape shape
+        ^param data/error/param ^request_id (?? response/headers/x-request-id response/headers/openai-request-id)
+        data/error/code)))
+  (responses_stream_result response "chatgpt"))
+
+(fn chatgpt_metadata [data]
+  (let models (normalize_chatgpt_models data))
+  # The authenticated catalog determines order and support. If it supplies no
+  # effort data, offer Auto only rather than borrowing another route's levels.
+  (var rank 0)
+  (for model in models
+    (model .put "rank" rank) (set rank (+ rank 1)))
+  models)
+
+(fn chatgpt_row [^root root = nil, ^base_url base_url : Str = "https://api.openai.com/v1",
+  ^access access = chatgpt_access]
+  (let resolved (login_root root))
+  (let descriptor {^adapter "openai_responses" ^base_url base_url ^billing "plan"
+    ^credential {^file ($path/join (chatgpt_root resolved) "active.json")}})
+  {^name "chatgpt" ^doc "Use the public Responses API with your authorized ChatGPT plan." ^auto 1
+   ^tags ["provider" "model" "chatgpt"] ^docs ["harness/providers/chatgpt"] ^media_recording "inventory"
+   ^transport descriptor ^builtin_models [] ^default_efforts [] ^^catalog_default ^capabilities model_capabilities
+   ^configure (fn [model effort timeout] (configure_model model effort timeout "gpt-6.1-sol"))
+   ^connection (fn []
+     (let deadline (+ ($os/monotonic_ms) 5000))
+     (let credentials (try (access ^root resolved)
+       catch ProviderError (return {^state (if (== $err/status 401) (then "sign_in_required") (else "unavailable"))
+         ^label "ChatGPT" ^billing "plan" ^reason $err/message})
+       catch Any (return {^state "unavailable" ^label "ChatGPT" ^billing "plan"
+         ^reason "ChatGPT connection state could not be read; inspect its account in Models."})))
+     (let remaining (- deadline ($os/monotonic_ms)))
+     (let checked (if (<= remaining 0) (then {^status 0 ^error "timeout"})
+       (else (probe_json ^timeout_ms remaining ^headers {^authorization $"Bearer ${credentials/access_token}"}
+         (endpoint_url base_url "models")))))
+     (let rejected ([401 403] .contains? checked/status))
+     {^state (if rejected (then "expired") (else "ready"))
+      ^label ($to_str "ChatGPT · " credentials/public/label) ^account credentials/account ^billing "plan"
+      ^reason (if rejected (then "ChatGPT access was rejected; reconnect this account in Models.") (else nil))
+      ^stale (|| (!= checked/status 200) ($present? checked/error))})
+   ^models (fn []
+     (let deadline (+ ($os/monotonic_ms) 5000))
+     (let credentials (access ^root resolved))
+     (let remaining (- deadline ($os/monotonic_ms)))
+     (if (<= remaining 0) (fail (ProviderError ^message "ChatGPT model discovery timed out")))
+     (let found (probe_json ^timeout_ms remaining ^headers {^authorization $"Bearer ${credentials/access_token}"}
+       (endpoint_url base_url "models")))
+     (if (|| (!= found/status 200) ($present? found/error))
+       (fail (ProviderError ^status found/status ^message "ChatGPT model discovery could not complete")))
+     (chatgpt_metadata found/data))
+   ^prepare (fn [call]
+     (let prepared (prepare_responses ^omit_budget true call))
+     (prepared .put "transport" call/selection/transport)
+     (prepared .put "account" call/selection/account)
+     prepared)
+   ^send (fn [prepared]
+     (let deadline (+ ($os/monotonic_ms) prepared/timeout_ms))
+     (let credentials (access ^root resolved))
+     (let actual (transport_identity {^name "chatgpt" ^transport descriptor}
+       {^billing "plan" ^account credentials/account}))
+     (if (&& ($present? prepared/account) ($present? prepared/transport) (!= prepared/transport actual))
+       (fail (ProviderError ^code "connection_changed" ^message "The selected ChatGPT account changed; submit a new round to use it.")))
+     (let remaining (- deadline ($os/monotonic_ms)))
+     (if (<= remaining 0) (return {^^timeout}))
+     (http_json_attempt ^max_bytes 8388608 (endpoint_url base_url "responses")
+       {^content-type "application/json" ^accept "text/event-stream" ^authorization $"Bearer ${credentials/access_token}"}
+       prepared/body remaining chatgpt_result))})

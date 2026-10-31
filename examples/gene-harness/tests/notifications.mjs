@@ -65,7 +65,7 @@ producers.producer_event(inbox,'notifications/state','host',snapshot('1',[messag
 assert.equal(element('notification_message_section').hidden,false);
 add('mixed');click(element('clear_messages'));
 assert.equal(element('notification_local').children.length,0);
-assert.equal(requests.at(-1).path,'/api/v8/notifications/clear');
+assert.equal(requests.at(-1).path,'/api/v9/notifications/clear');
 assert.deepEqual(requests.at(-1).data.messages,[{id:'published',revision:1n}]);
 assert.equal(element('clear_messages').disabled,true);
 assert.equal(element('clear_messages').textContent,'Clearing messages…');

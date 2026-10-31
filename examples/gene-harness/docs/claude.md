@@ -6,7 +6,7 @@ and the terminal:
 | Provider | Connection | Credentials and billing |
 | --- | --- | --- |
 | `claude` | Installed Claude Code CLI in print mode | Claude Code owns login, refresh, and billing selection. Can use your signed-in Claude subscription. |
-| `anthropic` | Anthropic Messages API | `ANTHROPIC_API_KEY`; separate API billing. |
+| `anthropic` | Anthropic Messages API | `ANTHROPIC_API_KEY`, otherwise `ant` Console OAuth; metered API billing. |
 
 ## Using a Claude subscription
 
@@ -20,19 +20,19 @@ claude auth status
 From `examples/gene-harness`, start the browser host on a project workspace:
 
 ```sh
-env GENE_HARNESS_PROVIDER=claude \
-  ../../bin/gene run \
-  src/web/server.gene --workspace /path/to/project
+../../bin/gene run src/web/server.gene \
+  --workspace /path/to/project --provider claude
 ```
 
 Retrieve the connection URL with `../../bin/gene run src/main.gene --workspace
 /path/to/project link`. CLI session commands connect to this same running host.
-Instead of the
-environment variable, you can set `^provider "claude"` in the workspace's
-`.gene-harness/config.gene`; a non-empty `GENE_HARNESS_PROVIDER` still wins.
+You can set `^provider "claude"` in the workspace's `.gene-harness/config.gene`
+instead. Saved settings beat the ambient `GENE_HARNESS_PROVIDER`; the explicit
+`--provider` launch flag overrides saved settings.
 
 The default CLI model is `sonnet`, resolved by Claude Code. Set
-`GENE_HARNESS_MODEL` to another CLI alias or exact supported model ID. Set
+`--model` to another CLI alias or exact supported model ID. `GENE_HARNESS_MODEL`
+is a fallback when no saved or launch choice applies to this provider. Set
 `GENE_HARNESS_CLAUDE_COMMAND` to an executable path if `claude` is not on PATH.
 This value is an executable, not a shell command or an argument string.
 
@@ -42,43 +42,56 @@ can choose those instead of the subscription; inspect `claude auth status`.
 
 ### What subscription usage means today
 
-Checked on 2026-09-14: Anthropic's June 15 update says its proposed separate
-Agent SDK credit change was paused. The update says Agent SDK, `claude -p`, and
-third-party app usage still draw from subscription usage limits. It does not
-promise unlimited use. [Anthropic's current plan guidance](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan)
+Checked on 2026-10-31: Anthropic permits an end user to sign in to the
+unmodified Claude Code binary with their own subscription. Advertised plan
+limits assume ordinary individual use. Harness leaves authentication and
+billing selection to that binary. It does not add a Claude.ai login service
+or handle subscription tokens in its HTTP adapters.
+[Authentication and credential use](https://code.claude.com/docs/en/legal-and-compliance)
 
-This integration runs the official local CLI for the signed-in user's use.
-It does not add a Claude.ai OAuth login service or reuse subscription tokens
-in a custom HTTP client. Shared or hosted products should use an API key;
-Anthropic distinguishes individual CLI/SDK use from services routing requests
-through their users' subscription credentials. [Authentication and credential use](https://code.claude.com/docs/en/legal-and-compliance)
+The running verification host completed a Sonnet round using an existing
+Claude Pro login, with connection billing reported as `plan`.
+[Recorded verification](verification/claude-subscription-check-20261031.json)
 
 ## Using the Anthropic API
 
 Configure `ANTHROPIC_API_KEY` in the process environment, then use the same
-launch command with `GENE_HARNESS_PROVIDER=anthropic`. No Claude Code executable
-or Claude login is required. OAuth setup-tokens are not accepted as API keys.
+launch command with `--provider anthropic`. If no API key is set, Harness can
+use an existing `ant auth login` Console profile. The API key takes precedence.
+Harness invokes `ant auth print-credentials --access-token` only for discovery
+and transport; `ant` owns refreshing its Console login. Both sources use
+metered API billing. No Claude Code executable or subscription login is
+required. Subscription and setup tokens are not accepted as API keys.
+[Console CLI authentication](https://platform.claude.com/docs/en/cli-sdks-libraries/cli/authentication)
 
-The default API model is `claude-sonnet-5`; `GENE_HARNESS_MODEL` overrides it.
+The default API model is `claude-sonnet-5-5`; `--model` overrides it.
 The adapter sends the instructions as the system prompt and the session history
 as user/assistant messages to `https://api.anthropic.com/v1/messages`, with
-`x-api-key` authentication and `anthropic-version: 2023-06-01`. It extracts
-assistant text blocks and ignores thinking blocks. [Messages API](https://platform.claude.com/docs/en/api/http/messages/create)
+`x-api-key` authentication for API keys and `anthropic-version: 2023-06-01`.
+Console OAuth instead uses Bearer authentication and the Console OAuth beta
+header. It buffers streamed Messages through successful completion, extracts
+assistant text blocks and ignores thinking blocks.
+[Messages API](https://platform.claude.com/docs/en/api/http/messages/create)
 
 The last two assistant messages carry `cache_control` checkpoints. History
 rewrites at most one older message per turn, so everything before the previous
 response stays cached; see the history section of [the design](design.md).
 
 The API path uses adaptive thinking and `output_config.effort`. Supported effort
-levels depend on the selected model. `none` sends disabled thinking and omits
-effort; `minimal` maps to `low`. Use an adaptive-thinking model with the default
-configuration; for older models without adaptive thinking, select `none` if the
-model supports disabled thinking. The API rejects unsupported model/effort
-combinations rather than silently changing models. [Thinking controls](https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking)
+levels depend on the selected model. `auto` uses its catalog default, and an
+unsupported portable level resolves down, or to the model's lowest supported
+level. For example, `none` becomes `low` on Opus 5.5; Sonnet 5.5 uses
+`between_tools` for `none`. The model itself never changes as a fallback.
+[Thinking controls](https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking)
 
-The default API response budget is 8,192 tokens per turn, including thinking.
-A compaction summary call computes its own smaller budget. A token-limit stop
-is an error even if the partial text happens to look like valid Gene.
+The API output budget includes thinking and follows effective effort:
+8,192 tokens for none/minimal/low or an unspecified effort, 16,384 for medium,
+32,768 for high, 65,536 for xhigh, and 128,000 for max/ultra. The selected
+model's output limit caps it; an explicit call budget, including a compaction
+summary's budget, takes precedence within that cap. The minimum covers a
+recorded 5,694-token summary. Higher-effort reserves remain provisional;
+see the [measurement evidence](verification/models-implementation.md#openrouter-live-verification-2026-10-31).
+A token-limit stop is an error even if the partial text looks like valid Gene.
 
 ## Execution boundary and limits
 
@@ -102,8 +115,10 @@ errors, timeouts, malformed JSON, and output truncation are rejected. API
 refusals, tool-use stops, and incomplete turns are also rejected. Cancelling
 the round cancels its CLI subprocess.
 
-Requests have a 180-second timeout and a 2 MB captured-response limit. The CLI
-uses argument arrays without shell interpolation. Because the CLI takes one
+The default request timeout is 600 seconds, configurable through
+`provider_timeout_ms`. Captured CLI responses are limited to 2 MB; streamed
+API responses are limited to 8 MiB. The CLI uses argument arrays without
+shell interpolation. Because the CLI takes one
 prompt, the Harness serializes the session's message history into it. System
 and prompt text together are limited to 128 KiB to stay below common process
 argument limits, so long sessions need the `anthropic` provider. Prompts are

@@ -381,6 +381,7 @@
           (fail $err)))))))
 
 (fn put_cordis_plugin [h : Harness, plugin : Plugin, entry_options, ^replace replace : Bool = false]
+  (run_composition_change h/snapshots (fn []
   (if ($absent? h/composition) (fail (HarnessError ^message "Harness has no Cordis composition")))
   (if_yes (&& (! replace) (!= (h/plugins .get; .get plugin/id) void))
     (fail (HarnessError ^message $"plugin ${plugin/id} already installed")))
@@ -400,9 +401,10 @@
     (h/plugin_errors
       .get
       ; .put plugin/id ($to_str $err)))
-  (status_of h plugin/id))
+  (status_of h plugin/id))))
 
 (fn put_cordis_plugins [h : Harness, admissions]
+  (run_composition_change h/snapshots (fn []
   # Boot stages every profile plugin and reconciles once. A plugin whose
   # activation fails is recorded by the reconcile itself; only a failure of the
   # reconcile as a whole marks every admission.
@@ -428,7 +430,7 @@
   (for admission in admissions
     (var id admission/plugin/id)
     (log_append h "lifecycle" $"installed ${id} (${(status_of h id)})"))
-  nil)
+  nil)))
 
 #
 # A plugin is in exactly one of three states:
@@ -482,6 +484,7 @@
   $"installed ${p/id} (${state})")
 
 (fn uninstall [h : Harness, id : Str] : Str
+  (run_composition_change h/snapshots (fn []
   (if (== (h/plugins .get; .get id) void)
     (fail (HarnessError ^message $"plugin ${id} not installed")))
   (h/plugins
@@ -495,7 +498,7 @@
     ; .delete id)
   (reconcile_cordis_harness h)
   (log_append h "lifecycle" $"uninstalled ${id}")
-  $"uninstalled ${id}")
+  $"uninstalled ${id}")))
 
 (fn retry [h : Harness, id : Str] : Str
   # A failed plugin is not retried automatically: an activation that raised

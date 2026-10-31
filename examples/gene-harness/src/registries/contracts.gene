@@ -29,11 +29,16 @@
     (fail (HarnessError ^message "input mode reset_on_interrupt must be Bool")))
   candidate)
 
-(fn validate_provider_row [candidate]
-  (if (|| ($absent? candidate/name) (== candidate/name "") ($absent? candidate/doc) (! ($runtime/callable? candidate/configure)) (! ($runtime/callable? candidate/prepare)) (! ($runtime/callable? candidate/send)) (&& ($present? candidate/available) (! ($runtime/callable? candidate/available))) (&& ($present? candidate/auto) (!= ($head candidate/auto) Int)))
+(fn validate_provider_row [candidate, ^image image : Bool = false]
+  (if (|| (!= ($head candidate/name) Str) (== candidate/name "") ($absent? candidate/doc) (! ($runtime/callable? candidate/configure)) (! ($runtime/callable? candidate/prepare)) (! ($runtime/callable? candidate/send)) (&& ($present? candidate/auto) (!= ($head candidate/auto) Int)))
     (fail (HarnessError ^message "a provider row needs name, doc, configure, prepare and send")))
+  (if (&& (! image) ($present? candidate/available))
+    (fail (HarnessError ^message "Provider available was replaced by connection; connection probes are cached outside turns.")))
   (if (&& ($present? candidate/capabilities) (! ($runtime/callable? candidate/capabilities)))
     (fail (HarnessError ^message "provider capabilities must be callable")))
+  (for field in ["connection" "models"]
+    (if (&& ($present? (candidate .get field)) (! ($runtime/callable? (candidate .get field))))
+      (fail (HarnessError ^message $"provider ${field} must be callable"))))
   (if (&& ($present? candidate/media_recording)
           (! (["inventory" "omit"] .contains? candidate/media_recording)))
     (fail (HarnessError ^message "provider media_recording must be inventory or omit")))
@@ -54,7 +59,7 @@
   candidate)
 
 (fn validate_image_generator_row [candidate]
-  (validate_provider_row candidate)
+  (validate_provider_row ^image true candidate)
   (for field in ["available" "capabilities"]
     (if_not ($runtime/callable? (candidate .get field))
       (fail (HarnessError ^message $"an image generator needs callable ${field}"))))

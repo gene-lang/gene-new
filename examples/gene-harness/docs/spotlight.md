@@ -34,7 +34,7 @@ invalidates requests, and restores normal navigation. Recovery UI omits it.
 
 ## Search scope
 
-`GET /api/v8/search/sessions?q=...&limit=50` searches indexed workspace metadata
+`GET /api/v9/search/sessions?q=...&limit=50` searches indexed workspace metadata
 independently of sidebar filters and the sidebar's 100-row list. Interactive,
 automated, and child sessions are included. Conversation matching uses
 exact/prefix/word and bounded typo matches in titles, then substring matches in
@@ -75,7 +75,7 @@ This permits new commands; it does not establish that the earlier command did
 not run, cancel it, or replay it. An in-flight submission/lookup cannot be
 forgotten. A receipt 404 alone never unlocks submission automatically.
 
-Before submission, `GET /api/v8/sessions/<id>/commands` returns only the next
+Before submission, `GET /api/v9/sessions/<id>/commands` returns only the next
 command sequence. It does not load transcript pages or render status components.
 Another tab can still win admission first: the host rejects the sequence
 conflict, and the browser reports it without silently changing identity or

@@ -41,7 +41,7 @@
     "admits new-tab links without an opener and rejects other target contexts"
     []
     (let link
-      (bounded_component_view (quote (a ^href "/api/v8/ui/open?name=workspace_open&id=project" ^target "_blank" "Open"))))
+      (bounded_component_view (quote (a ^href "/api/v9/ui/open?name=workspace_open&id=project" ^target "_blank" "Open"))))
     ($assert (== link/props/target "_blank"))
     ($assert (== link/props/rel "noopener"))
     (let ordinary (bounded_component_view (quote (a ^href "/" "Home"))))
@@ -137,7 +137,7 @@
             (div ^class_name "web_image_grid" ^columns 9 ^inset 5
               (button ^key "p" ^class_name "web_image_point" ^action "play" ^args {^point "0"} ^aria_label "Play A9"
                 (img ^src "assets/stone.svg" ^alt "Black stone at A9" ^width 100 ^height 100)))))))
-    ($assert (== tree/children/0/props/src "/api/v8/ui/image?path=assets%2Fboard.svg"))
+    ($assert (== tree/children/0/props/src "/api/v9/ui/image?path=assets%2Fboard.svg"))
     ($assert (== tree/children/1/props/data-columns "9"))
     ($assert (== tree/children/1/props/data-inset "5"))
     ($assert (== tree/children/1/children/0/children/0/props/alt "Black stone at A9"))

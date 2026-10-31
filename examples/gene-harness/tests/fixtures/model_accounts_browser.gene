@@ -1,0 +1,16 @@
+# Local UI acceptance only. These records have no refresh token, and the host
+# removes every vendor provider before activation. No vendor request can run.
+(import [main : browser_fixture] ^from "./model_browser")
+(import [save_chatgpt_account] ^from "../../src/public/chatgpt_store")
+
+(fn main [argv] : Int
+  (let args ($body argv))
+  ($assert (== args/.size 3) "Expected temporary WORKSPACE MANAGER_ROOT AUTH_HOME directories")
+  ($assert (== ($os/get_env "GENE_HARNESS_AUTH_HOME" "") args/2) "The auth home must be explicitly isolated")
+  (let a {^version 1 ^issuer "https://auth.openai.com" ^client_id "oaiapp_demo_personal" ^subject "demo"
+    ^email "demo@example.invalid" ^scopes ["resource.invoke" "chatgpt.tokens.use.direct"]
+    ^expires_at (+ (/ ($os/wall_ms) 1000) 86400) ^access_token "DEMO_ACCESS_NOT_A_REAL_TOKEN"})
+  (save_chatgpt_account args/2 a)
+  (let b ($thaw ($freeze a))) (b .put "client_id" "oaiapp_demo_work")
+  (save_chatgpt_account ^activate false args/2 b)
+  (browser_fixture [args/0 args/1 "0"]))

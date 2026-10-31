@@ -97,7 +97,7 @@
     (recover_round client)))
 
 (fn dispatch_round [client : RoundClient, session : Str, value : Str, input : Any,
-                    done : (Fn [Int Any] Void)] : Void
+                    done : (Fn [Int Any] Void), ^model_settings model_settings : Any = nil] : Void
   (if_yes (|| client/resolving ($present? client/pending))
     (done 409 {^code "pending_voice" ^^not_sent ^message "Resolve the earlier voice submission first."})
     (return))
@@ -105,7 +105,10 @@
     (done 400 {^^not_sent ^message "Choose a conversation and record a nonempty prompt."})
     (return))
   (var input_copy : Any nil)
-  (try (set input_copy ($json/parse ($json/stringify input)))
+  (var model_copy : Any nil)
+  (try
+    (set input_copy ($json/parse ($json/stringify input)))
+    (if_yes ($present? model_settings) (set model_copy ($json/parse ($json/stringify model_settings))))
     catch Any
       (hold_draft client session)
       (done 400 {^^not_sent ^message "Voice input metadata could not be encoded."}) (return))
@@ -123,6 +126,7 @@
         (return))
       (var envelope : Any {^session session ^text value ^input input_copy ^^literal
         ^request_id ($browser/request_id) ^submission_seq (text state/next_submission_seq)})
+      (if_yes ($present? model_copy) (set envelope/model_settings model_copy))
       (if_yes (! (storage_set (storage_key client) ($json/stringify envelope)))
         (set client/resolving false)
         (done 409 {^^not_sent ^message "Browser storage is required to recover a voice submission."}) (return))

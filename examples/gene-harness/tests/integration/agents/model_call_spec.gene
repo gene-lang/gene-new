@@ -15,7 +15,7 @@
          append_turn_end_once]
   ^from "../../../src/storage/state")
 (import [configure_model] ^from "../../../src/public/provider")
-(import [new_harness shutdown_harness contribute] ^from "../../../src/kernel")
+(import [new_harness shutdown_harness contribute provide] ^from "../../../src/kernel")
 (import $net/http_client [request])
 
 (type ProviderError ^props {^message Str} ^impl [Error])
@@ -218,7 +218,7 @@
             ^activate (fn [host]
               (host .PluginHost:contribute "providers"
                 {^name "first" ^doc "Initially selected provider." ^auto 0
-                 ^available (fn [] (if unavailable/.get "unavailable" nil))
+                 ^connection (fn [] {^state (if unavailable/.get (then "unavailable") (else "ready"))})
                  ^configure (fn [model, effort, timeout]
                    {^model "first" ^effort "none" ^timeout_ms timeout})
                  ^prepare (fn [call]
@@ -239,6 +239,9 @@
                    {^text "(Outcome ^^done ^reply \"wrong provider\")"})}))))
         (let runtime (open_runtime workspace "default"
           (Profile ^name "test" ^plugins [provider (history_basic)])))
+        (provide runtime/h "core" "models/catalog" {^snapshot (fn []
+          {^providers {^first {^connection {^state (if unavailable/.get (then "unavailable") (else "ready"))}}
+                       ^second {^connection {^state "ready"}}}})})
         (let controller (test_controller runtime nil))
         (try
           (let settings ($serde/read_data

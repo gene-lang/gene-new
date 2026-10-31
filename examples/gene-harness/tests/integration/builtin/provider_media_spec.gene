@@ -19,8 +19,8 @@
                         {^role "user" ^content "Describe the screenshot."
                          ^images [{^mime "image/png" ^data "AQID" ^detail "high"}]}
                         {^role "assistant" ^content "(Outcome ^^done ^reply \"done\")"}]})
-          (let codex (row service/runtime/h "providers" "codex"))
-          (let responses (codex/prepare request))
+          (let chatgpt (row service/runtime/h "providers" "chatgpt"))
+          (let responses (chatgpt/prepare request))
           ($assert (== responses/body/input/0/content/1/type "input_image"))
           ($assert (== responses/body/input/0/content/1/image_url "data:image/png;base64,AQID"))
           ($assert (== responses/body/input/0/content/1/detail "high"))

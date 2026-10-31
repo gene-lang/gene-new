@@ -3,6 +3,7 @@
 (import [api_root] ^from "../src/web/contract.gene")
 (import ^from "./state.gene" [query_value])
 (import ^from "./plugin_sessions.gene" [plugin_sessions_view])
+(import [owner_request] ^from "./owner_api.gene")
 
 (type Manager ^props {^csrf Str ^epoch Str ^host Str ^workspace Str ^revision Int ^base Int ^base_plugins (List Any) ^plugins (List Any) ^selected Str ^changes (List Any) ^restore Any ^plan Any ^busy Bool ^ready Bool ^recovery Bool ^repair Bool ^pending Str ^fetch_seq Int ^notice EventTarget})
 
@@ -67,20 +68,7 @@
   ($dom/set_class manager/notice "manager_error" error))
 
 (fn request [manager : Manager, method : Str, path : Str, payload : Any, done : (Fn [Int Any] Void)] : Void
-  ($http/request
-    method
-    path
-    ($json/stringify payload)
-    {^content-type "application/json" ^x-csrf-token manager/csrf}
-    (fn [code : Int, body : Str] : Void
-      (var data
-        :
-        Any
-        (try
-          ($json/parse body)
-        catch Any
-          {^message "The connection was interrupted. Refresh to inspect the current state."}))
-      (done code data))))
+  (owner_request manager/csrf method path payload done))
 
 # No push connection here: the mode comes from the rendered page and from each
 # catalog load (page load and Refresh).

@@ -1,0 +1,164 @@
+# Account records are private transport state. Only public_account/list_accounts
+# return values intended for a browser or catalog; they whitelist metadata.
+(mod chatgpt_store)
+(import [ProviderError] ^from "../plugin_api")
+(import [login_root] ^from "./provider_login")
+(import [try_lock_wait] ^from "./file_lock")
+
+(fn chatgpt_root [root = nil] : Str
+  ($path/join (login_root root) "chatgpt"))
+
+(fn account_id [record] : Str
+  ($crypto/sha256 ($json/stringify [record/issuer record/client_id record/subject])))
+
+(fn require_account_id [id]
+  (if (|| (!= ($head id) Str) ($absent? (#"^[0-9a-f]{64}$" .match id)))
+    (fail (ProviderError ^message "Invalid ChatGPT account selection")))
+  id)
+
+(fn account_path [root, id : Str] : Str
+  (require_account_id id)
+  ($path/join (chatgpt_root root) "accounts" ($to_str id ".json")))
+
+(fn ensure_store [root]
+  (let directory (chatgpt_root root))
+  ($fs/make_dir ($path/join directory "accounts"))
+  ($fs/set_mode directory 448)
+  ($fs/set_mode ($path/join directory "accounts") 448)
+  directory)
+
+(fn with_store_lock [root, name : Str, operation, ^wait_ms wait_ms : Int = 5000]
+  (let directory (ensure_store root))
+  (let lock (try_lock_wait ($path/join directory name) wait_ms))
+  (if ($absent? lock)
+    (fail (ProviderError ^message "ChatGPT credentials are being updated by another host; retry shortly")))
+  (try (operation) ensure lock/.close))
+
+(fn require_record [record, id : Str]
+  (if (|| (!= ($head record) Map) (!= record/version 1)
+    (!= record/issuer "https://auth.openai.com") (!= ($head record/client_id) Str)
+    (== record/client_id "") (== record/client_id "dynamic_agent_client")
+    (!= ($head record/subject) Str) (== record/subject "")
+    (!= (account_id record) id) (!= ($head record/scopes) List)
+    (!= ($head record/expires_at) Int))
+    (fail (ProviderError ^message "ChatGPT account record is invalid; sign in again")))
+  (for scope in record/scopes
+    (if (!= ($head scope) Str) (fail (ProviderError ^message "ChatGPT account record is invalid; sign in again"))))
+  (for key in ["access_token" "refresh_token" "id_token" "email" "name" "nonce"]
+    (let value (record .get key))
+    (if (&& ($present? value) (!= ($head value) Str))
+      (fail (ProviderError ^message "ChatGPT account record is invalid; sign in again"))))
+  record)
+
+(fn read_chatgpt_record [root, id : Str]
+  (let path (account_path root id))
+  (if (! ($fs/exists? path)) (return nil))
+  (try (require_record ($json/parse ($fs/read_text path)) id)
+    catch Any (fail (ProviderError ^message "ChatGPT account record is unreadable; sign in again"))))
+
+(fn active_chatgpt_id [root = nil]
+  (let path ($path/join (chatgpt_root root) "active.json"))
+  (if (! ($fs/exists? path)) (return nil))
+  (try
+    (let value ($json/parse ($fs/read_text path)))
+    (require_account_id value/id)
+  catch Any (fail (ProviderError ^message "ChatGPT account selection is unreadable; choose an account in Models"))))
+
+(fn plan_enabled? [record] : Bool
+  (&& ($present? record) (== ($head record/scopes) List)
+    (record/scopes .contains? "resource.invoke")
+    (record/scopes .contains? "chatgpt.tokens.use.direct")))
+
+(fn public_account [record]
+  (let id (account_id record))
+  (let identity (?? record/email record/name ($to_str "ChatGPT " ($str/slice_bytes record/subject 0 ($math/min 8 ($str/byte_size record/subject))))))
+  (let size ($str/byte_size record/client_id))
+  (let suffix ($str/slice_bytes record/client_id ($math/max 0 (- size 8)) ($math/min size 8)))
+  (let label $"${identity} · ${suffix}")
+  (let permitted (plan_enabled? record))
+  (var state "ready") (var reason nil)
+  (if (! permitted)
+    (then (set state "sign_in_required") (set reason "ChatGPT plan permission is not enabled; continue with ChatGPT and authorize plan usage."))
+    (elif (|| (== record/signed_out true) ($absent? record/access_token) (== record/access_token ""))
+      (set state "sign_in_required") (set reason "Continue with ChatGPT to reconnect this account."))
+    (elif (&& (<= record/expires_at (/ ($os/wall_ms) 1000)) ($absent? record/refresh_token))
+      (set state "expired") (set reason "ChatGPT access expired; continue with ChatGPT to reconnect.")))
+  {^id id ^label label ^client_id record/client_id ^subject record/subject
+   ^email record/email ^name record/name ^state state ^reason reason ^plan_enabled permitted
+   ^signed_out (== record/signed_out true)
+   ^welcome_pending (&& permitted (== state "ready") (!= record/plan_welcome_ack true))})
+
+(fn list_chatgpt_accounts [root = nil]
+  (let directory ($path/join (chatgpt_root root) "accounts"))
+  (let accounts [])
+  (if (! ($fs/exists? directory)) (return {^active nil ^accounts accounts}))
+  (for name in ($fs/list_dir directory)
+    (if ($absent? (#"^[0-9a-f]{64}[.]json$" .match name)) (continue))
+    (let id ($str/slice_bytes name 0 64))
+    (let account (try (public_account (read_chatgpt_record root id))
+      catch Any {^id id ^label $"Unreadable account ${($str/slice_bytes id 0 8)}" ^state "unavailable"
+        ^reason "This local record cannot be read; sign in again."}))
+    (accounts .push account))
+  (let selected (try {^active (active_chatgpt_id root)}
+    catch Any {^active nil ^error "Saved ChatGPT account selection is unreadable; choose an account or sign in again."}))
+  (selected .put "accounts" accounts)
+  selected)
+
+(fn select_chatgpt_account [root, id : Str]
+  (require_account_id id)
+  (with_store_lock root "accounts.lock" (fn []
+    (let record (read_chatgpt_record root id))
+    (if ($absent? record) (fail (ProviderError ^message "ChatGPT account not found")))
+    ($fs/write_text_atomic ^^owner_only ($path/join (chatgpt_root root) "active.json") ($json/stringify {^id id}))
+    (public_account record))))
+
+# The operation rereads under the per-account cross-process lock. Its result is
+# {record?, activate?, result?, error?}; a rotating token set is written together
+# before an optional error is raised. No caller may retain a stale refresh token.
+(fn with_chatgpt_account [root, id : Str, operation]
+  (require_account_id id)
+  (with_store_lock root ($to_str id ".lock") (fn []
+    (let current (read_chatgpt_record root id))
+    (let update (operation current))
+    (if ($present? update/record)
+      (then
+        (require_record update/record id)
+        ($fs/write_text_atomic ^^owner_only (account_path root id) ($json/stringify update/record))))
+    (if (== update/activate true) (select_chatgpt_account root id))
+    (if ($present? update/error) (fail update/error))
+    update/result)))
+
+(fn save_chatgpt_account [root, record, ^activate activate : Bool = true]
+  (let id (account_id record))
+  (with_chatgpt_account root id (fn [current]
+    (if (== current/plan_welcome_ack true) (record .put "plan_welcome_ack" true))
+    {^record record ^activate activate ^result (public_account record)})))
+
+(fn acknowledge_chatgpt_plan [root, id : Str]
+  (with_chatgpt_account root id (fn [record]
+    (if (|| ($absent? record) (! (plan_enabled? record)))
+      (fail (ProviderError ^message "ChatGPT plan usage is not enabled for this account")))
+    (record .put "plan_welcome_ack" true)
+    {^record record ^result {^^ok}})))
+
+(fn uuid_host_id [] : Str
+  (let value ($crypto/random_hex 16))
+  (let variants {^"0" "8" ^"1" "9" ^"2" "a" ^"3" "b" ^"4" "8" ^"5" "9" ^"6" "a" ^"7" "b"
+    ^"8" "8" ^"9" "9" ^a "a" ^b "b" ^c "8" ^d "9" ^e "a" ^f "b"})
+  ($to_str "urn:uuid:" ($str/slice_bytes value 0 8) "-" ($str/slice_bytes value 8 4)
+    "-4" ($str/slice_bytes value 13 3) "-" (variants .get ($str/slice_bytes value 16 1))
+    ($str/slice_bytes value 17 3) "-" ($str/slice_bytes value 20 12)))
+
+(fn chatgpt_host_id [root = nil]
+  (with_store_lock root "host.lock" (fn []
+    (let path ($path/join (chatgpt_root root) "host.json"))
+    (if ($fs/exists? path)
+      (then
+        (let stored (try ($json/parse ($fs/read_text path)) catch Any nil))
+        (if (|| (!= ($head stored/id) Str)
+          ($absent? (#"^urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" .match stored/id)))
+          (fail (ProviderError ^message "ChatGPT host identity is unreadable; repair the local host record before signing in")))
+        (return stored/id)))
+    (let id (uuid_host_id))
+    ($fs/write_text_atomic ^^owner_only path ($json/stringify {^id id}))
+    id)))

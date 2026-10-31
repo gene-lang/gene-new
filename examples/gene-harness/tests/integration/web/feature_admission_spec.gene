@@ -24,7 +24,7 @@
                         "/sessions/missing/delegations/recovery" "/sessions/missing/cards/x/actions"]
             (let denied (wire client/connection "POST" path {} ^credentials wrong_csrf))
             ($assert (== denied/status 403) ($to_str path ": " denied/status)))
-          (let foreign (request ^method "POST" ^url $"${client/connection/origin}/api/v8/notifications"
+          (let foreign (request ^method "POST" ^url $"${client/connection/origin}/api/v9/notifications"
             ^headers {^origin "http://foreign.invalid" ^cookie client/credentials/cookie
               ^x-csrf-token client/credentials/csrf ^content-type "application/json"} ^body "{}"))
           (let response (try (await foreign) ensure foreign/.cancel))

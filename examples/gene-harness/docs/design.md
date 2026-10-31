@@ -267,7 +267,7 @@ history. See [notifications](notification.md).
 
 Wire identifiers and shared bounds belong to `web/contract.gene`. Storage
 formats, browser pending-state formats and per-view state versions have
-different owners. See [browser wire protocol](web-client.md#wire-protocol-8).
+different owners. See [browser wire protocol](web-client.md#wire-protocol-9).
 
 ## Development
 

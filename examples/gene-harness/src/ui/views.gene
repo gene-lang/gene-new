@@ -67,7 +67,7 @@
 (fn ui_render [runtime, session : Str, name : Str, revision : Str, state, ^instance instance : Str = "preview", ^sequence sequence : Str = "0"]
   (let h runtime/h)
   (if_not (/enabled (ui_settings runtime)) (ui_error "unavailable" "The UI experiment is disabled."))
-  (let lease (acquire_snapshot h/snapshots))
+  (let lease (acquire_snapshot ^label "ui/render" h/snapshots))
   (try
     (let record (ui_record lease/snapshot "web_components" name))
     (if (|| ($absent? record) ($absent? record/payload/view_state)) (ui_error "not_found" "View not found."))

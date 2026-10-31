@@ -1,0 +1,70 @@
+(import $test [describe it])
+(import [isolated run_spec source_path] ^from "../../support")
+(import $net/http [listen serve stop json])
+
+(describe "Opt-in model budget probe"
+  (it "requires the live flag, validates every effort before spending and never evaluates output" []
+    (isolated this_mod/.path "requires the live flag, validates every effort before spending and never evaluates output"
+      (fn [workspace]
+        (let server (listen ^host "127.0.0.1" ^port 0)) (let calls ($cell 0))
+        (let credit_rejection ($cell false))
+        (let runner (spawn ^lane root (try
+          (let file ($path/join workspace "models.gene"))
+          ($fs/write_text file ($serde/write_data {^version 1 ^providers [{^name "probe" ^adapter "openai_chat"
+            ^base_url $"http://127.0.0.1:${server/port}/v1" ^credential {^env "PROBE_KEY"}
+            ^models [{^id "fake" ^efforts ["low" "high"] ^max_output 100}]}]}))
+          (let entry (source_path "probes/model_budget.gene"))
+          (let refused (await ($os/exec_async ($os/executable_path) "run" entry file "probe" "fake"
+            ^timeout_ms 30000 ^dir workspace)))
+          ($assert (== refused/status 2)) ($assert (== calls/.get 0))
+          (let invalid (await ($os/exec_async ($os/executable_path) "run" entry "--live" file "probe" "fake" "low" "ultra"
+            ^timeout_ms 30000 ^dir workspace)))
+          ($assert (!= invalid/status 0))
+          ($assert (== calls/.get 0) "an earlier effort spent money before a later invalid level was rejected")
+          (let measured (await ($os/exec_async ($os/executable_path) "run" entry "--live" file "probe" "fake" "high"
+            ^env {^PROBE_KEY "SECRET_KEY"} ^timeout_ms 30000 ^dir workspace)))
+          ($assert (== measured/status 0) ($to_str measured/stdout measured/stderr))
+          ($assert (== calls/.get 1))
+          (let metrics ($json/parse ($str/trim measured/stdout)))
+          ($assert (== metrics/budget 100)) ($assert (== metrics/output_tokens 25))
+          ($assert (== metrics/reasoning_tokens 10)) ($assert (== metrics/effective_effort "high"))
+          ($assert (! ($str/contains? measured/stdout "SECRET")))
+          ($assert (! ($str/contains? measured/stdout "$fs/write_text")))
+          ($assert (! ($fs/exists? ($path/join workspace "PROBE_EXECUTED"))))
+          ($fs/write_text file ($serde/write_data {^version 1 ^providers [{^name "probe" ^adapter "anthropic_messages"
+            ^base_url $"http://127.0.0.1:${server/port}/v1" ^credential {^env "PROBE_KEY"}
+            ^models [{^id "fake" ^efforts ["low"] ^max_output 100}]}]}))
+          (credit_rejection .set true)
+          (let failed (await ($os/exec_async ($os/executable_path) "run" entry "--live" file "probe" "fake" "low"
+            ^env {^PROBE_KEY "SECRET_KEY"} ^timeout_ms 30000 ^dir workspace)))
+          ($assert (== failed/status 1))
+          (let rejected ($json/parse ($str/trim failed/stdout)))
+          ($assert (== rejected/http_status 400))
+          ($assert (== rejected/error_code "invalid_request_error"))
+          ($assert (== rejected/failure_category "api_credits_insufficient"))
+          ($assert (== rejected/request_id "req_budget_fixture"))
+          ($assert (! ($str/contains? failed/stdout "SECRET")))
+          ($assert (== calls/.get 2) "the rejected request was retried")
+        ensure (stop server))))
+        (serve server ^handler (fn [incoming]
+          (calls .set (+ calls/.get 1))
+          (if credit_rejection/.get
+            (then
+              ($assert (== incoming/path "/v1/messages"))
+              ($assert (== incoming/headers/x-api-key "SECRET_KEY"))
+              (return (json 400 ($json/stringify {^type "error" ^request_id "req_budget_fixture"
+                ^error {^type "invalid_request_error" ^message "Your credit balance is too low. SECRET_CONTEXT"}})))))
+          ($assert (== incoming/path "/v1/chat/completions"))
+          ($assert (== incoming/headers/authorization "Bearer SECRET_KEY"))
+          (let body ($json/parse incoming/body))
+          ($assert (== body/max_completion_tokens 100)) ($assert (== body/reasoning_effort "high"))
+          (json 200 ($json/stringify {^choices [{^finish_reason "stop" ^message
+            {^content "($fs/write_text \"PROBE_EXECUTED\" \"SECRET_OUTPUT\")"}}]
+            ^usage {^prompt_tokens 15 ^completion_tokens 25 ^completion_tokens_details {^reasoning_tokens 10}
+              ^private "SECRET_USAGE"}}))))
+        (match runner/.join
+          (when (TaskOutcome/ok value) value)
+          (when (TaskOutcome/error error) (fail error))
+          (else ($assert false "probe fixture was cancelled")))))))
+
+(fn main [args] : Int (run_spec args))

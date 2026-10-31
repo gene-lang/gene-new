@@ -32,12 +32,12 @@
   ($dom/set_text bench/root ($to_str "Audio benchmark failed: " stage))
   (if_not ($absent? bench/host) (close_host_audio (host bench)))
   (if_yes (!= bench/session "")
-    (api bench "POST" $"/api/v8/sessions/${bench/session}/voice/latency"
+    (api bench "POST" $"/api/v9/sessions/${bench/session}/voice/latency"
       {^kind "error" ^elapsed_ms 0 ^identity stage}
       (fn [code : Int, data : Any] : Void nil))))
 
 (fn report [bench : AudioBench, kind : Str, elapsed : Int, identity : Str] : Void
-  (api bench "POST" $"/api/v8/sessions/${bench/session}/voice/latency"
+  (api bench "POST" $"/api/v9/sessions/${bench/session}/voice/latency"
     {^kind kind ^elapsed_ms elapsed ^identity ($to_str (+ bench/pair 1) "/" bench/phase "/" identity)
      ^input_kind bench/phase}
     (fn [code : Int, data : Any] : Void
@@ -72,7 +72,7 @@
 
 (fn claim_output [bench : AudioBench, output : Bool, next : (Fn [] Void)] : Void
   (var engine (host bench)) (set engine/output output)
-  (api bench "POST" $"/api/v8/sessions/${bench/session}/voice"
+  (api bench "POST" $"/api/v9/sessions/${bench/session}/voice"
     {^client_id bench/owner ^token bench/token ^output output}
     (fn [code : Int, data : Any] : Void
       (if_yes (!= code 200) (bench_error bench "claim-output") (return))
@@ -150,7 +150,7 @@
   (if_yes (! (flag current/connected))
     ($time/after 20.0 (fn [] : Void (wait_for_session bench))) (return))
   (set bench/owner (text current/client_id))
-  (api bench "POST" $"/api/v8/sessions/${bench/session}/voice" {^client_id bench/owner ^output true}
+  (api bench "POST" $"/api/v9/sessions/${bench/session}/voice" {^client_id bench/owner ^output true}
     (fn [code : Int, claim : Any] : Void
       (if_yes (!= code 200) (bench_error bench "initial-claim") (return))
       (set bench/token (text claim/token))

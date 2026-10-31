@@ -3,12 +3,48 @@
 The loop owns this response and record contract. [Design](design.md) explains
 ownership and lifetimes; feature APIs live in their registered chapters.
 
+## Model selection and catalog
+
+Web protocol 9 keeps the catalog separate from status. Status carries an opaque
+`catalog_revision` and the resolved model's requested/effective effort and source.
+While a round runs, status reports that round's selection.
+
+Operator round and deliberate-continuation submissions accept optional
+`model_settings`. An accepted choice is saved under the session gate before
+resolution; refused submissions do not save it. Without a new choice, the
+backend uses the session's current settings and default. Preview is informational
+and is not an admission precondition. Admission records the resolved selection,
+model limits and non-secret transport identity on the round receipt.
+
+The optional Models contribution owns these authenticated `/api/v9` routes:
+
+| Route | Contract |
+| --- | --- |
+| `GET /models` | Cached catalog, connection states and metadata; no inference |
+| `POST /models/refresh` | Request bounded discovery; returns 202 |
+| `GET /models/settings` | Inert shared configuration, errors and digest |
+| `POST /models/settings` | Save `config` with `expected_digest`; stale writes return 409 |
+| `POST /models/default` | Save `model_settings` as the shared default with `expected_digest` |
+| `POST /models/preview` | Resolve a session/selection for display without saving it |
+| `POST /models/connect` | Start user-requested sign-in for `provider`, optionally a saved `account` |
+| `GET /models/login?id=...` | Public metadata/status for that bounded sign-in attempt |
+| `DELETE /models/login?id=...` | Cancel the attempt |
+| `GET /models/accounts` | Account metadata; never tokens |
+| `POST /models/accounts` | `id` and `action`: select, sign_out or acknowledge the first-use plan notice |
+
+`GET /models` outside the API prefix renders the standalone settings page.
+The loopback `GET /auth/callback` validates one-shot OAuth state independently
+of the owner cookie. Credentials stay in the authentication/transport service.
+The loop still works with a typed provider/model when Models is disabled.
+
 ## Code response pipeline
 
 A turn builds instructions and history, invokes the provider, reads the raw
 response, applies its patch, evaluates code, and interprets the final value.
-The provider row is selected once from the turn's leased composition, so a
-summary and main call use the same row. The loop owns every protocol record.
+Round admission freezes provider, model, effort and model metadata. Each turn
+leases the current row under that transport identity, and its summary and main
+call use that row. Replacing row code is allowed; changing the connection stops
+the round. The loop owns every protocol record.
 Its order is:
 
 ```text

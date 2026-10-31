@@ -1,0 +1,38 @@
+# Small offline lists, replaced by discovery and file overrides when available.
+(mod model_defaults)
+
+# The Models API does not advertise disabled thinking. Keep only the documented
+# per-model exceptions here; an unfamiliar model gets no inferred off mode.
+(fn anthropic_thinking_off [id]
+  (match id
+    (when "claude-sonnet-5-5" "between_tools")
+    (when "claude-sonnet-5" "disabled")
+    (when "claude-opus-4-7" "disabled")
+    (when "claude-opus-4-8" "disabled")
+    (when "claude-opus-5" "disabled")
+    (when "claude-haiku-5-5" "disabled")
+    (else nil)))
+
+(fn anthropic_models []
+  (let result [])
+  (for [id label default] in
+    [["claude-opus-5-5" "Claude Opus 5.5" "medium"]
+     ["claude-sonnet-5-5" "Claude Sonnet 5.5" "high"]
+     ["claude-haiku-5-5" "Claude Haiku 5.5" "medium"]
+     ["claude-fable-5-1" "Claude Fable 5.1" "high"]]
+    (let efforts (if ($present? (anthropic_thinking_off id))
+      (then ["none" "low" "medium" "high" "xhigh" "max"])
+      (else ["low" "medium" "high" "xhigh" "max"])))
+    (result .push {^id id ^label label ^window 1000000 ^max_output 128000
+      ^input ["text" "image"] ^efforts efforts
+      ^default_effort default}))
+  result)
+
+(fn claude_models []
+  (let result [])
+  (for [alias id] in [["opus" "claude-opus-5-5"] ["sonnet" "claude-sonnet-5-5"]
+                     ["haiku" "claude-haiku-5-5"] ["fable" "claude-fable-5-1"]]
+    (result .push {^id alias ^label alias ^window 1000000 ^max_output 128000
+      ^input ["text"] ^prompt_limit_bytes 131072
+      ^efforts ["none" "low" "medium" "high" "xhigh" "max"]}))
+  result)

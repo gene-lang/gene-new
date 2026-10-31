@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "provider": "anthropic",
+  "credential_source": "ant Console OAuth",
+  "scope": "Authenticated read-only model discovery through an isolated native Harness host",
+  "connection_state": "ready",
+  "billing": "metered",
+  "model_count": 14,
+  "models_with_limits": 14,
+  "models_with_effort_metadata": 12,
+  "models_with_image_input": 14,
+  "inference_requests": 0,
+  "verification_host_stopped": true
+}

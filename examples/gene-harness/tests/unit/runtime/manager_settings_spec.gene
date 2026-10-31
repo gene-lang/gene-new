@@ -130,11 +130,11 @@
 (describe
   "Managed provider selection"
   (it
-    "uses saved values before compatible environment defaults without changing direct launches"
+    "uses saved values before compatible environment defaults for every launch"
     []
     (let h (new_harness))
     (var priority 0)
-    (for name in ["openrouter" "anthropic" "codex"]
+    (for name in ["openrouter" "anthropic" "chatgpt"]
       (let fallback $"${name}-default")
       (contribute
         h
@@ -144,8 +144,6 @@
           ^name name
           ^auto priority
           ^doc name
-          ^available (fn []
-                       nil)
           ^configure (fn [model, effort, timeout]
                        {^model (?? model fallback) ^effort (?? effort "medium")})
           ^prepare (fn [call]
@@ -156,16 +154,16 @@
     (let runtime {^h h ^profile {^name "test" ^provider nil ^requires []} ^^managed})
     (let environment
       {
-        ^GENE_HARNESS_PROVIDER "codex"
-        ^GENE_HARNESS_MODEL "codex-only"
+        ^GENE_HARNESS_PROVIDER "chatgpt"
+        ^GENE_HARNESS_MODEL "chatgpt-only"
         ^GENE_HARNESS_THINKING_EFFORT "high"})
     (let unset (select_provider ^environment environment runtime {}))
-    ($assert (== unset/name "codex"))
-    ($assert (== unset/settings/model "codex-only"))
+    ($assert (== unset/name "chatgpt"))
+    ($assert (== unset/settings/model "chatgpt-only"))
     (let saved (select_provider ^environment environment runtime {^provider "anthropic"}))
     ($assert (== saved/name "anthropic"))
     ($assert (== saved/settings/model "anthropic-default"))
-    ($assert (== saved/settings/effort "medium"))
+    ($assert ($absent? saved/settings/effort))
     (let explicit
       (select_provider ^environment environment
         runtime
@@ -182,8 +180,8 @@
     (runtime .put "managed" false)
     (let direct
       (select_provider ^environment environment runtime {^provider "anthropic" ^model "saved"}))
-    ($assert (== direct/name "codex"))
-    ($assert (== direct/settings/model "codex-only"))))
+    ($assert (== direct/name "anthropic"))
+    ($assert (== direct/settings/model "saved"))))
 
 (fn main [args] : Int
   (run_spec args))

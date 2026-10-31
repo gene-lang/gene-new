@@ -1,5 +1,5 @@
 (mod round_controller)
-(import [operator_round?] ^from "./round_policy")
+(import [operator_round? continuable_round?] ^from "./round_policy")
 (import [normalize_message] ^from "../channels/model")
 (import [resolve_initiator make_initiator] ^from "./initiators")
 (import [RoundError] ^from "./round_errors" ^^export)
@@ -13,7 +13,9 @@
 (import [prompt_limit receipt_limit] ^from "../web/contract")
 (import ^from "../agents/turn_loop" [run_round transcript finish_turn])
 (import [next_request] ^from "../agents/next_request")
-(import ^from "../agents/provider_selection" [readiness_report session_settings])
+(import ^from "../agents/provider_selection" [readiness_report session_settings resolve_selection])
+(import [validate_model_settings] ^from "../public/models")
+(import [ProviderError] ^from "../plugin_api")
 (import ^from "../agents/harness_turn" [answer_validators])
 (import ^from "./composition" [acquire_snapshot release_snapshot])
 (import ^from "./input_modes" [require_chat])
@@ -117,6 +119,7 @@
         (?? admission/child_prompt "") "\n\n" brief))
       (submit_round_impl controller admission/session admission/request_id state/next_seq text
         ^initiator (make_initiator controller/runtime/h "parent" $"${parent/session}/${admission/id}")
+        ^expected_transport admission/provider_settings/transport
         ^limits {^turn_limit admission/turn_limit ^timeout_ms admission/timeout_ms}
         ^delegation {^parent parent/session ^id admission/id ^admission admission/number
           ^source admission/source}))))))
@@ -139,11 +142,13 @@
     (if (== receipt/request_id request_id) (return receipt)))
   nil)
 
-(fn round_digest [text : Str, media, card_ref, checked_input]
-  ($crypto/sha256 (if ($absent? checked_input)
+(fn round_digest [text : Str, media, card_ref, checked_input, ^model_settings model_settings = nil]
+  (let content (if ($absent? checked_input)
     (if (&& media/.empty? ($absent? card_ref)) text
       ($serde/write_data {^text text ^media media ^card card_ref}))
-    ($serde/write_data {^text text ^media media ^card card_ref ^input checked_input}))))
+    ($serde/write_data {^text text ^media media ^card card_ref ^input checked_input})))
+  ($crypto/sha256 (if ($absent? model_settings) content
+    ($serde/write_data {^content content ^model_settings model_settings}))))
 
 # Batch selection, authorization and engine admission share the browser's
 # existing session gate. The callback queries the configured policy authority.
@@ -287,7 +292,7 @@
       (finish_round_unlocked controller session receipt outcome))))
   (if_yes (&& (== saved/state "paused") (== saved/continuation_mode "automatic")
               (! controller/runtime/stopping/.get))
-    (try (continue_round controller session saved/id "automatic")
+      (try (continue_round ^operator false controller session saved/id "automatic")
       catch Any (stop_continuation controller session saved/id $err)))
   saved)
 
@@ -358,7 +363,7 @@
   (frame .put "watcher" watcher)
   receipt)
 
-(fn submit_round [controller : RoundController, session : Str, request_id : Str, sequence : Int, text : Str, ^initiator initiator : Str = "user", ^on_admit on_admit = nil, ^media media = [], ^card card = nil, ^input input = nil]
+(fn submit_round [controller : RoundController, session : Str, request_id : Str, sequence : Int, text : Str, ^initiator initiator : Str = "user", ^on_admit on_admit = nil, ^media media = [], ^card card = nil, ^input input = nil, ^model_settings model_settings = nil]
   (with_body_use
     controller/runtime
     (fn []
@@ -366,14 +371,17 @@
         controller/runtime/sessions
         $"round/${session}"
         (fn []
-          (submit_round_impl ^initiator initiator ^on_admit on_admit ^media media ^card card ^input input
+          (submit_round_impl ^initiator initiator ^on_admit on_admit ^media media ^card card ^input input ^model_settings model_settings
             controller
             session
             request_id
             sequence
             text))))))
 
-(fn submit_round_impl [controller : RoundController, session : Str, request_id : Str, sequence : Int, text : Str, ^initiator initiator : Str = "user", ^on_admit on_admit = nil, ^media media = [], ^card card = nil, ^limits limits = nil, ^delegation delegation = nil, ^input input = nil, ^continuation continuation = nil]
+(fn submit_round_impl [controller : RoundController, session : Str, request_id : Str, sequence : Int, text : Str, ^initiator initiator : Str = "user", ^on_admit on_admit = nil, ^media media = [], ^card card = nil, ^limits limits = nil, ^delegation delegation = nil, ^input input = nil, ^continuation continuation = nil, ^model_settings model_settings = nil, ^expected_transport expected_transport = nil, ^persist_model_settings persist_model_settings : Bool = false]
+  (if ($present? model_settings)
+    (try (validate_model_settings model_settings)
+      catch Any (fail (RoundError ^code "invalid_request" ^message $err/message))))
   (let source (resolve_initiator controller/runtime session initiator text input continuation))
   (let user_source (== source/kind "user"))
   (let channel_source source/channel)
@@ -394,7 +402,7 @@
     (fail (RoundError ^code "invalid_request" ^message
       (if (== checked_input/kind "voice") "Voice input does not attach composer media or cards."
         "Channel input does not attach browser composer media or cards."))))
-  (let digest (round_digest text media card_ref checked_input))
+  (let digest (round_digest ^model_settings model_settings text media card_ref checked_input))
   (for old in state/receipts
     (if (|| (== old/request_id request_id) (== old/submission_seq sequence))
       (then
@@ -425,21 +433,36 @@
         (fail (RoundError ^code "invalid_request" ^message "Only the user sends cards.")))
       (card_send_item controller/runtime session card_ref text))))
   (let admission_lease (acquire_snapshot controller/runtime/h/snapshots))
-  (let ready_message
+  (let admission
     (try
       ($runtime/with_context
         {^composition controller/runtime/h/snapshots
          ^snapshot admission_lease/snapshot}
         (fn []
-          (let settings (session_settings (require_record controller/runtime/sessions session)
-            ($serde/read_data ($fs/read_text $"${controller/runtime/state_root}/config.gene"))))
-          (readiness_report controller/runtime settings)))
+          (let base ($serde/read_data ($fs/read_text $"${controller/runtime/state_root}/config.gene")))
+          (let stored (require_record controller/runtime/sessions session))
+          (let metadata (if (|| ($present? model_settings) (== source/kind "trigger"))
+            {^model_settings (?? model_settings {})} stored))
+          (let settings (session_settings metadata base))
+          (if (&& (== source/kind "trigger") (> ($size (?? model_settings {})) 0))
+            (settings .put "selection_source" "trigger"))
+          (let reason (readiness_report controller/runtime settings))
+          (if ($present? reason) (return {^reason reason}))
+          (let selection (try (resolve_selection controller/runtime settings)
+            catch ProviderError
+              (return {^reason $err/message ^code (if (&& user_source ($present? model_settings) (> ($size model_settings) 0))
+                (then "invalid_request") (else "not_ready"))})))
+          (if (&& ($present? expected_transport) (!= expected_transport selection/transport))
+            (return {^reason "Provider connection changed since the source round; start a new round deliberately."}))
+          {^selection selection ^reason nil}))
     ensure
       (release_snapshot controller/runtime/h/snapshots admission_lease)))
-  (if_not ($absent? ready_message)
-    (fail (RoundError ^code "not_ready" ^message ready_message)))
+  (if ($present? admission/reason)
+    (fail (RoundError ^code (?? admission/code "not_ready") ^message admission/reason)))
   (let metadata (require_record controller/runtime/sessions session))
   (let changes {})
+  (if (&& (|| user_source persist_model_settings) ($present? model_settings))
+    (changes .put "model_settings" (if (== ($size model_settings) 0) nil model_settings)))
   (let display_request (if (&& (== ($str/trim text) "") (! attachments/.empty?))
     $"Attachment: ${attachments/0/name}" text))
   (if source/operator (changes .put "attention" false))
@@ -468,6 +491,7 @@
       ^initiator initiator
       ^initiator_kind source/name ^operator source/operator
       ^prompt text
+      ^selection admission/selection
       ^request text
       ^turn_count 0
       ^accepted_at ($to_str ($now))})
@@ -537,12 +561,13 @@
   (if current (update_session controller/runtime/sessions session {^^attention}))
   nil)
 
-(fn continue_round [controller : RoundController, session : Str, source : Str, mode : Str]
+(fn continue_round [controller : RoundController, session : Str, source : Str, mode : Str,
+  ^operator operator : Bool = true, ^model_settings model_settings = nil]
   (if_not (["manual" "automatic"] .contains? mode)
     (fail (RoundError ^code "invalid_request" ^message "Unknown continuation mode.")))
   (with_body_use controller/runtime (fn []
     (with_session_gate controller/runtime/sessions $"round/${session}"
-      (fn [] (continue_round_locked controller session source mode))))))
+      (fn [] (continue_round_locked ^operator operator ^model_settings model_settings controller session source mode))))))
 
 # Caller holds the session gate and has durably claimed an explicit operator
 # choice to replace this paused task. The claim ID makes crash recovery safe.
@@ -561,8 +586,9 @@
   (save_round controller session receipt)
   receipt)
 
-(fn continue_round_locked [controller, session : Str, source : Str, mode : Str]
-  (let old (round_receipt controller session source))
+(fn continue_round_locked [controller, session : Str, source : Str, mode : Str,
+  ^operator operator : Bool = true, ^model_settings model_settings = nil]
+  (let old (copy_data (round_receipt controller session source)))
   (if ($absent? old) (fail (RoundError ^code "not_found" ^message "Paused round not found.")))
   (if_not ($absent? old/continued_by)
     (let successor (round_receipt controller session old/continued_by))
@@ -572,9 +598,15 @@
         (return successor)
         (fail (RoundError ^code "stale" ^message "Continuation admission was superseded.")))))
   (let loaded (load_session controller/runtime/sessions session))
+  (if (&& operator (== (/id loaded/round/.get) source)
+      (continuable_round? old) (== old/continuation_stop "failed"))
+    (then
+      (old .put "continuation_stop" nil)
+      (old .put "continuation_error" nil)
+      (old .put "continuation_intent" nil)))
   (if (|| (!= (/id loaded/round/.get) source) ($present? old/continuation_stop))
     (fail (RoundError ^code "stale" ^message "Continuation was superseded.")))
-  (if_not (&& (operator_round? old) (== old/state "paused"))
+  (if_not (continuable_round? old)
     (fail (RoundError ^code "invalid_request" ^message "This round has no pending continuation.")))
   (let state (round_state controller session))
   (let intent old/continuation_intent)
@@ -604,6 +636,11 @@
   (try
     (submit_round_impl controller session request_id sequence ""
       ^initiator (make_initiator controller/runtime/h "continue" source)
+      ^model_settings (?? model_settings (if ($absent? old/selection)
+        (then nil)
+        (else {^provider old/selection/provider ^model old/selection/model ^effort old/selection/requested_effort})))
+      ^persist_model_settings (&& operator ($present? model_settings))
+      ^expected_transport (if operator (then nil) (else old/selection/transport))
       ^limits old/effective_limits ^continuation descriptor
       ^input (?? descriptor/input nil))
   catch Any
@@ -621,7 +658,7 @@
     (let receipt loaded/round/.get)
     (if_not ($absent? receipt/continuation_stop) (continue))
     (if (|| (== receipt/continuation_mode "automatic") ($present? receipt/continuation_intent))
-      (try (continue_round controller session receipt/id (?? receipt/continuation_mode "manual"))
+      (try (continue_round ^operator false controller session receipt/id (?? receipt/continuation_mode "manual"))
         catch Any (stop_continuation controller session receipt/id $err))))
   nil)
 

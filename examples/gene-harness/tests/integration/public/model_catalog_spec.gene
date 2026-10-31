@@ -1,0 +1,150 @@
+(import $test [describe it])
+(import [isolated run_spec] ^from "../../support")
+(import [open_model_catalog close_model_catalog refresh_catalog catalog_snapshot catalog_failure adopt_catalog_connection]
+  ^from "../../../src/public/model_catalog")
+(import [bounded_probe claude_connection] ^from "../../../src/public/provider_discovery")
+
+(describe "Model catalog discovery"
+  (it "publishes an account switch immediately and discards older ready or rejected probes" []
+    (isolated this_mod/.path "publishes an account switch immediately and discards older ready or rejected probes"
+      (fn [workspace]
+        (for stale_state in ["ready" "expired"]
+          (let held ($cell false)) (let entered ($cell false)) (let released ($cell false))
+          (let account ($cell "account-a"))
+          (let provider {^name "example" ^transport {^adapter "fake" ^base_url "fake://one"}
+            ^connection (fn []
+              (let captured {^state (if held/.get (then stale_state) (else "ready")) ^billing "plan" ^account account/.get})
+              (if held/.get (then (entered .set true) (while (! released/.get) ($sleep 1))))
+              captured)
+            ^models (fn [] [{^id account/.get}])})
+          (let catalog (open_model_catalog ^start false workspace (fn [] [provider])))
+          (try
+            (refresh_catalog catalog) (held .set true)
+            (let probe (spawn ^lane root (refresh_catalog catalog)))
+            (let deadline (+ ($os/monotonic_ms) 5000))
+            (while (! entered/.get) ($assert (< ($os/monotonic_ms) deadline)) ($sleep 1))
+            (account .set "account-b")
+            (adopt_catalog_connection catalog "example" {^state "ready" ^billing "plan" ^account "account-b"})
+            ($assert (== catalog/state/.get/providers/example/connection/account "account-b"))
+            ($assert (== catalog/state/.get/providers/example/models []))
+            (released .set true) probe/.join
+            ($assert (== catalog/state/.get/providers/example/connection/account "account-b") stale_state)
+            ($assert (== catalog/state/.get/providers/example/connection/state "ready"))
+            (held .set false) (refresh_catalog catalog)
+            ($assert (== catalog/state/.get/providers/example/models/0/id "account-b"))
+          ensure (released .set true) (close_model_catalog catalog))))))
+
+  (it "keeps a newer 401 visible when an older probe completes and ignores another transport's failure" []
+    (isolated this_mod/.path "keeps a newer 401 visible when an older probe completes and ignores another transport's failure"
+      (fn [workspace]
+        (let held ($cell false)) (let entered ($cell false)) (let released ($cell false))
+        (let provider {^name "example" ^transport {^adapter "fake" ^base_url "fake://one"}
+          ^connection (fn [] {^state "ready" ^billing "plan" ^account "account"})
+          ^models (fn []
+            (if held/.get (then (entered .set true) (while (! released/.get) ($sleep 1))))
+            [{^id "one"}])})
+        (let catalog (open_model_catalog ^start false workspace (fn [] [provider])))
+        (try
+          (refresh_catalog catalog)
+          (catalog_failure ^transport "another-connection" catalog "example" 401)
+          ($assert (== catalog/state/.get/providers/example/connection/state "ready"))
+          (let transport catalog/state/.get/providers/example/transport)
+          (held .set true)
+          (let probe (spawn ^lane root (refresh_catalog catalog)))
+          (let deadline (+ ($os/monotonic_ms) 5000))
+          (while (! entered/.get) ($assert (< ($os/monotonic_ms) deadline)) ($sleep 1))
+          (catalog_failure ^transport transport catalog "example" 401)
+          (released .set true) probe/.join
+          ($assert (== catalog/state/.get/providers/example/connection/state "expired"))
+          ($assert (== catalog/state/.get/providers/example/connection/account "account"))
+          (refresh_catalog catalog)
+          ($assert (== catalog/state/.get/providers/example/connection/state "ready") "a later deliberate refresh could not recover")
+        ensure (released .set true) (close_model_catalog catalog)))))
+
+  (it "keeps independent provider results when probes run concurrently" []
+    (isolated this_mod/.path "keeps independent provider results when probes run concurrently"
+      (fn [workspace]
+        (let a {^name "a" ^connection (fn [] {^state "ready" ^billing "local"})
+          ^models (fn [] ($sleep 10) [{^id "model-a"}])})
+        (let b {^name "b" ^connection (fn [] {^state "ready" ^billing "metered"})
+          ^models (fn [] [{^id "model-b"}])})
+        (let catalog (open_model_catalog ^start false workspace (fn [] [a b])))
+        (try
+          (refresh_catalog catalog)
+          (let state (catalog_snapshot catalog))
+          ($assert (== state/providers/a/models/0/id "model-a"))
+          ($assert (== state/providers/b/models/0/id "model-b"))
+          ($assert (== state/providers/a/connection/billing "local"))
+          ($assert (== state/providers/b/connection/billing "metered"))
+        ensure (close_model_catalog catalog)))))
+
+  (it "keeps stale lists, expires rejected credentials and never caches tokens or accounts" []
+    (isolated this_mod/.path "keeps stale lists, expires rejected credentials and never caches tokens or accounts"
+      (fn [workspace]
+        (let failed ($cell false))
+        (let account ($cell "ACCOUNT_SENTINEL"))
+        (let calls ($cell 0))
+        (let provider {^name "example" ^doc "Discovery fixture."
+          ^transport {^adapter "fake" ^base_url "fake://one" ^billing "plan"}
+          ^connection (fn [] {^state "ready" ^billing "plan" ^account account/.get ^access_token "SECRET_SENTINEL"})
+          ^models (fn []
+            (calls .set (+ calls/.get 1))
+            (if failed/.get (fail "SECRET_SENTINEL should not be cached"))
+            [{^id "model" ^window 500000 ^input ["text" "image"] ^efforts ["low"] ^default_effort "low"}])})
+        (let catalog (open_model_catalog ^start false workspace (fn [] [provider])))
+        (try
+          (refresh_catalog catalog)
+          (let first (catalog_snapshot catalog))
+          ($assert (== first/providers/example/connection/state "ready"))
+          ($assert (== first/providers/example/models/0/window 500000))
+          (repeat 20 (catalog_snapshot catalog))
+          ($assert (== calls/.get 1) "reading snapshots ran discovery")
+          (failed .set true)
+          (refresh_catalog catalog)
+          (let stale (catalog_snapshot catalog))
+          ($assert stale/providers/example/stale)
+          ($assert (== stale/providers/example/models/0/id "model"))
+          (catalog_failure catalog "example" 401)
+          (let expired (catalog_snapshot catalog))
+          ($assert (== expired/providers/example/connection/state "expired"))
+          (let cached ($fs/read_text ($path/join workspace ".gene-harness" "model_catalog.gene")))
+          ($assert (! ($str/contains? cached "SECRET_SENTINEL")))
+          ($assert (! ($str/contains? cached "ACCOUNT_SENTINEL")))
+        ensure (close_model_catalog catalog))
+        (account .set "different-account")
+        (let reopened (open_model_catalog ^start false workspace (fn [] [provider])))
+        (try
+          (refresh_catalog reopened)
+          (let state (catalog_snapshot reopened))
+          ($assert (== state/providers/example/models []) "another account inherited the cached catalog")
+        ensure (close_model_catalog reopened)))))
+
+  (it "bounds arbitrary probe callbacks and cancels its worker on close" []
+    (isolated this_mod/.path "bounds arbitrary probe callbacks and cancels its worker on close"
+      (fn [workspace]
+        (let started ($os/monotonic_ms))
+        (let entered ($cell false))
+        (let refused (try (bounded_probe ^timeout_ms 25 (fn [] (entered .set true) ($sleep 1000) "late"))
+          false catch Any true))
+        ($assert refused)
+        ($assert entered/.get "probe never entered the callback")
+        ($assert (< (- ($os/monotonic_ms) started) 1000))
+        (let catalog (open_model_catalog workspace (fn [] [])))
+        ($sleep 150)
+        ($assert (> catalog/revision/.get 1) "discovery worker never ran")
+        (close_model_catalog catalog)
+        ($assert catalog/worker/.get/.done?))))
+
+  (it "reads Claude status through the unmodified CLI" []
+    (isolated this_mod/.path "reads Claude status through the unmodified CLI"
+      (fn [workspace]
+        (let command ($path/join workspace "claude-status"))
+        ($fs/write_text command "#!/bin/sh\nprintf '%s\\n' '{\"loggedIn\":true,\"authMethod\":\"claude.ai\",\"subscriptionType\":\"pro\",\"email\":\"person@example.test\"}'\n")
+        ($fs/set_mode command 493)
+        (let claude (claude_connection command))
+        ($assert (== claude/state "ready"))
+        ($assert (== claude/billing "plan"))
+        ($fs/write_text command "#!/bin/sh\nprintf '%s\\n' '{\"loggedIn\":false}'\nexit 1\n")
+        ($assert (== (/state (claude_connection command)) "sign_in_required"))))))
+
+(fn main [args] : Int (run_spec args))

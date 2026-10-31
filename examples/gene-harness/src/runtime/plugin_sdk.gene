@@ -3,8 +3,18 @@
 (mod plugin_sdk)
 (fn sdk_modules []
   ["src/plugin_api.gene" "src/public/response.gene" "src/public/text.gene" "src/web/contract.gene"
-   "src/public/documentation.gene" "src/public/provider.gene"
+   "src/public/documentation.gene" "src/public/provider.gene" "src/public/provider_payloads.gene"
    "src/public/history_policy.gene" "src/public/model_content.gene"
+   "src/public/models.gene" "src/public/model_defaults.gene" "src/public/model_discovery.gene"
+   "src/public/models_file.gene" "src/public/file_lock.gene"
+   "src/public/workspace_paths.gene"
+   "src/public/provider_discovery.gene" "src/public/provider_login.gene"
+   "src/public/anthropic_auth.gene"
+   "src/public/chatgpt_store.gene" "src/public/chatgpt_auth.gene"
+   "src/public/chatgpt_provider.gene"
+   "src/public/model_catalog.gene"
+   "src/public/model_choices.gene"
+   "src/public/model_page.gene"
    "src/public/image_contract.gene" "src/public/model_text.gene"
    "src/public/speech_engines.gene" "src/public/mac_recognition.gene"
    "src/public/voice_frames.gene"])

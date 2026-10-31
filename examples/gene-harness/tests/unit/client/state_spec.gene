@@ -54,7 +54,7 @@ Full second paragraph: 世界 <script>not HTML</script>")
     ($assert ($present? (first_prompt_block session [] []))))
 
   (it "retains attachment-only descriptors and uses a trigger's saved request" []
-    (let media [{^id "image" ^name "pixel.png" ^url "/api/v8/media/image"}])
+    (let media [{^id "image" ^name "pixel.png" ^url "/api/v9/media/image"}])
     (let session {^first_request "Attachment: pixel.png" ^first_request_round "round-a-1"
       ^first_request_media media})
     (let first (first_prompt_block session [] []))

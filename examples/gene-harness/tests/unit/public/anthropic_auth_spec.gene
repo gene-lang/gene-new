@@ -1,0 +1,51 @@
+(import $test [describe it run])
+(import [anthropic_auth_source anthropic_headers ant_status_metadata] ^from "../../../src/public/anthropic_auth")
+(import [ProviderError] ^from "../../../src/plugin_api")
+
+(describe "Anthropic credential routing"
+  (it "prefers an environment API key and leaves credentials out of the source descriptor" []
+    (let environment {^ANTHROPIC_API_KEY "SECRET_API_KEY" ^ANTHROPIC_PROFILE "work"})
+    (let source (anthropic_auth_source ^environment environment))
+    ($assert (== source/kind "api_key"))
+    ($assert (== source/credential {^env "ANTHROPIC_API_KEY"}))
+    ($assert (! ($str/contains? ($serde/write_data source) "SECRET")))
+    (let headers (anthropic_headers ^environment environment source))
+    ($assert (== headers/x-api-key "SECRET_API_KEY"))
+    ($assert ($absent? headers/authorization))
+    ($assert ($absent? headers/anthropic-beta))
+    ($assert (try (anthropic_headers ^environment {^ANTHROPIC_API_KEY "sk-ant-oat-CLAUDE_SUBSCRIPTION"} source)
+      false catch ProviderError true)))
+
+  (it "uses ant's public token command with the selected profile" []
+    (let source (anthropic_auth_source ^environment {^GENE_HARNESS_ANT_COMMAND "/fixture/ant" ^ANTHROPIC_PROFILE "work"}))
+    ($assert (== source/kind "ant"))
+    ($assert (== source/credential/command
+      ["/fixture/ant" "--profile" "work" "auth" "print-credentials" "--access-token"]))
+    ($assert (! ($str/contains? ($serde/write_data source) "Claude Code-credentials"))))
+
+  (it "retains only the documented profile and workspace identity from diagnostic status" []
+    (let status "Active profile:  default\nConfig dir: /SECRET_PATH\nCredentials\n(active) * Profile (user_oauth) [via active_config] sk-ant-oat-SECRET_TOKEN\nWorkspace\n(active) * Workspace wrkspc_123abc (SECRET_LABEL)\n")
+    (let metadata (ant_status_metadata status))
+    ($assert (== metadata/state "ready"))
+    ($assert (== metadata/account "default · wrkspc_123abc"))
+    ($assert (! ($str/contains? ($serde/write_data metadata) "SECRET")))
+    (let unsupported (ant_status_metadata "SECRET_TOKEN credentials source not recognized"))
+    ($assert (== unsupported/state "sign_in_required"))
+    ($assert (! ($str/contains? ($serde/write_data unsupported) "SECRET"))))
+
+  (it "accepts annotated profile selection without retaining its provenance" []
+    (let tail "\n(active) * Profile (user_oauth) SECRET_TOKEN\n(active) * Workspace wrkspc_123\n")
+    (let metadata (ant_status_metadata ($to_str "Active profile: default (from SECRET_CONTEXT)" tail)))
+    ($assert (== metadata/state "ready"))
+    ($assert (== metadata/account "default · wrkspc_123"))
+    ($assert (! ($str/contains? ($serde/write_data metadata) "SECRET")))
+    (for name in ["default arbitrary-tail" "default (unfinished" "../private/path"]
+      ($assert (== (/state (ant_status_metadata ($to_str "Active profile: " name tail))) "sign_in_required"))))
+
+  (it "does not mistake another selected source for a Console OAuth profile" []
+    (let status "Active profile: default\n(inactive) * Profile (user_oauth) SECRET_TOKEN\n(active) * Environment API key\n(active) * Workspace wrkspc_123\n")
+    ($assert (== (/state (ant_status_metadata status)) "sign_in_required"))
+    ($assert (== (/state (ant_status_metadata "Active profile: default\n(active) * Profile (user_oauth) SECRET_TOKEN\n"))
+      "sign_in_required"))))
+
+(fn main [args] : Int (/exit_code (run ^name (?? args/0 ""))))

@@ -56,7 +56,7 @@ assert.equal(titleTarget.textContent, 'Regular conversation');
 assert.equal(titleTarget.children.length, 0);
 update_session_title(titleState, 'Slack conversation', titleSharing, 'session a&b');
 update_session_title(titleState, 'Renamed conversation', titleSharing, 'session a&b');
-const threadLink = '/api/v8/sessions/session%20a%26b/slack-thread';
+const threadLink = '/api/v9/sessions/session%20a%26b/slack-thread';
 let titleLink = titleTarget.children.find(node => node.tag === 'a');
 assert.equal(titleLink.textContent, 'Renamed conversation');
 assert.equal(titleLink.attributes.href, threadLink);
@@ -67,7 +67,7 @@ assert.equal(titleTarget.children.find(node => node.tag === 'a'), titleLink, 'un
 update_session_title(titleState, 'Renamed again', titleSharing, 'session a&b');
 assert.equal(titleTarget.children.find(node => node.tag === 'a').textContent, 'Renamed again');
 update_session_title(titleState, 'Other Slack thread', {...titleSharing, thread: '2.000001'}, 'other');
-assert.equal(titleTarget.children.find(node => node.tag === 'a').attributes.href, '/api/v8/sessions/other/slack-thread');
+assert.equal(titleTarget.children.find(node => node.tag === 'a').attributes.href, '/api/v9/sessions/other/slack-thread');
 update_session_title(titleState, 'Regular again', null, 'regular');
 assert.equal(titleTarget.textContent, 'Regular again');
 assert.equal(titleTarget.children.length, 0);

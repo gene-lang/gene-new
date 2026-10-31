@@ -1,0 +1,20 @@
+(import $test [describe it run])
+(import [named_model_choice] ^from "../../../src/public/model_choices")
+
+(describe "Model choice names"
+  (it "preserves qualified native ids, resolves presets and refuses billing ambiguity" []
+    (let catalog {^presets [{^name "fast" ^provider "a" ^model "small" ^effort "low"}]
+      ^providers {^a {^models [{^id "native/model"} {^id "common"}]}
+                  ^b {^models [{^id "common"}]}}})
+    ($assert (== (named_model_choice catalog "native/model" "high")
+      {^provider "a" ^model "native/model" ^effort "high"}))
+    ($assert (== (named_model_choice catalog "a/new/model")
+      {^provider "a" ^model "new/model" ^effort "auto"}))
+    ($assert (== (named_model_choice catalog "fast")
+      {^provider "a" ^model "small" ^effort "low"}))
+    ($assert (== (named_model_choice catalog "default") {}))
+    ($assert (== (named_model_choice ^current_provider "a" catalog "future/model")
+      {^provider "a" ^model "future/model" ^effort "auto"}))
+    ($assert (try (named_model_choice catalog "common") false catch Any true))))
+
+(fn main [args] : Int (/exit_code (run ^name (?? args/0 ""))))

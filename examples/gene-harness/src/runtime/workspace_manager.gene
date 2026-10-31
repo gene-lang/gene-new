@@ -359,6 +359,7 @@
       (close_workspace_lock ownership))
     (let environment
       {
+        ^GENE_HARNESS_ROOT manager/root
         ^GENE_HARNESS_WORKSPACE nil
         ^GENE_HARNESS_PORT nil
         ^GENE_HARNESS_OFFLINE nil

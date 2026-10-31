@@ -5,12 +5,14 @@
 (import [baseline_profile] ^from "../../../src/profiles/baseline")
 (import [create_session load_session] ^from "../../../src/runtime/sessions")
 (import [submit_round round_receipt cancel_round close_round_controller
-         save_round RoundError answer_round request_stop resume_answered_rounds]
+         save_round RoundError answer_round request_stop resume_answered_rounds continue_round]
   ^from "../../../src/runtime/round_controller")
 (import [events_for append_core_event flush_event_store core_state record_core_state] ^from "../../../src/storage/state")
 (import [QuestionError answer_questions] ^from "../../../src/runtime/questions")
 (import [append_message] ^from "../../../src/agents/history")
-(import [RoundChanged] ^from "../../../src/kernel")
+(import [RoundChanged provide put_cordis_plugin] ^from "../../../src/kernel")
+(import [Profile] ^from "../../../src/profiles/profile")
+(import [Plugin PluginHost] ^from "../../../src/plugin_api")
 (import [scripted_profile] ^from "../../../src/profiles/scripted")
 (import [set_plugin_enabled] ^from "../../../src/storage/workspace_repair")
 
@@ -342,6 +344,98 @@
           ($assert ($str/contains? receipt/message "providers/scripted")
             "failure omitted the readiness reason")
         ensure
+          (close_round_controller controller)
+          (close_runtime runtime))))))
+
+(fn snapshot_fixture [url, send]
+  (Plugin ^id "snapshot_fixture" ^provides [["providers" "snapshot"]]
+    ^activate (fn [host]
+      (host .PluginHost:contribute "providers"
+        {^name "snapshot" ^doc "Exercise complete model snapshots."
+         ^transport {^adapter "fake" ^base_url url ^billing "metered"}
+         ^configure (fn [model effort timeout]
+           {^model (?? model "large") ^effort effort ^timeout_ms timeout})
+         ^prepare (fn [call] call) ^send send}))))
+
+(describe "Harness model selection rounds"
+  (it "holds one resolved selection across real model calls and refreshes the next round" []
+    (isolated this_mod/.path "holds one resolved selection across real model calls and refreshes the next round"
+      (fn [workspace]
+        (let cache ($cell
+          {^default {^provider "snapshot" ^model "large" ^effort "high"}
+           ^providers {^snapshot {^connection {^state "ready" ^billing "metered"}
+             ^models [{^id "large" ^window 1000000 ^input ["text" "image"] ^efforts ["low"]}
+                      {^id "small" ^window 64000 ^input ["text"] ^efforts ["high"]}]}}}))
+        (let calls ($cell []))
+        (let plugin (snapshot_fixture "fake://one" (fn [call]
+          (calls/.get .push call/settings)
+          (if (== calls/.get/.size 1)
+            (then
+              (let changed ($thaw ($freeze cache/.get)))
+              (changed/default .put "model" "small")
+              (changed/providers/snapshot/models/0 .put "window" 32000)
+              (cache .set changed)
+              {^text "(Outcome ^prompt \"one more turn\")"})
+            (else {^text "(Outcome ^^done ^reply \"done\")"})))))
+        (let runtime (open_runtime workspace "default"
+          (Profile ^name "test" ^plugins [plugin] ^provider "snapshot")))
+        (let controller (test_controller runtime nil))
+        (try
+          (provide runtime/h "core" "models/catalog" {^snapshot (fn [] cache/.get)})
+          (let first (submit_round controller "default" "first" 1 "work"))
+          ((/watcher (controller/rounds/.get .get "default")) .join)
+          ($assert (== (/state (round_receipt controller "default" first/id)) "done"))
+          ($assert (== calls/.get/.size 2))
+          (for settings in calls/.get
+            ($assert (== settings/model "large"))
+            ($assert (== settings/effort "low"))
+            ($assert (== settings/window 1000000)))
+          (let next (submit_round controller "default" "next" 2 "new work"))
+          ((/watcher (controller/rounds/.get .get "default")) .join)
+          ($assert (== next/selection/model "small"))
+          ($assert (== next/selection/context_window 64000))
+          ($assert (== calls/.get/2/model "small"))
+        ensure
+          (close_round_controller controller)
+          (close_runtime runtime)))))
+
+  (it "refuses the replacement transport before a second call is sent" []
+    (isolated this_mod/.path "refuses the replacement transport before a second call is sent"
+      (fn [workspace]
+        (let entered ($cell false))
+        (let released ($cell false))
+        (let calls ($cell []))
+        (let original (snapshot_fixture "fake://one" (fn [call]
+          (calls/.get .push "one")
+          (entered .set true)
+          (while (! released/.get) ($sleep 1))
+          {^text "(Outcome ^prompt \"continue\")"})))
+        (let runtime (open_runtime workspace "default"
+          (Profile ^name "test" ^plugins [original] ^provider "snapshot")))
+        (let controller (test_controller runtime nil))
+        (try
+          (let first (submit_round controller "default" "transport" 1 "work"))
+          (let deadline (+ ($os/monotonic_ms) 5000))
+          (while (! entered/.get)
+            ($assert (< ($os/monotonic_ms) deadline) "first transport did not start")
+            ($sleep 1))
+          (put_cordis_plugin ^^replace runtime/h
+            (snapshot_fixture "fake://two" (fn [call]
+              (calls/.get .push "two") {^text "(Outcome ^^done ^reply \"done\")"}))
+            {^^host ^limits runtime/profile/limits})
+          (released .set true)
+          ((/watcher (controller/rounds/.get .get "default")) .join)
+          (let result (round_receipt controller "default" first/id))
+          ($assert (== result/state "failed"))
+          ($assert ($str/contains? result/message "connection changed"))
+          ($assert (== calls/.get ["one"]) "replacement transport received the old round")
+          (let resumed (continue_round controller "default" first/id "manual"))
+          ((/watcher (controller/rounds/.get .get "default")) .join)
+          (let completed (round_receipt controller "default" resumed/id))
+          ($assert (== completed/state "done") ($to_str completed))
+          ($assert (== calls/.get ["one" "two"]) "operator could not accept the changed connection")
+        ensure
+          (released .set true)
           (close_round_controller controller)
           (close_runtime runtime))))))
 

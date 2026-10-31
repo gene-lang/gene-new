@@ -1,0 +1,85 @@
+# The Models contribution owns this standalone page and its executable asset.
+# The host supplies its theme CSS as data; no private host module is imported.
+(mod model_page)
+(import $html [render])
+(import $web [script stylesheet])
+
+(const model_styles """
+body.models_standalone { overflow: auto; height: auto; min-height: 100vh; }
+.models_page { max-width: 1200px; margin: auto; padding: 1.5rem; }
+.models_page header, .models_page nav, .models_page .actions { display: flex; align-items: center; gap: .7rem; flex-wrap: wrap; }
+.models_page header { justify-content: space-between; border-bottom: 1px solid var(--line); padding-bottom: 1rem; }
+.models_page h1 { margin: 0; }
+.models_page h2 { font-size: 1.1rem; margin: 0 0 .6rem; }
+.models_page p { margin: .5rem 0; }
+.models_page section, .models_page .connection { border: 1px solid var(--line); padding: 1rem; margin: 1rem 0; }
+.models_page .connection h3 { margin: 0; }
+.models_page .muted, .models_page small { color: var(--muted); font-size: .8rem; }
+.models_page .error { color: var(--danger); }
+.models_page .notice { min-height: 1.5rem; margin: .8rem 0; }
+.models_page code { overflow-wrap: anywhere; }
+.models_page input:not([type=checkbox]), .models_page select { padding: .45rem; border: 1px solid var(--edge); background: var(--input-surface); }
+.models_page form { display: grid; grid-template-columns: repeat(auto-fit,minmax(14rem,1fr)); gap: .8rem; align-items: end; }
+.models_page label { display: flex; flex-direction: column; gap: .35rem; }
+.models_page label.check { flex-direction: row; align-items: center; }
+.models_page table { width: 100%; border-collapse: collapse; margin-top: .8rem; }
+.models_page th, .models_page td { text-align: left; padding: .55rem; border-top: 1px solid var(--line); vertical-align: top; }
+.models_page td small { display: block; }
+.models_page .default_form { display: flex; gap: .4rem; flex-wrap: wrap; }
+.models_page .model_id { overflow-wrap: anywhere; }
+.models_welcome { position: fixed; inset: 0; z-index: 900; background: #0006; display: flex; align-items: center; justify-content: center; padding: 1rem; }
+.models_welcome[hidden] { display: none; }
+.models_welcome section { max-width: 30rem; border: 1px solid var(--line); background: var(--surface); padding: 1.5rem; }
+@media(max-width:700px) { .models_page { padding: 1rem; } .models_page table, .models_page tbody, .models_page tr, .models_page td { display: block; } .models_page thead { display: none; } .models_page td { border: 0; padding: .35rem 0; } .models_page tr { border-top: 1px solid var(--line); padding: .6rem 0; } }
+""")
+
+(fn model_page [asset, appearance : Str, workspace : Str, base_styles : Str] : Str
+  (let identity ($crypto/sha256 workspace))
+  ($to_str "<!doctype html>"
+    (render `(html ^id "harness_document" ^lang "en" ^data-theme %appearance ^data-workspace-id %identity
+      (head (meta ^charset "utf-8") (meta ^name "viewport" ^content "width=device-width,initial-scale=1")
+        (title "Models · Gene Harness")
+        %(stylesheet "harness-models-page" ($to_str base_styles model_styles)))
+      (body ^class "models_standalone"
+        (main ^id "models_page" ^class "models_page"
+          (header (h1 "Models")
+            (nav ^aria-label "Workspace navigation" (a ^href "/" "Workspace") (a ^href "/plugins" "Plugins")
+              (button ^id "models_refresh" ^type "button" "Refresh connections")))
+          (p ^id "models_workspace" ^class "muted" "Connecting to this workspace…")
+          (div ^id "models_notice" ^class "notice" ^role "status" ^aria-live "polite")
+          (div ^id "models_errors" ^role "alert")
+          (div ^id "models_login" ^aria-live "polite")
+          (div ^id "chatgpt_accounts")
+          (div ^id "models_welcome" ^class "models_welcome" ^^hidden)
+          (section (h2 "Shared default") (p ^id "models_default")
+            (p ^class "muted" "Sessions and workspaces can choose their own model. New selections use the current shared default.")
+            (p ^class "muted" "Settings file: " (code ^id "models_path")))
+          (label "Find a model" (input ^id "models_search" ^type "search" ^placeholder "Search by provider, name or model id"))
+          (div ^id "models_connections")
+          (section
+            (h2 "Add endpoint")
+            (form ^id "models_endpoint_form"
+              (label "Name" (input ^id "endpoint_name" ^^required ^placeholder "work_proxy"))
+              (label "Adapter" (select ^id "endpoint_adapter"
+                (option ^value "openai_chat" "OpenAI Chat Completions")
+                (option ^value "openai_responses" "OpenAI Responses")
+                (option ^value "anthropic_messages" "Anthropic Messages")
+                (option ^value "openrouter_chat" "OpenRouter Chat Completions")))
+              (label "Base URL" (input ^id "endpoint_url" ^type "url" ^^required ^placeholder "http://127.0.0.1:11434/v1"))
+              (label "Credential environment variable (optional)" (input ^id "endpoint_env" ^placeholder "WORK_LLM_KEY"))
+              (label "Initial model id (optional)" (input ^id "endpoint_model" ^placeholder "model-id"))
+              (label ^class "check" (input ^id "endpoint_discover" ^type "checkbox" ^^checked) "Discover models")
+              (button ^id "endpoint_add" ^type "submit" "Add endpoint"))
+            (p ^class "muted" "Enter the environment variable name, never its secret value. Credential commands can be configured in the data file."))
+          (section
+            (h2 "Add model")
+            (form ^id "models_model_form"
+              (label "Provider" (select ^id "model_provider"))
+              (label "Model id" (input ^id "model_id" ^^required))
+              (label "Display name (optional)" (input ^id "model_label"))
+              (label "Context window (optional)" (input ^id "model_window" ^type "number" ^min "1"))
+              (label "Supported efforts (optional)" (input ^id "model_efforts" ^placeholder "low medium high"))
+              (label "Default effort (optional)" (input ^id "model_default_effort" ^placeholder "medium"))
+              (button ^id "model_add" ^type "submit" "Add model"))
+            (p ^class "muted" "A typed model id is unverified. Context and effort overrides describe what this endpoint supports.")))
+        %(script ^mount "models_page" asset))))))

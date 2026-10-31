@@ -1,0 +1,20 @@
+# Shared same-origin owner API transport for standalone workspace pages.
+(mod owner_api ^profile web)
+(import [query_value] ^from "./state.gene")
+(import [api_root] ^from "../src/web/contract.gene")
+
+(fn owner_request [csrf : Str, method : Str, path : Str, payload : Any,
+  done : (Fn [Int Any] Void)] : Void
+  ($http/request method path ($json/stringify payload)
+    {^content-type "application/json" ^x-csrf-token csrf}
+    (fn [code : Int, body : Str] : Void
+      (var data : Any (try ($json/parse body)
+        catch Any {^message "The connection was interrupted. Refresh to inspect the current state."}))
+      (done code data))))
+
+(fn owner_connect [path : Str, done : (Fn [Int Any] Void)] : Void
+  (var token (query_value ($browser/hash) "token"))
+  ($browser/replace_url path)
+  (if (== token "")
+    (then (done 200 {}))
+    (else (owner_request "" "POST" $"${(api_root)}/auth/exchange" {^token token} done))))

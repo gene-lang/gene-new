@@ -1,0 +1,80 @@
+(mod models_plugin)
+(import [Plugin PluginHost ModelsHost] ^from "../plugin_api")
+(import [list_catalog_models] ^from "../public/model_catalog")
+(import [contribute_text_doc] ^from "../public/documentation")
+(import [model_page] ^from "../public/model_page")
+
+(var asset ($cell nil))
+(var stylesheet ($cell nil))
+(var page_asset ($cell nil))
+
+(fn models [^root root = nil] : Plugin
+  (let error (try
+    (if ($absent? asset/.get)
+      (asset .set ($web/load ($path/join this_pkg/root "client" "plugins" "models_picker.gene"))))
+    (if ($absent? page_asset/.get)
+      (page_asset .set ($web/load ($path/join this_pkg/root "client" "plugins" "models_page.gene"))))
+    (if ($absent? stylesheet/.get)
+      (stylesheet .set ($web/stylesheet "models" """
+.models-controls { display: inline-flex; align-items: center; flex-wrap: wrap; gap: .4rem; max-width: 100%; }
+.models-plan { font-size: .8rem; color: var(--muted); }
+.models-controls button { max-width: min(20rem, 45vw); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.models-controls .models-default { color: var(--muted); }
+.models-menu { position: fixed; z-index: 800; inset: 10vh auto auto 50%; transform: translateX(-50%); width: min(36rem, calc(100vw - 2rem)); max-height: 80dvh; overflow: auto; padding: 1.2rem; border: 1px solid var(--line); background: var(--surface); color: var(--ink); box-shadow: 0 8px 32px #0003; }
+.models-menu[hidden] { display: none; }
+.models-menu input[type=search] { width: 100%; margin-bottom: .6rem; }
+.models-menu button, .models-menu a { margin: .2rem .4rem .2rem 0; }
+.models-menu h4 { margin: 1rem 0 .4rem; font-size: .8rem; color: var(--muted); }
+.models-menu p { font-size: .8rem; line-height: 1.5; }
+.models-option { display: block; width: 100%; text-align: left; }
+.models-option small { display: block; color: var(--muted); }
+.models-custom { display: flex; flex-wrap: wrap; gap: .4rem; margin: .8rem 0; }
+.models-custom input { flex: 1; min-width: 8rem; }
+.models-trigger-controls { display: flex; flex-wrap: wrap; gap: .5rem 1rem; align-items: center; }
+.models-trigger-controls label { display: inline-flex; align-items: center; gap: .4rem; }
+.models-trigger-controls p { width: 100%; margin: 0 0 .5rem; font-size: .8rem; color: var(--muted); }
+""")))
+    nil catch Any $err/.Error:message))
+  (Plugin ^id "models" ^requires ["models/host"]
+    ^provides [["seams" "models/catalog"] ["seams" "models/page"] ["functions" "list_models"] ["docs" "harness/models"]
+      ["commands" "model"] ["commands" "effort"] ["browser_clients" "models"]]
+    ^activate (fn [host]
+      (if ($present? error) (fail error))
+      (let catalog (host .PluginHost:resolve "models/host"))
+      (catalog .ModelsHost:start root)
+      (host .PluginHost:contribute "browser_clients"
+        {^name "models" ^title "Models" ^asset asset/.get ^style stylesheet/.get})
+      (host .PluginHost:provide "models/page"
+        (fn [appearance : Str, workspace : Str, styles : Str] (model_page page_asset/.get appearance workspace styles)))
+      (host .PluginHost:provide "models/catalog"
+        {^snapshot (fn [] catalog/.ModelsHost:snapshot)
+         ^configuration (fn [] catalog/.ModelsHost:configuration)
+         ^refresh (fn [] catalog/.ModelsHost:refresh)
+         ^connect (fn [provider, account = nil] (catalog .ModelsHost:connect provider account))
+         ^accounts (fn [] catalog/.ModelsHost:accounts)
+         ^account_action (fn [id action] (catalog .ModelsHost:account_action id action))
+         ^login_status (fn [id] (catalog .ModelsHost:login_status id))
+         ^cancel_login (fn [id] (catalog .ModelsHost:cancel_login id))
+         ^login_callback (fn [params] (catalog .ModelsHost:login_callback params))
+         ^save (fn [value expected] (catalog .ModelsHost:save value expected))
+         ^set_default (fn [selection expected] (catalog .ModelsHost:set_default selection expected))
+         ^preview (fn [session selection] (catalog .ModelsHost:preview session selection))
+         ^select (fn [session selection] (catalog .ModelsHost:select session selection))
+         ^failed (fn [provider status transport = nil] (catalog .ModelsHost:failed provider status transport))})
+      (for definition in
+        [{^name "model" ^usage "/model [provider/model | preset | default]" ^doc "Show or set this conversation's model. Default removes its pin."}
+         {^name "effort" ^usage "/effort [auto | level]" ^doc "Show or set requested effort; effective effort follows model capabilities."}]
+        (let name definition/name)
+        (definition .put "raw_input" true)
+        (definition .put "tags" ["models" "provider" "effort"])
+        (definition .put "docs" ["harness/models"])
+        (definition .put "run" (fn [context] (catalog .ModelsHost:command name context)))
+        (host .PluginHost:contribute "commands" definition))
+      (host .PluginHost:contribute "functions"
+        {^name "list_models" ^doc "List ready models with efforts, context limits and billing. Search with q/provider; use next_offset for another page."
+         ^tags ["models" "provider" "effort"] ^docs ["harness/models"]
+         ^fn (fn [^provider provider = nil, ^q query : Str = "", ^offset offset : Int = 0, ^limit limit : Int = 50]
+           (list_catalog_models ^provider provider ^q query ^offset offset ^limit limit catalog/.ModelsHost:snapshot))})
+      (contribute_text_doc host "harness/models" "Model catalog, effort and connection discovery."
+        "list_models returns ready, visible provider/model pairs, supported efforts, model defaults, context/output limits and billing metadata. It reads the cached catalog and never calls inference or login tools. Use q for a multiword search, provider to narrow a connection, and next_offset to page. A catalog is not proof of model access. Effort auto uses the model default when known; other portable levels resolve down or to its lowest supported level. Native extras require explicit model support. Shared models.gene supplies defaults and metadata overrides. Credentials are read only by transport operations and never belong in prompts or prepared requests."
+        ^tags ["models" "provider" "effort"]))))

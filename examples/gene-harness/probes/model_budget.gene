@@ -1,0 +1,75 @@
+# Opt-in inference probe. It never evaluates model output or prints credentials,
+# request bodies or response text. Each requested effort makes one billed call.
+# Usage: gene run probes/model_budget.gene --live MODELS_FILE PROVIDER MODEL [EFFORT ...]
+(import [normalize_models_file] ^from "../src/public/models_file")
+(import [endpoint_provider configure_model] ^from "../src/public/provider")
+(import [model_entry] ^from "../src/public/models")
+(import [merge_models] ^from "../src/public/model_catalog")
+
+(fn number [value]
+  (if (|| (== ($head value) Int) (== ($head value) Float))
+    (then value) (else nil)))
+
+(fn failure_fields [error]
+  (let fields {^failure_category "provider_attempt_failed"})
+  (if (&& (== ($head error/status) Int) (>= error/status 100) (<= error/status 599))
+    (fields .put "http_status" error/status))
+  (if (&& (== ($head error/code) Str) ($present? (#"^[a-z][a-z0-9_]{0,95}$" .match error/code)))
+    (fields .put "error_code" error/code))
+  (if (== ($head error/message) Str)
+    (then
+      (if ($str/contains? error/message "API credits are insufficient")
+        (fields .put "failure_category" "api_credits_insufficient"))
+      (let request (#"Request: ([A-Za-z0-9_-]{1,128})[.]" .match error/message))
+      (if ($present? request) (fields .put "request_id" request/groups/0))))
+  fields)
+
+(fn main [argv] : Int
+  (let args []) (for arg in argv (args .push ($to_str arg)))
+  (if (|| (< args/.size 4) (!= args/0 "--live"))
+    (then
+      ($println "Refusing inference without --live. Usage: --live MODELS_FILE PROVIDER MODEL [EFFORT ...]. Each effort makes one billed request.")
+      (return 2)))
+  (let file (normalize_models_file ($serde/read_data ($fs/read_text args/1))))
+  (if (!= file/errors [])
+    (then ($println "Fix models.gene validation errors before probing.") (return 2)))
+  (var entry nil)
+  (for provider in file/config/providers
+    (if (== provider/name args/2) (set entry provider)))
+  (if ($absent? entry)
+    (then ($println "The named provider must be an endpoint in this models.gene file.") (return 2)))
+  (let provider (endpoint_provider entry))
+  (let models (merge_models provider/builtin_models [] file/config/models args/2))
+  (let efforts [])
+  (var index 4)
+  (while (< index args/.size) (efforts .push args/%index) (set index (+ index 1)))
+  (if (== efforts/.size 0) (efforts .push "auto"))
+  (let messages [{^role "system" ^content "Return only the requested Gene expression. Do not call tools."}
+    {^role "user" ^content "Find the smallest positive integer whose square is divisible by 72. Check your answer, then return (Outcome ^^done ^reply \"ANSWER\") with the integer in place of ANSWER."}])
+  (let attempts [])
+  (for requested in efforts
+    (let settings (configure_model ^catalog models args/3 requested 600000 args/3))
+    (settings .put "max_output" (/max_output (model_entry models args/3)))
+    (let prepared (provider/prepare {^settings settings ^messages messages}))
+    (attempts .push {^requested requested ^settings settings ^prepared prepared}))
+  (for attempt in attempts
+    (let requested attempt/requested) (let settings attempt/settings) (let prepared attempt/prepared)
+    (let began ($os/monotonic_ms))
+    (let result (try (provider/send prepared)
+      catch Any
+        (let failed {^provider args/2 ^model args/3 ^requested_effort requested
+          ^effective_effort settings/effort ^ok false ^elapsed_ms (- ($os/monotonic_ms) began)
+          ^reason "Provider attempt failed; no output was executed. Resolve the failure before repeating billed probes."})
+        (for [key value] in (failure_fields $err) (failed .put key value))
+        ($println ($json/stringify failed))
+        (return 1)))
+    ($println ($json/stringify {^provider args/2 ^adapter entry/adapter ^model args/3
+      ^requested_effort requested ^effective_effort settings/effort ^ok (!= result/timeout true)
+      ^budget (?? prepared/body/max_tokens prepared/body/max_completion_tokens prepared/body/max_output_tokens)
+      ^elapsed_ms (- ($os/monotonic_ms) began) ^output_bytes ($str/byte_size (?? result/text ""))
+      ^input_tokens (number (?? result/usage/input_tokens result/usage/prompt_tokens))
+      ^output_tokens (number (?? result/usage/output_tokens result/usage/completion_tokens))
+      ^reasoning_tokens (number (?? result/usage/output_tokens_details/reasoning_tokens
+        result/usage/completion_tokens_details/reasoning_tokens))}))
+    (if (== result/timeout true) (return 1)))
+  0)

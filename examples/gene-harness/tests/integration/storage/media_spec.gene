@@ -41,7 +41,7 @@
         ($assert (== item/mime "text/plain"))
         ($assert ($absent? item/path))
         ($assert ($absent? item/digest))
-        ($assert (== item/url $"/api/v8/media/${item/id}"))
+        ($assert (== item/url $"/api/v9/media/${item/id}"))
         (let reopened (open_media_store root))
         ($assert (== (media_bytes reopened item/id) data))
         ($assert (== (media_text reopened item/id) "A document: héllo 世界"))

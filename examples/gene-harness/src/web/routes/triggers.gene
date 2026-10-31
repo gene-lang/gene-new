@@ -2,7 +2,7 @@
 (mod triggers_routes)
 (import [api_root api_version] ^from "../contract.gene")
 (import [response request_data] ^from "../request")
-(import [list_triggers create_trigger delete_trigger list_occurrences] ^from "../../runtime/triggers")
+(import [list_triggers create_trigger update_trigger delete_trigger list_occurrences] ^from "../../runtime/triggers")
 (import [require_trigger_manager] ^from "../../runtime/trigger_host")
 
 (fn triggers_request [context, request, parts]
@@ -16,6 +16,8 @@
       (if (== request/method "POST")
         (return (response 201 (create_trigger (require_trigger_manager host/runtime) (request_data request)))))))
   (if_yes (&& (>= parts/.size 5) (== parts/1 "api") (== parts/2 (api_version)) (== parts/3 "triggers"))
+    (if (&& (== parts/.size 5) (== request/method "PATCH"))
+      (return (response 200 (update_trigger (require_trigger_manager host/runtime) parts/4 (request_data request)))))
     (if (&& (== parts/.size 5) (== request/method "DELETE"))
       (return (response 200 (delete_trigger (require_trigger_manager host/runtime) parts/4))))
     (if (&& (== parts/.size 6) (== parts/5 "occurrences") (== request/method "GET"))

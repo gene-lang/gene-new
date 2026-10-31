@@ -1,0 +1,96 @@
+(import $test [describe it run])
+(import [normalize_openrouter_models normalize_chatgpt_models normalize_anthropic_models
+         normalize_compatible_models] ^from "../../../src/public/model_discovery")
+
+(describe "Model discovery metadata"
+  (it "normalizes the recorded public OpenRouter catalog and its nullable-effort contract" []
+    (let fixture ($json/parse ($fs/read_text
+      ($path/join this_pkg/root "tests" "fixtures" "openrouter_models_20261031.json"))))
+    ($assert (== fixture/source "https://openrouter.ai/api/v1/models"))
+    ($assert (== fixture/authenticated false))
+    (let models (normalize_openrouter_models fixture))
+    ($assert (== ($map models /id)
+      ["openai/gpt-6.1-sol" "openai/gpt-6-sol" "google/gemini-2.5-flash" "openai/gpt-4.1-nano"]))
+    ($assert (! (models/0/efforts .contains? "none")))
+    ($assert (== models/0/default_effort "medium"))
+    ($assert (models/1/efforts .contains? "none"))
+    ($assert (== models/1/window fixture/data/1/context_length))
+    ($assert (== models/1/max_output 128000))
+    ($assert (== models/1/pricing/prompt "0.000002"))
+    ($assert (== models/1/pricing/completion "0.00001"))
+    ($assert ($absent? models/1/pricing/overrides))
+    ($assert (== models/2/efforts []))
+    ($assert (== models/3/efforts []))
+    # No model in the captured response had explicit null supported_efforts.
+    # This mutation exercises that documented edge case; it is not live evidence.
+    (fixture/data/1/reasoning .put "supported_efforts" nil)
+    (let nullable (normalize_openrouter_models fixture))
+    ($assert (nullable/1/efforts .contains? "none"))
+    ($assert (nullable/1/efforts .contains? "minimal"))
+    ($assert (nullable/1/efforts .contains? "max")))
+
+  (it "normalizes OpenRouter efforts, mandatory reasoning, limits and prices" []
+    (let models (normalize_openrouter_models {^data
+      [{^id "sparse" ^name "Sparse model" ^context_length 256000
+        ^top_provider {^max_completion_tokens 32000}
+        ^architecture {^input_modalities ["text" "image"]}
+        ^reasoning {^supported_efforts ["high" "low" "none"] ^default_effort "low"}
+        ^pricing {^prompt "0.000001" ^completion "0.000002" ^unrelated "do not cache"}}
+       {^id "all" ^reasoning {^supported_efforts nil ^mandatory true ^default_effort "medium"}}
+       {^id "no-reasoning"}]}))
+    ($assert (== models/0/window 256000))
+    ($assert (== models/0/max_output 32000))
+    ($assert (== models/0/input ["text" "image"]))
+    ($assert (== models/0/efforts ["high" "low" "none"]))
+    ($assert (== models/0/default_effort "low"))
+    ($assert ($absent? models/0/pricing/unrelated))
+    ($assert (! (models/1/efforts .contains? "none")))
+    ($assert (models/1/efforts .contains? "max"))
+    ($assert (== models/1/default_effort "medium"))
+    ($assert (== models/2/efforts [])))
+
+  (it "whitelists ChatGPT metadata and drops instruction templates" []
+    (let models (normalize_chatgpt_models {^models
+      [{^slug "model" ^display_name "Model" ^visibility "list" ^context_window 500000
+        ^effective_context_window_percent 95 ^input_modalities ["text" "image"]
+        ^default_reasoning_level "low" ^supported_reasoning_levels [{^effort "low"} {^effort "ultra"}]
+        ^base_instructions "PRIVATE INSTRUCTIONS" ^model_messages {^secret "PRIVATE"}}]}))
+    ($assert (== models/0/id "model"))
+    ($assert (== models/0/window 500000))
+    ($assert (== models/0/effective_percent 95))
+    ($assert (== models/0/default_effort "low"))
+    ($assert (== models/0/efforts ["low" "ultra"]))
+    ($assert ($absent? models/0/base_instructions))
+    ($assert ($absent? models/0/model_messages)))
+
+  (it "uses explicit Anthropic capability flags and leaves unknown defaults unset" []
+    (let models (normalize_anthropic_models {^data
+      [{^id "custom" ^display_name "Custom" ^max_input_tokens 200000 ^max_tokens 16000
+        ^capabilities {^image_input {^supported false}
+          ^effort {^supported true ^low {^supported true} ^high {^supported true}}}}]}))
+    ($assert (== models/0/input ["text"]))
+    ($assert (== models/0/efforts ["low" "high"]))
+    ($assert ($absent? models/0/default_effort))
+    ($assert (== models/0/window 200000))
+    ($assert (== models/0/max_output 16000)))
+
+  (it "offers documented thinking-off exceptions beyond the small offline model list" []
+    (let models (normalize_anthropic_models {^data
+      [{^id "claude-opus-4-7" ^capabilities {^effort {^low {^supported true} ^high {^supported true}}}}
+       {^id "claude-sonnet-5" ^capabilities {^effort {^low {^supported true}}}}
+       {^id "new-unknown-model" ^capabilities {^effort {^low {^supported true}}}}]}))
+    ($assert (== models/0/efforts ["none" "low" "high"]))
+    ($assert (== models/1/efforts ["none" "low"]))
+    ($assert (== models/2/efforts ["low"])))
+
+  (it "rejects malformed lists and invents no capabilities for compatible endpoints" []
+    (for normalize in [normalize_openrouter_models normalize_chatgpt_models
+                      normalize_anthropic_models normalize_compatible_models]
+      (let rejected (try (normalize {}) false catch Any true))
+      ($assert rejected "bad discovery JSON replaced the catalog"))
+    (let models (normalize_compatible_models {^data [{^id "local"}]}))
+    ($assert (== models/0/efforts []))
+    ($assert ($absent? models/0/window))
+    ($assert ($absent? models/0/input))))
+
+(fn main [args] : Int (/exit_code (run ^name (?? args/0 ""))))

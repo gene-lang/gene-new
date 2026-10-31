@@ -1,0 +1,127 @@
+(import $test [describe it])
+(import [isolated run_spec fixture_path] ^from "../../support")
+(import [openrouter_login run_openrouter_login login_status read_openrouter_record
+  openrouter_record_path pkce_challenge complete_openrouter_login close_login write_openrouter_record] ^from "../../../src/public/provider_login")
+(import $net/http [listen serve stop json text])
+(import $net/http_client [request])
+
+(fn get [url : Str]
+  (let task (request ^method "GET" ^url url ^timeout_ms 10000))
+  (try (await task) ensure task/.cancel))
+
+(fn joined [task]
+  (match task/.join
+    (when (TaskOutcome/ok value) value)
+    (when (TaskOutcome/error error) (fail error))
+    (else ($assert false "sign-in fixture was cancelled"))))
+
+(describe "Provider loopback sign-in"
+  (it "validates callback state, exchanges PKCE once and stores only owner-readable credentials" []
+    (isolated this_mod/.path "validates callback state, exchanges PKCE once and stores only owner-readable credentials"
+      (fn [workspace]
+        (let issuer (listen ^host "127.0.0.1" ^port 0))
+        (let exchanges ($cell 0)) (let pending ($cell nil)) (let mode ($cell "success"))
+        (let blocked ($cell false)) (let release ($cell false))
+        (let runner (spawn ^lane root (try
+          (let callback $"http://127.0.0.1:${issuer/port}/auth/callback")
+          (let attempt (openrouter_login callback ^root workspace ^timeout_ms 20000
+            ^authorization_url "https://openrouter.ai/auth"
+            ^exchange_url $"http://127.0.0.1:${issuer/port}/auth/keys"))
+          (pending .set attempt)
+          ($assert ($str/contains? attempt/url ($url/encode_component (pkce_challenge attempt/verifier))))
+          (let worker (spawn ^lane root (run_openrouter_login attempt)))
+          ($assert (== (/status (get $"${callback}?code=SECRET_CODE&state=wrong")) 400))
+          ($assert (== attempt/status/.get "pending"))
+          ($assert (== exchanges/.get 0))
+          (let response (get $"${callback}?code=SECRET_CODE&state=${attempt/state}"))
+          ($assert (== response/status 200))
+          (joined worker)
+          ($assert (== attempt/status/.get "complete"))
+          ($assert (== exchanges/.get 1))
+          ($assert (== (/key (read_openrouter_record workspace)) "SECRET_KEY"))
+          ($assert (== (/mode ($fs/info (openrouter_record_path workspace))) 384))
+          (let public ($serde/write_data (login_status attempt)))
+          ($assert (! ($str/contains? public "SECRET")))
+          ($assert (! ($str/contains? public attempt/verifier)))
+          ($assert (! ($str/contains? public attempt/state)))
+          ($assert (== (/status (get $"${callback}?code=SECRET_CODE&state=${attempt/state}")) 409))
+          ($assert (== exchanges/.get 1) "callback replay exchanged the code again")
+          (let declined (openrouter_login callback ^root workspace ^timeout_ms 20000))
+          (pending .set declined)
+          (let denied_worker (spawn ^lane root (run_openrouter_login declined)))
+          (let decline_callback (#"[?&]callback_url=([^&]+)" .match declined/url))
+          (get ($to_str ($url/decode_component decline_callback/groups/0) "&error=access_denied"))
+          (joined denied_worker)
+          ($assert (== declined/status/.get "declined"))
+          ($assert (== (/key (read_openrouter_record workspace)) "SECRET_KEY"))
+          (let failed (openrouter_login callback ^root workspace ^timeout_ms 20000
+            ^exchange_url $"http://127.0.0.1:${issuer/port}/auth/keys"))
+          (pending .set failed) (mode .set "failure")
+          (let failure (get $"${callback}?code=SECRET_CODE&state=${failed/state}"))
+          ($assert (== failure/status 400))
+          ($assert (! ($str/contains? failure/body "SECRET")))
+          ($assert (== failed/status/.get "failed"))
+          ($assert (== (/key (read_openrouter_record workspace)) "SECRET_KEY"))
+          (let cancelled (openrouter_login callback ^root workspace ^timeout_ms 20000
+            ^exchange_url $"http://127.0.0.1:${issuer/port}/auth/keys"))
+          (pending .set cancelled) (mode .set "wait")
+          (let late (request ^method "GET" ^url $"${callback}?code=SECRET_CODE&state=${cancelled/state}" ^timeout_ms 10000))
+          (let deadline (+ ($os/monotonic_ms) 5000))
+          (while (! blocked/.get)
+            ($assert (< ($os/monotonic_ms) deadline) "exchange did not start") ($sleep 1))
+          (close_login cancelled) (release .set true)
+          ($assert (== (/status (await late)) 400))
+          ($assert (== cancelled/status/.get "cancelled"))
+          ($assert (== (/key (read_openrouter_record workspace)) "SECRET_KEY") "late exchange overwrote the active login")
+          (let timed (openrouter_login callback ^root workspace ^timeout_ms 25))
+          (run_openrouter_login timed)
+          ($assert (== timed/status/.get "timed_out"))
+          ($assert (== exchanges/.get 3))
+        ensure (stop issuer))))
+        (serve issuer ^handler (fn [incoming]
+          (if (== incoming/path "/auth/callback")
+            (then
+              (let result (complete_openrouter_login pending/.get incoming/params))
+              (return (text result/status result/message))))
+          (exchanges .set (+ exchanges/.get 1))
+          ($assert (== incoming/method "POST")) ($assert (== incoming/path "/auth/keys"))
+          (let body ($json/parse incoming/body))
+          ($assert (== body/code "SECRET_CODE"))
+          ($assert (== body/code_verifier pending/.get/verifier))
+          ($assert (== body/code_challenge_method "S256"))
+          (if (== mode/.get "failure") (return (json 403 "{\"error\":\"SECRET_DIAGNOSTIC\"}")))
+          (if (== mode/.get "wait")
+            (then
+              (blocked .set true)
+              (while (! release/.get) ($sleep 1))
+              (return (json 200 "{\"key\":\"LATE_SECRET_KEY\"}"))))
+          (json 200 "{\"key\":\"SECRET_KEY\"}")))
+        (joined runner))))
+
+  (it "prefers environment keys over the saved login without opening a broken record" []
+    (isolated this_mod/.path "prefers environment keys over the saved login without opening a broken record"
+      (fn [workspace]
+        (let auth_root ($path/join workspace "credential-precedence"))
+        (write_openrouter_record auth_root "SECRET_STORED_KEY")
+        (for [environment expected source] in
+          [[{^OPENROUTER_API_KEY nil ^OPENROUTER_KEY nil} "SECRET_STORED_KEY" "file"]
+           [{^OPENROUTER_API_KEY nil ^OPENROUTER_KEY "SECRET_LEGACY"} "SECRET_LEGACY" "env"]
+           [{^OPENROUTER_API_KEY "SECRET_PRIMARY" ^OPENROUTER_KEY "SECRET_LEGACY"} "SECRET_PRIMARY" "env"]]
+          (environment .put "GENE_HARNESS_AUTH_HOME" auth_root)
+          (let result (await ($os/exec_async ($os/executable_path) "run" (fixture_path "openrouter_credential")
+            ^env environment ^timeout_ms 15000)))
+          ($assert (== result/status 0) result/stderr)
+          (let value ($json/parse ($str/trim result/stdout)))
+          ($assert (== value/digest ($crypto/sha256 expected)))
+          ($assert ($present? (value/source .get source)))
+          ($assert (! ($str/contains? result/stdout "SECRET"))))
+        ($fs/write_text_atomic ^^owner_only (openrouter_record_path auth_root) "{\"key\":\"SECRET_BROKEN\"}")
+        (let override (await ($os/exec_async ($os/executable_path) "run" (fixture_path "openrouter_credential")
+          ^env {^GENE_HARNESS_AUTH_HOME auth_root ^OPENROUTER_API_KEY "SECRET_PRIMARY" ^OPENROUTER_KEY nil} ^timeout_ms 15000)))
+        ($assert (== override/status 0) override/stderr)
+        (let invalid (await ($os/exec_async ($os/executable_path) "run" (fixture_path "openrouter_credential")
+          ^env {^GENE_HARNESS_AUTH_HOME auth_root ^OPENROUTER_API_KEY nil ^OPENROUTER_KEY nil} ^timeout_ms 15000)))
+        ($assert (!= invalid/status 0))
+        ($assert (! ($str/contains? invalid/stderr "SECRET_BROKEN")))))))
+
+(fn main [args] : Int (run_spec args))

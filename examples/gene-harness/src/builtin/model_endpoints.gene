@@ -1,0 +1,19 @@
+# Data is read only during activation, so doctor/recovery may inspect the profile
+# without opening models.gene. Replacements are ordinary provider contributions.
+(mod model_endpoints_plugin)
+(import [Plugin PluginHost ModelsHost] ^from "../plugin_api")
+(import [file_endpoint] ^from "../public/provider")
+
+(fn model_endpoints [^root root = nil] : Plugin
+  (Plugin ^id "model_endpoints" ^requires ["models/host"]
+    ^activate (fn [host]
+      (let service (host .PluginHost:resolve "models/host"))
+      (let file (service .ModelsHost:endpoint_entries root))
+      (for entry in file/config/providers
+        (host .PluginHost:contribute "providers" (file_endpoint entry))))))
+
+(fn models_file_watch [^root root = nil] : Plugin
+  (Plugin ^id "models_file_watch" ^requires ["models/host"]
+    ^activate (fn [host]
+      (let service (host .PluginHost:resolve "models/host"))
+      (service .ModelsHost:watch_file root))))

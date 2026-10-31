@@ -1,0 +1,292 @@
+# Pure wire construction and complete-response decoding. Credentials never enter
+# this module; transports call these helpers only with prepared data or responses.
+(mod provider_payloads)
+(import [ProviderError] ^from "../plugin_api")
+(import [chat_messages responses_content anthropic_content] ^from "./model_content")
+(import [anthropic_thinking_off] ^from "./model_defaults")
+
+(fn output_budget [call]
+  (let effort call/settings/effort)
+  # Recorded Gene summaries reached 5,694 output tokens. The default reserve
+  # covers that workload even when little or no reasoning is requested.
+  (let baseline (match effort
+    (when "none" 8192) (when "minimal" 8192) (when "low" 8192)
+    (when "medium" 16384) (when "high" 32768) (when "xhigh" 65536)
+    (when "max" 128000) (when "ultra" 128000) (else 8192)))
+  (let requested (?? call/max_tokens baseline))
+  (if (|| (!= ($head requested) Int) (<= requested 0))
+    (fail (ProviderError ^message "Output budget must be a positive integer")))
+  (let limit call/settings/max_output)
+  (if (&& (== ($head limit) Int) (> limit 0))
+    (then ($math/min requested limit)) (else requested)))
+
+(fn prepare_chat [call, adapter : Str]
+  (let body {^model call/settings/model ^messages (chat_messages call/messages)})
+  (body .put (if (== adapter "openrouter_chat") "max_tokens" "max_completion_tokens") (output_budget call))
+  (if ($present? call/settings/effort)
+    (if (== adapter "openrouter_chat")
+      (then (body .put "reasoning" {^effort call/settings/effort}))
+      (else (body .put "reasoning_effort" call/settings/effort))))
+  {^body body ^timeout_ms call/settings/timeout_ms})
+
+(fn split_system [messages]
+  (let system []) (let conversation [])
+  (for message in messages
+    (if (== message/role "system")
+      (then (system .push message/content)) (else (conversation .push message))))
+  {^system ($str/join system "\n\n") ^conversation conversation})
+
+(fn prepare_responses [call, ^omit_budget omit_budget : Bool = false]
+  (let parts (split_system call/messages))
+  (let body {^model call/settings/model ^!store ^^stream
+    ^input ($map parts/conversation (fn [message]
+      (let item {^role message/role ^content (responses_content message)})
+      (if (== message/role "assistant") (item .put "phase" "final_answer"))
+      item))})
+  (if (!= parts/system "") (body .put "instructions" parts/system))
+  (if (! omit_budget) (body .put "max_output_tokens" (output_budget call)))
+  (if ($present? call/settings/effort) (body .put "reasoning" {^effort call/settings/effort}))
+  {^body body ^timeout_ms call/settings/timeout_ms})
+
+(fn prepare_messages [call]
+  (let parts (split_system call/messages))
+  (let assistant_indices [])
+  (var index 0)
+  (for message in parts/conversation
+    (if (== message/role "assistant") (assistant_indices .push index))
+    (set index (+ index 1)))
+  (let cached ($into ($take assistant_indices/.reverse 2) []))
+  (let messages [])
+  (set index 0)
+  (for message in parts/conversation
+    (let blocks (anthropic_content message))
+    (if (cached .contains? index) (blocks/0 .put "cache_control" {^type "ephemeral"}))
+    (messages .push {^role message/role ^content blocks})
+    (set index (+ index 1)))
+  (let body {^model call/settings/model ^max_tokens (output_budget call) ^messages messages ^^stream})
+  (if (!= parts/system "") (body .put "system" parts/system))
+  (if ($present? call/settings/effort)
+    (if (== call/settings/effort "none")
+      (then (body .put "thinking" {^type (?? (anthropic_thinking_off call/settings/model) "disabled")}))
+      (else (body .put "thinking" {^type "adaptive"})
+        (body .put "output_config" {^effort call/settings/effort}))))
+  {^body body ^timeout_ms call/settings/timeout_ms})
+
+(fn require_success [response, label : Str]
+  (if (!= response/status 200)
+    (fail (ProviderError ^status response/status ^message $"${label} ${response/status}: provider request failed"))))
+
+(fn require_messages_success [response, label : Str]
+  (if (== response/status 200) (return nil))
+  (let data (try ($json/parse response/body) catch Any nil))
+  (let detail (if (== ($head data/error/message) Str) (then ($str/lower data/error/message)) (else "")))
+  (let credit_error (&& ([400 402] .contains? response/status)
+    (|| ($str/contains? detail "insufficient credit")
+      (&& ($str/contains? detail "credit balance")
+        (|| ($str/contains? detail "too low") ($str/contains? detail "insufficient") ($str/contains? detail "exceeded"))))))
+  (var message (if credit_error
+    (then $"${label} ${response/status}: API credits are insufficient. Review this connection's billing or workspace limit.")
+    (else $"${label} ${response/status}: provider request failed")))
+  (let request_id (?? response/headers/request-id data/request_id))
+  (if (&& (== ($head request_id) Str) ($present? (#"^[A-Za-z0-9_-]{1,128}$" .match request_id)))
+    (set message ($to_str message " Request: " request_id ".")))
+  (let code (if (["invalid_request_error" "authentication_error" "permission_error" "not_found_error"
+    "rate_limit_error" "api_error" "overloaded_error"] .contains? data/error/type)
+    (then data/error/type) (else nil)))
+  (fail (ProviderError ^status response/status ^code code ^message message)))
+
+(fn response_json [response, label : Str]
+  (require_success response label)
+  (let value (try ($json/parse response/body)
+    catch Any (fail (ProviderError ^message $"${label} returned invalid JSON"))))
+  (if (!= ($head value) Map) (fail (ProviderError ^message $"${label} returned an invalid response")))
+  value)
+
+(fn require_text [text, label : Str]
+  (if (|| (!= ($head text) Str) (== ($str/trim text) ""))
+    (fail (ProviderError ^message $"${label} returned no complete output text")))
+  text)
+
+(fn chat_result [response, label : Str = "chat"]
+  (let value (response_json response label))
+  (if (|| ($present? value/error) (!= ($head value/choices) List) (!= value/choices/.size 1))
+    (fail (ProviderError ^message $"${label} returned invalid choices")))
+  (let choice value/choices/0)
+  (if (|| ($present? choice/error) (!= choice/finish_reason "stop")
+    ($present? choice/message/refusal)
+    (&& ($present? choice/message/role) (!= choice/message/role "assistant")))
+    (fail (ProviderError ^message $"${label} response did not finish its turn; incomplete output was not executed")))
+  {^text (require_text choice/message/content label) ^usage value/usage})
+
+(fn responses_result [value, label : Str = "responses"]
+  (if (|| (!= ($head value) Map) (!= value/status "completed")
+    ($present? value/error) ($present? value/incomplete_details) (!= ($head value/output) List))
+    (fail (ProviderError ^message $"${label} response did not complete; incomplete output was not executed")))
+  (let text [])
+  (var phased false)
+  (for item in value/output
+    (if (&& (== item/type "message") ($present? item/phase)) (set phased true)))
+  (for item in value/output
+    (match item/type
+      (when "reasoning" nil)
+      (when "message"
+        (if (|| (!= item/role "assistant") (!= item/status "completed") (!= ($head item/content) List))
+          (fail (ProviderError ^message $"${label} returned an incomplete assistant message")))
+        (if (|| (! phased) (== item/phase "final_answer"))
+          (then
+            (for block in item/content
+              (if (|| (!= block/type "output_text") (!= ($head block/text) Str))
+                (fail (ProviderError ^message $"${label} returned unsupported or refused output")))
+              (text .push block/text)))))
+      (else (fail (ProviderError ^message $"${label} returned unsupported output; it was not executed")))))
+  {^text (require_text ($str/join text "") label) ^usage value/usage})
+
+(fn messages_result [value, label : Str = "messages"]
+  (if (|| (!= ($head value) Map) (!= value/type "message") (!= value/role "assistant")
+    (!= value/stop_reason "end_turn") (== value/stop_details/type "refusal") (!= ($head value/content) List))
+    (fail (ProviderError ^message $"${label} response did not finish its turn; incomplete output was not executed")))
+  (let text [])
+  (for block in value/content
+    (match block/type
+      (when "text"
+        (if (!= ($head block/text) Str) (fail (ProviderError ^message $"${label} returned invalid text")))
+        (text .push block/text))
+      (when "thinking" nil) (when "redacted_thinking" nil)
+      (else (fail (ProviderError ^message $"${label} returned unsupported output; it was not executed")))))
+  {^text (require_text ($str/join text "") label) ^usage value/usage})
+
+(fn event_payload [lines, label : Str]
+  (let data ($str/join lines "\n"))
+  (if (|| (== data "") (== data "[DONE]")) (return nil))
+  (let event (try ($json/parse data)
+    catch Any (fail (ProviderError ^message $"${label} returned invalid stream data"))))
+  (if (!= ($head event) Map) (fail (ProviderError ^message $"${label} returned an invalid stream event")))
+  event)
+
+(fn server_events [body : Str, label : Str]
+  (let events [])
+  (var data [])
+  (for raw in ($str/split body "\n")
+    (let line ($str/trim raw))
+    (if (== line "")
+      (then
+        (let event (event_payload data label))
+        (if ($present? event) (events .push event))
+        (set data []))
+      (elif ($str/starts_with? line "data:")
+        (data .push ($str/trim ($str/slice_bytes line 5 (- ($str/byte_size line) 5)))))))
+  (let last (event_payload data label))
+  (if ($present? last) (events .push last))
+  events)
+
+(fn chatgpt_failure [code, ^status status = nil, ^request_id request_id = nil, ^param param = nil, ^shape shape = nil]
+  (let safe_code (if (&& (== ($head code) Str) ($present? (#"^[a-z][a-z0-9_]{0,95}$" .match code)))
+    (then code) (else "provider_error")))
+  (let recovery (match safe_code
+    (when "subscription_sharing_usage_limit_exceeded" {^status 429 ^message "Plan usage limit reached. Review ChatGPT Settings → Usage before trying again."})
+    (when "subscription_sharing_usage_unavailable" {^status 503 ^message "Plan usage could not be checked. Preserve this connection and retry later."})
+    (when "subscription_sharing_user_unavailable" {^status 503 ^message "Account or workspace information is temporarily unavailable. Retry later."})
+    (when "subscription_sharing_user_not_eligible" {^status 403 ^message "Plan usage is unavailable for this user or workspace. Check eligibility and policy; repeating sign-in will not resolve this restriction."})
+    (when "subscription_sharing_unsupported_capability" {^status 400 ^message "A requested capability is unsupported. Review the model, inputs and settings before retrying."})
+    (when "subscription_sharing_route_not_supported" {^status 403 ^message "The request route is unsupported. Check this integration's method and endpoint."})
+    (when "subscription_sharing_invalid_user" {^status 401 ^message "The subscriber context could not be validated. Check the selected account and granted plan permission."})
+    (when "chatpass_v2_scope_not_authorized" {^status 403 ^message "The signed permission does not authorize this operation. Check the client and grant configuration."})
+    (when "chatpass_v2_invalid_authorization_context" {^status 403 ^message "The signed permission context is invalid. Check the client and grant configuration."})
+    (else {^status nil ^message (match status
+      (when 401 "Account identity or plan permission was not accepted. Check the selected account and granted scopes.")
+      (when 403 "A policy or permission restriction prevented admission. Verify the integration and serving-region policy.")
+      (when 503 "Direct routing is temporarily unavailable or not enabled. Preserve this connection and retry later.")
+      (else "The request did not complete. No partial output was executed."))})))
+  (let actual_status (?? status recovery/status))
+  (var message ($to_str "ChatGPT " (?? actual_status "stream") " (" safe_code "): " recovery/message))
+  (if (&& (== ($head shape) Str) (["error" "detail" "other"] .contains? shape))
+    (set message ($to_str message " Response shape: " shape ".")))
+  (if (&& (== ($head param) Str) ($present? (#"^[a-zA-Z0-9_.\[\]]{1,96}$" .match param)))
+    (set message ($to_str message " Parameter: " param ".")))
+  (if (&& (== ($head request_id) Str) ($present? (#"^[a-zA-Z0-9_.:-]{1,128}$" .match request_id)))
+    (set message ($to_str message " Request: " request_id ".")))
+  (fail (ProviderError ^status actual_status ^code safe_code ^message message)))
+
+(fn responses_stream_result [response, label : Str = "responses"]
+  (require_success response label)
+  (var completed nil)
+  (for event in (server_events response/body label)
+    (match event/type
+      (when "response.completed"
+        (if ($present? completed) (fail (ProviderError ^message $"${label} returned multiple completed responses")))
+        (set completed (responses_result event/response label)))
+      (when "error"
+        (if (== label "chatgpt")
+          (then
+            (let error (if (== ($head event/error) Map) (then event/error) (else event)))
+            (chatgpt_failure ^shape "error"
+              ^request_id (?? response/headers/x-request-id response/headers/openai-request-id event/request_id error/request_id)
+              ^param error/param error/code)))
+        (fail (ProviderError ^message $"${label} stream reported an error; output was not executed")))
+      (when "response.failed"
+        (if (== label "chatgpt") (chatgpt_failure ^shape "error"
+          ^request_id (?? response/headers/x-request-id response/headers/openai-request-id event/request_id event/response/request_id)
+          ^param event/response/error/param event/response/error/code))
+        (fail (ProviderError ^message $"${label} stream failed; output was not executed")))
+      (when "response.incomplete" (fail (ProviderError ^message $"${label} stream was incomplete; output was not executed")))
+      (else nil)))
+  (if ($absent? completed) (fail (ProviderError ^message $"${label} stream ended before response.completed")))
+  completed)
+
+(fn stream_index [event, blocks, label : Str]
+  (let index event/index)
+  (if (|| (!= ($head index) Int) (< index 0) (>= index blocks/.size))
+    (fail (ProviderError ^message $"${label} stream referenced an unknown content block")))
+  index)
+
+(fn messages_stream_result [response, label : Str = "messages"]
+  (require_messages_success response label)
+  (var message nil)
+  (let blocks [])
+  (let closed {})
+  (var stopped false)
+  (for event in (server_events response/body label)
+    (if (&& stopped (!= event/type "ping"))
+      (fail (ProviderError ^message $"${label} returned data after message_stop")))
+    (match event/type
+      (when "ping" nil)
+      (when "error" (fail (ProviderError ^message $"${label} stream reported an error; output was not executed")))
+      (when "message_start"
+        (if (|| ($present? message) (!= ($head event/message) Map))
+          (fail (ProviderError ^message $"${label} returned an invalid message_start")))
+        (set message ($thaw ($freeze event/message)))
+        (if (|| (!= message/type "message") (!= message/role "assistant"))
+          (fail (ProviderError ^message $"${label} returned an invalid assistant message"))))
+      (when "content_block_start"
+        (if (|| ($absent? message) (!= event/index blocks/.size) (!= ($head event/content_block) Map))
+          (fail (ProviderError ^message $"${label} returned an invalid content block")))
+        (blocks .push ($thaw ($freeze event/content_block))))
+      (when "content_block_delta"
+        (let index (stream_index event blocks label))
+        (if (== (closed .get ($to_str index)) true)
+          (fail (ProviderError ^message $"${label} stream changed a closed content block")))
+        (let block blocks/%index)
+        (match event/delta/type
+          (when "text_delta"
+            (if (|| (!= block/type "text") (!= ($head event/delta/text) Str))
+              (fail (ProviderError ^message $"${label} returned an invalid text delta")))
+            (block .put "text" ($to_str (?? block/text "") event/delta/text)))
+          (when "thinking_delta" nil) (when "signature_delta" nil)
+          (else (fail (ProviderError ^message $"${label} returned an unsupported content delta")))))
+      (when "content_block_stop"
+        (let index (stream_index event blocks label))
+        (if (== (closed .get ($to_str index)) true)
+          (fail (ProviderError ^message $"${label} stream closed a content block twice")))
+        (closed .put ($to_str index) true))
+      (when "message_delta"
+        (if ($absent? message) (fail (ProviderError ^message $"${label} returned a delta before message_start")))
+        (for [key value] in (?? event/delta {}) (message .put key value))
+        (let usage ($thaw ($freeze (?? message/usage {}))))
+        (for [key value] in (?? event/usage {}) (usage .put key value))
+        (message .put "usage" usage))
+      (when "message_stop" (set stopped true))
+      (else (fail (ProviderError ^message $"${label} returned an unsupported stream event")))))
+  (if (|| (! stopped) ($absent? message) (!= ($size closed) blocks/.size))
+    (fail (ProviderError ^message $"${label} stream ended before a complete message_stop")))
+  (message .put "content" blocks)
+  (messages_result message label))

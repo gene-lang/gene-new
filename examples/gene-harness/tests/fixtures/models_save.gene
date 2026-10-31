@@ -1,0 +1,19 @@
+(import [read_models_file write_models_file ModelsFileError] ^from "../../src/public/models_file")
+
+(fn main [args] : Int
+  (let root args/0)
+  (let expected args/1)
+  (let name args/2)
+  (let state (read_models_file root))
+  (state/config/presets .push {^name name ^provider "chatgpt" ^model "gpt-6-sol"})
+  ($fs/write_text ($path/join root $"ready-${name}") "ready")
+  (let deadline (+ ($os/monotonic_ms) 5000))
+  (while (! ($fs/exists? ($path/join root "start")))
+    (if (>= ($os/monotonic_ms) deadline) (fail "save barrier timed out"))
+    ($sleep 1))
+  (try
+    (write_models_file root state/config expected)
+    ($println "saved")
+  catch ModelsFileError
+    ($println $err/code))
+  0)

@@ -7,7 +7,7 @@
 
 (fn download_image [client, path]
   (let task
-    (request ^url $"${client/connection/origin}/api/v8/ui/image?path=${($url/encode_component path)}" ^headers {^cookie client/credentials/cookie} ^timeout_ms 15000 ^max_bytes 2097152))
+    (request ^url $"${client/connection/origin}/api/v9/ui/image?path=${($url/encode_component path)}" ^headers {^cookie client/credentials/cookie} ^timeout_ms 15000 ^max_bytes 2097152))
   (try
     (await task)
   ensure
@@ -53,7 +53,7 @@
             ($assert (== ((Path "status") (download_image client path)) 404)))
           (let foreign
             (await
-              (request ^url $"${client/connection/origin}/api/v8/ui/image?path=assets%2Fboard.svg" ^headers {^cookie client/credentials/cookie ^origin "https://example.com"} ^timeout_ms 15000)))
+              (request ^url $"${client/connection/origin}/api/v9/ui/image?path=assets%2Fboard.svg" ^headers {^cookie client/credentials/cookie ^origin "https://example.com"} ^timeout_ms 15000)))
           ($assert (== foreign/status 403))
         ensure
           (stop_host host))))))

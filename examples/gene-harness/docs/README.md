@@ -19,12 +19,14 @@ available feature.
 
 ## Proposals
 
+- [Providers, models and effort](models.md): implemented; see the verification record for evidence and limits.
 - [Durable memory](proposals/memory.md): planned; not implemented.
 
 ## Implementation and verification
 
 These are dated evidence and progress records, not alternate API contracts.
 
+- [Models implementation and verification](verification/models-implementation.md)
 - [Architecture refactor batches](verification/architecture-refactor.md)
 - [Kernel tidy](verification/kernel-tidy.md)
 - [Harness design review 3 implementation](verification/harness-review3.md)

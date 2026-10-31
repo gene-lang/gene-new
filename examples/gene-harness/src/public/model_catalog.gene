@@ -1,0 +1,390 @@
+# Optional contribution-owned model data. The loop reads snapshot only; every
+# file read, credential operation and network probe runs outside the turn path.
+(mod model_catalog)
+(import [ProviderError] ^from "../plugin_api")
+(import [transport_identity provider_transport validate_model_settings] ^from "./models")
+(import [read_models_file write_models_file validate_model ModelsFileError] ^from "./models_file")
+(import [bounded_probe] ^from "./provider_discovery")
+
+(type ModelCatalog ^props {^root Str ^providers Fn ^generation Str ^state Any ^discovered Any
+  ^file Any ^revision Any ^closed Any ^worker Any ^requested Any ^refreshing Any
+  ^next_refresh Any ^next_file_check Any ^on_change Any ^publishing Any ^on_file_change Any ^reserved Any
+  ^failure_version Any ^failures Any ^connection_versions Any})
+
+(fn catalog_snapshot [catalog]
+  catalog/state/.get)
+
+(fn list_catalog_models [snapshot, ^provider provider = nil, ^q query : Str = "",
+  ^offset offset : Int = 0, ^limit limit : Int = 50]
+  (if (|| (< offset 0) (< limit 1) (> limit 200))
+    (fail (ProviderError ^message "Model list offset must be nonnegative and limit must be 1–200")))
+  (let words ($str/split ($str/lower ($str/trim query)) " "))
+  (let matches [])
+  (for [key entry] in (?? snapshot/providers {})
+    (let name ($to_str key))
+    (if (|| (!= entry/connection/state "ready")
+            (&& ($present? provider) (!= provider name))) (continue))
+    (for model in (?? entry/models [])
+      (if (== model/hidden true) (continue))
+      (let label (?? model/label model/id))
+      (let text ($str/lower ($to_str name " " model/id " " label)))
+      (var include true)
+      (for word in words
+        (if (&& (!= word "") (! ($str/contains? text word))) (set include false)))
+      (if_not include (continue))
+      (let item {^provider name ^id model/id ^label label ^billing entry/connection/billing})
+      (for key in ["efforts" "default_effort" "window" "max_output" "input" "pricing" "prompt_limit_bytes"]
+        (let value (model .get key))
+        (if ($present? value) (item .put key value)))
+      (matches .push item)))
+  (let page [])
+  (var index offset)
+  (while (&& (< index matches/.size) (< page/.size limit))
+    (page .push matches/%index)
+    (set index (+ index 1)))
+  {^models page ^total matches/.size ^next_offset (if (< index matches/.size)
+    (then index) (else nil))})
+
+(fn canonical_models [models]
+  (if (!= ($head models) List) (fail (ProviderError ^message "Invalid provider model list")))
+  (let result [])
+  (let ids [])
+  (for source in models
+    (let clean {})
+    (for key in ["id" "label" "rank" "window" "max_output" "input" "efforts"
+      "default_effort" "hidden" "effective_percent" "pricing" "prompt_limit_bytes"]
+      (let value (source .get key))
+      (if ($present? value) (clean .put key value)))
+    (let checked (validate_model clean))
+    (if (ids .contains? clean/id) (fail (ProviderError ^message "Duplicate model in provider catalog")))
+    (ids .push clean/id)
+    (result .push checked))
+  result)
+
+(fn canonical_connection [value, name]
+  (if (!= ($head value) Map) (fail (ProviderError ^message "Invalid provider connection")))
+  (if_not (["ready" "sign_in_required" "expired" "unavailable"] .contains? value/state)
+    (fail (ProviderError ^message "Invalid provider connection state")))
+  (let result {^state value/state ^label (?? value/label name)
+    ^billing (?? value/billing "unknown") ^reason (?? value/reason nil)})
+  (if_not (["plan" "metered" "local" "unknown"] .contains? result/billing)
+    (fail (ProviderError ^message "Invalid provider billing class")))
+  (for key in ["label" "reason" "account" "transport"]
+    (let field (value .get key))
+    (if ($present? field)
+      (then
+        (if (!= ($head field) Str) (fail (ProviderError ^message "Invalid provider connection metadata")))
+        (result .put key field))))
+  (if (|| (== ($head value/limit_remaining) Int) (== ($head value/limit_remaining) Float))
+    (result .put "limit_remaining" value/limit_remaining))
+  result)
+
+(fn merge_models [builtin, discovered, overrides, provider]
+  (let order [])
+  (let entries {})
+  (for [list source] in [[builtin "builtin"] [discovered "discovery"] [overrides "file"]]
+    (for model in (?? list [])
+      (if (&& ($present? model/provider) (!= model/provider provider)) (continue))
+      (let id model/id)
+      (if_not (order .contains? id) (order .push id))
+      (let previous (?? (entries .get id) {}))
+      (let merged ($thaw ($freeze previous)))
+      (for [key value] in model (merged .put key value))
+      (merged .put "provider" provider)
+      (merged .put "source" source)
+      (entries .put id merged)))
+  ($map order (fn [id]
+    (let model (entries .get id))
+    (if (&& ($present? model/efforts) ($present? model/default_effort)
+        (! (model/efforts .contains? model/default_effort)))
+      (model .put "default_effort" nil))
+    model)))
+
+(fn reserved_provider_names [catalog]
+  (if ($present? catalog/reserved) (return (catalog/reserved)))
+  (let names [])
+  (for candidate in (catalog/providers)
+    (if (!= candidate/from_models_file true) (names .push candidate/name)))
+  names)
+
+(fn read_file [catalog]
+  (let reserved (reserved_provider_names catalog))
+  (try (read_models_file ^reserved reserved catalog/root)
+    catch Any {^config {^version 1 ^default {} ^models [] ^providers [] ^presets []}
+      ^errors [{^section "file" ^reason "Cannot read models.gene; check file permissions."}] ^digest "unreadable"}))
+
+(fn accept_file [catalog, file]
+  (if ($present? catalog/on_file_change) (catalog/on_file_change file))
+  (catalog/file .set file))
+
+(fn publish_catalog_state [catalog] ^^private
+  (if catalog/closed/.get (return nil))
+  (let config catalog/file/.get/config)
+  (var default_error nil)
+  (for error in catalog/file/.get/errors
+    (if (== error/section "file")
+      (set default_error "models.gene is invalid; choose a model explicitly or fix the shared settings."))
+    (if (&& (== error/section "providers") ($present? config/default/provider)
+      (== error/provider config/default/provider))
+      (set default_error "The default endpoint entry is invalid; fix models.gene or choose a model explicitly.")))
+  (let providers {})
+  (for candidate in (catalog/providers)
+    (let name candidate/name)
+    (let found (?? (catalog/discovered/.get .get name) {}))
+    (let same (== found/provider_transport (provider_transport candidate)))
+    (let connection (if (&& same ($present? found/connection))
+      (then found/connection)
+      (else (if ($present? candidate/connection)
+        (then {^state "unavailable" ^label name ^billing (?? candidate/transport/billing "unknown")
+          ^reason "Checking connection…"})
+        (else {^state "ready" ^label name ^billing (?? candidate/transport/billing "unknown") ^reason nil})))))
+    (let overrides [])
+    (for entry in (?? config/providers [])
+      (if (== entry/name name)
+        (for model in (?? entry/models []) (overrides .push model))))
+    (for model in (?? config/models [])
+      (if (== model/provider name) (overrides .push model)))
+    (providers .put name {^name name ^connection connection
+      ^models (merge_models candidate/builtin_models (if same (then found/models) (else [])) overrides name)
+      ^stale (|| (! same) (?? found/stale true)) ^updated_ms (?? found/updated_ms nil)
+      ^transport (transport_identity candidate connection)}))
+  (catalog/revision .set (+ catalog/revision/.get 1))
+  (let revision catalog/revision/.get)
+  (let generation catalog/generation)
+  (catalog/state .set ($freeze {^id $"${generation}:${revision}" ^revision revision ^providers providers
+    ^default (?? config/default {}) ^presets (?? config/presets [])
+    ^default_error default_error
+    ^errors catalog/file/.get/errors ^digest catalog/file/.get/digest
+    ^refreshing catalog/refreshing/.get}))
+  catalog/state/.get)
+
+(fn publish_catalog [catalog]
+  (if catalog/closed/.get (return nil))
+  (let snapshot (catalog/publishing (fn [] (publish_catalog_state catalog))))
+  (if (&& ($present? snapshot) ($present? catalog/on_change)) (catalog/on_change snapshot))
+  nil)
+
+(fn load_catalog_cache [catalog]
+  (let path ($path/join catalog/root ".gene-harness" "model_catalog.gene"))
+  (if (! ($fs/exists? path)) (return nil))
+  (try
+    (let saved ($serde/read_data ($fs/read_text path)))
+    (if (!= saved/version 1) (return nil))
+    (for [name entry] in saved/providers
+      (try
+        (let models (canonical_models entry/models))
+        (catalog/discovered/.get .put name
+          {^models models ^transport entry/transport ^provider_transport entry/provider_transport
+           ^updated_ms entry/updated_ms ^^stale})
+      catch Any nil))
+  catch Any nil))
+
+(fn save_catalog_cache [catalog]
+  (let providers {})
+  (for [name found] in catalog/discovered/.get
+    (providers .put name {^models (?? found/models []) ^transport (?? found/transport nil)
+      ^provider_transport found/provider_transport ^updated_ms (?? found/updated_ms nil)}))
+  (try
+    ($fs/make_dir ($path/join catalog/root ".gene-harness"))
+    ($fs/write_text_atomic ($path/join catalog/root ".gene-harness" "model_catalog.gene")
+      ($serde/write_data {^version 1 ^providers providers}))
+  catch Any nil))
+
+(fn probe_provider [catalog, candidate]
+  (let name candidate/name)
+  (let previous (?? (catalog/discovered/.get .get name) {}))
+  (let source (provider_transport candidate))
+  (let same (== source previous/provider_transport))
+  (var connection (if (&& same ($present? previous/connection))
+    (then previous/connection)
+    (else {^state "unavailable" ^label name ^billing (?? candidate/transport/billing "unknown")
+      ^reason "Connection check could not complete."})))
+  (var stale false)
+  (try
+    (let raw (if ($present? candidate/connection)
+      (then (bounded_probe candidate/connection))
+      (else {^state "ready" ^label name ^billing (?? candidate/transport/billing "unknown")})))
+    (if (== raw/stale true) (set stale true))
+    (if (&& (== raw/stale true) same ($present? previous/connection))
+      (then (set stale true))
+      (else (set connection (canonical_connection raw name))))
+  catch Any (set stale true))
+  (let identity (transport_identity candidate connection))
+  (let keep_models (&& same (|| (!= connection/state "ready") (== previous/transport identity))))
+  (var models (if keep_models (then (?? previous/models [])) (else [])))
+  (var updated (if keep_models (then (?? previous/updated_ms nil)) (else nil)))
+  (if (== connection/state "ready")
+    (then
+      (if ($present? candidate/models)
+        (then
+          (try
+            (set models (canonical_models (bounded_probe candidate/models)))
+            (set updated ($os/wall_ms))
+          catch Any
+            (set stale true)
+            (if ([401 403] .contains? $err/status)
+              (then
+                (set connection ($thaw ($freeze connection)))
+                (connection .put "state" "expired")
+                (connection .put "reason" "Provider rejected this connection; reconnect or update its credential.")))
+            (if ([404 405] .contains? $err/status) (set models []))))))
+    (else (set stale true)))
+  {^connection connection ^models models ^transport (transport_identity candidate connection)
+   ^provider_transport source ^updated_ms updated ^stale stale})
+
+(fn refresh_catalog [catalog]
+  (if catalog/closed/.get (return nil))
+  (if (catalog/refreshing .swap true) (return nil))
+  (try
+    (accept_file catalog (read_file catalog))
+    (publish_catalog catalog)
+    (scope
+      (let tasks [])
+      (for candidate in (catalog/providers)
+        (tasks .push (spawn ^lane root
+          (do
+            (let observed catalog/failure_version/.get)
+            (let observed_connection (?? (catalog/connection_versions .get candidate/name) 0))
+            (let found (probe_provider catalog candidate))
+            (if (! catalog/closed/.get)
+              (then
+                (catalog/publishing (fn []
+                  (let key ($serde/write_data [candidate/name found/transport]))
+                  (let rejected (?? (catalog/failures .get key) 0))
+                  # A probe begun before a 401 must not erase that newer fact.
+                  (if (&& (== observed_connection (?? (catalog/connection_versions .get candidate/name) 0))
+                    (|| (!= found/connection/state "ready") (<= rejected observed)))
+                    (catalog/discovered/.get .put candidate/name found))))
+                (publish_catalog catalog)))))))
+      (try
+        (for task in tasks
+          (match task/.join
+            (when (TaskOutcome/error error) nil)
+            (else nil)))
+      ensure
+        (for task in tasks (if_not task/.done? task/.cancel task/.join))))
+    (save_catalog_cache catalog)
+  ensure
+    (catalog/refreshing .set false)
+    (catalog/next_refresh .set (+ ($os/monotonic_ms) 86400000))
+    (publish_catalog catalog)))
+
+(fn request_catalog_refresh [catalog]
+  (catalog/requested .set true)
+  {^^accepted})
+
+(fn close_model_catalog [catalog]
+  (if (catalog/closed .swap true) (return nil))
+  (let worker catalog/worker/.get)
+  (if (&& ($present? worker) (! worker/.done?)) (then worker/.cancel worker/.join))
+  nil)
+
+(fn run_model_catalog [catalog]
+  ($runtime/with_context nil (fn []
+    (while (! catalog/closed/.get)
+      (if (|| catalog/requested/.get (>= ($os/monotonic_ms) catalog/next_refresh/.get))
+        (then
+          (catalog/requested .set false)
+          (try (refresh_catalog catalog) catch Any nil)))
+      (if (>= ($os/monotonic_ms) catalog/next_file_check/.get)
+        (then
+          (let file (read_file catalog))
+          (if (!= file/digest catalog/file/.get/digest)
+            (then
+              (try (accept_file catalog file) (publish_catalog catalog)
+                catch Any (request_catalog_refresh catalog))))
+          (catalog/next_file_check .set (+ ($os/monotonic_ms) 1000))))
+      ($sleep 100)))))
+
+(fn open_model_catalog [root : Str, providers : Fn, ^start start : Bool = true, ^on_change on_change = nil,
+  ^on_file_change on_file_change = nil, ^reserved reserved = nil, ^seed seed = nil]
+  (let catalog (ModelCatalog ^root root ^providers providers ^on_change on_change ^generation ($crypto/random_hex 12)
+    ^state ($cell {}) ^discovered ($cell {}) ^file ($cell {}) ^revision ($cell 0)
+    ^closed ($cell false) ^worker ($cell nil) ^requested ($cell true) ^publishing ($sync/gate)
+    ^refreshing ($cell false) ^next_refresh ($cell 0) ^next_file_check ($cell 0)
+    ^on_file_change on_file_change ^reserved reserved ^failure_version ($cell 0) ^failures {} ^connection_versions {}))
+  (load_catalog_cache catalog)
+  # In-memory observations survive a contribution publication in this host.
+  # Descriptor hashes still decide whether a connection can be reused; the
+  # disk cache intentionally contains no connection/account record.
+  (for [name found] in (?? seed {})
+    (try
+      (catalog/discovered/.get .put ($to_str name)
+        {^connection (canonical_connection found/connection ($to_str name))
+         ^models (canonical_models (?? found/models []))
+         ^transport found/transport ^provider_transport found/provider_transport
+         ^updated_ms found/updated_ms ^stale (== found/stale true)})
+    catch Any nil))
+  (catalog/file .set (read_file catalog))
+  (publish_catalog catalog)
+  (if start
+    (catalog/worker .set (spawn ^lane root (run_model_catalog catalog))))
+  catalog)
+
+(fn save_catalog_settings [catalog, value, expected]
+  (let reserved (reserved_provider_names catalog))
+  (let saved (write_models_file ^reserved reserved catalog/root value expected))
+  (accept_file catalog saved)
+  (publish_catalog catalog)
+  (request_catalog_refresh catalog)
+  catalog/state/.get)
+
+# The host uses this after it has published the matching provider contribution.
+# Skipping on_file_change here avoids recursively scheduling that publication.
+(fn adopt_catalog_file [catalog, file]
+  (if catalog/closed/.get (return nil))
+  (catalog/file .set file)
+  (publish_catalog catalog)
+  (request_catalog_refresh catalog)
+  catalog/state/.get)
+
+(fn set_catalog_default [catalog, selection, expected : Str]
+  (try (validate_model_settings selection)
+    catch Any (fail (ModelsFileError ^code "invalid_models" ^message $err/message)))
+  (if (|| ($absent? selection/provider) ($absent? selection/model))
+    (fail (ModelsFileError ^code "invalid_models" ^message "A shared default requires provider and model")))
+  (if (!= expected catalog/file/.get/digest)
+    (fail (ModelsFileError ^code "revision_conflict" ^message "Models settings changed; refresh before saving a default.")))
+  (let config ($thaw ($freeze catalog/file/.get/config)))
+  (config .put "default" selection)
+  (save_catalog_settings catalog config expected))
+
+(fn catalog_failure [catalog, provider : Str, status, ^transport transport = nil]
+  (if (!= status 401) (return nil))
+  (let changed (catalog/publishing (fn []
+    (let previous (catalog/discovered/.get .get provider))
+    (if (|| ($absent? previous) (&& ($present? transport) (!= transport previous/transport))) (return false))
+    (let version (+ catalog/failure_version/.get 1))
+    (catalog/failure_version .set version)
+    (catalog/failures .put ($serde/write_data [provider previous/transport]) version)
+    (let found ($thaw ($freeze_shallow previous)))
+    (let connection ($thaw ($freeze (?? previous/connection {}))))
+    (connection .put "state" "expired")
+    (connection .put "label" (?? connection/label provider))
+    (connection .put "billing" (?? connection/billing "unknown"))
+    (connection .put "reason" "Provider credential expired or was rejected; reconnect.")
+    (found .put "connection" connection)
+    (found .put "stale" true)
+    (catalog/discovered/.get .put provider found)
+    true)))
+  (if changed (publish_catalog catalog)))
+
+# Harness-owned sign-in/account changes are known immediately. Old probes must
+# not restore another account's connection or model list after this publication.
+(fn adopt_catalog_connection [catalog, provider : Str, connection]
+  (if catalog/closed/.get (return nil))
+  (catalog/publishing (fn []
+    (var candidate nil)
+    (for row in (catalog/providers) (if (== row/name provider) (set candidate row)))
+    (if ($absent? candidate) (return nil))
+    (let checked (canonical_connection connection provider))
+    (let transport (transport_identity candidate checked))
+    (let previous (catalog/discovered/.get .get provider))
+    (let same (&& (== previous/provider_transport (provider_transport candidate)) (== previous/transport transport)))
+    (catalog/connection_versions .put provider (+ 1 (?? (catalog/connection_versions .get provider) 0)))
+    (catalog/discovered/.get .put provider
+      {^connection checked ^transport transport ^provider_transport (provider_transport candidate)
+       ^models (if same (then (?? previous/models [])) (else []))
+       ^updated_ms (if same (then previous/updated_ms) (else nil)) ^stale true})))
+  (publish_catalog catalog)
+  (request_catalog_refresh catalog))

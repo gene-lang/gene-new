@@ -5,7 +5,7 @@
 (import [service_binding require_service] ^from "./service_handles")
 (import [immutable_view] ^from "./composition")
 (import [open_trigger_manager close_trigger_manager TriggerError
-  list_triggers create_trigger delete_trigger list_occurrences] ^from "./triggers")
+  list_triggers create_trigger update_trigger delete_trigger list_occurrences] ^from "./triggers")
 (import [composition_entries] ^from "../storage/composition_store")
 
 (fn new_trigger_host [runtime, controller]
@@ -66,6 +66,7 @@
     (message start [] : Any (start_scheduler self))
     (message list [] : Any (immutable_view (list_triggers (scheduler self))))
     (message create [definition] : Any (immutable_view (create_trigger (scheduler self) definition)))
+    (message update [id : Str, changes] : Any (immutable_view (update_trigger (scheduler self) id changes)))
     (message delete [id : Str] : Any (immutable_view (delete_trigger (scheduler self) id)))
     (message occurrences [^trigger trigger : Str = ""] : Any
       (immutable_view (list_occurrences (scheduler self) ^trigger (if (== trigger "") nil trigger))))))

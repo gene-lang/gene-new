@@ -5,6 +5,8 @@
 (import ^from "../plugin_api" [ProviderError])
 (import ^from "../public/provider" [nonempty configure_model])
 (import $os [exec_async])
+(import [claude_models] ^from "../public/model_defaults")
+(import [claude_connection] ^from "../public/provider_discovery")
 
 (fn claude_request [config, system : Str, user : Str]
   (if (>= (+ ($str/byte_size system) ($str/byte_size user)) 131072)
@@ -19,8 +21,8 @@
     "--disallowedTools" "mcp__*" "--permission-mode" "dontAsk"
     "--no-chrome" "--disable-slash-commands" "--no-session-persistence"
     "--max-turns" "1" "--model" config/model "--system-prompt" system])
-  (if_not (== config/effort "none")
-    (args .push "--effort") (args .push config/effort))
+  (if (&& ($present? config/effort) (!= config/effort "none"))
+    (then (args .push "--effort") (args .push config/effort)))
   (args .push "--") (args .push user)
   {^cmd config/claude_command ^args args})
 
@@ -58,10 +60,16 @@
     ^activate (fn [host]
       (host .PluginHost:contribute "providers"
         {^name "claude" ^tags ["provider" "model" "claude"] ^docs ["harness/providers/claude"] ^doc "Use the local Claude Code CLI."
+         ^auto 0
+         ^builtin_models (claude_models) ^models claude_models
+         ^connection (fn [] (claude_connection
+           (?? (nonempty ($os/env? "GENE_HARNESS_CLAUDE_COMMAND")) "claude")))
+         ^transport {^adapter "claude_cli" ^command (?? (nonempty ($os/env? "GENE_HARNESS_CLAUDE_COMMAND")) "claude")
+           ^credential {^kind "claude_login"} ^billing "unknown"}
          ^capabilities (fn [settings] {^image_input "no" ^image_output "no"})
          ^configure (fn [model, effort, timeout]
            (let configured
-             (configure_model ^^minimal_is_low model effort timeout "sonnet"))
+             (configure_model ^catalog (claude_models) model effort timeout "sonnet"))
            (configured .put "command"
              (?? (nonempty ($os/env? "GENE_HARNESS_CLAUDE_COMMAND")) "claude"))
            configured)

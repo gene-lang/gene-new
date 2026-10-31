@@ -1,0 +1,142 @@
+# User-initiated loopback sign-in. Secrets stay inside the transport and the
+# owner-only credential file; public status contains no callback parameters.
+(mod provider_login)
+(import [ProviderError] ^from "../plugin_api")
+(import [nonempty] ^from "./provider")
+(import $net/http_client [request])
+(import $sync [gate])
+
+(fn require_login_key [value] : Str
+  (if (|| (!= ($head value) Str) (== value "") (> ($str/byte_size value) 16384)
+    ($str/contains? value "\r") ($str/contains? value "\n"))
+    (fail (ProviderError ^message "Sign-in returned an invalid key")))
+  value)
+
+(fn login_root [supplied = nil] : Str
+  (let configured (?? supplied (nonempty ($os/env? "GENE_HARNESS_AUTH_HOME"))))
+  (if ($present? configured) (return configured))
+  (let home (nonempty ($os/env? "HOME")))
+  (if ($absent? home) (fail (ProviderError ^message "HOME is required to locate Harness sign-in records")))
+  ($path/join home ".config" "gene-harness"))
+
+(fn openrouter_record_path [root = nil] : Str
+  ($path/join (login_root root) "openrouter" "login.json"))
+
+(fn read_openrouter_record [root = nil]
+  (let path (openrouter_record_path root))
+  (if (! ($fs/exists? path)) (return nil))
+  (try
+    (let record ($json/parse ($fs/read_text path)))
+    (if (!= record/version 1)
+      (fail (ProviderError ^message "Invalid sign-in record")))
+    (require_login_key record/key)
+    {^key record/key ^account ($str/slice_bytes ($crypto/sha256 record/key) 0 12)}
+  catch Any (fail (ProviderError ^message "OpenRouter sign-in record is unreadable; connect again"))))
+
+(fn write_openrouter_record [root, key : Str]
+  (require_login_key key)
+  (let path (openrouter_record_path root))
+  ($fs/make_dir ($path/parent path))
+  ($fs/set_mode ($path/parent path) 448)
+  ($fs/write_text_atomic ^^owner_only path ($json/stringify {^version 1 ^key key})))
+
+(fn pkce_challenge [verifier : Str] : Str
+  # sha256 currently returns hexadecimal; preserve the digest bytes for S256.
+  (let digits {^"0" 0 ^"1" 1 ^"2" 2 ^"3" 3 ^"4" 4 ^"5" 5 ^"6" 6 ^"7" 7 ^"8" 8 ^"9" 9
+    ^a 10 ^b 11 ^c 12 ^d 13 ^e 14 ^f 15})
+  (let digest ($crypto/sha256 verifier)) (let bytes [])
+  (var index 0)
+  (while (< index ($str/byte_size digest))
+    (bytes .push (+ (* 16 (digits .get ($str/slice_bytes digest index 1)))
+      (digits .get ($str/slice_bytes digest (+ index 1) 1))))
+    (set index (+ index 2)))
+  (let base ($base64/encode ($binary/from_list bytes)))
+  (let minus ($str/join ($str/split base "+") "-"))
+  (let underscores ($str/join ($str/split minus "/") "_"))
+  ($str/join ($str/split underscores "=") ""))
+
+(fn query_string [values] : Str
+  (let parts [])
+  (for [name value] in values
+    (parts .push ($to_str ($url/encode_component ($to_str name)) "=" ($url/encode_component value))))
+  ($str/join parts "&"))
+
+(fn openrouter_login [callback : Str, ^root root = nil, ^timeout_ms timeout_ms : Int = 300000,
+  ^authorization_url authorization_url : Str = "https://openrouter.ai/auth",
+  ^exchange_url exchange_url : Str = "https://openrouter.ai/api/v1/auth/keys"]
+  (if ($absent? (#"^http://127[.]0[.]0[.]1:[0-9]+/auth/callback$" .match callback))
+    (fail (ProviderError ^message "Sign-in requires the running host's 127.0.0.1 callback")))
+  (let resolved_root (login_root root))
+  (let state ($crypto/random_hex 32)) (let verifier ($crypto/random_hex 32))
+  # OpenRouter omits OAuth state on denial. Bind the callback URL itself too,
+  # using a separate name so a successful redirect cannot duplicate state.
+  (let bound_callback ($to_str callback "?" (query_string {^openrouter_state state})))
+  {^id ($crypto/random_hex 16) ^provider "openrouter" ^root resolved_root ^mutate (gate)
+   ^state state ^verifier verifier ^exchange_url exchange_url
+   ^status ($cell "pending") ^worker ($cell nil) ^expires_at (+ ($os/monotonic_ms) timeout_ms)
+   ^url ($to_str authorization_url "?" (query_string {^callback_url bound_callback ^state state
+     ^code_challenge (pkce_challenge verifier) ^code_challenge_method "S256" ^key_label "Gene Harness"}))})
+
+(fn login_status [attempt]
+  (expire_login attempt)
+  (let result {^id attempt/id ^provider attempt/provider ^state attempt/status/.get})
+  (if ($present? attempt/account) (result .put "account" attempt/account))
+  result)
+
+(fn close_login [attempt]
+  (attempt/mutate (fn []
+    (if (["pending" "exchanging"] .contains? attempt/status/.get) (attempt/status .set "cancelled"))))
+  nil)
+
+(fn exchange_openrouter [attempt, code : Str]
+  (let task (request ^method "POST" ^url attempt/exchange_url
+    ^headers {^content-type "application/json"}
+    ^body ($json/stringify {^code code ^code_verifier attempt/verifier ^code_challenge_method "S256"})
+    ^timeout_ms 15000 ^max_bytes 65536))
+  (let response (try (await task) ensure task/.cancel))
+  (if (!= response/status 200) (fail (ProviderError ^message "OpenRouter sign-in exchange failed")))
+  (let data ($json/parse response/body))
+  (let key (require_login_key data/key))
+  (attempt/mutate (fn []
+    (if (&& (== attempt/status/.get "exchanging") (>= ($os/monotonic_ms) attempt/expires_at))
+      (attempt/status .set "timed_out"))
+    (if (== attempt/status/.get "exchanging")
+      (then
+        (write_openrouter_record attempt/root key)
+        (attempt/status .set "complete"))))))
+
+(fn expire_login [attempt]
+  (attempt/mutate (fn []
+    (if (&& (>= ($os/monotonic_ms) attempt/expires_at)
+      (["pending" "exchanging"] .contains? attempt/status/.get))
+      (attempt/status .set "timed_out")))))
+
+(fn complete_openrouter_login [attempt, params]
+  (expire_login attempt)
+  (if (|| (!= (?? params/state params/openrouter_state) attempt/state)
+    (&& ($present? params/openrouter_state) (!= params/openrouter_state attempt/state)))
+    (return {^status 400 ^message "Sign-in state did not match. Return to Gene Harness and try again."}))
+  (if (!= attempt/status/.get "pending")
+    (return {^status 409 ^message "This sign-in attempt is no longer pending."}))
+  (if ($present? params/error)
+    (then
+      (attempt/status .set "declined")
+      (return {^status 200 ^message "Sign-in was declined. You can return to Gene Harness."})))
+  (let code (nonempty params/code))
+  (if ($absent? code) (return {^status 400 ^message "Missing sign-in code"}))
+  (attempt/status .set "exchanging")
+  (try
+    (exchange_openrouter attempt code)
+    (if (== attempt/status/.get "complete")
+      (then {^status 200 ^message "OpenRouter is connected. You can return to Gene Harness."})
+      (else {^status 400 ^message "This sign-in attempt has ended."}))
+  catch Any
+    (if (== attempt/status/.get "exchanging") (attempt/status .set "failed"))
+    {^status 400 ^message "OpenRouter sign-in could not finish. Return to Gene Harness and try again."}))
+
+(fn run_openrouter_login [attempt]
+  (try
+    (while (["pending" "exchanging"] .contains? attempt/status/.get)
+      (expire_login attempt)
+      ($sleep 100))
+  ensure (close_login attempt)))

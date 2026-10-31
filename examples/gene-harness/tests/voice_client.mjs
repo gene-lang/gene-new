@@ -212,15 +212,18 @@ round.configure_rounds(client, "durable");
 stored.set(scoped("gene-harness/voice-draft/durable/original"), JSON.stringify({text: "words more", audio_ms: 200}));
 let outcome;
 const inputMetadata = {kind: "voice", recognizer: "fixture", audio_ms: 200n};
+const modelMetadata = {provider: 'fixture', model: 'small', effort: 'low'};
 round.dispatch_round(client, "original", "words", inputMetadata,
-  (code, data) => { outcome = {code, data}; });
+  (code, data) => { outcome = {code, data}; }, modelMetadata);
 inputMetadata.audio_ms = 999n;
+modelMetadata.model = 'large';
 wire.shift().done(200n, {next_submission_seq: "4", state: "done"});
 const post = wire.shift();
 assert.equal(post.payload.literal, true);
 assert.equal(post.payload.session, "original");
 assert.equal(post.payload.submission_seq, "4");
 assert.equal(post.payload.input.audio_ms, 200n, 'caller mutations must not change the pending voice envelope');
+assert.equal(post.payload.model_settings.model, 'small', 'voice must retain the model choice made when submission began');
 assert.equal(post.payload.media, undefined, "voice must not pick up attachment drafts");
 post.done(0n, {});
 assert.equal(outcome.code, 0n);
@@ -235,6 +238,7 @@ round.recover_round(client);
 wire.shift().done(200n, {id: "round", request_id: id, state: "done"});
 assert.equal(client.pending, null);
 assert.equal(settled.length, 1);
+assert.equal(settled[0].envelope.model_settings.model, 'small', 'receipt recovery retains the original model choice');
 assert.equal(JSON.parse(stored.get(scoped("gene-harness/voice-draft/durable/original"))).text, "more",
   "host receipt recovery clears admitted words while preserving a later unsent suffix after plugin disposal");
 assert.equal(JSON.parse(stored.get(scoped("gene-harness/voice-draft/durable/original"))).held, false);

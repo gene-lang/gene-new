@@ -1,5 +1,6 @@
 # Small, inert workspace metadata. Call writes only with workspace ownership.
 (mod workspace_settings)
+(import [manager_root_path : shared_manager_root_path] ^from "../public/workspace_paths")
 (import ^from "./workspace_lock" [acquire_workspace_lock close_workspace_lock])
 
 (type WorkspaceSettingsError ^props {^code Str ^message Str} ^impl [Error])
@@ -51,13 +52,8 @@
 # managed workspace under workspaces/<name>. Relative paths use the launch
 # directory, like --workspace.
 (fn manager_root_path [^explicit explicit = nil, ^environment environment = nil] : Str
-  (let configured (?? environment ($os/get_env "GENE_HARNESS_ROOT" "")))
-  (var selected (if (&& ($present? explicit) (!= explicit "")) explicit configured))
-  (if_yes (== selected "")
-    (let home ($os/get_env "HOME" ""))
-    (if (== home "") (settings_error "HOME is required to locate the manager root; use --root DIR."))
-    (set selected ($path/join home ".gene-harness-root")))
-  (if ($str/starts_with? selected "/") selected ($path/join ($os/launch_dir) selected)))
+  (try (shared_manager_root_path ^explicit explicit ^environment environment)
+    catch Any (settings_error $err/message)))
 
 (fn initialize_manager_workspace [^root explicit = nil]
   (let selected (manager_root_path ^explicit explicit))

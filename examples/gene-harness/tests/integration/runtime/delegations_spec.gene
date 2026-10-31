@@ -38,12 +38,14 @@
   (for [key value] in changes (config .put key value))
   ($fs/write_text_atomic path ($serde/write_data config)))
 
-(fn model_provider [runtime, reply]
+(fn model_provider [runtime, reply, ^models models = []]
   (put_cordis_plugin ^^replace runtime/h
     (Plugin ^id "delegation_test_models" ^provides [["providers" "delegation_test_models"]]
       ^activate (fn [host]
         (host .PluginHost:contribute "providers"
           {^name "delegation_test_models" ^doc "Model-setting and usage fixture."
+           ^builtin_models models
+           ^transport {^adapter "fake" ^base_url "fake://delegation" ^billing "local"}
            ^configure (fn [model effort timeout]
              {^model (?? model "parent-model") ^effort "none" ^timeout_ms timeout})
            ^prepare (fn [call] call)
@@ -224,11 +226,19 @@
         (in_runtime workspace (fn [runtime controller]
           (let parent_calls ($cell 0)) (let child_calls ($cell 0))
           (let child_sessions ($cell [])) (let parent_model ($cell nil))
-          (model_provider runtime (fn [call]
+          (configure runtime {^effort "high"})
+          (model_provider ^models
+            [{^id "parent-model" ^window 1000000 ^max_output 128000 ^input ["text" "image"] ^efforts ["low"]}
+             {^id "cheap-test" ^window 64000 ^max_output 8192 ^input ["text"] ^efforts ["low" "high"]}]
+            runtime (fn [call]
             (let metadata (require_record runtime/sessions call/session))
             (if (== metadata/kind "child")
               (then
                 ($assert (== call/settings/model "cheap-test"))
+                ($assert (== call/settings/effort "high"))
+                ($assert (== call/settings/window 64000))
+                ($assert (== call/settings/max_output 8192))
+                ($assert (== call/settings/input ["text"]))
                 ($assert (! ($str/contains? ($to_str call/messages) "private-parent-marker")))
                 (child_sessions/.get .push call/session)
                 (let n (child_calls .swap (+ child_calls/.get 1)))
@@ -240,6 +250,9 @@
               (else
                 (if ($absent? parent_model/.get) (parent_model .set call/settings/model))
                 ($assert (== call/settings/model parent_model/.get))
+                ($assert (== call/settings/effort "low"))
+                ($assert (== call/settings/requested_effort "high"))
+                ($assert (== call/settings/window 1000000))
                 (let n (parent_calls .swap (+ parent_calls/.get 1)))
                 (match n
                   (when 0 "(delegate \"audit\" ^title \"Audit\" ^brief \"Audit auth routes.\" ^model \"cheap-test\") (Outcome ^wait \"all\")")

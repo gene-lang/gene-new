@@ -1,0 +1,82 @@
+# Console OAuth uses ant's documented token-export command. Claude Code's
+# subscription credentials are never inspected or passed to the Messages API.
+(mod anthropic_auth)
+(import [ProviderError] ^from "../plugin_api")
+(import [nonempty resolve_credential] ^from "./provider")
+(import [cli_probe api_connection] ^from "./provider_discovery")
+
+(fn auth_env [name : Str, environment]
+  (if ($present? environment) (then (environment .get name)) (else ($os/env? name))))
+
+(fn anthropic_auth_source [^environment environment = nil]
+  (if ($present? (nonempty (auth_env "ANTHROPIC_API_KEY" environment)))
+    (return {^kind "api_key" ^label "Anthropic · ANTHROPIC_API_KEY" ^credential {^env "ANTHROPIC_API_KEY"}}))
+  (let command (?? (nonempty (auth_env "GENE_HARNESS_ANT_COMMAND" environment)) "ant"))
+  (let profile (nonempty (auth_env "ANTHROPIC_PROFILE" environment)))
+  (let args [command])
+  (if ($present? profile) (then (args .push "--profile") (args .push profile)))
+  (for arg in ["auth" "print-credentials" "--access-token"] (args .push arg))
+  {^kind "ant" ^label "Anthropic · ant Console OAuth" ^credential {^command args}
+   ^command command ^profile profile})
+
+(fn anthropic_headers [source, ^timeout_ms timeout_ms : Int = 5000, ^environment environment = nil]
+  (let secret (resolve_credential ^timeout_ms timeout_ms ^environment environment source/credential))
+  (if (&& (== source/kind "api_key") ($str/starts_with? secret "sk-ant-oat"))
+    (fail (ProviderError ^message "ANTHROPIC_API_KEY must be an API key, not a Claude subscription token")))
+  (let headers {^anthropic-version "2023-06-01"})
+  (if (== source/kind "api_key")
+    (then (headers .put "x-api-key" secret))
+    (else
+      (headers .put "authorization" $"Bearer ${secret}")
+      (headers .put "anthropic-beta" "oauth-2025-04-20")))
+  headers)
+
+(fn ant_status_metadata [stdout : Str]
+  (var profile nil) (var workspace nil) (var oauth false)
+  (for raw in ($str/split stdout "\n")
+    (let line ($str/trim raw))
+    (if ($str/starts_with? line "Active profile:")
+      (then
+        (let name ($str/trim ($str/slice_bytes line 15 (- ($str/byte_size line) 15))))
+        # ant may append parenthesized profile-selection provenance. Retain
+        # only the identifier, never its diagnostic suffix.
+        (let selected (#"^([A-Za-z0-9_.-]{1,128})(?:[ ]+[(][^()]*[)])?$" .match name))
+        (if ($present? selected) (set profile selected/groups/0))))
+    (if ($str/contains? line "(active)")
+      (then
+        (if ($str/contains? line "Profile (user_oauth)") (set oauth true))
+        (let match (#"Workspace[ ]+(wrkspc_[A-Za-z0-9]+)" .match line))
+        (if ($present? match) (set workspace match/groups/0)))))
+  (if (|| (! oauth) ($absent? profile) ($absent? workspace))
+    (return {^state "sign_in_required" ^label "Anthropic · ant Console OAuth" ^billing "metered"
+      ^reason "No supported ant Console OAuth login was reported; run ant auth login, then refresh."}))
+  {^state "ready" ^label $"Anthropic · ant (${profile})" ^billing "metered"
+   ^account $"${profile} · ${workspace}" ^reason nil})
+
+(fn anthropic_connection []
+  (let source (anthropic_auth_source))
+  (let deadline (+ ($os/monotonic_ms) 5000))
+  (var account nil) (var label source/label)
+  (if (== source/kind "ant")
+    (then
+      (let args [])
+      (if ($present? source/profile) (then (args .push "--profile") (args .push source/profile)))
+      (args .push "auth") (args .push "status")
+      (let status (try (cli_probe source/command args)
+        catch Any (return {^state "sign_in_required" ^label label ^billing "metered"
+          ^reason "Install ant and run ant auth login, or set ANTHROPIC_API_KEY."})))
+      # ant documents status as diagnostic output, not an exit-status health check.
+      (let metadata (ant_status_metadata status/stdout))
+      (if (!= metadata/state "ready") (return metadata))
+      (set account metadata/account) (set label metadata/label)))
+  (let remaining (- deadline ($os/monotonic_ms)))
+  (if (<= remaining 0) (fail (ProviderError ^message "Anthropic connection check timed out")))
+  (let headers (try (anthropic_headers ^timeout_ms remaining source)
+    catch Any (return {^state "sign_in_required" ^label label ^billing "metered"
+      ^reason "Anthropic credential is unavailable; use ANTHROPIC_API_KEY or run ant auth login. Claude subscription tokens cannot be used here."})))
+  (let left (- deadline ($os/monotonic_ms)))
+  (if (<= left 0) (fail (ProviderError ^message "Anthropic connection check timed out")))
+  (let connection (api_connection ^timeout_ms left ^headers headers label
+    "https://api.anthropic.com/v1/models?limit=1" nil))
+  (if ($present? account) (connection .put "account" account))
+  connection)

@@ -1,0 +1,58 @@
+(import $test [describe it run])
+(import [merge_models canonical_models canonical_connection list_catalog_models] ^from "../../../src/public/model_catalog")
+
+(describe "Merged model catalog"
+  (it "merges fields in file, discovery, built-in order without losing false overrides" []
+    (let models (merge_models
+      [{^id "one" ^label "Builtin" ^window 128000 ^efforts ["low" "medium"] ^default_effort "medium"}]
+      [{^id "one" ^window 500000 ^efforts ["low"]} {^id "two" ^efforts []}]
+      [{^provider "example" ^id "one" ^label "Mine" ^hidden false}
+       {^provider "other" ^id "other-model"}]
+      "example"))
+    ($assert (== models/.size 2))
+    ($assert (== models/0/window 500000))
+    ($assert (== models/0/label "Mine"))
+    ($assert (== models/0/hidden false))
+    ($assert ($absent? models/0/default_effort) "an obsolete default survived changed effort capabilities")
+    ($assert (== models/0/source "file")))
+
+  (it "drops undeclared response fields before caching model and account metadata" []
+    (let models (canonical_models [{^id "one" ^efforts [] ^api_key "SECRET_SENTINEL"}]))
+    ($assert ($absent? models/0/api_key))
+    (let connection (canonical_connection {^state "ready" ^billing "plan"
+      ^account "account" ^access_token "SECRET_SENTINEL"} "example"))
+    ($assert ($absent? connection/access_token))
+    ($assert (== connection/account "account"))))
+
+(describe "Catalog data ownership"
+  (it "copies nested metadata instead of retaining a probe callback's mutable data" []
+    (let source [{^id "one" ^efforts ["low"] ^pricing {^prompt "0.001"}}])
+    (let models (canonical_models source))
+    (set source/0/efforts/0 "high")
+    (set source/0/pricing/prompt "100")
+    ($assert (== models/0/efforts ["low"]))
+    ($assert (== models/0/pricing/prompt "0.001"))))
+
+(describe "Discoverable model options"
+  (it "pages only ready visible models and searches without exposing connection records" []
+    (let snapshot {^providers
+      {^connected {^connection {^state "ready" ^billing "plan" ^account "private-account"}
+        ^models [{^id "fast" ^label "Fast Code" ^efforts ["low"]}
+                 {^id "deep" ^label "Deep Code" ^efforts ["high"]}
+                 {^id "hidden" ^^hidden}]}
+       ^signed_out {^connection {^state "sign_in_required"} ^models [{^id "other"}]}}})
+    (let page (list_catalog_models ^limit 1 snapshot))
+    ($assert (== page/total 2))
+    ($assert (== page/next_offset 1))
+    ($assert (== page/models/0/billing "plan"))
+    ($assert (== page/models/0/provider "connected"))
+    ($assert ($absent? page/models/0/account))
+    (let result (list_catalog_models ^q "code deep" snapshot))
+    ($assert (== result/models/.size 1))
+    ($assert (== result/models/0/id "deep"))
+    (let filtered (list_catalog_models ^provider "connected" ($freeze snapshot)))
+    ($assert (== filtered/total 2))
+    (let last (list_catalog_models ^offset 1 snapshot))
+    ($assert ($absent? last/next_offset))))
+
+(fn main [args] : Int (/exit_code (run ^name (?? args/0 ""))))

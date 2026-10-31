@@ -17,7 +17,7 @@
 (import [next_request admit_next_request] ^from "./next_request")
 (import [operator_round? collection_turns] ^from "../runtime/round_policy")
 (import ^from "../public/text" [byte_prefix])
-(import ^from "./provider_selection" [readiness_report select_provider session_settings])
+(import ^from "./provider_selection" [readiness_info select_provider session_settings resolve_selection])
 (import ^from "./model_call" [call_model])
 (import ^from "./hooks" [history_policy request_prepare])
 (import ^from "../storage/state"
@@ -31,7 +31,7 @@
 (import [participant_inputs participant_bindings validate_participants commit_participants round_limit_participants
   request_source request_sources finish_participant_outcome] ^from "./turn_participation")
 
-(type TurnReadinessFailure ^props {^message Str} ^impl [Error])
+(type TurnReadinessFailure ^props {^message Str ^code Str?} ^impl [Error])
 (impl Error for TurnReadinessFailure)
 
 (fn recall_model_context [runtime, session : Str, id : Str]
@@ -154,6 +154,7 @@
   (let metadata (require_record runtime/sessions session))
   (let config (session_settings metadata
     ($serde/read_data ($fs/read_text $"${runtime/state_root}/config.gene"))))
+  (let selection (?? round/selection (resolve_selection runtime config)))
   (let limit
     (?? round/effective_limits/turn_limit
       (if (operator_round? round) (?? config/turn_limit 24) (?? config/trigger_turn_limit 12))))
@@ -188,7 +189,7 @@
     (round .put "last_turn" number)
     (if ($absent? round/first_turn) (round .put "first_turn" number))
     (update_session runtime/sessions session {^turns number})
-    (let lease (acquire_snapshot runtime/h/snapshots))
+    (let lease (acquire_snapshot ^label "model/turn" runtime/h/snapshots))
     (var result nil)
     (var stage "request/prepare")
     (var transaction nil)
@@ -260,18 +261,18 @@
       (start_record)
       (flush_event_store runtime/events)
       (set stage "readiness")
-      (let ready_message
+      (let ready
         ($runtime/with_context
           {^composition runtime/h/snapshots ^snapshot lease/snapshot}
           (fn []
-            (readiness_report runtime config))))
-      (if_not ($absent? ready_message)
-        (fail (TurnReadinessFailure ^message ready_message)))
+            (readiness_info ^selection selection runtime config))))
+      (if ($present? ready/reason)
+        (fail (TurnReadinessFailure ^code ready/code ^message ready/reason)))
       (set stage "provider/select")
       (let selected
         ($runtime/with_context
           {^composition runtime/h/snapshots ^snapshot lease/snapshot}
-          (fn [] (select_provider runtime config))))
+          (fn [] (select_provider ^selection selection runtime config))))
       (set stage "instructions")
       (let instructions
         ($runtime/with_context
@@ -279,7 +280,7 @@
           (fn []
             (assemble_instructions runtime (require_record runtime/sessions session)))))
       (set stage "history/compact")
-      (let window_tokens (?? config/context_window 128000))
+      (let window_tokens selection/context_window)
       (let policy
         ($runtime/with_context
           {^composition runtime/h/snapshots ^snapshot lease/snapshot}
@@ -396,7 +397,8 @@
     catch Any
       (set failure $err)
       (if (== ($head $err) ParticipantFailure) (set stage $"participants/${$err/phase}"))
-      (let kind (if (== ($head $err) TurnReadinessFailure) "not_ready" "error"))
+      (let kind (if (|| (== ($head $err) TurnReadinessFailure) (== $err/code "connection_changed"))
+        (then "not_ready") (else "error")))
       (set result ((?? result {}) .assoc "kind" kind ; .assoc "error" $err/message))
     ensure
       (let terminal
@@ -422,9 +424,23 @@
           ^text $"Turn finalization failed: ${$err/message}"})
         (flush_event_store runtime/events)
       ensure (release_snapshot runtime/h/snapshots lease)))
-    (if_not ($absent? failure)
-      (return {^state "failed" ^message failure/message ^stage stage
-        ^turn_count count ^last_turn number}))
+    (if ($present? failure)
+      (then
+        (let failed {^state "failed" ^message failure/message ^stage stage
+          ^turn_count count ^last_turn number})
+        # A transport refusal happened before a model call. Preserve its
+        # pending input for deliberate resumption; never replay uncertain work.
+        (if (&& (operator_round? round) (== failure/code "connection_changed")
+                (["readiness" "provider/select"] .contains? stage)
+                ($present? round/request_items_ref))
+          (then
+            (failed .put "reason" "connection_changed")
+            (failed .put "continuation_mode" "manual")
+            (failed .put "continuation" {^items_ref (?? round/logical_items_ref round/request_items_ref)
+              ^history (pending_request runtime session) ^media (?? round/request_media [])
+              ^request_sources (?? round/request_sources []) ^task_root (?? round/task_root round/id)
+              ^task_turns (+ (?? round/task_turns_base 0) count) ^source_round round/id ^source_turn number})))
+        (return failed)))
     (let outcome (?? result/validated/outcome nil))
     (if (== result/kind "done")
       (then

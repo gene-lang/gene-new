@@ -1,0 +1,24 @@
+(import $test [describe it run])
+(import [validate_provider_row validate_image_generator_row] ^from "../../../src/registries/contracts")
+
+(fn provider []
+  {^name "fixture" ^doc "Fixture" ^configure (fn [model effort timeout] {})
+   ^prepare (fn [call] call) ^send (fn [prepared] {^text "done"})})
+
+(describe "Provider discovery contracts"
+  (it "accepts optional discovery and rejects the replaced availability callback" []
+    (validate_provider_row (provider))
+    (validate_provider_row ((provider) .assoc "connection" (fn [] {^state "ready"})))
+    (let legacy ((provider) .assoc "available" (fn [] nil)))
+    (let failure (try (validate_provider_row legacy) "accepted" catch Any $err/message))
+    ($assert ($str/contains? failure "replaced by connection"))
+    (let invalid ((provider) .assoc "models" false))
+    ($assert (try (validate_provider_row invalid) false catch Any true)))
+
+  (it "keeps the separate image-generator availability contract" []
+    (let image (provider))
+    (image .put "available" (fn [] nil))
+    (image .put "capabilities" (fn [settings] {}))
+    (validate_image_generator_row image)))
+
+(fn main [args] : Int (/exit_code (run ^name (?? args/0 ""))))

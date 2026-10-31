@@ -1,0 +1,123 @@
+# Page-owned model drafts survive replacement of the optional picker asset.
+(mod model_glue ^profile web)
+(import [Client] ^from "./workspace_model.gene")
+(import [features browser_event notice] ^from "./feature_helpers.gene")
+(import [text flag items] ^from "../src/common/launcher.gene")
+(import [storage_get storage_set storage_remove] ^from "./workspace_storage.gene")
+
+(type ModelDrafts ^props {^workspace Str ^choices PropMap ^loaded Bool ^required Bool ^requested Bool
+  ^trigger_choice Any ^trigger_target Any ^trigger_sequence Int})
+
+(fn model_drafts [client : Client] : ModelDrafts
+  (var states (features client))
+  (if_yes ($absent? states/model_drafts)
+    (set states/model_drafts (ModelDrafts ^workspace "" ^choices {} ^!loaded ^!required ^!requested
+      ^trigger_choice {} ^trigger_target nil ^trigger_sequence 0)))
+  (var raw : Any states/model_drafts)
+  (var result : ModelDrafts raw)
+  (var workspace (text client/status/workspace))
+  (if_yes (!= workspace result/workspace)
+    (set result/workspace workspace) (set result/choices {}) (set result/loaded false)
+    (set result/trigger_choice {}) (set result/trigger_target nil))
+  result)
+
+(fn model_draft_key [drafts : ModelDrafts, session : Str] : Str
+  $"gene-harness/model-draft/${drafts/workspace}/${session}")
+
+(fn selected_model_draft [client : Client, session : Str] : Any
+  (var drafts (model_drafts client))
+  (var key (if (== session "") (then "new") (else session)))
+  (if_yes ($absent? drafts/choices/%key)
+    (var saved (?? (storage_get (model_draft_key drafts key)) ""))
+    (if_yes (!= saved "")
+      (try (set drafts/choices/%key ($json/parse saved)) catch Any nil)))
+  drafts/choices/%key)
+
+(fn choose_model_draft [client : Client, selection : Any] : Void
+  (var drafts (model_drafts client))
+  (var key (if (== client/selected "") (then "new") (else client/selected)))
+  (var value : Any ($json/parse ($json/stringify selection)))
+  (set drafts/choices/%key {^value value})
+  (storage_set (model_draft_key drafts key) ($json/stringify {^value value}))
+  (browser_event client "model/choice" client/selected {^model_settings value}))
+
+(fn transfer_model_draft [client : Client, session : Str] : Void
+  (var drafts (model_drafts client))
+  (var source : Any (selected_model_draft client ""))
+  (if_yes ($absent? source) (return))
+  (set drafts/choices/%session source)
+  (set drafts/choices/new nil)
+  (storage_set (model_draft_key drafts session) ($json/stringify source))
+  (storage_remove (model_draft_key drafts "new")))
+
+(fn attach_model_draft [client : Client, payload : Any, session : Str] : Void
+  (var choice : Any (selected_model_draft client session))
+  (if_yes ($present? choice)
+    (set payload/model_settings ($json/parse ($json/stringify choice/value)))))
+
+(fn model_draft_admitted [client : Client, session : Str, payload : Any] : Void
+  (if_yes ($absent? payload/model_settings) (return))
+  (var drafts (model_drafts client))
+  (var choice : Any (selected_model_draft client session))
+  (if_yes (&& ($present? choice) (== ($json/stringify choice/value) ($json/stringify payload/model_settings)))
+    (set drafts/choices/%session nil)
+    (storage_remove (model_draft_key drafts session))
+    (browser_event client "model/admitted" session payload/model_settings)))
+
+(fn model_picker_expected [client : Client] : Bool
+  (for descriptor in (items client/status/browser_clients)
+    (if_yes (== (text descriptor/name) "models") (return true)))
+  false)
+
+(fn attach_trigger_model [client : Client, payload : Any] : Void
+  (var drafts (model_drafts client))
+  (var choice : PropMap drafts/trigger_choice)
+  (var present false)
+  (for [key value] in choice (set present true))
+  (if_yes present
+    (set payload/model_settings ($json/parse ($json/stringify drafts/trigger_choice)))))
+
+(fn choose_trigger_model [client : Client, choice : Any] : Void
+  (var drafts (model_drafts client))
+  (set drafts/trigger_choice ($json/parse ($json/stringify choice)))
+  (browser_event client "models/trigger-choice" "" {}))
+
+(fn request_trigger_model [client : Client, selection : Any, button : EventTarget,
+  choose : (Fn [Any] Void)] : Void
+  (var drafts (model_drafts client))
+  (set drafts/trigger_sequence (+ drafts/trigger_sequence 1))
+  (set drafts/trigger_target {^id drafts/trigger_sequence ^selection ($json/parse ($json/stringify selection))
+    ^button button ^choose choose})
+  (browser_event client "models/trigger" "" {}))
+
+(fn model_allows_submit [client : Client, ^resume resume : Bool = true] : Bool
+  (if_yes (! (model_picker_expected client)) (return true))
+  (var drafts (model_drafts client))
+  (if_yes (|| (! drafts/loaded) drafts/required)
+    (set drafts/requested resume)
+    (browser_event client "models/choose" client/selected {})
+    (notice client (if drafts/loaded
+      (then "Choose a default model before the first prompt.") (else "Loading model choices…")))
+    (return false))
+  true)
+
+(fn model_capabilities [client : Client, resume : (Fn [] Void)] : Any
+  {^models {
+    ^state (fn [] : Any
+      (var drafts (model_drafts client))
+      (var choice : Any (selected_model_draft client client/selected))
+      {^choice choice ^requested drafts/requested ^loaded drafts/loaded ^required drafts/required})
+    ^choose (fn [selection : Any] : Void (choose_model_draft client selection))
+    ^trigger_state (fn [] : Any (var drafts (model_drafts client)) drafts/trigger_choice)
+    ^choose_trigger (fn [selection : Any] : Void (choose_trigger_model client selection))
+    ^trigger_target (fn [] : Any (var drafts (model_drafts client)) drafts/trigger_target)
+    ^release_trigger (fn [target : Any] : Void
+      (var drafts (model_drafts client))
+      (if_yes (&& ($present? target/id) (== target/id drafts/trigger_target/id)) (set drafts/trigger_target nil)))
+    ^configure (fn [loaded : Bool, required : Bool] : Void
+      (var drafts (model_drafts client)) (set drafts/loaded loaded) (set drafts/required required))
+    ^resume (fn [] : Void
+      (var drafts (model_drafts client))
+      (var requested drafts/requested)
+      (set drafts/requested false)
+      (if_yes requested (resume)))}})

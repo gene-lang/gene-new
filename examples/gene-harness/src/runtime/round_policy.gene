@@ -5,3 +5,9 @@
 
 (fn operator_round? [round]
   (== round/operator true))
+
+(fn continuable_round? [round]
+  (&& (operator_round? round)
+    (|| (== round/state "paused")
+        (&& (== round/state "failed") (== round/reason "connection_changed")
+            ($present? round/continuation)))))

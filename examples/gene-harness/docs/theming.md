@@ -346,7 +346,7 @@ later without changing the token model.
 ### Changing it
 
 There is one host setter, reached through a host endpoint,
-`POST /api/v8/appearance` with `{"mode": "dark"}`, on both the normal and the
+`POST /api/v9/appearance` with `{"mode": "dark"}`, on both the normal and the
 recovery server, with the same same-origin and CSRF checks as other mutations.
 It answers `{"mode": …}`; an unknown mode is a 400 `invalid_request`.
 Everything else calls the same setter:
@@ -401,7 +401,7 @@ Pages without a push connection update on load:
 
 - **The plugin manager** (`client/plugin_manager.gene`) uses fetch only. It
   takes the mode from its server-rendered page and from every catalog load
-  (page load and Refresh); `GET /api/v8/plugins` includes `appearance` on both
+  (page load and Refresh); `GET /api/v9/plugins` includes `appearance` on both
   servers, as does the recovery server's status.
 - **`/about/`** picks up the new mode on its next load.
 

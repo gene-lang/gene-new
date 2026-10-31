@@ -6,7 +6,8 @@
 (fn offline_profile [] : Profile
   (let base (baseline_profile))
   (let plugins [])
-  (for plugin in base/plugins (plugins .push plugin))
+  (for plugin in base/plugins
+    (if_not (["models" "model_endpoints" "models_file_watch"] .contains? plugin/id) (plugins .push plugin)))
   (plugins .push (provider_offline))
   (Profile ^name "offline" ^plugins plugins ^limits base/limits
     ^requires base/requires ^provider "offline"))

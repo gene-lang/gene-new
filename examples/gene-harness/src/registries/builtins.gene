@@ -29,7 +29,7 @@
     {^name "ui_links" ^^unique ^schema validate_function_row ^callbacks ["fn"]
      ^signature "fn" ^reserved discovery_reserved}
     {^name "providers" ^^unique ^schema validate_provider_row
-     ^callbacks ["available" "configure" "capabilities" "prepare" "send"]}
+     ^callbacks ["connection" "models" "configure" "capabilities" "prepare" "send"]}
     {^name "image_generators" ^^unique ^schema validate_image_generator_row
      ^callbacks ["available" "configure" "capabilities" "prepare" "send"]}
     {^name "speech_recognizers" ^^unique

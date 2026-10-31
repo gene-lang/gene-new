@@ -4,8 +4,9 @@
   [store_part : store_record_part load_part : load_record_part
    prepared_record result_record safe_error redact_image_text])
 (import ^from "../storage/state" [append_core_event flush_event_store])
-(import ^from "../kernel" [HarnessError])
+(import ^from "../kernel" [HarnessError row])
 (import [expand_media_messages] ^from "./media_input")
+(import [require_model_input] ^from "../public/models")
 
 (fn store_part [runtime, value]
   (store_record_part runtime value))
@@ -54,13 +55,14 @@
     supplied))
   (let inventory [])
   (let messages (expand_media_messages runtime request/messages ^inventory inventory))
+  (require_model_input selected/settings messages)
   (let input
     (try
       (selected/row/prepare
         {^purpose (?? request/purpose "turn")
          ^session request/session ^round request/round ^turn request/turn
          ^budget request/budget ^config request/config
-         ^messages messages ^settings selected/settings ^max_tokens request/max_tokens})
+         ^messages messages ^settings selected/settings ^selection selected/selection ^max_tokens request/max_tokens})
     catch Any
       (if inventory/.empty? (fail $err))
       (fail (HarnessError ^message $"${selected/name} could not prepare image inputs."))))
@@ -78,14 +80,25 @@
       (returned .set true)
     catch Any
       (returned .set true)
+      (let failure $err)
+      (if (== failure/code "connection_changed")
+        (try
+          (let catalog (row runtime/h "seams" "models/catalog"))
+          (if ($present? catalog) (catalog/value/refresh))
+        catch Any nil))
+      (if (== failure/status 401)
+        (try
+          (let catalog (row runtime/h "seams" "models/catalog"))
+          (if ($present? catalog) (catalog/value/failed selected/name 401 selected/selection/transport))
+        catch Any nil))
       (let message (if inventory/.empty?
-        (then ($to_str $err/message))
+        (then ($to_str failure/message))
         (elif (|| ($absent? recorded_request) ($present? recorded_request/harness_prepared_omitted)) $"${selected/name} image-input request failed; opaque provider detail was omitted.")
-        (else (safe_error ($to_str $err/message) inventory))))
+        (else (safe_error ($to_str failure/message) inventory))))
       (record_result runtime request call_id number "error" true
         (- ($os/monotonic_ms) started) ^error message ^inventory inventory)
       (if_not inventory/.empty? (fail (HarnessError ^message message)))
-      (fail $err)
+      (fail failure)
     ensure
       (if_not returned/.get
         (record_result runtime request call_id number "cancelled" true

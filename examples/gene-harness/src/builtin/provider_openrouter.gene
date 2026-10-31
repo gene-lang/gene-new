@@ -1,58 +1,93 @@
 (mod provider_openrouter)
-(import [chat_messages] ^from "../public/model_content")
 (import ^from "../plugin_api" [Plugin PluginHost])
 (import ^from "../public/documentation" [contribute_text_doc])
 (import ^from "../plugin_api" [ProviderError])
 (import ^from "../public/provider" [nonempty configure_model http_json_attempt])
+(import [api_connection openrouter_model_list] ^from "../public/provider_discovery")
+(import [model_capabilities] ^from "../public/models")
+(import [prepare_chat chat_result] ^from "../public/provider_payloads")
+(import [read_openrouter_record openrouter_record_path] ^from "../public/provider_login")
+
+(fn key_source []
+  (if ($present? (nonempty ($os/env? "OPENROUTER_API_KEY")))
+    (then {^env "OPENROUTER_API_KEY"})
+    (elif ($present? (nonempty ($os/env? "OPENROUTER_KEY"))) {^env "OPENROUTER_KEY"})
+    (else {^file (openrouter_record_path)})))
 
 (fn api_key []
   (?? (nonempty ($os/env? "OPENROUTER_API_KEY"))
-      (nonempty ($os/env? "OPENROUTER_KEY"))))
+      (nonempty ($os/env? "OPENROUTER_KEY"))
+      (/key (read_openrouter_record))))
+
+(fn openrouter_connection []
+  (let key (try (api_key) catch Any nil))
+  (let source (key_source))
+  (let label (if ($present? source/env)
+    (then "OpenRouter · environment key") (else "OpenRouter · Harness sign-in")))
+  (if ($absent? key)
+    (return {^state "sign_in_required" ^label label ^billing "metered"
+      ^reason "Connect OpenRouter in Models, or set OPENROUTER_API_KEY."}))
+  (let connection (api_connection label "https://openrouter.ai/api/v1/key" nil
+    ^headers {^authorization $"Bearer ${key}"}))
+  (connection .put "account" ($to_str "Key " ($str/slice_bytes ($crypto/sha256 key) 0 12)))
+  connection)
 
 (fn openrouter_text [response] : Str
   (if_not (== response/status 200)
-    (fail (ProviderError ^message
+    (fail (ProviderError ^status response/status ^message
       $"openrouter ${response/status}: provider request failed")))
-  (let parsed ($json/parse response/body))
-  (let content parsed/choices/0/message/content)
+  (let parsed (try ($json/parse response/body)
+    catch Any (fail (ProviderError ^message "openrouter returned invalid JSON"))))
+  (if (!= ($head parsed) Map)
+    (fail (ProviderError ^message "openrouter returned an invalid assistant message")))
+  (if ($present? parsed/error)
+    (fail (ProviderError ^message "openrouter returned a provider error; output was not executed")))
+  (if (!= ($head parsed/choices) List)
+    (fail (ProviderError ^message "openrouter returned invalid choices")))
+  (let choice parsed/choices/0)
+  (if ($present? choice/error)
+    (fail (ProviderError ^message "openrouter returned a provider error; output was not executed")))
+  (if (!= choice/finish_reason "stop")
+    (fail (ProviderError ^message
+      "openrouter response did not finish its turn; incomplete output was not executed")))
+  (let content choice/message/content)
   (if_not (== ($head content) Str)
     (fail (ProviderError ^message
       "provider returned invalid text content")))
+  (if (== ($str/trim content) "")
+    (fail (ProviderError ^message "openrouter returned no output text")))
   content)
 
 (fn provider_openrouter [] : Plugin
   (Plugin ^id "provider_openrouter" ^provides [["providers" "openrouter"]]
     ^activate (fn [host]
       (host .PluginHost:contribute "providers"
-        {^name "openrouter" ^tags ["provider" "model" "openrouter"] ^docs ["harness/providers/openrouter"] ^doc "Use OpenRouter chat completions." ^auto 0
+        {^name "openrouter" ^tags ["provider" "model" "openrouter"] ^docs ["harness/providers/openrouter"] ^doc "Use OpenRouter chat completions." ^auto 4
          ^media_recording "inventory"
-         ^capabilities (fn [settings] {^image_input "unknown" ^image_output "no"})
-         ^available (fn []
-           (if ($absent? (api_key))
-             "OPENROUTER_API_KEY is unavailable" nil))
+         ^transport {^adapter "openrouter_chat" ^base_url "https://openrouter.ai/api/v1"
+           ^credential (key_source) ^billing "metered"}
+         ^models (fn []
+           (let key (api_key))
+           (openrouter_model_list ^headers (if ($present? key)
+             (then {^authorization $"Bearer ${key}"}) (else {}))))
+         ^connection openrouter_connection
+         ^capabilities model_capabilities
          ^configure (fn [model, effort, timeout]
            (configure_model model effort timeout
-             (?? (nonempty ($os/env? "OPENROUTER_MODEL")) "openai/gpt-6-sol")))
+             (?? (nonempty ($os/env? "OPENROUTER_MODEL")) "deepseek/deepseek-v4.1-flash-1017")))
          ^prepare (fn [call]
-           (let settings call/settings)
-           {^body {^model settings/model ^messages (chat_messages call/messages)
-                   ^max_tokens (?? call/max_tokens 3000)
-                   ^reasoning {^effort settings/effort}}
-            ^timeout_ms settings/timeout_ms})
+           (prepare_chat call "openrouter_chat"))
          ^send (fn [prepared]
            (let key (api_key))
            (if ($absent? key)
              (fail (ProviderError ^message
-               "no OpenRouter API key; set OPENROUTER_API_KEY (or OPENROUTER_KEY)")))
+               "no OpenRouter API key; connect in Models or set OPENROUTER_API_KEY")))
            (http_json_attempt "https://openrouter.ai/api/v1/chat/completions"
              {^content-type "application/json"
               ^authorization $"Bearer ${key}"}
              prepared/body prepared/timeout_ms
-             (fn [response]
-               (let text (openrouter_text response))
-               (let parsed ($json/parse response/body))
-               {^text text ^usage parsed/usage})))})
+             (fn [response] (chat_result response "openrouter"))))})
       (contribute_text_doc host "harness/providers/openrouter"
         "OpenRouter transport and provider configuration."
-        "The openrouter provider preserves canonical messages and prepares model, reasoning effort and max_tokens (default 3000). Model defaults may use OPENROUTER_MODEL. Credentials are read only during send from OPENROUTER_API_KEY or OPENROUTER_KEY. Configuration selects the provider, model, effort and timeout; API keys must remain outside model-visible requests."
+        "The openrouter provider preserves canonical messages and prepares model, reasoning effort and an effort-dependent max_tokens budget capped by model metadata. Explicit call budgets remain bounded by that cap. Model defaults may use OPENROUTER_MODEL. Inference and discovery read OPENROUTER_API_KEY, then OPENROUTER_KEY, then the Harness sign-in record. Connection discovery verifies the key separately from the public model list. Credentials must remain outside model-visible requests."
         ^tags ["provider" "model" "openrouter"]))))

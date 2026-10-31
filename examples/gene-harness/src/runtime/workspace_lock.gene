@@ -1,4 +1,5 @@
 (mod workspace_lock)
+(import [try_lock_wait] ^from "../public/file_lock" ^^export)
 
 (type WorkspaceInUse ^props {^message Str ^root Str ^owner Any?} ^impl [Error])
 (impl Error for WorkspaceInUse)
@@ -12,15 +13,6 @@
       (when {^pid pid ^started started ^entry entry} record)
       (else nil))
     catch Any nil))
-
-(fn try_lock_wait [path : Str, wait_ms : Int]
-  (let due (+ ($os/monotonic_ms) ($math/max 0 wait_ms)))
-  (loop
-    (let handle ($fs/try_lock path))
-    (if_not ($absent? handle) (return handle))
-    (let remaining (- due ($os/monotonic_ms)))
-    (if (<= remaining 0) (return nil))
-    ($sleep ($math/min 10 remaining))))
 
 (fn acquire_workspace_lock [root : Str, entry : Str, ^wait_ms wait_ms : Int = 0] : WorkspaceLock
   (let canonical ($fs/real_path root))

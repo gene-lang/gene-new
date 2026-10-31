@@ -137,7 +137,8 @@
             (assemble_instructions runtime {^kind "interactive"})
             "Use (create_trigger"))
             "trigger manual was injected into the prompt")
-          ($assert (== (/total (discover runtime/h "schedule" ^kind "functions" ^owner "triggers")) 3))
+          ($assert (== (/total (discover runtime/h "schedule" ^kind "functions" ^owner "triggers")) 4)
+            "model-only trigger editing was not discoverable with the schedule helpers")
           ($assert ($str/contains? (doc runtime/h "harness/triggers") "every_ms"))
           (let result (evaluate_harness_turn runtime/h 1 runtime/root
             "(append_prompt \"triggers\" (list_triggers)) (Outcome ^prompt \"continue\")"))

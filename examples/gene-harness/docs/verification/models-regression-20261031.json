@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "recorded_date": "2026-10-31",
+  "scope": "Current worktree; hermetic Harness tests with isolated provider credentials and fake vendor executables",
+  "full_suite": {
+    "command": "gene test",
+    "passed": 765,
+    "failed": 1,
+    "errors": 0,
+    "skipped": 0,
+    "failure": {
+      "file": "tests/integration/channels/review_spec.gene",
+      "example": "preserves progress revision and Slack timestamp across asymmetric pruning and reopening",
+      "kind": "isolated_process_timeout",
+      "deadline_ms": 120000,
+      "assertion_failure_reported": false
+    }
+  },
+  "focused_retests": [
+    {
+      "scope": "Unchanged timed-out example",
+      "passed": 1,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "example_elapsed_ms": 25719
+    },
+    {
+      "scope": "Channel-review file and its imported service, handoff and transport specs",
+      "passed": 43,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "original_example_elapsed_ms": 25955
+    }
+  ],
+  "test_deadlines_changed": false,
+  "test_assertions_changed": false,
+  "timeout_cause": "Not reproduced; no production fix inferred from passing reruns",
+  "paid_inference_requests": 0
+}

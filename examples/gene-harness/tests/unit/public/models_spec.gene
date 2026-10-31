@@ -1,0 +1,51 @@
+(import $test [describe it run])
+(import [resolve_effort model_entry model_window model_capabilities require_model_input validate_model_settings]
+  ^from "../../../src/public/models")
+
+(describe "Model catalog resolution"
+  (it "rejects ambiguous or malformed selections at the shared boundary" []
+    (validate_model_settings {})
+    (validate_model_settings {^effort "low"})
+    (validate_model_settings {^provider "example" ^model "model" ^effort "auto"})
+    (for value in ["model" {^model "unscoped"} {^effort 1} {^effort ""} {^api_key "secret"}]
+      (let rejected (try (validate_model_settings value) false catch Any true))
+      ($assert rejected "malformed selection was accepted")))
+
+  (it "resolves portable effort without rounding into native extras" []
+    (let codex {^efforts ["low" "medium" "high" "xhigh" "max" "ultra"] ^default_effort "low"})
+    (let opus {^efforts ["low" "medium" "high" "xhigh" "max"] ^default_effort "medium"})
+    (for [requested model expected] in
+      [["auto" codex "low"] [nil opus "medium"] ["minimal" codex "low"]
+       ["none" opus "low"] ["xhigh" {^efforts ["low" "medium" "high"]} "high"]
+       ["ultra" codex "ultra"] ["high" {} "high"]
+       ["high" {^efforts []} nil] ["auto" {} nil]
+       ["medium" {^efforts ["none" "low" "high"]} "low"]
+       ["medium" {^efforts ["high"]} "high"]]
+      ($assert (== (resolve_effort requested model) expected)
+        $"Unexpected effort resolution for ${requested}"))
+    (for model in [opus {}]
+      (let rejected (try (resolve_effort "ultra" model) false catch Any true))
+      ($assert rejected "unlisted native effort was accepted")))
+
+  (it "uses the selected model's window and input capabilities" []
+    (let models [{^id "large" ^window 1000000 ^input ["text" "image"]}
+                 {^id "small" ^window 128000 ^effective_percent 95 ^input ["text"]}])
+    ($assert (== (model_window (model_entry models "small")) 121600)
+      "effective context percentage was ignored")
+    ($assert (== (model_window (model_entry models "large") 64000) 64000)
+      "workspace cap was ignored")
+    ($assert (== (model_window (model_entry models "missing")) 128000)
+      "unknown model inherited a catalog window")
+    ($assert (== (/image_input (model_capabilities (model_entry models "small"))) "no")
+      "text-only model inherited image support")
+    ($assert (== (/image_input (model_capabilities (model_entry models "missing"))) "unknown")
+      "unknown model invented image capabilities"))
+
+  (it "rejects historical images for a known text-only model before sending" []
+    (let messages [{^role "user" ^content "previous image" ^images [{^mime "image/png" ^data "data"}]}])
+    (let rejected (try (require_model_input {^input ["text"]} messages) false catch Any true))
+    ($assert rejected "a text-only selection accepted images")
+    (require_model_input {^input ["text" "image"]} messages)
+    (require_model_input {} messages)))
+
+(fn main [args] : Int (/exit_code (run ^name (?? args/0 ""))))

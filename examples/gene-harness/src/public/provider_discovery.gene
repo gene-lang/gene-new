@@ -1,0 +1,108 @@
+# Transport probes return metadata only. All subprocess output and HTTP error
+# bodies stay inside these functions.
+(mod provider_discovery)
+(import [ProviderError] ^from "../plugin_api")
+(import [nonempty resolve_credential probe_json] ^from "./provider")
+(import [normalize_anthropic_models normalize_openrouter_models]
+  ^from "./model_discovery")
+
+(fn bounded_probe [callback, ^timeout_ms timeout_ms : Int = 5000]
+  (scope
+    (let invoke ($runtime/bind_call ^policy {^timeout_ms timeout_ms ^max_memory_mb 64} callback []))
+    (let task (spawn ^lane root (scope (invoke))))
+    (let timer (spawn ^lane root (do ($sleep timeout_ms) task/.cancel)))
+    (try
+      (match task/.join
+        (when (TaskOutcome/ok value) value)
+        (when (TaskOutcome/error error) (fail error))
+        (else (fail (ProviderError ^message "Provider probe exceeded its limit"))))
+    ensure timer/.cancel timer/.join)))
+
+(fn cli_probe [command : Str, args, ^timeout_ms timeout_ms : Int = 5000]
+  (try
+    (let task ($os/exec_async command args... ^timeout_ms timeout_ms ^max_bytes 4194304))
+    (let result (try (await task) ensure task/.cancel))
+    (if (|| result/timed_out result/stdout_truncated result/stderr_truncated)
+      (fail (ProviderError ^message "Provider CLI probe exceeded its limit")))
+    result
+  catch Any (fail (ProviderError ^message "Provider CLI probe could not complete"))))
+
+(fn cli_probe_json [command : Str, args, ^allow_failure allow_failure : Bool = false]
+  (let result (cli_probe command args))
+  (if (&& (! allow_failure) (!= result/status 0)) (fail (ProviderError ^message "Provider CLI probe failed")))
+  (try ($json/parse result/stdout)
+    catch Any (fail (ProviderError ^message "Provider CLI returned invalid metadata"))))
+
+(fn claude_connection [command : Str]
+  (let data (try (cli_probe_json ^allow_failure true command ["auth" "status"])
+    catch Any (return {^state "unavailable" ^label "Claude Code" ^billing "unknown"
+      ^reason "Claude Code status is unavailable; install claude or check its executable setting."})))
+  (if (!= ($head data/loggedIn) Bool)
+    (return {^state "unavailable" ^label "Claude Code" ^billing "unknown"
+      ^reason "Claude Code did not report a valid login status."}))
+  (if (!= data/loggedIn true)
+    (return {^state "sign_in_required" ^label "Claude Code" ^billing "unknown"
+      ^reason "Claude Code is signed out; run claude auth login."}))
+  (let billing (match data/authMethod
+    (when "api_key" "metered")
+    (when "api" "metered")
+    (when "claude.ai" "plan")
+    (when "oauth" "plan")
+    (else "unknown")))
+  (let account (?? (nonempty data/accountId) (nonempty data/account_id) (nonempty data/email)))
+  {^state "ready" ^label ($to_str "Claude Code" (if ($present? data/subscriptionType)
+    (then $" · ${data/subscriptionType}") (else "")))
+   ^billing billing ^account account ^reason nil})
+
+(fn api_connection [name : Str, url : Str, credential, ^headers headers = {},
+  ^auth_header auth_header : Str = "authorization", ^scheme scheme : Str = "Bearer",
+  ^timeout_ms timeout_ms : Int = 5000]
+  (let deadline (+ ($os/monotonic_ms) timeout_ms))
+  (let secret (try (resolve_credential ^timeout_ms timeout_ms credential)
+    catch Any (return {^state "sign_in_required" ^label name ^billing "metered"
+      ^reason $"${name} credential is unavailable."})))
+  (let wire ($thaw ($freeze headers)))
+  (if ($present? secret)
+    (wire .put auth_header (if (== scheme "") (then secret) (else $"${scheme} ${secret}"))))
+  (let remaining (- deadline ($os/monotonic_ms)))
+  (let result (if (<= remaining 0)
+    (then {^status 0 ^error "timeout"})
+    (else (probe_json ^headers wire ^timeout_ms remaining url))))
+  (if ([401 403] .contains? result/status)
+    (return {^state "expired" ^label name ^billing "metered"
+      ^reason $"${name} credential was rejected; reconnect or update the API key."}))
+  (let connection {^state "ready" ^label name ^billing "metered" ^reason nil
+    ^stale (|| (!= result/status 200) ($present? result/error))})
+  (let credits result/data/data/limit_remaining)
+  (if (|| (== ($head credits) Int) (== ($head credits) Float))
+    (connection .put "limit_remaining" credits))
+  connection)
+
+(fn require_probe_data [result]
+  (if (|| (!= result/status 200) ($present? result/error))
+    (fail (ProviderError ^status result/status ^message "Provider model-list probe failed")))
+  result/data)
+
+(fn openrouter_model_list [credential = nil, ^headers headers = {}]
+  (normalize_openrouter_models (require_probe_data
+    (probe_json ^credential credential ^headers headers "https://openrouter.ai/api/v1/models"))))
+
+(fn anthropic_model_list [credential, ^headers headers = {^anthropic-version "2023-06-01"},
+  ^timeout_ms timeout_ms : Int = 5000]
+  (let result [])
+  (let deadline (+ ($os/monotonic_ms) timeout_ms))
+  (var cursor nil)
+  (loop
+    (let remaining (- deadline ($os/monotonic_ms)))
+    (if (<= remaining 0) (fail (ProviderError ^status 0 ^message "Model-list probe timed out")))
+    (let url ($to_str "https://api.anthropic.com/v1/models?limit=1000"
+      (if ($present? cursor) (then $"&after_id=${($url/encode_component cursor)}") (else ""))))
+    (let data (require_probe_data (probe_json ^credential credential
+      ^headers headers ^auth_header "x-api-key" ^scheme ""
+      ^timeout_ms remaining url)))
+    (for model in (normalize_anthropic_models data) (result .push model))
+    (if (!= data/has_more true) (break))
+    (if (|| ($absent? data/last_id) (== data/last_id cursor))
+      (fail (ProviderError ^message "Provider returned an invalid model-list cursor")))
+    (set cursor data/last_id))
+  result)

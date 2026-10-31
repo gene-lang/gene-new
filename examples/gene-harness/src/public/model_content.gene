@@ -61,5 +61,5 @@
     (let images (message_images message))
     (if_not images/.empty?
       (fail (ProviderError ^message
-        $"${provider} does not support image observations in this transport; choose codex, anthropic or an image-capable OpenRouter model."))))
+        $"${provider} does not support image observations in this transport; choose chatgpt, anthropic or an image-capable OpenRouter model."))))
   nil)

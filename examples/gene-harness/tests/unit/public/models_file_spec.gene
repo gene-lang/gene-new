@@ -1,0 +1,56 @@
+(import $test [describe it run])
+(import [normalize_models_file] ^from "../../../src/public/models_file")
+
+(describe "Shared models configuration"
+  (it "accepts the actual design document's inert configuration example" []
+    (let document ($fs/read_text ($path/join this_pkg/root "docs" "models.md")))
+    (let blocks ($str/split document "```gene\n"))
+    (let example ($str/split blocks/1 "```"))
+    (let result (normalize_models_file ($serde/read_data example/0)))
+    ($assert result/errors/.empty?)
+    ($assert (== result/config/providers/.size 2))
+    ($assert (== result/config/presets/.size 2)))
+
+  (it "keeps valid entries while reporting name conflicts and stored credential fields" []
+    (let result (normalize_models_file
+      {^version 1 ^default {^provider "chatgpt" ^model "gpt-6-sol" ^effort "auto"}
+       ^providers [{^name "chatgpt" ^adapter "openai_responses" ^base_url "https://example.com/v1"}
+                   {^name "bad" ^adapter "openai_chat" ^base_url "https://example.com/v1" ^api_key "SECRET_SENTINEL"}
+                   {^name "local" ^adapter "openai_chat" ^base_url "http://127.0.0.1:11434/v1"
+                    ^!discover ^models [{^id "local-model" ^window 64000}]}]
+       ^models [{^provider "chatgpt" ^id "hidden-model" ^hidden false}]
+       ^presets [{^name "fast" ^provider "chatgpt" ^model "gpt-6-sol" ^effort "low"}]}))
+    ($assert (== result/config/providers/.size 1))
+    ($assert (== result/config/providers/0/name "local"))
+    ($assert (== result/config/providers/0/discover false))
+    ($assert (== result/config/models/0/hidden false))
+    ($assert (== result/errors/.size 2))
+    ($assert (== result/errors/0/index 0))
+    ($assert (== result/errors/1/index 1))
+    ($assert (! ($str/contains? ($serde/write_data result/errors) "SECRET_SENTINEL"))))
+
+  (it "rejects invalid metadata, duplicate entries and executable credential shapes" []
+    (let result (normalize_models_file {^version 1
+      ^providers [{^name "bad" ^adapter "unknown" ^base_url "http://localhost"}
+                  {^name "bad-command" ^adapter "openai_chat" ^base_url "http://localhost"
+                   ^credential {^command "echo token"}}]
+      ^models [{^provider "chatgpt" ^id "bad-window" ^window -1}
+               {^provider "chatgpt" ^id "bad-default" ^efforts [] ^default_effort "high"}
+               {^provider "chatgpt" ^id "same"} {^provider "chatgpt" ^id "same"}]
+      ^presets [{^name "fast" ^provider "chatgpt" ^model "one"}
+                {^name "fast" ^provider "chatgpt" ^model "two"}]}))
+    ($assert (== result/errors/.size 6))
+    ($assert (== result/config/providers/.size 0))
+    ($assert (== result/config/models/.size 1))
+    ($assert (== result/config/presets/.size 1))))
+
+(describe "Endpoint credential boundary"
+  (it "rejects URL credentials and secret-bearing queries without echoing their contents" []
+    (for url in ["https://user:SECRET_PASSWORD@llm.example/v1"
+      "https://llm.example/v1?api_key=SECRET_KEY" "https://llm.example/v1#SECRET_FRAGMENT"]
+      (let file (normalize_models_file {^version 1 ^providers
+        [{^name "custom" ^adapter "openai_chat" ^base_url url}]}))
+      ($assert (! file/errors/.empty?))
+      ($assert (! ($str/contains? file/errors/0/reason "SECRET"))))))
+
+(fn main [args] : Int (/exit_code (run ^name (?? args/0 ""))))

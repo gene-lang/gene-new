@@ -8532,6 +8532,12 @@ proc isSupportedDynamicFfiSignature(params: openArray[Value],
         typeExprLabel(params[2]) == "C/Size") or
        (isDynamicFfiPointerParamType(params[1]) and
         typeExprLabel(params[2]) == "C/Size"))
+  of 4:
+    returnLabel == "C/Int" and
+      isDynamicFfiBufferParamType(params[0]) and
+      isDynamicFfiBufferParamType(params[1]) and
+      isDynamicFfiBufferParamType(params[2]) and
+      isDynamicFfiBufferParamType(params[3])
   else:
     false
 
@@ -29807,6 +29813,33 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
         let fn = cast[SlicePtrProc](callee.ffiCallableAddress)
         return ffiPointerResult(returnLabel, fn(arg0.address, arg0.length),
                                 releaseAddress)
+  if paramLabels.len == 4 and returnLabel == "C/Int" and
+      isFfiBufferLabel(paramLabels[0]) and isFfiBufferLabel(paramLabels[1]) and
+      isFfiBufferLabel(paramLabels[2]) and isFfiBufferLabel(paramLabels[3]):
+    var buffers: array[4, FfiBufferArg]
+    var positions: array[4, int]
+    for i in 0 ..< 4:
+      buffers[i] = ffiBufferArg("FFI argument " & $i & " for '" &
+        callee.ffiCallableName & "'", paramLabels[i], params[i], args[i])
+      positions[i] = i
+      for j in 0 ..< i:
+        if same(buffers[i].buffer, buffers[j].buffer):
+          positions[i] = positions[j]
+          break
+    type FourBuffersIntProc = proc(a: pointer, an: csize_t,
+      b: pointer, bn: csize_t, c: pointer, cn: csize_t,
+      d: pointer, dn: csize_t): cint {.cdecl.}
+    let fn = cast[FourBuffersIntProc](callee.ffiCallableAddress)
+    let a = positions[0]
+    let b = positions[1]
+    let c = positions[2]
+    let d = positions[3]
+    let nativeResult = fn(buffers[a].data, buffers[a].length,
+      buffers[b].data, buffers[b].length, buffers[c].data, buffers[c].length,
+      buffers[d].data, buffers[d].length)
+    for i in 0 ..< 4:
+      if positions[i] == i: copyBackFfiBufferArg(buffers[i])
+    return newInt(int64(nativeResult))
   if paramLabels.len == 1 and isFfiBufferLabel(paramLabels[0]):
     let arg0 = ffiBufferArg("FFI argument 0 for '" &
       callee.ffiCallableName & "'", paramLabels[0], params[0], args[0])

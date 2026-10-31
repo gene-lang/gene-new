@@ -14,7 +14,9 @@
     (do
       (args .push "web")
       (args .push "--workspace")
-      (args .push root))
+      (args .push root)
+      (args .push "--root")
+      (args .push ($path/join home "shared-models")))
     (args .push "manager"))
   (args .push "--port")
   (args .push "0")
@@ -27,8 +29,6 @@
   (let environment
     {
       ^HOME home
-      ^CODEX_HOME $"${home}/.codex"
-      ^CODEX_AUTH_FILE nil
       ^GENE_HARNESS_WORKSPACE $"${home}/ignored"
       ^GENE_HARNESS_ROOT nil
       ^GENE_HARNESS_PORT "not-a-port"
@@ -118,8 +118,6 @@
           ($assert (== create_form/props/success-state {^selected ""}))
           ($assert (exits_with_error home "manager" "--workspace" $"${root}/forbidden"))
           ($assert (! ($fs/exists? $"${root}/forbidden")))
-          ($assert (exits_with_error home "web" "--root" $"${root}/forbidden"))
-          ($assert (! ($fs/exists? $"${root}/forbidden")))
           # A chosen root must never convert someone's workspace into a manager.
           (let ordinary $"${root}/ordinary")
           ($fs/make_dir $"${ordinary}/.gene-harness")
@@ -170,7 +168,7 @@
           ($assert (! ($str/contains? transcript token)))
           ($assert (! ($str/contains? transcript "#token=")))
           (let redirect_task
-            (request ^url $"${client/connection/origin}/api/v8/ui/open?name=workspace_open&id=${id}" ^headers {^cookie client/credentials/cookie} ^timeout_ms 3000))
+            (request ^url $"${client/connection/origin}/api/v9/ui/open?name=workspace_open&id=${id}" ^headers {^cookie client/credentials/cookie} ^timeout_ms 3000))
           (let opened (try (await redirect_task) ensure redirect_task/.cancel))
           ($assert (== opened/status 302) ($to_str opened/status))
           ($assert (== opened/headers/location ($fs/read_text $"${project}/.gene-harness/link")))

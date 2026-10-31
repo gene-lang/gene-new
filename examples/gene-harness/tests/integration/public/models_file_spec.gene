@@ -1,0 +1,58 @@
+(import $test [describe it])
+(import [isolated run_spec fixture_path] ^from "../../support")
+(import [read_models_file write_models_file ModelsFileError models_path]
+  ^from "../../../src/public/models_file")
+
+(describe "Shared model saves"
+  (it "serializes independent processes and rejects the stale revision" []
+    (isolated this_mod/.path "serializes independent processes and rejects the stale revision"
+      (fn [workspace]
+        (let initial (read_models_file workspace))
+        (let state (write_models_file workspace
+          {^version 1 ^presets [{^name "existing" ^provider "chatgpt" ^model "gpt-6-sol"}]} initial/digest))
+        (let program (fixture_path "models_save"))
+        (let a ($os/exec_async ($os/executable_path) "run" program workspace state/digest "a"
+          ^timeout_ms 10000 ^max_bytes 4096))
+        (let b ($os/exec_async ($os/executable_path) "run" program workspace state/digest "b"
+          ^timeout_ms 10000 ^max_bytes 4096))
+        (try
+          (let deadline (+ ($os/monotonic_ms) 5000))
+          (while (! (&& ($fs/exists? ($path/join workspace "ready-a"))
+                        ($fs/exists? ($path/join workspace "ready-b"))))
+            ($assert (< ($os/monotonic_ms) deadline) "independent savers did not reach the barrier")
+            ($sleep 1))
+          ($fs/write_text ($path/join workspace "start") "start")
+          (let first (await a))
+          (let second (await b))
+          ($assert (== first/status 0) first/stderr)
+          ($assert (== second/status 0) second/stderr)
+          (let outcomes [($str/trim first/stdout) ($str/trim second/stdout)])
+          ($assert (outcomes .contains? "saved"))
+          ($assert (outcomes .contains? "revision_conflict"))
+          (let saved (read_models_file workspace))
+          ($assert (== saved/config/presets/.size 2))
+          ($assert (== saved/config/presets/0/name "existing"))
+          ($assert saved/errors/.empty?)
+        ensure
+          (if_not a/.done? a/.cancel a/.join)
+          (if_not b/.done? b/.cancel b/.join)))))
+
+  (it "bounds lock waits and returns inert errors for broken files" []
+    (isolated this_mod/.path "bounds lock waits and returns inert errors for broken files"
+      (fn [workspace]
+        ($fs/make_dir ($path/join workspace ".gene-harness"))
+        (let path (models_path workspace))
+        ($fs/write_text path "(serde_v1 ($fs/write_text \"MUST_NOT_EXIST\" \"SECRET_SENTINEL\"))")
+        (let state (read_models_file workspace))
+        ($assert (! state/errors/.empty?))
+        ($assert (! ($fs/exists? ($path/join workspace "MUST_NOT_EXIST"))))
+        ($assert (! ($str/contains? ($serde/write_data state/errors) "SECRET_SENTINEL")))
+        (let lock ($fs/try_lock ($path/join workspace ".gene-harness" "models.lock")))
+        (try
+          (let rejected (try
+            (write_models_file ^wait_ms 20 workspace {^version 1} state/digest)
+            false catch ModelsFileError (== $err/code "busy")))
+          ($assert rejected "save ignored another writer's lock")
+        ensure lock/.close)))))
+
+(fn main [args] : Int (run_spec args))

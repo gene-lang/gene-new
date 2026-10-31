@@ -3,10 +3,13 @@
 (import ^from "../storage/state"
   [core_states record_core_state flush_event_store copy_data])
 (import ^from "./sessions" [create_session require_record list_sessions unload_idle_sessions update_session delete_session load_session session_busy?])
-(import ^from "../kernel" [rows])
+(import ^from "../kernel" [rows row])
+(import [validate_model_settings] ^from "../public/models")
+(import [catalog_snapshot session_settings select_provider] ^from "../agents/provider_selection")
+(import [safe_publish] ^from "../notifications/publisher")
 (import ^from "../agents/history" [collect_unreferenced_bodies])
 (import [spawn_effect_call] ^from "." ^pkg "cordis")
-(import ^from "./round_controller" [submit_round round_state round_receipt answer_round])
+(import ^from "./round_controller" [submit_round round_state round_receipt answer_round RoundError])
 (import * : cron ^from "./schedule/cron")
 (import * : timezone ^from "./schedule/timezone")
 (import * : calendar ^from "./schedule/calendar")
@@ -63,7 +66,15 @@
     (when "cron" (cron/next definition/pattern definition/rules after))))
 
 (fn validate_definition [input, now]
+  (if (!= ($head input) Map) (invalid "Trigger definition must be an inert map"))
+  (for [key value] in input
+    (if_not (["id" "kind" "request" "every_ms" "at" "cron" "timezone" "missed" "overlap"
+      "continue_session" "enabled" "retention" "model_settings" "tags" "docs" "doc"] .contains? ($to_str key))
+      (invalid $"Unknown trigger field ${key}")))
   (let definition (copy_data input))
+  (if ($present? definition/model_settings)
+    (try (definition .put "model_settings" (validate_model_settings definition/model_settings))
+      catch Any (invalid $err/message)))
   (if_not (safe_trigger_id? definition/id) (invalid "Trigger id must contain letters, digits, - or _"))
   (if_not (["heartbeat" "scheduled" "cron"] .contains? definition/kind) (invalid "Invalid trigger kind"))
   (if (|| (!= ($head definition/request) Str) (== ($str/trim definition/request) ""))
@@ -95,6 +106,34 @@
       (definition .put "rules" rules)
       (definition .put "next_ms" (cron/next pattern rules now))))
   definition)
+
+(fn check_trigger_model [manager, definition]
+  (let choice (?? definition/model_settings {}))
+  (if (&& ($present? choice/provider) ($absent? (row manager/runtime/h "providers" choice/provider)))
+    (invalid $"Unknown trigger provider ${choice/provider}"))
+  (let base ($serde/read_data ($fs/read_text $"${manager/runtime/state_root}/config.gene")))
+  (let selected (try (select_provider ^allow_unready true manager/runtime
+    (session_settings {^model_settings choice} base))
+    catch Any
+      (if (&& (!= $err/code "not_ready") (> ($size choice) 0)) (invalid $err/message))
+      {^reason $err/message}))
+  (let warnings [])
+  (if ($present? selected/reason) (warnings .push selected/reason))
+  (if (&& ($present? choice/effort) (!= choice/effort "auto")
+    ($present? selected/selection) (!= choice/effort selected/selection/effective_effort))
+    (then
+      (let effective (?? selected/selection/effective_effort "provider default"))
+      (warnings .push $"Requested effort ${choice/effort} resolves to ${effective}.")))
+  (if ($present? choice/model)
+    (then
+      (let catalog (catalog_snapshot manager/runtime))
+      (let provider choice/provider)
+      (let candidate (row manager/runtime/h "providers" provider))
+      (var listed false)
+      (for model in (?? catalog/providers/%provider/models candidate/builtin_models [])
+        (if (== model/id choice/model) (set listed true)))
+      (if (! listed) (warnings .push "Model is not in the catalog; access is unverified."))))
+  warnings)
 
 (fn require_accepting [manager]
   (if (|| manager/closed/.get manager/runtime/stopping/.get)
@@ -132,7 +171,28 @@
   (manager/mutating (fn []
     (if_not ($absent? (manager/definitions/.get .get definition/id))
       (fail (TriggerError ^code "conflict" ^message "Trigger already exists")))
-    (save_definition manager definition))))
+    (let warnings (check_trigger_model manager definition))
+    (let result (save_definition manager definition))
+    (if (! warnings/.empty?) (result .put "warnings" warnings))
+    result)))
+
+(fn update_trigger [manager, id : Str, changes]
+  (require_accepting manager)
+  (if (!= ($head changes) Map) (invalid "Trigger changes must be an inert map"))
+  (for [key value] in changes
+    (if (!= ($to_str key) "model_settings") (invalid $"Unknown trigger update field ${key}")))
+  (manager/mutating (fn []
+    (let stored (manager/definitions/.get .get id))
+    (if (|| ($absent? stored) (== stored/deleted true))
+      (fail (TriggerError ^code "not_found" ^message "Trigger does not exist")))
+    (let next (copy_data stored))
+    (next .put "model_settings" (if ($absent? changes/model_settings)
+      (then nil)
+      (else (try (validate_model_settings changes/model_settings) catch Any (invalid $err/message)))))
+    (let warnings (check_trigger_model manager next))
+    (let result (save_definition manager next))
+    (if (! warnings/.empty?) (result .put "warnings" warnings))
+    result)))
 
 (fn delete_trigger [manager, id : Str]
   (require_accepting manager)
@@ -146,8 +206,14 @@
 
 (fn list_triggers [manager]
   (let result [])
+  (let waiting {})
+  (for [id occurrence] in manager/pending/.get
+    (if ($present? occurrence/waiting_reason) (waiting .put occurrence/trigger occurrence/waiting_reason)))
   (for [id definition] in manager/definitions/.get
-    (if_not (== definition/deleted true) (result .push (copy_data definition))))
+    (if_not (== definition/deleted true)
+      (let item (copy_data definition))
+      (if ($present? (waiting .get id)) (item .put "waiting_reason" (waiting .get id)))
+      (result .push item)))
   ($order/sort_by result (fn [definition] definition/id)))
 
 (fn list_occurrences [manager, ^trigger trigger = nil, ^active active : Bool = false]
@@ -261,15 +327,28 @@
     (boundary manager "session" occurrence)
     (let state (round_state manager/controller occurrence/session))
     (let sequence state/next_seq)
-    (submit_round manager/controller occurrence/session occurrence/id sequence definition/request
-      ^initiator $"trigger:${definition/id}"
-      ^on_admit (fn [receipt]
-        (boundary manager "admitted" occurrence)
-        (occurrence .put "state" "started")
-        (occurrence .put "round" receipt/id)
-        (save_occurrence manager occurrence)
-        (boundary manager "started" occurrence)))
-    (set running (+ running 1))))
+    (try
+      (submit_round manager/controller occurrence/session occurrence/id sequence definition/request
+        ^model_settings (?? definition/model_settings {})
+        ^initiator $"trigger:${definition/id}"
+        ^on_admit (fn [receipt]
+          (boundary manager "admitted" occurrence)
+          (occurrence .put "state" "started")
+          (occurrence .put "waiting_reason" nil)
+          (occurrence .put "round" receipt/id)
+          (save_occurrence manager occurrence)
+          (boundary manager "started" occurrence)))
+      (set running (+ running 1))
+    catch RoundError
+      (if (!= $err/code "not_ready") (fail $err))
+      (let reason $err/message)
+      (if (!= occurrence/waiting_reason reason)
+        (then
+          (occurrence .put "waiting_reason" reason)
+          (save_occurrence manager occurrence)
+          (safe_publish manager/runtime/h manager/runtime/services/values/inbox "triggers"
+            {^key $"trigger-blocked/${definition/id}" ^severity "warning" ^^renew
+             ^title $"Trigger ${definition/id} is waiting" ^summary reason}))))))
 
 (fn prune_occurrences [manager]
   (var removed 0)
@@ -336,6 +415,7 @@
       (fail (TriggerError ^code "conflict" ^message $"Plugin trigger conflicts with operator trigger ${input/id}")))
     (if_yes (|| ($absent? previous) (!= previous/plugin_fingerprint fingerprint))
       (let definition (validate_definition input now))
+      (check_trigger_model manager definition)
       (definition .put "plugin_fingerprint" fingerprint)
       (save_definition manager definition)))
   (for [id definition] in manager/definitions/.get

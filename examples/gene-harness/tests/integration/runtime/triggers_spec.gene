@@ -278,9 +278,20 @@ Full trigger prompt 世界") "trigger rename changed the initial request")
             (append_message runtime "gc" "user" $"full request ${turn}" ^settled "settled")
             (flush_event_store runtime/events))
           (let before ($size ($fs/list_dir $"${runtime/state_root}/blobs")))
-          (tick_triggers manager ^now 1)
+          # A background body writer may legitimately defer collection for a
+          # tick. Require the scheduler to collect after its lease is released.
+          (let deadline (+ ($os/monotonic_ms) 5000))
+          (var instant 1)
+          (while runtime/body_gc_pending/.get
+            (tick_triggers manager ^now instant)
+            (if runtime/body_gc_pending/.get
+              (then
+                ($assert (< ($os/monotonic_ms) deadline)
+                  $"periodic collection stayed blocked with ${runtime/body_users/.load} body writers")
+                ($sleep 1)
+                (set instant (+ instant 1)))))
           (let after ($size ($fs/list_dir $"${runtime/state_root}/blobs")))
-          ($assert (< after (/ before 2)) "periodic collection retained superseded history blobs")
+          ($assert (< after (/ before 2)) $"periodic collection retained superseded history blobs: ${before} before, ${after} after")
           ($assert (== (recall_body runtime "gc" "saved") "must survive collection") "periodic GC removed a live recall body")
           (let state (history_state runtime "gc"))
           ($assert (== state/messages/0/content "settled") "old full request bodies were not settled in storage")

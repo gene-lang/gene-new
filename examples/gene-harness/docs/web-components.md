@@ -274,7 +274,7 @@ service but never confirm active-work interruption.
 
 For browser-only navigation, **`ui_links`** rows use the same row shape with a
 callback accepting the request's parameter map and returning a destination
-URL. Link to `/api/v8/ui/open?name=ROW_NAME&...` from the view. The host checks
+URL. Link to `/api/v9/ui/open?name=ROW_NAME&...` from the view. The host checks
 owner authentication, invokes the current row and returns a redirect without
 putting its destination into a function result or action receipt. This lets the
 manager open a target's authenticated connection link while keeping its token
@@ -390,7 +390,7 @@ and `alt` (empty alt is permitted for decorative images) and has no children.
 are lowercase `.svg`, `.png`, `.jpg`, `.jpeg`, `.webp`. Paths are limited to
 240 bytes and ASCII letters, digits, `_`, `-`, `.`, `/`; absolute, hidden,
 empty, `.` and `..` segments, URL schemes, query strings and fragments are
-rejected. The validator maps it to `/api/v8/ui/image?path=...`; this GET route
+rejected. The validator maps it to `/api/v9/ui/image?path=...`; this GET route
 requires the existing owner authentication and same-origin policy.
 
 Optional `width` and `height` are integer intrinsic dimensions from 1 to 2048.

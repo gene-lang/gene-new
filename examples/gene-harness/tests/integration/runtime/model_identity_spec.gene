@@ -1,0 +1,88 @@
+(import $test [describe it])
+(import [isolated run_spec test_controller fixture_path] ^from "../../support")
+(import [Plugin PluginHost] ^from "../../../src/plugin_api")
+(import [Profile] ^from "../../../src/profiles/profile")
+(import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
+(import [submit_round round_receipt] ^from "../../../src/runtime/round_controller")
+(import [provide put_cordis_plugin] ^from "../../../src/kernel")
+(import [resolve_credential] ^from "../../../src/public/provider")
+
+(fn connection_cache [billing : Str, account : Str]
+  {^providers {^identity {^connection {^state "ready" ^billing billing ^account account}
+    ^models [{^id "model" ^window 128000 ^input ["text"] ^efforts ["low"] ^default_effort "low"}]}}})
+
+(fn identity_provider [send, ^credential credential = nil]
+  (Plugin ^id "identity_provider" ^provides [["providers" "identity"]]
+    ^activate (fn [host]
+      (host .PluginHost:contribute "providers"
+        {^name "identity" ^doc "Frozen connection identity fixture."
+         ^transport {^adapter "fake" ^base_url "fake://same" ^credential credential ^billing "plan"}
+         ^configure (fn [model effort timeout] {^model "model" ^timeout_ms timeout})
+         ^prepare (fn [call] call) ^send send}))))
+
+(fn wait_entered [entered]
+  (let deadline (+ ($os/monotonic_ms) 5000))
+  (while (! entered/.get) ($assert (< ($os/monotonic_ms) deadline) "model attempt did not enter") ($sleep 1)))
+
+(describe "Round connection identity audit"
+  (it "stops a running round before a new billing class or account receives its next call" []
+    (isolated this_mod/.path "stops a running round before a new billing class or account receives its next call"
+      (fn [workspace]
+        (for changed in ["billing" "account"]
+          (let root ($path/join workspace changed)) ($fs/make_dir root)
+          (let entered ($cell false)) (let released ($cell false)) (let calls ($cell 0))
+          (let cache ($cell (connection_cache "plan" "account-a")))
+          (let plugin (identity_provider (fn [call]
+            (calls .set (+ calls/.get 1)) (entered .set true)
+            (while (! released/.get) ($sleep 1))
+            {^text "(Outcome ^prompt \"continue\")"})))
+          (let runtime (open_runtime root "default" (Profile ^name "identity" ^plugins [plugin] ^provider "identity")))
+          (let controller (test_controller runtime nil))
+          (try
+            (provide runtime/h "core" "models/catalog" {^snapshot (fn [] cache/.get)})
+            (let first (submit_round controller "default" "identity" 1 "work"))
+            (wait_entered entered)
+            (cache .set (if (== changed "billing")
+              (then (connection_cache "metered" "account-a")) (else (connection_cache "plan" "account-b"))))
+            (released .set true)
+            ((/watcher (controller/rounds/.get .get "default")) .join)
+            (let receipt (round_receipt controller "default" first/id))
+            ($assert (== receipt/state "failed")) ($assert (== receipt/reason "connection_changed"))
+            ($assert (== calls/.get 1) "another connection received the running round")
+            ($assert (== receipt/selection/billing "plan")) ($assert (== receipt/selection/account "account-a"))
+          ensure (released .set true) (close_runtime runtime))))))
+
+  (it "uses replacement code and a refreshed token while retaining the same round identity" []
+    (isolated this_mod/.path "uses replacement code and a refreshed token while retaining the same round identity"
+      (fn [workspace]
+        (let token_path ($path/join workspace "fake-token"))
+        ($fs/write_text token_path "FAKE_TOKEN_ONE")
+        (let credential {^command [($os/executable_path) "run" (fixture_path "credential_file") token_path]})
+        (let entered ($cell false)) (let released ($cell false)) (let calls ($cell []))
+        (let old (identity_provider ^credential credential (fn [call]
+          (calls/.get .push {^code "old" ^token (resolve_credential credential) ^transport call/selection/transport})
+          (entered .set true) (while (! released/.get) ($sleep 1))
+          {^text "(Outcome ^prompt \"continue\")"})))
+        (let runtime (open_runtime workspace "default" (Profile ^name "identity" ^plugins [old] ^provider "identity")))
+        (let controller (test_controller runtime nil))
+        (let cache ($cell (connection_cache "plan" "account-a")))
+        (try
+          (provide runtime/h "core" "models/catalog" {^snapshot (fn [] cache/.get)})
+          (let first (submit_round controller "default" "same-identity" 1 "work"))
+          (wait_entered entered)
+          (put_cordis_plugin ^^replace runtime/h (identity_provider ^credential credential (fn [call]
+            (calls/.get .push {^code "new" ^token (resolve_credential credential) ^transport call/selection/transport})
+            (if (== calls/.get/.size 2)
+              (then ($fs/write_text token_path "FAKE_TOKEN_TWO") {^text "(Outcome ^prompt \"continue\")"})
+              (else {^text "(Outcome ^^done ^reply \"done\")"})))) {^^host ^limits runtime/profile/limits})
+          (released .set true)
+          ((/watcher (controller/rounds/.get .get "default")) .join)
+          (let receipt (round_receipt controller "default" first/id))
+          ($assert (== receipt/state "done") ($to_str receipt))
+          ($assert (== ($map calls/.get /code) ["old" "new" "new"]))
+          ($assert (== ($map calls/.get /token) ["FAKE_TOKEN_ONE" "FAKE_TOKEN_ONE" "FAKE_TOKEN_TWO"]))
+          (for call in calls/.get ($assert (== call/transport first/selection/transport)))
+          ($assert (! ($str/contains? ($serde/write_data receipt) "FAKE_TOKEN")))
+        ensure (released .set true) (close_runtime runtime))))))
+
+(fn main [args] : Int (run_spec args))

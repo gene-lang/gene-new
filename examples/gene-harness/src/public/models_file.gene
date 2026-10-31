@@ -1,0 +1,181 @@
+# Inert shared configuration. Loading never resolves credentials or runs code.
+(mod models_file)
+(import [validate_model_settings] ^from "./models")
+(import [try_lock_wait] ^from "./file_lock")
+
+(type ModelsFileError ^props {^code Str ^message Str} ^impl [Error])
+(impl Error for ModelsFileError)
+
+(fn config_error [message]
+  (fail (ModelsFileError ^code "invalid_models" ^message message)))
+
+(fn fields [value, allowed, label]
+  (if (!= ($head value) Map) (config_error $"${label} must be an inert map"))
+  (for [key item] in value
+    (if_not (allowed .contains? ($to_str key))
+      (config_error $"Unknown ${label} field ${key}"))))
+
+(fn require_text [value, label]
+  (if (|| (!= ($head value) Str) (== ($str/trim value) ""))
+    (config_error $"${label} must be a nonempty string")))
+
+(fn require_list [value, label]
+  (if (!= ($head value) List) (config_error $"${label} must be a list")))
+
+(fn validate_model [value, ^provider required_provider : Bool = false]
+  (fields value ["provider" "id" "label" "rank" "window" "max_output" "input"
+    "efforts" "default_effort" "hidden" "effective_percent" "prompt_limit_bytes" "pricing"] "model")
+  (require_text value/id "Model id")
+  (if (|| required_provider ($present? value/provider)) (require_text value/provider "Model provider"))
+  (if ($present? value/label) (require_text value/label "Model label"))
+  (for key in ["window" "max_output" "effective_percent" "prompt_limit_bytes"]
+    (let number (value .get key))
+    (if ($present? number)
+      (if (|| (!= ($head number) Int) (<= number 0))
+        (config_error $"Model ${key} must be a positive integer"))))
+  (if (&& ($present? value/effective_percent) (> value/effective_percent 100))
+    (config_error "Model effective_percent cannot exceed 100"))
+  (if (&& ($present? value/rank) (!= ($head value/rank) Int)) (config_error "Model rank must be an integer"))
+  (if (&& ($present? value/hidden) (!= ($head value/hidden) Bool)) (config_error "Model hidden must be a boolean"))
+  (for key in ["input" "efforts"]
+    (let values (value .get key))
+    (if ($present? values)
+      (then
+        (require_list values $"Model ${key}")
+        (for item in values (require_text item $"Model ${key} entry")))))
+  (if ($present? value/default_effort)
+    (then
+      (require_text value/default_effort "Model default_effort")
+      (if (&& ($present? value/efforts) (! (value/efforts .contains? value/default_effort)))
+        (config_error "Model default_effort must be in efforts"))))
+  (if ($present? value/pricing)
+    (then
+      (fields value/pricing ["prompt" "completion" "request" "image" "input_cache_read" "input_cache_write"] "pricing")
+      (for [key price] in value/pricing
+        (if_not (|| (== ($head price) Str) (== ($head price) Int) (== ($head price) Float))
+          (config_error "Model prices must be numbers or decimal strings")))))
+  ($thaw ($freeze value)))
+
+(fn validate_credential [value]
+  (fields value ["env" "command"] "credential")
+  (if (== ($present? value/env) ($present? value/command))
+    (config_error "Credential must name one environment variable or command"))
+  (if ($present? value/env)
+    (then (require_text value/env "Credential environment variable"))
+    (else
+      (require_list value/command "Credential command")
+      (if (== value/command/.size 0) (config_error "Credential command cannot be empty"))
+      (for arg in value/command
+        (if (!= ($head arg) Str) (config_error "Credential command arguments must be strings"))))))
+
+(fn validate_provider [value, reserved]
+  (fields value ["name" "adapter" "base_url" "credential" "discover" "models"] "provider")
+  (require_text value/name "Provider name")
+  (if (reserved .contains? value/name) (config_error $"Provider ${value/name} is already defined"))
+  (if_not (["openai_chat" "openrouter_chat" "openai_responses" "anthropic_messages"] .contains? value/adapter)
+    (config_error "Unknown provider adapter"))
+  (require_text value/base_url "Provider base_url")
+  (if_not (|| ($str/starts_with? value/base_url "http://") ($str/starts_with? value/base_url "https://"))
+    (config_error "Provider base_url must use HTTP or HTTPS"))
+  (if ($absent? (#"^https?://[^/?#@\s]+(?:/[^?#\s]*)?$" .match value/base_url))
+    (config_error "Provider base_url must be an HTTP(S) origin/path without credentials, query or fragment"))
+  (if ($present? value/credential) (validate_credential value/credential))
+  (if (&& ($present? value/discover) (!= ($head value/discover) Bool))
+    (config_error "Provider discover must be a boolean"))
+  (let models (?? value/models []))
+  (require_list models "Provider models")
+  (let ids [])
+  (for model in models
+    (validate_model model)
+    (if (&& ($present? model/provider) (!= model/provider value/name))
+      (config_error "Nested model names a different provider"))
+    (if (ids .contains? model/id) (config_error "Duplicate model id in provider"))
+    (ids .push model/id))
+  ($thaw ($freeze value)))
+
+(fn validate_preset [value]
+  (fields value ["name" "provider" "model" "effort"] "preset")
+  (require_text value/name "Preset name")
+  (require_text value/provider "Preset provider")
+  (require_text value/model "Preset model")
+  (validate_model_settings {^provider value/provider ^model value/model
+    ^effort (?? value/effort "auto")})
+  ($thaw ($freeze value)))
+
+(fn normalize_models_file [value, ^reserved reserved = ["chatgpt" "claude" "anthropic" "openrouter" "offline" "scripted"]]
+  (fields value ["version" "default" "providers" "models" "presets"] "models.gene")
+  (if (!= value/version 1) (config_error "Unsupported models.gene version"))
+  (let default (?? value/default {}))
+  (try (validate_model_settings default) catch Any (config_error $err/message))
+  (let config {^version 1 ^default default ^providers [] ^models [] ^presets []})
+  (let errors [])
+  (let names ($thaw ($freeze reserved)))
+  (let model_ids [])
+  (let preset_names [])
+  (for key in ["providers" "models" "presets"]
+    (let entries (?? (value .get key) []))
+    (require_list entries key)
+    (var index 0)
+    (for entry in entries
+      (try
+        (match key
+          (when "providers"
+            (let checked (validate_provider entry names))
+            (names .push checked/name)
+            (config/providers .push checked))
+          (when "models"
+            (let checked (validate_model ^provider true entry))
+            (let id ($serde/write_data [checked/provider checked/id]))
+            (if (model_ids .contains? id) (config_error "Duplicate provider/model override"))
+            (model_ids .push id)
+            (config/models .push checked))
+          (when "presets"
+            (let checked (validate_preset entry))
+            (if (preset_names .contains? checked/name) (config_error "Duplicate preset name"))
+            (preset_names .push checked/name)
+            (config/presets .push checked))
+          (else nil))
+      catch Any
+        (let issue {^section key ^index index ^reason $err/message})
+        (if (&& (== key "providers") (== ($head entry/name) Str)) (issue .put "provider" entry/name))
+        (errors .push issue))
+      (set index (+ index 1))))
+  {^config config ^errors errors})
+
+(fn models_path [root : Str] ($path/join root ".gene-harness" "models.gene"))
+
+(fn read_models_file [root : Str, ^reserved reserved = ["chatgpt" "claude" "anthropic" "openrouter" "offline" "scripted"]]
+  (let path (models_path root))
+  (if (! ($fs/exists? path))
+    (return {^config {^version 1 ^default {} ^providers [] ^models [] ^presets []}
+      ^errors [] ^digest ($crypto/sha256 "")}))
+  (let text ($fs/read_text path))
+  (let digest ($crypto/sha256 text))
+  (try
+    (let parsed (try ($serde/read_data text)
+      catch Any (config_error "models.gene is not valid inert serde data")))
+    (let result (normalize_models_file ^reserved reserved parsed))
+    (result .put "digest" digest)
+    result
+  catch Any
+    {^config {^version 1 ^default {} ^providers [] ^models [] ^presets []}
+     ^errors [{^section "file" ^reason $err/message}] ^digest digest}))
+
+(fn write_models_file [root : Str, value, expected : Str, ^wait_ms wait_ms : Int = 1000,
+  ^reserved reserved = ["chatgpt" "claude" "anthropic" "openrouter" "offline" "scripted"]]
+  (let checked (normalize_models_file ^reserved reserved value))
+  (if (! checked/errors/.empty?) (config_error checked/errors/0/reason))
+  ($fs/make_dir ($path/join root ".gene-harness"))
+  (let lock (try_lock_wait ($path/join root ".gene-harness" "models.lock") wait_ms))
+  (if ($absent? lock)
+    (fail (ModelsFileError ^code "busy" ^message "Models settings are being saved by another host; retry.")))
+  (try
+    (let current (read_models_file ^reserved reserved root))
+    (if (!= current/digest expected)
+      (fail (ModelsFileError ^code "revision_conflict" ^message "Models settings changed; refresh and review before saving.")))
+    (if (! current/errors/.empty?)
+      (config_error "Fix the reported models.gene errors before saving settings."))
+    (let encoded ($serde/write_data checked/config))
+    ($fs/write_text_atomic (models_path root) encoded)
+    {^config checked/config ^errors [] ^digest ($crypto/sha256 encoded)}
+  ensure lock/.close))

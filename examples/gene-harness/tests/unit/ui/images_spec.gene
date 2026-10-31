@@ -7,7 +7,7 @@
   (it
     "admits workspace image paths and refuses URL and traversal sources"
     []
-    ($assert (== (image_source "assets/board.svg") "/api/v8/ui/image?path=assets%2Fboard.svg"))
+    ($assert (== (image_source "assets/board.svg") "/api/v9/ui/image?path=assets%2Fboard.svg"))
     (for path in ["/etc/a.svg" "../a.svg" "a/../a.svg" "a//b.svg" "a/.private/b.svg" "https://evil/a.svg" "data:image/png,x" "a.svg?x=1" "a.svg#x" "a%2Fb.svg" ".harness/a.svg" "a.txt" "a\\b.svg"]
       ($assert (try (image_source path) false catch Any true))))
   (it

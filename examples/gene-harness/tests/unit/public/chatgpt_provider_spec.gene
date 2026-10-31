@@ -1,0 +1,59 @@
+(import $test [describe it run])
+(import [chatgpt_result] ^from "../../../src/public/chatgpt_provider")
+(import [ProviderError] ^from "../../../src/plugin_api")
+
+(describe "ChatGPT response recovery"
+  (it "preserves status, error shape, code, parameter and request id without provider text" []
+    (let plain (try (chatgpt_result {^status 403 ^headers {^x-request-id "req_fixture"}
+      ^body "{\"detail\":\"SECRET_ACCOUNT_CONTEXT\"}"}) nil catch ProviderError $err))
+    ($assert (== plain/status 403))
+    ($assert ($str/contains? plain/message "Response shape: detail"))
+    ($assert ($str/contains? plain/message "req_fixture"))
+    ($assert (! ($str/contains? plain/message "SECRET")))
+    (let structured (try (chatgpt_result {^status 400 ^body ($json/stringify {^error
+      {^code "subscription_sharing_unsupported_capability" ^param "temperature" ^message "SECRET_DETAIL"}})})
+      nil catch ProviderError $err))
+    ($assert (== structured/status 400))
+    ($assert (== structured/code "subscription_sharing_unsupported_capability"))
+    ($assert ($str/contains? structured/message "Parameter: temperature"))
+    ($assert (! ($str/contains? structured/message "SECRET"))))
+
+  (it "distinguishes usage-service failure from a usage limit after streaming starts" []
+    (let event {^type "response.failed" ^response {^error
+      {^code "subscription_sharing_usage_unavailable" ^message "SECRET_DETAIL"}}})
+    (let error (try (chatgpt_result {^status 200 ^headers {^x-request-id "req_stream"}
+      ^body ($to_str "data: " ($json/stringify event) "\n\n")}) nil catch ProviderError $err))
+    ($assert (== error/status 503))
+    ($assert (== error/code "subscription_sharing_usage_unavailable"))
+    ($assert ($str/contains? error/message "could not be checked"))
+    ($assert (! ($str/contains? error/message "limit reached")))
+    ($assert (! ($str/contains? error/message "SECRET")))))
+
+(describe "ChatGPT streamed error envelopes"
+  (it "recognizes a nested plan limit before the following response.failed event" []
+    # The live route emits error.error before response.failed. Never lose its
+    # code by treating the enclosing SSE event as the error object.
+    (let error {^code "subscription_sharing_usage_limit_exceeded" ^type "invalid_request_error"
+      ^param nil ^message "SECRET_PROVIDER_DIAGNOSTIC"})
+    (let events [{^type "error" ^error error}
+      {^type "response.failed" ^response {^error error}}])
+    (let failed (try (chatgpt_result {^status 200
+      ^body ($str/join ($map events (fn [event] ($to_str "data: " ($json/stringify event) "\n\n"))) "")})
+      nil catch ProviderError $err))
+    ($assert (== failed/code "subscription_sharing_usage_limit_exceeded"))
+    ($assert (== failed/status 429))
+    ($assert ($str/contains? failed/message "Plan usage limit reached"))
+    ($assert (! ($str/contains? failed/message "SECRET"))))
+
+  (it "preserves the flat stream error code and safe diagnostic metadata too" []
+    (let failed (try (chatgpt_result {^status 200
+      ^body ($to_str "data: " ($json/stringify {^type "error" ^code "subscription_sharing_unsupported_capability"
+        ^param "temperature" ^request_id "req_event" ^message "SECRET_PROVIDER_DIAGNOSTIC"}) "\n\n")})
+      nil catch ProviderError $err))
+    ($assert (== failed/code "subscription_sharing_unsupported_capability"))
+    ($assert (== failed/status 400))
+    ($assert ($str/contains? failed/message "Parameter: temperature"))
+    ($assert ($str/contains? failed/message "Request: req_event"))
+    ($assert (! ($str/contains? failed/message "SECRET")))))
+
+(fn main [args] : Int (/exit_code (run ^name (?? args/0 ""))))

@@ -159,6 +159,8 @@
                      (span ^id "media_status" ^role "status"))
                    (div ^class "composer_actions"
                      (span ^id "composer_hint" ^class "hint" "Shift+Enter for a new line · / for commands")
+                     (span ^id "web_composer_actions" ^class "web_components")
+                     (span ^id "browser_client_composer_actions")
                      (button ^id "send" ^class "send" ^type "submit" "Send")))
                  (button ^id "resolve_submission" ^class "resolve" ^type "button" ^^hidden "Resolve submission")))
              (aside ^id "ui_panel" ^class "ui_panel" ^^hidden ^aria-label "Workspace panel"
@@ -217,6 +219,7 @@
                    "Timezone"
                    (input ^id "trigger_timezone" ^value "UTC"))
                  (label "Request" (textarea ^id "trigger_request" ^rows "3" ^^required))
+                 (div ^id "trigger_model_actions")
                  (label
                    "After downtime"
                    (select ^id "trigger_missed"

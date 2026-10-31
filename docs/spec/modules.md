@@ -100,6 +100,10 @@ budgets bound the second.
   supplied its release symbol. `ffi/Library/close` rejects the live borrow.
   Explicit `C/close` or final reclamation invokes the release exactly once,
   then drops the borrow; an unreachable open library closes automatically.
+- Dynamic `ffi/bind` supports four byte-compatible `Buffer` arguments with a
+  `C/Int` result. Each buffer expands to its pointer and length. Repeated buffer
+  objects share the same native view, and modified bytes are copied back once
+  per distinct buffer after the synchronous call.
 
 ## Selected package resources
 

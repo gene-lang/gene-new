@@ -5,7 +5,7 @@
 (import $net/http_client [request])
 
 (fn download [client, path : Str]
-  (let task (request ^url $"${client/connection/origin}/api/v8${path}"
+  (let task (request ^url $"${client/connection/origin}/api/v9${path}"
     ^headers {^cookie client/credentials/cookie}
     ^timeout_ms 15000 ^max_bytes 20000000))
   (try (await task) ensure task/.cancel))

@@ -1,6 +1,6 @@
 # Replay the todo-app harness experiment
 
-From the repository root, launch the web harness with your host Codex OAuth
+From the repository root, launch the web harness with Harness's ChatGPT
 login, model `gpt-6.1-sol`, and high reasoning. Use a current checkout and build
 the binaries with `nimble build` if needed.
 
@@ -32,25 +32,21 @@ not expected turn counts or a fixed generated layout.
 ```sh
 GENE_BINARY="$PWD/bin/gene" \
 PATH="$PWD/bin:$PATH" \
-CODEX_AUTH_FILE="$HOME/.codex/auth.json" \
-GENE_HARNESS_PROVIDER=codex \
-GENE_HARNESS_MODEL=gpt-6.1-sol \
-GENE_HARNESS_THINKING_EFFORT=high \
 examples/gene-harness/bin/gene-harness web \
-  --workspace "$PWD/tmp/harness-todo-replay" --port 8097
+  --workspace "$PWD/tmp/harness-todo-replay" --port 8097 \
+  --provider chatgpt --model gpt-6.1-sol --effort high
 ```
 
-Keep the terminal running. The provider reads `tokens.access_token` and
-`tokens.account_id` from the host OAuth file; credentials stay out of the
-workspace and model context. Set `CODEX_AUTH_FILE` to a different path if your
-login is stored elsewhere. If credentials are missing or rejected, sign in
-through Codex with file credential storage and retry.
+Keep the terminal running. Open Models and choose **Continue with ChatGPT** to
+authorize the account and plan permission. Harness stores its own protected
+account record outside the workspace and model context. Reconnect that account
+in Models if authorization expires or is revoked.
 
 In another terminal, run `bin/gene run examples/gene-harness/src/main.gene
 --workspace "$PWD/tmp/harness-todo-replay" link` and open the returned URL.
 The owner token is reusable until explicit reset, and client credentials survive
 host restarts. The header and Workspace status should
-show `gpt-6.1-sol · codex · high`.
+show `gpt-6.1-sol · chatgpt · high`.
 
 The Gene supervisor launcher supports automatic `/restart`. A server launched
 directly with `gene run` must be started again manually. Only one harness can
@@ -103,7 +99,7 @@ attempt, with one retry on timeout. Set `provider_timeout_ms` in the same
 config file to change this independently of turn and evaluation limits.
 The older 180-second timeout appeared as `net/http_client: Timeout was reached`.
 Current failures identify the provider and configured duration, for example
-`codex model provider request exceeded 600.0 s (2 attempts)`, with continuation
+`chatgpt model provider request exceeded 600.0 s (2 attempts)`, with continuation
 and configuration guidance. Only a completed response reaches evaluation.
 
 | Composer command | Effect |

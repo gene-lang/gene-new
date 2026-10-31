@@ -1,0 +1,216 @@
+(import $test [describe it])
+(import [isolated run_spec fixture_path] ^from "../../support")
+(import [new_chatgpt_login complete_chatgpt_login chatgpt_access sign_out_chatgpt] ^from "../../../src/public/chatgpt_auth")
+(import [account_id list_chatgpt_accounts save_chatgpt_account read_chatgpt_record with_chatgpt_account] ^from "../../../src/public/chatgpt_store")
+(import [close_login] ^from "../../../src/public/provider_login")
+(import [ProviderError] ^from "../../../src/plugin_api")
+(import $net/http [listen serve stop json text])
+(import $net/http_client [request])
+
+(fn joined [task]
+  (match task/.join
+    (when (TaskOutcome/ok value) value)
+    (when (TaskOutcome/error error) (fail error))
+    (else ($assert false "authentication fixture was cancelled"))))
+
+(fn get [url : Str]
+  (let task (request ^method "GET" ^url url ^timeout_ms 10000))
+  (try (await task) ensure task/.cancel))
+
+(fn expired_record []
+  {^version 1 ^issuer "https://auth.openai.com" ^client_id "oaiapp_fixture" ^subject "subject"
+   ^scopes ["resource.invoke" "chatgpt.tokens.use.direct"] ^expires_at (- (/ ($os/wall_ms) 1000) 1)
+   ^nonce "SECRET_NONCE" ^access_token "SECRET_OLD_ACCESS" ^refresh_token "SECRET_OLD_REFRESH"})
+
+(describe "ChatGPT authentication"
+  (it "uses issued clients and verified identities without activating failed or declined sign-ins" []
+    (isolated this_mod/.path "uses issued clients and verified identities without activating failed or declined sign-ins"
+      (fn [workspace]
+        (let root ($path/join workspace "auth-test"))
+        (let server (listen ^host "127.0.0.1" ^port 0)) (let pending ($cell nil))
+        (let mode ($cell "success")) (let exchanges ($cell 0)) (let validated ($cell 0))
+        (let callback $"http://127.0.0.1:${server/port}/auth/callback")
+        (let exchange $"http://127.0.0.1:${server/port}/token")
+        (let verify (fn [tokens client nonce, ^refresh refresh : Bool = false]
+          ($assert (== client "oaiapp_fixture")) ($assert (== nonce pending/.get/nonce))
+          ($assert (== tokens/id_token "SECRET_ID_TOKEN")) ($assert (! refresh))
+          (validated .set (+ validated/.get 1))
+          (if (== mode/.get "invalid_signature") (fail (ProviderError ^message "SECRET_BAD_SIGNATURE")))
+          {^sub (if (== mode/.get "different_account") "different" "subject") ^email "user@example.invalid"
+           ^exp (+ (/ ($os/wall_ms) 1000) 3600)}))
+        (let runner (spawn ^lane root (try
+          (let first (new_chatgpt_login callback ^root root ^exchange_url exchange ^verify verify))
+          (pending .set first)
+          ($assert ($str/contains? first/url "client_id=dynamic_agent_client"))
+          ($assert ($str/contains? first/url "agent_name_hint=Gene%20Harness"))
+          ($assert ($str/contains? first/url "chatgpt.tokens.use.direct"))
+          ($assert (== (/status (get $"${callback}?code=SECRET_CODE&state=wrong&client_id=oaiapp_fixture")) 400))
+          ($assert (== exchanges/.get 0))
+          ($assert (== (/status (get $"${callback}?code=SECRET_CODE&state=${first/state}&client_id=oaiapp_fixture")) 200))
+          ($assert (== first/status/.get "complete"))
+          (let account first/account/id)
+          ($assert (== (/active (list_chatgpt_accounts root)) account))
+          ($assert (== (/access_token (read_chatgpt_record root account)) "SECRET_ACCESS_TOKEN"))
+          ($assert (== (/earliest_refresh_at (read_chatgpt_record root account)) "opaque-vendor-extension"))
+          ($assert (== (/status (get $"${callback}?code=SECRET_CODE&state=${first/state}&client_id=oaiapp_fixture")) 409))
+          ($assert (== exchanges/.get 1))
+          (let returning (new_chatgpt_login callback ^root root ^account account ^exchange_url exchange ^verify verify))
+          (pending .set returning)
+          ($assert ($str/contains? returning/url "client_id=oaiapp_fixture"))
+          ($assert (! ($str/contains? returning/url "agent_name_hint")))
+          ($assert (! ($str/contains? returning/url "SECRET_ID_TOKEN")))
+          ($assert (! ($str/contains? returning/url "prompt=consent")))
+          ($assert (== returning/host_id first/host_id))
+          ($assert (== (/status (get $"${callback}?code=SECRET_CODE&state=${returning/state}&client_id=oaiapp_other")) 400))
+          ($assert (== returning/status/.get "failed")) ($assert (== exchanges/.get 1))
+          (let mismatched (new_chatgpt_login callback ^root root ^account account ^exchange_url exchange ^verify verify))
+          (pending .set mismatched) (mode .set "different_account")
+          ($assert (== (/status (get $"${callback}?code=SECRET_CODE&state=${mismatched/state}")) 400))
+          ($assert (== (/access_token (read_chatgpt_record root account)) "SECRET_ACCESS_TOKEN"))
+          (let invalid (new_chatgpt_login callback ^root root ^exchange_url exchange ^verify verify))
+          (pending .set invalid) (mode .set "invalid_signature")
+          (let refused (get $"${callback}?code=SECRET_CODE&state=${invalid/state}&client_id=oaiapp_fixture"))
+          ($assert (== refused/status 400)) ($assert (! ($str/contains? refused/body "SECRET")))
+          (let retry (new_chatgpt_login callback ^root root ^registration invalid ^verify verify))
+          ($assert ($str/contains? retry/url "client_id=oaiapp_fixture"))
+          ($assert (! ($str/contains? retry/url "agent_name_hint")))
+          ($assert (!= retry/state invalid/state)) ($assert (!= retry/nonce invalid/nonce))
+          ($assert (== (/active (list_chatgpt_accounts root)) account))
+          (let declined (new_chatgpt_login callback ^root root ^exchange_url exchange ^verify verify))
+          (pending .set declined)
+          ($assert (== (/status (get $"${callback}?error=access_denied&state=${declined/state}")) 200))
+          ($assert (== declined/status/.get "declined"))
+          ($assert (== exchanges/.get 3)) ($assert (== validated/.get 3))
+          (let identity_only (new_chatgpt_login callback ^root root ^exchange_url exchange ^verify verify))
+          (pending .set identity_only) (mode .set "identity_only")
+          (let identity_reply (get $"${callback}?code=SECRET_CODE&state=${identity_only/state}&client_id=oaiapp_fixture"))
+          ($assert (== identity_reply/status 200))
+          ($assert ($str/contains? identity_reply/body "permission was not granted"))
+          ($assert (== identity_only/account/plan_enabled false))
+          (let enable_plan (new_chatgpt_login callback ^root root ^account account ^verify verify))
+          ($assert ($str/contains? enable_plan/url "prompt=consent"))
+          ($assert (try (chatgpt_access ^root root) false catch ProviderError (== $err/status 401)))
+        ensure (stop server))))
+        (serve server ^handler (fn [incoming]
+          (if (== incoming/path "/auth/callback")
+            (then (let result (complete_chatgpt_login pending/.get incoming/params)) (return (text result/status result/message))))
+          (exchanges .set (+ exchanges/.get 1))
+          ($assert (== incoming/path "/token"))
+          ($assert ($str/contains? incoming/headers/content-type "application/x-www-form-urlencoded"))
+          ($assert ($str/contains? incoming/body "client_id=oaiapp_fixture"))
+          ($assert ($str/contains? incoming/body ($to_str "code_verifier=" pending/.get/verifier)))
+          ($assert ($str/contains? incoming/body ($to_str "redirect_uri=" ($url/encode_component callback))))
+          ($assert ($str/contains? incoming/body "resource=https%3A%2F%2Fapi.openai.com%2Fv1"))
+          (if (== mode/.get "identity_only")
+            (return (json 200 ($json/stringify {^scope "openid profile email" ^id_token "SECRET_ID_TOKEN"}))))
+          (json 200 ($json/stringify {^token_type "Bearer" ^expires_in 3600
+            ^scope "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct"
+            ^earliest_refresh_at "opaque-vendor-extension"
+            ^access_token "SECRET_ACCESS_TOKEN" ^refresh_token "SECRET_REFRESH_TOKEN" ^id_token "SECRET_ID_TOKEN"}))))
+        (joined runner))))
+
+  (it "serializes rotating refresh tokens across processes and rereads the winning record" []
+    (isolated this_mod/.path "serializes rotating refresh tokens across processes and rereads the winning record"
+      (fn [workspace]
+        (let root ($path/join workspace "refresh-test"))
+        (let saved (save_chatgpt_account root (expired_record)))
+        (let server (listen ^host "127.0.0.1" ^port 0)) (let calls ($cell 0))
+        (let runner (spawn ^lane root (try
+          (let exchange $"http://127.0.0.1:${server/port}/token")
+          (let first ($os/exec_async ($os/executable_path) "run" (fixture_path "chatgpt_refresh") root exchange ^timeout_ms 30000))
+          (let second ($os/exec_async ($os/executable_path) "run" (fixture_path "chatgpt_refresh") root exchange ^timeout_ms 30000))
+          (let a (await first)) (let b (await second))
+          ($assert (== a/status 0) a/stderr) ($assert (== b/status 0) b/stderr)
+          (let one ($json/parse ($str/trim a/stdout))) (let two ($json/parse ($str/trim b/stdout)))
+          ($assert (== one/account saved/id)) ($assert (== two/account saved/id))
+          ($assert (== one/digest ($crypto/sha256 "SECRET_NEW_ACCESS"))) ($assert (== one/digest two/digest))
+          ($assert (! ($str/contains? a/stdout "SECRET"))) ($assert (! ($str/contains? b/stdout "SECRET")))
+          ($assert (== calls/.get 1) "two hosts attempted to rotate the same refresh token")
+          (let current (read_chatgpt_record root saved/id))
+          ($assert (== current/refresh_token "SECRET_NEW_REFRESH"))
+          ($assert (== current/access_token "SECRET_NEW_ACCESS"))
+        ensure (stop server))))
+        (serve server ^handler (fn [incoming]
+          (calls .set (+ calls/.get 1))
+          ($assert ($str/contains? incoming/body "grant_type=refresh_token"))
+          ($assert ($str/contains? incoming/body "refresh_token=SECRET_OLD_REFRESH"))
+          ($assert ($str/contains? incoming/body "client_id=oaiapp_fixture"))
+          ($assert (! ($str/contains? incoming/body "scope=")))
+          ($sleep 100)
+          (json 200 ($json/stringify {^token_type "Bearer" ^expires_in 3600
+            ^access_token "SECRET_NEW_ACCESS" ^refresh_token "SECRET_NEW_REFRESH"}))))
+        (joined runner))))
+
+  (it "honors refresh timing and stops revoked sessions without changing the selected account" []
+    (isolated this_mod/.path "honors refresh timing and stops revoked sessions without changing the selected account"
+      (fn [workspace]
+        (let root ($path/join workspace "refresh-errors"))
+        (let initial (expired_record))
+        (initial .put "expires_at" (+ (/ ($os/wall_ms) 1000) 20))
+        (initial .put "earliest_refresh_at" (+ (/ ($os/wall_ms) 1000) 600))
+        (let saved (save_chatgpt_account root initial))
+        ($assert (== (/access_token (chatgpt_access ^root root ^exchange_url "http://127.0.0.1:1/unused")) "SECRET_OLD_ACCESS"))
+        (with_chatgpt_account root saved/id (fn [record]
+          (record .put "expires_at" (- (/ ($os/wall_ms) 1000) 1)) {^record record}))
+        ($assert (try (chatgpt_access ^root root ^exchange_url "http://127.0.0.1:1/unused") false catch ProviderError true))
+        (with_chatgpt_account root saved/id (fn [record] (record .delete "earliest_refresh_at") {^record record}))
+        (let server (listen ^host "127.0.0.1" ^port 0))
+        (let mode ($cell "invalid_grant"))
+        (let runner (spawn ^lane root (try
+          (let endpoint $"http://127.0.0.1:${server/port}/token")
+          (for code in ["invalid_grant" "invalid_refresh_token" "token_expired" "refresh_token_expired"
+            "refresh_token_invalidated" "refresh_token_reused"]
+            (mode .set code) (save_chatgpt_account root (expired_record))
+            (let error (try (chatgpt_access ^root root ^exchange_url endpoint) nil catch ProviderError $err))
+            ($assert (== error/status 401)) ($assert (== error/code code))
+            ($assert (== (/active (list_chatgpt_accounts root)) saved/id))
+            (let current (read_chatgpt_record root saved/id))
+            ($assert ($absent? current/access_token)) ($assert ($absent? current/refresh_token)))
+          (for code in ["transient" "invalid_client"]
+            (mode .set code) (save_chatgpt_account root (expired_record))
+            (let error (try (chatgpt_access ^root root ^exchange_url endpoint) nil catch ProviderError $err))
+            ($assert ($present? error))
+            (if (== code "invalid_client") ($assert (== error/code "invalid_client")))
+            ($assert (== (/refresh_token (read_chatgpt_record root saved/id)) "SECRET_OLD_REFRESH")))
+        ensure (stop server))))
+        (serve server ^handler (fn [incoming]
+          (json (if (== mode/.get "transient") (then 503) (else 400))
+            ($json/stringify {^error {^code mode/.get ^description "SECRET_DIAGNOSTIC"}}))))
+        (joined runner)))))
+
+(describe "ChatGPT sign-out"
+  (it "retries revocation, clears only one account and reports unconfirmed remote revocation" []
+    (isolated this_mod/.path "retries revocation, clears only one account and reports unconfirmed remote revocation"
+      (fn [workspace]
+        (let root ($path/join workspace "signout-test"))
+        (let first (save_chatgpt_account root (expired_record)))
+        (let another (expired_record)) (another .put "client_id" "oaiapp_another")
+        (let second (save_chatgpt_account root another))
+        (let server (listen ^host "127.0.0.1" ^port 0))
+        (let calls ($cell 0)) (let failed ($cell false))
+        (let runner (spawn ^lane root (try
+          (let endpoint $"http://127.0.0.1:${server/port}/revoke")
+          (let revoked (sign_out_chatgpt ^root root ^account first/id ^revocation_url endpoint))
+          ($assert (== revoked/remote_revoked true)) ($assert (== calls/.get 3))
+          ($assert (! ($str/contains? ($json/stringify revoked) "SECRET")))
+          (let current (read_chatgpt_record root first/id))
+          ($assert ($absent? current/access_token)) ($assert ($absent? current/refresh_token))
+          ($assert ($absent? current/id_token)) ($assert (== current/client_id "oaiapp_fixture"))
+          ($assert (== (/access_token (read_chatgpt_record root second/id)) "SECRET_OLD_ACCESS"))
+          ($assert (== (/active (list_chatgpt_accounts root)) second/id))
+          (failed .set true) (calls .set 0)
+          (let local_only (sign_out_chatgpt ^root root ^account second/id ^revocation_url endpoint))
+          ($assert (== local_only/remote_revoked false)) ($assert (== calls/.get 3))
+          ($assert ($str/contains? local_only/message "not confirmed"))
+          ($assert ($absent? (/refresh_token (read_chatgpt_record root second/id))))
+        ensure (stop server))))
+        (serve server ^handler (fn [incoming]
+          ($assert (== incoming/path "/revoke"))
+          ($assert ($str/contains? incoming/body "token_type_hint=refresh_token"))
+          ($assert ($str/contains? incoming/body "token=SECRET_OLD_REFRESH"))
+          (calls .set (+ calls/.get 1))
+          (if (|| failed/.get (< calls/.get 3))
+            (then (text 503 "SECRET_DIAGNOSTIC")) (else (text 200 "")))))
+        (joined runner)))))
+
+(fn main [args] : Int (run_spec args))

@@ -29,6 +29,7 @@ proposals, and implementation/verification records.
 | Try the editable project board | [Workspace UI experiment](experiments/ui/README.md) |
 | Follow an end-to-end application build | [Todo replay](docs/todo-replay.md) |
 | Configure Claude transports | [Claude providers](docs/claude.md) |
+| Choose models, effort, defaults and endpoint adapters | [Models design](docs/models.md) and [implementation evidence](docs/verification/models-implementation.md) |
 
 ## Start
 
@@ -56,8 +57,13 @@ Unresponsive hosts require external process control in this MVP. See the
 From the Gene repository:
 
 ```text
-bin/gene run examples/gene-harness/src/main.gene web --workspace /path/to/project
+bin/gene run --package-root examples/gene-harness harness web --workspace /path/to/project
 ```
+
+The packaged host selects its declared native resources. ChatGPT ID-token
+verification uses `genex/crypto`, which needs OpenSSL 3 and `pkg-config` when
+building. The launcher builds the normal host through the same application
+target; offline and recovery starts use the captured-source entry.
 
 Workspace selection uses `--workspace DIR`, then a non-empty
 `GENE_HARNESS_WORKSPACE`, then the launch directory. Relative paths resolve
@@ -105,7 +111,7 @@ PORT` selects a fixed port and fails if unavailable. A supervised restart also
 requires its original port. `link` retrieves the current browser URL.
 
 See [the todo-app replay guide](docs/todo-replay.md) for a complete web workflow
-using Codex OAuth, including continuation, verification and recovery.
+using ChatGPT sign-in, including continuation, verification and recovery.
 
 ### CLI reference
 
@@ -180,25 +186,35 @@ recovery controls while suppressing rich plugin detail.
 
 See the [publishing recipe](docs/recipes/notification-publishing.md) and the
 [review notifier example](examples/notifications/README.md). Restart older hosts
-and reload browser tabs to use web protocol 8.
+and reload browser tabs to use web protocol 9.
 
 ## Providers and workspace settings
 
-Settings live in `.gene-harness/config.gene`, using Gene's inert serde data
-representation. A profile may pin a provider. Otherwise a non-empty
-GENE_HARNESS_PROVIDER selects one, then `config.gene`'s `provider`, then the
-available provider row with the lowest automatic rank: OpenRouter,
-Anthropic, Codex. An explicit missing or unavailable provider makes the
-profile `not_ready`; it does not silently fall back. Model and effort use
-their environment values, then `config.gene`, then the selected row's default.
-The loop selects once per turn from its leased plugin composition and uses
-that row for both a compaction summary and the main call.
+Workspace settings live in `.gene-harness/config.gene`. Shared models,
+endpoints, presets and the default live in the inert
+`<manager root>/.gene-harness/models.gene` file. The Models page edits that file
+with a shared save lock and revision check. Store credential references there,
+never secret values.
 
-Each provider is a plugin row with `available`, `configure`, `prepare` and
-`send` callbacks. `prepare` returns the complete model-visible input without
-credentials. `send` adds authentication and makes one transport attempt; the
-loop retries one reported HTTP timeout. The web host's `--script FILE` and
-`--offline` test configurations pin model-free provider plugins.
+Profile and explicit host pins come first, followed by the session's choice,
+workspace configuration, the shared default, environment and automatic choice.
+Automatic selection prefers ready plan/local routes to metered routes; built-in
+ranks are Claude Code, ChatGPT, Anthropic and OpenRouter. A selected
+unavailable connection makes the profile `not_ready`, with no fallback.
+
+The composer picker, `/model`, `/effort` and CLI send overrides set session
+choices. A send without a new choice uses the backend's current session settings;
+there is no stale-preview check. Admission freezes the round's provider, model,
+effort, metadata and transport identity. Compaction and model calls share that
+selection. A changed connection stops the round. Triggers resolve their own
+fields or the current default at firing time and never inherit the creating
+session's choice.
+
+Provider rows have `configure`, `prepare`, `send` and optional cached
+`connection`/`models` discovery callbacks. `prepare` returns model-visible input
+without credentials. Transport operations resolve credentials, and `send` makes
+one attempt; the loop retries one reported HTTP timeout. The web host's
+`--script FILE` and `--offline` configurations pin model-free providers.
 
 Every provider invocation, including a compaction summary, writes a
 `model/request` with the exact prepared input before transport and a
@@ -210,10 +226,25 @@ the turn transcript.
 
 | Provider | Host credentials |
 | --- | --- |
-| codex | CODEX_AUTH_FILE, or auth.json beneath CODEX_HOME / the user's .codex directory |
-| anthropic | ANTHROPIC_API_KEY |
+| chatgpt | Continue with ChatGPT in Models; separate protected account/client records and a shared refresh lock |
+| anthropic | ANTHROPIC_API_KEY, then `ant auth print-credentials --access-token` for Console OAuth; both use API billing |
 | claude | Claude Code's own login; optionally GENE_HARNESS_CLAUDE_COMMAND |
-| openrouter | OPENROUTER_API_KEY or OPENROUTER_KEY |
+| openrouter | OPENROUTER_API_KEY, then OPENROUTER_KEY, then the Harness Connect record |
+
+Harness sign-in records default to `~/.config/gene-harness/`; an explicit
+`GENE_HARNESS_AUTH_HOME` selects another directory. Records use owner-only
+permissions. ChatGPT requires granted plan scopes as well as a validated identity.
+The Models page supports account selection, reauthorization and sign-out, and
+links to ChatGPT usage settings.
+
+Real ChatGPT sign-in and authenticated model discovery are verified; its
+inference attempt reached a plan-usage limit. OpenRouter and the Claude Pro
+CLI route completed real Harness rounds. The owner skipped further native
+Anthropic API checks; the generic Chat and Responses adapters also completed
+live checks against OpenRouter using DeepSeek. Output budgets use recorded token measurements, with limits
+on those samples disclosed in the
+[verification record](docs/verification/models-implementation.md). The former
+Codex backend transport and its credential-file reader have been removed.
 
 Credentials remain in the host transport and are excluded from prompts and
 durable transcripts. The Claude transport disables its tools, hooks and MCP
@@ -223,8 +254,8 @@ CRLF delimiters are accepted while attachment bodies retain their line endings.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `provider`, `model` | `""` | Empty uses the profile/environment/configuration/automatic selection described above |
-| `effort` | `"medium"` | none, minimal, low, medium, high, xhigh or max |
+| `provider`, `model` | `""` | Empty follows the selection order above |
+| `effort` | `"auto"` | Model default, or none/minimal/low/medium/high/xhigh/max; native extras require advertised support |
 | `provider_timeout_ms` | `600000` | Timeout per provider attempt; one retry when `send` reports a timeout |
 | `response_budget` | `{^timeout_ms 600000 ^max_memory_mb 1024}` | Runaway limit for each response evaluation and command |
 | `turn_limit` | `24` | Turns per operator round; reaching it pauses for continuation |
@@ -232,7 +263,7 @@ CRLF delimiters are accepted while attachment bodies retain their line endings.
 | `trigger_timeout_ms` | `300000` | Running time per trigger round |
 | `trigger_concurrency` | `2` | Unfinished trigger rounds across the workspace |
 | `question_timeout_ms` | `86400000` | Deadline for a trigger round's question batch |
-| `context_window` | `128000` | Model window in tokens, used by compaction |
+| `context_window` | unset | Optional cap on the selected model's window; unknown models use 128,000 tokens |
 | `trigger_occurrence_keep` | `256` | Recent terminal occurrences kept per trigger |
 | `body_gc_interval_ms` | `60000` | Interval for idle collection of unreferenced blobs |
 

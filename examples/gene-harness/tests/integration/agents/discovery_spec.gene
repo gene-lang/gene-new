@@ -151,7 +151,7 @@
           (let recipes (form_docs/matches .filter (fn [entry] (== entry/name "harness/ui/forms"))))
           ($assert (! recipes/.empty?))
           ($assert ($str/contains? (doc runtime/h "harness/ui/forms") "safety_checked"))
-          ($assert (> ((Path "total") (discover ^owner "provider_codex" runtime/h)) 0))
+          ($assert (> ((Path "total") (discover ^owner "provider_chatgpt" runtime/h)) 0))
           ($assert (> ((Path "total") (discover ^owner "repl" runtime/h)) 0))
           (set_plugin_enabled runtime/workspace runtime/h "repl" false)
           ($assert (== ((Path "total") (discover ^owner "repl" runtime/h)) 0))

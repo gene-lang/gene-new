@@ -1,0 +1,64 @@
+(import $test [describe it])
+(import [isolated run_spec] ^from "../../support")
+(import [chatgpt_row] ^from "../../../src/public/chatgpt_provider")
+(import [transport_identity] ^from "../../../src/public/models")
+(import [ProviderError] ^from "../../../src/plugin_api")
+(import $net/http [listen serve stop json Response])
+
+(describe "ChatGPT public Responses transport"
+  (it "omits unsupported parameters, buffers completion and refuses a changed known account before inference" []
+    (isolated this_mod/.path "omits unsupported parameters, buffers completion and refuses a changed known account before inference"
+      (fn [workspace]
+        (let server (listen ^host "127.0.0.1" ^port 0))
+        (let account ($cell "account-a")) (let calls ($cell 0)) (let rejected ($cell false))
+        (let access (fn [^root root = nil]
+          {^access_token "SECRET_ACCESS" ^account account/.get ^public {^label "Fixture registration"}}))
+        (let provider (chatgpt_row ^root workspace ^base_url $"http://127.0.0.1:${server/port}/v1" ^access access))
+        (let runner (spawn ^lane root (try
+          (let connection (provider/connection))
+          ($assert (== connection/state "ready")) ($assert (== connection/billing "plan"))
+          ($assert (== connection/account "account-a"))
+          (let models (provider/models))
+          ($assert (== models/0/id "fake")) ($assert (== models/0/efforts ["low" "high"]))
+          ($assert (== models/0/window 64000)) ($assert (== models/0/rank 0))
+          ($assert (! ($str/contains? ($serde/write_data models) "SECRET")))
+          (let prepared (provider/prepare {^settings (provider/configure "fake" "high" 10000)
+            ^selection {^account "account-a" ^transport (transport_identity provider connection)}
+            ^messages [{^role "system" ^content "instructions"} {^role "user" ^content "work"}]}))
+          ($assert ($absent? prepared/body/max_output_tokens))
+          ($assert ($absent? prepared/body/temperature)) ($assert (== prepared/body/store false))
+          ($assert (== prepared/body/stream true))
+          ($assert (! ($str/contains? ($serde/write_data prepared) "SECRET_ACCESS")))
+          ($assert (== (/text (provider/send prepared)) "(Outcome ^^done)"))
+          (account .set "account-b")
+          ($assert (try (provider/send prepared) false catch ProviderError (== $err/code "connection_changed")))
+          ($assert (== calls/.get 1) "a changed account received an inference request")
+          (let uncataloged (provider/prepare {^settings (provider/configure "typed" nil 10000)
+            ^messages [{^role "user" ^content "work without the catalog contribution"}]}))
+          ($assert (== (/text (provider/send uncataloged)) "(Outcome ^^done)"))
+          ($assert (== calls/.get 2))
+          (rejected .set true)
+          ($assert (== (/state (provider/connection)) "expired"))
+        ensure (stop server))))
+        (serve server ^handler (fn [incoming]
+          ($assert (== incoming/headers/authorization "Bearer SECRET_ACCESS"))
+          (if (== incoming/method "GET")
+            (then
+              ($assert (== incoming/path "/v1/models"))
+              (if rejected/.get (return (json 401 "SECRET_DIAGNOSTIC")))
+              (return (json 200 ($json/stringify {^models [{^slug "fake" ^display_name "Fixture" ^visibility "list"
+                ^context_window 64000 ^supported_reasoning_levels [{^effort "low"} {^effort "high"}]
+                ^default_reasoning_level "low" ^instructions "SECRET_PROMPT"}]})))))
+          ($assert (== incoming/path "/v1/responses")) (calls .set (+ calls/.get 1))
+          (let body ($json/parse incoming/body))
+          ($assert ($absent? body/max_output_tokens)) ($assert ($absent? body/temperature))
+          ($assert (== body/stream true)) ($assert (== body/store false))
+          (Response ^status 200 ^headers {^content-type "text/event-stream"}
+            ^body ($to_str "data: " ($json/stringify {^type "response.completed" ^response {^status "completed"
+              ^output [{^type "message" ^role "assistant" ^status "completed" ^content [{^type "output_text" ^text "(Outcome ^^done)"}]}]}}) "\n\n"))))
+        (match runner/.join
+          (when (TaskOutcome/ok value) value)
+          (when (TaskOutcome/error error) (fail error))
+          (else ($assert false "ChatGPT provider fixture was cancelled")))))))
+
+(fn main [args] : Int (run_spec args))

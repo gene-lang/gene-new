@@ -5,9 +5,11 @@
 (import ^from "../runtime/workspace_lock" [WorkspaceInUse])
 (import ^from "./notification_presenter" [notification_command present_message])
 (import [channel_command] ^from "./channels")
+(import [named_model_choice] ^from "../public/model_choices")
 
 (fn usage [] """Gene Harness: one web host per workspace.
   gene-harness web [--workspace DIR] [--port PORT] [--offline | --script FILE]
+                   [--provider NAME] [--model ID] [--effort LEVEL]
   gene-harness manager [--root DIR] [--port PORT]
   gene-harness --workspace DIR --recovery
   gene-harness [--workspace DIR] [--json] COMMAND
@@ -20,7 +22,7 @@ HOME/.gene-harness-root. Managed workspaces live in ROOT/workspaces.
 Workspace commands:
   status | link | auth reset | stop [--confirm] | restart [--confirm]
   sessions [create --title TITLE]
-  triggers [list | create FILE | delete ID | occurrences [ID]]
+  triggers [list | create FILE | update ID FILE | delete ID | occurrences [ID]]
   channels [status | account NAME --file FILE | route ACCOUNT --file FILE]
   channels bind ROUTE --file FILE | queue --session ID | resume --session ID --revision N
   channels delivery ID
@@ -36,7 +38,8 @@ Workspace commands:
 
 Session commands (require --session ID):
   status | transcript [--before SEQ | --after SEQ]
-  send [--wait] TEXT                 submit a literal model prompt
+  send [--wait] [--model ID | PRESET] [--effort LEVEL] TEXT
+                                    submit a literal model prompt
   run CODE | sh COMMAND | view PATH  execute an operator command and wait
   command /NAME ARGS                 execute any registered operator command
   receipt ID | wait ID               inspect/wait for a round
@@ -259,6 +262,9 @@ Profile: """
     (if_yes (== sub "create")
       (if ($absent? words/2) (problem "triggers create needs a definition file."))
       (return (api client "POST" "/triggers" (read_data_file words/2))))
+    (if_yes (== sub "update")
+      (if (|| ($absent? words/2) ($absent? words/3)) (problem "triggers update needs an id and a changes file."))
+      (return (api client "PATCH" $"/triggers/${($url/encode_component words/2)}" (read_data_file words/3))))
     (if_yes (== sub "delete")
       (if ($absent? words/2) (problem "triggers delete needs an id."))
       (return (api client "DELETE" $"/triggers/${($url/encode_component words/2)}")))
@@ -270,7 +276,7 @@ Profile: """
           (if ($absent? words/2)
             "/trigger-occurrences"
             $"/triggers/${($url/encode_component words/2)}/occurrences"))))
-    (problem "Use triggers list|create|delete|occurrences."))
+    (problem "Use triggers list|create|update|delete|occurrences."))
   (if (== action "transcript")
     (return
       (api
@@ -328,20 +334,43 @@ Profile: """
     (var text (if ($absent? options/file) (joined_words words 1) ($fs/read_text options/file)))
     (if (== text "") (problem $"${action} needs text or --file FILE."))
     (let kind (if (== action "send") "round" "command"))
+    (let model_options (|| ($present? options/model) ($present? options/effort) ($present? options/provider)))
+    (if (&& model_options (!= kind "round"))
+      (problem "Model options apply to send. Use command /model or /effort to change the session selection."))
     (if (["run" "sh" "view"] .contains? action) (set text $"/${action} ${text}"))
     (let state (api client "GET" (session_path session "/snapshot?ui=default")))
+    (let payload {^text text ^^literal})
+    (if model_options
+      (then
+        (let info state/status/model)
+        (let choice (if ($present? options/model)
+          (then
+            (if ($present? options/provider)
+              (then {^provider options/provider ^model options/model ^effort (?? info/requested_effort "auto")})
+              (else
+                (let catalog (try (api client "GET" "/models")
+                  catch CliError
+                    (if (!= $err/code "unavailable") (fail $err)) {}))
+                (try (named_model_choice ^current_provider info/provider catalog options/model (?? info/requested_effort "auto"))
+                  catch Any (problem $err/message)))))
+          (elif ($present? options/provider) {^provider options/provider})
+          (else ($thaw ($freeze (?? state/session/model_settings {}))))))
+        (if ($present? options/effort) (choice .put "effort" ($str/lower ($str/trim options/effort))))
+        (payload .put "model_settings" choice)))
     (let request_id (?? (options .get "request-id") $"cli-${($crypto/random_hex 16)}"))
     (let sequence
       (?? options/sequence (if (== kind "round") state/next_submission_seq state/next_command_seq)))
     (if (&& ($present? (options .get "request-id")) ($absent? options/sequence))
       (problem "An explicit --request-id requires its original --sequence. Use receipt --request-id to resolve an uncertain submission."))
+    (payload .put "request_id" request_id)
+    (payload .put "submission_seq" sequence)
     (let result
       (try
         (api
           client
           "POST"
           (session_path session (if (== kind "round") "/rounds" "/commands"))
-          {^text text ^request_id request_id ^submission_seq sequence ^^literal})
+          payload)
       catch Any
         (fail
           (CliError ^code (?? $err/code "request_failed") ^message $"${$err/message} Request ${request_id}, sequence ${sequence}, kind ${kind}." ^request_id request_id ^submission_seq sequence ^kind kind ^session session))))

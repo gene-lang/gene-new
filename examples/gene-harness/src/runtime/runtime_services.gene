@@ -38,6 +38,7 @@
 (import [install_outcome_extensions] ^from "./outcome_extensions")
 (import [install_initiators] ^from "./initiators")
 (import [new_plugin_services] ^from "./plugin_services")
+(import [new_models_host close_models_host models_host_binding] ^from "./models_host")
 
 (fn close_kernel [ctx, h]
   (if (== ctx/harness_closed true) (return nil))
@@ -251,7 +252,15 @@
          manager
        catch Any (close_workspace_manager manager) (fail $err)))
      ^recover nil ^close (fn [ctx, manager] (close_workspace_manager manager))}
-    {^name "plugins" ^layer "loop" ^requires {^normal ["actions" "voice" "channel_queues" "manager" "media" "computer" "operator" "plugin_api" "participants" "core_prompt" "trigger_host" "notification_host" "readiness"] ^recovery ["runtime"] ^doctor []}
+    {^name "models_host" ^layer "feature_host" ^requires ["runtime"]
+     ^open (fn [ctx]
+       (let state (new_models_host ctx/runtime))
+       (set ctx/services/values/models_host state)
+       (provide ctx/h "core" "models/host" (models_host_binding ctx/runtime))
+       state)
+     ^recover nil ^quiesce (fn [ctx state] (close_models_host state))
+     ^close (fn [ctx state] (close_models_host state))}
+    {^name "plugins" ^layer "loop" ^requires {^normal ["actions" "voice" "channel_queues" "manager" "media" "computer" "operator" "plugin_api" "participants" "core_prompt" "trigger_host" "notification_host" "readiness" "models_host"] ^recovery ["runtime"] ^doctor []}
      ^open activate_services ^recover activate_services ^close close_kernel}
     {^name "initial_session" ^layer "loop" ^requires ["plugins" "sessions"]
      ^open (fn [ctx]

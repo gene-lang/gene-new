@@ -5,7 +5,7 @@
 (fn triggers [] : Plugin
   (Plugin ^id "triggers" ^requires ["triggers/host"]
     ^provides [["functions" "create_trigger"] ["functions" "list_triggers"]
-               ["functions" "delete_trigger"]]
+               ["functions" "delete_trigger"] ["functions" "update_trigger"]]
     ^activate (fn [host]
       (let scheduler (host .PluginHost:resolve "triggers/host"))
       scheduler/.TriggerHost:start
@@ -13,6 +13,10 @@
         {^name "create_trigger" ^doc "Schedule workspace work."
          ^tags ["schedule" "heartbeat" "cron" "triggers"] ^docs ["harness/triggers"]
          ^fn (fn [definition] (scheduler .TriggerHost:create definition))})
+      (host .PluginHost:contribute "functions"
+        {^name "update_trigger" ^doc "Change a trigger's model_settings; omit the field or use nil to follow the default."
+         ^tags ["schedule" "triggers" "models"] ^docs ["harness/triggers"]
+         ^fn (fn [id : Str, changes] (scheduler .TriggerHost:update id changes))})
       (host .PluginHost:contribute "functions"
         {^name "list_triggers" ^doc "List trigger definitions."
          ^tags ["schedule" "triggers"] ^docs ["harness/triggers"]

@@ -1,0 +1,56 @@
+(import $test [describe it run])
+(import [encode_url decode_url verify_rs256 verify_id_token CryptoError] ^from "." ^pkg "crypto")
+
+(describe "Base64url"
+  (it "round trips binary data and rejects noncanonical encodings" []
+    (let bytes ($binary/from_list [0 255 254 253 252 0]))
+    ($assert (== (decode_url (encode_url bytes)) bytes))
+    ($assert (== (encode_url bytes) "AP_-_fwA"))
+    (for invalid in ["A" "Zg=" "Zg==" "Zh" "Zg\n" "+/8"]
+      ($assert (try (decode_url invalid) false catch CryptoError true)))
+    ($assert (== (decode_url "") ($binary/from_list [])))))
+
+(describe "RS256 signature verification"
+  (it "verifies an independently generated signature and refuses modified inputs" []
+    # Public components/signature generated independently with Node's crypto.
+    # No private key is retained in the fixture or used by this library.
+    (let path ($path/join ($path/parent this_mod/.path) "rs256.json"))
+    (let fixture ($json/parse ($fs/read_text path)))
+    (let modulus (decode_url fixture/n)) (let exponent (decode_url fixture/e))
+    (let message ($binary/from_str fixture/message))
+    (let signature (decode_url fixture/signature))
+    ($assert (verify_rs256 modulus exponent message signature))
+    ($assert (! (verify_rs256 modulus exponent ($binary/from_list [0 1 2]) signature)))
+    ($assert (! (verify_rs256 modulus exponent message ($binary/slice signature 1 255))))
+    ($assert (! (verify_rs256 modulus ($binary/from_list [1]) message signature)))
+    ($assert (! (verify_rs256 ($binary/from_list [1]) exponent message signature)))))
+
+(describe "OIDC ID-token validation"
+  (it "checks signed identity, audience, nonce, validity and access-token binding" []
+    (let path ($path/join ($path/parent this_mod/.path) "tokens.json"))
+    (let fixture ($json/parse ($fs/read_text path)))
+    (for token in [fixture/valid fixture/multiple_audiences]
+      (let claims (verify_id_token token fixture/jwks "https://issuer.example" "client" "nonce" 2000))
+      ($assert (== claims/sub "subject")))
+    (let bound (verify_id_token ^access_token fixture/access_token fixture/bound fixture/jwks
+      "https://issuer.example" "client" "nonce" 2000))
+    ($assert (== bound/sub "subject"))
+    ($assert (== (/sub (verify_id_token ^require_nonce false fixture/refresh fixture/jwks
+      "https://issuer.example" "client" "nonce" 2000)) "subject"))
+    ($assert (try (verify_id_token fixture/refresh fixture/jwks "https://issuer.example" "client" "nonce" 2000)
+      false catch CryptoError true))
+    (for invalid in fixture/invalid
+      (let error (try
+        (verify_id_token ^access_token fixture/access_token invalid/token fixture/jwks
+          "https://issuer.example" "client" "nonce" 2000)
+        nil catch CryptoError $err/message))
+      ($assert ($present? error) invalid/name)
+      ($assert (! ($str/contains? error "SECRET"))))
+    ($assert (try (verify_id_token fixture/bound fixture/jwks "https://issuer.example" "client" "nonce" 2000)
+      false catch CryptoError true))
+    (let duplicate ($thaw ($freeze fixture/jwks)))
+    (duplicate/keys .push duplicate/keys/0)
+    ($assert (try (verify_id_token fixture/valid duplicate "https://issuer.example" "client" "nonce" 2000)
+      false catch CryptoError true))))
+
+(fn main [args] : Int (/exit_code (run ^name (?? args/0 ""))))

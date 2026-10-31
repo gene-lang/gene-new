@@ -76,7 +76,7 @@ encoding (do not replace the serialized configuration with a bare map):
         ^language "en" ^rate 1.0}
 ```
 
-`GET /api/v8/voice/status`, using the normal browser authentication, reports
+`GET /api/v9/voice/status`, using the normal browser authentication, reports
 engine selections and availability reasons. Select **Configured host engine**
 in Voice settings to use those choices. Missing models or services produce a
 notice and preserve typed input.

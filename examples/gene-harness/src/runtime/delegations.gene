@@ -155,7 +155,8 @@
       (delegation_error "invalid_request" "The brief and delegated instruction prefix exceed the 64 KiB prompt limit."))
     (normalized .put "provider_settings" (if ($absent? previous)
       {^provider origin/reviewer/name ^model (?? normalized/model origin/reviewer/settings/model)
-       ^effort (?? origin/reviewer/settings/effort "medium")}
+       ^effort (?? origin/reviewer/settings/requested_effort "auto")
+       ^transport origin/reviewer/selection/transport}
       (?? previous/provider_settings {})))
     (staged .push normalized)
     {^id normalized/id ^title normalized/title ^state "staged"})))

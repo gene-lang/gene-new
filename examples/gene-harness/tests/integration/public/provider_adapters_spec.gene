@@ -1,0 +1,140 @@
+(import $test [describe it])
+(import [isolated run_spec fixture_path] ^from "../../support")
+(import [endpoint_provider] ^from "../../../src/public/provider")
+(import [ProviderError] ^from "../../../src/plugin_api")
+(import $net/http [listen serve stop json Response])
+
+(fn stream [events]
+  ($str/join ($map events (fn [event] $"data: ${($json/stringify event)}\n\n")) ""))
+
+(fn stream_response [events]
+  (Response ^status 200 ^headers {^content-type "text/event-stream"} ^body (stream events)))
+
+(describe "Configured provider adapters"
+  (it "uses each wire protocol, resolves credentials only at transport boundaries and buffers completion" []
+    (isolated this_mod/.path "uses each wire protocol, resolves credentials only at transport boundaries and buffers completion"
+      (fn [workspace]
+        (let server (listen ^host "127.0.0.1" ^port 0))
+        (let counter ($path/join workspace "credential-reads"))
+        (let credential {^command [($os/executable_path) "run" (fixture_path "credential_probe") "count" counter]})
+        (let paid ($cell 0))
+        (let tester (spawn ^lane root
+          (try
+            (for adapter in ["openai_chat" "openrouter_chat" "openai_responses" "anthropic_messages"]
+              (let provider (endpoint_provider {^name adapter ^adapter adapter
+                ^base_url $"http://127.0.0.1:${server/port}/${adapter}/v1/" ^credential credential ^^discover
+                ^models [{^id "model" ^efforts ["low" "high"] ^default_effort "low"}]}))
+              (let configured (provider/configure "model" "high" 15000))
+              (configured .put "max_output" 20000)
+              (let prepared (provider/prepare {^settings configured ^messages
+                [{^role "system" ^content "instructions"} {^role "user" ^content "work"}]}))
+              (if (== adapter "openai_chat") ($assert (! ($fs/exists? counter)) "preparation read a credential"))
+              ($assert (! ($str/contains? ($serde/write_data prepared) "credential-reads")))
+              (let connection (provider/connection))
+              ($assert (== connection/state "ready")) ($assert (== connection/billing "local"))
+              (let models (provider/models))
+              ($assert (== models/0/id "model")) ($assert (== models/0/efforts []))
+              (let result (provider/send prepared))
+              ($assert (== result/text "(Outcome ^^done)"))
+              ($assert (== result/usage/output_tokens 12)))
+            ($assert (== paid/.get 4))
+            ($assert (== ($parse/parse_int ($fs/read_text counter)) 12) "credentials were resolved redundantly")
+          ensure (stop server))))
+        (serve ^handler (fn [request]
+          (let adapter ($str/split request/path "/"))
+          (let name adapter/1)
+          (if (== name "anthropic_messages")
+            (then
+              ($assert (== request/headers/x-api-key "fixture-token"))
+              ($assert (== request/headers/anthropic-version "2023-06-01"))
+              ($assert ($absent? request/headers/authorization)))
+            (else ($assert (== request/headers/authorization "Bearer fixture-token"))))
+          (if (== request/method "GET")
+            (then
+              ($assert (|| ($str/ends_with? request/path "/models")
+                (&& (== name "openrouter_chat") ($str/ends_with? request/path "/key"))))
+              (return (json 200 ($json/stringify {^data [{^id "model" ^access_token "NOT_CATALOG_DATA"}]})))))
+          ($assert (== request/method "POST"))
+          (paid .set (+ paid/.get 1))
+          (let body ($json/parse request/body))
+          ($assert (== body/model "model"))
+          (match name
+            (when "openai_chat"
+              ($assert (== request/path "/openai_chat/v1/chat/completions"))
+              ($assert (== body/reasoning_effort "high")) ($assert ($absent? body/reasoning))
+              ($assert (== body/max_completion_tokens 20000))
+              (json 200 ($json/stringify {^choices [{^finish_reason "stop" ^message {^content "(Outcome ^^done)"}}]
+                ^usage {^output_tokens 12}})))
+            (when "openrouter_chat"
+              ($assert (== request/path "/openrouter_chat/v1/chat/completions"))
+              ($assert (== body/reasoning/effort "high")) ($assert ($absent? body/reasoning_effort))
+              ($assert (== body/max_tokens 20000))
+              (json 200 ($json/stringify {^choices [{^finish_reason "stop" ^message {^content "(Outcome ^^done)"}}]
+                ^usage {^output_tokens 12}})))
+            (when "openai_responses"
+              ($assert (== request/path "/openai_responses/v1/responses"))
+              ($assert (== body/stream true)) ($assert (== body/store false))
+              ($assert (== body/reasoning/effort "high")) ($assert (== body/max_output_tokens 20000))
+              (stream_response [{^type "response.output_text.delta" ^delta "unexecuted fragment"}
+                {^type "response.completed" ^response {^status "completed" ^usage {^output_tokens 12}
+                  ^output [{^type "message" ^status "completed" ^role "assistant"
+                    ^content [{^type "output_text" ^text "(Outcome ^^done)"}]}]}}]))
+            (when "anthropic_messages"
+              ($assert (== request/path "/anthropic_messages/v1/messages"))
+              ($assert (== body/stream true)) ($assert (== body/thinking/type "adaptive"))
+              ($assert (== body/output_config/effort "high")) ($assert (== body/max_tokens 20000))
+              (stream_response [{^type "message_start" ^message {^type "message" ^role "assistant" ^content [] ^usage {^input_tokens 5}}}
+                {^type "content_block_start" ^index 0 ^content_block {^type "text" ^text ""}}
+                {^type "content_block_delta" ^index 0 ^delta {^type "text_delta" ^text "(Outcome ^^done)"}}
+                {^type "content_block_stop" ^index 0}
+                {^type "message_delta" ^delta {^stop_reason "end_turn"} ^usage {^output_tokens 12}}
+                {^type "message_stop"}]))
+            (else ($assert false "unexpected adapter route")))) server)
+        (match tester/.join
+          (when (TaskOutcome/ok value) value)
+          (when (TaskOutcome/error error) (fail error))
+          (else ($assert false "adapter fixture did not finish"))))))
+
+  (it "uses the discovery result table and never includes provider diagnostics in errors" []
+    (isolated this_mod/.path "uses the discovery result table and never includes provider diagnostics in errors"
+      (fn [workspace]
+        (let server (listen ^host "127.0.0.1" ^port 0))
+        (let seen ($cell 0))
+        (let tester (spawn ^lane root
+          (try
+            (for [route expected stale] in [["ready" "ready" false] ["rejected" "expired" false]
+              ["forbidden" "expired" false] ["missing" "ready" true] ["method" "ready" true]
+              ["failed" "unavailable" true] ["malformed" "unavailable" true]]
+              (let provider (endpoint_provider {^name "custom" ^adapter "openai_chat" ^^discover
+                ^base_url $"http://127.0.0.1:${server/port}/${route}"}))
+              (let connection (provider/connection))
+              ($assert (== connection/state expected) $"Unexpected state for ${route}")
+              ($assert (== (== connection/stale true) stale))
+              ($assert (! ($str/contains? ($serde/write_data connection) "SECRET_SENTINEL"))))
+            (let missing (endpoint_provider {^name "missing" ^adapter "openai_chat" ^^discover
+              ^base_url $"http://127.0.0.1:${server/port}/ready" ^credential {^env "GENE_SPEC_MISSING_CREDENTIAL"}}))
+            ($assert (== (/state (missing/connection)) "sign_in_required"))
+            ($assert (== seen/.get 7) "missing credentials still made a network probe")
+            (let rejected (endpoint_provider {^name "rejected" ^adapter "openai_chat"
+              ^base_url $"http://127.0.0.1:${server/port}/rejected" ^models [{^id "model"}]}))
+            (let prepared (rejected/prepare {^settings (rejected/configure "model" nil 10000)
+              ^messages [{^role "user" ^content "work"}]}))
+            (let error (try (rejected/send prepared) nil catch ProviderError {^status $err/status ^message $err/message}))
+            ($assert (== error/status 401))
+            ($assert (! ($str/contains? error/message "SECRET_SENTINEL")))
+          ensure (stop server))))
+        (serve ^handler (fn [request]
+          (seen .set (+ seen/.get 1))
+          (let route ($str/split request/path "/"))
+          (match route/1
+            (when "ready" (json 200 "{\"data\":[]}"))
+            (when "rejected" (json 401 "{\"error\":\"SECRET_SENTINEL\"}"))
+            (when "forbidden" (json 403 "{}")) (when "missing" (json 404 "{}"))
+            (when "method" (json 405 "{}")) (when "failed" (json 503 "{}"))
+            (else (json 200 "bad JSON SECRET_SENTINEL")))) server)
+        (match tester/.join
+          (when (TaskOutcome/ok value) value)
+          (when (TaskOutcome/error error) (fail error))
+          (else ($assert false "discovery table fixture did not finish")))))))
+
+(fn main [args] : Int (run_spec args))

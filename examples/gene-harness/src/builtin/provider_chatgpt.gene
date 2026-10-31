@@ -1,0 +1,13 @@
+(mod provider_chatgpt)
+(import [Plugin PluginHost] ^from "../plugin_api")
+(import [chatgpt_row] ^from "../public/chatgpt_provider")
+(import [contribute_text_doc] ^from "../public/documentation")
+
+(fn provider_chatgpt [] : Plugin
+  (Plugin ^id "provider_chatgpt" ^provides [["providers" "chatgpt"]]
+    ^activate (fn [host]
+      (host .PluginHost:contribute "providers" (chatgpt_row))
+      (contribute_text_doc host "harness/providers/chatgpt"
+        "ChatGPT plan sign-in and public Responses transport."
+        "Connect through Continue with ChatGPT in Models and authorize plan usage. Identity sign-in alone does not authorize inference. Account/client records remain separate, and refresh tokens rotate under a cross-process account lock. The provider lists models with the selected account's access token and uses the public Responses API with store false and stream true, omitting output budgets and sampling fields. Only a completed response is executable. A changed account stops a round rather than using another account's credentials. Sign-out attempts remote revocation and clears local tokens; use ChatGPT Settings → Usage to manage app access and limits."
+        ^tags ["provider" "model" "chatgpt"]))))

@@ -5,6 +5,11 @@
 (import ^from "./workspace_lock" [try_lock_wait])
 (import ^from "./host_log" [open_host_log write_host_log close_host_log])
 
+(fn child_entry [source_root : Str, hosting : Bool, offline : Bool, scripted : Bool, recovery : Bool]
+  (if (&& hosting (! offline) (! scripted) (! recovery))
+    (then ["run" "--package-root" source_root "harness"])
+    (else ["run" "--snapshot" ($path/join source_root "src" "main.gene")])))
+
 (fn main [args]
   (let parsed (parse_options args))
   (let hosting (&& (["web" "manager"] .contains? parsed/command) (!= parsed/options/help true)))
@@ -36,7 +41,12 @@
   (try
   (loop
     (let startup_id ($crypto/random_hex 16))
-    (let child_args ["run" "--snapshot" ($path/join root "main.gene")])
+    # The normal host needs the application's declared native resources for
+    # ChatGPT signature validation. Recovery and model-free fixtures stay usable
+    # through the captured-source entry when native build dependencies fail.
+    (let child_args (child_entry application/source_root hosting
+      (|| (== parsed/options/offline true) (== ($os/env? "GENE_HARNESS_OFFLINE") "1"))
+      ($present? parsed/options/script) recovery))
     (for arg in args
       (if (!= ($to_str arg) "--recovery") (child_args .push ($to_str arg))))
     (if_yes hosting

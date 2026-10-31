@@ -456,9 +456,13 @@ Workspace settings live under `delegation` in `.gene-harness/config.gene`:
 | `timeout_ms` | 600000 | 1–`max_timeout_ms` |
 | `max_timeout_ms` | 600000 | 1–86400000 |
 
-Children copy the parent's effective provider, model and effort when admitted.
-`^model` changes only the child's model, within that provider. Follow-ups keep
-the child session's settings. These settings never mutate workspace defaults.
+Children inherit the parent's provider, model and requested effort. `^model`
+changes the child's model within that provider. Admission resolves the child's
+effective effort, context window, output limit and input capabilities from its
+own model; an unknown model inherits none of the parent's metadata. The parent
+also passes its transport identity, so a queued child cannot move to a changed
+connection. Follow-ups keep the child's provider, model and effort request.
+These settings never mutate workspace defaults.
 
 Waiting rounds hold no running slot, because a waiting parent that held a slot
 could starve the children it waits for. The trigger cap counts waiting rounds,

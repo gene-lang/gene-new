@@ -1,0 +1,464 @@
+# Activation-owned factory for a contribution's catalog worker. Host execution
+# starts outside activation deadlines; probes retain their own bounded calls.
+(mod models_host)
+(import [ModelsHost ServiceError PluginHost HarnessEvent CommandResult CommandContext] ^from "../plugin_api")
+(import [spawn_effect_call] ^from "." ^pkg "cordis")
+(import [rows registry_row_records put_cordis_plugin CompositionChanged publish] ^from "../kernel")
+(import [service_binding require_service] ^from "./service_handles")
+(import [manager_root_path] ^from "../public/workspace_paths")
+(import [open_model_catalog close_model_catalog run_model_catalog catalog_snapshot
+  request_catalog_refresh save_catalog_settings set_catalog_default adopt_catalog_file catalog_failure adopt_catalog_connection] ^from "../public/model_catalog")
+(import [named_model_choice] ^from "../public/model_choices")
+(import [validate_model_settings] ^from "../public/models")
+(import [session_settings selection_view select_provider readiness_report selection_pins] ^from "../agents/provider_selection")
+(import [require_record update_session with_session_gate] ^from "./sessions")
+(import [run_composition_change] ^from "./composition")
+(import [composition_entries] ^from "../storage/composition_store")
+(import [read_models_file write_models_file models_path ModelsFileError] ^from "../public/models_file")
+(import [endpoint_plugin] ^from "../public/provider")
+(import [openrouter_login run_openrouter_login complete_openrouter_login login_status close_login] ^from "../public/provider_login")
+(import [new_chatgpt_login complete_chatgpt_login sign_out_chatgpt] ^from "../public/chatgpt_auth")
+(import [list_chatgpt_accounts select_chatgpt_account active_chatgpt_id acknowledge_chatgpt_plan] ^from "../public/chatgpt_store")
+
+(type ModelCatalogChanged : HarnessEvent ^props {^revision Str})
+
+(fn new_models_host [runtime]
+  (let state {^runtime runtime ^catalogs {} ^watches {} ^logins {} ^root ($cell nil)
+    ^publications ($cell []) ^publisher ($cell nil) ^endpoint_error ($cell nil) ^accepting ($cell true)})
+  # This module-defined worker belongs to the host service, not a plugin
+  # activation. A publication may retire the activation that requested it.
+  (state/publisher .set (spawn ^lane root (run_endpoint_publications state)))
+  state)
+
+(fn close_file_watch [watch]
+  (if (watch/closed .swap true) (return nil))
+  (let worker watch/worker/.get)
+  (if (&& ($present? worker) (! worker/.done?)) (then worker/.cancel worker/.join))
+  nil)
+
+(fn close_models_host [state]
+  (state/accepting .set false)
+  (let catalogs []) (let watches [])
+  (for [revision catalog] in state/catalogs (catalogs .push catalog))
+  (for [revision watch] in state/watches (watches .push watch))
+  (for catalog in catalogs (close_model_catalog catalog))
+  (for watch in watches (close_file_watch watch))
+  (for [id attempt] in state/logins (close_login attempt))
+  (let publisher state/publisher/.get)
+  (if (&& ($present? publisher) (! publisher/.done?)) (then publisher/.cancel publisher/.join))
+  (for job in state/publications/.get (job/done .set true))
+  (state/publications .set [])
+  nil)
+
+(fn endpoint_reserved_names [runtime]
+  (let names ["chatgpt" "claude" "anthropic" "openrouter" "offline" "scripted"])
+  (for record in (registry_row_records runtime/h "providers")
+    (if (&& (!= record/owner "model_endpoints") (! (names .contains? record/key)))
+      (names .push record/key)))
+  (for [id plugin] in runtime/h/plugins/.get
+    (if (== ($to_str id) "model_endpoints") (continue))
+    (for pair in (?? plugin/provides [])
+      (if (&& (== ($head pair) List) (== pair/.size 2) (== pair/0 "providers")
+        (== ($head pair/1) Str) (! (names .contains? pair/1)))
+        (names .push pair/1))))
+  names)
+
+(fn read_endpoint_file [runtime, root : Str]
+  (try (read_models_file ^reserved (endpoint_reserved_names runtime) root)
+    catch Any
+      {^config {^version 1 ^default {} ^providers [] ^models [] ^presets []}
+       ^errors [{^section "file" ^reason "Cannot read models.gene; check file permissions."}] ^digest "unreadable"}))
+
+(fn endpoint_source_enabled? [runtime]
+  (if ($absent? (runtime/h/plugins/.get .get "model_endpoints")) (return false))
+  (for entry in (composition_entries runtime/workspace)
+    (if (&& (== entry/id "model_endpoints")
+      (|| (== entry/disabled true) ($present? entry/module_digest))) (return false)))
+  true)
+
+(fn endpoints_match? [runtime, entries]
+  (let desired {}) (let actual {})
+  (for entry in entries (desired .put entry/name ($pkg/canonical_digest entry)))
+  (for record in (registry_row_records runtime/h "providers")
+    (if (== record/owner "model_endpoints") (actual .put record/key record/payload/config_digest)))
+  (== actual desired))
+
+(fn apply_endpoint_publication [state, root : Str]
+  (let runtime state/runtime)
+  (if (|| (! state/accepting/.get) runtime/stopping/.get (!= root state/root/.get)) (return nil))
+  (run_composition_change runtime/h/snapshots (fn []
+    (let file (read_endpoint_file runtime root))
+    (var changed false)
+    (if (&& (endpoint_source_enabled? runtime) (! (endpoints_match? runtime file/config/providers)))
+      (then
+        (let status (put_cordis_plugin ^^replace runtime/h (endpoint_plugin file/config/providers)
+          {^^host ^limits runtime/profile/limits ^digest "builtin"}))
+        (if (|| (!= status "ready") (! (endpoints_match? runtime file/config/providers)))
+          (fail (ServiceError ^code "unavailable" ^message "Endpoint configuration is not ready; inspect the model_endpoints plugin.")))
+        (set changed true)))
+    (let catalog (active_model_catalog runtime))
+    (if (&& ($present? catalog) (! catalog/closed/.get) (== catalog/root root)
+      (|| changed (!= catalog/file/.get/digest file/digest)))
+      (adopt_catalog_file catalog file))
+    (state/endpoint_error .set nil)))
+  nil)
+
+(fn run_endpoint_publications [state]
+  ($runtime/with_context nil (fn []
+    (while state/accepting/.get
+      (let jobs (state/publications .swap []))
+      (for job in jobs
+        (try
+          (apply_endpoint_publication state job/root)
+          (job/error .set nil)
+        catch Any
+          (job/error .set $err)
+          (state/endpoint_error .set "Endpoint configuration could not be activated; inspect the model_endpoints plugin.")
+        ensure (job/done .set true)))
+      ($sleep 10)))))
+
+(fn sync_endpoint_file [state, root : Str, file]
+  (if (|| (! state/accepting/.get) state/runtime/stopping/.get (!= root state/root/.get)) (return nil))
+  (if_not (endpoint_source_enabled? state/runtime) (return nil))
+  (if (endpoints_match? state/runtime file/config/providers) (return nil))
+  (let job {^root root ^done ($cell false)
+    ^error ($cell (ServiceError ^code "unavailable" ^message "The model settings host is closing."))})
+  (state/publications/.get .push job)
+  (while (! job/done/.get)
+    (if (! state/accepting/.get)
+      (fail (ServiceError ^code "unavailable" ^message "The model settings host is closing.")))
+    (if state/publisher/.get/.done?
+      (fail (ServiceError ^code "unavailable" ^message "Endpoint publication stopped; restart the host before saving again.")))
+    ($sleep 1))
+  (if ($present? job/error/.get) (fail job/error/.get))
+  nil)
+
+(fn run_file_watch [state, watch]
+  ($runtime/with_context nil (fn []
+    (while (&& state/accepting/.get (! watch/closed/.get))
+      (try
+        (let root state/root/.get)
+        (if (&& ($present? root) (endpoint_source_enabled? state/runtime))
+          (sync_endpoint_file state root (read_endpoint_file state/runtime root)))
+      catch Any
+        (state/endpoint_error .set "Endpoint configuration could not be activated; inspect the model_endpoints plugin."))
+      ($sleep 1000)))))
+
+(fn endpoint_entries [handle, supplied_root] ^^private
+  (let service (require_service handle))
+  (if (!= service/host/owner "model_endpoints")
+    (fail (ServiceError ^code "forbidden" ^message "Endpoint activation belongs to the model_endpoints plugin.")))
+  (let state service/config/state)
+  (if ($absent? state/root/.get) (state/root .set (manager_root_path ^explicit supplied_root)))
+  (read_endpoint_file service/runtime state/root/.get))
+
+(fn start_file_watch [handle, supplied_root] ^^private
+  (let service (require_service handle))
+  (if (!= service/host/owner "models_file_watch")
+    (fail (ServiceError ^code "forbidden" ^message "File watching belongs to the models_file_watch plugin.")))
+  (let state service/config/state)
+  (if (! state/accepting/.get) (fail (ServiceError ^code "unavailable" ^message "The models host is closing.")))
+  (if ($absent? state/root/.get) (state/root .set (manager_root_path ^explicit supplied_root)))
+  (let revision service/host/notification_revision)
+  (let watch {^closed ($cell false) ^worker ($cell nil)})
+  (state/watches .put revision watch)
+  (try
+    (watch/worker .set (spawn_effect_call service/host/effects "model endpoint file" run_file_watch [state watch]))
+    (service/host/effects .defer (fn []
+      (close_file_watch watch)
+      (state/watches .delete revision)))
+    {^^available}
+  catch Any
+    (close_file_watch watch) (state/watches .delete revision) (fail $err)))
+
+(fn active_model_catalog [runtime]
+  (let policy (runtime/h/plugin_policies/.get .get "models"))
+  (let state runtime/services/values/models_host)
+  (if ($absent? state) (return nil))
+  (state/catalogs .get (?? policy/activation_revision "")))
+
+(fn require_catalog [handle] ^^private
+  (let service (require_service handle))
+  (let state service/config/state)
+  (let catalog (state/catalogs .get service/host/notification_revision))
+  (if (|| ($absent? catalog) catalog/closed/.get)
+    (fail (ServiceError ^code "unavailable" ^message "The model catalog contribution is unavailable.")))
+  catalog)
+
+(fn model_configuration [handle] ^^private
+  (let catalog (require_catalog handle))
+  (let service (require_service handle))
+  (let state service/config/state)
+  (let file catalog/file/.get)
+  (let endpoint_error (if (&& (! file/config/providers/.empty?) (! (endpoint_source_enabled? service/runtime)))
+    (then "File-defined providers are disabled or overridden. Restore model_endpoints in Plugins to apply these entries.")
+    (else state/endpoint_error/.get)))
+  {^config ($freeze file/config) ^errors ($freeze file/errors)
+   ^digest file/digest ^revision catalog/state/.get/id ^path (models_path catalog/root) ^endpoint_error endpoint_error})
+
+(fn save_model_settings [handle, value, expected : Str] ^^private
+  (let service (require_service handle))
+  (let catalog (require_catalog handle))
+  (let context ($runtime/context))
+  (if (&& ($present? context/publication) context/publication/.get)
+    (fail (ServiceError ^code "invalid_request" ^message "Save shared model settings outside plugin activation.")))
+  (let root catalog/root)
+  (let saved (write_models_file ^reserved (endpoint_reserved_names service/runtime) root value expected))
+  (sync_endpoint_file service/config/state root saved)
+  # Provider publication may replace the Models activation and its handles.
+  # Acknowledge through current cached data rather than invoking a retired one.
+  ($runtime/with_context nil (fn []
+    (let current (active_model_catalog service/runtime))
+    (if (&& ($present? current) (== current/root root) (! current/closed/.get))
+      (then
+        (adopt_catalog_file current (read_endpoint_file service/runtime root))
+        (return (catalog_snapshot current))))
+    {^digest saved/digest ^default saved/config/default})))
+
+(fn save_model_default [handle, selection, expected : Str] ^^private
+  (let catalog (require_catalog handle))
+  (try (validate_model_settings selection)
+    catch Any (fail (ModelsFileError ^code "invalid_models" ^message $err/message)))
+  (if (|| ($absent? selection/provider) ($absent? selection/model))
+    (fail (ModelsFileError ^code "invalid_models" ^message "A shared default requires provider and model")))
+  (if (!= expected catalog/file/.get/digest)
+    (fail (ModelsFileError ^code "revision_conflict" ^message "Models settings changed; refresh before saving a default.")))
+  (let config ($thaw ($freeze catalog/file/.get/config)))
+  (config .put "default" selection)
+  (save_model_settings handle config expected))
+
+(fn failed_model_connection [handle, provider : Str, status, transport] ^^private
+  (if (!= status 401) (return nil))
+  (let service (require_service handle))
+  (let origin (require_catalog handle))
+  (let expected (?? transport (/transport (origin/discovered/.get .get provider))))
+  ($runtime/with_context nil (fn []
+    (run_composition_change service/runtime/h/snapshots (fn []
+      (let catalogs [])
+      (for [revision catalog] in service/config/state/catalogs (catalogs .push catalog))
+      (for catalog in catalogs
+        (if (&& (== catalog/root origin/root) (! catalog/closed/.get))
+          (catalog_failure ^transport expected catalog provider status)))))))
+  nil)
+
+(fn choice_preview [handle, session : Str, selection] ^^private
+  (require_catalog handle)
+  (let service (require_service handle))
+  (if (!= session "") (require_record service/runtime/sessions session))
+  (let choice (try (validate_model_settings selection)
+    catch Any (fail (ServiceError ^code "invalid_request" ^message $err/message))))
+  (let base ($serde/read_data ($fs/read_text $"${service/runtime/state_root}/config.gene")))
+  (let metadata {^model_settings choice})
+  (let settings (session_settings metadata base))
+  {^model (selection_view ^metadata metadata service/runtime base)
+   ^readiness (readiness_report service/runtime settings) ^model_settings choice})
+
+(fn select_session_model [handle, session : Str, selection] ^^private
+  (let service (require_service handle))
+  (require_catalog handle)
+  (with_session_gate service/runtime/sessions $"round/${session}" (fn []
+    (require_record service/runtime/sessions session)
+    (let choice (try (validate_model_settings selection)
+      catch Any (fail (ServiceError ^code "invalid_request" ^message $err/message))))
+    (let pins (selection_pins service/runtime))
+    (for key in ["provider" "model" "effort"]
+      (if (&& ($present? (choice .get key)) ($present? (pins .get key))
+              (!= (choice .get key) (pins .get key)))
+        (fail (ServiceError ^code "invalid_request" ^message $"${key} is fixed by this host's launch or profile settings"))))
+    (if (> ($size choice) 0)
+      (then
+        (let base ($serde/read_data ($fs/read_text $"${service/runtime/state_root}/config.gene")))
+        (try (select_provider ^allow_unready true service/runtime (session_settings {^model_settings choice} base))
+          catch Any (fail (ServiceError ^code "invalid_request" ^message $err/message)))))
+    (update_session service/runtime/sessions session {^model_settings (if (== ($size choice) 0)
+      (then nil) (else choice))})
+    (choice_preview handle session choice))))
+
+(fn choice_text [info] ^^private
+  (let provider info/provider)
+  (let model info/model)
+  (let requested info/requested_effort)
+  (let effective (?? info/effective_effort "provider default"))
+  ($to_str $"${provider}/${model} · ${requested} → ${effective}"
+    (if (== info/unverified_model true) (then "\nUnverified model id: not in the catalog; access has not been checked.") (else ""))
+    (if ($present? info/reason) (then $"\n${info/reason}") (else ""))))
+
+(fn model_command [handle, name : Str, context] ^^private
+  (let service (require_service handle))
+  (let catalog (require_catalog handle))
+  (let metadata (require_record service/runtime/sessions context/session))
+  (let base ($serde/read_data ($fs/read_text $"${service/runtime/state_root}/config.gene")))
+  (let info (selection_view ^metadata metadata service/runtime base))
+  (let argument ($str/trim context/raw))
+  (if (== argument "") (return (CommandResult ^display (choice_text info))))
+  (let choice (if (== name "model")
+    (then (try (named_model_choice ^current_provider info/provider (catalog_snapshot catalog) argument info/requested_effort)
+      catch Any (fail (ServiceError ^code "invalid_request" ^message $err/message))))
+    (else
+      (let next ($thaw ($freeze (?? metadata/model_settings {}))))
+      (next .put "effort" ($str/lower argument))
+      next)))
+  (let result (select_session_model handle context/session choice))
+  (CommandResult ^display (choice_text result/model)))
+
+(fn start_catalog [handle, root] ^^private
+  (let service (require_service handle))
+  (if (!= service/host/owner "models")
+    (fail (ServiceError ^code "forbidden" ^message "Catalog activation belongs to the models plugin.")))
+  (let state service/config/state)
+  (if (! state/accepting/.get)
+    (fail (ServiceError ^code "unavailable" ^message "The models host is closing.")))
+  (let revision service/host/notification_revision)
+  (let previous (state/catalogs .get revision))
+  (if (&& ($present? previous) (! previous/closed/.get)) (return {^^available}))
+  (let resolved_root (manager_root_path ^explicit root))
+  (state/root .set resolved_root)
+  (var seed nil)
+  (for [prior_revision prior] in state/catalogs
+    (if (&& (== prior/root resolved_root) (! prior/closed/.get))
+      (set seed ($thaw ($freeze prior/discovered/.get)))))
+  (let catalog (open_model_catalog ^start false
+    ^seed seed
+    ^reserved (fn [] (endpoint_reserved_names service/runtime))
+    ^on_file_change (fn [file] (sync_endpoint_file state resolved_root file))
+    ^on_change (fn [snapshot] (publish service/runtime/h (ModelCatalogChanged ^revision snapshot/id)))
+    resolved_root
+    (fn [] (rows service/runtime/h "providers"))))
+  (try
+    (state/catalogs .put revision catalog)
+    (let worker (spawn_effect_call service/host/effects "model discovery" run_model_catalog [catalog]))
+    (catalog/worker .set worker)
+    (service/host .PluginHost:subscribe CompositionChanged
+      (fn [event] (request_catalog_refresh catalog)))
+    (service/host/effects .defer (fn []
+      (close_model_catalog catalog)
+      (if (same? (state/catalogs .get revision) catalog) (state/catalogs .delete revision))))
+    {^^available}
+  catch Any
+    (close_model_catalog catalog)
+    (state/catalogs .delete revision)
+    (fail $err)))
+
+(fn begin_model_login [handle, provider : Str, account] ^^private
+  (let service (require_service handle))
+  (if (!= service/host/owner "models")
+    (fail (ServiceError ^code "forbidden" ^message "Sign-in belongs to the Models contribution.")))
+  (if (! (["openrouter" "chatgpt"] .contains? provider))
+    (fail (ServiceError ^code "invalid_request" ^message "This connection does not offer browser sign-in.")))
+  (let state service/config/state)
+  (var available false)
+  (for record in (registry_row_records service/runtime/h "providers")
+    (if (&& (== record/key provider) (== record/owner ($to_str "provider_" provider))) (set available true)))
+  (if (! available) (fail (ServiceError ^code "unavailable" ^message "This provider is disabled or replaced.")))
+  (let expired [])
+  (var registration nil)
+  (for [id attempt] in state/logins
+    (if (["pending" "exchanging"] .contains? attempt/status/.get)
+      (fail (ServiceError ^code "busy" ^message "Finish or cancel the pending sign-in first.")))
+    (if (&& (== provider "chatgpt") ($absent? account) (== attempt/provider "chatgpt")
+      (== attempt/status/.get "failed") ($present? attempt/issued_client_id) ($absent? attempt/expected_subject))
+      (set registration attempt))
+    (expired .push id))
+  (let port service/runtime/listen_port)
+  (if (|| ($absent? port) (<= port 0))
+    (fail (ServiceError ^code "unavailable" ^message "Browser sign-in requires a running local web host.")))
+  (let callback $"http://127.0.0.1:${port}/auth/callback")
+  (let attempt (try
+    (if (== provider "chatgpt")
+      (then (new_chatgpt_login ^account account ^registration registration callback))
+      (else (openrouter_login callback)))
+    catch Any (fail (ServiceError ^code "unavailable" ^message $err/message))))
+  (try
+    (for id in expired (state/logins .delete id))
+    (state/logins .put attempt/id attempt)
+    (attempt/worker .set (spawn_effect_call service/host/effects "Model sign-in" run_openrouter_login [attempt]))
+    (service/host/effects .defer (fn [] (close_login attempt)))
+    {^id attempt/id ^provider provider ^state "pending" ^url attempt/url}
+  catch Any
+    (close_login attempt)
+    (fail (ServiceError ^code "unavailable" ^message "The sign-in attempt could not start."))))
+
+(fn publish_chatgpt_account [service] ^^private
+  (let accounts (list_chatgpt_accounts))
+  (var chosen nil)
+  (for account in accounts/accounts (if (== account/id accounts/active) (set chosen account)))
+  (let connection {^state (?? chosen/state "sign_in_required")
+    ^label (if ($present? chosen) (then ($to_str "ChatGPT · " chosen/label)) (else "ChatGPT"))
+    ^billing "plan" ^account chosen/id
+    ^reason (?? chosen/reason (if ($absent? chosen) (then "Continue with ChatGPT in Models to connect an account.") (else nil)))})
+  ($runtime/with_context nil (fn []
+    (run_composition_change service/runtime/h/snapshots (fn []
+      (let catalogs [])
+      (for [revision catalog] in service/config/state/catalogs (catalogs .push catalog))
+      (for catalog in catalogs (adopt_catalog_connection catalog "chatgpt" connection))))))
+  nil)
+
+(fn model_accounts [handle] ^^private
+  (require_service handle)
+  (list_chatgpt_accounts))
+
+(fn model_account_action [handle, id : Str, action : Str] ^^private
+  (let service (require_service handle))
+  (if (!= service/host/owner "models")
+    (fail (ServiceError ^code "forbidden" ^message "Account changes belong to the Models contribution.")))
+  (let selected (active_chatgpt_id))
+  (let result (try
+    (match action
+      (when "select" {^^ok ^account (select_chatgpt_account nil id)})
+      (when "sign_out" (sign_out_chatgpt ^account id))
+      (when "acknowledge" (acknowledge_chatgpt_plan nil id))
+      (else (fail (ServiceError ^code "invalid_request" ^message "Use select, sign_out or acknowledge for a ChatGPT account."))))
+    catch Any (fail (ServiceError ^code "invalid_request" ^message $err/message))))
+  (if (|| (== action "select") (&& (== action "sign_out") (== id selected))) (publish_chatgpt_account service))
+  result)
+
+(fn model_login_status [handle, id : Str, cancel : Bool] ^^private
+  (let service (require_service handle))
+  (let state service/config/state)
+  (let attempt (state/logins .get id))
+  (if ($absent? attempt) (fail (ServiceError ^code "not_found" ^message "Sign-in attempt not found.")))
+  (if cancel (close_login attempt))
+  (if (== attempt/status/.get "complete")
+    (then
+      (let catalog (require_catalog handle))
+      (request_catalog_refresh catalog)))
+  (login_status attempt))
+
+(fn model_login_callback [handle, params] ^^private
+  (let service (require_service handle))
+  (let state service/config/state)
+  (for [id attempt] in state/logins
+    (let callback_state (if (== attempt/provider "openrouter")
+      (then (?? params/state params/openrouter_state)) (else params/state)))
+    (if (== callback_state attempt/state)
+      (then
+        (let result (if (== attempt/provider "chatgpt")
+          (then (complete_chatgpt_login attempt params)) (else (complete_openrouter_login attempt params))))
+        (if (&& (== attempt/provider "chatgpt") (== attempt/status/.get "complete")) (publish_chatgpt_account service))
+        (return result))))
+  {^status 400 ^message "Sign-in state did not match. Return to Gene Harness and connect again."})
+
+(type HostedModels ^^private ^props {^token Any}
+  (impl ModelsHost
+    (message start [root = nil] : Any (start_catalog self root))
+    (message endpoint_entries [root = nil] : Any (endpoint_entries self root))
+    (message watch_file [root = nil] : Any (start_file_watch self root))
+    (message snapshot [] : Any (catalog_snapshot (require_catalog self)))
+    (message configuration [] : Any (model_configuration self))
+    (message refresh [] : Any (request_catalog_refresh (require_catalog self)))
+    (message connect [provider : Str, account = nil] : Any (begin_model_login self provider account))
+    (message accounts [] : Any (model_accounts self))
+    (message account_action [id : Str, action : Str] : Any (model_account_action self id action))
+    (message login_status [id : Str] : Any (model_login_status self id false))
+    (message cancel_login [id : Str] : Any (model_login_status self id true))
+    (message login_callback [params] : Any (model_login_callback self params))
+    (message save [value, expected : Str] : Any (save_model_settings self value expected))
+    (message set_default [selection, expected : Str] : Any (save_model_default self selection expected))
+    (message preview [session : Str, selection] : Any (choice_preview self session selection))
+    (message select [session : Str, selection] : Any (select_session_model self session selection))
+    (message command [name : Str, context : CommandContext] : Any (model_command self name context))
+    (message failed [provider : Str, status, transport = nil] : Any (failed_model_connection self provider status transport))))
+
+(fn models_host_binding [runtime]
+  (service_binding runtime "models" (fn [token] (HostedModels ^token token))
+    ^config {^state runtime/services/values/models_host}))

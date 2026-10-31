@@ -1,7 +1,8 @@
 (mod trigger_ui ^profile web)
 (import [api_root] ^from "../src/web/contract.gene")
 (import [Client] ^from "./workspace_model.gene")
-(import [api string_or set_hidden show_error notice refresh_sessions select_session features] ^from "./feature_helpers.gene")
+(import [api string_or set_hidden show_error notice refresh_sessions select_session features browser_event] ^from "./feature_helpers.gene")
+(import [attach_trigger_model choose_trigger_model model_picker_expected request_trigger_model] ^from "./model_glue.gene")
 
 
 (type TriggerUi ^props {^selected Str})
@@ -41,7 +42,7 @@
             (var state : Str occurrence/state)
             (var name : Str occurrence/id)
             (var session : Str occurrence/session)
-            (var reason : Str (string_or occurrence/outcome (string_or occurrence/reason "")))
+            (var reason : Str (string_or occurrence/waiting_reason (string_or occurrence/outcome (string_or occurrence/reason ""))))
             ($dom/append
               target
               ($dom/render
@@ -68,13 +69,27 @@
           (for definition in definitions
             (var id : Str definition/id)
             (var kind : Str definition/kind)
+            (var waiting (string_or definition/waiting_reason ""))
+            (var selection : Any (?? definition/model_settings {}))
+            (var label (if ($present? selection/provider)
+              (then ($to_str (string_or selection/provider "") "/" (string_or selection/model ""))) (else "Default")))
+            (if_yes ($present? selection/effort) (set label ($to_str label " · " (string_or selection/effort ""))))
+            (var choose_model (fn [choice : Any] : Void
+              (api client "PATCH" $"${(api_root)}/triggers/${($url/encode_component id)}" {^model_settings choice}
+                (fn [status : Int, result : Any] : Void
+                  (if (== status 200) (then (load_triggers client)) (else (show_error client result)))))))
             ($dom/append
               target
               ($dom/render
                 `(div ^class_name "trigger_row"
                    (button ^type "button" ^on_click %(fn [event : Any] : Void (trigger_occurrences client id))
                      %id
-                     (small %kind))
+                     (small %kind)
+                     (small %(if (== waiting "") (then "") (else ($to_str "Waiting: " waiting)))))
+                   (button ^type "button" ^disabled %(! (model_picker_expected client))
+                     ^on_click %(fn [event : Any] : Void
+                       (var button : EventTarget event/current_target)
+                       (request_trigger_model client selection button choose_model)) %label)
                    (button ^type "button" ^on_click %(fn [event : Any] : Void (api client "DELETE" $"${(api_root)}/triggers/${($url/encode_component id)}" nil (fn [status : Int, result : Any] : Void (if (== status 200) (load_triggers client) (show_error client result))))) "Delete"))))))))))
 
 (fn create_trigger [client : Client] : Void
@@ -102,6 +117,7 @@
     (if_yes (== kind "cron")
       (set data/cron ($dom/input_value ($dom/element "trigger_cron")))
       (set data/timezone ($dom/input_value ($dom/element "trigger_timezone"))))
+    (attach_trigger_model client data)
     (api
       client
       "POST"
@@ -110,8 +126,12 @@
       (fn [code : Int, result : Any] : Void
         (if (== code 201)
           (then
+            (choose_trigger_model client {})
             (load_triggers client)
-            (notice client "Trigger created."))
+            (var warnings : (List Str) [])
+            (if_yes ($present? result/warnings) (set warnings result/warnings))
+            (notice client (if (== ($size warnings) 0)
+              (then "Trigger created.") (else ($to_str "Trigger created. " ($str/join warnings " "))))))
           (else
             (show_error client result)))))
   catch Any

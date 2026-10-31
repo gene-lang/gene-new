@@ -386,21 +386,23 @@ different provider from the saved one, do not apply its generic model/effort
 defaults to that saved provider. `OPENROUTER_MODEL` remains an OpenRouter-only
 fallback after the saved and applicable generic model values.
 
-For example, with no saved provider, `GENE_HARNESS_PROVIDER=codex` remains
+For example, with no saved provider or shared default, `GENE_HARNESS_PROVIDER=chatgpt` remains
 effective even when `OPENROUTER_API_KEY` is present. Saving `provider=anthropic`
-in that workspace overrides the manager's Codex default. A selected provider
+in that workspace overrides the manager's ChatGPT default. A selected provider
 that is unavailable reports an error rather than silently selecting another.
 
 Carry this launch policy through the per-workspace launcher and its restarts.
 Apply it consistently in readiness, plugin-plan validation and model requests;
 do not rewrite `config.gene` or let each caller invent its own precedence.
 Recovery continues to work without reading a broken provider configuration.
-Direct `web` launches keep their existing environment-first selection.
+Direct `web` launches use the same saved-first selection. Session choices and
+the shared models default also participate; see the complete precedence in
+[Providers and workspace settings](../README.md#providers-and-workspace-settings).
 
 Keep ordinary environment values, credentials and executable/auth-location
 settings, including `PATH`, `HOME`, `GENE_BINARY`,
-`GENE_HARNESS_CLAUDE_COMMAND`, provider API keys, `CODEX_HOME` and
-`CODEX_AUTH_FILE`. Do not copy them into workspace metadata.
+`GENE_HARNESS_CLAUDE_COMMAND`, provider API keys and
+`GENE_HARNESS_AUTH_HOME`. Do not copy them into workspace metadata.
 
 The environment comes from the shell that ran `gene-harness manager`. Later
 shell changes do not update the manager or existing launchers; to pick them up,

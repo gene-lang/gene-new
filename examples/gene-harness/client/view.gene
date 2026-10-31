@@ -192,8 +192,8 @@
 (fn run_status_view [run : Any, prompt : Str, on_retry : (Fn [Str] Void), ^on_continue on_continue : Any = nil] : EventTarget
   (var label (run_label run))
   (var status : Str run/state)
-  (var limited (|| (== label "Turn limit reached") (== status "paused")))
   (var resumable (if ($absent? run/resumable) (== status "paused") (status_flag run/resumable)))
+  (var limited (|| (== label "Turn limit reached") (== status "paused") (&& resumable (== status "failed"))))
   (var failed (|| (== status "failed") (== status "recovery_required")))
   (var detail "")
   (if_not (|| limited (== status "done") ($absent? run/message))
@@ -207,7 +207,8 @@
   (if_not ($absent? run/continuation_error)
     ($dom/append root ($dom/render `(span ^class_name "outcome_message" %(status_text run/continuation_error)))))
   (if_yes (&& limited resumable ($present? on_continue)
-              ($absent? run/continued_by) ($absent? run/continuation_stop))
+              ($absent? run/continued_by)
+              (|| ($absent? run/continuation_stop) (== (status_text run/continuation_stop) "failed")))
     (var resume : (Fn [Str] Void) on_continue)
     (for mode in ["manual" "automatic"]
       ($dom/append root ($dom/render `(button ^type "button"

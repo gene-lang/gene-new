@@ -149,7 +149,7 @@ than duplicating it. A continuation round has no new User bubble: its first turn
 shows the retained Request. New user input supersedes an unclaimed pause.
 
 The final reply should embed its selected generated image using the returned
-media descriptor URL: `![Description](/api/v8/media/ID)`. The renderer treats
+media descriptor URL: `![Description](/api/v9/media/ID)`. The renderer treats
 historical `/api/v<N>/media/ID` paths as media-ID references and resolves them
 through the current route. Other image URLs remain literal text on all Markdown
 surfaces, including `/view` and plugin docs. Image markup is omitted from turn
@@ -206,10 +206,10 @@ recovery page, retaining the selected conversation and omitting plugin views,
 render callbacks and theme overrides. Its requests carry `ui=default`.
 Return to workspace UI leaves recovery without changing shared settings.
 
-## Wire protocol 8
+## Wire protocol 9
 
 The native host and Gene web-profile client share web/contract.gene.
-The current version is 8. A version mismatch stops interaction and asks for a
+The current version is 9. A version mismatch stops interaction and asks for a
 reload.
 
 Every WebSocket frame has protocol, epoch, decimal-text sequence, type,
@@ -217,9 +217,19 @@ session and data. Sequence is per connection. An empty session denotes a
 workspace message. A session-specific frame goes only to peers viewing that
 session.
 
+Status `model` contains provider, model, requested/effective effort and source.
+An active round reports its saved selection; otherwise it previews the next
+operator round. `catalog_revision` is an opaque string that also changes when
+the catalog contribution is replaced. Compare it for equality and fetch the
+separate catalog on a change. Round submissions and deliberate continuations
+accept `model_settings` with provider/model and optional effort; `{}` clears a
+session pin at the next admitted submission. `POST /api/v9/models/refresh`
+requests bounded discovery without making an inference call.
+
 | Message | Data |
 | --- | --- |
 | status | Workspace, provider/model, light/dark appearance, commands, ordinary components, session context and render freshness |
+| models/catalog | A catalog revision; fetch `GET /api/v9/models` for the separate catalog |
 | appearance | The workspace's new light/dark mode; sent to every peer, including `/ui/default` |
 | session/list | Default session records and attention records |
 | attention | Sessions requiring attention |
@@ -247,7 +257,7 @@ provisional command output without dropping the command's live output.
 
 ### HTTP endpoints
 
-All API paths use /api/v8.
+All API paths use /api/v9.
 
 | Method and path | Purpose |
 | --- | --- |
@@ -412,7 +422,7 @@ dependencies remain usable, then closes acquired resources in reverse order.
 Recovery skips optional activation, and partial-open unwind releases workspace
 ownership last. Caller-owned event stores remain caller-owned.
 
-The package's `gene test` specs cover protocol-8 service delivery, live
+The package's `gene test` specs cover protocol-9 service delivery, live
 records before completion, console routing, custom question validation,
 metadata revisions/attention, command execution, restart authentication,
 concurrent sessions and shutdown. Responsiveness specs run CPU loops,

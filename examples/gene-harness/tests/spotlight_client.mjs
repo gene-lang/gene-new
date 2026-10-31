@@ -363,4 +363,17 @@ assert.equal(overlays.claim_modal("hidden-bar",focusRoot,panel,()=>{},fallback),
 focusRoot.removeChild(removed);
 overlays.release_modal("hidden-bar",true);
 assert.equal(document.activeElement,composer,"focus must not return to the hidden host bar");
+const triggerDrawer=document.getElementById('trigger_drawer');
+document.body.appendChild(triggerDrawer); // Host drawers live outside harness_root.
+const triggerModel=new Element('button'); triggerDrawer.append(triggerModel); triggerDrawer.hidden=false;
+triggerModel.focus();
+assert.equal(overlays.claim_modal('trigger-model',focusRoot,panel,()=>{},triggerModel),true,
+  'a control inside the trigger drawer can open an owned picker');
+assert.equal(triggerDrawer.hidden,true,'the parent drawer must not compete with the picker');
+overlays.release_modal('trigger-model',true);
+assert.equal(triggerDrawer.hidden,false);
+assert.equal(document.activeElement,triggerModel,'closing the picker returns to its parent form');
+assert.equal(overlays.claim_modal('trigger-dispose',focusRoot,panel,()=>{},triggerModel),true);
+overlays.release_modal('trigger-dispose',false);
+assert.equal(triggerDrawer.hidden,true,'disposing a picker must not reopen an abandoned drawer');
 console.log("Spotlight controller and command recovery checks passed");

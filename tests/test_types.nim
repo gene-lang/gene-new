@@ -1258,6 +1258,16 @@ proc ffiTestBufferFill(data: pointer, len: csize_t) {.cdecl.} =
   if len > 1: bytes[1] = 91'u8
   if len > 2: bytes[2] = 92'u8
 
+proc ffiTestFourBuffers(a: pointer, an: csize_t, b: pointer, bn: csize_t,
+                       c: pointer, cn: csize_t, d: pointer, dn: csize_t): cint {.cdecl.} =
+  if an > 0: cast[ptr uint8](a)[] = 10
+  if bn > 0: cast[ptr uint8](b)[] = 11
+  if cn > 0: cast[ptr uint8](c)[] = 12
+  if dn > 0: cast[ptr uint8](d)[] = 13
+  if an + bn + cn + dn == 0: return 0
+  if a == b and b == c and c == d: return 42
+  cint(an + bn + cn + dn)
+
 proc ffiTestSliceLenI32(data: pointer, len: csize_t): int32 {.cdecl.} =
   if data == nil: -1'i32 else: int32(len) + 5'i32
 
@@ -2436,6 +2446,32 @@ suite "types — function boundaries":
                 scope).print() == "true"
       expect GeneError:
         discard run(compileSource("(strlen \"closed\")"), scope)
+
+  test "dynamic FFI marshals four byte buffers with aliases and copyback":
+    let handle = loadLib()
+    if handle != nil:
+      let scope = newGlobalScope()
+      let lib = newFfiLibrary(handle, "<self>", nil)
+      let bufferType = newNode(newSym("Buffer"), body = @[newSym("C/UInt8")])
+      scope.define("lib", lib)
+      scope.define("four", newFfiCallable("four", "four",
+        cast[pointer](ffiTestFourBuffers), lib,
+        @[bufferType, bufferType, bufferType, bufferType], newSym("C/Int")))
+      check run(compileSource("""
+        (let a ($buffer C/UInt8 [1]))
+        (let b ($buffer C/UInt8 [2 2]))
+        (let c ($buffer C/UInt8 [3 3 3]))
+        (let d ($buffer C/UInt8 []))
+        [(four a b c d) a/.to_list b/.to_list c/.to_list d/.to_list]
+      """, useLocalSlots = false), scope).print() == "[6 [10] [11 2] [12 3 3] []]"
+      check run(compileSource("""
+        (let alias ($buffer C/UInt8 [0]))
+        [(four alias alias alias alias) alias/.to_list]
+      """, useLocalSlots = false), scope).print() == "[42 [13]]"
+      expect GeneError:
+        discard run(compileSource("(four ($buffer C/UInt8 [0]) " &
+          "($buffer C/UInt8 [0]) ($buffer C/UInt8 [0]) [0])"), scope)
+      discard run(compileSource("($ffi/Library/close lib)"), scope)
 
   test "direct FFI callable supports exact scalar and view ABI":
     let handle = loadLib()

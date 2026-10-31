@@ -10,6 +10,9 @@ CLI operations connect to the running web host. Use `--session ID run CODE`,
 command result unless `--no-wait` is given. `send TEXT` submits a literal model
 prompt, including text beginning with `/`; `send --wait` also waits for its
 round. Use `--file FILE` for complete multiline code or prompt text.
+`send --model provider/model --effort level` submits a session choice with that
+round. Saved settings outrank ambient environment values; an unavailable choice
+is reported without falling back to another provider.
 
 `sessions create --title TITLE` returns an id. `sessions` lists conversations;
 there are no `/new` or `/sessions` slash commands. `receipt ID` and `wait ID`
@@ -36,6 +39,13 @@ other running sessions require `--confirm`.
 - `/view <path>[:from-to]` reads a file or directory, up to 400 lines per page.
 - `/repl` opens persistent evaluation if the repl plugin is active; load
   `harness/repl` for its state/import behavior.
+- `/model [provider/model | preset | default]` shows or changes the session's
+  model. A preset writes an ordinary provider/model/effort selection; `default`
+  removes the session pin.
+- `/effort [auto | level]` shows or changes requested effort. Effective effort
+  follows the chosen model's supported levels; the original request is retained
+  when a model needs a lower level. Both commands belong to the optional Models
+  contribution and affect subsequent operator rounds.
 - `/theme [light|dark]` reports or switches the web UI theme for this
   workspace. Like `/cancel`, `/stop` and `/restart` it is host-owned, as is the
   `set_appearance` function; see [theming](theming.md).

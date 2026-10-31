@@ -201,7 +201,7 @@ the owning round and placement, both revisions and the last committed input
 ids. Each click is a `card/action` record keyed by its input id; the newest 256
 are kept.
 
-- `POST /api/v8/sessions/<session>/cards/<id>/actions` takes `input_id`, `action`
+- `POST /api/v9/sessions/<session>/cards/<id>/actions` takes `input_id`, `action`
   (`update` or `enable`), `name`, `args`, `fields`, `definition_revision`,
   `revision` and `generation` (the card's `action_generation`), and returns the
   receipt: `done`, `refused`, `failed` or `interrupted`, with the card's current
@@ -220,7 +220,7 @@ are kept.
 - Admission is durable before any card code runs, and a retained receipt
   answers a retry before any revision check. The commit names its input id, so
   a click admitted before a crash resolves to `done` or `interrupted`, never to
-  a second run. `GET /api/v8/sessions/<session>/card-actions/<input_id>` reads a
+  a second run. `GET /api/v9/sessions/<session>/card-actions/<input_id>` reads a
   receipt.
 - Round and command submissions accept `card` with `id`, `definition_revision`
   and `revision`. Commands from a static card check the definition revision; a

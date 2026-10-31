@@ -70,7 +70,7 @@ assert.equal(target.children[0].tag, "article");
 const image = descendants(target).find(element => element.tag === "img");
 assert.ok(image, "attachment-only first prompt lost its image");
 assert.equal(image.attributes.alt, "pixel.png");
-assert.equal(image.attributes.src, "/api/v8/media/image-id");
+assert.equal(image.attributes.src, "/api/v9/media/image-id");
 console.log("history start: saved full text, prompt styling, gap ordering, safe text, rename, identity deduplication, preview, trigger and attachment gallery passed");
 
 // Intermediate replies appear once in the heading, never in expanded turn content.

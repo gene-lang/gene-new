@@ -1,0 +1,28 @@
+# Selection spelling shared by commands and clients; the catalog stays data.
+(mod model_choices)
+(import [ProviderError] ^from "../plugin_api")
+
+(fn named_model_choice [catalog, value : Str, effort : Str = "auto", ^current_provider current_provider = nil]
+  (let name ($str/trim value))
+  (if (== name "default") (return {}))
+  (for preset in (?? catalog/presets [])
+    (if (== preset/name name)
+      (return {^provider preset/provider ^model preset/model ^effort (?? preset/effort "auto")})))
+  (let matches [])
+  (for [key provider] in (?? catalog/providers {})
+    (for model in (?? provider/models [])
+      (if (|| (== model/id name) (== model/label name))
+        (matches .push {^provider ($to_str key) ^model model/id ^effort effort}))))
+  (if (== matches/.size 1) (return matches/0))
+  (if (> matches/.size 1) (fail (ProviderError ^message "This model is offered by several providers; use provider/model")))
+  (let parts ($str/split name "/"))
+  (if (&& (> parts/.size 1) (|| ($absent? current_provider) ($has_key? (?? catalog/providers {}) parts/0)))
+    (then
+      (let suffix [])
+      (var index 1)
+      (while (< index parts/.size) (suffix .push parts/%index) (set index (+ index 1)))
+      (let model ($str/join suffix "/"))
+      (if (|| (== parts/0 "") (== model "")) (fail (ProviderError ^message "Use provider/model")))
+      (return {^provider parts/0 ^model model ^effort effort})))
+  (if ($present? current_provider) (return {^provider current_provider ^model name ^effort effort}))
+  (fail (ProviderError ^message "Unknown model or preset; use provider/model for an unverified id")))

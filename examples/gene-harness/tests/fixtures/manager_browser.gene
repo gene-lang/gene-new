@@ -8,8 +8,6 @@
   (let environment
     {
       ^HOME home
-      ^CODEX_HOME $"${home}/.codex"
-      ^CODEX_AUTH_FILE nil
       ^GENE_BINARY ($os/executable_path)
       ^GENE_HARNESS_WORKSPACE nil
       ^GENE_HARNESS_ROOT nil

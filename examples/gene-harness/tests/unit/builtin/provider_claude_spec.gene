@@ -1,6 +1,6 @@
 # Tests src/builtin/provider_claude.gene.
 (import $test [describe it run])
-(import [claude_text] ^from "../../../src/builtin/provider_claude")
+(import [claude_text claude_request] ^from "../../../src/builtin/provider_claude")
 (import [raw_blocks] ^from "./support")
 
 (describe "Harness provider response bytes"
@@ -14,6 +14,17 @@
             ^status 0
             ^stdout ($json/stringify
                       {^type "result" ^subtype "success" ^!is_error ^result text})})))))
+
+(describe "Claude effort arguments"
+  (it "omits auto effort and sends a complete flag-value pair for explicit levels" []
+    (for effort in [nil "none" "low" "max"]
+      (let request (claude_request {^model "sonnet" ^effort effort ^claude_command "claude"} "rules" "go"))
+      (for arg in request/args ($assert (== ($head arg) Str)))
+      (if (["low" "max"] .contains? effort)
+        (then
+          ($assert (request/args .contains? "--effort"))
+          ($assert ($str/contains? ($str/join request/args " ") $"--effort ${effort}")))
+        (else ($assert (! (request/args .contains? "--effort"))))))))
 
 (fn main [args] : Int
   (let result (run ^name (?? args/0 "")))

@@ -17,6 +17,9 @@
   (if_yes ($present? record/toolbar)
     (var toolbar : EventTarget record/toolbar)
     ($dom/remove toolbar))
+  (if_yes ($present? record/composer)
+    (var composer : EventTarget record/composer)
+    ($dom/remove composer))
   (var subscriptions : (List Any) (if ($absent? record/subscriptions) [] record/subscriptions))
   (for subscription in subscriptions
     (try
@@ -57,6 +60,7 @@
         (var generation host/generation)
         (var mount ($dom/create_element "div"))
         (var toolbar ($dom/create_element "span"))
+        (var composer ($dom/create_element "span"))
         (var source_bridge : PropMap host/bridge)
         (var bridge : PropMap {})
         (for [key value] in source_bridge (set bridge/%key value))
@@ -69,6 +73,10 @@
         (var host_toolbar : EventTarget host/bridge/toolbar)
         ($dom/append host_toolbar toolbar)
         (set bridge/toolbar toolbar)
+        (if_yes ($present? host/bridge/composer_actions)
+          (var host_composer : EventTarget host/bridge/composer_actions)
+          ($dom/append host_composer composer)
+          (set bridge/composer_actions composer))
         (var owner $"${name}:${generation}")
         (var subscriptions : (List Any) [])
         (set bridge/subscribe (fn [callback : (Fn [Str Str Any] Void)] : (Fn [] Void)
@@ -93,7 +101,7 @@
         (set bridge/subscribe_owned nil)
         (set mount/harness_bridge bridge)
         (set mount/harness_owner owner)
-        (set record {^root mount ^toolbar toolbar ^revision descriptor/revision ^owner owner
+        (set record {^root mount ^toolbar toolbar ^composer composer ^revision descriptor/revision ^owner owner
           ^generation generation ^status status ^subscriptions subscriptions})
         (set host/mounts/%name record)
         ($dom/append ($dom/body) mount)

@@ -34,6 +34,6 @@ extracted text/page references are cached so later model calls do not reconvert.
 Encrypted, corrupt and unsupported documents produce errors rather than empty
 successful results. DOCX conversion extracts text, not embedded pictures.
 
-Codex, Anthropic and OpenRouter receive image blocks; the configured model must
+ChatGPT, Anthropic and OpenRouter receive image blocks; the configured model must
 support vision. Claude CLI currently reports image input as unsupported. Image
 editing and generation are outside this feature's scope.

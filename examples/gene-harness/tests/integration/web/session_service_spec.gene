@@ -125,7 +125,7 @@
           (let waiting (receipt service session/id round/id))
           ($assert (== waiting/state "waiting") $"web round failed: ${waiting}")
           (let view (snapshot service session/id))
-          ($assert (== view/protocol 8) "snapshot retained an older protocol")
+          ($assert (== view/protocol 9) "snapshot retained an older protocol")
           ($assert (== view/questions/questions/.size 1) "web snapshot lost the batch")
           (let progress (view/records .filter (fn [record] (== record/phase "reply"))))
           ($assert (== progress/.size 1) "snapshot lost the intermediate reply")
@@ -153,7 +153,7 @@
             catch Any
               true)
             "conflicting answer retry was accepted")
-          ($println "web turn loop: protocol 8 service, code-only provider, questions and reply dedupe")
+          ($println "web turn loop: protocol 9 service, code-only provider, questions and reply dedupe")
         ensure
           (close_session_service service))))))
 

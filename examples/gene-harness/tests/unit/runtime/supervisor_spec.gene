@@ -1,0 +1,13 @@
+(import $test [describe it run])
+(import [child_entry] ^from "../../../src/runtime/supervisor")
+
+(describe "Supervised host entry"
+  (it "loads declared native resources for normal hosts and preserves source recovery" []
+    ($assert (== (child_entry "/harness" true false false false)
+      ["run" "--package-root" "/harness" "harness"]))
+    (for [hosting offline scripted recovery] in
+      [[false false false false] [true true false false] [true false true false] [true false false true]]
+      ($assert (== (child_entry "/harness" hosting offline scripted recovery)
+        ["run" "--snapshot" "/harness/src/main.gene"])))))
+
+(fn main [args] : Int (/exit_code (run ^name (?? args/0 ""))))

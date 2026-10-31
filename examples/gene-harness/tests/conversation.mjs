@@ -21,9 +21,9 @@ for(const version of ['1','7','8','999']){
   const source=`![Generated logo](/api/v${version}/media/asset_123)`;
   const rendered=markdown_view(source);
   const nodes=descendants(rendered);
-  assert.equal(nodes.find(node=>node.tag==='img').attributes.src,'/api/v8/media/asset_123');
+  assert.equal(nodes.find(node=>node.tag==='img').attributes.src,'/api/v9/media/asset_123');
   assert.equal(nodes.find(node=>node.tag==='img').attributes.alt,'Generated logo');
-  assert.ok(nodes.some(node=>node.attributes.href==='/api/v8/media/asset_123?download=1'));
+  assert.ok(nodes.some(node=>node.attributes.href==='/api/v9/media/asset_123?download=1'));
   assert.equal(reply_summary(source+'\nThe logo is ready.'),'The logo is ready.');
   assert.equal(reply_summary(source),'');
   assert.equal(reply_summary('Done. '+source),'Done.');

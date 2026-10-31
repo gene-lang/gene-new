@@ -1,0 +1,104 @@
+# Normalize vendor metadata to the small catalog contract. Never retain raw
+# responses (ChatGPT catalogs can contain entire instruction templates).
+(mod model_discovery)
+(import [ProviderError] ^from "../plugin_api")
+(import [effort_ladder] ^from "./models")
+(import [anthropic_thinking_off] ^from "./model_defaults")
+
+(fn catalog_items [payload, field]
+  (if (!= ($head payload) Map)
+    (fail (ProviderError ^message "Provider returned an invalid model list")))
+  (let items (payload .get field))
+  (if (!= ($head items) List)
+    (fail (ProviderError ^message "Provider returned an invalid model list")))
+  items)
+
+(fn copy_positive [target, field, value]
+  (if (&& (|| (== ($head value) Int) (== ($head value) Float)) (> value 0))
+    (target .put field ($to_int value))))
+
+(fn copy_default [target, value]
+  (if (&& (== ($head value) Str) ($present? target/efforts)
+      (target/efforts .contains? value))
+    (target .put "default_effort" value)))
+
+(fn normalize_openrouter_models [payload]
+  (let result [])
+  (for source in (catalog_items payload "data")
+    (if (|| (!= ($head source/id) Str) (== source/id "")) (continue))
+    (let model {^id source/id ^label (?? source/name source/id)})
+    (copy_positive model "window" source/context_length)
+    (copy_positive model "max_output" source/top_provider/max_completion_tokens)
+    (if (== ($head source/architecture/input_modalities) List)
+      (model .put "input" ($thaw ($freeze source/architecture/input_modalities))))
+    (let reasoning source/reasoning)
+    (var efforts [])
+    (if (&& ($present? reasoning) ($has_key? reasoning "supported_efforts"))
+      (then
+        (if ($absent? reasoning/supported_efforts)
+          (then (set efforts ($thaw ($freeze effort_ladder))))
+          (elif (== ($head reasoning/supported_efforts) List)
+            (for level in reasoning/supported_efforts
+              (if (&& (== ($head level) Str) (!= level "")) (efforts .push level)))))))
+    (if (== reasoning/mandatory true)
+      (set efforts ($filter efforts (fn [level] (!= level "none")))))
+    (model .put "efforts" efforts)
+    (copy_default model reasoning/default_effort)
+    (let pricing {})
+    (let raw_pricing (?? source/pricing {}))
+    (for key in ["prompt" "completion" "request" "image" "input_cache_read" "input_cache_write"]
+      (let value (raw_pricing .get key))
+      (if (|| (== ($head value) Str) (== ($head value) Int) (== ($head value) Float))
+        (pricing .put key value)))
+    (if (> ($size pricing) 0) (model .put "pricing" pricing))
+    (result .push model))
+  result)
+
+(fn normalize_chatgpt_models [payload]
+  (let result [])
+  (for source in (catalog_items payload "models")
+    (if (|| (!= ($head source/slug) Str) (== source/slug "")) (continue))
+    (let efforts [])
+    (for entry in (?? source/supported_reasoning_levels [])
+      (if (== ($head entry/effort) Str) (efforts .push entry/effort)))
+    (let model {^id source/slug ^label (?? source/display_name source/slug)
+      ^efforts efforts ^hidden (!= (?? source/visibility "list") "list")})
+    (copy_positive model "window" source/context_window)
+    (copy_positive model "effective_percent" source/effective_context_window_percent)
+    (copy_positive model "max_output" source/max_output_tokens)
+    (if (== ($head source/input_modalities) List)
+      (model .put "input" ($thaw ($freeze source/input_modalities))))
+    (if (== ($head source/priority) Int) (model .put "rank" source/priority))
+    (copy_default model source/default_reasoning_level)
+    (result .push model))
+  result)
+
+(fn normalize_anthropic_models [payload]
+  (let result [])
+  (for source in (catalog_items payload "data")
+    (if (|| (!= ($head source/id) Str) (== source/id "")) (continue))
+    (if (== source/lifecycle "retired") (continue))
+    (let model {^id source/id ^label (?? source/display_name source/id)})
+    (copy_positive model "window" source/max_input_tokens)
+    (copy_positive model "max_output" source/max_tokens)
+    (let caps source/capabilities)
+    (if ($present? caps/image_input/supported)
+      (model .put "input" (if (== caps/image_input/supported true)
+        (then ["text" "image"]) (else ["text"]))))
+    (if ($present? caps/effort)
+      (then
+        (let efforts [])
+        (if ($present? (anthropic_thinking_off source/id))
+          (efforts .push "none"))
+        (for level in ["low" "medium" "high" "xhigh" "max"]
+          (if (== caps/effort/%level/supported true) (efforts .push level)))
+        (model .put "efforts" efforts)))
+    (result .push model))
+  result)
+
+(fn normalize_compatible_models [payload]
+  (let result [])
+  (for source in (catalog_items payload "data")
+    (if (&& (== ($head source/id) Str) (!= source/id ""))
+      (result .push {^id source/id ^label source/id ^efforts []})))
+  result)

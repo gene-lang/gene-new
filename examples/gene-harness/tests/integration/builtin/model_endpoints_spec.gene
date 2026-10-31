@@ -1,0 +1,240 @@
+(import $test [describe it])
+(import [isolated run_spec test_controller] ^from "../../support")
+(import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
+(import [baseline_profile] ^from "../../../src/profiles/baseline")
+(import [models_path] ^from "../../../src/public/models_file")
+(import [catalog_snapshot readiness_report] ^from "../../../src/agents/provider_selection")
+(import [row uninstall put_cordis_plugin] ^from "../../../src/kernel")
+(import [models_file_watch] ^from "../../../src/builtin/model_endpoints")
+(import [acquire_snapshot release_snapshot] ^from "../../../src/runtime/composition")
+(import [submit_round round_receipt continue_round RoundError] ^from "../../../src/runtime/round_controller")
+(import $net/http [listen serve stop json])
+
+(fn settings [base : Str, ^window window : Int = 500000]
+  {^version 1 ^default {^provider "custom" ^model "model" ^effort "high"}
+   ^providers [{^name "custom" ^adapter "openai_chat" ^base_url base ^^discover
+     ^models [{^id "model" ^window window ^input ["text"] ^efforts ["low" "high"] ^default_effort "low"}]}]})
+
+(fn write_settings [root, config]
+  ($fs/make_dir ($path/join root ".gene-harness"))
+  ($fs/write_text_atomic (models_path root) ($serde/write_data config)))
+
+(fn ready [runtime]
+  (let deadline (+ ($os/monotonic_ms) 10000))
+  (while ($present? (readiness_report runtime {}))
+    ($assert (< ($os/monotonic_ms) deadline) (?? (readiness_report runtime {}) "connection did not become ready"))
+    ($sleep 10)))
+
+(fn settle [controller, session : Str]
+  ((/watcher (controller/rounds/.get .get session)) .join))
+
+(describe "File-defined provider contributions"
+  (it "replaces endpoints under real turn leases and keeps the file watcher independent of the picker" []
+    (isolated ^timeout_ms 180000 this_mod/.path
+      "replaces endpoints under real turn leases and keeps the file watcher independent of the picker"
+      (fn [workspace]
+        (let server (listen ^host "127.0.0.1" ^port 0))
+        (let manager ($path/join workspace "manager"))
+        (let base $"http://127.0.0.1:${server/port}")
+        (write_settings manager (settings $"${base}/one/v1"))
+        (let entered ($cell false)) (let released ($cell false))
+        (let calls ($cell [])) (let opened ($cell nil))
+        (let tester (spawn ^lane root
+          (try
+            (let runtime (open_runtime workspace "default" (baseline_profile ^models_root manager)))
+            (opened .set runtime)
+            (let controller (test_controller runtime nil))
+            (ready runtime)
+            ($assert (== (/name (row runtime/h "providers" "custom")) "custom"))
+            (let original (submit_round controller "default" "file-one" 1 "work"))
+            (let deadline (+ ($os/monotonic_ms) 5000))
+            (while (! entered/.get)
+              ($assert (< ($os/monotonic_ms) deadline) "first endpoint was not called") ($sleep 1))
+            (let catalog (/value (row runtime/h "seams" "models/catalog")))
+            (let before (catalog/snapshot))
+            (catalog/save (settings ^window 64000 $"${base}/two/v1") before/digest)
+            ($assert (== (/transport/base_url (row runtime/h "providers" "custom")) $"${base}/two/v1"))
+            (released .set true)
+            (settle controller "default")
+            (let refused (round_receipt controller "default" original/id))
+            ($assert (== refused/state "failed") ($to_str refused))
+            ($assert ($str/contains? refused/message "connection changed"))
+            ($assert (== calls/.get ["one"]) "old round reached the replacement endpoint")
+            (ready runtime)
+            ($assert (try (continue_round ^operator false controller "default" original/id "automatic") false
+              catch RoundError (== $err/code "not_ready")))
+            (let deliberate (continue_round controller "default" original/id "manual"))
+            (settle controller "default")
+            ($assert (== (/state (round_receipt controller "default" deliberate/id)) "done"))
+            ($assert (!= deliberate/selection/transport original/selection/transport))
+            ($assert (== deliberate/selection/context_window 64000))
+            (let typed (submit_round ^model_settings {^provider "custom" ^model "typed-id" ^effort "high"}
+              controller "default" "typed" 3 "work"))
+            (settle controller "default")
+            ($assert (== typed/selection/unverified_model true))
+            ($assert ($absent? typed/selection/effective_effort) "unknown custom model received an effort parameter")
+            ($assert (== typed/selection/context_window 128000))
+            # Force the catalog's own watcher to request its replacement. The
+            # publication must run outside that activation's retiring worker.
+            (uninstall runtime/h "models_file_watch")
+            (let hand_edit (settings ^window 64000 $"${base}/two/v1"))
+            (set hand_edit/providers/0/models/0/label "Hand edit")
+            (write_settings manager hand_edit)
+            (let reloaded (+ ($os/monotonic_ms) 10000))
+            (while (!= (/config_digest (row runtime/h "providers" "custom")) ($pkg/canonical_digest hand_edit/providers/0))
+              ($assert (< ($os/monotonic_ms) reloaded) "catalog watcher could not retire its own generation") ($sleep 10))
+            (ready runtime)
+            (let after_edit (submit_round controller "default" "hand-edit" 4 "work"))
+            (settle controller "default")
+            ($assert (== (/state (round_receipt controller "default" after_edit/id)) "done"))
+            (put_cordis_plugin runtime/h (models_file_watch ^root manager) {^^host ^limits runtime/profile/limits})
+            (uninstall runtime/h "models")
+            ($assert ($absent? (row runtime/h "seams" "models/catalog")))
+            (write_settings manager (settings $"${base}/three/v1"))
+            (let applied (+ ($os/monotonic_ms) 10000))
+            (while (!= (/transport/base_url (row runtime/h "providers" "custom")) $"${base}/three/v1")
+              ($assert (< ($os/monotonic_ms) applied) "file edits stopped when the picker was removed") ($sleep 10))
+            (let without_catalog (submit_round controller "default" "no-catalog" 5 "work"))
+            (settle controller "default")
+            ($assert (== (/state (round_receipt controller "default" without_catalog/id)) "done"))
+            ($assert (== calls/.get ["one" "two" "two" "two" "three"]))
+          ensure
+            (released .set true)
+            (if ($present? opened/.get) (close_runtime opened/.get))
+            (stop server))))
+        (serve ^handler (fn [request]
+          (if (== request/method "GET") (return (json 200 "{\"data\":[{\"id\":\"model\"}]}")))
+          (let pieces ($str/split request/path "/"))
+          (let destination pieces/1)
+          (calls/.get .push destination)
+          (let payload ($json/parse request/body))
+          (if (== payload/model "typed-id")
+            (then ($assert ($absent? payload/reasoning_effort)))
+            (else ($assert (== payload/reasoning_effort "high"))))
+          (if (== destination "one")
+            (then (entered .set true) (while (! released/.get) ($sleep 1))))
+          (json 200 ($json/stringify {^choices [{^finish_reason "stop" ^message
+            {^role "assistant" ^content (if (== destination "one")
+              (then "(Outcome ^prompt \"continue\")") (else "(Outcome ^^done ^reply \"done\")"))}}]}))) server)
+        (match tester/.join
+          (when (TaskOutcome/ok value) value)
+          (when (TaskOutcome/error error) (fail error))
+          (else ($assert false "file endpoint fixture did not finish"))))))
+
+  (it "keeps an unchanged connection ready across catalog replacement while freezing round metadata" []
+    (isolated ^timeout_ms 120000 this_mod/.path
+      "keeps an unchanged connection ready across catalog replacement while freezing round metadata"
+      (fn [workspace]
+        (let server (listen ^host "127.0.0.1" ^port 0))
+        (let manager ($path/join workspace "manager"))
+        (let base $"http://127.0.0.1:${server/port}/v1")
+        (write_settings manager (settings base))
+        (let entered ($cell false)) (let released ($cell false)) (let block_discovery ($cell false))
+        (let count ($cell 0)) (let opened ($cell nil))
+        (let tester (spawn ^lane root
+          (try
+            (let runtime (open_runtime workspace "default" (baseline_profile ^models_root manager)))
+            (opened .set runtime)
+            (let controller (test_controller runtime nil))
+            (ready runtime)
+            (let first (submit_round controller "default" "metadata-one" 1 "work"))
+            (let deadline (+ ($os/monotonic_ms) 5000))
+            (while (! entered/.get) ($assert (< ($os/monotonic_ms) deadline)) ($sleep 1))
+            (block_discovery .set true)
+            (let changed (settings ^window 64000 base))
+            (set changed/providers/0/models/0/efforts ["low"])
+            (let catalog (/value (row runtime/h "seams" "models/catalog")))
+            (let before (catalog/snapshot))
+            (catalog/save changed before/digest)
+            (released .set true)
+            (settle controller "default")
+            ($assert (== (/state (round_receipt controller "default" first/id)) "done")
+              "unchanged connection became unready while a new catalog probed it")
+            ($assert (== first/selection/context_window 500000))
+            ($assert (== first/selection/effective_effort "high"))
+            ($assert (== count/.get 2))
+            (let next (submit_round controller "default" "metadata-two" 2 "work"))
+            (settle controller "default")
+            ($assert (== (/state (round_receipt controller "default" next/id)) "done"))
+            ($assert (== next/selection/context_window 64000))
+            ($assert (== next/selection/effective_effort "low"))
+          ensure
+            (released .set true) (block_discovery .set false)
+            (if ($present? opened/.get) (close_runtime opened/.get))
+            (stop server))))
+        (serve ^handler (fn [request]
+          (if (== request/method "GET")
+            (then
+              (while block_discovery/.get ($sleep 1))
+              (return (json 200 "{\"data\":[{\"id\":\"model\"}]}"))))
+          (count .set (+ count/.get 1))
+          (let payload ($json/parse request/body))
+          ($assert (== payload/reasoning_effort (if (<= count/.get 2) "high" "low")))
+          (if (== count/.get 1)
+            (then (entered .set true) (while (! released/.get) ($sleep 1))))
+          (json 200 ($json/stringify {^choices [{^finish_reason "stop" ^message {^role "assistant"
+            ^content (if (== count/.get 1) "(Outcome ^prompt \"again\")" "(Outcome ^^done ^reply \"done\")")}}]}))) server)
+        (match tester/.join
+          (when (TaskOutcome/ok value) value)
+          (when (TaskOutcome/error error) (fail error))
+          (else ($assert false "metadata publication fixture did not finish"))))))
+
+  (it "expires matching connections across catalog generations without expiring a replacement" []
+    (isolated this_mod/.path "expires matching connections across catalog generations without expiring a replacement"
+      (fn [workspace]
+        (let manager ($path/join workspace "manager"))
+        (let config (settings "http://127.0.0.1:1/v1"))
+        (set config/providers/0/discover false)
+        (write_settings manager config)
+        (let runtime (open_runtime workspace "default" (baseline_profile ^models_root manager)))
+        (let lease (acquire_snapshot runtime/h/snapshots))
+        (try
+          (ready runtime)
+          (let origin (/value (row runtime/h "seams" "models/catalog")))
+          (let before (origin/snapshot))
+          (let identity before/providers/custom/transport)
+          (let changed ($thaw ($freeze config)))
+          (set changed/providers/0/models/0/label "Changed")
+          (origin/save changed before/digest)
+          (let active (/value (row runtime/h "seams" "models/catalog")))
+          (origin/failed "custom" 401 identity)
+          ($assert (== (/providers/custom/connection/state (active/snapshot)) "expired"))
+          (let current (active/snapshot))
+          (set changed/providers/0/base_url "http://127.0.0.1:2/v1")
+          (active/save changed current/digest)
+          (ready runtime)
+          (origin/failed "custom" 401 identity)
+          (let replacement (catalog_snapshot runtime))
+          ($assert (== replacement/providers/custom/connection/state "ready"))
+          ($assert (!= replacement/providers/custom/transport identity))
+        ensure (release_snapshot runtime/h/snapshots lease) (close_runtime runtime)))))
+
+  (it "reports conflicting entries, blocks their default and leaves activation-free recovery independent" []
+    (isolated this_mod/.path "reports conflicting entries, blocks their default and leaves activation-free recovery independent"
+      (fn [workspace]
+        (let manager ($path/join workspace "manager"))
+        (let value {^version 1 ^default {^provider "chatgpt" ^model "typed"}
+          ^providers [{^name "chatgpt" ^adapter "openai_chat" ^base_url "http://127.0.0.1:1/v1"}
+                      {^name "custom" ^adapter "openai_chat" ^base_url "http://127.0.0.1:1/v1"
+                       ^models [{^id "local"}]}]})
+        (write_settings manager value)
+        (let runtime (open_runtime workspace "default" (baseline_profile ^models_root manager)))
+        (try
+          (let deadline (+ ($os/monotonic_ms) 10000))
+          (while ($absent? (row runtime/h "providers" "custom"))
+            ($assert (< ($os/monotonic_ms) deadline)) ($sleep 10))
+          (let catalog (catalog_snapshot runtime))
+          ($assert (== catalog/errors/0/provider "chatgpt"))
+          ($assert ($present? catalog/default_error))
+          ($assert ($str/contains? (readiness_report runtime {}) "default endpoint entry is invalid"))
+          ($assert (!= (/from_models_file (row runtime/h "providers" "chatgpt")) true) "file replaced a built-in provider")
+          ($assert (== (/from_models_file (row runtime/h "providers" "custom")) true))
+        ensure (close_runtime runtime))
+        (write_settings manager "invalid data must not affect recovery")
+        (let doctor (open_runtime ^!activate ^mode "doctor" workspace "default" (baseline_profile ^models_root manager)))
+        (try
+          ($assert ($absent? doctor/services/values/models_host))
+          ($assert ($absent? (row doctor/h "providers" "custom")))
+        ensure (close_runtime doctor))))))
+
+(fn main [args] : Int (run_spec args))

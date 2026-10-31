@@ -137,6 +137,106 @@
           (let stopped (stop_host host))
           ($assert (== stopped/status 0) stopped/stderr))))))
 
+(describe "Harness model clients"
+  (it "applies model choices through CLI sends and the shared model endpoints" []
+    (isolated this_mod/.path "applies model choices through CLI sends and the shared model endpoints"
+      (fn [workspace]
+        (let host (start_host ^script ["(Outcome ^^done ^reply \"first\")" "(Outcome ^^done ^reply \"second\")"]
+          $"${workspace}/host"))
+        (try
+          (let session (/id (cli host/root ["sessions" "create"])))
+          (let first (cli host/root ["--session" session "send" "--model" "scripted/alternate" "--effort" "high" "--wait" "work"]))
+          ($assert (== first/state "done"))
+          ($assert (== first/selection/requested_effort "high"))
+          (let browser (connect host/root))
+          (let chosen (api browser "GET" (session_path session "/snapshot?ui=default")))
+          ($assert (== chosen/session/model_settings/provider "scripted"))
+          ($assert (== chosen/session/model_settings/model "alternate"))
+          (let lowered (cli host/root ["--session" session "command" "/effort low"]))
+          ($assert (== lowered/status "done") lowered/display)
+          (let shown (api browser "POST" "/models/preview" {^session session ^model_settings {^effort "low"}}))
+          ($assert (== shown/model/requested_effort "low"))
+          (let catalog (api browser "GET" "/models"))
+          (let saved (api browser "POST" "/models/default"
+            {^expected_digest catalog/digest ^model_settings {^provider "scripted" ^model "scripted" ^effort "high"}}))
+          ($assert (== saved/default/effort "high"))
+          (let conflict (wire ^credentials browser/credentials browser/connection "POST" "/models/default"
+            {^expected_digest catalog/digest ^model_settings {^provider "scripted" ^model "scripted" ^effort "low"}}))
+          ($assert (== conflict/status 409))
+          ($assert (== conflict/body/code "revision_conflict"))
+          (let cleared (cli host/root ["--session" session "command" "/model default"]))
+          ($assert (== cleared/status "done") cleared/display)
+          (let next (cli host/root ["--session" session "send" "--wait" "use current default"]))
+          ($assert (== next/state "done"))
+          ($assert (== next/selection/requested_effort "high"))
+          (let invalid (cli ^expected 1 host/root ["--session" session "run" "--effort" "low" "(+ 1 1)"]))
+          ($assert (== invalid/code "invalid_request"))
+          ($assert ($str/contains? invalid/message "apply to send"))
+          (let bad_effort (cli ^expected 1 host/root ["--session" session "send" "--effort" "ultra" "not admitted"]))
+          ($assert (== bad_effort/code "invalid_request"))
+          ($assert ($str/contains? bad_effort/message "not an effort level"))
+          (let scheduled (api browser "POST" "/triggers"
+            {^id "model-check" ^kind "scheduled" ^at (+ ($os/wall_ms) 3600000) ^request "later"}))
+          (let changes $"${host/root}/trigger-model.gene")
+          ($fs/write_text changes "{^model_settings {^effort \"low\"}}")
+          (let updated (cli host/root ["triggers" "update" "model-check" changes]))
+          ($assert (== updated/model_settings/effort "low"))
+          ($assert (== updated/next_ms scheduled/next_ms))
+          (let reset (api browser "PATCH" "/triggers/model-check" {}))
+          ($assert ($absent? reset/model_settings))
+          (let page_request (request ^url $"${browser/connection/origin}/models"))
+          (let page (try (await page_request) ensure page_request/.cancel))
+          ($assert (== page/status 200) page/body)
+          ($assert ($str/contains? page/body "Models · Gene Harness"))
+          ($assert ($str/contains? page/body "models_endpoint_form"))
+          ($assert (== (/status (wire browser/connection "GET" "/models/settings")) 401))
+          ($assert (== (/status (wire browser/connection "GET" "/models/accounts")) 401))
+          (let accounts (api browser "GET" "/models/accounts"))
+          ($assert (== accounts/accounts []))
+          ($assert ($absent? accounts/active))
+          (let invalid_account (wire ^credentials browser/credentials browser/connection "POST" "/models/accounts"
+            {^id "not-an-account" ^action "select"}))
+          ($assert (== invalid_account/status 400))
+          ($assert (== (/status (wire browser/connection "POST" "/models/connect" {^provider "openrouter"})) 401))
+          (let login (api browser "POST" "/models/connect" {^provider "openrouter"}))
+          ($assert (== login/state "pending") "Connect did not start a pending attempt")
+          ($assert ($str/starts_with? login/url "https://openrouter.ai/auth?") "Connect did not return the official authorization URL")
+          (let denied_duplicate (wire ^credentials browser/credentials browser/connection "POST" "/models/connect" {^provider "openrouter"}))
+          ($assert (== denied_duplicate/status 409) ($to_str "Duplicate sign-in returned " denied_duplicate/status " " denied_duplicate/body))
+          (let callback_match (#"[?&]callback_url=([^&]+)" .match login/url))
+          (let callback_url ($url/decode_component callback_match/groups/0))
+          (let callback_request (request ^url ($to_str callback_url "&error=access_denied")))
+          (let callback (try (await callback_request) ensure callback_request/.cancel))
+          ($assert (== callback/status 200) "OAuth callback required an owner cookie")
+          ($assert (== callback/headers/cache-control "no-store") "OAuth callback was cacheable")
+          ($assert (== (/state (api browser "GET" $"/models/login?id=${login/id}")) "declined") "Declined consent left the attempt pending")
+          ($assert (== (/status (wire browser/connection "GET" $"/models/login?id=${login/id}")) 401))
+          (let file (api browser "GET" "/models/settings"))
+          ($assert ($str/ends_with? file/path "/.gene-harness/models.gene"))
+          (let edited ($thaw ($freeze file/config)))
+          (edited/providers .push {^name "spec_local" ^adapter "openai_chat" ^base_url "http://127.0.0.1:1/v1"
+            ^!discover ^models [{^id "local"}]})
+          (edited/models .push {^provider "scripted" ^id "scripted" ^label "Scripted demo" ^hidden true})
+          (let configured (api browser "POST" "/models/settings" {^config edited ^expected_digest file/digest}))
+          ($assert (== configured/config/models/0/hidden true))
+          ($assert (== configured/config/providers/0/name "spec_local") "save acknowledgement used a retired Models handle")
+          (let stale (wire ^credentials browser/credentials browser/connection "POST" "/models/settings"
+            {^config file/config ^expected_digest file/digest}))
+          ($assert (== stale/status 409))
+          (let invalid_config ($thaw ($freeze configured/config)))
+          (invalid_config/providers .push {^name "secret" ^adapter "openai_chat" ^base_url "http://127.0.0.1:1/v1" ^api_key "SECRET_SENTINEL"})
+          (let secret (wire ^credentials browser/credentials browser/connection "POST" "/models/settings"
+            {^config invalid_config ^expected_digest configured/digest}))
+          ($assert (== secret/status 400))
+          ($assert (! ($str/contains? secret/body/message "SECRET_SENTINEL")))
+        catch Any
+          (let message $err/message)
+          (let stopped (stop_host host))
+          ($assert false ($to_str message "\n" stopped/stdout stopped/stderr))
+        ensure
+          (let stopped (stop_host host))
+          (if ($present? stopped) ($assert (== stopped/status 0) stopped/stderr)))))))
+
 (describe
   "Harness owner credentials"
   (it
@@ -408,7 +508,7 @@
           (for headers in [{^origin "http://other.invalid" ^cookie client/credentials/cookie ^x-csrf-token client/credentials/csrf} {^origin host/connection/origin ^host "other.invalid" ^cookie client/credentials/cookie ^x-csrf-token client/credentials/csrf}]
             (let denied
               (await
-                (request ^method "POST" ^url $"${host/connection/origin}/api/v8/sessions" ^headers headers ^body "{}" ^timeout_ms 5000)))
+                (request ^method "POST" ^url $"${host/connection/origin}/api/v9/sessions" ^headers headers ^body "{}" ^timeout_ms 5000)))
             ($assert (== denied/status 403) "Host or Origin validation was bypassed"))
           (let descriptor_path $"${host/root}/.gene-harness/connection")
           (let saved ($fs/read_text descriptor_path))
@@ -426,7 +526,7 @@
           (set socket (await (tcp_connect "127.0.0.1" host/connection/port)))
           (let header
             ($str/join
-              [$"GET /api/v8/events?ui=default&session=${session} HTTP/1.1"
+              [$"GET /api/v9/events?ui=default&session=${session} HTTP/1.1"
                $"Host: 127.0.0.1:${host/connection/port}"
                $"Origin: ${host/connection/origin}"
                $"Cookie: ${client/credentials/cookie}"

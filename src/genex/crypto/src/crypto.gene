@@ -1,0 +1,106 @@
+(mod crypto)
+
+(type CryptoError ^props {^message Str} ^impl [Error])
+(impl Error for CryptoError)
+
+(fn encode_url [data] : Str
+  (let base ($base64/encode data))
+  (let minus ($str/join ($str/split base "+") "-"))
+  (let underscores ($str/join ($str/split minus "/") "_"))
+  ($str/join ($str/split underscores "=") ""))
+
+(fn decode_url [value : Str] : Bytes
+  (if (|| (> ($str/byte_size value) 1398104) ($absent? (#"^[A-Za-z0-9_-]*$" .match value)))
+    (fail (CryptoError ^message "Invalid base64url data")))
+  (let padding (match (// ($str/byte_size value) 4)
+    (when 0 "") (when 2 "==") (when 3 "=")
+    (else (fail (CryptoError ^message "Invalid base64url length")))))
+  (let plus ($str/join ($str/split value "-") "+"))
+  (let slash ($str/join ($str/split plus "_") "/"))
+  (try ($base64/decode ($to_str slash padding))
+    catch Any (fail (CryptoError ^message "Invalid base64url data"))))
+
+(fn sha256_bytes [value] : Bytes
+  (let digits {^"0" 0 ^"1" 1 ^"2" 2 ^"3" 3 ^"4" 4 ^"5" 5 ^"6" 6 ^"7" 7 ^"8" 8 ^"9" 9
+    ^a 10 ^b 11 ^c 12 ^d 13 ^e 14 ^f 15})
+  (let hex ($crypto/sha256 value)) (let bytes [])
+  (var index 0)
+  (while (< index 64)
+    (bytes .push (+ (* 16 (digits .get ($str/slice_bytes hex index 1)))
+      (digits .get ($str/slice_bytes hex (+ index 1) 1))))
+    (set index (+ index 2)))
+  ($binary/from_list bytes))
+
+(fn verify_rs256 [modulus : Bytes, exponent : Bytes, message : Bytes, signature : Bytes] : Bool
+  (if (|| (< ($binary/size modulus) 256) (> ($binary/size modulus) 1024)
+    (< ($binary/size exponent) 1) (> ($binary/size exponent) 8)
+    (> ($binary/size message) 1048576) (!= ($binary/size signature) ($binary/size modulus)))
+    (return false))
+  (let lease ($pkg/native_binary this_pkg "native"))
+  (let library ($ffi/open lease/.path))
+  (try
+    (let verify ($ffi/bind library "gene_crypto_verify_rs256"
+      [(quote (Buffer C/UInt8)) (quote (Buffer C/UInt8))
+       (quote (Buffer C/UInt8)) (quote (Buffer C/UInt8))] C/Int))
+    (== (verify ($buffer C/UInt8 ($binary/to_list modulus))
+      ($buffer C/UInt8 ($binary/to_list exponent)) ($buffer C/UInt8 ($binary/to_list message))
+      ($buffer C/UInt8 ($binary/to_list signature))) 1)
+  ensure
+    ($ffi/Library/close library)
+    lease/.close))
+
+# The JWKS must come from the caller's trusted issuer, never from token headers.
+# The helper deliberately supports one pinned JOSE algorithm. Unsupported keys
+# or algorithms fail closed, and no unverified claim is returned.
+(fn verify_id_token [token : Str, jwks, issuer : Str, audience : Str, nonce : Str, now : Int,
+  ^access_token access_token = nil, ^require_nonce require_nonce : Bool = true]
+  (try
+    (if (|| (> ($str/byte_size token) 131072) (== issuer "") (== audience "") (== nonce ""))
+      (fail (CryptoError ^message "Invalid ID token")))
+    (let parts ($str/split token "."))
+    (if (!= parts/.size 3) (fail (CryptoError ^message "Invalid ID token")))
+    (let header ($json/parse ($binary/decode_utf8 (decode_url parts/0))))
+    (if (|| (!= ($head header) Map) (!= header/alg "RS256")
+      (!= ($head header/kid) Str) (== header/kid "")
+      (&& ($present? header/crit) (!= header/crit []))
+      (&& ($present? header/b64) (!= header/b64 true))
+      (&& ($present? header/typ) (!= header/typ "JWT")))
+      (fail (CryptoError ^message "Invalid ID token")))
+    (if (!= ($head jwks/keys) List) (fail (CryptoError ^message "Invalid signing keys")))
+    (var key nil) (var matches 0)
+    (for candidate in jwks/keys
+      (if (== candidate/kid header/kid)
+        (then (set key candidate) (set matches (+ matches 1)))))
+    (if (|| (!= matches 1) (!= key/kty "RSA")
+      (&& ($present? key/alg) (!= key/alg "RS256"))
+      (&& ($present? key/use) (!= key/use "sig"))
+      (&& ($present? key/key_ops) (|| (!= ($head key/key_ops) List) (! (key/key_ops .contains? "verify")))))
+      (fail (CryptoError ^message "Invalid signing key")))
+    (if (! (verify_rs256 (decode_url key/n) (decode_url key/e)
+      ($binary/from_str ($to_str parts/0 "." parts/1)) (decode_url parts/2)))
+      (fail (CryptoError ^message "Invalid ID token signature")))
+    (let claims ($json/parse ($binary/decode_utf8 (decode_url parts/1))))
+    (if (|| (!= ($head claims) Map) (!= claims/iss issuer)
+      (&& (|| require_nonce ($present? claims/nonce)) (!= claims/nonce nonce))
+      (!= ($head claims/sub) Str) (== claims/sub "")
+      (!= ($head claims/iat) Int) (!= ($head claims/exp) Int))
+      (fail (CryptoError ^message "Invalid ID token claims")))
+    (var expected_audience (== claims/aud audience))
+    (if (== ($head claims/aud) List)
+      (then
+        (set expected_audience (claims/aud .contains? audience))
+        (for item in claims/aud
+          (if (!= ($head item) Str) (set expected_audience false)))
+        (if (&& (> claims/aud/.size 1) (!= claims/azp audience))
+          (set expected_audience false))))
+    (if (|| (! expected_audience) (&& ($present? claims/azp) (!= claims/azp audience))
+      (<= claims/exp (- now 5)) (> claims/iat (+ now 5)) (<= claims/exp claims/iat)
+      (&& ($present? claims/nbf) (|| (!= ($head claims/nbf) Int) (> claims/nbf (+ now 5)))))
+      (fail (CryptoError ^message "Invalid ID token validity")))
+    (if ($present? claims/at_hash)
+      (then
+        (if (|| (!= ($head access_token) Str) (== access_token "")
+          (!= claims/at_hash (encode_url ($binary/slice (sha256_bytes access_token) 0 16))))
+          (fail (CryptoError ^message "ID token access-token binding failed")))))
+    claims
+  catch Any (fail (CryptoError ^message "ID token verification failed"))))

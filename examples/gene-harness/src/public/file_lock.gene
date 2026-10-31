@@ -1,0 +1,10 @@
+(mod file_lock)
+
+(fn try_lock_wait [path : Str, wait_ms : Int]
+  (let due (+ ($os/monotonic_ms) ($math/max 0 wait_ms)))
+  (loop
+    (let handle ($fs/try_lock path))
+    (if ($present? handle) (return handle))
+    (let remaining (- due ($os/monotonic_ms)))
+    (if (<= remaining 0) (return nil))
+    ($sleep ($math/min 10 remaining))))

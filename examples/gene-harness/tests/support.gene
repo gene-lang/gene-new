@@ -14,6 +14,19 @@
 (let source_root application/source_root)
 (let active_workspace ($cell nil))
 (let callback_cells ($cell {}))
+(let native_tools ($cell nil))
+
+(fn test_native_tools []
+  (if ($present? native_tools/.get) (return native_tools/.get))
+  (let tools {})
+  (for name in ["cc" "pkg-config"]
+    (let found (try (await ($os/exec_async "/usr/bin/which" name ^timeout_ms 1000 ^max_bytes 4096)) catch Any nil))
+    (if (== found/status 0)
+      (then
+        (let path ($str/trim found/stdout))
+        (if (&& ($str/starts_with? path "/") (! ($str/contains? path "\n"))) (tools .put name path)))))
+  (native_tools .set tools)
+  tools)
 
 (fn callback_plugin [cell]
   (Plugin ^id "provider_test" ^provides [["providers" "test"]]
@@ -89,11 +102,39 @@
   (if_not ($absent? selected) (return (body selected)))
   (let workspace ($path/join source_root $"tmp/spec-${($crypto/random_hex 12)}"))
   ($fs/make_dir workspace)
+  # Vendor probes must never inspect the developer's accounts or API keys.
+  # These tiny executables stand in for external CLIs at the process boundary.
+  (let bin ($path/join workspace "probe-bin"))
+  ($fs/make_dir bin)
+  (for name in ["claude" "ant"]
+    (let path ($path/join bin name))
+    ($fs/write_text path "#!/bin/sh\nexit 1\n")
+    ($fs/set_mode path 493))
+  # Normal supervised hosts select declared native recipes. Expose only their
+  # public build tools alongside the fake vendor binaries, keeping other host
+  # programs and real login tools off this test PATH.
+  (let tools (test_native_tools))
+  (for [name path] in tools ($fs/create_symlink path ($path/join bin ($to_str name))))
+  (let environment
+    {^GENE_HARNESS_ROOT ($path/join workspace "manager-root")
+     ^GENE_HARNESS_CLAUDE_COMMAND ($path/join bin "claude")
+     ^GENE_HARNESS_ANT_COMMAND ($path/join bin "ant")
+     ^GENE_HARNESS_AUTH_HOME ($path/join workspace "provider-logins")
+     ^GENE_C_COMPILER (?? ($os/env? "GENE_C_COMPILER") (tools .get "cc"))
+     ^GENE_HARNESS_PROVIDER nil ^GENE_HARNESS_MODEL nil ^GENE_HARNESS_THINKING_EFFORT nil
+     ^OPENROUTER_MODEL nil
+     ^ANTHROPIC_API_KEY nil ^ANTHROPIC_AUTH_TOKEN nil ^CLAUDE_CODE_OAUTH_TOKEN nil
+     ^OPENROUTER_API_KEY nil ^OPENROUTER_KEY nil
+     ^PATH bin})
+  (let progress (== ($os/get_env "GENE_HARNESS_TEST_PROGRESS" "") "1"))
+  (let started ($os/monotonic_ms))
+  (if progress (then ($println $"Running: ${name}") ($io/flush_stdout)))
   (let result (await ($os/exec_async ($os/executable_path)
     "run" "--snapshot" ($path/join source_root ($path/relative spec_path package_root)) workspace name ^dir source_root
-    ^timeout_ms timeout_ms ^max_bytes 1048576)))
+    ^env environment ^timeout_ms timeout_ms ^max_bytes 1048576)))
+  (if progress (then ($println $"Finished in ${(- ($os/monotonic_ms) started)} ms: ${name}") ($io/flush_stdout)))
   (assert_equal result/status 0
-    $"Isolated spec failed. Workspace: ${workspace}\n${result/stdout}${result/stderr}")
+    $"Isolated spec failed. Workspace: ${workspace}; status ${result/status}; timed_out ${result/timed_out}\n${result/stdout}${result/stderr}")
   ($assert (! result/truncated) "isolated spec output exceeded its capture bound")
   # A failed run keeps its workspace for inspection; the message names it.
   (remove_tree workspace))

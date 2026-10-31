@@ -1,0 +1,383 @@
+(mod models_picker ^profile web)
+(import [api_root] ^from "../../src/web/contract.gene")
+(import [text flag items] ^from "../../src/common/launcher.gene")
+
+(type Picker ^props {^root EventTarget ^bridge Any ^cap Any ^controls EventTarget
+  ^button EventTarget ^effort EventTarget ^usage EventTarget ^panel EventTarget ^heading EventTarget ^search EventTarget
+  ^results EventTarget ^message EventTarget ^catalog Any ^preview Any ^unsubscribe Any
+  ^menu_effort EventTarget ^default_button EventTarget ^target Any
+  ^trigger_controls EventTarget ^trigger_button EventTarget ^trigger_effort EventTarget ^trigger_info EventTarget
+  ^disposed Bool ^open Bool ^saving Bool ^loaded Bool ^required Bool ^serial Int ^preview_serial Int ^trigger_serial Int})
+
+(fn context [picker : Picker] : Any
+  (var read : (Fn [] Any) picker/bridge/state) (read))
+
+(fn draft [picker : Picker] : Any
+  (var read : (Fn [] Any) picker/cap/state) (read))
+
+(fn request [picker : Picker, method : Str, path : Str, value : Any, done : (Fn [Int Any] Void)] : Void
+  (var send : (Fn [Str Str Any (Fn [Int Any] Void)] Void) picker/bridge/api)
+  (send method ($to_str (api_root) path) value done))
+
+(fn settings [picker : Picker] : Any
+  (if_yes ($present? picker/target) (return picker/target/selection))
+  (var current : Any (draft picker))
+  (if_yes ($present? current/choice) (return current/choice/value))
+  (var state : Any (context picker))
+  (if_yes ($present? state/model_settings) (return state/model_settings))
+  {})
+
+(fn configure [picker : Picker] : Void
+  (if_yes ($present? picker/target) (set picker/required false) (return))
+  (var state : Any (context picker))
+  (var ready : Int 0)
+  (var providers : PropMap picker/catalog/providers)
+  (for [key entry] in providers
+    (if_yes (== (text entry/connection/state) "ready") (set ready (+ ready 1))))
+  (set picker/required (&& (> ready 1) (== (text picker/catalog/default/provider) "")
+    (flag picker/preview/model/automatic_provider)))
+  (var update : (Fn [Bool Bool] Void) picker/cap/configure)
+  (update picker/loaded picker/required))
+
+(fn close_menu [picker : Picker, restore : Bool = true] : Void
+  (set picker/open false) (set picker/panel/hidden true)
+  ($dom/set_attribute picker/button "aria-expanded" "false")
+  (var release : (Fn [Str Bool] Void) picker/bridge/release)
+  (release (text picker/root/harness_owner) restore)
+  (if_yes ($present? picker/target)
+    (if_yes ($present? picker/cap/release_trigger)
+      (var release_target : (Fn [Any] Void) picker/cap/release_trigger) (release_target picker/target))
+    (set picker/target nil) (preview picker)))
+
+(fn effort_label [value : Str] : Str
+  (match value
+    (when "auto" "Auto") (when "none" "None") (when "minimal" "Minimal")
+    (when "low" "Low") (when "medium" "Medium") (when "high" "High")
+    (when "xhigh" "Extra high") (when "max" "Max") (else value)))
+
+(fn catalog_model [picker : Picker, model : Any] : Any
+  (var provider (text model/provider))
+  (for row in (items picker/catalog/providers/%provider/models)
+    (if_yes (== (text row/id) (text model/model)) (return row)))
+  {})
+
+(fn paint_effort [picker : Picker, control : EventTarget, model : Any] : Void
+  ($dom/clear control)
+  (var row : Any (catalog_model picker model))
+  (var requested (text model/requested_effort "auto"))
+  (var effective (text model/effective_effort))
+  (var offered : (List Any) ["auto"])
+  (var efforts : Any (?? row/efforts model/efforts))
+  (var supported (if ($absent? efforts)
+    (then (items ["none" "minimal" "low" "medium" "high" "xhigh" "max"]))
+    (else (items efforts))))
+  (for level in supported (offered .push level))
+  (var found false)
+  (for level in offered
+    (var value (text level))
+    (if_yes (== value requested) (set found true))
+    (var title (effort_label value))
+    (if_yes (&& (== value "auto") (!= effective ""))
+      (set title ($to_str title " (" (effort_label effective) ")")))
+    ($dom/append control ($dom/render `(option ^value %value %title))))
+  (if_yes (! found)
+    (var title ($to_str (effort_label requested) " → " (if (== effective "")
+      (then "provider default") (else (effort_label effective)))))
+    ($dom/append control ($dom/render `(option ^value %requested %title))))
+  ($dom/set_input_value control requested)
+  (set control/disabled (|| picker/saving (! picker/loaded) ($present? model/pins/effort)))
+  ($dom/set_attribute control "title" (if (&& (!= requested "auto") (!= requested effective))
+    (then ($to_str "Requested " requested "; effective " (if (== effective "") (then "provider default") (else effective))))
+    (else "Effort for the next round"))))
+
+(fn paint [picker : Picker] : Void
+  (if_yes picker/disposed (return))
+  (var state : Any (context picker))
+  (var model : Any picker/preview/model)
+  (if_yes ($absent? model) (set model state/model))
+  (if_yes ($absent? picker/target)
+    (var choice : Any (settings picker))
+    (var label (text model/label (text model/model "Choose model")))
+    (if_yes (flag model/unverified_model) (set label ($to_str "Unverified · " label)))
+    (var pinned (!= (text choice/provider) ""))
+    ($dom/set_text picker/button (if pinned (then label) (else ($to_str "Default · " label))))
+    ($dom/set_attribute picker/button "aria-label" ($to_str "Model: " ($dom/text picker/button)))
+    ($dom/set_class picker/button "models-default" (! pinned))
+    (set picker/button/disabled (|| picker/saving (! (flag state/ready))))
+    (set picker/usage/hidden (|| (!= (text model/provider) "chatgpt") (!= (text picker/preview/readiness) "")))
+    (paint_effort picker picker/effort model))
+  (paint_effort picker picker/menu_effort model)
+  (set picker/default_button/hidden ($present? picker/target))
+  (var reason (text picker/preview/readiness (text model/reason)))
+  (if_yes (flag model/unverified_model)
+    (set reason ($to_str "This model id is not in the catalog; access is unverified. " reason)))
+  ($dom/set_text picker/message reason))
+
+(fn trigger_settings [picker : Picker] : Any
+  (var read : (Fn [] Any) picker/cap/trigger_state) (read))
+
+(fn preview_trigger [picker : Picker] : Void
+  (if_yes (|| picker/disposed ($absent? picker/bridge/trigger_model_actions) ($absent? picker/catalog)) (return))
+  (set picker/trigger_serial (+ picker/trigger_serial 1))
+  (var serial picker/trigger_serial)
+  (var choice : Any (trigger_settings picker))
+  (request picker "POST" "/models/preview" {^session "" ^model_settings choice}
+    (fn [code : Int, data : Any] : Void
+      (if_yes (|| picker/disposed (!= serial picker/trigger_serial)) (return))
+      (if (!= code 200)
+        (then ($dom/set_text picker/trigger_info (text data/message "Model selection is unavailable.")))
+        (else
+          (var model : Any data/model)
+          (var label (text model/label (text model/model "Unavailable")))
+          (if_yes (flag model/unverified_model) (set label ($to_str "Unverified · " label)))
+          ($dom/set_text picker/trigger_button (if ($present? choice/provider) (then label) (else ($to_str "Default · " label))))
+          ($dom/set_attribute picker/trigger_button "aria-label" ($to_str "Trigger model: " ($dom/text picker/trigger_button)))
+          (paint_effort picker picker/trigger_effort model)
+          (var detail ($to_str "Runs unattended · " (text model/billing "unknown")))
+          (if_yes (== (text model/provider) "claude") (set detail ($to_str detail " · text only, 128 KiB prompt limit")))
+          (var effort (text model/requested_effort))
+          (if_yes (|| (== effort "xhigh") (== effort "max") (== effort "ultra"))
+            (set detail ($to_str detail " · high effort may exceed the trigger round limit")))
+          (if_yes ($present? data/readiness) (set detail ($to_str detail " · " (text data/readiness))))
+          ($dom/set_text picker/trigger_info detail))))))
+
+(fn preview [picker : Picker] : Void
+  (if_yes (|| picker/disposed ($absent? picker/catalog)) (return))
+  (set picker/preview_serial (+ picker/preview_serial 1))
+  (var serial picker/preview_serial)
+  (var state : Any (context picker))
+  (request picker "POST" "/models/preview" {^session (if ($present? picker/target) (then "") (else (text state/session))) ^model_settings (settings picker)}
+    (fn [code : Int, data : Any] : Void
+      (if_yes (|| picker/disposed (!= serial picker/preview_serial)) (return))
+      (if (== code 200)
+        (then
+          (var changed (!= ($json/stringify (?? picker/preview/model nil)) ($json/stringify data/model)))
+          (set picker/preview data) (set picker/loaded true) (configure picker) (paint picker)
+          (if_yes (&& picker/open changed) (render_models picker))
+          (var current : Any (draft picker))
+          (if_yes (&& picker/required (flag current/requested)) (open_menu picker)))
+        (else ($dom/set_text picker/message (text data/message "Model selection could not be previewed.")))))))
+
+(fn fetch_catalog [picker : Picker] : Void
+  (if_yes picker/disposed (return))
+  (set picker/serial (+ picker/serial 1))
+  (var serial picker/serial)
+  (request picker "GET" "/models" nil (fn [code : Int, data : Any] : Void
+    (if_yes (|| picker/disposed (!= serial picker/serial)) (return))
+    (if (== code 200)
+      (then (set picker/catalog data) (preview picker) (preview_trigger picker) (render_models picker)
+        (open_requested_trigger picker))
+      (else ($dom/set_text picker/message (text data/message "Models are unavailable.")))))))
+
+(fn save_default [picker : Picker, selection : Any] : Void
+  (if_yes picker/saving (return))
+      (set picker/saving true) (paint picker)
+      (request picker "POST" "/models/default" {^model_settings selection ^expected_digest picker/catalog/digest}
+        (fn [code : Int, data : Any] : Void
+          (if_yes picker/disposed (return))
+          (set picker/saving false)
+          (if (== code 200)
+            (then
+              (set picker/catalog/default data/default) (set picker/catalog/digest data/digest)
+              (set picker/required false)
+              (var update : (Fn [Bool Bool] Void) picker/cap/configure) (update true false)
+              (close_menu picker) (preview picker)
+              (var resume : (Fn [] Void) picker/cap/resume) (resume))
+            (else ($dom/set_text picker/message (text data/message "Default was not saved.")) (fetch_catalog picker))))))
+
+(fn apply_choice [picker : Picker, selection : Any] : Void
+  (if_yes picker/saving (return))
+  (if_yes ($present? picker/target)
+    (var target_choose : (Fn [Any] Void) picker/target/choose)
+    (target_choose selection) (close_menu picker) (return))
+  (if picker/required
+    (then
+      (var resolved : Any ($json/parse ($json/stringify selection)))
+      (if_yes ($absent? resolved/provider)
+        (set resolved/provider picker/preview/model/provider) (set resolved/model picker/preview/model/model))
+      (save_default picker resolved))
+    (else
+      (var choose : (Fn [Any] Void) picker/cap/choose) (choose selection)
+      (close_menu picker) (preview picker))))
+
+(fn render_models [picker : Picker] : Void
+  (if_yes picker/disposed (return))
+  ($dom/set_text picker/heading (if ($present? picker/target)
+    (then "Choose a trigger model") (elif picker/required "Choose a default model") (else "Choose a model")))
+  ($dom/clear picker/results)
+  (var query ($str/lower ($str/trim ($dom/input_value picker/search))))
+  (var current : Any picker/preview/model)
+  (if_yes (! picker/required)
+    ($dom/append picker/results ($dom/render `(button ^type "button" ^on_click %(fn [event : Any] : Void (apply_choice picker {})) "Follow default"))))
+  (for preset in (items picker/catalog/presets)
+    (var selection : Any {^provider preset/provider ^model preset/model ^effort (text preset/effort "auto")})
+    (var provider (text preset/provider))
+    (var button ($dom/render `(button ^type "button" ^on_click %(fn [event : Any] : Void (apply_choice picker selection)) %(text preset/name))))
+    (set button/disabled (|| (!= (text picker/catalog/providers/%provider/connection/state) "ready")
+      (&& ($present? current/pins/provider) (!= (text current/pins/provider) provider))
+      (&& ($present? current/pins/model) (!= (text current/pins/model) (text preset/model)))))
+    ($dom/append picker/results button))
+  (var providers : PropMap picker/catalog/providers)
+  (for [key entry] in providers
+    (var provider ($to_str key))
+    (var connection : Any entry/connection)
+    (var billing (text connection/billing "unknown"))
+    (var heading ($to_str (text connection/label provider) " · " billing))
+    (if_yes ($present? connection/account) (set heading ($to_str heading " · " (text connection/account))))
+    (if_yes (== provider "claude") (set heading ($to_str heading " · text only · 128 KiB prompt limit")))
+    ($dom/append picker/results ($dom/render `(h4 %heading)))
+    (if (!= (text connection/state) "ready")
+      (then
+        (var instruction (match provider
+          (when "claude" "Connect: run claude auth login, then Refresh.")
+          (when "anthropic" "Connect: configure ANTHROPIC_API_KEY, then Refresh.")
+          (when "openrouter" "Connect: configure OPENROUTER_API_KEY, then Refresh.")
+          (else (text connection/reason "Connection unavailable"))))
+        ($dom/append picker/results ($dom/render `(p %instruction))))
+      (else
+        (for model in (items entry/models)
+          (var id (text model/id))
+          (var label (text model/label id))
+          (var selected (&& (== provider (text current/provider)) (== id (text current/model))))
+          (var show (&& (! (flag model/hidden)) (|| (!= query "") (!= provider "openrouter")
+            (== (text model/source) "file") selected)))
+          (if_yes (&& (!= query "") (! ($str/contains? ($str/lower ($to_str provider " " id " " label)) query))) (set show false))
+          (if_yes show
+            (var choice : Any {^provider provider ^model id ^effort (if picker/required
+              (then ($dom/input_value picker/menu_effort)) (else (text current/requested_effort "auto")))})
+            (var button ($dom/render `(button ^type "button" ^class_name "models-option"
+              ^on_click %(fn [event : Any] : Void (apply_choice picker choice))
+              %($to_str (if selected (then "✓ ") (else "")) label))))
+            (set button/disabled (||
+              (&& ($present? current/pins/provider) (!= (text current/pins/provider) provider))
+              (&& ($present? current/pins/model) (!= (text current/pins/model) id))))
+            (if_yes ($present? model/pricing/prompt)
+              ($dom/append button ($dom/render `(small %($to_str "Input $" (text model/pricing/prompt) "/token · output $" (text model/pricing/completion) "/token")))))
+            ($dom/append picker/results button))))))
+  (if_yes (== query "")
+    ($dom/append picker/results ($dom/render `(p "Search to see all models, including OpenRouter."))))
+  (var custom ($dom/render `(div ^class_name "models-custom")))
+  (var provider_input ($dom/render `(select ^aria-label "Provider for model id")))
+  (for [key entry] in providers
+    (var provider ($to_str key))
+    (if_yes (&& (== (text entry/connection/state) "ready")
+      (|| ($absent? current/pins/provider) (== (text current/pins/provider) provider)))
+      ($dom/append provider_input ($dom/render `(option ^value %provider %(text entry/connection/label provider))))))
+  ($dom/set_input_value provider_input (text current/provider))
+  (var id_input ($dom/render `(input ^type "text" ^placeholder "Model id" ^aria-label "Model id")))
+  (var use_id ($dom/render `(button ^type "button" ^on_click %(fn [event : Any] : Void
+    (var id ($str/trim ($dom/input_value id_input)))
+    (var provider ($dom/input_value provider_input))
+    (if_yes (&& (!= id "") (!= provider ""))
+      (apply_choice picker {^provider provider ^model id ^effort (text current/requested_effort "auto")}))) "Use a model id")))
+  (set use_id/disabled ($present? current/pins/model))
+  ($dom/append custom provider_input) ($dom/append custom id_input) ($dom/append custom use_id)
+  ($dom/append picker/results custom))
+
+(fn open_menu [picker : Picker] : Void
+  (if_yes (|| picker/disposed picker/open) (return))
+  (var claim : (Fn [Str EventTarget (Fn [Bool] Void) EventTarget] Bool) picker/bridge/claim)
+  (var fallback : EventTarget (if ($present? picker/target/button) (then picker/target/button) (else picker/button)))
+  (if_yes (! (claim (text picker/root/harness_owner) picker/panel
+    (fn [restore : Bool] : Void (close_menu picker restore)) fallback))
+    (if_yes ($present? picker/target) (set picker/target nil) (preview picker))
+    (return))
+  (set picker/open true) (set picker/panel/hidden false)
+  ($dom/set_attribute picker/button "aria-expanded" "true")
+  (render_models picker) ($dom/focus picker/search))
+
+(fn open_trigger [picker : Picker, target : Any] : Void
+  (if_yes picker/open (close_menu picker false))
+  (set picker/target target) (set picker/required false)
+  (preview picker) (open_menu picker))
+
+(fn open_requested_trigger [picker : Picker] : Void
+  (if_yes ($absent? picker/cap/trigger_target) (return))
+  (var read : (Fn [] Any) picker/cap/trigger_target)
+  (var target : Any (read))
+  (if_yes (&& ($present? target) ($absent? picker/target)) (open_trigger picker target)))
+
+(fn main [root : EventTarget] : Void
+  (var bridge : Any root/harness_bridge)
+  (var cap : Any bridge/capabilities/models)
+  (var controls ($dom/render `(span ^class_name "models-controls")))
+  (var button ($dom/render `(button ^type "button" ^aria-label "Choose model" ^aria-expanded "false" "Choose model")))
+  (var effort ($dom/render `(select ^aria-label "Reasoning effort")))
+  (var usage ($dom/render `(span ^class_name "models-plan" ^^hidden "Using ChatGPT plan · "
+    (a ^href "https://chatgpt.com/settings/usage" ^target "_blank" ^rel "noopener noreferrer" "Manage usage"))))
+  (var menu_effort ($dom/render `(select ^aria-label "Model menu effort")))
+  (var default_button ($dom/render `(button ^type "button" "Set as default")))
+  (var trigger_controls ($dom/render `(div ^class_name "models-trigger-controls")))
+  (var trigger_button ($dom/render `(button ^type "button" "Default")))
+  (var trigger_effort ($dom/render `(select ^aria-label "Trigger effort")))
+  (var trigger_info ($dom/render `(p ^role "status")))
+  (var panel ($dom/render `(section ^class_name "models-menu" ^role "dialog" ^aria-label "Model selection" ^^hidden)))
+  (var heading ($dom/render `(h3 "Choose a model")))
+  (var search ($dom/render `(input ^type "search" ^placeholder "Search models…" ^aria-label "Search models")))
+  (var results ($dom/render `(div ^class_name "models-results")))
+  (var message ($dom/render `(p ^role "status" ^aria-live "polite")))
+  (var picker (Picker ^root root ^bridge bridge ^cap cap ^controls controls ^button button ^effort effort ^usage usage
+    ^panel panel ^heading heading ^search search ^results results ^message message
+    ^menu_effort menu_effort ^default_button default_button ^target nil
+    ^trigger_controls trigger_controls ^trigger_button trigger_button ^trigger_effort trigger_effort ^trigger_info trigger_info
+    ^catalog nil ^preview nil ^unsubscribe nil ^!disposed ^!open ^!saving ^!loaded ^!required ^serial 0 ^preview_serial 0 ^trigger_serial 0))
+  (var outlet : EventTarget bridge/composer_actions)
+  ($dom/append controls button) ($dom/append controls effort) ($dom/append controls usage) ($dom/append outlet controls)
+  ($dom/append panel heading) ($dom/append panel search) ($dom/append panel results) ($dom/append panel message)
+  ($dom/append panel menu_effort)
+  ($dom/append panel ($dom/render `(button ^type "button" ^on_click %(fn [event : Any] : Void
+    (var selection : Any ($json/parse ($json/stringify (settings picker))))
+    (set selection/effort ($dom/input_value menu_effort))
+    (apply_choice picker selection)) "Apply effort")))
+  ($dom/append root panel)
+  (if_yes ($present? bridge/trigger_model_actions)
+    (var trigger_outlet : EventTarget bridge/trigger_model_actions)
+    (var model_label ($dom/render `(label "Model ")))
+    (var effort_label ($dom/render `(label "Effort ")))
+    ($dom/append model_label trigger_button) ($dom/append effort_label trigger_effort)
+    ($dom/append trigger_controls model_label) ($dom/append trigger_controls effort_label)
+    ($dom/append trigger_controls trigger_info) ($dom/append trigger_outlet trigger_controls)
+    ($dom/add_event_listener trigger_button "click" (fn [event : Any] : Void
+      (var choose : (Fn [Any] Void) cap/choose_trigger)
+      (open_trigger picker {^selection (trigger_settings picker) ^button trigger_button ^choose choose})))
+    ($dom/add_event_listener trigger_effort "change" (fn [event : Any] : Void
+      (var selection : Any ($json/parse ($json/stringify (trigger_settings picker))))
+      (set selection/effort ($dom/input_value trigger_effort))
+      (var choose : (Fn [Any] Void) cap/choose_trigger) (choose selection) (preview_trigger picker))))
+  ($dom/append panel ($dom/render `(button ^type "button" ^on_click %(fn [event : Any] : Void
+    (request picker "POST" "/models/refresh" {} (fn [code : Int, data : Any] : Void (fetch_catalog picker)))) "Refresh")))
+  ($dom/add_event_listener default_button "click" (fn [event : Any] : Void
+    (var model : Any picker/preview/model)
+    (save_default picker {^provider model/provider ^model model/model ^effort ($dom/input_value menu_effort)})))
+  ($dom/append panel default_button)
+  ($dom/append panel ($dom/render `(a ^href "/models" "Manage models…")))
+  ($dom/append panel ($dom/render `(button ^type "button" ^on_click %(fn [event : Any] : Void (close_menu picker)) "Close")))
+  ($dom/add_event_listener button "click" (fn [event : Any] : Void (open_menu picker)))
+  ($dom/add_event_listener search "input" (fn [event : Any] : Void (render_models picker)))
+  ($dom/add_event_listener effort "change" (fn [event : Any] : Void
+    (var selection : Any ($json/parse ($json/stringify (settings picker))))
+    (set selection/effort ($dom/input_value effort))
+    (var choose : (Fn [Any] Void) cap/choose) (choose selection) (preview picker)))
+  (var subscribe : (Fn [(Fn [Str Str Any] Void)] (Fn [] Void)) bridge/subscribe)
+  (set picker/unsubscribe (subscribe (fn [kind : Str, session : Str, data : Any] : Void
+    (match kind
+      (when "models/catalog" (fetch_catalog picker))
+      (when "models/choose" (if picker/loaded (then (open_menu picker)) (else (fetch_catalog picker))))
+      (when "models/trigger" (open_requested_trigger picker))
+      (when "models/trigger-choice" (preview_trigger picker))
+      (when "model/choice" (preview picker))
+      (when "model/admitted" (preview picker))
+      (when "snapshot" (preview picker))
+      (else nil)))))
+  (set root/harness_controller
+    {^update (fn [status : Any] : Void
+       (if (|| ($absent? picker/catalog) (!= (text status/catalog_revision) (text picker/catalog/id)))
+         (then (fetch_catalog picker)) (else (preview picker) (preview_trigger picker))))
+     ^key (fn [event : Any] : Bool
+       (if_yes (&& picker/open (== (text event/key) "Escape")) (close_menu picker) (return true)) false)
+     ^dispose (fn [] : Void
+       (set picker/disposed true)
+       (close_menu picker false)
+       (var unsubscribe : (Fn [] Void) picker/unsubscribe) (unsubscribe)
+       ($dom/remove controls) ($dom/remove trigger_controls) ($dom/remove panel))})
+  (fetch_catalog picker))

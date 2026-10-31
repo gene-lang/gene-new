@@ -1,6 +1,6 @@
 (mod harness_web_contract ^profile web)
 
-(const protocol_version 8)
+(const protocol_version 9)
 (fn api_version [] : Str $"v${protocol_version}")
 (fn api_root [] : Str $"/api/v${protocol_version}")
 (const voice_subprotocol "gene-harness-voice.1")

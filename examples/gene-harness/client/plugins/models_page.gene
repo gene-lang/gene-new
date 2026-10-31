@@ -1,0 +1,437 @@
+(mod models_page_client ^profile web)
+(import [api_root] ^from "../../src/web/contract.gene")
+(import [text flag items] ^from "../../src/common/launcher.gene")
+(import [owner_request owner_connect] ^from "../owner_api.gene")
+
+(type ModelsPage ^props {^root EventTarget ^notice EventTarget ^csrf Str ^file Any ^catalog Any
+  ^ready Bool ^busy Bool ^loading Bool ^serial Int ^poll Int ^await_revision Str ^login Any ^login_serial Int ^accounts Any})
+
+(fn notice [page : ModelsPage, message : Str, error : Bool = false] : Void
+  ($dom/set_text page/notice message) ($dom/set_class page/notice "error" error))
+
+(fn request [page : ModelsPage, method : Str, path : Str, data : Any, done : (Fn [Int Any] Void)] : Void
+  (owner_request page/csrf method ($to_str (api_root) path) data done))
+
+(fn scalar [value : Any] : Str
+  (if_yes ($absent? value) (return ""))
+  (var encoded ($json/stringify value))
+  (if ($str/starts_with? encoded "\"") (then (text value)) (else encoded)))
+
+(fn controls [page : ModelsPage] : Void
+  (var errors (items page/file/errors))
+  (var disabled (|| (! page/ready) page/busy page/loading (> errors/.size 0)))
+  (for id in ["endpoint_add" "model_add"]
+    (var control ($dom/element id)) (set control/disabled disabled))
+  (var refresh ($dom/element "models_refresh"))
+  (set refresh/disabled (|| page/busy page/loading)))
+
+(fn editable [page : ModelsPage] : Bool
+  (if_yes (|| (! page/ready) page/busy page/loading)
+    (notice page "Wait for the current settings request to finish." true) (return false))
+  (var errors (items page/file/errors))
+  (if_yes (> errors/.size 0)
+    (notice page "Correct the reported data-file errors before saving." true) (return false))
+  true)
+
+(fn copy_config [page : ModelsPage] : Any
+  ($json/parse ($json/stringify page/file/config)))
+
+(fn save [page : ModelsPage, config : Any] : Void
+  (if_yes (! (editable page)) (return))
+  (set page/busy true) (controls page)
+  (request page "POST" "/models/settings" {^config config ^expected_digest page/file/digest}
+    (fn [code : Int, data : Any] : Void
+      (set page/busy false)
+      (if (== code 200)
+        (then (notice page "Settings saved.") (set page/poll 0) (load page))
+        (else
+          (controls page)
+          (if (== (text data/code) "revision_conflict")
+            (then (load page) (notice page "Settings changed in another host. Review the refreshed settings, then save again." true))
+            (else (notice page (text data/message "Settings could not be saved. Refresh to inspect the current file.") true))))))))
+
+(fn set_default [page : ModelsPage, provider : Str, model : Str, effort : Str] : Void
+  (if_yes (! (editable page)) (return))
+  (var config : Any (copy_config page))
+  (set config/default {^provider provider ^model model ^effort effort})
+  (save page config))
+
+(fn set_hidden [page : ModelsPage, provider : Str, id : Str, hidden : Bool] : Void
+  (if_yes (! (editable page)) (return))
+  (var config : Any (copy_config page))
+  (var found false)
+  (for model in (items config/models)
+    (if_yes (&& (== (text model/provider) provider) (== (text model/id) id))
+      (set model/hidden hidden) (set found true)))
+  (if_yes (! found)
+    (var overrides (items config/models))
+    (overrides .push {^provider provider ^id id ^hidden hidden})
+    (set config/models overrides))
+  (save page config))
+
+(fn remove_endpoint [page : ModelsPage, provider : Str] : Void
+  (if_yes (! (editable page)) (return))
+  (var config : Any (copy_config page))
+  (var kept : (List Any) [])
+  (for entry in (items config/providers)
+    (if_yes (!= (text entry/name) provider) (kept .push entry)))
+  (set config/providers kept)
+  (save page config))
+
+(fn connection_hint [name : Str, configured : Any] : Str
+  (match name
+    (when "claude" "Run claude auth login, then refresh connections.")
+    (when "chatgpt" "Continue with ChatGPT and authorize plan usage. Identity sign-in alone does not enable inference.")
+    (when "anthropic" "Set ANTHROPIC_API_KEY or run ant auth login, then refresh connections. The API key takes precedence; both routes use API billing.")
+    (when "openrouter" "Connect with OpenRouter or set OPENROUTER_API_KEY. An environment key takes precedence over a saved sign-in.")
+    (else
+      (if ($present? configured/credential/env)
+        (then ($to_str "Configure " (text configured/credential/env) ", then refresh connections."))
+        (else "Check this endpoint and its credential source, then refresh connections.")))))
+
+(fn render_login [page : ModelsPage] : Void
+  (var target ($dom/element "models_login")) ($dom/clear target)
+  (if_yes ($absent? page/login) (return))
+  (var state (text page/login/state))
+  (var chatgpt (== (text page/login/provider) "chatgpt"))
+  (if (|| (== state "pending") (== state "exchanging"))
+    (then
+      (var link (if chatgpt
+        (then `(a ^href %(text page/login/url) ^target "_blank" ^rel "noopener noreferrer"
+          ^data-oai-siwc-button "" "Continue with ChatGPT"))
+        (else `(a ^href %(text page/login/url) ^target "_blank" ^rel "noopener noreferrer" "Continue to OpenRouter"))))
+      ($dom/append target ($dom/render `(section (h2 %(if chatgpt (then "Connect ChatGPT") (else "Connect OpenRouter")))
+        (p %(if chatgpt (then "OpenAI will ask you to authorize ChatGPT plan usage. Review the account, workspace and permissions before continuing.")
+          (else "OpenRouter will ask you to authorize an API key. Requests use your OpenRouter credits.")))
+        %link
+        (button ^type "button" ^on_click %(fn [event : Any] : Void (cancel_login page)) "Cancel sign-in")))))
+    (else
+      ($dom/append target ($dom/render `(p ^role "status"
+        %(if (== state "complete")
+          (then (if (&& chatgpt (! (flag page/login/account/plan_enabled)))
+            (then "ChatGPT identity connected. Plan permission was not granted; reconnect to enable inference.")
+            (else "Connected. Refreshing connections…")))
+          (else ($to_str "Sign-in " state ". You can connect again.")))))))))
+
+(fn poll_login [page : ModelsPage, serial : Int, count : Int] : Void
+  (if_yes (|| (!= serial page/login_serial) ($absent? page/login)) (return))
+  (var id (text page/login/id))
+  (request page "GET" ($to_str "/models/login?id=" ($url/encode_component id)) nil
+    (fn [code : Int, data : Any] : Void
+      (if_yes (!= serial page/login_serial) (return))
+      (set page/login/state (if (== code 200) (then (text data/state)) (else "failed")))
+      (if_yes ($present? data/account) (set page/login/account data/account))
+      (var state (text page/login/state)) (render_login page)
+      (if (|| (== state "pending") (== state "exchanging"))
+        (then
+          (if (< count 305)
+            (then ($time/after 1000.0 (fn [] : Void (poll_login page serial (+ count 1)))))
+            (else (cancel_login page))))
+        (elif (== state "complete") (set page/poll 0) (load page))))))
+
+(fn cancel_login [page : ModelsPage] : Void
+  (if_yes ($absent? page/login) (return))
+  (set page/login_serial (+ page/login_serial 1))
+  (var serial page/login_serial)
+  (request page "DELETE" ($to_str "/models/login?id=" ($url/encode_component (text page/login/id))) nil
+    (fn [code : Int, data : Any] : Void
+      (if_yes (!= serial page/login_serial) (return))
+      (set page/login/state (if (== code 200) (then (text data/state)) (else "failed")))
+      (render_login page)
+      (if_yes (== (text page/login/state) "complete") (load page)))))
+
+(fn connect_provider [page : ModelsPage, provider : Str, account : Str = ""] : Void
+  (if_yes ($present? page/login)
+    (var state (text page/login/state))
+    (if_yes (|| (== state "pending") (== state "exchanging"))
+      (notice page "Finish or cancel the pending sign-in first." true) (return)))
+  (set page/login_serial (+ page/login_serial 1))
+  (var serial page/login_serial)
+  (var body : Any {^provider provider})
+  (if_yes (!= account "") (set body/account account))
+  (request page "POST" "/models/connect" body (fn [code : Int, data : Any] : Void
+    (if_yes (!= serial page/login_serial) (return))
+    (if (!= code 202)
+      (then (notice page (text data/message "Sign-in could not start.") true))
+      (else
+        (set page/login data) (render_login page)
+        ($time/after 1000.0 (fn [] : Void (poll_login page serial 0))))))))
+
+(fn account_action [page : ModelsPage, id : Str, action : Str] : Void
+  (if_yes (|| page/busy page/loading) (return))
+  (set page/busy true) (controls page)
+  (request page "POST" "/models/accounts" {^id id ^action action} (fn [code : Int, data : Any] : Void
+    (set page/busy false) (controls page)
+    (if (== code 200)
+      (then (notice page (text data/message "ChatGPT account selected.")) (load page))
+      (else (notice page (text data/message "Account change could not finish.") true))))))
+
+(fn render_welcome [page : ModelsPage] : Void
+  (var host ($dom/element "models_welcome"))
+  (var selected : Any nil)
+  (for account in (items page/accounts/accounts)
+    (if_yes (&& (== (text account/id) (text page/accounts/active)) (flag account/welcome_pending))
+      (set selected account)))
+  (if_yes ($absent? selected) (set host/hidden true) ($dom/clear host) (return))
+  ($dom/clear host) (set host/hidden false)
+  (var id (text selected/id))
+  (var confirm ($dom/render `(button ^type "button"
+    ^on_click %(fn [event : Any] : Void (account_action page id "acknowledge")) "Got it")))
+  (var card ($dom/render `(section ^role "dialog" ^aria-modal "true" ^aria-labelledby "chatgpt_welcome_title"
+    (h2 ^id "chatgpt_welcome_title" "You're using your ChatGPT plan")
+    (p "Eligible requests in Gene Harness use your ChatGPT plan or credits. Manage app access and limits in ChatGPT Settings → Usage."))))
+  ($dom/append card confirm)
+  ($dom/add_event_listener card "keydown" (fn [event : Any] : Void
+    (if_yes (== (text event/key) "Tab") ($dom/prevent_default event) ($dom/focus confirm))
+    (if_yes (== (text event/key) "Escape") ($dom/prevent_default event) (account_action page id "acknowledge"))))
+  ($dom/append host card) ($dom/focus confirm))
+
+(fn render_accounts [page : ModelsPage] : Void
+  (var target ($dom/element "chatgpt_accounts")) ($dom/clear target)
+  (if_yes ($absent? page/accounts) (return))
+  (var section ($dom/render `(section (h2 "ChatGPT accounts")
+    (p "Accounts and workspaces have separate registrations. Plan usage requires your permission.")
+    (p (a ^href "https://chatgpt.com/settings/usage" ^target "_blank" ^rel "noopener noreferrer" "Manage usage in ChatGPT"))
+    (button ^type "button" ^data-oai-siwc-button ""
+      ^on_click %(fn [event : Any] : Void (connect_provider page "chatgpt")) "Add ChatGPT account"))))
+  (if_yes ($present? page/accounts/error)
+    ($dom/append section ($dom/render `(p ^class_name "error" %(text page/accounts/error)))))
+  (for account in (items page/accounts/accounts)
+    (var id (text account/id))
+    (var active (== id (text page/accounts/active)))
+    (var row ($dom/render `(div ^class_name "connection" (strong %(text account/label))
+      (p %(if active (then "Selected account") (else "Saved account")) " · " %(text account/state)))))
+    (if_yes ($present? account/reason) ($dom/append row ($dom/render `(p %(text account/reason)))))
+    (if_yes (! active)
+      ($dom/append row ($dom/render `(button ^type "button" ^disabled %(|| page/busy page/loading)
+        ^on_click %(fn [event : Any] : Void (account_action page id "select")) "Use account"))))
+    ($dom/append row ($dom/render `(button ^type "button" ^data-oai-siwc-button ""
+      ^on_click %(fn [event : Any] : Void (connect_provider page "chatgpt" id)) "Reconnect")))
+    (if_yes (! (flag account/signed_out))
+      ($dom/append row ($dom/render `(button ^type "button" ^disabled %(|| page/busy page/loading)
+        ^on_click %(fn [event : Any] : Void (account_action page id "sign_out")) "Sign out"))))
+    ($dom/append section row))
+  ($dom/append target section)
+  (render_welcome page))
+
+(fn render [page : ModelsPage] : Void
+  (var errors ($dom/element "models_errors")) ($dom/clear errors)
+  (for issue in (items page/file/errors)
+    (var message (text issue/reason))
+    (if_yes ($present? issue/provider) (set message ($to_str (text issue/provider) ": " message)))
+    ($dom/append errors ($dom/render `(p ^class_name "error" %message))))
+  (if_yes ($present? page/file/endpoint_error)
+    ($dom/append errors ($dom/render `(p ^class_name "error" %(text page/file/endpoint_error)))))
+  ($dom/set_text ($dom/element "models_path") (text page/file/path))
+  (var current : Any page/file/config/default)
+  (var default_label "Automatic")
+  (if_yes ($present? current/provider)
+    (set default_label ($to_str (text current/provider) "/" (text current/model) " · " (text current/effort "auto"))))
+  ($dom/set_text ($dom/element "models_default") default_label)
+  (var target ($dom/element "models_connections")) ($dom/clear target)
+  (var query ($str/lower ($str/trim ($dom/input_value ($dom/element "models_search")))))
+  (var providers : PropMap page/catalog/providers)
+  (var errors_list (items page/file/errors))
+  (var mutations_disabled (|| (! page/ready) page/loading page/busy (> errors_list/.size 0)))
+  (var provider_input ($dom/element "model_provider"))
+  (var previous_provider ($dom/input_value provider_input))
+  (var first_provider "") (var retained_provider false)
+  ($dom/clear provider_input)
+  (for [key entry] in providers
+    (var provider ($to_str key))
+    (if_yes (== first_provider "") (set first_provider provider))
+    (if_yes (== provider previous_provider) (set retained_provider true))
+    ($dom/append provider_input ($dom/render `(option ^value %provider %provider)))
+    (var configured : Any nil)
+    (for item in (items page/file/config/providers)
+      (if_yes (== (text item/name) provider) (set configured item)))
+    (var connection : Any entry/connection)
+    (var card ($dom/render `(section ^class_name "connection")))
+    ($dom/append card ($dom/render `(h3 %(text connection/label provider))))
+    (var label ($to_str (text connection/state "unavailable") " · " (text connection/billing "unknown")))
+    (if_yes ($present? connection/account) (set label ($to_str label " · " (text connection/account))))
+    (if_yes (flag entry/stale) (set label ($to_str label " · stale")))
+    ($dom/append card ($dom/render `(p ^class_name "muted" %label)))
+    (if_yes ($present? connection/reason) ($dom/append card ($dom/render `(p ^role "status" %(text connection/reason)))))
+    (if_yes (!= (text connection/state) "ready")
+      ($dom/append card ($dom/render `(details (summary "Connect") (p %(connection_hint provider configured))))))
+    (if_yes (== provider "openrouter")
+      ($dom/append card ($dom/render `(button ^type "button"
+        ^on_click %(fn [event : Any] : Void (connect_provider page provider)) "Connect OpenRouter"))))
+    (if_yes (== provider "chatgpt")
+      ($dom/append card ($dom/render `(button ^type "button" ^data-oai-siwc-button ""
+        ^on_click %(fn [event : Any] : Void (connect_provider page provider)) "Continue with ChatGPT"))))
+    (if_yes ($present? configured)
+      ($dom/append card ($dom/render `(p (code %(text configured/base_url)))))
+      ($dom/append card ($dom/render `(button ^type "button" ^disabled %mutations_disabled
+        ^on_click %(fn [event : Any] : Void (remove_endpoint page provider)) "Remove endpoint"))))
+    (var body ($dom/render `(tbody)))
+    (var count 0)
+    (for model in (items entry/models)
+      (var id (text model/id)) (var title (text model/label id))
+      (if_yes (&& (!= query "") (! ($str/contains? ($str/lower ($to_str provider " " id " " title)) query))) (continue))
+      (set count (+ count 1))
+      (var hidden (flag model/hidden))
+      (var row ($dom/render `(tr)))
+      (var description ($dom/render `(td ^class_name "model_id" (strong %title) (small %id))))
+      (if_yes ($present? model/input)
+        (var input_types : (List Str) model/input)
+        ($dom/append description ($dom/render `(small %($str/join input_types " · ")))))
+      (if_yes ($present? model/max_output)
+        ($dom/append description ($dom/render `(small %($to_str "Output cap " (scalar model/max_output) " tokens")))))
+      (if_yes (== provider "claude")
+        ($dom/append description ($dom/render `(small "Text only · 128 KiB prompt limit"))))
+      (if_yes ($present? model/pricing/prompt)
+        ($dom/append description ($dom/render `(small %($to_str "Input $" (scalar model/pricing/prompt) "/token · output $" (scalar model/pricing/completion) "/token")))))
+      ($dom/append row description)
+      ($dom/append row ($dom/render `(td %(if ($present? model/window) (then ($to_str (scalar model/window) " tokens")) (else "Context unknown")))))
+      (var visibility ($dom/render `(td)))
+      ($dom/append visibility ($dom/render `(button ^type "button" ^disabled %mutations_disabled
+        ^on_click %(fn [event : Any] : Void (set_hidden page provider id (! hidden))) %(if hidden (then "Show in picker") (else "Hide from picker")))))
+      ($dom/append row visibility)
+      (var choice ($dom/render `(td)))
+      (var form ($dom/render `(form ^class_name "default_form")))
+      (var effort ($dom/render `(select ^aria-label %($to_str "Requested effort for " title))))
+      (var levels : (List Any) ["auto"])
+      (for level in (items model/efforts) (levels .push level))
+      (var requested (if (&& (== (text current/provider) provider) (== (text current/model) id))
+        (then (text current/effort "auto")) (else "auto")))
+      (var found false)
+      (for level in levels
+        (var value (text level))
+        (if_yes (== value requested) (set found true))
+        ($dom/append effort ($dom/render `(option ^value %value %value))))
+      (if_yes (! found)
+        ($dom/append effort ($dom/render `(option ^value %requested %($to_str requested " (requested)")))))
+      ($dom/set_input_value effort requested)
+      (var disabled (|| mutations_disabled (!= (text connection/state) "ready")))
+      (set effort/disabled disabled)
+      ($dom/append form effort)
+      ($dom/append form ($dom/render `(button ^type "submit" ^disabled %disabled "Set as default")))
+      ($dom/add_event_listener form "submit" (fn [event : Any] : Void
+        ($dom/prevent_default event) (set_default page provider id ($dom/input_value effort))))
+      ($dom/append choice form) ($dom/append row choice) ($dom/append body row))
+    (if (> count 0)
+      (then
+        (var table ($dom/render `(table
+          (thead (tr (th "Model") (th "Context") (th "Visibility") (th "Requested effort / default"))))))
+        ($dom/append table body) ($dom/append card table))
+      (else ($dom/append card ($dom/render `(p ^class_name "muted" "No matching models. Add an id below or refresh discovery.")))))
+    ($dom/append target card))
+  (for entry in (items page/file/config/providers)
+    (var provider (text entry/name))
+    (if_yes ($absent? providers/%provider)
+      ($dom/append target ($dom/render `(section ^class_name "connection"
+        (h3 %provider) (p "Provider contribution is unavailable. Inspect its plugin or refresh after fixing the file.")
+        (p (code %(text entry/base_url))) (a ^href "/plugins" "Inspect plugins")
+        (button ^type "button" ^disabled %mutations_disabled
+          ^on_click %(fn [event : Any] : Void (remove_endpoint page provider)) "Remove endpoint"))))))
+  ($dom/set_input_value provider_input (if retained_provider (then previous_provider) (else first_provider)))
+  (render_accounts page)
+  (controls page))
+
+(fn finish_load [page : ModelsPage, file : Any, catalog : Any] : Void
+  (set page/file file) (set page/catalog catalog) (set page/ready true) (set page/loading false)
+  (render page)
+  (var pending (|| (flag catalog/refreshing)
+    (&& (!= page/await_revision "") (== page/await_revision (text catalog/id)))))
+  (var providers : PropMap catalog/providers)
+  (for [name entry] in providers
+    (if_yes ($str/starts_with? (text entry/connection/reason) "Checking") (set pending true)))
+  (if (&& pending (< page/poll 30))
+    (then
+      (set page/poll (+ page/poll 1))
+      (var serial page/serial)
+      ($time/after 400.0 (fn [] : Void (if_yes (&& (== serial page/serial) (! page/busy)) (load page)))))
+    (else (set page/await_revision "") (set page/poll 0))))
+
+(fn failed_load [page : ModelsPage, code : Int, data : Any] : Void
+  (set page/loading false) (set page/ready false) (controls page)
+  ($dom/clear ($dom/element "models_connections"))
+  (notice page (if (== code 401)
+    (then "Open this workspace's owner link, then return to Models.")
+    (else (text data/message "Models are unavailable. Return to the workspace and inspect its plugins."))) true))
+
+(fn load [page : ModelsPage] : Void
+  (set page/serial (+ page/serial 1)) (var serial page/serial)
+  (set page/loading true) (controls page)
+  (request page "GET" "/status" nil (fn [code : Int, status : Any] : Void
+    (if_yes (!= serial page/serial) (return))
+    (if_yes (!= code 200) (failed_load page code status) (return))
+    (set page/csrf (text status/csrf))
+    ($dom/set_text ($dom/element "models_workspace") (text status/workspace))
+    (request page "GET" "/models/settings" nil (fn [loaded : Int, file : Any] : Void
+      (if_yes (!= serial page/serial) (return))
+      (if_yes (!= loaded 200) (failed_load page loaded file) (return))
+      (request page "GET" "/models" nil (fn [ready : Int, catalog : Any] : Void
+        (if_yes (!= serial page/serial) (return))
+        (if_yes (!= ready 200) (failed_load page ready catalog) (return))
+        (if (!= (text file/digest) (text catalog/digest))
+          (then
+            (set page/loading false) (controls page)
+            (notice page "Settings changed while loading. Refresh to review the current file." true))
+          (else
+            (request page "GET" "/models/accounts" nil (fn [code : Int, accounts : Any] : Void
+              (if_yes (!= serial page/serial) (return))
+              (if (!= code 200)
+                (then (failed_load page code accounts))
+                (else (set page/accounts accounts) (finish_load page file catalog))))))))))))))
+
+(fn add_endpoint [page : ModelsPage] : Void
+  (if_yes (! (editable page)) (return))
+  (var config : Any (copy_config page))
+  (var entry : Any {^name ($str/trim ($dom/input_value ($dom/element "endpoint_name")))
+    ^adapter ($dom/input_value ($dom/element "endpoint_adapter"))
+    ^base_url ($str/trim ($dom/input_value ($dom/element "endpoint_url")))})
+  (var env ($str/trim ($dom/input_value ($dom/element "endpoint_env"))))
+  (if_yes (!= env "") (set entry/credential {^env env}))
+  (var discover ($dom/element "endpoint_discover")) (var checked : Bool discover/checked)
+  (set entry/discover checked)
+  (var model ($str/trim ($dom/input_value ($dom/element "endpoint_model"))))
+  (if_yes (!= model "") (set entry/models (items [{^id model}])))
+  (var entries (items config/providers)) (entries .push entry) (set config/providers entries)
+  (save page config))
+
+(fn add_model [page : ModelsPage] : Void
+  (if_yes (! (editable page)) (return))
+  (try
+    (var config : Any (copy_config page))
+    (var provider ($dom/input_value ($dom/element "model_provider")))
+    (var id ($str/trim ($dom/input_value ($dom/element "model_id"))))
+    (var model : Any {^provider provider ^id id})
+    (var entries (items config/models)) (var found false)
+    (for existing in entries
+      (if_yes (&& (== (text existing/provider) provider) (== (text existing/id) id))
+        (set model existing) (set found true)))
+    (var label ($str/trim ($dom/input_value ($dom/element "model_label"))))
+    (if_yes (!= label "") (set model/label label))
+    (var window ($str/trim ($dom/input_value ($dom/element "model_window"))))
+    (if_yes (!= window "") (var number : Int ($json/parse window)) (set model/window number))
+    (var effort_text ($str/trim ($dom/input_value ($dom/element "model_efforts"))))
+    (if_yes (!= effort_text "")
+      (var efforts : (List Str) [])
+      (for level in ($str/split effort_text " ") (if_yes (!= level "") (efforts .push level)))
+      (set model/efforts efforts))
+    (var default_effort ($str/trim ($dom/input_value ($dom/element "model_default_effort"))))
+    (if_yes (!= default_effort "") (set model/default_effort default_effort))
+    (if_yes (! found) (entries .push model))
+    (set config/models entries) (save page config)
+  catch Any (notice page "Check the model's context window and effort values." true)))
+
+(fn main [root : EventTarget] : Void
+  (var page (ModelsPage ^root root ^notice ($dom/element "models_notice") ^csrf "" ^file nil ^catalog nil
+    ^!ready ^!busy ^!loading ^serial 0 ^poll 0 ^await_revision "" ^login nil ^login_serial 0 ^accounts nil))
+  ($dom/add_event_listener ($dom/element "models_search") "input" (fn [event : Any] : Void
+    (if_yes ($present? page/catalog) (render page))))
+  ($dom/add_event_listener ($dom/element "models_refresh") "click" (fn [event : Any] : Void
+    (if_yes (|| page/busy page/loading) (return))
+    (set page/await_revision (text page/catalog/id)) (set page/poll 0)
+    (request page "POST" "/models/refresh" {} (fn [code : Int, data : Any] : Void
+      (if (== code 202) (then (notice page "Refreshing connections…") (load page))
+        (else (notice page (text data/message) true)))))))
+  ($dom/add_event_listener ($dom/element "models_endpoint_form") "submit" (fn [event : Any] : Void
+    ($dom/prevent_default event) (add_endpoint page)))
+  ($dom/add_event_listener ($dom/element "models_model_form") "submit" (fn [event : Any] : Void
+    ($dom/prevent_default event) (add_model page)))
+  (owner_connect "/models" (fn [code : Int, data : Any] : Void
+    (if (== code 200) (then (load page)) (else (failed_load page code data))))))

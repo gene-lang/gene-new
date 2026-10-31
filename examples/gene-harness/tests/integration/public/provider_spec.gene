@@ -1,0 +1,68 @@
+(import $test [describe it])
+(import [resolve_credential] ^from "../../../src/public/provider")
+(import [isolated run_spec fixture_path] ^from "../../support")
+(import [api_connection] ^from "../../../src/public/provider_discovery")
+(import $net/http [listen serve stop json])
+
+(describe "Transport credentials"
+  (it "resolves environment credentials without exposing their values in failures" []
+    ($assert (== (resolve_credential ^environment {^SPEC_KEY "fixture-token"}
+      {^env "SPEC_KEY"}) "fixture-token"))
+    ($assert ($absent? (resolve_credential nil)))
+    (for source in [{^env "MISSING"} {^api_key "SECRET_SENTINEL"}
+                   {^env "SPEC_KEY" ^command ["unused"]} {^command []}]
+      (let failure (try (resolve_credential ^environment {} source) "accepted" catch Any $err/message))
+      ($assert (!= failure "accepted"))
+      ($assert (! ($str/contains? failure "SECRET_SENTINEL")))))
+
+  (it "bounds real credential commands and omits their diagnostics" []
+    (isolated this_mod/.path "bounds real credential commands and omits their diagnostics"
+      (fn [workspace]
+        (let runner ($os/executable_path))
+        (let fixture (fixture_path "credential_probe"))
+        (let secret (resolve_credential {^command [runner "run" fixture "ok"]}))
+        ($assert (== secret "fixture-token"))
+        (for [mode timeout] in [["fail" 5000] ["slow" 25]]
+          (let failure (try
+            (resolve_credential ^timeout_ms timeout {^command [runner "run" fixture mode]})
+            "accepted" catch Any $err/message))
+          ($assert (!= failure "accepted"))
+          ($assert (! ($str/contains? failure "SECRET_SENTINEL")))
+          ($assert (! ($str/contains? failure "fixture-token"))))))))
+
+(describe "Authenticated discovery probes"
+  (it "checks an authenticated endpoint without inference and handles rejection or stale results" []
+    (isolated this_mod/.path "checks an authenticated endpoint without inference and handles rejection or stale results"
+      (fn [workspace]
+        (let server (listen ^host "127.0.0.1" ^port 0))
+        (let credential {^command [($os/executable_path) "run" (fixture_path "credential_probe") "ok"]})
+        (let seen ($cell 0))
+        (let tester (spawn ^lane root
+          (try
+            (let base $"http://127.0.0.1:${server/port}")
+            (let ready (api_connection "fixture" $"${base}/ready" credential))
+            ($assert (== ready/state "ready"))
+            ($assert (== ready/limit_remaining 25))
+            (let rejected (api_connection "fixture" $"${base}/rejected" credential))
+            ($assert (== rejected/state "expired"))
+            (let failed (api_connection "fixture" $"${base}/failed" credential))
+            ($assert failed/stale)
+            (let malformed (api_connection "fixture" $"${base}/malformed" credential))
+            ($assert malformed/stale)
+            ($assert (== seen/.get 4))
+          ensure (stop server))))
+        (serve ^handler (fn [request]
+          (seen .set (+ seen/.get 1))
+          ($assert (== request/method "GET") "discovery attempted a paid inference operation")
+          ($assert (== request/headers/authorization "Bearer fixture-token"))
+          (match request/path
+            (when "/ready" (json 200 "{\"data\":{\"limit_remaining\":25}}"))
+            (when "/rejected" (json 401 "{\"error\":\"SECRET_SENTINEL\"}"))
+            (when "/failed" (json 503 "{\"error\":\"SECRET_SENTINEL\"}"))
+            (else (json 200 "bad JSON SECRET_SENTINEL")))) server)
+        (match tester/.join
+          (when (TaskOutcome/ok value) value)
+          (when (TaskOutcome/error error) (fail error))
+          (else ($assert false "discovery probe fixture did not finish")))))))
+
+(fn main [args] : Int (run_spec args))

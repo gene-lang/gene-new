@@ -67,10 +67,10 @@
             (response {^^ok ^channel "C123" ^permalink "https://example.slack.com/archives/C123/p1000001"}))))
           (let input {^account "dobi" ^team "T123" ^channel "C123" ^thread "1.000001"})
           (for index in [1 2]
-            ($assert (== (/body/url (channel_request channels "POST" "/api/v8/channels/thread" input))
+            ($assert (== (/body/url (channel_request channels "POST" "/api/v9/channels/thread" input))
               "https://example.slack.com/archives/C123/p1000001?thread_ts=1.000001&cid=C123")))
           ($assert (== calls/.get 1))
-          ($assert (try (channel_request channels "POST" "/api/v8/channels/thread"
+          ($assert (try (channel_request channels "POST" "/api/v9/channels/thread"
             (input .assoc "channel" "COTHER")) false catch ChannelError (== $err/code "forbidden")))
           (mutate channels/owner (fn [state]
             (state/deliveries .put "new-reply"
@@ -79,7 +79,7 @@
             (calls .set (+ calls/.get 1))
             ($assert (== request/params/message_ts "2.000001"))
             (response {^^ok ^channel "C123" ^permalink "https://example.slack.com/archives/C123/p2000001"})))
-          ($assert (== (/body/url (channel_request channels "POST" "/api/v8/channels/thread" input))
+          ($assert (== (/body/url (channel_request channels "POST" "/api/v9/channels/thread" input))
             "https://example.slack.com/archives/C123/p2000001?thread_ts=1.000001&cid=C123"))
           ($assert (== calls/.get 2)))))))
 
@@ -96,9 +96,9 @@
             (response {^^ok ^channel {^id "C123" ^name "team-dobi"}}))))
           (let input {^account "dobi" ^team "T123" ^channel "C123"})
           (for index in [1 2]
-            ($assert (== (/body/name (channel_request channels "POST" "/api/v8/channels/channel" input)) "team-dobi")))
+            ($assert (== (/body/name (channel_request channels "POST" "/api/v9/channels/channel" input)) "team-dobi")))
           ($assert (== calls/.get 1))
-          ($assert (try (channel_request channels "POST" "/api/v8/channels/channel"
+          ($assert (try (channel_request channels "POST" "/api/v9/channels/channel"
             (input .assoc "channel" "COTHER")) false catch ChannelError (== $err/code "forbidden")))
           ($assert (== calls/.get 1)))))))
 
@@ -112,9 +112,9 @@
             (if (== request/method "users.info")
               (response {^!ok ^error "missing_scope"})
               (response {^^ok ^channel {^id "C123" ^name "team-dobi"}})))))
-          ($assert (== (/body/name (channel_request channels "POST" "/api/v8/channels/user"
+          ($assert (== (/body/name (channel_request channels "POST" "/api/v9/channels/user"
             {^account "dobi" ^team "T123" ^author "UOWNER"})) ""))
-          ($assert (== (/body/name (channel_request channels "POST" "/api/v8/channels/channel"
+          ($assert (== (/body/name (channel_request channels "POST" "/api/v9/channels/channel"
             {^account "dobi" ^team "T123" ^channel "C123"})) "team-dobi"))
           ($assert (== calls/.get ["users.info" "conversations.info"])))))))
 
@@ -139,12 +139,12 @@
             (response {^^ok ^user {^id "UOWNER" ^profile {^real_name "Guoliang Cao"}}}))))
           (let input {^account "dobi" ^team "T123" ^author "UOWNER"})
           (for index in [1 2]
-            (let result (channel_request channels "POST" "/api/v8/channels/user" input))
+            (let result (channel_request channels "POST" "/api/v9/channels/user" input))
             ($assert (== result/body/name "Guoliang Cao")))
           ($assert (== calls/.get 1))
           ($assert (try (lookup_user channels/users channels/owner (input .assoc "team" "TOTHER")) false
             catch ChannelError (== $err/code "forbidden")))
-          ($assert (try (channel_request channels "POST" "/api/v8/channels/user"
+          ($assert (try (channel_request channels "POST" "/api/v9/channels/user"
             (input .assoc "account" "other")) false catch ChannelError (== $err/code "forbidden")))
           ($assert (== calls/.get 1)))))))
 

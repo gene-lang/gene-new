@@ -1,0 +1,149 @@
+(import $test [describe it])
+(import [isolated run_spec test_controller] ^from "../../support")
+(import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
+(import [baseline_profile] ^from "../../../src/profiles/baseline")
+(import [Plugin PluginHost] ^from "../../../src/plugin_api")
+(import [put_cordis_plugin row] ^from "../../../src/kernel")
+(import [catalog_snapshot] ^from "../../../src/agents/provider_selection")
+(import [open_trigger_manager close_trigger_manager create_trigger update_trigger list_triggers
+  tick_triggers list_occurrences TriggerError] ^from "../../../src/runtime/triggers")
+(import [update_session require_record] ^from "../../../src/runtime/sessions")
+(import [round_receipt] ^from "../../../src/runtime/round_controller")
+(import [list_source_messages] ^from "../../../src/notifications/publisher")
+
+(fn fixture [calls]
+  (Plugin ^id "trigger_model_fixture" ^provides [["providers" "fixture"] ["providers" "blocked"]]
+    ^activate (fn [host]
+      (for name in ["fixture" "blocked"]
+        (host .PluginHost:contribute "providers"
+          {^name name ^doc "Hermetic trigger selection fixture."
+           ^builtin_models [{^id "small" ^efforts ["low"] ^default_effort "low" ^window 64000}
+                            {^id "large" ^efforts ["low" "high"] ^default_effort "high" ^window 500000}]
+           ^connection (fn [] {^state (if (== name "blocked") "sign_in_required" "ready")
+             ^label name ^billing "local" ^reason (if (== name "blocked") "Fixture signed out" nil)})
+           ^configure (fn [model effort timeout] {^model (?? model "small") ^effort effort ^timeout_ms timeout})
+           ^prepare (fn [call] call)
+           ^send (fn [call]
+             (calls/.get .push call/settings)
+             {^text "(Outcome ^^done ^reply \"checked\")"})})))))
+
+(fn prepare [runtime, calls]
+  (put_cordis_plugin runtime/h (fixture calls) {^^host ^limits runtime/profile/limits})
+  (let config ($serde/read_data ($fs/read_text $"${runtime/state_root}/config.gene")))
+  (config .put "provider" "fixture") (config .put "model" "small") (config .put "effort" "auto")
+  ($fs/write_text_atomic $"${runtime/state_root}/config.gene" ($serde/write_data config))
+  (let deadline (+ ($os/monotonic_ms) 5000))
+  (loop
+    (let catalog (catalog_snapshot runtime))
+    (if (== catalog/providers/blocked/connection/state "sign_in_required") (break))
+    ($assert (< ($os/monotonic_ms) deadline) "fixture connection was not discovered")
+    ($sleep 10)))
+
+(fn settle [controller]
+  (for [session frame] in controller/rounds/.get frame/watcher/.join))
+
+(fn declared_trigger [model]
+  (Plugin ^id "declared_trigger" ^provides [["triggers" "declared"]]
+    ^activate (fn [host]
+      (host .PluginHost:contribute "triggers" {^id "declared" ^kind "scheduled" ^at 999999 ^request "later"
+        ^model_settings {^provider "fixture" ^model model ^effort "low"}}))))
+
+(describe "Trigger model choices"
+  (it "keeps blocked work due, notifies once and still runs healthy occurrences" []
+    (isolated this_mod/.path "keeps blocked work due, notifies once and still runs healthy occurrences"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (let controller (test_controller runtime nil))
+        (let calls ($cell []))
+        (prepare runtime calls)
+        (let manager (open_trigger_manager runtime controller ^!start ^!boot ^now 0))
+        (try
+          (let blocked (create_trigger manager {^id "a_blocked" ^kind "heartbeat" ^every_ms 100 ^request "blocked"
+            ^model_settings {^provider "blocked" ^model "small" ^effort "low"}} ^now 0))
+          ($assert (! blocked/warnings/.empty?) "signed-out choice did not return a warning")
+          (create_trigger manager {^id "b_healthy" ^kind "heartbeat" ^every_ms 100 ^request "healthy"} ^now 0)
+          (tick_triggers manager ^now 100)
+          (settle controller)
+          (tick_triggers manager ^now 100)
+          ($assert (== calls/.get/.size 1) "a blocked occurrence prevented healthy work")
+          (let waiting (list_occurrences manager ^trigger "a_blocked"))
+          ($assert (== waiting/0/state "due"))
+          ($assert ($str/contains? waiting/0/waiting_reason "signed out"))
+          (let definitions (list_triggers manager))
+          ($assert ($str/contains? definitions/0/waiting_reason "signed out"))
+          (let messages (list_source_messages runtime/services/values/inbox "triggers"))
+          ($assert (== messages/.size 1) "blocked trigger did not publish one workspace notification")
+          (tick_triggers manager ^now 100)
+          (let repeated (list_source_messages runtime/services/values/inbox "triggers"))
+          ($assert (== repeated/.size 1))
+          ($assert (== repeated/0/revision messages/0/revision) "each polling tick renewed the same warning")
+          (update_trigger manager "a_blocked" {})
+          (tick_triggers manager ^now 100)
+          (settle controller)
+          (tick_triggers manager ^now 100)
+          ($assert (== calls/.get/.size 2) "clearing the pin did not release already due work")
+          (let released (list_occurrences manager ^trigger "a_blocked"))
+          ($assert (== released/0/state "finished"))
+          ($assert ($absent? released/0/waiting_reason))
+          (update_trigger manager "a_blocked" {^model_settings {^provider "blocked" ^model "small"}})
+          (tick_triggers manager ^now 200) (settle controller) (tick_triggers manager ^now 200)
+          (let blocked_again (list_source_messages runtime/services/values/inbox "triggers"))
+          ($assert (== blocked_again/.size 1))
+          ($assert (> blocked_again/0/revision messages/0/revision) "a later blocking incident did not renew its notification")
+        ensure (close_trigger_manager manager) (close_runtime runtime)))))
+
+  (it "resolves every firing independently of a continuing session and validates edits" []
+    (isolated this_mod/.path "resolves every firing independently of a continuing session and validates edits"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (let controller (test_controller runtime nil))
+        (let calls ($cell []))
+        (prepare runtime calls)
+        (let manager (open_trigger_manager runtime controller ^!start ^!boot ^now 0))
+        (try
+          (for invalid in [{^model "ignored"} {^model_settings {^model "unscoped"}}
+            {^model_settings {^provider "missing" ^model "small"}}]
+            (let input {^id "invalid" ^kind "heartbeat" ^every_ms 100 ^request "work"})
+            (for [key value] in invalid (input .put key value))
+            ($assert (try (create_trigger manager input ^now 0) false
+              catch TriggerError (== $err/code "invalid_request")) "invalid trigger fields were accepted"))
+          (let original (create_trigger manager {^id "repeat" ^kind "heartbeat" ^every_ms 100
+            ^request "work" ^^continue_session} ^now 0))
+          (tick_triggers manager ^now 100) (settle controller) (tick_triggers manager ^now 100)
+          (let first (list_occurrences manager ^trigger "repeat"))
+          (let session first/0/session)
+          (update_session runtime/sessions session {^model_settings {^provider "fixture" ^model "large" ^effort "high"}})
+          (tick_triggers manager ^now 200) (settle controller) (tick_triggers manager ^now 200)
+          ($assert (== calls/.get/1/model "small") "browser pin changed an unattended trigger")
+          ($assert (== calls/.get/1/effort "low"))
+          (let session_pin (/model_settings (require_record runtime/sessions session)))
+          ($assert (== session_pin/model "large") "trigger overwrote the interactive session pin")
+          (let pinned (update_trigger manager "repeat" {^model_settings {^provider "fixture" ^model "large" ^effort "high"}}))
+          ($assert (== pinned/created_ms original/created_ms))
+          ($assert (== pinned/next_ms 300) "model edit reset the schedule")
+          (tick_triggers manager ^now 300) (settle controller) (tick_triggers manager ^now 300)
+          ($assert (== calls/.get/2/model "large"))
+          (update_trigger manager "repeat" {})
+          (tick_triggers manager ^now 400) (settle controller) (tick_triggers manager ^now 400)
+          ($assert (== calls/.get/3/model "small") "clearing a trigger pin retained the session model")
+          (let later (list_occurrences manager ^trigger "repeat"))
+          ($assert (== later/3/session session) "continue_session did not reuse its session")
+          (let receipt (round_receipt controller session later/3/round))
+          ($assert (== receipt/selection/model "small"))
+          ($assert (== receipt/selection/requested_effort "auto"))
+          (put_cordis_plugin runtime/h (declared_trigger "large") {^^host ^limits runtime/profile/limits})
+          (tick_triggers manager ^now 400)
+          (let declared (manager/definitions/.get .get "declared"))
+          ($assert (== declared/model_settings/model "large"))
+          (update_trigger manager "declared" {^model_settings {^provider "fixture" ^model "large" ^effort "high"}})
+          (tick_triggers manager ^now 400)
+          (let edited (manager/definitions/.get .get "declared"))
+          ($assert (== edited/model_settings/effort "high"))
+          (put_cordis_plugin ^^replace runtime/h (declared_trigger "small") {^^host ^limits runtime/profile/limits})
+          (tick_triggers manager ^now 400)
+          (let changed (manager/definitions/.get .get "declared"))
+          ($assert (!= changed/plugin_fingerprint declared/plugin_fingerprint))
+          ($assert (== changed/model_settings/model "small") "model-only plugin edit was not synchronized")
+        ensure (close_trigger_manager manager) (close_runtime runtime))))))
+
+(fn main [args] : Int (run_spec args))

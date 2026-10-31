@@ -191,7 +191,7 @@ c = client(); c.selected = "";
 c.ui = create_ui(element("ui_root"), true, c.notices, noop, noop, noop, noop, "light");
 c.prompt.value = "Start a new project";
 harness.send(c);
-assert.equal(requests[0].path, "/api/v8/sessions");
+assert.equal(requests[0].path, "/api/v9/sessions");
 requests[0].reply(201, {id: "new-session"});
 await settled();
 assert.equal(c.selected, "new-session");
@@ -306,7 +306,7 @@ assert.equal(navigationResult,200n);
 assert.equal(c.selected,"target");
 assert.equal(c.title.textContent,"Fresh target");
 assert.equal(c.tabs.find(tab=>tab.id==="target").cache.session.revision,"4");
-assert.equal(requests.filter(request=>request.path==="/api/v8/sessions/target/snapshot").length,1);
+assert.equal(requests.filter(request=>request.path==="/api/v9/sessions/target/snapshot").length,1);
 
 // An already-open, connected tab keeps its live cache: frames delivered while
 // the navigation GET was in flight must not be replaced by the older snapshot.
@@ -367,7 +367,7 @@ harness.render_transcript(c);
 let panel=descendants(c.transcript).find(x=>x.attributes.class==='execution live_output');
 assert.equal(panel.hidden,true);
 const tab=harness.session_tab(c,'s');
-const frame=(sequence,id,text,extra={})=>JSON.stringify({protocol:8,epoch:'live-host',sequence:String(sequence),
+const frame=(sequence,id,text,extra={})=>JSON.stringify({protocol:9,epoch:'live-host',sequence:String(sequence),
   type:'console',session:'s',data:{id,round_id:'r',turn:1,text,phase:'console',...extra}});
 const beforeTimers=timers.filter(t=>t.ms===40).length;
 harness.stream_message(c,tab,frame(1,'s/log1','<script>literal</script>\n'));
@@ -394,7 +394,7 @@ assert.equal(descendants(c.transcript).filter(x=>x.attributes.class==='step').le
 const liveKey=outputModel.turn_output_key('s','r',1n);
 assert.ok(outputModel.output_entry(harness.live_store(c),liveKey));
 const bg=harness.session_tab(c,'background');
-const bgFrame={protocol:8,epoch:'live-host',sequence:'1',type:'console',session:'background',
+const bgFrame={protocol:9,epoch:'live-host',sequence:'1',type:'console',session:'background',
   data:{id:'bg/log',round_id:'r',turn:1,text:'background output',phase:'console'}};
 harness.stream_message(c,bg,JSON.stringify(bgFrame));
 assert.equal(outputModel.output_entry(harness.live_store(c),outputModel.turn_output_key('background','r',1n)).text,'background output');
@@ -495,7 +495,7 @@ harness.apply_run(c,'s',paused);
 const resumeButtons=descendants(c.transcript).filter(node=>node.tag==='button'&&['Continue','Continue until finished'].includes(node.textContent));
 assert.equal(resumeButtons.length,2);
 resumeButtons[1].dispatchEvent(new Event('click'));
-assert.equal(requests.at(-1).path,'/api/v8/sessions/s/rounds/projection/continue');
+assert.equal(requests.at(-1).path,'/api/v9/sessions/s/rounds/projection/continue');
 assert.equal(JSON.parse(requests.at(-1).options.body).mode,'automatic');
 assert.equal(descendants(c.transcript).some(node=>node.textContent==='Edit and retry'),false);
 harness.apply_run(c,'s',{...projectedRound,id:'successor',submission_seq:3n,continuation_mode:'automatic',task_turns:57n});
@@ -516,7 +516,7 @@ assert.equal(c.selected,'s','opening row actions must not navigate');
 let menu=c.session_menu;
 assert.deepEqual(menu.panel.children.filter(node=>node.tag==='button'&&!node.hidden).map(node=>node.textContent),['Rename','Delete','Pin']);
 menu.panel.children.find(node=>node.textContent==='Pin').dispatchEvent(new Event('click'));
-assert.equal(requests.at(-1).path,'/api/v8/sessions/menu-a');
+assert.equal(requests.at(-1).path,'/api/v9/sessions/menu-a');
 assert.equal(JSON.parse(requests.at(-1).options.body).revision,'2');
 requests.at(-1).reply(200,{...c.sessions[0],pinned:true,revision:'3'});await settled();
 assert.equal(c.selected,'s');
@@ -553,7 +553,7 @@ assert.equal(element('add_to_slack').disabled, false);
 harness.add_session_to_slack(c);
 harness.add_session_to_slack(c);
 assert.equal(requests.length, 1, 'double clicks send a single share request');
-assert.equal(requests[0].path, '/api/v8/sessions/s/slack');
+assert.equal(requests[0].path, '/api/v9/sessions/s/slack');
 assert.equal(element('add_to_slack').disabled, true);
 assert.equal(element('add_to_slack').textContent, 'Adding to Slack…');
 shareTab.cache.session = {...shareTab.cache.session, revision: '3', channel: {transport: 'slack', thread: '1.000001'}};
@@ -591,7 +591,7 @@ harness.render_sessions(c);
 c.list.children[0].children[1].dispatchEvent(new Event('click'));
 c.session_menu.panel.children.find(node=>node.textContent==='Add to Slack').dispatchEvent(new Event('click'));
 assert.equal(c.selected,'s','sharing another row must not navigate away from the current conversation');
-assert.equal(requests[0].path,'/api/v8/sessions/other/slack');
+assert.equal(requests[0].path,'/api/v9/sessions/other/slack');
 assert.deepEqual(JSON.parse(requests[0].options.body),{revision:'2'});
 requests[0].reply(202,{...c.sessions[0],revision:'3',slack_share:{status:'pending'}});
 await settled();
@@ -639,7 +639,7 @@ const observed=[];
 const failingObserver=featureBus.subscribe_feature(c.feature_events,()=>{throw new Error('fixture observer failed');});
 const observing=featureBus.subscribe_feature(c.feature_events,(kind,session)=>observed.push([kind,session]));
 const featureFrame=(sequence,session,type,data,epoch='features-host')=>JSON.stringify({
-  protocol:8,epoch,sequence:String(sequence),session,type,data});
+  protocol:9,epoch,sequence:String(sequence),session,type,data});
 const delegationBlock=(id,revision)=>({id,round_id:'r',turn:1,phase:'delegation/update',
   role:'assistant',seq:'1',text:'',durable:true,delegation:{revision}});
 const priorConsoleError=console.error;
@@ -664,3 +664,56 @@ try {
   assert.equal(observed.length,afterEpoch,'a sequence gap reached feature handlers');
 } finally { console.error=priorConsoleError; failingObserver(); observing(); }
 console.log('Feature stream coordination: guards, arbitrary events, failure isolation and selected/background delegation passed');
+
+const modelGlue = await import(new URL('model_glue.mjs', mainURL));
+const modelClient = client();
+modelClient.status = {workspace: 'models', browser_clients: [{name: 'models'}]};
+harness.ensure_feature_host(modelClient);
+const modelCap = modelGlue.model_capabilities(modelClient, noop).models;
+modelCap.choose({provider: 'plan', model: 'large', effort: 'high'});
+const stagedModel = {model_settings: null};
+modelGlue.attach_model_draft(modelClient, stagedModel, 's');
+modelCap.choose({provider: 'plan', model: 'small', effort: 'low'});
+assert.equal(stagedModel.model_settings.model, 'large', 'an in-flight payload retains its explicit picker choice');
+modelGlue.model_draft_admitted(modelClient, 's', stagedModel);
+assert.equal(modelCap.state().choice.value.model, 'small', 'admission must not discard a newer picker edit');
+const nextModel = {model_settings: null};
+modelGlue.attach_model_draft(modelClient, nextModel, 's');
+modelGlue.model_draft_admitted(modelClient, 's', nextModel);
+assert.equal(modelCap.state().choice, null);
+const followSession = {};
+modelGlue.attach_model_draft(modelClient, followSession, 's');
+assert.deepEqual(followSession, {}, 'without a picker edit the backend resolves the current session selection');
+modelCap.choose({});
+const resetModel = {model_settings: null};
+modelGlue.attach_model_draft(modelClient, resetModel, 's');
+assert.deepEqual(resetModel.model_settings, {}, 'following Default must remain an explicit reset');
+modelCap.configure(true, false);
+assert.equal(modelGlue.model_allows_submit(modelClient), true);
+modelClient.status.browser_clients = [];
+modelCap.configure(false, true);
+assert.equal(modelGlue.model_allows_submit(modelClient), true, 'removing the picker cannot disable ordinary sends');
+modelCap.choose_trigger({effort: 'low'});
+assert.deepEqual(modelCap.state().choice.value, {}, 'a trigger choice must not change the session draft');
+const triggerPayload = {model_settings: null};
+modelGlue.attach_trigger_model(modelClient, triggerPayload);
+assert.deepEqual(triggerPayload.model_settings, {effort: 'low'});
+modelCap.choose_trigger({});
+const unsetTrigger = {};
+modelGlue.attach_trigger_model(modelClient, unsetTrigger);
+assert.deepEqual(unsetTrigger, {}, 'new triggers follow the default without a copied session selection');
+let triggerEvent, editedTriggerModel;
+const offTrigger = harness.subscribe_browser(modelClient, 'models', (kind, session, data) => {
+  if (kind === 'models/trigger') triggerEvent = data;
+});
+const triggerAnchor = new Element('button');
+modelGlue.request_trigger_model(modelClient, {effort: 'low'}, triggerAnchor, value => { editedTriggerModel = value; });
+assert.deepEqual(triggerEvent, {}, 'the feature event bus carries only inert data');
+const target = modelCap.trigger_target();
+assert.equal(target.button, triggerAnchor);
+target.choose({});
+assert.deepEqual(editedTriggerModel, {});
+modelCap.release_trigger(target);
+assert.equal(modelCap.trigger_target(), null);
+offTrigger();
+console.log('model drafts: stable submissions, newer picker edits, explicit reset and backend session resolution passed');

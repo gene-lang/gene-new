@@ -1,0 +1,31 @@
+{
+  ^lock_format 1
+  ^root_manifest_digest "sha256:b9e084eab79836cd3363ca95d08fecbf31e8c097a8e8b58e11ceeab57298e35f"
+  ^workspace_digest "sha256:fc2162cc3f53253d71cefe2b0b1aff86e38baedf5c3e230b17d47d035a38ca06"
+  ^registry_snapshots [
+  ]
+  ^roots [ "workspace:genex/crypto_tests@0.1.0#sha256:bee99f464c31f7212c8817f47605f2bb22b9b5e74736d7b35cd96825de1fb588"]
+  ^packages [
+    (locked_package
+      ^id "path:genex/crypto@0.1.0#sha256:c86d09dfedd673ea47ddf7c4f67c2cd03d9d47a6739fd0991eafe81fd5069890"
+      ^name "genex/crypto"
+      ^version "0.1.0"
+      ^manifest_digest "sha256:a6fbbd335d34fe8c8226eccc32bad65824c798939ee222ec1dd7670c0a6be020"
+      ^source (path ^path "..")
+      ^features []
+      ^dependencies {
+      }
+      ^compatibility (compatibility ^package_format 1 ^runtime ">=0.1.0 <0.2.0"))
+    (locked_package
+      ^id "workspace:genex/crypto_tests@0.1.0#sha256:bee99f464c31f7212c8817f47605f2bb22b9b5e74736d7b35cd96825de1fb588"
+      ^name "genex/crypto_tests"
+      ^version "0.1.0"
+      ^manifest_digest "sha256:b9e084eab79836cd3363ca95d08fecbf31e8c097a8e8b58e11ceeab57298e35f"
+      ^source (workspace ^path ".")
+      ^features []
+      ^dependencies {
+        ^crypto (locked_edge ^scope runtime ^target "path:genex/crypto@0.1.0#sha256:c86d09dfedd673ea47ddf7c4f67c2cd03d9d47a6739fd0991eafe81fd5069890")
+      }
+      ^compatibility (compatibility ^package_format 1 ^runtime ">=0.1.0 <0.2.0"))
+  ]
+}

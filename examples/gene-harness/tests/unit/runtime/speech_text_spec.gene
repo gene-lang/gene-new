@@ -9,8 +9,8 @@
   (it "omits image references without leaving punctuation or reading their URLs" []
     (for [source expected] in [
       ["![Generated logo](/api/v7/media/image_id)\nThe logo is ready." "The logo is ready."]
-      ["Done. ![logo](/api/v8/media/image_id)" "Done."]
-      ["![](/api/v8/media/image_id)" ""]
+      ["Done. ![logo](/api/v9/media/image_id)" "Done."]
+      ["![](/api/v9/media/image_id)" ""]
       ["![external](https://example.com/logo.png)" ""]]
       ($assert (== (speech_text source) expected))))
   (it "keeps prose and replaces code and tables without reading their contents" []

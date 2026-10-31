@@ -1,0 +1,28 @@
+(import $test [describe it run])
+(import [pkce_challenge query_string openrouter_login complete_openrouter_login]
+  ^from "../../../src/public/provider_login")
+
+(describe "Provider sign-in helpers"
+  (it "uses the RFC 7636 S256 challenge without padding" []
+    ($assert (== (pkce_challenge "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk")
+      "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM")))
+  (it "encodes each authorization parameter independently" []
+    ($assert (== (query_string {^callback_url "http://127.0.0.1:123/auth/callback?a=1&b=2"})
+      "callback_url=http%3A%2F%2F127.0.0.1%3A123%2Fauth%2Fcallback%3Fa%3D1%26b%3D2")))
+  (it "binds a declined redirect even when OpenRouter omits OAuth state" []
+    (let attempt (openrouter_login "http://127.0.0.1:123/auth/callback" ^root "/unused"))
+    (let callback_match (#"[?&]callback_url=([^&]+)" .match attempt/url))
+    (let callback ($url/decode_component callback_match/groups/0))
+    ($assert (== callback ($to_str "http://127.0.0.1:123/auth/callback?openrouter_state=" attempt/state)))
+    (for params in [{^error "access_denied"}
+      {^error "access_denied" ^state "wrong" ^openrouter_state attempt/state}
+      {^error "access_denied" ^state attempt/state ^openrouter_state "wrong"}]
+      ($assert (== (/status (complete_openrouter_login attempt params)) 400))
+      ($assert (== attempt/status/.get "pending")))
+    ($assert (== (/status (complete_openrouter_login attempt
+      {^error "access_denied" ^openrouter_state attempt/state})) 200))
+    ($assert (== attempt/status/.get "declined"))
+    ($assert (== (/status (complete_openrouter_login attempt
+      {^code "MUST_NOT_EXCHANGE" ^openrouter_state attempt/state})) 409))))
+
+(fn main [args] : Int (/exit_code (run ^name (?? args/0 ""))))
