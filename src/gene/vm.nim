@@ -11520,6 +11520,31 @@ proc moduleSourceDir(app: Application, absPath: string): string =
 
 proc loadModuleValue(app: Application, absPath: string): Value
 
+proc resolveModuleRefFromScope(app: Application, scope: Scope, rawPath: string,
+                               pkgName = ""): string =
+  ## Resolve an import written inside a module against *that module*. Imports
+  ## normally execute during their module's initialization, where the loader's
+  ## current directory is the module's own. One that executes later - inside a
+  ## function, or in a macro-marked block called from another module - would
+  ## otherwise resolve against whichever module the loader last entered (the
+  ## entry module), so a library's `./sibling` path moved with its caller.
+  var importer: Value
+  let root = scope.moduleRootScope()
+  if root != nil and root.lookupOptional("this_mod", importer) and
+      importer.kind == vkModule and importer.modulePath.len > 0:
+    let dir = app.moduleSourceDir(importer.modulePath)
+    if dir != app.currentModuleDir:
+      let savedDir = ownedCopy(app.currentModuleDir)
+      let savedPkg = ownedCopy(app.currentPackage)
+      app.currentModuleDir = dir
+      app.currentPackage = app.packageForModule(importer.modulePath)
+      try:
+        return app.resolveModuleRef(rawPath, pkgName)
+      finally:
+        app.currentModuleDir = savedDir
+        app.currentPackage = savedPkg
+  app.resolveModuleRef(rawPath, pkgName)
+
 proc isSubtypeOf(actual, expected: Value): bool {.inline.} =
   if expected.kind != vkType:
     return false
@@ -13238,6 +13263,24 @@ proc resolveTypeContract(scope: Scope, pending: PendingTypeContract) =
 
 proc sameImplMessages(a, b: ProtocolImpl): bool
 
+proc implOriginLabel(impl: ProtocolImpl): string =
+  ## Where a registered impl came from, for conflict diagnostics. Both sides of
+  ## a conflict are named so the author can see which module governs each.
+  let kind =
+    case impl.visibility
+    of ivCanonical: "canonical"
+    of ivScoped:
+      if impl.imported: "imported scoped" else: "scoped"
+    of ivOverlay: "overlay"
+  if impl.originPath.len > 0:
+    kind & " impl from \"" & impl.originPath & "\""
+  else:
+    kind & " impl from a program or overlay scope"
+
+proc implConflictOrigins(existing, pending: ProtocolImpl): string =
+  " (existing: " & existing.implOriginLabel & "; incoming: " &
+    pending.implOriginLabel & ")"
+
 proc validateImplConflict(existing, pending: ProtocolImpl,
                           identicalIsDuplicate = false): bool =
   ## Returns true only for an identical registration that an explicit scoped
@@ -13246,14 +13289,23 @@ proc validateImplConflict(existing, pending: ProtocolImpl,
       same(existing.receiver, pending.receiver):
     if identicalIsDuplicate and existing.sameImplMessages(pending):
       return true
+    var advice = ""
+    if (existing.visibility == ivCanonical) != (pending.visibility == ivCanonical):
+      # A canonical impl applies application-wide; a scoped policy for the same
+      # pair cannot sit beside it. The mechanical migration keeps both.
+      advice = "; a canonical impl applies application-wide, so a scoped " &
+        "policy for the same pair cannot coexist with it: give the policy " &
+        "its own protocol and pass that operation explicitly"
     raise newException(GeneError,
       "duplicate visible impl " & pending.protocol.protocolName &
-      " for " & pending.receiver.typeName)
+      " for " & pending.receiver.typeName &
+      implConflictOrigins(existing, pending) & advice)
   let message = existing.overlappingMessage(pending)
   if message.kind != vkNil:
     raise newException(GeneError,
       "conflicting impls for message " & qualifiedMessageName(message) &
-      " on " & pending.receiver.typeName)
+      " on " & pending.receiver.typeName &
+      implConflictOrigins(existing, pending))
   if existing.receiver.bits != pending.receiver.bits and
       (existing.receiver.typeInheritsFrom(pending.receiver) or
        pending.receiver.typeInheritsFrom(existing.receiver)):
@@ -13262,7 +13314,12 @@ proc validateImplConflict(existing, pending: ProtocolImpl,
         if same(left.protocol, right.protocol) and not same(left.selfType, right.selfType):
           raise newException(GeneError,
             "incompatible established Self bindings for " & left.protocol.protocolName &
-            " on " & existing.receiver.typeName & " and " & pending.receiver.typeName)
+            " on " & existing.receiver.typeName & " and " & pending.receiver.typeName &
+            implConflictOrigins(existing, pending) &
+            ": a parent and child type share one Self binding per protocol, " &
+            "so the child impl must be built while the parent pair is visible " &
+            "(import or declare the parent pair first, then the child), " &
+            "not independently")
     for left in existing.messages:
       for right in pending.messages:
         if same(left.message, right.message):
@@ -14264,6 +14321,11 @@ proc findHiddenImpls(app: Application, protocol, receiver: Value,
     for impl in scope.impls:
       if impl.visibility != ivScoped:
         continue
+      if impl.imported:
+        # An explicit import_impl copy is not a provider: the provider's own
+        # entry (with its real `exported` flag) is enumerated from its module.
+        # Counting the copy made an exported provider look unexported.
+        continue
       if not protocolIsOrInherits(impl.protocol, protocol):
         continue
       if not receiver.isSubtypeOf(impl.receiver):
@@ -14279,6 +14341,27 @@ proc findHiddenImpls(app: Application, protocol, receiver: Value,
           break
       if not seen:
         result.add impl
+
+proc portableImportPath(target, origin: string): string =
+  ## Source spelling of `origin` for an `import_impl ^from` written inside the
+  ## module at `target`: relative to that module and without the extension, so
+  ## the suggestion can be pasted on any machine. Falls back to the absolute
+  ## path only when no relative spelling exists (different roots).
+  if target.len == 0 or origin.len == 0:
+    return origin
+  var relative = ""
+  try:
+    relative = relativePath(origin, parentDir(target))
+  except OSError:
+    return origin
+  if relative.len == 0 or relative.isAbsolute:
+    return origin
+  relative = relative.replace('\\', '/')
+  if relative.endsWith(".gene"):
+    relative.setLen(relative.len - ".gene".len)
+  if not relative.startsWith("."):
+    relative = "./" & relative
+  relative
 
 proc hiddenImplHint(app: Application, protocol, receiver: Value,
                     checking: Scope): string =
@@ -14317,8 +14400,14 @@ proc hiddenImplHint(app: Application, protocol, receiver: Value,
     if rank(impl) == rank(best):
       inc sameRank
   if sameRank > 1:
+    var origins: seq[string]
+    for impl in candidates:
+      if rank(impl) == rank(best) and impl.originPath.len > 0:
+        origins.add "\"" & impl.originPath & "\""
     return "impls of " & protocol.protocolName & " for " & receiver.typeName &
-      " exist in " & $sameRank & " modules but none is visible" &
+      " exist in " & $sameRank & " modules" &
+      (if origins.len > 0: " (" & origins.join(", ") & ")" else: "") &
+      " but none is visible" &
       (if addressable: " in \"" & target & "\"" else: " here") &
       "; import one there with import_impl"
   if best.originPath.len == 0:
@@ -14341,7 +14430,7 @@ proc hiddenImplHint(app: Application, protocol, receiver: Value,
   "an impl " & pair & " exists in \"" & best.originPath &
     "\" but is not visible in \"" & target &
     "\", which governs this check; add (import_impl " & pair &
-    " ^from \"" & best.originPath & "\") there"
+    " ^from \"" & portableImportPath(target, best.originPath) & "\") there"
 
 proc receiverType(value: Value): Value =
   if value.isSelector and gPathType.kind == vkType:
@@ -20353,7 +20442,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           if spec.fromModule:
             let app = scope.application()
             let dependencyPath =
-              app.resolveModuleRef(spec.modulePath, spec.pkgName)
+              app.resolveModuleRefFromScope(scope, spec.modulePath, spec.pkgName)
             var importer: Value
             if scope.moduleRootScope().lookupOptional("this_mod", importer) and
                 importer.kind == vkModule:
@@ -20430,7 +20519,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             raise newException(GeneError,
               "import_impl receiver must be a type")
           let app = scope.application()
-          let dependencyPath = app.resolveModulePath(spec.modulePath)
+          let dependencyPath =
+            app.resolveModuleRefFromScope(scope, spec.modulePath)
           var importer: Value
           if scope.moduleRootScope().lookupOptional("this_mod", importer) and
               importer.kind == vkModule:

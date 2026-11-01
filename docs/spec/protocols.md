@@ -52,7 +52,9 @@ Executable coverage: `tests/test_protocols.nim` and protocol suites in
   scoped impl for that exact protocol/receiver pair. `^from` must be a literal
   string and may appear anywhere among the positional operands. `for` remains
   positional; the old positional `from "path"` clause is rejected. No other
-  named properties are accepted.
+  named properties are accepted. A relative `^from` path resolves against the
+  module that contains the `import_impl`, including when the import executes
+  after that module's initialization.
 - Placement (owner decision D1): a direct `import_impl` registers its pair in
   the whole defining module, so it is valid only during ordinary module
   initialization (including plain `do`/`ns` blocks there) and inside a
@@ -64,6 +66,12 @@ Executable coverage: `tests/test_protocols.nim` and protocol suites in
   keeps its policy, and nested conflicting pairs still reject. Ordinary `impl`
   in a function body and eval overlays are separate mechanisms and unchanged.
   To select a policy per call, pass the operation from the composition root.
+- Conflict diagnostics name both origins (canonical, scoped, imported or overlay
+  impl and its module). A canonical impl added to a pair that a scoped policy
+  already supplies is rejected with the migration (give the policy its own
+  protocol and pass its operation explicitly). Hidden-impl advice never treats
+  an `import_impl` copy as a provider and spells its suggested `^from` as a
+  portable path relative to the checking module.
 - Unqualified sends resolve only receiver type-direct behavior, walking nominal parents;
   there is no protocol or lexical fallback. A failed bare send may list
   published, visible protocol-qualified candidates as a diagnostic hint;

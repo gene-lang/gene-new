@@ -1202,6 +1202,120 @@ suite "modules — built-in identity and scope hygiene":
     expect GeneError:
       discard runProgram("(import [this_mod] ^from \"./decls3\")")
 
+suite "modules — diagnostics advice and lexical import paths":
+  setup:
+    removeDir(modDir)
+    createDir(modDir)
+
+  test "advice treats an exported provider as exported after another module imported it":
+    writeModule("adv_proto.gene",
+      "(protocol Shown (message show [] : Str)) (type Widget ^props {})")
+    writeModule("adv_prov.gene",
+      "(import [Shown Widget] ^from \"./adv_proto\") " &
+      "(impl Shown for Widget ^^export (message show [] : Str \"w\"))")
+    writeModule("adv_importer.gene",
+      "(import [Shown Widget] ^from \"./adv_proto\") " &
+      "(import_impl Shown for Widget ^from \"./adv_prov\") (var done 1)")
+    writeModule("adv_main.gene",
+      "(import [Shown Widget] ^from \"./adv_proto\") " &
+      "(import [done] ^from \"./adv_importer\") " &
+      "(var shown ((Widget) .Shown:show))")
+    var msg = ""
+    try:
+      discard runProgram("(import [shown] ^from \"./adv_main\")")
+    except GeneError as error:
+      msg = error.msg
+    check "no implementation of message 'show'" in msg
+    check "not exported" notin msg
+    check "^^export" notin msg
+    # The suggestion is a portable spelling: relative to the checking module,
+    # no extension, and no absolute filesystem path inside the copied source.
+    check "(import_impl Shown for Widget ^from \"./adv_prov\")" in msg
+    check "^from \"" & modDir notin msg
+
+  test "duplicate impl diagnostics name both origins and the migration":
+    writeModule("dup_proto.gene",
+      "(protocol P (message m [] : Int)) (type T ^props {}) " &
+      "(impl P for T (message m [] : Int 1))")
+    writeModule("dup_ext.gene",
+      "(import [P T] ^from \"./dup_proto\") " &
+      "(impl P for T ^^export (message m [] : Int 2))")
+    var msg = ""
+    try:
+      discard runProgram("(import [P T] ^from \"./dup_proto\") " &
+        "(import_impl P for T ^from \"./dup_ext\")")
+    except GeneError as error:
+      msg = error.msg
+    check "duplicate visible impl P for T" in msg
+    check "canonical impl from" in msg
+    check "dup_proto.gene" in msg
+    check "scoped impl from" in msg
+    check "dup_ext.gene" in msg
+    check "its own protocol" in msg
+    # Two scoped providers for one pair name both modules without the advice
+    # that only applies to a canonical impl.
+    writeModule("dup_scoped_proto.gene",
+      "(protocol Q (message m [] : Int)) (type U ^props {})")
+    for name in ["dup_a", "dup_b"]:
+      writeModule(name & ".gene",
+        "(import [Q U] ^from \"./dup_scoped_proto\") " &
+        "(impl Q for U ^^export (message m [] : Int 1))")
+    msg = ""
+    try:
+      discard runProgram("(import [Q U] ^from \"./dup_scoped_proto\") " &
+        "(import_impl Q for U ^from \"./dup_a\") " &
+        "(import_impl Q for U ^from \"./dup_b\")")
+    except GeneError as error:
+      msg = error.msg
+    check "dup_a.gene" in msg
+    check "dup_b.gene" in msg
+    check "its own protocol" notin msg
+
+  test "incompatible Self bindings explain the parent and child dependency":
+    writeModule("self_proto.gene",
+      "(protocol Format (message head [] : Str)) " &
+      "(type Article ^props {}) (type Note : Article ^props {})")
+    writeModule("self_child.gene",
+      "(import [Format Note] ^from \"./self_proto\") " &
+      "(impl Format for Note ^^export (message head [] : Str \"n\"))")
+    writeModule("self_parent.gene",
+      "(import [Format Article] ^from \"./self_proto\") " &
+      "(impl Format for Article ^^export (message head [] : Str \"a\"))")
+    var msg = ""
+    try:
+      discard runProgram("(import [Format Article Note] ^from \"./self_proto\") " &
+        "(import_impl Format for Note ^from \"./self_child\") " &
+        "(import_impl Format for Article ^from \"./self_parent\")")
+    except GeneError as error:
+      msg = error.msg
+    check "incompatible established Self bindings for Format on Note and Article" in msg
+    check "self_child.gene" in msg
+    check "self_parent.gene" in msg
+    check "parent pair is visible" in msg
+
+  test "import_impl in a library function resolves its path against the library":
+    # The entry sits one directory above the library, so a path resolved against
+    # the entry (the old behavior) would look for ./policy beside the entry.
+    createDir(modDir / "lib")
+    writeFile(modDir / "lib" / "proto.gene",
+      "(protocol Label (message label [self] : Str)) (type Item)")
+    writeFile(modDir / "lib" / "policy.gene",
+      "(import [Label Item] ^from \"./proto\") " &
+      "(impl Label for Item ^^export (message label [self] : Str \"lib\"))")
+    writeFile(modDir / "lib" / "api.gene",
+      "(import [Label Item] ^from \"./proto\") " &
+      "(macro with_policy [body...] `(do (import_impl Label for Item ^from \"./policy\") %body...)) " &
+      "(fn labelled [item] (with_policy item/.Label:label)) " &
+      "(fn make [] (Item)) " &
+      "(fn late_make [] (import [Item] ^from \"./proto\") (Item))")
+    check runProgram(
+      "(import [labelled make] ^from \"./lib/api\") (labelled (make))").print() ==
+      "\"lib\""
+    # A plain import that executes inside a function resolves the same way.
+    check runProgram(
+      "(import [late_make] ^from \"./lib/api\") " &
+      "(late_make) nil").print() == "nil"
+
 suite "modules — namespace-path imports and mod":
   test "import selected bindings from an in-file namespace":
     initModuleContext(getTempDir())

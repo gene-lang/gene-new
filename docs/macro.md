@@ -516,7 +516,8 @@ block retains the implementation context it needs under ordinary closure rules.
 **D1, decided 2026-10-30:** a marked block may contain `import_impl` inside a
 `fn`, lambda, `message`, `ctor` or `spawn` body, including a local macro expanded
 at execution time. A direct `import_impl` in such a body is a compile-time error;
-a new deferred body defined inside a marked block gets no exemption.
+a new deferred body defined inside a marked block gets no exemption. The block's
+relative `^from` path resolves against the module that wrote it.
 
 Adding an unrelated `let` must not change whether an implementation escapes.
 This extends the binding-only scope predicate. It also confines a top-level
