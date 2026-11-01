@@ -1,13 +1,19 @@
 (import $test [describe it run])
-(import [child_entry] ^from "../../../src/runtime/supervisor")
+(import [child_entry native_build_failure?] ^from "../../../src/runtime/supervisor")
 
 (describe "Supervised host entry"
   (it "loads declared native resources for normal hosts and preserves source recovery" []
     ($assert (== (child_entry "/harness" true false false false)
       ["run" "--package-root" "/harness" "harness"]))
+    ($assert (== (child_entry ^source_only true "/harness" true false false false)
+      ["run" "--snapshot" "/harness/src/main.gene"]))
     (for [hosting offline scripted recovery] in
       [[false false false false] [true true false false] [true false true false] [true false false true]]
       ($assert (== (child_entry "/harness" hosting offline scripted recovery)
-        ["run" "--snapshot" "/harness/src/main.gene"])))))
+        ["run" "--snapshot" "/harness/src/main.gene"]))))
+  (it "distinguishes native build failures from application startup failures" []
+    ($assert (native_build_failure? "Error: BUILD_FEATURE_UNAVAILABLE: native compiler failed"))
+    ($assert (native_build_failure? "BUILD_TARGET_NOT_FOUND"))
+    ($assert (! (native_build_failure? "Plugin activation failed")))))
 
 (fn main [args] : Int (/exit_code (run ^name (?? args/0 ""))))

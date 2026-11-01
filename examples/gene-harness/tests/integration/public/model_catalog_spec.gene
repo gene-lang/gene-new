@@ -5,6 +5,33 @@
 (import [bounded_probe claude_connection] ^from "../../../src/public/provider_discovery")
 
 (describe "Model catalog discovery"
+  (it "retries unavailable connections and keeps ready metadata through transient failures" []
+    (isolated this_mod/.path "retries unavailable connections and keeps ready metadata through transient failures"
+      (fn [workspace]
+        (let state ($cell "unavailable")) (let calls ($cell 0)) (let healthy_calls ($cell 0))
+        (let provider {^name "flaky" ^transport {^adapter "fake"}
+          ^connection (fn [] (calls .set (+ calls/.get 1)) {^state state/.get ^billing "local"})
+          ^models (fn [] [{^id "one"}])})
+        (let healthy {^name "healthy" ^transport {^adapter "fake"}
+          ^connection (fn [] (healthy_calls .set (+ healthy_calls/.get 1)) {^state "ready" ^billing "local"})})
+        (let catalog (open_model_catalog ^start false workspace (fn [] [provider healthy])))
+        (try
+          (refresh_catalog catalog)
+          ($assert (== catalog/state/.get/providers/flaky/connection/state "unavailable"))
+          ($assert (<= (- catalog/next_refresh/.get ($os/monotonic_ms)) 30000))
+          (state .set "ready")
+          ((catalog/discovered/.get .get "flaky") .put "next_probe_ms" 0)
+          (refresh_catalog ^due_only true catalog)
+          ($assert (== calls/.get 2)) ($assert (== healthy_calls/.get 1))
+          ($assert (== catalog/state/.get/providers/flaky/models/0/id "one"))
+          (state .set "unavailable") (refresh_catalog catalog)
+          ($assert (== catalog/state/.get/providers/flaky/connection/state "ready"))
+          ($assert catalog/state/.get/providers/flaky/stale)
+          ($assert (<= (- catalog/next_refresh/.get ($os/monotonic_ms)) 30000))
+          (state .set "sign_in_required") (refresh_catalog catalog)
+          ($assert (== catalog/state/.get/providers/flaky/connection/state "sign_in_required"))
+          ($assert (== (/stale (claude_connection "/missing/claude")) true))
+        ensure (close_model_catalog catalog)))))
   (it "publishes an account switch immediately and discards older ready or rejected probes" []
     (isolated this_mod/.path "publishes an account switch immediately and discards older ready or rejected probes"
       (fn [workspace]

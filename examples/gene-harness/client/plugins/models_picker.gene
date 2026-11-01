@@ -141,6 +141,14 @@
           (if_yes ($present? data/readiness) (set detail ($to_str detail " · " (text data/readiness))))
           ($dom/set_text picker/trigger_info detail))))))
 
+(fn unavailable [picker : Picker, message : Str] : Void
+  (set picker/loaded false) (set picker/required false)
+  (var configure : (Fn [Bool Bool] Void) picker/cap/configure)
+  (configure false false)
+  ($dom/set_text picker/message message)
+  (var resume : (Fn [] Void) picker/cap/resume)
+  (resume))
+
 (fn preview [picker : Picker] : Void
   (if_yes (|| picker/disposed ($absent? picker/catalog)) (return))
   (set picker/preview_serial (+ picker/preview_serial 1))
@@ -156,7 +164,7 @@
           (if_yes (&& picker/open changed) (render_models picker))
           (var current : Any (draft picker))
           (if_yes (&& picker/required (flag current/requested)) (open_menu picker)))
-        (else ($dom/set_text picker/message (text data/message "Model selection could not be previewed.")))))))
+        (else (unavailable picker (text data/message "Model selection could not be previewed.")))))))
 
 (fn fetch_catalog [picker : Picker] : Void
   (if_yes picker/disposed (return))
@@ -167,7 +175,7 @@
     (if (== code 200)
       (then (set picker/catalog data) (preview picker) (preview_trigger picker) (render_models picker)
         (open_requested_trigger picker))
-      (else ($dom/set_text picker/message (text data/message "Models are unavailable.")))))))
+      (else (unavailable picker (text data/message "Models are unavailable.")))))))
 
 (fn save_default [picker : Picker, selection : Any] : Void
   (if_yes picker/saving (return))
@@ -223,7 +231,6 @@
     (var connection : Any entry/connection)
     (var billing (text connection/billing "unknown"))
     (var heading ($to_str (text connection/label provider) " · " billing))
-    (if_yes ($present? connection/account) (set heading ($to_str heading " · " (text connection/account))))
     (if_yes (== provider "claude") (set heading ($to_str heading " · text only · 128 KiB prompt limit")))
     ($dom/append picker/results ($dom/render `(h4 %heading)))
     (if (!= (text connection/state) "ready")

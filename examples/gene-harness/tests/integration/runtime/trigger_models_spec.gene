@@ -5,7 +5,7 @@
 (import [Plugin PluginHost] ^from "../../../src/plugin_api")
 (import [put_cordis_plugin row] ^from "../../../src/kernel")
 (import [catalog_snapshot] ^from "../../../src/agents/provider_selection")
-(import [open_trigger_manager close_trigger_manager create_trigger update_trigger list_triggers
+(import [open_trigger_manager close_trigger_manager create_trigger update_trigger delete_trigger list_triggers
   tick_triggers list_occurrences TriggerError] ^from "../../../src/runtime/triggers")
 (import [update_session require_record] ^from "../../../src/runtime/sessions")
 (import [round_receipt] ^from "../../../src/runtime/round_controller")
@@ -85,11 +85,17 @@
           (let released (list_occurrences manager ^trigger "a_blocked"))
           ($assert (== released/0/state "finished"))
           ($assert ($absent? released/0/waiting_reason))
+          (let cleared (list_source_messages runtime/services/values/inbox "triggers"))
+          ($assert (== cleared/0/cleared_revision cleared/0/revision)
+            "the waiting notice remained active after admission")
           (update_trigger manager "a_blocked" {^model_settings {^provider "blocked" ^model "small"}})
           (tick_triggers manager ^now 200) (settle controller) (tick_triggers manager ^now 200)
           (let blocked_again (list_source_messages runtime/services/values/inbox "triggers"))
           ($assert (== blocked_again/.size 1))
           ($assert (> blocked_again/0/revision messages/0/revision) "a later blocking incident did not renew its notification")
+          (delete_trigger manager "a_blocked")
+          (let deleted (list_source_messages runtime/services/values/inbox "triggers"))
+          ($assert (== deleted/0/cleared_revision deleted/0/revision) "deletion left a waiting notice behind")
         ensure (close_trigger_manager manager) (close_runtime runtime)))))
 
   (it "resolves every firing independently of a continuing session and validates edits" []

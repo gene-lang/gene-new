@@ -82,6 +82,8 @@ levels depend on the selected model. `auto` uses its catalog default, and an
 unsupported portable level resolves down, or to the model's lowest supported
 level. For example, `none` becomes `low` on Opus 5.5; Sonnet 5.5 uses
 `between_tools` for `none`. The model itself never changes as a fallback.
+An unfamiliar model with no verified thinking-off form rejects an explicit
+`none` before sending; choose Auto or a supported effort instead.
 [Thinking controls](https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking)
 
 The API output budget includes thinking and follows effective effort:

@@ -17,14 +17,43 @@
 (import [read_models_file write_models_file models_path ModelsFileError] ^from "../public/models_file")
 (import [endpoint_plugin] ^from "../public/provider")
 (import [openrouter_login run_openrouter_login complete_openrouter_login login_status close_login] ^from "../public/provider_login")
-(import [new_chatgpt_login complete_chatgpt_login sign_out_chatgpt] ^from "../public/chatgpt_auth")
+(import [new_chatgpt_login complete_chatgpt_login sign_out_chatgpt register_chatgpt_refresh unregister_chatgpt_refresh] ^from "../public/chatgpt_auth")
 (import [list_chatgpt_accounts select_chatgpt_account active_chatgpt_id acknowledge_chatgpt_plan] ^from "../public/chatgpt_store")
 
 (type ModelCatalogChanged : HarnessEvent ^props {^revision Str})
 
+(fn run_refresh_jobs [state] ^^private
+  (while (|| state/accepting/.get (> state/refresh_queue/.get/.size 0))
+    state/refresh_wake/.recv
+    (let queued (state/refresh_queue .swap []))
+    (for job in queued
+      (let task (spawn ^lane root
+        (scope
+          (let invoke ($runtime/bind_call ^policy {^timeout_ms 30000 ^max_memory_mb 64}
+            job/callback job/args))
+          ($runtime/with_context nil invoke))))
+      task/.detach
+      (state/refresh_tasks/.get .push task)
+      (job/task .set task))
+    nil))
+
 (fn new_models_host [runtime]
   (let state {^runtime runtime ^catalogs {} ^watches {} ^logins {} ^root ($cell nil)
-    ^publications ($cell []) ^publisher ($cell nil) ^endpoint_error ($cell nil) ^accepting ($cell true)})
+    ^publications ($cell []) ^publisher ($cell nil) ^endpoint_error ($cell nil) ^accepting ($cell true)
+    ^refresh_queue ($cell []) ^refresh_wake ($channel ^capacity 1)
+    ^refresh_tasks ($cell []) ^refresh_worker ($cell nil) ^refresh_registration nil})
+  (state/refresh_worker .set (spawn ^lane root (run_refresh_jobs state)))
+  (state .put "refresh_registration" (register_chatgpt_refresh (fn [callback args]
+    (if (! state/accepting/.get)
+      (fail (ServiceError ^code "unavailable" ^message "The authentication host is closing.")))
+    # Enqueue without awaiting. Once accepted, even cancellation while waiting
+    # for the host to start the task cannot discard a rotated-token response.
+    (let job {^callback callback ^args args ^task ($cell nil)})
+    (state/refresh_tasks .set ($filter state/refresh_tasks/.get (fn [task] (! task/.done?))))
+    (state/refresh_queue/.get .push job)
+    (state/refresh_wake .try_send nil)
+    (while ($absent? job/task/.get) ($sleep 1))
+    job/task/.get)))
   # This module-defined worker belongs to the host service, not a plugin
   # activation. A publication may retire the activation that requested it.
   (state/publisher .set (spawn ^lane root (run_endpoint_publications state)))
@@ -38,12 +67,18 @@
 
 (fn close_models_host [state]
   (state/accepting .set false)
+  (unregister_chatgpt_refresh state/refresh_registration)
+  (state/refresh_wake .try_send nil)
   (let catalogs []) (let watches [])
   (for [revision catalog] in state/catalogs (catalogs .push catalog))
   (for [revision watch] in state/watches (watches .push watch))
   (for catalog in catalogs (close_model_catalog catalog))
   (for watch in watches (close_file_watch watch))
   (for [id attempt] in state/logins (close_login attempt))
+  state/refresh_worker/.get/.join
+  state/refresh_wake/.close
+  (for task in state/refresh_tasks/.get task/.join)
+  (state/refresh_tasks .set [])
   (let publisher state/publisher/.get)
   (if (&& ($present? publisher) (! publisher/.done?)) (then publisher/.cancel publisher/.join))
   (for job in state/publications/.get (job/done .set true))
@@ -401,7 +436,7 @@
   (let service (require_service handle))
   (if (!= service/host/owner "models")
     (fail (ServiceError ^code "forbidden" ^message "Account changes belong to the Models contribution.")))
-  (let selected (active_chatgpt_id))
+  (let selected (try (active_chatgpt_id) catch Any nil))
   (let result (try
     (match action
       (when "select" {^^ok ^account (select_chatgpt_account nil id)})

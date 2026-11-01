@@ -5,10 +5,16 @@
 (import ^from "./workspace_lock" [try_lock_wait])
 (import ^from "./host_log" [open_host_log write_host_log close_host_log])
 
-(fn child_entry [source_root : Str, hosting : Bool, offline : Bool, scripted : Bool, recovery : Bool]
-  (if (&& hosting (! offline) (! scripted) (! recovery))
+(fn child_entry [source_root : Str, hosting : Bool, offline : Bool, scripted : Bool, recovery : Bool,
+  ^source_only source_only : Bool = false]
+  (if (&& hosting (! offline) (! scripted) (! recovery) (! source_only))
     (then ["run" "--package-root" source_root "harness"])
     (else ["run" "--snapshot" ($path/join source_root "src" "main.gene")])))
+
+(fn native_build_failure? [diagnostic : Str]
+  (for code in ["BUILD_FEATURE_UNAVAILABLE" "BUILD_TARGET_NOT_FOUND" "BUILD_TARGET_AMBIGUOUS"]
+    (if ($str/contains? diagnostic code) (return true)))
+  false)
 
 (fn main [args]
   (let parsed (parse_options args))
@@ -21,6 +27,7 @@
     {^GENE_HARNESS_STDOUT_TTY (if ($os/stdout_tty?) "1" "0")})
   (var restart_port nil)
   (var recovery (== parsed/options/recovery true))
+  (var source_only false)
   (var workspace (?? parsed/options/workspace ($os/launch_dir)))
   (if (&& hosting (== parsed/command "manager"))
     (set workspace (initialize_manager_workspace ^root parsed/options/root)))
@@ -41,10 +48,9 @@
   (try
   (loop
     (let startup_id ($crypto/random_hex 16))
-    # The normal host needs the application's declared native resources for
-    # ChatGPT signature validation. Recovery and model-free fixtures stay usable
-    # through the captured-source entry when native build dependencies fail.
-    (let child_args (child_entry application/source_root hosting
+    # Native resources enable optional provider features. A build failure must
+    # not prevent the ordinary host from using CLI or HTTP providers.
+    (let child_args (child_entry ^source_only source_only application/source_root hosting
       (|| (== parsed/options/offline true) (== ($os/env? "GENE_HARNESS_OFFLINE") "1"))
       ($present? parsed/options/script) recovery))
     (for arg in args
@@ -82,6 +88,11 @@
         (fail "Restart handoff did not retain a valid listening port."))
       (continue))
     (if (|| recovery ready ([130 143 -2 -15] .contains? status)) (return status))
+    (if (&& (! source_only) (native_build_failure? tail/.get))
+      (then
+        (emit "Native resources could not be built. Starting the normal source host; ChatGPT sign-in requires repairing the native build.")
+        (set source_only true)
+        (continue)))
     ($fs/make_dir $"${workspace}/.gene-harness")
     ($fs/write_text_atomic ^^owner_only $"${workspace}/.gene-harness/startup_failure"
       ($to_str "Normal startup exited before readiness (status " status ").\n" tail/.get))

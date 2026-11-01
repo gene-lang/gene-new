@@ -209,6 +209,12 @@
   (if_yes (&& limited resumable ($present? on_continue)
               ($absent? run/continued_by)
               (|| ($absent? run/continuation_stop) (== (status_text run/continuation_stop) "failed")))
+    (if_yes ($present? run/selection/model)
+      (var selection ($to_str (status_text run/selection/provider) "/" (status_text run/selection/model)))
+      (if_yes ($present? run/selection/requested_effort)
+        (set selection ($to_str selection " · " (status_text run/selection/requested_effort))))
+      ($dom/append root ($dom/render `(span ^class_name "outcome_message"
+        %($to_str "Continue keeps " selection ", unless you make a new picker choice. Session /model and /effort changes apply to new prompts.")))))
     (var resume : (Fn [Str] Void) on_continue)
     (for mode in ["manual" "automatic"]
       ($dom/append root ($dom/render `(button ^type "button"

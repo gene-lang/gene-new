@@ -4,6 +4,9 @@ Implements [Providers, models and effort](../models.md). The design and all seve
 review resolutions were accepted on 2026-10-30. This checklist tracks the full
 scope; unchecked work is still required.
 
+Subsequent runtime review fixes and their targeted verification are recorded in
+[Models code-review fixes](models-review-fixes.md).
+
 The [requirement audit](models-requirements.md) maps the accepted scope to
 implementation evidence and its verification limits. The accepted scope is
 implemented, including the owner's simplified admission rule and native

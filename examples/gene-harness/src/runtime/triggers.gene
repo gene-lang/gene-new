@@ -6,7 +6,7 @@
 (import ^from "../kernel" [rows row])
 (import [validate_model_settings] ^from "../public/models")
 (import [catalog_snapshot session_settings select_provider] ^from "../agents/provider_selection")
-(import [safe_publish] ^from "../notifications/publisher")
+(import [safe_publish list_source_messages clear_source_message] ^from "../notifications/publisher")
 (import ^from "../agents/history" [collect_unreferenced_bodies])
 (import [spawn_effect_call] ^from "." ^pkg "cordis")
 (import ^from "./round_controller" [submit_round round_state round_receipt answer_round RoundError])
@@ -194,6 +194,13 @@
     (if (! warnings/.empty?) (result .put "warnings" warnings))
     result)))
 
+(fn clear_waiting_notice [manager, id : Str] ^^private
+  (try
+    (for message in (list_source_messages manager/runtime/services/values/inbox "triggers")
+      (if (== message/key $"trigger-blocked/${id}")
+        (clear_source_message manager/runtime/services/values/inbox "triggers" message/id message/revision)))
+  catch Any nil))
+
 (fn delete_trigger [manager, id : Str]
   (require_accepting manager)
   (manager/mutating (fn []
@@ -202,7 +209,9 @@
     (let removed (copy_data definition))
     (removed .put "enabled" false)
     (removed .put "deleted" true)
-    (save_definition manager removed))))
+    (save_definition manager removed)
+    (clear_waiting_notice manager id)
+    removed)))
 
 (fn list_triggers [manager]
   (let result [])
@@ -335,6 +344,7 @@
           (boundary manager "admitted" occurrence)
           (occurrence .put "state" "started")
           (occurrence .put "waiting_reason" nil)
+          (clear_waiting_notice manager definition/id)
           (occurrence .put "round" receipt/id)
           (save_occurrence manager occurrence)
           (boundary manager "started" occurrence)))

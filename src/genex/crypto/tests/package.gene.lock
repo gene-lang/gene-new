@@ -7,10 +7,10 @@
   ^roots [ "workspace:genex/crypto_tests@0.1.0#sha256:bee99f464c31f7212c8817f47605f2bb22b9b5e74736d7b35cd96825de1fb588"]
   ^packages [
     (locked_package
-      ^id "path:genex/crypto@0.1.0#sha256:c86d09dfedd673ea47ddf7c4f67c2cd03d9d47a6739fd0991eafe81fd5069890"
+      ^id "path:genex/crypto@0.1.0#sha256:3bb1e9d56b719262e5e22304da78d86eca30615969162fd6ced5f90b64da872d"
       ^name "genex/crypto"
       ^version "0.1.0"
-      ^manifest_digest "sha256:a6fbbd335d34fe8c8226eccc32bad65824c798939ee222ec1dd7670c0a6be020"
+      ^manifest_digest "sha256:1c202ff330f9f7225cfea2ba8006c6eef49c4025ab46fb3740c04cb061ece628"
       ^source (path ^path "..")
       ^features []
       ^dependencies {
@@ -24,7 +24,7 @@
       ^source (workspace ^path ".")
       ^features []
       ^dependencies {
-        ^crypto (locked_edge ^scope runtime ^target "path:genex/crypto@0.1.0#sha256:c86d09dfedd673ea47ddf7c4f67c2cd03d9d47a6739fd0991eafe81fd5069890")
+        ^crypto (locked_edge ^scope runtime ^target "path:genex/crypto@0.1.0#sha256:3bb1e9d56b719262e5e22304da78d86eca30615969162fd6ced5f90b64da872d")
       }
       ^compatibility (compatibility ^package_format 1 ^runtime ">=0.1.0 <0.2.0"))
   ]

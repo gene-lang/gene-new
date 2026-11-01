@@ -81,6 +81,8 @@
     (then (set state "sign_in_required") (set reason "ChatGPT plan permission is not enabled; continue with ChatGPT and authorize plan usage."))
     (elif (|| (== record/signed_out true) ($absent? record/access_token) (== record/access_token ""))
       (set state "sign_in_required") (set reason "Continue with ChatGPT to reconnect this account."))
+    (elif ($present? record/pending_refresh)
+      (set state "unavailable") (set reason "Refreshed credentials are awaiting identity verification; retry when the service is reachable."))
     (elif (&& (<= record/expires_at (/ ($os/wall_ms) 1000)) ($absent? record/refresh_token))
       (set state "expired") (set reason "ChatGPT access expired; continue with ChatGPT to reconnect.")))
   {^id id ^label label ^client_id record/client_id ^subject record/subject
@@ -115,18 +117,23 @@
 # The operation rereads under the per-account cross-process lock. Its result is
 # {record?, activate?, result?, error?}; a rotating token set is written together
 # before an optional error is raised. No caller may retain a stale refresh token.
-(fn with_chatgpt_account [root, id : Str, operation]
+(fn with_chatgpt_account_checkpoint [root, id : Str, operation]
   (require_account_id id)
   (with_store_lock root ($to_str id ".lock") (fn []
     (let current (read_chatgpt_record root id))
-    (let update (operation current))
+    (let checkpoint (fn [record]
+      (require_record record id)
+      ($fs/write_text_atomic ^^owner_only (account_path root id) ($json/stringify record))))
+    (let update (operation current checkpoint))
     (if ($present? update/record)
       (then
-        (require_record update/record id)
-        ($fs/write_text_atomic ^^owner_only (account_path root id) ($json/stringify update/record))))
+        (checkpoint update/record)))
     (if (== update/activate true) (select_chatgpt_account root id))
     (if ($present? update/error) (fail update/error))
     update/result)))
+
+(fn with_chatgpt_account [root, id : Str, operation]
+  (with_chatgpt_account_checkpoint root id (fn [current checkpoint] (operation current))))
 
 (fn save_chatgpt_account [root, record, ^activate activate : Bool = true]
   (let id (account_id record))

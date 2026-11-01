@@ -119,7 +119,10 @@
           (while (!= (/account (/connection (/chatgpt (/providers (catalog/snapshot))))) a/id)
             ($assert (< ($os/monotonic_ms) deadline)) ($sleep 1))
           (let before (select_provider runtime {^provider "chatgpt" ^model "fake"}))
+          ($fs/write_text ($path/join auth_root "chatgpt" "active.json") "broken")
+          ($assert ($present? (/error (list_chatgpt_accounts auth_root))))
           (catalog/account_action b/id "select")
+          ($assert (== (/active (list_chatgpt_accounts auth_root)) b/id) "choosing an account did not repair corrupt active.json")
           ($assert (== (/account (/connection (/chatgpt (/providers (catalog/snapshot))))) b/id))
           ($assert (try (select_provider ^selection before/selection runtime {}) false
             catch Any (== $err/code "connection_changed")))

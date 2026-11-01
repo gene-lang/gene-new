@@ -14,6 +14,12 @@
   ($str/join ($map events (fn [event] $"data: ${($json/stringify event)}\n\n")) ""))
 
 (describe "Provider adapter payloads"
+  (it "refuses unverified Anthropic thinking-off modes before a request is sent" []
+    ($assert (try (prepare_messages (call "none")) false
+      catch ProviderError ($str/contains? $err/message "Thinking off is not verified")))
+    (let known (call "none"))
+    (known/settings .put "model" "claude-sonnet-5-5")
+    ($assert (== (/type (/thinking (/body (prepare_messages known)))) "between_tools")))
   (it "reports Messages credit rejection without exposing provider diagnostics" []
     (let error (try (messages_stream_result {^status 400 ^headers {^request-id "req_fixture"}
       ^body ($json/stringify {^type "error" ^error {^type "invalid_request_error"

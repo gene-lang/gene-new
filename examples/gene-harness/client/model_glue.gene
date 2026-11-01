@@ -92,12 +92,12 @@
 
 (fn model_allows_submit [client : Client, ^resume resume : Bool = true] : Bool
   (if_yes (! (model_picker_expected client)) (return true))
+  (if_yes (flag client/browser_clients/mounts/models/failed) (return true))
   (var drafts (model_drafts client))
-  (if_yes (|| (! drafts/loaded) drafts/required)
+  (if_yes (&& drafts/loaded drafts/required)
     (set drafts/requested resume)
     (browser_event client "models/choose" client/selected {})
-    (notice client (if drafts/loaded
-      (then "Choose a default model before the first prompt.") (else "Loading model choices…")))
+    (notice client "Choose a default model before the first prompt.")
     (return false))
   true)
 

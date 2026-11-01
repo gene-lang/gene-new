@@ -19,6 +19,9 @@
   (it "omits auto effort and sends a complete flag-value pair for explicit levels" []
     (for effort in [nil "none" "low" "max"]
       (let request (claude_request {^model "sonnet" ^effort effort ^claude_command "claude"} "rules" "go"))
+      (if (== effort "none")
+        ($assert ($str/contains? ($str/join request/args " ") "\"alwaysThinkingEnabled\":false")
+          "thinking off must use the CLI settings even though --effort is omitted"))
       (for arg in request/args ($assert (== ($head arg) Str)))
       (if (["low" "max"] .contains? effort)
         (then

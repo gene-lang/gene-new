@@ -6,6 +6,10 @@
 (import [ProviderError] ^from "../../../src/plugin_api")
 (import $net/http [listen serve stop json text])
 (import $net/http_client [request])
+(import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
+(import [baseline_profile] ^from "../../../src/profiles/baseline")
+(import [bounded_probe] ^from "../../../src/public/provider_discovery")
+(import [CryptoError] ^from "." ^pkg "crypto")
 
 (fn joined [task]
   (match task/.join
@@ -23,6 +27,115 @@
    ^nonce "SECRET_NONCE" ^access_token "SECRET_OLD_ACCESS" ^refresh_token "SECRET_OLD_REFRESH"})
 
 (describe "ChatGPT authentication"
+  (it "refuses to spend a refresh token from a bounded caller without a host executor" []
+    (isolated this_mod/.path "refuses to spend a refresh token from a bounded caller without a host executor"
+      (fn [workspace]
+        (let root ($path/join workspace "unowned-refresh"))
+        (save_chatgpt_account root (expired_record))
+        (let server (listen ^host "127.0.0.1" ^port 0)) (let calls ($cell 0))
+        (let runner (spawn ^lane root (try
+          (let endpoint $"http://127.0.0.1:${server/port}/token")
+          (let refused (try (bounded_probe ^timeout_ms 100
+            (fn [] (chatgpt_access ^root root ^exchange_url endpoint))) nil catch ProviderError $err))
+          ($assert (== refused/code "refresh_executor_required"))
+          ($assert (== calls/.get 0))
+          ($assert (== (/access_token (chatgpt_access ^root root ^exchange_url endpoint)) "SECRET_NEW_ACCESS"))
+          ($assert (== calls/.get 1))
+        ensure (stop server))))
+        (serve server ^handler (fn [incoming]
+          (calls .set (+ calls/.get 1))
+          ($assert ($str/contains? incoming/body "refresh_token=SECRET_OLD_REFRESH"))
+          (json 200 ($json/stringify {^token_type "Bearer" ^expires_in 3600
+            ^access_token "SECRET_NEW_ACCESS" ^refresh_token "SECRET_NEW_REFRESH"}))))
+        (joined runner))))
+
+  (it "persists rotation across verification failures and cancelled discovery without replaying a spent token" []
+    (isolated this_mod/.path "persists rotation across verification failures and cancelled discovery without replaying a spent token"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (let root ($path/join workspace "rotation"))
+        (let server (listen ^host "127.0.0.1" ^port 0))
+        (let phase ($cell "verification")) (let calls ($cell 0)) (let verified ($cell 0))
+        (let verify (fn [tokens client nonce, ^refresh refresh : Bool = false]
+          ($assert refresh)
+          (verified .set (+ verified/.get 1))
+          (if (&& (["verification" "delayed" "delayed_without_identity"] .contains? phase/.get) (== verified/.get 1))
+            (fail (ProviderError ^code "signing_keys_unavailable" ^message "Signing keys temporarily unavailable")))
+          (if (== phase/.get "signature") (fail (CryptoError ^message "Invalid fixture signature")))
+          {^sub (if (== phase/.get "identity") (then "other") (else "subject"))}))
+        (let runner (spawn ^lane root (try
+          (let url $"http://127.0.0.1:${server/port}/token")
+          (for mode in ["verification" "delayed" "delayed_without_identity" "cancel" "malformed" "access_shape" "identity" "signature" "shutdown"]
+            (phase .set mode) (calls .set 0) (verified .set 0)
+            (let account (save_chatgpt_account root (expired_record)))
+            (let first (try
+              (if (["cancel" "shutdown"] .contains? mode)
+                (then (bounded_probe ^timeout_ms 50 (fn [] (chatgpt_access ^root root ^exchange_url url ^verify verify))))
+                (else (chatgpt_access ^root root ^exchange_url url ^verify verify)))
+              nil catch Any $err))
+            ($assert ($present? first) mode)
+            (if (== mode "verification")
+              (then
+                (let pending (read_chatgpt_record root account/id))
+                ($assert (== pending/refresh_token "SECRET_NEW_REFRESH") "rotation was not durable before verification retried")
+                ($assert ($present? pending/pending_refresh))
+                (let public (list_chatgpt_accounts root))
+                ($assert (== public/accounts/0/state "unavailable"))
+                ($assert (! ($str/contains? ($json/stringify public) "SECRET")))))
+            (if (["identity" "signature"] .contains? mode)
+              (then
+                (let refused (read_chatgpt_record root account/id))
+                (if (== mode "identity")
+                  (then
+                    ($assert (== first/status 401))
+                    ($assert ($absent? refused/access_token))
+                    ($assert ($absent? refused/refresh_token))
+                    ($assert ($absent? refused/pending_refresh)))
+                  (else
+                    ($assert (== first/code "invalid_id_token"))
+                    ($assert (== refused/refresh_token "SECRET_NEW_REFRESH"))
+                    ($assert ($present? refused/pending_refresh))
+                    ($assert (try (chatgpt_access ^root root ^exchange_url url ^verify verify) false catch Any true))
+                    ($assert (== calls/.get 1) "an unverified identity caused another token exchange")))
+                (continue)))
+            (if (== mode "shutdown") (close_runtime runtime))
+            (if (["delayed" "delayed_without_identity"] .contains? mode)
+              (then
+                (with_chatgpt_account root account/id (fn [record]
+                  (record .put "pending_refresh_at" (- (/ ($os/wall_ms) 1000) 7200))
+                  {^record record}))
+                ($assert (try (chatgpt_access ^root root ^exchange_url url ^verify verify) false
+                  catch ProviderError (== $err/code "refresh_response_expired")))
+                ($assert (== calls/.get 1))))
+            (if (== mode "delayed_without_identity")
+              (then
+                (repeat 2
+                  ($assert (try (chatgpt_access ^root root ^exchange_url url ^verify verify) false
+                    catch ProviderError (== $err/code "identity_verification_required"))))
+                ($assert (== calls/.get 2) "missing identity repeatedly spent the saved refresh token")
+                (continue)))
+            (let result (chatgpt_access ^root root ^exchange_url url ^verify verify))
+            ($assert (== result/access_token "SECRET_NEW_ACCESS") mode)
+            ($assert (== (/refresh_token (read_chatgpt_record root account/id)) "SECRET_NEW_REFRESH") mode)
+            ($assert (== calls/.get (if (["malformed" "access_shape" "delayed"] .contains? mode) (then 2) (else 1)))
+              "a failed verifier or cancelled caller repeated the spent refresh token"))
+        ensure (stop server))))
+        (try
+          (serve server ^handler (fn [incoming]
+            (calls .set (+ calls/.get 1))
+            (let expected (if (== calls/.get 1) (then "SECRET_OLD_REFRESH") (else "SECRET_NEW_REFRESH")))
+            ($assert ($str/contains? incoming/body $"refresh_token=${expected}"))
+            (if (== phase/.get "cancel") ($sleep 150))
+            (if (== phase/.get "shutdown")
+              (while runtime/services/values/models_host/accepting/.get ($sleep 1)))
+            (let response {^token_type "Bearer"
+              ^expires_in (if (&& (== phase/.get "malformed") (== calls/.get 1)) (then "invalid") (else 3600))
+              ^access_token (if (&& (== phase/.get "access_shape") (== calls/.get 1)) (then 42) (else "SECRET_NEW_ACCESS"))
+              ^refresh_token "SECRET_NEW_REFRESH" ^id_token "SECRET_NEW_ID"})
+            (if (&& (== phase/.get "delayed_without_identity") (> calls/.get 1)) (response .delete "id_token"))
+            (json 200 ($json/stringify response))))
+          (joined runner)
+        ensure (close_runtime runtime)))))
   (it "uses issued clients and verified identities without activating failed or declined sign-ins" []
     (isolated this_mod/.path "uses issued clients and verified identities without activating failed or declined sign-ins"
       (fn [workspace]

@@ -2,6 +2,11 @@
 (import [merge_models canonical_models canonical_connection list_catalog_models] ^from "../../../src/public/model_catalog")
 
 (describe "Merged model catalog"
+  (it "keeps valid discovered models when other vendor rows are malformed" []
+    (let found (canonical_models [{^id "good"} {^id "bad" ^label ""}
+      {^id "good" ^window 12} {^id "invalid" ^effective_percent 101} nil {^id "also-good"}]))
+    ($assert (== ($map found /id) ["good" "also-good"]))
+    ($assert (try (canonical_models [{^id "bad" ^label ""}]) false catch Any true)))
   (it "merges fields in file, discovery, built-in order without losing false overrides" []
     (let models (merge_models
       [{^id "one" ^label "Builtin" ^window 128000 ^efforts ["low" "medium"] ^default_effort "medium"}]

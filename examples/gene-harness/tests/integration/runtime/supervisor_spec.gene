@@ -1,0 +1,43 @@
+(import $test [describe it])
+(import [isolated run_spec source_path] ^from "../../support")
+(import [ready_host stop_host] ^from "../../web_support")
+(import [connect api] ^from "../../../src/cli/client")
+
+(describe "Optional native provider builds"
+  (it "starts a normal CLI-backed host when the native compiler fails" []
+    (isolated this_mod/.path "starts a normal CLI-backed host when the native compiler fails"
+      (fn [workspace]
+        (let compiler ($path/join workspace "failed-cc"))
+        (let marker ($path/join workspace "compiler-called"))
+        ($fs/write_text compiler ($to_str "#!/bin/sh\n: > \"" marker "\"\nexit 1\n"))
+        ($fs/set_mode compiler 493)
+        (let claude ($path/join workspace "fake-claude"))
+        ($fs/write_text claude "#!/bin/sh\nprintf '%s\\n' '{\"loggedIn\":true,\"authMethod\":\"claude.ai\",\"subscriptionType\":\"pro\"}'\n")
+        ($fs/set_mode claude 493)
+        (let root ($path/join workspace "host")) ($fs/make_dir root)
+        (let process ($os/exec_async ($os/executable_path) "run" "--snapshot"
+          (source_path "src/runtime/supervisor.gene") "web" "--workspace" root "--port" "0"
+          "--provider" "claude" "--model" "sonnet"
+          ^timeout_ms 60000 ^max_bytes 1048576
+          ^env {^GENE_C_COMPILER compiler ^GENE_ARTIFACT_STORE ($path/join workspace "artifacts")
+            ^GENE_HARNESS_CLAUDE_COMMAND claude}))
+        (let host {^root root ^process process})
+        (try
+          (ready_host ^timeout_ms 40000 host)
+          (let client (connect root))
+          (let due (+ ($os/monotonic_ms) 10000))
+          (loop
+            (let status (api client "GET" "/status?ui=default"))
+            (if (== status/model/provider "claude")
+              (then
+                (let catalog (api client "GET" "/models"))
+                (if (== catalog/providers/claude/connection/state "ready") (break))))
+            ($assert (< ($os/monotonic_ms) due) "normal Claude-backed host did not become ready")
+            ($sleep 20))
+          ($assert ($fs/exists? marker) "the failing compiler was not exercised")
+        ensure
+          (let ended (stop_host host))
+          ($assert (== ended/status 0) ended/stderr)
+          ($assert ($str/contains? ended/stdout "Starting the normal source host")))))))
+
+(fn main [args] : Int (run_spec args))

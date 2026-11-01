@@ -1,0 +1,26 @@
+(import $test [describe it run])
+(import [chatgpt_signing_keys key_cache] ^from "../../../src/public/chatgpt_auth")
+(import [ProviderError] ^from "../../../src/plugin_api")
+
+(describe "ChatGPT signing key recovery"
+  (it "uses bounded stale keys only for known kids while the key service is unavailable" []
+    (let previous key_cache/.get) (key_cache .set {})
+    (let unavailable ($cell false)) (let calls ($cell 0))
+    (let fetch (fn [url method, ^timeout_ms timeout_ms = 5000]
+      (calls .set (+ calls/.get 1))
+      (if unavailable/.get (return {^status 503}))
+      {^status 200 ^data {^keys [{^kid "known"}]}}))
+    (try
+      ($assert (== (/keys (chatgpt_signing_keys ^fetch fetch ^now_ms 1000 {^kid "known"})) [{^kid "known"}]))
+      (unavailable .set true)
+      (chatgpt_signing_keys ^fetch fetch ^now_ms 1001 {^kid "known"})
+      ($assert (== calls/.get 1))
+      (chatgpt_signing_keys ^fetch fetch ^now_ms 301001 {^kid "known"})
+      ($assert (== calls/.get 2))
+      ($assert (try (chatgpt_signing_keys ^fetch fetch ^now_ms 301002 {^kid "unknown"}) false
+        catch ProviderError (== $err/code "signing_keys_unavailable")))
+      ($assert (try (chatgpt_signing_keys ^fetch fetch ^now_ms 4000000 {^kid "known"}) false
+        catch ProviderError (== $err/code "signing_keys_unavailable")))
+    ensure (key_cache .set previous))))
+
+(fn main [args] : Int (/exit_code (run ^name (?? args/0 ""))))

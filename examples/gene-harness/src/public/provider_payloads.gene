@@ -67,7 +67,11 @@
   (if (!= parts/system "") (body .put "system" parts/system))
   (if ($present? call/settings/effort)
     (if (== call/settings/effort "none")
-      (then (body .put "thinking" {^type (?? (anthropic_thinking_off call/settings/model) "disabled")}))
+      (then
+        (let off (anthropic_thinking_off call/settings/model))
+        (if ($absent? off)
+          (fail (ProviderError ^message "Thinking off is not verified for this Anthropic model; choose Auto or a supported effort.")))
+        (body .put "thinking" {^type off}))
       (else (body .put "thinking" {^type "adaptive"})
         (body .put "output_config" {^effort call/settings/effort}))))
   {^body body ^timeout_ms call/settings/timeout_ms})

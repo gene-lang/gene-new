@@ -179,6 +179,10 @@ the per-turn path. A host service runs discovery and caches the result, and
 `provider_reason` reads that cache. It runs at host start without blocking it, on
 **Refresh**, every 24 hours, and marks a connection `expired` after a provider
 401. Each probe gets 5 seconds. On failure the last catalog stays, marked stale.
+Transient failures preserve a previously ready connection; positive signed-out
+or expired results replace it. Unavailable or stale connections retry after
+30 seconds, with exponential backoff capped at five minutes. Healthy providers
+retain their 24-hour refresh interval, and a manual Refresh probes immediately.
 
 The merged catalog is cached in `<manager root>/.gene-harness/model_catalog.gene`
 with an atomic write, so a new host has a list immediately. Last writer wins is
@@ -295,6 +299,10 @@ The documented route:
 - Serialize refreshes. OpenAI warns about two processes racing a rotating token,
   and each Harness workspace is its own process, so this needs a file lock shared
   across hosts, not an in-process gate.
+- Own refresh exchanges in the host rather than an individual probe or round.
+  Persist rotated tokens before fallible ID-token checks, with pending credentials
+  unavailable for inference until verification succeeds. Cancellation must not
+  abandon the exchange, and delayed verification must not extend access expiry.
 
 Two cautions. It is a preview with listed limits, and one OpenAI page describes
 access as limited to select partners while the open-source guide describes

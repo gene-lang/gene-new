@@ -63,7 +63,11 @@ bin/gene run --package-root examples/gene-harness harness web --workspace /path/
 The packaged host selects its declared native resources. ChatGPT ID-token
 verification uses `genex/crypto`, which needs OpenSSL 3 and `pkg-config` when
 building. The launcher builds the normal host through the same application
-target; offline and recovery starts use the captured-source entry.
+target. If native compilation or target selection fails before startup, the
+launcher retries the normal captured-source host, so CLI and HTTP providers
+remain usable. ChatGPT sign-in still requires a working verifier and reports
+that failure on its own connection. Offline and recovery starts use the
+captured-source entry directly.
 
 Workspace selection uses `--workspace DIR`, then a non-empty
 `GENE_HARNESS_WORKSPACE`, then the launch directory. Relative paths resolve

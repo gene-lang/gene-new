@@ -41,8 +41,10 @@
      (let deadline (+ ($os/monotonic_ms) 5000))
      (let credentials (try (access ^root resolved)
        catch ProviderError (return {^state (if (== $err/status 401) (then "sign_in_required") (else "unavailable"))
+         ^stale (!= $err/status 401)
          ^label "ChatGPT" ^billing "plan" ^reason $err/message})
        catch Any (return {^state "unavailable" ^label "ChatGPT" ^billing "plan"
+         ^^stale
          ^reason "ChatGPT connection state could not be read; inspect its account in Models."})))
      (let remaining (- deadline ($os/monotonic_ms)))
      (let checked (if (<= remaining 0) (then {^status 0 ^error "timeout"})

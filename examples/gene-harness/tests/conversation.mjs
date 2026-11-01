@@ -88,6 +88,11 @@ assert.match(status.textContent,/Send a new message/);
 assert.equal(descendants(status).filter(node=>node.tag==='button').length,0);
 status=run_status_view({state:'paused',resumable:false,continuation_stop:'superseded'},'',()=>{});
 assert.doesNotMatch(status.textContent,/Send a new message/);
+status=run_status_view({state:'paused',resumable:true,
+  selection:{provider:'original',model:'small',requested_effort:'high'}},'',()=>{},()=>{});
+assert.match(status.textContent,/Continue keeps original\/small · high/);
+assert.match(status.textContent,/unless you make a new picker choice/);
+assert.match(status.textContent,/Session \/model and \/effort changes apply to new prompts/);
 const other=block('code',1,'other',{id:'other',round_id:'another'});
 groups=conversation_groups([records[0],other,records[1]]);
 assert.deepEqual(groups.filter(group=>group.kind==='turn').map(group=>group.key),['r/turn-1','another/turn-1']);

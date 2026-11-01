@@ -3,8 +3,8 @@
 (import [nonempty] ^from "./provider")
 (import [login_root pkce_challenge query_string expire_login] ^from "./provider_login")
 (import [account_id chatgpt_host_id active_chatgpt_id read_chatgpt_record save_chatgpt_account
-  with_chatgpt_account plan_enabled? public_account] ^from "./chatgpt_store")
-(import [decode_url verify_rs256 verify_id_token] ^from "." ^pkg "crypto")
+  with_chatgpt_account with_chatgpt_account_checkpoint plan_enabled? public_account] ^from "./chatgpt_store")
+(import [decode_url verify_rs256 verify_id_token CryptoError] ^from "." ^pkg "crypto")
 (import $net/http_client [request])
 (import $sync [gate])
 
@@ -14,6 +14,17 @@
 (const jwks_url "https://auth.openai.com/.well-known/jwks.json")
 (var key_cache ($cell {}))
 (var key_gate (gate))
+(var refresh_dispatchers ($cell []))
+
+# Normal hosts register their owned executor before provider discovery starts.
+# The exchange task outlives an individual probe/round, and shutdown drains it.
+(fn register_chatgpt_refresh [dispatch]
+  (let token ($cell nil))
+  (refresh_dispatchers/.get .push {^token token ^dispatch dispatch})
+  token)
+
+(fn unregister_chatgpt_refresh [token]
+  (refresh_dispatchers .set ($filter refresh_dispatchers/.get (fn [entry] (!= entry/token token)))))
 
 (fn auth_error [message : Str, status = nil, ^code code = nil]
   (fail (ProviderError ^status status ^code code ^message message)))
@@ -28,22 +39,30 @@
     {^status response/status ^data (try ($json/parse response/body) catch Any nil)}
   catch Any (auth_error "ChatGPT authentication service could not be reached; retry shortly")))
 
-(fn verify_chatgpt_token [tokens, client : Str, nonce : Str, ^refresh refresh : Bool = false]
-  (let keys (key_gate (fn []
+(fn chatgpt_signing_keys [header, ^fetch fetch = auth_http, ^now_ms supplied_now = nil]
+  (let now (?? supplied_now ($os/monotonic_ms)))
+  (key_gate (fn []
     (let cached (key_cache/.get .get jwks_url))
-    (let header (try
-      (let parts ($str/split tokens/id_token "."))
-      ($json/parse ($binary/decode_utf8 (decode_url parts/0)))
-      catch Any nil))
     (var known false)
     (for key in (?? cached/keys/keys [])
       (if (== key/kid header/kid) (set known true)))
-    (if (&& ($present? cached) known (< ($os/monotonic_ms) cached/expires_at)) (return cached/keys))
-    (let result (auth_http ^timeout_ms 5000 jwks_url "GET"))
+    (if (&& ($present? cached) known (< now cached/expires_at)) (return cached/keys))
+    (let result (try (fetch ^timeout_ms 5000 jwks_url "GET") catch Any nil))
     (if (|| (!= result/status 200) (!= ($head result/data/keys) List))
-      (auth_error "ChatGPT signing keys are unavailable; reconnect when the service is reachable"))
-    (key_cache/.get .put jwks_url {^keys result/data ^expires_at (+ ($os/monotonic_ms) 300000)})
+      (then
+        # Only a known key gets a bounded stale grace on an unavailable JWKS
+        # service. Unknown kids and invalid signatures still fail closed.
+        (if (&& known (< now (+ cached/expires_at 3600000))) (return cached/keys))
+        (auth_error ^code "signing_keys_unavailable" "ChatGPT signing keys are temporarily unavailable; retry shortly")))
+    (key_cache/.get .put jwks_url {^keys result/data ^expires_at (+ now 300000)})
     result/data)))
+
+(fn verify_chatgpt_token [tokens, client : Str, nonce : Str, ^refresh refresh : Bool = false]
+  (let header (try
+    (let parts ($str/split tokens/id_token "."))
+    ($json/parse ($binary/decode_utf8 (decode_url parts/0)))
+    catch Any nil))
+  (let keys (chatgpt_signing_keys header))
   (verify_id_token ^access_token tokens/access_token ^require_nonce (! refresh)
     tokens/id_token keys issuer client nonce (/ ($os/wall_ms) 1000)))
 
@@ -54,7 +73,7 @@
     (verify_rs256 bytes ($binary/from_list [1]) ($binary/from_list []) bytes)
     nil
   catch Any
-    (auth_error "ChatGPT sign-in needs a built Harness and the current Gene runtime with genex/crypto. Start it with gene run harness.")))
+    (auth_error "ChatGPT sign-in needs the native genex/crypto verifier. Repair the Harness native build with OpenSSL 3 and the current Gene runtime; other providers remain usable.")))
 
 (fn new_chatgpt_login [callback : Str, ^root root = nil, ^account account = nil,
   ^timeout_ms timeout_ms : Int = 300000, ^verify verifier = nil, ^registration registration = nil,
@@ -93,7 +112,10 @@
 (fn require_tokens [tokens, ^renewable renewable : Bool = false]
   (if (|| (!= ($head tokens) Map) (!= tokens/token_type "Bearer")
     (!= ($head tokens/expires_in) Int) (<= tokens/expires_in 0) (> tokens/expires_in 86400)
+    (!= ($head tokens/access_token) Str)
     ($absent? (nonempty tokens/access_token))
+    (&& ($present? tokens/id_token) (!= ($head tokens/id_token) Str))
+    (&& renewable (!= ($head tokens/refresh_token) Str))
     (&& renewable ($absent? (nonempty tokens/refresh_token))))
     (auth_error "ChatGPT returned an invalid token response")))
 
@@ -156,12 +178,82 @@
     (attempt/status .set "timed_out")))
 
 (fn chatgpt_access [^root root = nil, ^account supplied = nil, ^exchange_url exchange_url : Str = token_url,
-  ^verify verifier = nil]
+  ^verify verifier = nil, ^dispatch supplied_dispatch = nil]
+  (var dispatch supplied_dispatch)
+  (if (&& ($absent? dispatch) (> refresh_dispatchers/.get/.size 0))
+    (then
+      (let available refresh_dispatchers/.get)
+      (let index (- available/.size 1))
+      (set dispatch available/%index/dispatch)))
+  (if ($absent? dispatch)
+    (return (chatgpt_access_transaction
+      ^allow_refresh ($absent? (/deadline_ms ($runtime/execution_budget))) root supplied exchange_url verifier)))
+  (let task (dispatch chatgpt_access_transaction [root supplied exchange_url verifier]))
+  # The host owns this task, not the waiting discovery/round scope. In
+  # particular, do not cancel it while a rotating exchange may be in flight.
+  (match task/.join
+    (when (TaskOutcome/ok value) value)
+    (when (TaskOutcome/error error) (fail error))
+    (else (auth_error "ChatGPT refresh was interrupted; retry after the host recovers"))))
+
+(fn finish_chatgpt_refresh [current, verifier]
+  (let tokens current/pending_refresh)
+  (try
+    (require_tokens ^renewable true tokens)
+    (let scopes (token_scopes tokens current/scopes))
+    (current .put "scopes" scopes)
+  catch Any
+    # The rotated refresh value is already durable. A subsequent call may
+    # exchange that value again to recover malformed non-identity metadata.
+    (current .delete "pending_refresh")
+    (current .delete "pending_refresh_at")
+    (return {^record current ^error $err}))
+  (if (&& (== current/refresh_identity_required true) ($absent? tokens/id_token))
+    (return {^record current ^error (ProviderError ^status 401 ^code "identity_verification_required"
+      ^message "ChatGPT needs a fresh identity token after an interrupted verification; reconnect in Models")}))
+  (let received_at (if (== ($head current/pending_refresh_at) Int) (then current/pending_refresh_at) (else 0)))
+  (let expires_at (+ received_at tokens/expires_in))
+  (if (<= expires_at (/ ($os/wall_ms) 1000))
+    (then
+      (current .delete "pending_refresh") (current .delete "pending_refresh_at")
+      (return {^record current ^error (ProviderError ^code "refresh_response_expired"
+        ^message "ChatGPT access expired while identity verification was pending; retry with the saved refresh token")})))
+  (try
+    (if ($present? tokens/id_token)
+      (then
+        (if ($absent? verifier) (require_signature_backend))
+        (let verify (?? verifier verify_chatgpt_token))
+        (let identity (verify ^refresh true tokens current/client_id current/nonce))
+        (if (!= identity/sub current/subject)
+          (auth_error ^code "identity_mismatch" "ChatGPT refresh returned a different identity; reconnect in Models" 401))))
+  catch CryptoError
+    # A bad signature or unusable signing-key response must never authorize
+    # inference, but must not discard a newly rotated refresh value either.
+    (return {^record current ^error (ProviderError ^code "invalid_id_token"
+      ^message "ChatGPT refreshed identity could not be verified; retry or reconnect in Models")})
+  catch Any
+    (let error $err)
+    (if (== error/code "identity_mismatch")
+      (for field in ["access_token" "refresh_token" "id_token" "pending_refresh" "pending_refresh_at"] (current .delete field)))
+    (return {^record current ^error error}))
+  (if ($present? tokens/id_token) (current .put "id_token" tokens/id_token))
+  (current .delete "refresh_identity_required")
+  (current .put "expires_at" expires_at)
+  (current .put "earliest_refresh_at" tokens/earliest_refresh_at)
+  (current .delete "pending_refresh")
+  (current .delete "pending_refresh_at")
+  (if (! (plan_enabled? current))
+    (return {^record current ^error (ProviderError ^status 401 ^message "ChatGPT plan permission is no longer enabled; reconnect in Models")}))
+  {^record current ^result {^access_token current/access_token ^account (account_id current) ^public (public_account current)}})
+
+(fn chatgpt_access_transaction [root, supplied, exchange_url, verifier, ^allow_refresh allow_refresh : Bool = true]
   (let id (?? supplied (active_chatgpt_id root)))
   (if ($absent? id) (auth_error "Continue with ChatGPT in Models to connect an account" 401))
-  (with_chatgpt_account root id (fn [current]
+  (with_chatgpt_account_checkpoint root id (fn [current checkpoint]
+    (if ($present? current/pending_refresh)
+      (return (finish_chatgpt_refresh current verifier)))
     (if (|| ($absent? current) (! (plan_enabled? current)) (== current/signed_out true)
-      ($absent? (nonempty current/access_token)))
+      (&& ($absent? (nonempty current/access_token)) ($absent? (nonempty current/refresh_token))))
       (auth_error "ChatGPT plan permission is unavailable; reconnect this account in Models" 401))
     (let now (/ ($os/wall_ms) 1000))
     (let existing {^access_token current/access_token ^account id ^public (public_account current)})
@@ -171,6 +263,8 @@
         (if (> current/expires_at now) (return {^result existing}))
         (auth_error "ChatGPT token refresh is not available yet; retry shortly")))
     (if ($absent? (nonempty current/refresh_token)) (auth_error "ChatGPT access expired; reconnect in Models" 401))
+    (if (! allow_refresh)
+      (auth_error ^code "refresh_executor_required" "ChatGPT refresh requires the host-owned credential executor; retry through the running Harness host"))
     (let response (auth_http exchange_url "POST" (query_string
       {^grant_type "refresh_token" ^client_id current/client_id ^refresh_token current/refresh_token ^resource resource})))
     (if (!= response/status 200)
@@ -186,21 +280,21 @@
           (auth_error ^code "invalid_client" "ChatGPT client registration is invalid; check the integration's client configuration"))
         (auth_error "ChatGPT token refresh could not complete; retry shortly")))
     (let tokens response/data)
-    (require_tokens ^renewable true tokens)
-    (if ($present? tokens/id_token)
-      (then
-        (let verify (?? verifier verify_chatgpt_token))
-        (let identity (verify ^refresh true tokens current/client_id current/nonce))
-        (if (!= identity/sub current/subject) (auth_error "ChatGPT refresh returned a different identity; reconnect in Models"))))
     (let updated ($thaw ($freeze current)))
-    (for field in ["access_token" "refresh_token" "id_token"]
-      (if ($present? (tokens .get field)) (updated .put field (tokens .get field))))
-    (updated .put "scopes" (token_scopes tokens current/scopes))
-    (updated .put "expires_at" (+ (/ ($os/wall_ms) 1000) tokens/expires_in))
-    (updated .put "earliest_refresh_at" tokens/earliest_refresh_at)
-    (if (! (plan_enabled? updated))
-      (return {^record updated ^error (ProviderError ^status 401 ^message "ChatGPT plan permission is no longer enabled; reconnect in Models")}))
-    {^record updated ^result {^access_token updated/access_token ^account id ^public (public_account updated)}})))
+    (let pending {})
+    (if (== ($head tokens) Map)
+      (for field in ["access_token" "refresh_token" "id_token" "token_type" "expires_in" "scope" "earliest_refresh_at"]
+        (if ($present? (tokens .get field)) (pending .put field (tokens .get field)))))
+    (for field in ["access_token" "refresh_token"]
+      (if (&& (== ($head (pending .get field)) Str) ($present? (nonempty (pending .get field))))
+        (then (updated .put field (pending .get field)))
+        (else (updated .delete field))))
+    (updated .put "expires_at" 0)
+    (updated .put "pending_refresh" pending)
+    (updated .put "pending_refresh_at" (/ ($os/wall_ms) 1000))
+    (if ($present? pending/id_token) (updated .put "refresh_identity_required" true))
+    (checkpoint updated)
+    (finish_chatgpt_refresh updated verifier))))
 
 (fn sign_out_chatgpt [^root root = nil, ^account supplied = nil, ^revocation_url supplied_url = nil]
   (let id (?? supplied (active_chatgpt_id root)))
@@ -230,7 +324,7 @@
                 (elif (&& ($present? result/status) (< result/status 500)) (break))
                 (else (if (< attempt 2) ($sleep (* 100 (+ attempt 1))))))
               (set attempt (+ attempt 1)))))))
-    (for field in ["access_token" "refresh_token" "id_token" "nonce"] (current .delete field))
+    (for field in ["access_token" "refresh_token" "id_token" "nonce" "pending_refresh" "pending_refresh_at" "refresh_identity_required"] (current .delete field))
     (current .put "signed_out" true) (current .put "expires_at" 0)
     (current .put "revocation_confirmed" confirmed)
     {^record current ^result {^^ok ^account (public_account current) ^remote_revoked confirmed

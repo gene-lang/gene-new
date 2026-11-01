@@ -50,15 +50,20 @@
   (let result [])
   (let ids [])
   (for source in models
-    (let clean {})
-    (for key in ["id" "label" "rank" "window" "max_output" "input" "efforts"
-      "default_effort" "hidden" "effective_percent" "pricing" "prompt_limit_bytes"]
-      (let value (source .get key))
-      (if ($present? value) (clean .put key value)))
-    (let checked (validate_model clean))
-    (if (ids .contains? clean/id) (fail (ProviderError ^message "Duplicate model in provider catalog")))
-    (ids .push clean/id)
-    (result .push checked))
+    (try
+      (if (!= ($head source) Map) (continue))
+      (let clean {})
+      (for key in ["id" "label" "rank" "window" "max_output" "input" "efforts"
+        "default_effort" "hidden" "effective_percent" "pricing" "prompt_limit_bytes"]
+        (let value (source .get key))
+        (if ($present? value) (clean .put key value)))
+      (let checked (validate_model clean))
+      (if (ids .contains? clean/id) (continue))
+      (ids .push clean/id)
+      (result .push checked)
+    catch Any nil))
+  (if (&& (> models/.size 0) (== result/.size 0))
+    (fail (ProviderError ^message "Provider model list contains no valid models")))
   result)
 
 (fn canonical_connection [value, name]
@@ -204,10 +209,13 @@
     (let raw (if ($present? candidate/connection)
       (then (bounded_probe candidate/connection))
       (else {^state "ready" ^label name ^billing (?? candidate/transport/billing "unknown")})))
-    (if (== raw/stale true) (set stale true))
-    (if (&& (== raw/stale true) same ($present? previous/connection))
+    (let checked (canonical_connection raw name))
+    (if (|| (== raw/stale true) (== checked/state "unavailable")) (set stale true))
+    (if (&& same (== previous/connection/state "ready")
+      (|| (== checked/state "unavailable") (&& (== checked/state "ready") (== raw/stale true)))
+      (|| ($absent? checked/account) (== checked/account previous/connection/account)))
       (then (set stale true))
-      (else (set connection (canonical_connection raw name))))
+      (else (set connection checked)))
   catch Any (set stale true))
   (let identity (transport_identity candidate connection))
   (let keep_models (&& same (|| (!= connection/state "ready") (== previous/transport identity))))
@@ -232,7 +240,7 @@
   {^connection connection ^models models ^transport (transport_identity candidate connection)
    ^provider_transport source ^updated_ms updated ^stale stale})
 
-(fn refresh_catalog [catalog]
+(fn refresh_catalog [catalog, ^due_only due_only : Bool = false]
   (if catalog/closed/.get (return nil))
   (if (catalog/refreshing .swap true) (return nil))
   (try
@@ -241,11 +249,19 @@
     (scope
       (let tasks [])
       (for candidate in (catalog/providers)
+        (let prior (catalog/discovered/.get .get candidate/name))
+        (if (&& due_only (== prior/provider_transport (provider_transport candidate))
+          (> (?? prior/next_probe_ms 0) ($os/monotonic_ms))) (continue))
         (tasks .push (spawn ^lane root
           (do
             (let observed catalog/failure_version/.get)
             (let observed_connection (?? (catalog/connection_versions .get candidate/name) 0))
             (let found (probe_provider catalog candidate))
+            (let retry (if (|| found/stale (!= found/connection/state "ready"))
+              (then ($math/min 300000 ($math/max 30000 (* 2 (?? prior/retry_ms 0)))))
+              (else 0)))
+            (found .put "retry_ms" retry)
+            (found .put "next_probe_ms" (+ ($os/monotonic_ms) (if (> retry 0) (then retry) (else 86400000))))
             (if (! catalog/closed/.get)
               (then
                 (catalog/publishing (fn []
@@ -266,7 +282,11 @@
     (save_catalog_cache catalog)
   ensure
     (catalog/refreshing .set false)
-    (catalog/next_refresh .set (+ ($os/monotonic_ms) 86400000))
+    (var next (+ ($os/monotonic_ms) 86400000))
+    (for candidate in (catalog/providers)
+      (let found (catalog/discovered/.get .get candidate/name))
+      (set next ($math/min next (?? found/next_probe_ms next))))
+    (catalog/next_refresh .set next)
     (publish_catalog catalog)))
 
 (fn request_catalog_refresh [catalog]
@@ -284,8 +304,9 @@
     (while (! catalog/closed/.get)
       (if (|| catalog/requested/.get (>= ($os/monotonic_ms) catalog/next_refresh/.get))
         (then
+          (let due_only (! catalog/requested/.get))
           (catalog/requested .set false)
-          (try (refresh_catalog catalog) catch Any nil)))
+          (try (refresh_catalog ^due_only due_only catalog) catch Any nil)))
       (if (>= ($os/monotonic_ms) catalog/next_file_check/.get)
         (then
           (let file (read_file catalog))
@@ -365,6 +386,9 @@
     (connection .put "reason" "Provider credential expired or was rejected; reconnect.")
     (found .put "connection" connection)
     (found .put "stale" true)
+    (found .put "retry_ms" 30000)
+    (found .put "next_probe_ms" (+ ($os/monotonic_ms) 30000))
+    (catalog/next_refresh .set ($math/min catalog/next_refresh/.get found/next_probe_ms))
     (catalog/discovered/.get .put provider found)
     true)))
   (if changed (publish_catalog catalog)))

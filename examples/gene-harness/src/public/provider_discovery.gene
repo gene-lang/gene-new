@@ -36,9 +36,11 @@
 (fn claude_connection [command : Str]
   (let data (try (cli_probe_json ^allow_failure true command ["auth" "status"])
     catch Any (return {^state "unavailable" ^label "Claude Code" ^billing "unknown"
+      ^^stale
       ^reason "Claude Code status is unavailable; install claude or check its executable setting."})))
   (if (!= ($head data/loggedIn) Bool)
     (return {^state "unavailable" ^label "Claude Code" ^billing "unknown"
+      ^^stale
       ^reason "Claude Code did not report a valid login status."}))
   (if (!= data/loggedIn true)
     (return {^state "sign_in_required" ^label "Claude Code" ^billing "unknown"

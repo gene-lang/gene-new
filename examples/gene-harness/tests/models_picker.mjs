@@ -171,4 +171,21 @@ assert.equal(root.children.length, 0);
 delayed.forEach(reply => reply());
 assert.equal(controls.children.length, 0, 'a late catalog response cannot restore disposed controls');
 assert.ok(releases > 0);
+for (const failing of ['catalog','preview']) {
+  const failedRoot=new Element(), failedControls=new Element();
+  let gate={loaded:true,required:true};
+  failedRoot.harness_owner='models:failed';
+  failedRoot.harness_bridge={...root.harness_bridge,composer_actions:failedControls,
+    trigger_model_actions:new Element(),subscribe:()=>()=>{},
+    capabilities:{models:{...root.harness_bridge.capabilities.models,
+      state:()=>({choice:null,requested:false,...gate}),
+      configure:(loaded,required)=>{gate={loaded,required};},resume:()=>{}}},
+    api:(method,path,payload,done)=>{
+      if(failing==='catalog'||path.endsWith('/models/preview')) done(503n,{message:'Unavailable'});
+      else done(200n,catalog);
+    }};
+  picker.main(failedRoot);
+  assert.deepEqual(gate,{loaded:false,required:false},`${failing} failure left the first-run gate armed`);
+  failedRoot.harnessController.dispose();
+}
 console.log('model picker: first-run default, independent trigger/session choices, effort adjustment, signed-out connections, search, typed ids and disposal passed');
