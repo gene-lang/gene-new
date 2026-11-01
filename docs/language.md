@@ -562,7 +562,10 @@ such as `(import $str [join trim])` keep their syntax.
 To bring an exported scoped protocol implementation into the current module,
 use `(import_impl Protocol for Receiver ^from "./impls.gene")`. The protocol
 and receiver must already be in scope; `for` remains a positional keyword.
-File imports initialize a module once. Package dependency aliases identify
+Write it at module level, or inside a macro-marked block when the policy should
+stay local; a direct `import_impl` inside a `fn`, lambda, `message`, `ctor` or
+`spawn` body is a compile-time error. Pass the selected operation from the
+composition root instead. File imports initialize a module once. Package dependency aliases identify
 external libraries; [workflows](workflows.md#packages) shows the project layout.
 
 ### Namespaces

@@ -733,6 +733,120 @@ suite "modules — file imports":
       "[(get) (try item/.Label:label catch Any \"hidden\")]").print() ==
       "[\"local\" \"hidden\"]"
 
+  test "D1: direct import_impl in a deferred body is rejected at compile time":
+    writeModule("d1_label.gene", "(protocol Label (message label [self] : Str))")
+    writeModule("d1_item.gene", "(type Item)")
+    writeModule("d1_ext.gene",
+      "(import [Label] ^from \"./d1_label\") " &
+      "(import [Item] ^from \"./d1_item\") " &
+      "(impl Label for Item ^^export (message label [self] : Str \"local\"))")
+    let header = "(import [Label] ^from \"./d1_label\") " &
+      "(import [Item] ^from \"./d1_item\") "
+    let direct = "(import_impl Label for Item ^from \"./d1_ext\")"
+    for (kind, body) in [
+      ("fn", "(fn install [] " & direct & ")"),
+      ("fn with locals", "(fn install [seed] (let tag seed) " & direct & " tag)"),
+      ("lambda", "(let install (fn [] " & direct & "))"),
+      ("nested plain blocks",
+        "(fn install [flag] (do (if flag (then (do " & direct & ")))))"),
+      ("type message", "(type Holder ^props {} (message install [] : Nil " & direct & "))"),
+      ("impl message",
+        "(type Holder ^props {}) (protocol Install (message install [] : Nil)) " &
+        "(impl Install for Holder (message install [] : Nil " & direct & "))"),
+      ("ctor", "(type Holder ^props {} (ctor [] " & direct & "))"),
+      ("spawn in a function", "(fn start [] (spawn " & direct & "))"),
+      ("top-level spawn", "(let task (spawn " & direct & "))"),
+      ("fn inside a marked block",
+        "(macro with_ext [body...] `(do " & direct & " %body...)) " &
+        "(with_ext (fn inner [] " & direct & "))")
+    ]:
+      var diagnostic = ""
+      try:
+        discard compileSource(header & body)
+      except GeneError as error:
+        diagnostic = error.msg
+      checkpoint kind
+      check "import_impl Label for Item is not allowed directly in a function" in diagnostic
+      check "macro-marked block" in diagnostic
+
+  test "D1: a rejected module registers no pair and leaves a valid composition intact":
+    writeModule("d1b_label.gene", "(protocol Label (message label [self] : Str))")
+    writeModule("d1b_item.gene", "(type Item)")
+    writeModule("d1b_ext.gene",
+      "(import [Label] ^from \"./d1b_label\") " &
+      "(import [Item] ^from \"./d1b_item\") " &
+      "(impl Label for Item ^^export (message label [self] : Str \"local\"))")
+    writeModule("d1b_bad.gene",
+      "(import [Label] ^from \"./d1b_label\") " &
+      "(import [Item] ^from \"./d1b_item\") " &
+      "(fn install [] (import_impl Label for Item ^from \"./d1b_ext\"))")
+    let header = "(import [Label] ^from \"./d1b_label\") " &
+      "(import [Item] ^from \"./d1b_item\") "
+    expect GeneError:
+      discard runProgram(header & "(import [install] ^from \"./d1b_bad\")")
+    check runProgram(header &
+      "(let item (Item)) (try item/.Label:label catch Any \"hidden\")").print() ==
+      "\"hidden\""
+    check runProgram(header &
+      "(import_impl Label for Item ^from \"./d1b_ext\") " &
+      "(let item (Item)) item/.Label:label").print() == "\"local\""
+
+  test "D1: marked blocks stay legal inside function, message, ctor and spawn bodies":
+    writeModule("d1c_label.gene", "(protocol Label (message label [self] : Str))")
+    writeModule("d1c_item.gene", "(type Item)")
+    writeModule("d1c_one.gene",
+      "(import [Label] ^from \"./d1c_label\") " &
+      "(import [Item] ^from \"./d1c_item\") " &
+      "(impl Label for Item ^^export (message label [self] : Str \"one\"))")
+    writeModule("d1c_two.gene",
+      "(import [Label] ^from \"./d1c_label\") " &
+      "(import [Item] ^from \"./d1c_item\") " &
+      "(impl Label for Item ^^export (message label [self] : Str \"two\"))")
+    let header = "(import [Label] ^from \"./d1c_label\") " &
+      "(import [Item] ^from \"./d1c_item\") " &
+      "(macro with_one [body...] `(do (import_impl Label for Item ^from \"./d1c_one\") %body...)) " &
+      "(macro with_two [body...] `(do (import_impl Label for Item ^from \"./d1c_two\") %body...)) " &
+      "(let item (Item)) "
+    # Interleaved functions, an escaping closure, message, ctor, spawn, the
+    # module scope and a local macro expanded at execution time.
+    check runProgram(header &
+      "(fn one_fn [] (with_one item/.Label:label)) " &
+      "(fn two_fn [] (with_two item/.Label:label)) " &
+      "(fn escaping [] (with_one (fn [] item/.Label:label))) " &
+      "(type Holder ^props {^v Str} " &
+      "  (ctor [i] (set self/v (with_one i/.Label:label))) " &
+      "  (message via_two [i] : Str (with_two i/.Label:label))) " &
+      "(fn local_macro [] " &
+      "  (macro with_local [body...] `(do (import_impl Label for Item ^from \"./d1c_two\") %body...)) " &
+      "  (with_local item/.Label:label)) " &
+      "(let kept (escaping)) (let holder (new Holder item)) " &
+      "[(one_fn) (two_fn) (one_fn) (two_fn) (kept) holder/v (holder .via_two item) " &
+      " (await (spawn (with_two item/.Label:label))) (local_macro) " &
+      " (try item/.Label:label catch Any \"hidden\")]").print() ==
+      "[\"one\" \"two\" \"one\" \"two\" \"one\" \"one\" \"two\" \"two\" \"two\" \"hidden\"]"
+    # Marking is not a shadowing rule: nested conflicting pairs still reject.
+    expect GeneError:
+      discard runProgram(header & "(with_one (with_two item/.Label:label))")
+
+  test "D1: a deferred body in a runtime-expanded macro is still rejected":
+    writeModule("d1d_label.gene", "(protocol Label (message label [self] : Str))")
+    writeModule("d1d_item.gene", "(type Item)")
+    writeModule("d1d_ext.gene",
+      "(import [Label] ^from \"./d1d_label\") " &
+      "(import [Item] ^from \"./d1d_item\") " &
+      "(impl Label for Item ^^export (message label [self] : Str \"local\"))")
+    var diagnostic = ""
+    try:
+      discard runProgram("(import [Label] ^from \"./d1d_label\") " &
+        "(import [Item] ^from \"./d1d_item\") " &
+        "(fn run [] " &
+        "  (macro make [] `(fn inner [] (import_impl Label for Item ^from \"./d1d_ext\"))) " &
+        "  (make)) " &
+        "(run)")
+    except GeneError as error:
+      diagnostic = error.msg
+    check "is not allowed directly in a function" in diagnostic
+
   test "import_impl rejects positional from and malformed source properties":
     for (source, expected) in [
       ("(import_impl P for T from \"./provider\")", "`from` was removed; use `^from"),

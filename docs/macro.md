@@ -513,6 +513,11 @@ imported visibility remains local to that block. Code after the expansion
 cannot see it merely because the macro executed. A closure created inside the
 block retains the implementation context it needs under ordinary closure rules.
 
+**D1, decided 2026-10-30:** a marked block may contain `import_impl` inside a
+`fn`, lambda, `message`, `ctor` or `spawn` body, including a local macro expanded
+at execution time. A direct `import_impl` in such a body is a compile-time error;
+a new deferred body defined inside a marked block gets no exemption.
+
 Adding an unrelated `let` must not change whether an implementation escapes.
 This extends the binding-only scope predicate. It also confines a top-level
 macro-generated impl that is visible after the call today; list that migration

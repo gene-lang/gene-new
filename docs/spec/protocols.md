@@ -53,6 +53,17 @@ Executable coverage: `tests/test_protocols.nim` and protocol suites in
   string and may appear anywhere among the positional operands. `for` remains
   positional; the old positional `from "path"` clause is rejected. No other
   named properties are accepted.
+- Placement (owner decision D1): a direct `import_impl` registers its pair in
+  the whole defining module, so it is valid only during ordinary module
+  initialization (including plain `do`/`ns` blocks there) and inside a
+  macro-marked block that owns it. A direct `import_impl` in a `fn`, lambda,
+  `message`, `ctor` or `spawn` body, including through plain nested blocks, is a
+  compile-time error even if the body never runs; a new deferred body defined
+  inside a marked block gets no exemption. Marked blocks keep their lexical
+  isolation: interleaved blocks choose different policies, an escaping closure
+  keeps its policy, and nested conflicting pairs still reject. Ordinary `impl`
+  in a function body and eval overlays are separate mechanisms and unchanged.
+  To select a policy per call, pass the operation from the composition root.
 - Unqualified sends resolve only receiver type-direct behavior, walking nominal parents;
   there is no protocol or lexical fallback. A failed bare send may list
   published, visible protocol-qualified candidates as a diagnostic hint;

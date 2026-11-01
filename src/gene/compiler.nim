@@ -32,6 +32,16 @@ type
     arity: int
     returnType: Value
 
+  ImportImplPlacement = enum
+    ## Where a direct `import_impl` is being compiled (owner decision D1,
+    ## tmp/protocol-message-exp.md section 8.1). A direct import registers its
+    ## pair in the whole defining module, so it is only meaningful during
+    ## ordinary module initialization (`ipModule`) or inside a macro-marked
+    ## block that owns it (`ipMarked`). A deferred body (`ipDeferred`) would
+    ## hide a module-wide effect behind a call, so it is rejected at compile
+    ## time.
+    ipModule, ipDeferred, ipMarked
+
   StaticWildcardCandidate = object
     importKey: string   # gir.importKey: `^pkg`-aware module dependency key
     exportPath: seq[string]
@@ -67,6 +77,7 @@ type
     # fresh for each `fn`, so this never leaks into a nested one.
     inStatementFn: bool
     inFunction: bool
+    importImplPlacement: ImportImplPlacement
     inGenerator: bool
     loopDepth: int
     repeatBindings: bool # shared-scope chunks reentered by an enclosing loop
@@ -1039,6 +1050,7 @@ proc childCompiler(c: Compiler): Compiler =
            unitSource: c.unitSource,
            selfAvailable: c.selfAvailable,
            allowYield: c.allowYield, inFunction: c.inFunction,
+           importImplPlacement: c.importImplPlacement,
            generatorFnNames: c.generatorFnNames,
            inGenerator: c.inGenerator,
            ffiLibraryNames: c.ffiLibraryNames,
@@ -4422,6 +4434,7 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
       raise newException(GeneError, "duplicate parameter binding: " & specs.rest)
     seenLocals[specs.rest] = true
   var fnCompiler = c.childCompiler()
+  fnCompiler.importImplPlacement = ipDeferred
   fnCompiler.inStatementFn =
     returnType.kind == vkSymbol and returnType.symVal in ["Nil", "Void"]
   fnCompiler.enableLocalSlots()
@@ -7073,6 +7086,20 @@ proc compileImportImpl(c: var Compiler, node: Value) =
   if not c.allowAmbientImports:
     raise newException(GeneError,
       "eval cannot use import_impl; add policy impls to the surrounding scope")
+  if c.importImplPlacement == ipDeferred:
+    # Owner decision D1: a direct import in a deferred body registers its pair
+    # in the whole defining module, not in the body. Reject it before it can
+    # register anything, whether or not the body is ever invoked.
+    var pair = "import_impl"
+    if node.body.len == 3 and node.body[0].kind == vkSymbol and
+        node.body[2].kind == vkSymbol:
+      pair = "import_impl " & node.body[0].symVal & " for " & node.body[2].symVal
+    raise newException(GeneError,
+      pair & " is not allowed directly in a function, lambda, message, " &
+      "ctor or spawn body: a direct import would register the pair in the " &
+      "whole module, not in this body. Import it at module level and pass " &
+      "the selected operation from the composition root, or write the " &
+      "import inside a macro-marked block (a macro expansion) to scope it")
   for key in node.props.keys:
     if key != "from":
       raise newException(GeneError,
@@ -8750,7 +8777,10 @@ proc compileSpawn(c: var Compiler, node: Value) =
     if value.kind != vkSymbol or value.symVal != "root":
       raise newException(GeneError, "spawn ^lane currently accepts only root")
     rootLane = true
+  let outerPlacement = c.importImplPlacement
+  c.importImplPlacement = ipDeferred
   let body = c.compileSubBody(node.body, scoped = true)
+  c.importImplPlacement = outerPlacement
   discard c.emit(opSpawn, c.chunk.addSubchunk(body),
                  flag = not rootLane and
                    not body.chunkMutatesOuterScope() and
@@ -9778,6 +9808,7 @@ proc compileMacroResult(c: var Compiler, node: Value, tail: bool) =
     # name-based reflection from publishing these block-local declarations.
     let previousLocalCount = c.localNames.len
     var inner = c
+    inner.importImplPlacement = ipMarked
     inner.inlineBlockPrefix = BlockBindingPrefix & $c.nextGensym() & ":"
     inner.inlineBlockBindings = initHashSet[string]()
     inner.ownMacroNames = initHashSet[string]()
@@ -9795,6 +9826,7 @@ proc compileMacroResult(c: var Compiler, node: Value, tail: bool) =
         c.mutableBindingNames.incl instruction.name
   else:
     var inner = c.childCompiler()
+    inner.importImplPlacement = ipMarked
     inner.loopDepth = c.loopDepth
     inner.enableLocalSlots()
     inner.parentSlots = c.parentFrames()
