@@ -310,11 +310,15 @@ proc controlledEnvironment(policy: PkgConfigPolicy): StringTableRef =
   result["PKG_CONFIG_LIBDIR"] = policy.librarySearchPaths.join($PathSep)
   result["PKG_CONFIG_SYSROOT_DIR"] = policy.sysroot
 
-proc runProvider(executable: string, args: seq[string],
-                 environment: StringTableRef): string =
+proc requireProvider(executable: string) =
   if executable.len == 0 or not fileExists(executable):
     raiseSystemDependency(sdecProviderUnavailable,
-      "pkg_config executable is unavailable", [executable])
+      "pkg-config executable is unavailable",
+      [if executable.len == 0: "pkg-config was not found on PATH" else: executable])
+
+proc runProvider(executable: string, args: seq[string],
+                 environment: StringTableRef): string =
+  requireProvider(executable)
   let captured = runCaptured(executable, args, environment)
   if captured.exitCode != 0:
     raiseSystemDependency(sdecQueryFailed,
@@ -506,6 +510,7 @@ proc resolvePkgConfig(resolver: SystemDependencyResolver,
                       policy: PkgConfigPolicy,
                       request: SystemDependencyRequest):
                       SystemDependencyResult =
+  requireProvider(policy.executable)
   let environment = controlledEnvironment(policy)
   let modules = moduleNames(request.requirement)
   result.alias = request.requirement.alias

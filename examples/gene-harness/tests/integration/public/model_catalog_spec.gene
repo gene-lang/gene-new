@@ -9,8 +9,10 @@
     (isolated this_mod/.path "retries unavailable connections and keeps ready metadata through transient failures"
       (fn [workspace]
         (let state ($cell "unavailable")) (let calls ($cell 0)) (let healthy_calls ($cell 0))
+        (let transient ($cell true))
         (let provider {^name "flaky" ^transport {^adapter "fake"}
-          ^connection (fn [] (calls .set (+ calls/.get 1)) {^state state/.get ^billing "local"})
+          ^connection (fn [] (calls .set (+ calls/.get 1))
+            {^state state/.get ^billing "local" ^stale (&& transient/.get (== state/.get "unavailable"))})
           ^models (fn [] [{^id "one"}])})
         (let healthy {^name "healthy" ^transport {^adapter "fake"}
           ^connection (fn [] (healthy_calls .set (+ healthy_calls/.get 1)) {^state "ready" ^billing "local"})})
@@ -28,6 +30,9 @@
           ($assert (== catalog/state/.get/providers/flaky/connection/state "ready"))
           ($assert catalog/state/.get/providers/flaky/stale)
           ($assert (<= (- catalog/next_refresh/.get ($os/monotonic_ms)) 30000))
+          (transient .set false) (refresh_catalog catalog)
+          ($assert (== catalog/state/.get/providers/flaky/connection/state "unavailable")
+            "a permanent failure was retained as ready")
           (state .set "sign_in_required") (refresh_catalog catalog)
           ($assert (== catalog/state/.get/providers/flaky/connection/state "sign_in_required"))
           ($assert (== (/stale (claude_connection "/missing/claude")) true))

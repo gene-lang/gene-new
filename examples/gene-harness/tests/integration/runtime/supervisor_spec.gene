@@ -1,7 +1,71 @@
 (import $test [describe it])
-(import [isolated run_spec source_path] ^from "../../support")
+(import [isolated run_spec source_path test_native_tools] ^from "../../support")
 (import [ready_host stop_host] ^from "../../web_support")
 (import [connect api] ^from "../../../src/cli/client")
+
+(fn executable [path, source]
+  ($fs/write_text path source) ($fs/set_mode path 493) path)
+
+(fn supervisor_host [root, environment, ^literal_path literal_path = nil]
+  ($fs/make_dir ($path/join root ".gene-harness" "startup"))
+  (let arguments [])
+  (if ($present? literal_path)
+    (then (arguments .push $"PATH=${literal_path}") (arguments .push ($os/executable_path))))
+  (for arg in ["run" "--snapshot" (source_path "src/runtime/supervisor.gene")
+    "web" "--workspace" root "--port" "0" "--provider" "claude" "--model" "sonnet"]
+    (arguments .push arg))
+  {^root root ^process ($os/exec_async
+    (if ($present? literal_path) (then "/usr/bin/env") (else ($os/executable_path)))
+    arguments... ^timeout_ms 120000 ^max_bytes 1048576 ^env environment)})
+
+(fn ready_cli [host]
+  (let connection (ready_host ^timeout_ms 40000 host))
+  (let due (+ ($os/monotonic_ms) 10000))
+  (loop
+    (let models (api (connect host/root) "GET" "/models"))
+    (if (== models/providers/claude/connection/state "ready") (return connection))
+    ($assert (< ($os/monotonic_ms) due) "CLI connection did not become ready")
+    ($sleep 20)))
+
+(fn fake_claude [workspace]
+  (executable ($path/join workspace "fake-claude")
+    "#!/bin/sh\nprintf '%s\\n' '{\"loggedIn\":true,\"authMethod\":\"claude.ai\",\"subscriptionType\":\"pro\"}'\n"))
+
+(fn missing_dependency [workspace, mode]
+  (let tools (test_native_tools))
+  (let bin ($path/join workspace "bin")) ($fs/make_dir bin)
+  (for [name path] in tools
+    (if (!= ($to_str name) "pkg-config") ($fs/create_symlink path ($path/join bin ($to_str name)))))
+  (if (== mode "openssl")
+    (then
+      ($fs/create_symlink (tools .get "pkg-config") ($path/join bin "real-pkg-config"))
+      (executable ($path/join bin "pkg-config")
+        "#!/bin/sh\ncase \" $* \" in\n *' openssl '*) : > \"${0%/*}/query\"; echo 'openssl is unavailable' >&2; exit 1;;\nesac\nexec \"${0%/*}/real-pkg-config\" \"$@\"\n")))
+  # ^env PATH deliberately prefixes inherited PATH. Use env here to remove
+  # access to the host's pkg-config before Gene's package setup starts.
+  (let host (supervisor_host ^literal_path bin ($path/join workspace "host")
+    {^PATH bin ^GENE_C_COMPILER (tools .get "cc")
+     ^GENE_ARTIFACT_STORE ($path/join workspace "artifacts")
+     ^GENE_HARNESS_CLAUDE_COMMAND (fake_claude workspace)}))
+  (try
+    (ready_cli host)
+    (var entered false)
+    (for name in ($fs/list_dir ($path/join host/root ".gene-harness" "startup"))
+      (if ($str/ends_with? name ".entered") (set entered true)))
+    ($assert entered "the source main did not record entry")
+    (if (== mode "openssl") ($assert ($fs/exists? ($path/join bin "query"))))
+  ensure
+    (let ended (stop_host host))
+    ($assert (== ended/status 0) ended/stderr)
+    ($assert ($str/contains? ended/stdout "Starting the normal source host"))))
+
+(fn fake_gene [workspace, after_entry]
+  (let action (if after_entry
+    (then ": > \"$GENE_HARNESS_ENTRY_MARKER\"\nprintf '%s\\n' 'BUILD_FEATURE_UNAVAILABLE: host failed after entry'\nexit 1\n")
+    (else "if [ ! -f \"$GENE_TEST_ATTEMPTS\" ]; then\n : > \"$GENE_TEST_ATTEMPTS\"; echo 'pre-entry setup failed'; exit 1\nfi\nprintf 'retried' >> \"$GENE_TEST_ATTEMPTS\"\nsource=$3\nshift 4\nexec \"$GENE_TEST_REAL_BINARY\" run --snapshot \"$source/src/main.gene\" \"$@\"\n")))
+  (executable ($path/join workspace "fake-gene")
+    ($to_str "#!/bin/sh\nif [ \"$2\" = '--package-root' ]; then\n" action
+      "fi\nexec \"$GENE_TEST_REAL_BINARY\" \"$@\"\n")))
 
 (describe "Optional native provider builds"
   (it "starts a normal CLI-backed host when the native compiler fails" []
@@ -39,5 +103,45 @@
           (let ended (stop_host host))
           ($assert (== ended/status 0) ended/stderr)
           ($assert ($str/contains? ended/stdout "Starting the normal source host")))))))
+
+(describe "Supervised startup boundary"
+  (it "keeps normal execution available when OpenSSL discovery fails" []
+    (isolated this_mod/.path "keeps normal execution available when OpenSSL discovery fails"
+      (fn [workspace] (missing_dependency workspace "openssl"))))
+  (it "keeps normal execution available without pkg-config" []
+    (isolated this_mod/.path "keeps normal execution available without pkg-config"
+      (fn [workspace] (missing_dependency workspace "pkg-config"))))
+  (it "does not retry source startup after main has entered" []
+    (isolated this_mod/.path "does not retry source startup after main has entered"
+      (fn [workspace]
+        (let host (supervisor_host ($path/join workspace "host")
+          {^GENE_BINARY (fake_gene workspace true) ^GENE_TEST_REAL_BINARY ($os/executable_path)}))
+        (try
+          (ready_host host)
+          ($assert (== (/mode (api (connect host/root) "GET" "/status")) "recovery"))
+        ensure
+          (let ended (stop_host host))
+          ($assert (! ($str/contains? ended/stdout "Starting the normal source host")))))))
+  (it "retries packaged startup on an in-app restart after source fallback" []
+    (isolated this_mod/.path "retries packaged startup on an in-app restart after source fallback"
+      (fn [workspace]
+        (let attempts ($path/join workspace "attempts"))
+        (let host (supervisor_host ($path/join workspace "host")
+          {^GENE_BINARY (fake_gene workspace false) ^GENE_TEST_REAL_BINARY ($os/executable_path)
+           ^GENE_TEST_ATTEMPTS attempts ^GENE_HARNESS_CLAUDE_COMMAND (fake_claude workspace)}))
+        (try
+          (let first (ready_cli host))
+          ($println "restart fixture: first host ready") ($io/flush_stdout)
+          ($assert (== ($fs/read_text attempts) ""))
+          (api (connect host/root) "POST" "/control" {^action "restart" ^^confirm})
+          ($println "restart fixture: restart accepted") ($io/flush_stdout)
+          (let second (ready_host ^timeout_ms 40000 ^previous first/epoch host))
+          ($println "restart fixture: second host ready") ($io/flush_stdout)
+          ($assert (== second/port first/port))
+          ($assert (== ($fs/read_text attempts) "retried") "restart retained the source-only fallback")
+        ensure
+          ($println "restart fixture: stopping") ($io/flush_stdout)
+          (stop_host host)
+          ($println "restart fixture: stopped") ($io/flush_stdout))))))
 
 (fn main [args] : Int (run_spec args))

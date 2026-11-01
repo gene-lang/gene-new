@@ -433,7 +433,8 @@
       (let removed (copy_data definition))
       (removed .put "deleted" true)
       (removed .put "enabled" false)
-      (save_definition manager removed))))
+      (save_definition manager removed)
+      (clear_waiting_notice manager ($to_str id)))))
 
 (fn empty_heartbeat? [record]
   (&& (== record/kind "heartbeat") (== record/status "done")

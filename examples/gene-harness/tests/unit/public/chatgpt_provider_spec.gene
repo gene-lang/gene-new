@@ -1,8 +1,18 @@
 (import $test [describe it run])
-(import [chatgpt_result] ^from "../../../src/public/chatgpt_provider")
+(import [chatgpt_result chatgpt_row] ^from "../../../src/public/chatgpt_provider")
 (import [ProviderError] ^from "../../../src/plugin_api")
 
 (describe "ChatGPT response recovery"
+  (it "distinguishes retryable access errors from permanent connection failures" []
+    (for [code status stale] in [["auth_service_unavailable" nil true]
+      ["signing_keys_unavailable" nil true] ["refresh_failed" 503 true]
+      ["invalid_client" nil false] ["invalid_id_token" nil false]
+      ["signature_backend_unavailable" nil false] ["invalid_grant" 401 false]]
+      (let provider (chatgpt_row ^root "/tmp/fixture-auth" ^access (fn [^root root = nil]
+        (fail (ProviderError ^code code ^status status ^message "Fixture failure")))))
+      (let connection (provider/connection))
+      ($assert (== connection/stale stale) code)
+      ($assert (== connection/state (if (== status 401) (then "sign_in_required") (else "unavailable"))))))
   (it "preserves status, error shape, code, parameter and request id without provider text" []
     (let plain (try (chatgpt_result {^status 403 ^headers {^x-request-id "req_fixture"}
       ^body "{\"detail\":\"SECRET_ACCOUNT_CONTEXT\"}"}) nil catch ProviderError $err))

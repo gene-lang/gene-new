@@ -669,8 +669,17 @@ const modelGlue = await import(new URL('model_glue.mjs', mainURL));
 const modelClient = client();
 modelClient.status = {workspace: 'models', browser_clients: [{name: 'models'}]};
 harness.ensure_feature_host(modelClient);
-const modelCap = modelGlue.model_capabilities(modelClient, noop).models;
-assert.equal(modelGlue.model_allows_submit(modelClient), true, 'an unloaded optional picker cannot disable sends');
+let modelResumes=0;
+const modelCap = modelGlue.model_capabilities(modelClient, ()=>{modelResumes++;}).models;
+const loadingTimers=timers.length;
+assert.equal(modelGlue.model_allows_submit(modelClient), false, 'first send must briefly wait for the chooser preview');
+const firstModelTimer=timers.slice(loadingTimers).find(timer=>timer.ms===2000);
+assert.ok(firstModelTimer, 'model loading needs a bounded fallback timer');
+modelCap.configure(true,true);
+firstModelTimer.callback();
+assert.equal(modelGlue.model_allows_submit(modelClient),false,'a positive chooser requirement must survive the loading timeout');
+modelCap.configure(true,false);
+assert.equal(modelResumes,1,'settling the chooser should resume the held send exactly once');
 modelCap.choose({provider: 'plan', model: 'large', effort: 'high'});
 const stagedModel = {model_settings: null};
 modelGlue.attach_model_draft(modelClient, stagedModel, 's');
@@ -721,4 +730,42 @@ assert.deepEqual(editedTriggerModel, {});
 modelCap.release_trigger(target);
 assert.equal(modelCap.trigger_target(), null);
 offTrigger();
+{
+  const safe=client(); safe.safe_ui=true;
+  safe.status={workspace:'safe-models',browser_clients:[{name:'models'}]};
+  harness.ensure_feature_host(safe);
+  assert.equal(modelGlue.model_allows_submit(safe),true,'the recovery UI must not wait for a disabled picker');
+}
+for(const outcome of ['timeout','failure']) {
+  const waiting=client();
+  waiting.status={workspace:`loading-${outcome}`,browser_clients:[{name:'models'}]};
+  harness.ensure_feature_host(waiting);
+  let resumed=0;
+  const cap=modelGlue.model_capabilities(waiting,()=>{resumed++;}).models;
+  const at=timers.length;
+  assert.equal(modelGlue.model_allows_submit(waiting),false);
+  const timer=timers.slice(at).find(item=>item.ms===2000);
+  assert.ok(timer);
+  if(outcome==='failure') cap.configure(false,false);
+  timer.callback();
+  assert.equal(resumed,1,'the fallback must resume the held send only once');
+  assert.equal(modelGlue.model_allows_submit(waiting),true,'a broken picker must not block later sends');
+}
+for(const change of ['session','text','media']) {
+  const waiting=client();
+  waiting.status={workspace:`origin-${change}`,browser_clients:[{name:'models'}]};
+  waiting.prompt.value='original';
+  if(change==='media') waiting.media.drafts.s=[{state:'ready',asset:{id:'image-a'}}];
+  harness.ensure_feature_host(waiting);
+  let resumed=0;
+  modelGlue.model_capabilities(waiting,()=>{resumed++;});
+  const at=timers.length;
+  assert.equal(modelGlue.model_allows_submit(waiting),false);
+  if(change==='session') waiting.selected='other';
+  if(change==='text') waiting.prompt.value='edited';
+  if(change==='media') waiting.media.drafts.s[0].asset.id='image-b';
+  timers.slice(at).find(item=>item.ms===2000).callback();
+  assert.equal(resumed,0,`loading completion submitted a different ${change}`);
+  assert.equal(modelGlue.model_allows_submit(waiting),true);
+}
 console.log('model drafts: stable submissions, newer picker edits, explicit reset and backend session resolution passed');

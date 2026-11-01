@@ -1,6 +1,7 @@
 (import [chatgpt_access] ^from "../../src/public/chatgpt_auth")
 
 (fn main [args] : Int
-  (let access (chatgpt_access ^root args/0 ^exchange_url args/1))
+  (let access (chatgpt_access ^root args/0 ^exchange_url args/1
+    ^verify (fn [tokens client nonce, ^refresh refresh : Bool = false] {^sub "subject"})))
   ($println ($json/stringify {^account access/account ^digest ($crypto/sha256 access/access_token)}))
   0)

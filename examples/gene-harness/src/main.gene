@@ -4,7 +4,29 @@
 (import ^from "./web/recovery" [main : serve_recovery])
 (import ^from "./runtime/workspace_settings" [initialize_manager_workspace])
 
+(fn mark_startup_entry [input]
+  (let marker ($os/env? "GENE_HARNESS_ENTRY_MARKER"))
+  (if ($absent? marker) (return nil))
+  (let args [])
+  (for arg in input (args .push ($to_str arg)))
+  # Ignore the inherited marker in ordinary CLI subprocesses. The supervisor
+  # supplies both the marker and a startup id for its direct hosting child.
+  (var supervised false) (var id "") (var index 0)
+  (while (< index args/.size)
+    (let arg ($to_str args/%index))
+    (if (== arg "--") (break))
+    (if (== arg "--supervised") (set supervised true))
+    (if (&& (== arg "--startup-id") (< (+ index 1) args/.size))
+      (then (set index (+ index 1)) (set id ($to_str args/%index))))
+    (set index (+ index 1)))
+  (if (&& supervised (!= id "") ($str/ends_with? marker $"/${id}.entered"))
+    (then
+      ($fs/make_dir ($path/parent marker))
+      ($fs/write_text_atomic ^^owner_only marker "entered")))
+  nil)
+
 (fn main [args] : Int
+  (mark_startup_entry args)
   (let application ($pkg/application))
   (if_yes ($absent? application/provenance)
     (let delegated ["run" "--snapshot"

@@ -11,11 +11,6 @@
     (then ["run" "--package-root" source_root "harness"])
     (else ["run" "--snapshot" ($path/join source_root "src" "main.gene")])))
 
-(fn native_build_failure? [diagnostic : Str]
-  (for code in ["BUILD_FEATURE_UNAVAILABLE" "BUILD_TARGET_NOT_FOUND" "BUILD_TARGET_AMBIGUOUS"]
-    (if ($str/contains? diagnostic code) (return true)))
-  false)
-
 (fn main [args]
   (let parsed (parse_options args))
   (let hosting (&& (["web" "manager"] .contains? parsed/command) (!= parsed/options/help true)))
@@ -48,11 +43,14 @@
   (try
   (loop
     (let startup_id ($crypto/random_hex 16))
+    (child_environment .put "GENE_HARNESS_ENTRY_MARKER"
+      $"${workspace}/.gene-harness/startup/${startup_id}.entered")
     # Native resources enable optional provider features. A build failure must
     # not prevent the ordinary host from using CLI or HTTP providers.
     (let child_args (child_entry ^source_only source_only application/source_root hosting
       (|| (== parsed/options/offline true) (== ($os/env? "GENE_HARNESS_OFFLINE") "1"))
       ($present? parsed/options/script) recovery))
+    (let packaged (== child_args/1 "--package-root"))
     (for arg in args
       (if (!= ($to_str arg) "--recovery") (child_args .push ($to_str arg))))
     (if_yes hosting
@@ -79,18 +77,22 @@
     (let marker $"${workspace}/.gene-harness/startup/${startup_id}")
     (let ready ($fs/exists? marker))
     (if ready ($fs/remove marker))
+    (let entered_marker ($to_str marker ".entered"))
+    (let entered ($fs/exists? entered_marker))
+    (if entered ($fs/remove entered_marker))
     (let restart $"${workspace}/.gene-harness/restart_notice")
-    (if_yes (&& (== status 75) ($fs/exists? restart))
+    (if_yes (&& entered (== status 75) ($fs/exists? restart))
       (let notice ($serde/read_data ($fs/read_text restart)))
       (set restart_port notice/port)
+      (set source_only false)
       (if (== notice/normal true) (set recovery false))
       (if (|| (!= ($head restart_port) Int) (< restart_port 1024) (> restart_port 65535))
         (fail "Restart handoff did not retain a valid listening port."))
       (continue))
     (if (|| recovery ready ([130 143 -2 -15] .contains? status)) (return status))
-    (if (&& (! source_only) (native_build_failure? tail/.get))
+    (if (&& packaged (! entered))
       (then
-        (emit "Native resources could not be built. Starting the normal source host; ChatGPT sign-in requires repairing the native build.")
+        (emit "Packaged startup failed before main. Starting the normal source host; optional native features may be unavailable.")
         (set source_only true)
         (continue)))
     ($fs/make_dir $"${workspace}/.gene-harness")

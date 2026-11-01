@@ -4,20 +4,25 @@
 (import [features browser_event notice] ^from "./feature_helpers.gene")
 (import [text flag items] ^from "../src/common/launcher.gene")
 (import [storage_get storage_set storage_remove] ^from "./workspace_storage.gene")
+(import [MediaComposer media_ids] ^from "./media.gene")
 
 (type ModelDrafts ^props {^workspace Str ^choices PropMap ^loaded Bool ^required Bool ^requested Bool
+  ^loading Bool ^timer_started Bool ^load_epoch Int ^resume Any ^requested_draft Str
   ^trigger_choice Any ^trigger_target Any ^trigger_sequence Int})
 
 (fn model_drafts [client : Client] : ModelDrafts
   (var states (features client))
   (if_yes ($absent? states/model_drafts)
     (set states/model_drafts (ModelDrafts ^workspace "" ^choices {} ^!loaded ^!required ^!requested
+      ^^loading ^!timer_started ^load_epoch 0 ^resume nil ^requested_draft ""
       ^trigger_choice {} ^trigger_target nil ^trigger_sequence 0)))
   (var raw : Any states/model_drafts)
   (var result : ModelDrafts raw)
   (var workspace (text client/status/workspace))
   (if_yes (!= workspace result/workspace)
     (set result/workspace workspace) (set result/choices {}) (set result/loaded false)
+    (set result/required false) (set result/requested false) (set result/loading true)
+    (set result/timer_started false) (set result/load_epoch (+ result/load_epoch 1))
     (set result/trigger_choice {}) (set result/trigger_target nil))
   result)
 
@@ -65,6 +70,7 @@
     (browser_event client "model/admitted" session payload/model_settings)))
 
 (fn model_picker_expected [client : Client] : Bool
+  (if_yes client/safe_ui (return false))
   (for descriptor in (items client/status/browser_clients)
     (if_yes (== (text descriptor/name) "models") (return true)))
   false)
@@ -90,18 +96,54 @@
     ^button button ^choose choose})
   (browser_event client "models/trigger" "" {}))
 
+(fn submission_draft [client : Client] : Str
+  (var ids : (List Str) [])
+  (if_yes ($present? client/media)
+    (var media : MediaComposer client/media)
+    (set ids (media_ids media)))
+  ($json/stringify {^session client/selected ^text ($dom/input_value client/prompt) ^media ids}))
+
+(fn resume_model_submit [client : Client, drafts : ModelDrafts] : Void
+  (if_yes (|| (! drafts/requested) ($absent? drafts/resume)) (return))
+  (set drafts/requested false)
+  (if_yes (!= drafts/requested_draft (submission_draft client))
+    (notice client "Draft changed; press Send to submit the current draft.")
+    (return))
+  (var resume : (Fn [] Void) drafts/resume)
+  (resume))
+
 (fn model_allows_submit [client : Client, ^resume resume : Bool = true] : Bool
-  (if_yes (! (model_picker_expected client)) (return true))
-  (if_yes (flag client/browser_clients/mounts/models/failed) (return true))
   (var drafts (model_drafts client))
+  (if_yes (|| (! (model_picker_expected client)) (flag client/browser_clients/mounts/models/failed))
+    (set drafts/requested false) (return true))
+  (if_yes (&& (! drafts/loaded) drafts/loading)
+    (set drafts/requested resume)
+    (set drafts/requested_draft (submission_draft client))
+    (if_yes (! drafts/timer_started)
+      (set drafts/timer_started true)
+      (var epoch drafts/load_epoch)
+      ($time/after 2000.0 (fn [] : Void
+        (if_yes (!= epoch drafts/load_epoch) (return))
+        (set drafts/timer_started false)
+        (if (|| (! (model_picker_expected client)) (flag client/browser_clients/mounts/models/failed))
+          (then (set drafts/loaded false) (set drafts/required false))
+          (elif drafts/loaded (return)))
+        (set drafts/loading false)
+        (resume_model_submit client drafts))))
+    (notice client "Loading model choices…")
+    (return false))
   (if_yes (&& drafts/loaded drafts/required)
     (set drafts/requested resume)
+    (set drafts/requested_draft (submission_draft client))
     (browser_event client "models/choose" client/selected {})
     (notice client "Choose a default model before the first prompt.")
     (return false))
+  (set drafts/requested false)
   true)
 
 (fn model_capabilities [client : Client, resume : (Fn [] Void)] : Any
+  (var drafts (model_drafts client))
+  (set drafts/resume resume)
   {^models {
     ^state (fn [] : Any
       (var drafts (model_drafts client))
@@ -115,9 +157,9 @@
       (var drafts (model_drafts client))
       (if_yes (&& ($present? target/id) (== target/id drafts/trigger_target/id)) (set drafts/trigger_target nil)))
     ^configure (fn [loaded : Bool, required : Bool] : Void
-      (var drafts (model_drafts client)) (set drafts/loaded loaded) (set drafts/required required))
+      (var drafts (model_drafts client)) (set drafts/loaded loaded) (set drafts/required required)
+      (set drafts/loading false)
+      (if_yes (! required) (resume_model_submit client drafts)))
     ^resume (fn [] : Void
       (var drafts (model_drafts client))
-      (var requested drafts/requested)
-      (set drafts/requested false)
-      (if_yes requested (resume)))}})
+      (resume_model_submit client drafts))}})

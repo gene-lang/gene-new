@@ -179,8 +179,9 @@ the per-turn path. A host service runs discovery and caches the result, and
 `provider_reason` reads that cache. It runs at host start without blocking it, on
 **Refresh**, every 24 hours, and marks a connection `expired` after a provider
 401. Each probe gets 5 seconds. On failure the last catalog stays, marked stale.
-Transient failures preserve a previously ready connection; positive signed-out
-or expired results replace it. Unavailable or stale connections retry after
+Explicitly stale, transient failures preserve a previously ready connection;
+permanent unavailable, signed-out or expired results replace it. Non-ready
+connections (including signed-out ones) and stale catalogs retry after
 30 seconds, with exponential backoff capped at five minutes. Healthy providers
 retain their 24-hour refresh interval, and a manual Refresh probes immediately.
 
@@ -303,6 +304,9 @@ The documented route:
   Persist rotated tokens before fallible ID-token checks, with pending credentials
   unavailable for inference until verification succeeds. Cancellation must not
   abandon the exchange, and delayed verification must not extend access expiry.
+  A refresh checks its verifier before exchange and preserves an existing refresh
+  token when the response omits a replacement. Expired pending ID tokens can be
+  renewed without dropping the requirement for a freshly verified identity.
 
 Two cautions. It is a preview with listed limits, and one OpenAI page describes
 access as limited to select partners while the open-source guide describes

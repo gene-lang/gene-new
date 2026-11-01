@@ -37,7 +37,7 @@
       ^timeout_ms timeout_ms ^max_bytes 262144))
     (let response (try (await task) ensure task/.cancel))
     {^status response/status ^data (try ($json/parse response/body) catch Any nil)}
-  catch Any (auth_error "ChatGPT authentication service could not be reached; retry shortly")))
+  catch Any (auth_error ^code "auth_service_unavailable" "ChatGPT authentication service could not be reached; retry shortly")))
 
 (fn chatgpt_signing_keys [header, ^fetch fetch = auth_http, ^now_ms supplied_now = nil]
   (let now (?? supplied_now ($os/monotonic_ms)))
@@ -73,7 +73,7 @@
     (verify_rs256 bytes ($binary/from_list [1]) ($binary/from_list []) bytes)
     nil
   catch Any
-    (auth_error "ChatGPT sign-in needs the native genex/crypto verifier. Repair the Harness native build with OpenSSL 3 and the current Gene runtime; other providers remain usable.")))
+    (auth_error ^code "signature_backend_unavailable" "ChatGPT sign-in needs the native genex/crypto verifier. Repair the Harness native build with OpenSSL 3 and the current Gene runtime; other providers remain usable.")))
 
 (fn new_chatgpt_login [callback : Str, ^root root = nil, ^account account = nil,
   ^timeout_ms timeout_ms : Int = 300000, ^verify verifier = nil, ^registration registration = nil,
@@ -117,7 +117,7 @@
     (&& ($present? tokens/id_token) (!= ($head tokens/id_token) Str))
     (&& renewable (!= ($head tokens/refresh_token) Str))
     (&& renewable ($absent? (nonempty tokens/refresh_token))))
-    (auth_error "ChatGPT returned an invalid token response")))
+    (auth_error ^code "invalid_token_response" "ChatGPT returned an invalid token response")))
 
 (fn complete_chatgpt_login [attempt, params]
   (expire_login attempt)
@@ -196,6 +196,14 @@
     (when (TaskOutcome/error error) (fail error))
     (else (auth_error "ChatGPT refresh was interrupted; retry after the host recovers"))))
 
+(fn id_token_expired? [token, now : Int]
+  # This is an early rejection only. Unverified claims never authorize access.
+  (try
+    (let parts ($str/split token "."))
+    (let claims ($json/parse ($binary/decode_utf8 (decode_url parts/1))))
+    (&& (== ($head claims/exp) Int) (<= claims/exp (- now 5)))
+  catch Any false))
+
 (fn finish_chatgpt_refresh [current, verifier]
   (let tokens current/pending_refresh)
   (try
@@ -213,11 +221,12 @@
       ^message "ChatGPT needs a fresh identity token after an interrupted verification; reconnect in Models")}))
   (let received_at (if (== ($head current/pending_refresh_at) Int) (then current/pending_refresh_at) (else 0)))
   (let expires_at (+ received_at tokens/expires_in))
-  (if (<= expires_at (/ ($os/wall_ms) 1000))
+  (if (|| (<= expires_at (/ ($os/wall_ms) 1000))
+    (id_token_expired? tokens/id_token (/ ($os/wall_ms) 1000)))
     (then
       (current .delete "pending_refresh") (current .delete "pending_refresh_at")
       (return {^record current ^error (ProviderError ^code "refresh_response_expired"
-        ^message "ChatGPT access expired while identity verification was pending; retry with the saved refresh token")})))
+        ^message "ChatGPT token response expired while identity verification was pending; retry with the saved refresh token")})))
   (try
     (if ($present? tokens/id_token)
       (then
@@ -257,14 +266,15 @@
       (auth_error "ChatGPT plan permission is unavailable; reconnect this account in Models" 401))
     (let now (/ ($os/wall_ms) 1000))
     (let existing {^access_token current/access_token ^account id ^public (public_account current)})
-    (if (> current/expires_at (+ now 60)) (return {^result existing}))
+    (if (&& ($present? (nonempty current/access_token)) (> current/expires_at (+ now 60))) (return {^result existing}))
     (if (&& (== ($head current/earliest_refresh_at) Int) (< now current/earliest_refresh_at))
       (then
-        (if (> current/expires_at now) (return {^result existing}))
-        (auth_error "ChatGPT token refresh is not available yet; retry shortly")))
+        (if (&& ($present? (nonempty current/access_token)) (> current/expires_at now)) (return {^result existing}))
+        (auth_error ^code "refresh_not_available" "ChatGPT token refresh is not available yet; retry shortly")))
     (if ($absent? (nonempty current/refresh_token)) (auth_error "ChatGPT access expired; reconnect in Models" 401))
     (if (! allow_refresh)
       (auth_error ^code "refresh_executor_required" "ChatGPT refresh requires the host-owned credential executor; retry through the running Harness host"))
+    (if ($absent? verifier) (require_signature_backend))
     (let response (auth_http exchange_url "POST" (query_string
       {^grant_type "refresh_token" ^client_id current/client_id ^refresh_token current/refresh_token ^resource resource})))
     (if (!= response/status 200)
@@ -278,7 +288,7 @@
             (return {^record current ^error (ProviderError ^status 401 ^code code ^message "ChatGPT session expired or was revoked; reconnect in Models")})))
         (if (== code "invalid_client")
           (auth_error ^code "invalid_client" "ChatGPT client registration is invalid; check the integration's client configuration"))
-        (auth_error "ChatGPT token refresh could not complete; retry shortly")))
+        (auth_error ^code "refresh_failed" "ChatGPT token refresh could not complete; retry shortly" response/status)))
     (let tokens response/data)
     (let updated ($thaw ($freeze current)))
     (let pending {})
@@ -287,8 +297,10 @@
         (if ($present? (tokens .get field)) (pending .put field (tokens .get field)))))
     (for field in ["access_token" "refresh_token"]
       (if (&& (== ($head (pending .get field)) Str) ($present? (nonempty (pending .get field))))
-        (then (updated .put field (pending .get field)))
-        (else (updated .delete field))))
+        (then (updated .put field (pending .get field)))))
+    # A refresh response may legally omit a replacement. Bad/empty responses
+    # must likewise preserve the only credential available for a retry.
+    (if ($absent? pending/refresh_token) (pending .put "refresh_token" updated/refresh_token))
     (updated .put "expires_at" 0)
     (updated .put "pending_refresh" pending)
     (updated .put "pending_refresh_at" (/ ($os/wall_ms) 1000))

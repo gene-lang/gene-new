@@ -49,6 +49,27 @@
         ^model_settings {^provider "fixture" ^model model ^effort "low"}}))))
 
 (describe "Trigger model choices"
+  (it "clears a blocked notice when its declaring plugin retires the trigger" []
+    (isolated this_mod/.path "clears a blocked notice when its declaring plugin retires the trigger"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (let controller (test_controller runtime nil)) (let calls ($cell []))
+        (prepare runtime calls)
+        (let manager (open_trigger_manager runtime controller ^!start ^!boot ^now 0))
+        (try
+          (put_cordis_plugin runtime/h (Plugin ^id "blocked_declaration" ^provides [["triggers" "retired"]]
+            ^activate (fn [host]
+              (host .PluginHost:contribute "triggers" {^id "retired" ^kind "heartbeat" ^every_ms 100 ^request "blocked"
+                ^model_settings {^provider "blocked" ^model "small"}}))) {^^host ^limits runtime/profile/limits})
+          (tick_triggers manager ^now 0) (tick_triggers manager ^now 100)
+          (let blocked (list_source_messages runtime/services/values/inbox "triggers"))
+          ($assert (== blocked/.size 1))
+          (put_cordis_plugin ^^replace runtime/h (Plugin ^id "blocked_declaration" ^provides [] ^activate (fn [host] nil))
+            {^^host ^limits runtime/profile/limits})
+          (tick_triggers manager ^now 100)
+          (let messages (list_source_messages runtime/services/values/inbox "triggers"))
+          ($assert (== messages/0/cleared_revision messages/0/revision))
+        ensure (close_trigger_manager manager) (close_runtime runtime)))))
   (it "keeps blocked work due, notifies once and still runs healthy occurrences" []
     (isolated this_mod/.path "keeps blocked work due, notifies once and still runs healthy occurrences"
       (fn [workspace]

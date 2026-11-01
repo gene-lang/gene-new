@@ -212,7 +212,7 @@
     (let checked (canonical_connection raw name))
     (if (|| (== raw/stale true) (== checked/state "unavailable")) (set stale true))
     (if (&& same (== previous/connection/state "ready")
-      (|| (== checked/state "unavailable") (&& (== checked/state "ready") (== raw/stale true)))
+      (== raw/stale true) (["unavailable" "ready"] .contains? checked/state)
       (|| ($absent? checked/account) (== checked/account previous/connection/account)))
       (then (set stale true))
       (else (set connection checked)))

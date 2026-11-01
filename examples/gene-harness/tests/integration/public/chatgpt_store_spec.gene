@@ -1,7 +1,7 @@
 (import $test [describe it])
 (import [isolated run_spec fixture_path] ^from "../../support")
 (import [account_id account_path chatgpt_root chatgpt_host_id save_chatgpt_account
-  list_chatgpt_accounts select_chatgpt_account read_chatgpt_record with_chatgpt_account acknowledge_chatgpt_plan] ^from "../../../src/public/chatgpt_store")
+  list_chatgpt_accounts select_chatgpt_account read_chatgpt_record with_chatgpt_account acknowledge_chatgpt_plan public_account] ^from "../../../src/public/chatgpt_store")
 
 (fn record [client : Str, subject : Str]
   {^version 1 ^issuer "https://auth.openai.com" ^client_id client ^subject subject
@@ -15,6 +15,13 @@
       (fn [workspace]
         (let root ($path/join workspace "accounts-test"))
         (let first (record "oaiapp_first" "subject")) (let second (record "oaiapp_second" "subject"))
+        (let refresh_only ($thaw ($freeze first))) (refresh_only .delete "access_token")
+        ($assert (== (/state (public_account refresh_only)) "ready"))
+        (let pending ($thaw ($freeze first)))
+        (pending .put "pending_refresh" {}) (pending .put "refresh_identity_required" true)
+        (let projected (public_account pending))
+        ($assert (== projected/state "sign_in_required"))
+        ($assert ($str/contains? projected/reason "reconnect"))
         (let one (save_chatgpt_account root first))
         (let two (save_chatgpt_account root second))
         ($assert (!= one/id two/id))

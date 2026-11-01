@@ -8,6 +8,23 @@ proc systemDependencyRoot(): string =
   createDir(result)
 
 suite "system dependency resolver — pkg_config":
+  test "a missing provider reports its code and tool before reading its digest":
+    for executable in ["", getTempDir() / "gene-no-such-pkg-config"]:
+      let resolver = newSystemDependencyResolver(SystemDependencyPolicy(
+        providerOrder: @[spkPkgConfig],
+        pkgConfig: PkgConfigPolicy(executable: executable)))
+      var caught = false
+      try:
+        discard resolver.resolve(SystemDependencyRequest(
+          requirement: SystemLibraryRequirement(alias: "crypto", name: "openssl",
+            version: "*", providers: @[spkPkgConfig]),
+          targetTriple: "test", toolchainIdentity: "test"))
+      except SystemDependencyError as error:
+        caught = true
+        check error.code == sdecProviderUnavailable
+        check "pkg-config" in error.msg
+      check caught
+
   test "manifest providers can only narrow host policy":
     var requirement = SystemLibraryRequirement(
       alias: "sqlite", name: "sqlite3", version: "*",

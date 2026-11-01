@@ -28,6 +28,12 @@
     (model .put "rank" rank) (set rank (+ rank 1)))
   models)
 
+(fn retryable_access_error? [error]
+  (|| ([408 429] .contains? error/status)
+    (&& (== ($head error/status) Int) (>= error/status 500) (< error/status 600))
+    (["auth_service_unavailable" "signing_keys_unavailable" "refresh_not_available"
+      "refresh_response_expired" "invalid_token_response"] .contains? error/code)))
+
 (fn chatgpt_row [^root root = nil, ^base_url base_url : Str = "https://api.openai.com/v1",
   ^access access = chatgpt_access]
   (let resolved (login_root root))
@@ -41,10 +47,9 @@
      (let deadline (+ ($os/monotonic_ms) 5000))
      (let credentials (try (access ^root resolved)
        catch ProviderError (return {^state (if (== $err/status 401) (then "sign_in_required") (else "unavailable"))
-         ^stale (!= $err/status 401)
+         ^stale (retryable_access_error? $err)
          ^label "ChatGPT" ^billing "plan" ^reason $err/message})
        catch Any (return {^state "unavailable" ^label "ChatGPT" ^billing "plan"
-         ^^stale
          ^reason "ChatGPT connection state could not be read; inspect its account in Models."})))
      (let remaining (- deadline ($os/monotonic_ms)))
      (let checked (if (<= remaining 0) (then {^status 0 ^error "timeout"})
