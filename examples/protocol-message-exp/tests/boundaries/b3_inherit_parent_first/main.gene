@@ -1,12 +1,6 @@
-# Parent pair first, then an independent child pair.
+# A parent pair first, then an independent child pair: the load fails.
 (import [Article Note] ^from "../b3_inheritance/model")
 (import [Format] ^from "../b3_inheritance/contracts")
-(import [first_line] ^from "../common/util")
-(let first
-  (try (do (import_impl Format for Article ^from "../b3_inheritance/plain") "imported")
-    catch Any $err/message))
-(let second
-  (try (do (import_impl Format for Note ^from "../b3_inheritance/note_independent") "imported")
-    catch Any $err/message))
-($println $"Article first: ${first}")
-($println $"then independent Note: ${second}")
+(import_impl Format for Article ^from "../b3_inheritance/plain")
+(import_impl Format for Note ^from "../b3_inheritance/note_independent")
+($println "loaded")

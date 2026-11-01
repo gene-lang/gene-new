@@ -1,10 +1,6 @@
+# Two scoped providers for one pair: the load fails and names both origins.
 (import [Article] ^from "./model")
 (import [Render] ^from "./contracts")
-(import [attempt] ^from "../common/util")
 (import_impl Render for Article ^from "./one")
-(let article (Article ^title "A"))
-(let outcome
-  (try (do (import_impl Render for Article ^from "./two") "imported")
-    catch Any $err/message))
-($println $"second import: ${outcome}")
-($println $"first policy intact: ${article/.Render:render}")
+(import_impl Render for Article ^from "./two")
+($println "loaded")

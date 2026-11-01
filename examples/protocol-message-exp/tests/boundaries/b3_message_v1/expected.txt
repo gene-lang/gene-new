@@ -1,2 +1,1 @@
-contract change import: imported
 render: ext:A

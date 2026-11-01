@@ -20,7 +20,7 @@ Native VM only. Run everything from the repository root with a release `bin/gene
 | `src/consumers/` | Generic preview, export and outline-report consumers: no protocol, type or impl imports. |
 | `src/baseline/` | Variant F: explicit dispatcher with per-type entries. |
 | `src/variants/` | P-closure, P-typed and N (named canonical policy protocols). |
-| `tests/boundaries/` | B1-B4 and D1 fixtures; `run.gene` runs each in a fresh process against `expected.txt`. |
+| `tests/boundaries/` | B1-B4 and final-impl fixtures; `run.gene` runs each in a fresh process against `expected.txt`. |
 | `tests/integration/` | Matched outputs for P / P-closure / P-typed / F / N. |
 | `bench/h6/` | The frozen 1,000-node H6 fixture and the five timed variants. |
 | `bench/matrix/` | Dispatch matrix (transport x layout x monomorphic/alternating/uncached). |
@@ -54,10 +54,13 @@ calendar daemons can drive it to 100+ and invalidate a batch).
 
 The experiment produced runtime changes, each with regressions:
 
-- Owner decision D1: a direct `import_impl` in a `fn`, lambda, `message`, `ctor`
-  or `spawn` body is a compile error; macro-marked blocks stay legal there.
+- Final impls (owner decision): a module's impls are final once it has loaded.
+  `import_impl` is accepted only as a direct module-level form ahead of any code;
+  in a `fn`, lambda, `message`, `ctor`, `spawn` body, block, conditional, `ns`
+  body or macro expansion, or after code, it is a compile error. There are no
+  block-scoped imports.
 - Conflict diagnostics name both origins; hidden-impl advice ignores `import_impl`
   copies and spells its suggested path relative to the checking module.
-- A relative `import`/`import_impl` path that executes after module
-  initialization resolves against the module that wrote it.
+- A relative `import` path that executes after module initialization (inside a
+  function) resolves against the module that wrote it.
 - `benchmarks/bench_core.nim` gains held, view, dynamic and closure rows.

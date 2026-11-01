@@ -13,11 +13,14 @@ feeds an improvement plan (section 10). Native VM only.
 | After binary | `tmp/pm-exp-build/gene-after`, release, independent fresh Nim cache (29 min under machine load); SHA-256 `6deb08770ab7d869e37644c2b3ac7ab8d5cd458b6a89b503ddad981ea9f5aeb6`; source = HEAD plus a `src/` diff whose SHA-256 is `625a08e44261808c80e1ce442b56f0bdcc8785e570910ece993f25d3d3361f25`. |
 | Build line (both) | `Gene 0.1.0 (release; macosx/arm64; Nim 2.2.12; mm=orc; nim-opt=speed; bounds=true; overflow=true)`; `nim c -d:release --path:src --hints:off --nimcache:<fresh> src/gene.nim`. |
 | Machine | Apple arm64, 14 cores, AC power. The macOS contacts/calendar daemons repeatedly drove the load average to 100-200 during builds; every timing batch below ran at load 3-4 and records per-round load. |
-| Fixtures | `examples/protocol-message-exp/tests/boundaries` (39 cases). `bin/gene test examples/protocol-message-exp/tests` runs them plus the matched-output specs and the frozen-core check. |
+| Final binary | `tmp/pm-exp-build/gene-final`, release, same flags, nimcache reused (section 12: final-impls rule). Sections 2-11 were measured on the before/after binaries above and are unchanged by it. |
+| Fixtures | `examples/protocol-message-exp/tests/boundaries` (42 cases after section 12; 39 when sections 2-8 were run). `bin/gene test examples/protocol-message-exp/tests` runs them plus the matched-output specs and the frozen-core check. |
 
 Reproduce any boundary case: `bin/gene run examples/protocol-message-exp/tests/boundaries/run.gene ID`.
 Raw before/after outputs: `reports/evidence/before/boundaries` (first sweep, before any
-repair), `before/boundaries-final` (final fixtures on the before binary), `after/boundaries`.
+repair), `before/boundaries-final` (final fixtures on the before binary), `after/boundaries`,
+and `final` (the 42 fixtures of section 12 on the final binary, plus the same fixtures on the
+earlier binaries). The `d1_*` ids in the first three directories became `final_reject_*`.
 
 ### Existing coverage confirmation (not relabelled as new work)
 
@@ -25,7 +28,8 @@ On the working tree with the repairs: `tests/test_all.nim` 1,803 OK and 3 failur
 predate this work (`gene harness recovery nucleus` reads a deleted `view_api.gene`;
 `inference-depth` and `episode-depth` need deleted `tools/qualify_*.py`);
 `tests/spec_runner.nim` exit 0; `tests/test_rc.nim` (`-d:geneRcStats`) 91 OK;
-`tests/test_modules.nim` 124 OK including the new tests listed in section 8.
+`tests/test_modules.nim` 124 OK including the new tests listed in section 8. Section 12
+repeats all four on the final tree.
 
 ## 2. Contract versus observation (Phase 0)
 
@@ -36,7 +40,7 @@ Observations on the before binary unless noted; each row is a retained fixture.
 | Call-form `(P:m x)` normalizes to `(x .P:m)`, resolves at the send site | host without the pair: missing impl; at B's send site: B's body | as specified |
 | Held Message keeps its authored scope; checked `(Callable ...)` view and an A-authored Path value behave the same; `.%` uses the send-site scope and rejects a view | `b2_transport` matrix below | as specified |
 | Canonical impl needs protocol-or-type ownership | a third module implementing `Outline` for `Chart` is scoped (and the late `Chart` must own its canonical impl) | as specified |
-| Ordinary `import_impl` effect is module-wide even in a function | function-local import registered for the whole defining module; sibling function sees it, a second installer raises `duplicate visible impl` | defect against D1 (fixed, section 7) |
+| Ordinary `import_impl` effect is module-wide even in a function | function-local import registered for the whole defining module; sibling function sees it, a second installer raises `duplicate visible impl` | defect against final impls (fixed, sections 8 and 12) |
 | Hidden-impl advice names the module that governs the check | for an already exported provider it said "not exported; add `^^export`" once another module had imported the pair | defect (fixed) |
 | Suggested `import_impl` is copyable | contained an absolute filesystem path | defect (fixed) |
 | `import_impl ^from "./x"` resolves against the module that wrote it | resolved against the entry module's directory when executed after module init (functions, marked blocks in library functions); plain `import` in a function had the same flaw | defect (fixed) |
@@ -80,13 +84,13 @@ an operation-identity test; a protocol-typed host parameter without the pair rej
 (`parameter 'x' expected Render`); `($runtime/signature op article)` reports
 `dispatch_scope authored` for a held message and fails for a fresh one.
 
-Scope placement fixtures (before D1 / after D1):
+Scope placement fixtures (before / after the function-body rule; the final rule of section 12 supersedes the right column where noted):
 
 | Placement | Before | After |
 | --- | --- | --- |
-| Function body (with or without locals), either installer first | registers in the *defining module*; sibling sees it, outer module does not; a competing installer raises; the first stays intact | compile error (`b2_scope_fn_*`, `d1_reject_*`) |
-| Plain `do` / `ns` body at module level | module-wide, as before | unchanged (allowed) |
-| Macro-marked block inside a function / message / ctor / spawn / local macro | isolated per block, closures keep policy | unchanged (`d1_marked_scopes`) |
+| Function body (with or without locals), either installer first | registers in the *defining module*; sibling sees it, outer module does not; a competing installer raises; the first stays intact | compile error (`b2_scope_fn_*`, `final_reject_*`) |
+| Plain `do` / `ns` body at module level | module-wide, as before | `do` unchanged (allowed before code); `ns` body is a compile error in section 12 |
+| Macro-marked block inside a function / message / ctor / spawn / local macro | isolated per block, closures keep policy | legal at this stage (`evidence/after`, `d1_marked_scopes`); **removed in section 12** |
 | Eval `import_impl` | refused | unchanged |
 | Eval-local `impl` and function-local `impl` | overlay, no leak | unchanged |
 
@@ -237,7 +241,7 @@ baseline while they live (intentional retention) and return to baseline (leak 0)
 owner is dropped and two further reloads ran. RSS was not measured; one RSS sample would not
 distinguish retention from a leak.
 
-## 8. Repairs and D1 (separate commits on `protocol-message-exp`)
+## 8. Repairs and the function-body rule (separate commits on `protocol-message-exp`)
 
 | Commit | Change | Regression coverage |
 | --- | --- | --- |
@@ -256,6 +260,10 @@ spawn bodies (done); ordinary function-local `impl` and eval overlays unchanged 
 controls in `d1_marked_scopes` and `b2_scope_eval_overlay`); a deferred body inside a
 runtime-expanded macro is rejected at the expansion's compile (done).
 
+Superseded in part: the marked-block exemption and the checks that preserved it were removed
+by the owner's final-impls direction (section 12); the commit rows above describe the tree as
+it was after `b6fedcd0`.
+
 B4 before/after (retained in `reports/evidence`):
 
 | Reproduction | Before | After |
@@ -269,7 +277,8 @@ B4 before/after (retained in `reports/evidence`):
 Additional finding fixed with them: `import` / `import_impl` that executes after module
 initialization resolved a relative path against the entry module's directory (module loader
 state), so a macro-marked `import_impl "./policy"` in a library function failed with
-`MODULE_NOT_FOUND` when called from another directory. This broke the very pattern D1 retains.
+`MODULE_NOT_FOUND` when called from another directory. This broke the very pattern D1 then
+retained; the fix stays for plain `import` inside functions.
 
 ## 9. Performance (H6 and the dispatch matrix)
 
@@ -367,7 +376,7 @@ Findings:
 
 ### 9.3 Not measured
 
-A macro-marked-block or eval overlay send (only the equivalent activation-local `impl`
+An eval overlay send (only the equivalent activation-local `impl`
 overlay was timed; the cache refusal is the same `chainHasTransientImpls` check by source
 reading); cold first-resolution cost per site; timing of the warmed unrelated call site across a
 reload (reload has no Gene surface; its correctness is covered in section 7; the epoch bump
@@ -413,7 +422,7 @@ held messages being identity-per-authoring.
 - Contrary evidence: third-party recursion only works through root-authored threading; the
   threaded `each` parameter must exist before the container is frozen; incomplete roots fail
   at traversal; Section 9.2 shows the dispatch cost when many types share a site.
-- Done: D1, diagnostics, lexical path (section 8).
+- Done: final impls (sections 8 and 12), diagnostics, lexical path (section 8).
 - Next actions, in order:
   1. **Documented pattern** (done here): `docs/protocol-composition.md` records root-authored
      operations, the contract-first rule, and the ownership routes.
@@ -424,7 +433,8 @@ held messages being identity-per-authoring.
      construction (already the behavior of a nominal record); decide only after a second use
      case beyond Show/Style.
 - Owner decisions open: H4b (compatibility of a scoped pair with a later canonical addition
-  without migration); whether to extend D1's rejection to `scope`/`supervisor` bodies.
+  without migration). The final-impls rule already rejects `import_impl` in `scope` and
+  `supervisor` bodies, so that earlier question is closed.
 
 ### Held messages
 
@@ -449,11 +459,13 @@ held messages being identity-per-authoring.
 ### Overlays and reload
 
 - Evidence for: every retained transport follows reload, rejected reload preserves published
-  behavior, no managed leak after owners drop; macro-marked blocks isolate per block.
-- Contrary evidence: an overlay on the send scope forces the ~2,000 ns uncached path, so
-  heavy use of block-scoped policies in hot code costs the plateau above.
-- Next: after proposal 1, add a cache keyed on the overlay's activation identity or measure
-  whether marked blocks in hot loops matter in a real application first.
+  behavior, no managed leak after owners drop.
+- Contrary evidence: an overlay on the send scope (an eval unit, a function-local `impl`)
+  forces the ~2,000 ns uncached path, so heavy use of overlays in hot code costs the plateau
+  above. Module impls are final (section 12), so overlays are the only impls that can change
+  under a running site.
+- Next: after proposal 1, add a cache keyed on the overlay's activation identity, or measure
+  first whether overlays in hot code matter in a real application.
 
 ### Cordis and sparse adoption
 
@@ -476,5 +488,82 @@ where scoped impls compose; keep `examples/protocol-message-exp` and
 | Transport and reload matrices | sections 3 (B2), 7 |
 | Raw performance evidence or early-stop statement | `reports/evidence/raw`, section 9 |
 | Diagnostic defects and separate repair commits | section 8 |
-| D1 owner decision and implementation status | section 8 |
+| Final-impls owner decision and implementation status | sections 8 and 12 |
 | Prioritized improvement plan | section 10 |
+
+## 12. Final impls (owner direction, 2026-11-01)
+
+After section 8 the owner clarified the intent behind the placement rule: `import_impl`
+should not be dynamic, and a module's impls should be final once it has loaded. The
+function-body rule of section 8 closed only one route; the probe below (release `gene-after`)
+showed the others:
+
+| Probe on `gene-after` | Result |
+| --- | --- |
+| Same function `show` before and after a module-level `import_impl` | `no implementation of message 'render' for Article`, then `plain:A` |
+| `(if (== flag "plain") (import_impl ... plain) (import_impl ... compact))` at module level | accepted: a value chose the module's policy |
+| A competing second import after the first was used | `duplicate visible impl` only if the first had already run |
+| Ordinary top-level `impl` used before its form | `declaration not ready: Show for Box`: declared statically, published at activation |
+
+### Rule and implementation
+
+`import_impl` is a module-level declaration:
+
+1. It must be a direct module-level form. A top-level `do` and the body of `mod` are
+   transparent. In a `fn`, lambda, `message`, `ctor`, `spawn`, block, conditional, `try`,
+   `ns` body or macro expansion it is a compile error, whether or not the code ever runs.
+2. It must come before the first module-level statement that runs code. Declarations
+   (`import`, `type`, `protocol`, `enum`, `alias`, `impl`, `fn`, `macro`) only bind names and
+   may precede it; `let`, `var`, `const`, calls, conditionals, `ns` and bare expressions
+   may not. The check is syntactic (`markLateImportImpls`), so no hoisting machinery or
+   dependency-cycle handling was needed.
+3. Macro-marked blocks no longer exist for imports: a macro cannot write `import_impl`.
+   `scopedImplImports` (the block boundary flag) and the overlay copy path in
+   `importScopedImpl` were deleted; the placement enum from section 8 was replaced by the
+   two checks above. Ordinary `impl` in a function and eval overlays are unchanged.
+
+The web profile already rejected `import_impl` ("web impl visibility must be fixed at compile
+time"), so this makes the native rule match.
+
+### Evidence
+
+- Binary: `tmp/pm-exp-build/gene-final` (release, same flags as section 1, nimcache reused).
+- Boundary suite: 42 fixtures, all green on `gene-final` (`reports/evidence/final`).
+  Fixtures were renamed from `d1_*` to `final_reject_*`; the marked-block fixtures
+  (`d1_marked_scopes`, `b2_scope_marked_cross_module`) were deleted with the feature; the
+  fixtures that used try-wrapped or late imports were rewritten (`b3_*`, `b4_duplicate_scoped`,
+  `b2_scope_do_block`, `b2_scope_ns_body`). A conflict that used to be caught in a `try` is now
+  a load-time error, so the conflict fixtures are `error` cases whose first stderr line is
+  compared, and the "intact afterwards" half became its own fixture (`b3_canonical_v2_core`).
+- The new fixtures on the earlier binaries (`final/new-fixtures-on-*-binary.txt`): 16 of 42
+  pass on `gene-before`, 26 on `gene-after`. On `gene-after` the fixtures that fail because the
+  module was *accepted* are exactly the new rules: `b2_scope_ns_body`, `final_reject_conditional`,
+  `final_reject_late`, `final_reject_marked_block`; the others differ only by the diagnostic text.
+- Cordis C and P ports and `stale_probe` print the same lines as in section 6.
+- Package tests: 9 passed.
+- Suites on the final tree: `tests/test_all.nim` 1,803 OK and the same 3 failures as in
+  section 1; `tests/spec_runner.nim` exit 0 (892 OK); `tests/test_rc.nim` 91 OK;
+  `tests/test_modules.nim` 123 OK (the macro-marked and function-body tests were replaced by
+  four placement tests, and `mod` bodies were added to the ordering test). Two run traps:
+  the C-compiling tests need `SDKROOT=.../MacOSX26.5.sdk` at *runtime* (the 27.0 SDK linker
+  rejects its own `libSystem.tbd`), and `test_modules` and `test_all` share
+  `$TMPDIR/gene_module_tests`, so running them concurrently fails module lookups at random.
+- Defect found by the docs guard on the way: `docs/protocol-composition.md` (written in
+  section 8's commit) used `each` as a parameter name, which the "pruned stdlib name"
+  lint reads as a bare `$each` call. The doc example now names the parameter `visit`; the
+  package keeps `each`.
+
+### What changed for the experiment's conclusions
+
+- H1-H3 and H7 never used a marked block or a late or conditional import: every root already
+  had its pairs first, so the verdicts stand.
+- H4a: a conflict is now a load-time error in the module that wrote the second import, so
+  "the first policy stays intact" is shown by a separate core-only fixture rather than inside
+  a `try`. The diagnostics are unchanged.
+- The dispatch matrix and H6 were not re-measured on the final binary. The benchmarks load the
+  package roots, whose imports already sit at the top of their modules, and the change touches
+  compilation plus the import registration that runs once per module load, not the send path;
+  that is a reading of the diff, not a measurement.
+- Cost to authors: a library can no longer scope a policy to one call with a macro. The
+  replacement is the root-authored operation of section 3, which the package shows needs no
+  language feature but does need the `each`-style parameter planned in the contract.

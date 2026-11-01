@@ -1,6 +1,0 @@
-# A library module that uses a macro-marked import inside its own function.
-# The path "./plain" is relative to THIS file.
-(import [Article] ^from "./model")
-(import [Render] ^from "./contracts")
-(macro with_plain [body...] `(do (import_impl Render for Article ^from "./plain") %body...))
-(fn render_plain [article] (with_plain article/.Render:render))

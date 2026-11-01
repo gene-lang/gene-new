@@ -1,0 +1,7 @@
+# A macro expansion cannot write an import_impl either, so there is no
+# block-scoped policy: the expansion is rejected at its import_impl form.
+(import [Article] ^from "../common/model")
+(import [Render] ^from "../common/contracts")
+(macro with_plain [body...] `(do (import_impl Render for Article ^from "../common/plain") %body...))
+(with_plain nil)
+($println "loaded")

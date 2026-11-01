@@ -1,2 +1,1 @@
-outer module after plain do: plain:A
-competing do: duplicate visible impl Render for Article
+module after the do block: plain:A

@@ -4,7 +4,4 @@
 (import [install_plain install_compact render_sibling] ^from "../common/fns")
 (let article (Article ^title "A"))
 (install_compact)
-($println $"sibling after compact installer: ${(attempt (fn [] (render_sibling article)))}")
-($println $"outer module after compact installer: ${(attempt (fn [] article/.Render:render))}")
-($println $"competing installer: ${(attempt (fn [] (install_plain)))}")
-($println $"after rejected plain: ${(attempt (fn [] (render_sibling article)))}")
+($println "unreachable")

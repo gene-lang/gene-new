@@ -1,4 +1,5 @@
-# Fresh process: the plain installer runs first, then the competing installer.
+# The library whose functions import a pair is rejected as a whole at load,
+# before any installer can run.
 (import [Article] ^from "../common/model")
 (import [Render] ^from "../common/contracts")
 (import [attempt] ^from "../common/util")
@@ -6,7 +7,4 @@
 (let article (Article ^title "A"))
 ($println $"before: ${(attempt (fn [] (render_sibling article)))}")
 (install_plain)
-($println $"sibling after plain installer: ${(attempt (fn [] (render_sibling article)))}")
-($println $"outer module after plain installer: ${(attempt (fn [] article/.Render:render))}")
-($println $"competing installer: ${(attempt (fn [] (install_compact)))}")
-($println $"after rejected compact: ${(attempt (fn [] (render_sibling article)))}")
+($println "unreachable")

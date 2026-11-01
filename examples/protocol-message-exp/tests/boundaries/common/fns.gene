@@ -1,5 +1,5 @@
-# Function-local direct imports: the pre-D1 baseline. Under D1 these bodies must
-# be rejected at compile time (module load), so this module is the "after" test.
+# Function-local direct imports. A module's impls are final once it has loaded,
+# so the module is rejected when it is compiled.
 (import [Article] ^from "./model")
 (import [Render] ^from "./contracts")
 (fn install_plain [] (import_impl Render for Article ^from "../common/plain"))

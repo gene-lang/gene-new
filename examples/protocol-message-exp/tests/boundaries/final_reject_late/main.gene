@@ -1,0 +1,7 @@
+# import_impl must precede every module-level statement that runs code, so no
+# code can observe the module with its impl set still incomplete.
+(import [Article] ^from "../common/model")
+(import [Render] ^from "../common/contracts")
+(let article (Article ^title "A"))
+(import_impl Render for Article ^from "../common/plain")
+($println article/.Render:render)

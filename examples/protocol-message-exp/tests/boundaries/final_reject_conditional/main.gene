@@ -1,0 +1,9 @@
+# The module's impl set cannot depend on a value: a conditional import_impl is
+# rejected even when its condition is a literal.
+(import [Article] ^from "../common/model")
+(import [Render] ^from "../common/contracts")
+(let use_plain true)
+(if use_plain
+  (import_impl Render for Article ^from "../common/plain")
+  (import_impl Render for Article ^from "../common/compact"))
+($println "loaded")

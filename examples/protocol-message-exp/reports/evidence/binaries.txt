@@ -1,4 +1,5 @@
 before  tmp/pm-exp-build/gene-before  sha256 e0448e59f195db03df7752234b355ed29f3cd12c5e718777eeb780490a909467  source HEAD 8351b585 (clean tree), fresh nimcache, release
 after   tmp/pm-exp-build/gene-after   sha256 6deb08770ab7d869e37644c2b3ac7ab8d5cd458b6a89b503ddad981ea9f5aeb6  source HEAD 8351b585 + src diff sha256 625a08e44261808c80e1ce442b56f0bdcc8785e570910ece993f25d3d3361f25, fresh nimcache, release
+final   tmp/pm-exp-build/gene-final   sha256 c6d88aa83f9c09e1c8c42536dab6ebecb3429f020f640f7f17cfc7174cf3ff3b  source HEAD dd317417 + src diff sha256 2dd67162fa3330c5b4cf1efc19dfe6256de6dd422fd05f1bfd0bb4bdf33598bc (final-impls rule), nimcache reused, release
 bench_core release build: nim c -d:release --path:src --hints:off (benchmarks/bench_core.nim)
 build command: nim c -d:release --path:src --hints:off --nimcache:<fresh dir> -o:<out> src/gene.nim

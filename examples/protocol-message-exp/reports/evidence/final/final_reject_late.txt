@@ -1,0 +1,1 @@
+Error: import_impl Render for Article must come before the first module-level statement that runs code (a `let` form precedes it): a module's impls are final once it has loaded, and no code may run while they are still being added. Move it up with the module's other imports

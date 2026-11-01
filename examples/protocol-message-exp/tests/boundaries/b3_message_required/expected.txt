@@ -1,1 +1,1 @@
-contract change import: impl Render for Article is missing message: Render/weight
+Error: impl Render for Article is missing message: Render/weight

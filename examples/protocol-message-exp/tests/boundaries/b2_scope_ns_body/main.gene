@@ -1,7 +1,5 @@
-# A namespace body is not a policy sandbox either.
+# A namespace body is not a policy sandbox: an import_impl there is rejected.
 (import [Article] ^from "../common/model")
 (import [Render] ^from "../common/contracts")
-(import [attempt] ^from "../common/util")
-(let article (Article ^title "A"))
 (ns policy (import_impl Render for Article ^from "../common/plain"))
-($println $"outer module after ns: ${(attempt (fn [] article/.Render:render))}")
+($println "loaded")

@@ -1,0 +1,13 @@
+# Declarations only bind names, so the import may sit among them (here inside a
+# transparent `do`). Nothing runs before it, and the first statement that does
+# run already sees the complete impl set.
+(import [Article] ^from "../common/model")
+(import [Render] ^from "../common/contracts")
+(type Local ^props {^n Int})
+(fn helper [x] x)
+(protocol Weigh (message weigh [] : Int))
+(do (import_impl Render for Article ^from "../common/plain"))
+(impl Weigh for Local (message weigh [] : Int self/n))
+(let article (Article ^title "A"))
+($println $"article: ${article/.Render:render}")
+($println $"local: ${((Local ^n 3) .Weigh:weigh)}")

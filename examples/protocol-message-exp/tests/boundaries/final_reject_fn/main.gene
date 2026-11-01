@@ -1,0 +1,6 @@
+# A module's impls are final once it has loaded: a direct import_impl in a fn
+# body is rejected at compile time, even though the function is never called.
+(import [Article] ^from "../common/model")
+(import [Render] ^from "../common/contracts")
+(fn install [] (import_impl Render for Article ^from "../common/plain"))
+($println "loaded")
