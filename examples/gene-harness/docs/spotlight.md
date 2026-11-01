@@ -168,7 +168,7 @@ or when a query/step publishes a new result snapshot.
   across publication under the original lease.
 - `tests/integration/web/browser_clients_spec.gene`: published assets,
   descriptor validation, disable/re-enable, and recovery exclusion.
-- `tests/integration/web/spotlight_client_spec.gene`: actual compiled Gene
+- `tests/integration/web/client_contracts_spec.gene`: actual compiled Gene
   controllers against external browser-edge fixtures, covering delayed
   responses, numbered scrolling, activation latch, captured targets, persistent
   recovery, lifecycle cleanup, and failed mounts. The JavaScript fixture supplies

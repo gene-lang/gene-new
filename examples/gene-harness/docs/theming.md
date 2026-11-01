@@ -1,8 +1,5 @@
 # Theming
 
-This reference describes the implemented theme contract. Dated checks and
-rollout evidence are in the [verification record](verification/theming-history.md).
-
 The web UI has square geometry, two minimalist neutral palettes, and a
 host-owned light/dark setting. Light is the default; dark is an equal peer, not
 an inverted afterthought. `/about/` follows the same theme as the rest of the
@@ -319,8 +316,8 @@ receive that runtime and read or change its owned setting. It deliberately depen
   (`open_runtime ^mode "recovery"` in `src/runtime/bootstrap.gene`) leaves the
   event store unopened and skips the configuration read. The recovery server
   must still find the mode, so the record cannot live in any of those.
-- **Not `ui_experiment` state.** That plugin is disabled by default and owns
-  plugin-content overrides. Appearance is a host concern that must work with
+- **Not workspace view state.** The Workspace UI plugin owns plugin-content
+  overrides. Appearance is a host concern that must work with
   every plugin disabled.
 - **Missing or invalid means light.** A missing file, a read error or an
   unknown mode renders `light`, so a damaged file cannot break a page.

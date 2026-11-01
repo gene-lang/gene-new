@@ -24,6 +24,6 @@ Validation errors should also leave drafts available. Distinguish saved-record
 readiness from draft checkbox changes, and invalidate reviews when meaningful
 content changes according to your product policy.
 
-The project-board example in `experiments/ui/project_board.gene` demonstrates
+The project-board example in `examples/project_board/project_board.gene` demonstrates
 the complete atomic save. Do not import host implementation modules into a
 generated plugin; use the shared API and required seam.

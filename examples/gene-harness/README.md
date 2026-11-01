@@ -26,10 +26,9 @@ proposals, and implementation/verification records.
 | Notifications, background answers and producer messages | [Notifications](docs/notification.md) |
 | Add UI components or forms | [Web components](docs/web-components.md) |
 | Show cards, question views and interactive cards in a conversation | [Cards](docs/cards.md) |
-| Try the editable project board | [Workspace UI experiment](experiments/ui/README.md) |
-| Follow an end-to-end application build | [Todo replay](docs/todo-replay.md) |
+| Try the editable project board | [Project board example](examples/project_board/README.md) |
 | Configure Claude transports | [Claude providers](docs/claude.md) |
-| Choose models, effort, defaults and endpoint adapters | [Models design](docs/models.md) and [implementation evidence](docs/verification/models-implementation.md) |
+| Choose models, effort, defaults and endpoint adapters | [Models reference](docs/models.md) |
 
 ## Start
 
@@ -115,8 +114,8 @@ port; a fresh start announces a new address if that port is occupied. `--port
 PORT` selects a fixed port and fails if unavailable. A supervised restart also
 requires its original port. `link` retrieves the current browser URL.
 
-See [the todo-app replay guide](docs/todo-replay.md) for a complete web workflow
-using ChatGPT sign-in, including continuation, verification and recovery.
+See [Models](docs/models.md) for provider setup and
+[Web client](docs/web-client.md) for continuation and recovery.
 
 ### CLI reference
 
@@ -242,14 +241,8 @@ permissions. ChatGPT requires granted plan scopes as well as a validated identit
 The Models page supports account selection, reauthorization and sign-out, and
 links to ChatGPT usage settings.
 
-Real ChatGPT sign-in and authenticated model discovery are verified; its
-inference attempt reached a plan-usage limit. OpenRouter and the Claude Pro
-CLI route completed real Harness rounds. The owner skipped further native
-Anthropic API checks; the generic Chat and Responses adapters also completed
-live checks against OpenRouter using DeepSeek. Output budgets use recorded token measurements, with limits
-on those samples disclosed in the
-[verification record](docs/verification/models-implementation.md). The former
-Codex backend transport and its credential-file reader have been removed.
+Output budgets use effort-dependent reserves capped by model limits. The
+former Codex backend transport and its credential-file reader have been removed.
 
 Credentials remain in the host transport and are excluded from prompts and
 durable transcripts. The Claude transport disables its tools, hooks and MCP
@@ -330,10 +323,10 @@ validates changes, applies complete batches, and retains version history.
 plugins. The supervisor also falls back to recovery after startup failure.
 
 Plugins can contribute quoted Gene views to named slots in the browser.
-The opt-in [workspace UI experiment](experiments/ui/README.md) adds plugin views
+The [workspace UI](docs/workspace-views.md) supports plugin views
 that fill the application area or dock beside Classic Harness. The host picker,
-shortcuts, and view buttons switch locally in each tab. Its two-view project
-board fixture is installed separately; the interface remains experimental.
+shortcuts, and view buttons switch locally in each tab. The two-view
+[project board example](examples/project_board/README.md) is installed separately.
 
 The same registered functions serve the model, `/run`, the persistent REPL
 and view actions. The browser keeps filters, selections and unsaved drafts
@@ -629,6 +622,9 @@ history blobs while preserving live recall bodies and checkpoint fallbacks.
 
 ## Model-free specs
 
+See the [test guide](tests/README.md) for suite organization, prerequisites and
+compiled-browser checks.
+
 From this package directory:
 
 ```sh
@@ -638,7 +634,6 @@ From this package directory:
 ../../bin/gene test tests/unit/agents/response_spec.gene
 ../../bin/gene test tests/integration/ui
 ../../bin/gene test --name "Harness trigger recovery"
-../../bin/gene run ../../tools/generate_harness_event_catalog.gene --check
 ```
 
 The suite uses Gene's `$test` `describe`/`it` declarations, assertions and

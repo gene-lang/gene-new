@@ -26,14 +26,19 @@ contributing plugin; do not merge chapters across owners.
 
 From examples/gene-harness, use ../../bin/gene test tests for the complete
 package suite and select affected spec paths for focused checks. HTTP specs
-need loopback listener access. Run ../../bin/gene run tools/verify_workspace_storage.gene
-for the rendered-page and compiled-browser storage boundary; Node executes the
-emitted JavaScript while Gene owns the orchestration.
+need loopback listener access. The compiled browser and workspace-storage checks
+run through tests/integration/web/client_contracts_spec.gene; Node executes the
+emitted JavaScript while Gene owns the orchestration. See the
+[test guide](tests/README.md) for focused commands and fixture conventions.
 
-The repository event-catalog generator's --check mode verifies events.catalog
-and its generated Gene companion. Regenerate both after changing event schemas.
-Record implementation evidence under docs/verification and index new records
-in docs/README.md. Reference chapters describe current behavior.
+Edit [the event catalog](src/storage/event_catalog.gene) directly when changing
+event definitions or payload validators. Preserve persisted names, versions
+and ignorable flags unless explicitly changing the storage contract. Run the
+storage and recovery specs after changing event schemas.
+Keep reference chapters current. Retain measurement or live-service evidence
+under docs/verification when automated tests cannot reproduce it, and index it
+in docs/README.md. Completed rollout checklists and migration discussions belong
+in Git history rather than permanent reference chapters.
 
 ## Tooling constraints
 
@@ -53,3 +58,12 @@ The existing `stdout_chan` adapter also assembles a complete line before
 delivery, independently of its captured-output cap. Shell mode bounds the
 text it retains, but a bounded line adapter over `gene/io` byte readers would
 also bound native buffering for long lines.
+
+The kernel field guards inspect parsed Gene without evaluating it.
+PipelineSyntax currently lacks a public child accessor, so the guards inspect
+its canonical arrow spelling as inert tagged data. A read-only AST child API
+and cycle-aware thaw diagnostics remain language-tooling follow-ups.
+
+The web profile lacks the native `$order` API and full Unicode case-folding
+parity. Spotlight currently compares UTF-8 bytes for deterministic ordering;
+shared ordering and text APIs are standard-library follow-ups.

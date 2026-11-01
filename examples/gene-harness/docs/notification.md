@@ -2,13 +2,11 @@
 
 Notifications help the operator notice work, inspect evidence and take an
 explicit next step. The host-owned center is available independently of the
-experimental workspace UI.
+workspace UI.
 
 For model-facing usage, see the [overview](recipes/notifications.md),
 [publishing recipe](recipes/notification-publishing.md) and
 [review notifier example](../examples/notifications/README.md).
-The [verification record](verification/notification-verification.md) contains
-dated implementation evidence and browser checks.
 
 ## Sources and ownership
 

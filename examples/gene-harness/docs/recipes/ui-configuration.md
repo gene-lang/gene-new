@@ -1,4 +1,9 @@
-# Configure the experimental UI
+# Configure workspace UI
+
+The built-in Workspace UI plugin provides configuration and preview functions.
+Its persisted plugin ID remains `ui_experiment` so existing settings, stored
+overrides and enable/disable choices retain their identity. The implementation
+lives in `src/builtin/workspace_ui.gene`.
 
 Discover `ui_configure`, then enable a view and set fresh-tab defaults:
 
@@ -19,8 +24,8 @@ clear the overrides.
 `layout` is chat or panel; `side` is left or right; `width` is an integer from
 25 to 70. `theme` holds `^light` and `^dark` override maps; their keys are ink,
 muted, line, surface, sidebar, soft and accent, with six-digit hex colors. Keys a
-mode omits keep the host palette. A single flat key map still works and applies
-to light mode only. Configuration belongs to the workspace and supplies
+mode omits keep the host palette. Flat token maps are rejected; use explicit
+mode keys. Configuration belongs to the workspace and supplies
 fresh-tab defaults. The View picker, Show/Hide chat, dock side and width are
 tab-local; they do not call `ui_configure`. `default_view` takes precedence over
 the legacy `panel`/`layout` choice; `harness` means Classic alone. Canonical

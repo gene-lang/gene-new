@@ -36,7 +36,7 @@
     ($assert (== navigation/props/switch-view "desk"))
     ($assert (== navigation/props/presentation "docked"))
     (for source in [(quote (button ^switch_view "" "Missing")) (quote (button ^switch_view "harness" ^presentation "full" "Wrong")) (quote (button ^switch_view "desk" ^presentation "overlay" "Wrong")) (quote (button ^presentation "docked" "Missing view")) (quote (a ^switch_view "desk" "Wrong element")) (quote (button ^switch_view "desk" ^prompt "hello" "Ambiguous")) (quote (button ^key "bad" ^switch_view "desk" ^action "save" "Ambiguous"))]
-      ($assert (try (bounded_component_view ^^experimental source) false catch Any true))))
+      ($assert (try (bounded_component_view ^^interactive source) false catch Any true))))
   (it
     "admits new-tab links without an opener and rejects other target contexts"
     []
@@ -54,7 +54,7 @@
     "preserves textarea text defaults for keyed fields and honors explicit values"
     []
     (let view
-      (bounded_component_view ^^experimental
+      (bounded_component_view ^^interactive
         (quote
           (form ^key "job" ^action "save"
             (textarea ^key "concern" ^field "concern" "Saved " "repair request")
@@ -63,13 +63,13 @@
     ($assert (== view/children/1/props/value "Explicit notes"))
     ($assert
       (try
-        (bounded_component_view ^^experimental
+        (bounded_component_view ^^interactive
           (quote (textarea ^key "bad" (strong "Not plain text"))))
         false
       catch Any
         ($str/contains? $err/message "must be text"))))
   (it
-    "admits keyed forms and structured arguments only for the experiment"
+    "admits keyed forms and structured arguments only for interactive views"
     []
     (let source
       (quote
@@ -77,32 +77,32 @@
           (label "Title" (input ^key "title" ^field "title" ^value "Draft"))
           (button ^type "submit" "Save"))))
     ($assert (try (bounded_component_view source) false catch Any true))
-    (let view (bounded_component_view ^^experimental source))
+    (let view (bounded_component_view ^^interactive source))
     ($assert (== view/props/args/revision "1"))
     ($assert (== view/props/positional ["task"])))
   (it
     "validates success patches on action forms against declared view state"
     []
-    (let tree (bounded_component_view ^^experimental
+    (let tree (bounded_component_view ^^interactive
       (quote (form ^key "create" ^action "save" ^success_state {^selected ""}))))
     ($assert (== tree/props/success-state {^selected ""}))
     (let candidate {^actions ["save"] ^view_state {^selected "create"}})
     (let snapshot {^registries {^ui_actions [{^key "save"}]}})
     (validate_view_actions tree candidate snapshot)
     (for patch in [{^unknown ""} {^selected true}]
-      (let invalid (bounded_component_view ^^experimental
+      (let invalid (bounded_component_view ^^interactive
         `(form ^key "create" ^action "save" ^success_state %patch)))
       ($assert (try (validate_view_actions invalid candidate snapshot) false catch Any true)))
     (for source in [(quote (form ^key "create" ^action "save" ^success_state ""))
                    (quote (form ^key "create" ^action "save" ^success_state {^selected []}))
                    (quote (form ^key "create" ^success_state {^selected ""}))
                    (quote (button ^key "create" ^action "save" ^success_state {^selected ""}))]
-      ($assert (try (bounded_component_view ^^experimental source) false catch Any true))))
+      ($assert (try (bounded_component_view ^^interactive source) false catch Any true))))
   (it
     "rejects ambiguous keys, unowned fields and nested forms before display"
     []
     (for source in [(quote (input ^field "title")) (quote (input ^key "title" ^field "title")) (quote (section (p ^key "same") (p ^key "same"))) (quote (form ^key "outer" (form ^key "inner"))) (quote (form ^key "edit" (input ^key "a" ^field "title") (input ^key "b" ^field "title"))) (quote (input ^key "filter" ^state "filter" ^type "file"))]
-      ($assert (try (bounded_component_view ^^experimental source) false catch Any true))))
+      ($assert (try (bounded_component_view ^^interactive source) false catch Any true))))
   (it
     "normalizes quoted views and rejects invalid elements, actions and replacement names"
     []
@@ -130,7 +130,7 @@
     "normalizes workspace images and bounded image grids"
     []
     (let tree
-      (bounded_component_view ^^experimental
+      (bounded_component_view ^^interactive
         (quote
           (div ^class_name "web_image_surface"
             (img ^src "assets/board.svg" ^alt "Board" ^width 1000 ^height 1000)
@@ -147,7 +147,7 @@
     "rejects unsafe sources, unbounded geometry, scripts and custom CSS"
     []
     (for source in [(quote (img ^src "https://example.com/x.svg" ^alt "bad")) (quote (img ^src "../x.svg" ^alt "bad")) (quote (img ^src "x.html" ^alt "bad")) (quote (img ^src "x.svg")) (quote (img ^src "x.svg" ^alt "bad" "child")) (quote (img ^src "x.svg" ^alt "bad" ^width 2049)) (quote (img ^src "x.svg" ^alt "bad" ^height 0)) (quote (img ^src "x.svg" ^alt "bad" ^width "100%")) (quote (img ^src "x.svg" ^alt "bad" ^onerror "alert(1)")) (quote (img ^src "x.svg" ^alt "bad" ^style "position:fixed")) (quote (div ^src "x.svg")) (quote (div ^class_name "web_image_grid" ^columns 26)) (quote (div ^class_name "web_image_grid" ^columns 0)) (quote (div ^class_name "web_image_grid" ^inset -1)) (quote (div ^class_name "web_image_grid" ^inset 26)) (quote (div ^class_name "web_image_grid" ^columns "9")) (quote (div ^columns 9)) (quote (button ^class_name "web_image_grid" ^columns 9))]
-      ($assert (try (bounded_component_view ^^experimental source) false catch Any true)))))
+      ($assert (try (bounded_component_view ^^interactive source) false catch Any true)))))
 
 (describe "Conversation sidebar component contract"
   (it "admits named host controls only in the sidebar replacement" []

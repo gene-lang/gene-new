@@ -18,7 +18,7 @@
 (import [make_plugin_receiver revoke_plugin_receiver] ^from "../runtime/plugin_receiver")
 (import [sdk_modules] ^from "../runtime/plugin_sdk")
 (import [builtin_registry_specs] ^from "../registries/builtins")
-(import [core_event_types] ^from "../storage/generated_event_catalog")
+(import [core_event_types] ^from "../storage/event_catalog")
 (import [append_core_event] ^from "../storage/state")
 
 (fn ^^private snapshot_registries [h : Harness]

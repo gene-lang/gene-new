@@ -19,7 +19,7 @@
   ($assert (== ($head result) TaskOutcome/ok) ($to_str result))
   (ui_action_receipt service/runtime/services/values/actions record/input_id))
 
-(describe "Experimental UI actions"
+(describe "Workspace UI actions"
   (it "isolates runtime context and receipt invalidation while preserving cancellation" []
     (isolated this_mod/.path "isolates runtime context and receipt invalidation while preserving cancellation"
       (fn [workspace]
@@ -96,7 +96,7 @@
         (let service (test_service ^workspace workspace ^provider (fn [request] "(Outcome ^done true ^reply \"ok\")")))
         (try
           (let h service/runtime/h)
-          (let original ($fs/read_text (package_path "experiments/ui/project_board.gene")))
+          (let original ($fs/read_text (package_path "examples/project_board/project_board.gene")))
           (let source ($regex/replace_all #"\(host \.PluginHost:update_state" original
             "($sleep 30) (host .PluginHost:update_state"))
           (register_plugin service/runtime/workspace h "project_board" source)
@@ -128,7 +128,7 @@
         (let service (test_service ^workspace workspace ^provider (fn [request] "(Outcome ^done true ^reply \"ok\")")))
         (try
           (let h service/runtime/h)
-          (register_plugin service/runtime/workspace h "project_board" ($fs/read_text (package_path "experiments/ui/project_board.gene")))
+          (register_plugin service/runtime/workspace h "project_board" ($fs/read_text (package_path "examples/project_board/project_board.gene")))
           (let configure (/fn (row h "functions" "ui_configure")))
           (configure {^^enabled ^layout "panel" ^panel "project_board"})
           (let view (/0 (/components (ui_status service/runtime))))
@@ -163,7 +163,7 @@
           (let changed ($thaw ($freeze request)))
           (changed/named .put "title" "Different")
           ($assert (try (ui_action service/runtime/services/values/actions changed) false catch UiError (== $err/code "submission_conflict")))
-          (register_plugin ^^replace service/runtime/workspace h "project_board" ($fs/read_text (package_path "experiments/ui/project_board.gene")))
+          (register_plugin ^^replace service/runtime/workspace h "project_board" ($fs/read_text (package_path "examples/project_board/project_board.gene")))
           ($assert (== (/id (ui_action service/runtime/services/values/actions request)) record/id))
           (stale .put "input_id" "1:old-view")
           ($assert (try (ui_action service/runtime/services/values/actions stale) false catch UiError (== $err/code "revision_conflict")))

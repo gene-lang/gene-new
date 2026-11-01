@@ -49,10 +49,6 @@ billing selection to that binary. It does not add a Claude.ai login service
 or handle subscription tokens in its HTTP adapters.
 [Authentication and credential use](https://code.claude.com/docs/en/legal-and-compliance)
 
-The running verification host completed a Sonnet round using an existing
-Claude Pro login, with connection billing reported as `plan`.
-[Recorded verification](verification/claude-subscription-check-20261031.json)
-
 ## Using the Anthropic API
 
 Configure `ANTHROPIC_API_KEY` in the process environment, then use the same
@@ -91,8 +87,9 @@ The API output budget includes thinking and follows effective effort:
 32,768 for high, 65,536 for xhigh, and 128,000 for max/ultra. The selected
 model's output limit caps it; an explicit call budget, including a compaction
 summary's budget, takes precedence within that cap. The minimum covers a
-recorded 5,694-token summary. Higher-effort reserves remain provisional;
-see the [measurement evidence](verification/models-implementation.md#openrouter-live-verification-2026-10-31).
+recorded 5,694-token summary; the aggregate usage is retained as a
+[test fixture](../tests/fixtures/recorded-coding-token-observations-20261031.json).
+Higher-effort reserves remain provisional.
 A token-limit stop is an error even if the partial text looks like valid Gene.
 
 ## Execution boundary and limits

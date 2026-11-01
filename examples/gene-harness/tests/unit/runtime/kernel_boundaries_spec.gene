@@ -45,7 +45,7 @@
      "../runtime/execution_budget" "../runtime/service_binding" "../plugin_api" "../errors"]
    ^composition_bridge ["./registry" "./host" "./events" "./invoke" "../runtime/cordis_adapter"
      "../runtime/composition" "../storage/plugin_metadata" "../runtime/plugin_receiver"
-     "../runtime/plugin_sdk" "../registries/builtins" "../storage/generated_event_catalog"
+     "../runtime/plugin_sdk" "../registries/builtins" "../storage/event_catalog"
      "../storage/state" "../plugin_api" "../errors"]})
 
 (fn kernel_imports []

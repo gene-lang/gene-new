@@ -1,23 +1,21 @@
-# Experimental workspace UI
+# Project board example
 
-This opt-in experiment offers a project board and project overview, full screen
+This workspace UI example offers a project board and project overview, full screen
 or docked beside Classic Harness. Views are quoted Gene data rendered on the server. The browser
 preserves keyed controls, drafts and view state while data changes.
 
-Rendering and UI actions are disabled by default. The baseline profile always
-exposes `ui_configure` and `ui_preview` to the model; `ui_preview` reports that
-the experiment is disabled until it is enabled. This keeps discovery stable
-at the cost of two function entries in model instructions.
-Its API may change or be removed.
-See [RESULTS.md](RESULTS.md) for the observed behavior, measurements and
-keep/revise/remove recommendation.
+Workspace views are disabled until configured. The baseline profile exposes
+`ui_configure`, `ui_preview` and `ui_action_receipts` for configuration, previews
+and action inspection. The installer below registers the board and enables
+workspace views. See [workspace views](../../docs/workspace-views.md) for the
+navigation and lifecycle contract.
 
 ## Try it
 
 From the repository root, with no Harness process owning the chosen workspace:
 
 ```text
-bin/gene run examples/gene-harness/experiments/ui/install.gene /path/to/test-workspace
+bin/gene run examples/gene-harness/examples/project_board/install.gene /path/to/test-workspace
 bin/gene run examples/gene-harness/src/web/server.gene --workspace /path/to/test-workspace --offline
 ```
 
@@ -30,10 +28,10 @@ dock the current view. The board's selection and drafts survive switching and re
 Discard edits reloads the task's current values after a conflict.
 
 The installer registers `project_board.gene` through the normal workspace
-plugin loader and explicitly enables the experiment. Reinstalling replaces the
+plugin loader and enables workspace views. Reinstalling replaces the
 plugin while retaining its durable task state. It does not require a model.
 
-In a running Harness, the following operator commands configure the experiment:
+In a running Harness, the following operator commands configure the workspace UI:
 
 ```gene
 /run (ui_configure {^^enabled ^layout "panel" ^panel "project_board" ^side "left" ^width 45 ^theme {^light {^accent "#335577"} ^dark {^accent "#9db4d6"}}})

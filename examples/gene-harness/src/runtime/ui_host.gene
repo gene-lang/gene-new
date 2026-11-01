@@ -18,7 +18,7 @@
 (fn configure_ui [handle, settings]
   (let service (require_service handle))
   (if (!= service/host/owner "ui_experiment")
-    (fail (ServiceError ^code "forbidden" ^message "UI settings belong to the ui_experiment plugin.")))
+    (fail (ServiceError ^code "forbidden" ^message "UI settings belong to the Workspace UI plugin.")))
   (if (!= ($head settings) Map) (validate_ui_settings settings))
   (let merged {})
   (for [key value] in (ui_settings service/runtime) (merged .put key value))

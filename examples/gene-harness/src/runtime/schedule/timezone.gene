@@ -59,8 +59,10 @@
   (let range $"1970,${(+ through_year 1)}")
   (var text nil)
   (for executable in ["/usr/sbin/zdump" "/usr/bin/zdump"]
+    # Century-scale histories take several seconds on macOS. Allow the full
+    # supported horizon while keeping this configuration-time probe bounded.
     (let response (try ($os/exec executable "-i" "-c" range name
-      ^timeout_ms 2000 ^max_bytes 262144) catch Any nil))
+      ^timeout_ms 30000 ^max_bytes 262144) catch Any nil))
     (if_yes (&& ($present? response) (== response/status 0) (! response/timed_out))
       (set text response/stdout)
       (break)))

@@ -95,7 +95,7 @@
   (attributes .put name item)
   true)
 
-(fn component_view [value, ^depth depth : Int = 0, ^experimental experimental : Bool = false, ^keys keys = nil, ^form form = nil, ^widgets widgets = nil, ^card card = nil]
+(fn component_view [value, ^depth depth : Int = 0, ^interactive interactive : Bool = false, ^keys keys = nil, ^form form = nil, ^widgets widgets = nil, ^card card = nil]
   (if (> depth 24) (component_error "web component view exceeds 24 levels"))
   (if ([Str Int Float Bool Nil] .contains? ($head value))
     (return (if ($absent? value) "" ($to_str value))))
@@ -124,13 +124,13 @@
       (component_error $"duplicate sidebar widget ${props/name}"))
     (widgets .put props/name true)
     (return {^tag "host_widget" ^props {^name props/name} ^children []}))
-  (if_not (|| (component_tags .contains? tag) (&& (|| experimental ($present? card)) (interactive_tags .contains? tag)))
+  (if_not (|| (component_tags .contains? tag) (&& (|| interactive ($present? card)) (interactive_tags .contains? tag)))
     (component_error $"unsupported web component element ${tag}"))
   (let attributes {})
   (for [key item] in props
     (let name ($to_str key))
     (if_yes ($absent? card)
-      (if_not (|| (component_attributes .contains? name) (&& experimental (interactive_attributes .contains? name)))
+      (if_not (|| (component_attributes .contains? name) (&& interactive (interactive_attributes .contains? name)))
         (component_error $"unsupported web component attribute ${name}")))
     (if_not ($absent? card)
       (if (|| (["switch_view" "presentation"] .contains? name)
@@ -232,7 +232,7 @@
     (if (|| ($absent? attributes/switch-view) (== attributes/switch-view "harness")
             (! (["docked" "full"] .contains? attributes/presentation)))
       (component_error "presentation requires a plugin view target and must be docked or full")))
-  (if_yes experimental
+  (if_yes interactive
     (if (&& ($present? attributes/success-state)
             (|| (!= tag "form") ($absent? attributes/action)))
       (component_error "success_state requires a form action"))
@@ -247,7 +247,7 @@
       (component_error "interactive controls and forms require stable keys"))
     (if (&& (== tag "input") ($present? attributes/type)
             (! (["text" "search" "checkbox" "number" "hidden"] .contains? attributes/type)))
-      (component_error "unsupported experimental input type"))
+      (component_error "unsupported interactive input type"))
     (if (&& ($present? attributes/action) (! (["button" "form"] .contains? tag)))
       (component_error "function actions require a button or form"))
     (if (&& ($present? attributes/state) (! (["button" "input" "textarea" "select"] .contains? tag)))
@@ -267,7 +267,7 @@
     (if (!= (?? attributes/class "") "web_image_grid")
       (component_error "columns and inset require web_image_grid")))
   (let field_names (if (== tag "form") {} form))
-  (let body ($map children (fn [child] (component_view ^depth (+ depth 1) ^experimental experimental ^keys keys ^form field_names ^widgets widgets ^card card child))))
+  (let body ($map children (fn [child] (component_view ^depth (+ depth 1) ^interactive interactive ^keys keys ^form field_names ^widgets widgets ^card card child))))
   # A textarea's ordinary text content is its initial value. The keyed browser
   # adapter needs that value in props; explicit value still takes precedence.
   (if_yes (&& (== tag "textarea") ($absent? attributes/value) (! body/.empty?))
@@ -292,8 +292,8 @@
     (if (tree_has_commands? child) (return true)))
   false)
 
-(fn bounded_component_view [value, ^experimental experimental : Bool = false, ^sidebar sidebar : Bool = false]
-  (let view (component_view ^experimental experimental ^keys {} ^widgets (if sidebar {} nil) value))
+(fn bounded_component_view [value, ^interactive interactive : Bool = false, ^sidebar sidebar : Bool = false]
+  (let view (component_view ^interactive interactive ^keys {} ^widgets (if sidebar {} nil) value))
   (if (> ($str/byte_size ($json/stringify view)) 65536)
     (component_error "web component view exceeds 64 KiB"))
   view)

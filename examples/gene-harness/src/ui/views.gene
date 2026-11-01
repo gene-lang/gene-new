@@ -25,8 +25,8 @@
     (when (TaskOutcome/panic message) (fail (WebComponentError ^message $"component render panicked: ${message}")))
     (else (fail (WebComponentError ^message "component render exceeded its budget or was cancelled")))))
 
-(fn render_component [h, callback, context, ^experimental experimental : Bool = false, ^sidebar sidebar : Bool = false]
-  (bounded_component_view ^experimental experimental ^sidebar sidebar
+(fn render_component [h, callback, context, ^interactive interactive : Bool = false, ^sidebar sidebar : Bool = false]
+  (bounded_component_view ^interactive interactive ^sidebar sidebar
     (bounded_render_call h callback [context])))
 
 (fn ui_context [h, session : Str, state]
@@ -66,7 +66,7 @@
 
 (fn ui_render [runtime, session : Str, name : Str, revision : Str, state, ^instance instance : Str = "preview", ^sequence sequence : Str = "0"]
   (let h runtime/h)
-  (if_not (/enabled (ui_settings runtime)) (ui_error "unavailable" "The UI experiment is disabled."))
+  (if_not (/enabled (ui_settings runtime)) (ui_error "unavailable" "Workspace views are disabled."))
   (let lease (acquire_snapshot ^label "ui/render" h/snapshots))
   (try
     (let record (ui_record lease/snapshot "web_components" name))
@@ -83,7 +83,7 @@
     (let context (ui_context h session view_state))
     (try
       (let view ($runtime/with_context {^composition h/snapshots ^snapshot lease/snapshot ^session session ^^ui_render}
-        (fn [] (render_component ^^experimental h record/payload/render context))))
+        (fn [] (render_component ^^interactive h record/payload/render context))))
       (validate_view_actions view record/payload lease/snapshot)
       (result .put "view" view)
     catch Any (result .put "error" $err/message))

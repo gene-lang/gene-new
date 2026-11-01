@@ -181,7 +181,7 @@ remain in the durable workspace transcript.
 
 Ordinary plugin components occupy the named slots described in
 [web components](web-components.md). The opt-in
-[workspace UI experiment](../experiments/ui/README.md) supports one selected
+[workspace UI](../examples/project_board/README.md) supports one selected
 plugin view, either full screen or docked beside Classic Harness. View choice,
 presentation, dock side/width, and drafts belong to each browser tab. Shared
 workspace settings supply defaults only. See [workspace views](workspace-views.md)
@@ -291,8 +291,8 @@ All API paths use /api/v9.
 | GET /sessions/ID/requests/REQUEST?kind=round\|command | Look up a retained receipt by client request id |
 | POST /sessions/ID/mode/input | Submit `{instance, input_id, text}` to the current input mode |
 | POST /sessions/ID/mode/leave | Close the named mode instance through the host |
-| POST /ui/render | Render one experimental component with its instance, revision, request sequence and view state |
-| POST /ui/settings | Explicitly enable or configure the experimental workspace layout |
+| POST /ui/render | Render one workspace component with its instance, revision, request sequence and view state |
+| POST /ui/settings | Explicitly enable or configure the workspace layout |
 | POST /ui/actions | Submit a workspace function action with generation-bound input identity, publication revisions, and structured arguments |
 | GET /ui/actions/INPUT | Look up its workspace receipt without executing it |
 | POST /ui/actions/INPUT/cancel | Request cancellation by the original workspace action identity |

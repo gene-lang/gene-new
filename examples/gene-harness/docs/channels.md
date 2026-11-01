@@ -1,8 +1,6 @@
 # Messaging channels
 
-Status: milestones 0 and 1 implemented and qualified, 2026-10-27. Slack provides
-another way to use a Harness workspace's durable conversations. See the
-[implementation and verification record](verification/channels-implementation.md).
+Slack provides another way to use a Harness workspace's durable conversations.
 
 The recommended default is **one Slack channel per Gene workspace, with one
 Slack thread per Harness session**. A top-level request starts a conversation;
@@ -506,8 +504,6 @@ An explicit follow-up requests a change to work already started.
 
 ## Local setup
 
-The native transport and channel/thread workflow have passed local and live
-Slack qualification; see the [verification record](verification/channels-implementation.md).
 Setup uses authenticated local owner tooling. The connection owner's host can
 be the manager, a gateway, or the workspace itself in standalone operation.
 

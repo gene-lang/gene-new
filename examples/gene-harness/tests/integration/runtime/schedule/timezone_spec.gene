@@ -1,0 +1,14 @@
+(import $test [describe it assert_equal])
+(import [isolated run_spec] ^from "../../../support")
+(import [at_ms] ^from "../../../../src/runtime/triggers")
+(import [system_rules offset_at] ^from "../../../../src/runtime/schedule/timezone")
+
+(describe "System timezone adapter"
+  (it "loads installed intervals across a daylight-saving transition" []
+    (isolated this_mod/.path "loads installed intervals across a daylight-saving transition"
+      (fn [workspace]
+        (let rules (system_rules "America/New_York" 2100))
+        (assert_equal (offset_at rules (/ (at_ms "2026-03-08T06:59:00Z") 1000)) -18000)
+        (assert_equal (offset_at rules (/ (at_ms "2026-03-08T07:00:00Z") 1000)) -14400)))))
+
+(fn main [args] : Int (run_spec args))

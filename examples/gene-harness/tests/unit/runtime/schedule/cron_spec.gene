@@ -6,7 +6,11 @@
 
 (describe "Harness trigger calendar"
   (before_each [t]
-    (set t/rules (timezone/system_rules "America/New_York" 2100)))
+    # Fixed 2026 intervals keep calendar behavior independent of host utilities.
+    # The system adapter is checked separately in the integration suite.
+    (set t/rules (timezone/parse_intervals "America/New_York"
+      "-\t-\t-05\tEST\n2026-03-08\t03\t-04\tEDT\t1\n2026-11-01\t01\t-05\tEST\n"
+      2026)))
 
   (it "skips nonexistent spring minutes" [t]
     (let daily (cron/compile "30 2 * * *"))

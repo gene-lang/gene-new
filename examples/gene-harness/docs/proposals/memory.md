@@ -906,9 +906,9 @@ Milestones 0 through 4 define v1. Milestone 5 is a later research track.
   ordinary tasks available. Document the additive recovery metadata and verify
   client compatibility at this step; a general public-record projection is deferred.
   Keep terminal admission-error batches, child/trigger rejections, normal dirty
-  flush retries, and the existing receipt-list cap. Update `events.catalog` and
-  regenerate `src/storage/generated_event_catalog.gene` with the existing Gene
-  generator; update core event/projection allowlists.
+  flush retries, and the existing receipt-list cap. Add event definitions and
+  validators directly to `src/storage/event_catalog.gene`; update core
+  event/projection allowlists.
 - **3. Useful recall.** Add the built-in plugin, round-start settled injection,
   bounded Gene scan, retained-context duplicate suppression, session received sets
   and delivery cursors, plus `memory_search`, `memory_get`, `memory_sources`.
@@ -969,8 +969,7 @@ gate. The milestone labels below identify when each scenario becomes required.
 | 4 | The view shows paraphrase versus quoted source, inference labels, and near-duplicates; new endpoints enforce the bumped protocol contract. |
 | 5 | A derived index can be lost/rebuilt without stale revisions; failed embeddings fall back to Gene retrieval; delayed consolidation respects revised/deleted source dependencies. |
 
-Also replay a small set of real Harness tasks using the
-[todo replay](../todo-replay.md) format. Include a remembered gotcha,
+Also replay a small set of real Harness tasks end to end. Include a remembered gotcha,
 a corrected false lesson, and an unrelated task where memory should stay quiet.
 Score mistakes avoided, action/test outcomes, source correctness, and context
 bytes spent. Keep this real-model replay distinct from deterministic contract

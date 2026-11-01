@@ -84,7 +84,7 @@ the Gene skill is the `gene/overview` docs chapter. Plugin administration and
 triggers contribute searchable functions and owned docs rather than full prompt
 sections. The web entry contributes a short browser orientation.
 `gene_reference` makes the `harness/web_components` chapter available, and
-`ui_experiment` contributes configuration and preview functions. Prompts
+The Workspace UI plugin contributes configuration and preview functions. Prompts
 submitted through the CLI can author and preview UI plugins in the same host.
 Pull-only chapters come from `docs` rows and are read with `doc`. `discover`
 searches active contribution metadata with kind/owner filters and pagination,
@@ -369,11 +369,11 @@ The transcript is the complete durable record shown to the operator: requests,
 response code/stubs, patch results, replies, questions, commands and console.
 History is the model-facing view, with console excluded.
 
-The canonical event vocabulary is [events.catalog](../events.catalog), with
-payload validators in `src/storage/generated_event_catalog.gene`. It includes
-core records and feature records such as card and delegation state. The
-repository's `tools/generate_harness_event_catalog.gene` generates both files;
-`--check` verifies them. This reference does not keep a second enumeration.
+The canonical event vocabulary and payload validators live in
+[event_catalog.gene](../src/storage/event_catalog.gene). This ordinary Gene
+module defines names, versions, ignorable flags and schemas for core records
+and feature records such as card and delegation state. Edit it directly;
+there is no generation step. This reference does not keep a second enumeration.
 
 The loop allocates numeric session turns and records one ending for each
 started turn. `turn/request` describes the receiving turn's input, rather than

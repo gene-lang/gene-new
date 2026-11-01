@@ -216,7 +216,7 @@ built-in welcome immediately for an empty conversation.
 
 The optional workspace UI supports `view` components, full screen or docked
 beside Classic Harness. Legacy `panel` registrations are aliases with a docked
-default. It is disabled by default. See the [project board](../experiments/ui/README.md)
+default. It is disabled by default. See the [project board](../examples/project_board/README.md)
 for a two-view plugin and [workspace views](workspace-views.md) for navigation.
 
 Enable and configure it through `ui_configure`:
@@ -229,9 +229,8 @@ Enable and configure it through `ui_configure`:
 `layout` is `chat` or `panel`; `side` is `left` or `right`; `width` is an integer
 percentage from 25 to 70. `theme` overrides the panel's colors per mode:
 `^light` and `^dark` each map the keys `ink`, `muted`, `line`, `surface`,
-`sidebar`, `soft` and `accent` to six-digit hex colors. A single flat key map
-is accepted and applies to light mode only; in dark mode such a panel uses the
-host's dark palette. Passing
+`sidebar`, `soft` and `accent` to six-digit hex colors. Flat token maps are
+rejected; a mode without overrides uses the host palette. Passing
 `{^!enabled}` restores the ordinary interface. Configuration is workspace state
 and supplies fresh-tab defaults; navigation and presentation choices are local
 to a tab. `default_view` selects a canonical initial view or `harness` and takes

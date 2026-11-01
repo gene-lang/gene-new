@@ -42,7 +42,7 @@
     ($assert (! ($str/contains? auth/message "SECRET"))))
 
   (it "fits recorded summaries at the minimum default while retaining explicit and model caps" []
-    (let observations ($json/parse ($fs/read_text ($path/join this_pkg/root "docs" "verification"
+    (let observations ($json/parse ($fs/read_text ($path/join this_pkg/root "tests" "fixtures"
       "recorded-coding-token-observations-20261031.json"))))
     (var peak 0)
     (for group in observations/groups (set peak ($math/max peak group/max_output_tokens)))

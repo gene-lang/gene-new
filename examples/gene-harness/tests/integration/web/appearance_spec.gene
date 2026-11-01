@@ -58,7 +58,7 @@
           ($assert (== bad/status 400))
           ($assert (== (read_appearance state_root) "dark"))
           # The setting is host-owned: it works with the sidebar and the UI
-          # experiment disabled.
+          # Workspace UI plugin disabled.
           (let session (/id (cli host/root ["sessions" "create" "--title" "Theme"])))
           (cli host/root ["--session" session "run" "(disable_plugin \"sidebar\")"])
           (cli host/root ["--session" session "run" "(disable_plugin \"ui_experiment\")"])

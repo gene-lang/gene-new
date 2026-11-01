@@ -20,7 +20,7 @@ transcript at the turn that started the work.
 Replace the default with `register_plugin ^^replace "sidebar" ...`. The plugin
 contributes one `web_components` row whose **name and slot are both
 `conversation_sidebar`**. Use a static `view` or a bounded `render` callback
-with the ordinary web-component context. This slot does not use experimental
+with the ordinary web-component context. This slot does not use workspace
 `view_state`; it works while workspace views are disabled.
 
 Ordinary safe component elements, command/prompt buttons and view navigation

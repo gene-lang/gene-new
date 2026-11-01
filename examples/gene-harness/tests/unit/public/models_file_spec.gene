@@ -2,14 +2,16 @@
 (import [normalize_models_file] ^from "../../../src/public/models_file")
 
 (describe "Shared models configuration"
-  (it "accepts the actual design document's inert configuration example" []
+  (it "accepts the reference guide's inert configuration example without dropping entries" []
     (let document ($fs/read_text ($path/join this_pkg/root "docs" "models.md")))
     (let blocks ($str/split document "```gene\n"))
     (let example ($str/split blocks/1 "```"))
-    (let result (normalize_models_file ($serde/read_data example/0)))
+    (let configuration ($serde/read_data example/0))
+    (let result (normalize_models_file configuration))
     ($assert result/errors/.empty?)
-    ($assert (== result/config/providers/.size 2))
-    ($assert (== result/config/presets/.size 2)))
+    ($assert (== result/config/default configuration/default))
+    ($assert (== result/config/providers configuration/providers))
+    ($assert (== result/config/presets configuration/presets)))
 
   (it "keeps valid entries while reporting name conflicts and stored credential fields" []
     (let result (normalize_models_file

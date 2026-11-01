@@ -17,7 +17,7 @@
     (set t/spec
       (prepare_anthropic
         {^purpose "turn" ^messages messages
-         ^settings {^model "test" ^effort "none" ^timeout_ms 600000}
+         ^settings (configure_model "test" "auto" 600000 "unused")
          ^max_tokens 100})))
 
   (it "retains the conversation history" [t]

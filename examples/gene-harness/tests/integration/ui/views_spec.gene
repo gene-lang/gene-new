@@ -25,7 +25,7 @@
   (if (> omitted 0) ($assert (== body/item_tag "tr")))
   nil)
 
-(describe "Experimental UI views"
+(describe "Workspace UI views"
   (it "bounds publication outlines and renders only successfully published owners" []
     (isolated this_mod/.path "bounds publication outlines and renders only successfully published owners"
       (fn [workspace]
@@ -107,7 +107,7 @@
           (let session (create_session service))
           ($assert (== (/components (ui_status service/runtime)) []))
           ($assert ($present? (row h "seams" "ui/state_lock")) "shared state lock was not provided")
-          (let installed (register_plugin service/runtime/workspace h "project_board" ($fs/read_text (package_path "experiments/ui/project_board.gene"))))
+          (let installed (register_plugin service/runtime/workspace h "project_board" ($fs/read_text (package_path "examples/project_board/project_board.gene"))))
           ($assert (== installed/state "active") ($to_str installed))
           (let configure (/fn (row h "functions" "ui_configure")))
           (configure {^^enabled ^layout "panel" ^panel "project_board" ^theme {^light {^accent "#335577"}}})

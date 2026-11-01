@@ -1,8 +1,7 @@
 # Workspace manager
 
 This reference describes the single-root manager. Forced termination is not
-implemented; see [unresponsive workspaces](#unresponsive-workspaces). Historical
-checks and owner decisions are in the [verification record](verification/workspace-manager-history.md).
+implemented; see [unresponsive workspaces](#unresponsive-workspaces).
 
 The manager is a Harness workspace for creating, opening and managing other
 Gene Harness workspaces. Its directory is the **manager root**,

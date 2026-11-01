@@ -5,7 +5,7 @@
 (import [ui_action ui_action_receipt] ^from "../../src/ui/actions")
 
 (fn main [args]
-  (let board_path ($path/join ($path/parent ($path/parent ($path/parent this_mod/.path))) "experiments/ui/project_board.gene"))
+  (let board_path ($path/join ($path/parent ($path/parent ($path/parent this_mod/.path))) "examples/project_board/project_board.gene"))
   (let service (open_session_service ^workspace args/0 ^^offline))
   (let h service/runtime/h)
   ((/fn (row h "functions" "ui_configure")) {^^enabled})

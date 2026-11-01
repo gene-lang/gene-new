@@ -5,8 +5,7 @@ its principles, owners and lifetimes. The [protocol](protocol.md) specifies
 response grammar, evaluation bindings and durable records. The [README](../README.md)
 covers operation; [plugins](plugins.md) defines the contribution contract.
 
-The [memory proposal](proposals/memory.md) is planned work. Dated implementation
-evidence belongs under [verification](README.md#implementation-and-verification).
+The [memory proposal](proposals/memory.md) is planned work.
 
 ## Principles
 

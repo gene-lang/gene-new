@@ -10,6 +10,7 @@
 
 (fn ui_settings [runtime]
   (let h runtime/h)
+  # Match the Workspace UI plugin's persisted identity across source renames.
   (let saved (if ($absent? h/event_store) nil
     (plugin_state h/event_store "workspace" "workspace" "ui_experiment")))
   (?? saved runtime/services/values/ui_defaults {^enabled false ^layout "chat" ^panel "" ^side "left" ^width 50 ^theme {}}))

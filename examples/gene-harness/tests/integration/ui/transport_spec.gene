@@ -22,7 +22,7 @@
         (let setup (open_session_service ^workspace root ^^offline))
         (try
           (register_plugin setup/runtime/workspace setup/runtime/h "project_board"
-            ($fs/read_text (package_path "experiments/ui/project_board.gene")))
+            ($fs/read_text (package_path "examples/project_board/project_board.gene")))
           ((/fn (row setup/runtime/h "functions" "ui_configure")) {^^enabled ^default_view "project_board"})
           ensure (close_session_service setup))
         (var host (start_host root))

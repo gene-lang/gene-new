@@ -1,15 +1,10 @@
-# A ratchet for the migration: new built-ins use the public contract and shared
-# helpers. Existing private dependencies are explicit, and stale exceptions fail.
+# Built-ins and their shared helpers use only the public plugin contract.
 (import $test [describe it])
 (import [sdk_modules] ^from "../../../src/runtime/plugin_sdk")
 
-(fn private_imports [] {})
-
 (describe "Built-in import boundary"
-  (it "admits public dependencies and only the remaining named private exceptions" []
-    (let exceptions (private_imports))
+  (it "admits only public dependencies" []
     (let shared (sdk_modules))
-    (let observed {})
     (let root ($path/join this_pkg/root "src" "builtin"))
     (for name in ($fs/list_dir root)
       (if_not ($str/ends_with? name ".gene") (continue))
@@ -21,14 +16,8 @@
         (let file_path ($path/join root name))
         (let resolved ($path/normalize ($path/join ($path/parent file_path)
           (if ($str/ends_with? path ".gene") path ($to_str path ".gene")))))
-        (if (shared .contains? ($path/relative resolved this_pkg/root)) (continue))
-        ($assert ((?? (exceptions .get name) []) .contains? path)
-          $"${name} imports host internals: ${path}; use a narrow public protocol")
-        (observed .put ($to_str name ":" path) true)))
-    (for [name paths] in exceptions
-      (for path in paths
-        ($assert (== (observed .get ($to_str name ":" path)) true)
-          $"Remove the retired import exception ${name}: ${path}"))))
+        ($assert (shared .contains? ($path/relative resolved this_pkg/root))
+          $"${name} imports host internals: ${path}; use a narrow public protocol"))))
 
   (it "keeps public helpers independent of private host implementation modules" []
     (let shared (sdk_modules))

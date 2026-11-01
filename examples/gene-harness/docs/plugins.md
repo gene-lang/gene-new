@@ -50,7 +50,7 @@ notification failure separately from a successful business save. Keep policy
 in the plugin's owned usage chapter and use a real decision workflow for
 questions. See [publishing notifications](recipes/notification-publishing.md).
 
-When the UI experiment is enabled, successfully published plugins that own
+When workspace views are enabled, successfully published plugins that own
 stateful views also receive `[N.ui]` outlines or render errors. These previews
 run without a browser. Read the publication feedback before finishing, then
 exercise the action functions and verify the browser interactions as needed.
@@ -112,7 +112,7 @@ plugin and is removed when the activation unloads. Common rows are:
 | `speech_recognizers`, `speech_synthesizers` | Owned speech engines with availability, open/close and recognition/synthesis callbacks; see [Voice](audio.md) |
 | `hooks` | `{^point ^name ^run}`; an ordered listener at a published shaping point |
 | `triggers` | A definition that starts workspace work without a user |
-| `web_components` | `{^name ^slot ^view}` or `{^name ^slot ^render}`; quoted UI, with `view_state` and `actions` for experimental panel forms |
+| `web_components` | `{^name ^slot ^view}` or `{^name ^slot ^render}`; quoted UI, with `view_state` and `actions` for interactive view forms |
 | `browser_clients` | Owned browser asset and optional stylesheet mounted through the host bridge |
 | `ui_actions`, `ui_links` | Named supervised functions used by workspace views and navigation |
 
@@ -202,8 +202,8 @@ HTTP `status`, allowing a transport 401 to expire that cached connection.
 
 The [built-in import check](../tests/unit/builtin/import_policy_spec.gene)
 allows `plugin_api`, declared shared helpers and public Gene/genex libraries.
-All built-ins satisfy that boundary; the private-import exception list is
-empty. The check rejects both new private dependencies and stale exceptions.
+All built-ins satisfy that boundary. The check rejects private dependencies
+in both built-ins and their declared public helpers.
 Stored plugins retain the enforced source-closure boundary described below.
 
 Additional host services are resolved through these public protocols. Handles
@@ -217,7 +217,7 @@ that activation retires. Their returned data collections are immutable.
 | `channels/host` | `ChannelHost`: `start` and `state`. The `slack` plugin owns transport activation; host-owned accounts and queues survive its replacement or disable. Status contains public identity/health data. |
 | `sessions/host` | Read-only `SessionHost`: `record session` and `round session`. `round` returns a projection of the loaded round or nil, with no session cells or manager. |
 | `voice/host` | `VoiceHost`: `output session` and `reset_if_unused`, for spoken-reply policy and activation cleanup. |
-| `ui/host` | `UiHost`: `settings`, `configure changes`, `preview name state`, and filtered `receipts`. Configuration writes remain owned by `ui_experiment`. |
+| `ui/host` | `UiHost`: `settings`, `configure changes`, `preview name state`, and filtered `receipts`. Configuration writes remain owned by the Workspace UI plugin. |
 | `workspaces/host` | Manager-only `WorkspaceHost`: `list`, `snapshot`, `inspect id`, `operation name values`, browser `action`, and `open_link id`. Browser actions keep their existing confirmation checks. |
 | `computer/host` | `ComputerHost`: scoped activation, admitted operator `command`, conversation `targets`, `observe`, `act`, and durable `receipt`. Grants stay alive through overlapping activation readers. |
 | `operator/host` | `OperatorHost`: execute an admitted command, retain/classify/run/close the shell or REPL mode. A supplied CommandContext alone does not authorize execution. |
@@ -431,7 +431,7 @@ and renders it through the shared `ui/` layer. Plugins import only the shared
 `src/plugin_api.gene` contract and their declared dependencies; the `ui/`
 modules are host implementation details.
 
-The [project board](../experiments/ui/README.md) is a complete example. It stores
+The [project board](../examples/project_board/README.md) is a complete example. It stores
 task data through `PluginHost:update_state`; the browser owns filters,
 selection and drafts. It declares `ui/state_lock` as a required seam to make
 revision checks and updates atomic across direct calls and UI actions. The
@@ -763,7 +763,3 @@ source-session action. Trigger sessions keep their kind when opened.
 Navigation uses the existing same-tab route with `view=harness`, retaining
 per-session drafts. It does not prepare a prompt, submit work or create a new
 session. The user chooses the next action.
-
-Implementation evidence is in the [manager audit](verification/plugin-manager-verification.md),
-[manager ledger](verification/plugin-manager-progress.md) and
-[Harness review implementation](verification/harness-review3.md).

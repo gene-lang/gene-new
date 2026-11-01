@@ -1,8 +1,5 @@
 # Sub-agents
 
-This reference describes the implemented delegation contract. Dated design
-and verification discussion is in the [history record](verification/sub-agent-history.md).
-
 A sub-agent takes one concrete sub-task off a conversation. The conversation
 gives it a brief, the sub-agent works on its own, and the conversation gets a
 compact result back. This design does not copy another tool's sub-agent

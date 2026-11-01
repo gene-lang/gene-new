@@ -1,14 +1,16 @@
-(mod ui_experiment)
+(mod workspace_ui)
 (import [Plugin PluginHost UiHost] ^from "../plugin_api")
 (import [contribute_doc] ^from "../public/documentation")
 
-(fn ui_experiment [] : Plugin
+(fn workspace_ui [] : Plugin
+  # This persisted identity owns existing settings and plugin overrides.
+  # Keep it stable when changing the feature's name or source module.
   (Plugin ^id "ui_experiment" ^requires ["ui/host"]
     ^provides [["functions" "ui_configure"] ["functions" "ui_preview"] ["functions" "ui_action_receipts"]]
     ^activate (fn [host]
       (let ui (host .PluginHost:resolve "ui/host"))
       (host .PluginHost:contribute "functions"
-        {^name "ui_configure" ^doc "Enable, select or theme the experimental workspace panel. Omitted keys keep their current values."
+        {^name "ui_configure" ^doc "Enable, select or theme workspace views. Omitted keys keep their current values."
          ^tags ["ui" "layout" "theme" "panel"] ^docs ["harness/ui/configuration"]
          ^fn (fn [settings] (ui .UiHost:configure settings))})
       (host .PluginHost:contribute "functions"
