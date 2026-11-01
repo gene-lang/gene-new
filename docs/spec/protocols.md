@@ -53,19 +53,22 @@ Executable coverage: `tests/test_protocols.nim` and protocol suites in
   string and may appear anywhere among the positional operands. `for` remains
   positional; the old positional `from "path"` clause is rejected. No other
   named properties are accepted. A relative `^from` path resolves against the
-  module that contains the `import_impl`, including when the import executes
-  after that module's initialization.
-- Placement (owner decision D1): a direct `import_impl` registers its pair in
-  the whole defining module, so it is valid only during ordinary module
-  initialization (including plain `do`/`ns` blocks there) and inside a
-  macro-marked block that owns it. A direct `import_impl` in a `fn`, lambda,
-  `message`, `ctor` or `spawn` body, including through plain nested blocks, is a
-  compile-time error even if the body never runs; a new deferred body defined
-  inside a marked block gets no exemption. Marked blocks keep their lexical
-  isolation: interleaved blocks choose different policies, an escaping closure
-  keeps its policy, and nested conflicting pairs still reject. Ordinary `impl`
-  in a function body and eval overlays are separate mechanisms and unchanged.
-  To select a policy per call, pass the operation from the composition root.
+  module that contains the `import_impl`.
+- Final impls (owner decision, 2026-11-01): a module's impl set is final once the
+  module has loaded, so `import_impl` is a module-level declaration. It must be a
+  direct form at module level (a top-level `do` and the body of `mod` are
+  transparent) and must come before every module-level statement that runs code.
+  Declarations only bind names, so `import`, `type`, `protocol`, `enum`, `alias`,
+  `impl`, `fn` and `macro` forms may precede it; any other form (`let`, `var`,
+  `const`, a call, a conditional, `ns`, an expression) may not. An `import_impl`
+  in a `fn`, lambda, `message`, `ctor` or `spawn` body, a block, a conditional, a
+  `try`, an `ns` body, or a macro expansion is a compile-time error even if it
+  never runs, and so is one that follows code. Because the check is syntactic,
+  the whole pair list of a module can be read from its source and every pair is
+  in place before the module's first statement runs. The web profile already
+  rejects `import_impl` for the same reason. Ordinary `impl` in a function body
+  and eval overlays are separate mechanisms and unchanged. To select a policy per
+  call, pass the operation from the composition root.
 - Conflict diagnostics name both origins (canonical, scoped, imported or overlay
   impl and its module). A canonical impl added to a pair that a scoped policy
   already supplies is rejected with the migration (give the policy its own

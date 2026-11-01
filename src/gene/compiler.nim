@@ -32,16 +32,6 @@ type
     arity: int
     returnType: Value
 
-  ImportImplPlacement = enum
-    ## Where a direct `import_impl` is being compiled (owner decision D1,
-    ## tmp/protocol-message-exp.md section 8.1). A direct import registers its
-    ## pair in the whole defining module, so it is only meaningful during
-    ## ordinary module initialization (`ipModule`) or inside a macro-marked
-    ## block that owns it (`ipMarked`). A deferred body (`ipDeferred`) would
-    ## hide a module-wide effect behind a call, so it is rejected at compile
-    ## time.
-    ipModule, ipDeferred, ipMarked
-
   StaticWildcardCandidate = object
     importKey: string   # gir.importKey: `^pkg`-aware module dependency key
     exportPath: seq[string]
@@ -77,7 +67,6 @@ type
     # fresh for each `fn`, so this never leaks into a nested one.
     inStatementFn: bool
     inFunction: bool
-    importImplPlacement: ImportImplPlacement
     inGenerator: bool
     loopDepth: int
     repeatBindings: bool # shared-scope chunks reentered by an enclosing loop
@@ -180,6 +169,11 @@ type
     # Exact impl-form nodes that are unconditional static module/namespace
     # declarations. Nested control-flow and callable bodies are absent.
     staticTopLevelImpls: HashSet[uint64]
+    ## `import_impl` forms that follow a module-level statement which runs
+    ## code, mapped to the head of the first such statement. A module's impl
+    ## set is final once it has loaded, so no code may run while imports are
+    ## still being added.
+    lateImportImpls: Table[uint64, string]
     ## Message names declared by overlay-only impls anywhere in this unit.
     ## Collected up front so the check does not depend on compilation order.
     overlayImplMessages: HashSet[string]
@@ -1050,7 +1044,6 @@ proc childCompiler(c: Compiler): Compiler =
            unitSource: c.unitSource,
            selfAvailable: c.selfAvailable,
            allowYield: c.allowYield, inFunction: c.inFunction,
-           importImplPlacement: c.importImplPlacement,
            generatorFnNames: c.generatorFnNames,
            inGenerator: c.inGenerator,
            ffiLibraryNames: c.ffiLibraryNames,
@@ -4434,7 +4427,6 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
       raise newException(GeneError, "duplicate parameter binding: " & specs.rest)
     seenLocals[specs.rest] = true
   var fnCompiler = c.childCompiler()
-  fnCompiler.importImplPlacement = ipDeferred
   fnCompiler.inStatementFn =
     returnType.kind == vkSymbol and returnType.symVal in ["Nil", "Void"]
   fnCompiler.enableLocalSlots()
@@ -7086,20 +7078,30 @@ proc compileImportImpl(c: var Compiler, node: Value) =
   if not c.allowAmbientImports:
     raise newException(GeneError,
       "eval cannot use import_impl; add policy impls to the surrounding scope")
-  if c.importImplPlacement == ipDeferred:
-    # Owner decision D1: a direct import in a deferred body registers its pair
-    # in the whole defining module, not in the body. Reject it before it can
-    # register anything, whether or not the body is ever invoked.
-    var pair = "import_impl"
-    if node.body.len == 3 and node.body[0].kind == vkSymbol and
-        node.body[2].kind == vkSymbol:
-      pair = "import_impl " & node.body[0].symVal & " for " & node.body[2].symVal
+  # A module's impl set is final once the module has loaded: an import is a
+  # declaration of the module, written directly at module level before any
+  # code runs, never an effect of executing a body, branch or expansion.
+  var pair = "import_impl"
+  if node.body.len == 3 and node.body[0].kind == vkSymbol and
+      node.body[2].kind == vkSymbol:
+    pair = "import_impl " & node.body[0].symVal & " for " & node.body[2].symVal
+  # A namespace body is a static declaration area for types and impls, but an
+  # import written there would still register in the whole module.
+  if node.bits notin c.staticTopLevelImpls or c.namespacePath.len > 0:
     raise newException(GeneError,
-      pair & " is not allowed directly in a function, lambda, message, " &
-      "ctor or spawn body: a direct import would register the pair in the " &
-      "whole module, not in this body. Import it at module level and pass " &
-      "the selected operation from the composition root, or write the " &
-      "import inside a macro-marked block (a macro expansion) to scope it")
+      pair & " is not allowed here: a module's impls are final once it has " &
+      "loaded, so import_impl must be a direct module-level form, not part " &
+      "of a function, lambda, message, ctor, spawn, block, conditional, " &
+      "namespace or macro expansion. Write it at the top of the module with " &
+      "the other imports, and pass the selected operation from the " &
+      "composition root to code that needs a different policy")
+  if c.lateImportImpls.hasKey(node.bits):
+    raise newException(GeneError,
+      pair & " must come before the first module-level statement that runs " &
+      "code (a `" & c.lateImportImpls[node.bits] & "` form precedes it): a " &
+      "module's impls are final once it has loaded, and no code may run " &
+      "while they are still being added. Move it up with the module's " &
+      "other imports")
   for key in node.props.keys:
     if key != "from":
       raise newException(GeneError,
@@ -7135,6 +7137,39 @@ proc markStaticImplForms(c: var Compiler, forms: openArray[Value], first: int) =
   if first <= forms.high:
     for i in first .. forms.high:
       c.markStaticImplForm(forms[i])
+
+const ImportImplDeclarationHeads = [
+  "import", "type", "protocol", "enum", "alias", "impl", "fn", "macro"
+]
+
+proc markLateImportImpls(c: var Compiler, form: Value, firstCode: var string) =
+  ## Walk the module-level forms in source order and record every `import_impl`
+  ## that follows a form which can run code. Declarations (imports, type,
+  ## protocol, enum, alias, impl, plain fn and macro definitions) only bind
+  ## names, so imports may sit among them; `do` and `mod` are transparent.
+  if form.kind != vkNode:
+    if firstCode.len == 0:
+      firstCode = "expression"
+    return
+  let head = if form.head.kind == vkSymbol: form.head.symVal else: ""
+  if head == "do":
+    for child in form.body:
+      c.markLateImportImpls(child, firstCode)
+  elif head == "mod":
+    for i in 1 ..< form.body.len:
+      c.markLateImportImpls(form.body[i], firstCode)
+  elif head == "import_impl":
+    if firstCode.len > 0:
+      c.lateImportImpls[form.bits] = firstCode
+  elif head in ImportImplDeclarationHeads:
+    discard
+  elif firstCode.len == 0:
+    firstCode = if head.len > 0: head else: "call"
+
+proc markLateImportImpls(c: var Compiler, forms: openArray[Value]) =
+  var firstCode = ""
+  for form in forms:
+    c.markLateImportImpls(form, firstCode)
 
 proc collectOverlayImplMessages(c: var Compiler, form: Value) =
   ## Record every message name declared by an impl that is *not* an
@@ -8777,10 +8812,7 @@ proc compileSpawn(c: var Compiler, node: Value) =
     if value.kind != vkSymbol or value.symVal != "root":
       raise newException(GeneError, "spawn ^lane currently accepts only root")
     rootLane = true
-  let outerPlacement = c.importImplPlacement
-  c.importImplPlacement = ipDeferred
   let body = c.compileSubBody(node.body, scoped = true)
-  c.importImplPlacement = outerPlacement
   discard c.emit(opSpawn, c.chunk.addSubchunk(body),
                  flag = not rootLane and
                    not body.chunkMutatesOuterScope() and
@@ -9707,7 +9739,7 @@ proc ownsResultBindings(value: Value): bool =
           if quasiOwnsResultBindings(item, 1): return true
         return false
       of "let", "var", "const", "type", "protocol", "enum", "alias",
-         "ns", "macro", "import", "impl", "import_impl":
+         "ns", "macro", "import", "impl":
         return true
       of "fn":
         return value.body.len > 1 and
@@ -9765,7 +9797,7 @@ proc resultCanUseFrameSlots(c: Compiler, value: Value): bool =
       let head = value.head.symVal
       if head == "quote": return true
       if head in ["fn", "macro", "type", "protocol", "enum", "alias", "ns",
-          "impl", "import", "import_impl", "env", "eval", "try", "match",
+          "impl", "import", "env", "eval", "try", "match",
           "for", "scope", "supervisor", "spawn", "await", "yield"] or
           head.endsWith("!") or (c.hasMacros and c.macros.hasKey(head)):
         return false
@@ -9808,7 +9840,6 @@ proc compileMacroResult(c: var Compiler, node: Value, tail: bool) =
     # name-based reflection from publishing these block-local declarations.
     let previousLocalCount = c.localNames.len
     var inner = c
-    inner.importImplPlacement = ipMarked
     inner.inlineBlockPrefix = BlockBindingPrefix & $c.nextGensym() & ":"
     inner.inlineBlockBindings = initHashSet[string]()
     inner.ownMacroNames = initHashSet[string]()
@@ -9826,7 +9857,6 @@ proc compileMacroResult(c: var Compiler, node: Value, tail: bool) =
         c.mutableBindingNames.incl instruction.name
   else:
     var inner = c.childCompiler()
-    inner.importImplPlacement = ipMarked
     inner.loopDepth = c.loopDepth
     inner.enableLocalSlots()
     inner.parentSlots = c.parentFrames()
@@ -10931,6 +10961,7 @@ proc compileFormsIntoUnchecked(c: var Compiler, forms: openArray[Value],
   if useLocalSlots:
     c.enableLocalSlots()
   c.markStaticImplForms(forms)
+  c.markLateImportImpls(forms)
   c.collectOverlayImplMessages(forms)
   c.prepareStaticImports(forms)
   c.reserveProtocolBindingsFor(forms)

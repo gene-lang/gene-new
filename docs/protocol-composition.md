@@ -27,13 +27,13 @@ root and thread it through the contract:
 
 ```gene
 # contracts: decide the threaded parameter before the container is frozen
-(protocol Render (message render [each] : Str))
+(protocol Render (message render [visit] : Str))
 
 # the container: no knowledge of child types or providers
 (impl Render for Section ^^export
-  (message render [each] : Str
+  (message render [visit] : Str
     (var out self/title)
-    (for child in self/children (set out ($to_str out " / " (each child each))))
+    (for child in self/children (set out ($to_str out " / " (visit child visit))))
     out))
 
 # composition root: its imports select the policy for every node
@@ -46,8 +46,8 @@ root and thread it through the contract:
 ```
 
 The held `Render:render` keeps the root's scope at every node, through Callable views,
-closures and Paths, and across module reload. Costs to plan for: the `each` parameter and
-its propagation, one `import_impl` per (protocol, type, root), and a held call being
+closures and Paths, and across module reload. Costs to plan for: the threaded parameter (the
+experiment calls it `each`) and its propagation, one `import_impl` per (protocol, type, root), and a held call being
 resolved on every application (roughly 7x a cached qualified send; see the findings).
 
 An operation whose body calls a second protocol needs that selection carried too. Pass a
@@ -56,10 +56,13 @@ with `(Callable ...)` fields to fail at construction rather than during traversa
 
 ## Placement
 
-`import_impl` registers its pair in the whole defining module. Write it at module level, or
-inside a macro-marked block when the policy must stay local to that block (including in a
-`fn`, `message`, `ctor` or `spawn` body). A direct `import_impl` in a deferred body is a
-compile-time error. A relative `^from` resolves against the module that wrote it.
+A module's impls are final once it has loaded, so `import_impl` is a declaration of the
+module: write it directly at module level, with the module's other imports and before any
+statement that runs code. A function, lambda, `message`, `ctor`, `spawn` body, block,
+conditional, `ns` body or macro expansion cannot hold one, and neither can a position after a
+`let`, `var`, call or other code. Both mistakes are compile-time errors that say what to do.
+To use another policy for a call, pass the operation from the composition root instead of
+importing a different pair there. A relative `^from` resolves against the module that wrote it.
 
 ## Checking a root before traversal
 

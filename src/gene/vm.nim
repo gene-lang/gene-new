@@ -11525,7 +11525,7 @@ proc resolveModuleRefFromScope(app: Application, scope: Scope, rawPath: string,
   ## Resolve an import written inside a module against *that module*. Imports
   ## normally execute during their module's initialization, where the loader's
   ## current directory is the module's own. One that executes later - inside a
-  ## function, or in a macro-marked block called from another module - would
+  ## function, or in a macro-expanded block called from another module - would
   ## otherwise resolve against whichever module the loader last entered (the
   ## entry module), so a library's `./sibling` path moved with its caller.
   var importer: Value
@@ -12209,7 +12209,6 @@ proc resetCallScope(scope, parent: Scope, names: seq[string], mirror = false) =
   scope.implAssembly = nil
   scope.implValidationEpoch = 0
   scope.implOverlayRoot = false
-  scope.scopedImplImports = false
   scope.implStageRoot = false
   scope.forceOverlayImpls = false
   scope.moduleRoot = false
@@ -12589,7 +12588,6 @@ proc releaseCallScope(pools: var VmPools, scope: Scope) =
   if scope.corePendingTypes.len != 0:
     scope.corePendingTypes.setLen(0)
   scope.implOverlayRoot = false
-  scope.scopedImplImports = false
   scope.implStageRoot = false
   scope.forceOverlayImpls = false
   scope.moduleRoot = false
@@ -14222,21 +14220,18 @@ proc activateStagedImpls(stage: Scope) =
 
 proc makeImplsVisible(importingScope, sourceScope: Scope) =
   ## Ordinary value/namespace import never imports scoped policy. Canonical
-  ## impls are already present in the application registry; scoped impls use
-  ## `import_impl` and overlays are lexical only.
+  ## impls are already present in the application registry; a scoped impl
+  ## enters a module only through its module-level `import_impl`, and overlays
+  ## are lexical to the eval that created them.
   discard importingScope
   discard sourceScope
 
 proc importScopedImpl(importingScope, sourceScope: Scope,
                       protocol, receiver: Value) =
-  var target = importingScope.moduleRootScope()
-  var current = importingScope
-  while current != nil:
-    if current.scopedImplImports:
-      target = current
-      break
-    if current == target: break
-    current = current.parent
+  ## Register one exported scoped pair in the importing module. The compiler
+  ## admits `import_impl` only as a module-level declaration ahead of any
+  ## code, so the module's impl set is complete before it runs.
+  let target = importingScope.moduleRootScope()
   if target == nil:
     raise newException(GeneError, "import_impl requires a module scope")
   var found = false
@@ -14257,12 +14252,7 @@ proc importScopedImpl(importingScope, sourceScope: Scope,
   var imported = selected.implForScopeStorage(target)
   imported.exported = false
   imported.imported = true
-  if target.scopedImplImports:
-    imported.visibility = ivOverlay
   if target.validateImplAgainstChain(imported, identicalIsDuplicate = true):
-    return
-  if target.scopedImplImports:
-    target.publishImpl(imported)
     return
   let app = target.application()
   var prospectiveScopes = app.currentImplScopeSets(target)
@@ -15164,7 +15154,6 @@ proc snapshotScopeChain(source: Scope,
   result.moduleRoot = source.moduleRoot
   result.moduleStatic = source.moduleStatic
   result.forceOverlayImpls = source.forceOverlayImpls
-  result.scopedImplImports = source.scopedImplImports
   result.compilerMacros = source.compilerMacros
   result.runtimeMacroSlots = source.runtimeMacroSlots
   result.annotationSelfType = source.annotationSelfType
@@ -22186,7 +22175,6 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         of opBlockScope:
           let body = chunk.subchunks[inst[].intArg]
           let blockScope = newScope(scope)
-          blockScope.scopedImplImports = true
           blockScope.prepareChunkScope(body)
           let kind = if inst[].tail: fkTailMatchBody else: fkNormal
           pushFrame()

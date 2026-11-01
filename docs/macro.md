@@ -208,7 +208,7 @@ executable macro result using this rule:
 1. If the result is a `do` node, set its `macro_result` property to true.
 2. Otherwise, wrap the result in `(do ^^macro_result <result>)`.
 3. When compiling a `do` with `macro_result` true, create a lexical scope if
-   the block declares bindings or owns an `impl`/`import_impl` registration.
+   the block declares bindings or owns an `impl` registration.
    Otherwise, compile it as ordinary sequencing.
 
 For example:
@@ -249,8 +249,8 @@ names, and other binding forms already recognized by the compiler. A declaration
 in a conditional branch counts if it belongs to this block's ordinary scope.
 Bindings inside a nested function or another scoped block belong to that inner
 scope. `set` on an existing binding does not create a binding.
-Under D7, block-owned `impl` and `import_impl` visibility also require a scope,
-even when no ordinary variable is declared.
+Under D7, block-owned `impl` visibility also requires a scope, even when no
+ordinary variable is declared.
 
 Build a fresh result node when adding the marker; preserve other props,
 metadata, and source locations without mutating shared template or argument syntax. Reuse
@@ -507,17 +507,18 @@ re-exports, private declarations, and compile-time cycle diagnostics. B7 must
 be fixed so an `ns` macro is reachable by its qualified name later in its own
 file, under the same visibility rules used by importing code.
 
-**D7, decided 2026-10-02:** an `impl` or `import_impl` owned by a marked block
-requires a scope even when it adds no ordinary variable. Its registration or
-imported visibility remains local to that block. Code after the expansion
-cannot see it merely because the macro executed. A closure created inside the
-block retains the implementation context it needs under ordinary closure rules.
+**D7, decided 2026-10-02:** an `impl` owned by a marked block requires a scope
+even when it adds no ordinary variable. Its registration remains local to that
+block. Code after the expansion cannot see it merely because the macro executed.
+A closure created inside the block retains the implementation context it needs
+under ordinary closure rules.
 
-**D1, decided 2026-10-30:** a marked block may contain `import_impl` inside a
-`fn`, lambda, `message`, `ctor` or `spawn` body, including a local macro expanded
-at execution time. A direct `import_impl` in such a body is a compile-time error;
-a new deferred body defined inside a marked block gets no exemption. The block's
-relative `^from` path resolves against the module that wrote it.
+**Final impls, decided 2026-11-01:** a macro expansion cannot write
+`import_impl`. A module's impl set is final once the module has loaded, so the
+compiler admits `import_impl` only as a direct module-level form that precedes
+every statement that runs code ([protocols](spec/protocols.md)). A macro that
+expands to an `import_impl`, in a marked block or at module level, is a
+compile-time error; the pair list must be written in the module's source.
 
 Adding an unrelated `let` must not change whether an implementation escapes.
 This extends the binding-only scope predicate. It also confines a top-level
@@ -715,7 +716,7 @@ and outer-local loads. Split scoped-result implementation into two parts:
   declarations distinct slots. Two expansions may each declare `tmp` without
   colliding or changing the caller's slot mapping.
 - **Runtime-visible scope state:** preserve capture and activation lifetimes,
-  Env behavior, and the decided impl/import_impl rule under D7. Existing
+  Env behavior, and the decided impl rule under D7. Existing
   nested-chunk and impl-overlay machinery provides a baseline, but using it
   indiscriminately changes local loads to outer-local loads and can lose fast
   paths. Escaping mutable captures may need runtime storage even in a block
@@ -1027,9 +1028,9 @@ relying only on literal arguments.
 | Result marking | A non-do executable result gets one marked outer do; an existing do gets its boolean property set; preserve other props and metadata; leave quoted inner do data unchanged; do not mutate shared templates or arguments; test absent/true/false/non-boolean handwritten markers under the selected policy |
 | R3 expansion positions | VM/web agree on expression calls inside clauses, defaults, and nested bodies; clause-generating calls are consistently rejected under D8; unknown clauses are not silently discarded; quoted data and direct pipeline slots retain their contracts |
 | C3 pipeline slots | The direct-slot macro still gives `[0 1]`; multiple slots still fail; ordinary nested underscores remain nested; lists/maps containing declarations remain confined |
-| D5/D7 conditional scopes | No declarations or impl registrations means no extra scope; direct, conditional, destructured, imported, and argument-supplied declarations are counted in their owning block; nested scopes own their declarations; set alone adds no scope; impl/import_impl alone requires scope |
+| D5/D7 conditional scopes | No declarations or impl registrations means no extra scope; direct, conditional, destructured, imported, and argument-supplied declarations are counted in their owning block; nested scopes own their declarations; set alone adds no scope; impl alone requires scope |
 | D5 scoped declarations | `with_value` returns `84`; its name is absent afterward or leaves a same-named outer binding intact; declarations spliced through body arguments also stay local; nested and repeated expansions obey ordinary scopes; returned closures retain needed locals; declaration-export examples are rejected outside their expansion |
-| D7 impl visibility | Impl-only, impl-plus-local, and import_impl results remain local; dispatch after the expansion cannot use those registrations; a returned closure retains its local impl context; 300,000-deep tail recursion through marked blocks containing locals and containing an impl completes |
+| D7 impl visibility | Impl-only and impl-plus-local results remain local; dispatch after the expansion cannot use those registrations; a returned closure retains its local impl context; 300,000-deep tail recursion through marked blocks containing locals and containing an impl completes |
 | Body access | Caller-supplied names and body references connect normally; fixed template names are accessible to supplied bodies according to ordinary lexical visibility |
 | B5 and B7 visibility | Separate REPL inputs; failed-input state handling; local-scope isolation; same-file namespace call; selected, wildcard, alias, renamed, private, and re-exported imports |
 | D4 lexical shadowing | Inner parameters/locals hide outer macros in call and value positions; the outer macro is visible again outside that scope; non-callable inner values raise normal errors with no macro fallback; same-scope duplicates and imported names follow ordinary rules |
@@ -1082,7 +1083,7 @@ implemented spec when it lands.
 | D4: Macro/value shadowing | Ordinary lexical lookup: the nearest binding determines macro expansion versus ordinary use | Decided 2026-10-02. Inner bindings may hide macros; no fallback to a hidden macro when an inner value is not callable. Same-scope duplicates, imports, and REPL redefinition follow ordinary binding rules |
 | D5: Marked results and local declarations | Wrap a non-do executable result in `(do ^^macro_result <result>)`, or set the boolean property on an existing do; create a scope for bindings or impl registrations | Core and marker policy decided 2026-10-02. Classify position/slots before wrapping. Handwritten forms behave identically; only literal true enables the rule, and absent/false/non-boolean is unmarked. D7 specifies registration visibility |
 | D6: Explicit fresh names | Defer both `^fresh` and a public fresh-symbol helper until a concrete need arises | Deferred by the owner 2026-10-02. No new freshness API in this work; ordinary shadowing remains. Revisit if an application/library demonstrates the need; the existing collision audit still applies |
-| D7: Scope-sensitive registrations | Block-owned impl/import_impl require local scope even without variables | Decided 2026-10-02. Registrations are visible inside the marked block, not afterward; returned closures retain their implementation context. Adding an unrelated local changes nothing; top-level impl-producing macros require migration |
+| D7: Scope-sensitive registrations | Block-owned impl requires local scope even without variables | Decided 2026-10-02. Registrations are visible inside the marked block, not afterward; returned closures retain their implementation context. Adding an unrelated local changes nothing; top-level impl-producing macros require migration |
 | D8: Supported expansion positions | Expression positions plus existing direct pipeline-slot substitution; no clause-position macros | Decided 2026-10-02. VM/web must share syntax-role traversal and reject unsupported positions consistently; preserve expression macros inside valid clauses and allow a macro to generate an entire enclosing expression |
 
 The owner-approved direction is ordinary macro-body evaluation followed by
