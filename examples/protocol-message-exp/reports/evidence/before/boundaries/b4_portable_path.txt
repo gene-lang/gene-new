@@ -1,0 +1,1 @@
+suggestion: no implementation of message 'render' for Article; an impl Render for Article exists in "<pkg>/tests/boundaries/b4_portable_path/prov.gene" but is not visible in "<pkg>/tests/boundaries/b4_portable_path/main.gene", which governs this check; add (import_impl Render for Article ^from "<pkg>/tests/boundaries/b4_portable_path/prov.gene") there

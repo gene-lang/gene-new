@@ -1,0 +1,11 @@
+scoped:
+- section S
+  - article T
+  - chart c
+  - figure f
+canonical:
+- section S
+  - article T
+  - chart c
+  - figure f
+identical output: true

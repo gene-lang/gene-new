@@ -1,0 +1,3 @@
+installer returns: seed-1
+sibling: plain:A
+outer module: no implementation of message 'render' for Article

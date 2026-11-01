@@ -1,0 +1,9 @@
+functions: ["plain:A" "compact:A" "plain:A" "compact:A"]
+retained closure: ["plain:A" "compact:A" "plain:A"]
+local macro: compact:A
+ctor: plain:A message: compact:A
+spawn: compact:A
+module scope: no implementation of message 'render' for Article
+nested conflict: duplicate visible impl Render for Article
+function-local impl: overlay
+module scope after local impl: no implementation of message 'render' for Article

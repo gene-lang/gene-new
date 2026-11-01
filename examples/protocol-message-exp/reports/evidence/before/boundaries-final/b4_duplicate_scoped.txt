@@ -1,0 +1,2 @@
+second import: duplicate visible impl Render for Article
+first policy intact: one

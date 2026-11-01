@@ -81,6 +81,7 @@ out/
 *.out
 reports/
 !docs/reports/
+!examples/protocol-message-exp/reports/
 coverage/
 .cache/
 .claude/

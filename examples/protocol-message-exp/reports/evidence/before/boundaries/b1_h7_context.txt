@@ -1,0 +1,8 @@
+body-authored Mark: no implementation of message 'mark' for Figure; impls of Mark for Figure exist in 2 modules but none is visible in "<pkg>/tests/boundaries/b1_h7_context/render_body.gene"; import one there with import_impl
+separate params: ["S/[a/T/[b" "S/*a/T/*b" "S/[a/T/[b" "S/*a/T/*b"]
+raw record: ["S/[a/T/[b" "S/*a/T/*b" "S/[a/T/[b"]
+checked record: ["S/[a/T/[b" "S/*a/T/*b" "S/[a/T/[b"]
+missing mark, raw record: cannot call ops/mark: the value is void (missing)
+missing mark, checked record: missing required field 'mark' for Ops
+mixed raw record: S/*a/T/*b
+mixed checked record: S/*a/T/*b

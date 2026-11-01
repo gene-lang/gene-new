@@ -1,0 +1,5 @@
+before: no implementation of message 'render' for Article
+sibling after plain installer: plain:A
+outer module after plain installer: no implementation of message 'render' for Article
+competing installer: duplicate visible impl Render for Article
+after rejected compact: plain:A

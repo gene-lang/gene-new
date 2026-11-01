@@ -1,0 +1,2 @@
+direct figure: fig(c)
+body-authored recursion: no implementation of message 'render' for Figure; an impl Render for Figure exists in "<pkg>/src/policies/plain.gene" but is scoped and not exported; add ^^export, then import it into "<pkg>/tests/boundaries/b1_recursion/support.gene"
