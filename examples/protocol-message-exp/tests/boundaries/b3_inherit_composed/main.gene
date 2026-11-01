@@ -1,7 +1,7 @@
 # Child built on the plain parent (omits `body`), composed with compact Article.
 (import [Article Note] ^from "../b3_inheritance/model")
 (import [Format] ^from "../b3_inheritance/contracts")
-(import [attempt first_line] ^from "../shared/util")
+(import [attempt first_line] ^from "../common/util")
 (fn both [value] [value/.Format:head value/.Format:body])
 (let article (Article ^title "A"))
 (let note (Note ^title "N"))

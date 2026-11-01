@@ -1,6 +1,6 @@
 (import [Article] ^from "./model")
 (import [Render] ^from "./contracts")
-(import [attempt] ^from "../shared/util")
+(import [attempt] ^from "../common/util")
 (import_impl Render for Article ^from "./one")
 (let article (Article ^title "A"))
 (let outcome

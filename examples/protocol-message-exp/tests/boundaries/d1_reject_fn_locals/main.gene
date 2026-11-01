@@ -1,7 +1,7 @@
-(import [Article] ^from "../shared/model")
-(import [Render] ^from "../shared/contracts")
+(import [Article] ^from "../common/model")
+(import [Render] ^from "../common/contracts")
 (fn install [seed]
   (let label $"seed-${seed}")
-  (import_impl Render for Article ^from "../shared/plain")
+  (import_impl Render for Article ^from "../common/plain")
   label)
 ($println "loaded")

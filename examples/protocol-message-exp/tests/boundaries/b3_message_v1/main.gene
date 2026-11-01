@@ -1,6 +1,6 @@
 (import [Article] ^from "./model")
 (import [Render] ^from "./contracts")
-(import [first_line] ^from "../shared/util")
+(import [first_line] ^from "../common/util")
 (let article (Article ^title "A"))
 (let outcome
   (try (do (import_impl Render for Article ^from "./ext") "imported")

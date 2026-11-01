@@ -1,11 +1,11 @@
 # D1 retained behavior: a macro-marked block may contain import_impl inside any
 # deferred body. Each block is lexically isolated; escaping closures keep their
 # policy; module and sibling scopes never see it.
-(import [Article] ^from "../shared/model")
-(import [Render] ^from "../shared/contracts")
-(import [attempt] ^from "../shared/util")
-(macro with_plain [body...] `(do (import_impl Render for Article ^from "../shared/plain") %body...))
-(macro with_compact [body...] `(do (import_impl Render for Article ^from "../shared/compact") %body...))
+(import [Article] ^from "../common/model")
+(import [Render] ^from "../common/contracts")
+(import [attempt] ^from "../common/util")
+(macro with_plain [body...] `(do (import_impl Render for Article ^from "../common/plain") %body...))
+(macro with_compact [body...] `(do (import_impl Render for Article ^from "../common/compact") %body...))
 (let item (Article ^title "A"))
 
 # functions: interleave plain/compact/plain/compact
@@ -20,7 +20,7 @@
 
 # local macro expanding at execution time
 (fn local_macro []
-  (macro with_local [body...] `(do (import_impl Render for Article ^from "../shared/compact") %body...))
+  (macro with_local [body...] `(do (import_impl Render for Article ^from "../common/compact") %body...))
   (with_local item/.Render:render))
 ($println $"local macro: ${(local_macro)}")
 

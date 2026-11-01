@@ -1,8 +1,8 @@
 # Fresh process: the plain installer runs first, then the competing installer.
-(import [Article] ^from "../shared/model")
-(import [Render] ^from "../shared/contracts")
-(import [attempt] ^from "../shared/util")
-(import [install_plain install_compact render_sibling] ^from "../shared/fns")
+(import [Article] ^from "../common/model")
+(import [Render] ^from "../common/contracts")
+(import [attempt] ^from "../common/util")
+(import [install_plain install_compact render_sibling] ^from "../common/fns")
 (let article (Article ^title "A"))
 ($println $"before: ${(attempt (fn [] (render_sibling article)))}")
 (install_plain)

@@ -1,4 +1,4 @@
-(import [Article] ^from "../shared/model")
-(import [Render] ^from "../shared/contracts")
-(let install (fn [] (import_impl Render for Article ^from "../shared/plain")))
+(import [Article] ^from "../common/model")
+(import [Render] ^from "../common/contracts")
+(let install (fn [] (import_impl Render for Article ^from "../common/plain")))
 ($println "loaded")

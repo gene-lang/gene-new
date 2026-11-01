@@ -1,0 +1,7 @@
+# `first_line` keeps the leading clause of a diagnostic: it stops at the first "; "
+# and before an origin list " (existing: ...)", so fixtures that only care about
+# the headline stay stable while dedicated fixtures print the whole message.
+(fn first_line [text]
+  (let head ((text .split " (existing:") .get 0))
+  ((head .split "; ") .get 0))
+(fn attempt [thunk] (try (thunk) catch Any (first_line $err/message)))

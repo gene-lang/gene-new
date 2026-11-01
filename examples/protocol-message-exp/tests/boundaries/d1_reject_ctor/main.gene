@@ -1,5 +1,5 @@
-(import [Article] ^from "../shared/model")
-(import [Render] ^from "../shared/contracts")
+(import [Article] ^from "../common/model")
+(import [Render] ^from "../common/contracts")
 (type Holder ^props {}
-  (ctor [] (import_impl Render for Article ^from "../shared/plain")))
+  (ctor [] (import_impl Render for Article ^from "../common/plain")))
 ($println "loaded")

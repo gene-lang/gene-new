@@ -1,11 +1,11 @@
 # Eval overlays: import_impl is refused inside eval; an `impl` declared in an
 # evaluated unit is an overlay that does not leak into the surrounding module.
-(import [Article] ^from "../shared/model")
-(import [Render] ^from "../shared/contracts")
-(import [attempt] ^from "../shared/util")
+(import [Article] ^from "../common/model")
+(import [Render] ^from "../common/contracts")
+(import [attempt] ^from "../common/util")
 (let article (Article ^title "A"))
 (let overlay_env (env ^bindings {^Article Article ^Render Render}))
-(fn try_import [] (eval (quote (import_impl Render for Article ^from "../shared/plain")) ^in overlay_env))
+(fn try_import [] (eval (quote (import_impl Render for Article ^from "../common/plain")) ^in overlay_env))
 (fn try_overlay []
   (eval (quote (do (impl Render for Article (message render [] : Str "overlay"))
                    (let a (Article ^title "x"))

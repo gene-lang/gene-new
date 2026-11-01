@@ -1,0 +1,11 @@
+# Function-local direct imports: the pre-D1 baseline. Under D1 these bodies must
+# be rejected at compile time (module load), so this module is the "after" test.
+(import [Article] ^from "./model")
+(import [Render] ^from "./contracts")
+(fn install_plain [] (import_impl Render for Article ^from "../common/plain"))
+(fn install_compact [] (import_impl Render for Article ^from "../common/compact"))
+(fn install_plain_locals [seed]
+  (let label $"seed-${seed}")
+  (import_impl Render for Article ^from "../common/plain")
+  label)
+(fn render_sibling [article] article/.Render:render)

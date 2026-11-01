@@ -1,7 +1,7 @@
 # Parent pair first, then an independent child pair.
 (import [Article Note] ^from "../b3_inheritance/model")
 (import [Format] ^from "../b3_inheritance/contracts")
-(import [first_line] ^from "../shared/util")
+(import [first_line] ^from "../common/util")
 (let first
   (try (do (import_impl Format for Article ^from "../b3_inheritance/plain") "imported")
     catch Any $err/message))

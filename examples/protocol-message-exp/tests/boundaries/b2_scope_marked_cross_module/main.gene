@@ -1,7 +1,7 @@
-# The entry lives in another directory from shared/marked_lib.gene. A relative
+# The entry lives in another directory from common/marked_lib.gene. A relative
 # import_impl path should resolve against the module that contains it.
-(import [Article] ^from "../shared/model")
-(import [attempt] ^from "../shared/util")
-(import [render_plain] ^from "../shared/marked_lib")
+(import [Article] ^from "../common/model")
+(import [attempt] ^from "../common/util")
+(import [render_plain] ^from "../common/marked_lib")
 (let article (Article ^title "A"))
 ($println $"marked block in a library function: ${(attempt (fn [] (render_plain article)))}")
