@@ -1,0 +1,3 @@
+(import [Figure] ^from "../../../src/model")
+(import [Mark] ^from "./contracts")
+(impl Mark for Figure ^^export (message mark [] : Str "*"))

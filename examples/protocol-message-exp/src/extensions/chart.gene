@@ -1,0 +1,9 @@
+# Late type: a third-party package that the frozen core has never heard of.
+# It owns Chart, so its Outline impl here is canonical and needs no import_impl.
+(import [Outline indent] ^from "./outline")
+
+(type Chart ^props {^caption Str})
+
+(impl Outline for Chart
+  (message outline [depth : Int] : Str
+    ($to_str (indent depth) "- chart " self/caption)))

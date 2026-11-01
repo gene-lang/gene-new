@@ -1,0 +1,7 @@
+(import [Section Article Figure Chart] ^from "../model")
+(import [Render] ^from "./contracts")
+(import_impl Render for Section ^from "./impls")
+(import_impl Render for Article ^from "./impls")
+(import_impl Render for Figure ^from "./impls")
+(import_impl Render for Chart ^from "./impls")
+(fn operation [] Render:render)

@@ -1,0 +1,5 @@
+(import [Article] ^from "../shared/model")
+(import [Render] ^from "../shared/contracts")
+(type Holder ^props {}
+  (message install [] : Nil (import_impl Render for Article ^from "../shared/plain")))
+($println "loaded")

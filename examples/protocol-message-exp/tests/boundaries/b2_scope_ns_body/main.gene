@@ -1,0 +1,7 @@
+# A namespace body is not a policy sandbox either.
+(import [Article] ^from "../shared/model")
+(import [Render] ^from "../shared/contracts")
+(import [attempt] ^from "../shared/util")
+(let article (Article ^title "A"))
+(ns policy (import_impl Render for Article ^from "../shared/plain"))
+($println $"outer module after ns: ${(attempt (fn [] article/.Render:render))}")

@@ -1,0 +1,9 @@
+# The same application against core v2, with no migration.
+(import [Article Render] ^from "./core")
+(import [first_line] ^from "../shared/util")
+(let article (Article ^title "A"))
+(let outcome
+  (try (do (import_impl Render for Article ^from "./plugin") "imported")
+    catch Any $err/message))
+($println $"v2 import: ${outcome}")
+($println $"v2 canonical still intact: ${article/.Render:render}")

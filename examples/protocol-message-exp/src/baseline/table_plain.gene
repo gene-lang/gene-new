@@ -1,0 +1,5 @@
+(import [Table] ^from "../extensions/table")
+(import [entry] ^from "./dispatch")
+(fn is_table [n] (match n (when (x : Table) true) (else false)))
+(fn render_table [node each] : Str ($to_str "table(" node/title "," node/rows ")"))
+(let table_entry (entry is_table render_table))

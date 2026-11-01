@@ -1,0 +1,47 @@
+# Frozen-core manifest (plan section 4, B1): the model, contract, container
+# (policy Section/Article/Figure impls), shared consumers and the F dispatcher are
+# hashed before the extension tasks. A late extension may add modules and edit
+# composition roots, but a change to any file listed here is reported as a loss
+# of the extension promise.
+#
+#   gene run tools/freeze.gene write   # (re)write reports/evidence/frozen.sha256
+#   gene run tools/freeze.gene check   # exit 1 if a frozen file changed
+(let frozen [
+  "src/model.gene" "src/contracts.gene"
+  "src/policies/plain.gene" "src/policies/compact.gene"
+  "src/consumers/preview.gene" "src/consumers/export.gene"
+  "src/baseline/dispatch.gene" "src/baseline/plain.gene" "src/baseline/compact.gene"])
+
+(fn package_root [] ($path/parent ($path/parent ($fs/real_path this_mod/.path))))
+
+(fn manifest_lines []
+  (let root (package_root))
+  (let lines [])
+  (for file in frozen
+    (let path $"${root}/${file}")
+    (let digest ($crypto/sha256 ($fs/read_text path)))
+    (lines .push $"${digest}  ${file}"))
+  lines)
+
+(fn frozen_changes []
+  (let root (package_root))
+  (let recorded (($fs/read_text $"${root}/reports/evidence/frozen.sha256") .trim))
+  (let changed [])
+  (for line in (manifest_lines)
+    (if (! (recorded .contains? line)) (changed .push line)))
+  changed)
+
+(fn main [args] : Int
+  (let mode (if (> args/body/.size 0) args/body/0 "check"))
+  (if (== mode "write")
+    (then
+      (let root (package_root))
+      (let body ($str/join (manifest_lines) "\n"))
+      ($fs/write_text $"${root}/reports/evidence/frozen.sha256" $"${body}\n")
+      ($println "wrote reports/evidence/frozen.sha256")
+      0)
+    (else
+      (let changed (frozen_changes))
+      (if (== changed/.size 0)
+        (then ($println "frozen core unchanged") 0)
+        (else ($println $"frozen files changed: ${changed}") 1)))))

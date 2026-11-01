@@ -1,0 +1,16 @@
+# Variant F: an ordinary function with [node each] parameters and explicit
+# receiver-type identity branches in the order Section, Article, Figure, Chart.
+# Recursive calls apply `each` to the child and to `each`.
+(import [Section Article Figure Chart] ^from "../model")
+
+(fn render [node each]
+  (match node
+    (when (s : Section)
+      (var out s/title)
+      (for child in s/children (set out ($to_str out " / " (each child each))))
+      out)
+    (when (a : Article) ($to_str "art:" a/title ":" a/text))
+    (when (f : Figure) ($to_str "fig:" f/caption))
+    (else ($to_str "chart:" node/caption))))
+
+(fn operation [] render)

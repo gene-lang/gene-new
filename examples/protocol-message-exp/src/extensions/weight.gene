@@ -1,0 +1,3 @@
+# Third operation, used only by the late-extension composition sample (P = 3).
+# The contract module owns the protocol; the impls are third-party scoped pairs.
+(protocol Weight (message weigh [each] : Int))

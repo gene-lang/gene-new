@@ -1,0 +1,6 @@
+# D1: a direct import_impl in a deferred fn body is rejected at compile time,
+# even though the function is never called.
+(import [Article] ^from "../shared/model")
+(import [Render] ^from "../shared/contracts")
+(fn install [] (import_impl Render for Article ^from "../shared/plain"))
+($println "loaded")

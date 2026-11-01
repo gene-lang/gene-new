@@ -1,0 +1,12 @@
+# A plain `do` at module level is a grouping form, not a policy sandbox: its
+# import registers in the module (D1 keeps ordinary module-level imports).
+(import [Article] ^from "../shared/model")
+(import [Render] ^from "../shared/contracts")
+(import [attempt first_line] ^from "../shared/util")
+(let article (Article ^title "A"))
+(do (import_impl Render for Article ^from "../shared/plain"))
+($println $"outer module after plain do: ${(attempt (fn [] article/.Render:render))}")
+(let competing
+  (try (do (import_impl Render for Article ^from "../shared/compact") "imported")
+    catch Any (first_line $err/message)))
+($println $"competing do: ${competing}")

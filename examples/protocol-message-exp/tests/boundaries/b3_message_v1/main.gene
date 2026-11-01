@@ -1,0 +1,10 @@
+(import [Article] ^from "./model")
+(import [Render] ^from "./contracts")
+(import [first_line] ^from "../shared/util")
+(let article (Article ^title "A"))
+(let outcome
+  (try (do (import_impl Render for Article ^from "./ext") "imported")
+    catch Any (first_line $err/message)))
+($println $"contract change import: ${outcome}")
+(if (== outcome "imported")
+  (then ($println $"render: ${article/.Render:render}")))

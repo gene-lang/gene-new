@@ -1,0 +1,6 @@
+(import [Section Article Figure] ^from "../../../src/model")
+(import [Render] ^from "../../../src/contracts")
+(import_impl Render for Section ^from "../b1_recursion/support")
+(import_impl Render for Article ^from "../../../src/policies/plain")
+(import_impl Render for Figure ^from "../../../src/policies/plain")
+(fn operation [] Render:render)

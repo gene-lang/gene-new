@@ -1,0 +1,7 @@
+# The child impl is built while the plain parent pair is visible; it supplies
+# only `head`, so `body` is the retained plain parent body.
+(import [Article Note] ^from "./model")
+(import [Format] ^from "./contracts")
+(import_impl Format for Article ^from "./plain")
+(impl Format for Note ^^export
+  (message head [] : Str "note-head"))

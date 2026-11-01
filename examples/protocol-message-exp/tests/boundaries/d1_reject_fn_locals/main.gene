@@ -1,0 +1,7 @@
+(import [Article] ^from "../shared/model")
+(import [Render] ^from "../shared/contracts")
+(fn install [seed]
+  (let label $"seed-${seed}")
+  (import_impl Render for Article ^from "../shared/plain")
+  label)
+($println "loaded")

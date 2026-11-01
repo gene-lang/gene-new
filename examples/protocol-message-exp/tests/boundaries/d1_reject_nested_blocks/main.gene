@@ -1,0 +1,6 @@
+# Plain nested blocks are transparent: they do not make a deferred body safe.
+(import [Article] ^from "../shared/model")
+(import [Render] ^from "../shared/contracts")
+(fn install [flag]
+  (do (if flag (then (do (import_impl Render for Article ^from "../shared/plain"))))))
+($println "loaded")

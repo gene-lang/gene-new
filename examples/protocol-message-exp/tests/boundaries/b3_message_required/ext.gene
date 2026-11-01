@@ -1,0 +1,4 @@
+# Third-party extension written against contract v1 (one message).
+(import [Article] ^from "./model")
+(import [Render] ^from "./contracts")
+(impl Render for Article ^^export (message render [] : Str $"ext:${self/title}"))

@@ -1,0 +1,10 @@
+# Failing control: Render threaded alone; the body sends Mark directly.
+(import [Section Figure] ^from "../../../src/model")
+(import [RenderBody Mark] ^from "./contracts")
+(impl RenderBody for Section ^^export
+  (message render [each] : Str
+    (var out self/title)
+    (for child in self/children (set out ($to_str out "/" (each child each))))
+    out))
+(impl RenderBody for Figure ^^export
+  (message render [each] : Str ($to_str self/.Mark:mark self/caption)))

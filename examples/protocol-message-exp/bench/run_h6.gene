@@ -1,0 +1,143 @@
+# H6 paired runner: alternates fresh worker processes for every variant, rotates
+# the executable and variant order each round, excludes round zero (warm-up) and
+# records provenance, raw samples, per-round load and paired ratios.
+#
+#   gene run --package-root examples/protocol-message-exp \
+#     examples/protocol-message-exp/bench/run_h6.gene OUT_DIR REPS GENE_EXE [GENE_EXE...]
+#
+# GENE_BENCH_SAMPLES (3..100, default 5) sets the measured rounds. The output
+# directory must be new. H6 has no performance pass/fail verdict: the summary
+# reports raw times, medians, ranges and P/F, P-closure/F and P-typed/F ratios,
+# and labels rounds whose load average suggests contention.
+(fn capture [executable arguments]
+  (await ($os/exec_async executable arguments... ^timeout_ms 600000 ^max_bytes 4194304)))
+
+(fn distribution [values]
+  (let ordered ($order/sort values))
+  (let count ($size ordered))
+  ($assert (> count 0) "no samples")
+  (let middle (/ count 2))
+  (let previous (- middle 1))
+  (let last (- count 1))
+  (let median
+    (if (== (// count 2) 0)
+      (/ (+ ordered/%previous ordered/%middle) 2.0)
+      ordered/%middle))
+  {^samples values ^median median ^min ordered/0 ^max ordered/%last})
+
+(let variants ["f" "f_typed" "p" "p_closure" "p_typed"])
+
+(fn load_average []
+  (let uptime (capture "uptime" []))
+  (let parts ((uptime/stdout .trim) .split "load averages:"))
+  (if (> parts/.size 1)
+    (($str/join ((parts .get 1) .split ",") " ") .trim)
+    (uptime/stdout .trim)))
+
+(fn first_load [text]
+  ($parse/parse_float ((text .split " ") .get 0)))
+
+(fn main [args] : Int
+  ($assert (>= args/body/.size 3) "usage: run_h6.gene OUT_DIR REPS GENE_EXE [GENE_EXE...]")
+  (let output args/body/0)
+  (let reps ($parse/parse_int args/body/1))
+  ($assert (> reps 0) "reps must be positive")
+  ($assert (! ($fs/exists? output)) "output directory must be new")
+  (let samples ($parse/parse_int (?? ($os/env? "GENE_BENCH_SAMPLES") "5")))
+  ($assert (&& (>= samples 3) (<= samples 100)) "samples must be in 3..100")
+  (let here ($path/parent this_mod/.path))
+  (let package_root ($path/parent here))
+  (let worker $"${here}/h6/worker.gene")
+  (let executables [])
+  (for argument in ($drop args/body 2)
+    (let executable ($fs/real_path argument))
+    (let version (capture executable ["--version"]))
+    ($assert (== version/status 0) "could not read executable version")
+    (executables .push
+      {^executable executable ^version (version/stdout .trim)
+       ^sha256 ($crypto/sha256 ($fs/read_bytes executable)) ^rows {} ^loads []}))
+  (let h6_files [])
+  (for name in ["tree.gene" "model.gene" "fixture.json" "worker.gene" "f/render.gene"
+                "f/render_typed.gene" "p/contracts.gene" "p/impls.gene" "p/root.gene"
+                "p_closure/root.gene" "p_typed/contracts.gene" "p_typed/impls.gene"
+                "p_typed/root.gene"]
+    (h6_files .push {^file name ^sha256 ($crypto/sha256 ($fs/read_text $"${here}/h6/${name}"))}))
+  ($fs/make_dir output)
+  ($fs/write_text $"${output}/metadata.json"
+    ($json/stringify
+      {^format 1 ^reps reps ^samples samples ^warmup_rounds 1
+       ^ordering "executables rotate per round; variants rotate per round; fresh worker per sample"
+       ^variants variants ^fixture_files h6_files ^executables executables
+       ^git (capture "git" ["rev-parse" "HEAD"])
+       ^worktree (capture "git" ["status" "--porcelain"])
+       ^system (capture "uname" ["-srm"])
+       ^power (capture "pmset" ["-g" "ps"])
+       ^machine (?? ($os/env? "GENE_BENCH_MACHINE") "")}))
+  (var reference nil)
+  (repeat round in (+ samples 1)
+    (let load (load_average))
+    (repeat slot in executables/.size
+      (let eindex (// (+ slot round) executables/.size))
+      (let entry (executables .get eindex))
+      (if (> round 0) (entry/loads .push load))
+      (repeat vslot in variants/.size
+        (let vindex (// (+ vslot round eindex) variants/.size))
+        (let variant (variants .get vindex))
+        (let process
+          (capture entry/executable ["run" "--package-root" package_root worker variant ($to_str reps)]))
+        ($fs/write_text $"${output}/${eindex}-${round}-${variant}.json" process/stdout)
+        ($assert (&& (== process/status 0) (! process/timed_out))
+          $"H6 worker ${variant} failed in round ${round}; see ${output}")
+        (let row ($json/parse process/stdout))
+        # the checksum and node count must match across variants and binaries
+        (if ($absent? reference) (set reference row/result_sha256))
+        ($assert (== row/result_sha256 reference) $"H6 result checksum changed for ${variant}")
+        ($assert (== row/nodes 1000) "H6 traversal count changed")
+        (if (== round 0)
+          (then (entry/rows .put variant {^per_traversal_us [] ^elapsed_ms []}))
+          (else
+            (let group (entry/rows .get variant))
+            (group/per_traversal_us .push row/per_traversal_us)
+            (group/elapsed_ms .push row/elapsed_ms))))
+      ($println $"round ${round} executable ${eindex} done (load ${load})")))
+  # summaries: per executable, per variant, and paired ratios to F within a round
+  (let summary [])
+  (for entry in executables
+    ($assert (== entry/sha256 ($crypto/sha256 ($fs/read_bytes entry/executable)))
+      "executable changed during measurement")
+    (let rows {})
+    (for variant in variants
+      (let group (entry/rows .get variant))
+      (rows .put variant (distribution group/per_traversal_us)))
+    (let ratios {})
+    (for variant in ["f_typed" "p" "p_closure" "p_typed"]
+      (let numerator_group (entry/rows .get variant))
+      (let denominator_group (entry/rows .get "f"))
+      (let numerators numerator_group/per_traversal_us)
+      (let denominators denominator_group/per_traversal_us)
+      (let paired [])
+      (repeat i in numerators/.size
+        (paired .push (/ (numerators .get i) (denominators .get i))))
+      (ratios .put variant (distribution paired)))
+    (let p_over_ftyped [])
+    (let p_typed_group (entry/rows .get "p_typed"))
+    (let f_typed_group (entry/rows .get "f_typed"))
+    (let p_typed_samples p_typed_group/per_traversal_us)
+    (let f_typed_samples f_typed_group/per_traversal_us)
+    (repeat i in p_typed_samples/.size
+      (p_over_ftyped .push (/ (p_typed_samples .get i) (f_typed_samples .get i))))
+    (ratios .put "p_typed_over_f_typed" (distribution p_over_ftyped))
+    (summary .push
+      {^executable entry/executable ^sha256 entry/sha256 ^version entry/version
+       ^per_traversal_us rows ^paired_to_f ratios ^round_loads entry/loads}))
+  ($fs/write_text $"${output}/summary.json"
+    ($json/stringify {^format 1 ^reps reps ^samples samples ^executables summary}))
+  (for item in summary
+    ($println $"== ${item/version}")
+    (for variant in variants
+      (let d (item/per_traversal_us .get variant))
+      ($println $"${variant}: median ${d/median} us [${d/min}, ${d/max}]"))
+    (for [name d] in item/paired_to_f
+      ($println $"ratio ${name}/f: median ${d/median} [${d/min}, ${d/max}]")))
+  ($println $"saved ${output}/summary.json")
+  0)

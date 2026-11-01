@@ -1,0 +1,8 @@
+# N's late type: the type-owning module supplies a canonical impl for every policy
+# protocol it supports, so it must import all of them (and a new policy means
+# editing every type module). Recursion works because the impls are canonical.
+(import [PlainRender] ^from "./plain_policy")
+(import [CompactRender] ^from "./compact_policy")
+(type Chart ^props {^caption Str})
+(impl PlainRender for Chart (message render [] : Str ($to_str "chart(" self/caption ")")))
+(impl CompactRender for Chart (message render [] : Str "C"))

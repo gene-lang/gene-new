@@ -1,0 +1,80 @@
+# H6 fixture recipe (frozen). A deterministic 1,000-node tree, depth <= 8.
+#
+# Breadth-first over Sections in creation order. Section number i (0-based)
+# receives 3 + (i mod 4) children, until 1,000 nodes exist. The n-th created
+# node (the root is node 1) has kind (n mod 10):
+#   0 1 2 3 4  Section while its level is below 8, otherwise Article
+#   5 6        Article
+#   7 8        Figure
+#   9          Chart
+# The recipe yields Section 234, Article 466, Figure 200, Chart 100, depth 8.
+# Leaf text is fixed by the node number: "a<n>" titles, "x<n>" text and "c<n>"
+# captions. The root is level 1 and a level-8 node never has children.
+(import [Section Article Figure Chart] ^from "./model")
+
+(let node_count 1000)
+(let max_level 8)
+
+(fn make_node [n level kids]
+  (let kind (// n 10))
+  (if (< kind 5)
+    (then
+      (if (< level max_level)
+        (then (Section ^title $"s${n}" ^children kids))
+        (else (Article ^title $"a${n}" ^text $"x${n}"))))
+    (elif (< kind 7) (Article ^title $"a${n}" ^text $"x${n}"))
+    (elif (< kind 9) (Figure ^caption $"c${n}"))
+    (else (Chart ^caption $"c${n}"))))
+
+(fn is_section [node] (match node (when (x : Section) true) (else false)))
+
+(fn build_tree []
+  (let root_kids [])
+  (let root (Section ^title "s1" ^children root_kids))
+  (let pending_kids [root_kids])
+  (let pending_levels [1])
+  (var made 1)
+  (var next 0)
+  (while (&& (< made node_count) (< next pending_kids/.size))
+    (let kids (pending_kids .get next))
+    (let level (pending_levels .get next))
+    (let width (+ 3 (// next 4)))
+    (set next (+ next 1))
+    (repeat _ in width
+      (if (< made node_count)
+        (then
+          (set made (+ made 1))
+          (let child_kids [])
+          (let child (make_node made (+ level 1) child_kids))
+          (kids .push child)
+          (if (is_section child)
+            (then
+              (pending_kids .push child_kids)
+              (pending_levels .push (+ level 1))))))))
+  root)
+
+# Preorder serialization, used only to hash the fixture and count its kinds.
+(fn serialize [node out counts depth]
+  (if (> depth (?? (counts .get "max_depth") 0)) (counts .put "max_depth" depth))
+  (match node
+    (when (s : Section)
+      (counts .put "Section" (+ (?? (counts .get "Section") 0) 1))
+      (out .push $"S${depth}:${s/title}")
+      (for child in s/children (serialize child out counts (+ depth 1))))
+    (when (a : Article)
+      (counts .put "Article" (+ (?? (counts .get "Article") 0) 1))
+      (out .push $"A${depth}:${a/title}:${a/text}"))
+    (when (f : Figure)
+      (counts .put "Figure" (+ (?? (counts .get "Figure") 0) 1))
+      (out .push $"F${depth}:${f/caption}"))
+    (else
+      (counts .put "Chart" (+ (?? (counts .get "Chart") 0) 1))
+      (out .push $"C${depth}:${node/caption}"))))
+
+(fn describe [tree]
+  (let out [])
+  (let counts {})
+  (serialize tree out counts 1)
+  {^nodes out/.size
+   ^counts counts
+   ^sha256 ($crypto/sha256 ($str/join out "\n"))})

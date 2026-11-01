@@ -1,0 +1,48 @@
+# D1 retained behavior: a macro-marked block may contain import_impl inside any
+# deferred body. Each block is lexically isolated; escaping closures keep their
+# policy; module and sibling scopes never see it.
+(import [Article] ^from "../shared/model")
+(import [Render] ^from "../shared/contracts")
+(import [attempt] ^from "../shared/util")
+(macro with_plain [body...] `(do (import_impl Render for Article ^from "../shared/plain") %body...))
+(macro with_compact [body...] `(do (import_impl Render for Article ^from "../shared/compact") %body...))
+(let item (Article ^title "A"))
+
+# functions: interleave plain/compact/plain/compact
+(fn plain_fn [] (with_plain item/.Render:render))
+(fn compact_fn [] (with_compact item/.Render:render))
+($println $"functions: ${[(plain_fn) (compact_fn) (plain_fn) (compact_fn)]}")
+
+# escaping closure keeps its policy after return
+(fn make_plain [] (with_plain (fn [] item/.Render:render)))
+(let retained (make_plain))
+($println $"retained closure: ${[(retained) (compact_fn) (retained)]}")
+
+# local macro expanding at execution time
+(fn local_macro []
+  (macro with_local [body...] `(do (import_impl Render for Article ^from "../shared/compact") %body...))
+  (with_local item/.Render:render))
+($println $"local macro: ${(local_macro)}")
+
+# message, ctor and spawn bodies
+(type Holder ^props {^label Str}
+  (ctor [a] (set self/label (with_plain a/.Render:render)))
+  (message via_compact [a] : Str (with_compact a/.Render:render)))
+(let holder (new Holder item))
+($println $"ctor: ${holder/label} message: ${(holder .via_compact item)}")
+(let task (spawn (with_compact item/.Render:render)))
+($println $"spawn: ${(await task)}")
+
+# isolation: the module and siblings still see no impl
+($println $"module scope: ${(attempt (fn [] item/.Render:render))}")
+
+# nested marked blocks with conflicting pairs still reject
+(fn nested [] (with_plain (with_compact item/.Render:render)))
+($println $"nested conflict: ${(attempt nested)}")
+
+# controls: an ordinary impl in a function body keeps its activation-overlay contract
+(fn local_impl []
+  (impl Render for Article (message render [] : Str "overlay"))
+  item/.Render:render)
+($println $"function-local impl: ${(attempt local_impl)}")
+($println $"module scope after local impl: ${(attempt (fn [] item/.Render:render))}")

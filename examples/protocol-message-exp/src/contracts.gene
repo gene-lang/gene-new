@@ -1,0 +1,4 @@
+# Frozen core contract. `each` is the root-authored operation threaded through
+# recursion: a container applies it to every child, so the container never
+# names a child type or a provider.
+(protocol Render (message render [each] : Str))

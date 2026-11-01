@@ -1,0 +1,19 @@
+(mod protocol_message_exp_boundaries_spec)
+
+(import $test [describe it assert_equal])
+
+(fn capture [arguments]
+  (await ($os/exec_async ($os/executable_path) arguments... ^timeout_ms 600000 ^max_bytes 4194304)))
+
+(let root ($path/parent ($path/parent ($fs/real_path this_mod/.path))))
+
+(describe "protocol-message experiment package"
+  (it "keeps every boundary fixture on its recorded expectation" []
+    (let result (capture ["run" $"${root}/tests/boundaries/run.gene"]))
+    (if (!= result/status 0) ($println result/stdout))
+    (assert_equal result/status 0))
+
+  (it "leaves the frozen core and shared consumers unchanged" []
+    (let result (capture ["run" $"${root}/tools/freeze.gene" "check"]))
+    (if (!= result/status 0) ($println result/stdout))
+    (assert_equal result/status 0)))

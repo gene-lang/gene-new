@@ -1,0 +1,12 @@
+# Fresh process: the plain installer runs first, then the competing installer.
+(import [Article] ^from "../shared/model")
+(import [Render] ^from "../shared/contracts")
+(import [attempt] ^from "../shared/util")
+(import [install_plain install_compact render_sibling] ^from "../shared/fns")
+(let article (Article ^title "A"))
+($println $"before: ${(attempt (fn [] (render_sibling article)))}")
+(install_plain)
+($println $"sibling after plain installer: ${(attempt (fn [] (render_sibling article)))}")
+($println $"outer module after plain installer: ${(attempt (fn [] article/.Render:render))}")
+($println $"competing installer: ${(attempt (fn [] (install_compact)))}")
+($println $"after rejected compact: ${(attempt (fn [] (render_sibling article)))}")

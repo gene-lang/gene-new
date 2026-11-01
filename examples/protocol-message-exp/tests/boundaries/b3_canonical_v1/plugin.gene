@@ -1,0 +1,2 @@
+(import [Article Render] ^from "./core")
+(impl Render for Article ^^export (message render [] : Str $"plugin:${self/title}"))

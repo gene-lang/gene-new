@@ -1,0 +1,8 @@
+(import [Section Article Figure] ^from "../../../src/model")
+(import [Chart] ^from "../../../src/extensions/chart")
+(import [Outline2] ^from "./contract")
+(import_impl Outline2 for Section ^from "./impls")
+(import_impl Outline2 for Article ^from "./impls")
+(import_impl Outline2 for Figure ^from "./impls")
+(import_impl Outline2 for Chart ^from "./impls")
+(fn operation [] Outline2:outline)

@@ -1,0 +1,9 @@
+(import [Section Article Figure] ^from "../../model")
+(protocol CompactRender (message render [] : Str))
+(impl CompactRender for Section
+  (message render [] : Str
+    (var out "<")
+    (for child in self/children (set out ($to_str out "|" child/.CompactRender:render)))
+    ($to_str out ">")))
+(impl CompactRender for Article (message render [] : Str self/title))
+(impl CompactRender for Figure (message render [] : Str "F"))

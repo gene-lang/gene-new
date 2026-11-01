@@ -1,0 +1,15 @@
+(import [Section Article Figure] ^from "../../../src/model")
+(import [Chart] ^from "../../../src/extensions/chart")
+(import [Outline2] ^from "./contract")
+(fn pad [depth] (var s "") (repeat _ in depth (set s ($to_str s "  "))) s)
+(impl Outline2 for Section ^^export
+  (message outline [each depth] : Str
+    (var out ($to_str (pad depth) "- section " self/title))
+    (for child in self/children (set out ($to_str out "\n" (each child each (+ depth 1)))))
+    out))
+(impl Outline2 for Article ^^export
+  (message outline [each depth] : Str ($to_str (pad depth) "- article " self/title)))
+(impl Outline2 for Figure ^^export
+  (message outline [each depth] : Str ($to_str (pad depth) "- figure " self/caption)))
+(impl Outline2 for Chart ^^export
+  (message outline [each depth] : Str ($to_str (pad depth) "- chart " self/caption)))

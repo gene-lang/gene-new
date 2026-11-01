@@ -1,0 +1,5 @@
+(import [Chart] ^from "../extensions/chart")
+(import [entry] ^from "./dispatch")
+(fn is_chart [n] (match n (when (x : Chart) true) (else false)))
+(fn render_chart [node each] : Str "C")
+(let chart_entry (entry is_chart render_chart))

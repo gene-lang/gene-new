@@ -1,0 +1,12 @@
+# The plain root after the late-extension task: two new bindings, two new pair
+# imports. No model, contract, container or consumer file changes.
+(import [Section Article Figure] ^from "../model")
+(import [Chart] ^from "../extensions/chart")
+(import [Table] ^from "../extensions/table")
+(import [Render] ^from "../contracts")
+(import_impl Render for Section ^from "../policies/plain")
+(import_impl Render for Article ^from "../policies/plain")
+(import_impl Render for Figure ^from "../policies/plain")
+(import_impl Render for Chart ^from "../extensions/chart_plain")
+(import_impl Render for Table ^from "../extensions/table_plain")
+(fn operation [] Render:render)

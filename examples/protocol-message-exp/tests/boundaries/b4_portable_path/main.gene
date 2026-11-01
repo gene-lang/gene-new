@@ -1,0 +1,9 @@
+# Provider loaded (so it is known) but imported nowhere. The suggested import must
+# be copy-pasteable: a portable relative spelling, not an absolute filesystem path.
+(import [Article] ^from "./model")
+(import [Render] ^from "./contracts")
+(import [attempt] ^from "../shared/util")
+(import ^from "./loader" [])
+(let article (Article ^title "A"))
+(fn full_message [thunk] (try (thunk) catch Any $err/message))
+($println $"suggestion: ${(full_message (fn [] article/.Render:render))}")

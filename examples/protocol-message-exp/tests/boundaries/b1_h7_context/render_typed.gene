@@ -1,0 +1,9 @@
+(import [Section Figure] ^from "../../../src/model")
+(import [RenderTyped Ops] ^from "./contracts")
+(impl RenderTyped for Section ^^export
+  (message render [ops : Ops] : Str
+    (var out self/title)
+    (for child in self/children (set out ($to_str out "/" (ops/render child ops))))
+    out))
+(impl RenderTyped for Figure ^^export
+  (message render [ops : Ops] : Str ($to_str (ops/mark self) self/caption)))

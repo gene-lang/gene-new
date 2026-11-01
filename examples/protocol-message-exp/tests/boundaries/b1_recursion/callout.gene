@@ -1,0 +1,5 @@
+# Control: this module owns Callout, so the Render impl is canonical (global).
+(import [Render] ^from "../../../src/contracts")
+(type Callout ^props {^note Str})
+(impl Render for Callout
+  (message render [each] : Str ($to_str "callout(" self/note ")")))

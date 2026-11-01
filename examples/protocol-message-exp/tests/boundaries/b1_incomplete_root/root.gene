@@ -1,0 +1,6 @@
+# Incomplete root: it supports Section and Figure only.
+(import [Section Figure] ^from "../../../src/model")
+(import [Render] ^from "../../../src/contracts")
+(import_impl Render for Section ^from "./tracing")
+(import_impl Render for Figure ^from "./tracing")
+(fn operation [] Render:render)

@@ -634,6 +634,41 @@ proc main() =
   bench("vm.protocol_message.with_arg.compiled_chunk", 500_000, i):
     let v = run(sendArgChunk, protocolScope)
     checksum = checksum + v.intVal
+  # Held-message transport (tmp/protocol-message-exp.md section 7.1). The same
+  # ToInt body is reached through a raw held Message, a checked Callable view of
+  # it, a dynamic `.%` send of the raw Message, and an ordinary closure over the
+  # qualified send. Operation acquisition happens once, outside the loop; the
+  # `identity` row above is the plain-call reference. These rows author the
+  # operation and send in one root scope, so they measure the layout-neutral
+  # call mechanics; module-versus-entry-file layout is measured in Gene
+  # (examples/protocol-message-exp/bench/matrix).
+  # A separate scope: a slot-compiled setup chunk cannot share protocolScope's layout.
+  let transportScope = newGlobalScope()
+  discard run(compileSource(
+    "(protocol ToInt (message to_int [self] : Int)) " &
+    "(type Box ^props {^x Int}) " &
+    "(impl ToInt for Box (message to_int [self] : Int self/x)) " &
+    "(fn view_of [op : (Callable [Any] Int)] op) " &
+    "(var box (Box ^x 10)) " &
+    "(var held ToInt:to_int) " &
+    "(var checked (view_of ToInt:to_int)) " &
+    "(var closure (fn [b] (b .ToInt:to_int)))"), transportScope)
+  let heldChunk = compileSource("(held box)")
+  bench("vm.protocol_message.held.compiled_chunk", 500_000, i):
+    let v = run(heldChunk, transportScope)
+    checksum = checksum + v.intVal
+  let viewChunk = compileSource("(checked box)")
+  bench("vm.protocol_message.callable_view.compiled_chunk", 500_000, i):
+    let v = run(viewChunk, transportScope)
+    checksum = checksum + v.intVal
+  let dynamicChunk = compileSource("(box .%held)")
+  bench("vm.protocol_message.dynamic.compiled_chunk", 500_000, i):
+    let v = run(dynamicChunk, transportScope)
+    checksum = checksum + v.intVal
+  let closureChunk = compileSource("(closure box)")
+  bench("vm.protocol_message.closure.compiled_chunk", 500_000, i):
+    let v = run(closureChunk, transportScope)
+    checksum = checksum + v.intVal
   # `Self:` names no type at all and lowers to the bare send, so it should sit
   # on the type-direct line rather than the qualified one.
   let colonSelfChunk = compileSource("(box .Self:get)")

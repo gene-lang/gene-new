@@ -1,0 +1,4 @@
+(import [Article] ^from "./model")
+(import [Describe Explicit] ^from "./contracts")
+(impl Describe for Article ^^export (message describe [] : Str "special"))
+(impl Explicit for Article ^^export (message describe [] : Str "special"))

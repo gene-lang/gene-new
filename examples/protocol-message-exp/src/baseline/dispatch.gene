@@ -1,0 +1,15 @@
+# Variant F: explicit functions and a small generic dispatcher. An entry pairs a
+# type test with a handler; the composition root lists the entries it supports.
+(fn entry [matches handle] {^matches matches ^handle handle})
+
+(fn make_dispatcher [entries]
+  (fn dispatch [node each]
+    (var result nil)
+    (var found false)
+    (for e in entries
+      (if (&& (! found) (e/matches node))
+        (then
+          (set found true)
+          (set result (e/handle node each)))))
+    ($assert found "no handler for node")
+    result))

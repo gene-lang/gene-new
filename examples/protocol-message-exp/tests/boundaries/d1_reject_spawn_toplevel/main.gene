@@ -1,0 +1,4 @@
+(import [Article] ^from "../shared/model")
+(import [Render] ^from "../shared/contracts")
+(let task (spawn (import_impl Render for Article ^from "../shared/plain")))
+($println "loaded")

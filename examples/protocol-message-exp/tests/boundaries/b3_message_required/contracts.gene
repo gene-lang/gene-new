@@ -1,0 +1,4 @@
+# v2: a new REQUIRED message after extensions exist.
+(protocol Render
+  (message render [] : Str)
+  (message weight [] : Int))

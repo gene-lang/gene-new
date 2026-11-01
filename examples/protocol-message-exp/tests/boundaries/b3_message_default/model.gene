@@ -1,0 +1,1 @@
+(type Article ^props {^title Str})

@@ -1,0 +1,3 @@
+(import [Article] ^from "./model")
+(import [Render] ^from "./contracts")
+(impl Render for Article ^^export (message render [] : Str $"prov:${self/title}"))

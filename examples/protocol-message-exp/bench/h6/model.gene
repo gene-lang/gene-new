@@ -1,0 +1,5 @@
+# H6 frozen model: Sections, Articles, Figures and late Charts.
+(type Section ^props {^title Str ^children List})
+(type Article ^props {^title Str ^text Str})
+(type Figure ^props {^caption Str})
+(type Chart ^props {^caption Str})

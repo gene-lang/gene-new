@@ -1,0 +1,7 @@
+# A marked block owns the imports written directly in it, not those of a new
+# deferred body defined inside it: the enclosing macro grants no blanket exemption.
+(import [Article] ^from "../shared/model")
+(import [Render] ^from "../shared/contracts")
+(macro with_plain [body...] `(do (import_impl Render for Article ^from "../shared/plain") %body...))
+(with_plain (fn inner [] (import_impl Render for Article ^from "../shared/compact")))
+($println "loaded")

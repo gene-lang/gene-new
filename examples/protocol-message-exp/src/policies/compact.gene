@@ -1,0 +1,15 @@
+# Policy "compact": the same pairs with a different, independently authored body.
+(import [Section Article Figure] ^from "../model")
+(import [Render] ^from "../contracts")
+
+(impl Render for Section ^^export
+  (message render [each] : Str
+    (var out "<")
+    (for child in self/children (set out ($to_str out "|" (each child each))))
+    ($to_str out ">")))
+
+(impl Render for Article ^^export
+  (message render [each] : Str self/title))
+
+(impl Render for Figure ^^export
+  (message render [each] : Str "F"))

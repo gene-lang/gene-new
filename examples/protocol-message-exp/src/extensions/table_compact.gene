@@ -1,0 +1,4 @@
+(import [Table] ^from "./table")
+(import [Render] ^from "../contracts")
+(impl Render for Table ^^export
+  (message render [each] : Str "T"))

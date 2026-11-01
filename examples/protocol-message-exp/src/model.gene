@@ -1,0 +1,4 @@
+# Frozen core model. Late types live in extensions/ and never edit this file.
+(type Section ^props {^title Str ^children List})
+(type Article ^props {^title Str ^text Str})
+(type Figure ^props {^caption Str})

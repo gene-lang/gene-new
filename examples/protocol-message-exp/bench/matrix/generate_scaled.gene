@@ -1,0 +1,20 @@
+# Writes scaled_worker_K.gene: rows.gene plus K unrelated protocol/impl pairs on
+# Box (small versus large visible impl sets on the miss/uncached path), and an
+# entry main like generate_entry.gene.   gene run generate_scaled.gene K
+(fn main [args] : Int
+  (let k ($parse/parse_int args/body/0))
+  (let here ($path/parent this_mod/.path))
+  (var extra "")
+  (repeat i in k
+    (set extra ($to_str extra "(protocol Extra" i " (message m" i " [] : Int))\n"
+                "(impl Extra" i " for Box (message m" i " [] : Int " i "))\n")))
+  (let rows ($fs/read_text $"${here}/rows.gene"))
+  (let entry_main "
+(fn main [args] : Int
+  (let report (timed_row args/body/0 ($parse/parse_int args/body/1)))
+  (report .put \"layout\" \"scaled\")
+  ($println ($json/stringify report))
+  0)
+")
+  ($fs/write_text $"${here}/scaled_worker_${k}.gene" $"${rows}\n${extra}${entry_main}")
+  0)

@@ -1,0 +1,17 @@
+# Child built on the plain parent (omits `body`), composed with compact Article.
+(import [Article Note] ^from "../b3_inheritance/model")
+(import [Format] ^from "../b3_inheritance/contracts")
+(import [attempt first_line] ^from "../shared/util")
+(fn both [value] [value/.Format:head value/.Format:body])
+(let article (Article ^title "A"))
+(let note (Note ^title "N"))
+(let first
+  (try (do (import_impl Format for Article ^from "../b3_inheritance/compact") "imported")
+    catch Any (first_line $err/message)))
+(let second
+  (try (do (import_impl Format for Note ^from "../b3_inheritance/note_on_plain") "imported")
+    catch Any (first_line $err/message)))
+($println $"compact Article: ${first}")
+($println $"Note built on plain: ${second}")
+($println $"article: ${(attempt (fn [] (both article)))}")
+($println $"note: ${(attempt (fn [] (both note)))}")

@@ -1,0 +1,4 @@
+# Generic consumers: no protocol, type or impl imports. They receive the
+# root-authored operation and apply it with the operation itself as `each`.
+(fn preview [operation document]
+  ($to_str "[preview] " (operation document operation)))

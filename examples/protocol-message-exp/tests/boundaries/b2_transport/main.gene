@@ -1,0 +1,50 @@
+# B2 transport matrix: operations authored in A, invoked in a host without the
+# Article pair and at a B send site that has a different policy.
+(import [Article] ^from "./model")
+(import [Render] ^from "./contracts")
+(import [raw_message view closure path_value invoke_here] ^from "./author_a")
+(import [call_value dynamic_send fresh_qualified fresh_call_form] ^from "./site_b")
+
+(let article (Article ^title "A"))
+(fn attempt [thunk] (try (thunk) catch Any "ERR"))
+(fn first_line [text] ((text .split "; ") .get 0))
+(fn attempt_msg [thunk] (try (thunk) catch Any (first_line $err/message)))
+
+(let raw (raw_message))
+(let checked (view))
+(let cl (closure))
+(let pv (path_value))
+
+($println "-- invoked in the host (no Article pair)")
+($println $"raw message (op article): ${(raw article)}")
+($println $"checked view (op article): ${(checked article)}")
+($println $"A-authored closure: ${(cl article)}")
+($println $"A-authored path: ${(attempt_msg (fn [] (pv article)))}")
+($println $"raw .% dynamic send: ${(attempt_msg (fn [] (article .%raw)))}")
+($println $"fresh qualified: ${(attempt_msg (fn [] article/.Render:render))}")
+($println $"fresh call form: ${(attempt_msg (fn [] (Render:render article)))}")
+($println $"checked view with .%: ${(attempt_msg (fn [] (article .%checked)))}")
+
+($println "-- invoked at B's send site (compact policy visible)")
+($println $"raw message: ${(call_value raw article)}")
+($println $"checked view: ${(call_value checked article)}")
+($println $"A-authored closure: ${(call_value cl article)}")
+($println $"A-authored path: ${(attempt_msg (fn [] (call_value pv article)))}")
+($println $"raw .% dynamic send: ${(dynamic_send raw article)}")
+($println $"fresh qualified: ${(fresh_qualified article)}")
+($println $"fresh call form: ${(fresh_call_form article)}")
+($println $"checked view with .%: ${(attempt_msg (fn [] (dynamic_send checked article)))}")
+
+($println "-- invoked in A itself")
+($println $"${(invoke_here article)}")
+
+($println "-- identity and reflection")
+($println $"same operation twice equal: ${(== (raw_message) (raw_message))}")
+($println $"message equals itself: ${(== raw raw)}")
+(fn protocol_typed [x : Render] x/.Render:render)
+($println $"protocol-typed host parameter without the pair: ${(attempt_msg (fn [] (protocol_typed article)))}")
+(fn scope_of [op receiver]
+  (let sig ($runtime/signature op receiver))
+  sig/dispatch_scope)
+($println $"signature of held message with receiver: ${(attempt_msg (fn [] (scope_of raw article)))}")
+($println $"signature of fresh message with receiver: ${(attempt_msg (fn [] (scope_of Render:render article)))}")

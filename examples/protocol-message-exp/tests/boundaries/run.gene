@@ -1,0 +1,65 @@
+# Boundary fixture runner. Each case runs in a fresh `gene run` process so
+# import_impl effects (which are module-wide) cannot leak between cases. The
+# package root is replaced by <pkg> so diagnostics compare portably.
+#
+#   gene run tests/boundaries/run.gene            # check every case
+#   gene run tests/boundaries/run.gene ID         # check one case
+#   GENE_BOUNDARY_UPDATE=1 gene run ... run.gene  # rewrite expected.txt
+#   GENE_BOUNDARY_OUT=dir  gene run ... run.gene  # also save raw actual output
+#
+# A case expects either `ok` (exit 0, stdout equals expected.txt) or `error`
+# (non-zero exit, the first stderr line equals expected.txt) - the latter is
+# how compile-time rejections of a whole entry module are checked.
+(import [cases] ^from "./cases")
+
+(fn capture [executable arguments]
+  (await ($os/exec_async executable arguments... ^timeout_ms 120000 ^max_bytes 1048576)))
+
+(fn normalize [text root]
+  (($str/join (text .split root) "<pkg>") .trim))
+
+(fn first_line_of [text]
+  ((text .split "\n") .get 0))
+
+(fn run_case [executable root case]
+  (let entry $"${root}/tests/boundaries/${case/id}/main.gene")
+  (let process (capture executable ["run" "--package-root" root entry]))
+  (let stdout (normalize process/stdout root))
+  (let stderr (normalize process/stderr root))
+  {^status process/status ^stdout stdout ^stderr stderr
+   ^observed (if (== case/expect "error") (first_line_of stderr) stdout)})
+
+(fn check_all [only] : List
+  (let executable ($os/executable_path))
+  (let root ($path/parent ($path/parent ($path/parent ($fs/real_path this_mod/.path)))))
+  (let update (== (?? ($os/env? "GENE_BOUNDARY_UPDATE") "") "1"))
+  (let out (?? ($os/env? "GENE_BOUNDARY_OUT") ""))
+  (if (&& (!= out "") (! ($fs/exists? out))) ($fs/make_dir out))
+  (let results [])
+  (for case in cases
+    (if (|| (== only "") (== only case/id))
+      (then
+        (let outcome (run_case executable root case))
+        (let expected_path $"${root}/tests/boundaries/${case/id}/expected.txt")
+        (if update ($fs/write_text expected_path $"${outcome/observed}\n"))
+        (if (!= out "") ($fs/write_text $"${out}/${case/id}.txt" $"${outcome/observed}\n"))
+        (let expected (if ($fs/exists? expected_path) (($fs/read_text expected_path) .trim) nil))
+        (let status_ok
+          (if (== case/expect "error") (!= outcome/status 0) (== outcome/status 0)))
+        (results .push
+          {^id case/id ^ok (&& status_ok (== outcome/observed expected))
+           ^expected expected ^actual outcome/observed ^errors outcome/stderr
+           ^status outcome/status}))))
+  results)
+
+(fn main [args] : Int
+  (let only (if (> args/body/.size 0) args/body/0 ""))
+  (var failed 0)
+  (for r in (check_all only)
+    (if r/ok
+      (then ($println $"ok     ${r/id}"))
+      (else
+        (set failed (+ failed 1))
+        ($println $"FAILED ${r/id} (exit ${r/status})")
+        ($println $"--- expected\n${r/expected}\n--- actual\n${r/actual}\n--- stderr\n${r/errors}"))))
+  (if (> failed 0) 1 0))

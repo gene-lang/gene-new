@@ -1,0 +1,8 @@
+# Second late type, used only by the five-type composition sample.
+(import [Outline indent] ^from "./outline")
+
+(type Table ^props {^title Str ^rows Int})
+
+(impl Outline for Table
+  (message outline [depth : Int] : Str
+    ($to_str (indent depth) "- table " self/title)))

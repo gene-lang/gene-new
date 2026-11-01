@@ -1,0 +1,2 @@
+(protocol Describe ^^universal (message describe [] : Str "default"))
+(protocol Explicit (message describe [] : Str))

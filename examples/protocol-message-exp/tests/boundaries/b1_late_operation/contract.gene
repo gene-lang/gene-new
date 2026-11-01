@@ -1,0 +1,3 @@
+# Contract module only: no impls here, so every impl in impls.gene is a scoped
+# third-party pair (neither the protocol nor the receiver types are owned there).
+(protocol Outline2 (message outline [each depth] : Str))

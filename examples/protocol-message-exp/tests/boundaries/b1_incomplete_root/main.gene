@@ -1,0 +1,27 @@
+(import [Section Figure Article] ^from "../../../src/model")
+(import [Chart] ^from "../../../src/extensions/chart")
+(import [operation] ^from "./root")
+(import [events] ^from "./trace")
+(import [operation : complete_operation] ^from "../../../src/roots/compact_late")
+(import [Table] ^from "../../../src/extensions/table")
+
+(let op (operation))
+(let tree (Section ^title "S" ^children [(Figure ^caption "a") (Chart ^caption "c") (Figure ^caption "b")]))
+
+# The root composes and starts; failure appears only when traversal reaches Chart.
+($println $"result: ${(try (op tree op) catch Any $err/message)}")
+($println $"partial effects: ${events}")
+
+# Existing reflection: a held message resolves in its authored scope, so a
+# pre-flight over a declared supported-type set needs no execution of any body.
+(fn unsupported [operation samples]
+  (var missing [])
+  (for sample in samples
+    (try ($runtime/signature operation sample)
+      catch Any (missing .push ($to_str sample))))
+  (missing .size))
+(let samples [(Section ^title "s" ^children []) (Figure ^caption "f")
+              (Article ^title "t" ^text "x") (Chart ^caption "c")
+              (Table ^title "t" ^rows 1)])
+($println $"incomplete root unsupported samples: ${(unsupported op samples)}")
+($println $"complete root unsupported samples: ${(unsupported (complete_operation) samples)}")

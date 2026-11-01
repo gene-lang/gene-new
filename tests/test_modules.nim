@@ -972,6 +972,64 @@ suite "modules — file imports":
     check app.implActivationEpoch == stableEpoch
     check run(compileSource("((Item) .Render:render)"), scope).print() == "\"two\""
 
+  test "retained transports follow their authoring module across reload":
+    # Contract expectation, written before running: a held Message, a checked
+    # Callable view, a closure and a Path all resolve at application time in the
+    # scope they were authored in, and reload recomposes that scope's imported
+    # impl atomically. So after a same-interface replacement every retained
+    # transport and every send site (warmed or new) sees the new body, a
+    # rejected replacement leaves the published body intact, and a host scope
+    # with no pair still cannot send directly.
+    writeModule("ret_base.gene",
+      "(protocol Render (message render [] : Str)) (type Item ^props {})")
+    writeModule("ret_prov.gene",
+      "(import [Render Item] ^from \"./ret_base\") " &
+      "(impl Render for Item ^^export (message render [] : Str \"one\"))")
+    writeModule("ret_author.gene",
+      "(import [Render Item] ^from \"./ret_base\") " &
+      "(import_impl Render for Item ^from \"./ret_prov\") " &
+      "(fn raw [] Render:render) " &
+      "(fn as_view [op : (Callable [Any] Str)] op) " &
+      "(fn view [] (as_view Render:render)) " &
+      "(fn closure [] (fn [a] a/.Render:render)) " &
+      "(fn path_value [] /.Render:render) " &
+      "(fn warmed [a] a/.Render:render) " &
+      "(fn later [a] a/.Render:render)")
+    let app = newApplication(modDir)
+    let scope = newGlobalScope(app)
+    discard run(compileSource(
+      "(import [Item] ^from \"./ret_base\") " &
+      "(import [Render] ^from \"./ret_base\") " &
+      "(import [raw view closure path_value warmed later] ^from \"./ret_author\") " &
+      "(var item (Item)) (var op (raw)) (var checked (view)) " &
+      "(var cl (closure)) (var pv (path_value))"), scope)
+    proc observe(): string =
+      run(compileSource(
+        "[(warmed item) (later item) (op item) (checked item) (cl item) (pv item) " &
+        " (try item/.Render:render catch Any \"hidden\")]"), scope).print()
+    check observe() ==
+      "[\"one\" \"one\" \"one\" \"one\" \"one\" \"one\" \"hidden\"]"
+    let before = app.implActivationEpoch
+    writeModule("ret_prov.gene",
+      "(import [Render Item] ^from \"./ret_base\") " &
+      "(impl Render for Item ^^export (message render [] : Str \"two\"))")
+    discard app.reloadFileModule(modDir / "ret_prov.gene")
+    check app.implActivationEpoch == before + 1
+    check observe() ==
+      "[\"two\" \"two\" \"two\" \"two\" \"two\" \"two\" \"hidden\"]"
+    # A rejected replacement (the export disappears) leaves the published body.
+    let stable = app.implActivationEpoch
+    writeModule("ret_prov.gene",
+      "(import [Render Item] ^from \"./ret_base\") (var removed true)")
+    expect GeneError:
+      discard app.reloadFileModule(modDir / "ret_prov.gene")
+    check app.implActivationEpoch == stable
+    check observe() ==
+      "[\"two\" \"two\" \"two\" \"two\" \"two\" \"two\" \"hidden\"]"
+    # A retained operation applied to a fresh receiver still resolves in its
+    # authored scope, not at the host.
+    check run(compileSource("(op (Item))"), scope).print() == "\"two\""
+
   test "reload rejects compile-interface changes":
     writeModule("reload_interface.gene", "(var value 1)")
     let app = newApplication(modDir)
