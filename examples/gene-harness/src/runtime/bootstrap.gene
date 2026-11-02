@@ -17,21 +17,10 @@
   (let state_root $"${root}/.gene-harness")
   (for directory in ["composition" "modules" "blobs" "events" "sessions" "triggers"]
     ($fs/make_dir $"${state_root}/${directory}"))
+  # A new workspace stores no defaults: definitions and the model resolver supply
+  # them, so every stored value is a deliberate override. Existing files are untouched.
   (if_not ($fs/exists? $"${state_root}/config.gene")
-    ($fs/write_text_atomic
-      $"${state_root}/config.gene"
-      ($serde/write_data
-        {
-          ^provider ""
-          ^model ""
-          ^provider_timeout_ms 600000
-          ^response_budget {^timeout_ms 600000 ^max_memory_mb 1024}
-          ^turn_limit 24
-          ^trigger_turn_limit 12
-          ^trigger_timeout_ms 300000
-          ^idle_timeout_ms 600000
-          ^trigger_concurrency 2
-          ^question_timeout_ms 86400000})))
+    ($fs/write_text_atomic $"${state_root}/config.gene" ($serde/write_data {})))
   state_root)
 
 (fn close_runtime [runtime : HarnessRuntime]
@@ -63,7 +52,8 @@
      ^events nil ^workspace nil ^h nil ^runtime nil ^inbox nil ^harness_closed false
      ^owns_ownership ($absent? supplied_ownership) ^supplied_ownership supplied_ownership
      ^entry (if (== entry "") this_mod/.path entry) ^event_scope event_scope ^activate activate
-     ^mode mode ^recovery recovery ^managed managed ^lock_wait_ms lock_wait_ms ^objects objects})
+     ^mode mode ^recovery recovery ^managed managed ^lock_wait_ms lock_wait_ms ^objects objects
+     ^launch launch})
   (let services (new_host_services context
     (runtime_service_specs prepare_layout
       (fn [ctx]

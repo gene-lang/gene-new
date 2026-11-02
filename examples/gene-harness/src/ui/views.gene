@@ -4,7 +4,7 @@
 (import [acquire_snapshot release_snapshot] ^from "../runtime/composition")
 (import [spawn_composition_call] ^from "../runtime/cordis_adapter")
 (import [bounded_component_view WebComponentError] ^from "./components")
-(import [ui_settings ui_record ui_revision ui_data_revision ui_descriptor ui_error] ^from "./state")
+(import [ui_settings ui_record ui_revision ui_data_revision ui_descriptor ui_error view_listed? view_actions] ^from "./state")
 (import [view_outline outline_text] ^from "./outline")
 
 # One bounded plugin render call (1 s / 32 MiB) in the caller's context.
@@ -51,7 +51,7 @@
   (if ($absent? tree/tag) (return nil))
   (if_not ($absent? tree/props/action)
     (let name tree/props/action)
-    (if_not ((?? candidate/actions []) .contains? name)
+    (if_not ((view_actions snapshot candidate) .contains? name)
       (ui_error "invalid_request" $"Undeclared view action ${name}."))
     (if (&& ($absent? (ui_record snapshot "ui_actions" name))
             ($absent? (ui_record snapshot "functions" name)))
@@ -66,11 +66,11 @@
 
 (fn ui_render [runtime, session : Str, name : Str, revision : Str, state, ^instance instance : Str = "preview", ^sequence sequence : Str = "0"]
   (let h runtime/h)
-  (if_not (/enabled (ui_settings runtime)) (ui_error "unavailable" "Workspace views are disabled."))
   (let lease (acquire_snapshot ^label "ui/render" h/snapshots))
   (try
     (let record (ui_record lease/snapshot "web_components" name))
     (if (|| ($absent? record) ($absent? record/payload/view_state)) (ui_error "not_found" "View not found."))
+    (if_not (view_listed? (ui_settings runtime) record) (ui_error "unavailable" "Workspace views are disabled."))
     (if (&& (!= revision "") (!= revision (ui_revision h record))) (ui_error "revision_conflict" "This view was replaced. Refresh before trying again."))
     (let data_revision (ui_data_revision runtime lease/snapshot))
     (let result (ui_descriptor runtime lease/snapshot record))

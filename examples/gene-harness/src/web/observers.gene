@@ -5,6 +5,7 @@
 (import [close_runtime] ^from "../runtime/bootstrap")
 (import [open_loop_services] ^from "../runtime/loop_services")
 (import [HarnessEvent] ^from "../kernel")
+(import [observe_shared_settings close_shared_observation] ^from "../runtime/workspace_config")
 
 (fn stop_observers [ctx] ^^private
   (let service ctx/service)
@@ -47,7 +48,12 @@
         service
       catch Any (stop_observers ctx) (fail $err)))
     ^recover nil ^quiesce (fn [ctx, service] (stop_observers ctx))
-    ^close (fn [ctx, service] (stop_observers ctx))}])
+    ^close (fn [ctx, service] (stop_observers ctx))}
+   # Browser refresh only; shared values reach execution without it.
+   {^name "shared_settings" ^layer "loop" ^requires ["observers"]
+    ^open (fn [ctx] (observe_shared_settings ctx/service/runtime)) ^recover nil
+    ^quiesce (fn [ctx, watch] (close_shared_observation watch))
+    ^close (fn [ctx, watch] (close_shared_observation watch))}])
 
 (fn open_session_lifecycle [service, publish, on_event, ^channel_options channel_options = nil, ^observe observe = nil]
   (let ctx {^service service ^channel_options channel_options ^observe observe ^subscriptions []})

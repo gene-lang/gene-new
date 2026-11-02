@@ -11,6 +11,8 @@
 (import [acquire_workspace_lock close_workspace_lock] ^from "./workspace_lock")
 (import [open_appearance install_appearance_rows] ^from "./appearance")
 (import [install_setting_rows] ^from "./workspace_config")
+(import [startup_config new_settings_state note_active_setting effective_setting effective_config] ^from "./settings_resolver")
+(import [shared_settings_root] ^from "./shared_settings")
 (import [install_keyboard_rows] ^from "./keyboard")
 (import [open_session_manager close_session_manager create_session load_session with_session_gate] ^from "./sessions")
 (import [new_command_manager close_command_manager quiesce_command_manager] ^from "./commands")
@@ -52,7 +54,7 @@
   nil)
 
 (fn configuration [ctx]
-  (let settings (if (== ctx/mode "normal") ($serde/read_data ($fs/read_text $"${ctx/state_root}/config.gene")) {}))
+  (let settings (if (== ctx/mode "normal") (startup_config ctx/state_root (shared_settings_root ctx)) {}))
   (let requested (?? settings/response_budget {}))
   (let base (?? ctx/profile/limits (response_execution_limits)))
   (set ctx/limits (ExecutionLimits ^max_memory_mb (?? requested/max_memory_mb base/max_memory_mb)
@@ -111,6 +113,8 @@
      ^open (fn [ctx] (set ctx/state_root (layout ctx/root)) nil)
      ^recover (fn [ctx] (set ctx/state_root (layout ctx/root)) nil)}
     {^name "configuration" ^layer "kernel" ^requires ["layout"] ^open configuration ^recover configuration}
+    {^name "settings" ^layer "kernel" ^requires ["layout"]
+     ^open (fn [ctx] (new_settings_state)) ^recover (fn [ctx] (new_settings_state))}
     {^name "appearance" ^layer "kernel" ^requires ["layout"]
      ^open (fn [ctx] (open_appearance ctx/state_root))
      ^recover (fn [ctx] (open_appearance ctx/state_root))}
@@ -133,7 +137,7 @@
     {^name "kernel" ^layer "kernel" ^requires ["plugin_services"]
      ^open kernel_service ^recover kernel_service
      ^close close_kernel}
-    {^name "runtime" ^layer "kernel" ^requires ["kernel"]
+    {^name "runtime" ^layer "kernel" ^requires ["kernel" "settings"]
      ^open (fn [ctx] (set ctx/runtime (make_runtime ctx)) ctx/runtime)
      ^recover (fn [ctx] (set ctx/runtime (make_runtime ctx)) ctx/runtime)
      ^close (fn [ctx, runtime]
@@ -169,7 +173,11 @@
      ^recover nil}
     {^name "sessions" ^layer "kernel" ^requires ["catalog" "events"]
      ^open (fn [ctx]
-       (let sessions (open_session_manager ctx/runtime ctx/events ctx/state_root ^!recover))
+       # Doctor and recovery ignore execution configuration, as with response_budget.
+       (let idle (if (== ctx/mode "normal")
+         (then (note_active_setting ctx/runtime "idle_timeout_ms" (effective_setting ctx/runtime "idle_timeout_ms")))
+         (else 600000)))
+       (let sessions (open_session_manager ^idle_timeout_ms idle ctx/runtime ctx/events ctx/state_root ^!recover))
        (set ctx/runtime/sessions sessions)
        (try
          (provide ctx/h "core" "sessions/host" (session_host_binding ctx/runtime))
@@ -282,5 +290,4 @@
 
 (fn runtime_readiness [runtime]
   (fn []
-    (let current ($serde/read_data ($fs/read_text $"${runtime/state_root}/config.gene")))
-    (readiness_report runtime current)))
+    (readiness_report runtime (effective_config runtime))))

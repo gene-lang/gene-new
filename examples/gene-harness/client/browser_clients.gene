@@ -1,6 +1,6 @@
 # Host-owned executable-contribution lifecycle. Feature state stays in plugins.
 (mod harness_browser_clients ^profile web)
-(import [trap_modal_tab release_modal] ^from "./overlays.gene")
+(import [trap_modal_tab release_modal chord_recording?] ^from "./overlays.gene")
 (import [text flag integer] ^from "../src/common/launcher.gene")
 
 (type BrowserClients ^props {^root EventTarget ^safe Bool ^bridge Any
@@ -136,7 +136,7 @@
   (var host (BrowserClients ^root root ^safe safe ^bridge bridge ^mounts {} ^generation 0))
   ($dom/add_event_listener ^^capture ($dom/window) "keydown"
     (fn [event : Any] : Void
-      (if_yes ($event/is_composing event) (return))
+      (if_yes (|| ($event/is_composing event) (chord_recording?)) (return))
       (var handled (trap_modal_tab event))
       (for [name record] in host/mounts
         (if_yes (&& (! handled) ($present? record) (! (flag record/failed))

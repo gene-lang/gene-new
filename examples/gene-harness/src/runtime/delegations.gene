@@ -1,4 +1,5 @@
 (mod delegations)
+(import [effective_config] ^from "./settings_resolver")
 (import [DelegationHost DelegationError DurableRecord] ^from "../plugin_api")
 (import [delegation_error delegation_limits normalize_delegation terminal_delegation?
   delegation_source normalize_delegation_wait delegation_wait_members
@@ -121,7 +122,7 @@
     (let parent (delegation_parent service origin/session))
     (let owner (parent_round_record parent origin/round))
     (if owner/closed (delegation_error "round_closed" "This round no longer admits children."))
-    (let limits (delegation_limits ($serde/read_data ($fs/read_text $"${service/runtime/state_root}/config.gene"))))
+    (let limits (delegation_limits (effective_config service/runtime)))
     (let staged origin/context/staged/.get)
     (let admitted (parent_admissions parent ^round origin/round))
     (if (>= (+ admitted/.size staged/.size) limits/max_per_round)
@@ -583,7 +584,7 @@
 
 (fn dispatch_delegations [service]
   (if (|| service/stopping/.get service/runtime/stopping/.get) (return nil))
-  (let limits (delegation_limits ($serde/read_data ($fs/read_text $"${service/runtime/state_root}/config.gene"))))
+  (let limits (delegation_limits (effective_config service/runtime)))
   (let queue [])
   (for [session parent] in service/parents
     (for admission in (parent_admissions parent)

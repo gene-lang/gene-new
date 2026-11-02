@@ -112,8 +112,8 @@ authenticated event stream.
 
 | Message | Manager host | Ordinary workspace |
 | --- | --- | --- |
-| `manager/root`, `.model_configuration`, `.models` | Local | Local; no running manager needed |
-| `.set_default_model`, `.save_model_configuration` | Local, revision-checked | Local, revision-checked |
+| `manager/root`, `.model_configuration`, `.models`, `.settings` | Local | Local; no running manager needed |
+| `.set_default_model`, `.save_model_configuration`, `.set_setting`, `.set_settings`, `.reset_setting` | Local, revision-checked | Local, revision-checked |
 | `.workspaces` | Live status | Read from the workspaces directory, with status `unknown` |
 | `.workspace`, `.control` | Available | Fails with `unavailable` |
 
@@ -122,21 +122,36 @@ Reaching another workspace's sessions needs a connection between hosts that does
 
 ## Settings
 
-`workspace` owns writes to `config.gene`. Each setting comes from the `settings` registry and
-reports its definition, value, default and source (`launch`, `workspace` or `default`).
+`workspace` owns writes to `config.gene`; `manager` owns the shared generic defaults in the manager
+root's `settings.gene`. Each setting comes from the `settings` registry and reports its definition,
+value, stored value, shared value, inherited value, default and source (`launch`, `workspace`,
+`shared` or `default`). The [settings reference](settings.md) covers groups, choices, scopes and the
+Settings screen.
 
 ```gene
 (workspace .settings ^group "Triggers")
 (workspace .setting "turn_limit")
 (workspace .set_setting "turn_limit" 40 ^expected digest)
-(workspace .reset_setting "turn_limit")
+(workspace .set_settings {^provider "anthropic" ^model "claude-opus-5-5"} ^reset ["effort"] ^expected digest)
+(workspace .reset_setting "turn_limit")            # inherit the shared value or the default
+(workspace .settings_groups)
+(workspace .setting_choices "effort" ^values {^provider "anthropic" ^model "claude-opus-5-5"})
+workspace/.model_selection                          # what the next round would use, and why
+(manager .settings)
+(manager .set_setting "turn_limit" 40 ^expected digest)
+(manager .set_settings {^turn_limit 40} ^reset ["question_timeout_ms"] ^expected digest)
+(manager .reset_setting "turn_limit")
 ```
 
-A definition's `applies` says whether a change takes effect from the next round or needs a restart.
-Shared defaults belong to `manager`, workspace overrides to `workspace`, and conversation choices to
-`session`. A plugin adds a setting by contributing a row with `key`, `label`, `group`, `doc`, `type`,
-`default`, `applies` and an optional `validate`. Definitions are host-owned, so they stay available
-whichever screen shows them.
+Each save writes one store against that store's digest; one invalid value or a stale digest saves
+nothing. A definition's `applies` says whether a change takes effect at once, from the next round or
+after a restart, and restart settings report the `active` value and `pending_restart`. Only
+definitions with `^scopes ["workspace" "shared"]` take shared values: `turn_limit`,
+`trigger_turn_limit`, `trigger_timeout_ms` and `question_timeout_ms`. The shared model default stays in
+`models.gene` through `.set_default_model`, and conversation choices belong to `session`. A plugin adds
+a setting by contributing a row with `key`, `label`, `group`, `doc`, `type`, `default`, `applies` and
+optional `min`, `validate`, `choices` and `scopes`. Definitions are host-owned, so they stay
+available whichever screen shows them.
 
 ## Browser tabs and keyboard actions
 
@@ -155,14 +170,16 @@ on an authenticated route.
 Shortcuts come from the `keyboard_actions` registry. Chords use event codes, such as `Ctrl+Shift+KeyK`.
 
 ```gene
-workspace/.keyboard                             # binding, default, source, context and conflicts
-(workspace .bind_key "view/toggle" "Ctrl+Shift+KeyK")
-(workspace .clear_key "view/toggle")
-(workspace .restore_key "view/toggle")
+workspace/.keyboard                             # binding, default, source, context, conflicts, owner, digest
+(workspace .bind_key "view/toggle" "Ctrl+Shift+KeyK" ^expected digest)
+(workspace .clear_key "view/toggle" ^expected digest)
+(workspace .restore_key "view/toggle" ^expected digest)
 ```
 
-Connected tabs pick up a change at once. Overrides are stored by action id in the `keyboard_bindings`
-setting, so they survive a plugin being disabled and apply again when it returns. Keys that only move
+Connected tabs pick up a change at once. Overrides are stored by action id in the workspace-only
+`keyboard_bindings` setting, so they survive a plugin being disabled and apply again when it returns.
+Each message changes one action's entry inside the map read under the configuration gate, and a stale
+digest fails with a revision conflict. Keys that only move
 through or dismiss an open menu or list stay with that widget, following standard menu behavior.
 
 ## Contributing

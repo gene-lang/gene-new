@@ -1,7 +1,8 @@
 # Local navigation never writes shared workspace settings or admits work.
 (mod harness_ui_router ^profile web)
 (import [storage_get storage_set] ^from "../workspace_storage.gene")
-(import [keyboard_owned?] ^from "../overlays.gene")
+(import [keyboard_owned? chord_recording?] ^from "../overlays.gene")
+(import [event_chord] ^from "./chords.gene")
 (import [UiClient UiNode UiNavigation text flag copy_map notice persist_view sync_controls] ^from "./model.gene")
 (import [find_view initial_view presentation_for return_view view_url] ^from "./navigation.gene")
 (import [query_value] ^from "../state.gene")
@@ -100,17 +101,6 @@
   ($dom/set_input_value picker nav/active)
   (set picker/disabled ui/safe)
   (sync_controls ui))
-
-# A chord names physical keys by event code, as the host's keyboard_actions do.
-(fn event_chord [event : Any] : Str
-  (var parts "")
-  (if_yes ($event/ctrl_key event) (set parts $"${parts}Ctrl+"))
-  (if_yes ($event/shift_key event) (set parts $"${parts}Shift+"))
-  (if_yes ($event/alt_key event) (set parts $"${parts}Alt+"))
-  (if_yes ($event/meta_key event) (set parts $"${parts}Meta+"))
-  (var code ($event/code event))
-  (if_yes (== code "NumpadEnter") (set code "Enter"))
-  $"${parts}${code}")
 
 # One action's chord. The default applies until the first status arrives.
 (fn action_chord [ui : UiClient, action : Str, fallback : Str] : Str
@@ -230,7 +220,7 @@
       (persist_navigation ui) (layout ui)))
   ($dom/add_event_listener ^^capture ($dom/window) "keydown"
     (fn [event : Any] : Void
-      (if_yes (|| ui/safe (keyboard_owned?) ($event/is_composing event) ($event/repeat event)) (return))
+      (if_yes (|| ui/safe (keyboard_owned?) (chord_recording?) ($event/is_composing event) ($event/repeat event)) (return))
       (var chord (event_chord event))
       (var handled false)
       (for [id bound] in ui/keyboard

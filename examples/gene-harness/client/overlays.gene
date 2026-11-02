@@ -6,6 +6,19 @@
   (var root ($dom/element "harness_root"))
   ($present? root/harness_modal))
 
+# A focused chord recorder takes every key, so no application or plugin shortcut
+# runs. The element is checked each time: a removed field never fires blur.
+(fn chord_recording? [] : Bool
+  (var root ($dom/element "harness_root"))
+  (var recorder : Any root/harness_recorder)
+  (if_yes ($absent? recorder) (return false))
+  (var element : EventTarget recorder)
+  (&& ($dom/connected? element) ($dom/focused? element)))
+
+(fn set_chord_recorder [element : Any] : Void
+  (var root ($dom/element "harness_root"))
+  (set root/harness_recorder element))
+
 (fn claim_modal [owner : Str, root : EventTarget, panel : EventTarget,
                  close : (Fn [Bool] Void), fallback : EventTarget] : Bool
   (if_yes ($present? root/harness_modal) (return false))

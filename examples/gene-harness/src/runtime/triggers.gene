@@ -1,4 +1,5 @@
 (mod triggers)
+(import [effective_config note_active_setting] ^from "./settings_resolver")
 
 (import ^from "../storage/state"
   [core_states record_core_state flush_event_store copy_data])
@@ -111,7 +112,7 @@
   (let choice (?? definition/model_settings {}))
   (if (&& ($present? choice/provider) ($absent? (row manager/runtime/h "providers" choice/provider)))
     (invalid $"Unknown trigger provider ${choice/provider}"))
-  (let base ($serde/read_data ($fs/read_text $"${manager/runtime/state_root}/config.gene")))
+  (let base (effective_config manager/runtime))
   (let selected (try (select_provider ^allow_unready true manager/runtime
     (session_settings {^model_settings choice} base))
     catch Any
@@ -485,16 +486,16 @@
       (if (["due" "started"] .contains? value/state) (pending .put value/id value)))
     (if ($str/starts_with? ($to_str key) "occurrence-watermark/") (watermarks .put value/trigger value/at_ms))
     (if ($str/starts_with? ($to_str key) "trigger-last/") (finished .put value/trigger value)))
-  (let config ($serde/read_data ($fs/read_text $"${runtime/state_root}/config.gene")))
+  (let config (effective_config runtime))
   (for [id occurrence] in occurrences
     (if_yes (== occurrence/state "finished")
       (let previous (finished .get occurrence/trigger))
       (if (|| ($absent? previous) (> occurrence/at_ms previous/at_ms))
         (finished .put occurrence/trigger occurrence))))
-  (let cap (?? config/trigger_concurrency 2))
+  (let cap (note_active_setting runtime "trigger_concurrency" config/trigger_concurrency))
   (if (|| (!= ($head cap) Int) (< cap 1)) (invalid "trigger_concurrency must be positive"))
-  (let keep (?? config/trigger_occurrence_keep 256))
-  (let gc_interval (?? config/body_gc_interval_ms 60000))
+  (let keep (note_active_setting runtime "trigger_occurrence_keep" config/trigger_occurrence_keep))
+  (let gc_interval (note_active_setting runtime "body_gc_interval_ms" config/body_gc_interval_ms))
   (if (|| (!= ($head keep) Int) (< keep 0)) (invalid "trigger_occurrence_keep must be non-negative"))
   (if (|| (!= ($head gc_interval) Int) (< gc_interval 1)) (invalid "body_gc_interval_ms must be positive"))
   (let manager (TriggerManager ^runtime runtime ^controller controller ^definitions ($cell definitions)

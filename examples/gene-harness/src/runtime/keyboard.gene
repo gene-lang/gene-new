@@ -3,8 +3,8 @@
 # disabled, because disabling removes the row and leaves the stored override.
 (mod keyboard)
 (import [ServiceError] ^from "../plugin_api")
-(import [contribute rows row] ^from "../kernel")
-(import [read_config set_setting] ^from "./workspace_config")
+(import [contribute rows row registry_row_records] ^from "../kernel")
+(import [read_config config_digest commit_workspace] ^from "./workspace_config")
 
 (let modifier_order ["Ctrl" "Shift" "Alt" "Meta"])
 
@@ -25,20 +25,30 @@
   (ordered .push key)
   ($str/join ordered "+"))
 
-(fn stored_bindings [runtime]
-  (?? ((read_config runtime) .get "keyboard_bindings") {}))
+(fn stored_bindings_in [config]
+  (?? (config .get "keyboard_bindings") {}))
 
 (fn contexts_overlap? [left : Str, right : Str] : Bool
   (|| (== left right) (== left "application") (== right "application")))
 
-(fn keyboard_state [runtime]
-  (let stored (stored_bindings runtime))
+(fn action_owners [runtime]
+  (let owners {})
+  (for record in (registry_row_records runtime/h "keyboard_actions")
+    (owners .put ($to_str record/key) record/owner))
+  owners)
+
+# Views from one read of config.gene, with that read's digest, so an editor can
+# save against exactly the revision it showed.
+(fn keyboard_state_from [runtime, config]
+  (let stored (stored_bindings_in config))
+  (let owners (action_owners runtime))
   (let actions [])
   (for definition in (rows runtime/h "keyboard_actions")
     (let override (stored .get definition/id))
     (actions .push
       {^id definition/id ^label definition/label ^doc definition/doc ^context definition/context
        ^default definition/default ^binding (?? override definition/default)
+       ^owner (?? (owners .get definition/id) "core")
        ^source (if ($present? override) "override" "default")}))
   (for action in actions
     (let conflicts [])
@@ -48,7 +58,10 @@
                 (contexts_overlap? other/context action/context))
           (conflicts .push other/id))))
     (action .put "conflicts" conflicts))
-  {^actions actions})
+  {^actions actions ^digest (config_digest config)})
+
+(fn keyboard_state [runtime]
+  (keyboard_state_from runtime (read_config runtime)))
 
 # The compact id-to-chord map a browser needs.
 (fn keyboard_bindings [runtime]
@@ -63,24 +76,33 @@
     (fail (ServiceError ^code "not_found" ^message $"Unknown keyboard action ${id}.")))
   definition)
 
-(fn store_binding [runtime, id : Str, change]
-  (let next ($thaw ($freeze (stored_bindings runtime))))
-  (change next)
-  (set_setting runtime "keyboard_bindings" next)
-  (keyboard_state runtime))
+# Changes one action id inside the map read under the configuration gate, so two
+# editors cannot drop each other's overrides. A stale expected digest saves nothing.
+(fn store_binding [runtime, id : Str, change, ^expected expected : Str = ""]
+  (let written ($cell nil))
+  (commit_workspace runtime ^touches ["keyboard_bindings"] ^expected expected
+    ^mutate (fn [candidate]
+      (let next ($thaw ($freeze (stored_bindings_in candidate))))
+      (change next)
+      # Restoring the last override leaves no override, not an empty one.
+      (if (== ($size next) 0)
+        (then (candidate .delete "keyboard_bindings"))
+        (else (candidate .put "keyboard_bindings" next)))
+      (written .set candidate)))
+  (keyboard_state_from runtime written/.get))
 
-(fn bind_key [runtime, id : Str, chord : Str]
+(fn bind_key [runtime, id : Str, chord : Str, ^expected expected : Str = ""]
   (require_action runtime id)
   (let normalized (normalize_chord chord))
-  (store_binding runtime id (fn [next] (next .put id normalized))))
+  (store_binding ^expected expected runtime id (fn [next] (next .put id normalized))))
 
-(fn clear_key [runtime, id : Str]
+(fn clear_key [runtime, id : Str, ^expected expected : Str = ""]
   (require_action runtime id)
-  (store_binding runtime id (fn [next] (next .put id ""))))
+  (store_binding ^expected expected runtime id (fn [next] (next .put id ""))))
 
-(fn restore_key [runtime, id : Str]
+(fn restore_key [runtime, id : Str, ^expected expected : Str = ""]
   (require_action runtime id)
-  (store_binding runtime id (fn [next] (next .delete id))))
+  (store_binding ^expected expected runtime id (fn [next] (next .delete id))))
 
 (fn core_keyboard_actions []
   (let views [])

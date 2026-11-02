@@ -1,0 +1,59 @@
+# Key chords as the host stores them (event codes such as Ctrl+Shift+KeyK) and as
+# a person reads them on this platform. Formatting never changes the stored meaning.
+(mod harness_ui_chords ^profile web)
+
+# A chord names physical keys by event code, as the host's keyboard_actions do.
+(fn event_chord [event : Any] : Str
+  (var parts "")
+  (if_yes ($event/ctrl_key event) (set parts $"${parts}Ctrl+"))
+  (if_yes ($event/shift_key event) (set parts $"${parts}Shift+"))
+  (if_yes ($event/alt_key event) (set parts $"${parts}Alt+"))
+  (if_yes ($event/meta_key event) (set parts $"${parts}Meta+"))
+  (var code ($event/code event))
+  (if_yes (== code "NumpadEnter") (set code "Enter"))
+  $"${parts}${code}")
+
+# Pressing only a modifier is not a chord yet; the recorder waits for the key.
+(fn modifier_code? [code : Str] : Bool
+  (for name in ["ShiftLeft" "ShiftRight" "ControlLeft" "ControlRight" "AltLeft" "AltRight"
+                "MetaLeft" "MetaRight" "CapsLock" "Fn" "FnLock" "OSLeft" "OSRight"]
+    (if_yes (== code name) (return true)))
+  false)
+
+(fn mac_platform? [platform : Str] : Bool
+  (var lower ($str/lower platform))
+  (|| ($str/contains? lower "mac") ($str/contains? lower "iphone") ($str/contains? lower "ipad")))
+
+(fn modifier_label [name : Str, mac : Bool] : Str
+  (if_not mac (return name))
+  (if_yes (== name "Ctrl") (return "⌃"))
+  (if_yes (== name "Shift") (return "⇧"))
+  (if_yes (== name "Alt") (return "⌥"))
+  (if_yes (== name "Meta") (return "⌘"))
+  name)
+
+(fn key_label [code : Str] : Str
+  (var size ($str/byte_size code))
+  (if_yes (&& ($str/starts_with? code "Key") (== size 4)) (return ($str/slice_bytes code 3 1)))
+  (if_yes (&& ($str/starts_with? code "Digit") (== size 6)) (return ($str/slice_bytes code 5 1)))
+  (if_yes (== code "ArrowUp") (return "↑"))
+  (if_yes (== code "ArrowDown") (return "↓"))
+  (if_yes (== code "ArrowLeft") (return "←"))
+  (if_yes (== code "ArrowRight") (return "→"))
+  (if_yes (== code "Escape") (return "Esc"))
+  code)
+
+# Ctrl+Shift+KeyK reads ⌃⇧K on macOS and Ctrl+Shift+K elsewhere. Ctrl stays Ctrl:
+# it is never shown as Command, because the stored chord means the Control key.
+(fn format_chord [chord : Str, platform : Str] : Str
+  (if_yes (== ($str/trim chord) "") (return "Unbound"))
+  (var mac (mac_platform? platform))
+  (var parts ($str/split chord "+"))
+  (var out "")
+  (var index 0)
+  (var last (- parts/.size 1))
+  (for part in parts
+    (var label (if (== index last) (key_label part) (modifier_label part mac)))
+    (set out (if (|| mac (== index 0)) $"${out}${label}" $"${out}+${label}"))
+    (set index (+ index 1)))
+  out)

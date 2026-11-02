@@ -1,4 +1,5 @@
 (mod session_service)
+(import [effective_config] ^from "../runtime/settings_resolver")
 (import [open_session_lifecycle close_session_lifecycle] ^from "./observers")
 (import [command_descriptors] ^from "../runtime/command_identity")
 (import [browser_client_descriptors] ^from "../ui/browser_assets")
@@ -80,7 +81,9 @@
 (import [list_media] ^from "../runtime/media_host")
 (import [open_media_store put_media_base64 media_descriptor media_bytes] ^from "../storage/media")
 (import [voice_timings] ^from "../runtime/voice_state")
-(import [list_settings read_setting set_setting reset_setting] ^from "../runtime/workspace_config")
+(import [list_settings read_setting set_setting reset_setting set_settings list_settings_groups setting_choices
+  list_shared_settings read_shared_setting set_shared_setting reset_shared_setting commit_shared
+  require_definition SettingsChanged] ^from "../runtime/workspace_config")
 (import [keyboard_state keyboard_bindings bind_key clear_key restore_key] ^from "../runtime/keyboard")
 (import ^from "../runtime/cards" ^^export
   [card_records shown_card card_action card_action_receipt check_card_command
@@ -108,8 +111,7 @@
   (let metadata (if (== session "") (then nil) (else (require_record service/runtime/sessions session))))
   (let loaded (if (== session "") (then nil) (else (load_session service/runtime/sessions session))))
   (let round (if ($present? loaded) (then loaded/round/.get) (else nil)))
-  (let config ($serde/read_data ($fs/read_text $"${service/runtime/state_root}/config.gene")))
-  (selection_view ^metadata metadata ^round round service/runtime config))
+  (selection_view ^metadata metadata ^round round service/runtime (effective_config service/runtime)))
 
 (fn model_catalog [service]
   (let contribution (row service/runtime/h "seams" "models/catalog"))
@@ -412,6 +414,10 @@
       (publish_message service "ui/state" "" (ui_status service/runtime)))
     (when (changed : AppearanceChanged)
       (publish_message service "appearance" "" {^mode changed/mode}))
+    (when (changed : SettingsChanged)
+      (publish_message service "settings/changed" ""
+        {^scope changed/scope ^digest changed/digest ^keys changed/keys})
+      (publish_message service "ui/state" "" (ui_status service/runtime)))
     (when (record : DurableRecord)
       (if (&& (== record/name "trace") (== record/envelope/payload/kind "channel/status"))
         (queue_snapshot service record/stream))
@@ -865,7 +871,7 @@
         ^sessions (session_records service/runtime/sessions)}))
   (let components [])
   (for candidate in (rows service/runtime/h "web_components")
-    (if_not ($absent? candidate/view_state) (continue))
+    (if (|| ($present? candidate/view_state) (== candidate/slot "settings_section")) (continue))
     (let item {^name candidate/name ^slot candidate/slot})
     (if_not ($absent? candidate/style_css)
       (item .put "style" candidate/style_css)
@@ -912,7 +918,7 @@
   (for plugin in composition/plugins
     (plugins .push {^id plugin/id ^state plugin/status}))
   (let metadata (if (== session "") nil (require_record service/runtime/sessions session)))
-  (let config ($serde/read_data ($fs/read_text $"${service/runtime/state_root}/config.gene")))
+  (let config (effective_config service/runtime))
   (let current (if (== session "") (then nil) (else (load_session service/runtime/sessions session))))
   (let round (if ($present? current) (then current/round/.get) (else nil)))
   (let selection (if (["running" "waiting"] .contains? round/state) (then round/selection) (else nil)))
@@ -1081,6 +1087,21 @@
   (message set_default_model [selection, expected : Str] : Any
     @doc "Save the shared default model immediately. A stale digest fails with a revision conflict."
     (set_model_default self selection expected))
+  (message settings [^group group : Str = ""] : Any
+    @doc "Shared setting defaults in the manager root's settings.gene: each shared-capable setting's value, default and source, with that file's digest. Works without a running manager."
+    (list_shared_settings ^group group self/runtime))
+  (message setting [key : Str] : Any
+    @doc "One shared setting default."
+    (read_shared_setting self/runtime key))
+  (message set_setting [key : Str, value, ^expected expected : Str = ""] : Any
+    @doc "Save a shared setting default for every workspace without its own override. Running hosts use it from their next applicable round. A stale digest fails with a revision conflict."
+    (set_shared_setting ^expected expected self/runtime key value))
+  (message set_settings [changes, ^reset reset = [], ^expected expected : Str = ""] : Any
+    @doc "Save and reset several shared setting defaults in one locked write to settings.gene. Keys without shared scope, including model defaults, are refused before writing."
+    (commit_shared ^set changes ^reset reset ^expected expected self/runtime))
+  (message reset_setting [key : Str, ^expected expected : Str = ""] : Any
+    @doc "Remove a shared setting default so workspaces without an override use the definition default."
+    (reset_shared_setting ^expected expected self/runtime key))
   (message connect [provider : Str, ^account account = nil] : Any
     @doc "Start sign-in for a provider. Returns an attempt with its id and browser URL; read login_status for progress."
     (model_login ^account account self "connect" provider))
@@ -1248,24 +1269,36 @@
     @doc "One setting's definition, value, default and source."
     (read_setting self/runtime key))
   (message set_setting [key : Str, value, ^expected expected : Str = ""] : Any
-    @doc "Save a workspace setting immediately. Its applies field says whether it takes effect from the next round or a restart. A stale digest fails with a revision conflict."
+    @doc "Save a workspace setting immediately. Its applies field says whether it takes effect at once, from the next round or after a restart. A stale digest fails with a revision conflict."
     (set_setting ^expected expected self/runtime key value))
+  (message set_settings [changes, ^reset reset = [], ^expected expected : Str = ""] : Any
+    @doc "Save several workspace settings and reset others in one write to config.gene. One invalid value or a stale digest saves nothing. Returns the settings and the new digest."
+    (set_settings ^reset reset ^expected expected self/runtime changes))
+  (message model_selection [] : Any
+    @doc "The provider, model and effort the next round with no session choice would use, with its source, pins and any reason it is not ready."
+    (current_model_info self ""))
+  (message settings_groups [] : Any
+    @doc "The Settings sidebar: every setting group plus contributed settings_groups rows with their label, order, doc and section, in display order."
+    (list_settings_groups self/runtime))
+  (message setting_choices [key : Str, ^values values = {}, ^scope scope : Str = "workspace"] : Any
+    @doc "The options a setting's choice source offers for the given draft values, whether they are complete or closed, and why any are unavailable. Reads cached catalogs only."
+    (setting_choices ^values values ^scope scope self/runtime (require_definition self/runtime key)))
   (message keyboard [] : Any
-    @doc "Every keyboard action with its binding, default, source, context and conflicts."
+    @doc "Every keyboard action with its binding, default, source, context, conflicts and owning plugin, with the config digest."
     (keyboard_state self/runtime))
-  (message bind_key [id : Str, chord : Str] : Any
-    @doc "Bind an action to a chord such as Ctrl+Shift+KeyK, using event codes. Connected browsers pick it up at once. The binding is kept if the owning plugin is disabled."
-    (let state (bind_key self/runtime id chord))
+  (message bind_key [id : Str, chord : Str, ^expected expected : Str = ""] : Any
+    @doc "Bind an action to a chord such as Ctrl+Shift+KeyK, using event codes. Connected browsers pick it up at once. The binding is kept if the owning plugin is disabled. A stale digest fails with a revision conflict."
+    (let state (bind_key ^expected expected self/runtime id chord))
     (announce_keyboard self)
     state)
-  (message clear_key [id : Str] : Any
-    @doc "Leave an action with no binding."
-    (let state (clear_key self/runtime id))
+  (message clear_key [id : Str, ^expected expected : Str = ""] : Any
+    @doc "Leave an action with no binding. A stale digest fails with a revision conflict."
+    (let state (clear_key ^expected expected self/runtime id))
     (announce_keyboard self)
     state)
-  (message restore_key [id : Str] : Any
-    @doc "Restore an action's default binding."
-    (let state (restore_key self/runtime id))
+  (message restore_key [id : Str, ^expected expected : Str = ""] : Any
+    @doc "Restore an action's default binding. A stale digest fails with a revision conflict."
+    (let state (restore_key ^expected expected self/runtime id))
     (announce_keyboard self)
     state)
   (message clients [] : Any
@@ -1284,7 +1317,7 @@
     @doc "Run a keyboard action's operation in one tab, with no keypress."
     (client_request self/service/.get client "action/invoke" {^id id}))
   (message reset_setting [key : Str, ^expected expected : Str = ""] : Any
-    @doc "Remove a workspace override so the setting uses its default."
+    @doc "Remove a workspace override so the setting inherits its shared value or default. A stale digest fails with a revision conflict."
     (reset_setting ^expected expected self/runtime key))
   (message stop [^session session : Str = "", ^confirm confirm : Bool = false] : Any
     @doc "Stop this host. Other running sessions need confirm."

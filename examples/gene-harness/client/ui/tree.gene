@@ -1,6 +1,8 @@
 # Keyed DOM reconciliation. The controller supplies edit and submission handlers.
 (mod harness_ui_tree ^profile web)
 (import [UiNode UiClient text flag copy_map sync_controls] ^from "./model.gene")
+(import [event_chord modifier_code? format_chord] ^from "./chords.gene")
+(import [set_chord_recorder] ^from "../overlays.gene")
 
 (fn metadata [name : Str] : Bool
   (for key in ["key" "field" "state" "action" "args" "positional" "success-state" "command" "prompt" "switch-view" "presentation"]
@@ -47,6 +49,8 @@
       (if_yes created
         (if_yes (input_tag tag)
           ($dom/add_event_listener node/element "input" (fn [event : Any] : Void (changed node))))
+        (if_yes (&& (== tag "input") ($present? props/data-record-chord))
+          (bind_recorder node changed))
         (if_yes (== tag "button")
           ($dom/add_event_listener node/element "click" (fn [event : Any] : Void
             (if_not ($absent? node/props/switch-view)
@@ -78,8 +82,25 @@
           (set node/element/checked (if ($absent? draft) ($present? props/checked) (flag draft/value)))
           (do
             (var value (if ($absent? draft) (text props/value) (text draft/value)))
-            (if_yes (!= value ($dom/input_value node/element)) ($dom/set_input_value node/element value)))))))
+            (if_yes (!= value ($dom/input_value node/element)) ($dom/set_input_value node/element value)))))
+      (if_yes ($present? props/data-chord)
+        ($dom/set_text node/element (format_chord (text props/data-chord) ($browser/platform))))))
   ($dom/insert_at parent node/element at))
+
+# The recorder keeps keys from typing or running shortcuts and stores the chord.
+# Plain Tab and Shift+Tab still move focus, so the field never traps the keyboard.
+(fn bind_recorder [node : UiNode, changed : (Fn [UiNode] Void)] : Void
+  ($dom/add_event_listener node/element "focus" (fn [event : Any] : Void (set_chord_recorder node/element)))
+  ($dom/add_event_listener node/element "keydown" (fn [event : Any] : Void
+    (if_yes ($event/is_composing event) (return))
+    (var code ($event/code event))
+    (if_yes (modifier_code? code) (return))
+    (if_yes (&& (== code "Tab") (! ($event/ctrl_key event)) (! ($event/alt_key event)) (! ($event/meta_key event)))
+      (return))
+    ($dom/prevent_default event)
+    ($dom/stop_propagation event)
+    ($dom/set_input_value node/element (event_chord event))
+    (changed node))))
 
 (fn apply_tree [ui : UiClient, tree : Any,
   changed : (Fn [UiNode] Void), submit : (Fn [UiNode] Void)] : Void

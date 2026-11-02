@@ -3143,7 +3143,7 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
         # scope's cancellation, and this is not work.
         paramTypes = @[webType(wtkF64)]
         returnType = webType(wtkTask, webType(wtkNil))
-      of "browser/origin", "browser/hash", "browser/search", "browser/request_id":
+      of "browser/origin", "browser/hash", "browser/search", "browser/request_id", "browser/platform":
         paramTypes = @[]
         returnType = webType(wtkStr)
       of "browser/replace_url", "browser/push_url":
@@ -6086,6 +6086,11 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
     of "browser/hash": "window.location.hash"
     of "browser/search": "window.location.search"
     of "browser/request_id": "crypto.randomUUID()"
+    of "browser/platform":
+      # navigator.userAgentData is not in TypeScript's DOM library yet.
+      let agent = if emitter.typescript: "(navigator as any)" else: "navigator"
+      "(typeof navigator === \"undefined\" ? \"\" : String(" & agent &
+        ".userAgentData?.platform ?? navigator.platform ?? \"\"))"
     of "browser/load_module":
       "(import(" & arguments[0] & ").then(" & arguments[1] &
         ", $gene_load_error => " & arguments[2] &

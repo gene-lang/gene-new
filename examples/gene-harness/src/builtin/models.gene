@@ -3,6 +3,67 @@
 (import [list_catalog_models] ^from "../public/model_catalog")
 (import [contribute_text_doc] ^from "../public/documentation")
 (import [model_page] ^from "../public/model_page")
+(import [resolve_effort] ^from "../public/models")
+
+(const effort_levels ["auto" "none" "minimal" "low" "medium" "high" "xhigh" "max"])
+
+# Settings choices read the cached catalog; Refresh stays an explicit operation.
+(fn model_choice_options [snapshot]
+  (let options [])
+  (var complete true)
+  (for [key entry] in (?? snapshot/providers {})
+    (let provider ($to_str key))
+    (let ready (== entry/connection/state "ready"))
+    (if (|| (! ready) (== entry/stale true)) (set complete false))
+    (for model in (?? entry/models [])
+      (if (!= model/hidden true)
+        (options .push {^value model/id ^label (?? model/label model/id) ^provider provider ^model model/id
+          ^available ready ^reason (if ready nil (?? entry/connection/reason "Not connected."))}))))
+  {^options options ^complete complete
+   ^reason (if complete nil "Some connections are still being checked or are not ready. A model id that is not listed can still be typed; it is saved unverified.")})
+
+(fn catalog_model [snapshot, provider : Str, id : Str]
+  (let entry (?? snapshot/providers/%provider {}))
+  (for model in (?? entry/models [])
+    (if (== model/id id) (return model)))
+  {^id id})
+
+# Requested efforts are portable levels; each shows what it becomes for the model.
+(fn effort_choice_options [snapshot, values]
+  (let provider ($to_str (?? values/provider "")))
+  (let id ($to_str (?? values/model "")))
+  (let model (catalog_model snapshot provider id))
+  (let options [])
+  (for level in effort_levels
+    (let resolved (try {^effort (resolve_effort level model)} catch Any {^error ($to_str (?? $err/message $err))}))
+    (let effective (?? resolved/effort "provider default"))
+    (options .push
+      {^value level ^available ($absent? resolved/error) ^reason (?? resolved/error nil)
+       ^label (if ($present? resolved/error) $"${level} (not available for this model)"
+         (if (== level effective) level $"${level} → ${effective}"))}))
+  {^options options ^complete true})
+
+(fn providers_section [snapshot]
+  (let rows [])
+  (for [key entry] in (?? snapshot/providers {})
+    (let name ($to_str key))
+    (let connection (?? entry/connection {}))
+    (let count ($size (?? entry/models [])))
+    (rows .push
+      `(tr ^key %$"provider/${name}"
+         (td (strong %(?? connection/label name)) (br) (small ^class_name "web_muted" %name))
+         (td %(?? connection/state "unknown"))
+         (td %(?? connection/reason ""))
+         (td %$"${count} models"))))
+  `(section ^key "providers-section" ^class_name "web_stack"
+     (table ^key "providers-table" ^class_name "web_table_compact"
+       (thead (tr (th "Provider") (th "State") (th "Detail") (th "Models")))
+       (tbody %rows...))
+     (div ^class_name "web_actions"
+       (button ^key "providers-refresh" ^action "models_refresh" ^class_name "web_secondary" "Refresh connections")
+       (a ^href "/models" ^target "_blank" "Open Providers"))
+     (p ^class_name "web_muted"
+       "Sign-in, accounts and endpoint configuration are on the Providers page. Refresh checks connections and model lists; it does not send an inference request.")))
 
 (var asset ($cell nil))
 (var stylesheet ($cell nil))
@@ -37,7 +98,9 @@
     nil catch Any $err/.Error:message))
   (Plugin ^id "models" ^requires ["models/host"]
     ^provides [["seams" "models/catalog"] ["seams" "models/page"] ["functions" "list_models"] ["docs" "harness/models"]
-      ["commands" "model"] ["commands" "effort"] ["browser_clients" "models"]]
+      ["commands" "model"] ["commands" "effort"] ["browser_clients" "models"]
+      ["setting_choices" "models"] ["setting_choices" "efforts"] ["settings_groups" "Providers"]
+      ["web_components" "model_providers"] ["ui_actions" "models_refresh"]]
     ^activate (fn [host]
       (if ($present? error) (fail error))
       (let catalog (host .PluginHost:resolve "models/host"))
@@ -70,6 +133,20 @@
         (definition .put "docs" ["harness/models"])
         (definition .put "run" (fn [context] (catalog .ModelsHost:command name context)))
         (host .PluginHost:contribute "commands" definition))
+      (host .PluginHost:contribute "setting_choices"
+        {^name "models" ^!closed ^choices (fn [context] (model_choice_options catalog/.ModelsHost:snapshot))})
+      (host .PluginHost:contribute "setting_choices"
+        {^name "efforts" ^^closed
+         ^choices (fn [context] (effort_choice_options catalog/.ModelsHost:snapshot (?? context/values {})))})
+      (host .PluginHost:contribute "settings_groups"
+        {^name "Providers" ^order 30 ^section "model_providers"
+         ^doc "Model connections. Contributing a provider adds choices; it never changes the saved model."})
+      (host .PluginHost:contribute "ui_actions"
+        {^name "models_refresh" ^doc "Request bounded model discovery for every connection."
+         ^fn (fn [] catalog/.ModelsHost:refresh "Refreshing connections.")})
+      (host .PluginHost:contribute "web_components"
+        {^name "model_providers" ^slot "settings_section" ^actions ["models_refresh"]
+         ^render (fn [context] (providers_section catalog/.ModelsHost:snapshot))})
       (host .PluginHost:contribute "functions"
         {^name "list_models" ^doc "List ready models with efforts, context limits and billing. Search with q/provider; use next_offset for another page."
          ^tags ["models" "provider" "effort"] ^docs ["harness/models"]

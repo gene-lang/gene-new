@@ -10,6 +10,10 @@
 (import [command_receipt take_command_attachments submit_command] ^from "../../../src/runtime/commands")
 (import [list_sessions delete_session] ^from "../../../src/runtime/sessions")
 
+# Settings is always listed; these specs exercise optional plugin views.
+(fn plugin_views [status]
+  ($filter status/components (fn [view] (!= view/name "settings"))))
+
 (fn wait_command [service, session, record]
   (service/runtime/services/values/commands/watchers/.get .get $"${session}:${record/id}"; .join)
   (command_receipt service/runtime/services/values/commands session record/id))
@@ -48,8 +52,9 @@
           (let notifications [])
           (service/publisher .set (fn [message] (notifications .push message/type)))
           (let before (ui_status service/runtime))
-          ($assert (== before/components/.size 1) ($to_str h/plugin_errors/.get))
-          (let view before/components/0)
+          (let probes (plugin_views before))
+          ($assert (== probes/.size 1) ($to_str h/plugin_errors/.get))
+          (let view probes/0)
           (let request {^input_id "1:context" ^generation 1 ^instance "probe" ^component "probe"
             ^revision view/revision ^function "probe_action" ^function_revision view/functions/probe_action
             ^args [] ^named {}})
@@ -104,7 +109,7 @@
           (configure {^^enabled})
           (let a (create_session service))
           (let b (create_session service))
-          (let view (/0 (/components (ui_status service/runtime))))
+          (let view (/0 (plugin_views (ui_status service/runtime))))
           (let request {^input_id "1:first" ^generation 1 ^instance "board" ^component "project_board"
             ^revision view/revision ^function "board_save" ^function_revision view/functions/board_save
             ^args [] ^named {^id "welcome" ^revision "1" ^title "First"}})
@@ -131,7 +136,7 @@
           (register_plugin service/runtime/workspace h "project_board" ($fs/read_text (package_path "examples/project_board/project_board.gene")))
           (let configure (/fn (row h "functions" "ui_configure")))
           (configure {^^enabled ^layout "panel" ^panel "project_board"})
-          (let view (/0 (/components (ui_status service/runtime))))
+          (let view (/0 (plugin_views (ui_status service/runtime))))
           (let request {^input_id "1:save-once" ^generation 1 ^instance "board-instance" ^component "project_board"
             ^revision view/revision ^function "board_save" ^function_revision view/functions/board_save
             ^args [] ^named {^id "welcome" ^revision "1" ^title "Saved once"}})

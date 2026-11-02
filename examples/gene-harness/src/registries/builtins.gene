@@ -2,7 +2,7 @@
 # the same machinery available to a plugin-defined extension point.
 (mod builtin_registry_specs)
 (import [HarnessError] ^from "../errors")
-(import [validate_keyboard_action_row validate_setting_row validate_seam_row validate_command_row validate_function_row validate_input_mode_row
+(import [validate_keyboard_action_row validate_setting_row validate_settings_group_row validate_setting_choices_row validate_seam_row validate_command_row validate_function_row validate_input_mode_row
   validate_provider_row validate_speech_row validate_image_generator_row validate_hook_row
   validate_hook_point_row validate_trigger_row validate_interaction_row
   validate_prompt_row validate_docs_row validate_event_type_row validate_event_type_owner
@@ -55,6 +55,8 @@
      ^prepare (fn [owner, candidate] (prepare_prompt_callback h owner candidate))}
     {^name "docs" ^^unique ^schema validate_docs_row}
     {^name "settings" ^^unique ^schema validate_setting_row ^key "key" ^callbacks ["validate"]}
+    {^name "settings_groups" ^^unique ^schema validate_settings_group_row ^key "name"}
+    {^name "setting_choices" ^^unique ^schema validate_setting_choices_row ^key "name" ^callbacks ["choices"]}
     {^name "keyboard_actions" ^^unique ^schema validate_keyboard_action_row ^key "id"}
     {^name "web_components" ^^unique ^^ordered ^schema validate_web_component ^callbacks ["render"]}
     {^name "browser_clients" ^^unique ^^ordered ^schema validate_browser_client}

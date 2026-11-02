@@ -1,4 +1,5 @@
 (mod operator_eval)
+(import [effective_config] ^from "./settings_resolver")
 (import [new_turn_items append_prompt_at append_plugin_prompt attachment recall rewrite_prompt_calls render_request] ^from "../agents/outcome")
 (import [outcome_constructor] ^from "../agents/outcome_admission")
 (import [open_execution_scope close_execution_scope] ^from "./execution_budget")
@@ -16,7 +17,7 @@
   bindings)
 
 (fn operator_context [ctx, turn]
-  (let config ($serde/read_data ($fs/read_text $"${ctx/runtime/state_root}/config.gene")))
+  (let config (effective_config ctx/runtime))
   (let reviewer (try (select_provider ctx/runtime config) catch Any nil))
   (let pinned (if ($absent? reviewer) nil
     ($freeze_shallow {^name reviewer/name ^settings ($freeze reviewer/settings)
@@ -28,8 +29,7 @@
     ; .assoc "reviewer" pinned))
 
 (fn operator_scope [ctx, context]
-  (let config ($serde/read_data ($fs/read_text $"${ctx/runtime/state_root}/config.gene")))
-  (let limits (?? config/response_budget {^timeout_ms 600000 ^max_memory_mb 1024}))
+  (let limits (/response_budget (effective_config ctx/runtime)))
   (open_execution_scope "response"
     {^timeout_ms (?? limits/timeout_ms 600000)
      ^max_memory_mb (?? limits/max_memory_mb 1024)} context))

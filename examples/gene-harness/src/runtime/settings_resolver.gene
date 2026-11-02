@@ -1,0 +1,96 @@
+# The one read path for definition-backed settings. Each call reads config.gene and,
+# only when a shared-capable key has no workspace value, the shared settings.gene,
+# so a shared edit reaches the next consumer with no cache, watcher or restart.
+# Provider, model and effort pass through as stored: the model-selection resolver
+# owns their precedence and must not see injected defaults.
+(mod settings_resolver)
+(import [rows] ^from "../kernel")
+(import [core_setting_definitions model_setting_keys supports_scope?] ^from "./setting_definitions")
+(import [read_shared_settings shared_settings_root] ^from "./shared_settings")
+
+(fn read_workspace_values [state_root : Str]
+  ($serde/read_data ($fs/read_text $"${state_root}/config.gene")))
+
+# Registry rows once installed; the same built-in rows as data before that.
+(fn setting_definitions [runtime]
+  (let result {})
+  (for definition in (core_setting_definitions) (result .put definition/key definition))
+  (if ($present? runtime/h)
+    (for definition in (rows runtime/h "settings") (result .put definition/key definition)))
+  result)
+
+(fn stored? [values, key : Str] : Bool
+  ($has_key? values key))
+
+# Workspace, then shared where the definition allows it, then the definition default.
+# Presence decides, not truthiness: false, 0, "" and {} are real values.
+(fn layered_value [definition, workspace_values, shared_values]
+  (let key definition/key)
+  (if (stored? workspace_values key) (return (workspace_values .get key)))
+  (if (&& (supports_scope? definition "shared") (stored? shared_values key))
+    (return (shared_values .get key)))
+  definition/default)
+
+(fn needs_shared? [definitions, workspace_values] : Bool
+  (for [key definition] in definitions
+    (if (&& (supports_scope? definition "shared") (! (stored? workspace_values ($to_str key))))
+      (return true)))
+  false)
+
+# The workspace map with every non-model definition-backed key resolved. Keys
+# without a definition keep their stored values.
+(fn resolve_config [workspace_values, definitions, shared_root : Str]
+  (let shared (if (&& (!= shared_root "") (needs_shared? definitions workspace_values))
+    (then (/values (read_shared_settings shared_root)))
+    (else {})))
+  (let result workspace_values)
+  (for [key definition] in definitions
+    (let name ($to_str key))
+    (if_not (model_setting_keys .contains? name)
+      (result .put name (layered_value definition workspace_values shared))))
+  result)
+
+(fn effective_config [runtime]
+  (resolve_config (read_workspace_values runtime/state_root) (setting_definitions runtime)
+    (shared_settings_root runtime)))
+
+(fn effective_setting [runtime, key : Str]
+  ((effective_config runtime) .get key))
+
+# Startup consumers run before the runtime and registry exist. Only the built-in
+# definitions apply there; recovery passes no state root and keeps its profile limits.
+(fn startup_config [state_root : Str, shared_root : Str]
+  (let definitions {})
+  (for definition in (core_setting_definitions) (definitions .put definition/key definition))
+  (resolve_config (read_workspace_values state_root) definitions shared_root))
+
+# Host-owned settings state: a revision that open screens use to refresh, and the
+# values restart-applied consumers actually started with.
+(fn new_settings_state []
+  {^revision ($cell 0) ^active ($cell {}) ^observed ($cell nil)})
+
+(fn settings_state [runtime]
+  (if ($absent? runtime/services) (return nil))
+  runtime/services/values/settings)
+
+(fn settings_revision [runtime] : Int
+  (let state (settings_state runtime))
+  (if ($absent? state) 0 state/revision/.get))
+
+(fn bump_settings_revision [runtime]
+  (let state (settings_state runtime))
+  (if ($present? state) (state/revision .set (+ state/revision/.get 1)))
+  nil)
+
+# A consumer that applies a value only when it initializes records what it took.
+(fn note_active_setting [runtime, key : Str, value]
+  (let state (settings_state runtime))
+  (if ($absent? state) (return nil))
+  (let next ($thaw ($freeze state/active/.get)))
+  (next .put key value)
+  (state/active .set next)
+  value)
+
+(fn active_settings [runtime]
+  (let state (settings_state runtime))
+  (if ($absent? state) {} state/active/.get))

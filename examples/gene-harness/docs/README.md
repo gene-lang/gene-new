@@ -7,6 +7,7 @@ and measurement records are available in Git history.
 ## Reference
 
 - [Global objects](objects.md): `workspace`, `manager`, `session`, and how to read and change everything
+- [Settings](settings.md): the Settings screen, groups, choices, workspace and shared scopes, shortcuts
 - [Design and ownership](design.md), [protocol](protocol.md) and [contributor guide](../CONTRIBUTING.md)
 - [Plugin contract, manager and source history](plugins.md), [operator guide](plugin-manager-guide.md)
 - [Turn participants, Outcome schemas and initiators](turn-participants.md)

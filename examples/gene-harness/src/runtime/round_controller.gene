@@ -1,4 +1,5 @@
 (mod round_controller)
+(import [effective_config] ^from "./settings_resolver")
 (import [operator_round? continuable_round?] ^from "./round_policy")
 (import [normalize_message] ^from "../channels/model")
 (import [resolve_initiator make_initiator] ^from "./initiators")
@@ -439,7 +440,7 @@
         {^composition controller/runtime/h/snapshots
          ^snapshot admission_lease/snapshot}
         (fn []
-          (let base ($serde/read_data ($fs/read_text $"${controller/runtime/state_root}/config.gene")))
+          (let base (effective_config controller/runtime))
           (let stored (require_record controller/runtime/sessions session))
           (let metadata (if (|| ($present? model_settings) (== source/kind "trigger"))
             {^model_settings (?? model_settings {})} stored))
@@ -507,9 +508,8 @@
     (receipt .put "continued_from" continuation/source_round))
   (if (! (operator_round? receipt))
     (then
-      (let config
-        ($serde/read_data ($fs/read_text $"${controller/runtime/state_root}/config.gene")))
-      (receipt .put "deadline_ms" (+ ($os/wall_ms) (?? limits/timeout_ms (?? config/trigger_timeout_ms 300000))))))
+      (let config (effective_config controller/runtime))
+      (receipt .put "deadline_ms" (+ ($os/wall_ms) (?? limits/timeout_ms config/trigger_timeout_ms)))))
   (if user_source
     (then
       (let items (take_command_attachments controller/runtime session))

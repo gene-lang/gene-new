@@ -1,4 +1,5 @@
 (mod speech_service)
+(import [effective_config] ^from "./settings_resolver")
 (import [rows row_record] ^from "../kernel")
 (import [voice_error] ^from "./voice_state")
 (import [speech_segments nonempty] ^from "../public/speech_engines")
@@ -14,7 +15,7 @@
     ^cache ($cell []) ^cache_bytes ($cell 0) ^closed ($cell false) ^dirty ($cell false)))
 
 (fn speech_settings [service : SpeechService]
-  (?? (/voice ($serde/read_data ($fs/read_text $"${service/runtime/state_root}/config.gene"))) {}))
+  (?? (/voice (effective_config service/runtime)) {}))
 
 (fn speech_reason [candidate]
   (let result (try (candidate/available) catch Any $err/.Error:message))

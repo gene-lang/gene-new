@@ -1,0 +1,67 @@
+# The built-in setting definitions as plain data. Startup consumers that run before
+# the settings registry exists read these, and the registry later installs the same
+# rows, so the screen and execution agree on every default.
+(mod setting_definitions)
+(import [ServiceError] ^from "../plugin_api")
+
+(const portable_efforts ["auto" "none" "minimal" "low" "medium" "high" "xhigh" "max"])
+
+# Keys the model-selection resolver owns. The generic resolver passes their stored
+# values through untouched and never injects their defaults.
+(const model_setting_keys ["provider" "model" "effort"])
+
+(fn check_effort [value]
+  (let levels ($str/join portable_efforts ", "))
+  (if_not (portable_efforts .contains? value)
+    (fail (ServiceError ^code "invalid_request" ^message $"Effort must be one of ${levels}.")))
+  value)
+
+(fn core_setting_definitions []
+  (let group "General")
+  (let shared ["workspace" "shared"])
+  [{^key "provider" ^label "Provider" ^group "Models" ^type "str" ^default "" ^applies "next_round"
+    ^doc "Provider for this workspace. Empty follows the selection order."}
+   {^key "model" ^label "Model" ^group "Models" ^type "str" ^default "" ^applies "next_round" ^choices "models"
+    ^doc "Model for this workspace. Empty follows the selection order."}
+   {^key "effort" ^label "Effort" ^group "Models" ^type "str" ^default "auto" ^applies "next_round" ^choices "efforts"
+    ^validate check_effort
+    ^doc "Requested effort: auto, none, minimal, low, medium, high, xhigh or max."}
+   {^key "context_window" ^label "Context window" ^group "Models" ^type "int" ^default nil ^min 1 ^applies "next_round"
+    ^doc "Optional cap on the selected model's window in tokens."}
+   {^key "provider_timeout_ms" ^label "Provider timeout" ^group group ^type "int" ^default 600000 ^min 1 ^applies "next_round"
+    ^doc "Timeout per provider attempt in milliseconds."}
+   {^key "response_budget" ^label "Response budget" ^group group ^type "map"
+    ^default {^timeout_ms 600000 ^max_memory_mb 1024} ^applies "next_round"
+    ^doc "Runaway limit for each response evaluation and command. Plugin admission limits take it at startup."}
+   {^key "turn_limit" ^label "Turn limit" ^group group ^type "int" ^default 24 ^min 1 ^applies "next_round" ^scopes shared
+    ^doc "Turns per operator round. Reaching it pauses for continuation."}
+   {^key "trigger_turn_limit" ^label "Trigger turn limit" ^group "Triggers" ^type "int" ^default 12 ^min 1 ^applies "next_round" ^scopes shared
+    ^doc "Turns per trigger round."}
+   {^key "trigger_timeout_ms" ^label "Trigger timeout" ^group "Triggers" ^type "int" ^default 300000 ^min 1 ^applies "next_round" ^scopes shared
+    ^doc "Running time per trigger round in milliseconds."}
+   {^key "trigger_concurrency" ^label "Trigger concurrency" ^group "Triggers" ^type "int" ^default 2 ^min 1 ^applies "restart"
+    ^doc "Unfinished trigger rounds across the workspace."}
+   {^key "question_timeout_ms" ^label "Question timeout" ^group "Triggers" ^type "int" ^default 86400000 ^min 1 ^applies "next_round" ^scopes shared
+    ^doc "Deadline for a trigger round's question batch in milliseconds."}
+   {^key "trigger_occurrence_keep" ^label "Occurrences kept" ^group "Triggers" ^type "int" ^default 256 ^min 1 ^applies "restart"
+    ^doc "Recent terminal occurrences kept per trigger."}
+   {^key "idle_timeout_ms" ^label "Idle timeout" ^group group ^type "int" ^default 600000 ^min 1 ^applies "restart"
+    ^doc "How long an idle session stays loaded, in milliseconds."}
+   {^key "body_gc_interval_ms" ^label "Blob collection interval" ^group group ^type "int" ^default 60000 ^min 1 ^applies "restart"
+    ^doc "Interval for idle collection of unreferenced blobs in milliseconds."}
+   {^key "computer" ^label "Computer driver" ^group "Computer" ^type "map" ^default nil ^applies "restart"
+    ^doc "Optional driver command and socket for computer use."}
+   {^key "voice" ^label "Voice" ^group "Voice" ^type "map" ^default nil ^applies "next_round" ^choices "voices"
+    ^doc "Speech engine settings: recognizer, synthesizer, voice, language and rate."}
+   {^key "image" ^label "Images" ^group "Images" ^type "map" ^default nil ^applies "next_round"
+    ^doc "Default image generator and generation model."}
+   {^key "keyboard_bindings" ^label "Keyboard shortcuts" ^group "Keyboard Shortcuts" ^type "map" ^default {} ^applies "immediate"
+    ^doc "Overrides by keyboard action id. An empty chord clears a binding."}
+   {^key "delegation" ^label "Delegation" ^group "Delegation" ^type "map" ^default nil ^applies "next_round"
+    ^doc "Limits on delegated child sessions."}])
+
+(fn definition_scopes [definition]
+  (?? definition/scopes ["workspace"]))
+
+(fn supports_scope? [definition, scope : Str] : Bool
+  ((definition_scopes definition) .contains? scope))

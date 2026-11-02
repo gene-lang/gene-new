@@ -15,6 +15,7 @@ module loading, replacement and retirement as functions and commands.
 | `status` | Add panels in the workspace status drawer. |
 | `welcome` | Replace the empty-conversation view. The name must be `welcome`. |
 | `status_summary` | Replace the model/profile summary in the status drawer. The name must be `status_summary`. |
+| `settings_section` | A custom section inside a Settings group; see [settings](settings.md#groups). |
 
 Each row has a stable `name`, a `slot`, and exactly one of `view` or `render`.
 Additions use unique names such as `scratchpad` or `workspace_pulse`. Two plugins
@@ -300,6 +301,13 @@ input, textarea, select, option, table, thead, tbody, tr, th and td.
 | `success_state` | Optional scalar view-state patch on an action form, applied after its receipt succeeds. Useful for closing a completed creation form. Fields must be declared in `view_state`. |
 | `value`, `checked`, `selected`, `required`, `placeholder`, `rows`, `for`, `name` | Ordinary control attributes. Values and checked state are updated without overwriting dirty fields. |
 
+A text input with `^record_chord true` and a `field` records a key chord instead
+of text: it stores the pressed keys as event codes, such as `Ctrl+Shift+KeyK`,
+suspends application and plugin shortcuts while it has focus, and lets plain Tab
+and Shift+Tab move focus. A `code`, `span`, `strong` or `small` element with
+`^chord "Ctrl+KeyK"` and no children shows that chord in the browser platform's
+notation (`⌃K` on macOS, `Ctrl+K` elsewhere).
+
 Input types are text, search, checkbox, number and hidden. Field values are
 strings except checkboxes, which produce Bool; parse numbers in the function
 when needed. Nested forms, duplicate fields and duplicate keys are rejected.
@@ -373,6 +381,12 @@ An original generation-bound input identity is required for explicit retry.
 Generations rotate every 128 admissions; four generations and nonterminal
 records are protected. Receipt absence after expiry means the outcome can be
 unknown. Do not create a replacement identity to replay an uncertain operation.
+
+A host screen that must stay reachable can set `^always_available true` on its
+view row; it is listed, rendered and admits actions even while optional workspace
+views are disabled. Settings uses this. A view row with `^embeds "settings_section"`
+renders contributed section rows itself and admits each section's declared
+`actions` as its own.
 
 Navigation buttons may use `^switch_view "name"` and optionally
 `^presentation "docked"` or `"full"`. `harness` selects Classic alone and cannot

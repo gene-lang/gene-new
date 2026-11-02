@@ -5,10 +5,10 @@
 (type WebComponentError ^props {^message Str} ^impl [Error])
 (impl Error for WebComponentError)
 
-(const component_slots ["sidebar" "conversation_sidebar" "toolbar" "composer" "composer_actions" "status" "welcome" "status_summary" "panel" "view"])
+(const component_slots ["sidebar" "conversation_sidebar" "toolbar" "composer" "composer_actions" "status" "welcome" "status_summary" "panel" "view" "settings_section"])
 (const sidebar_widgets ["brand" "new_conversation" "filters" "attention" "extensions" "conversations" "workspace_tools"])
 (const interactive_tags ["form" "label" "input" "textarea" "select" "option" "table" "thead" "tbody" "tr" "th" "td"])
-(const interactive_attributes ["key" "field" "state" "action" "args" "positional" "success_state" "name" "placeholder" "checked" "selected" "for" "rows" "required"])
+(const interactive_attributes ["key" "field" "state" "action" "args" "positional" "success_state" "name" "placeholder" "checked" "selected" "for" "rows" "required" "record_chord"])
 # Conversation cards (docs/cards.md) use the keyed controls without view-state
 # or function actions, plus their own card actions.
 (const card_attributes ["key" "field" "args" "name" "placeholder" "checked" "selected" "for" "rows" "required" "update" "send" "answer"])
@@ -62,7 +62,8 @@
     "width"
     "height"
     "columns"
-    "inset"])
+    "inset"
+    "chord"])
 
 (fn component_error [message : Str]
   (fail (WebComponentError ^message ($to_str message
@@ -171,6 +172,17 @@
         (component_error "overlay columns must be 1–25; inset must be 0–25"))
       (attributes .put ($to_str "data-" name) ($to_str item))
       (continue))
+    # The browser shows a canonical event-code chord in its platform's notation.
+    (if_yes (== name "chord")
+      (if (|| (!= ($head item) Str) (! (["code" "span" "strong" "small"] .contains? tag)))
+        (component_error "chord takes a chord string on code, span, strong or small"))
+      (attributes .put "data-chord" item)
+      (continue))
+    # A recorder field captures the next key chord instead of typing text.
+    (if_yes (== name "record_chord")
+      (if (|| (!= item true) (!= tag "input")) (component_error "record_chord is true on an input field"))
+      (attributes .put "data-record-chord" "")
+      (continue))
     (if_not ([Str Int Float Bool Nil] .contains? ($head item))
       (component_error "web component attributes must be scalar data"))
     (if (|| ($absent? item) (== item false)) (continue))
@@ -266,6 +278,11 @@
   (if_yes (|| ($present? attributes/data-columns) ($present? attributes/data-inset))
     (if (!= (?? attributes/class "") "web_image_grid")
       (component_error "columns and inset require web_image_grid")))
+  (if (&& ($present? attributes/data-chord) (! children/.empty?))
+    (component_error "a chord element has no children; the browser writes its text"))
+  (if (&& ($present? attributes/data-record-chord)
+          (|| ($absent? attributes/field) (&& ($present? attributes/type) (!= attributes/type "text"))))
+    (component_error "record_chord needs a text input form field"))
   (let field_names (if (== tag "form") {} form))
   (let body ($map children (fn [child] (component_view ^depth (+ depth 1) ^interactive interactive ^keys keys ^form field_names ^widgets widgets ^card card child))))
   # A textarea's ordinary text content is its initial value. The keyed browser
@@ -343,6 +360,20 @@
         (if (|| (!= ($head name) Str) (== name "")) (component_error "invalid action function name")))))
   (if (&& (["panel" "view"] .contains? candidate/slot) (! stateful))
     (component_error "views must declare view_state"))
+  # A section renders inside a view that embeds its slot; its actions run as that view's.
+  (if_yes (== candidate/slot "settings_section")
+    (if (|| stateful ($absent? candidate/render))
+      (component_error "a settings section needs a render callback and no view_state"))
+    (if_not ($absent? candidate/actions)
+      (if (!= ($head candidate/actions) List) (component_error "actions must list function names"))
+      (for name in candidate/actions
+        (if (|| (!= ($head name) Str) (== name "")) (component_error "invalid action function name")))))
+  (if (&& ($present? candidate/embeds) (|| (! stateful) (!= candidate/embeds "settings_section")))
+    (component_error "only a stateful view embeds settings_section rows"))
+  # A host screen such as Settings stays listed when optional workspace views are off.
+  (if (&& ($present? candidate/always_available)
+          (|| (!= ($head candidate/always_available) Bool) (! stateful)))
+    (component_error "always_available is a Bool on a stateful view"))
   (if_yes stateful
     (let title (if (== candidate/slot "panel") (?? candidate/title candidate/name) candidate/title))
     (if (|| (!= ($head title) Str) (== ($str/trim title) "") (> ($str/byte_size title) 160))

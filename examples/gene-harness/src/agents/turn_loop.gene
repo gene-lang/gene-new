@@ -1,4 +1,5 @@
 (mod turn_loop)
+(import [effective_config] ^from "../runtime/settings_resolver")
 (import ^from "../runtime/composition" [acquire_snapshot release_snapshot])
 (import ^from "./harness_turn" [evaluate_harness_turn])
 (import [ui_publication_preview] ^from "../ui/views")
@@ -152,12 +153,11 @@
 
 (fn run_round [runtime, session : Str, round, ^resume resume : Bool = false]
   (let metadata (require_record runtime/sessions session))
-  (let config (session_settings metadata
-    ($serde/read_data ($fs/read_text $"${runtime/state_root}/config.gene"))))
+  (let config (session_settings metadata (effective_config runtime)))
   (let selection (?? round/selection (resolve_selection runtime config)))
   (let limit
     (?? round/effective_limits/turn_limit
-      (if (operator_round? round) (?? config/turn_limit 24) (?? config/trigger_turn_limit 12))))
+      (if (operator_round? round) config/turn_limit config/trigger_turn_limit)))
   (let extra_turns (collection_turns round))
   (let collection (> extra_turns 0))
   (let ceiling (+ limit extra_turns))
@@ -463,7 +463,7 @@
         (let deadline
           (if (== metadata/kind "interactive")
             nil
-            (+ ($os/wall_ms) (?? config/question_timeout_ms 86400000))))
+            (+ ($os/wall_ms) config/question_timeout_ms)))
         (let batch
           (ask_questions ^deadline deadline ^^normalized ^round round/id
             runtime/events

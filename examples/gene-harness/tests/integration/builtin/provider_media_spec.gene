@@ -14,7 +14,7 @@
           ^provider (fn [request] "(Outcome ^^done ^reply \"ok\")")))
         (try
           (let request
-            {^settings {^model "test" ^effort "none" ^timeout_ms 30000 ^command "claude"}
+            {^settings {^model "test" ^effort "auto" ^timeout_ms 30000 ^command "claude"}
              ^messages [{^role "system" ^content "instructions"}
                         {^role "user" ^content "Describe the screenshot."
                          ^images [{^mime "image/png" ^data "AQID" ^detail "high"}]}

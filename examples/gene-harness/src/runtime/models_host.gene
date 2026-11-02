@@ -1,6 +1,7 @@
 # Activation-owned factory for a contribution's catalog worker. Host execution
 # starts outside activation deadlines; probes retain their own bounded calls.
 (mod models_host)
+(import [effective_config] ^from "./settings_resolver")
 (import [ModelsHost ServiceError PluginHost HarnessEvent CommandResult CommandContext] ^from "../plugin_api")
 (import [spawn_effect_call] ^from "." ^pkg "cordis")
 (import [rows registry_row_records put_cordis_plugin CompositionChanged publish] ^from "../kernel")
@@ -282,7 +283,7 @@
   (if (!= session "") (require_record service/runtime/sessions session))
   (let choice (try (validate_model_settings selection)
     catch Any (fail (ServiceError ^code "invalid_request" ^message $err/message))))
-  (let base ($serde/read_data ($fs/read_text $"${service/runtime/state_root}/config.gene")))
+  (let base (effective_config service/runtime))
   (let metadata {^model_settings choice})
   (let settings (session_settings metadata base))
   {^model (selection_view ^metadata metadata service/runtime base)
@@ -302,7 +303,7 @@
         (fail (ServiceError ^code "invalid_request" ^message $"${key} is fixed by this host's launch or profile settings"))))
     (if (> ($size choice) 0)
       (then
-        (let base ($serde/read_data ($fs/read_text $"${service/runtime/state_root}/config.gene")))
+        (let base (effective_config service/runtime))
         (try (select_provider ^allow_unready true service/runtime (session_settings {^model_settings choice} base))
           catch Any (fail (ServiceError ^code "invalid_request" ^message $err/message)))))
     (update_session service/runtime/sessions session {^model_settings (if (== ($size choice) 0)
@@ -322,7 +323,7 @@
   (let service (require_service handle))
   (let catalog (require_catalog handle))
   (let metadata (require_record service/runtime/sessions context/session))
-  (let base ($serde/read_data ($fs/read_text $"${service/runtime/state_root}/config.gene")))
+  (let base (effective_config service/runtime))
   (let info (selection_view ^metadata metadata service/runtime base))
   (let argument ($str/trim context/raw))
   (if (== argument "") (return (CommandResult ^display (choice_text info))))

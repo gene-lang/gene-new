@@ -1,0 +1,55 @@
+# Shared generic setting values: <manager root>/.gene-harness/settings.gene. Several
+# hosts share the file, so every write holds settings.lock across its read,
+# digest check and atomic write. Model defaults stay in models.gene.
+(mod shared_settings)
+(import [ServiceError] ^from "../plugin_api")
+(import [try_lock_wait] ^from "../public/file_lock")
+(import [manager_root_path] ^from "../public/workspace_paths")
+
+(fn shared_settings_path [root : Str] : Str
+  ($path/join root ".gene-harness" "settings.gene"))
+
+(fn shared_settings_digest [values] : Str
+  ($pkg/canonical_digest values))
+
+# The manager root this host shares defaults with, or "" when none can be named.
+(fn shared_settings_root [runtime] : Str
+  (if (== runtime/profile/name "manager") (return runtime/root))
+  (try (manager_root_path ^explicit (?? runtime/launch/root nil)) catch Any ""))
+
+# A missing file holds no values. A damaged one reports its error and contributes
+# nothing, so reads keep working from workspace values and defaults.
+(fn read_shared_settings [root : Str]
+  (if (== root "") (return {^values {} ^digest (shared_settings_digest {}) ^errors [] ^root root}))
+  (let path (shared_settings_path root))
+  (if_not ($fs/exists? path)
+    (return {^values {} ^digest (shared_settings_digest {}) ^errors [] ^root root}))
+  (try
+    (let values ($serde/read_data ($fs/read_text path)))
+    (if (!= ($head values) Map) (fail "settings.gene must be an inert map"))
+    {^values values ^digest (shared_settings_digest values) ^errors [] ^root root}
+  catch Any
+    (let reason ($to_str "settings.gene cannot be read: " (?? $err/message $err)))
+    {^values {} ^digest "unreadable" ^root root ^errors [{^section "file" ^reason reason}]}))
+
+# Runs change on a copy of the current values under the cross-process lock and
+# writes the result atomically. A stale expected digest changes nothing.
+(fn write_shared_settings [root : Str, expected : Str, change, ^wait_ms wait_ms : Int = 1000]
+  (if (== root "")
+    (fail (ServiceError ^code "unavailable" ^message "No manager root is known, so shared settings cannot be saved.")))
+  ($fs/make_dir ($path/join root ".gene-harness"))
+  (let lock (try_lock_wait ($path/join root ".gene-harness" "settings.lock") wait_ms))
+  (if ($absent? lock)
+    (fail (ServiceError ^code "busy" ^message "Shared settings are being saved by another host; retry.")))
+  (try
+    (let current (read_shared_settings root))
+    (if_not current/errors/.empty?
+      (fail (ServiceError ^code "invalid_request" ^message current/errors/0/reason)))
+    (if (&& (!= expected "") (!= expected current/digest))
+      (fail (ServiceError ^code "revision_conflict"
+        ^message "Shared settings changed. Read them again before saving.")))
+    (let next ($thaw ($freeze current/values)))
+    (change next)
+    ($fs/write_text_atomic (shared_settings_path root) ($serde/write_data next))
+    {^values next ^digest (shared_settings_digest next) ^errors [] ^root root}
+  ensure lock/.close))

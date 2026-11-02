@@ -1,11 +1,12 @@
 (mod shell_sessions)
+(import [effective_config] ^from "./settings_resolver")
 (import [CommandResult] ^from "../plugin_api")
 (import [byte_prefix] ^from "../public/text")
 
 (let IoResource $io/IoResource)
 
 (fn shell_command [ctx]
-  (let config ($serde/read_data ($fs/read_text $"${ctx/runtime/state_root}/config.gene")))
+  (let config (effective_config ctx/runtime))
   (let shell (?? ($os/env? "SHELL") "/bin/sh"))
   (let channel ($channel ^capacity 128))
   (let process

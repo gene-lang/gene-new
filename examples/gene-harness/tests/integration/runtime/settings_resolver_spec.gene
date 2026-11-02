@@ -1,0 +1,196 @@
+# Tests src/runtime/settings_resolver.gene: one read path for definition-backed
+# settings, shared defaults read on use, and empty configurations.
+(import $test [describe it])
+(import [isolated run_spec test_controller] ^from "../../support")
+(import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
+(import [baseline_profile] ^from "../../../src/profiles/baseline")
+(import [submit_round round_state close_round_controller] ^from "../../../src/runtime/round_controller")
+(import [open_trigger_manager close_trigger_manager create_trigger tick_triggers list_occurrences]
+  ^from "../../../src/runtime/triggers")
+(import [effective_config settings_state] ^from "../../../src/runtime/settings_resolver")
+(import [read_setting reset_setting] ^from "../../../src/runtime/workspace_config")
+(import [write_shared_settings shared_settings_root] ^from "../../../src/runtime/shared_settings")
+
+# The configuration bootstrap wrote before empty configurations.
+(fn materialized_defaults []
+  {^provider "" ^model "" ^provider_timeout_ms 600000
+   ^response_budget {^timeout_ms 600000 ^max_memory_mb 1024}
+   ^turn_limit 24 ^trigger_turn_limit 12 ^trigger_timeout_ms 300000 ^idle_timeout_ms 600000
+   ^trigger_concurrency 2 ^question_timeout_ms 86400000})
+
+(const startup_keys ["provider_timeout_ms" "response_budget" "turn_limit" "trigger_turn_limit"
+  "trigger_timeout_ms" "idle_timeout_ms" "trigger_concurrency" "question_timeout_ms"])
+
+# Another host's write: the shared store primitive, with no message to this runtime.
+(fn share [runtime, changes]
+  (write_shared_settings (shared_settings_root runtime) ""
+    (fn [values] (for [key value] in changes (values .put ($to_str key) value)))))
+
+(fn config_text [runtime] : Str
+  ($fs/read_text $"${runtime/state_root}/config.gene"))
+
+(fn join_rounds [controller]
+  (for [id frame] in controller/rounds/.get
+    (if ($present? frame/watcher) frame/watcher/.join)))
+
+(fn latest_receipt [controller, session : Str]
+  ($last (/receipts (round_state controller session))))
+
+(fn assert_unobserved [runtime]
+  # The web host's file observation records the digest it watches; none runs here.
+  (let state (settings_state runtime))
+  ($assert ($absent? state/observed/.get) "shared-file observation is not running"))
+
+(describe "Shared settings reach running workspaces"
+  (it "applies a shared turn limit to the next operator round without restart or browser" []
+    (isolated this_mod/.path "applies a shared turn limit to the next operator round without restart or browser"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (let calls ($cell 0))
+        (let gate ($cell true))
+        (let controller (test_controller runtime (fn [request]
+          (while (! gate/.get) ($sleep 1))
+          (calls .set (+ calls/.get 1))
+          "(Outcome ^prompt \"Keep going.\" ^reply \"Working.\")")))
+        (try
+          (assert_unobserved runtime)
+          (share runtime {^turn_limit 2})
+          (submit_round controller "default" "r1" 1 "go")
+          (join_rounds controller)
+          (let first (latest_receipt controller "default"))
+          ($assert (== first/state "paused") ($to_str first))
+          ($assert (== first/reason "turn_limit"))
+          ($assert (== calls/.get 2) $"two turns under the shared limit, saw ${calls/.get}")
+          # An admitted round keeps the limit it started with.
+          (calls .set 0)
+          (share runtime {^turn_limit 3})
+          (gate .set false)
+          (submit_round controller "default" "r2" 2 "again")
+          ($sleep 50)
+          (share runtime {^turn_limit 1})
+          (gate .set true)
+          (join_rounds controller)
+          ($assert (== calls/.get 3) $"the running round kept its limit of three, saw ${calls/.get}")
+          (calls .set 0)
+          (submit_round controller "default" "r3" 3 "once more")
+          (join_rounds controller)
+          ($assert (== calls/.get 1) "the next round took the newer shared limit")
+          (assert_unobserved runtime)
+        ensure
+          (close_round_controller controller)
+          (close_runtime runtime)))))
+
+  (it "applies shared trigger limits, deadlines and question timeouts to the next trigger round" []
+    (isolated this_mod/.path "applies shared trigger limits, deadlines and question timeouts to the next trigger round"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (let calls ($cell 0))
+        (let controller (test_controller runtime (fn [request]
+          (calls .set (+ calls/.get 1))
+          (if ($str/contains? ($to_str request/messages) "ask a question")
+            "(Outcome ^questions [{^id \"pick\" ^prompt \"Which one?\"}] ^reply \"Choose.\")"
+            "(Outcome ^prompt \"Keep checking.\" ^reply \"Checking.\")"))))
+        (let manager (open_trigger_manager runtime controller ^!start ^now 1000))
+        (try
+          (assert_unobserved runtime)
+          (share runtime {^trigger_turn_limit 2 ^trigger_timeout_ms 7000 ^question_timeout_ms 9000})
+          (create_trigger manager {^id "beat" ^kind "heartbeat" ^every_ms 100 ^request "inspect"} ^now 1000)
+          (let before ($os/wall_ms))
+          (tick_triggers manager ^now 1100)
+          (let after ($os/wall_ms))
+          (join_rounds controller)
+          (let occurrence (/0 (list_occurrences manager ^trigger "beat")))
+          (let limited (latest_receipt controller occurrence/session))
+          ($assert (== calls/.get 2) $"the shared trigger turn limit ended the round after two turns, saw ${calls/.get}")
+          ($assert (== limited/message "turn limit reached") ($to_str limited))
+          ($assert (&& (>= limited/deadline_ms (+ before 7000)) (<= limited/deadline_ms (+ after 7000)))
+            $"the shared trigger timeout set the deadline: ${limited/deadline_ms}")
+          # The admitted deadline does not move when the shared value changes.
+          (share runtime {^trigger_timeout_ms 5000})
+          ($assert (== (/deadline_ms (latest_receipt controller occurrence/session)) limited/deadline_ms))
+          (create_trigger manager {^id "asker" ^kind "heartbeat" ^every_ms 100 ^request "ask a question"} ^now 1100)
+          (let asked_before ($os/wall_ms))
+          (tick_triggers manager ^now 1200)
+          (join_rounds controller)
+          (let asked (/0 (list_occurrences manager ^trigger "asker")))
+          (let waiting (latest_receipt controller asked/session))
+          ($assert (== waiting/state "waiting") ($to_str waiting))
+          ($assert (>= waiting/deadline_ms (+ asked_before 5000)) "the newer shared timeout applied to the next trigger")
+          (let deadline waiting/questions/deadline)
+          ($assert ($present? deadline) ($to_str waiting/questions))
+          ($assert (&& (>= deadline (+ asked_before 9000)) (<= deadline (+ ($os/wall_ms) 9000)))
+            $"the shared question timeout set the batch deadline: ${deadline}")
+          (assert_unobserved runtime)
+        ensure
+          (close_trigger_manager manager)
+          (close_round_controller controller)
+          (close_runtime runtime))))))
+
+(describe "Empty and materialized configurations"
+  (it "behaves the same with an empty config.gene and with the old materialized defaults" []
+    (isolated this_mod/.path "behaves the same with an empty config.gene and with the old materialized defaults"
+      (fn [workspace]
+        (let observed {})
+        (for name in ["fresh" "materialized"]
+          (let root ($path/join workspace name))
+          ($fs/make_dir ($path/join root ".gene-harness"))
+          (if (== name "materialized")
+            ($fs/write_text ($path/join root ".gene-harness" "config.gene") ($serde/write_data (materialized_defaults))))
+          (let runtime (open_runtime root "default" (baseline_profile)))
+          (let calls ($cell 0))
+          (let controller (test_controller runtime (fn [request]
+            (calls .set (+ calls/.get 1))
+            "(Outcome ^prompt \"Keep going.\" ^reply \"Working.\")")))
+          (let manager (open_trigger_manager runtime controller ^!start ^now 1000))
+          (try
+            (let before (config_text runtime))
+            (let config (effective_config runtime))
+            (let values {})
+            (for key in startup_keys (values .put key (config .get key)))
+            (values .put "idle_timeout_ms_active" runtime/sessions/idle_timeout_ms)
+            (values .put "trigger_cap" manager/cap)
+            (values .put "limits" {^timeout_ms runtime/h/limits/timeout_ms ^max_memory_mb runtime/h/limits/max_memory_mb})
+            (submit_round controller "default" "r1" 1 "go")
+            (join_rounds controller)
+            (values .put "turns" calls/.get)
+            (values .put "source" (/source (read_setting runtime "turn_limit")))
+            ($assert (== (config_text runtime) before) "reads wrote nothing back")
+            (if (== name "fresh")
+              ($assert (== ($serde/read_data before) {}) $"a new workspace stores no defaults: ${before}"))
+            (observed .put name values)
+          ensure
+            (close_trigger_manager manager)
+            (close_round_controller controller)
+            (close_runtime runtime)))
+        (let fresh observed/fresh)
+        (let old observed/materialized)
+        (let compared [startup_keys... "idle_timeout_ms_active" "trigger_cap" "limits" "turns"])
+        (for key in compared
+          ($assert (== (fresh .get key) (old .get key)) $"${key}: ${(fresh .get key)} vs ${(old .get key)}"))
+        ($assert (== fresh/turns 24))
+        ($assert (== fresh/source "default"))
+        ($assert (== old/source "workspace") "a stored default is a workspace override"))))
+
+  (it "keeps an existing stored value as a workspace override until it is reset" []
+    (isolated this_mod/.path "keeps an existing stored value as a workspace override until it is reset"
+      (fn [workspace]
+        ($fs/make_dir ($path/join workspace ".gene-harness"))
+        ($fs/write_text ($path/join workspace ".gene-harness" "config.gene") ($serde/write_data (materialized_defaults)))
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (try
+          (let before (config_text runtime))
+          (share runtime {^turn_limit 30})
+          (let kept (read_setting runtime "turn_limit"))
+          ($assert (== kept/value 24))
+          ($assert (== kept/source "workspace"))
+          ($assert (== kept/inherited 30) "the shared value is what it would inherit")
+          ($assert (== (/turn_limit (effective_config runtime)) 24))
+          ($assert (== (config_text runtime) before) "no migration rewrote the file")
+          (let inherited (reset_setting runtime "turn_limit"))
+          ($assert (== inherited/value 30))
+          ($assert (== inherited/source "shared"))
+          ($assert (== (/turn_limit (effective_config runtime)) 30))
+          ($assert (== (/trigger_turn_limit (effective_config runtime)) 12) "other stored values stay")
+        ensure (close_runtime runtime))))))
+
+(fn main [args] : Int (run_spec args))

@@ -33,8 +33,43 @@
       (fail (HarnessError ^message $"a setting needs a non-empty ${field}"))))
   (if_not (["int" "str" "bool" "map" "any"] .contains? candidate/type)
     (fail (HarnessError ^message "a setting type must be int, str, bool, map or any")))
-  (if_not (["next_round" "restart"] .contains? candidate/applies)
-    (fail (HarnessError ^message "a setting applies from next_round or restart")))
+  (if_not (["immediate" "next_round" "restart"] .contains? candidate/applies)
+    (fail (HarnessError ^message "a setting applies immediate, from next_round or after restart")))
+  (if (&& ($present? candidate/choices) (|| (!= ($head candidate/choices) Str) (== candidate/choices "")))
+    (fail (HarnessError ^message "a setting's choices names a setting_choices source")))
+  (if ($present? candidate/scopes)
+    (then
+      (if (|| (!= ($head candidate/scopes) List) candidate/scopes/.empty?)
+        (fail (HarnessError ^message "a setting's scopes is a nonempty list")))
+      (for scope in candidate/scopes
+        (if_not (["workspace" "shared"] .contains? scope)
+          (fail (HarnessError ^message "a setting scope is workspace or shared"))))
+      (if_not (candidate/scopes .contains? "workspace")
+        (fail (HarnessError ^message "every setting has a workspace scope")))))
+  candidate)
+
+# A Settings sidebar destination. Settings name their group; a row adds a label,
+# order, doc or a custom section, and can create a destination with no settings.
+(fn validate_settings_group_row [candidate]
+  (if (|| (!= ($head candidate/name) Str) (== candidate/name ""))
+    (fail (HarnessError ^message "a settings group needs a non-empty name")))
+  (for field in ["label" "doc" "section"]
+    (let value (candidate .get field))
+    (if (&& ($present? value) (|| (!= ($head value) Str) (== value "")))
+      (fail (HarnessError ^message $"a settings group ${field} is a non-empty string"))))
+  (if (&& ($present? candidate/order) (!= ($head candidate/order) Int))
+    (fail (HarnessError ^message "a settings group order is an integer")))
+  candidate)
+
+# Options for settings that name this source. closed means a value outside the
+# options is invalid; otherwise the options are suggestions.
+(fn validate_setting_choices_row [candidate]
+  (if (|| (!= ($head candidate/name) Str) (== candidate/name ""))
+    (fail (HarnessError ^message "a setting choices source needs a non-empty name")))
+  (if_not ($runtime/callable? candidate/choices)
+    (fail (HarnessError ^message "a setting choices source needs a callable choices")))
+  (if (&& ($present? candidate/closed) (!= ($head candidate/closed) Bool))
+    (fail (HarnessError ^message "a setting choices closed flag is Bool")))
   candidate)
 
 (fn validate_input_mode_row [candidate]

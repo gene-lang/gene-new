@@ -1,6 +1,7 @@
 # Validated operator plans are immutable data. Applying a stored plan never
 # accepts replacement source or a revised operation list from the client.
 (mod plugin_plans)
+(import [effective_config] ^from "./settings_resolver")
 (import $store/fs [Store])
 (import ^from "./composition" [run_composition_change current_snapshot])
 (import ^from "./plugin_manager" [plugin_catalog inspect_descriptor])
@@ -371,9 +372,7 @@
               (if (!= plan/stamp (fingerprint runtime))
                 (plan_error "Configuration changed during activation; validate the draft again."))
               (if_not plan/repair
-                (let settings
-                  ($serde/read_data ($fs/read_text $"${runtime/state_root}/config.gene")))
-                (let readiness (readiness_report runtime settings))
+                (let readiness (readiness_report runtime (effective_config runtime)))
                 (if_not ($absent? readiness) (plan_error readiness))))
             (fn []
               (check_reversion_base workspace plan/base_revision)

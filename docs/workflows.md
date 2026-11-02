@@ -254,7 +254,9 @@ Browser bindings include `$http/request method url body headers callback`,
 whose callback receives `(Int status, Str body)` including non-2xx responses;
 status `0` means a transport failure. `$session_storage/get|set|remove` handles
 tab-local drafts, and `$browser/origin|hash|search|replace_url|push_url|request_id|copy`
-provides location, submission identity, and clipboard operations. All application
+provides location, submission identity, and clipboard operations. `$browser/platform`
+returns the browser's reported platform (such as `macOS` or `MacIntel`), or `""`
+when it reports none, for platform-specific display such as shortcut glyphs. All application
 state and interaction logic can remain in Gene.
 
 Use `$event/code` with `$event/ctrl_key|shift_key|alt_key|meta_key` for physical

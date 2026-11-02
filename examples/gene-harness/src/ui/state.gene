@@ -55,18 +55,42 @@
 
 (fn ui_revision [h, record] ($to_str h/ui_epoch ":" record/row_id))
 
+# A view's own actions plus those of the section rows it embeds, so a contributed
+# section uses the ordinary action contract inside the embedding view.
+(fn view_actions [snapshot, payload]
+  (let names [])
+  (for name in (?? payload/actions []) (names .push name))
+  (if ($present? payload/embeds)
+    (for record in (?? (snapshot/registries .get "web_components") [])
+      (if (== record/payload/slot payload/embeds)
+        (for name in (?? record/payload/actions [])
+          (if_not (names .contains? name) (names .push name))))))
+  names)
+
+# Optional workspace views follow the enabled setting; an always_available view
+# such as Settings is listed regardless.
+(fn view_listed? [settings, record] : Bool
+  (|| (== settings/enabled true) (== record/payload/always_available true)))
+
 (fn ui_data_revision [runtime, snapshot]
   (let h runtime/h)
   (let manager runtime/services/values/manager)
   ($to_str snapshot/id ":" (if ($absent? h/event_store) 0
     (next_sequence h/event_store (stream_key "workspace" "workspace")))
-    (if ($absent? manager) "" ($to_str ":manager:" manager/revision/.get))))
+    (if ($absent? manager) "" ($to_str ":manager:" manager/revision/.get))
+    ":settings:" (settings_revision runtime)))
+
+# Bumped by every committed settings write and observed shared change, so open
+# Settings screens refresh. Read inline: ui state must not import the resolver.
+(fn settings_revision [runtime] : Int
+  (let state (if ($absent? runtime/services) nil runtime/services/values/settings))
+  (if ($absent? state) 0 state/revision/.get))
 
 (fn ui_descriptor [runtime, snapshot, record]
   (let h runtime/h)
   (let candidate record/payload)
   (let functions {})
-  (for name in (?? candidate/actions [])
+  (for name in (view_actions snapshot candidate)
     (let action (?? (ui_record snapshot "ui_actions" name) (ui_record snapshot "functions" name)))
     (if_not ($absent? action) (functions .put name (ui_revision h action))))
   {^name candidate/name ^title (?? candidate/title candidate/name) ^owner record/owner
@@ -81,10 +105,9 @@
   (let settings (ui_settings runtime))
   (let components [])
   (let snapshot h/snapshots/current/.get)
-  (if_yes settings/enabled
-    (for record in (?? (snapshot/registries .get "web_components") [])
-      (if_not ($absent? record/payload/view_state)
-        (components .push (ui_descriptor runtime snapshot record)))))
+  (for record in (?? (snapshot/registries .get "web_components") [])
+    (if (&& ($present? record/payload/view_state) (view_listed? settings record))
+      (components .push (ui_descriptor runtime snapshot record))))
   (let actions (if ($absent? runtime/services/values/actions) nil runtime/services/values/actions/log/state/.get))
   {^settings settings ^components ($order/sort_by components (fn [item] item/name))
    ^data_revision (ui_data_revision runtime snapshot) ^epoch h/ui_epoch

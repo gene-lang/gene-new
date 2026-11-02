@@ -4,6 +4,11 @@
 (import [close_session_service create_session command operator_receipt client_reply host_status] ^from "../../../src/web/session_service")
 (import [Plugin PluginHost] ^from "../../../src/plugin_api")
 (import [put_cordis_plugin uninstall] ^from "../../../src/kernel")
+(import [ui_status] ^from "../../../src/ui/state")
+(import [ui_preview] ^from "../../../src/ui/views")
+(import [ui_action ui_action_receipt] ^from "../../../src/ui/actions")
+(import [effective_setting] ^from "../../../src/runtime/settings_resolver")
+(import [shared_settings_path shared_settings_root] ^from "../../../src/runtime/shared_settings")
 
 (fn with_workspace [root : Str, body]
   (let service (test_service ^workspace root ^provider (fn [request] "(Outcome ^^done ^reply \"ok\")")))
@@ -172,5 +177,287 @@
           ($assert (== refused "client_error") refused)
           (let late (client_reply service {^id "gone" ^^ok}))
           ($assert late/ok "a late reply is ignored")))))))
+
+(fn manager_of [service]
+  (/manager service/runtime/h/objects/.get))
+
+(fn keys_of [listed]
+  ($map listed/settings (fn [view] view/key)))
+
+(fn group_names [groups]
+  ($map groups (fn [group] group/name)))
+
+(describe "Settings transactions and scopes"
+  (it "commits a batch of settings together or not at all" []
+    (isolated this_mod/.path "commits a batch of settings together or not at all"
+      (fn [root]
+        (with_workspace root (fn [service, shown]
+          (let before shown/.settings/digest)
+          ($assert (== (config_on_disk service) {}) "a new workspace stores no defaults")
+          (let bad (try (shown .set_settings {^turn_limit 5 ^trigger_turn_limit "many"} ^expected before) "saved" catch Any $err/code))
+          ($assert (== bad "invalid_request") bad)
+          ($assert (== (config_on_disk service) {}) "one invalid field saved nothing")
+          (let saved (shown .set_settings {^provider "test" ^model "unlisted-model" ^effort "high"} ^expected before))
+          ($assert (== saved/settings/.size 3))
+          (let disk (config_on_disk service))
+          ($assert (&& (== disk/provider "test") (== disk/model "unlisted-model") (== disk/effort "high")) ($to_str disk))
+          (let stale (try (shown .set_settings {^turn_limit 3} ^expected before) "saved" catch Any $err/code))
+          ($assert (== stale "revision_conflict") stale)
+          ($assert ($absent? (/turn_limit (config_on_disk service))) "a stale batch saved nothing")
+          (let both (try (shown .set_settings {^turn_limit 3} ^reset ["turn_limit"]) "saved" catch Any $err/code))
+          ($assert (== both "invalid_request") both)
+          (let orphan (try (shown .set_settings {^model "other"} ^reset ["provider"]) "saved" catch Any $err/code))
+          ($assert (== orphan "invalid_request") "a workspace model needs its provider")
+          (let effort (try (shown .set_setting "effort" "extreme") "saved" catch Any $err/code))
+          ($assert (== effort "invalid_request") effort)
+          (shown .set_settings {} ^reset ["provider" "model" "effort"] ^expected saved/digest)
+          ($assert (== (config_on_disk service) {}) "resetting removes the overrides"))))))
+
+  (it "keeps shared defaults in the manager root, separate from workspace overrides" []
+    (isolated this_mod/.path "keeps shared defaults in the manager root, separate from workspace overrides"
+      (fn [root]
+        (with_workspace ($path/join root "one") (fn [service, shown]
+          (let manager (manager_of service))
+          (let shared manager/.settings)
+          ($assert (== (keys_of shared) ["turn_limit" "trigger_turn_limit" "trigger_timeout_ms" "question_timeout_ms"])
+            ($to_str (keys_of shared)))
+          (let saved (manager .set_setting "turn_limit" 9 ^expected shared/digest))
+          ($assert (== saved/source "shared"))
+          ($assert ($fs/exists? (shared_settings_path (shared_settings_root service/runtime))))
+          ($assert (== (config_on_disk service) {}) "a shared save never writes config.gene")
+          (let inherited (shown .setting "turn_limit"))
+          ($assert (== inherited/value 9))
+          ($assert (== inherited/source "shared"))
+          ($assert (== (effective_setting service/runtime "turn_limit") 9))
+          (let own (shown .set_setting "turn_limit" 4))
+          ($assert (== own/source "workspace"))
+          ($assert (== own/inherited 9))
+          ($assert (== (/value manager/.settings/settings/0) 9) "a workspace save never writes shared defaults")
+          (shown .reset_setting "turn_limit")
+          ($assert (== (/source (shown .setting "turn_limit")) "shared"))
+          (let workspace_only (try (manager .set_setting "trigger_concurrency" 3) "saved" catch Any $err/code))
+          ($assert (== workspace_only "invalid_request") workspace_only)
+          (let keys (try (manager .set_setting "keyboard_bindings" {}) "saved" catch Any $err/code))
+          ($assert (== keys "invalid_request") "keyboard bindings stay workspace-only")
+          (let mixed (try (manager .set_settings {^turn_limit 5 ^model "other"}) "saved" catch Any $err/message))
+          ($assert ($str/contains? mixed "set_default_model") mixed)
+          ($assert (== (/value (manager .setting "turn_limit")) 9) "a mixed-store request changed nothing")
+          # A second host under the same manager root sees the value on its next read
+          # and cannot overwrite a write it has not seen.
+          (let digest manager/.settings/digest)
+          (with_workspace ($path/join root "two") (fn [other_service, other]
+            (let other_manager (manager_of other_service))
+            ($assert (== (/value (other .setting "turn_limit")) 9))
+            (other_manager .set_setting "trigger_turn_limit" 3 ^expected digest)
+            (let late (try (manager .set_setting "turn_limit" 10 ^expected digest) "saved" catch Any $err/code))
+            ($assert (== late "revision_conflict") late)
+            ($assert (== (/value (shown .setting "trigger_turn_limit")) 3))))
+          (manager .reset_setting "turn_limit")
+          ($assert (== (/source (shown .setting "turn_limit")) "default")))))))
+
+  (it "keeps false, zero and empty values distinct from inheriting" []
+    (isolated this_mod/.path "keeps false, zero and empty values distinct from inheriting"
+      (fn [root]
+        (with_workspace root (fn [service, shown]
+          (put_cordis_plugin service/runtime/h
+            (Plugin ^id "value_probe" ^activate (fn [host]
+              (host .PluginHost:contribute "settings"
+                {^key "value_probe/on" ^label "On" ^group "Probe" ^doc "A probe flag." ^type "bool"
+                 ^default true ^applies "next_round" ^scopes ["workspace" "shared"]})
+              (host .PluginHost:contribute "settings"
+                {^key "value_probe/name" ^label "Name" ^group "Probe" ^doc "A probe name." ^type "str"
+                 ^default "default" ^applies "next_round" ^scopes ["workspace" "shared"]})))
+            {})
+          (let manager (manager_of service))
+          (manager .set_settings {^value_probe/on true ^value_probe/name "shared"})
+          (shown .set_settings {^value_probe/on false ^value_probe/name ""})
+          ($assert (== (/value (shown .setting "value_probe/on")) false))
+          ($assert (== (/source (shown .setting "value_probe/on")) "workspace"))
+          ($assert (== (/value (shown .setting "value_probe/name")) ""))
+          ($assert (== (effective_setting service/runtime "value_probe/on") false))
+          (shown .set_settings {} ^reset ["value_probe/on" "value_probe/name"])
+          ($assert (== (/value (shown .setting "value_probe/on")) true))
+          ($assert (== (/value (shown .setting "value_probe/name")) "shared"))
+          ($assert (== (/source (shown .setting "value_probe/name")) "shared")))))))
+
+  (it "reports restart-applied values against the value the running feature started with" []
+    (isolated this_mod/.path "reports restart-applied values against the value the running feature started with"
+      (fn [root]
+        (with_workspace root (fn [service, shown]
+          (let idle (shown .setting "idle_timeout_ms"))
+          ($assert (== idle/active_known true) ($to_str idle))
+          ($assert (== idle/active 600000))
+          ($assert (== idle/pending_restart false))
+          (let changed (shown .set_setting "idle_timeout_ms" 1000))
+          ($assert (== changed/pending_restart true) ($to_str changed))
+          ($assert (== changed/active 600000))
+          (shown .reset_setting "idle_timeout_ms")
+          ($assert (== (/pending_restart (shown .setting "idle_timeout_ms")) false))
+          (let computer (shown .setting "computer"))
+          ($assert (== computer/active_known false) "a driver that never started reports no running value")
+          ($assert ($absent? computer/pending_restart))
+          ($assert (== (/applies (shown .setting "keyboard_bindings")) "immediate")))))))
+
+  (it "saves shortcuts against a revision without losing another editor's override" []
+    (isolated this_mod/.path "saves shortcuts against a revision without losing another editor's override"
+      (fn [root]
+        (with_workspace root (fn [service, shown]
+          (let start shown/.keyboard)
+          ($assert (== (/owner (action_named start "view/toggle")) "core"))
+          (let first (shown .bind_key "view/toggle" "Ctrl+KeyJ" ^expected start/digest))
+          (let stale (try (shown .bind_key "view/harness" "Ctrl+KeyL" ^expected start/digest) "bound" catch Any $err/code))
+          ($assert (== stale "revision_conflict") stale)
+          (let fresh (shown .bind_key "view/harness" "Ctrl+KeyL" ^expected first/digest))
+          ($assert (== (/binding (action_named fresh "view/toggle")) "Ctrl+KeyJ") "the other editor's override survived")
+          ($assert (== (/binding (action_named fresh "view/harness")) "Ctrl+KeyL"))
+          (let stale_clear (try (shown .clear_key "view/toggle" ^expected first/digest) "cleared" catch Any $err/code))
+          ($assert (== stale_clear "revision_conflict"))
+          (let restored (shown .restore_key "view/toggle" ^expected fresh/digest))
+          ($assert (== (/source (action_named restored "view/toggle")) "default"))
+          ($assert (== (/binding (action_named restored "view/harness")) "Ctrl+KeyL"))
+          (shown .restore_key "view/harness" ^expected restored/digest)
+          ($assert (== (config_on_disk service) {}) "restoring every shortcut leaves no override")
+          ($assert (== (/source (shown .setting "keyboard_bindings")) "default"))))))))
+
+(describe "Settings groups and choices"
+  (it "derives groups from settings and contributions, in order" []
+    (isolated this_mod/.path "derives groups from settings and contributions, in order"
+      (fn [root]
+        (with_workspace root (fn [service, shown]
+          (let names (group_names shown/.settings_groups))
+          (let ordered ($filter names (fn [name] (["General" "Models" "Providers" "Appearance" "Keyboard Shortcuts" "Voice"] .contains? name))))
+          ($assert (== ordered ["General" "Models" "Providers" "Appearance" "Keyboard Shortcuts" "Voice"]) ($to_str names))
+          (for name in ["Triggers" "Images" "Delegation" "Computer"]
+            ($assert (names .contains? name) $"${name} appears from its settings"))
+          (let providers ($first ($filter shown/.settings_groups (fn [group] (== group/name "Providers")))))
+          ($assert (== providers/section "model_providers"))
+          ($assert (== providers/owner "models"))
+          (shown .disable_plugin "voice")
+          (let voice ($first ($filter shown/.settings_groups (fn [group] (== group/name "Voice")))))
+          ($assert ($present? voice) "the Voice group stays while its settings exist")
+          ($assert ($absent? voice/section) "a removed plugin's section goes with it")
+          (let voices (shown .setting_choices "voice"))
+          ($assert ($present? voices/reason))
+          (shown .enable_plugin "voice")
+          ($assert (== (/section ($first ($filter shown/.settings_groups (fn [group] (== group/name "Voice"))))) "voice_engines")))))))
+
+  (it "offers dependent effort choices and keeps unlisted model ids usable" []
+    (isolated this_mod/.path "offers dependent effort choices and keeps unlisted model ids usable"
+      (fn [root]
+        (with_workspace root (fn [service, shown]
+          (let efforts (shown .setting_choices "effort" ^values {^provider "test" ^model "unlisted"}))
+          ($assert (== efforts/closed true))
+          ($assert (== ($map efforts/options (fn [option] option/value)) ["auto" "none" "minimal" "low" "medium" "high" "xhigh" "max"]))
+          (let models (shown .setting_choices "model"))
+          ($assert (== models/closed false))
+          (let saved (shown .set_settings {^provider "test" ^model "not-in-any-catalog"}))
+          ($assert (== (/value (shown .setting "model")) "not-in-any-catalog") "a typed model id is kept")
+          ($assert (== (/source (shown .setting "model")) "workspace"))))))))
+
+(fn settings_descriptor [service]
+  ($first ($filter (/components (ui_status service/runtime)) (fn [view] (== view/name "settings")))))
+
+(fn tree_has? [tree, test] : Bool
+  (if (!= ($head tree) Map) (return false))
+  (if (test tree) (return true))
+  (for child in (?? tree/children [])
+    (if (tree_has? child test) (return true)))
+  false)
+
+(fn run_view_action [service, id : Str, function : Str, named]
+  (let view (settings_descriptor service))
+  (let admitted (ui_action service/runtime/services/values/actions
+    {^input_id $"1:${id}" ^generation 1 ^instance "settings" ^component "settings"
+     ^revision view/revision ^function function ^function_revision (view/functions .get function)
+     ^args [] ^named named}))
+  (service/runtime/services/values/actions/watchers/.get .get admitted/input_id; .join)
+  (ui_action_receipt service/runtime/services/values/actions admitted/input_id))
+
+(describe "Settings screen"
+  (it "is a view even with workspace views off, and disabling it leaves the settings" []
+    (isolated this_mod/.path "is a view even with workspace views off, and disabling it leaves the settings"
+      (fn [root]
+        (with_workspace root (fn [service, shown]
+          ($assert ($present? (settings_descriptor service)) "Settings is listed with optional views disabled")
+          (shown .disable_plugin "settings")
+          ($assert ($absent? (settings_descriptor service)))
+          ($assert (> shown/.settings/settings/.size 10) "definitions stay without the screen")
+          ($assert (== (/value (shown .set_setting "turn_limit" 6)) 6))
+          ($assert ($present? shown/.keyboard/actions))
+          ($assert (names_include? (group_names shown/.settings_groups) "General"))
+          (shown .enable_plugin "settings")
+          ($assert ($present? (settings_descriptor service))))))))
+
+  (it "renders every group in both scopes, sections and the shortcut recorder" []
+    (isolated this_mod/.path "renders every group in both scopes, sections and the shortcut recorder"
+      (fn [root]
+        (with_workspace root (fn [service, shown]
+          (for group in (group_names shown/.settings_groups)
+            (for scope in ["workspace" "shared"]
+              (let rendered (ui_preview service/runtime "settings" {^group group ^scope scope}))
+              (let problem (?? rendered/error ""))
+              ($assert ($absent? rendered/error) $"${group}/${scope}: ${problem}")))
+          (let general (ui_preview service/runtime "settings" {^group "General"}))
+          ($assert (tree_has? general/view (fn [node]
+            (&& (== node/props/key "value/workspace/response_budget")
+                ($str/starts_with? (?? node/props/value "") "{^timeout_ms"))))
+            "a map setting is shown as plain Gene data")
+          (let providers (ui_preview service/runtime "settings" {^group "Providers"}))
+          ($assert (tree_has? providers/view (fn [node] (== node/props/href "/models"))) "Providers links to the Models page")
+          (let recording (ui_preview service/runtime "settings" {^group "Keyboard Shortcuts" ^recording "view/toggle"}))
+          ($assert ($absent? recording/error) (?? recording/error ""))
+          ($assert (tree_has? recording/view (fn [node] ($present? node/props/data-record-chord))) "the recorder field is shown")
+          ($assert (tree_has? recording/view (fn [node] (== node/props/data-chord "Ctrl+Shift+Digit1"))) "chords render for platform display")
+          (let drafted (ui_preview service/runtime "settings" {^group "Models" ^model_draft "test/draft-model"}))
+          ($assert ($absent? drafted/error) (?? drafted/error ""))
+          ($assert (tree_has? drafted/view (fn [node] (== node/props/key "models/workspace/test/draft-model")))
+            "a changed model draft opens a new editor"))))))
+
+  (it "saves through view actions with the same validation and revisions as messages" []
+    (isolated this_mod/.path "saves through view actions with the same validation and revisions as messages"
+      (fn [root]
+        (with_workspace root (fn [service, shown]
+          (let digest shown/.settings/digest)
+          (let saved (run_view_action service "save" "settings_save"
+            {^scope "workspace" ^key "turn_limit" ^expected digest ^value "7"}))
+          ($assert (== saved/status "done") ($to_str saved))
+          ($assert (== (/turn_limit (config_on_disk service)) 7))
+          (let stale (run_view_action service "stale" "settings_save"
+            {^scope "workspace" ^key "turn_limit" ^expected digest ^value "8"}))
+          ($assert (== stale/status "failed"))
+          ($assert (== stale/error_code "revision_conflict") ($to_str stale))
+          (let invalid (run_view_action service "invalid" "settings_save"
+            {^scope "workspace" ^key "turn_limit" ^value "0"}))
+          ($assert (== invalid/error_code "invalid_request") ($to_str invalid))
+          (let budget (run_view_action service "budget" "settings_save"
+            {^scope "workspace" ^key "response_budget" ^value "{^timeout_ms 1000 ^max_memory_mb 256}"}))
+          ($assert (== budget/status "done") ($to_str budget))
+          ($assert (== (/response_budget (config_on_disk service)) {^timeout_ms 1000 ^max_memory_mb 256}))
+          (let unreadable (run_view_action service "unreadable" "settings_save"
+            {^scope "workspace" ^key "response_budget" ^value "{^timeout_ms"}))
+          ($assert (== unreadable/error_code "invalid_request") ($to_str unreadable))
+          (let shared_manager (manager_of service))
+          (let shared_listing shared_manager/.settings)
+          (let shared (run_view_action service "shared" "settings_save"
+            {^scope "shared" ^key "question_timeout_ms" ^expected shared_listing/digest ^value "5000"}))
+          ($assert (== shared/status "done") ($to_str shared))
+          ($assert (== (/value (shown .setting "question_timeout_ms")) 5000))
+          (let models (run_view_action service "models" "settings_save_models"
+            {^scope "workspace" ^selection "test/picked" ^expected shown/.settings/digest ^effort "low" ^custom ""}))
+          ($assert (== models/status "done") ($to_str models))
+          (let disk (config_on_disk service))
+          ($assert (&& (== disk/provider "test") (== disk/model "picked") (== disk/effort "low")) ($to_str disk))
+          (let keys shown/.keyboard)
+          (let bound (run_view_action service "bind" "settings_key"
+            {^operation "bind" ^id "view/toggle" ^chord "Ctrl+KeyY" ^expected keys/digest}))
+          ($assert (== bound/status "done") ($to_str bound))
+          ($assert (== (/binding (action_named shown/.keyboard "view/toggle")) "Ctrl+KeyY"))
+          (let reset (run_view_action service "reset-models" "settings_reset_models"
+            {^scope "workspace" ^expected shown/.settings/digest}))
+          ($assert (== reset/status "done") ($to_str reset))
+          ($assert ($absent? (/model (config_on_disk service))))))))))
+
+(fn names_include? [names, name : Str] : Bool
+  (names .contains? name))
 
 (fn main [args] : Int (run_spec args))

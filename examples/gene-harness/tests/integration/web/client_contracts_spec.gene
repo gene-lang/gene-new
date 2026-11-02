@@ -29,6 +29,9 @@
         (let voice (await ($os/exec_async ^timeout_ms 15000 ^max_bytes 1048576
           "node" (package_path "tests/voice_client.mjs") $"${output}/voice.mjs" $"${output}/round_client.mjs")))
         ($assert (== voice/status 0) $"voice: ${voice/stdout}${voice/stderr}")
+        (let shortcuts (await ($os/exec_async ^timeout_ms 15000 ^max_bytes 1048576
+          "node" (package_path "tests/settings_shortcuts.mjs") $"${output}/main.mjs")))
+        ($assert (== shortcuts/status 0) $"settings shortcuts: ${shortcuts/stdout}${shortcuts/stderr}")
         (let spotlight (await ($os/exec_async ^timeout_ms 15000 ^max_bytes 1048576
           "node" (package_path "tests/spotlight_client.mjs")
           $"${output}/spotlight.mjs" $"${output}/command_client.mjs" $"${output}/browser_clients.mjs"

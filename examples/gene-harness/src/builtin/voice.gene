@@ -22,6 +22,36 @@
   (items .push {^id $"${context/turn}.voice" ^header "[harness_voice]" ^value guidance ^!settled})
   (context .assoc "items" items))
 
+# No current engine can enumerate its voices, so the source reports that and the
+# voice id stays a typed value in the voice map.
+(fn voice_choices [synthesizers, values]
+  (let configured (?? values/voice {}))
+  (let selected (if (== ($head configured) Map) (?? configured/synthesizer "") ""))
+  (let named (if (== selected "") "The configured synthesizer" $"The ${selected} synthesizer"))
+  {^options [] ^complete false
+   ^reason $"${named} does not list its voices. Type a voice id in the voice map, such as ^voice for an ElevenLabs voice ID."})
+
+(fn engine_rows [host, rows, kind : Str, label : Str]
+  (for engine in (host .PluginHost:rows kind)
+    (let reason (try (engine/available) catch Any "The availability check failed."))
+    (rows .push
+      `(tr ^key %$"${kind}/${engine/name}"
+         (td (strong %engine/name) (br) (small ^class_name "web_muted" %(?? engine/summary "")))
+         (td %label)
+         (td %(if ($absent? reason) "Available" reason)))))
+  rows)
+
+(fn voice_section [host]
+  (let rows [])
+  (engine_rows host rows "speech_recognizers" "Recognizer")
+  (engine_rows host rows "speech_synthesizers" "Synthesizer")
+  `(section ^key "voice-section" ^class_name "web_stack"
+     (table ^key "voice-engines" ^class_name "web_table_compact"
+       (thead (tr (th "Engine") (th "Kind") (th "Availability")))
+       (tbody %rows...))
+     (p ^class_name "web_muted"
+       "Choose engines with the voice map above: ^recognizer, ^synthesizer, ^voice, ^language and ^rate. Engines read credentials from the host environment.")))
+
 (fn voice [] : Plugin
   (let error (try
     (if ($absent? asset/.get)
@@ -40,7 +70,8 @@
   (Plugin ^id "voice" ^requires ["voice/host" "sessions/host"]
     ^provides [["browser_clients" "voice"] ["hooks" "request/prepare/voice"]
       ["speech_recognizers" "whisper_local"] ["speech_recognizers" "macos"] ["speech_synthesizers" "piper"]
-      ["speech_synthesizers" "elevenlabs"] ["speech_synthesizers" "macos"]]
+      ["speech_synthesizers" "elevenlabs"] ["speech_synthesizers" "macos"]
+      ["setting_choices" "voices"] ["settings_groups" "Voice"] ["web_components" "voice_engines"]]
     ^activate (fn [host]
       (if_not ($absent? error) (fail error))
       (let service (host .PluginHost:resolve "voice/host"))
@@ -53,6 +84,13 @@
       (host .PluginHost:contribute "speech_synthesizers" (mac_synthesizer_row))
       (host .PluginHost:contribute "browser_clients"
         {^name "voice" ^title "Voice" ^asset asset/.get ^style stylesheet/.get})
+      (host .PluginHost:contribute "setting_choices"
+        {^name "voices" ^!closed
+         ^choices (fn [context] (voice_choices (host .PluginHost:rows "speech_synthesizers") (?? context/values {})))})
+      (host .PluginHost:contribute "settings_groups"
+        {^name "Voice" ^order 60 ^section "voice_engines" ^doc "Speech engines for spoken prompts and replies."})
+      (host .PluginHost:contribute "web_components"
+        {^name "voice_engines" ^slot "settings_section" ^render (fn [context] (voice_section host))})
       (host .PluginHost:contribute "hooks"
         {^point "request/prepare" ^name "voice" ^summary "Temporary spoken-input and spoken-reply guidance."
          ^run (fn [context, next] (next (voice_advisory service sessions context)))})

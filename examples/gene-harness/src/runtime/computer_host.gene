@@ -1,6 +1,7 @@
 # Runtime-owned computer grants and durable driver receipts. The replaceable
 # plugin sees IDs/records and retains a counted lease through its last reader.
 (mod computer_host)
+(import [note_active_setting effective_setting] ^from "./settings_resolver")
 (import [ComputerHost CommandContext CommandResult ServiceError] ^from "../plugin_api")
 (import [append_prompt] ^from "../public/response")
 (import [service_binding require_service] ^from "./service_handles")
@@ -35,8 +36,7 @@
 (fn driver [state]
   (if state/closed/.get (fail (ServiceError ^code "unavailable" ^message "Computer host is closed.")))
   (if_yes ($absent? state/client/.get)
-    (let config ($serde/read_data ($fs/read_text $"${state/runtime/state_root}/config.gene")))
-    (let options (?? config/computer {}))
+    (let options (?? (note_active_setting state/runtime "computer" (effective_setting state/runtime "computer")) {}))
     (state/client .set (open_driver $"${state/runtime/state_root}/computer"
       ^command (?? options/command "cua-driver") ^socket (?? options/socket ""))))
   state/client/.get)

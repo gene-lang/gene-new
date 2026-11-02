@@ -231,11 +231,12 @@ console.log('UI forms/actions: success closure, draft preservation, recovery, qu
 // Composer keys follow the host's bindings, with defaults until the first status.
 {
   const router=await import(new URL('router.mjs', base));
+  const chords=await import(new URL('chords.mjs', base));
   const key=(code,mods={})=>({code,ctrlKey:!!mods.ctrl,shiftKey:!!mods.shift,altKey:!!mods.alt,metaKey:!!mods.meta});
-  assert.equal(router.event_chord(key('Enter')),'Enter');
-  assert.equal(router.event_chord(key('NumpadEnter')),'Enter');
-  assert.equal(router.event_chord(key('Enter',{shift:true})),'Shift+Enter');
-  assert.equal(router.event_chord(key('KeyK',{ctrl:true,shift:true})),'Ctrl+Shift+KeyK');
+  assert.equal(chords.event_chord(key('Enter')),'Enter');
+  assert.equal(chords.event_chord(key('NumpadEnter')),'Enter');
+  assert.equal(chords.event_chord(key('Enter',{shift:true})),'Shift+Enter');
+  assert.equal(chords.event_chord(key('KeyK',{ctrl:true,shift:true})),'Ctrl+Shift+KeyK');
   const {ui:client}=setup({submit:false});
   assert.equal(router.action_chord(client,'composer/send','Enter'),'Enter');
   client.keyboard={'composer/send':'Ctrl+Enter'};

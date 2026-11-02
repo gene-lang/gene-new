@@ -1,4 +1,5 @@
 (mod commands)
+(import [effective_config] ^from "./settings_resolver")
 (import [with_command_scope] ^from "./command_scope")
 (import [byte_prefix] ^from "../public/text")
 (import [command_identity same_command_identity?] ^from "./command_identity")
@@ -488,8 +489,7 @@ Stopped."""))))
     (let sink (fn [output] (append_command_output manager session record output)))
     (let ctx
       (CommandContext ^manager manager ^runtime manager/runtime ^session session ^raw parsed/raw ^id record/id ^output sink ^snapshot lease/snapshot))
-    (let config ($serde/read_data ($fs/read_text $"${manager/runtime/state_root}/config.gene")))
-    (let budget (?? config/response_budget {^timeout_ms 600000 ^max_memory_mb 1024}))
+    (let budget (/response_budget (effective_config manager/runtime)))
     (let timeout (?? budget/timeout_ms 600000))
     (let invoke
       ($runtime/bind_call ^policy {^timeout_ms timeout ^max_memory_mb (?? budget/max_memory_mb 1024)}
