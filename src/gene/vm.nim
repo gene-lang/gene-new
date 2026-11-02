@@ -9211,6 +9211,13 @@ when not defined(geneWasm):
 proc ioFileReadLifecycle*(value: Value): IoLifecycle
 proc ioTestingReadLifecycle*(value: Value): IoLifecycle
 
+# For the very large procs that only fill the built-ins tables at startup. They
+# run once per application, and optimizing them takes about a third of a clean
+# release build (mostly clang's hot/cold splitting) with no change in startup
+# time or VM speed. `optnone` requires `noinline`.
+{.pragma: startupRegistration,
+  codegenDecl: "__attribute__((optnone,noinline)) $1 $2$3".}
+
 include ./stdlib
 
 proc constructNew(callee: Value, args: openArray[Value], named: NamedArgs,
@@ -9433,7 +9440,7 @@ proc markImplValuesShared(impl: ProtocolImpl) =
   var publication: SharedValuePublication
   markImplValuesShared(impl, publication)
 
-proc buildBuiltins(app: Application): Scope =
+proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
   ## Construct a fresh built-ins root scope holding all standard bindings and the
   ## singleton marker protocols/types (`Error`, `Send`, `TypeError`, ...). One of
   ## these is shared per application (see `builtinsScope`) so built-in identity is

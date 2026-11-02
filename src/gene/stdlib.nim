@@ -10529,7 +10529,7 @@ proc biNativeModuleStatus(args: openArray[Value],
 
 const syncGateSource = staticRead("lib/sync.gene")
 
-proc registerStdlibNamespaces(root: Scope) =
+proc registerStdlibNamespaces(root: Scope) {.startupRegistration.} =
   let app = root.application()
   ## Define the importable stdlib namespaces (gene/*, str, html, url, net/http,
   ## db, db/sqlite, db/postgres) and their error types on the built-ins root
