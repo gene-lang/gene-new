@@ -4,7 +4,7 @@
 (import [service_binding require_service] ^from "./service_handles")
 (import [immutable_view] ^from "./composition")
 (import [validate_ui_settings ui_settings] ^from "../ui/state")
-(import [ui_preview] ^from "../ui/views")
+(import [ui_preview ui_validate_fragment] ^from "../ui/views")
 (import [list_action_receipts] ^from "../ui/action_log")
 (import [load_session require_record list_sessions] ^from "./sessions")
 
@@ -34,6 +34,8 @@
     (message configure [settings] : Any (configure_ui self settings))
     (message preview [name : Str, state = {}] : Any
       (immutable_view (ui_preview (/runtime (require_service self)) name state)))
+    (message validate [tree, ^view view : Str = ""] : Any
+      (ui_validate_fragment ^view view (/runtime (require_service self)) tree))
     (message receipts [^view view : Str = "", ^status status : Str = "", ^input_id input_id : Str = "",
                        ^before before : Int = 0, ^limit limit : Int = 25] : Any
       (let runtime (/runtime (require_service self)))

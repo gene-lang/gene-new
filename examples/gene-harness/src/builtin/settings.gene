@@ -3,7 +3,7 @@
 # validation, inheritance, persistence and revisions stay in those operations, so
 # disabling this plugin leaves every setting and API in place.
 (mod settings_plugin)
-(import [Plugin PluginHost ServiceError current_workspace current_manager] ^from "../plugin_api")
+(import [Plugin PluginHost UiHost ServiceError current_workspace current_manager] ^from "../plugin_api")
 (import [contribute_text_doc] ^from "../public/documentation")
 (import $css [css rule decl])
 
@@ -164,23 +164,39 @@
 
 # Models: a composite editor writes provider, model and effort together.
 
+# A selection is "-" (no override), "provider/" (that provider's default model) or
+# "provider/model". A saved model without a provider reads "/model" and is kept as is.
 (fn selection_value [provider, model] : Str
-  (if (|| ($absent? provider) ($absent? model) (== provider "") (== model "")) "-" $"${provider}/${model}"))
+  (let chosen_provider (?? provider ""))
+  (let chosen_model (?? model ""))
+  (if (&& (== chosen_provider "") (== chosen_model "")) "-" $"${chosen_provider}/${chosen_model}"))
 
 (fn split_selection [value : Str]
   (let parts ($str/split value "/"))
-  (if (< parts/.size 2) (invalid "Choose a model as provider/model."))
+  (if (< parts/.size 2) (invalid "Choose a model as provider/model, or provider/ for its default model."))
   (let rest [])
   (var index 1)
   (while (< index parts/.size) (rest .push parts/%index) (set index (+ index 1)))
-  (let model ($str/join rest "/"))
-  (if (|| (== parts/0 "") (== model "")) (invalid "Choose a model as provider/model."))
-  {^provider parts/0 ^model model})
+  {^provider parts/0 ^model ($str/join rest "/")})
+
+(fn selection_label [value : Str] : Str
+  (if (== value "-") (return "Follow the selection order"))
+  (let pair (split_selection value))
+  (if (== pair/model "") (return $"${pair/provider} · its default model"))
+  (if (== pair/provider "") (return $"${pair/model} (saved without a provider)"))
+  value)
 
 (fn model_options [workspace, current : Str]
   (let choices (workspace .setting_choices "model"))
   (let options [`(option ^value "-" "Follow the selection order")])
   (var listed (== current "-"))
+  (let providers [])
+  (for option in choices/options
+    (if_not (providers .contains? option/provider) (providers .push option/provider)))
+  (for provider in providers
+    (let value $"${provider}/")
+    (if (== value current) (set listed true))
+    (options .push `(option ^value %value %(selection_label value))))
   (for option in choices/options
     (let value (selection_value option/provider option/model))
     (if (== value current) (set listed true))
@@ -191,15 +207,20 @@
     (options .push `(option ^value %value %label)))
   # A saved choice stays visible when the catalog no longer lists it.
   (if_not listed
-    (options .push `(option ^value %current %$"${current} (not in the catalog; unverified)")))
+    (let label (selection_label current))
+    (options .push `(option ^value %current %(if (== label current) $"${current} (not in the catalog; unverified)" label))))
   {^options options ^note choices/reason})
 
-(fn effort_options [workspace, selection : Str]
-  (let values (if (== selection "-") {} (split_selection selection)))
-  (let choices (workspace .setting_choices "effort" ^values values))
+(fn effort_options [workspace, selection : Str, saved, ^scope scope : Str = "workspace"]
+  (let values (if (== selection "-") {^provider "" ^model ""} (split_selection selection)))
+  (let choices (workspace .setting_choices "effort" ^values values ^scope scope))
   (let options [`(option ^value "" "Use the inherited effort")])
+  (var listed (|| ($absent? saved) (== saved "")))
   (for option in choices/options
+    (if (== option/value saved) (set listed true))
     (options .push `(option ^value %option/value ^disabled %(== option/available false) %option/label)))
+  # A saved effort stays visible even when this model's list does not offer it.
+  (if_not listed (options .push `(option ^value %saved %$"${saved} (saved)")))
   options)
 
 (fn models_group [workspace, manager, state, scope : Str]
@@ -224,14 +245,14 @@
       (let current (if (== state/model_draft "") saved state/model_draft))
       (let models (model_options workspace current))
       (let model_nodes (/options models))
-      (let effort_nodes (effort_options workspace current))
+      (let effort_nodes (effort_options ^scope "shared" workspace current default/effort))
       [summary
        `(section ^key "model-shared" ^class_name "web_card"
           (h3 "Shared default model")
           (p ^class_name "web_muted" "Used by every workspace without its own model setting. Stored in the manager's models.gene.")
           (label "Model" (select ^key "model_draft_shared" ^state "model_draft" ^value %current %model_nodes...))
           (form ^key %$"models/shared/${current}" ^action "settings_save_models"
-            ^args %{^scope "shared" ^selection current ^expected catalog/digest} ^success_state {^model_draft ""}
+            ^args %{^scope "shared" ^selection current ^saved saved ^expected catalog/digest} ^success_state {^model_draft ""}
             (label "Effort" (select ^key %$"effort/shared/${current}" ^field "effort" ^value %(?? default/effort "")
               %effort_nodes...))
             (label "Or type provider/model" (input ^key %$"custom/shared/${current}" ^field "custom" ^placeholder "openrouter/vendor/model"))
@@ -252,7 +273,7 @@
       (let models (model_options workspace current))
       (let model_nodes (/options models))
       (let model_note (/note models))
-      (let effort_nodes (effort_options workspace current))
+      (let effort_nodes (effort_options workspace current effort/stored))
       (let overridden (|| (== provider/has_stored true) (== model/has_stored true) (== effort/has_stored true)))
       (let editor
         `(section ^key "model-workspace" ^class_name "web_card"
@@ -261,7 +282,7 @@
            (label "Model" (select ^key "model_draft_workspace" ^state "model_draft" ^value %current %model_nodes...))
            %(if ($present? model_note) `(small ^class_name "web_muted" %model_note) `(span ""))
            (form ^key %$"models/workspace/${current}" ^action "settings_save_models"
-             ^args %{^scope "workspace" ^selection current ^expected listed/digest} ^success_state {^model_draft ""}
+             ^args %{^scope "workspace" ^selection current ^saved saved ^expected listed/digest} ^success_state {^model_draft ""}
              (label "Effort" (select ^key %$"effort/workspace/${current}" ^field "effort"
                ^value %(if (== effort/has_stored true) effort/stored "")
                %effort_nodes...))
@@ -358,19 +379,43 @@
           ^class_name %(if (== mode "dark") "web_primary" "web_secondary") "Dark")))])
 
 # A contributed section renders through its own row; a failure stays inside it.
-(fn section_block [host, name, context]
+(fn section_error [name, reason]
+  `(p ^key %$"section-error/${name}" ^role "alert" ^class_name "web_notice web_notice_error"
+     %$"This section could not be shown: ${reason}"))
+
+# Validate the section's own tree here, so a contract mistake stays inside it.
+(fn section_block [host, ui, name, context]
   (if ($absent? name) (return `(span "")))
   (let row (host .PluginHost:row "web_components" name))
   (if (|| ($absent? row) (!= row/slot "settings_section"))
     (return `(p ^key %$"section-missing/${name}" ^class_name "web_notice"
       "This group's section is unavailable while its plugin is disabled.")))
-  (try (row/render context)
-    catch Any
-      (let reason ($to_str (?? $err/message $err)))
-      `(p ^key %$"section-error/${name}" ^role "alert" ^class_name "web_notice web_notice_error"
-         %$"This section could not be shown: ${reason}")))
+  (try
+    (let tree (row/render context))
+    (ui .UiHost:validate tree ^view "settings")
+    tree
+    catch Any (section_error name ($to_str (?? $err/message $err)))))
 
-(fn settings_view [host, context]
+(fn settings_layout [scope : Str, selected : Str, current, nav, body, section]
+  `(section ^key "settings" ^class_name "settings_layout"
+     (div ^key "settings-nav" ^class_name "settings_nav web_stack web_tight" %nav...)
+     (div ^key "settings-main" ^class_name "settings_main web_stack"
+       (div ^class_name "web_spread"
+         (h2 %(?? current/label selected))
+         (div ^class_name "web_actions" ^role "group" ^aria_label "Scope"
+           (button ^key "scope-workspace" ^state "scope" ^value "workspace"
+             ^class_name %(if (== scope "workspace") "web_primary" "web_secondary") "Workspace")
+           (button ^key "scope-shared" ^state "scope" ^value "shared"
+             ^class_name %(if (== scope "shared") "web_primary" "web_secondary") "Shared")))
+       (small ^class_name "web_muted"
+         %(if (== scope "shared")
+            "Saving changes the default for every workspace under this manager that has no override."
+            "Saving changes this workspace only."))
+       %(if ($present? current/doc) `(p ^class_name "web_muted" %current/doc) `(span ""))
+       %body...
+       %section)))
+
+(fn settings_view [host, ui, context]
   (let workspace (current_workspace))
   (let manager (current_manager))
   (let state context/view_state)
@@ -394,23 +439,17 @@
         (let reason ($to_str (?? $err/message $err)))
         [`(p ^key "group-error" ^role "alert" ^class_name "web_notice web_notice_error"
             %$"This group could not be read: ${reason}")]))
-  `(section ^key "settings" ^class_name "settings_layout"
-     (div ^key "settings-nav" ^class_name "settings_nav web_stack web_tight" %nav...)
-     (div ^key "settings-main" ^class_name "settings_main web_stack"
-       (div ^class_name "web_spread"
-         (h2 %(?? current/label selected))
-         (div ^class_name "web_actions" ^role "group" ^aria_label "Scope"
-           (button ^key "scope-workspace" ^state "scope" ^value "workspace"
-             ^class_name %(if (== scope "workspace") "web_primary" "web_secondary") "Workspace")
-           (button ^key "scope-shared" ^state "scope" ^value "shared"
-             ^class_name %(if (== scope "shared") "web_primary" "web_secondary") "Shared")))
-       (small ^class_name "web_muted"
-         %(if (== scope "shared")
-            "Saving changes the default for every workspace under this manager that has no override."
-            "Saving changes this workspace only."))
-       %(if ($present? current/doc) `(p ^class_name "web_muted" %current/doc) `(span ""))
-       %body...
-       %(section_block host current/section context))))
+  (let section (section_block host ui current/section context))
+  (if ($absent? current/section) (return (settings_layout scope selected current nav body section)))
+  # A section that is valid alone can still collide with the screen, for example
+  # by reusing a key. Check the composed tree and show that failure in its place.
+  (let composed (settings_layout scope selected current nav body section))
+  (try
+    (ui .UiHost:validate composed ^view "settings")
+    composed
+    catch Any
+      (settings_layout scope selected current nav body
+        (section_error current/section ($to_str (?? $err/message $err))))))
 
 # Actions: each Save targets exactly one store.
 
@@ -433,13 +472,15 @@
   (let typed ($str/trim custom))
   (if (!= typed "") typed selection))
 
-(fn save_models [^scope scope : Str, ^selection selection : Str = "-", ^expected expected : Str = "",
-                 ^effort effort : Str = "", ^custom custom : Str = ""]
+(fn save_models [^scope scope : Str, ^selection selection : Str = "-", ^saved saved : Str = "-",
+                 ^expected expected : Str = "", ^effort effort : Str = "", ^custom custom : Str = ""]
   (let chosen (chosen_selection selection custom))
   (if (== scope "shared")
     (then
       (if (== chosen "-") (invalid "Choose a model for the shared default, or clear it."))
       (let pair (split_selection chosen))
+      (if (|| (== pair/provider "") (== pair/model ""))
+        (invalid "A shared default names both a provider and a model."))
       (let value {^provider pair/provider ^model pair/model})
       (if (!= effort "") (value .put "effort" effort))
       ((current_manager) .set_default_model value expected)
@@ -447,18 +488,22 @@
     (else
       (let changes {})
       (let reset [])
-      (if (== chosen "-")
-        (then (reset .push "provider") (reset .push "model"))
-        (else
-          (let pair (split_selection chosen))
-          (changes .put "provider" pair/provider)
-          (changes .put "model" pair/model)))
+      # An unchanged selection leaves provider and model exactly as saved, including
+      # a provider-only override. Inheriting is only ever an explicit choice.
+      (if (!= chosen saved)
+        (if (== chosen "-")
+          (then (reset .push "provider") (reset .push "model"))
+          (else
+            (let pair (split_selection chosen))
+            (if (== pair/provider "") (invalid "Choose a provider for this model."))
+            (changes .put "provider" pair/provider)
+            (if (== pair/model "") (reset .push "model") (changes .put "model" pair/model)))))
       (if (== effort "") (reset .push "effort") (changes .put "effort" effort))
       ((current_workspace) .set_settings changes ^reset reset ^expected expected)
       "Saved the workspace model.")))
 
-(fn reset_models [^scope scope : Str, ^selection selection : Str = "-", ^expected expected : Str = "",
-                  ^effort effort : Str = "", ^custom custom : Str = ""]
+(fn reset_models [^scope scope : Str, ^selection selection : Str = "-", ^saved saved : Str = "-",
+                  ^expected expected : Str = "", ^effort effort : Str = "", ^custom custom : Str = ""]
   (if (== scope "shared")
     (then
       (let manager (current_manager))
@@ -500,8 +545,9 @@
   (let provides [["web_components" "settings"] ["docs" "harness/settings"]])
   (for name in actions (provides .push ["ui_actions" name]))
   (for group in groups (provides .push ["settings_groups" group/name]))
-  (Plugin ^id "settings" ^provides provides
+  (Plugin ^id "settings" ^provides provides ^requires ["ui/host"]
     ^activate (fn [host]
+      (let ui (host .PluginHost:resolve "ui/host"))
       (for group in groups (host .PluginHost:contribute "settings_groups" group))
       (host .PluginHost:contribute "ui_actions"
         {^name "settings_save" ^doc "Save one setting in the workspace or shared store." ^fn save_setting})
@@ -521,7 +567,7 @@
          ^embeds "settings_section"
          ^view_state {^group "General" ^scope "workspace" ^q "" ^customized false ^recording "" ^model_draft ""}
          ^state_version "1" ^actions actions ^style (settings_style)
-         ^render (fn [context] (settings_view host context))})
+         ^render (fn [context] (settings_view host ui context))})
       (contribute_text_doc ^tags ["settings" "keyboard" "models"] host "harness/settings"
         "The Settings screen and the settings objects behind it."
         "Settings lists every setting group with generated editors, a Workspace or Shared scope, the composite model editor and keyboard shortcuts. Read and write the same values directly: (workspace .settings), (workspace .set_settings {^turn_limit 40} ^expected digest), (manager .settings), (manager .set_setting \"turn_limit\" 40 ^expected digest), (workspace .keyboard), (workspace .bind_key id chord ^expected digest). Shared defaults live in the manager root's settings.gene and apply from the next round of every workspace without an override; the shared model default stays in models.gene through (manager .set_default_model selection digest)."))))

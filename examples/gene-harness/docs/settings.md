@@ -33,9 +33,12 @@ changes a setting key.
 
 A section is a `web_components` row with `^slot "settings_section"`, a `render`
 callback and an optional `actions` list. Settings renders it inside the group and
-admits its actions as its own, using the ordinary view-action contract. A section
-whose plugin is disabled, or whose render fails, explains that inside its group and
-leaves the rest of the screen working.
+admits its actions as its own, using the ordinary view-action contract. Each
+section's tree is checked on its own with `UiHost:validate tree ^view "settings"`,
+and then again as part of the whole screen, which catches collisions such as a
+reused key. A section whose plugin is disabled, whose render fails, or whose tree
+breaks the component or action contract explains that inside its group and leaves
+the rest of the screen working.
 
 When a plugin is removed, its settings, group rows and sections go with it. An
 inferred group stays while another plugin still contributes settings to it. Stored
@@ -59,8 +62,12 @@ exists use the same defaults the screen shows.
 ### Choice sources
 
 A `setting_choices` row has a `name`, a `choices` callback and an optional
-`closed` flag. The callback receives `{^key ^values ^scope}`, where `values` are the
-current or draft values, and returns a list of options or a map:
+`closed` flag. The callback receives `{^key ^values ^scope}`. `values` are always the
+complete values for that scope, so a source can read a dependency that was not
+edited: in workspace scope they resolve through the shared file and defaults, in
+shared scope they are the shared file over the defaults, and draft values are laid
+on top. Saves check choices against the whole candidate inside the store's
+transaction. The callback returns a list of options or a map:
 
 ```gene
 {^options [{^value "high" ^label "high" ^available true ^reason nil}]
@@ -76,7 +83,7 @@ from the options stays visible with its reason.
 | Source | From | Closed |
 | --- | --- | --- |
 | `models` | models plugin, cached catalog | no |
-| `efforts` | models plugin; depends on the draft provider and model | yes |
+| `efforts` | models plugin; the portable levels plus native levels the model advertises | yes, when the catalog describes the model |
 | `voices` | voice plugin; current engines cannot list voices, so it says so | no |
 
 ```gene
@@ -144,9 +151,15 @@ That watch is for screens only; execution never waits for it.
 
 The Models group shows what the next round would use and why
 (`(workspace .model_selection)`). In Workspace scope its editor saves provider,
-model and effort in one batch, so the screen cannot store a mismatched pair; **Use
-inherited selection** removes all three. Changing the model refreshes the effort
-choices before saving. In Shared scope it saves `models.gene`'s default through
+model and effort in one batch, so the screen cannot store a mismatched pair. A
+provider alone ("its default model") is a selection of its own, and saving with the
+selection unchanged leaves provider and model exactly as stored; **Follow the
+selection order** and **Use inherited selection** are the only ways to remove them.
+Changing the model refreshes the effort choices before saving. Effort accepts the
+portable levels and any native level, such as `ultra`, that the selected model
+advertises in the catalog. The model is the one the values being saved would select
+by the usual order, so resetting the model or keeping only a provider is judged
+against the inherited or default model. In Shared scope it saves `models.gene`'s default through
 `(manager .set_default_model selection digest)`. Installing a provider or
 refreshing the catalog never changes a saved selection.
 

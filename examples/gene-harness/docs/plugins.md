@@ -217,7 +217,7 @@ that activation retires. Their returned data collections are immutable.
 | `channels/host` | `ChannelHost`: `start` and `state`. The `slack` plugin owns transport activation; host-owned accounts and queues survive its replacement or disable. Status contains public identity/health data. |
 | `sessions/host` | Read-only `SessionHost`: `record session` and `round session`. `round` returns a projection of the loaded round or nil, with no session cells or manager. |
 | `voice/host` | `VoiceHost`: `output session` and `reset_if_unused`, for spoken-reply policy and activation cleanup. |
-| `ui/host` | `UiHost`: `settings`, `configure changes`, `preview name state`, and filtered `receipts`. Configuration writes remain owned by the Workspace UI plugin. |
+| `ui/host` | `UiHost`: `settings`, `configure changes`, `preview name state`, `validate tree ^view name` for a fragment a view embeds, and filtered `receipts`. Configuration writes remain owned by the Workspace UI plugin. |
 | `workspaces/host` | Manager-only `WorkspaceHost`: `list`, `snapshot`, `inspect id`, `operation name values`, browser `action`, and `open_link id`. Browser actions keep their existing confirmation checks. |
 | `computer/host` | `ComputerHost`: scoped activation, admitted operator `command`, conversation `targets`, `observe`, `act`, and durable `receipt`. Grants stay alive through overlapping activation readers. |
 | `operator/host` | `OperatorHost`: execute an admitted command, retain/classify/run/close the shell or REPL mode. A supplied CommandContext alone does not authorize execution. |

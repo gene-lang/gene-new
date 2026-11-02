@@ -8,7 +8,9 @@
 (import [contribute rows row publish registry_row_records] ^from "../kernel")
 (import [core_setting_definitions model_setting_keys definition_scopes supports_scope?] ^from "./setting_definitions")
 (import [read_shared_settings write_shared_settings shared_settings_root] ^from "./shared_settings")
-(import [setting_definitions layered_value bump_settings_revision active_settings settings_state] ^from "./settings_resolver")
+(import [select_provider] ^from "../agents/provider_selection")
+(import [setting_definitions layered_value resolve_config bump_settings_revision active_settings settings_state]
+  ^from "./settings_resolver")
 
 # After a committed write or reset, and when another host's shared write is observed.
 (type SettingsChanged : HarnessEvent ^props {^scope Str ^digest Str ^keys Any})
@@ -67,17 +69,55 @@
 
 # Choice sources
 
+# The complete values a choice source sees for one scope, so it can read unchanged
+# dependencies. Workspace scope is what execution resolves (model keys stay as
+# stored); shared scope is the shared file over the definition defaults.
+(fn scope_values [runtime, scope : Str, stored]
+  (let definitions (setting_definitions runtime))
+  (if (== scope "shared")
+    (then
+      (let values {})
+      (for [key definition] in definitions (values .put ($to_str key) definition/default))
+      (for [key value] in stored (values .put ($to_str key) value))
+      values)
+    (else (resolve_config ($thaw ($freeze stored)) definitions (shared_settings_root runtime)))))
+
+(fn current_scope_values [runtime, scope : Str]
+  (scope_values runtime scope
+    (if (== scope "shared") (then (/values (shared_values_for runtime))) (else (read_config runtime)))))
+
+# The provider and model the candidate values would select, by the existing
+# selection rules (pins, workspace, shared default, environment, automatic), so
+# model-dependent choices such as effort follow resets and provider defaults.
+(fn candidate_selection [runtime, complete]
+  # Effort does not choose the model, and the effort being checked must not stop
+  # the resolver from naming the model it is checked against.
+  (let without_effort ($thaw ($freeze complete)))
+  (without_effort .delete "effort")
+  (try
+    (let chosen (select_provider ^allow_unready true runtime without_effort))
+    {^provider chosen/selection/provider ^model chosen/selection/model}
+  catch Any nil))
+
 # Options for one setting from its named `setting_choices` source. Evaluation is a
-# read of cached catalogs. A failure leaves the saved value inspectable.
-(fn setting_choices [runtime, definition, ^values values = {}, ^scope scope : Str = "workspace"]
+# read of cached catalogs. A failure leaves the saved value inspectable. A
+# transaction passes its complete candidate `values`; otherwise the current values
+# for the scope are used with any `drafts` laid over them.
+(fn setting_choices [runtime, definition, ^values values = nil, ^drafts drafts = {}, ^scope scope : Str = "workspace"]
   (let name definition/choices)
   (if ($absent? name) (return nil))
+  (let complete (if ($present? values) (then values) (else (current_scope_values runtime scope))))
+  (if ($absent? values)
+    (for [key value] in drafts (complete .put ($to_str key) value)))
   (let source (row runtime/h "setting_choices" name))
   (if ($absent? source)
     (return {^source name ^options [] ^complete false ^closed false
              ^reason $"The ${name} choices are unavailable while their plugin is disabled."}))
+  (let context {^key definition/key ^values complete ^scope scope})
+  (if (&& (== scope "workspace") (model_setting_keys .contains? definition/key))
+    (context .put "selection" (candidate_selection runtime complete)))
   (try
-    (let result (source/choices {^key definition/key ^values values ^scope scope}))
+    (let result (source/choices context))
     (let shaped (if (== ($head result) List) {^options result} result))
     {^source name ^options (?? shaped/options []) ^complete (?? shaped/complete true)
      ^closed (== source/closed true) ^reason (?? shaped/reason nil)}
@@ -268,11 +308,12 @@
         (for [key value] in changes (candidate .put ($to_str key) value))
         (for key in reset (candidate .delete key))
         (if ($present? mutate) (mutate candidate))
+        (let complete (scope_values runtime "workspace" candidate))
         (for key in keys
           (if_yes ($has_key? candidate key)
             (let definition (definitions .get key))
             (check_setting_value definition (candidate .get key))
-            (check_choice runtime definition (candidate .get key) candidate "workspace")))
+            (check_choice runtime definition (candidate .get key) complete "workspace")))
         (if (|| (keys .contains? "provider") (keys .contains? "model")) (check_model_pair candidate))
         ($fs/write_text_atomic (config_path runtime) ($serde/write_data candidate))
         {^config candidate ^digest (config_digest candidate)})))
@@ -317,14 +358,16 @@
       (invalid $"${key} has no shared value; it is a workspace setting."))
     (definitions .put key definition))
   (for [key value] in changes
-    (let name ($to_str key))
-    (let definition (definitions .get name))
-    (check_setting_value definition value)
-    (check_choice runtime definition value changes "shared"))
+    (check_setting_value (definitions .get ($to_str key)) value))
+  # Choices are checked against the whole candidate read under the lock, so a
+  # single-field edit sees the saved values it depends on.
   (let saved (write_shared_settings (shared_settings_root runtime) expected
     (fn [values]
       (for [key value] in changes (values .put ($to_str key) value))
-      (for key in reset (values .delete key)))))
+      (for key in reset (values .delete key))
+      (let complete (scope_values runtime "shared" values))
+      (for [key value] in changes
+        (check_choice runtime (definitions .get ($to_str key)) value complete "shared")))))
   (announce runtime "shared" saved/digest keys)
   (let views [])
   (for key in keys (views .push (shared_view (definitions .get key) saved/values)))

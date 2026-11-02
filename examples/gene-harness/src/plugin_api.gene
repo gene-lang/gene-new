@@ -114,6 +114,7 @@
   (message settings [] : Any)
   (message configure [settings] : Any)
   (message preview [name : Str, state = {}] : Any)
+  (message validate [tree, ^view view : Str = ""] : Any)
   (message receipts [^view view : Str = "", ^status status : Str = "", ^input_id input_id : Str = "",
                      ^before before : Int = 0, ^limit limit : Int = 25] : Any))
 

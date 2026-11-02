@@ -10,11 +10,14 @@
 # values through untouched and never injects their defaults.
 (const model_setting_keys ["provider" "model" "effort"])
 
+# Portable levels always pass; a native level such as ultra passes here and is then
+# checked against the selected model's advertised efforts by the efforts choices.
 (fn check_effort [value]
+  (if (|| (portable_efforts .contains? value) ($present? (#"^[a-z][a-z0-9_]{0,31}$" .match value)))
+    (return value))
   (let levels ($str/join portable_efforts ", "))
-  (if_not (portable_efforts .contains? value)
-    (fail (ServiceError ^code "invalid_request" ^message $"Effort must be one of ${levels}.")))
-  value)
+  (fail (ServiceError ^code "invalid_request"
+    ^message $"Effort must be one of ${levels}, or a level the model advertises.")))
 
 (fn core_setting_definitions []
   (let group "General")
@@ -25,7 +28,7 @@
     ^doc "Model for this workspace. Empty follows the selection order."}
    {^key "effort" ^label "Effort" ^group "Models" ^type "str" ^default "auto" ^applies "next_round" ^choices "efforts"
     ^validate check_effort
-    ^doc "Requested effort: auto, none, minimal, low, medium, high, xhigh or max."}
+    ^doc "Requested effort: auto, none, minimal, low, medium, high, xhigh, max, or a native level the model advertises."}
    {^key "context_window" ^label "Context window" ^group "Models" ^type "int" ^default nil ^min 1 ^applies "next_round"
     ^doc "Optional cap on the selected model's window in tokens."}
    {^key "provider_timeout_ms" ^label "Provider timeout" ^group group ^type "int" ^default 600000 ^min 1 ^applies "next_round"

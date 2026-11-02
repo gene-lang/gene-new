@@ -1,7 +1,7 @@
 # Leased rendering and publication previews shared by CLI and browser hosts.
 (mod ui_views)
 (import [resolve] ^from "../kernel")
-(import [acquire_snapshot release_snapshot] ^from "../runtime/composition")
+(import [acquire_snapshot release_snapshot current_snapshot] ^from "../runtime/composition")
 (import [spawn_composition_call] ^from "../runtime/cordis_adapter")
 (import [bounded_component_view WebComponentError] ^from "./components")
 (import [ui_settings ui_record ui_revision ui_data_revision ui_descriptor ui_error view_listed? view_actions] ^from "./state")
@@ -89,6 +89,18 @@
     catch Any (result .put "error" $err/message))
     result
   ensure (release_snapshot h/snapshots lease)))
+
+# Checks a fragment that a view embeds, such as a Settings section, against the
+# component contract and that view's declared actions and state, so the embedding
+# view can show a failure in place instead of failing whole.
+(fn ui_validate_fragment [runtime, tree, ^view view : Str = ""]
+  (let checked (bounded_component_view ^interactive true tree))
+  (if_yes (!= view "")
+    (let snapshot (current_snapshot runtime/h/snapshots))
+    (let record (ui_record snapshot "web_components" view))
+    (if ($absent? record) (ui_error "not_found" $"View ${view} not found."))
+    (validate_view_actions checked record/payload snapshot))
+  nil)
 
 (fn ui_preview [runtime, name : Str, state = {}, ^session session : Str = ""]
   (let chosen (if (== session "") (?? (/session ($runtime/context)) "") session))

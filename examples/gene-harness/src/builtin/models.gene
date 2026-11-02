@@ -26,22 +26,36 @@
   (let entry (?? snapshot/providers/%provider {}))
   (for model in (?? entry/models [])
     (if (== model/id id) (return model)))
-  {^id id})
+  nil)
 
-# Requested efforts are portable levels; each shows what it becomes for the model.
+# Requested efforts are the portable levels plus native levels the model advertises;
+# each shows what it becomes for the model. Without catalog metadata for the model
+# the list is incomplete, so a native level is left to the round's own check.
 (fn effort_choice_options [snapshot, values]
   (let provider ($to_str (?? values/provider "")))
   (let id ($to_str (?? values/model "")))
-  (let model (catalog_model snapshot provider id))
+  (let listed (catalog_model snapshot provider id))
+  (let model (?? listed {^id id}))
+  (let levels ($thaw ($freeze effort_levels)))
+  (for level in (?? model/efforts [])
+    (if_not (levels .contains? level) (levels .push level)))
   (let options [])
-  (for level in effort_levels
+  (for level in levels
     (let resolved (try {^effort (resolve_effort level model)} catch Any {^error ($to_str (?? $err/message $err))}))
     (let effective (?? resolved/effort "provider default"))
     (options .push
       {^value level ^available ($absent? resolved/error) ^reason (?? resolved/error nil)
        ^label (if ($present? resolved/error) $"${level} (not available for this model)"
          (if (== level effective) level $"${level} → ${effective}"))}))
-  {^options options ^complete true})
+  {^options options ^complete ($present? listed)
+   ^reason (if ($present? listed) nil "This model has no catalog metadata, so only the portable levels are listed.")})
+
+# Workspace effort is judged against the model the candidate values select, which
+# the host resolves with resets, drafts and provider defaults applied. A shared
+# default names its provider and model directly.
+(fn effort_values [context]
+  (if (== context/scope "workspace") (return (?? context/selection {})))
+  (?? context/values {}))
 
 (fn providers_section [snapshot]
   (let rows [])
@@ -137,7 +151,7 @@
         {^name "models" ^!closed ^choices (fn [context] (model_choice_options catalog/.ModelsHost:snapshot))})
       (host .PluginHost:contribute "setting_choices"
         {^name "efforts" ^^closed
-         ^choices (fn [context] (effort_choice_options catalog/.ModelsHost:snapshot (?? context/values {})))})
+         ^choices (fn [context] (effort_choice_options catalog/.ModelsHost:snapshot (effort_values context)))})
       (host .PluginHost:contribute "settings_groups"
         {^name "Providers" ^order 30 ^section "model_providers"
          ^doc "Model connections. Contributing a provider adds choices; it never changes the saved model."})

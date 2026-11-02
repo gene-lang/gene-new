@@ -2,7 +2,7 @@
 (import $test [describe it])
 (import [isolated run_spec test_service] ^from "../../support")
 (import [close_session_service create_session command operator_receipt client_reply host_status] ^from "../../../src/web/session_service")
-(import [Plugin PluginHost] ^from "../../../src/plugin_api")
+(import [Plugin PluginHost ServiceError] ^from "../../../src/plugin_api")
 (import [put_cordis_plugin uninstall] ^from "../../../src/kernel")
 (import [ui_status] ^from "../../../src/ui/state")
 (import [ui_preview] ^from "../../../src/ui/views")
@@ -208,7 +208,7 @@
           ($assert (== both "invalid_request") both)
           (let orphan (try (shown .set_settings {^model "other"} ^reset ["provider"]) "saved" catch Any $err/code))
           ($assert (== orphan "invalid_request") "a workspace model needs its provider")
-          (let effort (try (shown .set_setting "effort" "extreme") "saved" catch Any $err/code))
+          (let effort (try (shown .set_setting "effort" "Extreme!") "saved" catch Any $err/code))
           ($assert (== effort "invalid_request") effort)
           (shown .set_settings {} ^reset ["provider" "model" "effort"] ^expected saved/digest)
           ($assert (== (config_on_disk service) {}) "resetting removes the overrides"))))))
@@ -456,6 +456,159 @@
             {^scope "workspace" ^expected shown/.settings/digest}))
           ($assert (== reset/status "done") ($to_str reset))
           ($assert ($absent? (/model (config_on_disk service))))))))))
+
+(fn find_node [tree, key : Str]
+  (if (!= ($head tree) Map) (return nil))
+  (if (== tree/props/key key) (return tree))
+  (for child in (?? tree/children [])
+    (let found (find_node child key))
+    (if ($present? found) (return found)))
+  nil)
+
+(fn dependent_choices_plugin []
+  (Plugin ^id "zone_probe" ^activate (fn [host]
+    (for key in ["zone_probe/region" "zone_probe/zone"]
+      (let definition {^key key ^label key ^group "Zones" ^doc "A probe setting." ^type "str"
+        ^default "west" ^applies "next_round" ^scopes ["workspace" "shared"]})
+      (if (== key "zone_probe/zone") (definition .put "choices" "zone_probe/zones"))
+      (host .PluginHost:contribute "settings" definition))
+    (host .PluginHost:contribute "setting_choices"
+      {^name "zone_probe/zones" ^^closed ^choices (fn [context]
+        (let region (?? (context/values .get "zone_probe/region") "west"))
+        [{^value region ^label region ^^available}])}))))
+
+# Stands in for a cataloged provider: it keeps the model it is given, so the
+# selection rules decide which model's efforts apply. It never sends a request.
+(fn catalog_provider_plugin []
+  (Plugin ^id "provider_test" ^provides [["providers" "test"]]
+    ^activate (fn [host]
+      (host .PluginHost:contribute "providers"
+        {^name "test" ^doc "Cataloged test provider."
+         ^configure (fn [model, effort, timeout] {^model (?? model "plain") ^timeout_ms timeout})
+         ^prepare (fn [call] call)
+         ^send (fn [call] (fail (ServiceError ^code "unexpected" ^message "No inference in settings specs.")))}))))
+
+(fn use_effort_catalog [service]
+  (put_cordis_plugin ^^replace service/runtime/h (catalog_provider_plugin) {})
+  (let manager (manager_of service))
+  (let configuration manager/.model_configuration)
+  (manager .save_model_configuration
+    {^version 1 ^default {^provider "test" ^model "plain" ^effort "low"} ^providers [] ^presets []
+     ^models [{^provider "test" ^id "native" ^efforts ["low" "ultra"] ^default_effort "low"}
+              {^provider "test" ^id "plain" ^efforts ["low"] ^default_effort "low"}]}
+    configuration/digest))
+
+(fn section_probe_plugin []
+  (Plugin ^id "section_probe" ^activate (fn [host]
+    (host .PluginHost:contribute "settings_groups" {^name "Probe collision" ^section "section_probe_collision"})
+    (host .PluginHost:contribute "web_components"
+      {^name "section_probe_collision" ^slot "settings_section"
+       ^render (fn [context] (quote (section ^key "settings" (p "Section content."))))})
+    (for name in ["broken_tree" "throwing" "undeclared"]
+      (host .PluginHost:contribute "settings_groups" {^name $"Probe ${name}" ^section $"section_probe_${name}"}))
+    (host .PluginHost:contribute "web_components"
+      {^name "section_probe_broken_tree" ^slot "settings_section"
+       ^render (fn [context] (quote (script "invalid component")))})
+    (host .PluginHost:contribute "web_components"
+      {^name "section_probe_throwing" ^slot "settings_section"
+       ^render (fn [context] (fail (ServiceError ^code "broken" ^message "section exploded")))})
+    (host .PluginHost:contribute "web_components"
+      {^name "section_probe_undeclared" ^slot "settings_section"
+       ^render (fn [context] (quote (button ^key "go" ^action "no_such_action" "Go")))}))))
+
+(describe "Settings review regressions"
+  (it "keeps a provider-only override when only the effort changes" []
+    (isolated this_mod/.path "keeps a provider-only override when only the effort changes"
+      (fn [root]
+        (with_workspace root (fn [service, shown]
+          (shown .set_setting "provider" "test")
+          (let rendered (ui_preview service/runtime "settings" {^group "Models"}))
+          (let form (find_node rendered/view "models/workspace/test/"))
+          ($assert ($present? form) "the provider-only override is its own selection")
+          (let named ($thaw ($freeze form/props/args)))
+          ($assert (== named/selection "test/"))
+          (named .put "effort" "high")
+          (named .put "custom" "")
+          (let saved (run_view_action service "effort-only" "settings_save_models" named))
+          ($assert (== saved/status "done") ($to_str saved))
+          ($assert (== (config_on_disk service) {^provider "test" ^effort "high"}) ($to_str (config_on_disk service)))
+          (let inherit (run_view_action service "inherit" "settings_save_models"
+            {^scope "workspace" ^selection "-" ^saved "test/" ^expected shown/.settings/digest ^effort "" ^custom ""}))
+          ($assert (== inherit/status "done") ($to_str inherit))
+          ($assert (== (config_on_disk service) {}) "inheriting is an explicit choice"))))))
+
+  (it "checks dependent choices against the saved values they depend on" []
+    (isolated this_mod/.path "checks dependent choices against the saved values they depend on"
+      (fn [root]
+        (with_workspace root (fn [service, shown]
+          (put_cordis_plugin service/runtime/h (dependent_choices_plugin) {})
+          (let manager (manager_of service))
+          (manager .set_settings {^zone_probe/region "east" ^zone_probe/zone "east"})
+          ($assert (== (/value (manager .set_setting "zone_probe/zone" "east")) "east") "a later single-field edit sees the saved region")
+          (let wrong (try (manager .set_setting "zone_probe/zone" "west") "saved" catch Any $err/code))
+          ($assert (== wrong "invalid_request") wrong)
+          ($assert (== (/value (manager .setting "zone_probe/zone")) "east"))
+          ($assert (== ($map (/options (shown .setting_choices "zone_probe/zone")) (fn [option] option/value)) ["east"])
+            "workspace choices see the inherited region")
+          ($assert (== (/value (shown .set_setting "zone_probe/zone" "east")) "east"))
+          (let drafted (shown .setting_choices "zone_probe/zone" ^values {^zone_probe/region "north"}))
+          ($assert (== drafted/options/0/value "north") "drafts lay over the saved values")
+          (let shared_form (ui_preview service/runtime "settings" {^group "Zones" ^scope "shared"}))
+          ($assert ($absent? shared_form/error) (?? shared_form/error ""))
+          ($assert (! ($str/contains? ($json/stringify shared_form/view) "no longer offered"))
+            "a valid saved value is offered, not flagged"))))))
+
+  (it "accepts a native effort the selected model advertises and rejects others" []
+    (isolated this_mod/.path "accepts a native effort the selected model advertises and rejects others"
+      (fn [root]
+        (with_workspace root (fn [service, shown]
+          (use_effort_catalog service)
+          (shown .set_settings {^provider "test" ^model "native" ^effort "ultra"})
+          ($assert (== (/effort (config_on_disk service)) "ultra"))
+          (let efforts (shown .setting_choices "effort"))
+          ($assert (== efforts/complete true))
+          ($assert (($map efforts/options (fn [option] option/value)) .contains? "ultra") "the native level is offered")
+          (let unsupported (try (shown .set_setting "effort" "turbo") "saved" catch Any $err/code))
+          ($assert (== unsupported "invalid_request") "a level the model does not advertise is refused")
+          (let malformed (try (shown .set_setting "effort" "Turbo!") "saved" catch Any $err/code))
+          ($assert (== malformed "invalid_request"))
+          (let rendered (ui_preview service/runtime "settings" {^group "Models"}))
+          ($assert ($str/contains? ($json/stringify rendered/view) "\"ultra\"") "the editor offers the saved native level"))))))
+
+  (it "judges effort against the model a reset or provider default selects" []
+    (isolated this_mod/.path "judges effort against the model a reset or provider default selects"
+      (fn [root]
+        (with_workspace root (fn [service, shown]
+          (use_effort_catalog service)
+          (shown .set_settings {^provider "test" ^model "native" ^effort "ultra"})
+          (let inherited (shown .setting_choices "effort" ^values {^provider "" ^model ""}))
+          ($assert (== inherited/complete true) ($to_str inherited))
+          ($assert (! (($map inherited/options (fn [option] option/value)) .contains? "ultra"))
+            "following the selection order offers the shared default model's efforts")
+          (let switched (try (shown .set_settings {^effort "ultra"} ^reset ["provider" "model"]) "saved" catch Any $err/code))
+          ($assert (== switched "invalid_request") "switching to an inherited model without ultra is refused")
+          ($assert (== (/model (config_on_disk service)) "native") "the refused save changed nothing")
+          (shown .set_settings {} ^reset ["provider" "model" "effort"])
+          (let defaulted (try (shown .set_settings {^provider "test" ^effort "ultra"}) "saved" catch Any $err/code))
+          ($assert (== defaulted "invalid_request") "a provider alone is judged by its default model")
+          (shown .set_settings {^provider "test" ^effort "low"})
+          ($assert (== (/effort (config_on_disk service)) "low"))
+          (let selection shown/.model_selection)
+          ($assert ($absent? selection/reason) (?? selection/reason ""))
+          ($assert (== selection/model "plain")))))))
+
+  (it "shows a broken section inside its group and keeps the rest of Settings" []
+    (isolated this_mod/.path "shows a broken section inside its group and keeps the rest of Settings"
+      (fn [root]
+        (with_workspace root (fn [service, shown]
+          (put_cordis_plugin service/runtime/h (section_probe_plugin) {})
+          (for name in ["broken_tree" "throwing" "undeclared" "collision"]
+            (let rendered (ui_preview service/runtime "settings" {^group $"Probe ${name}"}))
+            (let problem (?? rendered/error ""))
+            ($assert ($absent? rendered/error) $"${name}: ${problem}")
+            ($assert ($present? (find_node rendered/view $"section-error/section_probe_${name}"))
+              $"${name} failed inside its section")
+            ($assert ($present? (find_node rendered/view "scope-shared")) $"${name}: the rest of Settings rendered"))))))))
 
 (fn names_include? [names, name : Str] : Bool
   (names .contains? name))

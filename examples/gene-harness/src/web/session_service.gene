@@ -1281,8 +1281,8 @@
     @doc "The Settings sidebar: every setting group plus contributed settings_groups rows with their label, order, doc and section, in display order."
     (list_settings_groups self/runtime))
   (message setting_choices [key : Str, ^values values = {}, ^scope scope : Str = "workspace"] : Any
-    @doc "The options a setting's choice source offers for the given draft values, whether they are complete or closed, and why any are unavailable. Reads cached catalogs only."
-    (setting_choices ^values values ^scope scope self/runtime (require_definition self/runtime key)))
+    @doc "The options a setting's choice source offers for the scope's current values with any draft values laid over them, whether they are complete or closed, and why any are unavailable. Reads cached catalogs only."
+    (setting_choices ^drafts values ^scope scope self/runtime (require_definition self/runtime key)))
   (message keyboard [] : Any
     @doc "Every keyboard action with its binding, default, source, context, conflicts and owning plugin, with the config digest."
     (keyboard_state self/runtime))
