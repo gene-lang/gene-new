@@ -1,0 +1,107 @@
+# Keyboard actions: definitions in the `keyboard_actions` registry, overrides in the
+# `keyboard_bindings` setting keyed by action id. A binding survives its plugin being
+# disabled, because disabling removes the row and leaves the stored override.
+(mod keyboard)
+(import [ServiceError] ^from "../plugin_api")
+(import [contribute rows row] ^from "../kernel")
+(import [read_config set_setting] ^from "./workspace_config")
+
+(let modifier_order ["Ctrl" "Shift" "Alt" "Meta"])
+
+# Chords use event codes: "Ctrl+Shift+Space", "Enter". Empty means unbound.
+(fn normalize_chord [chord : Str] : Str
+  (if (== ($str/trim chord) "") (return ""))
+  (let parts ($map ($str/split ($str/trim chord) "+") $str/trim))
+  (let key ($last parts))
+  (let modifiers [])
+  (for part in parts
+    (if (!= part key)
+      (if_not (modifier_order .contains? part)
+        (fail (ServiceError ^code "invalid_request" ^message $"Unknown modifier ${part}."))))
+    (if (&& (!= part key) (! (modifiers .contains? part))) (modifiers .push part)))
+  (if (|| (== key "") (modifier_order .contains? key))
+    (fail (ServiceError ^code "invalid_request" ^message "A key binding needs a key.")))
+  (let ordered ($filter modifier_order (fn [name] (modifiers .contains? name))))
+  (ordered .push key)
+  ($str/join ordered "+"))
+
+(fn stored_bindings [runtime]
+  (?? ((read_config runtime) .get "keyboard_bindings") {}))
+
+(fn contexts_overlap? [left : Str, right : Str] : Bool
+  (|| (== left right) (== left "application") (== right "application")))
+
+(fn keyboard_state [runtime]
+  (let stored (stored_bindings runtime))
+  (let actions [])
+  (for definition in (rows runtime/h "keyboard_actions")
+    (let override (stored .get definition/id))
+    (actions .push
+      {^id definition/id ^label definition/label ^doc definition/doc ^context definition/context
+       ^default definition/default ^binding (?? override definition/default)
+       ^source (if ($present? override) "override" "default")}))
+  (for action in actions
+    (let conflicts [])
+    (if (!= action/binding "")
+      (for other in actions
+        (if (&& (!= other/id action/id) (== other/binding action/binding)
+                (contexts_overlap? other/context action/context))
+          (conflicts .push other/id))))
+    (action .put "conflicts" conflicts))
+  {^actions actions})
+
+# The compact id-to-chord map a browser needs.
+(fn keyboard_bindings [runtime]
+  (let result {})
+  (for action in (/actions (keyboard_state runtime))
+    (result .put action/id action/binding))
+  result)
+
+(fn require_action [runtime, id : Str]
+  (let definition (row runtime/h "keyboard_actions" id))
+  (if ($absent? definition)
+    (fail (ServiceError ^code "not_found" ^message $"Unknown keyboard action ${id}.")))
+  definition)
+
+(fn store_binding [runtime, id : Str, change]
+  (let next ($thaw ($freeze (stored_bindings runtime))))
+  (change next)
+  (set_setting runtime "keyboard_bindings" next)
+  (keyboard_state runtime))
+
+(fn bind_key [runtime, id : Str, chord : Str]
+  (require_action runtime id)
+  (let normalized (normalize_chord chord))
+  (store_binding runtime id (fn [next] (next .put id normalized))))
+
+(fn clear_key [runtime, id : Str]
+  (require_action runtime id)
+  (store_binding runtime id (fn [next] (next .put id ""))))
+
+(fn restore_key [runtime, id : Str]
+  (require_action runtime id)
+  (store_binding runtime id (fn [next] (next .delete id))))
+
+(fn core_keyboard_actions []
+  (let views [])
+  (for slot in [2 3 4 5 6 7 8 9]
+    (views .push
+      {^id $"view/open_${slot}" ^label $"Open view ${slot}" ^context "application"
+       ^default $"Ctrl+Shift+Digit${slot}" ^doc $"Open the view in position ${slot}."}))
+  [{^id "composer/send" ^label "Send message" ^context "composer" ^default "Enter"
+    ^doc "Send the composer's text."}
+   {^id "composer/close_commands" ^label "Close command list" ^context "composer" ^default "Escape"
+    ^doc "Close the composer's command suggestions."}
+   {^id "view/toggle_bar" ^label "Toggle view bar" ^context "application" ^default "Ctrl+Shift+Digit0"
+    ^doc "Show or hide the view bar."}
+   {^id "view/toggle" ^label "Toggle view" ^context "application" ^default "Ctrl+Shift+Space"
+    ^doc "Switch between the conversation and the last view."}
+   {^id "view/harness" ^label "Open conversation" ^context "application" ^default "Ctrl+Shift+Digit1"
+    ^doc "Show the conversation."}
+   views...])
+
+(fn install_keyboard_rows [runtime]
+  (for definition in (core_keyboard_actions)
+    (if ($absent? (row runtime/h "keyboard_actions" definition/id))
+      (contribute runtime/h "core" "keyboard_actions" definition)))
+  nil)

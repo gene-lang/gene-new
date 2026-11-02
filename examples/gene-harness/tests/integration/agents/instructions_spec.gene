@@ -58,7 +58,7 @@
           (try
             (let bindings (workspace_bindings runtime/h lease/snapshot "default" runtime/root))
             (for name in ["doc" "discover" "register_plugin" "enable_plugin" "disable_plugin"
-                          "restore_plugin" "plugin_states" "inspect_plugin" "session_id"]
+                          "restore_plugin" "plugin_states" "inspect_plugin" "session" "workspace"]
               ($assert ($present? (bindings .get name))
                 $"shared workspace binding ${name} is absent"))
           ensure
@@ -101,7 +101,7 @@
           (let disabled (assemble_instructions runtime session))
           ($assert (! ($str/contains? disabled "Prefer short investigation notes.")))
           ($assert ($str/starts_with? disabled response_format))
-          ($assert ($str/contains? disabled "session_id and workspace_root"))
+          ($assert ($str/contains? disabled "Three objects are always bound."))
           (restore_plugin runtime/workspace runtime/h "working_instructions")
           ($assert ($str/contains? (assemble_instructions runtime session)
             "Start with a # goal comment"))

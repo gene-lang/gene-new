@@ -38,7 +38,7 @@ function setup({submit=true}={}){
   const navigation=new model.UiNavigation({workspace:'test',active:'workspaces',last_view:'',presentation:'full',
     remembered:{},versions:{},snapshots:{},views:[],side:'left',width:50n,bar_hidden:false,focus:'name',scroll:0,
     focus_pending:false,action_generation:1n,action_revision:'',sidebar,restore:noop,refresh:noop});
-  const ui=new model.UiClient({root,target:root,safe:false,ready:true,session:'',workspace:'test',epoch:'host',
+  const ui=new model.UiClient({keyboard:{},root,target:root,safe:false,ready:true,session:'',workspace:'test',epoch:'host',
     metadata_revision:'1',rendered_revision:'r1',descriptor:{name:'workspaces',revision:'r1',data_revision:'d1',functions:{save:'f1'}},
     settings:{},instance:'instance',version:'2',notices:create_notices(),state:{selected:'create'},
     drafts:{name:{name:'name',form:'create',value:'calculator'}},forms:{create:{named:{operation:'create'},positional:[]}},
@@ -227,3 +227,19 @@ const notices=ui=>Object.values(ui.notices.items);
   assert.equal(notices(ui).length,0,'repeated keypad actions produce no success stack or stale progress');
 }
 console.log('UI forms/actions: success closure, draft preservation, recovery, quiet rapid actions, delayed progress and error isolation passed');
+
+// Composer keys follow the host's bindings, with defaults until the first status.
+{
+  const router=await import(new URL('router.mjs', base));
+  const key=(code,mods={})=>({code,ctrlKey:!!mods.ctrl,shiftKey:!!mods.shift,altKey:!!mods.alt,metaKey:!!mods.meta});
+  assert.equal(router.event_chord(key('Enter')),'Enter');
+  assert.equal(router.event_chord(key('NumpadEnter')),'Enter');
+  assert.equal(router.event_chord(key('Enter',{shift:true})),'Shift+Enter');
+  assert.equal(router.event_chord(key('KeyK',{ctrl:true,shift:true})),'Ctrl+Shift+KeyK');
+  const {ui:client}=setup({submit:false});
+  assert.equal(router.action_chord(client,'composer/send','Enter'),'Enter');
+  client.keyboard={'composer/send':'Ctrl+Enter'};
+  assert.equal(router.action_chord(client,'composer/send','Enter'),'Ctrl+Enter');
+  client.keyboard={'composer/send':''};
+  assert.equal(router.action_chord(client,'composer/send','Enter'),'');
+}

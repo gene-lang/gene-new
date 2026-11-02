@@ -3,7 +3,7 @@
 (import [ServiceError DelegationError] ^from "../plugin_api")
 
 (import ^from "./session_service"
-  [
+  [client_reply 
     open_session_service
     close_session_service
     list_sessions
@@ -231,6 +231,8 @@
         (if (== action "restart") 75 0) (== data/confirm true))
       (return (response 200 {^^ok ^restart (== host/runtime/exit_code/.get 75)
         ^message (if (== host/runtime/exit_code/.get 75) "Restarting." "Stopped.")})))
+    (if_yes (&& (== request/method "POST") (== request/path $"${(api_root)}/clients/reply"))
+      (return (response 200 (client_reply host (request_data request)))))
     (if_yes (&& (== request/method "POST") (== request/path $"${(api_root)}/appearance"))
       (let data (request_data request))
       (return (response 200 {^mode (set_appearance host/runtime data/mode)})))

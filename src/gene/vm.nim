@@ -4,7 +4,7 @@ import std/[algorithm, atomics, base64, dynlib, hashes, json, locks, math, monot
             options, osproc, sets, strtabs, strutils, tables, times, unicode]
 import ./[compiler, diagnostics, digest, equality, execution_limits, gir, package, printer, reader, types,
           type_contracts]
-import ./[callable_reflection, error_analysis, gir_codec, native_errors]
+import ./[callable_reflection, error_analysis, gir_codec, native_errors, value_graph]
 import ./io_lifecycle
 import ./pending_exception
 when defined(geneAtomicGenerationRetirementProbe):
@@ -2801,13 +2801,84 @@ proc semanticPropsEqual(left, right: PropTable): bool =
       return false
   true
 
+type SemanticEqualMode = enum
+  semanticIdle     ## not inside a container comparison
+  semanticProbing  ## ordinary comparison, watching the depth
+  semanticTracked  ## deep or cyclic: compare each pair once
+
+# Same approach as `equality.equal`: ordinary values never reach this depth, and
+# deeper comparisons restart with pair tracking.
+const semanticProbeDepth = 64
+
+var semanticMode {.threadvar.}: SemanticEqualMode
+var semanticDepth {.threadvar.}: int
+var semanticOverflowed {.threadvar.}: bool
+var semanticPairs {.threadvar.}: Table[(uint64, uint64), bool]
+
+proc semanticBodyEqual(left, right: Value): bool
+
 proc semanticEqual(left, right: Value): bool =
   if left.kind != right.kind: return false
+  if left.kind notin graphContainerKinds:
+    return equality.equal(left, right)
+  case semanticMode
+  of semanticIdle:
+    semanticMode = semanticProbing
+    semanticDepth = 1
+    semanticOverflowed = false
+    try:
+      result = semanticBodyEqual(left, right)
+      if semanticOverflowed:
+        semanticMode = semanticTracked
+        semanticPairs = initTable[(uint64, uint64), bool]()
+        semanticPairs[(left.bits, right.bits)] = true
+        result = semanticBodyEqual(left, right)
+    finally:
+      semanticMode = semanticIdle
+      semanticPairs = initTable[(uint64, uint64), bool]()
+  of semanticProbing:
+    # The result is discarded once the probe overflows, so siblings return at
+    # once instead of walking a graph that has no end.
+    if semanticOverflowed:
+      return false
+    if semanticDepth >= semanticProbeDepth:
+      semanticOverflowed = true
+      return false
+    inc semanticDepth
+    result = semanticBodyEqual(left, right)
+    dec semanticDepth
+  of semanticTracked:
+    # A pair already being compared is assumed equal: two cycles are equal when
+    # nothing reachable from them differs.
+    let pair = (left.bits, right.bits)
+    semanticPairs.withValue(pair, known):
+      return known[]
+    semanticPairs[pair] = true
+    result = semanticBodyEqual(left, right)
+    semanticPairs[pair] = result
+
+proc invokeIsolatedValueEqual(witness, left, right: Value): bool =
+  ## A witness is Gene code. It may compare other values or yield to another
+  ## task, so it must not see this comparison's depth or tracked pairs.
+  let savedMode = semanticMode
+  let savedDepth = semanticDepth
+  let savedOverflowed = semanticOverflowed
+  var savedPairs = move semanticPairs
+  semanticMode = semanticIdle
+  try:
+    result = invokeValueEqual(witness, left, right)
+  finally:
+    semanticMode = savedMode
+    semanticDepth = savedDepth
+    semanticOverflowed = savedOverflowed
+    semanticPairs = move savedPairs
+
+proc semanticBodyEqual(left, right: Value): bool =
   if left.kind == vkNode and left.head.kind == vkType:
     if right.head.bits != left.head.bits: return false
     let witness = left.head.readyCoreWitness(cvEqual)
     if witness.kind != vkNil:
-      return invokeValueEqual(witness, left, right)
+      return invokeIsolatedValueEqual(witness, left, right)
   case left.kind
   of vkList:
     if left.listItems.len != right.listItems.len: return false
@@ -5739,7 +5810,20 @@ proc freezeRejectName(value: Value): string =
   of vkCompositeSink: "event/CompositeSink"
   else: $value.kind
 
+# Frozen values are immutable, so they cannot contain a cycle. A walk this deep is
+# checked before it continues, because following a cycle would exhaust the native
+# stack, which no Gene code can catch. Ordinary values never get this far.
+const deepCopyCycleCheckDepth = 256
+var freezeDepth {.threadvar.}: int
+var thawDepth {.threadvar.}: int
+
 proc freezeValue(value: Value): Value =
+  let container = value.kind in graphContainerKinds
+  if container: inc freezeDepth
+  defer:
+    if container: dec freezeDepth
+  if container and freezeDepth == deepCopyCycleCheckDepth and valueHasCycle(value):
+    raise newException(GeneError, "freeze cannot freeze a cyclic value")
   case value.kind
   of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString, vkBytes, vkRegex, vkRange,
      vkDate, vkTime, vkDateTime, vkTimezone, vkDuration, vkChar, vkSymbol,
@@ -5821,6 +5905,12 @@ proc freezeValue(value: Value): Value =
     raise newException(GeneError, "freeze cannot freeze " & freezeRejectName(value))
 
 proc thawValue(value: Value): Value =
+  let container = value.kind in graphContainerKinds
+  if container: inc thawDepth
+  defer:
+    if container: dec thawDepth
+  if container and thawDepth == deepCopyCycleCheckDepth and valueHasCycle(value):
+    raise newException(GeneError, "thaw cannot copy a cyclic value")
   case value.kind
   of vkList:
     var items = newSeq[Value](value.listItems.len)
@@ -8778,6 +8868,7 @@ proc biRuntimeCallable(args: openArray[Value],
 proc biRuntimeBindCall(args: openArray[Value],
                        call: ptr NativeCall): Value {.nimcall.}
 proc biRuntimeSignature(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
+proc biRuntimeMessages(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
 proc biRuntimeConstructorSignature(args: openArray[Value]): Value {.nimcall.}
 proc biRuntimeBindShape(args: openArray[Value]): Value {.nimcall.}
 proc biRuntimeConfigureModule(args: openArray[Value],
@@ -10095,6 +10186,9 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
                       builtinNativeCallFn("runtime/bind_call", biRuntimeBindCall))
   runtimeScope.define("signature",
                       builtinNativeCallFn("runtime/signature", biRuntimeSignature,
+                                      acceptsNamed = false))
+  runtimeScope.define("messages",
+                      builtinNativeCallFn("runtime/messages", biRuntimeMessages,
                                       acceptsNamed = false))
   runtimeScope.define("constructor_signature",
                       builtinNativeFn("runtime/constructor_signature", biRuntimeConstructorSignature))
@@ -25297,13 +25391,9 @@ proc raiseCallKindError(where, expected, actual: string, value: Value,
   e.hasErrVal = true
   raise e
 
-proc visibleProtocolMessageHints(scope: Scope, recvType: Value,
-                                 message: string): seq[string] =
-  ## A diagnostic-only walk. `tryResolveProtocolMessage` would publish pending
-  ## assemblies and can raise while answering; a failed bare send must not.
-  if scope == nil or recvType.kind != vkType:
-    return
-  var names = initHashSet[string]()
+proc visibleProtocolQualifiers(scope: Scope): seq[tuple[value: Value, path: string]] =
+  ## Every protocol a send in this scope can name, by its shortest visible path.
+  ## Reads bindings only: nothing is published and no error can be raised.
   var qualifiers: seq[tuple[value: Value, path: string]]
   var scannedNamespaces = initHashSet[uint64]()
   var pending: seq[tuple[value: Value, path: string]]
@@ -25350,12 +25440,22 @@ proc visibleProtocolMessageHints(scope: Scope, recvType: Value,
       for name, value in owner.vars:
         if name notin seen and name notin owner.exportExcludedNames:
           pending.add (value: value, path: item.path & "/" & name)
+  qualifiers
+
+proc visibleProtocolMessageHints(scope: Scope, recvType: Value,
+                                 message: string): seq[string] =
+  ## A diagnostic-only walk. `tryResolveProtocolMessage` would publish pending
+  ## assemblies and can raise while answering; a failed bare send must not.
+  if scope == nil or recvType.kind != vkType:
+    return
+  var names = initHashSet[string]()
+  let qualifiers = visibleProtocolQualifiers(scope)
   proc usableQualifier(protocolMessage: Value): seq[string] =
     for qualifier in qualifiers:
       let candidates = qualifier.value.protocolClosureByName(message)
       if candidates.len == 1 and same(candidates[0], protocolMessage):
         result.add qualifier.path & ":" & message
-  current = scope
+  var current = scope
   while current != nil:
     for impl in current.impls:
       if recvType.receiverDistance(impl.receiver) < 0:
@@ -26822,6 +26922,85 @@ proc biRuntimeSignature(args: openArray[Value], call: ptr NativeCall): Value {.n
       ("completeness", newSym("partial")),
       ("dispatch_scope", newSym("query")),
       ("apply_contract", applyContract)])
+
+proc messageListing(name, send, kind: string, protocol, signature: Value,
+                    problem = ""): Value =
+  var entry = initPropTable()
+  entry["name"] = newStr(name)
+  entry["send"] = newStr(send)
+  entry["kind"] = newSym(kind)
+  entry["protocol"] = protocol
+  entry["signature"] = signature
+  entry["problem"] = if problem.len > 0: newStr(problem) else: NIL
+  newMap(entry, immutable = true)
+
+proc biRuntimeMessages(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  ## Lists what a send in the caller's scope can reach on a receiver, using the
+  ## same resolution a send would. No message body or default expression runs,
+  ## and the description does not retain the receiver. A message that a send
+  ## would refuse, such as an ambiguous one, is listed with the reason.
+  requireOne("runtime/messages", args)
+  let scope = if call == nil: nil else: call[].dispatchScope
+  let receiver = args[0]
+  let recvType = receiver.receiverType
+  var items: seq[Value]
+  if recvType.kind == vkType:
+    for name in recvType.typeDirectMessageNames:
+      let impl = readyTypeDirectMessage(recvType, name)
+      let signature = describeCallable(impl, reflectionTypeLookup,
+        ReflectionOptions(category: "message", origin: "implementation"))
+      items.add messageListing(name, name, "direct", NIL,
+        signature.withReflectionProperties([
+          ("name", newStr(name)),
+          ("resolution", newSym("implementation")),
+          ("dispatch_scope", newSym("query")),
+          ("receiver_included", TRUE),
+          ("receiver_type", recvType)]))
+    if scope != nil:
+      var listed = initHashSet[string]()
+      proc addProtocolMessage(path: string, protocol: Value, name: string) =
+        if listed.containsOrIncl(path & ":" & name):
+          return
+        let send = path & ":" & name
+        try:
+          let impl = resolveQualifiedSend(scope, protocol, name, receiver)
+          let signature = describeCallable(impl, reflectionTypeLookup,
+            ReflectionOptions(category: "message", origin: "implementation"))
+          items.add messageListing(name, send, "protocol", protocol,
+            signature.withReflectionProperties([
+              ("name", newStr(name)),
+              ("protocol", protocol),
+              ("resolution", newSym("implementation")),
+              ("dispatch_scope", newSym("query")),
+              ("receiver_included", TRUE),
+              ("receiver_type", recvType)]))
+        except GeneError as e:
+          items.add messageListing(name, send, "protocol", protocol, NIL, e.msg)
+      let qualifiers = visibleProtocolQualifiers(scope)
+      var current = scope
+      while current != nil:
+        for impl in current.impls:
+          if recvType.receiverDistance(impl.receiver) < 0:
+            continue
+          for entry in impl.messages:
+            if entry.fn.kind == vkNil:
+              continue
+            let name = entry.message.protocolMessageName
+            for qualifier in qualifiers:
+              let candidates = qualifier.value.protocolClosureByName(name)
+              if candidates.len >= 1 and same(candidates[0], entry.message):
+                addProtocolMessage(qualifier.path, qualifier.value, name)
+        current = current.parent
+      for qualifier in qualifiers:
+        if qualifier.value.protocolUniversal:
+          for name, message in qualifier.value.protocolMessages:
+            if message.protocolMessageDefaultFn.kind != vkNil:
+              addProtocolMessage(qualifier.path, qualifier.value, name)
+  items.sort(proc (a, b: Value): int =
+    result = cmp(a.mapEntries["name"].strVal, b.mapEntries["name"].strVal)
+    if result == 0:
+      result = cmp(a.mapEntries["send"].strVal, b.mapEntries["send"].strVal))
+  newList(items, immutable = true)
 
 proc biRuntimeConstructorSignature(args: openArray[Value]): Value {.nimcall.} =
   requireOne("runtime/constructor_signature", args)

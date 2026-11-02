@@ -44,11 +44,18 @@
     (bindings .put function/name (TurnFunction ^name function/name ^callable function/fn)))
   bindings)
 
+# The objects every evaluation sees. A kernel-only host publishes none, so it gets
+# the two values evaluated code can always rely on.
+(fn host_object_bindings [h : Harness, session : Str, root : Str]
+  (if ($absent? h/objects)
+    (return {^workspace {^root root} ^manager nil ^session {^id session}}))
+  (let objects h/objects/.get)
+  {^workspace objects/workspace ^manager objects/manager ^session (objects/session session)})
+
 (fn workspace_bindings [h : Harness, snapshot, session : Str, workspace_root : Str,
                         ^extra extra = {}]
   (let bindings (function_bindings snapshot))
-  (bindings .put "session_id" session)
-  (bindings .put "workspace_root" workspace_root)
+  (for [name value] in (host_object_bindings h session workspace_root) (bindings .put name value))
   (bindings .put "doc" (fn [name : Str] (doc h name ^snapshot snapshot)))
   (for [name value] in (discovery_bindings h ($cell snapshot)) (bindings .put name value))
   (for [name value] in extra (bindings .put name value))

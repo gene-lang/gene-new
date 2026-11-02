@@ -2,7 +2,7 @@
 # the same machinery available to a plugin-defined extension point.
 (mod builtin_registry_specs)
 (import [HarnessError] ^from "../errors")
-(import [validate_seam_row validate_command_row validate_function_row validate_input_mode_row
+(import [validate_keyboard_action_row validate_setting_row validate_seam_row validate_command_row validate_function_row validate_input_mode_row
   validate_provider_row validate_speech_row validate_image_generator_row validate_hook_row
   validate_hook_point_row validate_trigger_row validate_interaction_row
   validate_prompt_row validate_docs_row validate_event_type_row validate_event_type_owner
@@ -13,7 +13,7 @@
 (import [prepare_command_callback prepare_prompt_callback] ^from "../runtime/callback_context")
 
 (fn builtin_registry_specs [h, lookup]
-  (let discovery_reserved {^discover "" ^doc ""})
+  (let discovery_reserved {^discover "" ^doc "" ^workspace "" ^manager "" ^session ""})
   [
     {^name "seams" ^^unique ^schema validate_seam_row ^callbacks ["value"]}
     {^name "commands" ^^unique ^schema validate_command_row ^callbacks ["run"]
@@ -54,6 +54,8 @@
     {^name "prompt" ^!unique ^^ordered ^schema validate_prompt_row ^callbacks ["render"]
      ^prepare (fn [owner, candidate] (prepare_prompt_callback h owner candidate))}
     {^name "docs" ^^unique ^schema validate_docs_row}
+    {^name "settings" ^^unique ^schema validate_setting_row ^key "key" ^callbacks ["validate"]}
+    {^name "keyboard_actions" ^^unique ^schema validate_keyboard_action_row ^key "id"}
     {^name "web_components" ^^unique ^^ordered ^schema validate_web_component ^callbacks ["render"]}
     {^name "browser_clients" ^^unique ^^ordered ^schema validate_browser_client}
     {^name "event_types" ^^unique ^schema validate_event_type_row

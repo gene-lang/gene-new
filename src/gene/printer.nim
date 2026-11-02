@@ -4,8 +4,8 @@
 ## stored (source) order. Immutable containers use their `#`-prefix. The
 ## output re-reads to a structurally equal value (AST-level round-trip).
 
-import std/[strutils, unicode]
-import ./types
+import std/[sets, strutils, unicode]
+import ./[types, value_graph]
 
 proc print*(v: Value): string
 
@@ -289,7 +289,75 @@ proc printPipelineStage(stage: PipelineStage): string =
     result.add ' '
     result.add print(item)
 
+type PrintMode = enum
+  printIdle       ## not inside a print
+  printProbing    ## ordinary printing, watching the depth
+  printUnbounded  ## deep but acyclic: print everything
+  printGuarded    ## cyclic: print each container once
+
+# A value deeper than this is checked for cycles before it is printed. Ordinary
+# values never reach it, so they pay no tracking and print exactly as they did.
+const printProbeDepth = 64
+
+var printMode {.threadvar.}: PrintMode
+var printDepth {.threadvar.}: int
+var printOverflowed {.threadvar.}: bool
+var printPath {.threadvar.}: HashSet[uint64]
+var printSeen {.threadvar.}: HashSet[uint64]
+
+proc printBody(v: Value): string
+
+proc printTopContainer(v: Value): string =
+  printMode = printProbing
+  printDepth = 1
+  printOverflowed = false
+  try:
+    result = printBody(v)
+    if printOverflowed:
+      if valueHasCycle(v):
+        printMode = printGuarded
+        printPath = initHashSet[uint64]()
+        printSeen = initHashSet[uint64]()
+        printPath.incl v.bits
+        printSeen.incl v.bits
+      else:
+        printMode = printUnbounded
+      result = printBody(v)
+  finally:
+    printMode = printIdle
+    printPath = initHashSet[uint64]()
+    printSeen = initHashSet[uint64]()
+
 proc print*(v: Value): string =
+  if v.isNil or v.kind notin graphContainerKinds:
+    return printBody(v)
+  case printMode
+  of printIdle:
+    return printTopContainer(v)
+  of printUnbounded:
+    return printBody(v)
+  of printProbing:
+    # The partial text is discarded once the probe overflows, so the remaining
+    # siblings return at once instead of walking a graph that has no end.
+    if printOverflowed:
+      return ""
+    if printDepth >= printProbeDepth:
+      printOverflowed = true
+      return ""
+    inc printDepth
+    result = printBody(v)
+    dec printDepth
+  of printGuarded:
+    if printPath.contains(v.bits):
+      return "(cycle)"
+    if printSeen.contains(v.bits):
+      return "(seen)"
+    printPath.incl v.bits
+    printSeen.incl v.bits
+    result = printBody(v)
+    printPath.excl v.bits
+
+proc printBody(v: Value): string =
   if v.isNil: return "nil"
   case v.kind
   of vkNil:    "nil"

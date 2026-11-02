@@ -7,9 +7,8 @@
 (fn operator_turn [ctx]
   (new_turn_items ($parse/parse_int ($str/slice_bytes ctx/id 1 (- ($str/byte_size ctx/id) 1)))))
 
-(fn operator_bindings [bindings, root : Str, turn, snapshot]
+(fn operator_bindings [bindings, turn, snapshot]
   (bindings .put "Outcome" (outcome_constructor snapshot))
-  (bindings .put "workspace_root" root)
   (bindings .put "append_prompt_at" (fn [label line form value]
     (append_prompt_at turn label line form value)))
   (bindings .put "attachment" (fn [name] (attachment turn name)))

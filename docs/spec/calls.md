@@ -284,11 +284,33 @@ real target's ordinary boundary. Descriptions are fresh snapshots with no
 function-name cache; existing descriptions retain their type identities after
 replacement. Read a fresh description when registering a replacement callable.
 
+### Listing a receiver's messages
+
+`($runtime/messages value)` returns an immutable list of what a send in the
+calling scope can reach on `value`, sorted by name. Each entry is an immutable map:
+
+| Field | Meaning |
+| --- | --- |
+| `name` | The message name |
+| `send` | What to write after the dot: `title` or `Named:title` |
+| `kind` | `direct` for a type-direct message, including inherited ones, or `protocol` |
+| `protocol` | The qualifying protocol, or nil for a direct message |
+| `signature` | The receiver-aware `SignatureDescription` above, or nil when resolution failed |
+| `problem` | Why a send would be refused, such as an ambiguous message, or nil |
+
+Listing follows dispatch. A protocol message appears only where its protocol can
+be named from the calling scope and an implementation for the receiver's type is
+visible there, or where a universal protocol supplies a default. The most-derived
+type-direct message wins. Listing runs no message body or default expression and
+does not retain the receiver. It lists what the receiver's type declares, so the
+narrow built-in fallback messages of a receiver with no type table, such as `Set`,
+do not appear. A listed message is one a send can resolve, which does not promise
+that the operation will succeed.
+
 The implementation is shared by the native and wasm VM, subject to each VM's
 existing feature admission (for example, native FFI availability). The transpiled web
 profile rejects this runtime surface. Coverage lives in
-`tests/test_callable_reflection.nim`, with a real tool adapter in the Harness
-package's `src/agents/reflection.gene` and `tests/reflection_smoke.gene`.
+`tests/test_callable_reflection.nim`.
 
 ## Binding an invocation
 

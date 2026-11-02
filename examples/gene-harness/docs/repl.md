@@ -10,8 +10,9 @@ Printed text is kept only for the current page; reloading restores the input
 and result without printed output.
 
 The workspace directory is cwd. Imports are supported, subject to normal package
-boundaries. The environment exposes session_id, workspace_root, discover, doc,
-the standard library and active plugin functions. Discover and doc read the
+boundaries. The environment exposes `workspace`, `manager`, `session`, discover, doc,
+the standard library and active plugin functions. Those three names are bound once, so
+an input can shadow them with its own variables. Discover and doc read the
 composition leased for the current input. `Outcome` and `append_prompt` are
 available as in assistant code; each input gets a fresh command-owned image
 round, and generated images are retained in the session media catalog. Prompt

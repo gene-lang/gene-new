@@ -242,6 +242,17 @@ actual call still checks the target and its authority. This surface is
 available in the VM; the transpiled web profile rejects it. See the
 [reflection contract](spec/calls.md#callable-reflection) for fields and limits.
 
+`$runtime/messages` lists the messages a send in the current scope can reach on a
+receiver, each with its description:
+
+```gene runnable
+(type Greeter ^props {^name Str}
+  (message greet [] : Str @doc "Say hello." $"Hello, ${self/name}!"))
+(let entries ($runtime/messages (Greeter ^name "Ada")))
+entries/0/send           # "greet"
+entries/0/signature/doc  # "Say hello."
+```
+
 A message query can describe its protocol requirement or the implementation
 selected for a receiver. Type queries describe direct data construction;
 `constructor_signature` separately describes `new`, without running the ctor:

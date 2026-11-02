@@ -20,6 +20,7 @@ include test_stdlib_data
 include test_runtime_budget
 include test_bound_call
 include test_callable_reflection
+include test_cyclic_values
 include test_pipeline
 include test_unify_callable
 include test_vm

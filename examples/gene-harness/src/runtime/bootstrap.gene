@@ -49,7 +49,8 @@
 (fn open_runtime [root : Str, session : Str, profile, ^events supplied_events = nil,
   ^ownership supplied_ownership = nil, ^entry entry : Str = "", ^event_scope event_scope : Str = "session",
   ^activate activate : Bool = true, ^mode mode : Str = "normal", ^managed managed : Bool = false,
-  ^lock_wait_ms lock_wait_ms : Int = 0, ^service_event service_event = nil, ^launch launch = nil] : HarnessRuntime
+  ^lock_wait_ms lock_wait_ms : Int = 0, ^service_event service_event = nil, ^launch launch = nil,
+  ^objects objects = nil] : HarnessRuntime
   # Identify the mutation host before acquiring ownership or writing state.
   (if_not (["normal" "doctor" "recovery"] .contains? mode)
     (fail (HostServiceError ^message $"Unknown runtime startup mode ${mode}.")))
@@ -62,7 +63,7 @@
      ^events nil ^workspace nil ^h nil ^runtime nil ^inbox nil ^harness_closed false
      ^owns_ownership ($absent? supplied_ownership) ^supplied_ownership supplied_ownership
      ^entry (if (== entry "") this_mod/.path entry) ^event_scope event_scope ^activate activate
-     ^mode mode ^recovery recovery ^managed managed ^lock_wait_ms lock_wait_ms})
+     ^mode mode ^recovery recovery ^managed managed ^lock_wait_ms lock_wait_ms ^objects objects})
   (let services (new_host_services context
     (runtime_service_specs prepare_layout
       (fn [ctx]

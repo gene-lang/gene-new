@@ -116,9 +116,10 @@
     (flush_harness h)
     (update_active_revision workspace h)
     (record_application_result ^readiness readiness workspace h {^plugin id ^status (if enabled (status_of h id) "disabled")})
-    {^id id ^revision revision ^status (if enabled (status_of h id) "disabled")}))))
+    {^id id ^revision revision ^status (if enabled (status_of h id) "disabled") ^boundary "immediate"}))))
   (if (&& ($present? context/turn) (== context/turn/state/.get "open"))
-    (then (queue_composition_change h/snapshots {^id id ^kind "enabled" ^apply apply}) "queued")
+    (then (queue_composition_change h/snapshots {^id id ^kind "enabled" ^apply apply})
+      {^id id ^status "queued" ^boundary "turn"})
     (else (apply))))
 
 (fn restore_plugin [workspace : Workspace, h : Harness, id : Str, ^readiness readiness = nil]
@@ -131,9 +132,10 @@
     (flush_harness h)
     (update_active_revision workspace h)
     (record_application_result ^readiness readiness workspace h {^plugin id ^status (status_of h id)})
-    {^id id ^revision revision ^status (status_of h id)}))))
+    {^id id ^revision revision ^status (status_of h id) ^boundary "immediate"}))))
   (if (&& ($present? context/turn) (== context/turn/state/.get "open"))
-    (then (queue_composition_change h/snapshots {^id id ^kind "restored" ^apply apply}) "queued")
+    (then (queue_composition_change h/snapshots {^id id ^kind "restored" ^apply apply})
+      {^id id ^status "queued" ^boundary "turn"})
     (else (apply))))
 
 (fn enable_entry [workspace : Workspace, id : Str, ^h h = nil]
@@ -261,9 +263,9 @@
       (update_active_revision workspace h)
       (record_application_result ^readiness readiness workspace h
         {^plugin id ^status status ^message (?? (workspace/errors/.get .get id) nil)})
-      {^id id ^revision committed ^source_revision revision ^digest saved/module_digest ^status status}))))
+      {^id id ^boundary "immediate" ^revision committed ^source_revision revision ^digest saved/module_digest ^status status}))))
   (if (&& ($present? context/turn) (== context/turn/state/.get "open"))
     (do
       (queue_composition_change h/snapshots {^id id ^kind "revert" ^apply apply})
-      {^id id ^source_revision revision ^status "queued"})
+      {^id id ^source_revision revision ^status "queued" ^boundary "turn"})
     (apply)))

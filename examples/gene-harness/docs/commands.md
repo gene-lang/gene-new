@@ -26,7 +26,7 @@ Cancel with `cancel --round ID` or `cancel --command ID`. Exiting or interruptin
 a client never cancels the host's work. `stop` and `restart` act on the host;
 other running sessions require `--confirm`.
 
-- `/run <Gene code>` evaluates Gene with session_id, workspace_root, discover,
+- `/run <Gene code>` evaluates Gene with `workspace`, `manager`, `session`, discover,
   doc, plugin functions, `Outcome`, response-style `append_prompt`, and the
   standard library. It records the result and labeled prompt items in the
   command receipt. Each invocation has a fresh command-owned image round;

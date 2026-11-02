@@ -1,5 +1,6 @@
 # Static host service ownership. Plugins use facades; they cannot edit this table.
 (mod runtime_services)
+(import [withdraw_host_objects] ^from "../plugin_api")
 (import [new_harness shutdown_harness provide] ^from "../kernel")
 (import [profile_admissions] ^from "../profiles/profile")
 (import [open_event_store close_event_store flush_event_store] ^from "../storage/state")
@@ -9,6 +10,8 @@
 (import [prepare_workspace activate_workspace_plan record_application_result] ^from "../storage/workspace_activation")
 (import [acquire_workspace_lock close_workspace_lock] ^from "./workspace_lock")
 (import [open_appearance install_appearance_rows] ^from "./appearance")
+(import [install_setting_rows] ^from "./workspace_config")
+(import [install_keyboard_rows] ^from "./keyboard")
 (import [open_session_manager close_session_manager create_session load_session with_session_gate] ^from "./sessions")
 (import [new_command_manager close_command_manager quiesce_command_manager] ^from "./commands")
 (import [new_round_controller close_round_controller delegation_callbacks] ^from "./round_controller")
@@ -219,6 +222,8 @@
     {^name "actions" ^layer "feature_host" ^requires ["commands" "ui_defaults"]
      ^open (fn [ctx]
        (install_appearance_rows ctx/runtime)
+       (install_setting_rows ctx/runtime)
+       (install_keyboard_rows ctx/runtime)
        (let actions (open_ui_actions ctx/runtime))
        (try
          (provide ctx/h "core" "ui/context" (fn [session, state] (ui_context_data ctx/runtime session state)))
@@ -260,7 +265,11 @@
        state)
      ^recover nil ^quiesce (fn [ctx state] (close_models_host state))
      ^close (fn [ctx state] (close_models_host state))}
-    {^name "plugins" ^layer "loop" ^requires {^normal ["actions" "voice" "channel_queues" "manager" "media" "computer" "operator" "plugin_api" "participants" "core_prompt" "trigger_host" "notification_host" "readiness" "models_host"] ^recovery ["runtime"] ^doctor []}
+    # Plugin code can reach the global objects from activation onward.
+    {^name "host_objects" ^layer "feature_host" ^requires ["actions" "manager" "sessions"]
+     ^open (fn [ctx] (if ($present? ctx/objects) (ctx/objects ctx/runtime)) nil)
+     ^recover nil ^close (fn [ctx, state] (withdraw_host_objects ctx/h/snapshots))}
+    {^name "plugins" ^layer "loop" ^requires {^normal ["host_objects" "actions" "voice" "channel_queues" "manager" "media" "computer" "operator" "plugin_api" "participants" "core_prompt" "trigger_host" "notification_host" "readiness" "models_host"] ^recovery ["runtime"] ^doctor []}
      ^open activate_services ^recover activate_services ^close close_kernel}
     {^name "initial_session" ^layer "loop" ^requires ["plugins" "sessions"]
      ^open (fn [ctx]

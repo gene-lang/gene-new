@@ -23,7 +23,7 @@ shared wire contract) and the supplied content-addressed dependency closure.
 (Outcome ^prompt "Read the publication result, then test count_lines.")
 ```
 
-The call returns a digest and `queued`. After response evaluation, the
+The call returns the id, digest, `^status "queued"` and `^boundary "turn"`. After response evaluation, the
 Harness commits the desired composition generation, activates the candidate,
 and sends `[N.plugins]` with one short line per plugin: id, revision, state
 (`active`, `pending` or `quarantined`), digest prefix and any activation error.
@@ -285,6 +285,15 @@ Failure aborts that dispatch. The existing `request/prepare` and
 `history/compact` points declare coordinator dispatch and retain their
 specialized host contracts; `run_hooks` refuses to call them.
 
+### Reach the running host
+
+Plugin code calls `current_workspace`, `current_manager` and `current_session` from
+`src/plugin_api.gene` to reach the [global objects](objects.md), from activation onward.
+`current_session` is nil outside a session.
+
+A plugin can add a setting through the `settings` registry and a shortcut through the
+`keyboard_actions` registry; see [objects](objects.md).
+
 ### Make every plugin discoverable
 
 Mandatory turn callbacks and optional model-authored fields use the owned
@@ -297,7 +306,7 @@ Plugins use progressive discovery themselves. Their functions and other active
 contributions appear automatically in `(discover "topic")`; there is no separate
 catalog to synchronize. Keep doc descriptions concise. Add optional `summary`,
 `tags` (topic strings) and `docs` (chapter names) on contribution rows. A summary
-is a string; tags/docs are lists of nonempty strings. Legacy rows remain valid.
+is a string; tags/docs are lists of nonempty strings. All three are optional.
 
 Put detailed contracts, examples and workflow instructions in owned docs rows.
 Give those chapters a searchable summary/tags and a plugin-specific prefix.

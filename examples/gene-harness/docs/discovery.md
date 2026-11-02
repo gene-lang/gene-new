@@ -16,7 +16,7 @@ signature. The model finds capabilities as it needs them:
 
 | Argument | Meaning |
 | --- | --- |
-| `kind` | docs, functions, commands, input_modes, providers, hooks, web_components or seams; empty searches all |
+| `kind` | docs, functions, commands, input_modes, providers, image_generators, hooks, web_components or seams; empty searches all |
 | `owner` | Exact contribution owner/plugin ID; empty searches all |
 | `limit` | 1–100 matches, default 12 |
 | `offset` | Nonnegative match offset, default 0 |
@@ -44,7 +44,7 @@ would otherwise advertise signatures different from the shared bindings.
 
 Discovery is derived from ordinary contribution rows. No additional central
 catalog needs updating when a plugin is registered. A function's existing doc
-description is the fallback summary, so older plugins remain discoverable.
+description is the fallback summary, so a row with no other metadata is still discoverable.
 
 All plugins should provide concise descriptions and optional metadata:
 
@@ -55,8 +55,11 @@ All plugins should provide concise descriptions and optional metadata:
 Contribute detailed instructions and examples as docs rows, with a summary and
 tags. Give chapter names a plugin prefix. Keep essential behavioral rules and
 orientation in prompt rows; place API catalogs and tutorials in pull-only docs.
-The host validates metadata types but does not require metadata on legacy rows
-or impose a hard size limit on plugin instructions.
+The host validates metadata types but does not require metadata or impose a hard
+size limit on plugin instructions.
+
+Discovery is topic search over those kinds. Every registry and every message on the
+global objects is reachable through [`workspace`, `manager` and `session`](objects.md).
 
 See [plugins](plugins.md) for a self-describing plugin example and
 [UI overview](recipes/ui.md) for choosing focused recipes.

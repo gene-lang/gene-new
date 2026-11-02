@@ -168,7 +168,7 @@
           (register_plugin runtime/workspace runtime/h "example" (sample))
           (scope
             (let response
-              (spawn ^lane root (evaluate_harness_turn runtime/h 2 root "(append_prompt \"revert\" (revert_plugin \"example\" 1)) ($sleep 100) (Outcome ^prompt \"continue\")")))
+              (spawn ^lane root (evaluate_harness_turn runtime/h 2 root "(append_prompt \"revert\" (revert_plugin \"example\" 1 ^expected (/revision (plugin_history \"\" ^page true)))) ($sleep 100) (Outcome ^prompt \"continue\")")))
             (var attempts 0)
             (while (&& runtime/h/snapshots/pending/.get/.empty? (< attempts 1000))
               ($sleep 1)

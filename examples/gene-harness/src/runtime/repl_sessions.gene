@@ -3,6 +3,7 @@
 (import [close_execution_scope] ^from "./execution_budget")
 (import [doc] ^from "../kernel")
 (import [discovery_bindings] ^from "../agents/discovery")
+(import [host_object_bindings] ^from "../agents/harness_turn")
 (import [operator_turn operator_bindings operator_source operator_result operator_context operator_scope] ^from "./operator_eval")
 
 (type LiveReplFunction ^^private ^props {^name Str}
@@ -27,8 +28,8 @@
     (let h ctx/runtime/h)
     (let snapshot_ref ($cell ctx/snapshot))
     (let bindings (discovery_bindings h snapshot_ref))
-    (bindings .put "session_id" ctx/session)
-    (bindings .put "workspace_root" ctx/runtime/root)
+    # Bound once: later inputs may shadow these names with their own variables.
+    (for [name value] in (host_object_bindings h ctx/session ctx/runtime/root) (bindings .put name value))
     (bindings .put "doc" (fn [name : Str] (doc h name ^snapshot snapshot_ref/.get)))
     (let environment (env ^bindings bindings))
     (set state {^handle ($repl/open environment) ^names {} ^snapshot snapshot_ref})
@@ -43,7 +44,7 @@
       ($repl/bind state/handle name forwarder)
       (state/names .put name true)))
   (let turn (operator_turn ctx))
-  (let helper_bindings (operator_bindings {} ctx/runtime/root turn ctx/snapshot))
+  (let helper_bindings (operator_bindings {} turn ctx/snapshot))
   (for [name value] in helper_bindings ($repl/bind state/handle ($to_str name) value))
   (let context (operator_context ctx turn))
   (let scope (operator_scope ctx context))

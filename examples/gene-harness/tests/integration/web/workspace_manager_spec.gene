@@ -75,6 +75,36 @@
 (describe
   "Manager web host"
   (it
+    "exposes real manager control through the manager object"
+    []
+    (isolated
+      this_mod/.path
+      "exposes real manager control through the manager object"
+      (fn [root]
+        (let host (manager_host $"${root}/home"))
+        (try
+          (let session (cli host/root ["sessions" "create" "--title" "objects"]))
+          (let code
+            ($to_str
+              "(manager .control \"create\" {^name \"alpha\"})"
+              "(let listed manager/.workspaces)"
+              "($println ($to_str manager/.running? \"|\" (== manager/root workspace/root) \"|\" (/id listed/workspaces/0) \"|\" (/status listed/workspaces/0)))"
+              "($println (/name (manager .workspace \"alpha\")))"
+              "($println ($head manager/service))"))
+          (let done (cli host/root ["--session" session/id "run" code]))
+          ($assert (== done/status "done") ($to_str done))
+          (let lines ($str/split done/output "\n"))
+          (let parts ($str/split lines/0 "|"))
+          ($assert (== parts/0 "true") done/output)
+          ($assert (== parts/1 "true") done/output)
+          ($assert (== parts/2 "alpha") done/output)
+          ($assert (!= parts/3 "unknown") done/output)
+          ($assert (== lines/1 "alpha") done/output)
+          ($assert ($str/contains? lines/2 "WorkspaceManager") done/output)
+          ($assert ($fs/exists? $"${host/root}/workspaces/alpha"))
+        ensure
+          (stop_host host)))))
+  (it
     "creates the manager root at HOME and remains usable without a provider"
     []
     (isolated

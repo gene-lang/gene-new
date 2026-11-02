@@ -264,7 +264,7 @@
             (== next/validated/outcome/reply "pong")
             "next turn did not receive the queued function")
           (let inspection (evaluate_harness_turn runtime/h 4 root
-            "(Outcome ^^done ^reply ($to_str [(plugin_states) (inspect_plugin \"queued\") session_id]))"))
+            "(Outcome ^^done ^reply ($to_str [(plugin_states) (inspect_plugin \"queued\") session/id]))"))
           ($assert ($str/contains? inspection/validated/outcome/reply "queued") $"plugin inspection failed: ${inspection/validated/outcome/reply}; ${inspection/error}")
           (let disabled (evaluate_harness_turn runtime/h 5 root "(disable_plugin \"queued\") (Outcome ^^done ^reply \"disabled\")"))
           (let hidden (evaluate_harness_turn runtime/h 6 root "(append_prompt \"state\" (inspect_plugin \"queued\")) (ping)"))

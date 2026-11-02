@@ -59,7 +59,7 @@
     (if_not ($absent? candidate/bindings)
       (let parsed (try ($into ($parse/read_all owner) []) catch Any []))
       (if (|| (!= parsed/.size 1) (!= ($head parsed/0) Sym) (!= ($to_str parsed/0) owner)
-              (["Outcome" "session_id" "workspace_root" "doc" "discover" "append_prompt_at"
+              (["Outcome" "workspace" "manager" "session" "doc" "discover" "append_prompt_at"
                 "attachment" "recall"] .contains? owner)
               ($present? (row runtime/h "functions" owner)))
         (invalid_definition candidate/name "The public data binding namespace conflicts with an existing or reserved binding."))))

@@ -1,0 +1,428 @@
+# Tests the global workspace, manager and session objects in src/web/session_service.gene.
+(import $test [describe it])
+(import [isolated run_spec test_service set_test_provider] ^from "../../support")
+(import [close_session_service create_session command operator_receipt submit receipt]
+  ^from "../../../src/web/session_service")
+(import [Plugin PluginHost CommandResult current_workspace current_manager current_session]
+  ^from "../../../src/plugin_api")
+(import [put_cordis_plugin row] ^from "../../../src/kernel")
+(import [submit_mode_input mode_state] ^from "../../../src/runtime/input_modes")
+(import [require_record] ^from "../../../src/runtime/sessions")
+
+(fn with_service [workspace : Str, body, ^provider provider = nil]
+  (let service (test_service ^workspace workspace
+    ^provider (?? provider (fn [request] "(Outcome ^^done ^reply \"ok\")"))))
+  (try
+    (body service)
+  ensure
+    (close_session_service service)))
+
+(fn finish_command [service, session : Str, record]
+  (let watcher (service/runtime/services/values/commands/watchers/.get .get $"${session}:${record/id}"))
+  (if ($present? watcher) watcher/.join)
+  (operator_receipt service session record/id))
+
+(fn run_gene [service, session : Str, code : Str]
+  (finish_command service session (command service session $"/run ${code}")))
+
+# What a /run printed, failing the spec when the evaluation failed.
+(fn run_output [service, session : Str, code : Str] : Str
+  (let done (run_gene service session code))
+  ($assert (== done/status "done") $"${code} failed: ${done/display}")
+  (?? done/output ""))
+
+(fn finish_round [service, session : Str, admitted]
+  ((/watcher (service/runtime/services/values/controller/rounds/.get .get session)) .join)
+  (receipt service session admitted/id))
+
+(fn let_size [items] items/.size)
+
+(describe "Harness global objects"
+  (it "prints all three in /run without taking down the host" []
+    (isolated this_mod/.path "prints all three in /run without taking down the host"
+      (fn [workspace]
+        (with_service workspace (fn [service]
+          (let session (create_session service))
+          (for name in ["workspace" "manager" "session"]
+            (let done (run_gene service session/id name))
+            ($assert (== done/status "done") $"/run ${name}: ${done/display}"))
+          (let printed (run_output service session/id "($println ($to_str workspace))"))
+          ($assert ($str/contains? printed "(cycle)") "the real objects are cyclic")
+          ($assert (== (run_output service session/id "($println (== workspace workspace))") "true\n"))
+          (let frozen (run_output service session/id
+            "($println (try ($freeze workspace) \"frozen\" catch Any \"refused\"))"))
+          ($assert (== frozen "refused\n")))))))
+
+  (it "exposes the real internals by property path" []
+    (isolated this_mod/.path "exposes the real internals by property path"
+      (fn [workspace]
+        (with_service workspace (fn [service]
+          (let session (create_session service))
+          (let objects service/runtime/h/objects/.get)
+          (let shown objects/workspace)
+          ($assert (same? shown/runtime service/runtime))
+          ($assert (same? shown/h service/runtime/h))
+          ($assert (same? shown/sessions service/runtime/sessions))
+          ($assert (same? shown/services service/runtime/services))
+          ($assert (same? shown/workspace service/runtime/workspace))
+          ($assert (== shown/root service/runtime/root))
+          (let checks
+            ($to_str
+              "($println workspace/root)"
+              "($println session/id)"
+              "($println (== ($head workspace/h) ($head workspace/runtime/h)))"
+              "($println ((workspace .rows \"functions\") .size))"
+              "($println ($present? session/.state/round))"
+              "($println (/title session/.record))"))
+          (let lines ($str/split (run_output service session/id checks) "\n"))
+          ($assert (== lines/0 service/runtime/root))
+          ($assert (== lines/1 session/id))
+          ($assert (== lines/2 "true"))
+          ($assert (> ($parse/parse_int lines/3) 0))
+          ($assert (== lines/4 "true"))
+          ($assert (== lines/5 session/title)))))))
+
+  (it "binds the objects in response code and retires the old names" []
+    (isolated this_mod/.path "binds the objects in response code and retires the old names"
+      (fn [workspace]
+        (with_service workspace ^provider
+          (fn [request]
+            "(let shown ($to_str session/id \"|\" workspace/root \"|\" manager/.running? \"|\" (try session_id catch Any \"gone\") \"|\" (try workspace_root catch Any \"gone\")))\n(Outcome ^^done ^reply shown)")
+          (fn [service]
+            (let session (create_session service))
+            (let admitted (submit service session/id "objects" 1 "go"))
+            (let done (finish_round service session/id admitted))
+            ($assert (== done/state "done") ($to_str done))
+            (let reply (/reply done))
+            ($assert (== reply $"${session/id}|${service/runtime/root}|false|gone|gone") ($to_str done)))))))
+
+  (it "reaches the objects from plugin code in every context" []
+    (isolated this_mod/.path "reaches the objects from plugin code in every context"
+      (fn [workspace]
+        (with_service workspace (fn [service]
+          (let activation ($cell nil))
+          (let worker ($cell nil))
+          (put_cordis_plugin service/runtime/h
+            (Plugin ^id "object_probe"
+              ^activate (fn [host]
+                (activation .set
+                  {^root (/root (current_workspace)) ^manager (/root (current_manager)) ^session (current_session)})
+                (let task (spawn ^lane root
+                  (do ($sleep 1)
+                    (worker .set {^root (/root (current_workspace)) ^session (current_session)}))))
+                (host .PluginHost:defer (fn [] task/.cancel))
+                (host .PluginHost:contribute "functions"
+                  {^name "probe_objects" ^doc "Report the objects a plugin function sees."
+                   ^fn (fn []
+                     (let spawned (spawn (/id (current_session))))
+                     {^root (/root (current_workspace)) ^session (/id (current_session))
+                      ^spawned spawned/.join ^manager (/root (current_manager))})})
+                (host .PluginHost:contribute "commands"
+                  {^name "probe_objects" ^doc "Report objects from a command." ^usage "/probe_objects"
+                   ^run (fn [context]
+                     (CommandResult ^display $"${(/id (current_session))}|${(/root (current_workspace))}"))})))
+            {})
+          (let session (create_session service))
+          ($assert (== (/root activation/.get) service/runtime/root))
+          ($assert ($absent? (/session activation/.get)) "activation has no session")
+          (while ($absent? worker/.get) ($sleep 1))
+          ($assert (== (/root worker/.get) service/runtime/root))
+          ($assert ($absent? (/session worker/.get)) "background work has no session")
+          (let printed (run_output service session/id "($println (probe_objects))"))
+          ($assert ($str/contains? printed $"^session \"${session/id}\"") printed)
+          ($assert ($str/contains? printed "^spawned") printed)
+          ($assert (! ($str/contains? printed "^spawned nil")) printed)
+          (let shown (finish_command service session/id (command service session/id "/probe_objects")))
+          ($assert ($str/contains? shown/display $"${session/id}|${service/runtime/root}") shown/display))))))
+
+  (it "keeps an operator's own variables in the persistent REPL" []
+    (isolated this_mod/.path "keeps an operator's own variables in the persistent REPL"
+      (fn [workspace]
+        (with_service workspace (fn [service]
+          (let session (create_session service))
+          (let modes service/runtime/services/values/commands/modes)
+          (finish_command service session/id (command service session/id "/repl"))
+          (let mode (mode_state modes session/id))
+          (let input (fn [id : Str, text : Str]
+            (finish_command service session/id (submit_mode_input modes session/id mode/instance id text))))
+          (let before (input "first" "session/id"))
+          ($assert ($str/contains? before/display session/id) before/display)
+          (input "second" "(var session 5)")
+          (let shadowed (input "third" "session"))
+          ($assert ($str/contains? shadowed/display "5") shadowed/display)
+          (let root (input "fourth" "workspace/root"))
+          ($assert ($str/contains? root/display service/runtime/root) root/display))))))
+
+  (it "operates on sessions, including other sessions" []
+    (isolated this_mod/.path "operates on sessions, including other sessions"
+      (fn [workspace]
+        (with_service workspace (fn [service]
+          (let objects service/runtime/h/objects/.get)
+          (let shown objects/workspace)
+          (let first_session (create_session service))
+          (let second (shown .create_session ^title "second"))
+          ($assert (== second/.title "second"))
+          ($assert ($present? second/.state))
+          (second .rename "renamed")
+          ($assert (== second/.title "renamed"))
+          (let found (/sessions (shown .sessions ^q "renamed")))
+          ($assert (== found/.size 1))
+          ($assert (== found/0/id second/id))
+          (let stale (try (second .rename "x" ^revision 99) "applied" catch Any $err/code))
+          ($assert (== stale "revision_conflict") stale)
+          # Code in one session can work on another with the operator's operations.
+          (let driven (run_output service first_session/id
+            $"(let other (workspace .session \"${second/id}\")) ($println (/state (other .submit \"hello\")))"))
+          ($assert (> ($str/byte_size driven) 0))
+          ((/watcher (service/runtime/services/values/controller/rounds/.get .get second/id)) .join)
+          ($assert (== (/state second/.round) "done"))
+          ($assert ($present? (/records second/.transcript)))
+          ($assert ($present? (/model second/.model)))
+          (let deleted (run_output service first_session/id
+            $"($println (/deleted ((workspace .session \"${second/id}\") .delete)))"))
+          ($assert ($str/contains? deleted second/id) deleted)
+          (let gone (try (shown .session second/id) "found" catch Any "not found"))
+          ($assert (== gone "not found")))))))
+
+  (it "lists every public message with its contract" []
+    (isolated this_mod/.path "lists every public message with its contract"
+      (fn [workspace]
+        (with_service workspace (fn [service]
+          (let session (create_session service))
+          (let objects service/runtime/h/objects/.get)
+          (for object in [objects/workspace objects/manager (objects/session session/id)]
+            (let entries ($runtime/messages object))
+            ($assert (> entries/.size 0))
+            (for entry in entries
+              ($assert (== entry/kind `direct) entry/send)
+              ($assert entry/signature/result_known $"${entry/send} needs a declared result")
+              ($assert ($present? entry/signature/doc) $"${entry/send} needs literal @doc")))
+          (let listed (run_output service session/id
+            "($println ($map ($runtime/messages session) (fn [entry] entry/send)))"))
+          (for name in ["rename" "record" "submit" "transcript"]
+            ($assert ($str/contains? listed $"\"${name}\"") listed)))))))
+
+  (it "reports the effect boundary and keeps disabled plugins inspectable" []
+    (isolated this_mod/.path "reports the effect boundary and keeps disabled plugins inspectable"
+      (fn [workspace]
+        (with_service workspace (fn [service]
+          (let session (create_session service))
+          (let shown (/workspace service/runtime/h/objects/.get))
+          (let staged (run_output service session/id "($println (workspace .disable_plugin \"image\"))"))
+          ($assert ($str/contains? staged "^boundary \"turn\"") staged)
+          ($assert ($str/contains? staged "^status \"queued\"") staged)
+          (let disabled (shown .plugin "image"))
+          ($assert (== disabled/state "disabled"))
+          ($assert (> disabled/provides/.size 0) "a disabled plugin keeps its declared contributions")
+          ($assert ($absent? (row service/runtime/h "functions" "image_generate")))
+          (let immediate ($runtime/with_context {} (fn [] (shown .enable_plugin "image"))))
+          ($assert (== immediate/boundary "immediate") ($to_str immediate))
+          ($assert (== (/state (shown .plugin "image")) "ready"))
+          (let staged_function (run_output service session/id "($println (disable_plugin \"image\"))"))
+          ($assert ($str/contains? staged_function "^boundary \"turn\"") staged_function)
+          ($runtime/with_context {} (fn [] (shown .restore_plugin "image")))
+          ($assert (== shown/.revision (/id service/runtime/h/snapshots/current/.get)))
+          ($assert (> (let_size (/plugins shown/.plugins)) 0)))))))
+
+  (it "keeps plugin administration at parity with the browser" []
+    (isolated this_mod/.path "keeps plugin administration at parity with the browser"
+      (fn [workspace]
+        (with_service workspace (fn [service]
+          (let shown (/workspace service/runtime/h/objects/.get))
+          (let plan (shown .validate_plugin_plan
+            {^base_revision (/revision shown/.plugins) ^changes []}))
+          ($assert ($present? plan) "a plan is reachable from Gene")
+          (let history (shown .plugin_history))
+          ($assert ($present? history))
+          ($assert ($absent? (shown .plugin_plan_result "absent")) "an unknown plan has no result")
+          (let session (create_session service))
+          (let refused (run_gene service session/id "(revert_plugin \"image\" 1)"))
+          ($assert (== refused/status "failed") "the function requires the expected revision, like the route"))))))
+
+  (it "gives an ordinary workspace direct manager values and no control" []
+    (isolated this_mod/.path "gives an ordinary workspace direct manager values and no control"
+      (fn [workspace]
+        (with_service workspace (fn [service]
+          (let manager (/manager service/runtime/h/objects/.get))
+          ($assert (! manager/.running?))
+          ($assert (== manager/root ($os/get_env "GENE_HARNESS_ROOT" "")))
+          ($fs/make_dir ($path/join manager/root "workspaces" "alpha"))
+          (let listed manager/.workspaces)
+          ($assert (== listed/workspaces/.size 1))
+          ($assert (== listed/workspaces/0/id "alpha"))
+          (let control (try (manager .control "start" {^id "alpha"}) "ran" catch Any $err/code))
+          ($assert (== control "unavailable") control)
+          (let inspect (try (manager .workspace "alpha") "ran" catch Any $err/code))
+          ($assert (== inspect "unavailable") inspect))))))
+
+  (it "changes shared defaults from an ordinary workspace with a revision check" []
+    (isolated this_mod/.path "changes shared defaults from an ordinary workspace with a revision check"
+      (fn [workspace]
+        (with_service workspace (fn [service]
+          (let manager (/manager service/runtime/h/objects/.get))
+          (let before manager/.model_configuration)
+          (let saved (manager .set_default_model {^provider "test" ^model "chosen"} before/digest))
+          ($assert (== (/model saved/default) "chosen") ($to_str saved))
+          (let after manager/.model_configuration)
+          ($assert (== (/model after/config/default) "chosen"))
+          (let stale (try (manager .set_default_model {^provider "test" ^model "other"} before/digest)
+            "saved" catch Any $err/code))
+          ($assert (== stale "revision_conflict") stale))))))
+
+  (it "lets a conversation that starts with only the three names find its way" []
+    (isolated this_mod/.path "lets a conversation that starts with only the three names find its way"
+      (fn [workspace]
+        (with_service workspace ^provider (fn [request] """
+(let rename ($first ($filter ($runtime/messages session) (fn [entry] (== entry/send "rename")))))
+(let listed (/sessions (workspace .sessions)))
+(let config manager/.model_configuration)
+(let saved (manager .set_default_model {^provider "test" ^model "picked"} config/digest))
+(let plugin (workspace .plugin "image"))
+(Outcome ^^done ^reply ($to_str
+  rename/signature/doc "|" listed/.size "|" (/model saved/default) "|" plugin/state "|" (plugin/provides .size)))
+""")
+          (fn [service]
+            (let session (create_session service))
+            ((/workspace service/runtime/h/objects/.get) .disable_plugin "image")
+            (let done (finish_round service session/id (submit service session/id "discover" 1 "go")))
+            ($assert (== done/state "done") ($to_str done))
+            (let parts ($str/split done/reply "|"))
+            ($assert ($str/contains? parts/0 "Rename the session") done/reply)
+            ($assert (== parts/1 "1") done/reply)
+            ($assert (== parts/2 "picked") done/reply)
+            ($assert (== parts/3 "disabled") done/reply)
+            ($assert (> ($parse/parse_int parts/4) 0) done/reply))))))
+
+  (it "reaches the objects from a stored plugin, including at startup" []
+    (isolated this_mod/.path "reaches the objects from a stored plugin, including at startup"
+      (fn [workspace]
+        (let source
+          "(register_plugin \"stored_probe\" `(mod plugin
+             (import [Plugin PluginHost current_workspace current_manager current_session] ^from \"src/plugin_api.gene\")
+             (fn init [descriptor]
+               (Plugin ^id \"stored_probe\" ^provides [[\"functions\" \"stored_objects\"]]
+                 ^activate (fn [host]
+                   (let at_activation (/root (current_workspace)))
+                   (host .PluginHost:contribute \"functions\"
+                     {^name \"stored_objects\" ^doc \"probe\"
+                      ^fn (fn [] ($to_str at_activation \"|\" (/id (current_session)) \"|\" (/root (current_manager))))}))))))")
+        (var session_id "")
+        (var root "")
+        (with_service workspace (fn [service]
+          (let session (create_session service))
+          (set session_id session/id)
+          (set root service/runtime/root)
+          (let registered (run_gene service session/id source))
+          ($assert (== registered/status "done") registered/display)
+          (let printed (run_output service session/id "($println (stored_objects))"))
+          ($assert ($str/starts_with? printed $"${root}|${session/id}|") printed)))
+        (with_service workspace (fn [service]
+          (let printed (run_output service session_id "($println (stored_objects))"))
+          ($assert ($str/starts_with? printed $"${root}|${session_id}|") printed))))))
+
+  (it "binds the objects in hooks, prompts, view actions and child rounds" []
+    (isolated this_mod/.path "binds the objects in hooks, prompts, view actions and child rounds"
+      (fn [workspace]
+        (let parent_calls ($cell 0))
+        (with_service workspace ^provider
+          (fn [request]
+            (let metadata (require_record (/sessions (/workspace current_objects_for_test/.get)) request/session))
+            (if (== metadata/kind "child")
+              (then "(Outcome ^^done ^reply session/id)")
+              (elif (== (parent_calls .swap (+ parent_calls/.get 1)) 0)
+                "(delegate \"child\" ^title \"Child\" ^brief \"Report.\")\n(Outcome ^wait \"all\" ^reply \"Waiting.\")")
+              (else "(Outcome ^^done ^reply \"Collected.\")")))
+          (fn [service]
+            (current_objects_for_test .set service/runtime/h/objects/.get)
+            (let seen ($cell {}))
+            (put_cordis_plugin service/runtime/h
+              (Plugin ^id "context_probe" ^activate (fn [host]
+                (host .PluginHost:contribute "prompt"
+                  {^name "context_probe" ^render (fn [context, record]
+                    (seen/.get .put "prompt_root" (/root (current_workspace)))
+                    "")})
+                (host .PluginHost:contribute "functions"
+                  {^name "context_probe_seen" ^doc "probe" ^fn (fn [] seen/.get)})
+                (host .PluginHost:contribute "ui_actions"
+                  {^name "context_probe_action" ^doc "probe" ^fn (fn []
+                    (seen/.get .put "action_root" (/root (current_workspace)))
+                    (seen/.get .put "action_session" (current_session))
+                    "ok")})))
+              {})
+            (let objects service/runtime/h/objects/.get)
+            (let session (create_session service))
+            # A view action has no implicit session.
+            (let action (/fn (row service/runtime/h "ui_actions" "context_probe_action")))
+            ($runtime/with_context {^^ui_action} (fn [] (action)))
+            ($assert (== (seen/.get .get "action_root") service/runtime/root))
+            ($assert ($absent? (seen/.get .get "action_session")))
+            # A delegated child's response sees its own session.
+            (let admitted (submit service session/id "parent" 1 "delegate"))
+            (let children ($cell nil))
+            (let due (+ ($os/monotonic_ms) 30000))
+            (while (&& ($absent? children/.get) (< ($os/monotonic_ms) due))
+              (let found (/sessions (objects/workspace .sessions ^kind "child")))
+              (if_not found/.empty?
+                (let candidate (objects/workspace .session found/0/id))
+                (if (== (/state candidate/.round) "done") (children .set candidate)))
+              ($sleep 5))
+            ($assert ($present? children/.get)
+              ($to_str "the child did not finish: " (receipt service session/id admitted/id)))
+            (let child children/.get)
+            ($assert (!= child/id session/id))
+            ($assert (== (/reply child/.round) child/id) ($to_str child/.round))
+            ($assert (== (seen/.get .get "prompt_root") service/runtime/root))
+            nil)))))
+
+  (it "binds the objects in a trigger's round" []
+    (isolated this_mod/.path "binds the objects in a trigger's round"
+      (fn [workspace]
+        (with_service workspace ^provider (fn [request] "(Outcome ^^done ^reply session/id)")
+          (fn [service]
+            (let shown (/workspace service/runtime/h/objects/.get))
+            (shown .create_trigger {^id "beat" ^kind "heartbeat" ^every_ms 50 ^request "report"})
+            (let due (+ ($os/monotonic_ms) 30000))
+            (var occurrence nil)
+            (while (&& ($absent? occurrence) (< ($os/monotonic_ms) due))
+              (for item in (shown .trigger_occurrences ^trigger "beat")
+                (if (== item/state "finished") (set occurrence item)))
+              ($sleep 10))
+            ($assert ($present? occurrence) "the trigger did not finish")
+            (shown .delete_trigger "beat")
+            (let ran (shown .session occurrence/session))
+            ($assert (== (/reply ran/.round) ran/id) ($to_str ran/.round)))))))
+
+  (it "covers the remaining workspace features" []
+    (isolated this_mod/.path "covers the remaining workspace features"
+      (fn [workspace]
+        (with_service workspace (fn [service]
+          (let shown (/workspace service/runtime/h/objects/.get))
+          ($assert (["light" "dark"] .contains? shown/.appearance))
+          (shown .set_appearance "dark")
+          ($assert (== shown/.appearance "dark"))
+          ($assert ($present? shown/.views/settings))
+          ($assert (> shown/.commands/.size 0))
+          ($assert ($present? shown/.metadata))
+          ($assert ($present? shown/.voice))
+          (let posted (shown .post_notification {^title "t" ^body "b"}))
+          ($assert ($present? posted))
+          ($assert (> shown/.notifications/messages/.size 0))
+          (let session (shown .create_session ^title "findable"))
+          ($assert ($present? (shown .search_sessions "findable")))
+          ($assert ($present? session/.voice))
+          ($assert ($present? shown/.media_limits/max_file_bytes))
+          (let stored (shown .store_media "note.txt" ($base64/encode "hello")))
+          ($assert (== (/name (shown .media_item stored/id)) "note.txt"))
+          ($assert ($present? (shown .media_bytes stored/id)))
+          ($assert ($present? session/.media))
+          ($assert ($present? session/.cards))
+          ($assert ($present? session/.delegations))
+          ($assert ($present? shown/.voice_engines))
+          ($assert ($present? session/.voice_timings))
+          ($assert ($present? shown/.channel_status))))))))
+
+(var current_objects_for_test ($cell nil))
+
+(fn main [args] : Int (run_spec args))
+
+

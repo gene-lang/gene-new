@@ -5,7 +5,7 @@
     (for form in ($parse/read_all ($fs/read_text ($path/join this_pkg/root "src/kernel/registry.gene")))
       (if (&& (== ($to_str ($head form)) "type") (== ($to_str form/0) "Harness"))
         (set fields form/props)))
-    ($assert (== ($size fields) 21))
+    ($assert (== ($size fields) 22))
     (for field in ["composer" "plugin_services" "snapshots" "composition" "plugin_policies" "plugin_depth"]
       ($assert (fields .has_key? field) field))
     (for field in ["services" "bridge" "readiness" "notifications" "ui_action_log" "appearance" "ui_defaults" "manager_revision"

@@ -5,6 +5,43 @@
 
 (mod plugin_api)
 
+# The global objects of the running host. Plugin modules have closed scope, so they
+# reach them through these accessors; evaluated code has them as bound names. A host
+# publishes its objects at startup. A process normally has one host, and tests that
+# open several are told apart by the composition in the calling context.
+(var published_objects ^^private ($cell []))
+
+(fn publish_host_objects [composition, objects]
+  (published_objects .set [{^composition composition ^objects objects} published_objects/.get...])
+  nil)
+
+(fn withdraw_host_objects [composition]
+  (published_objects .set ($filter published_objects/.get
+    (fn [entry] (! (same? entry/composition composition)))))
+  nil)
+
+(fn current_objects ^^private []
+  (let entries published_objects/.get)
+  (if entries/.empty?
+    (fail (ServiceError ^code "unavailable" ^message "This code is not running in a Harness host.")))
+  (let composition (/composition ($runtime/context)))
+  (if ($present? composition)
+    (for entry in entries
+      (if (same? entry/composition composition) (return entry/objects))))
+  (/objects entries/0))
+
+(fn current_workspace []
+  (/workspace (current_objects)))
+
+(fn current_manager []
+  (/manager (current_objects)))
+
+# nil when the calling code is not running as part of a session.
+(fn current_session []
+  (let id (/session ($runtime/context)))
+  (if (|| ($absent? id) (== id "")) (return nil))
+  ((/session (current_objects)) id))
+
 (type Plugin ^props {^id Str ^provides Any? ^requires Any? ^activate Any ^deactivate Any? ^events Any?})
 
 # The bus publishes this after a workspace or session event is appended.

@@ -17,6 +17,26 @@
     (fail (HarnessError ^message "a function row requires name, doc and a callable fn")))
   candidate)
 
+(fn validate_keyboard_action_row [candidate]
+  (for field in ["id" "label" "doc" "context"]
+    (let value (candidate .get field))
+    (if (|| (!= ($head value) Str) (== value ""))
+      (fail (HarnessError ^message $"a keyboard action needs a non-empty ${field}"))))
+  (if (!= ($head candidate/default) Str)
+    (fail (HarnessError ^message "a keyboard action's default is a chord or an empty string")))
+  candidate)
+
+(fn validate_setting_row [candidate]
+  (for field in ["key" "label" "group" "doc" "type" "applies"]
+    (let value (candidate .get field))
+    (if (|| (!= ($head value) Str) (== value ""))
+      (fail (HarnessError ^message $"a setting needs a non-empty ${field}"))))
+  (if_not (["int" "str" "bool" "map" "any"] .contains? candidate/type)
+    (fail (HarnessError ^message "a setting type must be int, str, bool, map or any")))
+  (if_not (["next_round" "restart"] .contains? candidate/applies)
+    (fail (HarnessError ^message "a setting applies from next_round or restart")))
+  candidate)
+
 (fn validate_input_mode_row [candidate]
   (for field in ["name" "label" "hint" "submit_label" "prompt"]
     (let value (candidate .get field))

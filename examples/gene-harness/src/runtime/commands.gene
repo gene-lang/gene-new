@@ -123,12 +123,17 @@
     (lines .push $"${command/usage} — ${command/doc}"))
   (CommandResult ^display ($str/join lines "\n")))
 
+# A receipt stores frozen data, which a live object such as `workspace` cannot be.
+(fn displayable_result [value]
+  (if ($nil? value) (return "nil"))
+  (try ($freeze value) catch Any ($to_str value)))
+
 (fn run_command [ctx]
   (let forms ($into ($parse/read_all ^source ctx/id ^^locs ctx/raw) []))
   (let bindings
     (workspace_bindings ctx/runtime/h ctx/snapshot ctx/session ctx/runtime/root))
   (let turn (operator_turn ctx))
-  (let environment (env ^bindings (operator_bindings bindings ctx/runtime/root turn ctx/snapshot)))
+  (let environment (env ^bindings (operator_bindings bindings turn ctx/snapshot)))
   (let context (operator_context ctx turn))
   (let rewritten (operator_forms forms))
   (let scope (operator_scope ctx context))
@@ -148,7 +153,7 @@
       (if_not completed/.get (discard_composition_changes ctx/runtime/h/snapshots turn))
       (close_execution_scope scope)))
   # Keep an evaluated nil distinct from an omitted display value.
-  (CommandResult ^display (operator_result turn (if ($nil? value) "nil" value)) ^!attached ^status "done"))
+  (CommandResult ^display (operator_result turn (displayable_result value)) ^!attached ^status "done"))
 
 (fn view_command [ctx]
   (let specification ($str/trim ctx/raw))

@@ -155,7 +155,7 @@ are exactly:
 | Group | Names |
 | --- | --- |
 | Loop | `Outcome`, `append_prompt` (rewritten to `append_prompt_at`), `attachment`, `recall` |
-| Context | `session_id`, `workspace_root`, `discover`, `doc` |
+| Context | `workspace`, `manager`, `session`, `discover`, `doc`; see [Objects](objects.md) |
 | Functions | every row of the leased `functions` registry, by name; the built-in plugin and trigger functions appear only while their plugins are active |
 
 The whole standard library is reachable through `$`. Relative paths resolve

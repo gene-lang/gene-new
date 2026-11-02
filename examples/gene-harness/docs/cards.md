@@ -121,8 +121,8 @@ data only:
   a command button or hand them to the model with `^send`.
 - `^view` and `^update` must be literal `(fn ...)` forms written in the `card`
   call. The host keeps their source and evaluates it in a fresh environment on
-  every call: the standard library, the workspace's functions, `session_id`,
-  `workspace_root` and `context` (`session_id`, `session`, and the session's
+  every call: the standard library, the workspace's functions, `workspace`,
+  `manager`, `session` and `context` (`session_id`, `session`, and the session's
   current `round` or nil). A turn's local variables are never visible; put data
   the card needs in `^state`. An unresolved name fails when the code that uses
   it runs, so exercise `update` paths deliberately.

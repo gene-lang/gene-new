@@ -8978,6 +8978,11 @@ proc implMessageProto(c: var Compiler, node: Value,
                               generator = node.generatorMarker)
   if node.props.hasKey("errors") and node.props["errors"].kind == vkList:
     fn.signatureErrorExprs = node.props["errors"].listItems
+  # Declaration meta rides the proto as it does for `fn`, so `$runtime/signature`
+  # and `$runtime/messages` can report a message's literal `@doc`.
+  for key, val in node.meta:
+    fn.declMetaKeys.add key
+    fn.declMetaValues.add val
   ImplMessageProto(name: parts.name,
                    declaresOverride: declaresOverride,
                    protocolPath: parts.protocolPath,

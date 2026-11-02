@@ -8187,9 +8187,62 @@ proc functionForScopeStorage*(v: Value, owner: Scope, binding = false): Value =
       cur = data.source
   v
 
+type WeakenWalkMode = enum
+  weakenIdle      ## not inside a walk
+  weakenProbing   ## ordinary walk, watching the depth
+  weakenTracked   ## deep or cyclic: visit each container once
+
+# A walk deeper than this restarts visiting each container once, so it terminates
+# on a cyclic value and stays linear on a densely connected one. A repeated
+# container is left as it is: its functions keep their strong capture, which costs
+# at most a retained scope. Ordinary values never reach this depth.
+const weakenProbeDepth = 64
+const weakenContainerKinds = {vkList, vkMap, vkSet, vkHashMap, vkPipeline, vkNode}
+
+var weakenMode {.threadvar.}: WeakenWalkMode
+var weakenDepth {.threadvar.}: int
+var weakenOverflowed {.threadvar.}: bool
+var weakenSeen {.threadvar.}: HashSet[uint64]
+
+proc weakenScopeFunctionsBody(v: Value, owner: Scope): Value
+
 proc weakenScopeFunctions(v: Value, owner: Scope): Value =
   if owner == nil or not v.isManaged:
     return v
+  if v.kind notin weakenContainerKinds:
+    return weakenScopeFunctionsBody(v, owner)
+  case weakenMode
+  of weakenIdle:
+    weakenMode = weakenProbing
+    weakenDepth = 1
+    weakenOverflowed = false
+    try:
+      result = weakenScopeFunctionsBody(v, owner)
+      if weakenOverflowed:
+        weakenMode = weakenTracked
+        weakenSeen = initHashSet[uint64]()
+        weakenSeen.incl v.bits
+        result = weakenScopeFunctionsBody(v, owner)
+    finally:
+      weakenMode = weakenIdle
+      weakenSeen = initHashSet[uint64]()
+  of weakenProbing:
+    # The result is discarded once the probe overflows, so siblings return at
+    # once instead of walking a graph that has no end.
+    if weakenOverflowed:
+      return v
+    if weakenDepth >= weakenProbeDepth:
+      weakenOverflowed = true
+      return v
+    inc weakenDepth
+    result = weakenScopeFunctionsBody(v, owner)
+    dec weakenDepth
+  of weakenTracked:
+    if weakenSeen.containsOrIncl(v.bits):
+      return v
+    result = weakenScopeFunctionsBody(v, owner)
+
+proc weakenScopeFunctionsBody(v: Value, owner: Scope): Value =
   case v.kind
   of vkFunction, vkProtocolMessage, vkCallableView:
     functionForScopeStorage(v, owner)
@@ -10174,6 +10227,24 @@ proc newEnum*(name: string, typeParams: sink seq[string],
                                             backing: spec.backing,
                                             hasBacking: spec.hasBacking))
     data.variants.add variant
+
+proc typeDirectMessageNames*(v: Value): seq[string] =
+  ## Every name `typeDirectMessage` would resolve for this type, including
+  ## inherited ones.
+  var t = v
+  while t.kind == vkType:
+    case objData(t).objKind
+    of okType:
+      let data = TypeData(objData(t))
+      for name in data.messages.keys:
+        if name notin result: result.add name
+      t = data.parent
+    of okEnum:
+      for name in EnumData(objData(t)).messages.keys:
+        if name notin result: result.add name
+      t = NIL
+    else:
+      t = NIL
 
 proc typeDirectMessage*(v: Value, name: string): Value =
   ## Type-direct message lookup, walking the parent chain — most-derived type

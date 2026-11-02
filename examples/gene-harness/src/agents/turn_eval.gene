@@ -99,9 +99,12 @@
       (with_patch_gate workspace_root prepare_and_commit))
     (if (|| ($absent? patch_result) (== patch_result/status "applied"))
       (then
-        (let values ($thaw ($freeze_shallow bindings)))
+        # Bindings hold live objects, so copy the map without copying its values.
+        (let values {})
+        (for [name value] in bindings (values .put name value))
         (values .put "Outcome" (?? outcome_binding Outcome))
-        (values .put "workspace_root" workspace_root)
+        (if ($absent? (values .get "workspace"))
+          (values .put "workspace" {^root workspace_root}))
         (values .put "append_prompt_at" (fn [label line form value]
           (append_prompt_at turn label line form value)))
         (values .put "attachment" (fn [name] (attachment turn name)))

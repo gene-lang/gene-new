@@ -5,7 +5,7 @@
 (fn core_commands [] : Plugin
   (Plugin ^id "core_commands" ^requires ["operator/host"]
     ^provides [["commands" "help"] ["commands" "run"]
-               ["commands" "view"]]
+               ["commands" "view"] ["docs" "harness/objects"]]
     ^activate (fn [host]
       (let operator (host .PluginHost:resolve "operator/host"))
       (for command in
@@ -19,6 +19,9 @@
         (row .put "docs" ["harness/commands"])
         (row .put "tags" ["commands" "operator"])
         (host .PluginHost:contribute "commands" row))
+      (contribute_doc host "harness/objects"
+        "The global workspace, manager and session objects: read and change everything from Gene."
+        "examples/gene-harness/docs/objects.md" ^tags ["objects" "workspace" "manager" "session" "reflection" "sessions" "settings"])
       (contribute_doc host "harness/commands"
         "Operator commands: help, Gene evaluation and file inspection."
         "examples/gene-harness/docs/commands.md" ^tags ["commands" "operator" "run" "files"]))))

@@ -55,6 +55,12 @@ Interpolation reads as the same ordinary call:
 # ["Hello, Ada!" "Hello, Ada!" ""]
 ```
 
+Display is safe on cyclic values. A container that contains itself prints
+`(cycle)` at the point it repeats, and within such a value a container reached a
+second way prints `(seen)`, so each one appears once. `==` also terminates on
+cycles: two are equal when nothing reachable from them differs. `$freeze` and
+`$thaw` raise a catchable error on a cyclic value.
+
 The web profile supports scalar display values: Str, Int, F64, Bool, Nil,
 Void and Sym. A bare `$` has no built-in concatenation behavior.
 

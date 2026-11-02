@@ -1,0 +1,176 @@
+# Tests the settings registry and src/runtime/workspace_config.gene.
+(import $test [describe it])
+(import [isolated run_spec test_service] ^from "../../support")
+(import [close_session_service create_session command operator_receipt client_reply host_status] ^from "../../../src/web/session_service")
+(import [Plugin PluginHost] ^from "../../../src/plugin_api")
+(import [put_cordis_plugin uninstall] ^from "../../../src/kernel")
+
+(fn with_workspace [root : Str, body]
+  (let service (test_service ^workspace root ^provider (fn [request] "(Outcome ^^done ^reply \"ok\")")))
+  (try
+    (body service (/workspace service/runtime/h/objects/.get))
+  ensure
+    (close_session_service service)))
+
+(fn config_on_disk [service]
+  ($serde/read_data ($fs/read_text $"${service/runtime/state_root}/config.gene")))
+
+(describe "Harness settings"
+  (it "describes every setting with its value and source" []
+    (isolated this_mod/.path "describes every setting with its value and source"
+      (fn [root]
+        (with_workspace root (fn [service, shown]
+          (let listed shown/.settings)
+          ($assert (> listed/settings/.size 10))
+          ($assert ($present? listed/digest))
+          (let limit (shown .setting "turn_limit"))
+          ($assert (== limit/value 24))
+          ($assert (== limit/default 24))
+          ($assert (== limit/applies "next_round"))
+          (for view in listed/settings
+            ($assert ($present? view/label) view/key)
+            ($assert (["default" "workspace" "launch"] .contains? view/source) view/key)))))))
+
+  (it "owns config writes with validation and a revision check" []
+    (isolated this_mod/.path "owns config writes with validation and a revision check"
+      (fn [root]
+        (with_workspace root (fn [service, shown]
+          (let before shown/.settings/digest)
+          (let saved (shown .set_setting "turn_limit" 7 ^expected before))
+          ($assert (== saved/value 7))
+          ($assert (== saved/source "workspace"))
+          ($assert (== (/turn_limit (config_on_disk service)) 7) "the value reached config.gene")
+          (let stale (try (shown .set_setting "turn_limit" 8 ^expected before) "saved" catch Any $err/code))
+          ($assert (== stale "revision_conflict") stale)
+          (let wrong (try (shown .set_setting "turn_limit" "many") "saved" catch Any $err/code))
+          ($assert (== wrong "invalid_request") wrong)
+          (let zero (try (shown .set_setting "turn_limit" 0) "saved" catch Any $err/code))
+          ($assert (== zero "invalid_request") zero)
+          (let unknown (try (shown .set_setting "no_such" 1) "saved" catch Any $err/code))
+          ($assert (== unknown "not_found") unknown)
+          (let reset (shown .reset_setting "turn_limit"))
+          ($assert (== reset/value 24))
+          ($assert (== reset/source "default"))
+          ($assert ($absent? (/turn_limit (config_on_disk service)))))))))
+
+  (it "applies a saved setting to the next round" []
+    (isolated this_mod/.path "applies a saved setting to the next round"
+      (fn [root]
+        (with_workspace root (fn [service, shown]
+          (shown .set_setting "turn_limit" 1)
+          (let session (shown .create_session))
+          (let admitted (session .submit "go"))
+          (let watcher (/watcher (service/runtime/services/values/controller/rounds/.get .get session/id)))
+          watcher/.join
+          (let finished session/.round)
+          ($assert (== (/id finished) admitted/id))
+          ($assert (== (/state finished) "done") ($to_str finished)))))))
+
+  (it "lets a plugin add a setting that stays read after the plugin is gone" []
+    (isolated this_mod/.path "lets a plugin add a setting that stays read after the plugin is gone"
+      (fn [root]
+        (with_workspace root (fn [service, shown]
+          (put_cordis_plugin service/runtime/h
+            (Plugin ^id "setting_probe" ^activate (fn [host]
+              (host .PluginHost:contribute "settings"
+                {^key "setting_probe/level" ^label "Level" ^group "Probe" ^doc "A probe setting."
+                 ^type "int" ^default 3 ^applies "next_round"
+                 ^validate (fn [value] (if (> value 9) (fail "too high")))})))
+            {})
+          ($assert (== (/value (shown .setting "setting_probe/level")) 3))
+          ($assert (== (/value (shown .set_setting "setting_probe/level" 5)) 5))
+          (let refused (try (shown .set_setting "setting_probe/level" 10) "saved" catch Any "refused"))
+          ($assert (== refused "refused"))
+          (let probe_group (/settings (shown .settings ^group "Probe")))
+          ($assert (== probe_group/.size 1))))))))
+
+(fn action_named [state, id : Str]
+  ($first ($filter state/actions (fn [action] (== action/id id)))))
+
+# Stands in for connected tabs: replies as a browser would, or stays silent.
+(fn fake_tab [service, answer]
+  (set service/clients (fn [] [{^client_id "tab" ^session "" ^!safe}]))
+  (service/publisher .set (fn [message]
+    (if (== message/type "client/request")
+      (answer message/data))
+    nil)))
+
+(describe "Harness keyboard actions and browser requests"
+  (it "reports bindings, conflicts and sources" []
+    (isolated this_mod/.path "reports bindings, conflicts and sources"
+      (fn [root]
+        (with_workspace root (fn [service, shown]
+          (let toggle (action_named shown/.keyboard "view/toggle"))
+          ($assert (== toggle/binding "Ctrl+Shift+Space"))
+          ($assert (== toggle/source "default"))
+          ($assert toggle/conflicts/.empty?)
+          (let bound (shown .bind_key "view/toggle" "Shift+Ctrl+KeyK"))
+          ($assert (== (/binding (action_named bound "view/toggle")) "Ctrl+Shift+KeyK") "chords normalize")
+          ($assert (== (/source (action_named bound "view/toggle")) "override"))
+          (let clash (shown .bind_key "view/harness" "Ctrl+Shift+KeyK"))
+          ($assert (== (/conflicts (action_named clash "view/harness")) ["view/toggle"]) ($to_str clash))
+          (let cleared (shown .clear_key "view/harness"))
+          ($assert (== (/binding (action_named cleared "view/harness")) ""))
+          (let remaining (/conflicts (action_named cleared "view/toggle")))
+          ($assert remaining/.empty?)
+          (let restored (shown .restore_key "view/harness"))
+          ($assert (== (/binding (action_named restored "view/harness")) "Ctrl+Shift+Digit1"))
+          ($assert (== (/source (action_named restored "view/harness")) "default"))
+          (let status (host_status service))
+          ($assert ($present? status/keyboard))
+          (let wrong (try (shown .bind_key "no/such" "KeyK") "bound" catch Any $err/code))
+          ($assert (== wrong "not_found") wrong)
+          (let bad (try (shown .bind_key "view/toggle" "Hyper+KeyK") "bound" catch Any $err/code))
+          ($assert (== bad "invalid_request") bad))))))
+
+  (it "keeps a plugin action's binding while the plugin is disabled" []
+    (isolated this_mod/.path "keeps a plugin action's binding while the plugin is disabled"
+      (fn [root]
+        (with_workspace root (fn [service, shown]
+          (put_cordis_plugin service/runtime/h
+            (Plugin ^id "key_probe" ^activate (fn [host]
+              (host .PluginHost:contribute "keyboard_actions"
+                {^id "key_probe/run" ^label "Run" ^doc "Run the probe." ^context "application" ^default "Ctrl+KeyP"})))
+            {})
+          (shown .bind_key "key_probe/run" "Ctrl+KeyO")
+          ($assert (== (/binding (action_named shown/.keyboard "key_probe/run")) "Ctrl+KeyO"))
+          (uninstall service/runtime/h "key_probe")
+          ($assert ($absent? (action_named shown/.keyboard "key_probe/run")) "a removed plugin's action is gone")
+          (let stored (/stored (shown .setting "keyboard_bindings")))
+          ($assert (== (stored .get "key_probe/run") "Ctrl+KeyO"))
+          (put_cordis_plugin service/runtime/h
+            (Plugin ^id "key_probe" ^activate (fn [host]
+              (host .PluginHost:contribute "keyboard_actions"
+                {^id "key_probe/run" ^label "Run" ^doc "Run the probe." ^context "application" ^default "Ctrl+KeyP"})))
+            {})
+          ($assert (== (/binding (action_named shown/.keyboard "key_probe/run")) "Ctrl+KeyO") "the binding returns with the plugin"))))))
+
+  (it "asks one connected tab and returns its reply" []
+    (isolated this_mod/.path "asks one connected tab and returns its reply"
+      (fn [root]
+        (with_workspace root (fn [service, shown]
+          (fake_tab service (fn [data]
+            (client_reply service {^id data/id ^^ok ^result {^active data/operation}})))
+          ($assert (== shown/.clients/.size 1))
+          ($assert (== (/active (shown .client_view "tab")) "view/state"))
+          ($assert (== (/active (shown .navigate_client "tab" "harness")) "view/navigate"))
+          ($assert (== (/active (shown .invoke_client_action "tab" "view/toggle")) "action/invoke")))))))
+
+  (it "reports an absent, silent or refusing tab" []
+    (isolated this_mod/.path "reports an absent, silent or refusing tab"
+      (fn [root]
+        (with_workspace root (fn [service, shown]
+          ($assert shown/.clients/.empty? "no tab is connected yet")
+          (let absent (try (shown .client_view "tab") "answered" catch Any $err/code))
+          ($assert (== absent "unavailable") absent)
+          (fake_tab service (fn [data] nil))
+          (let silent (try (shown .client_request "tab" "view/state" {} ^timeout_ms 50) "answered" catch Any $err/code))
+          ($assert (== silent "unavailable") silent)
+          ($assert (== ($size service/client_requests/.get) 0) "a timed-out request is forgotten")
+          (fake_tab service (fn [data] (client_reply service {^id data/id ^!ok ^error "no"})))
+          (let refused (try (shown .client_view "tab") "answered" catch Any $err/code))
+          ($assert (== refused "client_error") refused)
+          (let late (client_reply service {^id "gone" ^^ok}))
+          ($assert late/ok "a late reply is ignored")))))))
+
+(fn main [args] : Int (run_spec args))

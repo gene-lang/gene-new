@@ -55,6 +55,13 @@
     (for peer in hub/peers/.get
       (if (&& (! peer/closed) (== peer/session session)) (return true)))
     false))
+  (set host/clients
+    (fn []
+      (let live [])
+      (for peer in hub/peers/.get
+        (if (&& (! peer/closed) (!= (?? peer/client_id "") ""))
+          (live .push {^client_id peer/client_id ^session peer/session ^safe peer/safe})))
+      live))
   (set host/ui_audience
     (fn []
       (for peer in hub/peers/.get

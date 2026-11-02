@@ -41,7 +41,7 @@
 (import ^from "../agents/provider_selection" [provider_choice select_provider selection_view session_settings catalog_snapshot readiness_report])
 (import [ModelCatalogChanged] ^from "../runtime/models_host")
 (import ^from "../storage/state" [events_for])
-(import ^from "./contract" [protocol_version history_page_limit])
+(import ^from "./contract" [protocol_version history_page_limit api_path])
 (import ^from "../runtime/commands"
   [
     parse_submission
@@ -52,6 +52,7 @@
     cancel_command])
 (import ^from "../kernel"
   [
+    registry_names
     rows
     contribute
     RoundChanged
@@ -61,7 +62,26 @@
 (import ^from "../runtime/composition" [acquire_snapshot release_snapshot current_snapshot])
 (import ^from "../runtime/input_modes" [mode_state])
 (import ^from "../kernel" [ModeChanged CompositionChanged CardChanged row])
-(import [ServiceError] ^from "../plugin_api")
+(import [ServiceError publish_host_objects] ^from "../plugin_api")
+(import [plugin_catalog plugin_history_catalog] ^from "../runtime/plugin_manager")
+(import [validate_plan apply_plan plan_result] ^from "../runtime/plugin_plans")
+(import [set_plugin_enabled restore_plugin revert_plugin] ^from "../storage/workspace_repair")
+(import [pin_history] ^from "../storage/plugin_history")
+(import [manager_list manager_inspect manager_operation] ^from "../runtime/workspace_manager")
+(import [manager_root_path] ^from "../public/workspace_paths")
+(import [require_trigger_manager] ^from "../runtime/trigger_host")
+(import [inbox_snapshot message_detail clear_messages acknowledge_messages] ^from "../notifications/inbox")
+(import [publish_notification] ^from "../notifications/publisher")
+(import [invoke_notification_action] ^from "../notifications/actions")
+(import [set_appearance] ^from "../runtime/appearance")
+(import [search_sessions] ^from "../runtime/launcher_search")
+(import [read_workspace_settings update_workspace_settings] ^from "../runtime/workspace_settings")
+(import [channel_request] ^from "../channels/http")
+(import [list_media] ^from "../runtime/media_host")
+(import [open_media_store put_media_base64 media_descriptor media_bytes] ^from "../storage/media")
+(import [voice_timings] ^from "../runtime/voice_state")
+(import [list_settings read_setting set_setting reset_setting] ^from "../runtime/workspace_config")
+(import [keyboard_state keyboard_bindings bind_key clear_key restore_key] ^from "../runtime/keyboard")
 (import ^from "../runtime/cards" ^^export
   [card_records shown_card card_action card_action_receipt check_card_command
    admit_card_command release_card_command CardError])
@@ -82,7 +102,7 @@
     delete_trigger
     list_occurrences])
 
-(type WorkspaceService ^props {^runtime Any ^epoch Str ^publisher Any ^revision Any ^closed Any ^offline Bool ^snapshot_jobs Any ^snapshot_versions Any ^browser_requests Any ^ui_audience Any? ^snapshot_audience Any? ^lifecycle Any?})
+(type WorkspaceService ^props {^runtime Any ^epoch Str ^publisher Any ^revision Any ^closed Any ^offline Bool ^snapshot_jobs Any ^snapshot_versions Any ^browser_requests Any ^ui_audience Any? ^snapshot_audience Any? ^lifecycle Any? ^clients Any? ^client_requests Any?})
 
 (fn current_model_info [service, session : Str = ""]
   (let metadata (if (== session "") (then nil) (else (require_record service/runtime/sessions session))))
@@ -452,6 +472,7 @@
   (let profile (workspace_profile ^base supplied_profile ^offline offline ^models_root launch/root canonical))
   (let runtime
     (open_runtime ^ownership ownership ^managed managed ^launch launch ^event_scope "workspace" ^entry ($path/join ($path/parent this_mod/.path) "server.gene")
+      ^objects (fn [opened] (install_host_objects opened launch))
       canonical
       "default"
       profile))
@@ -465,7 +486,8 @@
       ^name "web_components"
       ^text "This session has a browser frontend. Discover UI capabilities and start with (doc \"harness/ui\") to customize its workspace. Verify the browser as well as server previews."})
   (set service
-    (WorkspaceService ^runtime runtime ^epoch ($crypto/random_hex 16) ^publisher ($cell nil) ^revision ($atomic_cell 0) ^closed ($cell false) ^offline offline ^snapshot_jobs ($cell {}) ^snapshot_versions ($cell {}) ^browser_requests ($cell {})))
+    (WorkspaceService ^runtime runtime ^epoch ($crypto/random_hex 16) ^publisher ($cell nil) ^revision ($atomic_cell 0) ^closed ($cell false) ^offline offline ^snapshot_jobs ($cell {}) ^snapshot_versions ($cell {}) ^browser_requests ($cell {}) ^client_requests ($cell {})))
+  (runtime/h/objects/.get/workspace/service .set service)
   (set service/lifecycle (open_session_lifecycle service publish_message handle_harness_event
     ^channel_options channel_options ^observe service_event))
   service
@@ -904,6 +926,7 @@
     ^catalog_revision catalog_revision
     ^profile service/runtime/profile/name
     ^appearance (appearance_mode service/runtime)
+    ^keyboard (keyboard_bindings service/runtime)
     ^readiness (readiness_report ^selection selection service/runtime (session_settings metadata config))
     ^plugins plugins
     ^web_components (if safe [] (web_components service session))
@@ -917,3 +940,435 @@
 (fn close_session_service [service]
   (if (service/closed .swap true) (return nil))
   (close_session_lifecycle service/lifecycle))
+
+# Public objects: code running in this host reaches everything through these.
+# Each one holds the real internals in public properties and filters nothing.
+# Their messages call the same operations as the routes above, so `self` stands in
+# for the `service` argument: those operations read only its `runtime` property.
+
+(type HarnessSession ^props {^id Str ^runtime Any ^workspace Any}
+  (message state [] : Any
+    @doc "The live SessionState: history, current round, outputs and console."
+    (load_session self/runtime/sessions self/id))
+  (message record [] : Any
+    @doc "The stored session record: title, kind, status, model settings and revision."
+    (require_record self/runtime/sessions self/id))
+  (message title [] : Str
+    @doc "The session title."
+    (/title (require_record self/runtime/sessions self/id)))
+  (message round [] : Any
+    @doc "The current or most recent round's live record, or nil. A running /run or REPL command is not a round."
+    (let loaded (load_session self/runtime/sessions self/id))
+    loaded/round/.get)
+  (message receipt [id : Str] : Any
+    @doc "The durable receipt of one round."
+    (receipt self self/id id))
+  (message command_receipt [id : Str] : Any
+    @doc "The durable receipt of one operator command."
+    (operator_receipt self self/id id))
+  (message transcript [^after after : Int = -1, ^before before : Int = -1] : Any
+    @doc "The same records the operator sees, including commands and REPL activity. Page with after and before."
+    (snapshot ^after after ^before before self/workspace/service/.get self/id))
+  (message rename [title : Str, ^revision revision = nil] : Any
+    @doc "Rename the session immediately. Uses the current revision unless one is given."
+    (edit_session self self/id {^title title}
+      (?? revision (?? (/revision (require_record self/runtime/sessions self/id)) 0))))
+  (message edit [changes, ^revision revision = nil] : Any
+    @doc "Change title or pinned immediately. Uses the current revision unless one is given."
+    (edit_session self self/id changes
+      (?? revision (?? (/revision (require_record self/runtime/sessions self/id)) 0))))
+  (message delete [^revision revision = nil] : Any
+    @doc "Delete this session and its children immediately. Fails with busy while work is running."
+    (remove_session self self/id
+      (?? revision (?? (/revision (require_record self/runtime/sessions self/id)) 0))))
+  (message submit [text : Str, ^request_id request_id = nil, ^sequence sequence = nil, ^media media = [],
+                   ^model_settings model_settings = nil] : Any
+    @doc "Submit text like the operator's composer: a model round, or a command when it starts with a slash. Returns the admission receipt; work continues after it. This is not delegation and has none of its budget or parent ownership."
+    (submit ^media media ^model_settings model_settings self self/id
+      (?? request_id $"gene-${($crypto/random_hex 16)}")
+      (?? sequence (/next_seq (round_state self/runtime/services/values/controller self/id)))
+      text))
+  (message command [text : Str] : Any
+    @doc "Run one operator command such as /help in this session. Returns its record; work may continue after it."
+    (command self self/id text))
+  (message cancel [^round round_id = nil] : Any
+    @doc "Cancel a round, by default the current one."
+    (let loaded (load_session self/runtime/sessions self/id))
+    (cancel self self/id (?? round_id (/id loaded/round/.get))))
+  (message cancel_command [id : Str] : Any
+    @doc "Cancel a running operator command."
+    (cancel_operator_command self self/id id))
+  (message answer [batch : Str, values, ^dismiss dismiss : Bool = false] : Any
+    @doc "Answer or dismiss a pending question batch."
+    (answer ^dismiss dismiss self self/id batch values))
+  (message model [] : Any
+    @doc "The model this session resolves to, with requested and effective effort."
+    (current_model_info self self/id))
+  (message preview_model [selection] : Any
+    @doc "Resolve a selection for this session without saving it."
+    (preview_model_settings self self/id selection))
+  (message select_model [selection] : Any
+    @doc "Save this session's model choice immediately. A running round keeps its selection; the choice applies from the next admission."
+    (select_model_settings self self/id selection))
+  (message card_action [card : Str, request] : Any
+    @doc "Apply an action to one of this session's cards."
+    (session_card_action self self/id card request))
+  (message card_receipt [input_id : Str] : Any
+    @doc "The outcome of a card action."
+    (session_card_receipt self self/id input_id))
+  (message voice [] : Any
+    @doc "This session's voice state."
+    (session_voice_state self self/id))
+  (message cancel_delegation [id : Str, admission : Int] : Any
+    @doc "Cancel one delegated child by its id and admission."
+    (cancel_child self self/id id admission))
+  (message cards [] : Any
+    @doc "This session's cards as the operator's transcript shows them."
+    ($filter (/records (snapshot self/workspace/service/.get self/id))
+      (fn [record] (== record/kind "card"))))
+  (message claim_voice [request] : Any
+    @doc "Claim or release this session's voice for a browser client, as the browser does."
+    (session_voice_claim self self/id request))
+  (message voice_timings [] : Any
+    @doc "Recorded voice latency for this session."
+    (voice_timings self/runtime/services/values/voice self/id))
+  (message media [] : Any
+    @doc "This session's attachment descriptors."
+    ($runtime/with_context {^session self/id} (fn [] (list_media self/runtime))))
+  (message delegations [] : Any
+    @doc "This session's delegated children and their state."
+    (delegation_blocks self/runtime/services/values/delegations self/id))
+  (message recover_delegations [round : Str, action : Str] : Any
+    @doc "Resume or give up on children cut off from a round, as the browser's recovery controls do."
+    (recover_children self self/id round action))
+  (message slack_thread [] : Str
+    @doc "The Slack thread link for this session."
+    (session_slack_thread self self/id))
+  (message add_to_slack [revision : Int] : Any
+    @doc "Share this session to Slack. A stale revision fails with a conflict."
+    (session_add_to_slack self self/id revision))
+  (message acknowledge_attention [] : Any
+    @doc "Clear this session's attention flag."
+    (acknowledge_attention self self/id)))
+
+(type HarnessManager ^props {^runtime Any ^root Str ^workspaces_dir Str ^archive_dir Str ^service Any?}
+  (message running? [] : Bool
+    @doc "Whether this host is the manager and can control workspaces."
+    ($present? self/service))
+  (message workspaces [] : Any
+    @doc "The workspaces under the manager root. The manager host adds live status; other hosts read the directory."
+    (if ($present? self/service)
+      (then (manager_list self/service))
+      (else (workspace_directory_list self/workspaces_dir self/archive_dir))))
+  (message workspace [id : Str] : Any
+    @doc "Inspect one workspace with startup diagnostics. Needs the manager host."
+    (manager_inspect (require_live_manager self) id))
+  (message control [operation : Str, values = {}, ^confirmed confirmed : Bool = false] : Any
+    @doc "Run a manager operation such as start, stop, restart, create, port, rename, archive or restore. Needs the manager host."
+    (manager_operation ^confirmed confirmed (require_live_manager self) operation values))
+  (message models [] : Any
+    @doc "The cached model catalog, connection states and shared default. Makes no inference call."
+    (model_catalog self))
+  (message refresh_models [] : Any
+    @doc "Request bounded model discovery. Returns at once; read models again to see the result."
+    (refresh_models self))
+  (message model_configuration [] : Any
+    @doc "The shared models.gene configuration, errors and digest."
+    (model_configuration self))
+  (message save_model_configuration [config, expected : Str] : Any
+    @doc "Save shared models.gene immediately. A stale digest fails with a revision conflict."
+    (save_model_configuration self config expected))
+  (message set_default_model [selection, expected : Str] : Any
+    @doc "Save the shared default model immediately. A stale digest fails with a revision conflict."
+    (set_model_default self selection expected))
+  (message connect [provider : Str, ^account account = nil] : Any
+    @doc "Start sign-in for a provider. Returns an attempt with its id and browser URL; read login_status for progress."
+    (model_login ^account account self "connect" provider))
+  (message login_status [id : Str] : Any
+    @doc "Status of one sign-in attempt."
+    (model_login self "status" id))
+  (message cancel_login [id : Str] : Any
+    @doc "Cancel one sign-in attempt."
+    (model_login self "cancel" id))
+  (message accounts [] : Any
+    @doc "Saved provider accounts."
+    (model_accounts self))
+  (message account_action [id : Str, action : Str] : Any
+    @doc "Run select, sign_out or acknowledge on a saved account."
+    (model_accounts ^action action ^id id self)))
+
+(type HarnessWorkspace ^props {^runtime Any ^service Any ^root Str ^state_root Str ^h Any ^workspace Any ^profile Any
+                               ^events Any ^sessions Any ^services Any ^manager Any}
+  (message sessions [^q q : Str = "", ^kind kind = nil, ^status status = nil, ^attention attention = nil,
+                     ^trigger trigger = nil, ^since since : Str = "", ^until until : Str = "",
+                     ^after after : Str = "", ^limit limit : Int = 100] : Any
+    @doc "Find sessions. Returns their records, those needing attention, and a next cursor."
+    (list_sessions ^q q ^kind kind ^status status ^attention attention ^trigger trigger
+      ^since since ^until until ^after after ^limit limit self))
+  (message session [id : Str] : HarnessSession
+    @doc "One session by id."
+    (require_record self/sessions id)
+    (HarnessSession ^id id ^runtime self/runtime ^workspace self))
+  (message create_session [^title title : Str = "New conversation"] : HarnessSession
+    @doc "Create a conversation immediately."
+    (let created (create_session ^title title self))
+    (HarnessSession ^id created/id ^runtime self/runtime ^workspace self))
+  (message registries [] : Any
+    @doc "Every registry name, including plugin-created ones."
+    (registry_names self/h))
+  (message rows [name : Str] : Any
+    @doc "The real rows of one registry in the caller's composition, including their callbacks."
+    (rows self/h name))
+  (message row [name : Str, key : Str] : Any
+    @doc "One real registry row, or nil."
+    (row self/h name key))
+  (message revision [] : Int
+    @doc "The composition revision the caller is reading. Session metadata and configuration have their own revisions."
+    (/id (current_snapshot self/h/snapshots)))
+  (message plugins [^q q : Str = "", ^state state : Str = ""] : Any
+    @doc "The plugin catalog: declared and observed contributions, state, errors and diagnostics for every plugin, including disabled and failed ones."
+    (plugin_catalog ^query q ^state state self/runtime))
+  (message plugin [id : Str] : Any
+    @doc "One plugin's catalog row, or nil. A disabled or failed plugin keeps its declared contributions and reason."
+    (for candidate in (/plugins (plugin_catalog self/runtime))
+      (if (== candidate/id id) (return candidate)))
+    nil)
+  (message enable_plugin [id : Str] : Any
+    @doc "Enable a plugin. Staged when called inside an open turn, otherwise immediate; the result's boundary says which."
+    (set_plugin_enabled ^readiness self/services/values/readiness self/workspace self/h id true))
+  (message disable_plugin [id : Str] : Any
+    @doc "Disable a plugin. Staged when called inside an open turn, otherwise immediate; the result's boundary says which."
+    (set_plugin_enabled ^readiness self/services/values/readiness self/workspace self/h id false))
+  (message restore_plugin [id : Str] : Any
+    @doc "Restore a built-in to its profile default. Staged when called inside an open turn, otherwise immediate."
+    (restore_plugin ^readiness self/services/values/readiness self/workspace self/h id))
+  (message validate_plugin_plan [request] : Any
+    @doc "Validate a batch of plugin changes without applying it. Returns the plan or the reason it cannot apply."
+    (validate_plan self/runtime request))
+  (message apply_plugin_plan [id : Str] : Any
+    @doc "Apply a validated plan immediately. A plan is never applied twice."
+    (apply_plan self/runtime id))
+  (message plugin_plan_result [id : Str] : Any
+    @doc "The durable result of a plan."
+    (plan_result self/runtime id))
+  (message plugin_history [id : Str = "", ^limit limit : Int = 50, ^before before = nil] : Any
+    @doc "Retained composition revisions, optionally for one plugin."
+    (plugin_history_catalog ^limit limit ^before before self/runtime id))
+  (message revert_plugin [id : Str, revision : Int, expected : Int] : Any
+    @doc "Revert to a retained plugin entry. A stale expected revision fails with a conflict."
+    (revert_plugin ^readiness self/services/values/readiness ^expected expected self/workspace self/h id revision))
+  (message pin_plugin_history [revision : Int, pinned : Bool] : Any
+    @doc "Pin or unpin a retained composition revision."
+    (pin_history self/workspace/store self/workspace/history_head/.get revision pinned))
+  (message search_sessions [query : Str, ^limit limit : Int = 50] : Any
+    @doc "Search session titles and transcripts."
+    (search_sessions ^limit limit self/sessions query))
+  (message triggers [] : Any
+    @doc "Trigger definitions."
+    (list_triggers (require_trigger_manager self/runtime)))
+  (message create_trigger [definition] : Any
+    @doc "Create a trigger immediately. Scheduled work starts from it."
+    (create_trigger (require_trigger_manager self/runtime) definition))
+  (message update_trigger [id : Str, changes] : Any
+    @doc "Change a trigger immediately."
+    (update_trigger (require_trigger_manager self/runtime) id changes))
+  (message delete_trigger [id : Str] : Any
+    @doc "Delete a trigger immediately."
+    (delete_trigger (require_trigger_manager self/runtime) id))
+  (message trigger_occurrences [^trigger trigger = nil] : Any
+    @doc "Trigger occurrences and their outcomes, optionally for one trigger."
+    (if ($present? trigger)
+      (then (list_occurrences (require_trigger_manager self/runtime) ^trigger trigger))
+      (else (list_occurrences (require_trigger_manager self/runtime)))))
+  (message notifications [] : Any
+    @doc "The notification inbox."
+    (inbox_snapshot self/services/values/inbox))
+  (message notification [id : Str] : Any
+    @doc "One notification with its detail."
+    (message_detail self/services/values/inbox id))
+  (message post_notification [message] : Any
+    @doc "Post an operator-owned notification immediately."
+    (publish_notification self/h self/services/values/inbox "operator" message))
+  (message acknowledge_notifications [through : Int] : Any
+    @doc "Mark notifications read through a sequence number."
+    (acknowledge_messages self/services/values/inbox through))
+  (message clear_notifications [messages] : Any
+    @doc "Clear notifications, each with its id and revision."
+    (clear_messages self/services/values/inbox messages))
+  (message notification_action [request] : Any
+    @doc "Invoke a notification's action. A command action returns its admission; work continues after it."
+    (invoke_notification_action self/runtime request))
+  (message appearance [] : Str
+    @doc "The workspace theme mode."
+    (appearance_mode self/runtime))
+  (message set_appearance [mode : Str] : Str
+    @doc "Set the workspace theme mode immediately."
+    (set_appearance self/runtime mode))
+  (message views [] : Any
+    @doc "UI settings, registered views and their revisions."
+    (ui_status self/runtime))
+  (message commands [] : Any
+    @doc "Registered operator commands."
+    (rows self/h "commands"))
+  (message voice [] : Any
+    @doc "Voice engine and claim state."
+    (public_voice_state (voice_snapshot self/services/values/voice)))
+  (message media_limits [] : Any
+    @doc "Upload limits for attachments."
+    (let store (open_media_store self/state_root))
+    {^max_file_bytes store/max_file_bytes ^max_files 16 ^max_message_bytes 41943040})
+  (message store_media [name : Str, encoded : Str] : Any
+    @doc "Store an attachment from base64 immediately, as a browser upload does. Returns its descriptor."
+    (put_media_base64 (open_media_store self/state_root) name encoded))
+  (message media_item [id : Str] : Any
+    @doc "One attachment's descriptor."
+    (media_descriptor (open_media_store self/state_root) id))
+  (message media_bytes [id : Str] : Any
+    @doc "One attachment's bytes."
+    (media_bytes (open_media_store self/state_root) id))
+  (message voice_engines [] : Any
+    @doc "The registered speech recognizers and synthesizers."
+    {^recognizers (rows self/h "speech_recognizers") ^synthesizers (rows self/h "speech_synthesizers")})
+  (message channel_status [] : Any
+    @doc "Channel accounts, health and pending incoming messages."
+    (/body (channel_request self/services/values/channels "GET" (api_path ["channels"]))))
+  (message channels [method : Str, endpoint : Str, data = {}] : Any
+    @doc "Call a channel operation with the same method, path and data as its authenticated route."
+    (channel_request self/services/values/channels method endpoint data))
+  (message metadata [] : Any
+    @doc "This workspace's stored metadata: port and role."
+    (read_workspace_settings self/root))
+  (message update_metadata [changes, ^expected expected : Str = ""] : Any
+    @doc "Change this workspace's stored metadata immediately. A stale digest fails with a revision conflict."
+    (update_workspace_settings ^expected expected self/root changes))
+  (message settings [^group group : Str = ""] : Any
+    @doc "Every setting's definition, value, default and source, with the config digest. Source is launch, workspace or default."
+    (list_settings ^group group self/runtime))
+  (message setting [key : Str] : Any
+    @doc "One setting's definition, value, default and source."
+    (read_setting self/runtime key))
+  (message set_setting [key : Str, value, ^expected expected : Str = ""] : Any
+    @doc "Save a workspace setting immediately. Its applies field says whether it takes effect from the next round or a restart. A stale digest fails with a revision conflict."
+    (set_setting ^expected expected self/runtime key value))
+  (message keyboard [] : Any
+    @doc "Every keyboard action with its binding, default, source, context and conflicts."
+    (keyboard_state self/runtime))
+  (message bind_key [id : Str, chord : Str] : Any
+    @doc "Bind an action to a chord such as Ctrl+Shift+KeyK, using event codes. Connected browsers pick it up at once. The binding is kept if the owning plugin is disabled."
+    (let state (bind_key self/runtime id chord))
+    (announce_keyboard self)
+    state)
+  (message clear_key [id : Str] : Any
+    @doc "Leave an action with no binding."
+    (let state (clear_key self/runtime id))
+    (announce_keyboard self)
+    state)
+  (message restore_key [id : Str] : Any
+    @doc "Restore an action's default binding."
+    (let state (restore_key self/runtime id))
+    (announce_keyboard self)
+    state)
+  (message clients [] : Any
+    @doc "Connected browser tabs: client id, watched session and whether each is in safe mode."
+    (connected_clients self/service/.get))
+  (message client_request [client : Str, operation : Str, args = {}, ^timeout_ms timeout_ms : Int = 5000] : Any
+    @doc "Ask one connected browser tab to run a client operation and wait for its reply. Fails with unavailable when the tab is absent or does not answer in time."
+    (client_request ^timeout_ms timeout_ms self/service/.get client operation args))
+  (message client_view [client : Str] : Any
+    @doc "Read one tab's selected view and presentation. This reads tab state only and changes no workspace default."
+    (client_request self/service/.get client "view/state" {}))
+  (message navigate_client [client : Str, view : Str, ^presentation presentation : Str = ""] : Any
+    @doc "Switch one tab to a view. This changes that tab only, not workspace defaults."
+    (client_request self/service/.get client "view/navigate" {^view view ^presentation presentation}))
+  (message invoke_client_action [client : Str, id : Str] : Any
+    @doc "Run a keyboard action's operation in one tab, with no keypress."
+    (client_request self/service/.get client "action/invoke" {^id id}))
+  (message reset_setting [key : Str, ^expected expected : Str = ""] : Any
+    @doc "Remove a workspace override so the setting uses its default."
+    (reset_setting ^expected expected self/runtime key))
+  (message stop [^session session : Str = "", ^confirm confirm : Bool = false] : Any
+    @doc "Stop this host. Other running sessions need confirm."
+    (request_stop self/services/values/controller session 0 confirm)
+    {^^ok})
+  (message restart [^session session : Str = "", ^confirm confirm : Bool = false] : Any
+    @doc "Restart this host under its supervisor. Other running sessions need confirm."
+    (request_stop self/services/values/controller session 75 confirm)
+    {^^ok}))
+
+(fn announce_keyboard [workspace : HarnessWorkspace]
+  (let service workspace/service/.get)
+  (if ($present? service)
+    (publish_message service "keyboard/changed" "" {^bindings (keyboard_bindings workspace/runtime)})))
+
+(fn connected_clients [service]
+  (if (|| ($absent? service) ($absent? service/clients)) (return []))
+  (service/clients))
+
+# One request to one browser tab, over the push socket. The reply arrives on an
+# authenticated route. All tabs see the frame and only the named one answers.
+(fn client_request [service, client : Str, operation : Str, args, ^timeout_ms timeout_ms : Int = 5000]
+  (let present ($filter (connected_clients service) (fn [peer] (== peer/client_id client))))
+  (if present/.empty?
+    (fail (ServiceError ^code "unavailable" ^message $"Browser client ${client} is not connected.")))
+  (let id ($crypto/random_hex 16))
+  (let slot ($cell nil))
+  (service/client_requests/.get .put id slot)
+  (try
+    (publish_message service "client/request" "" {^id id ^client client ^operation operation ^args args})
+    (let due (+ ($os/monotonic_ms) timeout_ms))
+    (while (&& ($absent? slot/.get) (< ($os/monotonic_ms) due))
+      ($sleep 5))
+    (let reply slot/.get)
+    (if ($absent? reply)
+      (fail (ServiceError ^code "unavailable" ^message $"Browser client ${client} did not answer in time.")))
+    (if (!= reply/ok true)
+      (fail (ServiceError ^code "client_error" ^message ($to_str (?? reply/error "The browser refused the request.")))))
+    reply/result
+  ensure
+    (service/client_requests/.get .delete id)))
+
+(fn client_reply [service, reply]
+  (let slot (service/client_requests/.get .get reply/id))
+  (if_not ($absent? slot) (slot .set reply))
+  {^^ok})
+
+(fn workspace_directory_list [workspaces_dir : Str, archive_dir : Str]
+  (let names (fn [dir : Str]
+    (if ($fs/exists? dir)
+      (then ($filter ($fs/list_dir dir) (fn [name] (!= name ".DS_Store"))))
+      (else []))))
+  {^workspaces ($map (names workspaces_dir)
+     (fn [name] {^id name ^name name ^dir ($path/join workspaces_dir name) ^status "unknown"}))
+   ^archived (names archive_dir)
+   ^workspaces_dir workspaces_dir ^archive_dir archive_dir})
+
+(fn require_live_manager [manager : HarnessManager]
+  (if ($absent? manager/service)
+    (fail (ServiceError ^code "unavailable"
+      ^message "Workspace control needs the manager host. Run this from a manager conversation.")))
+  manager/service)
+
+(fn select_model_settings [service, session : Str, selection]
+  (let contribution (row service/runtime/h "seams" "models/catalog"))
+  (if ($absent? contribution)
+    (fail (ServiceError ^code "unavailable" ^message "The Models contribution is disabled or unavailable.")))
+  (contribution/value/select session selection))
+
+(fn install_host_objects [runtime, launch]
+  (let live runtime/services/values/manager)
+  (let root (if ($present? live) (then runtime/root)
+    (else (try (manager_root_path ^explicit (?? launch/root nil)) catch Any ""))))
+  (let manager (HarnessManager ^runtime runtime ^root root
+    ^workspaces_dir (if (== root "") "" ($path/join root "workspaces"))
+    ^archive_dir (if (== root "") "" ($path/join root "archive"))
+    ^service live))
+  (let workspace (HarnessWorkspace ^runtime runtime ^root runtime/root ^state_root runtime/state_root
+    ^service ($cell nil) ^h runtime/h ^workspace runtime/workspace ^profile runtime/profile
+    ^events runtime/events ^sessions runtime/sessions ^services runtime/services ^manager manager))
+  (let objects {^workspace workspace ^manager manager
+    ^session (fn [id : Str] (HarnessSession ^id id ^runtime runtime ^workspace workspace))})
+  # Behind a cell: the VM's scope and escape walks follow plain properties, and the
+  # kernel Harness is reachable from nearly everywhere.
+  (set runtime/h/objects ($cell objects))
+  (publish_host_objects runtime/h/snapshots objects)
+  objects)

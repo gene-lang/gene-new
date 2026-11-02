@@ -7,10 +7,63 @@
 ## Mutable/immutable representation does not affect equality (e.g. [1 2 3]
 ## equals #[1 2 3]).
 
-import std/[hashes, sets]
-import ./types
+import std/[hashes, sets, tables]
+import ./[types, value_graph]
 
 proc equal*(a, b: Value): bool
+
+type EqualMode = enum
+  equalIdle     ## not inside a container comparison
+  equalProbing  ## ordinary comparison, watching the depth
+  equalTracked  ## deep or cyclic: compare each pair once
+
+# Comparisons deeper than this restart with pair tracking. Ordinary values never
+# reach it, so they allocate nothing extra.
+const equalProbeDepth = 64
+
+var equalMode {.threadvar.}: EqualMode
+var equalDepth {.threadvar.}: int
+var equalOverflowed {.threadvar.}: bool
+var equalPairs {.threadvar.}: Table[(uint64, uint64), bool]
+
+proc containerBodyEqual(a, b: Value): bool
+
+proc containersEqual(a, b: Value): bool =
+  case equalMode
+  of equalIdle:
+    equalMode = equalProbing
+    equalDepth = 1
+    equalOverflowed = false
+    try:
+      result = containerBodyEqual(a, b)
+      if equalOverflowed:
+        equalMode = equalTracked
+        equalPairs = initTable[(uint64, uint64), bool]()
+        equalPairs[(a.bits, b.bits)] = true
+        result = containerBodyEqual(a, b)
+    finally:
+      equalMode = equalIdle
+      equalPairs = initTable[(uint64, uint64), bool]()
+  of equalProbing:
+    # The result is discarded once the probe overflows, so siblings return at
+    # once instead of walking a graph that has no end.
+    if equalOverflowed:
+      return false
+    if equalDepth >= equalProbeDepth:
+      equalOverflowed = true
+      return false
+    inc equalDepth
+    result = containerBodyEqual(a, b)
+    dec equalDepth
+  of equalTracked:
+    # A pair already being compared is assumed equal: two cycles are equal when
+    # nothing reachable from them differs.
+    let pair = (a.bits, b.bits)
+    equalPairs.withValue(pair, known):
+      return known[]
+    equalPairs[pair] = true
+    result = containerBodyEqual(a, b)
+    equalPairs[pair] = result
 
 proc tablesEqual(a, b: PropTable): bool =
   if a.len != b.len: return false
@@ -38,6 +91,11 @@ proc equal*(a, b: Value): bool =
   if a.isNil or b.isNil: return a.isNil and b.isNil
   if a.kind != b.kind:
     return false
+  if a.kind in graphContainerKinds:
+    return containersEqual(a, b)
+  containerBodyEqual(a, b)
+
+proc containerBodyEqual(a, b: Value): bool =
   case a.kind
   of vkNil, vkVoid: true
   of vkBool:   a.boolVal == b.boolVal

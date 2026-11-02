@@ -101,6 +101,23 @@
   (set picker/disabled ui/safe)
   (sync_controls ui))
 
+# A chord names physical keys by event code, as the host's keyboard_actions do.
+(fn event_chord [event : Any] : Str
+  (var parts "")
+  (if_yes ($event/ctrl_key event) (set parts $"${parts}Ctrl+"))
+  (if_yes ($event/shift_key event) (set parts $"${parts}Shift+"))
+  (if_yes ($event/alt_key event) (set parts $"${parts}Alt+"))
+  (if_yes ($event/meta_key event) (set parts $"${parts}Meta+"))
+  (var code ($event/code event))
+  (if_yes (== code "NumpadEnter") (set code "Enter"))
+  $"${parts}${code}")
+
+# One action's chord. The default applies until the first status arrives.
+(fn action_chord [ui : UiClient, action : Str, fallback : Str] : Str
+  (for [id bound] in ui/keyboard
+    (if_yes (== ($to_str id) action) (return (text bound))))
+  fallback)
+
 (fn navigate [ui : UiClient, target : Str, presentation : Str = "", push : Bool = true] : Bool
   (if_yes (&& ui/safe (!= target "harness")) (return false))
   (var nav ui/navigation)
@@ -213,17 +230,21 @@
       (persist_navigation ui) (layout ui)))
   ($dom/add_event_listener ^^capture ($dom/window) "keydown"
     (fn [event : Any] : Void
-      (if_yes (|| ui/safe (keyboard_owned?) ($event/is_composing event) ($event/repeat event)
-                  (! ($event/ctrl_key event)) (! ($event/shift_key event))
-                  ($event/alt_key event) ($event/meta_key event)) (return))
-      (var code ($event/code event))
+      (if_yes (|| ui/safe (keyboard_owned?) ($event/is_composing event) ($event/repeat event)) (return))
+      (var chord (event_chord event))
       (var handled false)
-      (if_yes (== code "Digit0") (set handled (toggle_bar ui)))
-      (if_yes (== code "Space") (set handled (toggle ui)))
-      (if_yes (== code "Digit1") (set handled (navigate ui "harness")))
-      (var index 2)
-      (for view in ui/navigation/views
-        (if_yes (&& (<= index 9) (== code $"Digit${index}"))
-          (set handled (navigate ui (text view/name))))
-        (set index (+ index 1)))
+      (for [id bound] in ui/keyboard
+        (if_yes (&& (! ($str/starts_with? ($to_str id) "composer/")) (== (text bound) chord))
+          (set handled (run_action ui ($to_str id)))))
       (if_yes handled ($dom/prevent_default event)))))
+
+# Runs one navigation action, whether from a key or from a host request.
+(fn run_action [ui : UiClient, id : Str] : Bool
+  (if_yes (== id "view/toggle_bar") (return (toggle_bar ui)))
+  (if_yes (== id "view/toggle") (return (toggle ui)))
+  (if_yes (== id "view/harness") (return (navigate ui "harness")))
+  (var index 2)
+  (for view in ui/navigation/views
+    (if_yes (== id $"view/open_${index}") (return (navigate ui (text view/name))))
+    (set index (+ index 1)))
+  false)

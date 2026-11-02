@@ -180,7 +180,7 @@
     (queue_composition_change h/snapshots
       {^kind "registration" ^id id
        ^apply (fn [] (publish_registration ^readiness readiness workspace h descriptor entry replace authenticated_turn))})
-    (return {^id id ^digest digest ^status "queued"}))
+    (return {^id id ^digest digest ^status "queued" ^boundary "turn"}))
   (publish_registration ^readiness readiness workspace h descriptor entry replace authenticated_turn))
 
 (fn publish_registration [workspace : Workspace, h : Harness, descriptor, entry, replace : Bool, authenticated_turn : Int, ^readiness readiness = nil]

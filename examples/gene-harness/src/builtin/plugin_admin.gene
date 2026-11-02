@@ -44,7 +44,7 @@
       (host .PluginHost:contribute "functions"
         {^name "revert_plugin" ^doc "Revert to a retained plugin entry, preserving application data and enabled state."
          ^tags ["plugins" "history" "revert"] ^docs ["harness/plugins"]
-         ^fn (fn [id : Str, revision : Int, ^expected expected = nil]
+         ^fn (fn [id : Str, revision : Int, ^expected expected : Int]
            (administration .CompositionHost:revert id revision ^expected expected))})
       (contribute_doc host "harness/plugin_manager"
         "Review plugin capabilities, validate batches, revert versions, and repair startup."

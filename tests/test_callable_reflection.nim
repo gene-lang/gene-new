@@ -1,4 +1,4 @@
-import std/[unittest, tables]
+import std/[strutils, unittest, tables]
 import gene/[compiler, gir, gir_codec, printer, types, vm, web]
 
 template reflectionCheck(source, expected: string) =
@@ -477,3 +477,81 @@ suite "language callable reflection":
       (let s ($runtime/signature Error:message err))
       [formatted s/result s/resolution]
     """, "[0 Str implementation]"
+
+suite "runtime/messages":
+  const messagesPrelude = """
+    (protocol Named
+      (message title [] : Str)
+      (message rename [name : Str, ^revision revision : Int = 0] : Str))
+    (type Base ^props {^id Str}
+      (message describe [] : Str @doc "Describe the receiver." "base")
+      (message shared [] : Str "base"))
+    (type Item : Base ^props {^tag Str}
+      (impl Named
+        (message title [] : Str "t")
+        (message rename [name : Str, ^revision revision : Int = 0] : Str name))
+      (message shared ^^override [] : Str "item")
+      (message tagged [suffix : Str] : Str suffix))
+    (let item (Item ^id "x" ^tag "y"))
+    (fn sends [] ($map ($runtime/messages item) (fn [entry] entry/send)))
+    (fn find [send : Str]
+      (var found nil)
+      (for entry in ($runtime/messages item)
+        (if (== entry/send send) (set found entry)))
+      found)
+  """
+
+  template messagesCheck(source, expected: string) =
+    check run(compileSource(messagesPrelude & source), newGlobalScope()).print() == expected
+
+  test "lists direct, inherited and visible protocol messages":
+    messagesCheck """
+      (let names (sends))
+      [(names .contains? "describe") (names .contains? "shared") (names .contains? "tagged")
+       (names .contains? "Named:title") (names .contains? "Named:rename")]
+    """, "[true true true true true]"
+
+  test "every listed send actually dispatches":
+    messagesCheck """
+      [item/.describe item/.shared (item .tagged "z") item/.Named:title]
+    """, "[\"base\" \"item\" \"z\" \"t\"]"
+
+  test "entries carry the existing signature format":
+    messagesCheck """
+      (let tagged (find "tagged"))
+      (let inherited (find "describe"))
+      (let rename (find "Named:rename"))
+      [tagged/kind tagged/protocol tagged/signature/result
+       tagged/signature/positional/1/name tagged/signature/positional/1/type
+       inherited/signature/doc
+       rename/kind rename/name rename/signature/named/0/name rename/signature/result]
+    """, "[direct nil Str \"suffix\" Str \"Describe the receiver.\" protocol \"rename\" \"revision\" Str]"
+
+  test "listing runs no message body or default":
+    messagesCheck """
+      (var calls 0)
+      (fn next [] (set calls (+ calls 1)) "v")
+      (type Counting ^props {^id Str}
+        (message effect [x : Str = (next)] : Str (next) x))
+      (let c (Counting ^id "c"))
+      ($runtime/messages c)
+      calls
+    """, "0"
+
+  test "a protocol that is not visible here is not listed":
+    let source = """
+      (type Hidden ^props {^id Str})
+      (fn hide []
+        (protocol Secret (message reveal [] : Str))
+        (impl Secret for Hidden (message reveal [] : Str "s")))
+      (let h (Hidden ^id "h"))
+      ($map ($runtime/messages h) (fn [entry] entry/send))
+    """
+    check run(compileSource(source), newGlobalScope()).print().find("reveal") < 0
+
+  test "a value with no messages gives an empty result, and the result is frozen":
+    messagesCheck """
+      (type Plain ^props {^id Str})
+      (let listed ($runtime/messages (Plain ^id "p")))
+      [listed/.size (try (listed .push 1) "pushed" catch Any "refused")]
+    """, "[0 \"refused\"]"
