@@ -11925,7 +11925,6 @@ suite "spec — Tier 0 CSS data DSL (transpile proposal P0)":
       ".card {\n" &
       "  display: -webkit-box;\n" &
       "  display: flex;\n" &
-      "  border-radius: 14px;\n" &
       "  --brand: #fff;\n" &
       "}\n" &
       ".card:hover {\n" &
@@ -11942,7 +11941,6 @@ suite "spec — Tier 0 CSS data DSL (transpile proposal P0)":
       "  (rule \".card\" " &
       "    (decl display \"-webkit-box\") " &
       "    (decl display \"flex\") " &
-      "    (decl border_radius \"14px\") " &
       "    (decl \"--brand\" \"#fff\") " &
       "    (rule \"&:hover\" (decl background \"#000\"))) " &
       "  (media \"(max-width: 600px)\" " &

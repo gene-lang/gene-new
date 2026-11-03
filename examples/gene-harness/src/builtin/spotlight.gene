@@ -8,7 +8,7 @@
 .spotlight-launcher { white-space: nowrap; }
 .spotlight-backdrop { position: fixed; inset: 0; z-index: 1000; background: #0005; padding: min(14vh, 110px) 16px 24px; overflow: auto; }
 .spotlight-backdrop[hidden] { display: none; }
-.spotlight-dialog { width: min(640px, 100%); margin: 0 auto; background: var(--surface, #fff); color: var(--ink, #18202b); border: 1px solid var(--line, #ccd2db); border-radius: 14px; box-shadow: 0 16px 60px #0005; overflow: hidden; }
+.spotlight-dialog { width: min(640px, 100%); margin: 0 auto; background: var(--surface, #fff); color: var(--ink, #18202b); border: 1px solid var(--line, #ccd2db); box-shadow: 0 16px 60px #0005; overflow: hidden; }
 .spotlight-heading { display: flex; align-items: center; padding: 12px 14px; gap: 10px; border-bottom: 1px solid var(--line, #ccd2db); }
 .spotlight-heading input { flex: 1; min-width: 0; border: 0; background: transparent; color: inherit; font: inherit; font-size: 21px; padding: 7px 2px; outline-offset: 4px; }
 .spotlight-crumb:empty { display: none; }

@@ -4,6 +4,7 @@ import std/[algorithm, os, osproc, sets, strutils, tables]
 import ./[build_host, digest, gir, gir_codec, package, printer, process_lock, reader,
           system_dependency, types, vm]
 import ./native_api
+import ./c_sdk
 
 when defined(posix) and not defined(emscripten) and not defined(geneWasm):
   import std/posix
@@ -995,6 +996,10 @@ proc selectedResources(engine: BuildEngine, request: BuildRequest,
         raiseBuild(becRequestInvalid,
           "native output is selected more than once", [pkg.name, alias])
       seen.incl relative
+      # SDK choice must precede compiler/system-library fingerprints. The Nim
+      # build's environment selection does not survive into a later gene run.
+      if engine.environment.toolchains.cCompilerEvidenceOverride.len == 0:
+        ensureCompatibleMacSdk(engine.environment.toolchains.cCompilerPath)
       let identity = engine.environment.toolchains.compilerIdentity
       var evidence: seq[string]
       for systemAlias in recipe.systemAliases:

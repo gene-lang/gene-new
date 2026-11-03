@@ -27,6 +27,7 @@ include test_vm
 include test_modules
 include test_package
 include test_system_dependency
+include test_c_sdk
 include test_build
 include test_execution_provenance
 include test_web_modules

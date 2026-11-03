@@ -215,7 +215,6 @@
         (decl padding "0 20px"))
       (rule ".card"
         (decl padding "20px 24px")
-        (decl border_radius "14px")
         (decl margin "16px 0")
         (decl background "#fff"))
       (rule "ul" (decl list_style "none") (decl padding 0))

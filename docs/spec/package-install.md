@@ -45,6 +45,10 @@ authenticated source snapshot. `^include_dirs`, `^system`, `^cflags`, and
 argv directly, without a shell. The build captures the C compiler binary
 digest plus SDK environment inputs as environment-dependent evidence and
 resolves declared system dependencies before the derivation is selected.
+On macOS, when `SDKROOT` is unset and the toolchain's default SDK fails a small
+link probe, planning selects the newest installed compatible sibling SDK before
+capturing this evidence. Explicit `SDKROOT` values are preserved. This selection
+also applies to native builds initiated by `gene run`.
 An environment-dependent C derivation also includes a build-host identity:
 the hostname and a random per-user build-installation token outside artifact
 stores (`~/.gene/native-build-host-id`). Copying or sharing an artifact store

@@ -62,7 +62,9 @@ bin/gene run --package-root examples/gene-harness harness web --workspace /path/
 The packaged host selects its declared native resources. ChatGPT ID-token
 verification uses `genex/crypto`, which needs OpenSSL 3 and `pkg-config` when
 building. The launcher builds the normal host through the same application
-target. If package or native setup fails before Harness main is entered, the
+target. On macOS, native builds select a compatible installed SDK when the
+toolchain default cannot link; an explicit `SDKROOT` takes precedence.
+If package or native setup fails before Harness main is entered, the
 launcher retries the normal captured-source host, so CLI and HTTP providers
 remain usable. ChatGPT sign-in still requires a working verifier and reports
 that failure on its own connection. Offline and recovery starts use the
