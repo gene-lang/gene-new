@@ -180,8 +180,15 @@ These defaults are supplied by the host. Their absence from the seven-key
 | `scrim` | Overlay behind the mobile sidebar | `rgb(0 0 0 / .2)` | `rgb(0 0 0 / .5)` |
 | `select-chevron` | Select arrow, a data-URI SVG drawn in `muted` | per palette | per palette |
 | `radius-button` | The only radius | `5px` | `5px` |
+| `control-height` | Common action-button and dropdown height | `2.5rem` (40px) | same |
 | `font-sans` | UI and prose text | `-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif` | same |
 | `font-mono` | Code, commands, REPL input | `ui-monospace, SFMono-Regular, Menlo, Consolas, monospace` | same |
+
+Single-line dropdowns use `--control-height` with border-box sizing, 5px left
+padding and no vertical padding. Action buttons and the file chooser button use the same
+minimum height and a 1.25 line height, so different local font sizes do not
+make toolbar, filter and composer controls uneven. Buttons with multiple lines
+can grow to fit their content; explicit select list boxes retain their list height.
 
 - **`user`** is deliberately its own token rather than an alias of `soft`.
   Then the message block can be tuned without changing hover, code and badge
