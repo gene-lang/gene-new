@@ -315,7 +315,7 @@
   (let selected (select_provider ^selection selection runtime (effective_config runtime)))
   (let completion (call_model runtime
     {^session session ^round (?? request/fence/round "") ^turn (?? request/fence/turn 0)
-     ^purpose $"decision/${request/use}" ^config {} ^max_tokens (?? call/max_tokens 1024)
+     ^purpose $"decision/${request/use}" ^config {} ^max_tokens (?? call/max_tokens 4096)
      ^messages call/messages}
     ^selected selected ^!retry_timeouts))
   {^text completion/text ^call_id completion/call_id ^provider completion/provider

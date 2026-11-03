@@ -90,7 +90,7 @@
   {^answers parsed})
 
 (fn model_decide [resource, request]
-  (let completion (request/model {^messages (model_messages request/state request/questions) ^max_tokens 1024}))
+  (let completion (request/model {^messages (model_messages request/state request/questions) ^max_tokens 4096}))
   (let result (model_reply completion/text))
   (result .put "model" completion/model)
   (result .put "call_id" completion/call_id)

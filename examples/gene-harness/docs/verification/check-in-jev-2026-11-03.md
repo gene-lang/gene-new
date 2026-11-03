@@ -50,6 +50,29 @@ the estimate put at 24k tokens was rejected as too large. The estimate is now
 
 The check-in timeout is 10 s, so latency is not a constraint at these sizes.
 
+## The `model` engine on the same cases
+
+`--engine model` runs the real decision service on a fresh workspace, so its
+call is selected, recorded under `decision/round/check_in` and validated like a
+check-in's. Run with OpenRouter and `deepseek/deepseek-v4-flash-0731` at effort
+low (synthetic cases only):
+
+```text
+OPENROUTER_API_KEY=… ../../bin/gene run --snapshot probes/check_in_bench.gene --synthetic --engine model --workspace NEW_DIR --provider openrouter --model deepseek/deepseek-v4-flash-0731 --effort low
+```
+
+| Run | Valid answers | Matched the expected action | Not valid |
+| --- | --- | --- | --- |
+| Output cap 1,024 tokens | 4 of 7 | 4 of 4 | 2 truncated; 1 rejected by central validation (`operator_now` was not a map) |
+| Output cap 4,096 tokens (now the default) | 6 of 7 | 6 of 6 | 1 truncated |
+
+Latency was seconds, against about 0.1–0.3 s for Jev: p50 6.3 s, p95 16.5 s and
+max 26 s with the larger cap. The model also scored `same_failure_distinct_edits`
+as `uncertain` (0.6) rather than `repeating`. A non-valid answer is a status
+(`error`), never a pause or an accepted "continue", so the round falls back to
+the turn limit. Single runs of one model differ between runs, so this shows the
+path works, not which engine is better.
+
 ## Through the loop
 
 `probes/check_in_live.gene NEW_DIR` runs a scripted, model-free round in a fresh

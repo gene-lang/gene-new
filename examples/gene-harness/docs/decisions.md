@@ -387,6 +387,13 @@ to end with a scripted engine:
   correct, false and missed pauses. Split labeled sets by task and session,
   never by overlapping windows.
 
+- `--engine model --workspace NEW_DIR --provider NAME [--model ID] [--effort L]`
+  runs the synthetic cases through the `model` engine and the real decision
+  service, to compare it with `jev` on the same cases (run it with `--snapshot`).
+- `--replay EVENTS_DIR --label-template FILE` writes one entry per boundary with
+  the request and the last five results, for a person to set each `^label` to
+  `"pause"` or `"continue"`. Pass the filled file as `--labels`.
+
 `probes/check_in_live.gene NEW_DIR` runs one scripted, model-free round in a
 fresh workspace with whatever engine the host selects, and prints its check-in
 records.
