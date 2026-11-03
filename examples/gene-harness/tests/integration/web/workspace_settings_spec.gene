@@ -219,7 +219,8 @@
         (with_workspace ($path/join root "one") (fn [service, shown]
           (let manager (manager_of service))
           (let shared manager/.settings)
-          ($assert (== (keys_of shared) ["turn_limit" "trigger_turn_limit" "trigger_timeout_ms" "question_timeout_ms"])
+          ($assert (== (keys_of shared) ["turn_limit" "check_ins" "check_in_turns" "trigger_turn_limit"
+                                          "trigger_timeout_ms" "question_timeout_ms"])
             ($to_str (keys_of shared)))
           (let saved (manager .set_setting "turn_limit" 9 ^expected shared/digest))
           ($assert (== saved/source "shared"))
