@@ -1556,6 +1556,44 @@ suite "gir — disassembly":
     ck "(fn f [m] (var n 0) (for kv in m (set n (+ n 1))) n) (f {^a 1 ^b 2})", "2"
     ck "(fn f [s] (var n 0) (for c in s (set n (+ n 1))) n) (f \"abc\")", "3"
 
+  test "a repeat index belongs to its loop, as a for variable does":
+    # Two loops in a function or at the top level may reuse an index name.
+    ck "(fn f [] (var xs []) (repeat i in 2 (xs .push i)) " &
+       "  (repeat i in 3 (xs .push i)) xs) (f)", "[0 1 0 1 2]"
+    ck "(var xs []) (repeat i in 2 (xs .push i)) (repeat i in 1 (xs .push i)) xs",
+       "[0 1 0]"
+    # The index shadows an outer binding for the loop only, `let` included.
+    ck "(fn f [] (let i 99) (var t 0) (repeat i in 3 (set t (+ t i))) [i t]) (f)",
+       "[99 3]"
+    ck "(fn f [] (var i 5) (repeat i in 2 (set i (+ i 10))) i) (f)", "5"
+    expect GeneError:
+      discard compileSource("(fn f [] (let i 1) (repeat i in 2 nil) (set i 3)) (f)")
+    # The name ends with the loop; bindings the body makes keep the
+    # enclosing scope, as in `while`.
+    ck "(fn f [] (repeat i in 2 nil) (try i catch Any \"unbound\")) (f)",
+       "\"unbound\""
+    ck "(fn f [] (repeat i in 2 (var last i)) last) (f)", "1"
+    # Closures keep the index's slot; nested loops nest.
+    ck "(fn f [] (var fs []) (repeat i in 3 (fs .push (fn [] i))) " &
+       "  [((fs .get 0)) ((fs .get 2))]) (f)", "[3 3]"
+    ck "(fn f [] (var t []) (repeat i in 2 (repeat j in 2 (t .push [i j]))) t) (f)",
+       "[[0 0] [0 1] [1 0] [1 1]]"
+    # A body that reaches names at run time keeps the index visible by name.
+    ck "(fn f [] (var t []) (repeat i in 2 (try (t .push i) catch Any nil)) " &
+       "  (repeat i in 1 (try (t .push i) catch Any nil)) t) (f)", "[0 1 0]"
+    ck "(fn f [] (var t []) (macro m [] `i) (repeat i in 2 (t .push (m))) t) (f)",
+       "[0 1]"
+    ck "(fn f [] (var t []) (repeat i in 2 (t .push (eval (quote i) ^in (env)))) t) (f)",
+       "[0 1]"
+    expect GeneError:
+      discard compileSource("(fn f [] (let i 9) (repeat i in 2 (try i catch Any nil))) (f)")
+    # Name-resolved code (the REPL, eval) rebinds the index.
+    let scope = newGlobalScope()
+    discard run(compileSource("(var xs []) (repeat i in 2 (xs .push i))",
+      useLocalSlots = false), scope)
+    check run(compileSource("(repeat i in 1 (xs .push i)) xs",
+      useLocalSlots = false), scope).print() == "[0 1 0]"
+
   test "an inlined for starts each item without the body's bindings":
     # A frame loop runs each item in a fresh scope, so a binding the body made
     # for one item is undefined for the next, after a continue, and on the

@@ -70,6 +70,8 @@ type
     inGenerator: bool
     loopDepth: int
     repeatBindings: bool # shared-scope chunks reentered by an enclosing loop
+    # `repeat` indexes this scope keeps visible by name (see compileRepeat).
+    repeatIndexNames: HashSet[string]
     gensym: ref int   # shared with child compilers; see nextGensym
     useLocalSlots: bool
     localSlots: Table[string, int]
@@ -8319,24 +8321,141 @@ proc compileLoop(c: var Compiler, node: Value) =
   dec c.loopDepth
   c.emitConst NIL
 
-proc compileRepeat(c: var Compiler, node: Value) =
-  let body = node.body
-  if node.props.len != 0:
-    raise newException(GeneError, "repeat does not accept props")
-  if body.len == 0:
-    raise newException(GeneError, "repeat requires a count")
+proc isMacroResult(node: Value): bool
 
-  if body.len >= 2 and body[1].isSymbol("in"):
-    if body.len < 3:
-      raise newException(GeneError, "repeat requires an index, in, and a count")
-    if body[0].kind != vkSymbol:
-      raise newException(GeneError, "repeat index must be a local name")
+# Forms that can reach a loop body's bindings by name at run time. A try or
+# ensure body shares its enclosing scope by name; eval, env, fexprs and macro
+# expansion resolve names; declarations publish them. Typed bindings resolve
+# their annotations by name.
+const repeatNameForms = ["try", "eval", "env", "caller_env", "macro", "import",
+  "import_impl", "type", "protocol", "enum", "alias", "ns", "impl", "match",
+  "scope", "supervisor"]
+
+proc repeatBodyNeedsNames(c: Compiler, value: Value): bool =
+  ## Whether a `repeat` body must keep its bindings visible by name, so the
+  ## loop runs as a block scope of its own rather than in private slots.
+  case value.kind
+  of vkNode:
+    if value.isMacroResult: return true
+    if value.head.kind == vkSymbol:
+      let head = value.head.symVal
+      if head == "quote": return false
+      if head in repeatNameForms or head.endsWith("!") or
+          (c.hasMacros and c.macros.hasKey(head)):
+        return true
+      if head in ["let", "var", "const"] and
+          (value.body.len != 2 or value.body[0].kind != vkSymbol):
+        return true
+    if c.importedMacroForHead(value.head).found: return true
+    let path = value.head.pathSymbolSegments
+    if path.len > 1 and builtinNamespaceMacros(
+        path.toOpenArray(0, path.high - 1)).hasKey(path[^1]):
+      return true
+    if c.repeatBodyNeedsNames(value.head): return true
+    for _, item in value.props:
+      if c.repeatBodyNeedsNames(item): return true
+    for item in value.body:
+      if c.repeatBodyNeedsNames(item): return true
+  of vkList:
+    for item in value.listItems:
+      if c.repeatBodyNeedsNames(item): return true
+  of vkMap:
+    for _, item in value.mapEntries:
+      if c.repeatBodyNeedsNames(item): return true
+  of vkHashMap, vkSet, vkPipeline:
+    return true
+  else: discard
+  false
+
+type LoopIndexBinding = object
+  ## What a `repeat` index's name meant before the loop, restored after it.
+  name: string
+  hadSlot, hadFast, hadType, hadSig, hadConst, hadAot: bool
+  hadOrdinary, hadGenerator, hadAlias, wasLet, wasOwnValue, wasDeclared: bool
+  slot, fast: int
+  localType, constValue, aot: Value
+  sig: KnownFunctionSig
+  ordinary, generator: bool
+  alias: StaticAliasInterface
+  macros: seq[(string, MacroDef)]
+
+proc beginLoopIndex(c: var Compiler, name: string): LoopIndexBinding =
+  ## Binds the index in a fresh block-private slot, as an inlined `for`
+  ## binds its variable. Closures made in the body keep the slot.
+  result = LoopIndexBinding(name: name, hadSlot: c.localSlots.hasKey(name),
+    hadFast: c.fastLocalLoads.hasKey(name), hadType: c.localTypes.hasKey(name),
+    hadSig: c.localFunctionSigs.hasKey(name), hadConst: c.constValues.hasKey(name),
+    hadAot: c.aotConstants.hasKey(name), hadOrdinary: c.ordinaryFnNames.hasKey(name),
+    hadGenerator: c.generatorFnNames.hasKey(name),
+    hadAlias: c.aliasInterfaces.hasKey(name), wasLet: name in c.letNames,
+    wasOwnValue: name in c.ownValueNames, wasDeclared: name in c.declaredNames)
+  if result.hadSlot: result.slot = c.localSlots[name]
+  if result.hadFast: result.fast = c.fastLocalLoads[name]
+  if result.hadType: result.localType = c.localTypes[name]
+  if result.hadSig: result.sig = c.localFunctionSigs[name]
+  if result.hadConst: result.constValue = c.constValues[name]
+  if result.hadAot: result.aot = c.aotConstants[name]
+  if result.hadOrdinary: result.ordinary = c.ordinaryFnNames[name]
+  if result.hadGenerator: result.generator = c.generatorFnNames[name]
+  if result.hadAlias: result.alias = c.aliasInterfaces[name]
+  if c.hasMacros:
+    for path, definition in c.macros:
+      if path == name or path.startsWith(name & "/"):
+        result.macros.add (path, definition)
+  let prefix = c.inlineBlockPrefix
+  let bindings = c.inlineBlockBindings
+  c.inlineBlockPrefix = BlockBindingPrefix & $c.nextGensym() & ":"
+  c.inlineBlockBindings = initHashSet[string]()
+  c.emitDefineBinding(name)
+  c.inlineBlockPrefix = prefix
+  c.inlineBlockBindings = bindings
+
+proc endLoopIndex(c: var Compiler, saved: LoopIndexBinding) =
+  let name = saved.name
+  if saved.hadSlot: c.localSlots[name] = saved.slot
+  else: c.localSlots.del(name)
+  if saved.hadFast: c.fastLocalLoads[name] = saved.fast
+  else: c.fastLocalLoads.del(name)
+  if saved.hadType: c.localTypes[name] = saved.localType
+  else: c.localTypes.del(name)
+  if saved.hadSig: c.localFunctionSigs[name] = saved.sig
+  else: c.localFunctionSigs.del(name)
+  if saved.hadConst: c.constValues[name] = saved.constValue
+  else: c.constValues.del(name)
+  if saved.hadAot: c.aotConstants[name] = saved.aot
+  else: c.aotConstants.del(name)
+  if saved.hadOrdinary: c.ordinaryFnNames[name] = saved.ordinary
+  else: c.ordinaryFnNames.del(name)
+  if saved.hadGenerator: c.generatorFnNames[name] = saved.generator
+  else: c.generatorFnNames.del(name)
+  if saved.hadAlias: c.aliasInterfaces[name] = saved.alias
+  for (path, definition) in saved.macros: c.macros[path] = definition
+  if saved.wasLet: c.letNames.incl name
+  else: c.letNames.excl name
+  if not saved.wasOwnValue: c.ownValueNames.excl name
+  if not saved.wasDeclared: c.declaredNames.excl name
+
+proc emitRebindableBinding(c: var Compiler, name: string) =
+  ## A loop's own binding that a later loop in the same name-resolved scope,
+  ## such as a following REPL input, defines again.
+  let shared = c.repeatBindings
+  c.repeatBindings = true
+  c.emitDefineBinding(name)
+  c.repeatBindings = shared
+
+proc compileRepeatLoop(c: var Compiler, body: openArray[Value], indexed: bool,
+                       privateIndex = false) =
+  if indexed:
     let indexName = body[0].symVal
     let limitName = c.nextTemp("repeat_limit")
     compileExpr(c, body[2])
-    c.emitDefineBinding(limitName)
+    c.emitRebindableBinding(limitName)
     c.emitConst newInt(0)
-    c.emitDefineBinding(indexName)
+    var saved: LoopIndexBinding
+    if privateIndex:
+      saved = c.beginLoopIndex(indexName)
+    else:
+      c.emitRebindableBinding(indexName)
 
     let enter = c.emit(opLoopEnter)
     let start = c.chunk.instructions.len
@@ -8359,12 +8478,13 @@ proc compileRepeat(c: var Compiler, node: Value) =
     c.chunk.instructions[enter].intArg = c.chunk.instructions.len
     discard c.emit(opLoopLeave)
     dec c.loopDepth
+    if privateIndex: c.endLoopIndex(saved)
     c.emitConst NIL
     return
 
   let remainingName = c.nextTemp("repeat_remaining")
   compileExpr(c, body[0])
-  c.emitDefineBinding(remainingName)
+  c.emitRebindableBinding(remainingName)
 
   let enter = c.emit(opLoopEnter)
   let start = c.chunk.instructions.len
@@ -8389,7 +8509,43 @@ proc compileRepeat(c: var Compiler, node: Value) =
   dec c.loopDepth
   c.emitConst NIL
 
-proc isMacroResult(node: Value): bool
+proc compileRepeat(c: var Compiler, node: Value) =
+  ## A `repeat` index belongs to its loop, as a `for` variable does: it
+  ## shadows an outer name for the loop only, and a later loop may reuse it.
+  ## It lives in a block-private slot. A body that reaches names at run time
+  ## (a try body, eval, env, fexprs, macro expansion), and name-resolved code
+  ## such as the REPL, keeps the index visible by name instead: a later loop
+  ## rebinds it, and replacing another binding of that name is an error.
+  ## Bindings the body makes keep the enclosing scope, as in `while`.
+  let body = node.body
+  if node.props.len != 0:
+    raise newException(GeneError, "repeat does not accept props")
+  if body.len == 0:
+    raise newException(GeneError, "repeat requires a count")
+  let indexed = body.len >= 2 and body[1].isSymbol("in")
+  if not indexed:
+    compileRepeatLoop(c, body, false)
+    return
+  if body.len < 3:
+    raise newException(GeneError, "repeat requires an index, in, and a count")
+  if body[0].kind != vkSymbol:
+    raise newException(GeneError, "repeat index must be a local name")
+  var needsNames = not c.useLocalSlots
+  for i in 3 ..< body.len:
+    if needsNames: break
+    needsNames = c.repeatBodyNeedsNames(body[i])
+  if not needsNames:
+    compileRepeatLoop(c, body, true, privateIndex = true)
+    return
+  let name = body[0].symVal
+  if name notin c.repeatIndexNames and
+      (c.localSlots.hasKey(name) or name in c.letNames):
+    raise newException(GeneError,
+      "repeat index " & name & " would replace a binding of the same name, because " &
+      "this loop's body reaches names at run time; rename the index")
+  c.repeatIndexNames.incl name
+  compileRepeatLoop(c, body, true)
+
 
 const inlineForOperators = ["+", "-", "*", "/", "//", "<", "<=", ">", ">=",
                             "==", "!="]

@@ -1046,6 +1046,21 @@
       }
     },
     {
+      "id": "control.repeat_index_scope",
+      "source": "(fn exercise [] : Int (let i : Int 100) (var total : Int 0) (repeat i in 3 (set total (+ total i))) (repeat i in 2 (set total (+ total (* i 10)))) (+ total i)) (exercise)",
+      "web_source": "(mod control_repeat_index_scope ^profile web) (fn exercise [] : Int (let i : Int 100) (var total : Int 0) (repeat i in 3 (set total (+ total i))) (repeat i in 2 (set total (+ total (* i 10)))) (+ total i)) (fn run [] : Int (exercise))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "int",
+        "value": "113"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
       "id": "control.state_and_loops",
       "source": "(fn exercise [] : Int (var total : Int 0) (repeat i in 5 (if (== i 3) (continue)) (set total (+ total i))) (while (< total 20) (set total (+ total 1)) (if (== total 12) (break))) total) (exercise)",
       "web_source": "(mod control_state_and_loops ^profile web) (fn exercise [] : Int (var total : Int 0) (repeat i in 5 (if (== i 3) (continue)) (set total (+ total i))) (while (< total 20) (set total (+ total 1)) (if (== total 12) (break))) total) (fn run [] : Int (exercise))",

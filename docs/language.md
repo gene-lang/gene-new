@@ -312,6 +312,22 @@ Loops support `break` and `continue`:
 total # 10
 ```
 
+`(repeat n body...)` runs its body `n` times, and `(repeat i in n body...)`
+also binds an index from 0 to `n - 1`. A `for` variable and a `repeat` index
+belong to their loop: each shadows an outer binding of the same name for the
+loop only, and a later loop may reuse the name. A `repeat` body whose code
+reaches names at run time (a `try` body, `eval`, `env`, an fexpr or a macro)
+keeps its index visible by name, so there the index may not replace another
+binding of the same name.
+
+```gene runnable
+(let i "outer")
+(var squares [])
+(repeat i in 3 (squares .push (* i i)))
+(repeat i in 2 (squares .push i))
+[i squares] # ["outer" [0 1 4 0 1]]
+```
+
 ### Patterns
 
 Patterns bind parts of a value. `_` ignores a position; a final rest binding
