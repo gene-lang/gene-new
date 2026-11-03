@@ -1,0 +1,61 @@
+# Constructed round check-in cases (docs/decisions.md, Evaluation). Each case is
+# a task request and its turns, oldest first, as {^response ^result ^evidence}.
+# ^expect names the label a person gave the window: pause or continue, and the
+# class. ^rule says whether the unchanged-loop rule must decide it.
+(mod check_in_cases)
+
+(fn step [response : Str, result : Str, ^error error = nil, ^files files = [], ^output output = ""]
+  {^response response ^result result
+   ^evidence {^kind (if ($absent? error) "continue" "error") ^files files ^error error
+              ^digest ($crypto/sha256 ($serde/write_data [result error files output]))}})
+
+(fn parser_turn [number : Int, file : Str]
+  (step ($to_str "# Extend the quoted-key reader, part " number ".\n(patch \"" file "\")\n(append_prompt \"tests\" (run_specs \"tests/parser_spec.gene\"))")
+    ($to_str "Patched " file ". Output: " (+ 10 number) " passed, 0 failed") ^files [file]
+    ^output ($to_str (+ 10 number) " passed")))
+
+(fn check_in_cases []
+  [{^name "clean_progress" ^expect {^action "continue" ^verdict "advancing"} ^rule false
+    ^request "Make quoted keys round-trip in the printer and the parser."
+    ^turns [(parser_turn 1 "src/parser.gene") (parser_turn 2 "src/lexer.gene")
+            (parser_turn 3 "src/printer.gene") (parser_turn 4 "tests/printer_spec.gene")]}
+   {^name "verifying" ^expect {^action "continue" ^verdict "verifying"} ^rule false
+    ^request "Make quoted keys round-trip in the printer and the parser."
+    ^turns [(parser_turn 1 "src/parser.gene") (parser_turn 2 "src/printer.gene")
+            (step "# The feature is in place. Run the whole suite before reporting.\n(append_prompt \"suite\" (run_specs \"tests\"))"
+              "Output: 412 passed, 0 failed" ^output "412 passed")
+            (step "# Check the round trip by hand on the examples from the request.\n(append_prompt \"manual\" (round_trip \"{^\\\"a b\\\" 1}\"))"
+              "Output: {^\"a b\" 1}" ^output "{^\"a b\" 1}")]}
+   {^name "repeating_attempts" ^expect {^action "pause" ^verdict "repeating"} ^rule false
+    ^request "Fix the failing test_quoted_keys spec."
+    ^turns [(step "# Maybe the escape is wrong. Change it back to a single backslash.\n(patch \"src/lexer.gene\")" "Patched src/lexer.gene. Error: test_quoted_keys failed: expected \"a b\", got \"a\"" ^error "test_quoted_keys failed: expected \"a b\", got \"a\"" ^files ["src/lexer.gene"])
+            (step "# Try a double backslash instead.\n(patch \"src/lexer.gene\")" "Patched src/lexer.gene. Error: test_quoted_keys failed: expected \"a b\", got \"a\"" ^error "test_quoted_keys failed: expected \"a b\", got \"a\"" ^files ["src/lexer.gene"])
+            (step "# Revert to the single backslash, it was probably right.\n(patch \"src/lexer.gene\")" "Patched src/lexer.gene. Error: test_quoted_keys failed: expected \"a b\", got \"a\"" ^error "test_quoted_keys failed: expected \"a b\", got \"a\"" ^files ["src/lexer.gene"])
+            (step "# Double backslash again, with a comment.\n(patch \"src/lexer.gene\")" "Patched src/lexer.gene. Error: test_quoted_keys failed: expected \"a b\", got \"a\"" ^error "test_quoted_keys failed: expected \"a b\", got \"a\"" ^files ["src/lexer.gene"])]}
+   {^name "blocked_on_credential" ^expect {^action "pause" ^verdict "blocked"} ^rule false
+    ^request "Deploy the report service to the staging cluster."
+    ^turns [(parser_turn 1 "deploy/staging.gene")
+            (step "# Push the image.\n(append_prompt \"push\" (shell \"deploy push staging\"))" "Error: registry login required: no credentials for registry.internal" ^error "registry login required: no credentials for registry.internal")
+            (step "# Look for credentials in the environment.\n(append_prompt \"env\" (shell \"env | grep REGISTRY\"))" "Output: (no output)" ^output "")
+            (step "# There is no registry token here. The operator must provide REGISTRY_TOKEN or log in; I cannot continue the deploy without it.\n(Outcome ^prompt \"Wait for the registry credential.\")" "No output.")]}
+   {^name "drifting" ^expect {^action "pause" ^verdict "drifting"} ^rule false
+    ^request "Fix the off-by-one error in the pagination of the orders page."
+    ^turns [(step "# Find the pagination code.\n(append_prompt \"grep\" (shell \"grep -rn page_size src\"))" "Output: src/orders.gene:42 (let page_size 20)" ^output "src/orders.gene:42")
+            (step "# While here, the logging framework is outdated. Replace it with a structured logger across the project.\n(patch \"src/log.gene\")" "Patched src/log.gene." ^files ["src/log.gene"])
+            (step "# Convert every module to the new logger.\n(patch \"src/users.gene\" \"src/billing.gene\")" "Patched src/users.gene, src/billing.gene." ^files ["src/users.gene" "src/billing.gene"])
+            (step "# Add log rotation and a config section for log levels.\n(patch \"src/config.gene\")" "Patched src/config.gene." ^files ["src/config.gene"])]}
+   {^name "polling_job" ^expect {^action "continue" ^verdict "advancing"} ^rule false
+    ^request "Run the migration job and report when it finishes."
+    ^turns [(step "(append_prompt \"job\" (job_status \"migrate\"))" "Output: migrate running, 40% done" ^output "40%")
+            (step "(append_prompt \"job\" (job_status \"migrate\"))" "Output: migrate running, 70% done" ^output "70%")
+            (step "(append_prompt \"job\" (job_status \"migrate\"))" "Output: migrate running, 90% done" ^output "90%")]}
+   {^name "same_failure_distinct_edits" ^expect {^action "continue" ^verdict "advancing"} ^rule false
+    ^request "Fix the failing test_quoted_keys spec."
+    ^turns [(step "# The reader drops the quote. Fix the reader.\n(patch \"src/reader.gene\")" "Patched src/reader.gene. Error: test_quoted_keys failed" ^error "test_quoted_keys failed" ^files ["src/reader.gene"])
+            (step "# The printer also needs to quote keys with spaces.\n(patch \"src/printer.gene\")" "Patched src/printer.gene. Error: test_quoted_keys failed" ^error "test_quoted_keys failed" ^files ["src/printer.gene"])
+            (step "# The test helper compares with the wrong normalizer; fix it.\n(patch \"tests/helpers.gene\")" "Patched tests/helpers.gene. Error: test_quoted_keys failed" ^error "test_quoted_keys failed" ^files ["tests/helpers.gene"])]}
+   {^name "unchanged_failure_loop" ^expect {^action "pause" ^verdict "repeating"} ^rule true
+    ^request "Fix the failing test_quoted_keys spec."
+    ^turns [(step "(append_prompt \"tests\" (run_specs \"tests/parser_spec.gene\"))" "Error: test_quoted_keys failed" ^error "test_quoted_keys failed")
+            (step "(append_prompt \"tests\" (run_specs \"tests/parser_spec.gene\"))" "Error: test_quoted_keys failed" ^error "test_quoted_keys failed")
+            (step "(append_prompt \"tests\" (run_specs \"tests/parser_spec.gene\"))" "Error: test_quoted_keys failed" ^error "test_quoted_keys failed")]}])

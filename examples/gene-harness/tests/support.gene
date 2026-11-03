@@ -57,13 +57,14 @@
   runtime/services/values/controller)
 
 (fn test_service [^workspace workspace : Str = "", ^provider provider, ^without_plugins without_plugins = [],
-  ^channel_options channel_options = nil]
+  ^channel_options channel_options = nil, ^plugins extra = []]
   (let cell ($cell provider))
   (let base (baseline_profile))
   (let plugins [])
   (for plugin in base/plugins
     (if_not (without_plugins .contains? plugin/id) (plugins .push plugin)))
   (plugins .push (callback_plugin cell))
+  (for plugin in extra (plugins .push plugin))
   (let profile (Profile ^name "test" ^plugins plugins ^limits base/limits
     ^requires base/requires ^provider "test"))
   (let service (open_session_service ^workspace workspace ^profile profile ^channel_options channel_options))
@@ -124,7 +125,7 @@
      ^GENE_HARNESS_PROVIDER nil ^GENE_HARNESS_MODEL nil ^GENE_HARNESS_THINKING_EFFORT nil
      ^OPENROUTER_MODEL nil
      ^ANTHROPIC_API_KEY nil ^ANTHROPIC_AUTH_TOKEN nil ^CLAUDE_CODE_OAUTH_TOKEN nil
-     ^OPENROUTER_API_KEY nil ^OPENROUTER_KEY nil
+     ^OPENROUTER_API_KEY nil ^OPENROUTER_KEY nil ^TYPESAFE_API_KEY nil
      ^PATH bin})
   (let progress (== ($os/get_env "GENE_HARNESS_TEST_PROGRESS" "") "1"))
   (let started ($os/monotonic_ms))

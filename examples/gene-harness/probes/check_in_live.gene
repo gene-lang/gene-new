@@ -1,0 +1,47 @@
+# Opt-in live check-in: a scripted, model-free round in a fresh workspace with
+# whatever decision engine the host selects (jev when TYPESAFE_API_KEY is set).
+# The scripted turns are synthetic; no recorded transcripts are sent.
+#   gene run probes/check_in_live.gene NEW_DIR
+(import [test_controller] ^from "../tests/support")
+(import [open_runtime close_runtime] ^from "../src/runtime/bootstrap")
+(import [baseline_profile] ^from "../src/profiles/baseline")
+(import [submit_round round_receipt close_round_controller] ^from "../src/runtime/round_controller")
+(import [core_state] ^from "../src/storage/state")
+
+(fn main [argv] : Int
+  (let args [])
+  (for arg in argv (args .push ($to_str arg)))
+  (if (< args/.size 1)
+    (then ($println "Usage: gene run probes/check_in_live.gene NEW_DIR") (return 2)))
+  (let root args/0)
+  (if ($fs/exists? root) (then ($println "NEW_DIR must not exist.") (return 2)))
+  ($fs/make_dir root)
+  (let runtime (open_runtime root "default" (baseline_profile)))
+  (let calls ($cell 0))
+  (let controller (test_controller runtime (fn [call]
+    (let n (calls .swap (+ calls/.get 1)))
+    (if (< n 6)
+      ($to_str "# Add parser case " n " and run its spec.\n(append_prompt \"spec\" \"case " n ": 1 passed\") (Outcome ^prompt \"Next case.\")")
+      ($to_str "# Try escaping the quote another way (attempt " n ").\n(append_prompt \"spec\" \"test_quoted_keys failed: expected a b, got a\") (Outcome ^prompt \"Try again.\")")))))
+  (try
+    (let round (submit_round controller "default" "live" 1 "Make quoted keys round-trip in the parser."))
+    ($println $"mode ${round/continuation_mode}")
+    (let due (+ ($os/monotonic_ms) 120000))
+    (loop
+      (let current (round_receipt controller "default" round/id))
+      (if (|| (!= current/state "running") (>= ($os/monotonic_ms) due)) (break))
+      ($sleep 50))
+    (let done (round_receipt controller "default" round/id))
+    ($println ($to_str "state " done/state " reason " (?? done/reason "") " turns " done/turn_count))
+    (if ($present? done/notice) ($println done/notice))
+    (var boundary 10)
+    (while (<= boundary done/turn_count)
+      (let record (core_state runtime/events "session" "default" $"check_in/${round/id}/${boundary}"))
+      (if ($present? record)
+        ($println ($to_str "check at " boundary ": " record/status " " record/engine " " (?? record/model "")
+          " " record/latency_ms " ms -> " record/action "/" record/verdict
+          " p=" ($json/stringify (?? record/answers/progress/probabilities {}))
+          " now=" (?? record/answers/operator_now/value "") " stored=" ($present? record/input_ref))))
+      (set boundary (+ boundary 1)))
+    0
+  ensure (close_round_controller controller) (close_runtime runtime)))

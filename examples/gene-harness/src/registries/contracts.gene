@@ -113,6 +113,19 @@
     (fail (HarnessError ^message "Synthesizers declare streaming Bool.")))
   candidate)
 
+# A quick-decision engine (docs/decisions.md). available, open, decide and
+# limits receive the engine's settings; open returns the resource that decide
+# and close receive.
+(fn validate_decision_engine_row [candidate]
+  (if (|| (!= ($head candidate/name) Str) ($absent? (#"^[a-z][a-z0-9_]{0,39}$" .match candidate/name))
+          (!= ($head candidate/doc) Str) (== ($str/trim candidate/doc) "")
+          (&& ($present? candidate/auto) (!= ($head candidate/auto) Int)))
+    (fail (HarnessError ^message "A decision engine needs a lowercase name, a doc and an optional integer auto rank.")))
+  (for field in ["available" "open" "close" "decide" "limits"]
+    (if_not ($runtime/callable? (candidate .get field))
+      (fail (HarnessError ^message $"A decision engine needs callable ${field}."))))
+  candidate)
+
 (fn validate_image_generator_row [candidate]
   (validate_provider_row ^image true candidate)
   (for field in ["available" "capabilities"]

@@ -19,6 +19,24 @@
   (fail (ServiceError ^code "invalid_request"
     ^message $"Effort must be one of ${levels}, or a level the model advertises.")))
 
+# {^engine "jev" ^model "jev-1.14.0" ^uses {^"round/check_in" {^engine "model" ^preset "fast"}}}
+(fn check_decisions [value]
+  (if ($absent? value) (return value))
+  (fn require_entry [entry, label : Str]
+    (if (!= ($head entry) Map)
+      (fail (ServiceError ^code "invalid_request" ^message $"${label} must be a map.")))
+    (if (&& ($present? entry/engine) (|| (!= ($head entry/engine) Str) (== ($str/trim entry/engine) "")))
+      (fail (ServiceError ^code "invalid_request" ^message $"${label} names its ^engine as a non-empty string."))))
+  (require_entry value "The decisions setting")
+  (if_not ($absent? value/uses)
+    (if (!= ($head value/uses) Map)
+      (fail (ServiceError ^code "invalid_request" ^message "Decision ^uses is a map from use id to an engine entry.")))
+    (for [use entry] in value/uses
+      (require_entry entry $"The ${use} entry")
+      (if ($absent? entry/engine)
+        (fail (ServiceError ^code "invalid_request" ^message $"The ${use} entry needs an ^engine.")))))
+  value)
+
 (fn core_setting_definitions []
   (let group "General")
   (let shared ["workspace" "shared"])
@@ -37,7 +55,14 @@
     ^default {^timeout_ms 600000 ^max_memory_mb 1024} ^applies "next_round"
     ^doc "Runaway limit for each response evaluation and command. Plugin admission limits take it at startup."}
    {^key "turn_limit" ^label "Turn limit" ^group group ^type "int" ^default 24 ^min 1 ^applies "next_round" ^scopes shared
-    ^doc "Turns per operator round. Reaching it pauses for continuation."}
+    ^doc "Turns per operator round. Reaching it pauses for continuation. With check-ins, it counts from the last answered check-in."}
+   {^key "check_ins" ^label "Progress check-ins" ^group group ^type "bool" ^default true ^applies "next_round" ^scopes shared
+    ^doc "When a decision engine is available, ask it every check_in_turns turns whether an operator round should continue or pause for you."}
+   {^key "check_in_turns" ^label "Check-in interval" ^group group ^type "int" ^default 10 ^min 1 ^applies "next_round" ^scopes shared
+    ^doc "Task turns between progress check-ins."}
+   {^key "decisions" ^label "Decision engines" ^group "Decisions" ^type "map" ^default nil ^applies "next_round"
+    ^validate check_decisions
+    ^doc "Quick-decision engine selection: ^engine with its settings, such as ^model or ^preset, and per-use entries under ^uses."}
    {^key "trigger_turn_limit" ^label "Trigger turn limit" ^group "Triggers" ^type "int" ^default 12 ^min 1 ^applies "next_round" ^scopes shared
     ^doc "Turns per trigger round."}
    {^key "trigger_timeout_ms" ^label "Trigger timeout" ^group "Triggers" ^type "int" ^default 300000 ^min 1 ^applies "next_round" ^scopes shared

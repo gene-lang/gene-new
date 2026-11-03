@@ -41,8 +41,27 @@
 (import [CommandResult] ^from "../plugin_api")
 (import [note_delegation_round queue_delegation_answer
   close_delegation_owner prepare_delegations_stop] ^from "./delegations")
+(import [decision_available?] ^from "./decision_service")
 
 (type RoundController ^props {^runtime Any ^rounds Any ^closed Any})
+
+(const continuation_modes ["manual" "automatic" "checked"])
+
+# Check-ins need the setting and an available engine for round/check_in.
+(fn check_ins_on? [controller] : Bool
+  (let config (effective_config controller/runtime))
+  (&& (!= config/check_ins false)
+      (decision_available? controller/runtime/services/values/decisions "round/check_in")))
+
+(fn initial_continuation_mode [controller, receipt] : Str
+  (if (&& (operator_round? receipt) (check_ins_on? controller)) "checked" "manual"))
+
+# Continue keeps a checked task checked; Continue until finished is automatic.
+(fn continuation_choice [controller, source, mode : Str] : Str
+  (if (== mode "automatic") (return "automatic"))
+  (if (|| (== mode "checked") (== source/continuation_mode "checked"))
+    (return (if (check_ins_on? controller) "checked" "manual")))
+  "manual")
 
 (fn install_loop_commands [controller] ^^private
   (let runtime controller/runtime)
@@ -242,6 +261,11 @@
             (receipts .push superseded))
           (receipts .push old)))))
   (if_not found (receipts .push (copy_data receipt)))
+  # A superseded pause may still own running children; the delegation host
+  # settles them. Never take a delegation gate here.
+  (if_not ($absent? controller/runtime/services/values/delegations)
+    (for superseded in superseded_receipts
+      (note_delegation_round controller/runtime/services/values/delegations session superseded)))
   (let retained (if (> receipts/.size receipt_limit)
     ($drop receipts (- receipts/.size receipt_limit)) receipts))
   (let all {^next_seq ($math/max state/next_seq (+ receipt/submission_seq 1)) ^receipts retained})
@@ -502,7 +526,7 @@
   (if_not ($absent? delegation) (receipt .put "delegation" (copy_data delegation)))
   (receipt .put "task_root" (?? continuation/task_root receipt/id))
   (receipt .put "task_turns_base" (?? continuation/task_turns 0))
-  (receipt .put "continuation_mode" (?? continuation/mode "manual"))
+  (receipt .put "continuation_mode" (?? continuation/mode (initial_continuation_mode controller receipt)))
   (if_not ($absent? continuation)
     (receipt .put "continuation" (copy_data continuation))
     (receipt .put "continued_from" continuation/source_round))
@@ -563,7 +587,7 @@
 
 (fn continue_round [controller : RoundController, session : Str, source : Str, mode : Str,
   ^operator operator : Bool = true, ^model_settings model_settings = nil]
-  (if_not (["manual" "automatic"] .contains? mode)
+  (if_not (continuation_modes .contains? mode)
     (fail (RoundError ^code "invalid_request" ^message "Unknown continuation mode.")))
   (with_body_use controller/runtime (fn []
     (with_session_gate controller/runtime/sessions $"round/${session}"
@@ -575,8 +599,8 @@
   (let loaded (load_session controller/runtime/sessions session))
   (let receipt loaded/round/.get)
   (if (|| (!= receipt/id source) (!= receipt/state "paused")
-          (!= receipt/continuation_mode "manual"))
-    (fail (RoundError ^code "stale" ^message "The named manual pause is no longer current.")))
+          (! (["manual" "checked"] .contains? (?? receipt/continuation_mode "manual"))))
+    (fail (RoundError ^code "stale" ^message "The named operator pause is no longer current.")))
   (if (&& (== receipt/continuation_stop "superseded") (== receipt/queue_replacement claim))
     (return receipt))
   (if (|| ($present? receipt/continuation_stop) ($present? receipt/continued_by))
@@ -612,7 +636,7 @@
   (let intent old/continuation_intent)
   (let sequence (?? intent/sequence state/next_seq))
   (if (!= sequence state/next_seq) (fail (RoundError ^code "stale" ^message "Continuation sequence was superseded.")))
-  (let chosen (?? intent/mode mode))
+  (let chosen (continuation_choice controller old (?? intent/mode mode)))
   (let descriptor (copy_data (?? old/continuation
     {^items_ref old/request_items_ref ^history (pending_request controller/runtime session)
      ^media (?? old/request_media []) ^request_sources (?? old/request_sources [])

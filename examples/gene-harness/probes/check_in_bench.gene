@@ -1,0 +1,209 @@
+# Opt-in round check-in bench (docs/decisions.md, Evaluation). Rules run
+# offline by default. --engine jev sends states to TypeSafe and needs
+# TYPESAFE_API_KEY; replaying recorded sessions to a cloud engine also needs
+# --allow-cloud, because those are real transcripts.
+#
+#   gene run probes/check_in_bench.gene --synthetic [--engine jev] [--pad TOKENS] [--reversed] [--rounds N]
+#   gene run probes/check_in_bench.gene --replay EVENTS_DIR [--engine jev --allow-cloud] [--labels FILE] [--out FILE]
+#
+# EVENTS_DIR is a stopped workspace's .gene-harness/events directory, or a copy.
+# Labels are a data file of {^session ^task_root ^boundary ^label "pause"|"continue"}.
+# Operator behavior after a boundary is reported as a tuning signal, not a label.
+(import [check_in_questions task_turns_from unchanged_failure_loop fit_turns fuse] ^from "../src/runtime/check_ins")
+(import [validate_answers estimated_tokens] ^from "../src/runtime/decision_service")
+(import [jev_row] ^from "../src/public/decision_engines")
+(import [open_event_store close_event_store events_for] ^from "../src/storage/state")
+(import [byte_prefix] ^from "../src/public/text")
+(import [check_in_cases] ^from "../tests/fixtures/check_in_cases")
+
+(const interval 10)
+(const window 30)
+
+(fn option [args, name : Str, fallback]
+  (var index 0)
+  (while (< index (- args/.size 1))
+    (if (== args/%index name) (return (args .get (+ index 1))))
+    (set index (+ index 1)))
+  fallback)
+
+(fn flag? [args, name : Str] : Bool (args .contains? name))
+
+(fn reversed_questions []
+  (let questions (check_in_questions))
+  (let criteria questions/progress/criteria)
+  (let reversed {})
+  (for name in ["drifting" "blocked" "repeating" "verifying" "advancing"] (reversed .put name (criteria .get name)))
+  (questions/progress .put "criteria" reversed)
+  questions)
+
+(fn open_engine [name : Str]
+  (if (== name "rules") (return nil))
+  (if (!= name "jev") (fail $"Unknown engine ${name}; use rules or jev."))
+  (let row (jev_row))
+  (let reason (row/available {}))
+  (if ($present? reason) (fail reason))
+  {^row row ^resource (row/open {})})
+
+(fn close_engine [engine]
+  (if ($present? engine) (engine/row/close engine/resource)))
+
+(fn judge [engine, request : Str, turns, questions]
+  (let rule (unchanged_failure_loop turns))
+  (if (|| ($present? rule) ($absent? engine))
+    (return {^rule rule ^verdict (fuse rule {^status "skipped"}) ^tokens 0 ^latency_ms 0}))
+  (let fitted (fit_turns request nil turns false questions (engine/row/limits {})))
+  (let tokens (estimated_tokens ($str/byte_size ($json/stringify {^state fitted/state ^questions questions}))))
+  (let started ($os/monotonic_ms))
+  (let raw (try (engine/row/decide engine/resource {^settings {} ^state fitted/state ^questions questions ^timeout_ms 10000})
+    catch Any {^status "error" ^reason ($to_str $err/message)}))
+  (let latency (- ($os/monotonic_ms) started))
+  (let result (if ($present? raw/status) raw
+    (do
+      (let checked (validate_answers questions raw/answers))
+      (if ($present? checked/error) {^status "error" ^reason checked/error}
+        {^status "ok" ^answers checked/value ^model raw/model ^input_tokens raw/usage/input_tokens}))))
+  {^rule nil ^verdict (fuse nil result) ^result result ^tokens tokens ^latency_ms latency ^trimmed fitted/trimmed})
+
+# Earlier progress turns in front of a case, up to roughly a real packed size.
+(fn padded [turns, target : Int]
+  (if (<= target 0) (return turns))
+  (let filler [])
+  (var number 1)
+  # Each filler turn takes an equal share of the target within the window.
+  (let share (/ (* target 12) (* 5 ($math/max 1 (- window turns/.size)))))
+  (let line_count ($math/max 4 (/ share 52)))
+  (loop
+    (let bytes ($str/byte_size ($json/stringify {^filler filler ^turns turns})))
+    (if (|| (>= (estimated_tokens bytes) target) (>= (+ filler/.size turns/.size) window)) (break))
+    (let lines [])
+    (repeat line in line_count (lines .push ($to_str "  (let value_" line " (compute_part " number " " line "))")))
+    (filler .push {^response ($to_str "# Implement part " number " of the change and run its specs.\n(fn part_" number " []\n"
+        ($str/join lines "\n") "\n  value_0)\n(append_prompt \"specs\" (run_specs \"tests/part_" number "_spec.gene\"))")
+      ^result ($to_str "Patched src/part_" number ".gene. Output: " (+ 20 number) " passed, 0 failed")})
+    (set number (+ number 1)))
+  [filler... turns...])
+
+(fn percentile [values, fraction]
+  (if values/.empty? (return 0))
+  (let sorted ($order/sort_by values (fn [value] value)))
+  (sorted .get ($math/min (- sorted/.size 1) (/ (* (- sorted/.size 1) fraction) 100))))
+
+(fn synthetic [args]
+  (let engine (open_engine (option args "--engine" "rules")))
+  (let questions (if (flag? args "--reversed") (reversed_questions) (check_in_questions)))
+  (let target ($parse/parse_int (option args "--pad" "0")))
+  (let rounds ($parse/parse_int (option args "--rounds" "1")))
+  (let latencies [])
+  (var agree 0)
+  (var total 0)
+  (try
+    (repeat round in rounds
+      (for case in (check_in_cases)
+        (let turns (padded case/turns target))
+        (let judged (judge engine case/request turns questions))
+        (if (> judged/latency_ms 0) (latencies .push judged/latency_ms))
+        (let action judged/verdict/action)
+        (let matched (|| ($present? judged/rule) ($absent? engine)
+          (== action case/expect/action)))
+        (set total (+ total 1))
+        (if (== action case/expect/action) (set agree (+ agree 1)))
+        ($println ($to_str case/name ": want " case/expect/action "/" case/expect/verdict
+          " got " action "/" judged/verdict/verdict
+          (if ($present? judged/rule) " (rule)" "")
+          (if ($present? judged/result) ($to_str " status=" judged/result/status
+            " model=" (?? judged/result/model "") " tokens~" judged/tokens
+            (if ($present? judged/result/input_tokens) ($to_str " reported=" judged/result/input_tokens) "")
+            " " judged/latency_ms " ms"
+            " p=" ($json/stringify (?? judged/result/answers/progress/probabilities {}))
+            " now=" (?? judged/result/answers/operator_now/value "")) "")
+          (if matched "" "  MISMATCH")))))
+  ensure (close_engine engine))
+  ($println ($to_str "agreement " agree "/" total
+    (if latencies/.empty? "" ($to_str "; latency p50 " (percentile latencies 50) " ms, p95 " (percentile latencies 95)
+      " ms, max " (percentile latencies 100) " ms over " latencies/.size " requests"))))
+  0)
+
+(fn task_roots [records]
+  (let roots [])
+  (for event in records
+    (if_yes (== event/type "turn/start")
+      (let root (?? event/payload/task_root event/payload/round))
+      (if_not (roots .contains? root) (roots .push root))))
+  roots)
+
+(fn task_request [records, root : Str] : Str
+  (for event in records
+    (if (&& (== event/type "turn/request") (== event/payload/round root) (== event/payload/initial true))
+      (return (byte_prefix (?? event/payload/settled event/payload/full "") 16384))))
+  "")
+
+# What the operator did within the next interval: a tuning signal only.
+(fn signal [turns, boundary : Int] : Str
+  (if (>= turns/.size (+ boundary interval)) (return "continued"))
+  (let last ($last turns))
+  (match (?? last/end_reason "")
+    (when "cancelled" "stopped")
+    (when "done" "finished")
+    (else "ended")))
+
+(fn replay [args]
+  (let directory (option args "--replay" ""))
+  (let engine_name (option args "--engine" "rules"))
+  (if (&& (!= engine_name "rules") (! (flag? args "--allow-cloud")))
+    (then
+      ($println "Replaying recorded sessions to a cloud engine sends real transcripts. Pass --allow-cloud once the owner has approved it.")
+      (return 2)))
+  (let labels_path (option args "--labels" nil))
+  (let labels (if ($absent? labels_path) [] ($serde/read_data ($fs/read_text labels_path))))
+  (let events (open_event_store directory))
+  (let engine (open_engine engine_name))
+  (let rows [])
+  (try
+    (let manifest events/last_manifest/.get)
+    (for [key descriptor] in (?? manifest/streams {})
+      (let name ($to_str key))
+      (if_not ($str/starts_with? name "session:") (continue))
+      (let session ($str/slice_bytes name 8 (- ($str/byte_size name) 8)))
+      (let records (events_for events "session" session))
+      (for root in (task_roots records)
+        (let turns (task_turns_from records root))
+        (let request (task_request records root))
+        (var boundary interval)
+        (while (<= boundary turns/.size)
+          (let slice ($take turns boundary))
+          (let recent (if (> slice/.size window) ($drop slice (- slice/.size window)) slice))
+          (let judged (judge engine request recent (check_in_questions)))
+          (var label nil)
+          (for item in labels
+            (if (&& (== item/session session) (== item/task_root root) (== item/boundary boundary)) (set label item/label)))
+          (rows .push {^session session ^task_root root ^boundary boundary ^action judged/verdict/action
+            ^verdict judged/verdict/verdict ^by (if ($present? judged/rule) "rule" (if ($absent? engine) "none" "engine"))
+            ^status (?? judged/result/status nil) ^latency_ms judged/latency_ms ^tokens judged/tokens
+            ^signal (signal turns boundary) ^label label})
+          (set boundary (+ boundary interval)))))
+  ensure (close_engine engine) (close_event_store events))
+  (for row in rows
+    ($println ($to_str row/session " " row/task_root " @" row/boundary ": " row/action "/" row/verdict
+      " by " row/by " next=" row/signal (if ($present? row/label) ($to_str " label=" row/label) ""))))
+  (for source in ["rule" "engine"]
+    (var true_pause 0) (var false_pause 0) (var missed 0)
+    (for row in rows
+      (if (|| ($absent? row/label) (&& (!= row/by source) (! (&& (== source "engine") (== row/by "none")))))
+        (continue))
+      (if (&& (== row/action "pause") (== row/label "pause")) (set true_pause (+ true_pause 1)))
+      (if (&& (== row/action "pause") (== row/label "continue")) (set false_pause (+ false_pause 1)))
+      (if (&& (== row/action "continue") (== row/label "pause")) (set missed (+ missed 1))))
+    (if (> (+ true_pause false_pause missed) 0)
+      ($println ($to_str source ": " true_pause " correct pauses, " false_pause " false pauses, " missed " missed pauses"))))
+  ($println ($to_str rows/.size " boundaries in " directory))
+  (let out (option args "--out" nil))
+  (if ($present? out) ($fs/write_text out ($serde/write_data rows)))
+  0)
+
+(fn main [argv] : Int
+  (let args [])
+  (for arg in argv (args .push ($to_str arg)))
+  (if (flag? args "--synthetic") (return (synthetic args)))
+  (if ($present? (option args "--replay" nil)) (return (replay args)))
+  ($println "Usage: --synthetic [--engine jev] [--pad TOKENS] [--reversed] [--rounds N], or --replay EVENTS_DIR [--engine jev --allow-cloud] [--labels FILE] [--out FILE]")
+  2)

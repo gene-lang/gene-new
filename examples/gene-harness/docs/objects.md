@@ -147,7 +147,7 @@ Each save writes one store against that store's digest; one invalid value or a s
 nothing. A definition's `applies` says whether a change takes effect at once, from the next round or
 after a restart, and restart settings report the `active` value and `pending_restart`. Only
 definitions with `^scopes ["workspace" "shared"]` take shared values: `turn_limit`,
-`trigger_turn_limit`, `trigger_timeout_ms` and `question_timeout_ms`. The shared model default stays in
+`check_ins`, `check_in_turns`, `trigger_turn_limit`, `trigger_timeout_ms` and `question_timeout_ms`. The shared model default stays in
 `models.gene` through `.set_default_model`, and conversation choices belong to `session`. A plugin adds
 a setting by contributing a row with `key`, `label`, `group`, `doc`, `type`, `default`, `applies` and
 optional `min`, `validate`, `choices` and `scopes`. Definitions are host-owned, so they stay

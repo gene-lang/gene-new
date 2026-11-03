@@ -1,0 +1,407 @@
+# Round check-ins end to end (docs/decisions.md), with a scripted engine row.
+(import $test [describe it])
+(import [isolated run_spec test_controller] ^from "../../support")
+(import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
+(import [baseline_profile] ^from "../../../src/profiles/baseline")
+(import [Plugin PluginHost] ^from "../../../src/plugin_api")
+(import [put_cordis_plugin] ^from "../../../src/kernel")
+(import [submit_round continue_round cancel_round round_receipt close_round_controller
+  replace_paused_round_locked] ^from "../../../src/runtime/round_controller")
+(import [require_record with_session_gate] ^from "../../../src/runtime/sessions")
+(import [delegation_blocks] ^from "../../../src/runtime/delegations")
+(import [events_for core_state] ^from "../../../src/storage/state")
+(import [read_body] ^from "../../../src/agents/history")
+(import [inbox_snapshot] ^from "../../../src/notifications/inbox")
+
+(fn wait_for [predicate, message : Str, ^timeout_ms timeout_ms : Int = 20000]
+  (let due (+ ($os/monotonic_ms) timeout_ms))
+  (while (! (predicate))
+    ($assert (< ($os/monotonic_ms) due) message)
+    ($sleep 10)))
+
+(fn configure [runtime, values]
+  (let path $"${runtime/state_root}/config.gene")
+  (let config (if ($fs/exists? path) ($serde/read_data ($fs/read_text path)) {}))
+  (for [key value] in values (config .put ($to_str key) value))
+  ($fs/write_text_atomic path ($serde/write_data config)))
+
+(fn verdict [name : Str, ^now now = 0.1]
+  (let probabilities {^advancing 0.0 ^verifying 0.0 ^repeating 0.0 ^blocked 0.0 ^drifting 0.0})
+  (probabilities .put name 1.0)
+  {^model "fixture-1" ^answers {^progress {^choice name ^probabilities probabilities} ^operator_now {^noul now}}})
+
+(fn fixture_engine [script]
+  (Plugin ^id "decision_fixture" ^provides [["decision_engines" "fixture"]]
+    ^activate (fn [host]
+      (host .PluginHost:contribute "decision_engines"
+        {^name "fixture" ^doc "Scripted test engine." ^auto 1
+         ^available (fn [settings] nil)
+         ^open (fn [settings] {})
+         ^close (fn [resource] nil)
+         ^limits (fn [settings] {^request_tokens 64000 ^question_tokens 32000})
+         ^decide (fn [resource request] (script request))}))))
+
+(fn install_engine [runtime, script]
+  (put_cordis_plugin ^^replace runtime/h (fixture_engine script) {^^host ^limits runtime/profile/limits}))
+
+(fn receipt [controller, id : Str]
+  (round_receipt controller "default" id))
+
+(fn settled? [controller, id : Str] : Bool
+  (let current (receipt controller id))
+  (&& ($present? current) (["done" "paused" "failed" "cancelled"] .contains? current/state)
+      ($absent? (/task (controller/rounds/.get .get "default")))))
+
+(fn session_events [runtime, type : Str]
+  ($filter (events_for runtime/events "session" "default") (fn [event] (== event/type type))))
+
+(fn check_record [runtime, round : Str, boundary : Int]
+  (core_state runtime/events "session" "default" $"check_in/${round}/${boundary}"))
+
+(fn parent_turn? [runtime, call] : Bool
+  (&& (== call/purpose "turn") (!= (/kind (require_record runtime/sessions call/session)) "child")))
+
+(describe "Checked rounds"
+  (it "continue past the turn limit while check-ins answer, with delegation still usable" []
+    (isolated this_mod/.path "continue past the turn limit while check-ins answer, with delegation still usable"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (configure runtime {^turn_limit 4 ^check_in_turns 2})
+        (let asked [])
+        (install_engine runtime (fn [request]
+          (asked .push request/fence/boundary)
+          ($assert (== request/use "round/check_in"))
+          ($assert ($absent? request/state/turns/0/turn) "the check-in state carried turn numbers")
+          (verdict "advancing")))
+        (let parents ($cell 0))
+        (let controller (test_controller runtime (fn [call]
+          (if (== (/kind (require_record runtime/sessions call/session)) "child")
+            (return "(Outcome ^^done ^reply \"LATE_CHILD_RESULT\")"))
+          (let n (parents .swap (+ parents/.get 1)))
+          (if (== n 0)
+            ($assert ($str/contains? ($to_str call/messages) "periodic progress check-ins")
+              "the budget advisory kept its countdown in checked mode"))
+          (match n
+            (when 5 "(delegate \"late\" ^title \"Late\" ^brief \"Report back.\") (Outcome ^wait \"all\")")
+            (when 6
+              ($assert ($str/contains? ($to_str call/messages) "LATE_CHILD_RESULT"))
+              "(Outcome ^^done ^reply \"Collected.\")")
+            (else "(append_prompt \"step\" \"step done\") (Outcome ^prompt \"Keep going.\")")))))
+        (try
+          (let round (submit_round controller "default" "long" 1 "Do a long task."))
+          ($assert (== round/continuation_mode "checked"))
+          (wait_for (fn [] (settled? controller round/id)) "The checked round did not finish.")
+          (let done (receipt controller round/id))
+          ($assert (== done/state "done") $"state ${done/state}: ${done/message}")
+          ($assert (> done/turn_count 4) "the round stopped at the configured limit")
+          ($assert (== asked [2 4]) $"asked at ${asked}")
+          ($assert (== done/allowance_base 4))
+          ($assert (== done/allowance_source "check_in"))
+          (let child (/0 (/records (delegation_blocks runtime/services/values/delegations "default"))))
+          ($assert (== child/state "done"))
+          ($assert child/seen)
+          (let record (check_record runtime round/id 2))
+          ($assert (== record/verdict "continue"))
+          ($assert (== record/engine "fixture"))
+          ($assert (== record/versions/questions "check_in/questions-1"))
+          ($assert (== record/counters/allowance_base 2))
+          ($assert ($present? record/input_ref) "the judged input was not stored")
+          (let stored ($json/parse (read_body runtime record/input_ref)))
+          ($assert (== ($crypto/sha256 (read_body runtime record/input_ref)) record/input_digest))
+          ($assert (== stored/state/request "Do a long task."))
+          ($assert (== stored/state/turns/0/result "Output: step done"))
+          (let ends (session_events runtime "turn/end"))
+          ($assert (== (/payload/result_line ($first ends)) "Output: step done"))
+          ($assert (>= ($size (session_events runtime "decision")) 2) "decision traces were not recorded")
+          ($assert ($absent? (/payload/state ($first (session_events runtime "decision")))))
+        ensure (close_round_controller controller) (close_runtime runtime)))))
+
+  (it "pause early while a child runs, and the continuation adopts the child" []
+    (isolated this_mod/.path "pause early while a child runs, and the continuation adopts the child"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (configure runtime {^turn_limit 6 ^check_in_turns 2})
+        (let checks ($cell 0))
+        (install_engine runtime (fn [request]
+          (checks .set (+ checks/.get 1))
+          (verdict "blocked")))
+        (let released ($cell false))
+        (let parents ($cell 0))
+        (let controller (test_controller runtime (fn [call]
+          (if_yes (== (/kind (require_record runtime/sessions call/session)) "child")
+            (while (! released/.get) ($sleep 10))
+            (return "(Outcome ^^done ^reply \"ADOPTED_CHILD_RESULT\")"))
+          (let n (parents .swap (+ parents/.get 1)))
+          (match n
+            (when 0 "(delegate \"slow\" ^title \"Slow\" ^brief \"Take your time.\") (Outcome ^prompt \"Work alongside the child.\")")
+            (when 1 "(Outcome ^prompt \"Keep going.\")")
+            (else
+              ($assert ($str/contains? ($to_str call/messages) "ADOPTED_CHILD_RESULT")
+                "the continuation did not receive the paused round's child result")
+              "(Outcome ^^done ^reply \"Collected after Continue.\")")))))
+        (try
+          (let round (submit_round controller "default" "early" 1 "Coordinate a slow child."))
+          (wait_for (fn [] (settled? controller round/id)) "The round did not pause.")
+          (let paused (receipt controller round/id))
+          ($assert (== paused/state "paused") $"state ${paused/state}: ${paused/message}")
+          ($assert (== paused/reason "check_in"))
+          ($assert (== paused/check_in/verdict "blocked"))
+          ($assert (== paused/turn_count 2))
+          ($assert paused/children_running)
+          ($assert ($str/contains? paused/notice "still running") paused/notice)
+          ($assert (== parents/.get 2) "a model call ran after the pause verdict")
+          ($assert (/attention (require_record runtime/sessions "default")))
+          ($sleep 200)
+          (let held (/0 (/records (delegation_blocks runtime/services/values/delegations "default"))))
+          ($assert (== held/state "running") $"the paused round's child became ${held/state}")
+          (released .set true)
+          (wait_for (fn [] (== (/state (/0 (/records (delegation_blocks runtime/services/values/delegations "default")))) "done"))
+            "The child did not finish while its parent was paused.")
+          (let next (continue_round controller "default" round/id "manual"))
+          ($assert (== next/continuation_mode "checked") "Continue left checked mode")
+          (wait_for (fn [] (settled? controller next/id)) "The continuation did not finish.")
+          (let finished (receipt controller next/id))
+          ($assert (== finished/state "done") $"state ${finished/state}: ${finished/message}")
+          (let child (/0 (/records (delegation_blocks runtime/services/values/delegations "default"))))
+          ($assert child/seen)
+          ($assert (== child/round next/id) "the continuation did not adopt the child")
+          ($assert (== checks/.get 1))
+        ensure (close_round_controller controller) (close_runtime runtime)))))
+
+  (it "pause at the turn limit during an engine outage, then continue with a fresh allowance" []
+    (isolated this_mod/.path "pause at the turn limit during an engine outage, then continue with a fresh allowance"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (configure runtime {^turn_limit 3 ^check_in_turns 1})
+        (let outage ($cell true))
+        (let asked [])
+        (install_engine runtime (fn [request]
+          (asked .push request/fence/boundary)
+          (if outage/.get {^status "unavailable" ^reason "Fixture outage."} (verdict "advancing"))))
+        (let parents ($cell 0))
+        (let controller (test_controller runtime (fn [call]
+          (let n (parents .swap (+ parents/.get 1)))
+          (if (== n 4) "(Outcome ^^done ^reply \"Finished after the outage.\")"
+            "(Outcome ^prompt \"Keep going.\")"))))
+        (try
+          (let round (submit_round controller "default" "outage" 1 "Work through an outage."))
+          (wait_for (fn [] (settled? controller round/id)) "The round did not pause.")
+          (let paused (receipt controller round/id))
+          ($assert (== paused/state "paused"))
+          ($assert (== paused/reason "turn_limit"))
+          ($assert (== paused/turn_count 3))
+          ($assert (== paused/check_in/status "unavailable"))
+          ($assert ($str/contains? paused/notice "no progress check-in answered") paused/notice)
+          ($assert (== asked [1 2 3]))
+          (let notices ($filter (/messages (inbox_snapshot runtime/services/values/inbox))
+            (fn [message] (== message/source "decisions"))))
+          ($assert (== notices/.size 1) "the outage notice was not posted exactly once")
+          (outage .set false)
+          (let next (continue_round controller "default" round/id "manual"))
+          ($assert (== next/continuation_mode "checked"))
+          (wait_for (fn [] (settled? controller next/id)) "The continuation did not finish.")
+          (let finished (receipt controller next/id))
+          ($assert (== finished/state "done") $"state ${finished/state}: ${finished/message}")
+          ($assert (== finished/task_turns_base 3))
+          ($assert (== finished/allowance_source "check_in"))
+          ($assert (== asked [1 2 3 4]))
+          ($assert (== (/status (check_record runtime next/id 4)) "ok"))
+        ensure (close_round_controller controller) (close_runtime runtime)))))
+
+  (it "keep committed check-ins and counters across a restart after an outage" []
+    (isolated this_mod/.path "keep committed check-ins and counters across a restart after an outage"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (configure runtime {^turn_limit 3 ^check_in_turns 2})
+        (let calls ($cell 0))
+        (install_engine runtime (fn [request]
+          (let n (calls .swap (+ calls/.get 1)))
+          (if (== n 0) (verdict "advancing") {^status "error" ^reason "Fixture outage."})))
+        (let controller (test_controller runtime (fn [call] "(Outcome ^prompt \"Keep going.\")")))
+        (let round (submit_round controller "default" "restart" 1 "Survive a restart."))
+        (wait_for (fn [] (settled? controller round/id)) "The round did not pause.")
+        (let paused (receipt controller round/id))
+        ($assert (== paused/state "paused"))
+        ($assert (== paused/reason "turn_limit"))
+        ($assert (== paused/turn_count 5) $"turn count ${paused/turn_count}")
+        (close_round_controller controller)
+        (close_runtime runtime)
+        (let restored (open_runtime workspace "default" (baseline_profile)))
+        (let asked [])
+        (install_engine restored (fn [request]
+          (asked .push request/fence/boundary)
+          (verdict "advancing")))
+        (let finishing ($cell 0))
+        (let resumed (test_controller restored (fn [call]
+          (let n (finishing .swap (+ finishing/.get 1)))
+          (if (== n 2) "(Outcome ^^done ^reply \"Done after restart.\")" "(Outcome ^prompt \"Keep going.\")"))))
+        (try
+          (let saved (receipt resumed round/id))
+          ($assert (== saved/allowance_base 2))
+          ($assert (== saved/next_check_turn 6))
+          (let first (check_record restored round/id 2))
+          ($assert (== first/status "ok"))
+          ($assert (== (/status (check_record restored round/id 4)) "error"))
+          (let next (continue_round resumed "default" round/id "manual"))
+          (wait_for (fn [] (settled? resumed next/id)) "The continuation did not finish.")
+          ($assert (== (/state (receipt resumed next/id)) "done"))
+          ($assert (== asked [7]) $"asked at ${asked}: a committed boundary was asked again")
+        ensure (close_round_controller resumed) (close_runtime restored)))))
+
+  (it "stop the engine's work when Stop arrives during a check" []
+    (isolated this_mod/.path "stop the engine's work when Stop arrives during a check"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (configure runtime {^turn_limit 6 ^check_in_turns 1})
+        (let started ($cell false))
+        (let stopped ($cell false))
+        (install_engine runtime (fn [request]
+          (started .set true)
+          (try ($sleep 8000) (verdict "advancing")
+          ensure (stopped .set true))))
+        (let controller (test_controller runtime (fn [call] "(Outcome ^prompt \"Keep going.\")")))
+        (try
+          (let round (submit_round controller "default" "stop" 1 "Stop me mid-check."))
+          (wait_for (fn [] started/.get) "The check did not start.")
+          (let before ($os/monotonic_ms))
+          (cancel_round controller "default" round/id)
+          (wait_for (fn [] (settled? controller round/id)) "The round did not stop.")
+          (wait_for (fn [] stopped/.get) "The engine's work kept running after Stop." ^timeout_ms 3000)
+          ($assert (< (- ($os/monotonic_ms) before) 5000))
+          ($assert (== (/state (receipt controller round/id)) "cancelled"))
+          ($assert ($absent? (check_record runtime round/id 1)) "a cancelled check committed its record")
+        ensure (close_round_controller controller) (close_runtime runtime)))))
+
+  (it "pause a genuinely unchanged failure loop without asking the engine" []
+    (isolated this_mod/.path "pause a genuinely unchanged failure loop without asking the engine"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (configure runtime {^turn_limit 10 ^check_in_turns 3})
+        (let checks ($cell 0))
+        (install_engine runtime (fn [request] (checks .set (+ checks/.get 1)) (verdict "advancing")))
+        (let controller (test_controller runtime (fn [call] "(fail \"test_quoted_keys still fails\")")))
+        (try
+          (let round (submit_round controller "default" "loop" 1 "Fix the quoted keys test."))
+          (wait_for (fn [] (settled? controller round/id)) "The loop was not paused.")
+          (let paused (receipt controller round/id))
+          ($assert (== paused/state "paused") $"state ${paused/state}")
+          ($assert (== paused/reason "check_in"))
+          ($assert (== paused/check_in/rule "unchanged_failure_loop"))
+          ($assert (== paused/check_in/verdict "repeating"))
+          ($assert (== paused/turn_count 3))
+          ($assert (== checks/.get 0) "the rule consulted the engine")
+          ($assert ($str/contains? paused/notice "the last three turns failed the same way") paused/notice)
+        ensure (close_round_controller controller) (close_runtime runtime))))))
+
+(describe "Check-in admission and controls"
+  (it "choose checked mode only with an available engine and the setting on" []
+    (isolated this_mod/.path "choose checked mode only with an available engine and the setting on"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (let controller (test_controller runtime (fn [call] "(Outcome ^^done ^reply \"ok\")")))
+        (try
+          (let plain (submit_round controller "default" "plain" 1 "No engine."))
+          ($assert (== plain/continuation_mode "manual"))
+          (wait_for (fn [] (settled? controller plain/id)) "plain round")
+          (install_engine runtime (fn [request] (verdict "advancing")))
+          (let checked (submit_round controller "default" "checked" 2 "With an engine."))
+          ($assert (== checked/continuation_mode "checked"))
+          (wait_for (fn [] (settled? controller checked/id)) "checked round")
+          (configure runtime {^check_ins false})
+          (let off (submit_round controller "default" "off" 3 "Setting off."))
+          ($assert (== off/continuation_mode "manual"))
+          (wait_for (fn [] (settled? controller off/id)) "off round")
+        ensure (close_round_controller controller) (close_runtime runtime)))))
+
+  (it "settle a paused round's running child when new input supersedes it" []
+    (isolated this_mod/.path "settle a paused round's running child when new input supersedes it"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (configure runtime {^check_in_turns 1})
+        (install_engine runtime (fn [request] (verdict "blocked")))
+        (let controller (test_controller runtime (fn [call]
+          (if_yes (== (/kind (require_record runtime/sessions call/session)) "child")
+            ($sleep 60000)
+            (return "(Outcome ^^done)"))
+          (if ($str/contains? ($to_str call/messages) "Something else.")
+            "(Outcome ^^done ^reply \"New task done.\")"
+            "(delegate \"slow\" ^title \"Slow\" ^brief \"Take your time.\") (Outcome ^prompt \"Keep going.\")"))))
+        (try
+          (let round (submit_round controller "default" "first" 1 "Start a slow child."))
+          (wait_for (fn [] (settled? controller round/id)) "The round did not pause.")
+          ($assert (== (/reason (receipt controller round/id)) "check_in"))
+          (wait_for (fn [] (== (/state (/0 (/records (delegation_blocks runtime/services/values/delegations "default")))) "running"))
+            "The child did not start.")
+          (let next (submit_round controller "default" "second" 2 "Something else."))
+          (wait_for (fn [] (settled? controller next/id)) "The new task did not finish.")
+          ($assert (== (/continuation_stop (receipt controller round/id)) "superseded"))
+          (wait_for (fn [] (== (/state (/0 (/records (delegation_blocks runtime/services/values/delegations "default")))) "cancelled"))
+            "The superseded pause kept its child running.")
+        ensure (close_round_controller controller) (close_runtime runtime)))))
+
+  (it "let new input replace a check-in pause" []
+    (isolated this_mod/.path "let new input replace a check-in pause"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (configure runtime {^check_in_turns 1})
+        (install_engine runtime (fn [request] (verdict "drifting")))
+        (let controller (test_controller runtime (fn [call] "(Outcome ^prompt \"Wander.\")")))
+        (try
+          (let round (submit_round controller "default" "drift" 1 "Stay on task."))
+          (wait_for (fn [] (settled? controller round/id)) "The drifting round did not pause.")
+          (let paused (receipt controller round/id))
+          ($assert (== paused/reason "check_in"))
+          ($assert (== paused/check_in/verdict "drifting"))
+          (let replaced (with_session_gate runtime/sessions "round/default"
+            (fn [] (replace_paused_round_locked controller "default" round/id "claim-1"))))
+          ($assert (== replaced/continuation_stop "superseded"))
+        ensure (close_round_controller controller) (close_runtime runtime))))))
+
+(describe "The decide function"
+  (it "answers response code through the selected engine and validates every answer" []
+    (isolated this_mod/.path "answers response code through the selected engine and validates every answer"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (configure runtime {^check_ins false})
+        (let replies ($cell [{^answers {^ok {^noul 0.7}}} {^answers {^ok {^noul 2}}}]))
+        (install_engine runtime (fn [request]
+          (let next ($first replies/.get))
+          (replies .set ($drop replies/.get 1))
+          next))
+        (let code "(let questions {^ok {^type \"noul\" ^instructions \"The state looks fine.\"}})
+(let first (decide ^use \"code/test\" ^state {^x 1} ^questions questions))
+(let second (decide ^use \"code/test\" ^state {^x 1} ^questions questions))
+(let raised (try (decide ^use \"code/test\" ^state {} ^questions {}) false catch Any true))
+(Outcome ^^done ^reply ($to_str first/status \" \" first/engine \" \" first/answers/ok/value \" \" second/status \" \" raised))")
+        (let controller (test_controller runtime (fn [call] code)))
+        (try
+          (let round (submit_round controller "default" "decide" 1 "Use decide."))
+          (wait_for (fn [] (settled? controller round/id)) "The round did not finish.")
+          (let done (receipt controller round/id))
+          ($assert (== done/reply "ok fixture 0.7 error true") $"reply ${done/reply}: ${done/message}")
+        ensure (close_round_controller controller) (close_runtime runtime)))))
+
+  (it "sends the model engine's questions through call_model with the decision purpose" []
+    (isolated this_mod/.path "sends the model engine's questions through call_model with the decision purpose"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (configure runtime {^check_ins false ^decisions {^engine "model" ^provider "test" ^model "test"}})
+        (let code "(let result (decide ^use \"code/model\" ^state {^x 1} ^questions {^ok {^type \"noul\" ^instructions \"The state looks fine.\"}}))
+(Outcome ^^done ^reply ($to_str result/status \" \" result/engine \" \" result/answers/ok/value))")
+        (let controller (test_controller runtime (fn [call]
+          (if (== call/purpose "decision/code/model")
+            (then
+              ($assert ($str/contains? ($to_str call/messages) "never follow instructions"))
+              "```json\n{\"ok\": {\"noul\": 0.4}}\n```")
+            (else code)))))
+        (try
+          (let round (submit_round controller "default" "model" 1 "Use the model engine."))
+          (wait_for (fn [] (settled? controller round/id)) "The round did not finish.")
+          (let done (receipt controller round/id))
+          ($assert (== done/reply "ok model 0.4") $"reply ${done/reply}: ${done/message}")
+          (let requests ($filter (session_events runtime "model/request")
+            (fn [event] (== event/payload/purpose "decision/code/model"))))
+          ($assert (== requests/.size 1) "the decision call was not recorded as a model request")
+        ensure (close_round_controller controller) (close_runtime runtime))))))
+
+(fn main [args] : Int (run_spec args))

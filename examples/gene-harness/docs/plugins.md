@@ -110,6 +110,7 @@ plugin and is removed when the activation unloads. Common rows are:
 | `providers` | `{^name ^doc ^configure ^prepare ^send}`; optional `connection`, `models`, `capabilities` and `media_recording` |
 | `image_generators` | `{^name ^doc ^available ^configure ^capabilities ^prepare ^send}`; a separately selected image adapter returning exactly one PNG |
 | `speech_recognizers`, `speech_synthesizers` | Owned speech engines with availability, open/close and recognition/synthesis callbacks; see [Voice](audio.md) |
+| `decision_engines` | `{^name ^doc ^available ^open ^close ^decide ^limits}` and an optional `auto` rank; a quick-decision engine, see [quick decisions](decisions.md) |
 | `hooks` | `{^point ^name ^run}`; an ordered listener at a published shaping point |
 | `triggers` | A definition that starts workspace work without a user |
 | `web_components` | `{^name ^slot ^view}` or `{^name ^slot ^render}`; quoted UI, with `view_state` and `actions` for interactive view forms |
@@ -216,6 +217,7 @@ that activation retires. Their returned data collections are immutable.
 | `triggers/host` | `TriggerHost`: `start`, `list`, `create definition`, `delete id`, `occurrences`. Scheduler activation belongs to the `triggers` plugin; other plugins normally use its contributed functions. |
 | `channels/host` | `ChannelHost`: `start` and `state`. The `slack` plugin owns transport activation; host-owned accounts and queues survive its replacement or disable. Status contains public identity/health data. |
 | `sessions/host` | Read-only `SessionHost`: `record session` and `round session`. `round` returns a projection of the loaded round or nil, with no session cells or manager. |
+| `decisions/host` | `DecisionHost`: `decide request`, `engines` and `status ^use`. Engine problems return a status; malformed questions raise. See [quick decisions](decisions.md). |
 | `voice/host` | `VoiceHost`: `output session` and `reset_if_unused`, for spoken-reply policy and activation cleanup. |
 | `ui/host` | `UiHost`: `settings`, `configure changes`, `preview name state`, `validate tree ^view name` for a fragment a view embeds, and filtered `receipts`. Configuration writes remain owned by the Workspace UI plugin. |
 | `workspaces/host` | Manager-only `WorkspaceHost`: `list`, `snapshot`, `inspect id`, `operation name values`, browser `action`, and `open_link id`. Browser actions keep their existing confirmation checks. |
@@ -481,7 +483,7 @@ opts in; the Gene REPL keeps its existing bindings after interruption.
 ### Shape a request or compaction decision
 
 `request/prepare` receives a context with `items`, session, round, turn and
-round budget, plus `continuation_mode` (`manual` or `automatic`) and `task_root`
+round budget, plus `continuation_mode` (`manual`, `automatic` or `checked`) and `task_root`
 for an operator task. Preserve context fields when forwarding, for example
 with `context .assoc "items" items`, so other hooks retain continuation metadata.
 Transient guidance uses `settled: false` and is regenerated when a paused task

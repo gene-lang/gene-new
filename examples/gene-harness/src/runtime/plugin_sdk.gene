@@ -17,7 +17,7 @@
    "src/public/model_page.gene"
    "src/public/image_contract.gene" "src/public/model_text.gene"
    "src/public/speech_engines.gene" "src/public/mac_recognition.gene"
-   "src/public/voice_frames.gene"])
+   "src/public/voice_frames.gene" "src/public/decision_engines.gene"])
 
 (fn sdk_import? [path : Str] : Bool
   ((sdk_modules) .contains? path))

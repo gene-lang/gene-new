@@ -140,7 +140,7 @@ Profile: """
     ($println
       $"Request: ${result/request_id}; sequence: ${(?? result/submission_seq result/request_seq)}"))
   (var displayed false)
-  (for key in ["reply" "display" "message"]
+  (for key in ["reply" "display" "message" "notice"]
     (let value (result .get key))
     (if_yes (&& ($present? value) (!= value ""))
       ($println value)

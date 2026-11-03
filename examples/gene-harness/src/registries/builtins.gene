@@ -3,13 +3,13 @@
 (mod builtin_registry_specs)
 (import [HarnessError] ^from "../errors")
 (import [validate_keyboard_action_row validate_setting_row validate_settings_group_row validate_setting_choices_row validate_seam_row validate_command_row validate_function_row validate_input_mode_row
-  validate_provider_row validate_speech_row validate_image_generator_row validate_hook_row
+  validate_provider_row validate_speech_row validate_decision_engine_row validate_image_generator_row validate_hook_row
   validate_hook_point_row validate_trigger_row validate_interaction_row
   validate_prompt_row validate_docs_row validate_event_type_row validate_event_type_owner
   cancel_subscription_row] ^from "./contracts")
 (import [validate_web_component] ^from "../ui/components")
 (import [validate_browser_client] ^from "../ui/browser_assets")
-(import [own_speech_engine] ^from "./resources")
+(import [own_engine_resources] ^from "./resources")
 (import [prepare_command_callback prepare_prompt_callback] ^from "../runtime/callback_context")
 
 (fn builtin_registry_specs [h, lookup]
@@ -34,12 +34,15 @@
      ^callbacks ["available" "configure" "capabilities" "prepare" "send"]}
     {^name "speech_recognizers" ^^unique
      ^schema (fn [candidate] (validate_speech_row candidate "recognizer"))
-     ^prepare (fn [owner, candidate] (own_speech_engine h owner candidate))
+     ^prepare (fn [owner, candidate] (own_engine_resources h owner candidate))
      ^callbacks ["available" "open" "transcribe" "stream"]}
     {^name "speech_synthesizers" ^^unique
      ^schema (fn [candidate] (validate_speech_row candidate "synthesizer"))
-     ^prepare (fn [owner, candidate] (own_speech_engine h owner candidate))
+     ^prepare (fn [owner, candidate] (own_engine_resources h owner candidate))
      ^callbacks ["available" "open" "synthesize"]}
+    {^name "decision_engines" ^^unique ^schema validate_decision_engine_row
+     ^prepare (fn [owner, candidate] (own_engine_resources h owner candidate))
+     ^callbacks ["available" "open" "decide" "limits"]}
     {^name "hook_points" ^^unique ^schema validate_hook_point_row}
     {^name "hooks" ^^unique ^^ordered ^callbacks ["run"]
      ^key (fn [candidate] $"${candidate/point}/${candidate/name}")

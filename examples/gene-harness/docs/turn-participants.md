@@ -138,7 +138,9 @@ All participant callbacks take `[context state value]`. `state` is a mutable
 map private to that participant for this turn, including partial acquisition.
 `context` is immutable data: `workspace_root`, `session_id`, `round_id`, `turn`,
 `round_turn`, `turn_limit`, `composition_revision`, `collection` and `boundary`.
-It contains no runtime, manager, snapshot object or round/turn cells.
+It contains no runtime, manager, snapshot object or round/turn cells. In a
+checked round `turn_limit` is the effective ceiling, which moves forward with
+each answered progress check-in ([quick decisions](decisions.md)).
 
 | Phase | Return contract |
 | --- | --- |

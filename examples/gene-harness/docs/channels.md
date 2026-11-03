@@ -300,7 +300,7 @@ Offer distinct controls for the paused task and for queued requests:
 | --- | --- |
 | Running | Queue follow-ups; Stop targets the active round and adds an operator hold. |
 | Waiting for answers | Temporarily block draining; answers use the existing question lifecycle and preserve any operator hold. |
-| Manually paused at the turn limit | Add an operator hold; offer Continue current work and Continue until finished. |
+| Paused at the turn limit or a progress check-in | Add an operator hold; offer Continue current work and Continue until finished. |
 | Stopped, failed or interrupted | Preserve the operator hold; recover uncertain work before explicitly resuming queued requests. |
 | Normally completed | Clear only the completed work's temporary blockers; coalesce and admit a batch only if no operator hold remains. |
 

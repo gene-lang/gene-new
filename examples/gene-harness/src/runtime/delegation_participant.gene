@@ -3,7 +3,7 @@
 (mod delegation_participant)
 (import [delegation_context delegation_request_items begin_delegation_request
   mark_delegation_results_seen commit_delegation_turn release_delegation_turn
-  has_owned_work?] ^from "./delegations")
+  has_owned_work? adopt_delegation_owner] ^from "./delegations")
 (import [new_turn_items] ^from "../agents/outcome")
 (import [ParticipantValidation] ^from "./participant_contract")
 
@@ -31,6 +31,8 @@
 (fn delegation_participant [service]
   {^name "core/delegation" ^priority 0 ^request_record {^^delegation}
    ^request_items (fn [context state value]
+     (if (&& context/carry ($present? context/round/continued_from))
+       (adopt_delegation_owner service context/session context/round/continued_from context/round/id))
      (let known (?? context/round/request_sources []))
      (let incoming (delegation_request_items service context/session context/round/id context/turn
        ^carry context/carry))

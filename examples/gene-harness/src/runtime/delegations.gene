@@ -385,9 +385,18 @@
     (if_not ($absent? service/checkpoint) (service/checkpoint "child_finished" parent/session)))
   (queue_terminal_result service parent admission))
 
+# A check-in pause keeps its children running until the operator decides:
+# Continue adopts them, Stop or new input settles them (docs/decisions.md).
+(fn live_pause? [service, parent, receipt] : Bool
+  (if (|| (!= receipt/state "paused") ($present? receipt/continuation_stop)) (return false))
+  (if ($absent? receipt/continued_by) (return true))
+  (let successor (service/callbacks/owner parent/session receipt/continued_by))
+  (|| ($absent? successor) (! (terminal_delegation? successor/state))))
+
 (fn owner_is_live? [service, parent, owner]
   (let receipt (service/callbacks/owner parent/session owner/id))
-  (&& ($present? receipt) (["running" "waiting"] .contains? receipt/state)))
+  (&& ($present? receipt)
+      (|| (["running" "waiting"] .contains? receipt/state) (live_pause? service parent receipt))))
 
 (fn close_owner_unlocked [service, parent, round : Str, reason : Str]
   (let owner (parent_round_record parent round))
@@ -555,7 +564,8 @@
   (for [round owner] in parent/rounds
     (if owner/closed (continue))
     (let receipt (service/callbacks/owner parent/session ($to_str round)))
-    (if_yes (|| ($absent? receipt) (terminal_delegation? receipt/state))
+    (if_yes (|| ($absent? receipt) (terminal_delegation? receipt/state)
+                (&& (== receipt/state "paused") (! (live_pause? service parent receipt))))
       (close_owner_unlocked service parent ($to_str round) "The parent round ended before collecting its children.")
       (continue))
     (if_yes (&& recovering (== receipt/state "waiting"))
@@ -658,6 +668,41 @@
       (service/parents .delete session))
     (dispatch_delegations service)))
   nil)
+
+# A continuation round takes over the children and unseen results of the round
+# it continues, which paused without collecting them. Runs on the successor's
+# first turn, before its request items are read.
+(fn adopt_delegation_owner [service, session : Str, from : Str, to : Str]
+  (if (|| (== from to) ($absent? (service/parents .get session))) (return nil))
+  (service/gate (fn []
+    (with_session_gate service/runtime/sessions $"round/${session}" (fn []
+      (let parent (service/parents .get session))
+      (let source (parent/rounds .get from))
+      (if (|| ($absent? source) (== source/closed true)) (return nil))
+      (let moved [])
+      (for admission in (parent_admissions parent ^round from)
+        (if_yes (|| (! (terminal_delegation? admission/state)) (!= admission/seen true))
+          (admission .put "owner_round" to)
+          (moved .push admission/id)))
+      (parent_round_record parent to)
+      (source .put "closed" true)
+      (source .put "adopted_by" to)
+      (source .put "wait" nil)
+      (checkpoint_delegations service parent ^changed moved)
+      (service/dirty .set true)))))
+  nil)
+
+(fn owned_delegation_counts [service, session : Str, round : Str]
+  (service/gate (fn []
+    (let parent (service/parents .get session))
+    (if ($absent? parent) (return {^running 0 ^unseen 0}))
+    (var running 0)
+    (var unseen 0)
+    (for admission in (parent_admissions parent ^round round)
+      (if (! (terminal_delegation? admission/state))
+        (then (set running (+ running 1)))
+        (elif (!= admission/seen true) (set unseen (+ unseen 1)))))
+    {^running running ^unseen unseen})))
 
 (fn begin_delegation_request [service, session : Str, round : Str, turn : Int, sources]
   (if sources/.empty? (return nil))

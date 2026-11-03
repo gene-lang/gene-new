@@ -248,6 +248,7 @@
   (if_yes (== status "paused")
     (if_not ($absent? run/continuation_stop) (return "Continuation stopped"))
     (if_not ($absent? run/continued_by) (return "Continued"))
+    (if (== (status_text run/reason) "check_in") (return "Paused · progress check-in"))
     (return "Paused · turn limit reached"))
   (if_yes (&& (== status "running") (== (status_text run/continuation_mode) "automatic"))
     (var turns : Int 0)

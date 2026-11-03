@@ -17,9 +17,14 @@ and measurement records are available in Git history.
 - [Voice](audio.md), [computer use](computer.md), [Slack channels](channels.md) and [sub-agents](sub-agent.md)
 - [Triggers](triggers.md), [discovery](discovery.md), [sidebar](sidebar.md), [themes](theming.md) and [Claude providers](claude.md)
 - [Providers, models and effort](models.md), [Spotlight](spotlight.md)
+- [Quick decisions and round check-ins](decisions.md)
 - [UI recipes](recipes/ui.md) and [notification recipes](recipes/notifications.md)
 - [Project board example](../examples/project_board/README.md)
 - [Tests and verification commands](../tests/README.md)
+
+## Verification records
+
+- [Jev on round check-in states](verification/check-in-jev-2026-11-03.md), 2026-11-03
 
 ## Proposals
 

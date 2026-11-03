@@ -21,8 +21,8 @@ The sidebar is built from what is contributed, not from a fixed list:
 
 Groups sort by `order`, then label, then name. The built-ins are General (10),
 Models (20), Providers (30, from the models plugin), Appearance (40), Keyboard
-Shortcuts (50) and Voice (60, from the voice plugin). Triggers, Images, Delegation and
-Computer follow from their settings. Moving a group or renaming its label never
+Shortcuts (50), Voice (60, from the voice plugin) and Decisions (70, from the
+decisions plugin). Triggers, Images, Delegation and Computer follow from their settings. Moving a group or renaming its label never
 changes a setting key.
 
 ```gene
@@ -99,8 +99,8 @@ from the options stays visible with its reason.
 | Shared model default and catalog configuration | `manager` model messages | `<manager root>/.gene-harness/models.gene` |
 | Theme, provider connections and other domains | Their own owners | Their own files |
 
-The shared keys are `turn_limit`, `trigger_turn_limit`, `trigger_timeout_ms` and
-`question_timeout_ms`. Everything else, including `keyboard_bindings`,
+The shared keys are `turn_limit`, `check_ins`, `check_in_turns`, `trigger_turn_limit`,
+`trigger_timeout_ms` and `question_timeout_ms`. Everything else, including `keyboard_bindings`,
 `trigger_concurrency` and `response_budget`, is workspace-only. `response_budget`
 also sets plugin admission limits when the host starts, so its new value reaches new
 evaluations at once and plugin budgets after a restart.

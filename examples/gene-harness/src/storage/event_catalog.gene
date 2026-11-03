@@ -72,6 +72,14 @@
       ($panic "turn/response reply_hint must be a string of at most 1 KiB")))
   payload)
 
+# One ignorable trace per quick decision (docs/decisions.md). It never carries
+# the state that was judged.
+(fn validate_decision_event [payload]
+  (require_event_fields payload ["type" "use" "status" "latency_ms"] "decision")
+  (if_not ($absent? payload/state)
+    ($panic "decision traces never record the judged state"))
+  payload)
+
 (fn validate_turn_start_event [payload]
   (require_event_fields payload ["type" "turn"] "turn_start")
   payload)
@@ -100,4 +108,5 @@
     #{^name "history/summary" ^version 1 ^!ignorable ^origin "core" ^owner "core" ^schema validate_core_state_event}
     #{^name "card/state" ^version 1 ^!ignorable ^origin "core" ^owner "core" ^schema validate_core_state_event}
     #{^name "card/action" ^version 1 ^!ignorable ^origin "core" ^owner "core" ^schema validate_core_state_event}
-    #{^name "delegation/state" ^version 1 ^!ignorable ^origin "core" ^owner "core" ^schema validate_core_state_event}])
+    #{^name "delegation/state" ^version 1 ^!ignorable ^origin "core" ^owner "core" ^schema validate_core_state_event}
+    #{^name "decision" ^version 1 ^^ignorable ^origin "core" ^owner "core" ^schema validate_decision_event}])

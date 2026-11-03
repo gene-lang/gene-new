@@ -204,6 +204,8 @@
     (span %label))))
   (if_yes (!= detail "")
     ($dom/append root ($dom/render `(span ^class_name "outcome_message" %detail))))
+  (if_yes (&& (== status "paused") ($present? run/notice) ($absent? run/continued_by))
+    ($dom/append root ($dom/render `(span ^class_name "outcome_message" %(status_text run/notice)))))
   (if_not ($absent? run/continuation_error)
     ($dom/append root ($dom/render `(span ^class_name "outcome_message" %(status_text run/continuation_error)))))
   (if_yes (&& limited resumable ($present? on_continue)

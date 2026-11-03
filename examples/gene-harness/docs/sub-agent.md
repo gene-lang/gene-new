@@ -119,6 +119,14 @@ query shapes with their counts, as ^result."
   If the collection turn does not end with `done`, ordinary round-limit policy
   applies: operator rounds pause and automated rounds fail. A round therefore runs at most limit + 1 turns. A
   `^wait` returned on the last permitted turn is the drain, whatever its mode.
+- **In a checked round the limit is the effective ceiling.** It moves forward
+  with each answered progress check-in, so the last permitted turn and the
+  drain move with it ([quick decisions](decisions.md)). A check-in pause is a
+  separate boundary: it neither drains nor collects. Running children keep
+  going under their own budgets. Continue hands them, and any unseen results,
+  to the continuation round on its first turn. Stop, or new input that
+  supersedes the paused task, cancels unfinished children and carries their
+  results to the next round, as when a round ends.
 - `(Outcome ^wait "all")`, `^wait "any"` or `^wait ["auth_audit"]` ends the
   turn and parks the round in `waiting`. The parent's turn ends, its
   composition lease is released, and the wait holds no response budget. The

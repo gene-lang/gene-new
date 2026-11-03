@@ -140,7 +140,10 @@ file viewers retain their presentation. Diagnostic console events and CLI transc
 available independently of the browser's temporary display.
 
 At an operator turn limit, the receipt ends **paused** and the unsent Request
-stays hidden. **Continue** admits a linked round with another normal turn budget;
+stays hidden. A progress check-in can pause a checked round earlier; the status
+then reads **Paused · progress check-in** and shows the check-in's notice, and
+Continue keeps the task checked ([quick decisions](decisions.md)).
+**Continue** admits a linked round with another normal turn budget;
 **Continue until finished** automatically continues across later round budgets,
 stopping for completion, input, failure, or Stop. Automatic status shows the
 cumulative task turns. Both actions retain the logical input, refresh transient

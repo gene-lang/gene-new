@@ -171,6 +171,14 @@
   (message finish [run : Str, reason : Str] : Any)
   (message image_input [run : Str, id : Str] : Any))
 
+# Quick decisions (docs/decisions.md). decide picks among the caller's options
+# and never raises for engine or transport problems: it returns a status. A
+# malformed question set is a caller bug and raises ServiceError.
+(protocol DecisionHost
+  (message decide [request] : Any)
+  (message engines [] : Any)
+  (message status [^use use : Str = ""] : Any))
+
 (protocol PluginHost
   (message execution_budget [] : Any)
   (message defer [cleanup] : Any)

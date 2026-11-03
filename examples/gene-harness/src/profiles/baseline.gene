@@ -28,6 +28,7 @@
 (import [models] ^from "../builtin/models")
 (import [model_endpoints models_file_watch] ^from "../builtin/model_endpoints")
 (import [settings] ^from "../builtin/settings")
+(import [decisions] ^from "../builtin/decisions")
 (fn baseline_profile [^models_root models_root = nil]
   (let launcher (spotlight))
-  (Profile ^name "web" ^plugins [launcher (voice) (gene_reference) (plugin_admin) (core_commands) (shell) (repl) (triggers) (workspace_ui) (notifications) (provider_chatgpt) (provider_anthropic) (provider_claude) (provider_openrouter) (budget_advisory) (history_basic) (working_instructions) (sidebar) (media) (computer) (image) (image_openrouter) (delegation) (slack) (model_endpoints ^root models_root) (models_file_watch ^root models_root) (models ^root models_root) (settings)] ^requires [["prompt" "gene_reference"] ["hooks" "history/compact/history_basic"]] ^limits (ExecutionLimits ^max_memory_mb 1024 ^timeout_ms 600000)))
+  (Profile ^name "web" ^plugins [launcher (voice) (gene_reference) (plugin_admin) (core_commands) (shell) (repl) (triggers) (workspace_ui) (notifications) (provider_chatgpt) (provider_anthropic) (provider_claude) (provider_openrouter) (budget_advisory) (decisions) (history_basic) (working_instructions) (sidebar) (media) (computer) (image) (image_openrouter) (delegation) (slack) (model_endpoints ^root models_root) (models_file_watch ^root models_root) (models ^root models_root) (settings)] ^requires [["prompt" "gene_reference"] ["hooks" "history/compact/history_basic"]] ^limits (ExecutionLimits ^max_memory_mb 1024 ^timeout_ms 600000)))

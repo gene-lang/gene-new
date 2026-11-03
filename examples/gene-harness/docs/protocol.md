@@ -215,8 +215,16 @@ admission and participant completion.
 24 turns; reaching the limit pauses it and retains the unsent input. Continue
 admits a linked round with another budget, while Continue until finished admits
 successors automatically and shows cumulative task turns. The browser hides the
-unrun turn. Trigger rounds default to 12 turns and retain their existing failure
-and parent/trigger completion policies.
+unrun turn. When a decision engine is available, operator rounds are instead
+checked: every 10 task turns a progress check-in decides whether to continue or
+pause, and the limit counts from the last answered check-in
+([quick decisions](decisions.md)). Trigger rounds default to 12 turns and retain
+their existing failure and parent/trigger completion policies.
+
+Each `turn/end` carries a short `result_line` and an `evidence` map (Outcome
+kind, patched files, the first error line and a digest of the code's outputs).
+They are built from the turn's results, never from the response's prose, and
+check-ins read them.
 
 ### Next request
 

@@ -1,9 +1,9 @@
-# Speech resources are a feature adapter, independent of registry dispatch.
+# Engine resources are a feature adapter, independent of registry dispatch.
 (mod registry_resources)
-# Warm speech resources belong to the exact activation that opened them.
+# Warm speech and decision engine resources belong to the exact activation that opened them.
 # A cleanup lease remains usable after operation callbacks expire, and Cordis
 # also disposes it on retirement even when the caller lost the open result.
-(fn own_speech_engine [h, owner : Str, engine]
+(fn own_engine_resources [h, owner : Str, engine]
   (let policy (h/plugin_policies/.get .get owner))
   (let effects policy/effects)
   (if ($absent? effects) (return engine))

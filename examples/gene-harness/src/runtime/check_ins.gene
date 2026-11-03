@@ -1,0 +1,336 @@
+# Round check-ins (docs/decisions.md): every check_in_turns task turns a
+# checked round asks the decision service whether the work is progressing.
+# They judge progress, never permission. A deterministic rule pauses a
+# genuinely unchanged failure loop without asking an engine.
+(mod check_ins)
+(import [decide decision_status decision_input_text estimated_tokens] ^from "./decision_service")
+(import [events_for core_state record_core_state flush_event_store] ^from "../storage/state")
+(import [write_body read_body] ^from "../agents/history")
+(import [byte_prefix] ^from "../public/text")
+
+(const check_in_use "round/check_in")
+(const window_turns 30)
+(const state_version "check_in/state-1")
+(const question_version "check_in/questions-1")
+(const fusion_version "check_in/fusion-1")
+(const check_in_timeout_ms 10000)
+(const text_cap 16384)
+(const line_cap 400)
+
+(const check_in_setting
+  "A coding assistant is working on the operator's request by writing code that the harness runs. Turns are listed from older to newer. Each has the assistant's response and a short result.")
+
+(const criteria_text
+  {^advancing "The assistant is making steady progress on the operator's request."
+   ^verifying "The requested work looks complete and the assistant is testing or checking it."
+   ^repeating "The assistant keeps trying the same approach and gets the same failure, or undoes and redoes its own changes."
+   ^blocked "The assistant needs something only the operator can provide, such as a decision, a credential, access or missing information."
+   ^drifting "The assistant is working on something the operator did not ask for."})
+
+(const operator_now_text "The operator would want to look at this work before the assistant continues.")
+
+# Wording is literal and positive. Option order is a measured parameter.
+(fn check_in_questions []
+  {^progress {^type "choice" ^instructions "Which describes the assistant's most recent turns?"
+     ^criteria {^advancing criteria_text/advancing ^verifying criteria_text/verifying
+                ^repeating criteria_text/repeating ^blocked criteria_text/blocked
+                ^drifting criteria_text/drifting}}
+   ^operator_now {^type "noul" ^instructions operator_now_text}})
+
+(fn nonempty [value]
+  (if ($absent? value) (return nil))
+  (let text ($str/trim ($to_str value)))
+  (if (== text "") nil text))
+
+(fn first_line [value, cap : Int]
+  (let text (nonempty value))
+  (if ($absent? text) (return nil))
+  (byte_prefix ($str/trim ($first ($str/split text "\n"))) cap))
+
+(fn collapsed [text : Str, cap : Int] : Str
+  (byte_prefix ($str/trim ($regex/replace_all #"\s+" text " ")) cap))
+
+# Values the code produced for the next request. Patch, error and the model's own
+# Outcome prompt have their own fields or are prose, so they are excluded.
+(fn observed_outputs [items] : Str
+  (let parts [])
+  (for item in (?? items [])
+    (if ($present? (#"\.(patch|error|result)(#[0-9]+)?$" .match ($to_str (?? item/id "")))) (continue))
+    (if ($present? item/value) (parts .push ($to_str item/value))))
+  ($str/join parts "\n"))
+
+(fn file_list [files] : Str
+  (let shown ($take files 4))
+  (let text ($str/join ($map shown (fn [file] ($to_str file))) ", "))
+  (if (> files/.size 4) $"${text} and ${(- files/.size 4)} more" text))
+
+# One short result line per turn, built from what the loop recorded, never from
+# the assistant's prose. The digest covers the observed results exactly.
+(fn turn_evidence [terminal]
+  (let kind ($to_str (?? terminal/kind "error")))
+  (let patch terminal/patch)
+  (let files (if (== ($head patch/files) List) patch/files []))
+  (let patch_failed (&& ($present? patch) (!= patch/status "applied")))
+  (let error (first_line (?? terminal/error (if patch_failed patch/text nil)) 240))
+  (let output (observed_outputs terminal/request_items))
+  (let parts [])
+  (if (&& ($present? patch) (! patch_failed) (! files/.empty?))
+    (parts .push $"Patched ${(file_list files)}."))
+  (if patch_failed (parts .push ($to_str "Patch " (?? (first_line patch/text 200) "failed") ".")))
+  (match kind
+    (when "done" (parts .push "Finished the task."))
+    (when "questions" (parts .push "Asked the operator questions."))
+    (when "delegation_wait" (parts .push "Waiting for delegated children."))
+    (when "cancelled" (parts .push "Cancelled."))
+    (when "not_ready" (parts .push "The provider was not ready."))
+    (else nil))
+  (if (&& ($present? error) (! patch_failed)) (parts .push $"Error: ${error}"))
+  (if (!= ($str/trim output) "") (parts .push $"Output: ${(collapsed output 240)}"))
+  (if parts/.empty? (parts .push "No output."))
+  {^line (byte_prefix ($str/join parts " ") line_cap) ^kind kind ^files files ^error error
+   ^digest ($crypto/sha256 ($serde/write_data [kind (?? patch/status nil) files error output]))})
+
+# Turns recorded before result lines existed get one from their patch and
+# turn/end records, so older sessions can still be judged.
+(fn recorded_evidence [entry]
+  (let patch entry/patch_text)
+  (let error (first_line entry/end_text 240))
+  (let parts [])
+  (if ($present? patch) (parts .push ($to_str "Patch " (first_line patch 200) ".")))
+  (if ($present? error) (parts .push $"Error: ${error}"))
+  (if parts/.empty? (parts .push "No output."))
+  (let failed (&& ($present? patch) (! ($str/starts_with? patch "applied"))))
+  {^line (byte_prefix ($str/join parts " ") line_cap)
+   ^evidence {^kind (?? entry/end_reason "continue") ^files (if (|| ($absent? patch) failed) [] ["unknown"])
+     ^error (?? error (if failed (first_line patch 240) nil))
+     ^digest ($crypto/sha256 ($serde/write_data [patch error entry/end_reason]))}})
+
+# The task's turns in order, across its continuation rounds and restarts, from
+# a session's event records.
+(fn task_turns_from [records, task_root : Str]
+  (let rounds {})
+  (let turns {})
+  (let order [])
+  (for event in records
+    (let payload event/payload)
+    (match event/type
+      (when "turn/start"
+        (if_yes (== (?? payload/task_root payload/round) task_root)
+          (rounds .put payload/round true)
+          (let key ($to_str payload/turn))
+          (if_yes ($absent? (turns .get key))
+            (turns .put key {^turn payload/turn ^round payload/round})
+            (order .push key))))
+      (when "turn/response"
+        (if_yes ($present? (rounds .get ($to_str payload/round)))
+          (let entry (turns .get ($to_str payload/turn)))
+          (if ($present? entry) (entry .put "response" payload/text))))
+      (when "turn/patch"
+        (let entry (turns .get ($to_str payload/turn)))
+        (if (&& ($present? entry) (== entry/round payload/round)) (entry .put "patch_text" payload/text)))
+      (when "turn/end"
+        (let entry (turns .get ($to_str payload/turn)))
+        (if_yes (&& ($present? entry) (== entry/round payload/round))
+          (entry .put "end_reason" payload/reason)
+          (entry .put "end_text" (?? payload/text nil))
+          (entry .put "result" (?? payload/result_line nil))
+          (entry .put "evidence" (?? payload/evidence nil))))
+      (else nil)))
+  (let result [])
+  (for key in order
+    (let entry (turns .get key))
+    (if_yes (&& ($absent? entry/result) ($present? entry/end_reason))
+      (let rebuilt (recorded_evidence entry))
+      (entry .put "result" rebuilt/line)
+      (entry .put "evidence" rebuilt/evidence))
+    (result .push entry))
+  result)
+
+(fn task_turns [runtime, session : Str, task_root : Str]
+  (task_turns_from (events_for runtime/events "session" session) task_root))
+
+# Pauses only a genuinely unchanged loop: across each of the last three turns
+# the same error, no file changed, and identical results.
+(fn unchanged_failure_loop [turns]
+  (if (< turns/.size 3) (return nil))
+  (let recent ($drop turns (- turns/.size 3)))
+  (let first recent/0/evidence)
+  (for entry in recent
+    (let evidence entry/evidence)
+    (if (|| ($absent? evidence) ($absent? evidence/error) (> ($size (?? evidence/files [])) 0)
+            (!= evidence/digest first/digest) (!= evidence/error first/error)
+            (!= entry/result recent/0/result))
+      (return nil)))
+  {^rule "unchanged_failure_loop" ^verdict "repeating" ^error first/error
+   ^turns ($map recent (fn [entry] entry/turn))})
+
+(fn request_text [receipt] : Str
+  (byte_prefix (?? (nonempty receipt/prompt) (nonempty receipt/request) "") text_cap))
+
+# The task root's original request.
+(fn task_request [runtime, session : Str, round] : Str
+  (let root_id (?? round/task_root round/id))
+  (if (== root_id round/id) (return (request_text round)))
+  (let saved (core_state runtime/events "session" session "rounds"))
+  (let state (if ($absent? saved) nil
+    (if ($absent? saved/digest) saved (try ($serde/read_data (read_body runtime saved/digest)) catch Any nil))))
+  (for receipt in (?? state/receipts [])
+    (if (== receipt/id root_id) (return (request_text receipt))))
+  (request_text round))
+
+# No numbers: the engine reads order, not counts. The state is untrusted, so the
+# worst case of a manipulated answer is a missed pause.
+(fn check_in_state [request : Str, latest, turns, omitted : Bool]
+  (let state {^setting check_in_setting ^request request})
+  (if ($present? latest) (state .put "latest_operator_message" latest))
+  (if omitted (state .put "earlier_turns_omitted" true))
+  (state .put "turns" ($map turns (fn [entry]
+    {^response (byte_prefix (?? entry/response "") text_cap)
+     ^result (?? entry/result "No result was recorded.")})))
+  state)
+
+(fn fits? [state, questions, limits] : Bool
+  (let overhead (?? limits/overhead_tokens 0))
+  (let state_bytes ($str/byte_size ($json/stringify state)))
+  (var largest 0)
+  (for [id question] in questions
+    (set largest ($math/max largest ($str/byte_size ($json/stringify question)))))
+  (&& (<= (+ overhead (estimated_tokens ($str/byte_size (decision_input_text state questions)))) limits/request_tokens)
+      (<= (+ overhead (estimated_tokens (+ state_bytes largest 64))) limits/question_tokens)))
+
+# Drops the oldest turns until the state fits the engine's reported limits.
+(fn fit_turns [request : Str, latest, turns, omitted : Bool, questions, limits]
+  (var kept turns)
+  (var dropped omitted)
+  (loop
+    (let state (check_in_state request latest kept dropped))
+    (if (|| (<= kept/.size 1) (fits? state questions limits))
+      (return {^state state ^turns kept ^trimmed (- turns/.size kept/.size)}))
+    (set kept ($drop kept 1))
+    (set dropped true)))
+
+(fn probability [answers, option : Str]
+  (let value (?? (/probabilities (/progress answers)) {}))
+  (?? (value .get option) 0.0))
+
+(fn criterion_evidence [verdict : Str] : Str
+  (if (== verdict "operator_now") operator_now_text (?? (criteria_text .get verdict) "")))
+
+# Provisional bands (docs/decisions.md). They read class probabilities, never
+# an engine's confidence statistic.
+(fn fuse [rule, result]
+  (if ($present? rule)
+    (return {^action "pause" ^verdict rule/verdict ^answered false
+      ^evidence $"the last three turns failed the same way (${rule/error}) with no file changed"}))
+  (if (!= result/status "ok")
+    (return {^action "continue" ^verdict "unanswered" ^answered false
+      ^evidence ($to_str "the decision engine did not answer (" result/status ")")}))
+  (let answers result/answers)
+  (let now (?? (/value (/operator_now answers)) 0.0))
+  (let pause (fn [verdict]
+    {^action "pause" ^verdict verdict ^answered true ^evidence (criterion_evidence verdict)}))
+  (if (>= (probability answers "blocked") 0.7) (return (pause "blocked")))
+  (if (>= (probability answers "repeating") 0.7) (return (pause "repeating")))
+  (if (>= (probability answers "drifting") 0.7) (return (pause "drifting")))
+  (if (>= now 0.85) (return (pause "operator_now")))
+  (if (&& (|| (>= (probability answers "advancing") 0.7) (>= (probability answers "verifying") 0.7)) (< now 0.5))
+    (return {^action "continue" ^verdict "continue" ^answered true ^evidence ""}))
+  {^action "continue" ^verdict "uncertain" ^answered true ^evidence ""})
+
+(fn round_current? [runtime, session : Str, round] : Bool
+  (let loaded (runtime/sessions/loaded/.get .get session))
+  (&& ($present? loaded) (== (/id loaded/round/.get) round/id)))
+
+(fn check_in_key [round, boundary : Int] : Str
+  $"check_in/${round/id}/${boundary}")
+
+# Counters after a check (docs/decisions.md, Counters). An answered check moves
+# the fallback allowance; an unanswered one only moves the next check.
+(fn next_counters [round, record, boundary : Int, interval : Int]
+  (let answered (== record/verdict_answered true))
+  (let step (if (== record/verdict "uncertain") ($math/max 1 (/ interval 2)) interval))
+  {^next_check_turn (+ boundary step)
+   ^allowance_base (if answered boundary round/allowance_base)
+   ^allowance_source (if answered "check_in" round/allowance_source)})
+
+(fn decision_for [runtime, session : Str, round, boundary : Int, window, omitted : Bool]
+  (let service runtime/services/values/decisions)
+  (if ($absent? service)
+    (return {^result {^status "unavailable" ^reason "The decision service is not running." ^engine ""
+      ^latency_ms 0 ^attempts 0}}))
+  (let request (task_request runtime session round))
+  (let prompt (nonempty round/prompt))
+  (let latest (if (&& ($present? prompt) (!= (byte_prefix prompt text_cap) request)) (byte_prefix prompt text_cap) nil))
+  (let questions (check_in_questions))
+  (let status (decision_status service check_in_use))
+  (let limits (?? status/limits {^request_tokens 32000 ^question_tokens 32000 ^overhead_tokens 0}))
+  (var fitted (fit_turns request latest window omitted questions limits))
+  (let fence {^session session ^round round/id ^boundary boundary ^turn (?? round/last_turn 0)
+    ^active (fn [] (round_current? runtime session round))})
+  (let started ($os/monotonic_ms))
+  (var result (decide service {^use check_in_use ^state fitted/state ^questions questions
+    ^timeout_ms check_in_timeout_ms ^fence fence ^session session}))
+  # An engine's own size rejection: trim further and retry inside the deadline.
+  (let left (- check_in_timeout_ms (- ($os/monotonic_ms) started)))
+  (if_yes (&& (== result/status "too_large") (> fitted/turns/.size 1) (> left 1000))
+    (let half ($drop fitted/turns (/ fitted/turns/.size 2)))
+    (set fitted (fit_turns request latest half true questions limits))
+    (set fitted (fitted .assoc "trimmed" (- window/.size fitted/turns/.size)))
+    (set result (decide service {^use check_in_use ^state fitted/state ^questions questions
+      ^timeout_ms left ^fence fence ^session session})))
+  {^result result ^fitted fitted ^questions questions})
+
+# Runs one check at a committed boundary and returns its durable record, or nil
+# when the round stopped owning the boundary before the answer was applied.
+(fn run_check_in [runtime, session : Str, round, boundary : Int, ^interval interval : Int]
+  (let key (check_in_key round boundary))
+  # A committed boundary is never asked again, across restarts too.
+  (let committed (core_state runtime/events "session" session key))
+  (if ($present? committed) (return committed))
+  (let task_root (?? round/task_root round/id))
+  (let all (task_turns runtime session task_root))
+  (let window (if (> all/.size window_turns) ($drop all (- all/.size window_turns)) all))
+  (let omitted (> all/.size window/.size))
+  (let rule (unchanged_failure_loop window))
+  (let asked (if ($absent? rule) (decision_for runtime session round boundary window omitted) nil))
+  (let result (if ($absent? asked)
+    {^status "skipped" ^reason "A rule decided this check." ^engine "" ^latency_ms 0 ^attempts 0}
+    asked/result))
+  # Stale and cancelled results never update counters.
+  (if (|| (== result/status "stale") (! (round_current? runtime session round))) (return nil))
+  (let verdict (fuse rule result))
+  (let input_text (if ($absent? asked) nil (decision_input_text asked/fitted/state asked/questions)))
+  (let sent (&& ($present? input_text) (> (?? result/attempts 0) 0)))
+  (let record
+    {^use check_in_use ^round round/id ^task_root task_root ^boundary boundary ^turn (?? round/last_turn 0)
+     ^window {^first (if window/.empty? nil window/0/turn) ^last (if window/.empty? nil (/turn ($last window)))
+              ^turns (if ($absent? asked) window/.size asked/fitted/turns/.size)
+              ^trimmed (if ($absent? asked) 0 asked/fitted/trimmed) ^earlier_omitted omitted}
+     ^versions {^state state_version ^questions question_version ^fusion fusion_version}
+     ^engine (?? result/engine "") ^model (?? result/model nil) ^source (?? result/source nil)
+     ^status result/status ^reason (?? result/reason nil) ^answers (?? result/answers nil)
+     ^latency_ms (?? result/latency_ms 0) ^rule rule
+     ^action verdict/action ^verdict verdict/verdict ^verdict_answered verdict/answered ^evidence verdict/evidence
+     ^input_digest (if ($absent? input_text) nil ($crypto/sha256 input_text))
+     # The model engine's call already records the prepared request.
+     ^model_call (if (== ($head result/call_id) Str) result/call_id nil)
+     ^input_ref (if (&& sent (!= ($head result/call_id) Str)) (write_body runtime input_text) nil)
+     ^at_ms ($os/wall_ms)})
+  (record .put "counters" (next_counters round record boundary interval))
+  # Committed before the next model call.
+  (record_core_state runtime/events "session" session "round/state" key record)
+  (flush_event_store runtime/events)
+  record)
+
+(fn check_in_summary [record]
+  {^key (check_in_key {^id record/round} record/boundary) ^verdict record/verdict ^action record/action
+   ^engine record/engine ^model record/model ^status record/status ^latency_ms record/latency_ms
+   ^probabilities (/probabilities (/progress record/answers))
+   ^operator_now (/value (/operator_now record/answers)) ^rule (/rule record/rule)
+   ^evidence record/evidence ^boundary record/boundary})
+
+(fn check_in_notice [record, turn : Int, ^children children : Bool = false] : Str
+  ($to_str "Paused after turn " turn ": " record/evidence
+    (if ($str/ends_with? record/evidence ".") " " ". ")
+    "Continue, or tell it what to change."
+    (if children " Delegated children are still running; their results go to the next round." "")))

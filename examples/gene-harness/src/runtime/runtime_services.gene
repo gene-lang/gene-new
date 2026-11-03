@@ -44,6 +44,7 @@
 (import [install_initiators] ^from "./initiators")
 (import [new_plugin_services] ^from "./plugin_services")
 (import [new_models_host close_models_host models_host_binding] ^from "./models_host")
+(import [open_decision_service close_decision_service] ^from "./decision_service")
 
 (fn close_kernel [ctx, h]
   (if (== ctx/harness_closed true) (return nil))
@@ -273,11 +274,19 @@
        state)
      ^recover nil ^quiesce (fn [ctx state] (close_models_host state))
      ^close (fn [ctx state] (close_models_host state))}
+    # Quick decisions: the host owns selection and validation; engines are
+    # plugin rows, so with none installed every use applies its default.
+    {^name "decisions" ^layer "feature_host" ^requires ["runtime" "inbox"]
+     ^open (fn [ctx]
+       (let service (open_decision_service ctx/runtime))
+       (try (provide ctx/h "core" "decisions/host" service/handle) service
+         catch Any (close_decision_service service) (fail $err)))
+     ^recover nil ^close (fn [ctx, service] (close_decision_service service))}
     # Plugin code can reach the global objects from activation onward.
     {^name "host_objects" ^layer "feature_host" ^requires ["actions" "manager" "sessions"]
      ^open (fn [ctx] (if ($present? ctx/objects) (ctx/objects ctx/runtime)) nil)
      ^recover nil ^close (fn [ctx, state] (withdraw_host_objects ctx/h/snapshots))}
-    {^name "plugins" ^layer "loop" ^requires {^normal ["host_objects" "actions" "voice" "channel_queues" "manager" "media" "computer" "operator" "plugin_api" "participants" "core_prompt" "trigger_host" "notification_host" "readiness" "models_host"] ^recovery ["runtime"] ^doctor []}
+    {^name "plugins" ^layer "loop" ^requires {^normal ["host_objects" "actions" "voice" "channel_queues" "manager" "media" "computer" "operator" "plugin_api" "participants" "core_prompt" "trigger_host" "notification_host" "readiness" "models_host" "decisions"] ^recovery ["runtime"] ^doctor []}
      ^open activate_services ^recover activate_services ^close close_kernel}
     {^name "initial_session" ^layer "loop" ^requires ["plugins" "sessions"]
      ^open (fn [ctx]

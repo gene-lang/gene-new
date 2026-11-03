@@ -1,0 +1,57 @@
+# Quick-decision engines and the decide function (docs/decisions.md). The host
+# decision service owns selection, deadlines and validation. Without this
+# plugin no engine is installed, so every use applies its default and round
+# check-ins fall back to the turn limit.
+(mod decisions_plugin)
+(import [Plugin PluginHost DecisionHost] ^from "../plugin_api")
+(import [contribute_text_doc] ^from "../public/documentation")
+(import [jev_row model_row] ^from "../public/decision_engines")
+
+(fn engines_section [service]
+  (let rows [])
+  (for engine in service/.DecisionHost:engines
+    (rows .push
+      `(tr ^key %$"decision-engine/${engine/name}"
+         (td (strong %engine/name) (br) (small ^class_name "web_muted" %engine/summary))
+         (td %(if ($absent? engine/reason) "Available" engine/reason)))))
+  (let status (service .DecisionHost:status ^use "round/check_in"))
+  (let check_ins (if status/available
+    $"Round check-ins use ${status/engine}."
+    $"Round check-ins are off: ${status/reason} Rounds pause at the turn limit."))
+  `(section ^key "decision-section" ^class_name "web_stack"
+     (table ^key "decision-engines" ^class_name "web_table_compact"
+       (thead (tr (th "Engine") (th "Availability")))
+       (tbody %rows...))
+     (p ^class_name "web_muted" %check_ins)
+     (p ^class_name "web_muted"
+       "Jev sends each check-in's request and recent responses to TypeSafe. Set ^engine \"model\" with a ^preset or ^provider in the decisions map above to use a provider you already trust, or a local endpoint.")))
+
+(fn decisions [] : Plugin
+  (Plugin ^id "decisions" ^requires ["decisions/host"]
+    ^provides [["decision_engines" "jev"] ["decision_engines" "model"]
+      ["functions" "decide"] ["functions" "decision_engines"] ["docs" "harness/decisions"]
+      ["settings_groups" "Decisions"] ["web_components" "decision_engines"]]
+    ^activate (fn [host]
+      (let service (host .PluginHost:resolve "decisions/host"))
+      (host .PluginHost:contribute "decision_engines" (jev_row))
+      (host .PluginHost:contribute "decision_engines" (model_row))
+      (host .PluginHost:contribute "functions"
+        {^name "decide"
+         ^doc "Ask a quick decision engine narrow questions about a small state. Returns ^status \"ok\" with ^answers, or another status; engine problems never raise."
+         ^tags ["decisions" "judge" "classification"] ^docs ["harness/decisions"]
+         ^fn (fn [^use use : Str = "code/decide", ^state state = nil, ^questions questions = nil,
+                  ^timeout_ms timeout_ms : Int = 10000, ^fence fence = nil]
+           (service .DecisionHost:decide
+             {^use use ^state state ^questions questions ^timeout_ms timeout_ms ^fence fence}))})
+      (host .PluginHost:contribute "functions"
+        {^name "decision_engines" ^doc "List decision engines and why any is unavailable."
+         ^tags ["decisions" "judge"] ^docs ["harness/decisions"]
+         ^fn (fn [] service/.DecisionHost:engines)})
+      (host .PluginHost:contribute "settings_groups"
+        {^name "Decisions" ^order 70 ^section "decision_engines"
+         ^doc "Quick-decision engines for round check-ins and the decide function."})
+      (host .PluginHost:contribute "web_components"
+        {^name "decision_engines" ^slot "settings_section" ^render (fn [context] (engines_section service))})
+      (contribute_text_doc ^tags ["decisions" "judge" "classification"] host "harness/decisions"
+        "Quick decisions: decide, question types, answers and statuses."
+        "decide ^use ^state ^questions [^timeout_ms 10000] asks the selected engine to pick among options you define; it writes no text and runs nothing. Questions map snake_case ids to {^type \"choice\" ^instructions ^criteria {^option \"description\" ...}}, {^type \"score\" ^instructions ^criteria [\"lowest level\" ... \"highest\"]} or {^type \"noul\" ^instructions} (one value from 0 to 1). Keep the state small and free of numbers the engine must compare; write instructions literally and positively. A result is {^status \"ok\" ^engine ^model ^latency_ms ^answers {id {^choice ^probabilities} | {^score ^probabilities} | {^value}}}, or ^status unavailable, timeout, rate_limited, too_large, stale or error with ^reason. Always keep a default action for a non-ok status. Malformed questions raise. decision_engines lists the engines. Round check-ins use the same service; they judge progress, never permission."))))

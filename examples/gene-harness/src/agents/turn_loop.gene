@@ -31,6 +31,8 @@
   ^from "../runtime/turn_participants")
 (import [participant_inputs participant_bindings validate_participants commit_participants round_limit_participants
   request_source request_sources finish_participant_outcome] ^from "./turn_participation")
+(import [turn_evidence run_check_in check_in_summary check_in_notice] ^from "../runtime/check_ins")
+(import [owned_delegation_counts] ^from "../runtime/delegations")
 
 (type TurnReadinessFailure ^props {^message Str ^code Str?} ^impl [Error])
 (impl Error for TurnReadinessFailure)
@@ -151,16 +153,40 @@
     (record .put key value))
   record)
 
+# Checked rounds have no fixed ceiling while check-ins answer. Their counters
+# are in task turns; the effective ceiling is allowance_base + turn_limit,
+# converted here to this round's turns (docs/decisions.md).
+(fn init_check_in_counters [round, interval : Int]
+  (let base (?? round/task_turns_base 0))
+  (if ($absent? round/allowance_base) (round .put "allowance_base" base))
+  (if ($absent? round/allowance_source)
+    (round .put "allowance_source" (if ($present? round/continuation) "operator" "start")))
+  (if ($absent? round/next_check_turn) (round .put "next_check_turn" (+ base interval)))
+  nil)
+
+(fn checked_limit [round, configured : Int] : Int
+  (- (+ round/allowance_base configured) (?? round/task_turns_base 0)))
+
+(fn owned_children? [runtime, session : Str, round] : Bool
+  (let service runtime/services/values/delegations)
+  (if ($absent? service) (return false))
+  (try (> (/running (owned_delegation_counts service session round/id)) 0) catch Any false))
+
 (fn run_round [runtime, session : Str, round, ^resume resume : Bool = false]
   (let metadata (require_record runtime/sessions session))
   (let config (session_settings metadata (effective_config runtime)))
   (let selection (?? round/selection (resolve_selection runtime config)))
-  (let limit
+  (let configured_limit
     (?? round/effective_limits/turn_limit
       (if (operator_round? round) config/turn_limit config/trigger_turn_limit)))
+  (let checked (&& (operator_round? round) (== round/continuation_mode "checked")))
+  (let interval (?? config/check_in_turns 10))
+  (if checked (init_check_in_counters round interval))
+  (var limit (if checked (checked_limit round configured_limit) configured_limit))
   (let extra_turns (collection_turns round))
   (let collection (> extra_turns 0))
-  (let ceiling (+ limit extra_turns))
+  (var ceiling (+ limit extra_turns))
+  (var pause nil)
   (var count (?? round/turn_count 0))
   (var last_request (?? round/request round/prompt))
   (if_not resume
@@ -213,6 +239,11 @@
       (let reason (if failed "error" terminal/kind))
       (let ended {^type "turn/end" ^turn number ^round round/id ^reason reason
         ^text (if failed ($str/join ($map errors /message) "; ") (?? terminal/error nil)) ^!synthetic})
+      # A short result line per turn, for check-ins and their repetition rule.
+      (let evidence (try (turn_evidence (if failed (terminal .assoc "error" ended/text) terminal)) catch Any nil))
+      (if_yes ($present? evidence)
+        (ended .put "result_line" evidence/line)
+        (ended .put "evidence" (evidence .assoc "line" nil)))
       (if (== reason "error") (ended .put "stage" stage))
       (let record (finish_turn runtime session ended))
       (flush_event_store runtime/events)
@@ -450,9 +481,20 @@
       (then
         (flush_event_store runtime/events)
         (return {^state "cancelled" ^turn_count count ^last_turn number})))
+    # The check runs once this turn's result is final and before the next
+    # request is recorded, so the unsent marker reflects its verdict.
+    (if_yes (&& checked (! collection) ($absent? result/suspension) (!= result/kind "questions")
+                (>= (+ (?? round/task_turns_base 0) count) round/next_check_turn))
+      (let record (run_check_in runtime session round (+ (?? round/task_turns_base 0) count) ^interval interval))
+      (if_yes ($present? record)
+        (for [key value] in record/counters (round .put ($to_str key) value))
+        (round .put "last_check_in" (check_in_summary record))
+        (if (== record/action "pause") (set pause record))
+        (set limit (checked_limit round configured_limit))
+        (set ceiling (+ limit extra_turns))))
     (let requests (next_request runtime session round result/prepared_request_items
       ^logical result/request_items ^media (?? result/media [])
-      ^record_fields {^at_limit (>= count ceiling)} ^!admit))
+      ^record_fields {^at_limit (|| ($present? pause) (>= count ceiling))} ^!admit))
     (set last_request requests/full)
     (if_yes ($present? result/suspension)
       (flush_event_store runtime/events)
@@ -479,13 +521,35 @@
             ^turn_count count
             ^last_turn number})))
     (admit_next_request runtime session round)
-    (flush_event_store runtime/events))
+    (flush_event_store runtime/events)
+    (if ($present? pause) (break)))
+  (if_yes ($present? pause)
+    # pause_requested: no further parent model call and no collection turn.
+    # Running children keep going and belong to the continuation round.
+    (let turns (+ (?? round/task_turns_base 0) count))
+    (let children (owned_children? runtime session round))
+    (return {^state "paused" ^reason "check_in" ^message "paused at a progress check-in"
+      ^notice (check_in_notice pause (?? round/last_turn 0) ^children children)
+      ^check_in (check_in_summary pause) ^children_running children
+      ^request last_request ^turn_count count ^last_turn (?? round/last_turn 0)
+      ^task_turns turns ^continuation_mode "checked"
+      ^continuation {^items_ref (?? round/logical_items_ref round/request_items_ref)
+        ^history (pending_request runtime session) ^media (?? round/request_media [])
+        ^request_sources (?? round/request_sources []) ^task_root (?? round/task_root round/id)
+        ^task_turns turns ^source_round round/id ^source_turn (?? round/last_turn 0)}}))
   (let boundary_turn (?? round/last_turn metadata/turns))
   (let parked (round_limit_participants runtime session round boundary_turn count limit collection))
   (if_not ($absent? parked)
     (return (suspension_result parked round (?? round/request last_request) count boundary_turn)))
   (if_yes (operator_round? round)
     (let turns (+ (?? round/task_turns_base 0) count))
+    # In checked mode this is the fallback: no check-in answered within
+    # turn_limit turns. The last check-in's status is the evidence.
+    (if_yes (&& checked ($present? round/last_check_in))
+      (round .put "check_in" round/last_check_in)
+      (round .put "notice" ($to_str "Paused after turn " (?? round/last_turn 0)
+        ": no progress check-in answered within the turn limit (last status: "
+        round/last_check_in/status "). Continue, or tell it what to change.")))
     (return {^state "paused" ^reason "turn_limit" ^message "turn limit reached"
       ^request last_request ^turn_count count ^last_turn (?? round/last_turn 0)
       ^task_turns turns ^continuation_mode (?? round/continuation_mode "manual")

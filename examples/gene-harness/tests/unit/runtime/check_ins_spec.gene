@@ -1,0 +1,185 @@
+# Quick decisions and round check-ins as data: validation, engine reply
+# mapping, per-turn evidence, the repetition rule and the fusion bands.
+(import $test [describe it])
+(import [validate_questions validate_answers estimated_tokens] ^from "../../../src/runtime/decision_service")
+(import [check_in_questions turn_evidence unchanged_failure_loop fuse fit_turns check_in_state
+  next_counters check_in_notice] ^from "../../../src/runtime/check_ins")
+(import [jev_reply model_reply jev_body] ^from "../../../src/public/decision_engines")
+(import [check_in_cases] ^from "../../fixtures/check_in_cases")
+
+(fn raises? [thunk] : Bool
+  (try (thunk) false catch Any true))
+
+(fn ok_answers [progress, now]
+  {^status "ok" ^answers {^progress {^choice "advancing" ^probabilities progress} ^operator_now {^value now}}})
+
+(fn distribution [overrides]
+  (let base {^advancing 0.0 ^verifying 0.0 ^repeating 0.0 ^blocked 0.0 ^drifting 0.0})
+  (for [key value] in overrides (base .put ($to_str key) value))
+  base)
+
+# A turn as the loop records it: the response and its turn/end evidence.
+(fn recorded_turn [number : Int, terminal]
+  (let evidence (turn_evidence terminal))
+  {^turn number ^round "r" ^response $"response ${number}" ^result evidence/line ^evidence evidence})
+
+(fn failing_turn [number : Int, ^patch patch = nil, ^output output = "", ^error error = "test_quoted_keys failed"]
+  (recorded_turn number {^kind "error" ^error error ^patch patch
+    ^request_items (if (== output "") [] [{^id $"${number}.tests" ^value output}])}))
+
+(describe "Decision questions and answers"
+  (it "accepts the check-in questions and rejects malformed ones" []
+    (validate_questions (check_in_questions))
+    ($assert (raises? (fn [] (validate_questions {}))))
+    ($assert (raises? (fn [] (validate_questions {^Bad {^type "noul" ^instructions "x"}}))))
+    ($assert (raises? (fn [] (validate_questions {^a {^type "choice" ^instructions "x" ^criteria {^only "one"}}}))))
+    ($assert (raises? (fn [] (validate_questions {^a {^type "score" ^instructions "x" ^criteria ["low"]}}))))
+    ($assert (raises? (fn [] (validate_questions {^a {^type "guess" ^instructions "x"}}))))
+    ($assert (raises? (fn [] (validate_questions {^a {^type "noul" ^instructions ""}})))))
+
+  (it "validates every engine's answers centrally and normalizes them" []
+    (let questions (check_in_questions))
+    (let good (validate_answers questions
+      {^progress {^choice "advancing" ^confidence 0.8
+                  ^probabilities {^advancing 0.86 ^verifying 0.08 ^repeating 0.03 ^blocked 0.02 ^drifting 0.01}}
+       ^operator_now {^noul 0.12} ^extra {^noul 1}}))
+    ($assert ($absent? good/error) $"valid answers were rejected: ${good/error}")
+    ($assert (== good/value/operator_now/value 0.12))
+    ($assert ($absent? good/value/extra))
+    ($assert (== good/value/progress/confidence 0.8))
+    (for [label answers] in
+      {^missing {^progress {^choice "advancing" ^probabilities (distribution {^advancing 1.0})}}
+       ^unknown_option {^progress {^choice "finished" ^probabilities (distribution {^advancing 1.0})} ^operator_now {^noul 0.1}}
+       ^incomplete {^progress {^choice "advancing" ^probabilities {^advancing 1.0}} ^operator_now {^noul 0.1}}
+       ^sum {^progress {^choice "advancing" ^probabilities (distribution {^advancing 0.5})} ^operator_now {^noul 0.1}}
+       ^range {^progress {^choice "advancing" ^probabilities (distribution {^advancing 1.0})} ^operator_now {^noul 1.5}}
+       ^text {^progress {^choice "advancing" ^probabilities (distribution {^advancing "1"})} ^operator_now {^noul 0.1}}}
+      ($assert ($present? (/error (validate_answers questions answers))) $"${label} answers were accepted")))
+
+  (it "validates score answers against zero-based levels" []
+    (let questions {^effort {^type "score" ^instructions "How much work remains?" ^criteria ["none" "some" "most"]}})
+    ($assert ($absent? (/error (validate_answers questions
+      {^effort {^score 1.2 ^probabilities {^"0" 0.1 ^"1" 0.6 ^"2" 0.3}}}))))
+    ($assert ($present? (/error (validate_answers questions
+      {^effort {^score 3 ^probabilities {^"0" 0.1 ^"1" 0.6 ^"2" 0.3}}})))))
+
+  (it "estimates tokens at 2.4 bytes each, rounded up" []
+    ($assert (== (estimated_tokens 12) 5))
+    ($assert (== (estimated_tokens 13) 6))
+    ($assert (== (estimated_tokens 24000) 10000))))
+
+(describe "Engine replies"
+  (it "maps Jev statuses onto decision statuses" []
+    (let ok (jev_reply 200 "{\"model\":\"jev-1.14.0\",\"answers\":{\"operator_now\":{\"noul\":0.2}},\"usage\":{\"input_tokens\":12}}"))
+    ($assert (== ok/model "jev-1.14.0"))
+    ($assert (== ok/answers/operator_now/noul 0.2))
+    ($assert (== (/status (jev_reply 429 "")) "rate_limited"))
+    ($assert (== (/status (jev_reply 529 "")) "rate_limited"))
+    ($assert (== (/status (jev_reply 413 "")) "too_large"))
+    ($assert (== (/status (jev_reply 400 "{\"error\":\"max_tokens_exceeded\"}")) "too_large"))
+    ($assert (== (/status (jev_reply 401 "")) "unavailable"))
+    ($assert (== (/status (jev_reply 500 "")) "error"))
+    ($assert (== (/status (jev_reply 200 "not json")) "error"))
+    (let body ($json/parse (jev_body {} {^request "x"} (check_in_questions))))
+    ($assert (== body/model "jev-1.14.0"))
+    ($assert (== (/model ($json/parse (jev_body {^model "jev-1.13.0"} {} (check_in_questions)))) "jev-1.13.0")))
+
+  (it "reads a model engine's JSON reply, with or without a code fence" []
+    ($assert (== (/answers/operator_now/noul (model_reply "{\"operator_now\":{\"noul\":0.3}}")) 0.3))
+    ($assert (== (/answers/operator_now/noul (model_reply "```json\n{\"operator_now\":{\"noul\":0.4}}\n```")) 0.4))
+    ($assert (== (/status (model_reply "I think it is advancing.")) "error"))))
+
+(describe "Per-turn results"
+  (it "builds result lines from recorded outcomes, not prose" []
+    (let patched (turn_evidence {^kind "continue" ^patch {^status "applied" ^text "applied: 1 file" ^files ["src/parser.gene"]}
+      ^request_items [{^id "4.patch" ^value "applied"} {^id "4.tests" ^value "12 passed\n0 failed"}
+                      {^id "4.result" ^value "I will now run the tests."}]}))
+    ($assert (== patched/line "Patched src/parser.gene. Output: 12 passed 0 failed") patched/line)
+    ($assert (== patched/files ["src/parser.gene"]))
+    ($assert ($absent? patched/error))
+    (let failed (turn_evidence {^kind "error" ^error "undefined symbol: foo\nat line 3" ^request_items []}))
+    ($assert (== failed/line "Error: undefined symbol: foo") failed/line)
+    (let patch_failed (turn_evidence {^kind "error" ^patch {^status "failed" ^text "failed: no such file" ^files []}}))
+    ($assert (== patch_failed/line "Patch failed: no such file.") patch_failed/line)
+    ($assert (== patch_failed/error "failed: no such file"))
+    ($assert (== (/line (turn_evidence {^kind "questions" ^request_items []})) "Asked the operator questions."))
+    ($assert (== (/line (turn_evidence {^kind "continue" ^request_items []})) "No output."))))
+
+(describe "The unchanged-loop rule"
+  (it "continues repeated polling with advancing results" []
+    (let turns [(recorded_turn 1 {^kind "continue" ^request_items [{^id "1.job" ^value "job 40% done"}]})
+                (recorded_turn 2 {^kind "continue" ^request_items [{^id "2.job" ^value "job 70% done"}]})
+                (recorded_turn 3 {^kind "continue" ^request_items [{^id "3.job" ^value "job 90% done"}]})])
+    ($assert ($absent? (unchanged_failure_loop turns))))
+
+  (it "leaves the same failing test after distinct edits to the engine" []
+    (let turns [(failing_turn 1 ^patch {^status "applied" ^text "applied" ^files ["a.gene"]})
+                (failing_turn 2 ^patch {^status "applied" ^text "applied" ^files ["b.gene"]})
+                (failing_turn 3 ^patch {^status "applied" ^text "applied" ^files ["a.gene"]})])
+    ($assert ($absent? (unchanged_failure_loop turns))))
+
+  (it "leaves the same error with different outputs to the engine" []
+    (let turns [(failing_turn 1 ^output "trace one") (failing_turn 2 ^output "trace two") (failing_turn 3 ^output "trace three")])
+    ($assert ($absent? (unchanged_failure_loop turns))))
+
+  (it "decides exactly the synthetic cases marked for the rule" []
+    (for case in (check_in_cases)
+      (let fired ($present? (unchanged_failure_loop case/turns)))
+      ($assert (== fired case/rule) $"${case/name}: the rule fired ${fired}")))
+
+  (it "pauses a genuinely unchanged failure loop" []
+    (let turns [(recorded_turn 1 {^kind "continue" ^request_items []})
+                (failing_turn 2) (failing_turn 3) (failing_turn 4)])
+    (let fired (unchanged_failure_loop turns))
+    ($assert ($present? fired))
+    ($assert (== fired/verdict "repeating"))
+    ($assert (== fired/turns [2 3 4]))
+    ($assert ($absent? (unchanged_failure_loop ($take turns 3))))))
+
+(describe "Check-in fusion"
+  (it "applies the provisional bands to class probabilities" []
+    ($assert (== (/verdict (fuse nil (ok_answers (distribution {^advancing 0.9 ^verifying 0.1}) 0.1))) "continue"))
+    ($assert (== (/verdict (fuse nil (ok_answers (distribution {^verifying 0.8 ^advancing 0.2}) 0.2))) "continue"))
+    ($assert (== (/verdict (fuse nil (ok_answers (distribution {^blocked 0.75 ^advancing 0.25}) 0.2))) "blocked"))
+    ($assert (== (/verdict (fuse nil (ok_answers (distribution {^repeating 0.8 ^advancing 0.2}) 0.2))) "repeating"))
+    ($assert (== (/verdict (fuse nil (ok_answers (distribution {^drifting 0.7 ^advancing 0.3}) 0.2))) "drifting"))
+    ($assert (== (/verdict (fuse nil (ok_answers (distribution {^advancing 1.0}) 0.9))) "operator_now"))
+    ($assert (== (/verdict (fuse nil (ok_answers (distribution {^advancing 0.9 ^verifying 0.1}) 0.6))) "uncertain"))
+    ($assert (== (/verdict (fuse nil (ok_answers (distribution {^advancing 0.5 ^repeating 0.5}) 0.1))) "uncertain"))
+    (let missing (fuse nil {^status "timeout"}))
+    ($assert (== missing/action "continue"))
+    ($assert (== missing/answered false))
+    (let ruled (fuse {^verdict "repeating" ^error "boom"} nil))
+    ($assert (== ruled/action "pause"))
+    ($assert ($str/contains? ruled/evidence "boom")))
+
+  (it "moves the fallback allowance only for answered checks" []
+    (let round {^allowance_base 0 ^allowance_source "start"})
+    (let answered (next_counters round {^verdict "continue" ^verdict_answered true} 10 10))
+    ($assert (== answered {^next_check_turn 20 ^allowance_base 10 ^allowance_source "check_in"}))
+    (let uncertain (next_counters round {^verdict "uncertain" ^verdict_answered true} 10 10))
+    ($assert (== uncertain/next_check_turn 15))
+    (let missed (next_counters round {^verdict "unanswered" ^verdict_answered false} 10 10))
+    ($assert (== missed {^next_check_turn 20 ^allowance_base 0 ^allowance_source "start"})))
+
+  (it "writes the pause notice from its evidence" []
+    (let text (check_in_notice {^evidence "the assistant needs a credential."} 40 ^^children))
+    ($assert (== text "Paused after turn 40: the assistant needs a credential. Continue, or tell it what to change. Delegated children are still running; their results go to the next round.") text)))
+
+(describe "Check-in state"
+  (it "keeps numbers out and trims the oldest turns to fit" []
+    (let turns [])
+    (let words [])
+    (repeat word_index in 300 (words .push "word"))
+    (repeat index in 30
+      (turns .push {^turn (+ index 1) ^response ($str/join words " ") ^result "No output."}))
+    (let state (check_in_state "Fix the parser." nil turns false))
+    ($assert ($absent? state/turns/0/turn))
+    ($assert (== state/turns/.size 30))
+    (let fitted (fit_turns "Fix the parser." nil turns false (check_in_questions)
+      {^request_tokens 4000 ^question_tokens 4000 ^overhead_tokens 0}))
+    ($assert (< fitted/turns/.size 30))
+    ($assert (> fitted/turns/.size 0))
+    ($assert (== fitted/trimmed (- 30 fitted/turns/.size)))
+    ($assert (== fitted/state/earlier_turns_omitted true))
+    ($assert (== (/turn ($last fitted/turns)) 30) "Trimming dropped the newest turns.")))
