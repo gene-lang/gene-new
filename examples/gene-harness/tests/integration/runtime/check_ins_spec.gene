@@ -12,6 +12,7 @@
 (import [events_for core_state] ^from "../../../src/storage/state")
 (import [read_body] ^from "../../../src/agents/history")
 (import [inbox_snapshot] ^from "../../../src/notifications/inbox")
+(import [channel_addressed] ^from "../../../src/runtime/addressed")
 
 (fn wait_for [predicate, message : Str, ^timeout_ms timeout_ms : Int = 20000]
   (let due (+ ($os/monotonic_ms) timeout_ms))
@@ -403,5 +404,83 @@
             (fn [event] (== event/payload/purpose "decision/code/model"))))
           ($assert (== requests/.size 1) "the decision call was not recorded as a model request")
         ensure (close_round_controller controller) (close_runtime runtime))))))
+
+(describe "Check-ins for children, triggers and channels"
+  (it "end a delegated child at a check-in and report the evidence to its parent" []
+    (isolated this_mod/.path "end a delegated child at a check-in and report the evidence to its parent"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (configure runtime {^check_in_turns 2 ^check_ins true})
+        (let uses [])
+        (install_engine runtime (fn [request]
+          (uses .push request/use)
+          (if (== request/use "delegation/check_in") (verdict "blocked") (verdict "advancing"))))
+        (let parents ($cell 0))
+        (let controller (test_controller runtime (fn [call]
+          (if_yes (== (/kind (require_record runtime/sessions call/session)) "child")
+            (return "(Outcome ^prompt \"Keep trying.\")"))
+          (match (parents .swap (+ parents/.get 1))
+            (when 0 "(delegate \"stuck\" ^title \"Stuck\" ^brief \"Do it.\") (Outcome ^wait \"all\")")
+            (else
+              ($assert ($str/contains? ($to_str call/messages) "ended at a progress check-in")
+                "the parent did not receive the child's check-in evidence")
+              "(Outcome ^^done ^reply \"Reported.\")")))))
+        (try
+          (let round (submit_round controller "default" "child" 1 "Delegate a stuck task."))
+          (wait_for (fn [] (settled? controller round/id)) "The parent did not finish.")
+          (let parent_end (receipt controller round/id))
+          ($assert (== parent_end/state "done") ($to_str "parent " parent_end/state " " (?? parent_end/message "") " " (?? parent_end/error "")))
+          (let child (/0 (/records (delegation_blocks runtime/services/values/delegations "default"))))
+          ($assert (== child/state "failed") child/state)
+          ($assert ($str/contains? child/reply "ended at a progress check-in (blocked)") child/reply)
+          ($assert (uses .contains? "delegation/check_in"))
+        ensure (close_round_controller controller) (close_runtime runtime)))))
+
+  (it "end a trigger round at a check-in instead of running to its limit" []
+    (isolated this_mod/.path "end a trigger round at a check-in instead of running to its limit"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (configure runtime {^check_in_turns 2 ^trigger_turn_limit 12})
+        (let asked [])
+        (install_engine runtime (fn [request]
+          (asked .push [request/use request/fence/boundary])
+          (verdict "repeating")))
+        (let controller (test_controller runtime (fn [call] "(Outcome ^prompt \"Poll again.\")")))
+        (try
+          (let round (submit_round controller "default" "trig" 1 "Check the feed." ^initiator "trigger:feed"))
+          (wait_for (fn [] (settled? controller round/id)) "The trigger round did not end.")
+          (let ended (receipt controller round/id))
+          ($assert (== ended/state "failed") ended/state)
+          ($assert (== ended/reason "check_in"))
+          ($assert ($str/contains? ended/message "ended at a progress check-in (repeating)") ended/message)
+          ($assert (== ended/turn_count 2) "the round kept running past its check-in")
+          ($assert (== asked [["trigger/check_in" 2]]) ($to_str asked))
+        ensure (close_round_controller controller) (close_runtime runtime)))))
+
+  (it "keeps the channel's own rule unless a message is confidently for other people" []
+    (isolated this_mod/.path "keeps the channel's own rule unless a message is confidently for other people"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (try
+          (let none (channel_addressed runtime "anyone seen the deploy?" ^session "default"))
+          ($assert (&& none/start (== none/status "unavailable")) "no engine must keep the channel's rule")
+          (let reply ($cell nil))
+          (install_engine runtime (fn [request]
+            ($assert (== request/use "channel/addressed"))
+            reply/.get))
+          (fn audience [assistant, people, unclear]
+            {^model "fixture-1" ^answers {^audience {^choice "people"
+              ^probabilities {^assistant assistant ^people people ^unclear unclear}}}})
+          (reply .set (audience 0.05 0.9 0.05))
+          (let other (channel_addressed runtime "lunch at noon, everyone?" ^session "default"))
+          ($assert (&& (! other/start) (== other/verdict "people")) ($to_str other))
+          (reply .set (audience 0.9 0.05 0.05))
+          ($assert (/start (channel_addressed runtime "please rerun the specs" ^session "default")))
+          (reply .set (audience 0.2 0.5 0.3))
+          ($assert (/start (channel_addressed runtime "hmm, maybe" ^session "default")) "a middling answer must not hold a message back")
+          (reply .set {^status "unavailable" ^reason "Fixture outage."})
+          (let down (channel_addressed runtime "lunch at noon?" ^session "default"))
+          ($assert (&& down/start (== down/status "unavailable")) ($to_str down))
+        ensure (close_runtime runtime))))))
 
 (fn main [args] : Int (run_spec args))

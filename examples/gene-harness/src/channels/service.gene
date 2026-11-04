@@ -12,6 +12,7 @@
 (import [byte_prefix] ^from "../public/text")
 (import [connect api] ^from "../cli/client")
 (import [create_session_unlocked] ^from "../runtime/sessions")
+(import [channel_addressed] ^from "../runtime/addressed")
 (import [admit_channel_queue round_state] ^from "../runtime/round_controller")
 (import [core_state events_for append_core_event flush_event_store next_sequence stream_key unload_event_stream] ^from "../storage/state")
 (import [RoundChanged DurableRecord] ^from "../kernel")
@@ -189,8 +190,14 @@
             (?? result/result/round (?? result/target "channel-control")) result/result/text)))
       (deleted_notice service result supplied/message)
       (return result))
+    # A message that starts work without mentioning the assistant gets a quick
+    # decision on whom it is for; only a confident "other people" holds it back.
+    (var start_allowed (== supplied/start_allowed true))
+    (if (&& start_allowed (!= supplied/mentioned true)
+            (== supplied/message/thread supplied/message/message))
+      (set start_allowed (/start (channel_addressed service/runtime supplied/message/text))))
     (let disposition (enqueue service/runtime/services/values/channel_queues supplied/message decision
-      ^start_allowed (== supplied/start_allowed true)))
+      ^start_allowed start_allowed))
     (if (== disposition/status "queued") (ensure_session service disposition/session))
     (deleted_notice service disposition supplied/message)
     disposition)))

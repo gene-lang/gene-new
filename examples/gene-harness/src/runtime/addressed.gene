@@ -1,0 +1,33 @@
+# Whether a channel message that does not mention the assistant is meant for it
+# (docs/decisions.md, "Channel messages"). A quick decision with a short
+# deadline; any other status keeps the channel's own rule.
+(mod addressed)
+(import [decide decision_available?] ^from "./decision_service")
+(import [byte_prefix] ^from "../public/text")
+
+(const addressed_use "channel/addressed")
+(const addressed_timeout_ms 1500)
+(const people_band 0.7)
+
+(fn addressed_questions []
+  {^audience {^type "choice"
+    ^instructions "Who is the latest message written to?"
+    ^criteria {^assistant "The message asks the coding assistant to do something, or answers something the assistant asked."
+               ^people "The message is written to other people in the channel, such as a greeting, a plan or a reply to a teammate."
+               ^unclear "The message could be written to the assistant or to other people."}}})
+
+# {^start Bool ^verdict Str ^status Str}. start stays true unless the engine
+# is confident the message is for other people.
+(fn channel_addressed [runtime, text : Str, ^session session = nil]
+  (let service runtime/services/values/decisions)
+  (if (! (decision_available? service addressed_use))
+    (return {^start true ^verdict "default" ^status "unavailable"}))
+  (let result (decide service {^use addressed_use
+    ^state {^setting "A chat channel where a coding assistant is a member. Only the latest message needs a decision."
+            ^latest_message (byte_prefix text 4096)}
+    ^questions (addressed_questions) ^timeout_ms addressed_timeout_ms ^session session}))
+  (if (!= result/status "ok") (return {^start true ^verdict "default" ^status result/status}))
+  (let people (?? (/probabilities (/audience result/answers)) {}))
+  (if (>= (?? (people .get "people") 0.0) people_band)
+    {^start false ^verdict "people" ^status "ok"}
+    {^start true ^verdict "assistant" ^status "ok"}))

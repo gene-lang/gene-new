@@ -32,6 +32,7 @@
 (import [participant_inputs participant_bindings validate_participants commit_participants round_limit_participants
   request_source request_sources finish_participant_outcome] ^from "./turn_participation")
 (import [turn_evidence run_check_in check_in_summary check_in_notice] ^from "../runtime/check_ins")
+(import [decision_available?] ^from "../runtime/decision_service")
 (import [owned_delegation_counts] ^from "../runtime/delegations")
 
 (type TurnReadinessFailure ^props {^message Str ^code Str?} ^impl [Error])
@@ -187,6 +188,16 @@
   (let collection (> extra_turns 0))
   (var ceiling (+ limit extra_turns))
   (var pause nil)
+  # Trigger rounds and delegated children end early, rather than pause, when a
+  # progress check-in finds them blocked, repeating or drifting. A child's
+  # failed result, with the evidence, is its report to the parent.
+  (let early_use (if (== round/initiator_kind "core/trigger")
+    (then "trigger/check_in")
+    (elif (== round/initiator_kind "core/parent") "delegation/check_in")
+    (else nil)))
+  (let early (&& ($present? early_use) (!= config/check_ins false)
+    (decision_available? runtime/services/values/decisions early_use)))
+  (var next_early interval)
   (var count (?? round/turn_count 0))
   (var last_request (?? round/request round/prompt))
   (if_not resume
@@ -492,6 +503,16 @@
         (if (== record/action "pause") (set pause record))
         (set limit (checked_limit round configured_limit))
         (set ceiling (+ limit extra_turns))))
+    (if_yes (&& early (>= count next_early) (!= result/kind "questions") ($absent? result/suspension))
+      (let early_record (run_check_in ^use early_use runtime session round count ^interval interval))
+      (if_yes ($present? early_record)
+        (set next_early (+ count (if (== early_record/verdict "uncertain") ($math/max 1 (/ interval 2)) interval)))
+        (round .put "last_check_in" (check_in_summary early_record))
+        (if_yes (== early_record/action "pause")
+          (flush_event_store runtime/events)
+          (return {^state "failed" ^reason "check_in" ^check_in (check_in_summary early_record)
+            ^message $"ended at a progress check-in (${early_record/verdict}): ${early_record/evidence}"
+            ^request last_request ^turn_count count ^last_turn number}))))
     (let requests (next_request runtime session round result/prepared_request_items
       ^logical result/request_items ^media (?? result/media [])
       ^record_fields {^at_limit (|| ($present? pause) (>= count ceiling))} ^!admit))

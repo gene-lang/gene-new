@@ -250,10 +250,10 @@
   (let answered (== record/verdict_answered true))
   (let step (if (== record/verdict "uncertain") ($math/max 1 (/ interval 2)) interval))
   {^next_check_turn (+ boundary step)
-   ^allowance_base (if answered boundary round/allowance_base)
-   ^allowance_source (if answered "check_in" round/allowance_source)})
+   ^allowance_base (if answered boundary (?? round/allowance_base 0))
+   ^allowance_source (if answered "check_in" (?? round/allowance_source "start"))})
 
-(fn decision_for [runtime, session : Str, round, boundary : Int, window, omitted : Bool]
+(fn decision_for [runtime, session : Str, round, boundary : Int, window, omitted : Bool, use : Str]
   (let service runtime/services/values/decisions)
   (if ($absent? service)
     (return {^result {^status "unavailable" ^reason "The decision service is not running." ^engine ""
@@ -262,13 +262,13 @@
   (let prompt (nonempty round/prompt))
   (let latest (if (&& ($present? prompt) (!= (byte_prefix prompt text_cap) request)) (byte_prefix prompt text_cap) nil))
   (let questions (check_in_questions))
-  (let status (decision_status service check_in_use))
+  (let status (decision_status service use))
   (let limits (?? status/limits {^request_tokens 32000 ^question_tokens 32000 ^overhead_tokens 0}))
   (var fitted (fit_turns request latest window omitted questions limits))
   (let fence {^session session ^round round/id ^boundary boundary ^turn (?? round/last_turn 0)
     ^active (fn [] (round_current? runtime session round))})
   (let started ($os/monotonic_ms))
-  (var result (decide service {^use check_in_use ^state fitted/state ^questions questions
+  (var result (decide service {^use use ^state fitted/state ^questions questions
     ^timeout_ms check_in_timeout_ms ^fence fence ^session session}))
   # An engine's own size rejection: trim further and retry inside the deadline.
   (let left (- check_in_timeout_ms (- ($os/monotonic_ms) started)))
@@ -276,13 +276,13 @@
     (let half ($drop fitted/turns (/ fitted/turns/.size 2)))
     (set fitted (fit_turns request latest half true questions limits))
     (set fitted (fitted .assoc "trimmed" (- window/.size fitted/turns/.size)))
-    (set result (decide service {^use check_in_use ^state fitted/state ^questions questions
+    (set result (decide service {^use use ^state fitted/state ^questions questions
       ^timeout_ms left ^fence fence ^session session})))
   {^result result ^fitted fitted ^questions questions})
 
 # Runs one check at a committed boundary and returns its durable record, or nil
 # when the round stopped owning the boundary before the answer was applied.
-(fn run_check_in [runtime, session : Str, round, boundary : Int, ^interval interval : Int]
+(fn run_check_in [runtime, session : Str, round, boundary : Int, ^interval interval : Int, ^use use : Str = check_in_use]
   (let key (check_in_key round boundary))
   # A committed boundary is never asked again, across restarts too.
   (let committed (core_state runtime/events "session" session key))
@@ -292,7 +292,7 @@
   (let window (if (> all/.size window_turns) ($drop all (- all/.size window_turns)) all))
   (let omitted (> all/.size window/.size))
   (let rule (unchanged_failure_loop window))
-  (let asked (if ($absent? rule) (decision_for runtime session round boundary window omitted) nil))
+  (let asked (if ($absent? rule) (decision_for runtime session round boundary window omitted use) nil))
   (let result (if ($absent? asked)
     {^status "skipped" ^reason "A rule decided this check." ^engine "" ^latency_ms 0 ^attempts 0}
     asked/result))
@@ -302,7 +302,7 @@
   (let input_text (if ($absent? asked) nil (decision_input_text asked/fitted/state asked/questions)))
   (let sent (&& ($present? input_text) (> (?? result/attempts 0) 0)))
   (let record
-    {^use check_in_use ^round round/id ^task_root task_root ^boundary boundary ^turn (?? round/last_turn 0)
+    {^use use ^round round/id ^task_root task_root ^boundary boundary ^turn (?? round/last_turn 0)
      ^window {^first (if window/.empty? nil window/0/turn) ^last (if window/.empty? nil (/turn ($last window)))
               ^turns (if ($absent? asked) window/.size asked/fitted/turns/.size)
               ^trimmed (if ($absent? asked) 0 asked/fitted/trimmed) ^earlier_omitted omitted}

@@ -402,9 +402,36 @@ Replaying recorded sessions to a cloud engine sends real transcripts and needs
 `--allow-cloud`. Whether real transcripts may go to TypeSafe is still the
 owner's decision.
 
+## Trigger rounds, delegated children and channel messages
+
+The same service serves three more uses. Each has its own `use` id, so each can
+have its own engine under `^uses` in the `decisions` setting.
+
+| Use | Where | Default without an answer |
+| --- | --- | --- |
+| `trigger/check_in` | A trigger round, every `check_in_turns` of its own turns | The round runs to `trigger_turn_limit`, as before |
+| `delegation/check_in` | A delegated child, every `check_in_turns` of its own turns | The child runs to its own turn limit and deadline, as before |
+| `channel/addressed` | A top-level channel message that starts work without mentioning the assistant | The route's own rule: the message starts work |
+
+- **Trigger rounds and children** use the same state, questions, rule and
+  fusion bands as operator check-ins, and the same durable record
+  (`check_in/<round>/<turn>`). Nothing pauses, because neither has an operator
+  to continue it. A pause verdict **ends the round early**, as `failed`, with
+  reason `check_in` and the message `ended at a progress check-in (<verdict>):
+  <evidence>`. A trigger's failure is recorded as for any failed round. A
+  child's failed result, with that evidence, is its report to the parent, so
+  the parent can decide what to do next. An `uncertain` or unanswered check
+  re-checks after half the interval, or at the next interval. The settings
+  `check_ins` and `check_in_turns` apply.
+- **Channel messages.** When a route does not require a mention and a top-level
+  message does not mention the assistant, the handoff asks one `choice`
+  question, `audience`, with options `assistant`, `people` and `unclear`, with
+  a 1.5 s deadline and only the latest message as state. Only `people` at 0.7
+  or more holds the message back, as if the route required a mention. Any
+  other answer, and any other status, keeps the route's rule. Replies in an
+  existing thread are not asked.
+
 ## Not implemented yet
 
 - Voice turn-taking on this service.
-- Check-ins for delegated children (a child would report to its parent), for
-  trigger rounds and for channel messages.
 - A human-labeled set. The bench's label format and report are ready for one.

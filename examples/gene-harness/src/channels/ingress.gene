@@ -54,6 +54,7 @@
           ^event_id payload/event_id ^event (copy event)})
         (record .put "message" message)
         (record .put "start_allowed" (|| (! decision/route/require_mention) (event/text .contains? mention)))
+        (record .put "mentioned" (event/text .contains? mention))
         (record .put "status" "pending")
         (record .delete "reason")))
     (state/ingress .put id record)

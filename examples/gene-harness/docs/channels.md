@@ -304,6 +304,11 @@ Offer distinct controls for the paused task and for queued requests:
 | Stopped, failed or interrupted | Preserve the operator hold; recover uncertain work before explicitly resuming queued requests. |
 | Normally completed | Clear only the completed work's temporary blockers; coalesce and admit a batch only if no operator hold remains. |
 
+A top-level message that does not mention the assistant on a route without
+`require_mention` also gets a quick `channel/addressed` decision, so a message
+clearly written to other people does not start work
+([quick decisions](decisions.md)).
+
 **Continue current work** uses the existing manual continuation operation.
 **Continue until finished** uses its automatic continuation mode. These task
 controls preserve operator holds on the queue, even after the resumed task
