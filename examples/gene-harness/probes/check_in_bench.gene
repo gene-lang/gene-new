@@ -226,6 +226,7 @@
           (if ($present? template_path)
             (templates .push {^session session ^task_root root ^boundary boundary
               ^request (byte_prefix request 600)
+              ^responses ($map ($drop recent (- recent/.size ($math/min 3 recent/.size))) (fn [entry] (byte_prefix (?? entry/response "") 300)))
               ^recent ($map ($drop recent (- recent/.size ($math/min 5 recent/.size))) (fn [entry] (byte_prefix (?? entry/result "") 200)))
               ^label ""}))
           (set boundary (+ boundary interval)))))
