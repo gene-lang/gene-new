@@ -863,7 +863,8 @@ and the descriptors `@font-face` needs:
   drawers).
 - **Density.** Each step is declared as `calc(<base> * var(--density))` on
   `:root`, with the same calc on `control-height`. The theme sets `--density: 1`;
-  the compact preference sets `.8` on the root element. Density applies to the
+  the compact preference sets `.8` on the root element from the `preferences`
+  layer, so it wins over the theme's value. Density applies to the
   whole page; a subtree that redeclares `--density` does not recompute the
   steps, for the same reason the aliases are declared on `.ui_panel`.
 - **Rule**: margins, paddings and gaps in host CSS use a space token, `0` or
@@ -910,13 +911,15 @@ current engines, so focus rings still match each shape.
   stack correctly without guessing 1000.
 - **Motion**: `duration-fast` (100ms), `duration-base` (180ms) and
   `ease-standard`. `minimal` has no transitions; the tokens let another theme
-  add hover and drawer motion. Under `prefers-reduced-motion: reduce`
-  the system sets both durations to `0ms`. Animated mode switching stays a
-  non-goal.
+  add hover and drawer motion. Under `prefers-reduced-motion: reduce` the
+  system sets both durations to `0ms`. It does so with `!important` in the
+  `preferences` layer, so the setting beats any theme value (see
+  [Applying a theme](#themes)). Animated mode switching stays a non-goal.
 
 ### Layout sizes
 
-All in `rem`, so they scale with text size:
+All are plain `rem` lengths, so they scale with text size, and the generator
+can compute the `narrow` breakpoint from them (see [Responsive](#responsive)):
 
 | Token | Today |
 | --- | --- |
@@ -925,7 +928,7 @@ All in `rem`, so they scale with text size:
 | `topbar-height` | 76px → `4.75rem` |
 | `drawer-width`, `drawer-width-wide` | 320px / 440px → `20rem` / `27.5rem` |
 | `menu-width` | 220px → `13.75rem` |
-| `panel-min`, `main-min` | Docked minimums, 280px / 340px |
+| `panel-min`, `main-min` | Docked minimums, 280px / 340px → `17.5rem` / `21.25rem` |
 | `control-height` | `2.5rem`, unchanged |
 | `touch-target` | `2.75rem` (44px), used under a coarse pointer |
 
@@ -981,24 +984,44 @@ Three layers, in order of preference:
    this way. Most components need nothing more.
 2. **Container queries inside regions.** A component's layout depends on the
    width of the region it sits in, not on the window.
-3. **Viewport media queries only for the shell's arrangement and for input
-   modality.**
+3. **A query on the whole page only for the shell's arrangement**, plus media
+   queries for input modality and for user settings such as reduced motion.
 
-**Shell breakpoints.** There are two named breakpoints, defined once as Gene data
-in `theme.gene`. The app, the plugin manager and `/about/` all use them.
-Breakpoints belong to the system, not to a theme: media queries cannot read
-tokens, and the client must agree with the CSS.
+**Shell breakpoints.** There are two. The app, the plugin manager and `/about/`
+all use them.
 
-| Name | Width | Shell |
+| Name | Applies below | Shell |
 | --- | --- | --- |
-| `narrow` | ≤ 900px | The sidebar becomes an overlay with all of its overlay styling. A docked view stacks above the conversation. |
-| `compact` | ≤ 760px | Phone gutters, drawers at full width, smaller empty state |
+| `narrow` | The larger of `56.25rem` (900px today) and `sidebar-width + panel-min + main-min` | The sidebar becomes an overlay with all of its overlay styling. A docked view stacks above the conversation. |
+| `compact` | `47.5rem` (760px today) | Phone gutters, drawers at full width, smaller empty state |
 
-Media queries cannot read custom properties, so host rules that use a
-breakpoint are generated from the constant. Spotlight's 480px query moves to
-`compact`. The client's `narrow_sidebar?` must agree with
-the CSS. A guard spec can check both against the constant today. A
-`$dom/match_media` web-profile primitive would remove the duplicate number.
+Both are measured in `rem` against the root's actual font size, so they move
+with the browser's text size and with the `text_size` preference, as the column
+widths do. A viewport media query cannot do this: in a media query, `rem` means
+the browser's initial font size and ignores the preference. Take `larger`
+(125%) with a 16px browser default. The three columns then need
+290 + 350 + 425 = 1065px, and `narrow` starts at 1125px. A 1024px window gets
+the narrow layout instead of overflowing.
+
+- **The page is the shell's container.** `body` is an `inline-size` container
+  named `shell`, and the shell's rules are `@container shell (width < …)`
+  queries, whose conditions resolve `rem` against the root element. A region
+  container cannot do this, because the shell grid itself is what changes.
+  Phase 2 checks that fixed overlays (the narrow sidebar, drawers, spotlight)
+  still cover the viewport when an ancestor is a container.
+- **`narrow` follows the theme.** Query conditions cannot read custom
+  properties. So the generator computes `narrow` from the theme's resolved
+  layout sizes and writes the shell's narrow rules into the theme's stylesheet,
+  inside the `shell` layer. The layout size tokens are therefore plain `rem`
+  lengths that the generator can add up. A theme with a wider sidebar collapses
+  earlier instead of overflowing. `compact` stays a system constant.
+- **The client follows the CSS.** The narrow rules also set `--shell-narrow: 1`
+  on `.app`. The client reads it on resize and after applying an appearance
+  change, through a new `$dom/style_value` web-profile primitive.
+  `narrow_sidebar?` no longer compares `inner_width` with 900, so the threshold
+  exists only in the generated CSS.
+
+Spotlight's 480px query moves to `compact`.
 
 **Region containers.** Every region whose width is set by the shell becomes a
 named `inline-size` container:
@@ -1066,28 +1089,87 @@ Four parties customize different things:
   across ports. This cookie deliberately has no port in its name. One choice
   therefore follows a browser profile across every Harness host on the same
   host name: all local workspaces and the manager. The value is a short
-  URL-encoded field list plus a random browser id. Its attributes are
+  URL-encoded field list. Its attributes are
   `Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000`. The client never reads
-  the cookie itself; it gets the values from `<html>` and from push messages.
-- **Defaults.** A missing or invalid field falls back to its own default. A
-  theme name that is not installed renders `default`. The cookie keeps the name,
-  so the choice comes back if the theme is installed again.
-- **Setting.** `POST /api/v9/appearance` takes any subset of the fields, with
-  the same same-origin and CSRF checks as today. It answers with the resolved
-  appearance and a `Set-Cookie`. The recovery server offers the same endpoint.
+  the cookie itself. It gets the values from `<html>` and from
+  `GET /api/v9/appearance`.
+- **Saved and rendered.** The cookie holds the *saved* choice. Each host
+  resolves it into what it *renders*.
+  - A theme that is not installed on that host renders `default`, and so does
+    every plugin or user theme under Recovery. The saved name stays, so the
+    choice comes back wherever the theme is installed.
+  - A missing field renders its default. So does an invalid one, which the next
+    write drops.
+  - A theme name is kept whether or not this host has the theme.
+
+  The saved value is never replaced by its fallback. Suppose a browser chooses
+  `paper` in workspace A, then changes only the mode in workspace B, which
+  lacks that plugin. B renders `default` and keeps `paper` saved, so A still
+  shows `paper`.
 - **First paint.** `page` reads the cookie from the request. It renders
   `data-theme`, `data-density`, `data-text-size` and `data-content-width` on
-  `<html>`, the active theme's stylesheet link and its font preloads. There is
-  no flash, as today.
-- **Live updates.** The WebSocket upgrade request carries cookies, so the push
-  service records each socket's browser id. A change sends `appearance` only to
-  the sockets of that browser. Other browsers keep their own choice.
+  `<html>`, the rendered theme's stylesheet link and its font preloads. There
+  is no flash, as today. A browser with no cookie renders the defaults. Nothing
+  needs to be written until the user changes something.
+- **Reading.** `GET /api/v9/appearance` answers from the cookie its request
+  carries, with both forms:
+
+  ```gene
+  {^saved {^theme "paper" ^mode "dark"}
+   ^rendered {^theme "default" ^mode "dark" ^stylesheet "…"}}
+  ```
+
+  Tabs apply `rendered`, and Settings shows `saved`. The picker marks `paper`
+  as chosen and notes that it is not installed on this host.
+- **Persisting.** `POST /api/v9/appearance` is the only path that writes the
+  cookie. It takes the fields to change, with the same same-origin and CSRF
+  checks as today.
+  - **Merging.** It merges those fields into the saved values from the
+    request's cookie. It compares the saved values before and after, never the
+    rendered ones.
+  - **Nothing changed.** It sends no `Set-Cookie`, pushes nothing and publishes
+    no event. Today's `set_appearance` publishes `AppearanceChanged` even when
+    the mode is unchanged; this path does not.
+  - **Something changed.** It writes the merged saved values and publishes
+    `AppearanceChanged` with them. It then sends `appearance_changed`, which
+    carries no values, to every socket on this host.
+
+  It answers in the same shape as the GET. Settings and the client send only
+  the fields the user changed, never a rendered value. So an ordinary mode or
+  density change cannot save a fallback as the user's theme. The recovery
+  server offers both endpoints.
+- **Applying.** A tab that receives `appearance_changed` calls the GET and
+  applies `rendered` if it differs from what it shows. The GET carries that
+  tab's own cookie. A tab of the same browser therefore picks up the change,
+  and a tab of another browser finds nothing new.
+  - The push needs no browser identity, so there is no id to issue and no
+    socket that might lack one. A fresh browser behaves the same as any other.
+  - The cost is one small GET per open tab on the host for each change.
+  - A tab never answers either the push or the GET with a POST, so one change
+    cannot cause another.
+- **Other workspaces.** A host can push only to its own sockets. A change made
+  in workspace A therefore does not reach a tab of workspace B that is already
+  open in the same browser, even though B's next request carries the new
+  cookie. B catches up when it becomes active.
+  - On window `focus`, where the client already reconnects its socket, and on
+    `visibilitychange` to visible, the client makes the same GET.
+  - Switching to B updates it at once. Of two windows side by side, the one not
+    focused stays stale until it is.
+  - A notification across hosts would need each host to reach the others, while
+    the focus check needs nothing new.
 - **`/theme`, `set_appearance` and the CLI** run on the server, where no browser
-  is involved. They send `appearance` to every connected socket. Each tab
-  applies it and stores it in its own cookie with the POST, which is harmless
-  when several tabs of one browser repeat it. Browsers that are not connected
-  keep their choice. The model reads the connected browsers' appearances from
-  `(workspace .appearance)`, one entry per browser.
+  is involved. They send `appearance_request` to every connected socket, with
+  only the fields the command sets. A tab that receives it POSTs those fields.
+  - When one browser has several tabs open, the first POST changes the cookie
+    and sends `appearance_changed`. The other tabs' POSTs merge the same fields
+    and find nothing changed.
+  - If two POSTs race with the old cookie, both write the same merged values,
+    and the extra `appearance_changed` only causes GETs.
+  - Browsers that are not connected keep their choice.
+
+  The model reads what each connected tab shows from `(workspace .appearance)`:
+  one entry per tab, with its saved and rendered values. Each tab reports them
+  over its socket after applying a change.
 - **What goes away.** `<state_root>/appearance.gene` and the per-workspace mode
   are removed, with no migration. The recovery server reads the cookie like the
   normal server. `/about/` renders its `<html>` attributes per request instead
@@ -1283,8 +1365,23 @@ first `minimal` only restates them. The two diverge as the designer works.
   theme's. Plugin style contributions mount after both. The order is host
   rules, then theme rules, then plugin rules, and host rules sit in cascade
   layers, so a theme rule beats a host rule regardless of specificity.
-- **Switching.** Changing theme in a tab replaces one `<link>`. The
-  `appearance` message carries the new stylesheet URL.
+- **User settings beat themes.** That same order would let a theme defeat the
+  user. A normal host declaration in a layer loses to any unlayered theme value.
+  So a layered `--duration-fast: 0ms` under reduced motion would lose to a
+  theme's `180ms`, and a layered `--content-width` for the user's preference
+  would lose to the theme's own `--content-width`. The host declarations that
+  carry a user setting are therefore `!important` and sit in a `preferences`
+  layer declared before all others:
+  - reduced motion
+  - the forced-colors adjustments
+  - the density, text size and content width preferences
+
+  An important declaration beats every normal one. Among important
+  declarations the first layer wins, even over an unlayered `!important` in a
+  theme or plugin. A preference at its default declares nothing, so the
+  theme's own value applies.
+- **Switching.** Changing theme in a tab replaces one `<link>`. The appearance
+  answer's `rendered` part carries the new stylesheet URL.
 - **Recovery** renders built-in themes only. A browser set to a plugin or user
   theme sees `default` there.
 
@@ -1340,7 +1437,11 @@ Appearance, per browser. Once the design is settled, its values move into
    - views docked at 25%, 50% and 70% on both sides, and the full view
    - sidebar collapsed, and long titles
    - Recovery UI, the plugin manager and `/about/`
-   - 200% text size, forced colors and reduced motion
+   - 200% text size, and each `text_size` preference with a view docked at
+     1024 and 1440px
+   - forced colors
+   - reduced motion, with a theme whose durations are not zero; `minimal` has
+     none, so it would hide a failure
    - `minimal` as well as `default`, since `minimal` takes whatever it does not
      set from `default`
 
@@ -1359,7 +1460,10 @@ themes. They do not restrict plugin or user themes.
   exceptions with their reasons, such as the image-grid insets.
 - Host markup uses icons by name, never as text glyphs, and every name in the
   vocabulary has a drawing in `default`.
-- Every viewport query uses a named breakpoint, and the client agrees with it.
+- Every shell query uses a named breakpoint, and no host or client code
+  compares the window width with a number.
+- The `preferences` layer is declared first and holds only `!important`
+  declarations. Every user setting the host applies is declared there.
 - The color floors hold for `default` and `minimal` in both modes, checked on
   `minimal`'s resolved tokens.
 - A built-in theme's `style` follows the token rule for values. A literal in
@@ -1384,14 +1488,18 @@ above.
   `rem`, fix the mono literal, move the overlay styling to `narrow`, delete the
   duplicate rules, and give the menu shadow a dark value.
 - Split `base_styles` into modules under `src/web/style/` in the cascade layers
-  `reset, base, shell, components, content, utilities`. Theme and plugin styles
+  `preferences, reset, base, shell, components, content, utilities`. The
+  reduced-motion and forced-colors blocks move into `preferences` as
+  `!important` declarations. Theme and plugin styles
   stay outside any layer, so they win over every host rule without `:where()`,
   and the "select rule comes last" ordering is no longer needed.
 - Extend the guards.
 
 **Phase 2: responsive structure and the specimen.**
 
-- Add the named breakpoints and generate the media queries from them.
+- Make `body` the `shell` container and add the named breakpoints. Generate
+  `narrow` from each theme's layout sizes, and switch the client to
+  `--shell-narrow` with `$dom/style_value`.
 - Make the regions containers and add the `$css` `container` node.
 - Support modes for part of a page, and add `data-component` on the view and
   sidebar roots.
@@ -1402,9 +1510,14 @@ above.
 **Phase 3: themes, fonts, icons and per-browser appearance.**
 
 - Add the `themes` registry for plugin themes, and one stylesheet per theme.
-- Store appearance, including the theme name, in the cookie, with live updates
-  to the sockets of each browser. Remove `appearance.gene`, and add the theme
-  picker and the new preferences to Settings → Appearance.
+- Store appearance, including the theme name, in the cookie. Implement:
+  - the split between saved and rendered values
+  - the merging POST and the GET
+  - `appearance_changed` and `appearance_request`
+  - the re-read on focus
+
+  Remove `appearance.gene`, and add the theme picker and the new preferences
+  to Settings → Appearance.
 - Add web fonts: `$web/font`, the `$css` `font_face` node and preloads.
 - Add icons: the vocabulary, mask rendering, the `icon` node and `icons` rows,
   and replace the glyphs in host markup.
@@ -1429,3 +1542,111 @@ fonts and icons.
    is a linked child that `extends` the original and follows later changes to
    it, the way `minimal` follows `default`.
    Both could be offered: Duplicate for a copy, Customize for a child.
+
+## Review comments — 2026-11-04
+
+1. **Complete the per-browser synchronization flow.** In
+   [Appearance preferences](#customization), a shared cookie carries the choice
+   across workspace ports, but a workspace can push only to its own sockets.
+   Changing appearance in workspace A therefore leaves an already-open
+   workspace B displaying the old choice, even though its next request carries
+   the new cookie. Specify whether B refreshes on focus/reconnect or receives a
+   cross-host notification. Also distinguish a server-command request to persist
+   a choice from the notification that the choice was saved: having every tab
+   POST each received `appearance` message can create a POST/push loop. Today's
+   `src/runtime/appearance.gene` publishes even when the mode is unchanged, so
+   repeated POSTs are not currently harmless. Define the persist-once and
+   apply-only paths before implementing Phase 3.
+
+   **Resolved.** [Customization](#customization) now separates the paths. The
+   POST is the only writer, and it does nothing (no cookie, push or event) when
+   the values are unchanged. Pushes never cause a POST. Server commands send a
+   separate `appearance_request`. Other workspaces re-read the cookie on window
+   focus and on `visibilitychange` through `GET /api/v9/appearance`. Round 2
+   below replaced the push to one browser's sockets with a push to every
+   socket that carries no values.
+
+2. **Make shell collapse follow the scaled layout minimums.**
+   [Layout sizes](#layout-sizes) converts column widths to `rem`, while
+   [Responsive](#responsive) fixes the wide layout above 900px. At the proposed
+   125% text size with a 16px browser default, sidebar + panel minimum + main
+   minimum becomes 290 + 350 + 425 = 1065px. A 1024px window still gets the
+   three-column layout and overflows. Region container queries cannot repair
+   that outer grid. Specify an intrinsic fallback or collapse based on the
+   available width and resolved minimums, with matching client behavior. Include
+   this combination in the reflow checks; it affects ordinary preference changes
+   as well as custom themes.
+
+   **Resolved.** In [Responsive](#responsive), `body` is now the `shell`
+   container. The breakpoints are container queries in `rem`, which resolve
+   against the actual root font size. `narrow` is generated from each theme's
+   own `sidebar-width + panel-min + main-min`, with today's 900px as a floor.
+   The client reads `--shell-narrow` from the CSS instead of comparing the
+   window width with 900. The designer's reflow checks cover each `text_size`
+   preference at 1024 and 1440px.
+
+3. **Give reduced-motion overrides precedence over theme values.**
+   [Motion](#elevation-layers-and-motion) says the system sets durations to
+   `0ms` under reduced motion, but [Applying a theme](#themes) and Phase 1 put
+   all host rules in layers and theme declarations outside them. A normal
+   layered `--duration-fast: 0ms` loses to the theme's unlayered nonzero token,
+   regardless of selector specificity or source order. State where these system
+   overrides sit in the cascade, or give the reduced-motion declarations
+   explicit priority. Verify with a built-in theme that actually has motion;
+   `minimal`'s zero durations would conceal the problem.
+
+   **Resolved.** The same problem affected the density and content-width
+   preferences, since the theme declares `--density` and `--content-width` too.
+   [Applying a theme](#themes) adds a `preferences` layer, declared first,
+   whose declarations are all `!important`. It holds reduced motion, the
+   forced-colors adjustments and the user's preferences. A guard checks the
+   layer. The reduced-motion check uses a theme with nonzero durations, because
+   neither built-in theme has any motion while `default` keeps today's values.
+
+## Review comments — round 2, 2026-11-04
+
+The updated synchronization, responsive layout and preference-layer sections
+address the previous comments. Two remaining points concern the appearance flow:
+
+1. **Establish the browser id before subscribing to appearance updates.**
+   [Customization](#customization) gets the socket's browser id from the
+   appearance cookie at upgrade, but only the appearance POST creates that
+   cookie. In a fresh browser, two tabs can therefore connect without an id.
+   The first setting change creates an id, while their existing sockets still
+   have none, so a push scoped to the new id cannot update the other tab.
+   Specify the initial cookie/bootstrap step and how existing sockets adopt
+   the identity. A missing identity also needs an exception to the no-op rule:
+   initializing with the default preferences must still establish the cookie.
+
+2. **Separate the saved theme choice from the theme actually rendered.**
+   The defaults rule correctly keeps an unavailable theme's name in the cookie,
+   but the POST flow now describes comparing and persisting the resolved
+   appearance. For example, a browser chooses `paper` in workspace A, visits
+   workspace B where that plugin is absent, and changes only the mode. B must
+   preserve `paper` while rendering `default`; persisting B's resolved fallback
+   would silently reset A's choice too. State that partial writes merge into
+   the saved preferences and compare those values before resolving local
+   fallbacks. Keep that distinction in responses used by Settings, so an
+   ordinary mode or density change cannot write the fallback back as the user's
+   chosen theme. The same case applies in Recovery, where plugin themes always
+   fall back.
+
+### Resolutions — round 2
+
+1. **Resolved by removing the browser id.** The id existed only to aim pushes
+   at one browser's sockets. A change now sends `appearance_changed`, which
+   carries no values, to every socket on the host. Each tab re-reads its own
+   cookie with `GET /api/v9/appearance`, the same call as the focus check.
+   Nothing needs an identity, so there is no bootstrap step, no socket left
+   without one, and no exception to the no-op rule. A browser without a cookie
+   renders the defaults until the user changes something. The cost is one
+   small GET per open tab for each change, which suits a single user.
+   `(workspace .appearance)` becomes one entry per tab, reported by each tab
+   over its socket.
+2. **Resolved.** [Customization](#customization) now separates the saved
+   choice from what a host renders. The POST merges the fields it is given
+   into the saved values and compares saved values only. The GET and POST
+   answers carry both `saved` and `rendered`. Tabs apply `rendered`, Settings
+   shows `saved`, and both send only the fields the user changed. Server
+   commands send only the fields they set. In the `paper` example, B and
+   Recovery render `default` while `paper` stays saved.
