@@ -8,16 +8,36 @@ public color overrides, and can contribute styles for presentation the host
 does not provide. The host supplies visual defaults; trusted plugin authors
 decide when to customize them.
 
+This chapter has two parts. Everything up to [Plugin styling](#plugin-styling-defaults-and-customization)
+describes the theme as implemented. That theme is the owner's personal
+preference and will become the `minimal` theme. [Theme foundation](#theme-foundation-proposed)
+proposes the system in which every visual decision can be customized. It covers
+installable themes, web fonts, icons, responsive layout, per-browser
+preferences, plugin-defined structures, and type, spacing, border, shape and
+elevation tokens. A designer will build the `default` theme on it. That part is
+not implemented.
+
 ## Decisions
 
-Owner decisions, 2026-10-17:
+Owner decisions, 2026-11-04:
+
+| Question | Decision |
+| --- | --- |
+| Scope of customization | Everything can be customized. The 2026-10-17 decisions below describe the owner's own theme, `minimal`, not rules of the system. A designer creates the `default` theme. |
+| Web fonts | Allowed |
+| Icons | Use an icon set |
+| Appearance preferences | Per browser, replacing the per-workspace mode |
+| Several themes | Yes: users choose among installed themes. Later they can duplicate a theme and customize the copy. |
+| `minimal` and `default` | `minimal` extends `default` and sets its own values for the owner's choices. Everything else follows `default`. |
+
+Owner decisions, 2026-10-17, now the values of the `minimal` theme:
 
 | Question | Decision |
 | --- | --- |
 | Button radius | `5px` |
 | Accent | Fully neutral: pure grays, and the accent is the ink color |
 | User message | Square block whose color is a theme token (`user`) |
-| Where the mode is stored | Per workspace, for now |
+| Where the mode is stored | Per workspace, for now. Superseded 2026-11-04: per browser. |
 | Follow-the-OS mode | No. Only `light` (default) and `dark` |
 | `/about/` | In scope. It is part of the Harness and takes the theme the way a plugin view does |
 | Plugin styling | Ordinary plugin views should need no or minimal CSS. Provide scoped customization for needs outside the theme, and document what the theme does and does not cover. |
@@ -38,9 +58,10 @@ Owner decisions, 2026-10-17:
 - **An extension path.** Plugins can customize their own presentation and add
   styles for specialized content that the host theme does not cover.
 
-Non-goals: user-authored CSS, theming the terminal client, following
-`prefers-color-scheme`, animated theme transitions, and defensive restrictions
-intended to contain malicious plugin CSS. Plugin customization is in scope.
+Non-goals: theming the terminal client, following `prefers-color-scheme`,
+animated theme transitions, and defensive restrictions intended to contain
+malicious plugin CSS. Plugin customization is in scope. User-made themes,
+including their CSS, are planned; see [Themes](#themes).
 
 ## Principles
 
@@ -131,7 +152,8 @@ a tab or a link, it is square, and so is its hover background.
   colors are gone.
 - **Shadows** are gone from the composer, drawers and the `/about/` hero
   panel. Floating layers (drawers, the notification center, the mobile sidebar)
-  get a 1px `--edge` border. The mobile overlay keeps its
+  get a 1px `--edge` border. The exception is the conversation row menu
+  (`.session_menu`), which uses `--shadow-menu`. The mobile overlay keeps its
   `box-shadow: 0 0 0 100vmax` scrim technique, colored by `--scrim`. That is a
   backdrop, not a shadow.
 
@@ -180,6 +202,7 @@ These defaults are supplied by the host. Their absence from the seven-key
 | `scrim` | Overlay behind the mobile sidebar | `rgb(0 0 0 / .2)` | `rgb(0 0 0 / .5)` |
 | `select-chevron` | Select arrow, a data-URI SVG drawn in `muted` | per palette | per palette |
 | `radius-button` | The only radius | `5px` | `5px` |
+| `shadow-menu` | Conversation row menu | `0 5px 18px #0002` | same |
 | `control-height` | Common action-button and dropdown height | `2.5rem` (40px) | same |
 | `font-sans` | UI and prose text | `-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif` | same |
 | `font-mono` | Code, commands, REPL input | `ui-monospace, SFMono-Regular, Menlo, Consolas, monospace` | same |
@@ -611,3 +634,798 @@ mounts no styles in `/ui/default`).
 Keep this boundary in the plugin author documentation so authors can tell
 whether to use a host primitive, add a small scoped style contribution, or
 propose a reusable addition to the shared UI layer.
+
+## Theme foundation (proposed)
+
+Proposed 2026-11-04. Nothing in this part is implemented.
+
+The aim is a system in which the visual design is a set of values: a theme. A
+designer produces the `default` theme, and the owner keeps the current look as
+`minimal`, by changing values rather than restructuring the shell. Plugin
+structures follow whichever theme is active. Users choose among installed
+themes in each browser, and later duplicate one and customize the copy. The
+current theme already treats color this way. This part extends that to every
+other visual decision: fonts, icons, layout, responsiveness, user preferences
+and plugin-defined structures.
+
+### Where the current theme stands
+
+The palettes are a good base: colors are data, both modes are complete, and a
+spec guards contrast. Every other visual decision is still written inline in
+about 500 lines of CSS text. Measured in `src/web/style.gene` on 2026-11-04:
+
+| Dimension | Distinct values | Notes |
+| --- | --- | --- |
+| `font-size` | 27 | `.63rem` to `1.9rem`; `.8rem` ×15, `.78rem` ×13, `.75rem` ×8 |
+| `padding` | 82 | |
+| `margin` | 66 | |
+| `gap` | 21 | |
+| `line-height` | 11 | |
+| `letter-spacing` | 7 | |
+| `font-weight` | 6 | 400, 450, 500, 550, 600, 650 |
+| `z-index` | 5 | 1, 3, 5, 6, 20; the spotlight plugin uses 1000 |
+| Viewport breakpoints | 5 | app 760/900/901, website 760/960, plugin manager 760, spotlight 480; the client hard-codes 900 |
+
+Other findings:
+
+- **The guard enforces the look instead of the system.**
+  `tests/unit/web/theme_spec.gene` asserts that every radius is `0` except the
+  `button` rule and four `/about/` controls. A designer who wants rounded cards
+  must first rewrite the test. The spec should require radius tokens and leave
+  the values to the theme.
+- **The root font size is pinned.** `:root { font-size: 16px }` overrides the
+  reader's browser text-size setting, so every `rem` ignores it.
+- **Layout widths are in px**: 232px sidebar, 760px content, 320px and 440px
+  drawers, 220px menu, 76px top bar. They do not grow with text size.
+  `--content-width` is declared in `base_styles`, not in the theme.
+- **The no-shadow rule has drifted.** `--shadow-menu` (`0 5px 18px #0002`) is
+  one value for both modes, and 13% black barely shows on the dark surface.
+- **One literal font stack.** `.command_output` repeats the mono stack instead
+  of using `var(--font-mono)`.
+- **The narrow layout is split across two breakpoints.** The sidebar becomes an
+  overlay at 900px (client and CSS), but its overlay styling (`.close_menu`,
+  `.brand` padding, 40px row heights) only starts at 760px. Between 761px and
+  900px the overlay's Close button keeps default button chrome. Four rules in the
+  first 760px block repeat what the 900px block already does.
+- **Built-in plugins invent their own tokens.** `src/builtin/spotlight.gene`
+  ships a stylesheet with a 7px radius, two box shadows, px font sizes, a `#0005`
+  backdrop, a hex fallback on every token (`var(--accent, #2463eb)`) and its own
+  `[data-theme=dark]` block. It needs a dialog, an active list option and
+  keyboard hints, and the theme has no tokens for any of them. The literal scan
+  does not cover plugin stylesheets, so nothing flagged it.
+- **Plugin views respond to the viewport, not to their own box.** A view docked
+  at 25% of a 1440px window is 360px wide, but no media query fires.
+- **A mode cannot apply to part of a page.** The dark palette is declared only
+  on `:root[data-theme="dark"]`. So the two modes cannot be shown side by side,
+  and a region cannot stay dark on its own.
+- **`$css` has no `@container`, `@layer`, `@supports` or `@font-face` node.**
+  Host CSS is text and can use them; plugin styles, which are `$css` data,
+  cannot.
+- **No webfont path.** Only system font stacks work; no route serves font files.
+
+### System and theme
+
+| | System | Theme |
+| --- | --- | --- |
+| Defines | Token names and roles, which rules read which token, the icon names, the shell structure and region names, breakpoint names, cascade layers, accessibility floors for built-in themes | Every value: palettes, fonts, type scale, spacing scale, radii, borders, shadows, motion, layout sizes, icon drawings, and any extra CSS |
+| Owner | Host; changes are reviewed because plugins and themes depend on the names | The theme's author: the designer for `default`, the owner for `minimal`, a plugin or a user for theirs |
+| Lives in | Stylesheet modules under `src/web/style/` | Built-in themes in `src/web/themes/<name>.gene`; plugin `themes` rows; the user theme library |
+| Checked by | The guard spec: rules use tokens | Built-in themes: contrast floors in the guard spec. Other themes: the specimen and editor show ratios without enforcing them. |
+
+Nothing in the system fixes a visual choice. Square corners, the neutral
+palette, the 5px button radius, underlined links and the near-absence of
+shadows are values of `minimal`. The `default` theme may choose differently.
+
+### Token tiers
+
+1. **Scales.** Raw steps: the spacing scale, the type scale, gray ramps. Rules
+   may use spacing and type steps directly. Color ramps are private to the
+   theme, and rules use color roles only.
+2. **Roles.** The public contract that host rules, plugin styles and
+   `ui_configure ^theme` use: `--surface-raised`, `--radius-field`,
+   `--type-small`, `--layer-dialog`.
+3. **Component tokens.** Optional hooks that a single component reads with a
+   role fallback, such as `--message-user-surface` or `--board-lane-surface`.
+   The host adds them only where a designer needs to tune one component apart
+   from its role. Plugins use them to make their own structures themable (see
+   [Extensibility](#extensibility-plugin-defined-structures)).
+
+Names are kebab-case CSS custom properties, `--<group>-<role>[-<variant>]`.
+Gene theme maps use snake_case keys (`^radius_field`), and the generator
+converts `_` to `-`, as `$css` `decl` already does.
+
+### Color
+
+The current twelve palette entries become roles. `sidebar` and `user` describe
+one component each, so they become component tokens. The new roles fill gaps
+that host rules or plugins currently cover with literals.
+
+| Role | Use | Today |
+| --- | --- | --- |
+| `surface` | Page, panels | `surface` |
+| `surface-alt` | Secondary regions: sidebar, card headers, the `/about/` footer | `sidebar` |
+| `surface-raised` | Menus, drawers, dialogs, popovers | `surface`, written per rule |
+| `soft` | Hover, code, badges | `soft` |
+| `selected` | Selected row, tab or option | alias `selected-surface` |
+| `line` | Decorative dividers | `line` |
+| `edge` | Control boundaries, floating-layer borders | `edge` |
+| `ink`, `muted` | Primary and secondary text | same |
+| `accent` | Links, active markers, the status dot | `accent` |
+| `action`, `action-ink` | Primary button fill and its text | `ink` fill, alias `action-ink` |
+| `focus` | Focus rings | `accent` |
+| `danger`, `success`, `warning`, `info` | Status text and rules | `danger`, `success`; `warning` and `info` are new |
+| `danger-surface` and the three other status surfaces | Tinted notice and badge backgrounds | none; notices are `soft` with a colored rule |
+| `scrim` | Overlay backdrop | `scrim` |
+| `series-1` … `series-8` | Categorical data colors for charts, legends and diagrams | none |
+| `syntax-*` | Code | derived from `ink`, unchanged |
+
+**Links** read `link-color` (default `accent`) and `link-decoration`. In
+`minimal`, `link-decoration` is `underline`, because its accent equals its ink.
+A theme that drops the underline needs a link color with 3:1 contrast against
+the surrounding text (WCAG 1.4.1).
+
+Floors for the built-in themes, checked in both modes. Plugin and user themes
+see the same ratios in the specimen and the theme editor, which never refuse a
+value.
+
+- Text roles reach 4.5:1 on every surface role they appear on.
+- `edge` and `focus` reach 3:1 on every surface.
+- Each `series-*` color reaches 3:1 on `surface` (WCAG 1.4.11, graphical
+  objects).
+- `action-ink` reaches 4.5:1 on `action` and on the action's hover fill.
+
+`ui_configure ^theme` accepts any color role, plus the tokens the view's own
+plugin declares (see [Extensibility](#extensibility-plugin-defined-structures)),
+instead of the current seven.
+
+### Typography
+
+- **Families**: `font-sans`, `font-mono`, and a new `font-display` for
+  headings, which defaults to `font-sans`.
+- **Root size**: `100%`, so the browser's text-size setting and the user's
+  text-size preference (below) scale everything measured in `rem`.
+- **Weights**: `weight-regular` (400), `weight-medium` (550) and `weight-bold`
+  (650) replace the current six. With system fonts, 550 renders as an
+  intermediate weight only where the font is variable.
+- **Size scale.** Eight steps absorb the current 27 values:
+
+| Step | Value | Absorbs | Typical use |
+| --- | --- | --- | --- |
+| `text-2xs` | `.68rem` | .63, .65, .68, .7 | Section labels, tab subtitles, hints |
+| `text-xs` | `.75rem` | .72, .75, .78 | Metadata, run status, footer links |
+| `text-sm` | `.82rem` | .8, .82, .85 | UI rows, conversation names, drawers, tables |
+| `text-md` | `.94rem` | .88, .9, .92, .94, .95 | Transcript body, composer, markdown |
+| `text-lg` | `1.05rem` | 1, 1.05, 1.1 | Small headings |
+| `text-xl` | `1.2rem` | 1.15, 1.2, 1.25 | Section headings, glyph buttons |
+| `text-2xl` | `1.4rem` | 1.4, 1.65 | Brand, page headings |
+| `text-display` | `clamp(1.8rem, 2.7vw, 2.4rem)` | 1.8, 1.9, the clamp | Empty-state headline |
+
+- **Roles.** Each role is one `font` shorthand token, so a rule writes
+  `font: var(--type-body)`. Tracking (letter spacing) is a separate token
+  because `font` cannot carry it.
+
+| Role | Today's equivalent |
+| --- | --- |
+| `type-body` | `.94rem/1.75` transcript and markdown |
+| `type-ui` | `.82rem/1.6` controls and rows |
+| `type-small` | `.75rem` metadata |
+| `type-label` | `.68rem` uppercase section labels, with `tracking-label` (`.07em`) |
+| `type-title` | `.88rem`, weight 550, the top-bar and drawer titles |
+| `type-heading-1` … `type-heading-3` | Markdown and plugin headings, with `tracking-tight` |
+| `type-display` | The empty-state headline |
+| `type-code` | `.82rem/1.7 var(--font-mono)` |
+
+#### Web fonts
+
+A theme can bring its own typefaces. Each font entry names a family, a file,
+and the descriptors `@font-face` needs:
+
+```gene
+^fonts [{^family "Inter" ^src "fonts/InterVariable.woff2" ^weight "100 900" ^style "normal"}
+        {^family "Inter" ^src "fonts/InterVariable-Italic.woff2" ^weight "100 900" ^style "italic"}]
+^tokens {^shared {^font_sans "Inter, -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif"}}
+```
+
+- **Bundled files.** A relative `src` names a file that ships with the theme:
+  `assets/fonts/` in the repository for built-in themes, or the plugin's
+  package for a plugin theme. The host publishes each file under a
+  content-addressed URL, as it does for stylesheets. It sends the font MIME type
+  and a long cache lifetime, which is safe because the URL changes with the
+  content. WOFF2 is the expected format. A plugin theme prepares its files with
+  a new `$web/font` while constructing its descriptor, as spotlight does with
+  `$web/stylesheet`. Bundled fonts work offline.
+- **External URLs.** An `https:` `src` is used as given. It needs the network
+  and reveals each page load to the font host. That is the theme author's
+  choice; pages send no CSP, so nothing blocks it.
+- **Rendering.** The generator emits one `@font-face` per entry, with
+  `font-display: swap` unless the theme says otherwise. `$css` gains a
+  `font_face` node so plugin and user themes can write font rules too. `page`
+  adds `<link rel="preload" as="font" crossorigin>` for the face that the
+  active theme's `font-sans` names, if any, so the first paint rarely shows a
+  swap. A theme inherits its parent's font entries, but a browser downloads a
+  face only when a family token uses it.
+- **Fallbacks.** Every family token keeps a system stack after the web face. A
+  theme may add metric overrides (`size-adjust`, `ascent-override`) on a local
+  fallback face, which reduces layout shift when the web face arrives.
+- **Licenses.** A bundled face needs a license that allows redistribution, such
+  as the SIL Open Font License. Its license file ships beside the font files.
+- **Recovery.** The recovery server serves the built-in themes' fonts without
+  loading any plugin.
+
+### Spacing and density
+
+- **Scale**: `space-1` `.25rem`, `space-2` `.5rem`, `space-3` `.75rem`,
+  `space-4` `1rem`, `space-5` `1.25rem`, `space-6` `1.5rem`, `space-8` `2rem`,
+  `space-10` `2.5rem`, `space-12` `3rem`.
+- **Semantic spacing**: `gutter` (inline page padding: today 2.25rem, or 1rem
+  when narrow), `stack-gap` (between blocks), `inline-gap` (between controls),
+  `inset-control` (button padding), `inset-field`, `inset-surface` (cards,
+  drawers).
+- **Density.** Each step is declared as `calc(<base> * var(--density))` on
+  `:root`, with the same calc on `control-height`. The theme sets `--density: 1`;
+  the compact preference sets `.8` on the root element. Density applies to the
+  whole page; a subtree that redeclares `--density` does not recompute the
+  steps, for the same reason the aliases are declared on `.ui_panel`.
+- **Rule**: margins, paddings and gaps in host CSS use a space token, `0` or
+  `auto`.
+
+Snapping 82 paddings to nine steps moves some elements by up to about 1px.
+That is expected and is the point of the scale.
+
+### Shape
+
+| Role | Use | `minimal` |
+| --- | --- | --- |
+| `radius-control` | Buttons (renames `radius-button`) | `5px` |
+| `radius-field` | Inputs, selects, the composer | `0` |
+| `radius-surface` | Cards, drawers, menus, dialogs, code blocks, images | `0` |
+| `radius-row` | Rows, tabs, and row-like buttons | `0` |
+| `radius-chip` | Badges, the status dot | `0` |
+| `radius-message` | The user message block | `0` |
+
+The reset keeps `border-radius: 0`. Each component rule reads its role, and the
+list of square exceptions under [Geometry](#the-rule) becomes rules that read
+`radius-row`. The guard changes from "only `button` is rounded" to "every
+radius is `0` or `var(--radius-*)`". Focus outlines follow `border-radius` in
+current engines, so focus rings still match each shape.
+
+### Borders and focus
+
+- `border-width` (1px), `border-width-strong` (2px: the selected tab, the
+  attention rail) and `rule-width` (3px: status rules on notices).
+- Decorative borders use `line` and control borders use `edge`, as today.
+- `focus-width` (2px), `focus-offset` (4px) and the `focus` color make up the
+  single focus ring rule. The image-grid point keeps its inset ring by reading
+  the same tokens with a negative offset.
+
+### Elevation, layers and motion
+
+- **Elevation**: `shadow-raised` and `shadow-overlay`, defined per mode. A dark
+  shadow needs a much higher alpha, or `none` with an `edge` border. `minimal`
+  keeps "lines, not shadows" by setting `none` everywhere except the menu.
+- **Layers.** One z-index scale replaces the scattered numbers: `layer-raised`
+  (1), `layer-sticky` (10, the host bar), `layer-overlay` (20, the mobile
+  sidebar), `layer-drawer` (30), `layer-menu` (40), `layer-dialog` (50,
+  spotlight), `layer-toast` (60). Plugin overlays use the same tokens, so they
+  stack correctly without guessing 1000.
+- **Motion**: `duration-fast` (100ms), `duration-base` (180ms) and
+  `ease-standard`. `minimal` has no transitions; the tokens let another theme
+  add hover and drawer motion. Under `prefers-reduced-motion: reduce`
+  the system sets both durations to `0ms`. Animated mode switching stays a
+  non-goal.
+
+### Layout sizes
+
+All in `rem`, so they scale with text size:
+
+| Token | Today |
+| --- | --- |
+| `sidebar-width` | 232px → `14.5rem` |
+| `content-width` | 760px → `47.5rem`; moves into the theme |
+| `topbar-height` | 76px → `4.75rem` |
+| `drawer-width`, `drawer-width-wide` | 320px / 440px → `20rem` / `27.5rem` |
+| `menu-width` | 220px → `13.75rem` |
+| `panel-min`, `main-min` | Docked minimums, 280px / 340px |
+| `control-height` | `2.5rem`, unchanged |
+| `touch-target` | `2.75rem` (44px), used under a coarse pointer |
+
+### Icons
+
+Today the UI uses text glyphs: `+`, `×`, `↓`, `⋯`. An icon set replaces them.
+Like every other visual decision, the drawings belong to the theme.
+
+- **The system owns the names.** Host markup uses a fixed vocabulary: `add`,
+  `close`, `menu`, `more`, `send`, `stop`, `copy`, `search`, `settings`,
+  `notifications`, `light`, `dark`, `chevron-down`, `chevron-right`,
+  `arrow-down`, `check`, `success`, `warning`, `error`, `info`, `external`,
+  `attachment`, `microphone`, `pin`, `edit`, `retry`, `delete`, `sidebar`,
+  `plugin`, `trigger`. Plugins can add names.
+- **The theme owns the drawings.** A theme's `^icons` map gives each name a
+  one-color SVG on a 24×24 view box. The generator writes each drawing into a
+  custom property as a data URI, `--icon-close: url("data:image/svg+xml,…")`.
+  A theme that omits a name inherits that drawing from `default`.
+- **Painted with masks.** Host markup and the component node render
+  `<span class="icon" data-icon="close" aria-hidden="true">`. The system paints
+  every icon with `background: currentColor` and
+  `mask: var(--icon) center / contain no-repeat`, plus one generated rule per
+  name that sets `--icon`. With masks, switching themes is purely a CSS change:
+  - no markup changes and no sprite URL in client state;
+  - no flash, and the recovery server needs nothing extra;
+  - icons take the current text color, so they follow mode, hover and
+    disabled states.
+
+  The cost is one color per icon. Stroke width cannot be tuned from CSS either,
+  so a theme that wants a different weight ships different drawings. An inline
+  SVG sprite referenced with `<use>` would allow tuning the stroke, but the
+  client would have to track the sprite URL of the active theme.
+- **Sizes**: `icon-size` (`1.25em`), `icon-size-sm` and `icon-size-lg`. They
+  are in `em`, so an icon scales with the text beside it.
+- **Default drawings.** The designer picks an open-source set with a
+  permissive license; Lucide (ISC), Phosphor (MIT) and Tabler (MIT) all fit.
+  `minimal` inherits these drawings unless the owner picks a square-capped
+  variant.
+- **Plugins.** Component trees gain `(icon ^name "close")`. A plugin adds a name
+  with an `icons` row, `{^name "board-lane" ^svg "<svg …>"}`. Its drawing is
+  checked against the inert SVG subset that the workspace image route already
+  enforces. A theme can redraw a plugin's icon by defining the same name.
+- **Accessibility.** Icons are decorative (`aria-hidden`). A button whose only
+  content is an icon needs an `aria_label`. Host buttons such as the menu
+  toggle and drawer close already have one.
+
+### Responsive
+
+Three layers, in order of preference:
+
+1. **Intrinsic layout first.** Flex wrapping, `repeat(auto-fit, minmax(…))`,
+   `min()` and `clamp()` adapt without any query. `web_grid` already works
+   this way. Most components need nothing more.
+2. **Container queries inside regions.** A component's layout depends on the
+   width of the region it sits in, not on the window.
+3. **Viewport media queries only for the shell's arrangement and for input
+   modality.**
+
+**Shell breakpoints.** There are two named breakpoints, defined once as Gene data
+in `theme.gene`. The app, the plugin manager and `/about/` all use them.
+Breakpoints belong to the system, not to a theme: media queries cannot read
+tokens, and the client must agree with the CSS.
+
+| Name | Width | Shell |
+| --- | --- | --- |
+| `narrow` | ≤ 900px | The sidebar becomes an overlay with all of its overlay styling. A docked view stacks above the conversation. |
+| `compact` | ≤ 760px | Phone gutters, drawers at full width, smaller empty state |
+
+Media queries cannot read custom properties, so host rules that use a
+breakpoint are generated from the constant. Spotlight's 480px query moves to
+`compact`. The client's `narrow_sidebar?` must agree with
+the CSS. A guard spec can check both against the constant today. A
+`$dom/match_media` web-profile primitive would remove the duplicate number.
+
+**Region containers.** Every region whose width is set by the shell becomes a
+named `inline-size` container:
+
+| Container | Element |
+| --- | --- |
+| `main` | `.workspace` |
+| `view` | `#ui_view` |
+| `sidebar` | `#sidebar_view` |
+| `drawer` | `.drawer` |
+
+Slot wrappers (`.plugin_component`) are not containers. An `inline-size`
+container cannot take its width from its content, so a toolbar component would
+collapse to zero width. Components in slots query the enclosing region instead.
+
+**Plugin authors** get three container steps, which are documented constants
+because queries cannot use custom properties either: `30rem` (phone-like),
+`48rem` (two columns fit) and `64rem` (wide). `$css` gains a `container` node
+that renders `@container` and is scoped like `media`:
+
+```gene
+(css
+  (rule ".sheet_grid" (decl grid_template_columns "12rem repeat(6, 1fr)"))
+  (container "view (max-width: 30rem)"
+    (rule ".sheet_grid" (decl grid_template_columns "1fr"))))
+```
+
+**Shared responsive structures**: `web_split` (two panes that wrap below their
+basis, intrinsic), `web_scroll_x` (horizontal scrolling for wide tables, the
+plugin counterpart of `.table_scroll`).
+
+**Input modality.** Under `(hover: none), (pointer: coarse)`, controls and rows
+use `touch-target` as their minimum height. Actions that are revealed on hover
+stay visible, as `.session_more` already does.
+
+**Accessibility floors**: reflow without horizontal page scrolling at 320 CSS
+px (WCAG 1.4.10), usable at 200% text size, and the existing `forced-colors`
+and `prefers-reduced-motion` blocks. The `max-height: 600px` landscape block
+stays.
+
+### Customization
+
+Four parties customize different things:
+
+| Who | Customizes | Through | Scope |
+| --- | --- | --- | --- |
+| Theme author | Every value | A built-in theme file, a `themes` row, or the theme editor | An installed theme |
+| User | Theme, mode, density, text size and content width. Also dock side and width, docked or full view, sidebar shown, host bar shown | Settings → Appearance, the host toggle, `/theme`, `set_appearance`, host controls | Browser for appearance; tab for presentation (as today) |
+| Plugin author | Their content and their regions (sidebar replacement, views, slots) and their view's colors | Components, `style`, `ui_configure ^theme`, component tokens | Their contributions, or page-wide if they choose |
+| Host | The shell structure and the recovery path | The system | — |
+
+**Appearance preferences, per browser:**
+
+| Preference | Values | Effect |
+| --- | --- | --- |
+| `theme` | An installed theme name; `default` when unset | See [Themes](#themes) |
+| `mode` | `light` (default), `dark` | `data-theme` |
+| `density` | `comfortable` (default), `compact` | `--density` 1 or .8 |
+| `text_size` | `small`, `default`, `large`, `larger` | Root font size 90%, 100%, 112.5% or 125% |
+| `content_width` | `narrow`, `default`, `wide`, `full` | `--content-width` for the transcript and composer |
+
+- **Storage.** The preferences are kept in a cookie, `gene_harness_appearance`,
+  that the server reads when it renders a page. Auth cookies put the port in
+  their names (`gene_harness_session_<port>`) because browsers share cookies
+  across ports. This cookie deliberately has no port in its name. One choice
+  therefore follows a browser profile across every Harness host on the same
+  host name: all local workspaces and the manager. The value is a short
+  URL-encoded field list plus a random browser id. Its attributes are
+  `Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000`. The client never reads
+  the cookie itself; it gets the values from `<html>` and from push messages.
+- **Defaults.** A missing or invalid field falls back to its own default. A
+  theme name that is not installed renders `default`. The cookie keeps the name,
+  so the choice comes back if the theme is installed again.
+- **Setting.** `POST /api/v9/appearance` takes any subset of the fields, with
+  the same same-origin and CSRF checks as today. It answers with the resolved
+  appearance and a `Set-Cookie`. The recovery server offers the same endpoint.
+- **First paint.** `page` reads the cookie from the request. It renders
+  `data-theme`, `data-density`, `data-text-size` and `data-content-width` on
+  `<html>`, the active theme's stylesheet link and its font preloads. There is
+  no flash, as today.
+- **Live updates.** The WebSocket upgrade request carries cookies, so the push
+  service records each socket's browser id. A change sends `appearance` only to
+  the sockets of that browser. Other browsers keep their own choice.
+- **`/theme`, `set_appearance` and the CLI** run on the server, where no browser
+  is involved. They send `appearance` to every connected socket. Each tab
+  applies it and stores it in its own cookie with the POST, which is harmless
+  when several tabs of one browser repeat it. Browsers that are not connected
+  keep their choice. The model reads the connected browsers' appearances from
+  `(workspace .appearance)`, one entry per browser.
+- **What goes away.** `<state_root>/appearance.gene` and the per-workspace mode
+  are removed, with no migration. The recovery server reads the cookie like the
+  normal server. `/about/` renders its `<html>` attributes per request instead
+  of choosing one of two pre-rendered pages. The static export stays `default`
+  and light. The statement in [workspace views](workspace-views.md) that
+  cookies handle only authentication changes with it.
+- **Settings → Appearance** becomes a section for this browser: a theme picker
+  with previews, then mode, density, text size and content width. These are not
+  setting definitions, since Settings scopes are workspace and shared. The
+  section uses its own action, as the theme buttons do today.
+
+**Is the layout customizable?** Yes, at four levels:
+
+1. **Sizes are tokens.** A theme sets the sidebar width, content width,
+   gutters and drawer widths.
+2. **The user** chooses content width and density, and already controls dock
+   side, dock width, docked or full view, sidebar visibility and host bar
+   visibility per tab. A sidebar width handle, remembered per tab like the
+   dock width, is a cheap addition.
+3. **Plugins** already own region content: the replaceable conversation
+   sidebar, views, and the `sidebar`, `toolbar`, `composer`, `status` and
+   `welcome` slots.
+4. **The shell structure is a documented contract.** A plugin with a page-wide
+   style can already rearrange the grid. Documenting the hooks below lets such
+   a plugin survive host changes.
+
+Not recommended now: rearranging regions by drag and drop, or a layout editor.
+Each movable region needs keyboard docking, persistence and a narrow-width
+behavior for every arrangement. The shell has four regions and already offers
+the useful arrangements: docked left, docked right, full, and sidebar hidden. If
+more are wanted later, add them as named presets (`grid-template-areas` strings
+in the theme), not as free-form docking.
+
+**Shell hooks.** These are the stable surface for themes and page-wide plugin
+styles:
+
+| Hook | Element | Notes |
+| --- | --- | --- |
+| `#harness_root.app` | The shell grid, areas `host`, `sidebar`, `panel`, `main` | State classes: `sidebar_collapsed`, `menu_open`, `has_ui_panel`, `ui_full`, `ui_right` |
+| `#ui_host` | Host bar | |
+| `#classic_sidebar`, `#sidebar_view` | Sidebar region and its content root | |
+| `#classic_workspace` (`.workspace`) | Conversation region: top bar, toolbar, transcript, composer | |
+| `#ui_panel`, `#ui_view` | View region and its content root | |
+| `.drawer` | Drawers | |
+| `[data-component="<name>"]` | A contribution's wrapper | Slot wrappers have this today. `#ui_view` and `#sidebar_view` get it too; today they carry only the scope class. |
+| `:root[data-theme]` and the preference attributes | Mode and preferences | |
+
+Other class names are internal. They remain usable, but they may change
+without notice.
+
+### Extensibility: plugin-defined structures
+
+**Why the theme must reach structures that plugins define:**
+
+1. **Much of the product is already plugins.** The conversation sidebar,
+   Settings, the model and provider screens, voice, spotlight and the workspace
+   manager are all plugins, and response cards use the same vocabulary. A
+   theme that cannot reach plugin structures cannot style the product.
+2. **Plugins build structures the host never will**: boards, sheets, timelines,
+   charts, game boards, palettes. When the user switches themes, these should
+   follow (rounder corners, warmer grays, a new type scale) without their
+   authors editing anything.
+3. **Without roles, plugins hard-code values.** Spotlight is the evidence: its
+   radius, shadows, backdrop and fallback colors already disagree with the
+   current theme.
+4. **Domain visuals need tuned values per mode.** Without `series-*`, every
+   chart plugin chooses its own hues, and they clash with each other and with
+   one of the two modes.
+
+**How, in order of preference:**
+
+1. **Use roles.** Plugin CSS reads role tokens only. Fallbacks such as
+   `var(--surface, #fff)` never apply inside the Harness and can go. With the
+   roles above, spotlight needs no literals and no dark-mode block:
+
+   ```css
+   /* today */
+   .spotlight-backdrop { z-index: 1000; background: #0005; }
+   .spotlight-dialog { background: var(--surface, #fff); border: 1px solid var(--line, #ccd2db); box-shadow: 0 16px 60px #0005; }
+   .spotlight-option { padding: 9px 12px; border-radius: 7px; }
+   .spotlight-option.active { background: var(--accent, #2463eb); color: var(--surface, #fff); }
+   [data-theme=dark] .spotlight-dialog { background: var(--surface, #20242c); /* … */ }
+
+   /* with roles */
+   .spotlight-backdrop { z-index: var(--layer-dialog); background: var(--scrim); }
+   .spotlight-dialog { background: var(--surface-raised); border: var(--border-width) solid var(--edge);
+     border-radius: var(--radius-surface); box-shadow: var(--shadow-overlay); }
+   .spotlight-option { padding: var(--space-2) var(--space-3); border-radius: var(--radius-row); }
+   .spotlight-option.active { background: var(--action); color: var(--action-ink); }
+   ```
+
+2. **Promote shared structures.** When two plugins need the same structure, it
+   becomes a host class, following the rule under [No or minimal CSS](#no-or-minimal-css-for-ordinary-views).
+   The current candidates are `web_dialog` (backdrop and raised panel),
+   `web_listbox` (option rows with an active state, used by spotlight and the
+   command list), `web_field` (label, control, help and error), `web_tabs` and
+   `web_split`.
+3. **Component tokens, read with a fallback.** A plugin that wants a theme to be
+   able to restyle its structure exposes tokens and reads each one with a role
+   fallback:
+
+   ```css
+   .lane { background: var(--board-lane-surface, var(--soft));
+           border-radius: var(--board-lane-radius, var(--radius-surface)); }
+   ```
+
+   The plugin never declares `--board-lane-surface` itself. A custom property
+   uses the nearest declaration, so a value declared on the plugin's own element
+   would shadow the theme's value on `:root`. This is the same trap described
+   for `/about/` above. Reading with a fallback lets a theme set the token, per
+   mode, and win. Names are `--<plugin id>-<part>-<property>`. The contribution
+   lists them so they can be discovered:
+
+   ```gene
+   ^tokens [{^name "board-lane-surface" ^fallback "var(--soft)" ^doc "Lane background."}]
+   ```
+
+   The host lists declared tokens in the specimen view and in
+   `(workspace .theme_tokens)`. A theme can set them, and so can
+   `ui_configure ^theme` for the plugin's own view.
+4. **Theme rules aimed at plugin markup.** As a last resort, a theme's `style`
+   can target stable hooks such as `[data-component="board"] .lane`. This ties
+   the theme to the plugin's markup, so use it only when a token cannot express
+   the change.
+
+**Modes for part of a page.** Emit each palette for `[data-theme="light"]` and
+`[data-theme="dark"]` as well as for `:root`, and declare the derived tokens on
+`[data-theme]` too, so that they recompute inside the subtree. Then any element
+can force a mode. That allows a side-by-side specimen, a region that stays
+dark, and theme previews. Component trees gain a `theme` attribute (values
+`light` and `dark`) that renders as `data-theme`.
+
+### Themes
+
+A theme is data:
+
+| Field | Meaning |
+| --- | --- |
+| `name`, `title`, `doc` | Identity shown in the picker |
+| `extends` | The theme that fills in fields this one leaves unset; `default` when omitted |
+| `tokens` | `{^shared {…} ^light {…} ^dark {…}}`: any scale, role or component token, with snake_case keys |
+| `fonts` | Font entries; see [Web fonts](#web-fonts) |
+| `icons` | Drawings by icon name; see [Icons](#icons) |
+| `style` | Optional `$css` data for what tokens cannot express. It applies to the whole page. A theme's rules come after its parent's, which still apply. |
+
+A token resolves from the theme first, then along its `extends` chain, then
+from `default`. A theme states only what it changes, and a token added to the
+system later always has a value. `src/web/theme.gene` keeps the generator, the
+token names and `contrast_ratio`. The values move to theme files.
+
+**Where themes come from:**
+
+| Source | Lives in | Notes |
+| --- | --- | --- |
+| Built-in | `src/web/themes/default.gene`, `src/web/themes/minimal.gene` | Owned by the host, so they are available on the recovery server and with every plugin disabled. `default` is the designer's and starts with today's values. `minimal` extends it. |
+| Plugin | `themes` rows | Re-publishing updates every tab that uses the theme. While the plugin is disabled or removed, those browsers render `default`. |
+| User | The theme library (later) | Duplicates that the user edits; see below |
+
+```gene
+(host .PluginHost:contribute "themes"
+  {^name "paper" ^title "Paper" ^extends "default"
+   ^tokens {^shared {^radius_surface "6px" ^font_display "\"Iowan Old Style\", serif"}
+            ^light {^surface "#fbfaf7" ^ink "#22201c"}
+            ^dark {^surface "#1a1916" ^ink "#ece8e1"}}
+   ^style (css (rule ".card_header" (decl background "var(--surface-alt)")))})
+```
+
+**`minimal` extends `default`.** `minimal` is the owner's personal theme. It
+sets its own values for the choices that define it:
+
+- every color role in both modes: pure grays, the accent equal to the ink, and
+  the user message block color
+- `link-decoration: underline`
+- the radii: `radius-control` is `5px` and every other radius is `0`
+- no shadows except the menu's, with a menu shadow for each mode
+- `0ms` durations, so there are no transitions
+- the system font stacks for `font-sans`, `font-mono` and `font-display`
+
+Everything else comes from `default`: the type scale and roles, spacing and
+density, border and focus widths, layers, layout sizes and the icon drawings.
+A redesign of those reaches `minimal`, and so does any token the system adds
+later. To keep a value through a redesign, the owner sets it in
+`src/web/themes/minimal.gene`. `default` starts with today's values, so at
+first `minimal` only restates them. The two diverge as the designer works.
+
+**Applying a theme.**
+
+- **One stylesheet per theme.** The generator renders the resolved theme into a
+  single content-addressed stylesheet. It contains the token blocks for each
+  mode, the `@font-face` rules, the icon properties and the theme's `style`.
+  The host stylesheet of system rules is the same for every theme.
+- **Cascade order.** `page` links the host stylesheet and then the active
+  theme's. Plugin style contributions mount after both. The order is host
+  rules, then theme rules, then plugin rules, and host rules sit in cascade
+  layers, so a theme rule beats a host rule regardless of specificity.
+- **Switching.** Changing theme in a tab replaces one `<link>`. The
+  `appearance` message carries the new stylesheet URL.
+- **Recovery** renders built-in themes only. A browser set to a plugin or user
+  theme sees `default` there.
+
+**Why a registry.** A designer iterates live with `register_plugin ^^replace`,
+with no host restart. Users pick among installed themes in Settings →
+Appearance, per browser. Once the design is settled, its values move into
+`src/web/themes/default.gene`.
+
+#### User themes: duplicate and customize (later)
+
+- **Duplicate.** Each theme in Settings → Appearance has **Duplicate**. It
+  creates a user theme holding a copy of the source's resolved tokens, font
+  entries, icon drawings and `style`. Because it is a copy, later changes to
+  the original do not reach it. Font files stay those of the source theme. If
+  a plugin theme's fonts disappear with its plugin, the copy falls back to the
+  system stack in its family token.
+- **Editor.** A theme editor view groups the tokens:
+  - color roles for each mode, with color pickers and live contrast ratios
+  - fonts, the type scale and spacing
+  - radii, borders and shadows
+  - the theme's `style`, edited as `$css`
+
+  The browser that is editing applies the theme as it changes, in the specimen
+  and in the real app. Ratios are shown and never enforced.
+- **Library.** User themes live with the shared settings, in
+  `<manager root>/.gene-harness/themes/<name>.gene`. Every workspace and
+  browser on the machine sees them, which matches a per-browser choice that
+  follows the browser across workspaces. Saves use revision checks
+  (`^expected`) like shared settings, and the library is reachable through the
+  manager object.
+- **Export.** A user theme can be exported as theme plugin source to share or
+  commit. Uploading new font files for a user theme comes later; until then a
+  user theme uses fonts from installed themes or external URLs.
+
+### Designer workflow
+
+1. **Edit values.** The fastest loop is a theme plugin reloaded with
+   `register_plugin ^^replace`. When the design is settled, its values move into
+   `src/web/themes/default.gene`.
+2. **Review the specimen.** A built-in `theme` view, always available like
+   Settings, renders the following in both modes side by side:
+   - palette swatches with ratios from `contrast_ratio`
+   - type roles, fonts and icons
+   - samples of spacing, radius, border, elevation and layers
+   - every shared `web_*` class
+   - every button variant in its disabled and focus states
+   - the host structures: user and agent messages, steps, execution blocks,
+     source previews, cards, notices, drawers, menus and the composer
+   - the tokens plugins have declared
+
+   A theme picker in the view compares any installed theme against another.
+3. **Check the real app** at widths 320, 390, 768, 1024 and 1440px. Cover:
+   - views docked at 25%, 50% and 70% on both sides, and the full view
+   - sidebar collapsed, and long titles
+   - Recovery UI, the plugin manager and `/about/`
+   - 200% text size, forced colors and reduced motion
+   - `minimal` as well as `default`, since `minimal` takes whatever it does not
+     set from `default`
+
+   Resizing the window in browser automation can be unreliable. A same-origin
+   `<iframe>` of the target width works, since pages send no CSP.
+4. **Run the guards** with `../../bin/gene test` from `examples/gene-harness`.
+
+**Guards.** These extend `theme_spec`. They lint host code and the built-in
+themes. They do not restrict plugin or user themes.
+
+- No color literal (hex, `rgb()`, `hsl()`) outside `src/web/themes/`. The scan
+  covers built-in plugin stylesheets too.
+- In host CSS, `font`, `font-size`, `padding`, `margin`, `gap`, `z-index`,
+  `border-radius`, `box-shadow` and `transition` values are `0`, `auto`,
+  `inherit`, a token, or a `calc()` of tokens. A short list names deliberate
+  exceptions with their reasons, such as the image-grid insets.
+- Host markup uses icons by name, never as text glyphs, and every name in the
+  vocabulary has a drawing in `default`.
+- Every viewport query uses a named breakpoint, and the client agrees with it.
+- The color floors hold for `default` and `minimal` in both modes, checked on
+  `minimal`'s resolved tokens.
+- A built-in theme's `style` follows the token rule for values. A literal in
+  `default`'s `style`, such as a fixed radius on cards, would reach `minimal`
+  with no token for `minimal` to override.
+- The specimen covers every shared `web_*` class.
+
+### Plan
+
+**Phase 1: tokens.** The look stays the same apart from the snapping noted
+above.
+
+- Add the type, spacing, shape, border, elevation, layer, motion and layout
+  tokens at today's values, snapped to the scales. Move all values into
+  `src/web/themes/default.gene`, and leave the generator in `theme.gene`.
+- Add the theme format with `extends`, and `src/web/themes/minimal.gene` with
+  the owner's values. Until Phase 3 moves appearance to the browser, the theme
+  name sits next to the mode in the workspace appearance setting, so the
+  owner's workspaces render `minimal` while the designer's render `default`.
+- Rewrite `style.gene`, the plugin manager styles and the spotlight stylesheet
+  to use the tokens. Set the root font size to `100%`, convert px widths to
+  `rem`, fix the mono literal, move the overlay styling to `narrow`, delete the
+  duplicate rules, and give the menu shadow a dark value.
+- Split `base_styles` into modules under `src/web/style/` in the cascade layers
+  `reset, base, shell, components, content, utilities`. Theme and plugin styles
+  stay outside any layer, so they win over every host rule without `:where()`,
+  and the "select rule comes last" ordering is no longer needed.
+- Extend the guards.
+
+**Phase 2: responsive structure and the specimen.**
+
+- Add the named breakpoints and generate the media queries from them.
+- Make the regions containers and add the `$css` `container` node.
+- Support modes for part of a page, and add `data-component` on the view and
+  sidebar roots.
+- Add `web_dialog` and `web_listbox` (what spotlight needs), then `web_field`,
+  `web_tabs` and `web_split`.
+- Build the specimen view and add the touch-target rules.
+
+**Phase 3: themes, fonts, icons and per-browser appearance.**
+
+- Add the `themes` registry for plugin themes, and one stylesheet per theme.
+- Store appearance, including the theme name, in the cookie, with live updates
+  to the sockets of each browser. Remove `appearance.gene`, and add the theme
+  picker and the new preferences to Settings → Appearance.
+- Add web fonts: `$web/font`, the `$css` `font_face` node and preloads.
+- Add icons: the vocabulary, mask rendering, the `icon` node and `icons` rows,
+  and replace the glyphs in host markup.
+- Add plugin component tokens, and widen `ui_configure ^theme` to every color
+  role and declared token.
+
+**Phase 4 (later): user themes.** Duplicate, the theme editor, the library in
+the manager root, and export as plugin source.
+
+The designer needs Phases 1 to 3: tokens, the specimen, and the registry with
+fonts and icons. They can start on palettes, the type scale and spacing after
+Phase 2, restarting the host to see each change. Phase 3 adds live reload,
+fonts and icons.
+
+### Open questions
+
+1. **Server-side theme changes.** `/theme`, `set_appearance` and the CLI have
+   no browser. The proposal above has every connected browser adopt the change.
+   The alternative is to limit them to `default` preferences for browsers with
+   no choice of their own, which would bring back a workspace-level value.
+2. **Duplicate.** The proposal makes a duplicate a frozen copy. The alternative
+   is a linked child that `extends` the original and follows later changes to
+   it, the way `minimal` follows `default`.
+   Both could be offered: Duplicate for a copy, Customize for a child.
