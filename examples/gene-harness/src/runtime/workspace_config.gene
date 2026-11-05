@@ -92,10 +92,8 @@
 (fn candidate_selection [runtime, complete]
   # Effort does not choose the model, and the effort being checked must not stop
   # the resolver from naming the model it is checked against.
-  (let without_effort ($thaw ($freeze complete)))
-  (without_effort .delete "effort")
   (try
-    (let chosen (select_provider ^allow_unready true runtime without_effort))
+    (let chosen (select_provider ^allow_unready true ^model_only true runtime complete))
     {^provider chosen/selection/provider ^model chosen/selection/model}
   catch Any nil))
 

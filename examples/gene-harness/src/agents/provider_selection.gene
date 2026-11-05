@@ -146,7 +146,7 @@
   pins)
 
 (fn select_provider [runtime, settings, ^environment supplied = nil, ^selection selection = nil,
-  ^allow_unready allow_unready : Bool = false]
+  ^allow_unready allow_unready : Bool = false, ^model_only model_only : Bool = false]
   (let choice (provider_choice ^environment supplied ^selection selection runtime settings))
   (if (&& ($present? choice/reason) (|| (! allow_unready) ($absent? choice/row)))
     (fail (HarnessError ^code (?? choice/code "not_ready") ^message choice/reason)))
@@ -168,15 +168,15 @@
         (if from_default (then (nonempty defaults/model)) (else nil))
         (if applicable (then (nonempty environment/GENE_HARNESS_MODEL)) (else nil))
         (if (== choice/row/catalog_default true) (then (catalog_default_model runtime choice/name)) (else nil))))
-      (let requested (?? (if from_launch (then (nonempty runtime/launch/effort)) (else nil)) (nonempty settings/effort)
+      (let requested (if model_only "auto" (?? (if from_launch (then (nonempty runtime/launch/effort)) (else nil)) (nonempty settings/effort)
         (if from_default (then (nonempty defaults/effort)) (else nil))
-        (if applicable (then (nonempty environment/GENE_HARNESS_THINKING_EFFORT)) (else nil)) "auto"))
+        (if applicable (then (nonempty environment/GENE_HARNESS_THINKING_EFFORT)) (else nil)) "auto")))
       (set configured (choice/row/configure model nil timeout))
       (let metadata (selection_metadata runtime choice/row configured/model))
       (set snapshot {^provider choice/name ^model configured/model
         ^unverified_model (! (model_listed? runtime choice/row configured/model))
         ^automatic_provider (== choice/automatic true)
-        ^requested_effort requested ^effective_effort (resolve_effort requested metadata)
+        ^requested_effort requested ^effective_effort (if model_only nil (resolve_effort requested metadata))
         ^source (selection_source runtime settings defaults environment)
         ^transport (transport_identity choice/row choice/connection)
         ^provider_transport (provider_transport choice/row)

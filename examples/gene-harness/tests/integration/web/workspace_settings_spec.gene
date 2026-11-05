@@ -576,6 +576,27 @@
           (let rendered (ui_preview service/runtime "settings" {^group "Models"}))
           ($assert ($str/contains? ($json/stringify rendered/view) "\"ultra\"") "the editor offers the saved native level"))))))
 
+  (it "validates workspace effort independently of a different inherited native effort" []
+    (isolated this_mod/.path "validates workspace effort independently of a different inherited native effort"
+      (fn [root]
+        (with_workspace root (fn [service, shown]
+          (use_effort_catalog service)
+          (let manager (manager_of service))
+          (let configuration manager/.model_configuration)
+          (manager .set_default_model {^provider "test" ^model "native" ^effort "ultra"} configuration/digest)
+          (shown .set_settings {^provider "test" ^model "plain" ^effort "low"})
+          (let before (config_on_disk service))
+          (let choices (shown .setting_choices "effort"))
+          ($assert (== choices/complete true) ($to_str choices))
+          ($assert (($map choices/options (fn [option] option/value)) .contains? "low"))
+          (let refused (try (shown .set_setting "effort" "turbo") "saved" catch Any $err/code))
+          ($assert (== refused "invalid_request"))
+          ($assert (== before (config_on_disk service)))
+          (let selected shown/.model_selection)
+          ($assert ($absent? selected/reason) (?? selected/reason ""))
+          ($assert (== selected/model "plain"))
+          ($assert (== selected/requested_effort "low")))))))
+
   (it "judges effort against the model a reset or provider default selects" []
     (isolated this_mod/.path "judges effort against the model a reset or provider default selects"
       (fn [root]
