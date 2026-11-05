@@ -1,5 +1,5 @@
 (mod harness_client ^profile web)
-(import ^from "./appearance.gene" [BrowserAppearance start_appearance refresh_appearance change_appearance])
+(import ^from "./appearance.gene" [BrowserAppearance start_appearance appearance_event change_appearance])
 (import [storage_get storage_set storage_remove] ^from "./workspace_storage.gene")
 (import [api_root client_record_limit] ^from "../src/web/contract.gene")
 
@@ -2189,12 +2189,9 @@
       (command_confirmation confirmations session data))
     (ui_event ui kind data)
     (if_yes (== kind "ui/state") (sync_plugin_styles client))
-    (if_yes (|| (== kind "appearance_changed") (== kind "ui/state") (== kind "ready"))
+    (if_yes ($present? client/browser_appearance)
       (var appearance : BrowserAppearance client/browser_appearance)
-      (refresh_appearance appearance))
-    (if_yes (== kind "appearance_request")
-      (var requested_appearance : BrowserAppearance client/browser_appearance)
-      (change_appearance requested_appearance data))
+      (appearance_event appearance kind data (== tab/id client/selected)))
     (if_yes (&& (== tab/id client/selected) (== kind "ui/state"))
       (invalidate_status client server_epoch (string_or data/data_revision "")))
     (if_yes (== kind "ready") (set tab/connected true))
@@ -2431,7 +2428,9 @@
     (fn [method : Str, path : Str, payload : Any, done : (Fn [Int Any] Void)] : Void
       (api client method path payload done))
     (fn [answer : Any] : Void
-      (apply_appearance client answer/rendered/mode)
+      (apply_appearance client answer/rendered/mode))
+    ^on_error (fn [error : Any] : Void (show_error client error))
+    ^report (fn [answer : Any] : Void
       (if_not ($absent? client/socket)
         (var socket : EventTarget client/socket)
         (if_yes ($ws/open? socket)

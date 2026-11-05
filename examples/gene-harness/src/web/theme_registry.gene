@@ -1,47 +1,52 @@
 # Theme and icon contributions use the same leased registry lifecycle as views.
 (mod harness_theme_registry)
-(import ^from "./theme" [builtin_themes resolve_theme generate_theme css_name])
+(import ^from "./theme_error" [ThemeError theme_error] ^^export)
+(import ^from "./theme" [builtin_themes css_name])
 (import ^from "../ui/images" [safe_svg])
 
 (fn validate_icon [candidate]
   (if (|| (!= ($head candidate/name) Str) ($absent? (#"^[a-z][a-z0-9-]{0,79}$" .match candidate/name)))
-    (fail "An icon requires a kebab-case name."))
+    (theme_error "An icon requires a kebab-case name."))
   (if (|| (!= ($head candidate/svg) Str) (> ($str/byte_size candidate/svg) 65536))
-    (fail "An icon requires an SVG drawing of at most 64 KiB."))
+    (theme_error "An icon requires an SVG drawing of at most 64 KiB."))
   (safe_svg candidate/svg)
   candidate)
 
 (fn validate_theme [candidate]
   (if (|| (!= ($head candidate/name) Str) ($absent? (#"^[a-z][a-z0-9_-]{0,79}$" .match candidate/name))
           (["light" "dark" "default" "minimal"] .contains? candidate/name))
-    (fail "A theme requires a unique name; built-in and mode names are reserved."))
+    (theme_error "A theme requires a unique name; built-in and mode names are reserved."))
   (for key in ["title" "doc"]
     (if (&& ($present? (candidate .get key)) (!= ($head (candidate .get key)) Str))
-      (fail $"Theme ${key} must be text.")))
-  (if (&& ($present? candidate/extends) (!= ($head candidate/extends) Str)) (fail "Theme extends must name a theme."))
+      (theme_error $"Theme ${key} must be text.")))
+  (if (&& ($present? candidate/extends) (!= ($head candidate/extends) Str)) (theme_error "Theme extends must name a theme."))
   (for [mode tokens] in (?? candidate/tokens {})
-    (if_not (["shared" "light" "dark"] .contains? ($to_str mode)) (fail "Theme tokens require shared/light/dark maps."))
-    (if (!= ($head tokens) Map) (fail "Theme tokens must be maps."))
+    (if_not (["shared" "light" "dark"] .contains? ($to_str mode)) (theme_error "Theme tokens require shared/light/dark maps."))
+    (if (!= ($head tokens) Map) (theme_error "Theme tokens must be maps."))
     (for [name value] in tokens
       (if (&& (["sidebar_width" "sidebar-width" "panel_min" "panel-min" "main_min" "main-min"] .contains? ($to_str name))
               (|| (!= ($head value) Str) ($absent? (#"^([0-9]+([.][0-9]+)?|[.][0-9]+)rem$" .match value))))
-        (fail "Theme column sizes must be plain rem lengths."))
+        (theme_error "Theme column sizes must be plain rem lengths."))
       (if (|| ($absent? (#"^[a-z][a-z0-9_-]*$" .match ($to_str name))) (!= ($head value) Str))
-        (fail "Theme tokens require valid names and CSS strings."))))
+        (theme_error "Theme tokens require valid names and CSS strings."))))
   (for [name svg] in (?? candidate/icons {}) (validate_icon {^name (css_name name) ^svg svg}))
   (if_yes ($present? candidate/fonts)
-    (if (!= ($head candidate/fonts) List) (fail "Theme fonts must be a list."))
+    (if (!= ($head candidate/fonts) List) (theme_error "Theme fonts must be a list."))
     (for face in candidate/fonts
       (if (|| (!= ($head face/family) Str) (!= ($head face/src) Str)
               (! (|| ($str/starts_with? face/src "https:") ($str/starts_with? face/src "/"))))
-        (fail "Theme fonts need a family and an HTTPS URL or a URL prepared by $web/font."))))
+        (theme_error "Theme fonts need a family and an HTTPS URL or a URL prepared by $web/font."))))
   (if ($present? candidate/style) ($css/render candidate/style))
   candidate)
 
-(fn installed_themes [runtime = nil, safe : Bool = false]
+(let builtin_revision ($pkg/canonical_digest builtin_themes))
+(let catalog_gate ($sync/gate))
+(var last_snapshot nil)
+(var last_themes nil)
+(var last_revision "")
+
+(fn collect_themes [snapshot]
   (let themes ($thaw ($freeze builtin_themes)))
-  (if (|| safe ($absent? runtime)) (return themes))
-  (let snapshot runtime/h/snapshots/current/.get)
   (let plugin_icons {})
   (for record in (?? snapshot/registries/icons [])
     (plugin_icons .put record/payload/name record/payload/svg))
@@ -51,7 +56,27 @@
   (themes/default .put "icons" root_icons)
   (for record in (?? snapshot/registries/themes [])
     (themes .put record/payload/name record/payload))
-  themes)
+  ($freeze themes))
+
+(fn installed_themes [runtime = nil, safe : Bool = false]
+  (if (|| safe ($absent? runtime)) (return builtin_themes))
+  (let snapshot runtime/h/snapshots/current/.get)
+  (catalog_gate (fn []
+    (if_not (same? snapshot last_snapshot)
+      (set last_themes (collect_themes snapshot))
+      (set last_revision ($pkg/canonical_digest last_themes))
+      (set last_snapshot snapshot))
+    last_themes)))
+
+(fn themes_revision [themes]
+  (if (same? themes builtin_themes) (return builtin_revision))
+  (catalog_gate (fn []
+    (if (same? themes last_themes)
+      (then last_revision)
+      (else ($pkg/canonical_digest themes))))))
+
+(fn theme_revision [runtime = nil, safe : Bool = false]
+  (themes_revision (installed_themes runtime safe)))
 
 (fn theme_catalog [themes]
   (let result [])

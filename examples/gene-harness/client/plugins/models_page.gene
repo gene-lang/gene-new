@@ -3,6 +3,7 @@
 (import [api_root] ^from "../../src/web/contract.gene")
 (import [text flag items] ^from "../../src/common/launcher.gene")
 (import [owner_request owner_connect] ^from "../owner_api.gene")
+(import [query_value] ^from "../state.gene")
 
 (type ModelsPage ^props {^appearance Any? ^root EventTarget ^notice EventTarget ^csrf Str ^file Any ^catalog Any
   ^ready Bool ^busy Bool ^loading Bool ^serial Int ^poll Int ^await_revision Str ^login Any ^login_serial Int ^accounts Any})
@@ -427,7 +428,9 @@
   (var appearance (start_appearance
     (fn [method : Str, path : Str, data : Any, done : (Fn [Int Any] Void)] : Void
       (owner_request page/csrf method path data done))
-    (fn [answer : Any] : Void (return))))
+    (fn [answer : Any] : Void (return))
+    (== (query_value ($browser/search) "ui") "default")
+    ^on_error (fn [error : Any] : Void (notice page (text error/message "Appearance could not be saved.") true))))
   (set page/appearance appearance)
   ($dom/add_event_listener ($dom/element "theme_toggle") "click"
     (fn [event : Any] : Void

@@ -1,7 +1,8 @@
 # Browser appearance is cookie data, independent of workspace settings.
 (mod browser_appearance)
-(import ^from "./theme" [resolve_theme generate_theme preview_css resolved_tokens color_value builtin_themes])
-(import ^from "./theme_registry" [installed_themes theme_catalog])
+(import ^from "./theme" [builtin_themes])
+(import ^from "./theme_registry" [installed_themes theme_catalog themes_revision])
+(import ^from "./theme_assets" [active_theme_assets theme_preview_asset])
 (import ^from "./request" [cookie_value request_data response])
 (import ^from "../runtime/appearance" [AppearanceError AppearanceChanged])
 (import ^from "../kernel" [publish])
@@ -33,27 +34,21 @@
   (let rendered ($thaw ($freeze defaults)))
   (for [name value] in saved (rendered .put name value))
   (if ($absent? (themes .get rendered/theme)) (rendered .put "theme" "default"))
-  # An unavailable parent also falls back, preserving the saved name.
-  (let theme (try (resolve_theme rendered/theme themes)
-    catch Any
-      (rendered .put "theme" "default")
-      (resolve_theme)))
-  (var css (generate_theme theme))
-  (for [name candidate] in themes
-    (try (set css ($to_str css (preview_css (resolve_theme ($to_str name) themes)))) catch Any nil))
-  (let link ($web/stylesheet $"harness-theme-${rendered/theme}" css))
-  (let preloads [])
-  (let family (try (color_value (resolved_tokens theme rendered/mode) "font-sans") catch Any ""))
-  (let first_family ($str/lower ($str/trim (/0 ($str/split family ",")))))
-  (let family_name ($str/join ($str/split ($str/join ($str/split first_family "\"") "") "'") ""))
-  (var body_face nil)
-  (for face in theme/fonts
-    (if (&& (== family_name ($str/lower face/family)) (== (?? face/style "normal") "normal"))
-      (set body_face face/src)))
-  (if ($present? body_face) (preloads .push body_face))
-  (rendered .put "preloads" preloads)
-  (rendered .put "stylesheet" (/href ($props link)))
+  # Invalid inheritance falls back too, without replacing the saved choice.
+  (let assets (active_theme_assets rendered/theme themes))
+  (rendered .put "theme" assets/name)
+  (rendered .put "preloads" (assets/preloads .get rendered/mode))
+  (rendered .put "stylesheet" assets/stylesheet)
+  (rendered .put "theme_revision" (themes_revision themes))
   {^saved saved ^rendered rendered ^themes (theme_catalog themes)})
+
+(fn appearance_preview_request [request, runtime, safe : Bool = false]
+  (let themes (installed_themes runtime safe))
+  (let name (?? request/params/theme "default"))
+  (try
+    (response 200 {^theme name ^revision (themes_revision themes) ^stylesheet (theme_preview_asset name themes)})
+  catch Any
+    (response 400 {^code "invalid_request" ^message ($to_str $err/message)})))
 
 (fn request_appearance [request, runtime = nil, safe : Bool = false]
   (appearance_answer (read_saved (?? request/headers/cookie "")) (installed_themes runtime safe)))

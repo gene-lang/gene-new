@@ -58,9 +58,9 @@
       (asset .set ($web/load ($path/join this_pkg/root "client" "plugins" "voice.gene"))))
     (if ($absent? stylesheet/.get)
       (stylesheet .set ($web/stylesheet "voice" """
-.voice-panel { position: fixed; right: var(--size-1); top: var(--size-4); max-height: max(var(--size-12), calc(100dvh - var(--size-16))); overflow: auto; z-index: var(--layer-menu); width: min(var(--size-26), calc(100vw - var(--size-2))); padding: var(--space-4); border: var(--border-width) solid var(--line); background: var(--surface-raised); color: var(--ink); box-shadow: var(--shadow-overlay); }
+.voice-panel { position: fixed; right: var(--voice-panel-inset-inline); top: var(--voice-panel-inset-block); max-height: max(var(--voice-panel-min-height), calc(100dvh - var(--voice-panel-viewport-inset-block))); overflow: auto; z-index: var(--layer-menu); width: min(var(--voice-panel-width), calc(100vw - var(--voice-panel-viewport-inset-inline))); padding: var(--space-4); border: var(--border-width) solid var(--line); background: var(--surface-raised); color: var(--ink); box-shadow: var(--shadow-overlay); }
 .voice-panel[hidden] { display: none; }
-.voice-panel textarea { display: block; width: 100%; min-height: var(--size-5); margin: var(--space-2) 0; }
+.voice-panel textarea { display: block; width: 100%; min-height: var(--voice-input-min-height); margin: var(--space-2) 0; }
 .voice-panel button { margin: var(--space-1) var(--space-1) var(--space-1) 0; }
 .voice-panel label { display: block; margin: var(--space-2) 0; }
 .voice-panel p { margin: var(--space-2) 0; font-size: var(--text-sm); line-height: var(--line-body); }

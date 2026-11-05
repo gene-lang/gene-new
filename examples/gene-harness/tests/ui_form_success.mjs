@@ -2,7 +2,7 @@ globalThis.getComputedStyle ??= () => ({getPropertyValue: name => name === "--sh
 import assert from 'node:assert/strict';
 import {pathToFileURL} from 'node:url';
 class Element extends EventTarget {
-  constructor(){super();this.children=[];this.value='';this.hidden=false;this.disabled=false;this.attributes={};}
+  constructor(){super();this.children=[];this.value='';this.hidden=false;this.disabled=false;this.attributes={};this.style={setProperty(){}};}
   append(...nodes){for(const node of nodes)this.appendChild(node);}
   appendChild(node){if(node.parentNode)node.parentNode.removeChild(node);node.parentNode=this;this.children.push(node);return node;}
   removeChild(node){this.children.splice(this.children.indexOf(node),1);}
@@ -244,4 +244,31 @@ console.log('UI forms/actions: success closure, draft preservation, recovery, qu
   assert.equal(router.action_chord(client,'composer/send','Enter'),'Ctrl+Enter');
   client.keyboard={'composer/send':''};
   assert.equal(router.action_chord(client,'composer/send','Enter'),'');
+}
+
+// The server normalizes preview_theme to data-preview-theme. A freshly
+// rendered specimen must request its sheet before measuring its swatches.
+{
+  globalThis.window = new EventTarget();
+  const {start_appearance} = await import(new URL('appearance.mjs', base));
+  const {ui} = setup({submit:false});
+  const pending = [];
+  const state = start_appearance((method,path,data,done)=>{pending.push({method,path,done});}, noop, false);
+  pending.shift().done(200n, {saved:{},rendered:{theme:'default',mode:'light',density:'comfortable',text_size:'default',content_width:'default',stylesheet:'/theme.css',theme_revision:'one'},themes:[]});
+  ui.browser_appearance = state;
+  const swatch = new Element();
+  ui.nodes = {
+    preview: new model.UiNode({key:'preview',tag:'section',element:new Element(),props:{'data-preview-theme':'minimal'},form:'',seen:0n}),
+    ratio: new model.UiNode({key:'ratio',tag:'small',element:swatch,props:{class:'theme_ratio contrast_ink',title:'sample'},form:'',seen:0n}),
+  };
+  controller.specimen_ratios(ui);
+  assert.equal(pending.length, 1);
+  assert.equal(pending[0].path, '/api/v9/appearance/preview?theme=minimal');
+  assert.equal(swatch.text, undefined, 'ratios wait until the preview sheet loads');
+  pending.shift().done(200n, {revision:'one',stylesheet:'/minimal-preview.css'});
+  const computed = globalThis.getComputedStyle;
+  globalThis.getComputedStyle = () => ({getPropertyValue:()=> 'color(srgb 1 1 1 / 1)'});
+  element('theme_preview_styles').children.at(-1).dispatchEvent(new Event('load'));
+  assert.match(swatch.text, /1:1 on surface/);
+  globalThis.getComputedStyle = computed;
 }

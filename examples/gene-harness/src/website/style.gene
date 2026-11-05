@@ -21,7 +21,7 @@
         (decl "-webkit-font-smoothing" "antialiased"))
       (rule "*, *::before, *::after" (decl box_sizing "border-box") (decl border_radius 0))
       (rule "[hidden]" (decl display "none !important"))
-      (rule "[id]" (decl scroll_margin_top "var(--size-5)"))
+      (rule "[id]" (decl scroll_margin_top "var(--site-anchor-offset)"))
       (rule "a" (decl color "var(--link-color)") (decl text_decoration "var(--link-decoration)") (decl text_underline_offset "var(--link-underline-offset)"))
       (rule "a:hover" (decl color "var(--link-color)") (decl text_decoration "underline"))
       (rule ":not(pre) > code"
@@ -32,22 +32,23 @@
         (decl overflow_wrap "anywhere"))
       (rule ".shell"
         (decl width "100%")
-        (decl max_width "var(--size-72)")
+        (decl max_width "var(--site-shell-max-width)")
         (decl margin_inline "auto")
         (decl padding_inline "var(--site-shell-inset)"))
       (rule ".skip_link"
         (decl position "absolute")
-        (decl left "var(--size-1)")
-        (decl top "calc(-1 * var(--size-4))")
+        (decl left "var(--site-skip-link-inset)")
+        (decl top "calc(-1 * var(--site-skip-link-hidden-offset))")
         (decl z_index "var(--layer-menu)")
         (decl padding "var(--space-2) var(--space-4)")
         (decl background "var(--ink)")
         (decl color "var(--action-ink)"))
-      (rule ".skip_link:focus" (decl top "var(--size-1)") (decl color "var(--action-ink)"))
+      (rule ".skip_link:focus" (decl top "var(--site-skip-link-inset)") (decl color "var(--action-ink)"))
+      # One-pixel clipping is structural screen-reader support, not theme sizing.
       (rule ".visually_hidden"
         (decl position "absolute")
-        (decl width "var(--size-0-0625)")
-        (decl height "var(--size-0-0625)")
+        (decl width "1px")
+        (decl height "1px")
         (decl overflow "hidden")
         (decl clip "rect(0 0 0 0)")
         (decl white_space "nowrap"))
@@ -67,7 +68,7 @@
         (decl flex_wrap "wrap")
         (decl align_items "center")
         (decl gap "var(--space-2) var(--space-6)")
-        (decl min_height "var(--size-4)"))
+        (decl min_height "var(--site-header-min-height)"))
       (rule ".wordmark"
         (decl display "inline-flex")
         (decl align_items "center")
@@ -81,8 +82,8 @@
       (rule ".wordmark_mark"
         (decl display "grid")
         (decl place_items "center")
-        (decl width "var(--size-2)")
-        (decl height "var(--size-2)")
+        (decl width "var(--site-wordmark-size)")
+        (decl height "var(--site-wordmark-size)")
         (decl background "var(--ink)")
         (decl color "var(--surface)")
         (decl font "var(--type-code)"))
@@ -144,7 +145,7 @@
         (decl line_height "var(--line-tight)")
         (decl letter_spacing "var(--tracking-tight)"))
       (rule ".hero_lede"
-        (decl max_width "var(--size-34)")
+        (decl max_width "var(--site-hero-copy-measure)")
         (decl margin "var(--space-6) 0 0")
         (decl color "var(--muted)")
         (decl font_size "var(--text-lg)"))
@@ -191,7 +192,7 @@
         (decl padding "var(--space-3) var(--space-4)"))
       (rule ".workflow_step + .workflow_step" (decl border_top "var(--border-width) dashed var(--line)"))
       (rule ".workflow_who"
-        (decl flex "0 1 var(--size-5-25)")
+        (decl flex "0 1 var(--site-workflow-label-width)")
         (decl padding_top "var(--space-1)")
         (decl color "var(--muted)")
         (decl font_size "var(--text-xs)")
@@ -224,7 +225,7 @@
         (decl padding_block "var(--site-section-inset)")
         (decl border_top "var(--border-width) solid var(--line)"))
       (rule ".section_alt" (decl background "var(--soft)"))
-      (rule ".section_head" (decl max_width "var(--size-44)") (decl margin_bottom "var(--site-heading-gap)"))
+      (rule ".section_head" (decl max_width "var(--site-section-heading-measure)") (decl margin_bottom "var(--site-heading-gap)"))
       (rule ".section_title"
         (decl margin 0)
         (decl font_size "var(--text-display)")
@@ -237,7 +238,7 @@
         (decl margin 0)
         (decl padding 0)
         (decl list_style "none"))
-      (rule ".card_grid" (decl grid_template_columns "repeat(auto-fit, minmax(min(100%, var(--size-16)), 1fr))"))
+      (rule ".card_grid" (decl grid_template_columns "repeat(auto-fit, minmax(min(100%, var(--site-card-min-width)), 1fr))"))
       (rule ".card"
         (decl padding "var(--space-6)")
         (decl border "var(--border-width) solid var(--line)")
@@ -251,7 +252,7 @@
         (decl color "var(--muted)")
         (decl font "var(--type-code)"))
       (rule ".steps"
-        (decl grid_template_columns "repeat(auto-fit, minmax(min(100%, var(--size-14)), 1fr))")
+        (decl grid_template_columns "repeat(auto-fit, minmax(min(100%, var(--site-step-min-width)), 1fr))")
         (decl counter_reset "step"))
       (rule ".step"
         (decl padding "var(--space-5) var(--space-5) var(--space-5)")
@@ -280,14 +281,14 @@
         (decl align_items "center")
         (decl justify_content "space-between")
         (decl gap "var(--space-3)")
-        (decl min_height "var(--size-2-4)")
+        (decl min_height "var(--site-code-bar-min-height)")
         (decl padding "var(--space-1) var(--space-2) var(--space-1) var(--space-4)")
         (decl border_bottom "var(--border-width) solid var(--line)")
         (decl background "var(--soft)")
         (decl color "var(--muted)")
         (decl font "var(--type-code)"))
       (rule ".code_pre"
-        (decl max_height "var(--size-34)")
+        (decl max_height "var(--site-code-max-height)")
         (decl margin 0)
         (decl padding "var(--space-4) var(--space-4)")
         (decl overflow "auto")
@@ -343,12 +344,12 @@
       (rule ".view_title" (decl margin 0) (decl font_size "var(--text-xl)"))
       (rule ".enhanced .view_title"
         (decl position "absolute")
-        (decl width "var(--size-0-0625)")
-        (decl height "var(--size-0-0625)")
+        (decl width "1px")
+        (decl height "1px")
         (decl overflow "hidden")
         (decl clip "rect(0 0 0 0)")
         (decl white_space "nowrap"))
-      (rule ".view_text" (decl max_width "var(--size-46)") (decl margin 0) (decl color "var(--muted)"))
+      (rule ".view_text" (decl max_width "var(--site-example-copy-measure)") (decl margin 0) (decl color "var(--muted)"))
       (rule ".request_quote"
         (decl margin 0)
         (decl padding "var(--space-5) var(--space-6)")
@@ -408,7 +409,7 @@
       # Written in Gene
       (rule ".gene_grid"
         (decl display "grid")
-        (decl grid_template_columns "repeat(auto-fit, minmax(min(100%, var(--size-20)), 1fr))")
+        (decl grid_template_columns "repeat(auto-fit, minmax(min(100%, var(--site-example-min-width)), 1fr))")
         (decl gap "var(--space-5)"))
       (rule ".gene_item" (decl display "grid") (decl align_content "start") (decl gap "var(--space-3)") (decl min_width 0))
       (rule ".gene_item h3" (decl margin 0) (decl font_size "var(--text-lg)"))
@@ -444,8 +445,8 @@
         (decl display "inline-grid")
         (decl place_items "center")
         (decl flex "none")
-        (decl width "var(--size-1-65)")
-        (decl height "var(--size-1-65)")
+        (decl width "var(--site-step-marker-size)")
+        (decl height "var(--site-step-marker-size)")
         (decl background "var(--ink)")
         (decl color "var(--surface)")
         (decl font "var(--type-code)"))
@@ -455,7 +456,7 @@
       (rule ".dirs dd" (decl margin "var(--space-1) 0 0") (decl color "var(--muted)") (decl font_size "var(--text-md)"))
 
       # FAQ and footer
-      (rule ".faq_list" (decl display "grid") (decl gap "var(--space-3)") (decl max_width "var(--size-52)"))
+      (rule ".faq_list" (decl display "grid") (decl gap "var(--space-3)") (decl max_width "var(--site-faq-measure)"))
       (rule ".faq_item"
         (decl border "var(--border-width) solid var(--line)")
         (decl background "var(--surface)"))
@@ -468,11 +469,11 @@
         (decl color "var(--ink)"))
       (rule ".footer_inner"
         (decl display "grid")
-        (decl grid_template_columns "repeat(auto-fit, minmax(min(100%, var(--size-16)), 1fr))")
+        (decl grid_template_columns "repeat(auto-fit, minmax(min(100%, var(--site-footer-column-min-width)), 1fr))")
         (decl gap "var(--space-8)"))
       (rule ".site_footer a" (decl color "var(--ink)"))
       (rule ".footer_title" (decl margin 0) (decl color "var(--ink)") (decl font_weight "var(--weight-bold)"))
-      (rule ".footer_note" (decl max_width "var(--size-30)") (decl margin "var(--space-2) 0 0") (decl color "var(--muted)") (decl font_size "var(--text-md)"))
+      (rule ".footer_note" (decl max_width "var(--site-footer-note-measure)") (decl margin "var(--space-2) 0 0") (decl color "var(--muted)") (decl font_size "var(--text-md)"))
       (rule ".footer_links"
         (decl display "flex")
         (decl flex_wrap "wrap")

@@ -220,10 +220,22 @@
         "Show connected browsers or request a theme or mode."
         (fn [ctx]
           (let requested ($str/trim ctx/raw))
-          (if (== requested "")
-            (return (CommandResult ^display $"Appearance: ${(appearance_tabs ctx/runtime)}. Themes: ${(theme_catalog (installed_themes ctx/runtime))}." ^!attached)))
+          (if_yes (== requested "")
+            (let browsers [])
+            (for tab in (appearance_tabs ctx/runtime)
+              (let saved_theme (?? tab/saved/theme "default"))
+              (let saved_mode (?? tab/saved/mode "light"))
+              (let rendered_theme (?? tab/rendered/theme "default"))
+              (let rendered_mode (?? tab/rendered/mode "light"))
+              (browsers .push $"${tab/tab}: saved ${saved_theme}/${saved_mode}; rendered ${rendered_theme}/${rendered_mode}"))
+            (let shown (if browsers/.empty? "No connected browsers." ($str/join browsers "\n")))
+            (let names ($map (theme_catalog (installed_themes ctx/runtime)) (fn [theme] theme/name)))
+            (let listed ($str/join names ", "))
+            (return (CommandResult ^display $"Appearance: ${shown}\nInstalled themes: ${listed}" ^!attached)))
           (set_appearance ctx/runtime (if (theme_modes .contains? requested) {^mode requested} {^theme requested}))
-          (CommandResult ^display $"Appearance requested: ${requested}." ^!attached))]])
+          (let missing (&& (! (theme_modes .contains? requested)) ($absent? ((installed_themes ctx/runtime) .get requested))))
+          (let suffix (if missing " This theme is not installed here; browsers will render default and keep the saved name." ""))
+          (CommandResult ^display $"Appearance requested: ${requested}.${suffix}" ^!attached))]])
   (for entry in definitions
     (if ($absent? (row runtime/h "commands" entry/0))
       (contribute

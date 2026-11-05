@@ -7,7 +7,7 @@
 }
 @layer components {
 
-.manager { max-width: var(--size-80); margin: auto; padding: var(--space-6); }
+.manager { max-width: var(--manager-max-width); margin: auto; padding: var(--space-6); }
 .manager header, .manager_bar, .manager_actions, .plugin_heading { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
 .manager header { justify-content: space-between; border-bottom: var(--border-width) solid var(--line); padding-bottom: var(--space-4); }
 .manager h1 { margin: 0; font-size: var(--text-2xl); letter-spacing: var(--tracking-tight); }
@@ -34,7 +34,7 @@
 .manager ul { padding-left: var(--space-5); }
 .manager .primary { border-color: var(--action); background: var(--action); color: var(--action-ink); }
 .manager .primary:hover:not(:disabled) { border-color: var(--action-hover); background: var(--action-hover); }
-.manager_notice { min-height: var(--size-1-75); margin-top: var(--space-3); overflow-wrap: anywhere; }
+.manager_notice { min-height: var(--manager-notice-min-height); margin-top: var(--space-3); overflow-wrap: anywhere; }
 .manager_draft { margin-top: var(--space-5); border-color: var(--edge); }
 .manager_draft .manager_actions { margin-top: var(--space-4); }
 .manager code { overflow-wrap: anywhere; font-size: var(--text-sm); }

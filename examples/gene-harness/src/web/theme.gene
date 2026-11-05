@@ -1,5 +1,6 @@
 # Theme resolution and generation. Values belong in themes/, never host rules.
 (mod harness_web_theme)
+(import ^from "./theme_error" [ThemeError theme_error] ^^export)
 (import $css [css rule decl_value font_face scoped class_name render : render_css])
 (import ^from "../public/web_style" [narrow_minimum])
 (import ^from "./style/narrow" [rules : narrow_rules])
@@ -28,7 +29,7 @@
   (for role in group/1 (system_tokens .push $"${group/0}-${role}")))
 (for step in [1 2 3 4 5 6 8 10 12] (system_tokens .push $"space-${step}"))
 
-(var builtin_themes {^default default_theme ^minimal minimal_theme})
+(let builtin_themes ($freeze {^default default_theme ^minimal minimal_theme}))
 
 (fn theme_mode [value] : Str
   (if (theme_modes .contains? value) (then value) (else "light")))
@@ -40,9 +41,9 @@
   target)
 
 (fn resolve_theme [name : Str = "default", themes = builtin_themes, trail = []]
-  (if (trail .contains? name) (fail $"Theme inheritance cycle: ${name}"))
+  (if (trail .contains? name) (theme_error $"Theme inheritance cycle: ${name}"))
   (let source (themes .get name))
-  (if ($absent? source) (fail $"Unknown theme ${name}"))
+  (if ($absent? source) (theme_error $"Unknown theme ${name}"))
   (let seen [])
   (for item in trail (seen .push item))
   (seen .push name)
@@ -92,7 +93,7 @@
   (svg_url ($str/join ($str/split (theme/icons .get "chevron-down") "currentColor") color)))
 
 (fn rem_size [value : Str] : Float
-  (if_not ($str/ends_with? value "rem") (fail "Theme layout sizes must be plain rem lengths."))
+  (if_not ($str/ends_with? value "rem") (theme_error "Theme layout sizes must be plain rem lengths."))
   (let raw ($str/slice_bytes value 0 (- ($str/byte_size value) 3)))
   (let number (if ($str/starts_with? raw ".") ($to_str "0" raw) raw))
   (+ 0.0 ($json/parse number)))
@@ -289,9 +290,9 @@
   output)
 
 (fn color_value [tokens, name : Str, trail = []] : Str
-  (if (trail .contains? name) (fail $"Cyclic color token ${name}"))
+  (if (trail .contains? name) (theme_error $"Cyclic color token ${name}"))
   (let value (tokens .get name))
-  (if ($absent? value) (fail $"Missing color token ${name}"))
+  (if ($absent? value) (theme_error $"Missing color token ${name}"))
   (if ($str/starts_with? value "var(--")
     (then
       (let seen ($into trail [])) (seen .push name)
@@ -317,7 +318,7 @@
     (while (< j 16)
       (if (== ($str/slice_bytes digits j 1) digit) (set found j))
       (set j (+ j 1)))
-    (if (< found 0) (fail $"Invalid hex color ${color}"))
+    (if (< found 0) (theme_error $"Invalid hex color ${color}"))
     (set value (+ (* value 16) found))
     (set i (+ i 1)))
   (/ (+ value 0.0) 255.0))

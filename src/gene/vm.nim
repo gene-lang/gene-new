@@ -9297,15 +9297,18 @@ when not defined(geneWasm):
                                       body: css))
     app.webAssetUrl(fileName)
 
-  proc publishWebFont*(app: Application, path, body: string): string =
-    let extension = splitFile(path).ext.toLowerAscii()
-    let mime = case extension
+  proc webFontContentType*(path: string): string =
+    case splitFile(path).ext.toLowerAscii()
       of ".woff2": "font/woff2"
       of ".woff": "font/woff"
       of ".ttf": "font/ttf"
       of ".otf": "font/otf"
       else:
         raise newException(GeneError, "web/font expects a WOFF2, WOFF, TTF or OTF file")
+
+  proc publishWebFont*(app: Application, path, body: string): string =
+    let extension = splitFile(path).ext.toLowerAscii()
+    let mime = webFontContentType(path)
     let fileName = "font-" & webContentHash(body) & extension
     app.publishWebRoute(WebAssetRoute(fileName: fileName, contentType: mime, body: body))
     app.webAssetUrl(fileName)

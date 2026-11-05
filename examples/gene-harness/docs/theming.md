@@ -80,6 +80,11 @@ Names are kebab-case CSS custom properties, `--<group>-<role>[-<variant>]`.
 Gene theme maps use snake_case keys (`^radius_field`), and the generator
 converts `_` to `-`, as `$css` `decl` does.
 
+Layout hooks also name their purpose: `empty-heading-measure`,
+`models-welcome-width` and `site-footer-note-measure` are independent even
+when their initial values match. Host rules do not use value-named `size-*`
+aliases. Structural screen-reader clipping remains a one-pixel box.
+
 ### Color
 
 | Role | Use |
@@ -491,6 +496,15 @@ A page links two generated stylesheets, and plugin styles mount after them:
 | Theme | One content-addressed stylesheet per theme: the token blocks for each mode, the `@font-face` rules, the icon properties, the generated `narrow` rules, and the theme's `style` | Unlayered, except the `narrow` rules, which sit in `shell` |
 | Plugin | Style contributions, one `<style>` per contribution | Unlayered |
 
+The specimen and Settings load separate, content-addressed preview sheets
+only for the themes they display. They request
+`GET /api/v9/appearance/preview?theme=<name>` with the same admission as the
+appearance GET; safe UI requests retain `ui=default`. Ordinary pages and the
+static export do not include preview CSS. Resolved themes, font preloads and
+generated sheets are cached by effective theme/icon payloads and asset base.
+Replacing a theme or an ancestor invalidates its catalog generation; an
+ordinary plugin-state write does not.
+
 - **Order.** Unlayered rules beat layered ones regardless of specificity. So a
   theme rule beats a host rule, and a plugin rule beats both when it comes
   later. Host defaults therefore need no `:where()`, and their source order
@@ -754,6 +768,14 @@ that plugin. B renders `default` and keeps `paper` saved, so A still shows
   - The cost is one small GET per open tab on the host for each change.
   - A tab never answers a push or a GET with a POST, so one change cannot
     cause another.
+  - One document uses only its selected conversation socket for appearance
+    events. `ui/state` carries a theme-registry revision, and only a changed
+    revision causes an appearance read. Overlapping reads coalesce; unchanged
+    answers do not rebuild controls, measure swatches or resend reports.
+    Reconnection explicitly resends the report without a layout rebuild.
+  - A failed write shows the page's existing error notice, immediately restores
+    the last known saved controls, and rereads the saved choice. It does not
+    silently leave a failed select value on screen.
 - **Other workspaces.** A host can push only to its own sockets. A change made
   in workspace A does not reach a tab of workspace B that is already open in
   the same browser. B catches up when it becomes active, through the focus and
@@ -808,6 +830,7 @@ never removes them.
 | `/` | From the cookie, with live updates |
 | `/?ui=default` (safe UI; `/ui/default` redirects here) | From the cookie, with live updates. Built-in themes only, and no plugin token overrides or styles, so a broken plugin theme cannot lock the user out. |
 | Plugin manager | From the cookie on load; the GET on focus and Refresh |
+| Models | From the cookie on load, focus and Refresh. `ui=default` stays restricted to built-in themes on subsequent reads. |
 | Recovery server (`--recovery`) | Serves the plugin manager page. Built-in themes only. Offers the same endpoints. |
 | `/about/` (embedded) | From the cookie, rendered per request |
 | Static website export | `default`, light. There is no browser choice to read. |
@@ -1079,6 +1102,9 @@ generation diagnostics.
    host structures and plugin tokens so each rendered tree stays within the
    component contract’s 64 KiB bound. Preview fonts and animations are
    namespaced so they cannot replace the active page’s resources.
+   A missing parent or inheritance cycle becomes a notice in that comparison
+   column; both pickers and the other column remain usable. Theme validation
+   and resolution failures carry `ThemeError` with the intended diagnostic.
 3. **Check the real app** at widths 320, 390, 768, 1024 and 1440px. Cover:
    - views docked at 25%, 50% and 70% on both sides, and the full view
    - sidebar collapsed, and long titles

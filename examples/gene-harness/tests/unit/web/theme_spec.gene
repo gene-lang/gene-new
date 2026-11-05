@@ -11,6 +11,9 @@
 (import ^from "../../../src/website/page" [website_page])
 (import ^from "../../../src/website/export" [write_route])
 (import ^from "../../../src/web/appearance" [appearance_answer])
+(import ^from "../../../src/web/theme" [ThemeError])
+(import ^from "../../../src/web/theme_registry" [validate_theme : validate_theme_row validate_icon theme_revision])
+(import ^from "../../../src/web/theme_assets" [active_theme_assets theme_preview_asset])
 (import ^from "../../../src/ui/components" [bounded_component_view])
 (import ^from "../../../src/web/specimen" [shared_classes specimen specimen_sections])
 
@@ -53,6 +56,72 @@
   styles)
 
 (describe "Harness theme contracts"
+  (it "reports actionable theme and icon validation errors" []
+    (for [value message] in [
+      [{^name "default"} "reserved"]
+      [{^name "paper" ^tokens {^shared {^sidebar_width "240px"}}} "plain rem"]
+      [{^name "paper" ^fonts [{^family "Example" ^src "http://example.test/font.woff2"}]} "HTTPS"]]
+      (let error (try (validate_theme_row value) nil catch ThemeError $err))
+      ($assert ($present? error))
+      ($assert ($str/contains? error/message message) error/message))
+    (let icon_error (try (validate_icon {^name "Upper" ^svg "<svg/>"}) nil catch ThemeError $err))
+    ($assert ($str/contains? icon_error/message "kebab-case"))
+    (let missing (try (resolve_theme "missing") nil catch ThemeError $err))
+    ($assert ($str/contains? missing/message "Unknown theme missing")))
+
+  (it "caches active assets separately from lazy previews and follows the asset base" []
+    (let first (active_theme_assets "default" builtin_themes))
+    ($assert (same? first (active_theme_assets "default" builtin_themes)))
+    (let active ($first ($filter ($web/published_routes) (fn [route] ($str/ends_with? first/stylesheet route/file)))))
+    ($assert (! ($str/contains? active/body "data-preview-theme")))
+    (let preview (theme_preview_asset "minimal" builtin_themes))
+    ($assert (!= preview first/stylesheet))
+    (let route ($first ($filter ($web/published_routes) (fn [route] ($str/ends_with? preview route/file)))))
+    ($assert ($str/contains? route/body "data-preview-theme"))
+    (let base ($web/asset_base))
+    (try
+      ($web/set_asset_base "/theme-asset-test")
+      ($assert ($str/starts_with? (/stylesheet (active_theme_assets "default" builtin_themes)) "/theme-asset-test/"))
+    ensure ($web/set_asset_base base))
+    (let themes ($thaw ($freeze builtin_themes)))
+    (themes .put "paper" {^name "paper" ^tokens {^shared {^radius_surface "6px"}}})
+    (let before (appearance_answer {^theme "paper"} themes))
+    (themes/paper/tokens/shared .put "radius_surface" "12px")
+    (let after (appearance_answer {^theme "paper"} themes))
+    ($assert (!= before/rendered/stylesheet after/rendered/stylesheet))
+    ($assert (!= before/rendered/theme_revision after/rendered/theme_revision)))
+
+  (it "keeps specimen pickers and healthy columns when inheritance is broken" []
+    (for [name extra message] in [
+      ["paper" {^name "paper" ^extends "missing_parent"} "Unknown theme missing_parent"]
+      ["loop" {^name "loop" ^extends "loop"} "inheritance cycle"]]
+      (let runtime {^h {^snapshots {^current ($cell {^registries {^themes [{^payload extra}]}})}}})
+      (let tree (specimen runtime {^view_state {^first name ^second "minimal" ^section "palette"}}))
+      (let shown ($json/stringify (bounded_component_view ^^interactive tree)))
+      ($assert ($str/contains? shown message) shown)
+      ($assert ($str/contains? shown "compare/first"))
+      ($assert ($str/contains? shown "compare/second"))
+      ($assert ($str/contains? shown "Minimal"))))
+
+  (it "changes appearance revisions only for theme or icon payloads" []
+    (let current ($cell {^registries {}}))
+    (let runtime {^h {^snapshots {^current current}}})
+    (let before (theme_revision runtime))
+    (current .set {^registries {^web_components [{^payload {^name "other"}}]}})
+    ($assert (== before (theme_revision runtime)))
+    (current .set {^registries {^icons [{^payload {^name "board" ^svg "<svg/>"}}]}})
+    ($assert (!= before (theme_revision runtime)))
+    ($assert (== before (theme_revision runtime true))))
+
+  (it "names independent layout roles instead of coupling equal lengths" []
+    (let themes ($thaw ($freeze builtin_themes)))
+    (themes .put "roomy" {^name "roomy" ^tokens {^shared {^empty_heading_measure "40rem"}}})
+    (let tokens (resolved_tokens (resolve_theme "roomy" themes) "light"))
+    ($assert (== tokens/empty-heading-measure "40rem"))
+    ($assert (== tokens/models-welcome-width "30rem"))
+    ($assert (== tokens/site-footer-note-measure "30rem"))
+    (for [name value] in tokens ($assert (! ($str/starts_with? ($to_str name) "size-")))))
+
   (it "resolves inherited tokens and detects cycles" []
     (let themes ($thaw ($freeze builtin_themes)))
     (themes .put "paper" {^name "paper" ^tokens {^shared {^radius_surface "6px"} ^dark {^ink "#eeeeee"}}})
@@ -124,6 +193,7 @@
 
   (it "keeps host declarations token-based and colors in theme files" []
     (for text in (host_stylesheets)
+      ($assert (! ($str/contains? text "var(--size-")) "Layout lengths need semantic roles.")
       ($assert ($absent? (#"#[0-9a-fA-F]{3,8}\b|\brgba?[(]|\bhsla?[(]" .match text)))
       (for [name value] in (declarations text)
         (if_yes (["font" "font-size" "font-family" "font-weight" "line-height" "letter-spacing" "opacity" "row-gap" "column-gap" "padding" "padding-inline" "padding-block" "margin" "margin-inline" "margin-block" "gap" "z-index" "border-radius" "box-shadow" "transition"] .contains? name)
@@ -212,6 +282,8 @@
     ($assert (! ($str/contains? css "font-family: Example Extra;"))))
 
   (it "publishes font bytes with a content address and generates inherited faces" []
+    (let invalid (try ($web/font "missing-font.txt") "" catch Any $err/message))
+    ($assert ($str/contains? invalid "web/font expects"))
     (let path ($path/join this_pkg/root "tmp" $"theme-font-${($crypto/random_hex 8)}.woff2"))
     (let exported ($to_str path ".export"))
     (let payload ($binary/from_list [119 79 70 50 0 255 128 13 10]))

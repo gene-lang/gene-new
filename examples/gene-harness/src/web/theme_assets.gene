@@ -1,0 +1,57 @@
+# Generated assets are shared by reads of the same effective theme catalog.
+# Keep a bounded number of catalog generations, including the safe catalog.
+(mod theme_assets)
+(import ^from "./theme" [resolve_theme generate_theme preview_css resolved_tokens color_value theme_error])
+(import ^from "./theme_registry" [themes_revision])
+
+(let asset_gate ($sync/gate))
+(var catalogs {})
+
+(fn catalog_cache [themes]
+  (let revision ($to_str ($web/asset_base) "|" (themes_revision themes)))
+  (if_yes ($absent? (catalogs .get revision))
+    (if (>= ($size catalogs) 8) (set catalogs {}))
+    (catalogs .put revision {^resolved {} ^active {} ^previews {}}))
+  (catalogs .get revision))
+
+(fn cached_resolution [cache, name : Str, themes]
+  (if ($absent? (cache/resolved .get name))
+    (cache/resolved .put name
+      (try {^theme (resolve_theme name themes)}
+       catch Any {^error ($to_str $err/message)})))
+  (cache/resolved .get name))
+
+(fn body_preloads [theme, mode : Str]
+  (let result [])
+  (let family (try (color_value (resolved_tokens theme mode) "font-sans") catch Any ""))
+  (let first_family ($str/lower ($str/trim (/0 ($str/split family ",")))))
+  (let name ($str/join ($str/split ($str/join ($str/split first_family "\"") "") "'") ""))
+  (var body_face nil)
+  (for face in theme/fonts
+    (if (&& (== name ($str/lower face/family)) (== (?? face/style "normal") "normal"))
+      (set body_face face/src)))
+  (if ($present? body_face) (result .push body_face))
+  result)
+
+(fn active_theme_assets [wanted : Str, themes]
+  (asset_gate (fn []
+    (let cache (catalog_cache themes))
+    (let selected (cached_resolution cache wanted themes))
+    (let theme (if ($present? selected/theme) selected/theme
+      (/theme (cached_resolution cache "default" themes))))
+    (let name theme/name)
+    (if_yes ($absent? (cache/active .get name))
+      (let link ($web/stylesheet $"harness-theme-${name}" (generate_theme theme)))
+      (cache/active .put name ($freeze {^name name ^stylesheet (/href ($props link))
+        ^preloads {^light (body_preloads theme "light") ^dark (body_preloads theme "dark")}})))
+    (cache/active .get name))))
+
+(fn theme_preview_asset [name : Str, themes]
+  (asset_gate (fn []
+    (let cache (catalog_cache themes))
+    (let selected (cached_resolution cache name themes))
+    (if ($present? selected/error) (theme_error selected/error))
+    (if_yes ($absent? (cache/previews .get name))
+      (let link ($web/stylesheet $"harness-preview-${name}" (preview_css selected/theme)))
+      (cache/previews .put name (/href ($props link))))
+    (cache/previews .get name))))

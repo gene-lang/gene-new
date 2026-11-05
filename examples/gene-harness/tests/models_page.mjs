@@ -25,10 +25,11 @@ const element = id => {
 };
 globalThis.HTMLElement = Element;
 globalThis.document = {activeElement: null, getElementById: element, createElement: tag => new Element(tag), createTextNode: text => new Element('#text', text)};
-globalThis.window = Object.assign(new EventTarget(), {location: {hash: ''}});
+globalThis.window = Object.assign(new EventTarget(), {location: {hash: '', search: '?ui=default'}});
 globalThis.history = {replaceState() { window.location.hash = ''; }};
 globalThis.fetch = (url, options) => new Promise(resolve => {
-  if (url === '/api/v9/appearance') {
+  if (url.startsWith('/api/v9/appearance')) {
+    assert.equal(url, '/api/v9/appearance?ui=default', 'standalone Models must retain safe appearance on every read');
     resolve({status: 200, text: async () => JSON.stringify({saved: {}, rendered: {
       theme: 'default', mode: 'light', density: 'comfortable', text_size: 'default', content_width: 'default', stylesheet: '/theme.css'}, themes: []})});
     return;

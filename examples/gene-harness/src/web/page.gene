@@ -29,6 +29,7 @@
          (body
            # Plugin style contributions are mounted here as <style> elements.
            (div ^id "plugin_styles" ^^hidden)
+           (div ^id "theme_preview_styles" ^^hidden)
            (div ^id "harness_root" ^class "app"
              (header ^id "ui_host" ^class "ui_host" ^aria-label "Harness controls"
                ^title "Ctrl+Shift+0 to hide or show this bar"

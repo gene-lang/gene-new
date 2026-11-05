@@ -93,9 +93,9 @@
       (stylesheet .set ($web/stylesheet "models" """
 .models-controls { display: inline-flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); max-width: 100%; }
 .models-plan { font-size: var(--text-sm); color: var(--muted); }
-.models-controls button { max-width: min(var(--size-20), var(--model-picker-max-inline)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.models-controls button { max-width: min(var(--model-picker-max-width), var(--model-picker-max-inline)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .models-controls .models-default { color: var(--muted); }
-.models-menu { position: fixed; z-index: var(--layer-menu); inset: var(--model-menu-inset-block) auto auto 50%; transform: translateX(-50%); width: min(var(--size-36), calc(100vw - var(--size-2))); max-height: var(--model-menu-max-height); overflow: auto; padding: var(--space-5); border: var(--border-width) solid var(--line); background: var(--surface-raised); color: var(--ink); box-shadow: var(--shadow-raised); }
+.models-menu { position: fixed; z-index: var(--layer-menu); inset: var(--model-menu-inset-block) auto auto 50%; transform: translateX(-50%); width: min(var(--model-menu-width), calc(100vw - var(--model-menu-viewport-inset-inline))); max-height: var(--model-menu-max-height); overflow: auto; padding: var(--space-5); border: var(--border-width) solid var(--line); background: var(--surface-raised); color: var(--ink); box-shadow: var(--shadow-raised); }
 .models-menu[hidden] { display: none; }
 .models-menu input[type=search] { width: 100%; margin-bottom: var(--space-2); }
 .models-menu button, .models-menu a { margin: var(--space-1) var(--space-2) var(--space-1) 0; }
@@ -104,7 +104,7 @@
 .models-option { display: block; width: 100%; text-align: left; }
 .models-option small { display: block; color: var(--muted); }
 .models-custom { display: flex; flex-wrap: wrap; gap: var(--space-2); margin: var(--space-3) 0; }
-.models-custom input { flex: 1; min-width: var(--size-8); }
+.models-custom input { flex: 1; min-width: var(--model-custom-input-min-width); }
 .models-trigger-controls { display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-4); align-items: center; }
 .models-trigger-controls label { display: inline-flex; align-items: center; gap: var(--space-2); }
 .models-trigger-controls p { width: 100%; margin: 0 0 var(--space-2); font-size: var(--text-sm); color: var(--muted); }

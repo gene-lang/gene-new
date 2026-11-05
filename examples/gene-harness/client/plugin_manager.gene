@@ -71,13 +71,6 @@
 (fn request [manager : Manager, method : Str, path : Str, payload : Any, done : (Fn [Int Any] Void)] : Void
   (owner_request manager/csrf method path payload done))
 
-# No push connection here: the mode comes from the rendered page and from each
-# catalog load (page load and Refresh).
-(fn apply_appearance [mode : Str] : Void
-  (if_yes (&& (!= mode "light") (!= mode "dark")) (return))
-  ($dom/set_attribute ($dom/element "harness_document") "data-mode" mode)
-  ($dom/set_text ($dom/element "theme_toggle") (if (== mode "dark") "Light theme" "Dark theme")))
-
 (fn current_appearance [] : Str
   (var document ($dom/element "harness_document"))
   (text document/dataset/mode))
@@ -810,7 +803,8 @@
   (var appearance (start_appearance
     (fn [method : Str, path : Str, payload : Any, done : (Fn [Int Any] Void)] : Void
       (request manager method path payload done))
-    (fn [answer : Any] : Void (return))))
+    (fn [answer : Any] : Void (return))
+    ^on_error (fn [error : Any] : Void (notice manager ($to_str "Appearance could not be saved. " (text error/message)) true))))
   (set manager/appearance appearance)
   ($dom/add_event_listener ($dom/element "theme_toggle") "click"
     (fn [event : Any] : Void

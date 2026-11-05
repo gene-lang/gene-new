@@ -63,6 +63,11 @@
           (let changed (wire host/connection "POST" "/appearance" {^density "compact"} ^credentials credentials))
           ($assert (== changed/status 200))
           ($assert (== changed/body/saved/theme "missing"))
+          (let preview (wire host/connection "GET" "/appearance/preview?theme=default" ^credentials credentials))
+          ($assert (== preview/status 200))
+          ($assert ($str/contains? (page_html origin preview/body/stylesheet) "data-preview-theme"))
+          ($assert (! ($str/contains? (page_html origin changed/body/rendered/stylesheet) "data-preview-theme")))
+          ($assert (== (/status (wire host/connection "GET" "/appearance/preview?theme=default")) 401))
           (let cookie (/0 ($str/split changed/headers/set-cookie ";")))
           (credentials .put "cookie" ($to_str client/credentials/cookie "; " cookie))
           (let same (wire host/connection "POST" "/appearance" {^density "compact"} ^credentials credentials))
@@ -162,6 +167,9 @@
           (uninstall h "styled")
           ($assert ($absent? (named (/web_components (host_status service)) "styled_board")))
           ($assert ($absent? (named (/components (ui_status service/runtime)) "styled_view")))
+          (let command (/run (row h "commands" "theme")))
+          ($assert ($str/contains? (/display (command {^runtime service/runtime ^raw ""})) "Installed themes:"))
+          ($assert ($str/contains? (/display (command {^runtime service/runtime ^raw "paper"})) "not installed here"))
         ensure
           (close_session_service service))))))
 

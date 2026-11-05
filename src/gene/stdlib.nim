@@ -1179,6 +1179,7 @@ when not defined(geneWasm):
     requireStr("web/font path", args[0])
     let scope = if call == nil: nil else: call[].dispatchScope
     let path = args[0].strVal
+    discard webFontContentType(path)
     newStr(scope.application().publishWebFont(path, fsReadBytes(path)))
 
   proc biWebAssetBase(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =

@@ -15,7 +15,7 @@
 .web_components:empty { display: none; }
 .web_components { display: grid; gap: var(--space-3); }
 .web_toolbar { display: flex; flex-wrap: wrap; padding: 0 var(--gutter) var(--space-3); }
-.web_image_surface { position: relative; width: 100%; max-width: var(--size-60); margin: var(--space-3) auto; line-height: var(--line-tight); }
+.web_image_surface { position: relative; width: 100%; max-width: var(--image-surface-max-width); margin: var(--space-3) auto; line-height: var(--line-tight); }
 .web_image_surface > img { display: block; width: 100%; height: auto; }
 .web_image_grid { position: absolute; inset: 0; display: grid; grid-auto-rows: 1fr; gap: 0; }
 .web_image_grid > .web_image_point { display: flex; align-items: center; justify-content: center; min-width: 0; min-height: 0; padding: 0; margin: 0; border: 0; background: transparent; line-height: var(--line-tight); }
@@ -77,7 +77,7 @@
 .web_card { border: var(--border-width) solid var(--line); padding: var(--inset-surface); background: var(--surface); }
 .web_card h2, .web_card h3, .web_card h4 { margin: 0 0 var(--space-2); letter-spacing: var(--tracking-tight); }
 .web_card p { margin: var(--space-2) 0; color: var(--muted); line-height: var(--line-body); }
-.web_grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, var(--size-10)), 1fr)); gap: var(--space-3); }
+.web_grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, var(--grid-item-min-width)), 1fr)); gap: var(--space-3); }
 .web_actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin-top: var(--space-3); }
 .web_badge { display: inline-block; padding: var(--space-1) var(--space-2); background: var(--soft); color: var(--ink); font-size: var(--text-xs); }
 .web_metric { font-size: var(--text-display); font-weight: var(--weight-medium); letter-spacing: var(--tracking-tight); }

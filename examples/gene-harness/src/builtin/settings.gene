@@ -531,7 +531,7 @@
 (fn settings_style []
   (css
     (rule ".settings_layout" (decl display "flex") (decl flex_wrap "wrap") (decl gap "var(--space-6)") (decl align_items "flex-start"))
-    (rule ".settings_nav" (decl flex "0 1 var(--size-12)") (decl min_width "min(100%, var(--size-10))"))
+    (rule ".settings_nav" (decl flex "0 1 var(--settings-nav-width)") (decl min_width "min(100%, var(--settings-nav-min-width))"))
     (rule ".settings_nav button" (decl width "100%") (decl text_align "left"))
     (rule ".settings_main" (decl flex "1 1 var(--drawer-width-wide)") (decl min_width "0"))
     (rule ".settings_main label" (decl display "block"))

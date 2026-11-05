@@ -150,10 +150,15 @@
     (for [key theme] in themes
       (options .push `(option ^value %($to_str key) %(?? theme/title ($to_str key)))))
     (pickers .push `(label %field (select ^key %$"compare/${field}" ^state %field ^value %name %options...)))
-    (let theme (resolve_theme name themes))
-    (columns .push `(section ^class_name "theme_preview web_stack" ^preview_theme %name
-      (h2 %theme/title)
-      (div ^class_name "theme_modes" %(mode_samples theme "light" declared section field) %(mode_samples theme "dark" declared section field)))))
+    (try
+      (let theme (resolve_theme name themes))
+      (columns .push `(section ^class_name "theme_preview web_stack" ^preview_theme %name
+        (h2 %theme/title)
+        (div ^class_name "theme_modes" %(mode_samples theme "light" declared section field) %(mode_samples theme "dark" declared section field))))
+    catch Any
+      (columns .push `(section ^class_name "web_stack"
+        (h2 %name)
+        (p ^class_name "web_notice web_notice_error" %$"${name}: ${$err/message}")))))
   `(div ^class_name "web_stack"
      (h2 "Theme specimen")
      (div ^class_name "web_row" %pickers...

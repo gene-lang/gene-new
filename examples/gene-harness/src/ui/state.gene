@@ -2,6 +2,7 @@
 (mod ui_state)
 (import [plugin_state next_sequence stream_key] ^from "../storage/state")
 (import [public_tokens theme_modes css_name] ^from "../web/theme")
+(import [theme_revision] ^from "../web/theme_registry")
 
 (type UiError ^props {^code Str ^message Str} ^impl [Error])
 (impl Error for UiError)
@@ -116,7 +117,7 @@
       (components .push (ui_descriptor runtime snapshot record))))
   (let actions (if ($absent? runtime/services/values/actions) nil runtime/services/values/actions/log/state/.get))
   {^settings settings ^components ($order/sort_by components (fn [item] item/name))
-   ^data_revision (ui_data_revision runtime snapshot) ^epoch h/ui_epoch
+   ^data_revision (ui_data_revision runtime snapshot) ^theme_revision (theme_revision runtime) ^epoch h/ui_epoch
    ^actions (if ($absent? actions) nil
      {^generation actions/generation ^floor actions/floor ^revision ($to_str actions/revision)})
    ^workspace (?? h/workspace/workspace_root "")})
