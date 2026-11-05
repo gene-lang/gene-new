@@ -109,4 +109,5 @@
     #{^name "card/state" ^version 1 ^!ignorable ^origin "core" ^owner "core" ^schema validate_core_state_event}
     #{^name "card/action" ^version 1 ^!ignorable ^origin "core" ^owner "core" ^schema validate_core_state_event}
     #{^name "delegation/state" ^version 1 ^!ignorable ^origin "core" ^owner "core" ^schema validate_core_state_event}
+    #{^name "feature/record" ^version 1 ^!ignorable ^origin "core" ^owner "core" ^schema validate_core_state_event}
     #{^name "decision" ^version 1 ^^ignorable ^origin "core" ^owner "core" ^schema validate_decision_event}])

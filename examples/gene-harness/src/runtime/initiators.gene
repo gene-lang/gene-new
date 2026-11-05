@@ -1,5 +1,5 @@
 (mod initiators)
-(import [registry contribute rows] ^from "../kernel")
+(import [registry contribute rows registry_row_records] ^from "../kernel")
 (import [acquire_snapshot release_snapshot current_snapshot] ^from "./composition")
 (import [core_initiators core_source_owner initiator_matches?] ^from "./initiator_specs")
 (import [register_channel_initiators channel_source_owner] ^from "../channels/initiators")
@@ -20,7 +20,7 @@
     (initiator_error "An initiator needs name, prefix, kind, operator policy and normalize callback."))
   (for [key value] in candidate
     (if_not (["name" "prefix" "kind" "transport" "operator" "normalize" "exact"
-              "requires_continuation" "summary" "tags" "docs"] .contains? ($to_str key))
+              "requires_continuation" "check_in" "summary" "tags" "docs"] .contains? ($to_str key))
       (initiator_error $"Unknown initiator field ${key}.")))
   (for key in ["exact" "requires_continuation"]
     (if (&& ($present? (candidate .get key)) (!= ($head (candidate .get key)) Bool))
@@ -32,15 +32,31 @@
   (if (== b/exact true) (return (initiator_matches? a b/prefix)))
   (|| ($str/starts_with? a/prefix b/prefix) ($str/starts_with? b/prefix a/prefix)))
 
+# A contributor's namespaces: its own id, plus every feature slot it claims,
+# so a replacement implementation keeps the routes of work its predecessor
+# admitted (docs/plugins.md, feature slots).
+(fn ^^private contributor_namespaces [runtime, owner : Str]
+  (let names [owner])
+  (for record in (registry_row_records runtime/h "feature_slots")
+    (if (&& (== record/owner owner) (! (names .contains? record/payload/name)))
+      (names .push record/payload/name)))
+  names)
+
+(fn ^^private in_namespace? [candidate, namespace : Str]
+  (&& ($str/starts_with? candidate/name $"${namespace}/") (!= candidate/name $"${namespace}/")
+      (|| ($str/starts_with? candidate/prefix $"${namespace}:")
+          ($str/starts_with? candidate/prefix $"channel:${namespace}/"))))
+
 (fn prepare_initiator [runtime, owner : Str, candidate]
   (let native (|| (== owner core_source_owner) (== owner channel_source_owner)))
   (if_not native
-    (if (|| (! ($str/starts_with? candidate/name $"${owner}/")) (== candidate/name $"${owner}/")
+    (var owned false)
+    (for namespace in (contributor_namespaces runtime owner)
+      (if (in_namespace? candidate namespace) (set owned true)))
+    (if (|| (! owned)
             (! (["channel" "plugin"] .contains? candidate/kind))
-            (candidate .has_key? "requires_continuation")
-            (! (|| ($str/starts_with? candidate/prefix $"${owner}:")
-                    ($str/starts_with? candidate/prefix $"channel:${owner}/"))))
-      (initiator_error "Initiator names and routes must belong to their contributor's namespace."))
+            (candidate .has_key? "requires_continuation"))
+      (initiator_error "Initiator names and routes must belong to their contributor's namespace or a feature slot it claims."))
     (if (&& (== candidate/kind "channel") (!= candidate/transport owner))
       (initiator_error "A channel initiator's transport belongs to its contributor.")))
   (for existing in (rows runtime/h "initiators")
@@ -58,6 +74,7 @@
     (let normalize candidate/normalize)
     (let kind candidate/kind)
     (let transport candidate/transport)
+    (let namespaces (contributor_namespaces runtime owner))
     (prepared .put "normalize" (fn [context value]
       (let result (normalize (freeze_turn_data context) (freeze_turn_data value)))
       (if_not ($absent? result)
@@ -66,8 +83,8 @@
           (if (|| (!= result/kind "channel") (!= result/transport transport))
             (initiator_error "Channel metadata does not match its registered transport.")))
         (if (== kind "plugin")
-          (if (|| (!= result/kind "plugin") (!= result/owner owner))
-            (initiator_error "Plugin input metadata must name its registered owner."))))
+          (if (|| (!= result/kind "plugin") (! (namespaces .contains? result/owner)))
+            (initiator_error "Plugin input metadata must name its registered owner or a slot it claims."))))
       (freeze_turn_data result))))
   prepared)
 
@@ -127,7 +144,7 @@
         # original source. It remains usable if that plugin has been disabled.
         (let normalized (if carried_plugin (freeze_turn_data input)
           (invoke_normalizer normalizer context input)))
-        {^kind selected/kind ^name selected/name ^subject subject
+        {^kind selected/kind ^name selected/name ^subject subject ^check_in selected/check_in
          ^operator (&& selected/operator (|| (!= selected/requires_continuation true) continued))
          ^channel (&& (== selected/kind "channel") (! continued)) ^input normalized}))
   ensure (release_snapshot runtime/h/snapshots lease)))

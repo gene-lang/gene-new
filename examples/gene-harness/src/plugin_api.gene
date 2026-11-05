@@ -102,6 +102,21 @@
   (message start [] : Any)
   (message state [] : Any))
 
+# Plugin work admission (AdmissionHost, seam "admission/host"). Rounds use the
+# caller's `initiators` row; identity, sequence and digest rules are the round
+# controller's. A retried request id returns its recorded receipt.
+(protocol AdmissionHost
+  (message create_session [^id id : Str = "", ^kind kind : Str = "automated", ^title title : Str = "",
+                           ^first_request first_request : Str = "", ^origin origin = nil] : Any)
+  (message session [session : Str] : Any)
+  (message sessions [^origin_owner origin_owner : Str = ""] : Any)
+  (message busy? [session : Str] : Bool)
+  (message update_session [session : Str, changes] : Any)
+  (message delete_session [session : Str] : Bool)
+  (message receipt [session : Str, request_id : Str] : Any)
+  (message submit [session : Str, request_id : Str, text : Str, ^initiator initiator : Str,
+                   ^input input = nil, ^model_settings model_settings = nil] : Any))
+
 (protocol SessionHost
   (message record [session : Str] : Any)
   (message round [session : Str] : Any))
@@ -197,6 +212,17 @@
   (message emit_event [name : Str, payload] : Any)
   (message state [^session session = nil] : Any)
   (message update_state [value, ^session session = nil] : Any)
+  # Feature records: workspace-scoped, keyed by kind and key, shared by every
+  # implementation of the feature. Reads always see the latest write.
+  (message put_record [kind : Str, key : Str, value] : Any)
+  (message delete_record [kind : Str, key : Str] : Bool)
+  (message record [kind : Str, key : Str] : Any)
+  (message records [kind : Str] : Any)
+  # Long-lived work outside callback deadlines. It starts after this
+  # activation is published (and, with ^slot, only while this plugin holds that
+  # feature_slots row); quiesce runs when it stops producing; it is cancelled
+  # when the activation retires.
+  (message service [name : Str, body, ^slot slot = nil, ^quiesce quiesce = nil] : Str)
   (message notify [message] : Any)
   (message notifications [] : Any)
   (message notification_update [id : Str, changes] : Any)

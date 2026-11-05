@@ -514,7 +514,7 @@
       ^digest digest
       ^state "running"
       ^initiator initiator
-      ^initiator_kind source/name ^operator source/operator
+      ^initiator_kind source/name ^operator source/operator ^check_in_use source/check_in
       ^prompt text
       ^selection admission/selection
       ^request text

@@ -76,6 +76,7 @@
 (import $os [get_env])
 (import [response fail_request field optional_field number request_data path_parts cookie_value secure_response] ^from "./request")
 (import [feature_request] ^from "./routes/catalog")
+(import [plugin_route] ^from "./routes/plugin_routes")
 
 (fn main [argv, ^profile supplied_profile = nil, ^channel_options channel_options = nil, ^on_open on_open = nil]
   (manager_client)
@@ -159,6 +160,11 @@
   (fn handle [request]
     (if (!= (?? request/headers/host "") authority)
       (fail_request "forbidden" "Use the local address printed by the server."))
+    # External callbacks carry no browser Origin or owner cookie; a plugin's
+    # callback route verifies its own protocol before browser admission.
+    (if_yes ($str/starts_with? request/path "/callback/")
+      (let callback (plugin_route host/runtime/h request "callback"))
+      (if_not ($absent? callback) (return callback)))
     # OAuth authenticates its own one-shot state. This loopback GET must work
     # even when the vendor opens a browser without the Harness owner cookie.
     (if (&& (== request/method "GET") (== request/path "/auth/callback"))
@@ -207,6 +213,8 @@
     (if_yes (&& (!= request/method "GET") host/runtime/stopping/.get)
       (fail_request "stopped" "The workspace is stopping."))
     (let parts (path_parts request/path))
+    (let plugin_owned (plugin_route host/runtime/h request "owner"))
+    (if_not ($absent? plugin_owned) (return plugin_owned))
     (let feature (feature_request
       {^host host ^root root ^safe safe ^media media_store ^voice voice_hub
        ^browser browser ^auth auth ^origin origin ^request_origin request_origin ^plugin_control plugin_control}

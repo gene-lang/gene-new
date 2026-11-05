@@ -11,9 +11,9 @@
 (import ^from "../agents/history" [collect_unreferenced_bodies])
 (import [spawn_effect_call] ^from "." ^pkg "cordis")
 (import ^from "./round_controller" [submit_round round_state round_receipt answer_round RoundError])
-(import * : cron ^from "./schedule/cron")
-(import * : timezone ^from "./schedule/timezone")
-(import * : calendar ^from "./schedule/calendar")
+(import * : cron ^from "../builtin/triggers/schedule/cron")
+(import * : timezone ^from "../builtin/triggers/schedule/timezone")
+(import * : calendar ^from "../builtin/triggers/schedule/calendar")
 
 (type TriggerError ^props {^code Str ^message Str} ^impl [Error])
 (impl Error for TriggerError)
@@ -391,19 +391,13 @@
   (if (|| manager/closed/.get manager/runtime/stopping/.get) (return nil))
   (manager/mutating (fn []
     (sync_plugin_triggers manager (?? now ($os/wall_ms)))
-    (expire_trigger_questions manager (?? now ($os/wall_ms)))
     (reconcile_occurrences manager)
     (schedule_due manager (?? now ($os/wall_ms)) boot)
-    (if_yes (&& manager/runtime/body_gc_pending/.get
-      (>= (- (?? now ($os/wall_ms)) manager/last_gc/.get) manager/gc_interval))
-      (if (collect_unreferenced_bodies manager/runtime)
-        (manager/last_gc .set (?? now ($os/wall_ms)))))
     (start_due manager)
     (prune_occurrences manager)
     (if_yes (>= (- (?? now ($os/wall_ms)) manager/last_retention/.get) 3600000)
       (apply_retention manager ^now now)
-      (manager/last_retention .set (?? now ($os/wall_ms))))
-    (unload_idle_sessions manager/runtime/sessions))))
+      (manager/last_retention .set (?? now ($os/wall_ms)))))))
 
 (fn expire_trigger_questions [manager, now]
   (for record in (list_sessions manager/runtime/sessions ^status "waiting")

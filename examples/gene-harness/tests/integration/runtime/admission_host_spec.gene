@@ -1,0 +1,75 @@
+(import $test [describe it])
+(import [isolated run_spec test_controller] ^from "../../support")
+(import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
+(import [Profile] ^from "../../../src/profiles/profile")
+(import [Plugin PluginHost AdmissionHost] ^from "../../../src/plugin_api")
+(import [provide] ^from "../../../src/kernel")
+(import [admission_host_binding] ^from "../../../src/runtime/admission_host")
+(import [close_round_controller round_state] ^from "../../../src/runtime/round_controller")
+(import [require_record] ^from "../../../src/runtime/sessions")
+(import [acquire_snapshot release_snapshot] ^from "../../../src/runtime/composition")
+
+# A feature plugin that admits its own work: an initiator row for its route
+# and a function that creates an origin-tagged session and submits a round.
+(fn worker []
+  (Plugin ^id "worker" ^requires ["admission/host"]
+    ^activate (fn [host]
+      (let admission (host .PluginHost:resolve "admission/host"))
+      (host .PluginHost:contribute "initiators"
+        {^name "worker/jobs" ^kind "plugin" ^prefix "worker:" ^!operator
+         ^normalize (fn [context input] {^kind "plugin" ^owner "worker" ^job context/subject})})
+      (host .PluginHost:contribute "functions"
+        {^name "start_job" ^doc "Start a job."
+         ^fn (fn [job : Str]
+           (admission .AdmissionHost:create_session ^id $"s-job-${job}" ^title $"Job ${job}"
+             ^origin {^owner "worker" ^job job})
+           (admission .AdmissionHost:submit $"s-job-${job}" $"job-${job}" $"Do job ${job}."
+             ^initiator $"worker:${job}" ^model_settings {}))})
+      (host .PluginHost:contribute "functions"
+        {^name "job_receipt" ^doc "Find a job's receipt."
+         ^fn (fn [job : Str] (admission .AdmissionHost:receipt $"s-job-${job}" $"job-${job}"))})
+      (host .PluginHost:contribute "functions"
+        {^name "job_sessions" ^doc "List job sessions."
+         ^fn (fn [] (admission .AdmissionHost:sessions ^origin_owner "worker"))}))))
+
+(fn call [runtime, name : Str, args...]
+  (let lease (acquire_snapshot runtime/h/snapshots))
+  (try
+    (let found (/0 ($filter (?? (lease/snapshot/registries .get "functions") [])
+      (fn [record] (== record/key name)))))
+    ($assert ($present? found) $"function ${name} is not published")
+    ((/payload/fn found) args...)
+  ensure (release_snapshot runtime/h/snapshots lease)))
+
+(fn join_rounds [controller]
+  (for [id frame] in controller/rounds/.get
+    (if ($present? frame/watcher) frame/watcher/.join)))
+
+(describe "Plugin work admission"
+  (it "admits a plugin's round through its initiator and returns the recorded receipt on retry" []
+    (isolated this_mod/.path "admits a plugin's round through its initiator and returns the recorded receipt on retry"
+      (fn [root]
+        (let runtime (open_runtime root "default" (Profile ^name "admission" ^plugins [(worker)])))
+        (let controller (test_controller runtime (fn [request] "(Outcome ^^done ^reply \"Job done.\")")))
+        (try
+          (provide runtime/h "core" "admission/host" (admission_host_binding runtime))
+          (let first (call runtime "start_job" "a"))
+          ($assert (== first/request_id "job-a") ($to_str first))
+          ($assert (== first/initiator_kind "worker/jobs") ($to_str first))
+          (join_rounds controller)
+          (let again (call runtime "start_job" "a"))
+          ($assert (== again/id first/id) "a retried request id returns the recorded receipt")
+          (let receipts (/receipts (round_state controller "s-job-a")))
+          ($assert (== receipts/.size 1) "the job was admitted once")
+          (let receipt (call runtime "job_receipt" "a"))
+          ($assert (== receipt/state "done") ($to_str receipt))
+          (let record (require_record runtime/sessions "s-job-a"))
+          ($assert (== record/origin {^owner "worker" ^job "a"}) ($to_str record))
+          ($assert (== record/kind "automated"))
+          (let listed (call runtime "job_sessions"))
+          ($assert (== ($map listed /id) ["s-job-a"]) ($to_str listed))
+        ensure
+          (close_round_controller controller)
+          (close_runtime runtime))))))
+
+(fn main [args] : Int (run_spec args))

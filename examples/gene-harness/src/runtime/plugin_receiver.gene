@@ -86,6 +86,16 @@
       (let host (delegate self)) (host .PluginHost:state ^session session))
     (message update_state [value, ^session session = nil] : Any
       (let host (delegate self)) (host .PluginHost:update_state value ^session session))
+    (message put_record [kind : Str, key : Str, value] : Any
+      (let host (delegate self)) (host .PluginHost:put_record kind key (freeze_turn_data value)))
+    (message delete_record [kind : Str, key : Str] : Bool
+      (let host (delegate self)) (host .PluginHost:delete_record kind key))
+    (message record [kind : Str, key : Str] : Any
+      (let host (delegate self)) (host .PluginHost:record kind key))
+    (message records [kind : Str] : Any
+      (let host (delegate self)) (host .PluginHost:records kind))
+    (message service [name : Str, body, ^slot slot = nil, ^quiesce quiesce = nil] : Str
+      (let host (delegate self)) (host .PluginHost:service name body ^slot slot ^quiesce quiesce))
     (message notify [message] : Any
       (let host (delegate self)) (host .PluginHost:notify message))
     (message notifications [] : Any

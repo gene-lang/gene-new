@@ -1,0 +1,65 @@
+(import $test [describe it])
+(import [isolated run_spec] ^from "../../support")
+(import [start_host stop_host] ^from "../../web_support")
+(import [connect api wire] ^from "../../../src/cli/client")
+(import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
+(import [offline_profile] ^from "../../../src/profiles/offline")
+(import [register_plugin] ^from "../../../src/storage/workspace_activation")
+(import [api_root] ^from "../../../src/web/contract")
+(import $net/http_client [request])
+
+(fn routes_source []
+  (quote (mod plugin
+    (import [Plugin PluginHost] ^from "src/plugin_api.gene")
+    (fn init [descriptor]
+      (Plugin ^id "routes_probe" ^activate (fn [host]
+        (host .PluginHost:contribute "http_routes"
+          {^name "hello" ^kind "owner" ^methods ["GET" "POST"] ^path "/hello"
+           ^handle (fn [req] {^status 200 ^body {^name (?? req/params/name "") ^subpath req/subpath ^method req/method}})})
+        (host .PluginHost:contribute "http_routes"
+          {^name "hook" ^kind "callback" ^methods ["POST"] ^path "/hook"
+           ^handle (fn [req]
+             (if (== (?? req/headers/x-signature "") "good")
+               {^status 200 ^body "accepted"}
+               {^status 401 ^body "bad signature"}))})))))))
+
+(fn raw [connection, method : Str, path : Str, headers]
+  (let pending (request ^method method ^url $"${connection/origin}${path}" ^headers headers
+    ^body "{}" ^timeout_ms 10000 ^max_bytes 65536))
+  (try (await pending) ensure pending/.cancel))
+
+(describe "Plugin HTTP routes"
+  (it "serves owner routes after browser admission and callback routes before it" []
+    (isolated this_mod/.path "serves owner routes after browser admission and callback routes before it"
+      (fn [root]
+        (let setup (open_runtime root "default" (offline_profile)))
+        (try
+          (let result (register_plugin setup/workspace setup/h "routes_probe" (routes_source)))
+          ($assert (== result/status "ready") ($to_str result))
+        ensure (close_runtime setup))
+        (let host (start_host root))
+        (try
+          (let client (connect root))
+          (let hello (api client "GET" "/p/routes_probe/hello/deep?name=ada"))
+          ($assert (== hello/name "ada") ($to_str hello))
+          ($assert (== hello/subpath "/deep"))
+          (let posted (api client "POST" "/p/routes_probe/hello" {}))
+          ($assert (== posted/method "POST"))
+          # An owner route keeps browser admission: no cross-origin mutation.
+          (let foreign (raw client/connection "POST" $"${(api_root)}/p/routes_probe/hello"
+            {^origin "http://evil.example" ^cookie client/credentials/cookie
+             ^x-csrf-token client/credentials/csrf ^content-type "application/json"}))
+          ($assert (== foreign/status 403) ($to_str foreign/status))
+          # A callback runs without an Origin or cookie and verifies itself.
+          (let verified (raw client/connection "POST" "/callback/routes_probe/hook"
+            {^x-signature "good" ^content-type "application/json"}))
+          ($assert (== verified/status 200) ($to_str verified/status))
+          ($assert (== verified/body "accepted"))
+          (let forged (raw client/connection "POST" "/callback/routes_probe/hook"
+            {^x-signature "forged" ^content-type "application/json"}))
+          ($assert (== forged/status 401))
+          (let unknown (raw client/connection "POST" "/callback/routes_probe/missing" {}))
+          ($assert (!= unknown/status 200))
+        ensure (stop_host host))))))
+
+(fn main [args] : Int (run_spec args))

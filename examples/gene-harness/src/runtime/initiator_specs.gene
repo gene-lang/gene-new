@@ -8,8 +8,10 @@
 
 (fn core_initiators []
   [{^name "core/user" ^kind "user" ^prefix "user" ^^exact ^^operator ^normalize normalize_user_source}
-   {^name "core/trigger" ^kind "trigger" ^prefix "trigger:" ^!operator ^normalize normalize_user_source}
-   {^name "core/parent" ^kind "parent" ^prefix "parent:" ^!operator ^normalize normalize_user_source}
+   {^name "core/trigger" ^kind "trigger" ^prefix "trigger:" ^!operator ^check_in "trigger/check_in"
+    ^normalize normalize_user_source}
+   {^name "core/parent" ^kind "parent" ^prefix "parent:" ^!operator ^check_in "delegation/check_in"
+    ^normalize normalize_user_source}
    {^name "core/continue" ^kind "continue" ^prefix "continue:" ^^operator ^^requires_continuation
     ^normalize normalize_user_source}])
 

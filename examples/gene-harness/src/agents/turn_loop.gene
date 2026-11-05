@@ -188,13 +188,11 @@
   (let collection (> extra_turns 0))
   (var ceiling (+ limit extra_turns))
   (var pause nil)
-  # Trigger rounds and delegated children end early, rather than pause, when a
-  # progress check-in finds them blocked, repeating or drifting. A child's
-  # failed result, with the evidence, is its report to the parent.
-  (let early_use (if (== round/initiator_kind "core/trigger")
-    (then "trigger/check_in")
-    (elif (== round/initiator_kind "core/parent") "delegation/check_in")
-    (else nil)))
+  # Rounds whose initiator declares a check-in use (trigger rounds, delegated
+  # children, plugin automation) end early, rather than pause, when a progress
+  # check-in finds them blocked, repeating or drifting. A child's failed
+  # result, with the evidence, is its report to the parent.
+  (let early_use (?? round/check_in_use nil))
   (let early (&& ($present? early_use) (!= config/check_ins false)
     (decision_available? runtime/services/values/decisions early_use)))
   (var next_early interval)
