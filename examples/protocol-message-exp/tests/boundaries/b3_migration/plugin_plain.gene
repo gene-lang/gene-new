@@ -1,0 +1,6 @@
+# Migrated plugin: a dedicated policy protocol owned by the plugin. Its Article
+# impl is canonical (the plugin owns the protocol), so no import_impl is needed.
+(import [Article] ^from "./core")
+(protocol PlainRender (message render [] : Str))
+(impl PlainRender for Article (message render [] : Str $"plugin:${self/title}"))
+(fn operation [] PlainRender:render)

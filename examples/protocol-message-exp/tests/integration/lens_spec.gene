@@ -1,0 +1,85 @@
+(mod lens_integration_spec)
+
+(import $test [describe it assert_equal assert_raises])
+(import [core_document late_document] ^from "../../src/documents")
+(import [operation : plain_core] ^from "../../src/roots/plain")
+(import [operation : compact_core] ^from "../../src/roots/compact")
+(import [operation : plain_late] ^from "../../src/roots/plain_late")
+(import [operation : compact_late] ^from "../../src/roots/compact_late")
+(import [operation : f_plain_core] ^from "../../src/baseline/plain_root")
+(import [operation : f_compact_core] ^from "../../src/baseline/compact_root")
+(import [operation : f_plain_late] ^from "../../src/baseline/plain_late_root")
+(import [operation : f_compact_late] ^from "../../src/baseline/compact_late_root")
+(import [preview] ^from "../../src/consumers/preview")
+(import [export_all] ^from "../../src/consumers/export")
+(import [outline_report] ^from "../../src/consumers/outline_report")
+(import [Outline] ^from "../../src/extensions/outline")
+(import [operation : weight_late] ^from "../../src/roots/weight_late")
+(import [operation : f_weight_late] ^from "../../src/baseline/weight_late_root")
+(import [operation : closure_plain_late] ^from "../../src/variants/closure/plain_late")
+(import [operation : typed_plain_late] ^from "../../src/variants/typed/plain_late")
+(import [Section Article Figure] ^from "../../src/model")
+(import [Chart] ^from "../../src/variants/named/chart")
+(import [PlainRender] ^from "../../src/variants/named/plain_policy")
+(import [CompactRender] ^from "../../src/variants/named/compact_policy")
+
+(let plain_golden "A / fig(c) / B / fig(d)")
+(let compact_golden "<|F|<|F>>")
+(let plain_late_golden "Report / Intro: hello / Data / chart(growth) / table(totals,3) / fig(map)")
+(let compact_late_golden "<|Intro|<|C|T|F>>")
+
+(describe "Document Lens matched outputs"
+  (it "renders the core tree identically under P and F" []
+    (assert_equal (preview (plain_core) (core_document)) ($to_str "[preview] " plain_golden))
+    (assert_equal (preview (f_plain_core) (core_document)) ($to_str "[preview] " plain_golden))
+    (assert_equal ((compact_core) (core_document) (compact_core)) compact_golden)
+    (let fc (f_compact_core))
+    (assert_equal (fc (core_document) fc) compact_golden))
+
+  (it "renders the late tree identically under P, P-closure and F" []
+    (let p (plain_late))
+    (let c (compact_late))
+    (let fp (f_plain_late))
+    (let fc (f_compact_late))
+    (assert_equal (p (late_document) p) plain_late_golden)
+    (assert_equal (fp (late_document) fp) plain_late_golden)
+    (assert_equal (c (late_document) c) compact_late_golden)
+    (assert_equal (fc (late_document) fc) compact_late_golden))
+
+  (it "interleaves two policies over one value graph" []
+    (let tree (late_document))
+    (let p (plain_late))
+    (let c (compact_late))
+    (assert_equal [(p tree p) (c tree c) (p tree p) (c tree c)]
+      [plain_late_golden compact_late_golden plain_late_golden compact_late_golden]))
+
+  (it "serves three generic consumers without consumer impl imports" []
+    (let p (plain_late))
+    (assert_equal (export_all p [(core_document) (core_document)])
+      ($to_str "1. " plain_golden "\n2. " plain_golden))
+    (assert_equal (outline_report Outline:outline [(late_document)])
+      ($str/join ["- section Report" "  - article Intro" "  - section Data"
+                  "    - chart growth" "    - table totals" "    - figure map"] "\n")))
+
+  (it "gives P-closure and P-typed the same late-extension output as P" []
+    (let c (closure_plain_late))
+    (let t (typed_plain_late))
+    (assert_equal (c (late_document) c) plain_late_golden)
+    (assert_equal (t (late_document) t) plain_late_golden))
+
+  (it "gives N the same output with canonical policy protocols and no threading" []
+    (let document (Section ^title "Report" ^children [
+      (Article ^title "Intro" ^text "hello")
+      (Section ^title "Data" ^children [(Chart ^caption "growth") (Figure ^caption "map")])]))
+    (let plain PlainRender:render)
+    (let compact CompactRender:render)
+    (assert_equal [(plain document) (compact document) (plain document)]
+      ["Report / Intro: hello / Data / chart(growth) / fig(map)"
+       "<|Intro|<|C|F>>"
+       "Report / Intro: hello / Data / chart(growth) / fig(map)"]))
+
+  (it "computes the third operation identically under P and F" []
+    (let w (weight_late))
+    (let fw (f_weight_late))
+    (assert_equal (w (late_document) w) 15)
+    (assert_equal (fw (late_document) fw) 15)))

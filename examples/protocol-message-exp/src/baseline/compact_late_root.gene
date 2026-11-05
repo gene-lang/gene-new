@@ -1,0 +1,5 @@
+(import [make_dispatcher] ^from "./dispatch")
+(import [entries] ^from "./compact")
+(import [chart_entry] ^from "./chart_compact")
+(import [table_entry] ^from "./table_compact")
+(fn operation [] (make_dispatcher [entries... chart_entry table_entry]))

@@ -1,0 +1,4 @@
+# Core v2 alone: the canonical behavior is intact when the plugin is not imported.
+(import [Article Render] ^from "./core")
+(let article (Article ^title "A"))
+($println $"v2 canonical: ${article/.Render:render}")

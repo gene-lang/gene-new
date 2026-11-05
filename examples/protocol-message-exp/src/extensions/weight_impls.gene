@@ -1,0 +1,13 @@
+(import [Section Article Figure] ^from "../model")
+(import [Chart] ^from "./chart")
+(import [Table] ^from "./table")
+(import [Weight] ^from "./weight")
+(impl Weight for Section ^^export
+  (message weigh [each] : Int
+    (var total 1)
+    (for child in self/children (set total (+ total (each child each))))
+    total))
+(impl Weight for Article ^^export (message weigh [each] : Int 3))
+(impl Weight for Figure ^^export (message weigh [each] : Int 2))
+(impl Weight for Chart ^^export (message weigh [each] : Int 5))
+(impl Weight for Table ^^export (message weigh [each] : Int self/rows))

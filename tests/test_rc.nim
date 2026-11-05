@@ -973,6 +973,91 @@ when defined(geneRcStats):
       test "a value retained from a reloaded module keeps it usable until dropped":
         check retainedReloadLeak() == 0
 
+      proc runText(scope: Scope, src: string): string =
+        run(compileSource(src), scope).print()
+
+      proc transportReloadMeasure(): tuple[retained, leaked: int, answers: string] =
+        ## A held Message, a checked Callable view, an authored closure and a Path
+        ## are retained across provider reloads, used, and then dropped.
+        ## `retained` is the intentional cost while they live; `leaked` is what
+        ## remains after every owner is released and two further reloads ran.
+        let dir = getTempDir() / "gene-rc-reload-transports"
+        createDir(dir)
+        let prov = dir / "prov.gene"
+        writeFile(dir / "base.gene",
+          "(protocol Render (message render [] : Str)) (type Item ^props {})")
+        writeFile(prov,
+          "(import [Render Item] ^from \"./base\") " &
+          "(impl Render for Item ^^export (message render [] : Str \"one\"))")
+        writeFile(dir / "author.gene",
+          "(import [Render Item] ^from \"./base\") " &
+          "(import_impl Render for Item ^from \"./prov\") " &
+          "(fn raw [] Render:render) " &
+          "(fn as_view [op : (Callable [Any] Str)] op) " &
+          "(fn view [] (as_view Render:render)) " &
+          "(fn closure [] (fn [a] a/.Render:render)) " &
+          "(fn path_value [] /.Render:render) " &
+          "(fn make [] (Item))")
+        let app = newApplication(dir)
+        let scope = newGlobalScope(app)
+        discard run(compileSource(
+          "(import [raw view closure path_value make] ^from \"./author\") " &
+          "(var item nil) (var op nil) (var checked nil) (var cl nil) (var pv nil)"),
+          scope)
+        app.reloadAndCollect(prov, 2)
+        let before = liveManaged
+        discard scope.runText(
+          "(set item (make)) (set op (raw)) (set checked (view)) " &
+          "(set cl (closure)) (set pv (path_value)) nil")
+        app.reloadAndCollect(prov, 3)
+        result.answers = scope.runText(
+          "[(op item) (checked item) (cl item) (pv item)]")
+        result.retained = liveManaged - before
+        discard scope.runText(
+          "(set item nil) (set op nil) (set checked nil) (set cl nil) (set pv nil) nil")
+        app.reloadAndCollect(prov, 2)
+        result.leaked = liveManaged - before
+
+      test "retained transports stay usable across reloads and release their generations":
+        let measured = transportReloadMeasure()
+        check measured.answers == "[\"one\" \"one\" \"one\" \"one\"]"
+        check measured.retained > 0   # live transports intentionally retain
+        check measured.leaked == 0    # and nothing more once dropped
+
+      proc nestedImportImplGrowth(withImport: bool): int =
+        ## Managed values left behind by 40 calls of a function that imports a
+        ## pair into its own activation and makes and drops a closure there,
+        ## measured after a warm-up call has loaded the modules.
+        let dir = getTempDir() / "gene-rc-nested-import-impl"
+        createDir(dir)
+        writeFile(dir / "base.gene",
+          "(protocol Render (message render [] : Str)) (type Item ^props {})")
+        writeFile(dir / "prov.gene",
+          "(import [Render Item] ^from \"./base\") " &
+          "(impl Render for Item ^^export (message render [] : Str \"one\"))")
+        let app = newApplication(dir)
+        let scope = newGlobalScope(app)
+        let pair =
+          if withImport: "(import_impl Render for Item ^from \"./prov\") " else: ""
+        discard scope.runText(
+          "(import [Render Item] ^from \"./base\") " &
+          "(import * : p ^from \"./prov\") " &
+          "(let item (Item)) (var i 0) " &
+          "(fn body [] " & pair &
+          "  (let f (fn [] (try item/.Render:render catch Any \"hidden\"))) (f)) " &
+          "(body) ($runtime/test_collect) nil")
+        GC_fullCollect()
+        let before = liveManaged
+        discard scope.runText(
+          "(while (< i 40) (body) (set i (+ i 1))) ($runtime/test_collect) nil")
+        GC_fullCollect()
+        result = liveManaged - before
+
+      test "a function-local import_impl is released with its activation":
+        let control = nestedImportImplGrowth(withImport = false)
+        check nestedImportImplGrowth(withImport = true) == control
+        check control == 0
+
       test "a function escaping eval into its caller is reclaimed":
         # The escaped function captures the eval scope, whose chain reaches the
         # calling scope that binds it: a cycle only returned-call retirement

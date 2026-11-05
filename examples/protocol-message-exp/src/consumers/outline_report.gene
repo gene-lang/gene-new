@@ -1,0 +1,4 @@
+(fn outline_report [operation documents]
+  (var out [])
+  (for document in documents (out .push (operation document 0)))
+  ($str/join out "\n"))

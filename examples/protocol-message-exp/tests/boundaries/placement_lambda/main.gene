@@ -1,0 +1,9 @@
+(import [Article] ^from "../common/model")
+(import [Render] ^from "../common/contracts")
+(import [attempt] ^from "../common/util")
+(let show (fn [article]
+  (import_impl Render for Article ^from "../common/plain")
+  article/.Render:render))
+(let article (Article ^title "A"))
+($println $"in the lambda: ${(show article)}")
+($println $"module after the call: ${(attempt (fn [] article/.Render:render))}")

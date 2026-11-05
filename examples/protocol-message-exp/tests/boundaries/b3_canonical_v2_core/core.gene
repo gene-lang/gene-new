@@ -1,0 +1,5 @@
+# v2 of the core adds a canonical default: the owner module now implements Render
+# for Article. This is the "later canonical addition" under test.
+(protocol Render (message render [] : Str))
+(type Article ^props {^title Str})
+(impl Render for Article (message render [] : Str $"core:${self/title}"))

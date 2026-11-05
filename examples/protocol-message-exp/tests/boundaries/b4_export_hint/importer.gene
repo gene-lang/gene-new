@@ -1,0 +1,4 @@
+# Imports the exported pair, so an imported copy exists in this module's scope.
+(import [Article] ^from "./model")
+(import [Render] ^from "./contracts")
+(import_impl Render for Article ^from "./prov")

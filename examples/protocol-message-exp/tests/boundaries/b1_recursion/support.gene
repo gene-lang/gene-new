@@ -1,0 +1,10 @@
+# Support for the failing controls: a body-authored Section impl that sends
+# `child/.Render:render` directly instead of applying the threaded operation.
+(import [Section] ^from "../../../src/model")
+(import [Render] ^from "../../../src/contracts")
+(impl Render for Section ^^export
+  (message render [each] : Str
+    (var out self/title)
+    (for child in self/children
+      (set out ($to_str out " / " (child .Render:render each))))
+    out))

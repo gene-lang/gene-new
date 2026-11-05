@@ -1,0 +1,9 @@
+(import [Article] ^from "../common/model")
+(import [Render] ^from "../common/contracts")
+(import [attempt] ^from "../common/util")
+(fn start [article]
+  (spawn (do (import_impl Render for Article ^from "../common/plain")
+             article/.Render:render)))
+(let article (Article ^title "A"))
+($println $"in the task: ${(await (start article))}")
+($println $"module after the task: ${(attempt (fn [] article/.Render:render))}")

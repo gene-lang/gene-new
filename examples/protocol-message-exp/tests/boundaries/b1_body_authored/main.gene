@@ -1,0 +1,9 @@
+# Failing control: a body-authored qualified send does not acquire impls just
+# because the caller (here the composition root) imports them.
+(import [Section Figure] ^from "../../../src/model")
+(import [operation] ^from "./control_root")
+(let op (operation))
+(let leaf (Figure ^caption "c"))
+($println $"direct figure: ${(op leaf op)}")
+(let tree (Section ^title "A" ^children [leaf]))
+($println $"body-authored recursion: ${(try (op tree op) catch Any $err/message)}")

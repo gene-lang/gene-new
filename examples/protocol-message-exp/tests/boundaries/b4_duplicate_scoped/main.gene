@@ -1,0 +1,6 @@
+# Two scoped providers for one pair: the load fails and names both origins.
+(import [Article] ^from "./model")
+(import [Render] ^from "./contracts")
+(import_impl Render for Article ^from "./one")
+(import_impl Render for Article ^from "./two")
+($println "loaded")

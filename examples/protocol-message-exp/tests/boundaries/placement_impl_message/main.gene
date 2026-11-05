@@ -1,0 +1,12 @@
+(import [Article] ^from "../common/model")
+(import [Render] ^from "../common/contracts")
+(import [attempt] ^from "../common/util")
+(type Holder ^props {})
+(protocol Show (message show [article] : Str))
+(impl Show for Holder
+  (message show [article] : Str
+    (import_impl Render for Article ^from "../common/plain")
+    article/.Render:render))
+(let article (Article ^title "A"))
+($println $"in the impl message: ${((Holder) .Show:show article)}")
+($println $"module after the send: ${(attempt (fn [] article/.Render:render))}")

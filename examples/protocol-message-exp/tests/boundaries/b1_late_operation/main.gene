@@ -1,0 +1,19 @@
+# B1.6: the late operation implemented as scoped third-party pairs, to compare with
+# the natural canonical implementation in src/extensions/outline.gene (no imports,
+# no `^^export`, no threaded operation). Consumers still import no impls.
+(import [Section Article Figure] ^from "../../../src/model")
+(import [Chart] ^from "../../../src/extensions/chart")
+(import [Outline] ^from "../../../src/extensions/outline")
+(import [operation] ^from "./root")
+(import [late_document] ^from "../../../src/documents")
+(import [outline_report] ^from "../../../src/consumers/outline_report")
+(fn scoped_report [operation documents]
+  (var out [])
+  (for document in documents (out .push (operation document operation 0)))
+  ($str/join out "\n"))
+(let tree (Section ^title "S" ^children [(Article ^title "T" ^text "x") (Chart ^caption "c") (Figure ^caption "f")]))
+(let scoped (scoped_report (operation) [tree]))
+(let canonical (outline_report Outline:outline [tree]))
+($println $"scoped:\n${scoped}")
+($println $"canonical:\n${canonical}")
+($println $"identical output: ${(== scoped canonical)}")

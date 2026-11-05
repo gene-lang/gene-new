@@ -1,0 +1,10 @@
+(import [Section Article Figure] ^from "../../model")
+(import [Chart] ^from "./chart")
+(import [PlainRender] ^from "./plain_policy")
+(import [CompactRender] ^from "./compact_policy")
+(let document (Section ^title "Report" ^children [
+  (Article ^title "Intro" ^text "hello")
+  (Section ^title "Data" ^children [(Chart ^caption "growth") (Figure ^caption "map")])]))
+(let plain PlainRender:render)
+(let compact CompactRender:render)
+($println [(plain document) (compact document) (plain document) (compact document)])

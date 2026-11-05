@@ -1,0 +1,6 @@
+# Without the import the universal default serves every type.
+(import [Article Other] ^from "./model")
+(import [Describe] ^from "./contracts")
+(let article (Article ^title "A"))
+(let other (Other))
+($println $"universal, no import: article=${article/.Describe:describe} other=${other/.Describe:describe}")

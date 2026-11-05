@@ -1,0 +1,12 @@
+# P-closure: the same scoped pairs as roots/plain_late.gene, carried by a
+# root-authored ordinary closure over the qualified send instead of a held Message.
+(import [Section Article Figure] ^from "../../model")
+(import [Chart] ^from "../../extensions/chart")
+(import [Table] ^from "../../extensions/table")
+(import [Render] ^from "../../contracts")
+(import_impl Render for Section ^from "../../policies/plain")
+(import_impl Render for Article ^from "../../policies/plain")
+(import_impl Render for Figure ^from "../../policies/plain")
+(import_impl Render for Chart ^from "../../extensions/chart_plain")
+(import_impl Render for Table ^from "../../extensions/table_plain")
+(fn operation [] (fn [node each] (node .Render:render each)))

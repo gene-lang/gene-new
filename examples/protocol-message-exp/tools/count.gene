@@ -1,0 +1,80 @@
+# Composition-cost counts (plan sections 5.1 and 9): a text scan of each variant's
+# file set. It counts what a reader would have to write or edit - code lines,
+# import statements, exact-pair import_impl statements, `^^export` markers,
+# operation-threading tokens, per-type test functions and dispatcher entries.
+# Counts are supporting evidence only: fewer lines never establishes a benefit.
+#
+#   gene run tools/count.gene [OUT.json]
+(let sets [
+  {^name "P recursive (T=3, P=2 incl. canonical Outline, M=3)"
+   ^files ["src/contracts.gene" "src/policies/plain.gene" "src/policies/compact.gene"
+           "src/roots/plain.gene" "src/roots/compact.gene"
+           "src/consumers/preview.gene" "src/consumers/export.gene"
+           "src/consumers/outline_report.gene" "src/extensions/outline.gene"]}
+  {^name "P late extension additions (T=5: Chart, Table; P=3: Weight)"
+   ^files ["src/extensions/chart.gene" "src/extensions/table.gene"
+           "src/extensions/chart_plain.gene" "src/extensions/chart_compact.gene"
+           "src/extensions/table_plain.gene" "src/extensions/table_compact.gene"
+           "src/roots/plain_late.gene" "src/roots/compact_late.gene"
+           "src/extensions/weight.gene" "src/extensions/weight_impls.gene"
+           "src/roots/weight_late.gene"]}
+  {^name "P-closure late root (replaces roots/plain_late.gene)"
+   ^files ["src/variants/closure/plain_late.gene"]}
+  {^name "P-typed (contract + plain policy + late root)"
+   ^files ["src/variants/typed/contracts.gene" "src/variants/typed/plain.gene"
+           "src/variants/typed/plain_late.gene"]}
+  {^name "N recursive+late (named canonical policy protocols; no Table)"
+   ^files ["src/variants/named/plain_policy.gene" "src/variants/named/compact_policy.gene"
+           "src/variants/named/chart.gene"]}
+  {^name "F recursive (dispatcher + 2 policies + 2 roots + consumers)"
+   ^files ["src/baseline/dispatch.gene" "src/baseline/plain.gene" "src/baseline/compact.gene"
+           "src/baseline/plain_root.gene" "src/baseline/compact_root.gene"
+           "src/consumers/preview.gene" "src/consumers/export.gene"
+           "src/consumers/outline_report.gene" "src/extensions/outline.gene"]}
+  {^name "F late extension additions (Chart, Table, Weight entries)"
+   ^files ["src/baseline/chart_plain.gene" "src/baseline/chart_compact.gene"
+           "src/baseline/table_plain.gene" "src/baseline/table_compact.gene"
+           "src/baseline/plain_late_root.gene" "src/baseline/compact_late_root.gene"
+           "src/baseline/weight.gene" "src/baseline/weight_late_root.gene"]}
+  {^name "Cordis C control (clock plugin)" ^files ["ports/cordis/c/plugins/clock.gene"]}
+  {^name "Cordis P variant (clock plugin + moved definitions + adapter)"
+   ^files ["ports/cordis/p/plugins/clock.gene" "ports/cordis/p/plugins/counter_type.gene"
+           "ports/cordis/p/plugins/clock_impl.gene"]}])
+
+(fn package_root [] ($path/parent ($path/parent ($fs/real_path this_mod/.path))))
+
+(fn occurrences [text needle]
+  (- ((text .split needle) .size) 1))
+
+(fn count_file [root file]
+  (let text ($fs/read_text $"${root}/${file}"))
+  (var code_lines 0)
+  (for line in (text .split "\n")
+    (let trimmed (line .trim))
+    (if (&& (!= trimmed "") (! (trimmed .starts_with? "#")))
+      (set code_lines (+ code_lines 1))))
+  {^file file ^code_lines code_lines
+   ^imports (occurrences text "(import ")
+   ^import_impl (occurrences text "(import_impl ")
+   ^export_marks (occurrences text "^^export")
+   ^each_tokens (occurrences text "each")
+   ^type_tests (occurrences text "(fn is_")
+   ^entries (occurrences text "(entry ")})
+
+(fn main [args] : Int
+  (let root (package_root))
+  (let report [])
+  (for group in sets
+    (let rows [])
+    (var totals {^code_lines 0 ^imports 0 ^import_impl 0 ^export_marks 0
+                 ^each_tokens 0 ^type_tests 0 ^entries 0})
+    (for file in group/files
+      (let row (count_file root file))
+      (rows .push row)
+      (for key in ["code_lines" "imports" "import_impl" "export_marks" "each_tokens" "type_tests" "entries"]
+        (totals .put key (+ (totals .get key) (row .get key)))))
+    ($println $"${group/name}: files=${group/files/.size} ${totals}")
+    (report .push {^name group/name ^files rows ^totals totals}))
+  (if (> args/body/.size 0)
+    ($fs/write_text args/body/0 ($json/stringify {^format 1 ^sets report})))
+  0)

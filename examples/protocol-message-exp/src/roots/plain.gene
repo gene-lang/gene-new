@@ -1,0 +1,8 @@
+# Composition root, plain policy, core types. The imports below (not any
+# consumer's) decide what `Render:render` means for every node.
+(import [Section Article Figure] ^from "../model")
+(import [Render] ^from "../contracts")
+(import_impl Render for Section ^from "../policies/plain")
+(import_impl Render for Article ^from "../policies/plain")
+(import_impl Render for Figure ^from "../policies/plain")
+(fn operation [] Render:render)

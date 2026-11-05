@@ -1,0 +1,14 @@
+# H2: loading order must not change either policy's output. This process loads the
+# plain root first and the compact root second, then interleaves them over one value graph.
+(import [operation : first_op] ^from "../../../src/roots/plain_late")
+(import [operation : second_op] ^from "../../../src/roots/compact_late")
+(import [late_document] ^from "../../../src/documents")
+(let tree (late_document))
+(let first (first_op))
+(let second (second_op))
+(fn run [op] (op tree op))
+(let a (run first))
+(let b (run second))
+($println $"plain: ${a}")
+($println $"compact: ${b}")
+($println $"interleaved stable: ${(&& (== a (run first)) (== b (run second)) (== a (run first)) (== b (run second)))}")

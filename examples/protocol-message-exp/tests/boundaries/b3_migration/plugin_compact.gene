@@ -1,0 +1,4 @@
+(import [Article] ^from "./core")
+(protocol CompactRender (message render [] : Str))
+(impl CompactRender for Article (message render [] : Str $"compact:${self/title}"))
+(fn operation [] CompactRender:render)

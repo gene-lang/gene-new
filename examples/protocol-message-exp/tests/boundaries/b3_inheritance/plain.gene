@@ -1,0 +1,5 @@
+(import [Article] ^from "./model")
+(import [Format] ^from "./contracts")
+(impl Format for Article ^^export
+  (message head [] : Str "plain-head")
+  (message body [] : Str "plain-body"))

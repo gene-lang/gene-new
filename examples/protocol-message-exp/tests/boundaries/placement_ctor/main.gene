@@ -1,0 +1,11 @@
+(import [Article] ^from "../common/model")
+(import [Render] ^from "../common/contracts")
+(import [attempt] ^from "../common/util")
+(type Holder ^props {^text Str}
+  (ctor [article]
+    (import_impl Render for Article ^from "../common/plain")
+    (set self/text article/.Render:render)))
+(let article (Article ^title "A"))
+(let holder (new Holder article))
+($println $"in the ctor: ${holder/text}")
+($println $"module after construction: ${(attempt (fn [] article/.Render:render))}")

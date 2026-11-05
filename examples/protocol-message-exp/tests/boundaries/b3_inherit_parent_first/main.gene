@@ -1,0 +1,6 @@
+# A parent pair first, then an independent child pair: the load fails.
+(import [Article Note] ^from "../b3_inheritance/model")
+(import [Format] ^from "../b3_inheritance/contracts")
+(import_impl Format for Article ^from "../b3_inheritance/plain")
+(import_impl Format for Note ^from "../b3_inheritance/note_independent")
+($println "loaded")

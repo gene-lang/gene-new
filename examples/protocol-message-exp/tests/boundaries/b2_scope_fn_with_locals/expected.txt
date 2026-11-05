@@ -1,0 +1,3 @@
+in the function: seed-1 plain:A
+sibling: no implementation of message 'render' for Article
+outer module: no implementation of message 'render' for Article

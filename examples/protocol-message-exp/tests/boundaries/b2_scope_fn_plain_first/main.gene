@@ -1,0 +1,13 @@
+# A library whose functions each import a pair: every call uses its own
+# policy, in any order, and neither leaks into the library or the caller.
+(import [Article] ^from "../common/model")
+(import [Render] ^from "../common/contracts")
+(import [attempt] ^from "../common/util")
+(import [render_plain render_compact render_sibling] ^from "../common/fns")
+(let article (Article ^title "A"))
+($println $"sibling before: ${(attempt (fn [] (render_sibling article)))}")
+($println $"plain: ${(render_plain article)}")
+($println $"compact: ${(render_compact article)}")
+($println $"plain again: ${(render_plain article)}")
+($println $"sibling after: ${(attempt (fn [] (render_sibling article)))}")
+($println $"outer module: ${(attempt (fn [] article/.Render:render))}")

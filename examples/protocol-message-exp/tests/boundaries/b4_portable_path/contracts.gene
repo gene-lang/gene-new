@@ -1,0 +1,1 @@
+(protocol Render (message render [] : Str))

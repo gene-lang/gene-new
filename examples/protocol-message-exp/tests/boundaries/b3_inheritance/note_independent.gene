@@ -1,0 +1,6 @@
+# An independent child impl: no parent pair visible while it is declared.
+(import [Note] ^from "./model")
+(import [Format] ^from "./contracts")
+(impl Format for Note ^^export
+  (message head [] : Str "note-head")
+  (message body [] : Str "note-body"))

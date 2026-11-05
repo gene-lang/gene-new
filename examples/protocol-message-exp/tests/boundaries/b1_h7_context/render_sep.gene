@@ -1,0 +1,9 @@
+(import [Section Figure] ^from "../../../src/model")
+(import [RenderSep] ^from "./contracts")
+(impl RenderSep for Section ^^export
+  (message render [each mark] : Str
+    (var out self/title)
+    (for child in self/children (set out ($to_str out "/" (each child each mark))))
+    out))
+(impl RenderSep for Figure ^^export
+  (message render [each mark] : Str ($to_str (mark self) self/caption)))

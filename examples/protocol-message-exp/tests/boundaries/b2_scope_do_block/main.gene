@@ -1,0 +1,7 @@
+# A plain `do` at module level is a grouping form, not a policy sandbox: its
+# import is an ordinary module-level declaration and registers in the module.
+(import [Article] ^from "../common/model")
+(import [Render] ^from "../common/contracts")
+(do (import_impl Render for Article ^from "../common/plain"))
+(let article (Article ^title "A"))
+($println $"module after the do block: ${article/.Render:render}")

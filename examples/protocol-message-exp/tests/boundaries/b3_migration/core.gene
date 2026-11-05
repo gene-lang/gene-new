@@ -1,0 +1,3 @@
+(protocol Render (message render [] : Str))
+(type Article ^props {^title Str})
+(impl Render for Article (message render [] : Str $"core:${self/title}"))

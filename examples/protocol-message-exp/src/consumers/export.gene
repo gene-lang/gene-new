@@ -1,0 +1,7 @@
+(fn export_all [operation documents]
+  (var out [])
+  (var index 0)
+  (for document in documents
+    (set index (+ index 1))
+    (out .push ($to_str index ". " (operation document operation))))
+  ($str/join out "\n"))

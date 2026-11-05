@@ -1,0 +1,17 @@
+# Policy "plain": third-party scoped Render impls for the core types.
+# Neither the protocol nor the receiver types live here, so the pairs are
+# scoped; `^^export` lets a composition root import them one pair at a time.
+(import [Section Article Figure] ^from "../model")
+(import [Render] ^from "../contracts")
+
+(impl Render for Section ^^export
+  (message render [each] : Str
+    (var out self/title)
+    (for child in self/children (set out ($to_str out " / " (each child each))))
+    out))
+
+(impl Render for Article ^^export
+  (message render [each] : Str ($to_str self/title ": " self/text)))
+
+(impl Render for Figure ^^export
+  (message render [each] : Str ($to_str "fig(" self/caption ")")))

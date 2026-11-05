@@ -1,0 +1,17 @@
+(import [Section Article Figure] ^from "../model")
+(import [entry] ^from "./dispatch")
+
+(fn is_section [n] (match n (when (x : Section) true) (else false)))
+(fn is_article [n] (match n (when (x : Article) true) (else false)))
+(fn is_figure [n] (match n (when (x : Figure) true) (else false)))
+
+(fn render_section [node each] : Str
+  (var out "<")
+  (for child in node/children (set out ($to_str out "|" (each child each))))
+  ($to_str out ">"))
+(fn render_article [node each] : Str node/title)
+(fn render_figure [node each] : Str "F")
+
+(let entries [(entry is_section render_section)
+              (entry is_article render_article)
+              (entry is_figure render_figure)])

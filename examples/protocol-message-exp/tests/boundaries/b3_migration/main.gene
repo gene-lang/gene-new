@@ -1,0 +1,10 @@
+# Migration for the canonical-addition break: each policy becomes its own protocol,
+# passed as an explicit operation. Core canonical behavior and both policies coexist.
+(import [Article Render] ^from "./core")
+(import [operation : plain] ^from "./plugin_plain")
+(import [operation : compact] ^from "./plugin_compact")
+(let article (Article ^title "A"))
+(let p (plain))
+(let c (compact))
+($println $"canonical: ${article/.Render:render}")
+($println $"interleaved: ${[(p article) (c article) (p article) (c article) article/.Render:render]}")

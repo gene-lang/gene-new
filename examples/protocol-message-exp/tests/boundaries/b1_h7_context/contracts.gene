@@ -1,0 +1,8 @@
+# H7: a policy spanning two protocols. Render providers must stay policy-neutral:
+# they never name a Mark provider; the composition root selects both.
+(protocol Mark (message mark [] : Str))
+(protocol RenderSep (message render [each mark] : Str))
+(protocol RenderRec (message render [ops] : Str))
+(type Ops ^props {^render (Callable [Any Any] Str) ^mark (Callable [Any] Str)})
+(protocol RenderTyped (message render [ops : Ops] : Str))
+(protocol RenderBody (message render [each] : Str))

@@ -1,0 +1,11 @@
+# A top-level conditional runs in the module's base scope, so the import it
+# chooses joins the module, as an import of names there would.
+(import [Article] ^from "../common/model")
+(import [Render] ^from "../common/contracts")
+(import [attempt] ^from "../common/util")
+(let use_plain true)
+(if use_plain
+  (then (import_impl Render for Article ^from "../common/plain"))
+  (else (import_impl Render for Article ^from "../common/compact")))
+(let article (Article ^title "A"))
+($println $"module after the conditional: ${article/.Render:render}")

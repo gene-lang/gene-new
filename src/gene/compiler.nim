@@ -7075,6 +7075,9 @@ proc compileImportImpl(c: var Compiler, node: Value) =
   if not c.allowAmbientImports:
     raise newException(GeneError,
       "eval cannot use import_impl; add policy impls to the surrounding scope")
+  # Placement follows `import`: the pair becomes visible in the scope where an
+  # `import` written at the same position binds its names (see
+  # importScopedImpl). Only eval, which cannot use `import` either, rejects it.
   for key in node.props.keys:
     if key != "from":
       raise newException(GeneError,

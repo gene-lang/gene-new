@@ -1,0 +1,9 @@
+# P: Clock behavior for CounterClock as a scoped, exported third-party pair
+# (neither Clock nor CounterClock is owned here).
+(import [Clock] ^from "../src/demo_contract")
+(import [CounterClock] ^from "./counter_type")
+(impl Clock for CounterClock ^^export
+  (message tick [] : Int
+    (var current self/counter/.get)
+    (self/counter .set (+ current 1))
+    current))

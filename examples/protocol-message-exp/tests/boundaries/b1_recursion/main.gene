@@ -1,0 +1,31 @@
+# B1: recursive composition with the root-authored held message (variant P).
+(import [Section Article Figure] ^from "../../../src/model")
+(import [Chart] ^from "../../../src/extensions/chart")
+(import [Table] ^from "../../../src/extensions/table")
+(import [Render] ^from "../../../src/contracts")
+(import [operation : plain_op] ^from "../../../src/roots/plain_late")
+(import [operation : compact_op] ^from "../../../src/roots/compact_late")
+(import [Callout] ^from "./callout")
+(import [consume] ^from "./consumer")
+
+(let figure (Figure ^caption "f"))
+(let article (Article ^title "T" ^text "x"))
+(let chart (Chart ^caption "c"))
+(let callout (Callout ^note "n"))
+(let tree (Section ^title "S" ^children [
+  article figure
+  (Section ^title "N" ^children [figure chart (Table ^title "t" ^rows 2) callout])]))
+(let plain (plain_op))
+(let compact (compact_op))
+
+# 1. direct sends (the Callout control owns its canonical impl)
+($println $"callout canonical, no import: ${(callout .Render:render nil)}")
+# 2. nested recursion under two policies in one process, interleaved
+($println $"plain:   ${(consume plain tree)}")
+($println $"compact: ${(consume compact tree)}")
+($println $"plain again: ${(consume plain tree)}")
+($println $"compact again: ${(consume compact tree)}")
+# 3. identical value graph: nothing in the tree changed between runs
+($println $"tree unchanged: ${(== tree/children/2/children/.size 4)}")
+# 4. a plain host without the pair cannot send directly (call-form normalization)
+($println $"fresh send in this module: ${(try (Render:render article nil) catch Any $err/message)}")

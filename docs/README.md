@@ -18,6 +18,7 @@ For contributors:
 - [Development, status, and roadmap](development.md)
 - [The implemented specification](spec/README.md) — precise rules
 - [Macro design and implementation guide](macro.md)
+- [Composing protocols across modules](protocol-composition.md) — root-authored operations and impl ownership
 - [Design proposals](proposals/README.md) — open and staged designs
 - [Work reports](reports/README.md) — completed optimizations and verifications
 - [Native application profile](profiles/native-app.md) — qualification evidence

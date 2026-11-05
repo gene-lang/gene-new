@@ -1,0 +1,23 @@
+(mod clock_plugin)
+
+(import [PluginSpec] ^from "../src/plugin_api")
+(import [Clock clock_key] ^from "../src/demo_contract")
+(import [CounterClock] ^from "./counter_type")
+
+# P: the pair is scoped, so it is visible here only. `check_clock` (declared in
+# demo_contract) cannot see it; the canonical ClockHandle adapter below, owned by
+# this module, carries the captured held operation to every consumer.
+(import_impl Clock for CounterClock ^from "./clock_impl")
+(var tick_operation Clock:tick)
+
+(type ClockHandle ^props {^target Any ^operation Any})
+(impl Clock for ClockHandle
+  (message tick [] : Int (self/operation self/target)))
+
+(fn activate [ctx, config]
+  (ctx .provide clock_key
+    (ClockHandle ^target (CounterClock ^counter ($cell 1)) ^operation tick_operation)))
+
+(var plugin
+  (PluginSpec ^id "core/clock" ^config_schema nil ^requires []
+              ^provides [clock_key] ^reload nil ^activate activate))

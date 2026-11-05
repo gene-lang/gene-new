@@ -1,0 +1,14 @@
+# N: this module owns the PlainRender protocol, so its impls for the core types
+# are canonical: no `^^export`, no import_impl, no threaded operation. Bodies
+# recurse with an ordinary qualified send because canonical impls are global.
+(import [Section Article Figure] ^from "../../model")
+(protocol PlainRender (message render [] : Str))
+(impl PlainRender for Section
+  (message render [] : Str
+    (var out self/title)
+    (for child in self/children (set out ($to_str out " / " child/.PlainRender:render)))
+    out))
+(impl PlainRender for Article
+  (message render [] : Str ($to_str self/title ": " self/text)))
+(impl PlainRender for Figure
+  (message render [] : Str ($to_str "fig(" self/caption ")")))

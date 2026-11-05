@@ -1,0 +1,3 @@
+(protocol Format
+  (message head [] : Str)
+  (message body [] : Str))

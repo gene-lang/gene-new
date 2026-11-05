@@ -1,0 +1,14 @@
+# Compact-style impls that log each visit, so partial effects are observable.
+(import [Section Figure] ^from "../../../src/model")
+(import [Render] ^from "../../../src/contracts")
+(import [events] ^from "./trace")
+(impl Render for Section ^^export
+  (message render [each] : Str
+    (events .push $"enter ${self/title}")
+    (var out "<")
+    (for child in self/children (set out ($to_str out "|" (each child each))))
+    ($to_str out ">")))
+(impl Render for Figure ^^export
+  (message render [each] : Str
+    (events .push $"figure ${self/caption}")
+    "F"))

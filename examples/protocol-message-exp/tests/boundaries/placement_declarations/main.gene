@@ -1,0 +1,12 @@
+# Declarations and imports may sit in any order at module level; here the
+# import is inside a transparent `do`, among declarations.
+(import [Article] ^from "../common/model")
+(import [Render] ^from "../common/contracts")
+(type Local ^props {^n Int})
+(fn helper [x] x)
+(protocol Weigh (message weigh [] : Int))
+(do (import_impl Render for Article ^from "../common/plain"))
+(impl Weigh for Local (message weigh [] : Int self/n))
+(let article (Article ^title "A"))
+($println $"article: ${article/.Render:render}")
+($println $"local: ${((Local ^n 3) .Weigh:weigh)}")

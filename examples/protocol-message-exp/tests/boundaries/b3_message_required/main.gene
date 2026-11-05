@@ -1,0 +1,6 @@
+# The contract gained a required message after the extension was written: the
+# load fails at the import, naming the missing message.
+(import [Article] ^from "./model")
+(import [Render] ^from "./contracts")
+(import_impl Render for Article ^from "./ext")
+($println "loaded")

@@ -1,0 +1,38 @@
+(import [Section Figure] ^from "../../../src/model")
+(import [body_op sep_ops raw_ops typed_ops raw_ops_missing_mark] ^from "./root_bracket")
+(import [sep_ops : star_sep raw_ops : star_raw typed_ops : star_typed] ^from "./root_star")
+(import [Ops] ^from "./contracts")
+(let tree (Section ^title "S" ^children [(Figure ^caption "a") (Section ^title "T" ^children [(Figure ^caption "b")])]))
+
+# Control: threading Render alone does not carry the root's Mark selection into a
+# body-authored send, even though the root imported both exact pairs.
+(let body (body_op))
+($println $"body-authored Mark: ${(try (body tree body) catch Any $err/message)}")
+
+# Variant 1: separate protocol parameters
+(let sep_b (sep_ops))
+(let sep_s (star_sep))
+(fn run_sep [ops] (ops/render tree ops/render ops/mark))
+($println $"separate params: ${[(run_sep sep_b) (run_sep sep_s) (run_sep sep_b) (run_sep sep_s)]}")
+
+# Variant 2: raw operations record
+(let raw_b (raw_ops))
+(let raw_s (star_raw))
+($println $"raw record: ${[(raw_b/render tree raw_b) (raw_s/render tree raw_s) (raw_b/render tree raw_b)]}")
+
+# Variant 3: nominal record with checked Callable fields
+(let typed_b (typed_ops))
+(let typed_s (star_typed))
+($println $"checked record: ${[(typed_b/render tree typed_b) (typed_s/render tree typed_s) (typed_b/render tree typed_b)]}")
+
+# Missing secondary operation: raw fails late (at traversal), typed fails at construction.
+(let missing (raw_ops_missing_mark))
+($println $"missing mark, raw record: ${(try (missing/render tree missing) catch Any $err/message)}")
+($println $"missing mark, checked record: ${(try (Ops ^render raw_b/render) catch Any $err/message)}")
+
+# Mixed-root contexts are possible by construction (values, not scopes): the
+# result silently mixes a bracket traversal with a star marker.
+(let mixed {^render raw_b/render ^mark raw_s/mark})
+($println $"mixed raw record: ${(mixed/render tree mixed)}")
+(let mixed_typed (Ops ^render typed_b/render ^mark typed_s/mark))
+($println $"mixed checked record: ${(mixed_typed/render tree mixed_typed)}")

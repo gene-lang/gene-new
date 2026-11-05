@@ -1,0 +1,10 @@
+# A module-level import_impl may follow code. As with import, code that runs
+# before the form does not see the pair and code that runs after it does.
+(import [Article] ^from "../common/model")
+(import [Render] ^from "../common/contracts")
+(import [attempt] ^from "../common/util")
+(let article (Article ^title "A"))
+(fn show [] (attempt (fn [] article/.Render:render)))
+($println $"before the import: ${(show)}")
+(import_impl Render for Article ^from "../common/plain")
+($println $"after the import: ${(show)}")

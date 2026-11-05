@@ -1,0 +1,5 @@
+# The same application against core v2, with no migration: the load fails
+# because the canonical impl and the scoped pair cannot coexist.
+(import [Article Render] ^from "./core")
+(import_impl Render for Article ^from "./plugin")
+($println "loaded")

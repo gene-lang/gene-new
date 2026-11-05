@@ -1,0 +1,44 @@
+(mod stale_probe)
+
+# Same scenario for C and P: activate provider + consumer, then reconcile a
+# manifest that removes the provider while the consumer still requires it, then
+# restore it. Prints observable outcomes only.
+(import $log [new_logger])
+(import [ReconcileMode RuntimeOptions LoaderOptions invocation_limits
+         default_plugin_invoker new_runtime]
+  ^from "./cordis")
+(import [Clock clock_key] ^from "./demo_contract")
+
+(fn entries [with_clock]
+  (var list [{^id "reporter" ^plugin_id "app/reporter" ^module "reporter.gene" ^config nil}])
+  (if with_clock
+    (list .push {^id "clock" ^plugin_id "core/clock" ^module "clock.gene" ^config nil}))
+  {^format 1 ^entries list})
+
+(fn main [args]
+  (var runtime
+    (new_runtime
+      (RuntimeOptions ^logger (new_logger "app/cordis")
+                      ^invoker (default_plugin_invoker)
+                      ^default_limits (invocation_limits))))
+  (runtime .admit_service_key clock_key)
+  (var loader
+    (runtime .loader
+      (LoaderOptions ^plugin_root "plugins"
+        ^shared ["src/plugin_api.gene" "src/demo_contract.gene"]
+        ^max_namespaces []
+        ^default_limits nil ^reload_policy nil)))
+  (loader .reconcile (entries true) ReconcileMode/staged)
+  (var first (runtime/.root .require clock_key))
+  ($println $"first tick ${first/.Clock:tick}")
+  (let removal (try (do (loader .reconcile (entries false) ReconcileMode/staged) "accepted") catch Any $err/message))
+  ($println $"remove provider: ${removal}")
+  (let after (try (do (runtime/.root .require clock_key) "available") catch Any $err/message))
+  ($println $"provider after removal: ${after}")
+  (let restore (try (do (loader .reconcile (entries true) ReconcileMode/staged) "accepted") catch Any $err/message))
+  ($println $"restore provider: ${restore}")
+  (var second (runtime/.root .require clock_key))
+  ($println $"restored tick ${second/.Clock:tick}")
+  loader/.dispose
+  runtime/.close
+  0)

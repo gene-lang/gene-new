@@ -52,7 +52,32 @@ Executable coverage: `tests/test_protocols.nim` and protocol suites in
   scoped impl for that exact protocol/receiver pair. `^from` must be a literal
   string and may appear anywhere among the positional operands. `for` remains
   positional; the old positional `from "path"` clause is rejected. No other
-  named properties are accepted.
+  named properties are accepted. A relative `^from` path resolves against the
+  module that contains the `import_impl`.
+- Placement follows `import` (owner decision, 2026-11-05, replacing the
+  2026-11-01 module-level-only rule): `import_impl` is accepted wherever `import`
+  is, which is everywhere except `eval`, and the pair becomes visible in the
+  scope where an `import` at the same position binds its names. Run in the
+  module's base scope (module level, including inside a top-level conditional,
+  `try` or `do`, and after other statements), it adds the pair to the module, so
+  every function of the module sees it once the form has run; code that runs
+  earlier does not. Run in a nested activation (a `fn`, lambda, `message`,
+  `ctor`, `spawn` or loop body, or a macro-marked block), it adds the pair to
+  that activation only: the body and the closures created in it see the pair,
+  code after the activation does not, and each execution imports again. A
+  nested import is an overlay impl, like an `impl` in a function body, so its
+  sends take uncached dispatch and each execution moves the dispatch epoch.
+  Impls never shadow: importing a pair identical to one already visible is a
+  no-op, and a different visible impl of the pair or one of its messages is a
+  conflict. Only code running in the base scope adds to a module's impls, so
+  they are final once the module has loaded. The web profile rejects
+  `import_impl` because web impl visibility must be fixed at compile time.
+- Conflict diagnostics name both origins (canonical, scoped, imported or overlay
+  impl and its module). A canonical impl added to a pair that a scoped policy
+  already supplies is rejected with the migration (give the policy its own
+  protocol and pass its operation explicitly). Hidden-impl advice never treats
+  an `import_impl` copy as a provider and spells its suggested `^from` as a
+  portable path relative to the checking module.
 - Unqualified sends resolve only receiver type-direct behavior, walking nominal parents;
   there is no protocol or lexical fallback. A failed bare send may list
   published, visible protocol-qualified candidates as a diagnostic hint;

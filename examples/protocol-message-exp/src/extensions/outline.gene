@@ -1,0 +1,27 @@
+# Late operation, natural implementation: this module owns the Outline protocol,
+# so its impls for existing types are canonical (application-wide on load) and
+# need no import_impl, no `^^export` and no threaded operation. Recursion is an
+# ordinary qualified send because canonical impls are visible at every send site.
+(import [Section Article Figure] ^from "../model")
+
+(protocol Outline (message outline [depth : Int] : Str))
+
+(fn indent [depth : Int] : Str
+  (var out "")
+  (repeat _ in depth (set out ($to_str out "  ")))
+  out)
+
+(impl Outline for Section
+  (message outline [depth : Int] : Str
+    (var out ($to_str (indent depth) "- section " self/title))
+    (for child in self/children
+      (set out ($to_str out "\n" (child .Outline:outline (+ depth 1)))))
+    out))
+
+(impl Outline for Article
+  (message outline [depth : Int] : Str
+    ($to_str (indent depth) "- article " self/title)))
+
+(impl Outline for Figure
+  (message outline [depth : Int] : Str
+    ($to_str (indent depth) "- figure " self/caption)))

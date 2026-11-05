@@ -1,0 +1,11 @@
+# Local bindings do not change where the pair lives: still the call.
+(import [Article] ^from "../common/model")
+(import [Render] ^from "../common/contracts")
+(import [attempt] ^from "../common/util")
+(fn show [article seed]
+  (let label $"seed-${seed}")
+  (import_impl Render for Article ^from "../common/plain")
+  $"${label} ${article/.Render:render}")
+(let article (Article ^title "A"))
+($println $"in the function: ${(show article 1)}")
+($println $"module after the call: ${(attempt (fn [] article/.Render:render))}")

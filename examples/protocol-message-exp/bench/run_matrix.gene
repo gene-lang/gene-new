@@ -1,0 +1,101 @@
+# Paired runner for the dispatch matrix (matrix/rows.gene). Every (layout, row)
+# runs in a fresh worker; the layout/row order rotates each round; round zero is
+# a warm-up and is excluded. Net cost subtracts the empty-loop row measured in the
+# same round. No pass/fail limit: it reports raw samples, medians and ranges.
+#
+#   gene run --package-root examples/protocol-message-exp \
+#     examples/protocol-message-exp/bench/run_matrix.gene OUT_DIR ITERATIONS GENE_EXE [GENE_EXE...]
+(fn capture [executable arguments]
+  (await ($os/exec_async executable arguments... ^timeout_ms 600000 ^max_bytes 4194304)))
+
+(fn distribution [values]
+  (let ordered ($order/sort values))
+  (let count ($size ordered))
+  (let middle (/ count 2))
+  (let previous (- middle 1))
+  (let last (- count 1))
+  (let median
+    (if (== (// count 2) 0)
+      (/ (+ ordered/%previous ordered/%middle) 2.0)
+      ordered/%middle))
+  {^samples values ^median median ^min ordered/0 ^max ordered/%last})
+
+(let rows ["empty" "fn" "closure" "type_direct" "qualified" "closure_over_send"
+           "held" "view" "dynamic" "type_direct_alt" "qualified_alt" "held_alt"
+           "qualified_overlay"])
+(let layouts ["module" "entry"])
+
+(fn main [args] : Int
+  ($assert (>= args/body/.size 3) "usage: run_matrix.gene OUT_DIR ITERATIONS GENE_EXE [GENE_EXE...]")
+  (let output args/body/0)
+  (let iterations ($parse/parse_int args/body/1))
+  ($assert (! ($fs/exists? output)) "output directory must be new")
+  (let samples ($parse/parse_int (?? ($os/env? "GENE_BENCH_SAMPLES") "5")))
+  ($assert (&& (>= samples 3) (<= samples 100)) "samples must be in 3..100")
+  (let here ($path/parent this_mod/.path))
+  (let package_root ($path/parent here))
+  (let executables [])
+  (for argument in ($drop args/body 2)
+    (let executable ($fs/real_path argument))
+    (let version (capture executable ["--version"]))
+    (executables .push
+      {^executable executable ^version (version/stdout .trim)
+       ^sha256 ($crypto/sha256 ($fs/read_bytes executable)) ^cells {} ^loads []}))
+  ($fs/make_dir output)
+  ($fs/write_text $"${output}/metadata.json"
+    ($json/stringify
+      {^format 1 ^iterations iterations ^samples samples ^warmup_rounds 1
+       ^rows rows ^layouts layouts ^executables executables
+       ^source_sha256 ($crypto/sha256 ($fs/read_text $"${here}/matrix/rows.gene"))
+       ^git (capture "git" ["rev-parse" "HEAD"])
+       ^worktree (capture "git" ["status" "--porcelain"])
+       ^machine (?? ($os/env? "GENE_BENCH_MACHINE") "")}))
+  (var reference {})
+  (repeat round in (+ samples 1)
+    (let uptime (capture "uptime" []))
+    (repeat slot in executables/.size
+      (let eindex (// (+ slot round) executables/.size))
+      (let entry (executables .get eindex))
+      (if (> round 0) (entry/loads .push (uptime/stdout .trim)))
+      (repeat cell in (* layouts/.size rows/.size)
+        (let flat (// (+ cell (* round 7)) (* layouts/.size rows/.size)))
+        (let layout (layouts .get (// flat layouts/.size)))
+        (let row (rows .get (// (/ flat layouts/.size) rows/.size)))
+        (let worker $"${here}/matrix/${layout}_worker.gene")
+        (let process
+          (capture entry/executable ["run" "--package-root" package_root worker row ($to_str iterations)]))
+        ($assert (&& (== process/status 0) (! process/timed_out))
+          $"matrix worker ${layout}/${row} failed in round ${round}")
+        (let report ($json/parse process/stdout))
+        (let key $"${layout}/${row}")
+        (if (== round 0)
+          (then
+            (reference .put key report/checksum)
+            (entry/cells .put key {^ns_per_op [] ^elapsed_ms []}))
+          (else
+            ($assert (== (reference .get key) report/checksum) $"checksum changed for ${key}")
+            (let group (entry/cells .get key))
+            (group/ns_per_op .push report/ns_per_op)
+            (group/elapsed_ms .push report/elapsed_ms)))))
+    ($println $"round ${round} done"))
+  (let summary [])
+  (for entry in executables
+    (let table {})
+    (for layout in layouts
+      (for row in rows
+        (let key $"${layout}/${row}")
+        (let group (entry/cells .get key))
+        (let empty_group (entry/cells .get $"${layout}/empty"))
+        (let net [])
+        (repeat i in group/ns_per_op/.size
+          (net .push (- (group/ns_per_op .get i) (empty_group/ns_per_op .get i))))
+        (table .put key {^gross_ns (distribution group/ns_per_op) ^net_ns (distribution net)})))
+    (summary .push {^executable entry/executable ^sha256 entry/sha256 ^version entry/version
+                    ^table table ^round_loads entry/loads}))
+  ($fs/write_text $"${output}/summary.json"
+    ($json/stringify {^format 1 ^iterations iterations ^samples samples ^executables summary}))
+  (for item in summary
+    ($println $"== ${item/version}")
+    (for [key cell] in item/table
+      ($println $"${key}: net median ${cell/net_ns/median} ns [${cell/net_ns/min}, ${cell/net_ns/max}] gross ${cell/gross_ns/median}")))
+  0)

@@ -1,0 +1,3 @@
+(import [make_dispatcher] ^from "./dispatch")
+(import [entries] ^from "./weight")
+(fn operation [] (make_dispatcher entries))

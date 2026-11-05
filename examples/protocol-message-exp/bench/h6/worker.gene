@@ -1,0 +1,58 @@
+# H6 worker: one variant per process. Times complete traversal and result
+# construction of the frozen 1,000-node tree; the tree build, fixture check and
+# operation acquisition happen outside the timed window.
+#
+#   gene run --package-root <pkg> bench/h6/worker.gene VARIANT REPS [json]
+#
+# VARIANT is one of f, f_typed, p, p_closure, p_typed. The held operation (or
+# closure, or function) is applied at every recursive node.
+(import [build_tree describe] ^from "./tree")
+(import [operation : f_operation] ^from "./f/render")
+(import [operation : f_typed_operation] ^from "./f/render_typed")
+(import [operation : p_operation] ^from "./p/root")
+(import [operation : p_closure_operation] ^from "./p_closure/root")
+(import [operation : p_typed_operation] ^from "./p_typed/root")
+
+(fn acquire [variant]
+  (match variant
+    (when "f" (f_operation))
+    (when "f_typed" (f_typed_operation))
+    (when "p" (p_operation))
+    (when "p_closure" (p_closure_operation))
+    (when "p_typed" (p_typed_operation))
+    (else (fail (Error ^message $"unknown H6 variant ${variant}")))))
+
+(fn traverse [operation tree reps]
+  (var result "")
+  (var i 0)
+  (while (< i reps)
+    (set result (operation tree operation))
+    (set i (+ i 1)))
+  result)
+
+(fn main [args] : Int
+  ($assert (>= args/body/.size 2) "usage: worker.gene VARIANT REPS [json]")
+  (let variant args/body/0)
+  (let reps ($parse/parse_int args/body/1))
+  ($assert (> reps 0) "reps must be positive")
+  (let tree (build_tree))
+  (let fixture (describe tree))
+  (let expected ($json/parse ($fs/read_text ($path/join ($path/parent this_mod/.path) "fixture.json"))))
+  ($assert (== fixture/sha256 expected/sha256) "H6 fixture hash changed")
+  ($assert (== fixture/nodes expected/nodes) "H6 fixture node count changed")
+  (let operation (acquire variant))
+  # warm every call site and cache outside the timed window
+  (traverse operation tree 3)
+  (let started ($os/monotonic_ms))
+  (let result (traverse operation tree reps))
+  (let elapsed (- ($os/monotonic_ms) started))
+  # traversal-count check: each non-root node contributes one separator
+  (let visited (+ 1 (- ((result .split " / ") .size) 1)))
+  ($assert (== visited fixture/nodes) "traversal visited the wrong number of nodes")
+  (let report
+    {^variant variant ^reps reps ^elapsed_ms elapsed
+     ^nodes visited ^per_traversal_us (/ (* elapsed 1000.0) reps)
+     ^result_sha256 ($crypto/sha256 result) ^result_bytes (result .byte_size)
+     ^fixture_sha256 fixture/sha256})
+  ($println ($json/stringify report))
+  0)

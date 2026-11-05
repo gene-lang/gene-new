@@ -718,20 +718,143 @@ suite "modules — file imports":
         "(import [User] ^from \"./model\") " & source & source &
         "((User ^name \"Ada\") .ToJson:to_json)").print() == "\"Ada\""
 
-  test "macro import_impl stays local and survives through a returned closure":
-    writeModule("macro_label.gene", "(protocol Label (message label [self] : Str))")
-    writeModule("macro_item.gene", "(type Item)")
-    writeModule("macro_extension.gene",
-      "(import [Label] ^from \"./macro_label\") " &
-      "(import [Item] ^from \"./macro_item\") " &
+  test "import_impl is accepted wherever import is and is visible where import binds":
+    writeModule("pl_label.gene", "(protocol Label (message label [self] : Str))")
+    writeModule("pl_item.gene", "(type Item)")
+    writeModule("pl_ext.gene",
+      "(import [Label] ^from \"./pl_label\") " &
+      "(import [Item] ^from \"./pl_item\") " &
+      "(var tag \"local\") " &
       "(impl Label for Item ^^export (message label [self] : Str \"local\"))")
-    check runProgram("(import [Label] ^from \"./macro_label\") " &
-      "(import [Item] ^from \"./macro_item\") " &
-      "(macro with_label [body...] `(do " &
-      "(import_impl Label for Item ^from \"./macro_extension\") %body...)) " &
-      "(let item (Item)) (let get (with_label (fn [] item/.Label:label))) " &
-      "[(get) (try item/.Label:label catch Any \"hidden\")]").print() ==
-      "[\"local\" \"hidden\"]"
+    let header = "(import [Label] ^from \"./pl_label\") " &
+      "(import [Item] ^from \"./pl_item\") (let item (Item)) "
+    # Each position runs `{I}` then `{U}` and leaves the result in `inside`.
+    # `nested` positions keep both kinds of import to their activation; the
+    # others run in the module's base scope, so the import joins the module.
+    let positions = [
+      ("fn", true, "(fn run [] {I} {U}) (let inside (run))"),
+      ("fn with locals", true,
+        "(fn run [seed] (let t seed) {I} {U}) (let inside (run 1))"),
+      ("lambda", true, "(let run (fn [] {I} {U})) (let inside (run))"),
+      ("nested blocks in a fn", true,
+        "(fn run [flag] (do (if flag (then (do {I})))) {U}) (let inside (run true))"),
+      ("type message", true,
+        "(type Holder ^props {} (message run [] {I} {U})) " &
+        "(let inside ((Holder) .run))"),
+      ("impl message", true,
+        "(type Holder ^props {}) (protocol Run (message run [])) " &
+        "(impl Run for Holder (message run [] {I} {U})) " &
+        "(let inside ((Holder) .Run:run))"),
+      ("ctor", true,
+        "(type Holder ^props {^v Any} (ctor [] {I} (set self/v {U}))) " &
+        "(let holder (new Holder)) (let inside holder/v)"),
+      ("spawn in a fn", true,
+        "(fn run [] (await (spawn (do {I} {U})))) (let inside (run))"),
+      ("top-level spawn", true, "(let inside (await (spawn (do {I} {U}))))"),
+      ("macro-marked block", true,
+        "(macro with_ext [body...] `(do {I} %body...)) (let inside (with_ext {U}))"),
+      ("macro expanded in a fn", true,
+        "(fn run [] (macro make [] `(do {I} {U})) (make)) (let inside (run))"),
+      ("top-level for body", true,
+        "(var inside nil) (for x in [1] {I} (set inside {U}))"),
+      ("scope body", true, "(let inside (scope {I} {U}))"),
+      ("supervisor body", true, "(let inside (supervisor ^strategy stop {I} {U}))"),
+      ("ns body", true, "(ns box {I} (fn get [] {U})) (let inside (box/get))"),
+      ("top-level conditional", false, "(let inside (if true (then {I} {U})))"),
+      ("top-level try", false, "(let inside (try {I} {U} catch Any nil))"),
+      ("top-level do", false, "(do {I}) (let inside {U})"),
+      ("after code", false, "(let x 1) {I} (let inside {U})")
+    ]
+    for (kind, nested, code) in positions:
+      checkpoint kind
+      var results: seq[string]
+      for (importForm, use) in [
+        ("(import [tag] ^from \"./pl_ext\")", "tag"),
+        ("(import_impl Label for Item ^from \"./pl_ext\")", "item/.Label:label")
+      ]:
+        let program = header &
+          code.replace("{I}", importForm).replace("{U}", use) &
+          " [inside (try " & use & " catch Any \"hidden\")]"
+        results.add runProgram(program).print()
+      check results[0] == results[1]
+      check results[1] ==
+        (if nested: "[\"local\" \"hidden\"]" else: "[\"local\" \"local\"]")
+    # A `mod` form's body is module level as well, before or after code.
+    check runProgram("(mod pl_body " & header &
+      "(let x 1) (import_impl Label for Item ^from \"./pl_ext\") " &
+      "item/.Label:label)").print() == "\"local\""
+    # eval rejects both.
+    for form in ["(import [tag] ^from \"./pl_ext\")",
+                 "(import_impl Label for Item ^from \"./pl_ext\")"]:
+      expect GeneError:
+        discard runProgram(header &
+          "(eval (quote " & form & ") ^in (env ^bindings {^Label Label ^Item Item}))")
+
+  test "a nested import_impl belongs to its activation and never shadows":
+    writeModule("act_label.gene", "(protocol Label (message label [self] : Str))")
+    writeModule("act_item.gene", "(type Item)")
+    for name in ["one", "two"]:
+      writeModule("act_" & name & ".gene",
+        "(import [Label] ^from \"./act_label\") " &
+        "(import [Item] ^from \"./act_item\") " &
+        "(impl Label for Item ^^export (message label [self] : Str \"" & name & "\"))")
+    writeModule("act_lib.gene",
+      "(import [Label] ^from \"./act_label\") " &
+      "(import [Item] ^from \"./act_item\") " &
+      "(fn label_one [i] (import_impl Label for Item ^from \"./act_one\") i/.Label:label) " &
+      "(fn sibling [i] (try i/.Label:label catch Any \"hidden\"))")
+    let header = "(import [Label] ^from \"./act_label\") " &
+      "(import [Item] ^from \"./act_item\") " &
+      "(let item (Item)) "
+    let one = "(import_impl Label for Item ^from \"./act_one\")"
+    let two = "(import_impl Label for Item ^from \"./act_two\")"
+    # Interleaved activations each use their own pair; a closure keeps the
+    # policy of the activation that made it; a library function's import stays
+    # in that call, so neither the library nor the caller sees it.
+    check runProgram(header &
+      "(import [label_one sibling] ^from \"./act_lib\") " &
+      "(fn one_fn [] " & one & " item/.Label:label) " &
+      "(fn two_fn [] " & two & " item/.Label:label) " &
+      "(fn escaping [] " & one & " (fn [] item/.Label:label)) " &
+      "(macro with_two [body...] `(do " & two & " %body...)) " &
+      "(let kept (escaping)) " &
+      "[(one_fn) (two_fn) (one_fn) (two_fn) (kept) (with_two item/.Label:label) " &
+      " (label_one item) (sibling item) " &
+      " (try item/.Label:label catch Any \"hidden\")]").print() ==
+      "[\"one\" \"two\" \"one\" \"two\" \"one\" \"two\" \"one\" \"hidden\" \"hidden\"]"
+    # Impls never shadow: an identical pair already visible is a no-op, a
+    # different provider of a visible pair is a conflict, and the conflict
+    # leaves the visible pair in place.
+    check runProgram(header & one &
+      " (fn same [] " & one & " item/.Label:label) " &
+      "(fn other [] " & two & " item/.Label:label) " &
+      "[(same) (try (other) catch Any \"conflict\") item/.Label:label]").print() ==
+      "[\"one\" \"conflict\" \"one\"]"
+    var diagnostic = ""
+    try:
+      discard runProgram(header &
+        "(fn nested [] " & one & " ((fn [] " & two & " item/.Label:label))) (nested)")
+    except GeneError as error:
+      diagnostic = error.msg
+    check "duplicate visible impl Label for Item" in diagnostic
+
+  test "a module's imported impls are all in place before its first statement runs":
+    writeModule("fin4_proto.gene",
+      "(protocol Label (message label [self] : Str)) (type Item) (type Other)")
+    for (name, text) in [("fin4_a", "item"), ("fin4_b", "other")]:
+      writeModule(name & ".gene",
+        "(import [Label Item Other] ^from \"./fin4_proto\") " &
+        "(impl Label for " & (if text == "item": "Item" else: "Other") &
+        " ^^export (message label [self] : Str \"" & text & "\"))")
+    writeModule("fin4_root.gene",
+      "(import [Label Item Other] ^from \"./fin4_proto\") " &
+      "(import_impl Label for Item ^from \"./fin4_a\") " &
+      "(import_impl Label for Other ^from \"./fin4_b\") " &
+      "(var first ((Item) .Label:label)) " &
+      "(var second ((Other) .Label:label))")
+    check runProgram(
+      "(import [first second] ^from \"./fin4_root\") [first second]").print() ==
+      "[\"item\" \"other\"]"
 
   test "import_impl rejects positional from and malformed source properties":
     for (source, expected) in [
@@ -857,6 +980,64 @@ suite "modules — file imports":
       discard app.reloadFileModule(modDir / "reload_ext.gene")
     check app.implActivationEpoch == stableEpoch
     check run(compileSource("((Item) .Render:render)"), scope).print() == "\"two\""
+
+  test "retained transports follow their authoring module across reload":
+    # Contract expectation, written before running: a held Message, a checked
+    # Callable view, a closure and a Path all resolve at application time in the
+    # scope they were authored in, and reload recomposes that scope's imported
+    # impl atomically. So after a same-interface replacement every retained
+    # transport and every send site (warmed or new) sees the new body, a
+    # rejected replacement leaves the published body intact, and a host scope
+    # with no pair still cannot send directly.
+    writeModule("ret_base.gene",
+      "(protocol Render (message render [] : Str)) (type Item ^props {})")
+    writeModule("ret_prov.gene",
+      "(import [Render Item] ^from \"./ret_base\") " &
+      "(impl Render for Item ^^export (message render [] : Str \"one\"))")
+    writeModule("ret_author.gene",
+      "(import [Render Item] ^from \"./ret_base\") " &
+      "(import_impl Render for Item ^from \"./ret_prov\") " &
+      "(fn raw [] Render:render) " &
+      "(fn as_view [op : (Callable [Any] Str)] op) " &
+      "(fn view [] (as_view Render:render)) " &
+      "(fn closure [] (fn [a] a/.Render:render)) " &
+      "(fn path_value [] /.Render:render) " &
+      "(fn warmed [a] a/.Render:render) " &
+      "(fn later [a] a/.Render:render)")
+    let app = newApplication(modDir)
+    let scope = newGlobalScope(app)
+    discard run(compileSource(
+      "(import [Item] ^from \"./ret_base\") " &
+      "(import [Render] ^from \"./ret_base\") " &
+      "(import [raw view closure path_value warmed later] ^from \"./ret_author\") " &
+      "(var item (Item)) (var op (raw)) (var checked (view)) " &
+      "(var cl (closure)) (var pv (path_value))"), scope)
+    proc observe(): string =
+      run(compileSource(
+        "[(warmed item) (later item) (op item) (checked item) (cl item) (pv item) " &
+        " (try item/.Render:render catch Any \"hidden\")]"), scope).print()
+    check observe() ==
+      "[\"one\" \"one\" \"one\" \"one\" \"one\" \"one\" \"hidden\"]"
+    let before = app.implActivationEpoch
+    writeModule("ret_prov.gene",
+      "(import [Render Item] ^from \"./ret_base\") " &
+      "(impl Render for Item ^^export (message render [] : Str \"two\"))")
+    discard app.reloadFileModule(modDir / "ret_prov.gene")
+    check app.implActivationEpoch == before + 1
+    check observe() ==
+      "[\"two\" \"two\" \"two\" \"two\" \"two\" \"two\" \"hidden\"]"
+    # A rejected replacement (the export disappears) leaves the published body.
+    let stable = app.implActivationEpoch
+    writeModule("ret_prov.gene",
+      "(import [Render Item] ^from \"./ret_base\") (var removed true)")
+    expect GeneError:
+      discard app.reloadFileModule(modDir / "ret_prov.gene")
+    check app.implActivationEpoch == stable
+    check observe() ==
+      "[\"two\" \"two\" \"two\" \"two\" \"two\" \"two\" \"hidden\"]"
+    # A retained operation applied to a fresh receiver still resolves in its
+    # authored scope, not at the host.
+    check run(compileSource("(op (Item))"), scope).print() == "\"two\""
 
   test "reload rejects compile-interface changes":
     writeModule("reload_interface.gene", "(var value 1)")
@@ -1087,6 +1268,119 @@ suite "modules — built-in identity and scope hygiene":
     writeModule("decls3.gene", "(var only-me 1)")
     expect GeneError:
       discard runProgram("(import [this_mod] ^from \"./decls3\")")
+
+suite "modules — diagnostics advice and lexical import paths":
+  setup:
+    removeDir(modDir)
+    createDir(modDir)
+
+  test "advice treats an exported provider as exported after another module imported it":
+    writeModule("adv_proto.gene",
+      "(protocol Shown (message show [] : Str)) (type Widget ^props {})")
+    writeModule("adv_prov.gene",
+      "(import [Shown Widget] ^from \"./adv_proto\") " &
+      "(impl Shown for Widget ^^export (message show [] : Str \"w\"))")
+    writeModule("adv_importer.gene",
+      "(import [Shown Widget] ^from \"./adv_proto\") " &
+      "(import_impl Shown for Widget ^from \"./adv_prov\") (var done 1)")
+    writeModule("adv_main.gene",
+      "(import [Shown Widget] ^from \"./adv_proto\") " &
+      "(import [done] ^from \"./adv_importer\") " &
+      "(var shown ((Widget) .Shown:show))")
+    var msg = ""
+    try:
+      discard runProgram("(import [shown] ^from \"./adv_main\")")
+    except GeneError as error:
+      msg = error.msg
+    check "no implementation of message 'show'" in msg
+    check "not exported" notin msg
+    check "^^export" notin msg
+    # The suggestion is a portable spelling: relative to the checking module,
+    # no extension, and no absolute filesystem path inside the copied source.
+    check "(import_impl Shown for Widget ^from \"./adv_prov\")" in msg
+    check "^from \"" & modDir notin msg
+
+  test "duplicate impl diagnostics name both origins and the migration":
+    writeModule("dup_proto.gene",
+      "(protocol P (message m [] : Int)) (type T ^props {}) " &
+      "(impl P for T (message m [] : Int 1))")
+    writeModule("dup_ext.gene",
+      "(import [P T] ^from \"./dup_proto\") " &
+      "(impl P for T ^^export (message m [] : Int 2))")
+    var msg = ""
+    try:
+      discard runProgram("(import [P T] ^from \"./dup_proto\") " &
+        "(import_impl P for T ^from \"./dup_ext\")")
+    except GeneError as error:
+      msg = error.msg
+    check "duplicate visible impl P for T" in msg
+    check "canonical impl from" in msg
+    check "dup_proto.gene" in msg
+    check "scoped impl from" in msg
+    check "dup_ext.gene" in msg
+    check "its own protocol" in msg
+    # Two scoped providers for one pair name both modules without the advice
+    # that only applies to a canonical impl.
+    writeModule("dup_scoped_proto.gene",
+      "(protocol Q (message m [] : Int)) (type U ^props {})")
+    for name in ["dup_a", "dup_b"]:
+      writeModule(name & ".gene",
+        "(import [Q U] ^from \"./dup_scoped_proto\") " &
+        "(impl Q for U ^^export (message m [] : Int 1))")
+    msg = ""
+    try:
+      discard runProgram("(import [Q U] ^from \"./dup_scoped_proto\") " &
+        "(import_impl Q for U ^from \"./dup_a\") " &
+        "(import_impl Q for U ^from \"./dup_b\")")
+    except GeneError as error:
+      msg = error.msg
+    check "dup_a.gene" in msg
+    check "dup_b.gene" in msg
+    check "its own protocol" notin msg
+
+  test "incompatible Self bindings explain the parent and child dependency":
+    writeModule("self_proto.gene",
+      "(protocol Format (message head [] : Str)) " &
+      "(type Article ^props {}) (type Note : Article ^props {})")
+    writeModule("self_child.gene",
+      "(import [Format Note] ^from \"./self_proto\") " &
+      "(impl Format for Note ^^export (message head [] : Str \"n\"))")
+    writeModule("self_parent.gene",
+      "(import [Format Article] ^from \"./self_proto\") " &
+      "(impl Format for Article ^^export (message head [] : Str \"a\"))")
+    var msg = ""
+    try:
+      discard runProgram("(import [Format Article Note] ^from \"./self_proto\") " &
+        "(import_impl Format for Note ^from \"./self_child\") " &
+        "(import_impl Format for Article ^from \"./self_parent\")")
+    except GeneError as error:
+      msg = error.msg
+    check "incompatible established Self bindings for Format on Note and Article" in msg
+    check "self_child.gene" in msg
+    check "self_parent.gene" in msg
+    check "parent pair is visible" in msg
+
+  test "an import executed inside a library function resolves its path against the library":
+    # The entry sits one directory above the library, so a path resolved against
+    # the entry (the old behavior) would look for ./proto beside the entry.
+    createDir(modDir / "lib")
+    writeFile(modDir / "lib" / "proto.gene",
+      "(protocol Label (message label [self] : Str)) (type Item)")
+    writeFile(modDir / "lib" / "policy.gene",
+      "(import [Label Item] ^from \"./proto\") " &
+      "(impl Label for Item ^^export (message label [self] : Str \"lib\"))")
+    writeFile(modDir / "lib" / "api.gene",
+      "(import [Label] ^from \"./proto\") " &
+      "(fn late_make [] (import [Item] ^from \"./proto\") (Item)) " &
+      "(fn labelled [item] (import [Item] ^from \"./proto\") " &
+      "  (import_impl Label for Item ^from \"./policy\") item/.Label:label)")
+    check runProgram(
+      "(import [late_make] ^from \"./lib/api\") " &
+      "(late_make) nil").print() == "nil"
+    # import_impl executed in a library function resolves the same way.
+    check runProgram(
+      "(import [late_make labelled] ^from \"./lib/api\") " &
+      "(labelled (late_make))").print() == "\"lib\""
 
 suite "modules — namespace-path imports and mod":
   test "import selected bindings from an in-file namespace":

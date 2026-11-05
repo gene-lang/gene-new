@@ -1,0 +1,3 @@
+compact: <|Intro|<|C|T|F>>
+plain: Report / Intro: hello / Data / chart(growth) / table(totals,3) / fig(map)
+interleaved stable: true

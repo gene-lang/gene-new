@@ -1,0 +1,2 @@
+(type Article ^props {^title Str})
+(type Other ^props {})

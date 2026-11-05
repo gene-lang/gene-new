@@ -1,0 +1,4 @@
+(import [Article Render] ^from "./core")
+(import_impl Render for Article ^from "./plugin")
+(let article (Article ^title "A"))
+($println $"v1 plugin policy: ${article/.Render:render}")

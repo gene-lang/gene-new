@@ -1,0 +1,6 @@
+(import [Article] ^from "./model")
+(import [Render] ^from "./contracts")
+(import_impl Render for Article ^from "./ext")
+(let article (Article ^title "A"))
+($println $"render: ${article/.Render:render}")
+($println $"defaulted message on the old extension: ${article/.Render:weight}")

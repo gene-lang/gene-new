@@ -1,0 +1,1 @@
+(type CounterClock ^props {^counter Cell})

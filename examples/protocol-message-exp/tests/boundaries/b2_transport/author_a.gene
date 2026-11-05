@@ -1,0 +1,14 @@
+# Module A owns the plain policy and returns *actual* operations carrying its
+# authored dispatch scope. It never invokes them at the host's or B's site.
+(import [Article] ^from "./model")
+(import [Render] ^from "./contracts")
+(import_impl Render for Article ^from "./plain")
+(fn raw_message [] Render:render)
+(fn as_view [op : (Callable [Any] Str)] op)
+(fn view [] (as_view Render:render))
+(fn closure [] (fn [a] a/.Render:render))
+(fn path_value [] /.Render:render)
+(fn invoke_here [article]
+  (let raw (raw_message))
+  [(raw article) ((view) article) ((closure) article) ((path_value) article)
+   article/.Render:render (article .%raw)])

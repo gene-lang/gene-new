@@ -578,7 +578,6 @@ type
     implValidationEpoch*: uint64
     implValidationActive*: bool
     implOverlayRoot*: bool  # eval-local impls register here, never application-wide
-    scopedImplImports*: bool # macro-result lexical boundary, not an eval unit
     implStageRoot*: bool    # module impls remain pending until atomic activation
     forceOverlayImpls*: bool # compiler-owned derive execution for overlay types
     moduleRoot*: bool       # program/file-module base scope
