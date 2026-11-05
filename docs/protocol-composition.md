@@ -56,13 +56,23 @@ with `(Callable ...)` fields to fail at construction rather than during traversa
 
 ## Placement
 
-A module's impls are final once it has loaded, so `import_impl` is a declaration of the
-module: write it directly at module level, with the module's other imports and before any
-statement that runs code. A function, lambda, `message`, `ctor`, `spawn` body, block,
-conditional, `ns` body or macro expansion cannot hold one, and neither can a position after a
-`let`, `var`, call or other code. Both mistakes are compile-time errors that say what to do.
-To use another policy for a call, pass the operation from the composition root instead of
-importing a different pair there. A relative `^from` resolves against the module that wrote it.
+`import_impl` goes wherever `import` can, and the pair is visible where an `import` at the
+same position would bind its names. At module level it joins the module, for every function
+of the module once the form has run. Inside a function, lambda, `message`, `ctor`, `spawn` or
+loop body, or a macro-marked block, it belongs to that activation: the body and closures
+created in it see the pair, and code after the activation does not. A function can therefore
+select a policy for its own sends without changing the module:
+
+```gene
+(fn plain_preview [document]
+  (import_impl Render for Section ^from "./policies/plain")
+  (import_impl Render for Figure ^from "./policies/plain")
+  (document .Render:render Render:render))
+```
+
+Impls never shadow, so a function cannot replace a pair its module already imports; a
+different visible impl of the same pair is a conflict. A nested import is an overlay, so its
+sends take uncached dispatch. A relative `^from` resolves against the module that wrote it.
 
 ## Checking a root before traversal
 

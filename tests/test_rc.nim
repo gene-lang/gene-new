@@ -1024,6 +1024,40 @@ when defined(geneRcStats):
         check measured.retained > 0   # live transports intentionally retain
         check measured.leaked == 0    # and nothing more once dropped
 
+      proc nestedImportImplGrowth(withImport: bool): int =
+        ## Managed values left behind by 40 calls of a function that imports a
+        ## pair into its own activation and makes and drops a closure there,
+        ## measured after a warm-up call has loaded the modules.
+        let dir = getTempDir() / "gene-rc-nested-import-impl"
+        createDir(dir)
+        writeFile(dir / "base.gene",
+          "(protocol Render (message render [] : Str)) (type Item ^props {})")
+        writeFile(dir / "prov.gene",
+          "(import [Render Item] ^from \"./base\") " &
+          "(impl Render for Item ^^export (message render [] : Str \"one\"))")
+        let app = newApplication(dir)
+        let scope = newGlobalScope(app)
+        let pair =
+          if withImport: "(import_impl Render for Item ^from \"./prov\") " else: ""
+        discard scope.runText(
+          "(import [Render Item] ^from \"./base\") " &
+          "(import * : p ^from \"./prov\") " &
+          "(let item (Item)) (var i 0) " &
+          "(fn body [] " & pair &
+          "  (let f (fn [] (try item/.Render:render catch Any \"hidden\"))) (f)) " &
+          "(body) ($runtime/test_collect) nil")
+        GC_fullCollect()
+        let before = liveManaged
+        discard scope.runText(
+          "(while (< i 40) (body) (set i (+ i 1))) ($runtime/test_collect) nil")
+        GC_fullCollect()
+        result = liveManaged - before
+
+      test "a function-local import_impl is released with its activation":
+        let control = nestedImportImplGrowth(withImport = false)
+        check nestedImportImplGrowth(withImport = true) == control
+        check control == 0
+
       test "a function escaping eval into its caller is reclaimed":
         # The escaped function captures the eval scope, whose chain reaches the
         # calling scope that binds it: a cycle only returned-call retirement

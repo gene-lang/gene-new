@@ -14221,16 +14221,20 @@ proc activateStagedImpls(stage: Scope) =
 proc makeImplsVisible(importingScope, sourceScope: Scope) =
   ## Ordinary value/namespace import never imports scoped policy. Canonical
   ## impls are already present in the application registry; a scoped impl
-  ## enters a module only through its module-level `import_impl`, and overlays
-  ## are lexical to the eval that created them.
+  ## enters a scope only through an explicit `import_impl`, and overlays are
+  ## lexical to the scope that created them.
   discard importingScope
   discard sourceScope
 
 proc importScopedImpl(importingScope, sourceScope: Scope,
                       protocol, receiver: Value) =
-  ## Register one exported scoped pair in the importing module. The compiler
-  ## admits `import_impl` only as a module-level declaration ahead of any
-  ## code, so the module's impl set is complete before it runs.
+  ## Make one exported scoped pair visible where an `import` at the same
+  ## position would bind its names. Code running in the module's base scope
+  ## (module level, including a top-level conditional, `try` or `do`) adds the
+  ## pair to the module; code running in a nested activation (a function,
+  ## lambda, message, ctor, spawn, scope, supervisor, loop or ns body, or a
+  ## macro-marked block) adds it to that activation only, as an overlay that
+  ## closures made there keep and that is gone when the activation ends.
   let target = importingScope.moduleRootScope()
   if target == nil:
     raise newException(GeneError, "import_impl requires a module scope")
@@ -14249,6 +14253,17 @@ proc importScopedImpl(importingScope, sourceScope: Scope,
     raise newException(GeneError,
       "module does not export impl " & protocol.protocolName &
       " for " & receiver.typeName)
+  if importingScope != target:
+    var local = selected.implForScopeStorage(importingScope)
+    local.exported = false
+    local.imported = true
+    local.visibility = ivOverlay
+    # Impls never shadow: a pair already visible from an enclosing scope is
+    # a no-op when identical and a conflict otherwise.
+    if importingScope.validateImplAgainstChain(local, identicalIsDuplicate = true):
+      return
+    importingScope.publishImpl(local)
+    return
   var imported = selected.implForScopeStorage(target)
   imported.exported = false
   imported.imported = true
@@ -14775,7 +14790,9 @@ proc chunkCapturesSendable(chunk: Chunk, fnScope, visibleScope: Scope,
     of opFail, opPanic:
       if mode == csmWorker:
         return false
-    of opMakeNamespace:
+    of opMakeNamespace, opImportImpl:
+      # import_impl publishes into the application's impl registry and bumps
+      # its epoch, which only the owner lane may write.
       if mode == csmWorker:
         return false
     else:

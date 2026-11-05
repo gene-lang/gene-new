@@ -718,133 +718,125 @@ suite "modules — file imports":
         "(import [User] ^from \"./model\") " & source & source &
         "((User ^name \"Ada\") .ToJson:to_json)").print() == "\"Ada\""
 
-  test "import_impl is a module-level declaration, never part of a body, branch or expansion":
-    writeModule("fin_label.gene", "(protocol Label (message label [self] : Str))")
-    writeModule("fin_item.gene", "(type Item)")
-    writeModule("fin_ext.gene",
-      "(import [Label] ^from \"./fin_label\") " &
-      "(import [Item] ^from \"./fin_item\") " &
+  test "import_impl is accepted wherever import is and is visible where import binds":
+    writeModule("pl_label.gene", "(protocol Label (message label [self] : Str))")
+    writeModule("pl_item.gene", "(type Item)")
+    writeModule("pl_ext.gene",
+      "(import [Label] ^from \"./pl_label\") " &
+      "(import [Item] ^from \"./pl_item\") " &
+      "(var tag \"local\") " &
       "(impl Label for Item ^^export (message label [self] : Str \"local\"))")
-    let header = "(import [Label] ^from \"./fin_label\") " &
-      "(import [Item] ^from \"./fin_item\") "
-    let direct = "(import_impl Label for Item ^from \"./fin_ext\")"
-    for (kind, body) in [
-      ("fn", "(fn install [] " & direct & ")"),
-      ("fn with locals", "(fn install [seed] (let tag seed) " & direct & " tag)"),
-      ("lambda", "(let install (fn [] " & direct & "))"),
-      ("nested plain blocks",
-        "(fn install [flag] (do (if flag (then (do " & direct & ")))))"),
-      ("type message", "(type Holder ^props {} (message install [] : Nil " & direct & "))"),
-      ("impl message",
-        "(type Holder ^props {}) (protocol Install (message install [] : Nil)) " &
-        "(impl Install for Holder (message install [] : Nil " & direct & "))"),
-      ("ctor", "(type Holder ^props {} (ctor [] " & direct & "))"),
-      ("spawn in a function", "(fn start [] (spawn " & direct & "))"),
-      ("top-level spawn", "(let task (spawn " & direct & "))"),
-      ("top-level conditional", "(if true " & direct & ")"),
-      ("top-level try", "(try " & direct & " catch Any nil)"),
-      ("namespace body", "(ns policy " & direct & ")"),
-      ("macro expansion",
-        "(macro install_ext [] `" & direct & ") (install_ext)"),
-      ("macro-marked block",
-        "(macro with_ext [body...] `(do " & direct & " %body...)) " &
-        "(with_ext nil)"),
-      ("fn inside a macro-marked block",
-        "(macro with_ext [body...] `(do " & direct & " %body...)) " &
-        "(with_ext (fn inner [] nil))")
-    ]:
-      var diagnostic = ""
-      try:
-        discard compileSource(header & body)
-      except GeneError as error:
-        diagnostic = error.msg
+    let header = "(import [Label] ^from \"./pl_label\") " &
+      "(import [Item] ^from \"./pl_item\") (let item (Item)) "
+    # Each position runs `{I}` then `{U}` and leaves the result in `inside`.
+    # `nested` positions keep both kinds of import to their activation; the
+    # others run in the module's base scope, so the import joins the module.
+    let positions = [
+      ("fn", true, "(fn run [] {I} {U}) (let inside (run))"),
+      ("fn with locals", true,
+        "(fn run [seed] (let t seed) {I} {U}) (let inside (run 1))"),
+      ("lambda", true, "(let run (fn [] {I} {U})) (let inside (run))"),
+      ("nested blocks in a fn", true,
+        "(fn run [flag] (do (if flag (then (do {I})))) {U}) (let inside (run true))"),
+      ("type message", true,
+        "(type Holder ^props {} (message run [] {I} {U})) " &
+        "(let inside ((Holder) .run))"),
+      ("impl message", true,
+        "(type Holder ^props {}) (protocol Run (message run [])) " &
+        "(impl Run for Holder (message run [] {I} {U})) " &
+        "(let inside ((Holder) .Run:run))"),
+      ("ctor", true,
+        "(type Holder ^props {^v Any} (ctor [] {I} (set self/v {U}))) " &
+        "(let holder (new Holder)) (let inside holder/v)"),
+      ("spawn in a fn", true,
+        "(fn run [] (await (spawn (do {I} {U})))) (let inside (run))"),
+      ("top-level spawn", true, "(let inside (await (spawn (do {I} {U}))))"),
+      ("macro-marked block", true,
+        "(macro with_ext [body...] `(do {I} %body...)) (let inside (with_ext {U}))"),
+      ("macro expanded in a fn", true,
+        "(fn run [] (macro make [] `(do {I} {U})) (make)) (let inside (run))"),
+      ("top-level for body", true,
+        "(var inside nil) (for x in [1] {I} (set inside {U}))"),
+      ("scope body", true, "(let inside (scope {I} {U}))"),
+      ("supervisor body", true, "(let inside (supervisor ^strategy stop {I} {U}))"),
+      ("ns body", true, "(ns box {I} (fn get [] {U})) (let inside (box/get))"),
+      ("top-level conditional", false, "(let inside (if true (then {I} {U})))"),
+      ("top-level try", false, "(let inside (try {I} {U} catch Any nil))"),
+      ("top-level do", false, "(do {I}) (let inside {U})"),
+      ("after code", false, "(let x 1) {I} (let inside {U})")
+    ]
+    for (kind, nested, code) in positions:
       checkpoint kind
-      check "import_impl Label for Item is not allowed here" in diagnostic
-      check "final once it has loaded" in diagnostic
-      check "direct module-level form" in diagnostic
-    # A runtime-expanded macro inside a function is rejected as well.
-    var runtimeDiagnostic = ""
+      var results: seq[string]
+      for (importForm, use) in [
+        ("(import [tag] ^from \"./pl_ext\")", "tag"),
+        ("(import_impl Label for Item ^from \"./pl_ext\")", "item/.Label:label")
+      ]:
+        let program = header &
+          code.replace("{I}", importForm).replace("{U}", use) &
+          " [inside (try " & use & " catch Any \"hidden\")]"
+        results.add runProgram(program).print()
+      check results[0] == results[1]
+      check results[1] ==
+        (if nested: "[\"local\" \"hidden\"]" else: "[\"local\" \"local\"]")
+    # A `mod` form's body is module level as well, before or after code.
+    check runProgram("(mod pl_body " & header &
+      "(let x 1) (import_impl Label for Item ^from \"./pl_ext\") " &
+      "item/.Label:label)").print() == "\"local\""
+    # eval rejects both.
+    for form in ["(import [tag] ^from \"./pl_ext\")",
+                 "(import_impl Label for Item ^from \"./pl_ext\")"]:
+      expect GeneError:
+        discard runProgram(header &
+          "(eval (quote " & form & ") ^in (env ^bindings {^Label Label ^Item Item}))")
+
+  test "a nested import_impl belongs to its activation and never shadows":
+    writeModule("act_label.gene", "(protocol Label (message label [self] : Str))")
+    writeModule("act_item.gene", "(type Item)")
+    for name in ["one", "two"]:
+      writeModule("act_" & name & ".gene",
+        "(import [Label] ^from \"./act_label\") " &
+        "(import [Item] ^from \"./act_item\") " &
+        "(impl Label for Item ^^export (message label [self] : Str \"" & name & "\"))")
+    writeModule("act_lib.gene",
+      "(import [Label] ^from \"./act_label\") " &
+      "(import [Item] ^from \"./act_item\") " &
+      "(fn label_one [i] (import_impl Label for Item ^from \"./act_one\") i/.Label:label) " &
+      "(fn sibling [i] (try i/.Label:label catch Any \"hidden\"))")
+    let header = "(import [Label] ^from \"./act_label\") " &
+      "(import [Item] ^from \"./act_item\") " &
+      "(let item (Item)) "
+    let one = "(import_impl Label for Item ^from \"./act_one\")"
+    let two = "(import_impl Label for Item ^from \"./act_two\")"
+    # Interleaved activations each use their own pair; a closure keeps the
+    # policy of the activation that made it; a library function's import stays
+    # in that call, so neither the library nor the caller sees it.
+    check runProgram(header &
+      "(import [label_one sibling] ^from \"./act_lib\") " &
+      "(fn one_fn [] " & one & " item/.Label:label) " &
+      "(fn two_fn [] " & two & " item/.Label:label) " &
+      "(fn escaping [] " & one & " (fn [] item/.Label:label)) " &
+      "(macro with_two [body...] `(do " & two & " %body...)) " &
+      "(let kept (escaping)) " &
+      "[(one_fn) (two_fn) (one_fn) (two_fn) (kept) (with_two item/.Label:label) " &
+      " (label_one item) (sibling item) " &
+      " (try item/.Label:label catch Any \"hidden\")]").print() ==
+      "[\"one\" \"two\" \"one\" \"two\" \"one\" \"two\" \"one\" \"hidden\" \"hidden\"]"
+    # Impls never shadow: an identical pair already visible is a no-op, a
+    # different provider of a visible pair is a conflict, and the conflict
+    # leaves the visible pair in place.
+    check runProgram(header & one &
+      " (fn same [] " & one & " item/.Label:label) " &
+      "(fn other [] " & two & " item/.Label:label) " &
+      "[(same) (try (other) catch Any \"conflict\") item/.Label:label]").print() ==
+      "[\"one\" \"conflict\" \"one\"]"
+    var diagnostic = ""
     try:
       discard runProgram(header &
-        "(fn run [] " &
-        "  (macro make [] `(fn inner [] " & direct & ")) " &
-        "  (make)) " &
-        "(run)")
+        "(fn nested [] " & one & " ((fn [] " & two & " item/.Label:label))) (nested)")
     except GeneError as error:
-      runtimeDiagnostic = error.msg
-    check "is not allowed here" in runtimeDiagnostic
-
-  test "import_impl must precede the first module-level statement that runs code":
-    writeModule("fin2_label.gene", "(protocol Label (message label [self] : Str))")
-    writeModule("fin2_item.gene", "(type Item)")
-    writeModule("fin2_ext.gene",
-      "(import [Label] ^from \"./fin2_label\") " &
-      "(import [Item] ^from \"./fin2_item\") " &
-      "(impl Label for Item ^^export (message label [self] : Str \"local\"))")
-    let header = "(import [Label] ^from \"./fin2_label\") " &
-      "(import [Item] ^from \"./fin2_item\") "
-    let direct = "(import_impl Label for Item ^from \"./fin2_ext\")"
-    for (kind, code, head) in [
-      ("let", "(let item (Item))", "let"),
-      ("var", "(var count 0)", "var"),
-      ("call", "($println \"hi\")", "call"),
-      ("conditional", "(if true 1)", "if"),
-      ("expression", "42", "expression"),
-      ("namespace", "(ns box (var inner 1))", "ns"),
-      ("wrapped definition", "(fn wrap [f] f) #@wrap (fn wrapped [] 1)", "wrap"),
-      ("code before a transparent do", "(let item (Item)) (do " & direct & ")", "let")
-    ]:
-      var diagnostic = ""
-      try:
-        discard compileSource(header & code & " " & direct)
-      except GeneError as error:
-        diagnostic = error.msg
-      checkpoint kind
-      check "must come before the first module-level statement that runs code" in diagnostic
-      check "(a `" & head & "` form precedes it)" in diagnostic
-    # Declarations only bind names, so imports may sit among them, inside
-    # transparent grouping forms and a module declaration.
-    check runProgram(header &
-      "(type Holder ^props {^n Int}) (protocol Other (message other [self] : Int)) " &
-      "(fn helper [] 1) (macro twice [x] `(+ %x %x)) " &
-      "(enum Color red green) (alias Thing Item) " &
-      "(do " & direct & ") " &
-      "(impl Other for Holder (message other [self] : Int self/n)) " &
-      "(let item (Item)) item/.Label:label").print() == "\"local\""
-    check runProgram("(mod fin2_mod) " & header & direct &
-      " (let item (Item)) item/.Label:label").print() == "\"local\""
-    # A `mod` form's own body is module level as well.
-    check runProgram("(mod fin2_body " & header & direct &
-      " (let item (Item)) item/.Label:label)").print() == "\"local\""
-    var lateInMod = ""
-    try:
-      discard compileSource("(mod fin2_late " & header &
-        "(let item (Item)) " & direct & ")")
-    except GeneError as error:
-      lateInMod = error.msg
-    check "(a `let` form precedes it)" in lateInMod
-
-  test "a rejected module registers no pair and leaves a valid composition intact":
-    writeModule("fin3_label.gene", "(protocol Label (message label [self] : Str))")
-    writeModule("fin3_item.gene", "(type Item)")
-    writeModule("fin3_ext.gene",
-      "(import [Label] ^from \"./fin3_label\") " &
-      "(import [Item] ^from \"./fin3_item\") " &
-      "(impl Label for Item ^^export (message label [self] : Str \"local\"))")
-    writeModule("fin3_bad.gene",
-      "(import [Label] ^from \"./fin3_label\") " &
-      "(import [Item] ^from \"./fin3_item\") " &
-      "(fn install [] (import_impl Label for Item ^from \"./fin3_ext\"))")
-    let header = "(import [Label] ^from \"./fin3_label\") " &
-      "(import [Item] ^from \"./fin3_item\") "
-    expect GeneError:
-      discard runProgram(header & "(import [install] ^from \"./fin3_bad\")")
-    check runProgram(header &
-      "(let item (Item)) (try item/.Label:label catch Any \"hidden\")").print() ==
-      "\"hidden\""
-    check runProgram(header &
-      "(import_impl Label for Item ^from \"./fin3_ext\") " &
-      "(let item (Item)) item/.Label:label").print() == "\"local\""
+      diagnostic = error.msg
+    check "duplicate visible impl Label for Item" in diagnostic
 
   test "a module's imported impls are all in place before its first statement runs":
     writeModule("fin4_proto.gene",
@@ -1374,11 +1366,21 @@ suite "modules — diagnostics advice and lexical import paths":
     createDir(modDir / "lib")
     writeFile(modDir / "lib" / "proto.gene",
       "(protocol Label (message label [self] : Str)) (type Item)")
+    writeFile(modDir / "lib" / "policy.gene",
+      "(import [Label Item] ^from \"./proto\") " &
+      "(impl Label for Item ^^export (message label [self] : Str \"lib\"))")
     writeFile(modDir / "lib" / "api.gene",
-      "(fn late_make [] (import [Item] ^from \"./proto\") (Item))")
+      "(import [Label] ^from \"./proto\") " &
+      "(fn late_make [] (import [Item] ^from \"./proto\") (Item)) " &
+      "(fn labelled [item] (import [Item] ^from \"./proto\") " &
+      "  (import_impl Label for Item ^from \"./policy\") item/.Label:label)")
     check runProgram(
       "(import [late_make] ^from \"./lib/api\") " &
       "(late_make) nil").print() == "nil"
+    # import_impl executed in a library function resolves the same way.
+    check runProgram(
+      "(import [late_make labelled] ^from \"./lib/api\") " &
+      "(labelled (late_make))").print() == "\"lib\""
 
 suite "modules — namespace-path imports and mod":
   test "import selected bindings from an in-file namespace":

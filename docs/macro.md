@@ -513,12 +513,12 @@ block. Code after the expansion cannot see it merely because the macro executed.
 A closure created inside the block retains the implementation context it needs
 under ordinary closure rules.
 
-**Final impls, decided 2026-11-01:** a macro expansion cannot write
-`import_impl`. A module's impl set is final once the module has loaded, so the
-compiler admits `import_impl` only as a direct module-level form that precedes
-every statement that runs code ([protocols](spec/protocols.md)). A macro that
-expands to an `import_impl`, in a marked block or at module level, is a
-compile-time error; the pair list must be written in the module's source.
+**`import_impl` placement, decided 2026-11-05:** a macro expansion may write
+`import_impl` wherever it may write `import` ([protocols](spec/protocols.md)).
+A marked block that holds one owns a scope, as D7 gives an `impl`: the pair is
+visible inside the block and to closures created there, never after the
+expansion. This replaces the 2026-11-01 rule that admitted `import_impl` only as
+a module-level form.
 
 Adding an unrelated `let` must not change whether an implementation escapes.
 This extends the binding-only scope predicate. It also confines a top-level

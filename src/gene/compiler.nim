@@ -169,11 +169,6 @@ type
     # Exact impl-form nodes that are unconditional static module/namespace
     # declarations. Nested control-flow and callable bodies are absent.
     staticTopLevelImpls: HashSet[uint64]
-    ## `import_impl` forms that follow a module-level statement which runs
-    ## code, mapped to the head of the first such statement. A module's impl
-    ## set is final once it has loaded, so no code may run while imports are
-    ## still being added.
-    lateImportImpls: Table[uint64, string]
     ## Message names declared by overlay-only impls anywhere in this unit.
     ## Collected up front so the check does not depend on compilation order.
     overlayImplMessages: HashSet[string]
@@ -7078,30 +7073,9 @@ proc compileImportImpl(c: var Compiler, node: Value) =
   if not c.allowAmbientImports:
     raise newException(GeneError,
       "eval cannot use import_impl; add policy impls to the surrounding scope")
-  # A module's impl set is final once the module has loaded: an import is a
-  # declaration of the module, written directly at module level before any
-  # code runs, never an effect of executing a body, branch or expansion.
-  var pair = "import_impl"
-  if node.body.len == 3 and node.body[0].kind == vkSymbol and
-      node.body[2].kind == vkSymbol:
-    pair = "import_impl " & node.body[0].symVal & " for " & node.body[2].symVal
-  # A namespace body is a static declaration area for types and impls, but an
-  # import written there would still register in the whole module.
-  if node.bits notin c.staticTopLevelImpls or c.namespacePath.len > 0:
-    raise newException(GeneError,
-      pair & " is not allowed here: a module's impls are final once it has " &
-      "loaded, so import_impl must be a direct module-level form, not part " &
-      "of a function, lambda, message, ctor, spawn, block, conditional, " &
-      "namespace or macro expansion. Write it at the top of the module with " &
-      "the other imports, and pass the selected operation from the " &
-      "composition root to code that needs a different policy")
-  if c.lateImportImpls.hasKey(node.bits):
-    raise newException(GeneError,
-      pair & " must come before the first module-level statement that runs " &
-      "code (a `" & c.lateImportImpls[node.bits] & "` form precedes it): a " &
-      "module's impls are final once it has loaded, and no code may run " &
-      "while they are still being added. Move it up with the module's " &
-      "other imports")
+  # Placement follows `import`: the pair becomes visible in the scope where an
+  # `import` written at the same position binds its names (see
+  # importScopedImpl). Only eval, which cannot use `import` either, rejects it.
   for key in node.props.keys:
     if key != "from":
       raise newException(GeneError,
@@ -7137,39 +7111,6 @@ proc markStaticImplForms(c: var Compiler, forms: openArray[Value], first: int) =
   if first <= forms.high:
     for i in first .. forms.high:
       c.markStaticImplForm(forms[i])
-
-const ImportImplDeclarationHeads = [
-  "import", "type", "protocol", "enum", "alias", "impl", "fn", "macro"
-]
-
-proc markLateImportImpls(c: var Compiler, form: Value, firstCode: var string) =
-  ## Walk the module-level forms in source order and record every `import_impl`
-  ## that follows a form which can run code. Declarations (imports, type,
-  ## protocol, enum, alias, impl, plain fn and macro definitions) only bind
-  ## names, so imports may sit among them; `do` and `mod` are transparent.
-  if form.kind != vkNode:
-    if firstCode.len == 0:
-      firstCode = "expression"
-    return
-  let head = if form.head.kind == vkSymbol: form.head.symVal else: ""
-  if head == "do":
-    for child in form.body:
-      c.markLateImportImpls(child, firstCode)
-  elif head == "mod":
-    for i in 1 ..< form.body.len:
-      c.markLateImportImpls(form.body[i], firstCode)
-  elif head == "import_impl":
-    if firstCode.len > 0:
-      c.lateImportImpls[form.bits] = firstCode
-  elif head in ImportImplDeclarationHeads:
-    discard
-  elif firstCode.len == 0:
-    firstCode = if head.len > 0: head else: "call"
-
-proc markLateImportImpls(c: var Compiler, forms: openArray[Value]) =
-  var firstCode = ""
-  for form in forms:
-    c.markLateImportImpls(form, firstCode)
 
 proc collectOverlayImplMessages(c: var Compiler, form: Value) =
   ## Record every message name declared by an impl that is *not* an
@@ -9739,7 +9680,7 @@ proc ownsResultBindings(value: Value): bool =
           if quasiOwnsResultBindings(item, 1): return true
         return false
       of "let", "var", "const", "type", "protocol", "enum", "alias",
-         "ns", "macro", "import", "impl":
+         "ns", "macro", "import", "impl", "import_impl":
         return true
       of "fn":
         return value.body.len > 1 and
@@ -9797,7 +9738,7 @@ proc resultCanUseFrameSlots(c: Compiler, value: Value): bool =
       let head = value.head.symVal
       if head == "quote": return true
       if head in ["fn", "macro", "type", "protocol", "enum", "alias", "ns",
-          "impl", "import", "env", "eval", "try", "match",
+          "impl", "import", "import_impl", "env", "eval", "try", "match",
           "for", "scope", "supervisor", "spawn", "await", "yield"] or
           head.endsWith("!") or (c.hasMacros and c.macros.hasKey(head)):
         return false
@@ -10961,7 +10902,6 @@ proc compileFormsIntoUnchecked(c: var Compiler, forms: openArray[Value],
   if useLocalSlots:
     c.enableLocalSlots()
   c.markStaticImplForms(forms)
-  c.markLateImportImpls(forms)
   c.collectOverlayImplMessages(forms)
   c.prepareStaticImports(forms)
   c.reserveProtocolBindingsFor(forms)
