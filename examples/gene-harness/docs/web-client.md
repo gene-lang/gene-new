@@ -309,11 +309,11 @@ All API paths use /api/v9.
 | POST /ui/actions | Submit a workspace function action with generation-bound input identity, publication revisions, and structured arguments |
 | GET /ui/actions/INPUT | Look up its workspace receipt without executing it |
 | POST /ui/actions/INPUT/cancel | Request cancellation by the original workspace action identity |
-| GET /triggers | List definitions |
-| POST /triggers | Create a definition |
-| DELETE /triggers/ID | Disable/delete a definition |
-| GET /triggers/ID/occurrences | List occurrence state |
-| GET /trigger-occurrences | List retained occurrences across triggers |
+| GET /p/triggers | List definitions |
+| POST /p/triggers | Create a definition |
+| DELETE /p/triggers/ID | Disable/delete a definition |
+| GET /p/triggers/ID/occurrences | List occurrence state |
+| GET /p/triggers/occurrences | List retained occurrences across triggers |
 
 Snapshots include both `next_submission_seq` for rounds and `next_command_seq`
 for operator commands. CLI mutations are never automatically replayed after a

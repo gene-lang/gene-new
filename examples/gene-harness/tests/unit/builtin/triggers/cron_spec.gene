@@ -1,6 +1,6 @@
 # Tests src/builtin/triggers/schedule/cron.gene.
 (import $test [describe it before_each assert_equal run])
-(import [at_ms] ^from "../../../../src/runtime/triggers")
+(import [at_ms] ^from "../../../../src/builtin/triggers/scheduler")
 (import * : cron ^from "../../../../src/builtin/triggers/schedule/cron")
 (import * : timezone ^from "../../../../src/builtin/triggers/schedule/timezone")
 

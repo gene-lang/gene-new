@@ -1,30 +1,71 @@
 (mod triggers)
-(import ^from "../plugin_api" [Plugin PluginHost TriggerHost])
+(import ^from "../plugin_api" [Plugin PluginHost])
 (import ^from "../public/documentation" [contribute_doc])
+(import [new_scheduler run_scheduler create_trigger update_trigger delete_trigger list_triggers list_occurrences]
+  ^from "./triggers/scheduler")
+(import [trigger_route] ^from "./triggers/routes")
+
+# The browser client is compiled once, at descriptor construction, as the
+# spotlight built-in does; a compile failure quarantines only this plugin.
+(var client_asset ($cell nil))
+
+# The whole trigger feature lives in this plugin: scheduler (a slot service),
+# definitions and occurrences (feature records), admission (its own initiator),
+# HTTP route, functions and docs. Disabling it removes all of them; another
+# plugin can replace it by claiming the "triggers" slot with ^takeover.
+(fn validate_trigger_row [candidate]
+  (if (|| (!= ($head candidate/id) Str) (!= ($head candidate/request) Str)
+          (! (["heartbeat" "scheduled" "cron"] .contains? candidate/kind)))
+    (fail "a trigger row requires id, kind and request"))
+  candidate)
 
 (fn triggers [] : Plugin
-  (Plugin ^id "triggers" ^requires ["triggers/host"]
+  (let preparation_error
+    (try
+      (if ($absent? client_asset/.get)
+        (client_asset .set ($web/load ($path/join this_pkg/root "client" "plugins" "triggers.gene"))))
+      nil
+      catch Any $err/.Error:message))
+  (let prepared_asset client_asset/.get)
+  (Plugin ^id "triggers" ^requires ["admission/host"]
     ^provides [["functions" "create_trigger"] ["functions" "list_triggers"]
-               ["functions" "delete_trigger"] ["functions" "update_trigger"]]
+               ["functions" "delete_trigger"] ["functions" "update_trigger"]
+               ["functions" "trigger_occurrences"]]
     ^activate (fn [host]
-      (let scheduler (host .PluginHost:resolve "triggers/host"))
-      scheduler/.TriggerHost:start
+      (if_not ($absent? preparation_error) (fail preparation_error))
+      (let admission (host .PluginHost:resolve "admission/host"))
+      (host .PluginHost:contribute "browser_clients" {^name "triggers" ^title "Triggers" ^asset prepared_asset})
+      (let scheduler (new_scheduler host admission))
+      # Other plugins contribute trigger definitions here (^requires
+      # [{^registry "triggers"}]); the scheduler syncs them each tick.
+      (host .PluginHost:create_registry {^name "triggers" ^^unique ^key "id" ^schema validate_trigger_row})
+      (host .PluginHost:contribute "feature_slots"
+        {^name "triggers" ^summary "The workspace trigger scheduler."})
+      (host .PluginHost:contribute "initiators"
+        {^name "triggers/schedule" ^kind "plugin" ^prefix "triggers:" ^!operator ^check_in "trigger/check_in"
+         ^normalize (fn [context input] {^kind "plugin" ^owner "triggers" ^trigger context/subject})})
+      (host .PluginHost:service "scheduler" ^slot "triggers" (fn [] (run_scheduler scheduler)))
+      (host .PluginHost:contribute "http_routes" (trigger_route scheduler))
       (host .PluginHost:contribute "functions"
         {^name "create_trigger" ^doc "Schedule workspace work."
          ^tags ["schedule" "heartbeat" "cron" "triggers"] ^docs ["harness/triggers"]
-         ^fn (fn [definition] (scheduler .TriggerHost:create definition))})
+         ^fn (fn [definition] (create_trigger scheduler definition))})
       (host .PluginHost:contribute "functions"
         {^name "update_trigger" ^doc "Change a trigger's model_settings; omit the field or use nil to follow the default."
          ^tags ["schedule" "triggers" "models"] ^docs ["harness/triggers"]
-         ^fn (fn [id : Str, changes] (scheduler .TriggerHost:update id changes))})
+         ^fn (fn [id : Str, changes] (update_trigger scheduler id changes))})
       (host .PluginHost:contribute "functions"
         {^name "list_triggers" ^doc "List trigger definitions."
          ^tags ["schedule" "triggers"] ^docs ["harness/triggers"]
-         ^fn (fn [] scheduler/.TriggerHost:list)})
+         ^fn (fn [] (list_triggers scheduler))})
       (host .PluginHost:contribute "functions"
         {^name "delete_trigger" ^doc "Disable a trigger by id."
          ^tags ["schedule" "triggers"] ^docs ["harness/triggers"]
-         ^fn (fn [id : Str] (scheduler .TriggerHost:delete id))})
+         ^fn (fn [id : Str] (delete_trigger scheduler id))})
+      (host .PluginHost:contribute "functions"
+        {^name "trigger_occurrences" ^doc "Trigger occurrences and their outcomes, optionally for one trigger id."
+         ^tags ["schedule" "triggers"] ^docs ["harness/triggers"]
+         ^fn (fn [^trigger trigger = nil] (list_occurrences scheduler ^trigger trigger))})
       (contribute_doc host "harness/triggers"
         "Schedule heartbeat, one-shot and cron work; policies and verification."
         "examples/gene-harness/docs/triggers.md" ^tags ["schedule" "heartbeat" "cron" "triggers"]))))

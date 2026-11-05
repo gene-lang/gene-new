@@ -1,6 +1,6 @@
 (import $test [describe it assert_equal])
 (import [isolated run_spec] ^from "../../../support")
-(import [at_ms] ^from "../../../../src/runtime/triggers")
+(import [at_ms] ^from "../../../../src/builtin/triggers/scheduler")
 (import [system_rules offset_at] ^from "../../../../src/builtin/triggers/schedule/timezone")
 
 (describe "System timezone adapter"

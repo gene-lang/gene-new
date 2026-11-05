@@ -6,6 +6,8 @@
 (import [immutable_view] ^from "../runtime/composition")
 (import [open_transport close_transport] ^from "./transport")
 (import [public_authority] ^from "./authority")
+(import [contribute] ^from "../kernel")
+(import [register_service] ^from "../runtime/activation_services")
 
 (fn channel_service [handle]
   (let record (require_service handle))
@@ -14,22 +16,37 @@
     (fail (ServiceError ^code "unavailable" ^message "The channel service is unavailable.")))
   service)
 
+# The Slack transport is a slot service ("channels/slack"): it starts after the
+# caller's activation is published, and a successor that takes the slot makes
+# it disconnect before the successor connects (Slack allows one receiver).
 (fn start_channel_transport [handle]
   (let record (require_service handle))
-  (if (!= record/host/owner "slack")
-    (fail (ServiceError ^code "forbidden" ^message "Slack transport activation belongs to the slack plugin.")))
   (let previous (record/values/.get .get "transport"))
   (if (&& ($present? previous) (! previous/closed/.get)) (return {^^started}))
   (let service (channel_service handle))
   (let options (?? record/config {}))
   (if_not ($absent? options/requester) (set service/users/requester options/requester))
-  (let transport (open_transport service ^owner record/host/effects
-    ^start (?? options/start true) ^driver options/driver ^requester options/requester))
-  (try
-    (record/values/.get .put "transport" transport)
-    (record/host/effects .defer (fn [] (close_transport transport)))
-    {^^started}
-  catch Any (close_transport transport) (fail $err)))
+  (if (|| (== options/start false) ($absent? record/runtime/services/values/plugin_services))
+    (then
+      # Tests and offline hosts open the transport inline, without a producer.
+      (let transport (open_transport service ^owner record/host/effects
+        ^start (?? options/start true) ^driver options/driver ^requester options/requester))
+      (record/values/.get .put "transport" transport)
+      (record/host/effects .defer (fn [] (close_transport transport)))
+      (return {^^started})))
+  (contribute record/runtime/h record/host/owner "feature_slots" {^name "channels/slack"})
+  (register_service record/runtime/services/values/plugin_services/activation_services
+    record/runtime/h record/host/owner record/host/effects "slack_transport"
+    (fn []
+      (let transport (open_transport service ^owner record/host/effects
+        ^start true ^driver options/driver ^requester options/requester))
+      (record/values/.get .put "transport" transport)
+      (try (while (! transport/closed/.get) ($sleep 100)) ensure (close_transport transport)))
+    ^slot "channels/slack"
+    ^quiesce (fn []
+      (let current (record/values/.get .get "transport"))
+      (if ($present? current) (close_transport current))))
+  {^^started})
 
 (type HostedChannels ^^private ^props {^token Any}
   (impl ChannelHost

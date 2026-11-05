@@ -90,13 +90,6 @@
   (message page [id : Str, page : Int] : Any)
   (message store [name : Str, data, ^source source : Str = "upload"] : Any))
 
-(protocol TriggerHost
-  (message start [] : Any)
-  (message list [] : Any)
-  (message create [definition] : Any)
-  (message update [id : Str, changes] : Any)
-  (message delete [id : Str] : Any)
-  (message occurrences [^trigger trigger : Str = ""] : Any))
 
 (protocol ChannelHost
   (message start [] : Any)
@@ -114,6 +107,7 @@
   (message update_session [session : Str, changes] : Any)
   (message delete_session [session : Str] : Bool)
   (message receipt [session : Str, request_id : Str] : Any)
+  (message check_model_settings [settings] : Any)
   (message submit [session : Str, request_id : Str, text : Str, ^initiator initiator : Str,
                    ^input input = nil, ^model_settings model_settings = nil] : Any))
 

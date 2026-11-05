@@ -321,7 +321,7 @@
     (if (&& ($present? kind) (!= record/kind kind)) (continue))
     (if (&& ($present? status) (!= record/status status)) (continue))
     (if (&& ($present? attention) (!= record/attention attention)) (continue))
-    (if (&& ($present? trigger) (!= record/trigger trigger)) (continue))
+    (if (&& ($present? trigger) (!= (?? record/trigger record/origin/trigger) trigger)) (continue))
     (if (&& (!= since "") (< ($order/compare record/last_active since) 0)) (continue))
     (if (&& (!= until "") (> ($order/compare record/last_active until) 0)) (continue))
     (if (&& (!= query "") (! ($str/contains? ($str/lower record/title) query)) (! ($str/contains? ($str/lower record/first_request) query)))

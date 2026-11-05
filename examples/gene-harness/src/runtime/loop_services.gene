@@ -7,7 +7,6 @@
   ^from "./round_controller")
 (import [start_delegation_host] ^from "./delegations")
 (import [open_channel_service close_channel_service] ^from "../channels/service")
-(import [trigger_host_binding close_trigger_host] ^from "./trigger_host")
 (import [channel_host_binding] ^from "../channels/host")
 (import [admission_host_binding] ^from "./admission_host")
 (import [start_manager_polling] ^from "./workspace_manager")
@@ -19,9 +18,8 @@
   (if (== ctx/bindings_closed true) (return nil))
   (set ctx/bindings_closed true)
   (let errors [])
-  (for name in ["triggers/host" "channels/host" "admission/host"]
+  (for name in ["channels/host" "admission/host"]
     (try (withdraw_seam ctx/runtime/h "core" name) catch Any (errors .push $err/message)))
-  (try (close_trigger_host ctx/runtime/services/values/trigger_host) catch Any (errors .push $err/message))
   (if_not errors/.empty? (fail (HostServiceError ^message $"Loop binding cleanup failed: ${errors}")))
   nil)
 
@@ -68,8 +66,6 @@
    {^name "bindings" ^layer "loop" ^requires ["resumption" "manager_polling" "plugin_service_lifetime"]
     ^open (fn [ctx]
       (try
-        (provide ctx/runtime/h "core" "triggers/host"
-          (trigger_host_binding ctx/runtime))
         (provide ctx/runtime/h "core" "admission/host" (admission_host_binding ctx/runtime))
         (if_not ($absent? ctx/runtime/services/values/channels)
           (provide ctx/runtime/h "core" "channels/host"

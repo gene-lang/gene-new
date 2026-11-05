@@ -8,7 +8,6 @@
 (import [Client SessionTab] ^from "./workspace_model.gene" ^^export)
 (import [FeatureHost] ^from "./feature_host.gene")
 (import [render_session_title : slack_title resolve_slack_author : slack_author add_session_to_slack : slack_share pending_session : slack_pending] ^from "./slack_ui.gene")
-(import [trigger_fields trigger_occurrences : trigger_history load_triggers : trigger_load create_trigger : trigger_create] ^from "./trigger_ui.gene")
 (import [voice_pending? : pending_voice voice_replay_handler : replay_voice voice_rounds : rounds_voice
   voice_submit : submit_voice voice_review_key : review_key_voice reviewed_voice_input : input_voice
   initialize_voice : initialize_voice_feature configure_voice
@@ -105,9 +104,6 @@
 (fn resolve_slack_author [client : Client, source : Any, target : EventTarget] : Void
   (ensure_feature_host client) (slack_author client source target))
 (fn add_session_to_slack [client : Client] : Void (ensure_feature_host client) (slack_share client))
-(fn trigger_occurrences [client : Client, id : Str] : Void (ensure_feature_host client) (trigger_history client id))
-(fn load_triggers [client : Client] : Void (ensure_feature_host client) (trigger_load client))
-(fn create_trigger [client : Client] : Void (ensure_feature_host client) (trigger_create client))
 (fn voice_pending? [client : Client] : Bool (ensure_feature_host client) (pending_voice client))
 (fn voice_replay_handler [client : Client] : Any (ensure_feature_host client) (replay_voice client))
 (fn voice_rounds [client : Client] : RoundClient (ensure_feature_host client) (rounds_voice client))
@@ -292,12 +288,6 @@
     (done 200 {})
     (var center : NotificationCenter client/center)
     (toggle_center center true)
-    (return))
-  (if_yes (== (string_or item/action "") "triggers")
-    (done 200 {})
-    (set_hidden "trigger_drawer" false)
-    (load_triggers client)
-    ($dom/focus ($dom/element "close_triggers"))
     (return))
   (var draft (if (== client/selected "") ($dom/input_value client/prompt)
     (?? (storage_get (draft_key "new")) "")))
@@ -2492,28 +2482,6 @@
       "change"
       (fn [event : Any] : Void
         (refresh_sessions client))))
-  ($dom/add_event_listener
-    ($dom/element "triggers_button")
-    "click"
-    (fn [event : Any] : Void
-      (set_hidden "trigger_drawer" false)
-      (load_triggers client)))
-  ($dom/add_event_listener
-    ($dom/element "close_triggers")
-    "click"
-    (fn [event : Any] : Void
-      (set_hidden "trigger_drawer" true)))
-  ($dom/add_event_listener
-    ($dom/element "trigger_kind")
-    "change"
-    (fn [event : Any] : Void
-      (trigger_fields)))
-  ($dom/add_event_listener
-    ($dom/element "trigger_form")
-    "submit"
-    (fn [event : Any] : Void
-      ($dom/prevent_default event)
-      (create_trigger client)))
   ($dom/add_event_listener
     ($dom/element "leave_mode")
     "click"

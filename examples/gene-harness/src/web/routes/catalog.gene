@@ -7,7 +7,6 @@
 (import [voice_request] ^from "./voice")
 (import [notifications_request] ^from "./notifications")
 (import [ui_request] ^from "./ui")
-(import [triggers_request] ^from "./triggers")
 (import [delegations_request] ^from "./delegations")
 (import [cards_request] ^from "./cards")
 
@@ -18,7 +17,6 @@
    {^name "voice" ^request voice_request}
    {^name "notifications" ^request notifications_request}
    {^name "ui" ^request ui_request}
-   {^name "triggers" ^request triggers_request}
    {^name "delegations" ^request delegations_request}
    {^name "cards" ^request cards_request}])
 

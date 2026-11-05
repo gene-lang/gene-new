@@ -188,11 +188,6 @@
       (fail (HarnessError ^message $"Unsupported http route method ${method}"))))
   candidate)
 
-(fn validate_trigger_row [candidate]
-  (if (|| (!= ($head candidate/id) Str) (!= ($head candidate/request) Str) (! (["heartbeat" "scheduled" "cron"] .contains? candidate/kind)))
-    (fail (HarnessError ^message "a trigger row requires id, kind and request")))
-  candidate)
-
 (fn validate_interaction_row [candidate]
   (if (|| ($absent? candidate/name) (! ($runtime/callable? candidate/validate_request)) (! ($runtime/callable? candidate/validate_reply)))
     (fail (HarnessError ^message "an interaction needs a name and request/reply validators")))

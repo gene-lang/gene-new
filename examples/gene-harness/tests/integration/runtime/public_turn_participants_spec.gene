@@ -153,9 +153,9 @@
 )
 
 (describe "Public extension ownership and supervision"
-  (it "refuses unowned keys, legacy aliases, host annotations and duplicate declarations during activation" []
+  (it "refuses unowned keys, legacy aliases and duplicate declarations during activation" []
     (isolated this_mod/.path
-      "refuses unowned keys, legacy aliases, host annotations and duplicate declarations during activation"
+      "refuses unowned keys, legacy aliases and duplicate declarations during activation"
       (fn [root]
         (let runtime (open_runtime root "default" (baseline_profile)))
         (try
@@ -167,9 +167,6 @@
               ^definition (quote {^name "notes/memory" ^begin (fn [ctx state value] nil)})}
              {^id "aliases" ^registry "outcome_extensions" ^name "aliases/field"
               ^definition (quote {^name "aliases/field" ^alias "reply" ^schema (fn [ctx value] {^value value})})}
-             {^id "annotations" ^registry "turn_participants" ^name "annotations/policy"
-              ^definition (quote {^name "annotations/policy" ^request_record {^type "reply"}
-                ^begin (fn [ctx state value] nil)})}
              {^id "duplicate" ^registry "outcome_extensions" ^name "duplicate/field" ^^duplicate
               ^definition (quote {^name "duplicate/field" ^schema (fn [ctx value] {^value value})})}
              {^id "duplicate_part" ^registry "turn_participants" ^name "duplicate_part/pipeline" ^^duplicate

@@ -204,6 +204,18 @@ Publication observers subscribe independently and cancel only their own
 subscriptions. Retained code may outlive publication; revocable receivers and
 service handles enforce the owning activation's lifetime.
 
+A feature can live entirely in its plugin. Long-lived work is a
+`PluginHost:service`: it starts after its activation is published, quiesces
+before a successor starts or when the host stops, and is cancelled when the
+activation retires. A `feature_slots` row names a single-producer feature
+independently of the plugin id; only the slot's holder produces, and another
+plugin takes it only with an explicit `^takeover`. Feature records
+(`put_record`/`records`) are the feature's authoritative state and outlive any one
+implementation. Plugins admit work through `AdmissionHost` with their own
+initiator, add HTTP through `http_routes`, and observe round lifecycle events
+(`round_lifecycle`: saved, closed, answered, host stopping). The triggers plugin
+is the reference: scheduler, records, admission, route, functions and docs.
+
 Plugin state updates append immediately. There is no turn-wide transaction
 that rolls back arbitrary external effects. Features doing external work own
 durable intent/result receipts and reconcile uncertainty on recovery.

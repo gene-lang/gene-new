@@ -26,7 +26,7 @@
   (if_yes (> confirmations/.size 0) ($dom/focus confirmations/0) (return false))
   (var parent_drawer : Any nil)
   (for names in [["notification_center" "close_notifications"]
-                 ["trigger_drawer" "close_triggers"] ["status_drawer" "close_status"]]
+                 ["status_drawer" "close_status"]]
     (var drawer ($dom/element names/0))
     (if_yes (! drawer/hidden)
       (if ($dom/contains? drawer fallback)

@@ -1,5 +1,6 @@
-# Native coordinator installation. Plugin registration remains closed until
-# both existing consumers have moved through the production transaction path.
+# Turn participant registry. Native rows (delegation, cards, voice, plugin
+# recovery) and public rows share one contract: public participants may also
+# declare `limit` callbacks and `request_record` annotations.
 (mod turn_participant_registry)
 (import [registry contribute row] ^from "../kernel")
 (import [new_turn_transaction guard_participant_callback ParticipantFailure phases]
@@ -49,9 +50,8 @@
   (if_not native
     (let prefix $"${owner}/")
     (if (|| (! ($str/starts_with? candidate/name prefix)) (== candidate/name prefix)
-            (> ($str/byte_size candidate/name) 192) (candidate .has_key? "request_record")
-            (candidate .has_key? "limit"))
-      (invalid_definition candidate/name "Public participants use their owner's namespace; host record annotations and limit policy are reserved."))
+            (> ($str/byte_size candidate/name) 192))
+      (invalid_definition candidate/name "Public participants use their owner's namespace."))
     (set slot ($str/slice_bytes candidate/name ($str/byte_size prefix)
       (- ($str/byte_size candidate/name) ($str/byte_size prefix))))
     (if ($str/contains? slot "/")

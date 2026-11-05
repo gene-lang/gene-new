@@ -175,14 +175,14 @@
           (let bad_effort (cli ^expected 1 host/root ["--session" session "send" "--effort" "ultra" "not admitted"]))
           ($assert (== bad_effort/code "invalid_request"))
           ($assert ($str/contains? bad_effort/message "not an effort level"))
-          (let scheduled (api browser "POST" "/triggers"
+          (let scheduled (api browser "POST" "/p/triggers"
             {^id "model-check" ^kind "scheduled" ^at (+ ($os/wall_ms) 3600000) ^request "later"}))
           (let changes $"${host/root}/trigger-model.gene")
           ($fs/write_text changes "{^model_settings {^effort \"low\"}}")
           (let updated (cli host/root ["triggers" "update" "model-check" changes]))
           ($assert (== updated/model_settings/effort "low"))
           ($assert (== updated/next_ms scheduled/next_ms))
-          (let reset (api browser "PATCH" "/triggers/model-check" {}))
+          (let reset (api browser "PATCH" "/p/triggers/model-check" {}))
           ($assert ($absent? reset/model_settings))
           (let page_request (request ^url $"${browser/connection/origin}/models"))
           (let page (try (await page_request) ensure page_request/.cancel))

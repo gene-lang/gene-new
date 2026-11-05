@@ -12,14 +12,14 @@
         (try
           (let client (connect root))
           (for path in ["/channels" "/plugins" "/media" "/voice/status" "/notifications"
-                        "/ui/image?path=missing.png" "/triggers" "/trigger-occurrences"
+                        "/ui/image?path=missing.png" "/p/triggers" "/p/triggers/occurrences"
                         "/sessions/missing/slack-thread" "/sessions/missing/voice"
                         "/sessions/missing/card-actions/missing"]
             (let denied (wire client/connection "GET" path))
             ($assert (== denied/status 401) ($to_str path ": " denied/status)))
           (let wrong_csrf (client/credentials .assoc "csrf" "wrong"))
           (for path in ["/channels/configure" "/plugins/inspect" "/media" "/notifications"
-                        "/notifications/action" "/ui/render" "/ui/actions" "/triggers"
+                        "/notifications/action" "/ui/render" "/ui/actions" "/p/triggers"
                         "/sessions/missing/slack" "/sessions/missing/voice"
                         "/sessions/missing/delegations/recovery" "/sessions/missing/cards/x/actions"]
             (let denied (wire client/connection "POST" path {} ^credentials wrong_csrf))

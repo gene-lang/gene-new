@@ -252,3 +252,17 @@ images, questions, pause/continuation and core model-record fixtures remain
 acceptance boundaries. The turn-limit fixture now asserts an operator pause,
 durably retained input and an explicit continuation rather than a synthetic
 final limit reply.
+
+## Round lifecycle events
+
+Some feature work happens outside any turn: a superseded paused parent, a
+failed or cancelled parent, an answered question batch, and Stop. The round
+controller keeps admission and cancellation and dispatches these as
+`round_lifecycle` events (`round/saved`, `round/closed`, `round/answered`,
+`host/stopping`) in a fixed order relative to them. A row is
+`{^name ^events ^handle}`; a `round/answered` handler that returns true takes over
+the resumption. Delegation's handling is a native row, and plugins may add their
+own. Public participants may declare `limit` callbacks and `request_record`
+annotations, and a profile built-in may declare the short `alias` of its own
+Outcome extension field.
+

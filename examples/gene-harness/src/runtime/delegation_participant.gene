@@ -3,7 +3,7 @@
 (mod delegation_participant)
 (import [delegation_context delegation_request_items begin_delegation_request
   mark_delegation_results_seen commit_delegation_turn release_delegation_turn
-  has_owned_work? adopt_delegation_owner] ^from "./delegations")
+  has_owned_work? adopt_delegation_owner note_delegation_round close_delegation_owner queue_delegation_answer prepare_delegations_stop] ^from "./delegations")
 (import [new_turn_items] ^from "../agents/outcome")
 (import [ParticipantValidation] ^from "./participant_contract")
 
@@ -79,3 +79,16 @@
        {^kind "continue" ^turn (new_turn_items context/turn) ^request_items [] ^validated nil}
        ^limit context/limit ^count context/count))
      (waiting_result context parked))})
+
+# The delegation host's round lifecycle handling, as native round_lifecycle
+# rows instead of direct round-controller calls (round_lifecycle.gene).
+(fn delegation_lifecycle_handler [service]
+  {^name "core/delegation" ^events ["round/saved" "round/closed" "round/answered" "host/stopping"]
+   ^handle (fn [event]
+     (match event/event ^!exhaustive
+       (when "round/saved" (note_delegation_round service event/session event/receipt) nil)
+       (when "round/closed" (close_delegation_owner service event/session event/round event/reason) nil)
+       (when "round/answered" (queue_delegation_answer service event/session event/receipt event/batch))
+       (when "host/stopping" (prepare_delegations_stop service []) nil)
+       (else nil)))})
+

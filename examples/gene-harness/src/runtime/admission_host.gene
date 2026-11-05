@@ -10,6 +10,40 @@
   ^from "./sessions")
 (import [submit_round round_state round_for_request RoundError] ^from "./round_controller")
 (import [copy_data] ^from "../storage/state")
+(import [row] ^from "../kernel")
+(import [validate_model_settings] ^from "../public/models")
+(import [effective_config] ^from "./settings_resolver")
+(import [catalog_snapshot session_settings select_provider] ^from "../agents/provider_selection")
+
+# How a round admitted with `settings` would select its model: an error for an
+# unusable choice, otherwise warnings (unready provider, effort resolution,
+# uncatalogued model). Selection stays host-owned.
+(fn ^^private check_model_settings [runtime, input]
+  (let choice (try (validate_model_settings (?? input {})) catch Any (return {^error $err/message})))
+  (if (&& ($present? choice/provider) ($absent? (row runtime/h "providers" choice/provider)))
+    (return {^error $"Unknown provider ${choice/provider}"}))
+  (let base (effective_config runtime))
+  (let selected (try (select_provider ^allow_unready true runtime
+    (session_settings {^model_settings choice} base))
+    catch Any
+      (if (&& (!= $err/code "not_ready") (> ($size choice) 0)) (return {^error $err/message}))
+      {^reason $err/message}))
+  (let warnings [])
+  (if ($present? selected/reason) (warnings .push selected/reason))
+  (if (&& ($present? choice/effort) (!= choice/effort "auto")
+    ($present? selected/selection) (!= choice/effort selected/selection/effective_effort))
+    (then
+      (let effective (?? selected/selection/effective_effort "provider default"))
+      (warnings .push $"Requested effort ${choice/effort} resolves to ${effective}.")))
+  (if_yes ($present? choice/model)
+    (let catalog (catalog_snapshot runtime))
+    (let provider choice/provider)
+    (let candidate (row runtime/h "providers" provider))
+    (var listed false)
+    (for model in (?? catalog/providers/%provider/models candidate/builtin_models [])
+      (if (== model/id choice/model) (set listed true)))
+    (if (! listed) (warnings .push "Model is not in the catalog; access is unverified.")))
+  {^settings choice ^warnings warnings})
 
 (fn ^^private controller_of [handle]
   (let record (require_service handle))
@@ -63,6 +97,9 @@
     (message delete_session [session : Str] : Bool
       (let context (controller_of self))
       (delete_session context/runtime/sessions session))
+    (message check_model_settings [settings] : Any
+      (let context (controller_of self))
+      (immutable_view (check_model_settings context/runtime settings)))
     (message receipt [session : Str, request_id : Str] : Any
       (let context (controller_of self))
       (receipt_view (find_receipt context/controller context/runtime session request_id)))

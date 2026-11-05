@@ -1,0 +1,49 @@
+# Round lifecycle events outside any turn transaction (tmp/harness-review3.md 4g).
+# The round controller keeps admission and cancellation and dispatches, in a
+# fixed order relative to them:
+#   round/saved     {^session ^receipt}         a receipt was recorded (including superseded ones)
+#   round/closed    {^session ^round ^reason}   a parent round failed or was cancelled
+#   round/answered  {^session ^receipt ^batch}  a question batch was answered; a handler
+#                                               returning true takes over the resumption
+#   host/stopping   {}                          Stop closed admission
+# Handlers are `round_lifecycle` rows {^name ^events [...] ^handle}; the
+# delegation host's are native rows, and any plugin may add its own.
+(mod round_lifecycle)
+(import [registry contribute] ^from "../kernel")
+(import [current_snapshot] ^from "./composition")
+(import [HarnessError] ^from "../errors")
+
+(const native_owner "$host/round_lifecycle")
+(const lifecycle_events ["round/saved" "round/closed" "round/answered" "host/stopping"])
+
+(fn ^^private validate_handler [candidate]
+  (if (|| (!= ($head candidate/name) Str) (== candidate/name "")
+          (!= ($head candidate/events) List) candidate/events/.empty?
+          (! ($runtime/callable? candidate/handle)))
+    (fail (HarnessError ^message "a round lifecycle handler needs name, events and a callable handle")))
+  (for event in candidate/events
+    (if_not (lifecycle_events .contains? event)
+      (fail (HarnessError ^message $"Unknown round lifecycle event ${event}"))))
+  candidate)
+
+(fn install_round_lifecycle [runtime]
+  (registry runtime/h "round_lifecycle" ^owner native_owner
+    ^spec {^name "round_lifecycle" ^^unique ^^ordered ^schema validate_handler ^callbacks ["handle"]})
+  nil)
+
+(fn contribute_native_handler [runtime, handler]
+  (contribute runtime/h native_owner "round_lifecycle" handler))
+
+# Calls every handler for `name` in registry order and returns their results.
+(fn dispatch_round_event [runtime, name : Str, event]
+  (let results [])
+  (if ($absent? runtime/h/snapshots) (return results))
+  (let snapshot (current_snapshot runtime/h/snapshots))
+  (for record in (?? (snapshot/registries .get "round_lifecycle") [])
+    (if (record/payload/events .contains? name)
+      (results .push (record/payload/handle (event .assoc "event" name)))))
+  results)
+
+(fn claimed? [results] : Bool
+  (for result in results (if (== result true) (return true)))
+  false)

@@ -42,12 +42,15 @@
       (schema_failure candidate/name $"Unknown Outcome extension field ${key}.")))
   candidate)
 
-(fn prepare_schema [owner : Str, candidate]
+(fn prepare_schema [runtime, owner : Str, candidate]
   (let native (== owner native_owner))
+  # A profile built-in may declare the short spelling of its own field, so a
+  # feature that moves into its plugin keeps the syntax the model writes.
+  (let profile_builtin (== (/host (runtime/h/plugin_policies/.get .get owner)) true))
   (let name candidate/name)
   (if_not native
     (if (|| (! ($str/starts_with? candidate/name $"${owner}/"))
-            (== candidate/name $"${owner}/") (candidate .has_key? "alias"))
+            (== candidate/name $"${owner}/") (&& (candidate .has_key? "alias") (! profile_builtin)))
       (schema_failure candidate/name "Outcome extension keys belong to their contributor's namespace; short spellings belong to the host.")))
   (let schema candidate/schema)
   (let prepared {})
@@ -72,7 +75,8 @@
   (for definition in definitions (reserved .put definition/name native_owner))
   (registry runtime/h "outcome_extensions" ^owner native_owner
     ^spec {^name "outcome_extensions" ^^unique ^^ordered ^schema validate_schema_definition
-      ^prepare prepare_schema ^callbacks ["schema"] ^reserved reserved ^^same_owner})
+      ^prepare (fn [owner candidate] (prepare_schema runtime owner candidate)) ^callbacks ["schema"]
+      ^reserved reserved ^^same_owner})
   (for definition in definitions (contribute runtime/h native_owner "outcome_extensions" definition))
   nil)
 

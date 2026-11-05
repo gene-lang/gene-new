@@ -1,6 +1,7 @@
 # Workspace UI configuration and revision descriptors; no rendering or transport.
 (mod ui_state)
 (import [plugin_state next_sequence stream_key] ^from "../storage/state")
+(import [current_snapshot] ^from "../runtime/composition")
 (import [public_tokens theme_modes css_name] ^from "../web/theme")
 (import [theme_revision] ^from "../web/theme_registry")
 
@@ -14,7 +15,15 @@
   # Match the Workspace UI plugin's persisted identity across source renames.
   (let saved (if ($absent? h/event_store) nil
     (plugin_state h/event_store "workspace" "workspace" "ui_experiment")))
-  (?? saved runtime/services/values/ui_defaults {^enabled false ^layout "chat" ^panel "" ^side "left" ^width 50 ^tokens {}}))
+  (var defaults nil)
+  (if_yes ($present? h/snapshots)
+    (let snapshot (current_snapshot h/snapshots))
+    (for record in (?? (snapshot/registries .get "ui_defaults") [])
+      (if_yes (== record/key "default")
+        (set defaults {})
+        (for [key value] in record/payload
+          (if (!= ($to_str key) "name") (defaults .put ($to_str key) value))))))
+  (?? saved defaults {^enabled false ^layout "chat" ^panel "" ^side "left" ^width 50 ^tokens {}}))
 
 (fn validate_theme_colors [colors, declared = []]
   (if (!= ($head colors) Map) (ui_error "invalid_request" "Theme overrides must be a map of tokens."))
